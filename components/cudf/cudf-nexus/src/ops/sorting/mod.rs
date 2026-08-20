@@ -45,6 +45,7 @@ const SORTED_ORDER_MAX_ROWS: usize = i32::MAX as usize;
 
 /// Stable contract label for the libcudf-owned sorted-order radix preflight.
 pub const SORTED_ORDER_RADIX_PREFLIGHT_CONTRACT: &str = "sorted_order_radix_owner_preflight";
+pub const SORTED_ORDER_LEXICOGRAPHIC_PREFLIGHT_CONTRACT: &str = "sorted_order_lexicographic_owner_preflight";
 
 /// Allocation components returned by the owner-level unstable one-key radix
 /// sorted-order preflight.
@@ -85,6 +86,61 @@ impl SortedOrderRadixPreflight {
     }
 
     /// Checked sum of all five co-resident allocations during radix execution.
+    pub fn active_phase_peak_bytes(self) -> usize {
+        self.active_phase_peak_bytes
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SortedOrderLexicographicPreflight {
+    comparator_state_bytes: usize,
+    temporary_workspace_bytes: usize,
+    retained_order_bytes: usize,
+    active_phase_peak_bytes: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortedOrderPreflight {
+    Radix(SortedOrderRadixPreflight),
+    Lexicographic(SortedOrderLexicographicPreflight),
+}
+
+impl SortedOrderPreflight {
+    pub fn temporary_workspace_bytes(self) -> usize {
+        match self {
+            Self::Radix(preflight) => preflight.temporary_workspace_bytes(),
+            Self::Lexicographic(preflight) => preflight.temporary_workspace_bytes(),
+        }
+    }
+
+    pub fn retained_order_bytes(self) -> usize {
+        match self {
+            Self::Radix(preflight) => preflight.retained_order_bytes(),
+            Self::Lexicographic(preflight) => preflight.retained_order_bytes(),
+        }
+    }
+
+    pub fn active_phase_peak_bytes(self) -> usize {
+        match self {
+            Self::Radix(preflight) => preflight.active_phase_peak_bytes(),
+            Self::Lexicographic(preflight) => preflight.active_phase_peak_bytes(),
+        }
+    }
+}
+
+impl SortedOrderLexicographicPreflight {
+    pub fn comparator_state_bytes(self) -> usize {
+        self.comparator_state_bytes
+    }
+
+    pub fn temporary_workspace_bytes(self) -> usize {
+        self.temporary_workspace_bytes
+    }
+
+    pub fn retained_order_bytes(self) -> usize {
+        self.retained_order_bytes
+    }
+
     pub fn active_phase_peak_bytes(self) -> usize {
         self.active_phase_peak_bytes
     }
@@ -270,6 +326,137 @@ pub fn sorted_order_radix_preflight(
         device,
         "sorting::sorted_order_radix_preflight",
     )
+}
+
+pub fn sorted_order_lexicographic_preflight(
+    num_rows: usize,
+    key_types: &[DataType],
+    null_counts: &[usize],
+    stable: bool,
+    key_orders: &[Order],
+    null_precedence: &[NullOrder],
+    device: DeviceId,
+) -> Result<SortedOrderLexicographicPreflight> {
+    let operation = "sorting::sorted_order_lexicographic_preflight";
+    if key_types.len() < 2
+        || key_types.len() != null_counts.len()
+        || key_types.len() != key_orders.len()
+        || key_types.len() != null_precedence.len()
+    {
+        return Err(sorted_order_radix_preflight_unsupported(
+            operation,
+            "lexicographic sort metadata requires matching vectors with at least two keys",
+            "lexicographic_metadata_length_mismatch",
+            "provide one type, null count, order, and null precedence for each sort key",
+        ));
+    }
+    if num_rows > SORTED_ORDER_MAX_ROWS {
+        return Err(sorted_order_radix_preflight_unsupported(
+            operation,
+            "sorted-order lexicographic rows exceed cudf::size_type",
+            "row_count_exceeds_cudf_size_type",
+            "reduce row_count to fit within cudf::size_type",
+        ));
+    }
+    if stable {
+        return Err(sorted_order_radix_preflight_unsupported(
+            operation,
+            "sorted-order lexicographic preflight supports only unstable sorting",
+            "stable_sort_unsupported",
+            "use unstable sorting",
+        ));
+    }
+    for (index, (key_type, null_count)) in key_types.iter().zip(null_counts).enumerate() {
+        let id = key_type.id();
+        if !(id.is_numeric()
+            || id.is_boolean()
+            || id.is_timestamp()
+            || id.is_duration()
+            || id.is_decimal()
+            || id == TypeId::String)
+        {
+            return Err(Error::new_with(
+                ErrorCode::UnsupportedDtype,
+                operation,
+                "sorted-order lexicographic key type is unsupported",
+            )
+            .with_fact(crate::core::error::FACT_TYPE_ID, id)
+            .with_detail("key_index", index.to_string()));
+        }
+        if *null_count > num_rows {
+            return Err(Error::new_with(
+                ErrorCode::ForeignInvariantViolation,
+                operation,
+                "sort key null count exceeds row count",
+            )
+            .with_detail("key_index", index.to_string()));
+        }
+    }
+
+    let num_rows = error::usize_to_i64(num_rows, operation, "num_rows")?;
+    let key_count = checked_num_keys(operation, key_types.len())?;
+    let key_types = key_types.iter().map(|key_type| key_type.id().to_raw()).collect::<Vec<_>>();
+    let null_counts = null_counts
+        .iter()
+        .map(|count| error::usize_to_i64(*count, operation, "null_count"))
+        .collect::<Result<Vec<_>>>()?;
+    let key_orders = key_orders
+        .iter()
+        .map(|order| match order {
+            Order::Ascending => cudf_sys::CUDF_ORDER_ASCENDING,
+            Order::Descending => cudf_sys::CUDF_ORDER_DESCENDING,
+        })
+        .collect::<Vec<_>>();
+    let null_precedence = null_precedence
+        .iter()
+        .map(|order| match order {
+            NullOrder::After => cudf_sys::CUDF_NULL_ORDER_AFTER,
+            NullOrder::Before => cudf_sys::CUDF_NULL_ORDER_BEFORE,
+        })
+        .collect::<Vec<_>>();
+    let mut raw = cudf_sys::cudf_sorted_order_lexicographic_preflight_result_t {
+        comparator_state_bytes: 0,
+        temporary_workspace_bytes: 0,
+        retained_order_bytes: 0,
+        active_phase_peak_bytes: 0,
+    };
+    let status = unsafe {
+        cudf_sys::cudf_sorted_order_lexicographic_preflight(
+            num_rows,
+            key_types.as_ptr(),
+            null_counts.as_ptr(),
+            key_orders.as_ptr(),
+            null_precedence.as_ptr(),
+            key_count,
+            0,
+            device.ordinal_raw(),
+            &mut raw,
+        )
+    };
+    error::check_status_in(status, operation)?;
+    let comparator_state_bytes =
+        checked_native_preflight_bytes(raw.comparator_state_bytes, "comparator_state_bytes", operation)?;
+    let temporary_workspace_bytes =
+        checked_native_preflight_bytes(raw.temporary_workspace_bytes, "temporary_workspace_bytes", operation)?;
+    let retained_order_bytes =
+        checked_native_preflight_bytes(raw.retained_order_bytes, "retained_order_bytes", operation)?;
+    let active_phase_peak_bytes =
+        checked_native_preflight_bytes(raw.active_phase_peak_bytes, "active_phase_peak_bytes", operation)?;
+    let expected_peak = checked_preflight_sum(comparator_state_bytes, temporary_workspace_bytes, operation)?;
+    let expected_peak = checked_preflight_sum(expected_peak, retained_order_bytes, operation)?;
+    if expected_peak != active_phase_peak_bytes {
+        return Err(Error::new_with(
+            ErrorCode::ForeignInvariantViolation,
+            operation,
+            "native sorted-order lexicographic preflight component sum differs from its peak",
+        ));
+    }
+    Ok(SortedOrderLexicographicPreflight {
+        comparator_state_bytes,
+        temporary_workspace_bytes,
+        retained_order_bytes,
+        active_phase_peak_bytes,
+    })
 }
 
 /// Column sort order.

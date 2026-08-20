@@ -53,7 +53,8 @@ pub use graph_algorithm::{
     GraphSsspSource, GraphTriangleCountAllParams, GraphVertexIdTypeSupport, GraphVertexPairInput, GraphWccParams,
     GraphWeightPolicy, ResidentGraphKey, edge_plan_has_simple_directed_edge_topology,
     graph_residency_descriptor_for_edge_plan, graph_residency_descriptor_for_local_parquet_source,
-    graph_result_schema_for_params, planned_resident_graph_key, stable_graph_result_schema,
+    graph_result_schema_for_params, graph_result_schema_for_vertex_type, planned_resident_graph_key,
+    stable_graph_result_schema,
 };
 pub use join::{
     HashJoinBuildArtifactId, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType,

@@ -955,7 +955,7 @@ pub struct ExecutionContext {
     /// Immutable post-grant proof shared by this context and its query handle.
     /// Direct contexts intentionally carry no proof.
     admitted_attempt_proof: Option<Arc<AdmittedAttemptProof>>,
-    activated_deferred_graph_phase: Option<Arc<ActivatedDeferredGraphPhase>>,
+    activated_deferred_resident_phase: Option<Arc<ActivatedDeferredResidentPhase>>,
     /// This context's shared member lease on its execution stream. One
     /// member per stream for the attempt; per-stage tokens clone it.
     attempt_member_lease: Option<cudf::StreamReservationLease>,
@@ -1008,21 +1008,49 @@ pub struct ExecutionContext {
 }
 
 #[derive(Debug)]
-struct ActivatedDeferredGraphPhase {
-    graph_execution_scope_fingerprint: String,
-    producer_execution_scope_fingerprint: String,
-    input_name: String,
-    input_schema: arrow::datatypes::SchemaRef,
-    input_memory_identity: cudf::DataFrameMemoryIdentity,
-    input_row_count: u64,
+struct ActivatedDeferredResidentPhase {
+    consumer_execution_scope_fingerprint: String,
+    inputs: Vec<ActivatedDeferredResidentInput>,
     capability_proof: QueryPlanCapabilityProof,
     reservation_envelope: AttemptReservationEnvelope,
     phase_grant: MemoryGrantPhase,
     grant_identity: crate::runtime::gpu::GrantIdentity,
 }
 
-impl ActivatedDeferredGraphPhase {
-    fn validate_input(&self, input: &GpuResultHandle, grant: &MemoryGrant) -> Result<()> {
+#[derive(Debug)]
+struct ActivatedDeferredResidentInput {
+    producer_execution_scope_fingerprint: String,
+    input_name: String,
+    input_schema: arrow::datatypes::SchemaRef,
+    input_memory_identity: cudf::DataFrameMemoryIdentity,
+    input_row_count: u64,
+}
+
+impl ActivatedDeferredResidentPhase {
+    fn validate_inputs(&self, inputs: &GpuResidentInputMap, grant: &MemoryGrant) -> Result<()> {
+        for activated in &self.inputs {
+            let input = inputs.get(&activated.input_name).ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::UnsupportedPlanShape,
+                    "nexus_query_engine.runtime.context",
+                    "the activated deferred resident input is missing",
+                )
+                .with_fact("reason", "deferred_resident_input_missing")
+                .with_fact("input_name", &activated.input_name)
+            })?;
+            activated.validate(input, grant, self)?;
+        }
+        Ok(())
+    }
+}
+
+impl ActivatedDeferredResidentInput {
+    fn validate(
+        &self,
+        input: &GpuResultHandle,
+        grant: &MemoryGrant,
+        phase: &ActivatedDeferredResidentPhase,
+    ) -> Result<()> {
         let row_count = u64::try_from(input.frame().num_rows()).map_err(|_| {
             QueryError::new(
                 QueryErrorCode::UnsupportedPlanShape,
@@ -1033,13 +1061,13 @@ impl ActivatedDeferredGraphPhase {
         })?;
         let physical_bytes = input.device_allocated_size_bytes()?;
         let retained_by_grant = input.retained_reservation_identity_for(grant).is_some();
-        if self.grant_identity != grant.identity()
+        if phase.grant_identity != grant.identity()
             || input.schema() != &self.input_schema
             || input.frame().memory_identity() != self.input_memory_identity
             || input.producer_execution_scope() != Some(&self.producer_execution_scope_fingerprint)
             || row_count != self.input_row_count
-            || self.phase_grant.grant_identity() != grant.identity()
-            || self.reservation_envelope.complete_phase_peak_bytes() != Some(self.phase_grant.required_bytes())
+            || phase.phase_grant.grant_identity() != grant.identity()
+            || phase.reservation_envelope.complete_phase_peak_bytes() != Some(phase.phase_grant.required_bytes())
             || (physical_bytes > 0 && !retained_by_grant)
         {
             return Err(QueryError::new(
@@ -1272,7 +1300,7 @@ impl ExecutionContext {
             attempt_allocation_domain: parts.attempt_allocation_domain,
             attempt_auxiliary_slots: parts.attempt_auxiliary_slots,
             admitted_attempt_proof: parts.admitted_attempt_proof,
-            activated_deferred_graph_phase: None,
+            activated_deferred_resident_phase: None,
             attempt_member_lease: parts.attempt_member_lease,
             boundary_policy: parts.boundary_policy,
             source_scheduler_policy: parts.source_scheduler_policy,
@@ -1727,26 +1755,42 @@ impl ExecutionContext {
         let Some((proof, immutable_grant)) = self.validated_admitted_identity(plan)? else {
             return Ok(None);
         };
-        if let Some(descriptor) = proof.submitted_capability_evidence().deferred_graph_phase_for_plan(plan)? {
-            let activated = self.activated_deferred_graph_phase.as_ref().ok_or_else(|| {
+        if let Some(descriptor) = proof.submitted_capability_evidence().deferred_resident_phase_for_plan(plan)? {
+            if descriptor.is_composed_consumer()
+                && self.activated_deferred_resident_phase.is_none()
+                && let Some(occurrence_ids) = occurrence_ids
+            {
+                proof.submitted_capability_evidence().validate_covers_plan(plan)?;
+                return proof.reservation_envelope().validate_and_project_composed_execution(
+                    plan,
+                    occurrence_ids,
+                    immutable_grant.budget_bytes(),
+                    Some((
+                        proof.grant_identity().attempt_id,
+                        proof.selected_device(),
+                        proof.grant_identity().generation,
+                    )),
+                );
+            }
+            let activated = self.activated_deferred_resident_phase.as_ref().ok_or_else(|| {
                 QueryError::new(
                     QueryErrorCode::UnsupportedPlanShape,
                     "nexus_query_engine.runtime.context",
-                    "the admitted graph phase requires its exact materialized edge frame before execution",
+                    "the admitted deferred phase requires its exact resident inputs before execution",
                 )
-                .with_fact("reason", "deferred_graph_phase_not_activated")
+                .with_fact("reason", "deferred_resident_phase_not_activated")
                 .with_fact("input_name", descriptor.input_name())
             })?;
             let execution_scope = crate::admission::canonical_execution_scope_fingerprint(plan);
-            if activated.graph_execution_scope_fingerprint != execution_scope
+            if activated.consumer_execution_scope_fingerprint != execution_scope
                 || activated.grant_identity != immutable_grant.identity()
             {
                 return Err(QueryError::new(
                     QueryErrorCode::UnsupportedPlanShape,
                     "nexus_query_engine.runtime.context",
-                    "the activated graph phase differs from the admitted plan or immutable grant",
+                    "the activated deferred phase differs from the admitted plan or immutable grant",
                 )
-                .with_fact("reason", "deferred_graph_phase_identity_mismatch"));
+                .with_fact("reason", "deferred_resident_phase_identity_mismatch"));
             }
             activated.capability_proof.as_requirement().validate_covers_plan(plan)?;
             activated.reservation_envelope.validate_execution_with_grant(
@@ -1800,7 +1844,7 @@ impl ExecutionContext {
             return Ok(());
         };
         proof.submitted_capability_evidence().validate_covers_plan(plan)?;
-        if proof.submitted_capability_evidence().deferred_graph_phase_for_plan(plan)?.is_some() {
+        if proof.submitted_capability_evidence().deferred_resident_phase_for_plan(plan)?.is_some() {
             return Ok(());
         }
         self.validate_admitted_proof(plan, None).map(|_| ())
@@ -1810,9 +1854,75 @@ impl ExecutionContext {
         let Some((proof, immutable_grant)) = self.validated_admitted_identity(plan)? else {
             return Ok(self.clone());
         };
-        let Some(descriptor) = proof.submitted_capability_evidence().deferred_graph_phase_for_plan(plan)? else {
+        let Some(descriptor) = proof.submitted_capability_evidence().deferred_resident_phase_for_plan(plan)? else {
             return Ok(self.clone());
         };
+        if let Some(activated) = &self.activated_deferred_resident_phase {
+            if activated.consumer_execution_scope_fingerprint
+                != crate::admission::canonical_execution_scope_fingerprint(plan)
+                || activated.grant_identity != immutable_grant.identity()
+            {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedPlanShape,
+                    "nexus_query_engine.runtime.context",
+                    "the activated deferred phase differs from the admitted plan or immutable grant",
+                )
+                .with_fact("reason", "deferred_resident_phase_identity_mismatch"));
+            }
+            activated.validate_inputs(gpu_inputs, &immutable_grant)?;
+            return Ok(self.clone());
+        }
+        if descriptor.is_composed_consumer() {
+            proof.submitted_capability_evidence().validate_covers_plan(plan)?;
+            let capability_proof =
+                proof.submitted_capability_evidence().resolve_deferred_resident_consumer(plan, gpu_inputs)?;
+            let (reservation_envelope, phase_grant) =
+                self.resolve_deferred_phase_envelope(plan, &capability_proof, &immutable_grant)?;
+            let inputs = descriptor
+                .inputs()
+                .iter()
+                .map(|descriptor| {
+                    let input = gpu_inputs.get(descriptor.input_name()).ok_or_else(|| {
+                        QueryError::new(
+                            QueryErrorCode::UnsupportedPlanShape,
+                            "nexus_query_engine.runtime.context",
+                            "the admitted deferred resident input is missing at phase activation",
+                        )
+                        .with_fact("reason", "deferred_resident_input_missing")
+                        .with_fact("input_name", descriptor.input_name())
+                    })?;
+                    let input_row_count = u64::try_from(input.frame().num_rows()).map_err(|_| {
+                        QueryError::new(
+                            QueryErrorCode::SizeOverflow,
+                            "nexus_query_engine.runtime.context",
+                            "the resident input row count exceeds the admission integer range",
+                        )
+                        .with_fact("reason", "deferred_resident_input_row_count_overflow")
+                    })?;
+                    Ok(ActivatedDeferredResidentInput {
+                        producer_execution_scope_fingerprint: descriptor
+                            .producer_execution_scope_fingerprint()
+                            .to_owned(),
+                        input_name: descriptor.input_name().to_owned(),
+                        input_schema: descriptor.input_schema().clone(),
+                        input_memory_identity: input.frame().memory_identity(),
+                        input_row_count,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let activated = ActivatedDeferredResidentPhase {
+                consumer_execution_scope_fingerprint: crate::admission::canonical_execution_scope_fingerprint(plan),
+                inputs,
+                capability_proof,
+                reservation_envelope,
+                phase_grant,
+                grant_identity: immutable_grant.identity(),
+            };
+            activated.validate_inputs(gpu_inputs, &immutable_grant)?;
+            let mut context = self.clone();
+            context.activated_deferred_resident_phase = Some(Arc::new(activated));
+            return Ok(context);
+        }
         let input_name = descriptor.input_name();
         let input = gpu_inputs.get(input_name).ok_or_else(|| {
             QueryError::new(
@@ -1865,6 +1975,34 @@ impl ExecutionContext {
                 .with_fact("reason", "deferred_graph_capability_missing")
             })?
             .with_graph_memory_admission_evidence(&evidence)?;
+        let (reservation_envelope, phase_grant) =
+            self.resolve_deferred_phase_envelope(plan, &capability_proof, &immutable_grant)?;
+        let activated = ActivatedDeferredResidentPhase {
+            consumer_execution_scope_fingerprint: crate::admission::canonical_execution_scope_fingerprint(plan),
+            inputs: vec![ActivatedDeferredResidentInput {
+                producer_execution_scope_fingerprint: descriptor.producer_execution_scope_fingerprint().to_owned(),
+                input_name: input_name.to_owned(),
+                input_schema: descriptor.input_schema().clone(),
+                input_memory_identity: input.frame().memory_identity(),
+                input_row_count: row_count,
+            }],
+            capability_proof,
+            reservation_envelope,
+            phase_grant,
+            grant_identity: immutable_grant.identity(),
+        };
+        activated.validate_inputs(gpu_inputs, &immutable_grant)?;
+        let mut context = self.clone();
+        context.activated_deferred_resident_phase = Some(Arc::new(activated));
+        Ok(context)
+    }
+
+    fn resolve_deferred_phase_envelope(
+        &self,
+        plan: &QueryPlan,
+        capability_proof: &QueryPlanCapabilityProof,
+        immutable_grant: &MemoryGrant,
+    ) -> Result<(AttemptReservationEnvelope, MemoryGrantPhase)> {
         let MemoryControlPolicy::Bounded {
             max_source_chunk_bytes,
             max_row_groups_per_chunk,
@@ -1876,9 +2014,9 @@ impl ExecutionContext {
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedPlanShape,
                 "nexus_query_engine.runtime.context",
-                "a deferred graph phase requires the admitted bounded memory policy",
+                "a deferred resident phase requires the admitted bounded memory policy",
             )
-            .with_fact("reason", "deferred_graph_unbounded_context"));
+            .with_fact("reason", "deferred_resident_unbounded_context"));
         };
         let reservation_envelope = capability_proof.resolve_reservation_envelope(AttemptReservationPolicy::new(
             max_source_chunk_bytes,
@@ -1901,27 +2039,12 @@ impl ExecutionContext {
             QueryError::new(
                 QueryErrorCode::UnsupportedPlanShape,
                 "nexus_query_engine.runtime.context",
-                "the deferred graph phase did not resolve one complete immutable bound",
+                "the deferred resident phase did not resolve one complete immutable bound",
             )
-            .with_fact("reason", "deferred_graph_phase_bound_incomplete")
+            .with_fact("reason", "deferred_resident_phase_bound_incomplete")
         })?;
         let phase_grant = immutable_grant.activate_phase(phase_peak_bytes)?;
-        let activated = ActivatedDeferredGraphPhase {
-            graph_execution_scope_fingerprint: crate::admission::canonical_execution_scope_fingerprint(plan),
-            producer_execution_scope_fingerprint: descriptor.producer_execution_scope_fingerprint().to_owned(),
-            input_name: input_name.to_owned(),
-            input_schema: descriptor.input_schema().clone(),
-            input_memory_identity: input.frame().memory_identity(),
-            input_row_count: row_count,
-            capability_proof,
-            reservation_envelope,
-            phase_grant,
-            grant_identity: immutable_grant.identity(),
-        };
-        activated.validate_input(input, &immutable_grant)?;
-        let mut context = self.clone();
-        context.activated_deferred_graph_phase = Some(Arc::new(activated));
-        Ok(context)
+        Ok((reservation_envelope, phase_grant))
     }
 
     pub(crate) fn validate_admitted_plan_capabilities_with_gpu_inputs(
@@ -1930,29 +2053,21 @@ impl ExecutionContext {
         gpu_inputs: &GpuResidentInputMap,
     ) -> Result<()> {
         self.validate_admitted_plan_capabilities(plan)?;
-        let Some(activated) = self.activated_deferred_graph_phase.as_ref().filter(|activated| {
-            activated.graph_execution_scope_fingerprint == crate::admission::canonical_execution_scope_fingerprint(plan)
+        let Some(activated) = self.activated_deferred_resident_phase.as_ref().filter(|activated| {
+            activated.consumer_execution_scope_fingerprint
+                == crate::admission::canonical_execution_scope_fingerprint(plan)
         }) else {
             return Ok(());
         };
-        let input = gpu_inputs.get(&activated.input_name).ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                "nexus_query_engine.runtime.context",
-                "the activated graph phase input is missing at execution",
-            )
-            .with_fact("reason", "deferred_graph_input_missing")
-            .with_fact("input_name", &activated.input_name)
-        })?;
         let immutable_grant = self.memory_grant()?.ok_or_else(|| {
             QueryError::new(
                 QueryErrorCode::UnsupportedPlanShape,
                 "nexus_query_engine.runtime.context",
-                "the activated graph phase lost its immutable grant",
+                "the activated deferred phase lost its immutable grant",
             )
-            .with_fact("reason", "deferred_graph_grant_missing")
+            .with_fact("reason", "deferred_resident_grant_missing")
         })?;
-        activated.validate_input(input, &immutable_grant)
+        activated.validate_inputs(gpu_inputs, &immutable_grant)
     }
 
     /// Validates one composed attempt against its final engine-selected bound.

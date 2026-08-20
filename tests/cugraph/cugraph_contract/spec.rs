@@ -24,7 +24,7 @@ use nexus_query_engine::{
         GraphOutDegreesAllParams, GraphPageRankParams, GraphPageRankPersonalizationInput,
         GraphPersonalizedPageRankParams, GraphSccParams, GraphSimilarityParams, GraphSpectralClusteringParams,
         GraphSsspParams, GraphTriangleCountAllParams, GraphVertexIdTypeSupport, GraphVertexPairInput, GraphWccParams,
-        PlanNode, QueryPlan, QueryPlanBuilder, stable_graph_result_schema,
+        PlanNode, QueryPlan, QueryPlanBuilder, graph_result_schema_for_vertex_type, stable_graph_result_schema,
     },
     source::{GpuResidentSource, SourceNode},
 };
@@ -108,8 +108,10 @@ fn similarity_pair_schema(algorithm: GraphAlgorithm) -> Arc<Schema> {
 
 /// Build the canonical CPU-only QueryPlan for the contract checks.
 pub fn graph_plan(algorithm: GraphAlgorithm) -> QueryPlan {
+    let edge_schema = edge_schema(algorithm);
+    let vertex_type = edge_schema.field_with_name("src").expect("contract edge schema has src").data_type().clone();
     let mut builder = QueryPlanBuilder::new();
-    let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", edge_schema(algorithm))));
+    let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", edge_schema)));
     let personalization =
         if algorithm == GraphAlgorithm::PersonalizedPageRank {
             Some(builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
@@ -139,11 +141,13 @@ pub fn graph_plan(algorithm: GraphAlgorithm) -> QueryPlan {
     } else {
         default_params(algorithm)
     };
-    let spec = GraphAlgorithmSpec::with_stable_schema(
+    let output_schema = graph_result_schema_for_vertex_type(algorithm, &params, &vertex_type);
+    let spec = GraphAlgorithmSpec::new(
         algorithm,
         GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
         algorithm.definition().default_graph_options(&GraphConstructionOptions::default()),
         params,
+        output_schema,
     );
     let graph = builder.add_graph_algorithm(input, spec);
     builder.finish_with_host_sink(graph)

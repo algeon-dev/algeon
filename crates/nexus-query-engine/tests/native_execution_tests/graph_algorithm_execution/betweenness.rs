@@ -14,7 +14,7 @@ fn betweenness_with_explicit_seeds_records_approximate_metadata() {
 
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
-    let spec = GraphAlgorithmSpec::with_stable_schema(
+    let spec = int32_graph_spec(
         GraphAlgorithm::BetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
@@ -25,7 +25,7 @@ fn betweenness_with_explicit_seeds_records_approximate_metadata() {
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan =
-        builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -69,7 +69,7 @@ fn betweenness_k_selects_deterministic_approximate_seed_count() {
 
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
-    let spec = GraphAlgorithmSpec::with_stable_schema(
+    let spec = int32_graph_spec(
         GraphAlgorithm::BetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
@@ -80,7 +80,7 @@ fn betweenness_k_selects_deterministic_approximate_seed_count() {
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan =
-        builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -141,7 +141,7 @@ fn exact_betweenness_above_threshold_is_refused_before_cugraph() {
 
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
-    let spec = GraphAlgorithmSpec::with_stable_schema(
+    let spec = int32_graph_spec(
         GraphAlgorithm::BetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
@@ -152,7 +152,7 @@ fn exact_betweenness_above_threshold_is_refused_before_cugraph() {
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan =
-        builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -192,7 +192,7 @@ fn bounded_exact_betweenness_above_threshold_is_refused_before_graph_memory_deni
     .unwrap();
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
-    let spec = GraphAlgorithmSpec::with_stable_schema(
+    let spec = int32_graph_spec(
         GraphAlgorithm::BetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
@@ -203,7 +203,7 @@ fn bounded_exact_betweenness_above_threshold_is_refused_before_graph_memory_deni
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan =
-        builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -245,7 +245,7 @@ fn exact_betweenness_threshold_uses_actual_vertices_not_edge_upper_bound() {
 
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
-    let spec = GraphAlgorithmSpec::with_stable_schema(
+    let spec = int32_graph_spec(
         GraphAlgorithm::BetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
@@ -256,7 +256,7 @@ fn exact_betweenness_threshold_uses_actual_vertices_not_edge_upper_bound() {
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan =
-        builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -303,7 +303,7 @@ fn bounded_betweenness_oom_retries_once_by_chunking_same_seed_set() {
 
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
-    let spec = GraphAlgorithmSpec::with_stable_schema(
+    let spec = int32_graph_spec(
         GraphAlgorithm::BetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
@@ -314,7 +314,7 @@ fn bounded_betweenness_oom_retries_once_by_chunking_same_seed_set() {
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan =
-        builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -434,7 +434,7 @@ fn bounded_betweenness_failed_retry_still_records_graph_floor() {
 
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
-    let spec = GraphAlgorithmSpec::with_stable_schema(
+    let spec = int32_graph_spec(
         GraphAlgorithm::BetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
@@ -445,7 +445,7 @@ fn bounded_betweenness_failed_retry_still_records_graph_floor() {
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan =
-        builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -506,7 +506,7 @@ fn bounded_edge_betweenness_retry_matches_full_seed_result() {
 
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
-    let spec = GraphAlgorithmSpec::with_stable_schema(
+    let spec = int32_graph_spec(
         GraphAlgorithm::EdgeBetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
@@ -517,7 +517,7 @@ fn bounded_edge_betweenness_retry_matches_full_seed_result() {
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan = builder
-        .finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::EdgeBetweennessCentrality));
+        .finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::EdgeBetweennessCentrality));
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 

@@ -36,6 +36,7 @@ pub(crate) enum GraphMemoryOwnerTermRole {
     GraphPersistent,
     ConstructionTransient,
     ExecutionWorkspace,
+    SsspUnitWeights,
     GraphLiveReservationFloorTopUp,
     SideInputWorkspace,
     RetainedOutput,
@@ -47,6 +48,7 @@ impl GraphMemoryOwnerTermRole {
             Self::GraphPersistent => "graph_persistent",
             Self::ConstructionTransient => "construction_transient",
             Self::ExecutionWorkspace => "execution_workspace",
+            Self::SsspUnitWeights => "sssp_unit_weights",
             Self::GraphLiveReservationFloorTopUp => "graph_live_reservation_floor_top_up",
             Self::SideInputWorkspace => "side_input_workspace",
             Self::RetainedOutput => "retained_output",
@@ -103,6 +105,7 @@ pub(crate) struct GraphMemoryOwnerComponents {
     pub(super) graph_persistent_bytes: u64,
     pub(super) construction_transient_bytes: u64,
     pub(super) execution_workspace_bytes: u64,
+    pub(super) sssp_unit_weight_bytes: Option<u64>,
 }
 
 impl GraphMemoryRetainedOutputContribution {
@@ -161,6 +164,8 @@ pub struct GraphMemoryEstimate {
     pub construction_bytes: u64,
     /// Peak bytes needed by the algorithm after graph construction.
     pub execution_bytes: u64,
+    /// Call-local unit-weight property allocated only for unweighted SSSP.
+    pub(super) sssp_unit_weight_bytes: Option<u64>,
     /// Typed bytes and row-count bound retained by the producer result handle.
     ///
     /// This is the owner-calculated `output_bytes` contribution. It is not
@@ -802,6 +807,10 @@ impl GraphMemoryOwnerComponents {
                 "execution_workspace_bytes",
                 diagnostic_projection,
             )?,
+            sssp_unit_weight_bytes: derived
+                .sssp_unit_weights
+                .map(|bytes| project_model_bytes(bytes, "sssp_unit_weight_bytes", diagnostic_projection))
+                .transpose()?,
         })
     }
 
@@ -842,6 +851,15 @@ impl GraphMemoryOwnerComponents {
                 Some(retained_output.row_count_upper_bound()),
             )?,
         ];
+        if let Some(bytes) = self.sssp_unit_weight_bytes {
+            terms.push(GraphMemoryOwnerTermFact::new(
+                execution_scope_fingerprint.clone(),
+                graph_node_id,
+                GraphMemoryOwnerTermRole::SsspUnitWeights,
+                bytes,
+                None,
+            )?);
+        }
         if let Some(bytes) = live_reservation_floor_top_up_bytes {
             terms.push(GraphMemoryOwnerTermFact::new(
                 execution_scope_fingerprint,

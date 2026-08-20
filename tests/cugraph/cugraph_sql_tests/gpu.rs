@@ -1498,6 +1498,8 @@ async fn cugraph_sql_gpu_bfs_utf8_source_list_executes_multi_source() {
 
 #[tokio::test]
 async fn cugraph_sql_bfs_path_ordering_satisfies_strict_final_plan_without_sort_exec() {
+    let dir = unique_temp_dir("datafusion-nexus-cugraph-bfs-path-metadata");
+    let metadata_path = dir.join("metadata.parquet");
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     let vertices = [
         "bd2f79216e59522ab2ce48a860bcbfdf",
@@ -1520,6 +1522,25 @@ async fn cugraph_sql_bfs_path_ordering_satisfies_strict_final_plan_without_sort_
     .unwrap();
     ctx.register_table("raw_edges", Arc::new(MemTable::try_new(edge_schema, vec![vec![edge_batch]]).unwrap())).unwrap();
     register_string_vertex_memtable(&ctx, "targets", "vertex_id", &vertices[6..]);
+    let metadata_schema = Arc::new(Schema::new(vec![
+        Field::new("vertex", DataType::Utf8, false),
+        Field::new("label", DataType::Utf8, false),
+    ]));
+    let metadata_batch = RecordBatch::try_new(
+        Arc::clone(&metadata_schema),
+        vec![
+            Arc::new(StringArray::from(vertices.to_vec())) as ArrayRef,
+            Arc::new(StringArray::from((0..vertices.len()).map(|index| format!("node-{index}")).collect::<Vec<_>>()))
+                as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let mut writer = ArrowWriter::try_new(fs::File::create(&metadata_path).unwrap(), metadata_schema, None).unwrap();
+    writer.write(&metadata_batch).unwrap();
+    writer.close().unwrap();
+    ctx.register_parquet("path_metadata", metadata_path.to_str().unwrap(), ParquetReadOptions::default())
+        .await
+        .unwrap();
 
     let plan = ctx
         .sql(
@@ -1550,6 +1571,56 @@ async fn cugraph_sql_bfs_path_ordering_satisfies_strict_final_plan_without_sort_
     assert_eq!(int64_column(batch, 0), (0_i64..=6).collect::<Vec<_>>());
     let path = batch.column(3).as_any().downcast_ref::<StringArray>().unwrap();
     assert_eq!((0..batch.num_rows()).map(|row| path.value(row)).collect::<Vec<_>>(), vertices);
+
+    let joined = ctx
+        .sql(
+            "WITH path AS (\
+                 SELECT path_index, source, target, vertex, distance \
+                 FROM cugraph_bfs('raw_edges', 'bd2f79216e59522ab2ce48a860bcbfdf', 'src', 'dst', NULL, \
+                      '{\"construction_policy\":\"raw_libcugraph\",\
+                         \"depth_limit\":6,\
+                         \"output_mode\":\"path\",\
+                         \"target_vertices_table\":\"targets\",\
+                         \"target_vertex_col\":\"vertex_id\"}')\
+             ) \
+             SELECT path.vertex, metadata.label \
+             FROM path LEFT JOIN path_metadata metadata ON path.vertex = metadata.vertex",
+        )
+        .await
+        .unwrap();
+    let joined_plan = joined.create_physical_plan().await.unwrap();
+    assert_eq!(classify_final_plan(joined_plan.as_ref()), FinalPlanDisposition::Native);
+    assert!(find_composed_exec(joined_plan.as_ref()).is_some(), "BFS path join must form one composed GPU island");
+    let joined_batches = datafusion::physical_plan::collect(joined_plan, ctx.task_ctx()).await.unwrap();
+    let joined = single_batch(&joined_batches);
+    assert_eq!(joined.num_rows(), 7);
+    let labels = joined.column(1);
+    let mut labels = match labels.data_type() {
+        DataType::Utf8 => labels
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .iter()
+            .map(|value| value.unwrap().to_string())
+            .collect::<Vec<_>>(),
+        DataType::LargeUtf8 => labels
+            .as_any()
+            .downcast_ref::<LargeStringArray>()
+            .unwrap()
+            .iter()
+            .map(|value| value.unwrap().to_string())
+            .collect::<Vec<_>>(),
+        DataType::Utf8View => labels
+            .as_any()
+            .downcast_ref::<StringViewArray>()
+            .unwrap()
+            .iter()
+            .map(|value| value.unwrap().to_string())
+            .collect::<Vec<_>>(),
+        data_type => panic!("unexpected label type: {data_type}"),
+    };
+    labels.sort_unstable();
+    assert_eq!(labels, (0..7).map(|index| format!("node-{index}")).collect::<Vec<_>>());
 
     drop_session_context_on_blocking_thread(ctx).await;
 }
@@ -1927,6 +1998,126 @@ async fn cugraph_sql_gpu_m2_string_side_inputs_and_edge_subset_match_numeric_ide
     let string_k_core = "SELECT src, dst FROM cugraph_k_core('string_edges')";
     let numeric_k_core = "SELECT src, dst FROM cugraph_k_core('numeric_edges')";
     assert_eq!(identity_rows(&ctx, string_k_core, 2).await, identity_rows(&ctx, numeric_k_core, 2).await);
+    drop_session_context_on_blocking_thread(ctx).await;
+}
+
+#[tokio::test]
+async fn cugraph_graph_outputs_feed_an_outer_graph_and_personalization_side_input_on_device() {
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int32, false),
+        Field::new("dst", DataType::Int32, false),
+    ]));
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![
+            Arc::new(Int32Array::from(vec![0, 1, 2, 2])) as ArrayRef,
+            Arc::new(Int32Array::from(vec![1, 2, 0, 3])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table("graph_edges_i32", Arc::new(MemTable::try_new(edge_schema, vec![vec![edge_batch]]).unwrap()))
+        .unwrap();
+    ctx.sql(
+        "CREATE VIEW core_edges AS \
+         SELECT src, dst FROM cugraph_k_core('graph_edges_i32', 'src', 'dst', NULL, '{\"k\":1}')",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+
+    let outer = ctx
+        .sql("SELECT vertex, value FROM cugraph_pagerank('core_edges', 'src', 'dst') ORDER BY vertex")
+        .await
+        .unwrap();
+    assert_eq!(outer.schema().field(0).data_type(), &DataType::Int32);
+    let outer_plan = outer.create_physical_plan().await.unwrap();
+    assert_eq!(
+        classify_final_plan(outer_plan.as_ref()),
+        FinalPlanDisposition::Native,
+        "{}",
+        displayable(outer_plan.as_ref()).indent(false)
+    );
+    let outer_batches = datafusion::physical_plan::collect(outer_plan, ctx.task_ctx()).await.unwrap();
+    assert!(outer_batches.iter().map(RecordBatch::num_rows).sum::<usize>() > 0);
+
+    ctx.sql(
+        "CREATE VIEW top_seeds AS \
+         SELECT vertex, value FROM cugraph_pagerank('graph_edges_i32', 'src', 'dst') \
+         ORDER BY value DESC, vertex LIMIT 2",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+    let personalized = ctx
+        .sql(
+            "SELECT vertex, value FROM cugraph_personalized_pagerank(\
+                 'graph_edges_i32', 'src', 'dst', NULL, \
+                 '{\"personalization_table\":\"top_seeds\",\
+                    \"personalization_vertex_col\":\"vertex\",\
+                    \"personalization_value_col\":\"value\"}') \
+             ORDER BY vertex",
+        )
+        .await
+        .unwrap();
+    assert_eq!(personalized.schema().field(0).data_type(), &DataType::Int32);
+    let personalized_plan = personalized.create_physical_plan().await.unwrap();
+    assert_eq!(
+        classify_final_plan(personalized_plan.as_ref()),
+        FinalPlanDisposition::Native,
+        "{}",
+        displayable(personalized_plan.as_ref()).indent(false)
+    );
+    let personalized_batches = datafusion::physical_plan::collect(personalized_plan, ctx.task_ctx()).await.unwrap();
+    assert!(personalized_batches.iter().map(RecordBatch::num_rows).sum::<usize>() > 0);
+    drop_session_context_on_blocking_thread(ctx).await;
+}
+
+#[tokio::test]
+async fn graph_results_support_aggregate_provenance_union_and_global_row_number_composition() {
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    register_edge_memtable(&ctx, "ordinary_graph_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    let queries = [
+        (
+            "aggregate",
+            "SELECT COUNT(value) AS count_value, SUM(value) AS sum_value, \
+                    MIN(value) AS min_value, MAX(value) AS max_value \
+             FROM cugraph_pagerank('ordinary_graph_edges', 'src', 'dst', 'weight')",
+        ),
+        (
+            "provenance union",
+            "SELECT vertex, 'pagerank' AS provenance \
+             FROM cugraph_pagerank('ordinary_graph_edges', 'src', 'dst', 'weight') \
+             UNION ALL \
+             SELECT vertex, 'bfs' AS provenance \
+             FROM cugraph_bfs('ordinary_graph_edges', 0, 'src', 'dst')",
+        ),
+        (
+            "global row number",
+            "SELECT vertex, value, \
+                    ROW_NUMBER() OVER (ORDER BY value DESC, vertex) AS row_number \
+             FROM cugraph_pagerank('ordinary_graph_edges', 'src', 'dst', 'weight') \
+             ORDER BY row_number",
+        ),
+    ];
+    for (label, sql) in queries {
+        let dataframe = ctx.sql(sql).await.unwrap_or_else(|error| panic!("{label} SQL must plan: {error}"));
+        let plan = dataframe.create_physical_plan().await.unwrap();
+        assert_eq!(
+            classify_final_plan(plan.as_ref()),
+            FinalPlanDisposition::Native,
+            "{label}\n{}",
+            displayable(plan.as_ref()).indent(false),
+        );
+        let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx())
+            .await
+            .unwrap_or_else(|error| panic!("{label} must execute: {error}"));
+        assert!(batches.iter().map(RecordBatch::num_rows).sum::<usize>() > 0, "{label}");
+    }
     drop_session_context_on_blocking_thread(ctx).await;
 }
 

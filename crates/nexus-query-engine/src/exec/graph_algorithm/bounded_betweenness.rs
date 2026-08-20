@@ -536,21 +536,8 @@ fn chunked_betweenness_vertex_count(
         crate::plan::GraphAlgorithm::BetweennessCentrality => Ok(first.num_rows()),
         crate::plan::GraphAlgorithm::EdgeBetweennessCentrality => {
             let mut vertices = std::collections::BTreeSet::new();
-            let sources = first.series("source").and_then(|series| series.to_vec_strict::<i64>()).map_err(|error| {
-                QueryError::from_cudf(
-                    "nexus_query_engine.graph_algorithm.bounded_seed_chunk_retry.vertex_count",
-                    "failed to read edge-betweenness source vertices for retry scaling",
-                    error,
-                )
-            })?;
-            let destinations =
-                first.series("destination").and_then(|series| series.to_vec_strict::<i64>()).map_err(|error| {
-                    QueryError::from_cudf(
-                        "nexus_query_engine.graph_algorithm.bounded_seed_chunk_retry.vertex_count",
-                        "failed to read edge-betweenness destination vertices for retry scaling",
-                        error,
-                    )
-                })?;
+            let sources = frame_graph_vertices_i64(first, "source")?;
+            let destinations = frame_graph_vertices_i64(first, "destination")?;
             vertices.extend(sources);
             vertices.extend(destinations);
             Ok(vertices.len())
@@ -561,6 +548,33 @@ fn chunked_betweenness_vertex_count(
             "graph bounded seed-chunk retry can only count betweenness vertices",
         )
         .with_fact("algorithm", spec.algorithm.as_str())),
+    }
+}
+
+#[cfg(feature = "cugraph")]
+fn frame_graph_vertices_i64(frame: &DataFrame, column: &'static str) -> Result<Vec<i64>> {
+    let operation = "nexus_query_engine.graph_algorithm.bounded_seed_chunk_retry.vertex_count";
+    let series = frame
+        .series(column)
+        .map_err(|error| QueryError::from_cudf(operation, "failed to read edge-betweenness vertices", error))?;
+    let dtype = series
+        .dtype()
+        .map_err(|error| QueryError::from_cudf(operation, "failed to inspect edge-betweenness vertex type", error))?;
+    match dtype.id() {
+        cudf::TypeId::Int32 => series
+            .to_vec_strict::<i32>()
+            .map(|values| values.into_iter().map(i64::from).collect())
+            .map_err(|error| QueryError::from_cudf(operation, "failed to copy Int32 edge-betweenness vertices", error)),
+        cudf::TypeId::Int64 => series
+            .to_vec_strict::<i64>()
+            .map_err(|error| QueryError::from_cudf(operation, "failed to copy Int64 edge-betweenness vertices", error)),
+        vertex_type => Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            operation,
+            "edge-betweenness retry requires Int32 or Int64 vertex output",
+        )
+        .with_fact("column", column)
+        .with_fact("vertex_type", vertex_type.name())),
     }
 }
 
@@ -598,7 +612,7 @@ fn betweenness_frame_to_raw_contributions(
                 params.normalized,
                 params.include_endpoints,
             )?;
-            let seed_literals = betweenness_seed_literals(seeds);
+            let seed_literals = betweenness_seed_literals(spec, seeds)?;
             when(col("vertex").is_in_list(seed_literals))
                 .then(col(score_column) * denominators.source)
                 .otherwise(col(score_column) * denominators.nonsource)
@@ -648,7 +662,7 @@ fn raw_betweenness_frame_to_requested_scale(
                 params.normalized,
                 params.include_endpoints,
             )?;
-            let seed_literals = betweenness_seed_literals(seeds);
+            let seed_literals = betweenness_seed_literals(spec, seeds)?;
             when(col("vertex").is_in_list(seed_literals))
                 .then(col(score_column) / denominators.source)
                 .otherwise(col(score_column) / denominators.nonsource)
@@ -682,9 +696,46 @@ fn raw_betweenness_frame_to_requested_scale(
 }
 
 #[cfg(feature = "cugraph")]
-fn betweenness_seed_literals(seeds: &crate::plan::GraphBetweennessSeeds) -> Vec<cudf::ops::expr::Expr> {
+fn betweenness_seed_literals(
+    spec: &crate::plan::GraphAlgorithmSpec,
+    seeds: &crate::plan::GraphBetweennessSeeds,
+) -> Result<Vec<cudf::ops::expr::Expr>> {
     match seeds {
-        crate::plan::GraphBetweennessSeeds::I64(values) => values.iter().copied().map(lit).collect(),
+        crate::plan::GraphBetweennessSeeds::I64(values) => {
+            let vertex_type = spec
+                .output_schema
+                .field_with_name("vertex")
+                .map_err(|_| {
+                    QueryError::new(
+                        QueryErrorCode::InvalidPlan,
+                        "nexus_query_engine.graph_algorithm.bounded_seed_chunk_retry.seed_type",
+                        "vertex betweenness output schema is missing its vertex column",
+                    )
+                })?
+                .data_type();
+            match vertex_type {
+                arrow::datatypes::DataType::Int32 => values
+                    .iter()
+                    .map(|value| {
+                        i32::try_from(*value).map(lit).map_err(|_| {
+                            QueryError::new(
+                                QueryErrorCode::InvalidPlan,
+                                "nexus_query_engine.graph_algorithm.bounded_seed_chunk_retry.seed_type",
+                                "betweenness seed does not fit the Int32 graph vertex domain",
+                            )
+                            .with_fact("seed", *value)
+                        })
+                    })
+                    .collect(),
+                arrow::datatypes::DataType::Int64 => Ok(values.iter().copied().map(lit).collect()),
+                vertex_type => Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.graph_algorithm.bounded_seed_chunk_retry.seed_type",
+                    "vertex betweenness output requires an Int32 or Int64 vertex domain",
+                )
+                .with_fact("vertex_type", format!("{vertex_type:?}"))),
+            }
+        },
         crate::plan::GraphBetweennessSeeds::Input { .. } => {
             unreachable!("bounded seed-chunk retry rewrites only literal seed batches")
         },

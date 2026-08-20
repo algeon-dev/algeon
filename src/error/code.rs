@@ -87,6 +87,8 @@ pub enum ErrorCode {
     CudfPersistentFailure,
     /// cuDF reported a permanent dependency failure.
     CudfDependencyFailure,
+    /// An iterative native algorithm reached its configured iteration bound.
+    AlgorithmDidNotConverge,
     /// cuDF reported an invariant or execution-context violation.
     CudfInvariantViolation,
     /// The native admission controller could not reserve requested memory.
@@ -142,6 +144,7 @@ impl ErrorCode {
             Self::CudfTemporaryFailure => "cudf_temporary_failure",
             Self::CudfPersistentFailure => "cudf_persistent_failure",
             Self::CudfDependencyFailure => "cudf_dependency_failure",
+            Self::AlgorithmDidNotConverge => "algorithm_did_not_converge",
             Self::CudfInvariantViolation => "cudf_invariant_violation",
             Self::MemoryReservationFailed => "memory_reservation_failed",
             Self::ServiceOverloaded => "service_overloaded",
@@ -296,6 +299,7 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
         ErrorCode::CudfTemporaryFailure
         | ErrorCode::CudfPersistentFailure
         | ErrorCode::CudfDependencyFailure
+        | ErrorCode::AlgorithmDidNotConverge
         | ErrorCode::SourceDependencyFailure
         | ErrorCode::SourceTemporaryFailure
         | ErrorCode::ServerTransportFailure => ErrorKind::DependencyFailure,
@@ -329,6 +333,7 @@ pub(crate) fn code_for_native_error(code: QueryErrorCode) -> ErrorCode {
         QueryErrorCode::CudfTemporaryFailure => ErrorCode::CudfTemporaryFailure,
         QueryErrorCode::CudfPersistentFailure => ErrorCode::CudfPersistentFailure,
         QueryErrorCode::CudfDependencyFailure => ErrorCode::CudfDependencyFailure,
+        QueryErrorCode::AlgorithmDidNotConverge => ErrorCode::AlgorithmDidNotConverge,
         QueryErrorCode::SourceAccessDenied => ErrorCode::SourceAccessDenied,
         QueryErrorCode::SourceUnauthenticated => ErrorCode::SourceUnauthenticated,
         QueryErrorCode::SourceObjectNotFound => ErrorCode::SourceObjectNotFound,
@@ -373,6 +378,7 @@ pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
         | ErrorCode::HostMaterializationLimitExceeded
         | ErrorCode::HostStagingLimitExceeded
         | ErrorCode::CudfDependencyFailure
+        | ErrorCode::AlgorithmDidNotConverge
         | ErrorCode::SourceDependencyFailure
         | ErrorCode::CudfInvariantViolation
         | ErrorCode::ServerTransportFailure

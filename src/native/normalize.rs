@@ -705,6 +705,9 @@ fn normalize_native_input(
         return Ok(NormalizedNativeInput::GpuResidentSource(NormalizedNativeGpuResidentSource {
             source_exec: plan,
             input_name,
+            row_count_upper_bound: crate::native_exec::producer::gpu_resident_producer_hard_output_row_upper_bound(
+                plan,
+            ),
             unique_output_key: gpu_resident_producer_unique_output_key(plan),
         }));
     }

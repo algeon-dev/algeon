@@ -181,6 +181,7 @@ impl QueryAdmissionOutcome {
             QueryErrorCode::Cancelled => Self::Cancelled,
             QueryErrorCode::CudfTemporaryFailure
             | QueryErrorCode::CudfPersistentFailure
+            | QueryErrorCode::AlgorithmDidNotConverge
             | QueryErrorCode::CudfDependencyFailure
             | QueryErrorCode::SourceAccessDenied
             | QueryErrorCode::SourceUnauthenticated

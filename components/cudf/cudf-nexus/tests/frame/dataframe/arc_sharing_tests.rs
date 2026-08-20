@@ -142,6 +142,30 @@ fn test_empty_select_memory_effect_reports_zero_column_alias() {
     assert!(output_columns.is_empty());
 }
 
+#[test]
+fn test_select_as_allows_multiple_output_aliases_for_one_owner() {
+    let df = sample_df();
+    let selected = df.select_as([("score", "sum_score"), ("score", "min_score")]).unwrap();
+    let effect = df.select_as_memory_effect([("score", "sum_score"), ("score", "min_score")]).unwrap();
+
+    assert_eq!(selected.column_names(), &["sum_score", "min_score"]);
+    assert_eq!(device_ptr(&selected, "sum_score"), device_ptr(&selected, "min_score"));
+    let FrameMemoryEffect::AliasOfInput { output_columns, .. } = effect else {
+        panic!("select_as should report an alias-of-input memory effect");
+    };
+    assert_eq!(output_columns[0].input_position, output_columns[1].input_position);
+    assert_eq!(output_columns[0].identity, output_columns[1].identity);
+    assert_eq!(output_columns[0].output_name, "sum_score");
+    assert_eq!(output_columns[1].output_name, "min_score");
+}
+
+#[test]
+fn test_select_as_rejects_duplicate_output_names() {
+    let df = sample_df();
+    let error = df.select_as([("id", "duplicate"), ("score", "duplicate")]).expect_err("output names remain unique");
+    assert_eq!(error.detail_value("duplicate_name"), Some("duplicate"));
+}
+
 // ---------------------------------------------------------------------------
 // rename() shares all column data
 // ---------------------------------------------------------------------------

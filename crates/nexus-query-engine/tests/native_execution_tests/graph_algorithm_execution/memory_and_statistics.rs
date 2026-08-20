@@ -14,14 +14,14 @@ fn bounded_bfs_counts_gpu_tables_without_graph_memory_reservation() {
 
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
-    let spec = GraphAlgorithmSpec::with_stable_schema(
+    let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
         GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
     );
     let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs));
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -120,14 +120,14 @@ fn bounded_bfs_counts_side_input_tables_without_graph_memory_reservation() {
     let sources = builder.add_source(SourceNode::GpuResident(gpu_resident_source("sources", Arc::clone(&source_schema), &source_batch)));
     let mut params = GraphBfsParams::new(0, None);
     params.source_vertices = Some(GraphPredicateInput::new(sources, "source_vertex"));
-    let spec = GraphAlgorithmSpec::with_stable_schema(
+    let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
         GraphAlgorithmParams::Bfs(Box::new(params)),
     );
     let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs));
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -221,7 +221,7 @@ fn bounded_betweenness_success_keeps_graph_memory_reservation() {
 
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
-    let spec = GraphAlgorithmSpec::with_stable_schema(
+    let spec = int32_graph_spec(
         GraphAlgorithm::BetweennessCentrality,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
@@ -232,7 +232,7 @@ fn bounded_betweenness_success_keeps_graph_memory_reservation() {
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan =
-        builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality));
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -320,7 +320,7 @@ fn bounded_sparse_pagerank_uses_runtime_vertex_estimate_to_admit_graph_memory() 
     let fixture_edge_frame = GpuDataFrame::new(DataFrame::from_record_batch(&fixture_runtime, &edge_batch).unwrap());
     let input_bytes = fixture_edge_frame.device_allocated_size_bytes().unwrap();
 
-    let spec = GraphAlgorithmSpec::with_stable_schema(
+    let spec = int32_graph_spec(
         GraphAlgorithm::PageRank,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
@@ -358,7 +358,7 @@ fn bounded_sparse_pagerank_uses_runtime_vertex_estimate_to_admit_graph_memory() 
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
     let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::PageRank));
+    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::PageRank));
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let edge_frame = GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap());
@@ -451,7 +451,7 @@ fn bounded_triangle_count_reports_runtime_graph_statistics() {
 
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
-    let spec = GraphAlgorithmSpec::with_stable_schema(
+    let spec = int32_graph_spec(
         GraphAlgorithm::TriangleCountAll,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { directed: false, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
@@ -460,7 +460,7 @@ fn bounded_triangle_count_reports_runtime_graph_statistics() {
     let expected_model_spec = spec.clone();
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan =
-        builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::TriangleCountAll));
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::TriangleCountAll));
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -578,7 +578,7 @@ fn bounded_graph_statistics_optional_resource_exhaustion_keeps_exact_vertices() 
 
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
-    let spec = GraphAlgorithmSpec::with_stable_schema(
+    let spec = int32_graph_spec(
         GraphAlgorithm::TriangleCountAll,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { directed: false, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
@@ -586,7 +586,7 @@ fn bounded_graph_statistics_optional_resource_exhaustion_keeps_exact_vertices() 
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan =
-        builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::TriangleCountAll));
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::TriangleCountAll));
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -646,14 +646,14 @@ fn pagerank_python_cugraph_reports_edge_normalize_in_graph_reservation() {
 
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(SourceNode::LocalParquet(local_source));
-    let spec = GraphAlgorithmSpec::with_stable_schema(
+    let spec = int32_graph_spec(
         GraphAlgorithm::PageRank,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions::default(),
         GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
     );
     let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::PageRank));
+    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::PageRank));
     assert!(plan.contains_edge_normalize());
     let admitted = context.admit_plan_with_graph_memory_calibration_override(&plan, calibration_override).unwrap();
 

@@ -38,6 +38,7 @@ const ADAPTER_STATUS_CASES: &[(ErrorCode, ErrorStatus)] = &[
     (ErrorCode::CudfTemporaryFailure, ErrorStatus::Temporary),
     (ErrorCode::CudfPersistentFailure, ErrorStatus::Persistent),
     (ErrorCode::CudfDependencyFailure, ErrorStatus::Permanent),
+    (ErrorCode::AlgorithmDidNotConverge, ErrorStatus::Permanent),
     (ErrorCode::CudfInvariantViolation, ErrorStatus::Permanent),
     (ErrorCode::MemoryReservationFailed, ErrorStatus::Temporary),
     (ErrorCode::ServiceOverloaded, ErrorStatus::Temporary),
@@ -67,6 +68,7 @@ const NATIVE_ADAPTER_STATUS_CASES: &[(QueryErrorCode, ErrorCode, QueryErrorStatu
     (QueryErrorCode::CudfTemporaryFailure, ErrorCode::CudfTemporaryFailure, QueryErrorStatus::Temporary),
     (QueryErrorCode::CudfPersistentFailure, ErrorCode::CudfPersistentFailure, QueryErrorStatus::Persistent),
     (QueryErrorCode::CudfDependencyFailure, ErrorCode::CudfDependencyFailure, QueryErrorStatus::Permanent),
+    (QueryErrorCode::AlgorithmDidNotConverge, ErrorCode::AlgorithmDidNotConverge, QueryErrorStatus::Permanent),
     (QueryErrorCode::SourceAccessDenied, ErrorCode::SourceAccessDenied, QueryErrorStatus::Permanent),
     (QueryErrorCode::SourceUnauthenticated, ErrorCode::SourceUnauthenticated, QueryErrorStatus::Permanent),
     (QueryErrorCode::SourceObjectNotFound, ErrorCode::SourceObjectNotFound, QueryErrorStatus::Permanent),
@@ -79,7 +81,7 @@ const NATIVE_ADAPTER_STATUS_CASES: &[(QueryErrorCode, ErrorCode, QueryErrorStatu
 
 #[test]
 fn every_adapter_code_has_the_expected_retry_status() {
-    assert_eq!(ADAPTER_STATUS_CASES.len(), 35, "update the complete adapter status policy table");
+    assert_eq!(ADAPTER_STATUS_CASES.len(), 36, "update the complete adapter status policy table");
 
     for &(code, expected_status) in ADAPTER_STATUS_CASES {
         let error = Error::new(code, "datafusion_nexus.test.retry_policy", "retry policy test");

@@ -344,3 +344,28 @@ pub fn stable_graph_result_schema(algorithm: GraphAlgorithm) -> SchemaRef {
 pub fn graph_result_schema_for_params(algorithm: GraphAlgorithm, params: &GraphAlgorithmParams) -> SchemaRef {
     algorithm.definition().result_schema_for_params(params)
 }
+
+/// Expected graph result schema in the input graph's numeric vertex-id domain.
+pub fn graph_result_schema_for_vertex_type(
+    algorithm: GraphAlgorithm,
+    params: &GraphAlgorithmParams,
+    vertex_type: &arrow::datatypes::DataType,
+) -> SchemaRef {
+    assert!(
+        matches!(vertex_type, arrow::datatypes::DataType::Int32 | arrow::datatypes::DataType::Int64),
+        "native graph vertex type must be Int32 or Int64"
+    );
+    let vertex_columns = algorithm.definition().vertex_output_columns();
+    let fields = graph_result_schema_for_params(algorithm, params)
+        .fields()
+        .iter()
+        .map(|field| {
+            if vertex_columns.contains(&field.name().as_str()) {
+                field.as_ref().clone().with_data_type(vertex_type.clone())
+            } else {
+                field.as_ref().clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    Arc::new(Schema::new(fields))
+}

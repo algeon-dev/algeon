@@ -12,6 +12,26 @@ pub(super) async fn assert_sql_schema(ctx: &SessionContext, sql: &str, algorithm
     }
 }
 
+pub(super) async fn assert_sql_schema_with_vertex_type(
+    ctx: &SessionContext,
+    sql: &str,
+    algorithm: CugraphAlgorithm,
+    vertex_type: &DataType,
+    vertex_columns: &[&str],
+) {
+    let df = ctx.sql(sql).await.unwrap();
+    let actual = df.schema().inner();
+    let expected = stable_result_schema(algorithm);
+    assert_eq!(actual.fields().len(), expected.fields().len());
+    for (actual, expected) in actual.fields().iter().zip(expected.fields()) {
+        assert_eq!(actual.name(), expected.name());
+        let expected_type =
+            if vertex_columns.contains(&expected.name().as_str()) { vertex_type } else { expected.data_type() };
+        assert_eq!(actual.data_type(), expected_type);
+        assert_eq!(actual.is_nullable(), expected.is_nullable());
+    }
+}
+
 pub(super) fn assert_error_contains(
     result: datafusion::common::Result<datafusion_nexus::cugraph_sql::CugraphAlgorithmSpec>,
     expected: &str,

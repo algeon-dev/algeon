@@ -12,7 +12,8 @@ use crate::{
     expr::{AggregateSpec, ColumnRef, Expr, LiteralValue},
     plan::{
         GraphBfsParams, GraphBfsPathOutput, GraphConstructionOptions, GraphForceAtlas2Params, GraphPageRankParams,
-        GraphSimilarityParams, GraphTriangleCountAllParams, JoinKey, JoinSpec, QueryPlanBuilder,
+        GraphSimilarityParams, GraphSsspParams, GraphSsspSource, GraphTriangleCountAllParams, JoinKey, JoinSpec,
+        QueryPlanBuilder,
     },
     source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
 };
@@ -412,6 +413,26 @@ fn grouped_aggregate_hard_row_bound_cannot_exceed_its_input() {
 }
 
 #[test]
+fn graph_edge_output_hard_bound_can_feed_a_later_graph() {
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("bounded-k-core-edges", edge_schema()).with_row_count_upper_bound(4),
+    ));
+    let k_core = builder.add_graph_algorithm(
+        source,
+        GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::KCore,
+            GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
+            GraphConstructionOptions::default(),
+            GraphAlgorithmParams::KCore(crate::plan::GraphKCoreParams::default()),
+        ),
+    );
+    let plan = builder.finish_gpu_resident(k_core);
+
+    assert_eq!(query_plan_hard_row_upper_bound(&plan), Some(4));
+}
+
+#[test]
 fn bounded_graph_evidence_exposes_exclusive_owner_terms() {
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::Bfs,
@@ -498,6 +519,31 @@ fn bounded_graph_evidence_exposes_exclusive_owner_terms() {
     );
     assert!(facts.iter().all(|fact| fact.role() != GraphMemoryOwnerTermRole::GraphPersistent
         || fact.bytes() != estimate.estimate.construction_bytes));
+}
+
+#[cfg(feature = "cugraph")]
+#[test]
+fn sssp_unit_weights_are_an_exact_active_phase_owner_term() {
+    let spec = |weight: Option<&str>| {
+        GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::Sssp,
+            GraphEdgeColumnBindings::new("src", "dst", weight),
+            GraphConstructionOptions::default(),
+            GraphAlgorithmParams::Sssp(GraphSsspParams { source_vertex: GraphSsspSource::I64(0), cutoff: None }),
+        )
+    };
+    let unweighted = bounded_evidence_for_spec(&spec(None), 3);
+    let weighted = bounded_evidence_for_spec(&spec(Some("weight")), 3);
+    let unit_weights = unweighted
+        .owner_term_facts()
+        .iter()
+        .find(|fact| fact.role() == GraphMemoryOwnerTermRole::SsspUnitWeights)
+        .expect("unweighted SSSP must price the native unit-weight property");
+    assert_eq!(unit_weights.bytes(), 12);
+    assert!(
+        weighted.owner_term_facts().iter().all(|fact| fact.role() != GraphMemoryOwnerTermRole::SsspUnitWeights),
+        "weighted SSSP borrows its graph-owned weight property"
+    );
 }
 
 #[test]

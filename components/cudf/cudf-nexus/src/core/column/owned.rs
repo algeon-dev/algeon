@@ -460,6 +460,22 @@ impl Column {
         self.view()?.to_optional_strings()
     }
 
+    /// Returns the exact active UTF-8 character-buffer size without copying values to host.
+    pub fn string_chars_size_bytes(&self) -> Result<usize> {
+        let view = self.view()?;
+        let data_type = view.data_type()?;
+        if data_type.id() != TypeId::String {
+            return Err(Error::new_with(
+                ErrorCode::TypeMismatch,
+                "column::string_chars_size_bytes",
+                "column type is not STRING",
+            )
+            .with_fact(FACT_LEFT_TYPE_ID, data_type.id())
+            .with_fact(FACT_RIGHT_TYPE_ID, TypeId::String));
+        }
+        view.string_chars_ptr_and_size().map(|(_, size)| size)
+    }
+
     /// Create an internal immutable view handle of this column.
     pub(crate) fn view(&self) -> Result<ColumnView<'_>> {
         let mut view_handle = ptr::null_mut();

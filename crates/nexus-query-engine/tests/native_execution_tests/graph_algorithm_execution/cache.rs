@@ -24,7 +24,7 @@ fn source_alias_residency_does_not_preserve_graph_residency_descriptor() {
         Arc::clone(&edge_schema),
         vec!["src".to_string(), "dst".to_string()],
     );
-    let spec = GraphAlgorithmSpec::with_stable_schema(
+    let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },

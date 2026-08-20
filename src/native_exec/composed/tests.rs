@@ -569,10 +569,10 @@ fn complete_composed_admission_proof_rejects_invalid_graph_result_sorts_at_admis
             "sort_owner_nullable_key_unsupported",
         ),
         (
-            Arc::new(Schema::new(vec![Field::new("vertex", DataType::Int64, false)])),
-            2,
+            Arc::new(Schema::new(vec![Field::new("vertex", DataType::Utf8, false)])),
+            1,
             None,
-            "sort_owner_sort_requires_exactly_one_key",
+            "sort_owner_key_type_not_radix_dispatchable",
         ),
     ];
 

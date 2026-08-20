@@ -15,6 +15,8 @@ use datafusion::{
 };
 #[cfg(feature = "cugraph")]
 pub use exec::CugraphAlgoExec;
+#[cfg(feature = "cugraph")]
+pub(crate) use exec::native_graph_input_execution_plan;
 pub(crate) use gpu_family::CugraphGpuFunctionFamily;
 pub use parser::parse_cugraph_algorithm_spec;
 #[cfg(feature = "cugraph")]

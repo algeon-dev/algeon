@@ -22,7 +22,8 @@ fn requirement(floor: u64, hint: Option<u64>) -> AttemptRequirement {
         requires_composed_producer_binding: false,
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
-        deferred_graph_phases: Vec::new(),
+        deferred_resident_phases: Vec::new(),
+        runtime_refinable_output_scopes: Vec::new(),
     }
 }
 
@@ -555,7 +556,8 @@ fn zero_request_floor_resolves_against_each_candidate_profile() {
         requires_composed_producer_binding: false,
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
-        deferred_graph_phases: Vec::new(),
+        deferred_resident_phases: Vec::new(),
+        runtime_refinable_output_scopes: Vec::new(),
     };
 
     assert_eq!(small.required_floor_bytes_for(&zero_floor).unwrap(), 8);
@@ -581,7 +583,8 @@ fn request_floor_cannot_lower_the_candidate_profile_floor() {
         requires_composed_producer_binding: false,
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
-        deferred_graph_phases: Vec::new(),
+        deferred_resident_phases: Vec::new(),
+        runtime_refinable_output_scopes: Vec::new(),
     };
 
     assert_eq!(ledger.required_floor_bytes_for(&requirement).unwrap(), 107);
@@ -604,7 +607,8 @@ fn requirement_floor_above_the_candidate_profile_floor_is_preserved() {
         requires_composed_producer_binding: false,
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
-        deferred_graph_phases: Vec::new(),
+        deferred_resident_phases: Vec::new(),
+        runtime_refinable_output_scopes: Vec::new(),
     };
 
     assert_eq!(ledger.required_floor_bytes_for(&requirement).unwrap(), 127);
@@ -640,7 +644,8 @@ fn overflowing_floor_is_rejected_structurally() {
         requires_composed_producer_binding: false,
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
-        deferred_graph_phases: Vec::new(),
+        deferred_resident_phases: Vec::new(),
+        runtime_refinable_output_scopes: Vec::new(),
     };
     assert!(ledger.try_admit(request(1), &overflowing).is_err());
 }

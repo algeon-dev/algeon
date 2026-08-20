@@ -75,6 +75,8 @@ fn bindings_include_critical_core_symbols() {
         "cugraph_bfs_predicate_result_get_target_distance",
         "cugraph_bfs_predicate_result_free",
         "cugraph_sssp",
+        "cugraph_sssp_workspace_preflight",
+        "cugraph_eigenvector_centrality_allow_nonconvergence",
         "cugraph_paths_result_get_vertices",
         "cugraph_paths_result_get_distances",
         "cugraph_paths_result_get_predecessors",

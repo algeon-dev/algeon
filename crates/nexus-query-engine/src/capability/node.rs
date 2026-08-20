@@ -769,8 +769,14 @@ fn graph_algorithm_node_executable_decision(
         }
     }
 
+    let vertex_type = input
+        .output_schema()
+        .field_with_name(&graph.spec.edge_columns.source)
+        .expect("source column was validated above")
+        .data_type();
     if graph.output_schema().as_ref()
-        != crate::plan::graph_result_schema_for_params(graph.spec.algorithm, &graph.spec.params).as_ref()
+        != crate::plan::graph_result_schema_for_vertex_type(graph.spec.algorithm, &graph.spec.params, vertex_type)
+            .as_ref()
     {
         return CapabilityDecision::rejected(
             "unsupported_graph_algorithm_node_capability",
@@ -778,6 +784,7 @@ fn graph_algorithm_node_executable_decision(
                 ("node_id", node_id.to_string()),
                 ("reason", "unexpected_output_schema".to_string()),
                 ("algorithm", graph.spec.algorithm.as_str().to_string()),
+                ("vertex_type", format!("{vertex_type:?}")),
                 ("schema_field_count", graph.output_schema().fields().len().to_string()),
             ],
         );

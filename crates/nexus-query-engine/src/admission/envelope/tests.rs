@@ -535,7 +535,7 @@ fn graph_phase_accounts_for_one_attested_bounded_sort_consumer_without_widening_
 
     let proof = proof
         .requirement_for_device_with_preflight(0, |_, _| {
-            Ok(crate::admission::requirement::SortRadixPreflight::new_for_test(128, 80, 256, 80))
+            Ok(crate::admission::requirement::SortPreflight::new_for_test(128, 80, 256, 80))
         })
         .expect("the deterministic test preflight resolves the sort owner terms");
     let envelope = proof.resolve_reservation_envelope(reservation_policy()).unwrap();
@@ -633,6 +633,8 @@ fn schedule_scope(scope: &str) -> AttemptReservationShape {
         sort_rejection_reason: None,
         owner_term_rejection_reason: None,
         producer_occurrences: Vec::new(),
+        nested_consumer_occurrence_ids: None,
+        deferred_owner_term_occurrence: None,
         ordered_schedule: None,
     }
 }

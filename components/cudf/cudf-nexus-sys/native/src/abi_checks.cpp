@@ -290,6 +290,13 @@ static_assert(offsetof(cudf_sorted_order_radix_preflight_result_t, sequence_byte
 static_assert(offsetof(cudf_sorted_order_radix_preflight_result_t, temporary_workspace_bytes) == sizeof(uint64_t) * 3);
 static_assert(offsetof(cudf_sorted_order_radix_preflight_result_t, retained_order_bytes) == sizeof(uint64_t) * 4);
 static_assert(offsetof(cudf_sorted_order_radix_preflight_result_t, active_phase_peak_bytes) == sizeof(uint64_t) * 5);
+static_assert(std::is_standard_layout_v<cudf_sorted_order_lexicographic_preflight_result_t>);
+static_assert(sizeof(cudf_sorted_order_lexicographic_preflight_result_t) == sizeof(uint64_t) * 4);
+static_assert(alignof(cudf_sorted_order_lexicographic_preflight_result_t) == alignof(uint64_t));
+static_assert(offsetof(cudf_sorted_order_lexicographic_preflight_result_t, comparator_state_bytes) == 0);
+static_assert(offsetof(cudf_sorted_order_lexicographic_preflight_result_t, temporary_workspace_bytes) == sizeof(uint64_t));
+static_assert(offsetof(cudf_sorted_order_lexicographic_preflight_result_t, retained_order_bytes) == sizeof(uint64_t) * 2);
+static_assert(offsetof(cudf_sorted_order_lexicographic_preflight_result_t, active_phase_peak_bytes) == sizeof(uint64_t) * 3);
 
 static_assert(sizeof(cudf_null_policy_t) == sizeof(int32_t), "cudf_null_policy_t must be 32-bit");
 static_assert(CUDF_NULL_POLICY_EXCLUDE == static_cast<int>(cudf::null_policy::EXCLUDE));

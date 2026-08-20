@@ -43,6 +43,10 @@ use crate::error::{Error, ErrorCode};
 pub(crate) trait GpuResidentProducer: Send + Sync {
     fn gpu_result_input_name(&self) -> &str;
 
+    fn hard_output_row_upper_bound(&self) -> Option<u64> {
+        None
+    }
+
     /// Returns one output key whose values are unique, when the producer's
     /// algorithm contract guarantees at most one row per key.
     fn unique_output_key_columns(&self) -> Option<&'static [&'static str]> {
@@ -268,6 +272,10 @@ impl GpuResidentProducer for NexusNativeGpuProducerExec {
         self.input_name()
     }
 
+    fn hard_output_row_upper_bound(&self) -> Option<u64> {
+        nexus_query_engine::graph_memory::query_plan_hard_row_upper_bound(&self.plan)
+    }
+
     fn prepare_execution_plan<'a>(
         &'a self,
         plan: Arc<dyn ExecutionPlan>,
@@ -348,6 +356,10 @@ pub(crate) fn gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn Gpu
 
 pub(crate) fn gpu_resident_producer_input_name(plan: &dyn ExecutionPlan) -> Option<String> {
     gpu_resident_producer(plan).map(|producer| producer.gpu_result_input_name().to_string())
+}
+
+pub(crate) fn gpu_resident_producer_hard_output_row_upper_bound(plan: &dyn ExecutionPlan) -> Option<u64> {
+    gpu_resident_producer(plan).and_then(GpuResidentProducer::hard_output_row_upper_bound)
 }
 
 pub(crate) fn gpu_resident_producer_unique_output_key(plan: &dyn ExecutionPlan) -> Option<BTreeSet<String>> {

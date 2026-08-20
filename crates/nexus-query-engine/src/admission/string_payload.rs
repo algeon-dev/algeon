@@ -2,8 +2,9 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use arrow::{
     array::{Array, LargeStringArray, StringArray, StringViewArray},
-    datatypes::DataType,
+    datatypes::{DataType, SchemaRef},
 };
+use cudf::{DataFrame, TypeId, frame::dataframe::InfoDetail};
 
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
@@ -18,6 +19,7 @@ pub(super) enum StringPayloadLineage {
     Parquet { stable_id: String, physical_column_index: usize, selected_row_groups: Vec<usize> },
     Literal { node_id: NodeId, column_index: usize },
     Computed { node_id: NodeId, column_index: usize },
+    Resident { execution_scope_fingerprint: String, occurrence_id: String, column_index: usize },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +72,85 @@ impl PlanColumnEvidence {
     pub(super) fn is_unique_on(&self, columns: &BTreeSet<String>) -> bool {
         self.unique_keys.iter().any(|key| key.is_subset(columns))
     }
+}
+
+pub(crate) fn resident_frame_column_evidence(
+    frame: &DataFrame,
+    schema: &SchemaRef,
+    occurrence_id: &str,
+    execution_scope_fingerprint: &str,
+) -> Result<PlanColumnEvidence> {
+    let operation = "nexus_query_engine.admission.resident_evidence";
+    let info = frame.info_with(InfoDetail::COLUMNS).map_err(|error| {
+        QueryError::from_cudf(operation, "failed to inspect the admitted resident frame", error)
+            .with_fact("reason", "resident_column_metadata_unavailable")
+    })?;
+    let columns = info.columns.ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::Internal,
+            "nexus_query_engine.admission.resident_evidence",
+            "resident frame metadata omitted column details",
+        )
+        .with_fact("reason", "resident_column_metadata_missing")
+    })?;
+    if columns.len() != schema.fields().len() {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedPlanShape,
+            "nexus_query_engine.admission.resident_evidence",
+            "resident frame schema width differs from its admitted descriptor",
+        )
+        .with_fact("reason", "resident_evidence_schema_width_mismatch")
+        .with_fact("frame_columns", columns.len())
+        .with_fact("schema_fields", schema.fields().len()));
+    }
+    let mut evidence = PlanColumnEvidence::default();
+    for (column, field) in columns.iter().zip(schema.fields()) {
+        if !is_string(field.data_type()) {
+            continue;
+        }
+        if column.data_type.id() != TypeId::String {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.admission.resident_evidence",
+                "resident string evidence is not backed by a physical string column",
+            )
+            .with_fact("reason", "resident_evidence_string_type_mismatch")
+            .with_fact("column", field.name())
+            .with_fact("physical_type", column.data_type.id()));
+        }
+        let series = frame.series(&column.name).map_err(|error| {
+            QueryError::from_cudf(operation, "failed to resolve an admitted resident column", error)
+                .with_fact("reason", "resident_column_missing")
+                .with_fact("column", field.name())
+        })?;
+        let chars_bytes = series.as_column().string_chars_size_bytes().map_err(|error| {
+            QueryError::from_cudf(operation, "failed to inspect resident string payload", error)
+                .with_fact("reason", "resident_string_payload_unavailable")
+                .with_fact("column", field.name())
+        })?;
+        let chars_bytes = u64::try_from(chars_bytes).map_err(|_| {
+            QueryError::new(
+                QueryErrorCode::SizeOverflow,
+                "nexus_query_engine.admission.resident_evidence",
+                "resident string payload exceeds the admission integer range",
+            )
+            .with_fact("reason", "resident_evidence_string_payload_overflow")
+            .with_fact("column", field.name())
+        })?;
+        evidence.string_payload_bounds.insert(
+            field.name().clone(),
+            StringPayloadBound {
+                total_payload_upper_bound_bytes: Some(chars_bytes),
+                max_single_value_length_bytes: Some(chars_bytes),
+                lineages: BTreeSet::from([StringPayloadLineage::Resident {
+                    execution_scope_fingerprint: execution_scope_fingerprint.to_owned(),
+                    occurrence_id: occurrence_id.to_owned(),
+                    column_index: column.position,
+                }]),
+            },
+        );
+    }
+    Ok(evidence)
 }
 
 #[derive(Debug, Clone, Default)]
@@ -142,14 +223,13 @@ impl PlanColumnEvidenceAnalysis {
                     if !is_string(projection_output.field.data_type()) {
                         continue;
                     }
-                    if let Some(bound) = output_rows.and_then(|rows| {
-                        computed_string_payload_bound(
-                            &projection_output.expr,
-                            &input,
-                            rows,
-                            StringPayloadLineage::Computed { node_id, column_index },
-                        )
-                    }) {
+                    let lineage = StringPayloadLineage::Computed { node_id, column_index };
+                    let bound = output_rows
+                        .and_then(|rows| {
+                            computed_string_payload_bound(&projection_output.expr, &input, rows, lineage.clone())
+                        })
+                        .or_else(|| row_independent_literal_string_payload_bound(&projection_output.expr, lineage));
+                    if let Some(bound) = bound {
                         output.string_payload_bounds.insert(projection_output.field.name().clone(), bound);
                     }
                 }
@@ -309,14 +389,7 @@ fn computed_string_payload_bound(
     rows: u64,
     lineage: StringPayloadLineage,
 ) -> Option<StringPayloadBound> {
-    let literal_length = match expr {
-        Expr::Literal(LiteralValue::Utf8(value) | LiteralValue::LargeUtf8(value)) => {
-            Some(u64::try_from(value.len()).ok()?)
-        },
-        Expr::Literal(LiteralValue::Null(data_type)) if is_string(data_type) => Some(0),
-        _ => None,
-    };
-    if let Some(length) = literal_length {
+    if let Some(length) = literal_string_value_length(expr) {
         return Some(StringPayloadBound {
             total_payload_upper_bound_bytes: Some(rows.checked_mul(length)?),
             max_single_value_length_bytes: Some(length),
@@ -355,6 +428,29 @@ fn computed_string_payload_bound(
         },
         _ => None,
     }
+}
+
+fn literal_string_value_length(expr: &Expr) -> Option<u64> {
+    match expr {
+        Expr::Literal(LiteralValue::Utf8(value) | LiteralValue::LargeUtf8(value)) => {
+            Some(u64::try_from(value.len()).ok()?)
+        },
+        Expr::Literal(LiteralValue::Null(data_type)) if is_string(data_type) => Some(0),
+        Expr::Alias { expr, .. } => literal_string_value_length(expr),
+        _ => None,
+    }
+}
+
+fn row_independent_literal_string_payload_bound(
+    expr: &Expr,
+    lineage: StringPayloadLineage,
+) -> Option<StringPayloadBound> {
+    let length = literal_string_value_length(expr)?;
+    Some(StringPayloadBound {
+        total_payload_upper_bound_bytes: None,
+        max_single_value_length_bytes: Some(length),
+        lineages: BTreeSet::from([lineage]),
+    })
 }
 
 fn union_evidence(plan: &QueryPlan, inputs: &[NodeId], analysis: &PlanColumnEvidenceAnalysis) -> PlanColumnEvidence {
@@ -765,13 +861,11 @@ mod tests {
             )],
         );
         let unknown_plan = unknown_builder.finish_gpu_resident(projection);
-        assert!(
-            PlanColumnEvidenceAnalysis::for_plan(&unknown_plan, &HashMap::new())
-                .unwrap()
-                .root(&unknown_plan)
-                .string_payload_bound("seed")
-                .is_none()
-        );
+        let unknown_analysis = PlanColumnEvidenceAnalysis::for_plan(&unknown_plan, &HashMap::new()).unwrap();
+        let unknown_root = unknown_analysis.root(&unknown_plan);
+        let unknown = unknown_root.string_payload_bound("seed").unwrap();
+        assert_eq!(unknown.total_payload_upper_bound_bytes, None);
+        assert_eq!(unknown.max_single_value_length_bytes, Some(4));
 
         let input_schema = Arc::new(Schema::new(vec![Field::new("selector", DataType::Int32, false)]));
         let batch = RecordBatch::try_new(Arc::clone(&input_schema), vec![Arc::new(Int32Array::from(vec![0]))]).unwrap();

@@ -443,6 +443,37 @@ pub struct GraphOperationDefinition {
 }
 
 impl GraphOperationDefinition {
+    /// Result columns whose dtype is the graph's vertex-id domain.
+    pub const fn vertex_output_columns(&self) -> &'static [&'static str] {
+        match self.algorithm {
+            GraphAlgorithm::Bfs => &["vertex", "predecessor", "source", "target"],
+            GraphAlgorithm::Sssp => &["vertex", "predecessor"],
+            GraphAlgorithm::EdgeBetweennessCentrality => &["source", "destination"],
+            GraphAlgorithm::KCore | GraphAlgorithm::MinimumSpanningTree => &["src", "dst"],
+            GraphAlgorithm::Jaccard | GraphAlgorithm::Sorensen | GraphAlgorithm::Overlap | GraphAlgorithm::Cosine => {
+                &["first", "second"]
+            },
+            GraphAlgorithm::PageRank
+            | GraphAlgorithm::PersonalizedPageRank
+            | GraphAlgorithm::Louvain
+            | GraphAlgorithm::EigenvectorCentrality
+            | GraphAlgorithm::KatzCentrality
+            | GraphAlgorithm::Hits
+            | GraphAlgorithm::BetweennessCentrality
+            | GraphAlgorithm::DegreesAll
+            | GraphAlgorithm::InDegreesAll
+            | GraphAlgorithm::OutDegreesAll
+            | GraphAlgorithm::WeaklyConnectedComponents
+            | GraphAlgorithm::StronglyConnectedComponents
+            | GraphAlgorithm::TriangleCountAll
+            | GraphAlgorithm::CoreNumber
+            | GraphAlgorithm::Leiden
+            | GraphAlgorithm::Ecg
+            | GraphAlgorithm::SpectralModularityMaximization
+            | GraphAlgorithm::ForceAtlas2 => &["vertex"],
+        }
+    }
+
     /// Source-vertex requirement for this algorithm.
     pub const fn source_vertex_requirement(&self) -> GraphSourceVertexRequirement {
         match self.algorithm {

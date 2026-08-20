@@ -516,8 +516,8 @@ fn native_node_reproduces_declared_output_ordering(
         },
         NativePlanNode::Limit(limit) => native_node_reproduces_limit_output_ordering(plan, limit.input, stack),
         NativePlanNode::Sort(_) => true,
+        NativePlanNode::Window(window) => native_node_reproduces_declared_output_ordering(plan, window.input, stack),
         NativePlanNode::Aggregate(_)
-        | NativePlanNode::Window(_)
         | NativePlanNode::Join(_)
         | NativePlanNode::Union(_)
         | NativePlanNode::EdgeNormalize(_)
@@ -680,13 +680,18 @@ mod tests {
     }
 
     #[test]
-    fn order_reproduction_audit_rejects_aggregate_window_join_union_edge_normalize_and_graph_algorithm() {
-        let cases =
-            [aggregate_plan(), window_plan(), join_plan(), union_plan(), edge_normalize_plan(), graph_algorithm_plan()];
+    fn order_reproduction_audit_rejects_aggregate_join_union_edge_normalize_and_graph_algorithm() {
+        let cases = [aggregate_plan(), join_plan(), union_plan(), edge_normalize_plan(), graph_algorithm_plan()];
 
         for plan in cases {
             assert!(!native_plan_reproduces_declared_output_ordering(&plan), "{plan}");
         }
+    }
+
+    #[test]
+    fn order_reproduction_audit_preserves_window_input_ordering() {
+        let plan = window_plan();
+        assert!(native_plan_reproduces_declared_output_ordering(&plan), "{plan}");
     }
 
     fn aggregate_plan() -> QueryPlan {

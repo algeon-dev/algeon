@@ -2,7 +2,7 @@
 
 use std::{collections::HashMap, fmt::Debug, ptr};
 
-use cugraph_sys::{cugraph_error_t, cugraph_paths_result_t, cugraph_sssp};
+use cugraph_sys::{cugraph_error_t, cugraph_paths_result_t, cugraph_sssp, cugraph_sssp_workspace_preflight};
 
 use crate::{
     array::DeviceArray,
@@ -17,6 +17,82 @@ use crate::{
     traversal::paths::{ExtractPathsResult, PathsResult},
     types::{CugraphElement, DataType, to_bool_t},
 };
+
+const SSSP_PREFLIGHT_OPERATION: &str = "sssp_workspace_preflight";
+
+/// Bounded SSSP shape used by the native allocation preflight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[must_use]
+pub struct SsspWorkspacePreflightInput {
+    edge_count: usize,
+    weight_type: DataType,
+    has_edge_weights: bool,
+}
+
+impl SsspWorkspacePreflightInput {
+    /// Create a preflight input for the graph shape passed to SSSP.
+    pub fn new(edge_count: usize, weight_type: DataType, has_edge_weights: bool) -> Result<Self> {
+        if !weight_type.is_float() {
+            return Err(Error::new(ErrorKind::UnsupportedType, "SsspWorkspacePreflightInput::new")
+                .with_message(format!("SSSP weight_type must be Float32 or Float64, got {weight_type}")));
+        }
+        Ok(Self { edge_count, weight_type, has_edge_weights })
+    }
+
+    /// Physical edge count or admission-time hard upper bound.
+    pub const fn edge_count(self) -> usize {
+        self.edge_count
+    }
+
+    /// Graph weight dtype, including the default Float32 dtype of an unweighted graph.
+    pub const fn weight_type(self) -> DataType {
+        self.weight_type
+    }
+
+    /// Whether the graph already owns the edge-weight property consumed by SSSP.
+    pub const fn has_edge_weights(self) -> bool {
+        self.has_edge_weights
+    }
+}
+
+/// Owner-reported additional unit-weight allocation for one SSSP call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[must_use]
+pub struct SsspWorkspacePreflight {
+    unit_weight_bytes: u64,
+}
+
+impl SsspWorkspacePreflight {
+    /// Bytes allocated for call-local unit weights, or zero for a weighted graph.
+    pub const fn unit_weight_bytes(self) -> u64 {
+        self.unit_weight_bytes
+    }
+}
+
+/// Query the native SSSP unit-weight allocation without accessing a CUDA device.
+pub fn sssp_workspace_preflight(input: &SsspWorkspacePreflightInput) -> Result<SsspWorkspacePreflight> {
+    let mut unit_weight_bytes = 0usize;
+    let mut error: *mut cugraph_error_t = ptr::null_mut();
+    // SAFETY: the safe input validates the dtype and both output pointers are
+    // writable for the duration of this allocation-free native query.
+    let code = unsafe {
+        cugraph_sssp_workspace_preflight(
+            input.edge_count,
+            input.weight_type.into(),
+            to_bool_t(input.has_edge_weights),
+            &mut unit_weight_bytes,
+            &mut error,
+        )
+    };
+    // SAFETY: consume the native error object exactly once on failure.
+    unsafe { crate::error::check_host_error(code, error, SSSP_PREFLIGHT_OPERATION) }?;
+    Ok(SsspWorkspacePreflight {
+        unit_weight_bytes: u64::try_from(unit_weight_bytes).map_err(|_| {
+            Error::new(ErrorKind::Unexpected, SSSP_PREFLIGHT_OPERATION)
+                .with_message("native size_t SSSP unit-weight bound does not fit u64")
+        })?,
+    })
+}
 
 /// Parameters for the SSSP traversal algorithm.
 #[derive(Debug, Clone, Copy, Default)]
@@ -321,4 +397,46 @@ fn flatten_paths_i32(rows: &[Vec<i64>], max_path_length: usize, operation: &'sta
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod preflight_tests {
+    use super::*;
+
+    #[test]
+    fn input_preserves_weight_mode_and_dtype() {
+        let input = SsspWorkspacePreflightInput::new(17, DataType::Float64, false).expect("valid SSSP shape");
+        assert_eq!(input.edge_count(), 17);
+        assert_eq!(input.weight_type(), DataType::Float64);
+        assert!(!input.has_edge_weights());
+    }
+
+    #[test]
+    fn input_rejects_non_float_weight_dtype() {
+        let error = SsspWorkspacePreflightInput::new(1, DataType::Int32, false)
+            .expect_err("SSSP preflight must reject an unsupported weight dtype");
+        assert_eq!(error.kind(), ErrorKind::UnsupportedType);
+        assert_eq!(error.operation(), "SsspWorkspacePreflightInput::new");
+    }
+
+    #[test]
+    fn native_preflight_prices_only_unit_weights() {
+        let float32 =
+            sssp_workspace_preflight(&SsspWorkspacePreflightInput::new(3, DataType::Float32, false).unwrap()).unwrap();
+        let float64 =
+            sssp_workspace_preflight(&SsspWorkspacePreflightInput::new(3, DataType::Float64, false).unwrap()).unwrap();
+        let weighted =
+            sssp_workspace_preflight(&SsspWorkspacePreflightInput::new(3, DataType::Float64, true).unwrap()).unwrap();
+        assert_eq!(float32.unit_weight_bytes(), 12);
+        assert_eq!(float64.unit_weight_bytes(), 24);
+        assert_eq!(weighted.unit_weight_bytes(), 0);
+    }
+
+    #[test]
+    fn native_preflight_rejects_overflow() {
+        let error =
+            sssp_workspace_preflight(&SsspWorkspacePreflightInput::new(usize::MAX, DataType::Float64, false).unwrap())
+                .expect_err("overflow must fail closed");
+        assert_eq!(error.operation(), SSSP_PREFLIGHT_OPERATION);
+    }
 }

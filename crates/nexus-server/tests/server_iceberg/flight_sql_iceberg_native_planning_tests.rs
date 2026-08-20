@@ -63,18 +63,17 @@ async fn native_profile_iceberg_group_by_order_by_rewrites_with_no_leftover_leaf
 }
 
 #[tokio::test]
-async fn native_profile_iceberg_lead_window_remains_executable_on_datafusion() {
+async fn native_profile_iceberg_lead_window_rewrites_with_no_leftover_leaf() {
     let plan = native_admissible_scan_plan(iceberg_test_schema());
     let physical_plan = run_iceberg_sql_under_native_profile(
         &[("iceberg_t", plan)],
         "SELECT id, LEAD(id) OVER (ORDER BY id) AS next_id FROM iceberg_t",
     )
     .await
-    .expect("native-unsupported LEAD must retain an executable DataFusion plan");
+    .expect("native profile must rewrite LEAD over Iceberg");
 
-    assert_executable_iceberg_datafusion_plan(physical_plan.as_ref());
-    assert_plan_contains_operator(physical_plan.as_ref(), "BoundedWindowAggExec");
-    assert_plan_contains_operator(physical_plan.as_ref(), "SortExec");
+    assert_no_leftover_table_format_scan(physical_plan.as_ref());
+    assert_query_fully_lowered_to_native(physical_plan.as_ref());
 }
 
 #[tokio::test]

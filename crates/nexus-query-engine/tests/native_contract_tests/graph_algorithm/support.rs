@@ -133,13 +133,20 @@ fn graph_plan_with_options(
     graph_options: GraphConstructionOptions,
     input_schema: Arc<Schema>,
 ) -> QueryPlan {
+    let vertex_type = input_schema.field_with_name("src").expect("test edge schema has src").data_type().clone();
     let mut builder = QueryPlanBuilder::new();
     let input = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("edges", input_schema)));
-    let spec = GraphAlgorithmSpec::with_stable_schema(
+    let output_schema = if matches!(vertex_type, DataType::Int32 | DataType::Int64) {
+        graph_result_schema_for_vertex_type(algorithm, &params, &vertex_type)
+    } else {
+        stable_graph_result_schema(algorithm)
+    };
+    let spec = GraphAlgorithmSpec::new(
         algorithm,
         GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
         graph_options,
         params,
+        output_schema,
     );
     let graph = builder.add_graph_algorithm(input, spec);
     builder.finish_with_host_sink(graph)
