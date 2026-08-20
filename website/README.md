@@ -151,7 +151,7 @@ Two paths, both live:
   touches `website/**` (needs the `CLOUDFLARE_API_TOKEN` /
   `CLOUDFLARE_ACCOUNT_ID` repository secrets).
 - **Manual** —
-  `npm run build && npx wrangler pages deploy build --project-name=datafusion-nexus --branch=main`.
+  `npm ci && npm run typecheck && npm run build && npm run deploy`.
 
 See [`DEPLOY.md`](./DEPLOY.md) for the full Cloudflare Pages setup, secrets, and
 custom-domain reference.

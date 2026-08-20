@@ -7,7 +7,7 @@
     "start": "docusaurus start",
     "build": "docusaurus build",
     "swizzle": "docusaurus swizzle",
-    "deploy": "docusaurus deploy",
+    "deploy": "wrangler pages deploy build --project-name=datafusion-nexus --branch=main",
     "clear": "docusaurus clear",
     "serve": "docusaurus serve",
     "write-translations": "docusaurus write-translations",
@@ -34,7 +34,8 @@
     "@docusaurus/tsconfig": "^3.10.2",
     "@docusaurus/types": "^3.10.2",
     "@types/react": "^19.0.0",
-    "typescript": "~6.0.2"
+    "typescript": "~6.0.2",
+    "wrangler": "^4.127.1"
   },
   "browserslist": {
     "production": [
@@ -49,6 +50,6 @@
     ]
   },
   "engines": {
-    "node": ">=20.0"
+    "node": ">=22.0"
   }
 }
