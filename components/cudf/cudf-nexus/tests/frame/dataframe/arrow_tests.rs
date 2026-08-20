@@ -92,17 +92,17 @@ fn assert_float64_large_list_value(array: &LargeListArray, index: usize, expecte
 }
 
 fn decimal128_series(values: &[i64], scale: i32) -> cudf::Result<cudf::Series> {
-    crate::common::series("amount", values)?.astype(DataType::fixed_point(TypeId::Decimal128, scale))
+    crate::common::series("amount", values)?.astype(DataType::fixed_point(TypeId::Decimal128, scale).unwrap())
 }
 
 fn nullable_decimal32_series(values: &[i32], validity: &[bool], scale: i32) -> cudf::Result<cudf::Series> {
     crate::common::nullable_series("amount32", values, validity)?
-        .astype(DataType::fixed_point(TypeId::Decimal32, scale))
+        .astype(DataType::fixed_point(TypeId::Decimal32, scale).unwrap())
 }
 
 fn nullable_decimal64_series(values: &[i64], validity: &[bool], scale: i32) -> cudf::Result<cudf::Series> {
     crate::common::nullable_series("amount64", values, validity)?
-        .astype(DataType::fixed_point(TypeId::Decimal64, scale))
+        .astype(DataType::fixed_point(TypeId::Decimal64, scale).unwrap())
 }
 
 fn timestamp_series(values: &[i64], duration_type: TypeId, timestamp_type: TypeId) -> cudf::Result<cudf::Series> {
@@ -242,18 +242,18 @@ fn test_arrow_host_dtype_mapping_preserves_logical_metadata() {
 
     assert_eq!(
         cudf_dtype_from_arrow_type(&ArrowDataType::Decimal128(18, 2)).unwrap(),
-        DataType::fixed_point(TypeId::Decimal128, -2)
+        DataType::fixed_point(TypeId::Decimal128, -2).unwrap()
     );
     assert_eq!(
-        arrow_type_from_cudf_dtype(DataType::fixed_point(TypeId::Decimal128, -6)).unwrap(),
+        arrow_type_from_cudf_dtype(DataType::fixed_point(TypeId::Decimal128, -6).unwrap()).unwrap(),
         ArrowDataType::Decimal128(38, 6)
     );
     assert_eq!(
-        arrow_type_from_cudf_dtype(DataType::fixed_point(TypeId::Decimal32, -2)).unwrap(),
+        arrow_type_from_cudf_dtype(DataType::fixed_point(TypeId::Decimal32, -2).unwrap()).unwrap(),
         ArrowDataType::Decimal128(38, 2)
     );
     assert_eq!(
-        arrow_type_from_cudf_dtype(DataType::fixed_point(TypeId::Decimal64, -4)).unwrap(),
+        arrow_type_from_cudf_dtype(DataType::fixed_point(TypeId::Decimal64, -4).unwrap()).unwrap(),
         ArrowDataType::Decimal128(38, 4)
     );
     assert_eq!(
@@ -309,11 +309,11 @@ fn test_arrow_host_dtype_mapping_preserves_logical_metadata() {
     assert!(is_supported_arrow_numeric_type(&ArrowDataType::Float64));
     assert!(!is_supported_arrow_numeric_type(&ArrowDataType::Boolean));
     assert!(cudf_dtype_can_export_to_arrow_type(
-        DataType::fixed_point(TypeId::Decimal64, -2),
+        DataType::fixed_point(TypeId::Decimal64, -2).unwrap(),
         &ArrowDataType::Decimal128(38, 2)
     ));
     assert!(!cudf_dtype_can_export_to_arrow_type(
-        DataType::fixed_point(TypeId::Decimal64, -3),
+        DataType::fixed_point(TypeId::Decimal64, -3).unwrap(),
         &ArrowDataType::Decimal128(38, 2)
     ));
 }
@@ -414,7 +414,7 @@ fn test_arrow_host_duration_import_export_mappings() {
 fn test_arrow_host_dtype_mapping_rejects_decimal_scale_outside_arrow_range() {
     use cudf::interop::arrow_host::arrow_type_from_cudf_dtype;
 
-    let err = arrow_type_from_cudf_dtype(DataType::fixed_point(TypeId::Decimal128, -39))
+    let err = arrow_type_from_cudf_dtype(DataType::fixed_point(TypeId::Decimal128, -39).unwrap())
         .expect_err("Arrow Decimal128 scale must fit the exported precision");
 
     assert_eq!(err.kind(), ErrorKind::Unsupported);
@@ -426,7 +426,7 @@ fn test_arrow_host_dtype_mapping_rejects_decimal_scale_outside_arrow_range() {
     assert_eq!(error_context_value(&err, "arrow_precision").as_deref(), Some("38"));
     assert_eq!(error_context_value(&err, "reason").as_deref(), Some("decimal_scale_exceeds_decimal128_precision"));
 
-    let range_err = arrow_type_from_cudf_dtype(DataType::fixed_point(TypeId::Decimal128, -129))
+    let range_err = arrow_type_from_cudf_dtype(DataType::fixed_point(TypeId::Decimal128, -129).unwrap())
         .expect_err("large Arrow Decimal128 scale must fail before Arrow array construction");
     assert_eq!(range_err.kind(), ErrorKind::Unsupported);
     assert_eq!(range_err.code(), ErrorCode::UnsupportedDtype);
@@ -459,7 +459,7 @@ fn test_arrow_host_schema_validation_exposes_planner_metadata() {
     assert_eq!(mapped.field(0).unwrap().arrow_data_type(), &ArrowDataType::Int32);
     assert!(!mapped.field(0).unwrap().nullable());
     assert_eq!(mapped.field(1).unwrap().name(), "amount");
-    assert_eq!(mapped.field(1).unwrap().cudf_data_type(), DataType::fixed_point(TypeId::Decimal128, -3));
+    assert_eq!(mapped.field(1).unwrap().cudf_data_type(), DataType::fixed_point(TypeId::Decimal128, -3).unwrap());
     assert_eq!(mapped.field_by_name("label").unwrap().cudf_data_type(), DataType::new(TypeId::String));
 }
 
@@ -655,8 +655,14 @@ fn test_narrow_decimal_import_and_schema_aware_export_preserve_width_precision_s
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(decimal32), Arc::new(decimal64)]).unwrap();
 
     let frame = import_record_batch(&batch).unwrap();
-    assert_eq!(frame.series("amount32").unwrap().dtype().unwrap(), DataType::fixed_point(TypeId::Decimal32, -2));
-    assert_eq!(frame.series("amount64").unwrap().dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4));
+    assert_eq!(
+        frame.series("amount32").unwrap().dtype().unwrap(),
+        DataType::fixed_point(TypeId::Decimal32, -2).unwrap()
+    );
+    assert_eq!(
+        frame.series("amount64").unwrap().dtype().unwrap(),
+        DataType::fixed_point(TypeId::Decimal64, -4).unwrap()
+    );
 
     let canonical = frame.to_record_batch().unwrap();
     assert_eq!(canonical.schema().field(0).data_type(), &ArrowDataType::Decimal128(38, 2));
@@ -1468,7 +1474,7 @@ fn test_round_trip_nullable_decimal128_date32_and_timestamp_units() {
 
     let df = import_record_batch(&batch).unwrap();
 
-    assert_eq!(df.series("amount").unwrap().dtype().unwrap(), DataType::fixed_point(TypeId::Decimal128, -2));
+    assert_eq!(df.series("amount").unwrap().dtype().unwrap(), DataType::fixed_point(TypeId::Decimal128, -2).unwrap());
     assert_eq!(df.series("date").unwrap().dtype().unwrap().id(), TypeId::TimestampDays);
     assert_eq!(df.series("ts_s").unwrap().dtype().unwrap().id(), TypeId::TimestampSeconds);
     assert_eq!(df.series("ts_ms").unwrap().dtype().unwrap().id(), TypeId::TimestampMilliseconds);
@@ -1636,8 +1642,11 @@ fn test_to_record_batch_mixed_decimal_temporal_boundary_observation() {
         .build()
         .unwrap();
 
-    let amount =
-        runtime.series(&[12345i64, -67890]).unwrap().astype(DataType::fixed_point(TypeId::Decimal128, -2)).unwrap();
+    let amount = runtime
+        .series(&[12345i64, -67890])
+        .unwrap()
+        .astype(DataType::fixed_point(TypeId::Decimal128, -2).unwrap())
+        .unwrap();
     let date = runtime
         .series(&[18_262i32, 18_263])
         .unwrap()

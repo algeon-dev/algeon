@@ -345,7 +345,7 @@ fn assert_host_table_exports_equivalent(source: &Table, imported: &Table) {
 }
 
 fn decimal64_series(runtime: &Runtime, _name: &str, values: &[i64], scale: i32) -> Series {
-    runtime.series(values).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, scale)).unwrap()
+    runtime.series(values).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, scale).unwrap()).unwrap()
 }
 
 #[repr(C)]
@@ -949,7 +949,7 @@ fn decimal64_series_device_arrow_import_reports_foreign_retained_view_and_preser
     let imported = Series::try_import_from_device_arrow_column_into_runtime(&foreign, &runtime).unwrap();
 
     assert_eq!(imported.as_column().device_data_ptr().unwrap(), producer_ptr);
-    assert_eq!(imported.as_column().data_type().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2));
+    assert_eq!(imported.as_column().data_type().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2).unwrap());
     assert_eq!(imported.eq(&series).unwrap().to_vec_strict::<bool>().unwrap(), vec![true, true, true]);
 }
 
@@ -965,7 +965,7 @@ fn decimal64_series_device_arrow_round_trip_does_not_call_host_arrow_path() {
     let foreign = export.into_foreign();
     let imported = Series::try_import_from_device_arrow_column_into_runtime(&foreign, &runtime).unwrap();
 
-    assert_eq!(imported.as_column().data_type().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2));
+    assert_eq!(imported.as_column().data_type().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2).unwrap());
     assert_eq!(imported.eq(&series).unwrap().to_vec_strict::<bool>().unwrap(), vec![true, true, true]);
     assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 0);
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
@@ -1702,7 +1702,7 @@ fn decimal64_dataframe_device_arrow_round_trip_preserves_names_scale_and_values(
     assert_eq!(imported.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![3, 1, 4]);
     assert_eq!(
         imported.series("amount").unwrap().as_column().data_type().unwrap(),
-        DataType::fixed_point(TypeId::Decimal64, -2)
+        DataType::fixed_point(TypeId::Decimal64, -2).unwrap()
     );
     assert_eq!(
         imported.series("amount").unwrap().eq(&amounts).unwrap().to_vec_strict::<bool>().unwrap(),

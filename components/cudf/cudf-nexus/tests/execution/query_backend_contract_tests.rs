@@ -1990,12 +1990,16 @@ fn host_batch_cursor_decimal32_and_decimal64_limits_use_decimal128_destination_w
     let runtime = sample_runtime();
     for (storage_type, source_width) in [(TypeId::Decimal32, 4usize), (TypeId::Decimal64, 8usize)] {
         let series = match storage_type {
-            TypeId::Decimal32 => {
-                runtime.series(&[123i32]).unwrap().astype(cudf::DataType::fixed_point(storage_type, -2)).unwrap()
-            },
-            TypeId::Decimal64 => {
-                runtime.series(&[123i64]).unwrap().astype(cudf::DataType::fixed_point(storage_type, -2)).unwrap()
-            },
+            TypeId::Decimal32 => runtime
+                .series(&[123i32])
+                .unwrap()
+                .astype(cudf::DataType::fixed_point(storage_type, -2).unwrap())
+                .unwrap(),
+            TypeId::Decimal64 => runtime
+                .series(&[123i64])
+                .unwrap()
+                .astype(cudf::DataType::fixed_point(storage_type, -2).unwrap())
+                .unwrap(),
             _ => unreachable!(),
         };
         let frame = DataFrame::from_series([("amount", series)]).unwrap();

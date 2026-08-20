@@ -10,9 +10,7 @@ use cudf::testing::prelude::*;
 use cudf_sys::test_support;
 use cugraph::{
     DeviceArray, GraphBuilder,
-    cudf_interop::{
-        GraphConstructionPolicy, SeriesGraphOptions, graph_from_borrowed_columns, graph_from_prepared_columns,
-    },
+    cudf_interop::{GraphConstructionPolicy, PreparedGraphOptions, graph_from_prepared_columns},
     graph::Transposed,
     handle::ResourceHandle,
     types::GraphProperties,
@@ -43,8 +41,8 @@ fn last_exec_mr_value() -> usize {
     out as usize
 }
 
-fn python_weighted_options() -> SeriesGraphOptions {
-    SeriesGraphOptions::default()
+fn python_weighted_options() -> PreparedGraphOptions {
+    PreparedGraphOptions::default()
         .properties(GraphProperties::undirected())
         .renumber()
         .construction_policy(GraphConstructionPolicy::PythonCugraph)
@@ -52,49 +50,6 @@ fn python_weighted_options() -> SeriesGraphOptions {
 
 fn runtime_with_explicit_pool_memory_resource() -> Arc<cudf::Runtime> {
     Arc::new(cudf::Runtime::builder().with_pool_memory_resource(8 * 1024 * 1024, None).build().expect("runtime"))
-}
-
-#[test]
-fn runtime_bound_borrowed_python_imports_use_runtime_execution_context() {
-    let _guard = common::cudf::cuda_test_serial_guard();
-    let runtime = runtime_with_explicit_pool_memory_resource();
-    let handle = ResourceHandle::for_runtime(Arc::clone(&runtime)).expect("runtime-bound handle");
-    let handle = handle.enter("runtime_bound_borrowed_python_imports_use_runtime_execution_context").expect("entered");
-    let expected = python_weighted_reciprocal_expected_pagerank_map(&handle);
-
-    let src_runtime = explicit_runtime();
-    let dst_runtime = explicit_runtime();
-    let wgt_runtime = explicit_runtime();
-    let src = src_runtime.series(&[0i32, 1, 1, 2]).expect("src");
-    let dst = dst_runtime.series(&[1i32, 0, 2, 1]).expect("dst");
-    let wgt = wgt_runtime.series(&[5.0f32, 2.0, 1.0, 1.0]).expect("weight");
-    let src_borrowed = src.try_borrow_column_view().expect("src borrowed");
-    let dst_borrowed = dst.try_borrow_column_view().expect("dst borrowed");
-    let wgt_borrowed = wgt.try_borrow_column_view().expect("weight borrowed");
-    reset_exec_observation();
-
-    let mut graph = graph_from_borrowed_columns::<Transposed>(
-        &handle,
-        &src_borrowed,
-        &dst_borrowed,
-        Some(&wgt_borrowed),
-        &python_weighted_options(),
-    )
-    .expect("graph_from_borrowed_columns");
-    let actual = pagerank_score_map(&handle, &mut graph);
-    runtime.synchronize().expect("runtime synchronize");
-
-    assert_eq!(
-        last_exec_stream_value(),
-        runtime.stream().testing_raw_handle_value(),
-        "borrowed import path should run cudf work on the runtime stream"
-    );
-    assert_eq!(
-        last_exec_mr_value(),
-        runtime.memory_resource().testing_raw_handle_value(),
-        "borrowed import path should run cudf work on the runtime memory resource"
-    );
-    assert_score_maps_close_f32(&actual, &expected, 1.0e-6, "borrowed allocator routing");
 }
 
 #[test]

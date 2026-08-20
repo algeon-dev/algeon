@@ -761,8 +761,8 @@ fn align_decimal_binary_storage(left: Series, right: Series, ctx: &ExprEvalConte
     }
 
     let common_storage = common_decimal_storage_type(left_type.id(), right_type.id(), ctx.operation)?;
-    let left_target = DataType::fixed_point(common_storage, left_type.scale());
-    let right_target = DataType::fixed_point(common_storage, right_type.scale());
+    let left_target = DataType::fixed_point(common_storage, left_type.scale())?;
+    let right_target = DataType::fixed_point(common_storage, right_type.scale())?;
     Ok((
         cast_series_to_binary_operand_dtype(left, left_target, ctx)?,
         cast_series_to_binary_operand_dtype(right, right_target, ctx)?,

@@ -1,22 +1,21 @@
 #![warn(clippy::undocumented_unsafe_blocks)]
 
-//! Safe Rust bindings for NVIDIA cuGraph GPU-accelerated graph analytics.
+//! Workspace-internal safe libcugraph execution component for DataFusion Nexus.
 //!
-//! This crate wraps the cuGraph C API in safe Rust types with RAII semantics,
-//! zero-copy array views, and structured error handling.
+//! Nexus integrations enter through a runtime-bound [`ResourceHandle`], use
+//! the prepared transfer contracts in [`cudf_interop`], consult graph and
+//! algorithm preflight facts before admission, and retain explicit producer
+//! readiness and consumer completion ordering. Native failures are preserved
+//! as structured [`Error`] values.
 //!
-//! For most applications, the intended entry point is
-//! [`cudf_interop`]: build graphs from cudf
-//! [`Series`](cudf::Series)/[`DataFrame`](cudf::DataFrame), run algorithms,
-//! then convert results back to cudf tables. [`DeviceArray`] and
-//! [`GraphBuilder`] remain available for lower-level workflows that already own
-//! typed device arrays.
+//! The package name `cugraph-nexus` and Rust import name `cugraph` are
+//! workspace contracts. This crate is not published as a general-purpose
+//! cuGraph SDK and does not make an external semantic-versioning promise.
 //!
 //! # Key concepts
 //!
-//! - **[`cudf_interop`]** — preferred graph-ingestion path for cudf-backed
-//!   applications. Includes `graph_from_series`, `graph_from_dataframe`, and
-//!   Parquet helpers.
+//! - **[`cudf_interop`]** — canonical prepared cuDF graph ingress and result
+//!   egress for the Nexus engine.
 //! - **[`ResourceHandle`]** — long-lived owner of GPU execution provenance
 //!   (bound device, retained runtime, cuGraph resource handle). Not
 //!   thread-safe.
@@ -30,41 +29,6 @@
 //! - **[`Graph<T>`]** — the central graph data structure, parameterized by
 //!   transposition state ([`Forward`] or [`Transposed`]). Algorithms are methods
 //!   on `Graph`, constrained by the required layout.
-//!
-//! # Quick start
-//!
-//! ```no_run
-//! use cudf::Runtime;
-//! use cugraph::{
-//!     ResourceHandle, Transposed,
-//!     centrality::PageRankParams,
-//!     cudf_interop::{DataFrameGraphOptions, graph_from_dataframe},
-//!     types::GraphProperties,
-//! };
-//!
-//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
-//! let runtime = std::sync::Arc::new(Runtime::new()?);
-//! let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime))?;
-//! let entered = handle.enter("quick_start")?;
-//!
-//! let src = runtime.series(&[0i32, 1, 2, 1, 2, 0])?;
-//! let dst = runtime.series(&[1i32, 2, 0, 0, 1, 2])?;
-//! let edges = cudf::DataFrame::from_series([("src", src), ("dst", dst)])?;
-//!
-//! let opts = DataFrameGraphOptions::new("src", "dst")
-//!     .properties(GraphProperties::undirected())
-//!     .renumber();
-//! let mut graph =
-//!     graph_from_dataframe::<Transposed>(&entered, &edges, &opts)?;
-//!
-//! let result = graph.pagerank(&entered, &PageRankParams::default())?;
-//! let df = result.to_dataframe(&runtime)?;
-//! let vertices: Vec<i32> = df.series("vertex")?.to_vec_strict()?;
-//! let scores: Vec<f32> = df.series("value")?.to_vec_strict()?;
-//! let _ = (vertices, scores);
-//! # Ok(())
-//! # }
-//! ```
 //!
 //! # Type-state encoding
 //!
@@ -80,11 +44,9 @@
 //!
 //! # cudf interop
 //!
-//! The [`cudf_interop`] module provides single-GPU graph construction from
-//! cudf [`Series`](cudf::Series) and [`DataFrame`](cudf::DataFrame), plus
-//! result-to-DataFrame conversions. Prefer its prepared-export entry points
-//! for new shared-contract integrations; borrowed zero-copy entry points remain
-//! available as compatibility paths.
+//! The [`cudf_interop`] module owns single-GPU prepared graph construction
+//! from cudf tables and result-to-DataFrame conversion. The prepared export
+//! contract is the canonical Nexus ingress path.
 
 pub mod array;
 pub mod centrality;

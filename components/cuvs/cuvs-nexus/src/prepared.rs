@@ -22,7 +22,7 @@ pub struct PreparedTensorLease<'export, 'producer, 'consumer, T: DeviceElement> 
     _consumer: PhantomData<&'consumer CuvsResources>,
 }
 
-impl<'export, 'producer, 'consumer, T: DeviceElement> PreparedTensorLease<'export, 'producer, 'consumer, T> {
+impl<'export, T: DeviceElement> PreparedTensorLease<'export, '_, '_, T> {
     pub fn tensor(&self) -> &DeviceTensor<'export, T> {
         &self.tensor
     }
@@ -61,7 +61,7 @@ pub struct PreparedValidatedTensorLease<'export, 'producer, 'consumer> {
     _consumer: PhantomData<&'consumer CuvsResources>,
 }
 
-impl<'export, 'producer, 'consumer> PreparedValidatedTensorLease<'export, 'producer, 'consumer> {
+impl<'export> PreparedValidatedTensorLease<'export, '_, '_> {
     pub fn tensor(&self) -> &ValidatedDeviceTensor<'export> {
         &self.tensor
     }

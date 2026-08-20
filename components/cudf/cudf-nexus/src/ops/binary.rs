@@ -319,7 +319,7 @@ fn infer_decimal_binary_output(
         _ => return make_err("unsupported decimal binary operator"),
     };
 
-    Ok(DataType::fixed_point(lhs_id, scale))
+    DataType::fixed_point(lhs_id, scale)
 }
 
 fn infer_temporal_binary_output(
@@ -621,8 +621,8 @@ fn decimal_division_explicit_type_operand_targets(
     })?;
 
     Ok(Some((
-        DataType::fixed_point(output_type.id(), lhs_scale),
-        DataType::fixed_point(output_type.id(), rhs_type.scale()),
+        DataType::fixed_point(output_type.id(), lhs_scale)?,
+        DataType::fixed_point(output_type.id(), rhs_type.scale())?,
     )))
 }
 
@@ -652,8 +652,8 @@ fn decimal_division_explicit_type_column_scalar_targets(
         operation,
     )?;
     Ok(Some((
-        DataType::fixed_point(output_type.id(), lhs_scale),
-        DataType::fixed_point(output_type.id(), rhs_type.scale()),
+        DataType::fixed_point(output_type.id(), lhs_scale)?,
+        DataType::fixed_point(output_type.id(), rhs_type.scale())?,
     )))
 }
 
@@ -683,8 +683,8 @@ fn decimal_division_explicit_type_scalar_column_targets(
         operation,
     )?;
     Ok(Some((
-        DataType::fixed_point(output_type.id(), lhs_scale),
-        DataType::fixed_point(output_type.id(), rhs_type.scale()),
+        DataType::fixed_point(output_type.id(), lhs_scale)?,
+        DataType::fixed_point(output_type.id(), rhs_type.scale())?,
     )))
 }
 

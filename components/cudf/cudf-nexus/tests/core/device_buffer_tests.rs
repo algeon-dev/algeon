@@ -215,6 +215,27 @@ fn adopt_f64_roundtrip() {
 }
 
 #[test]
+fn adopted_bool8_decodes_non_canonical_non_zero_bytes() {
+    let rt = Runtime::new().unwrap();
+    let buf = rt.device_buffer_from_host_data(&[0u8, 1, 2, 0xff]).unwrap();
+    let col = rt.column_from_device_buffer(buf, 4, TypeId::Bool8).unwrap();
+
+    assert_eq!(col.to_vec::<bool>().unwrap(), vec![false, true, true, true]);
+}
+
+#[test]
+fn adopted_nullable_bool8_never_materializes_null_slot_as_bool() {
+    let rt = Runtime::new().unwrap();
+    let data_buf = rt.device_buffer_from_host_data(&[0u8, 0xff, 2]).unwrap();
+    let mut mask = [0u8; 64];
+    mask[0] = 0b101;
+    let mask_buf = rt.device_buffer_from_host_data(&mask).unwrap();
+    let col = rt.column_from_device_buffer_nullable(data_buf, mask_buf, 1, 3, TypeId::Bool8).unwrap();
+
+    assert_eq!(col.to_optional_vec::<bool>().unwrap(), vec![Some(false), None, Some(true)]);
+}
+
+#[test]
 fn adopt_proves_zero_copy() {
     let rt = Runtime::new().unwrap();
     let data: &[i32] = &[42, 99];

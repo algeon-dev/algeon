@@ -844,17 +844,6 @@ impl Series {
         self.factorize_with_options_in_context(&default_execution_context(), options, "series::factorize_with")
     }
 
-    pub fn lookup(&self, keys: &Series, values: &Series) -> Result<Series> {
-        (|| {
-            let input = self.view()?;
-            let key_view = keys.view()?;
-            let value_view = values.view()?;
-            let result = crate::ops::lookup::probe(&input, &key_view, &value_view)?;
-            Series::from_column(result)
-        })()
-        .map_err(|e| e.reanchor("series::lookup"))
-    }
-
     /// Sort the series according to the given options.
     ///
     /// Equivalent to cuDF Python's `Series.sort_values()`.

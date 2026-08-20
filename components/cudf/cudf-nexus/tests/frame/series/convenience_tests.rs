@@ -396,113 +396,6 @@ fn test_nunique_excludes_null_but_keeps_nan_distinctness() {
 // ===========================================================================
 
 #[test]
-fn test_lookup_exact_match() {
-    let input = crate::common::series("vertex", &["u2", "u1", "u3"]).unwrap();
-    let keys = crate::common::series("id", &["u1", "u2", "u3"]).unwrap();
-    let values = crate::common::series("label", &["alice", "bob", "carol"]).unwrap();
-
-    let looked_up = input.lookup(&keys, &values).unwrap();
-    assert_eq!(
-        looked_up.to_optional_strings().unwrap(),
-        vec![Some("bob".to_string()), Some("alice".to_string()), Some("carol".to_string())]
-    );
-}
-
-#[test]
-fn test_lookup_missing_key_produces_null() {
-    let input = crate::common::series("vertex", &["u2", "u9", "u1"]).unwrap();
-    let keys = crate::common::series("id", &["u1", "u2"]).unwrap();
-    let values = crate::common::series("label", &["alice", "bob"]).unwrap();
-
-    let looked_up = input.lookup(&keys, &values).unwrap();
-
-    assert_eq!(
-        looked_up.to_optional_strings().unwrap(),
-        vec![Some("bob".to_string()), None, Some("alice".to_string())]
-    );
-}
-
-#[test]
-fn test_lookup_rejects_duplicate_keys() {
-    let input = crate::common::series("vertex", &["u1", "u2"]).unwrap();
-    let keys = crate::common::series("id", &["u1", "u1"]).unwrap();
-    let values = crate::common::series("label", &["alice", "alice-2"]).unwrap();
-
-    let err = input.lookup(&keys, &values).unwrap_err();
-
-    assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(err.code(), cudf::ErrorCode::DuplicateKey);
-    assert_eq!(err.operation(), "series::lookup");
-    assert_eq!(err.fact_value(FactKeyName::KeysCount), Some(&FactValue::Usize(2)));
-    assert_eq!(err.fact_value(FactKeyName::DistinctKeysCount), Some(&FactValue::Usize(1)));
-    assert_eq!(err.detail_value("keys_count"), None);
-    assert_eq!(err.detail_value("distinct_keys_count"), None);
-}
-
-#[test]
-fn test_lookup_rejects_dtype_mismatch() {
-    let input = crate::common::series::<i32>("vertex", &[1, 2]).unwrap();
-    let keys = crate::common::series("id", &["1", "2"]).unwrap();
-    let values = crate::common::series("label", &["alice", "bob"]).unwrap();
-
-    let err = input.lookup(&keys, &values).unwrap_err();
-
-    assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(err.code(), cudf::ErrorCode::TypeMismatch);
-    assert_eq!(err.operation(), "series::lookup");
-    assert_eq!(err.fact_value(FactKeyName::LeftTypeId), Some(&FactValue::TypeId(TypeId::Int32)));
-    assert_eq!(err.fact_value(FactKeyName::RightTypeId), Some(&FactValue::TypeId(TypeId::String)));
-    assert_eq!(err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::String)));
-    assert_eq!(crate::common::error_context_value(&err, "output_type_id").as_deref(), None);
-    assert_eq!(crate::common::error_context_value(&err, "values_type_id").as_deref(), None);
-}
-
-#[test]
-fn test_lookup_rejects_mapping_length_mismatch_with_series_operation() {
-    let input = crate::common::series("vertex", &["u1", "u2"]).unwrap();
-    let keys = crate::common::series("id", &["u1", "u2"]).unwrap();
-    let values = crate::common::series("label", &["alice"]).unwrap();
-
-    let err = input.lookup(&keys, &values).unwrap_err();
-
-    assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(err.code(), cudf::ErrorCode::ColumnLengthMismatch);
-    assert_eq!(err.operation(), "series::lookup");
-    assert_eq!(err.fact_value(FactKeyName::RightTypeId), Some(&FactValue::TypeId(TypeId::String)));
-    assert_eq!(err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::String)));
-    assert_eq!(err.fact_value(FactKeyName::KeysCount), Some(&FactValue::Usize(2)));
-    assert_eq!(err.detail_value("values_count"), Some("1"));
-    assert_eq!(err.detail_value("keys_count"), None);
-    assert_eq!(crate::common::error_context_value(&err, "keys_type_id").as_deref(), None);
-    assert_eq!(crate::common::error_context_value(&err, "output_type_id").as_deref(), None);
-}
-
-#[test]
-fn test_lookup_returns_requested_values() {
-    let input = crate::common::series("vertex", &["u2", "u1"]).unwrap();
-    let keys = crate::common::series("id", &["u1", "u2"]).unwrap();
-    let values = crate::common::series("label", &["alice", "bob"]).unwrap();
-
-    let looked_up = input.lookup(&keys, &values).unwrap();
-    assert_eq!(looked_up.to_optional_strings().unwrap(), vec![Some("bob".to_string()), Some("alice".to_string())]);
-}
-
-#[test]
-fn test_lookup_display_omits_series_names() {
-    let input = crate::common::series("vertex", &["u2", "u1"]).unwrap();
-    let keys = crate::common::series("id", &["u1", "u2"]).unwrap();
-    let values = crate::common::series("label", &["alice", "bob"]).unwrap();
-
-    let looked_up = input.lookup(&keys, &values).unwrap();
-    let output = format!("{}", looked_up);
-    assert!(
-        !output.contains("vertex") && !output.contains("label"),
-        "lookup output should not expose input schema names: {}",
-        output
-    );
-}
-
-#[test]
 fn test_factorize_basic() {
     let s = crate::common::series::<i32>("x", &[10, 20, 10, 30, 20]).unwrap();
     let factorized = s.factorize().unwrap();
@@ -722,7 +615,7 @@ fn test_zero_argument_codebook_preserves_sorted_default_ordering() {
 
 #[test]
 fn test_empty_decimal_codebook_preserves_scale() {
-    let dtype = DataType::fixed_point(TypeId::Decimal64, -3);
+    let dtype = DataType::fixed_point(TypeId::Decimal64, -3).unwrap();
     let s = sample_runtime().empty_series(dtype).unwrap();
 
     let codebook = s.codebook().unwrap();
@@ -813,7 +706,7 @@ fn test_zero_argument_factorize_preserves_sorted_default_ordering() {
 
 #[test]
 fn test_empty_decimal_factorize_preserves_codebook_scale() {
-    let dtype = DataType::fixed_point(TypeId::Decimal128, -6);
+    let dtype = DataType::fixed_point(TypeId::Decimal128, -6).unwrap();
     let s = sample_runtime().empty_series(dtype).unwrap();
 
     let factorized = s.factorize().unwrap();

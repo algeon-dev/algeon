@@ -258,35 +258,24 @@ fn test_factorize_row_codes_are_not_a_reusable_codebook_for_uniques() {
     let factorized = lookup_source.factorize().unwrap();
     let row_codes = factorized.row_codes();
     let uniques = factorized.codebook().keys();
-    let query = crate::common::series("query", &["a", "b", "c"]).unwrap();
 
     // This is the tempting but invalid pattern: slice row-aligned factorize
-    // codes down to uniques.len() and reuse them as if they were a stable
-    // key->code mapping for later lookup/gather() calls.
+    // codes down to uniques.len() and reuse them as if they were a stable key
+    // to code mapping.
     let first_positions = crate::common::series("first_positions", &[0i32, 1, 2]).unwrap();
     let wrong_lookup_values = row_codes.gather(&first_positions).unwrap();
     assert_eq!(wrong_lookup_values.len(), uniques.len());
-
-    let wrong_encoded = query.lookup(uniques, &wrong_lookup_values).unwrap();
-    let wrong_decoded = uniques.gather(&wrong_encoded).unwrap();
-
-    assert_ne!(
-        wrong_decoded.testing_view().unwrap().to_strings_lossy().unwrap(),
-        query.testing_view().unwrap().to_strings_lossy().unwrap()
-    );
+    assert_ne!(wrong_lookup_values.to_vec_strict::<i32>().unwrap(), vec![0, 1, 2]);
 }
 
 #[test]
 fn test_factorize_uniques_support_safe_positional_codebook_round_trip() {
     let lookup_source = Series::from_column(column_from_strs(&["b", "a", "c", "a"]).unwrap()).unwrap();
     let factorized = lookup_source.factorize().unwrap();
-    let _ = factorized.row_codes();
-    let uniques = factorized.codebook().keys().clone();
-
-    let positional = crate::common::series("codes", &[0i32, 1, 2]).unwrap();
+    let codebook = factorized.codebook();
     let query = crate::common::series("query", &["a", "b", "c"]).unwrap();
-    let encoded = query.lookup(&uniques, &positional).unwrap();
-    let decoded = uniques.gather(&encoded).unwrap();
+    let encoded = codebook.encode(&query).unwrap();
+    let decoded = codebook.decode(&encoded).unwrap();
 
     assert_eq!(
         decoded.testing_view().unwrap().to_strings_lossy().unwrap(),

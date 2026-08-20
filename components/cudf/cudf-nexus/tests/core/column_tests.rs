@@ -18,7 +18,7 @@ fn test_create_empty_column() {
 
 #[test]
 fn test_create_empty_decimal_column_preserves_scale() {
-    let dtype = DataType::fixed_point(TypeId::Decimal64, -2);
+    let dtype = DataType::fixed_point(TypeId::Decimal64, -2).unwrap();
     let col = crate::common::empty_column(dtype).unwrap();
     let view = col.testing_view().unwrap();
     assert_eq!(view.len().unwrap(), 0);
@@ -888,7 +888,7 @@ fn test_nulls_string() {
 
 #[test]
 fn test_nulls_decimal64_preserve_scale() {
-    let dtype = DataType::fixed_point(TypeId::Decimal64, -2);
+    let dtype = DataType::fixed_point(TypeId::Decimal64, -2).unwrap();
     let col = crate::common::null_column(dtype, 5).unwrap();
     let view = col.testing_view().unwrap();
     assert_eq!(view.len().unwrap(), 5);

@@ -1090,7 +1090,7 @@ fi
 
 if [[ "${mode}" == full ]]; then
   run_or_cache_phase checked-bindings none - - checked_bindings_command || true
-  run_or_cache_phase component-packages "literal:packages=7" - - bash scripts/ci/check_component_packages.sh || true
+  run_or_cache_phase component-packages "literal:packages=3" - - bash scripts/ci/check_component_packages.sh || true
   run_or_cache_phase cuvs-native-free none - - env CUVS_NEXUS_SYS_SKIP_NATIVE=1 \
     cargo check --locked -p cuvs-nexus-sys --all-targets --all-features || true
   run_phase msrv-check none - - msrv_check_command || true
@@ -1152,7 +1152,7 @@ if [[ "${mode}" == full ]]; then
   run_or_cache_phase doctests doctest - "${GPU_LOCK}" doctest_command || true
   run_or_cache_phase rustdoc none - - rustdoc_command || true
   rustdoc_summary="command_status=${PHASE_EXIT[rustdoc]} warnings=denied"
-  run_or_cache_phase public-api-surface literal:crates=4 - - public_api_surface_command || true
+  run_or_cache_phase public-api-surface literal:crates=6 - - public_api_surface_command || true
   run_or_cache_phase clippy none - - cargo clippy --workspace --all-targets "${FEATURE_ARGS[@]}" -- -D warnings || true
 fi
 

@@ -14,7 +14,7 @@ use cudf::{
         error::{FactKeyName, FactValue},
         memory::DeviceMemoryResource,
     },
-    frame::dataframe::{MeltOptions, ParquetWriteOptions},
+    frame::dataframe::ParquetWriteOptions,
     ops::{
         ast::AstExpression,
         expr::{col, lit},
@@ -229,10 +229,6 @@ fn dataframe1(name: &str, series: Series) -> DataFrame {
 
 fn dataframe2(name1: &str, series1: Series, name2: &str, series2: Series) -> DataFrame {
     DataFrame::from_series([(name1, series1), (name2, series2)]).unwrap()
-}
-
-fn dataframe3(name1: &str, series1: Series, name2: &str, series2: Series, name3: &str, series3: Series) -> DataFrame {
-    DataFrame::from_series([(name1, series1), (name2, series2), (name3, series3)]).unwrap()
 }
 
 fn cross_device_write_dataframe() -> (Runtime, Runtime, DataFrame) {
@@ -1643,96 +1639,6 @@ fn runtime_head_tail_slice_regression() {
         },
     };
     assert_eq!(slice.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![20, 30]);
-}
-
-#[test]
-fn runtime_melt_regression() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let _device_guard = common::DeviceRestoreGuard::new();
-    let (device0, device1) = first_two_test_devices();
-    common::set_current_device(device0);
-
-    let rt1 = Runtime::builder().with_device(device1).build().unwrap();
-    let a = rt1.series(&["a", "b", "c"]).unwrap();
-    let b = rt1.series(&[1, 3, 5]).unwrap();
-    let c = rt1.series(&[2, 4, 6]).unwrap();
-    let df = dataframe3("A", a, "B", b, "C", c);
-
-    let opts = MeltOptions::builder().id_vars(&["A"]).value_vars(&["B", "C"]).build();
-    common::reset_exec_observation();
-    let result = match df.melt(opts) {
-        Ok(result) => result,
-        Err(err) => {
-            panic!(
-                "melt() should succeed on a runtime-pinned dataframe with the calling thread on another GPU: {err:?}"
-            )
-        },
-    };
-    assert_eq!(result.series("A").unwrap().to_strings_strict().unwrap(), vec!["a", "b", "c", "a", "b", "c"]);
-    assert_eq!(result.series("variable").unwrap().to_strings_strict().unwrap(), vec!["B", "B", "B", "C", "C", "C"]);
-    assert_eq!(result.series("value").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 3, 5, 2, 4, 6]);
-}
-
-#[test]
-fn runtime_lookup_regression() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let _device_guard = common::DeviceRestoreGuard::new();
-    let (device0, device1) = first_two_test_devices();
-    common::set_current_device(device0);
-
-    let rt1 = Runtime::builder().with_device(device1).build().unwrap();
-    let input = rt1.series(&[1, 2, 3, 1]).unwrap();
-    let keys = rt1.series(&[1, 2, 3]).unwrap();
-    let values = rt1.series(&[100, 200, 300]).unwrap();
-
-    common::reset_exec_observation();
-    let result = match cudf::ops::lookup::probe(
-        &input.testing_view().unwrap(),
-        &keys.testing_view().unwrap(),
-        &values.testing_view().unwrap(),
-    ) {
-        Ok(result) => result,
-        Err(err) => panic!("lookup::probe() should succeed when all logical inputs are runtime-pinned: {err:?}"),
-    };
-    assert_eq!(result.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![100, 200, 300, 100]);
-}
-
-#[test]
-fn runtime_lookup_table_regression() {
-    if !should_run_multi_gpu_test() {
-        return;
-    }
-
-    let _device_guard = common::DeviceRestoreGuard::new();
-    let (device0, device1) = first_two_test_devices();
-    common::set_current_device(device0);
-
-    let rt1 = Runtime::builder().with_device(device1).build().unwrap();
-    let keys = rt1.series(&[1, 2, 3]).unwrap();
-    let values = rt1.series(&[100, 200, 300]).unwrap();
-    let table = cudf::LookupTable::new(keys, values).unwrap();
-    let input = rt1.series(&[1, 4, 2, 3]).unwrap();
-
-    common::reset_exec_observation();
-    let result = match table.probe(&input) {
-        Ok(result) => result,
-        Err(err) => panic!("LookupTable::probe() should succeed when all logical inputs are runtime-pinned: {err:?}"),
-    };
-
-    assert_eq!(
-        common::last_exec_device(),
-        device1.ordinal() as i32,
-        "LookupTable::probe() should execute on device {}, observed device {}",
-        device1.ordinal(),
-        common::last_exec_device()
-    );
-    assert_eq!(result.to_optional_vec::<i32>().unwrap(), vec![Some(100), None, Some(200), Some(300)]);
 }
 
 #[test]

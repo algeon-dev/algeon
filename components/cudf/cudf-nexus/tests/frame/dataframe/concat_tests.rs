@@ -272,7 +272,7 @@ fn test_concat_by_name_exact_rejects_missing_columns() {
 fn test_concat_by_name_decimal_null_fill_preserves_scale() {
     let decimal = crate::common::series("amount", &[12345i64, 67890])
         .unwrap()
-        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
         .unwrap();
 
     let left = DataFrame::from_series([("id", crate::common::series("id", &[1i32, 2]).unwrap())]).unwrap();
@@ -283,7 +283,7 @@ fn test_concat_by_name_decimal_null_fill_preserves_scale() {
     let amount = result.series("amount").unwrap();
     let raw = amount.astype(TypeId::Int64).unwrap();
 
-    assert_eq!(amount.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2));
+    assert_eq!(amount.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2).unwrap());
     assert_eq!(raw.to_optional_vec::<i64>().unwrap(), vec![None, None, Some(12345), Some(67890)]);
 }
 

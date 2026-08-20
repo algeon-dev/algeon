@@ -14,7 +14,8 @@ use common::{
     },
     support::{
         BFS_SOURCE_VERTEX_I32, DIRECTED_TRIANGLE_CYCLE_DST_I32, DIRECTED_TRIANGLE_CYCLE_SRC_I32, TRIANGLE_TAIL_DST_I32,
-        TRIANGLE_TAIL_SRC_I32, TRIANGLE_TAIL_WEIGHT_F32, bfs_distance_map_i32_result, triangle_graph_dataframe,
+        TRIANGLE_TAIL_SRC_I32, TRIANGLE_TAIL_WEIGHT_F32, bfs_distance_map_i32_result, bfs_distance_map_i64_result,
+        triangle_graph_dataframe,
     },
 };
 use cudf::testing::prelude::*;
@@ -22,13 +23,14 @@ use cudf_sys::test_support;
 use cugraph::{
     array::DeviceArray,
     cudf_interop::{
-        SeriesGraphOptions, TableGraphOptions, TableVertexPairOptions, graph_from_prepared_columns,
-        graph_from_prepared_table_export, vertex_pairs_from_prepared_columns, vertex_pairs_from_prepared_table_export,
+        GraphConstructionPolicy, PreparedGraphOptions, TableGraphOptions, TableVertexPairOptions,
+        graph_from_prepared_columns, graph_from_prepared_table_export, vertex_pairs_from_prepared_columns,
+        vertex_pairs_from_prepared_table_export,
     },
     error::ErrorKind,
     graph::{Forward, Graph, GraphBuilder},
     handle::ResourceHandle,
-    traversal::BfsParams,
+    traversal::{BfsParams, BfsPredicateParams},
     types::GraphProperties,
 };
 use rapids_interop::{
@@ -378,7 +380,7 @@ fn graph_from_prepared_columns_i32_bfs() {
     let src_export = src.try_prepare_device_column_export().expect("src export");
     let dst_export = dst.try_prepare_device_column_export().expect("dst export");
 
-    let opts = SeriesGraphOptions::default().renumber();
+    let opts = PreparedGraphOptions::default().renumber();
     let mut graph =
         graph_from_prepared_columns::<Forward>(&handle, &src_export, &dst_export, None, &opts).expect("prepared graph");
 
@@ -420,7 +422,7 @@ fn graph_from_prepared_columns_completes_earlier_leases_when_later_activation_fa
         .expect("dst export")
         .with_lease_backend(LeaseBackend::new(FailingActivationBackend));
 
-    let opts = SeriesGraphOptions::default().renumber();
+    let opts = PreparedGraphOptions::default().renumber();
     let err = graph_from_prepared_columns::<Forward>(&handle, &src_export, &dst_export, None, &opts)
         .expect_err("second activation should fail");
 
@@ -452,7 +454,7 @@ fn graph_from_prepared_columns_runtime_bound_handle_uses_consumer_stream_authori
         .expect("src export")
         .with_lease_backend(LeaseBackend::new(RecordingLeaseBackend { recorded: Arc::clone(&recorded) }));
     let dst_export = dst.try_prepare_device_column_export().expect("dst export");
-    let opts = SeriesGraphOptions::default().renumber();
+    let opts = PreparedGraphOptions::default().renumber();
 
     let _graph = graph_from_prepared_columns::<Forward>(&handle, &src_export, &dst_export, None, &opts).expect("graph");
 
@@ -495,7 +497,7 @@ fn graph_from_prepared_columns_runtime_bound_handle_defers_completion_sync_until
     let dst_export = dst.try_prepare_device_column_export().expect("dst export");
     assert!(src_export.clone_retained_owner().is_some(), "series prepared export should retain its producer owner");
     assert!(dst_export.clone_retained_owner().is_some(), "series prepared export should retain its producer owner");
-    let opts = SeriesGraphOptions::default().renumber();
+    let opts = PreparedGraphOptions::default().renumber();
 
     reset_event_observation();
     let _ = event_synchronize_call_count();
@@ -535,6 +537,115 @@ fn graph_from_prepared_table_export_bfs() {
 
     let dist_map = bfs_distance_map_i32_result(&handle, &result);
     assert_eq!(dist_map[&3], 3);
+}
+
+#[test]
+fn graph_from_prepared_table_export_i32_f32_edge_ids_drive_predicate_bfs() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let _event_observation = lock_event_observation();
+    let handle = test_handle();
+    let handle =
+        handle.enter("graph_from_prepared_table_export_i32_f32_edge_ids_drive_predicate_bfs").expect("entered");
+    let runtime = explicit_runtime();
+    let df = cudf::DataFrame::from_series([
+        ("src", runtime.series(&[0i32, 0, 1, 2]).expect("src")),
+        ("dst", runtime.series(&[1i32, 2, 3, 3]).expect("dst")),
+        ("weight", runtime.series(&[1.0f32, 2.0, 3.0, 4.0]).expect("weight")),
+        ("edge_id", runtime.series(&[10i32, 11, 12, 13]).expect("edge id")),
+    ])
+    .expect("dataframe");
+    let export = df.try_prepare_device_table_export().expect("table export");
+    let options = TableGraphOptions::new(0, 1)
+        .weight_col(2)
+        .edge_id_col(3)
+        .construction_policy(GraphConstructionPolicy::RawLibcugraph);
+    let mut graph = graph_from_prepared_table_export::<Forward>(&handle, &export, &options).expect("graph");
+
+    let sources = DeviceArray::from_slice(&handle, &[0i32]).expect("sources");
+    let allowed = DeviceArray::from_slice(&handle, &[11i32, 13]).expect("allowed edge ids");
+    let sources = sources.view().expect("sources view");
+    let allowed = allowed.view().expect("allowed view");
+    let predicates = BfsPredicateParams { include_edge_ids: Some(&allowed), ..BfsPredicateParams::default() };
+    let result =
+        graph.bfs_with_predicates(&handle, &sources, &BfsParams::default(), &predicates).expect("predicate bfs");
+    let distances = bfs_distance_map_i32_result(&handle, &result);
+    assert_eq!(distances[&0], 0);
+    assert_eq!(distances[&1], i32::MAX);
+    assert_eq!(distances[&2], 1);
+    assert_eq!(distances[&3], 2);
+}
+
+#[test]
+fn graph_from_prepared_table_export_i64_f64_edge_ids_drive_predicate_bfs() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let _event_observation = lock_event_observation();
+    let handle = test_handle();
+    let handle =
+        handle.enter("graph_from_prepared_table_export_i64_f64_edge_ids_drive_predicate_bfs").expect("entered");
+    let runtime = explicit_runtime();
+    let df = cudf::DataFrame::from_series([
+        ("src", runtime.series(&[0i64, 0, 1, 2]).expect("src")),
+        ("dst", runtime.series(&[1i64, 2, 3, 3]).expect("dst")),
+        ("weight", runtime.series(&[1.0f64, 2.0, 3.0, 4.0]).expect("weight")),
+        ("edge_id", runtime.series(&[10i64, 11, 12, 13]).expect("edge id")),
+    ])
+    .expect("dataframe");
+    let export = df.try_prepare_device_table_export().expect("table export");
+    let options = TableGraphOptions::new(0, 1)
+        .weight_col(2)
+        .edge_id_col(3)
+        .construction_policy(GraphConstructionPolicy::RawLibcugraph);
+    let mut graph = graph_from_prepared_table_export::<Forward>(&handle, &export, &options).expect("graph");
+
+    let sources = DeviceArray::from_slice(&handle, &[0i64]).expect("sources");
+    let allowed = DeviceArray::from_slice(&handle, &[11i64, 13]).expect("allowed edge ids");
+    let sources = sources.view().expect("sources view");
+    let allowed = allowed.view().expect("allowed view");
+    let predicates = BfsPredicateParams { include_edge_ids: Some(&allowed), ..BfsPredicateParams::default() };
+    let result =
+        graph.bfs_with_predicates(&handle, &sources, &BfsParams::default(), &predicates).expect("predicate bfs");
+    let distances = bfs_distance_map_i64_result(&handle, &result);
+    assert_eq!(distances[&0], 0);
+    assert_eq!(distances[&1], i64::MAX);
+    assert_eq!(distances[&2], 1);
+    assert_eq!(distances[&3], 2);
+}
+
+#[test]
+fn graph_from_prepared_table_export_rejects_invalid_edge_id_binding() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let _event_observation = lock_event_observation();
+    let handle = test_handle();
+    let handle = handle.enter("graph_from_prepared_table_export_rejects_invalid_edge_id_binding").expect("entered");
+    let runtime = explicit_runtime();
+    let df = cudf::DataFrame::from_series([
+        ("src", runtime.series(&[0i32, 1]).expect("src")),
+        ("dst", runtime.series(&[1i32, 2]).expect("dst")),
+        ("edge_id", runtime.series(&[10i64, 11]).expect("edge id")),
+    ])
+    .expect("dataframe");
+    let export = df.try_prepare_device_table_export().expect("table export");
+
+    let duplicate =
+        TableGraphOptions::new(0, 1).edge_id_col(1).construction_policy(GraphConstructionPolicy::RawLibcugraph);
+    let error = graph_from_prepared_table_export::<Forward>(&handle, &export, &duplicate)
+        .expect_err("duplicate selection must fail");
+    assert_eq!(error.kind(), ErrorKind::InvalidInput);
+    assert!(error.message().contains("distinct columns"));
+
+    let out_of_range =
+        TableGraphOptions::new(0, 1).edge_id_col(3).construction_policy(GraphConstructionPolicy::RawLibcugraph);
+    let error = graph_from_prepared_table_export::<Forward>(&handle, &export, &out_of_range)
+        .expect_err("out-of-range selection must fail");
+    assert_eq!(error.kind(), ErrorKind::InvalidInput);
+    assert!(error.message().contains("out of bounds"));
+
+    let mismatched =
+        TableGraphOptions::new(0, 1).edge_id_col(2).construction_policy(GraphConstructionPolicy::RawLibcugraph);
+    let error = graph_from_prepared_table_export::<Forward>(&handle, &export, &mismatched)
+        .expect_err("mismatched edge-ID dtype must fail");
+    assert_eq!(error.kind(), ErrorKind::InvalidInput);
+    assert!(error.message().contains("edge_ids must have the same dtype"));
 }
 
 #[test]
@@ -593,11 +704,15 @@ fn graph_from_prepared_table_export_runtime_bound_handle_defers_completion_sync_
         .expect("entered");
     let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
     let dst = runtime.series(TRIANGLE_TAIL_DST_I32).expect("dst");
-    let df = cudf::DataFrame::from_series([("src", src), ("dst", dst)]).expect("dataframe");
+    let edge_ids = runtime.series(&[10i32, 11, 12, 13]).expect("edge ids");
+    let df = cudf::DataFrame::from_series([("src", src), ("dst", dst), ("edge_id", edge_ids)]).expect("dataframe");
 
     let export = df.try_prepare_device_table_export().expect("table export");
     assert!(export.clone_retained_owner().is_some(), "dataframe prepared export should retain its producer owner");
-    let opts = TableGraphOptions::new(0, 1).renumber();
+    let opts = TableGraphOptions::new(0, 1)
+        .edge_id_col(2)
+        .renumber()
+        .construction_policy(GraphConstructionPolicy::RawLibcugraph);
 
     reset_event_observation();
     let _ = event_synchronize_call_count();
@@ -636,7 +751,7 @@ fn graph_from_prepared_columns_runtime_bound_owned_column_export_defers_completi
         dst_export.clone_retained_owner().is_some(),
         "owned column prepared export should retain its producer owner"
     );
-    let opts = SeriesGraphOptions::default().renumber();
+    let opts = PreparedGraphOptions::default().renumber();
 
     reset_event_observation();
     let _ = event_synchronize_call_count();
@@ -705,7 +820,7 @@ fn graph_from_prepared_columns_python_cugraph_weighted_undirected_simple_keeps_m
     let dst_export = dst.try_prepare_device_column_export().expect("dst export");
     let wgt_export = wgt.try_prepare_device_column_export().expect("weight export");
 
-    let opts = SeriesGraphOptions::default().properties(cugraph::types::GraphProperties::undirected()).renumber();
+    let opts = PreparedGraphOptions::default().properties(cugraph::types::GraphProperties::undirected()).renumber();
     let mut graph = graph_from_prepared_columns::<cugraph::graph::Transposed>(
         &handle,
         &src_export,
@@ -753,7 +868,7 @@ fn graph_from_prepared_columns_rejects_host_exports() {
     let src_export = src.try_prepare_host_column_export().expect("src host export");
     let dst_export = dst.try_prepare_host_column_export().expect("dst host export");
 
-    let opts = SeriesGraphOptions::default().renumber();
+    let opts = PreparedGraphOptions::default().renumber();
     let err = graph_from_prepared_columns::<Forward>(&handle, &src_export, &dst_export, None, &opts)
         .expect_err("host prepared export should be rejected");
 

@@ -5,11 +5,12 @@ use std::{
 };
 
 use cudf::{
-    DataFrame, DataType, DeviceId, ErrorCode, HostColumnData, Runtime, Series, TimestampResolution, TypeId,
+    DataFrame, DataType, DeviceId, ErrorCode, Runtime, Series, TimestampResolution, TypeId,
     core::{
         Column, CudfType, DeviceBuffer, Scalar,
         error::{FactKeyName, FactValue},
     },
+    frame::HostColumnData,
     runtime::CudaStream,
     testing::{self, prelude::*},
 };

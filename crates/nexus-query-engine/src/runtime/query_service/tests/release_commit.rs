@@ -1069,8 +1069,13 @@ fn disposition_mapping_matches_isolation_rules() {
     let device = cudf::DeviceId::new(0).expect("runtime service established device zero");
     for (native_status, expected_status) in [
         (
-            cudf::runtime::DeviceFaultNativeStatus::Cudf(cudf_sys::CUDF_ERROR_FATAL_CUDA),
-            crate::observability::AttemptNativeStatus::Cudf(cudf_sys::CUDF_ERROR_FATAL_CUDA),
+            cudf::runtime::DeviceFaultNativeStatus::CUDF_FATAL_CUDA,
+            match cudf::runtime::DeviceFaultNativeStatus::CUDF_FATAL_CUDA {
+                cudf::runtime::DeviceFaultNativeStatus::Cudf(status) => {
+                    crate::observability::AttemptNativeStatus::Cudf(status)
+                }
+                _ => unreachable!(),
+            },
         ),
         (cudf::runtime::DeviceFaultNativeStatus::Cuda(700), crate::observability::AttemptNativeStatus::Cuda(700)),
     ] {

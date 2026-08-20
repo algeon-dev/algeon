@@ -274,32 +274,10 @@ fn source_validation_checks_partition_value_count_type_and_supported_dtype() {
     assert_eq!(unsupported_err.code(), ErrorCode::UnsupportedDtype);
     assert_eq!(unsupported_err.detail_value("reason"), Some("unsupported_partition_dtype"));
 
-    let scaled_non_decimal = DataType::fixed_point(TypeId::Int32, 7);
-    let scaled_column_err = LocalParquetSource::data(
-        [LocalParquetFile::new("part-0.parquet", "part-0", [PartitionValue::Null(scaled_non_decimal)]).unwrap()],
-        SourceSchema::new([SourceColumn::new("part", scaled_non_decimal, true).unwrap()]).unwrap(),
-        Vec::<String>::new(),
-        [SourceOutputColumn::new("part", SourceColumnRef::Partition(0)).unwrap()],
-        [],
-        [PartitionColumn::new("part", scaled_non_decimal, true).unwrap()],
-    )
-    .unwrap_err();
-    assert_eq!(scaled_column_err.code(), ErrorCode::UnsupportedDtype);
-    assert_eq!(scaled_column_err.detail_value("reason"), Some("unsupported_partition_dtype"));
-    assert_eq!(scaled_column_err.detail_value("partition_dtype"), Some("int32(scale=7)"));
-
-    let scaled_null_value_err = LocalParquetSource::data(
-        [LocalParquetFile::new("part-0.parquet", "part-0", [PartitionValue::Null(scaled_non_decimal)]).unwrap()],
-        SourceSchema::new([SourceColumn::new("part", dtype(TypeId::Int32), true).unwrap()]).unwrap(),
-        Vec::<String>::new(),
-        [SourceOutputColumn::new("part", SourceColumnRef::Partition(0)).unwrap()],
-        [],
-        [PartitionColumn::new("part", dtype(TypeId::Int32), true).unwrap()],
-    )
-    .unwrap_err();
-    assert_eq!(scaled_null_value_err.code(), ErrorCode::UnsupportedDtype);
-    assert_eq!(scaled_null_value_err.detail_value("reason"), Some("unsupported_partition_value_dtype"));
-    assert_eq!(scaled_null_value_err.detail_value("actual_partition_dtype"), Some("int32(scale=7)"));
+    let fixed_point_err = DataType::fixed_point(TypeId::Int32, 7).unwrap_err();
+    assert_eq!(fixed_point_err.code(), ErrorCode::UnsupportedDtype);
+    assert_eq!(fixed_point_err.operation(), "data_type::fixed_point");
+    assert_eq!(fixed_point_err.detail_value("reason"), Some("fixed_point_requires_decimal_type"));
 
     let duration_days_err = LocalParquetSource::data(
         [LocalParquetFile::new(
@@ -339,7 +317,7 @@ fn source_validation_checks_partition_value_count_type_and_supported_dtype() {
 
 #[test]
 fn source_validation_accepts_extended_partition_values_and_rejects_mismatches() {
-    let decimal_dtype = DataType::fixed_point(TypeId::Decimal128, -2);
+    let decimal_dtype = DataType::fixed_point(TypeId::Decimal128, -2).unwrap();
     let nullable_i32 = dtype(TypeId::Int32);
 
     let source = LocalParquetSource::data(

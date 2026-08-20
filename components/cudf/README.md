@@ -3,22 +3,21 @@
 `components/cudf` is the DataFusion Nexus Rust integration component built
 around [`libcudf`](https://github.com/DataFusion-Nexus/cudf). It is part of the
 root Cargo workspace; it is not a second repository or workspace.
-Its main direction is to make cuDF usable as part of backend services and query execution systems for
-[DataFusion Nexus](https://github.com/DataFusion-Nexus/datafusion-nexus/tree/main/components/cudf). It focuses on safe Rust APIs for GPU data
-processing while keeping ownership, memory movement, execution context, synchronization, and interop
-behavior explicit enough for service-side integration.
+It exists only to support the native backend of
+[DataFusion Nexus](https://github.com/DataFusion-Nexus/datafusion-nexus/tree/main/components/cudf).
+Its Rust package and import names are workspace contracts, not an external
+semantic-versioning or publication promise.
 
 ## Focus
 
-- Safe, idiomatic Rust wrappers around `libcudf`.
-- Backend-service and query-engine integration, rather than just direct API bindings.
-- Runtime and execution-context abstractions that can be honored by real compute and I/O paths.
-- Clear separation between borrowing, shared ownership, device copies, host materialization, and external interoperability contracts.
-- A shared RAPIDS Rust interoperability vocabulary for DataFusion-Nexus and other service components.
+- Explicit device, stream, memory-resource, and owner provenance.
+- Prepared transfer and completion ordering across RAPIDS components.
+- Metadata-only preflight facts and structured errors for bounded admission.
+- Safe ownership of libcudf objects and validated host/device materialization.
 
 ## Workspace
 
-- `components/cudf/cudf-nexus/` - the safe public Rust API crate, published as `cudf-nexus` (import `cudf`).
+- `components/cudf/cudf-nexus/` - the internal safe execution crate, packaged as `cudf-nexus` (import `cudf`).
 - `components/cudf/cudf-nexus-sys/` - low-level FFI bindings and the native C shim around `libcudf` (import `cudf_sys`).
 - `components/cudf/rapids-interop/` - shared RAPIDS Rust interop contract types and traits.
 - `components/cudf/cudf/` - the pinned **[forked cuDF](https://github.com/DataFusion-Nexus/cudf)** source submodule used to build `libcudf`.

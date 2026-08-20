@@ -184,8 +184,10 @@ fn test_filter_any_empty_returns_empty_dataframe_with_same_schema() {
 
 #[test]
 fn test_filter_any_empty_preserves_full_dtype_metadata() {
-    let amount =
-        series("amount", &[100i64, 250, 999]).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, -2)).unwrap();
+    let amount = series("amount", &[100i64, 250, 999])
+        .unwrap()
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
+        .unwrap();
     let df = DataFrame::from_series([("amount", amount.clone())]).unwrap();
 
     let filtered = df.filter_any(std::iter::empty::<cudf::Expr>()).unwrap();
@@ -197,8 +199,10 @@ fn test_filter_any_empty_preserves_full_dtype_metadata() {
 
 #[test]
 fn test_filter_expr_decimal_literal_predicate_matches_tpch_q6_discount_shape() {
-    let discount =
-        series("discount", &[4i64, 5, 6, 7, 8]).unwrap().astype(DataType::fixed_point(TypeId::Decimal128, -2)).unwrap();
+    let discount = series("discount", &[4i64, 5, 6, 7, 8])
+        .unwrap()
+        .astype(DataType::fixed_point(TypeId::Decimal128, -2).unwrap())
+        .unwrap();
     let id = series("id", &[1i32, 2, 3, 4, 5]).unwrap();
     let df = DataFrame::from_series([("id", id), ("discount", discount)]).unwrap();
 
@@ -215,8 +219,10 @@ fn test_filter_expr_decimal_literal_predicate_matches_tpch_q6_discount_shape() {
 
 #[test]
 fn test_filter_expr_integer_literal_rescales_to_decimal_column_on_fused_path() {
-    let discount =
-        series("discount", &[4i64, 5, 6, 7, 8]).unwrap().astype(DataType::fixed_point(TypeId::Decimal128, -2)).unwrap();
+    let discount = series("discount", &[4i64, 5, 6, 7, 8])
+        .unwrap()
+        .astype(DataType::fixed_point(TypeId::Decimal128, -2).unwrap())
+        .unwrap();
     let id = series("id", &[1i32, 2, 3, 4, 5]).unwrap();
     let df = DataFrame::from_series([("id", id), ("discount", discount)]).unwrap();
 
@@ -233,7 +239,8 @@ fn test_filter_expr_integer_literal_rescales_to_decimal_column_on_fused_path() {
 
 #[test]
 fn test_filter_expr_decimal32_literal_predicate_uses_fused_path() {
-    let amount = series("amount", &[1i32, 2, 3]).unwrap().astype(DataType::fixed_point(TypeId::Decimal32, -2)).unwrap();
+    let amount =
+        series("amount", &[1i32, 2, 3]).unwrap().astype(DataType::fixed_point(TypeId::Decimal32, -2).unwrap()).unwrap();
     let id = series("id", &[1i32, 2, 3]).unwrap();
     let df = DataFrame::from_series([("id", id), ("amount", amount)]).unwrap();
 
@@ -250,7 +257,8 @@ fn test_filter_expr_decimal32_literal_predicate_uses_fused_path() {
 
 #[test]
 fn test_filter_expr_decimal64_literal_predicate_uses_fused_path() {
-    let amount = series("amount", &[1i64, 2, 3]).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, -3)).unwrap();
+    let amount =
+        series("amount", &[1i64, 2, 3]).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, -3).unwrap()).unwrap();
     let id = series("id", &[1i32, 2, 3]).unwrap();
     let df = DataFrame::from_series([("id", id), ("amount", amount)]).unwrap();
 
@@ -267,8 +275,10 @@ fn test_filter_expr_decimal64_literal_predicate_uses_fused_path() {
 
 #[test]
 fn test_filter_expr_decimal_literal_non_exact_rescale_returns_user_visible_error() {
-    let amount =
-        series("amount", &[100i64, 250, 300]).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, -2)).unwrap();
+    let amount = series("amount", &[100i64, 250, 300])
+        .unwrap()
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
+        .unwrap();
     let id = series("id", &[1i32, 2, 3]).unwrap();
     let df = DataFrame::from_series([("id", id), ("amount", amount)]).unwrap();
 

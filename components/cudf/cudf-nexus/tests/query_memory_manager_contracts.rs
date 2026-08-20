@@ -1489,7 +1489,7 @@ fn fused_filter_decimal_rescaling_uses_replacement_query_domain_member() {
     let input = runtime.series_from_value_with_budget(7i32, 4096, &input_token).unwrap().into_value();
     let integer_frame = DataFrame::from_series([("value", input)]).unwrap();
     let decimal_frame = integer_frame
-        .cast_column_with_budget("value", DataType::fixed_point(TypeId::Decimal128, -2), &input_token)
+        .cast_column_with_budget("value", DataType::fixed_point(TypeId::Decimal128, -2).unwrap(), &input_token)
         .unwrap()
         .into_value();
     drop(integer_frame);

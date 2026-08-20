@@ -122,16 +122,16 @@ fn test_series_add_operator_mixed_type_promotion() {
 fn test_series_add_decimal64_same_scale_preserves_scale_and_raw_values() {
     let a = crate::common::series("a", &[12_345i64, 20_000, 0])
         .unwrap()
-        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
         .unwrap();
     let b = crate::common::series("b", &[100i64, -500, 25])
         .unwrap()
-        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
         .unwrap();
 
     let result = (&a + &b).unwrap();
 
-    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2));
+    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2).unwrap());
     assert_eq!(host_export_i64_values(&result), vec![1_244_500, 1_950_000, 2_500]);
 }
 
@@ -139,29 +139,33 @@ fn test_series_add_decimal64_same_scale_preserves_scale_and_raw_values() {
 fn test_series_mul_decimal64_same_scale_sums_scales_and_raw_values() {
     let a = crate::common::series("a", &[12_345i64, 20_000])
         .unwrap()
-        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
         .unwrap();
     let b = crate::common::series("b", &[100i64, -500])
         .unwrap()
-        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
         .unwrap();
 
     let result = (&a * &b).unwrap();
 
-    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4));
+    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4).unwrap());
     assert_eq!(host_export_i64_values(&result), vec![12_345_000_000, -100_000_000_000]);
 }
 
 #[test]
 fn test_series_add_decimal64_mixed_scale_uses_finer_scale_and_raw_values() {
-    let a =
-        crate::common::series("a", &[1i64, 2]).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, -2)).unwrap();
-    let b =
-        crate::common::series("b", &[3i64, 4]).unwrap().astype(DataType::fixed_point(TypeId::Decimal64, -4)).unwrap();
+    let a = crate::common::series("a", &[1i64, 2])
+        .unwrap()
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
+        .unwrap();
+    let b = crate::common::series("b", &[3i64, 4])
+        .unwrap()
+        .astype(DataType::fixed_point(TypeId::Decimal64, -4).unwrap())
+        .unwrap();
 
     let result = (&a + &b).unwrap();
 
-    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4));
+    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4).unwrap());
     assert_eq!(host_export_i64_values(&result), vec![40_000, 60_000]);
 }
 
@@ -169,16 +173,16 @@ fn test_series_add_decimal64_mixed_scale_uses_finer_scale_and_raw_values() {
 fn test_series_add_nullable_decimal64_preserves_scale_and_nulls() {
     let a = crate::common::nullable_series("a", &[1i64, 0, 3], &[true, false, true])
         .unwrap()
-        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
         .unwrap();
     let b = crate::common::series("b", &[10i64, 20, 30])
         .unwrap()
-        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
         .unwrap();
 
     let result = (&a + &b).unwrap();
 
-    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2));
+    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2).unwrap());
     assert_eq!(result.null_count(), 1);
 }
 

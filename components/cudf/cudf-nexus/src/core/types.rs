@@ -2,7 +2,7 @@
 
 use std::{fmt, ptr};
 
-use crate::core::error::{self, Result};
+use crate::core::error::{self, Error, ErrorCode, FACT_TYPE_ID, Result};
 
 macro_rules! define_type_ids {
     (
@@ -277,8 +277,19 @@ impl DataType {
     }
 
     /// Create a fixed-point `DataType` with an explicit scale.
-    pub fn fixed_point(id: TypeId, scale: i32) -> Self {
-        Self { id, scale }
+    ///
+    /// Returns [`ErrorCode::UnsupportedDtype`] when `id` is not decimal.
+    pub fn fixed_point(id: TypeId, scale: i32) -> Result<Self> {
+        if !id.is_decimal() {
+            return Err(Error::new_with(
+                ErrorCode::UnsupportedDtype,
+                "data_type::fixed_point",
+                "fixed-point construction requires a decimal type",
+            )
+            .with_fact(FACT_TYPE_ID, id)
+            .with_detail("reason", "fixed_point_requires_decimal_type"));
+        }
+        Ok(Self { id, scale })
     }
 
     /// Returns the type identifier.
@@ -293,8 +304,33 @@ impl DataType {
 
     pub(crate) fn from_raw_parts(raw_id: i32, scale: i32) -> Result<Self> {
         let id = TypeId::from_raw(raw_id)?;
-        Ok(if id.is_decimal() { Self::fixed_point(id, scale) } else { Self::new(id) })
+        if id.is_decimal() {
+            return Self::fixed_point(id, scale);
+        }
+        if scale != 0 {
+            return Err(error::foreign_invariant_violation(
+                "data_type::from_raw_parts",
+                "libcudf returned a non-decimal type with a non-zero scale",
+                "data_type",
+                "non_decimal_scale_must_be_zero",
+                "upgrade or repair the native producer so non-decimal data types use scale zero",
+            )
+            .with_fact(FACT_TYPE_ID, id)
+            .with_detail("scale", scale.to_string()));
+        }
+        Ok(Self::new(id))
     }
+}
+
+pub(crate) fn materialize_bool<T: CudfType>(raw: u8, operation: &'static str) -> Result<T> {
+    <T as private::Sealed>::from_bool_byte(raw).ok_or_else(|| {
+        Error::new_with(
+            ErrorCode::InvariantViolation,
+            operation,
+            "internal Bool8 materialization requires the requested Rust type to be bool",
+        )
+        .with_fact(FACT_TYPE_ID, T::TYPE_ID)
+    })
 }
 
 impl From<TypeId> for DataType {
@@ -304,7 +340,11 @@ impl From<TypeId> for DataType {
 }
 
 mod private {
-    pub trait Sealed {}
+    pub trait Sealed: Copy {
+        fn from_bool_byte(_raw: u8) -> Option<Self> {
+            None
+        }
+    }
 
     impl Sealed for i8 {}
     impl Sealed for i16 {}
@@ -316,7 +356,11 @@ mod private {
     impl Sealed for u64 {}
     impl Sealed for f32 {}
     impl Sealed for f64 {}
-    impl Sealed for bool {}
+    impl Sealed for bool {
+        fn from_bool_byte(raw: u8) -> Option<Self> {
+            Some(raw != 0)
+        }
+    }
 }
 
 /// Trait for Rust types that map to a cudf `TypeId`.
@@ -524,6 +568,35 @@ mod tests {
             assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
             assert_eq!(err.operation(), "type_id::from_raw");
             assert_eq!(err.detail_value("raw_type_id"), Some(raw.to_string().as_str()));
+        }
+    }
+
+    #[test]
+    fn fixed_point_rejects_non_decimal_types() {
+        let err = DataType::fixed_point(TypeId::Int32, 7).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::UnsupportedDtype);
+        assert_eq!(err.operation(), "data_type::fixed_point");
+        assert_eq!(err.detail_value("reason"), Some("fixed_point_requires_decimal_type"));
+    }
+
+    #[test]
+    fn decimal_default_constructor_uses_zero_scale() {
+        assert_eq!(DataType::new(TypeId::Decimal64).scale(), 0);
+    }
+
+    #[test]
+    fn raw_data_type_rejects_non_decimal_scale() {
+        let err = DataType::from_raw_parts(TypeId::Int32.to_raw() as i32, 7).unwrap_err();
+        assert_eq!(err.code(), ErrorCode::ForeignInvariantViolation);
+        assert_eq!(err.operation(), "data_type::from_raw_parts");
+        assert_eq!(err.detail_value("reason"), Some("non_decimal_scale_must_be_zero"));
+    }
+
+    #[test]
+    fn bool_materialization_accepts_every_non_zero_byte() {
+        assert!(!materialize_bool::<bool>(0, "test::materialize_bool").unwrap());
+        for raw in [1, 2, 0x7f, 0xff] {
+            assert!(materialize_bool::<bool>(raw, "test::materialize_bool").unwrap());
         }
     }
 }

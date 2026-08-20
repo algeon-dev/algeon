@@ -89,46 +89,6 @@ fn validated_device(device: i32, operation: &'static str) -> Result<DeviceId> {
         })
 }
 
-/// Convert a raw cudf status code into the crate's structured error type.
-pub(crate) fn check_cudf_status(status: cudf_sys::cudf_status_t, operation: &'static str) -> Result<()> {
-    if status == cudf_sys::CUDF_SUCCESS {
-        return Ok(());
-    }
-
-    let error = match status {
-        cudf_sys::CUDF_ERROR_OUT_OF_MEMORY => Error::new(ErrorKind::OutOfMemory, operation)
-            .with_message(format!("cudf helper failed with status {status}"))
-            .set_temporary(),
-        cudf_sys::CUDF_ERROR_CUDA => Error::new(ErrorKind::Unexpected, operation)
-            .with_message(format!("cudf helper failed with status {status}"))
-            .set_temporary(),
-        cudf_sys::CUDF_ERROR_FATAL_CUDA => Error::new(ErrorKind::Unexpected, operation)
-            .with_message(format!("cudf helper failed with status {status}"))
-            .set_persistent(),
-        _ => Error::new(ErrorKind::Unexpected, operation)
-            .with_message(format!("cudf helper failed with status {status}")),
-    };
-    Err(error)
-}
-
-pub(crate) fn check_cudf_status_on_device(
-    status: cudf_sys::cudf_status_t,
-    device: i32,
-    operation: &'static str,
-) -> Result<()> {
-    if status == cudf_sys::CUDF_ERROR_FATAL_CUDA
-        && let Ok(device) = validated_device(device, operation)
-    {
-        cudf::runtime::report_device_fault(
-            device,
-            cudf::runtime::DeviceFaultKind::FatalDeviceOperation,
-            operation,
-            Some(cudf::runtime::DeviceFaultNativeStatus::Cudf(status)),
-        );
-    }
-    check_cudf_status(status, operation)
-}
-
 /// cuGraph-local wrapper around cudf's host-thread device-entry proof.
 #[derive(Debug)]
 pub(crate) struct DeviceGuard {
@@ -198,23 +158,4 @@ pub(crate) fn fail_next_fatal_device_resource_destroy(cuda_status: i32) {
     // SAFETY: the native test hook stores two scalar values in thread-local
     // state and retains no Rust pointers.
     unsafe { cugraph_rs_test_fail_next_device_resource_destroy(CUGRAPH_RS_DESTROY_FATAL_CUDA, cuda_status) };
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn check_cudf_status_maps_out_of_memory_to_temporary_oom() {
-        let err = check_cudf_status(cudf_sys::CUDF_ERROR_OUT_OF_MEMORY, "test_op").expect_err("expected error");
-        assert_eq!(err.kind(), ErrorKind::OutOfMemory);
-        assert!(err.is_temporary());
-    }
-
-    #[test]
-    fn check_cudf_status_maps_fatal_cuda_to_persistent_unexpected() {
-        let err = check_cudf_status(cudf_sys::CUDF_ERROR_FATAL_CUDA, "test_op").expect_err("expected error");
-        assert_eq!(err.kind(), ErrorKind::Unexpected);
-        assert!(err.is_persistent());
-    }
 }

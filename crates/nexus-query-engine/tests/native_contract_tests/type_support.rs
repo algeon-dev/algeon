@@ -11,12 +11,12 @@ fn decimal128_type_support_policy_accepts_valid_arrow_decimals() {
     assert!(is_supported_arrow_type(&decimal_with_fractional_scale));
     assert_eq!(
         cudf_dtype_from_arrow_type(&decimal_with_fractional_scale),
-        Some(CudfDataType::fixed_point(TypeId::Decimal128, -2))
+        Some(CudfDataType::fixed_point(TypeId::Decimal128, -2).unwrap())
     );
     assert!(is_supported_arrow_type(&decimal_with_negative_scale));
     assert_eq!(
         cudf_dtype_from_arrow_type(&decimal_with_negative_scale),
-        Some(CudfDataType::fixed_point(TypeId::Decimal128, 1))
+        Some(CudfDataType::fixed_point(TypeId::Decimal128, 1).unwrap())
     );
 }
 
@@ -45,7 +45,7 @@ fn decimal32_and_decimal64_type_support_policy_accepts_valid_arrow_decimals() {
         assert!(is_narrow_decimal_carry_type(&arrow_type), "{arrow_type:?}");
         assert_eq!(
             cudf_dtype_from_arrow_type(&arrow_type),
-            Some(CudfDataType::fixed_point(cudf_type_id, cudf_scale)),
+            Some(CudfDataType::fixed_point(cudf_type_id, cudf_scale).unwrap()),
             "{arrow_type:?}"
         );
         assert!(is_supported_arrow_implicit_cast(&arrow_type, &arrow_type), "{arrow_type:?}");

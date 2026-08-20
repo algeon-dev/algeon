@@ -6,11 +6,11 @@ use rapids_interop::{
 };
 
 use super::{
-    borrowed::{
+    errors::{map_prepared_lease_activation_interop_error, map_prepared_lease_completion_interop_error},
+    prepared_support::{
         checked_active_byte_len, checked_column_offset_bytes, edge_list_dtype, offset_device_ptr,
         validate_edge_list_devices,
     },
-    errors::{map_prepared_lease_activation_interop_error, map_prepared_lease_completion_interop_error},
 };
 use crate::{
     array::{DeviceArrayView, RawDeviceArrayView},
@@ -31,6 +31,7 @@ pub(super) struct PreparedEdgeList<'a> {
     pub(super) src: PreparedEdgeColumn<'a>,
     pub(super) dst: PreparedEdgeColumn<'a>,
     pub(super) weights: Option<PreparedEdgeColumn<'a>>,
+    pub(super) edge_ids: Option<PreparedEdgeColumn<'a>>,
 }
 
 /// Prepared explicit vertex-pair columns supplied to a pairwise cuGraph
@@ -179,6 +180,9 @@ fn validate_prepared_edge_list_policy(
     let mut columns = vec![("dst", prepared_column_device(edge_list.dst, "dst", operation)?)];
     if let Some(weights) = edge_list.weights {
         columns.push(("wgt", prepared_column_device(weights, "wgt", operation)?));
+    }
+    if let Some(edge_ids) = edge_list.edge_ids {
+        columns.push(("edge_id", prepared_column_device(edge_ids, "edge_id", operation)?));
     }
 
     validate_edge_list_devices(handle, producer_device, columns, "prepared", operation)
@@ -371,10 +375,14 @@ pub(super) fn build_graph_from_prepared_edge_list_raw<T: Transposition>(
     let src = prepared_column_to_raw(edge_list.src, "src", operation)?;
     let dst = prepared_column_to_raw(edge_list.dst, "dst", operation)?;
     let wgt = edge_list.weights.map(|column| prepared_column_to_raw(column, "wgt", operation)).transpose()?;
+    let edge_ids = edge_list.edge_ids.map(|column| prepared_column_to_raw(column, "edge_id", operation)).transpose()?;
 
     let mut builder = GraphBuilder::from_raw_views(properties, &src, &dst)?.renumber_flag(renumber);
     if let Some(ref weights) = wgt {
         builder = builder.weights_raw(weights)?;
+    }
+    if let Some(ref edge_ids) = edge_ids {
+        builder = builder.edge_ids_raw(edge_ids)?;
     }
     builder.build_inner(handle, T::store_transposed())
 }

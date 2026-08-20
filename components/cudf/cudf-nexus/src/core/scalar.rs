@@ -12,7 +12,7 @@ use std::{
 
 use super::{
     error::{self, Error, ErrorCode, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, FACT_TYPE_ID, Result},
-    types::{CudfType, DataType, TypeId},
+    types::{CudfType, DataType, TypeId, materialize_bool},
 };
 use crate::runtime::execution_domain::ExecutionDomain;
 
@@ -614,6 +614,10 @@ impl Scalar {
             .with_fact(FACT_LEFT_TYPE_ID, dt.id())
             .with_fact(FACT_RIGHT_TYPE_ID, T::TYPE_ID));
         }
+        if T::TYPE_ID == TypeId::Bool8 {
+            return materialize_bool(self.raw_value_unchecked::<u8>("scalar::value")?, "scalar::value");
+        }
+
         // SAFETY: `CudfType` is sealed to built-in primitives with valid
         // all-zero bit patterns.
         let mut out = unsafe { std::mem::zeroed::<T>() };

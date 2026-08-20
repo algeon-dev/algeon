@@ -3,19 +3,17 @@
 mod common;
 
 use common::{
-    cudf::{assert_score_maps_close_f32, explicit_runtime, python_weighted_reciprocal_expected_pagerank_map},
+    cudf::explicit_runtime,
     support::{
         BFS_SOURCE_VERTEX_I32, SIMPLE_CHAIN_DST_I32, SIMPLE_CHAIN_SRC_I32, TRIANGLE_TAIL_DST_I32,
         TRIANGLE_TAIL_SRC_I32, UNDIRECTED_TRIANGLE_DST_I32, UNDIRECTED_TRIANGLE_SRC_I32,
-        UNDIRECTED_TRIANGLE_WEIGHT_F32,
     },
 };
 use cugraph::{
     VertexSelection,
     array::DeviceArray,
-    centrality::PageRankParams,
-    cudf_interop::{IntoSeries, SeriesGraphOptions, device_array_view_from_slice, graph_from_series},
-    graph::{Forward, GraphBuilder, Transposed},
+    cudf_interop::{IntoSeries, device_array_view_from_slice},
+    graph::{Forward, GraphBuilder},
     handle::ResourceHandle,
     layout::{ForceAtlas2Params, LayoutResult},
     params::IterationCount,
@@ -49,61 +47,17 @@ fn device_array_view_from_slice_rejects_mismatch() {
 }
 
 #[test]
-fn graph_from_series_weighted_pagerank() {
-    let _guard = common::cudf::cuda_test_serial_guard();
-    let runtime = std::sync::Arc::new(explicit_runtime());
-    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
-    let handle = handle.enter("graph_from_series_weighted_pagerank").expect("entered");
-
-    let src = runtime.series(UNDIRECTED_TRIANGLE_SRC_I32).expect("src");
-    let dst = runtime.series(UNDIRECTED_TRIANGLE_DST_I32).expect("dst");
-    let wgt = runtime.series(UNDIRECTED_TRIANGLE_WEIGHT_F32).expect("wgt");
-
-    let opts = SeriesGraphOptions::default().properties(GraphProperties::undirected()).renumber();
-    let mut graph = graph_from_series::<Transposed>(&handle, &src, &dst, Some(&wgt), &opts).expect("graph_from_series");
-
-    let result = graph.pagerank(&handle, &PageRankParams::default()).expect("pagerank");
-    let scores: Vec<f32> = result.scores().expect("scores").to_vec_f32(&handle).expect("copy");
-
-    assert_eq!(scores.len(), 3, "should have 3 vertices");
-    for (i, &score) in scores.iter().enumerate() {
-        assert!(score > 0.0 && score.is_finite(), "score[{i}] = {score} should be positive finite");
-    }
-}
-
-#[test]
-fn graph_from_series_python_cugraph_weighted_undirected_simple_keeps_minimum_reciprocal_weight() {
-    let _guard = common::cudf::cuda_test_serial_guard();
-    let runtime = std::sync::Arc::new(explicit_runtime());
-    let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
-    let handle = handle
-        .enter("graph_from_series_python_cugraph_weighted_undirected_simple_keeps_minimum_reciprocal_weight")
-        .expect("entered");
-
-    let src = runtime.series(&[0i32, 1, 1, 2]).expect("src");
-    let dst = runtime.series(&[1i32, 0, 2, 1]).expect("dst");
-    let wgt = runtime.series(&[5.0f32, 2.0, 1.0, 1.0]).expect("wgt");
-
-    let opts = SeriesGraphOptions::default().properties(GraphProperties::undirected()).renumber();
-    let mut graph = graph_from_series::<Transposed>(&handle, &src, &dst, Some(&wgt), &opts).expect("graph_from_series");
-
-    let actual = common::cudf::pagerank_score_map(&handle, &mut graph);
-    let expected = python_weighted_reciprocal_expected_pagerank_map(&handle);
-    assert_score_maps_close_f32(&actual, &expected, 1.0e-6, "graph_from_series");
-}
-
-#[test]
 fn graph_bfs_host_slice_matches_typed_view_path() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let runtime = std::sync::Arc::new(explicit_runtime());
     let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).expect("handle");
     let handle = handle.enter("graph_bfs_host_slice_matches_typed_view_path").expect("entered");
 
-    let src = runtime.series(TRIANGLE_TAIL_SRC_I32).expect("src");
-    let dst = runtime.series(TRIANGLE_TAIL_DST_I32).expect("dst");
-
-    let opts = SeriesGraphOptions::default().renumber();
-    let mut graph = graph_from_series::<Forward>(&handle, &src, &dst, None, &opts).expect("graph_from_series");
+    let src = DeviceArray::from_slice(&handle, TRIANGLE_TAIL_SRC_I32).expect("src");
+    let dst = DeviceArray::from_slice(&handle, TRIANGLE_TAIL_DST_I32).expect("dst");
+    let src = src.view().expect("src view");
+    let dst = dst.view().expect("dst view");
+    let mut graph = GraphBuilder::new(&src, &dst).renumber().build::<Forward>(&handle).expect("graph");
 
     let direct_sources = DeviceArray::from_slice(&handle, &[BFS_SOURCE_VERTEX_I32]).expect("sources");
     let direct_sources_view = direct_sources.view().expect("direct_sources_view");

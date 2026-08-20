@@ -402,30 +402,6 @@ fn fast_hash_surface_is_publicly_importable() {
 }
 
 #[test]
-fn query_expression_surface_is_publicly_importable() {
-    use cudf::{
-        ops::expr::col,
-        query::{
-            NamedExpr, QueryAggregateExpr, QueryAggregateFunction, QueryAggregateSpec, QueryBinaryOp, QueryLiteral,
-            QuerySortExpr, QuerySortSpec,
-        },
-    };
-
-    let expr = QueryBinaryOp::Add.expr(col("x"), QueryLiteral::Int32(1));
-    let _named = NamedExpr::new(expr.clone(), "x_plus_one");
-    let _aggregate = QueryAggregateSpec::new(
-        [NamedExpr::new(col("k"), "key")],
-        [QueryAggregateExpr::new(QueryAggregateFunction::Sum, expr, "total")],
-    );
-    let sort = QuerySortSpec::new([QuerySortExpr::descending(col("x")).with_nulls_first(true)]).with_stable(true);
-    let _null = QueryLiteral::Null(cudf::DataType::new(cudf::TypeId::Int32)).into_expr();
-
-    assert!(sort.stable());
-    assert!(sort.expressions()[0].is_descending());
-    assert!(sort.expressions()[0].nulls_first());
-}
-
-#[test]
 fn expression_allocation_preflight_surface_is_publicly_importable() {
     use cudf::ops::expr::{
         DataFrameExpressionAllocationPreflight, DataFrameExpressionInputColumn, DataFrameExpressionPeakGroup,

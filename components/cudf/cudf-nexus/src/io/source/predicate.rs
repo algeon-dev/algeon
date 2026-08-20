@@ -392,7 +392,7 @@ fn source_reader_decimal_literal_raw(literal: &SourceReaderPredicateLiteral, tar
         SourceReaderPredicateLiteral::Int64(value) => decimal_raw_for_integer_value(i128::from(*value), target_scale),
         SourceReaderPredicateLiteral::UInt64(value) => decimal_raw_for_integer_value(i128::from(*value), target_scale),
         SourceReaderPredicateLiteral::Decimal128 { raw, scale } => rescale_decimal_raw(*raw, *scale, target_scale),
-        _ => source_reader_literal_type_mismatch(literal, DataType::fixed_point(TypeId::Decimal128, target_scale)),
+        _ => source_reader_literal_type_mismatch(literal, DataType::fixed_point(TypeId::Decimal128, target_scale)?),
     }
 }
 
@@ -545,7 +545,7 @@ fn parquet_reader_decimal_dtype(path: &Path, read_column: &str, read_index: usiz
         .with_detail("physical_type", format!("{:?}", descriptor.physical_type()))
     })?;
     let type_id = parquet_reader_decimal_type_id(descriptor, precision)?;
-    Ok(DataType::fixed_point(type_id, -scale))
+    DataType::fixed_point(type_id, -scale)
 }
 
 fn parquet_descriptor_matches_column(descriptor: &ColumnDescriptor, column_name: &str) -> bool {

@@ -3,22 +3,21 @@
 `components/cugraph` is the DataFusion Nexus Rust graph integration component
 built around [`libcugraph`](https://github.com/DataFusion-Nexus/cugraph). It is
 part of the root Cargo workspace, not a second repository or workspace.
-Its main direction is to make cuGraph usable as part of backend services and query execution systems for
-[DataFusion Nexus](https://github.com/DataFusion-Nexus/datafusion-nexus/tree/main/components/cugraph). It focuses on safe Rust APIs for GPU graph
-processing while keeping ownership, memory movement, execution context, synchronization, and interop
-behavior explicit enough for service-side integration.
+It exists only to support the native backend of
+[DataFusion Nexus](https://github.com/DataFusion-Nexus/datafusion-nexus/tree/main/components/cugraph).
+Its Rust package and import names are workspace contracts, not an external
+semantic-versioning or publication promise.
 
 ## Focus
 
-- Safe, idiomatic Rust wrappers around `libcugraph`.
-- Backend-service and query-engine integration, rather than just direct API bindings.
-- cudf-backed graph ingestion and result conversion.
-- Graph algorithm APIs that can be embedded in query and service runtimes.
-- Structured errors that preserve machine-readable failure context across the GPU boundary.
+- Runtime-bound graph ownership and algorithm execution.
+- Canonical prepared cuDF ingress and result egress with completion ordering.
+- Allocation preflight facts for bounded Nexus admission.
+- Structured errors that preserve machine-readable native failure context.
 
 ## Workspace
 
-- `components/cugraph/cugraph-nexus/` - the safe public Rust API crate, published as `cugraph-nexus` (import `cugraph`).
+- `components/cugraph/cugraph-nexus/` - the internal safe execution crate, packaged as `cugraph-nexus` (import `cugraph`).
 - `components/cugraph/cugraph-nexus-sys/` - low-level FFI bindings around the cuGraph C API (import `cugraph_sys`).
 - `components/cugraph/cugraph/` - the pinned **[forked cuGraph](https://github.com/DataFusion-Nexus/cugraph)** source submodule used to build `libcugraph`.
 

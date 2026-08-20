@@ -409,13 +409,13 @@ fn series_from_scalar_cross_runtime_copy_waits_on_target_stream() {
 fn copy_into_domain_decimal64() {
     let rt = sample_runtime();
     let s = crate::common::series::<i64>("d", &[100]).unwrap();
-    let dec = s.astype(DataType::fixed_point(TypeId::Decimal64, -2)).unwrap();
+    let dec = s.astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap()).unwrap();
     let scalar = dec.min().unwrap();
 
     let result = rt.series_from_scalar(&scalar, 2).unwrap();
     let expected = crate::common::series::<i64>("out", &[100, 100])
         .unwrap()
-        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
         .unwrap();
     assert_series_host_export_equivalent(&expected, &result);
 }
@@ -424,13 +424,13 @@ fn copy_into_domain_decimal64() {
 fn copy_into_domain_decimal128() {
     let rt = sample_runtime();
     let s = crate::common::series::<i64>("d", &[200]).unwrap();
-    let dec = s.astype(DataType::fixed_point(TypeId::Decimal128, -3)).unwrap();
+    let dec = s.astype(DataType::fixed_point(TypeId::Decimal128, -3).unwrap()).unwrap();
     let scalar = dec.min().unwrap();
 
     let result = rt.series_from_scalar(&scalar, 2).unwrap();
     let expected = crate::common::series::<i64>("out", &[200, 200])
         .unwrap()
-        .astype(DataType::fixed_point(TypeId::Decimal128, -3))
+        .astype(DataType::fixed_point(TypeId::Decimal128, -3).unwrap())
         .unwrap();
     assert_series_host_export_equivalent(&expected, &result);
 }

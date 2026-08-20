@@ -5,13 +5,12 @@ edition.workspace = true
 rust-version.workspace = true
 build = "build.rs"
 links = "cugraph"
-description = "Raw FFI bindings to the cuGraph C API"
+description = "Workspace-internal libcugraph FFI component for DataFusion Nexus"
 license-file = "../../../LICENSE"
 repository.workspace = true
 homepage.workspace = true
 readme = "../README.md"
-documentation = "https://docs.rs/cugraph-nexus-sys"
-categories = ["api-bindings", "external-ffi-bindings"]
+publish = false
 keywords = ["cugraph", "cuda", "ffi", "gpu", "rapids"]
 
 [lib]

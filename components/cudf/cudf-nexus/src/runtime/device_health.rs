@@ -68,6 +68,11 @@ pub enum DeviceFaultNativeStatus {
     Cuda(i32),
 }
 
+impl DeviceFaultNativeStatus {
+    /// Native cuDF status used when a cuDF call reports a fatal CUDA failure.
+    pub const CUDF_FATAL_CUDA: Self = Self::Cudf(cudf_sys::CUDF_ERROR_FATAL_CUDA);
+}
+
 impl DeviceFault {
     /// Fault classification.
     pub fn kind(self) -> DeviceFaultKind {

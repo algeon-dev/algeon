@@ -267,9 +267,6 @@ fn source_chunk_mismatch_error(
 
 fn is_supported_partition_dtype(data_type: DataType) -> bool {
     let type_id = data_type.id();
-    if !type_id.is_decimal() && data_type.scale() != 0 {
-        return false;
-    }
     matches!(
         type_id,
         TypeId::Bool8
@@ -938,7 +935,7 @@ fn source_row_count_to_i64_with_context(
 }
 
 fn dtype_label(data_type: DataType) -> String {
-    if data_type.id().is_decimal() || data_type.scale() != 0 {
+    if data_type.id().is_decimal() {
         format!("{}(scale={})", data_type.id(), data_type.scale())
     } else {
         data_type.id().to_string()

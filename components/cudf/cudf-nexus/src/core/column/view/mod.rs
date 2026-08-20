@@ -25,7 +25,7 @@ use crate::{
             self, Error, ErrorCode, FACT_ACTUAL_COUNT, FACT_EXPECTED_COUNT, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID,
             FACT_TYPE_ID, Result,
         },
-        types::{CudfType, DataType, TypeId},
+        types::{CudfType, DataType, TypeId, materialize_bool},
     },
     ops::search,
     runtime::execution_domain::ExecutionDomain,
@@ -377,6 +377,10 @@ impl<'a> ColumnView<'a> {
             .with_fact(FACT_RIGHT_TYPE_ID, T::TYPE_ID));
         }
 
+        if T::TYPE_ID == TypeId::Bool8 {
+            return self.to_raw_bytes()?.into_iter().map(|raw| materialize_bool(raw, "column_view::to_vec")).collect();
+        }
+
         let size = self.len()?;
         // SAFETY: `CudfType` is sealed to built-in primitives with valid
         // all-zero bit patterns.
@@ -470,21 +474,19 @@ impl<'a> ColumnView<'a> {
 
     fn to_optional_vec_bool<T: CudfType>(&self) -> Result<Vec<Option<T>>> {
         let raw = self.to_raw_bytes()?;
-        let bool_values: Vec<Option<bool>> = match self.to_host_validity()? {
-            None => raw.into_iter().map(|b| Some(b != 0)).collect(),
-            Some(mask) => raw.into_iter().zip(mask).map(|(b, valid)| if valid { Some(b != 0) } else { None }).collect(),
-        };
-
-        let boxed: Box<dyn std::any::Any> = Box::new(bool_values);
-        boxed.downcast::<Vec<Option<T>>>().map(|typed| *typed).map_err(|_| {
-            Error::new_with(
-                ErrorCode::InvariantViolation,
-                "column_view::to_optional_vec",
-                "internal bool materialization helper requires T = bool",
-            )
-            .with_fact(FACT_TYPE_ID, T::TYPE_ID)
-            .with_detail("requested_type_id", format!("{:?}", T::TYPE_ID).to_lowercase())
-        })
+        match self.to_host_validity()? {
+            None => {
+                raw.into_iter().map(|byte| materialize_bool(byte, "column_view::to_optional_vec").map(Some)).collect()
+            },
+            Some(mask) => {
+                raw.into_iter()
+                    .zip(mask)
+                    .map(|(byte, valid)| {
+                        if valid { materialize_bool(byte, "column_view::to_optional_vec").map(Some) } else { Ok(None) }
+                    })
+                    .collect()
+            },
+        }
     }
 
     /// Copy any fixed-width column view to raw host bytes.

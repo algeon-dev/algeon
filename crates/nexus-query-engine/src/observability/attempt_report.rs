@@ -392,7 +392,7 @@ fn deserialize_bounded_attempt_failure_text_value<'de, D>(deserializer: D) -> Re
 where D: serde::Deserializer<'de> {
     struct BoundedTextVisitor;
 
-    impl<'de> Visitor<'de> for BoundedTextVisitor {
+    impl Visitor<'_> for BoundedTextVisitor {
         type Value = String;
 
         fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

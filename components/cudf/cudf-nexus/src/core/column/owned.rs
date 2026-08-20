@@ -639,10 +639,6 @@ impl Column {
         Self::from_strs_impl(data, None, Arc::clone(runtime.execution_domain()), "column::from_strs_with_runtime")
     }
 
-    pub(crate) fn from_strs_in_domain(data: &[&str], domain: &Arc<ExecutionDomain>) -> Result<Self> {
-        Self::from_strs_impl(data, None, Arc::clone(domain), "column::from_strs_in_domain")
-    }
-
     fn from_strs_impl(
         data: &[&str],
         validity: Option<&[bool]>,

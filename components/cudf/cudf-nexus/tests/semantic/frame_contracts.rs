@@ -25,8 +25,6 @@ mod dataframe_high_level_d3_tests;
 mod dataframe_high_level_entrypoint_contract_tests;
 #[path = "../frame/dataframe/info_tests.rs"]
 mod dataframe_info_tests;
-#[path = "../frame/dataframe/melt_tests.rs"]
-mod dataframe_melt_tests;
 #[path = "../frame/dataframe/metadata_ops_tests.rs"]
 mod dataframe_metadata_ops_tests;
 #[path = "../frame/dataframe/series_bridge_tests.rs"]

@@ -11,27 +11,20 @@
 //! contract.
 
 use std::{
-    fmt,
     ptr::{self, NonNull},
     sync::Arc,
 };
 
 use crate::{
-    Series,
     core::{
         column::{Column, ColumnView},
-        error::{
-            self, Error, ErrorCode, FACT_DISTINCT_KEYS_COUNT, FACT_KEYS_COUNT, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID,
-            FACT_TYPE_ID, Result,
-        },
+        error::{self, Error, ErrorCode, FACT_KEYS_COUNT, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, FACT_TYPE_ID, Result},
         table::TableView,
         types::{DataType, TypeId},
     },
-    ops::{copying, stream_compaction},
+    ops::copying,
     runtime::{
-        BoundaryKind, BoundaryObservation, ExecutionPlacement, QueryStageKind, Runtime,
-        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain,
-        execution_resolver::ResolvedExecution, record_boundary_observation_in_domain,
+        execution_context::ExecutionOverrides, execution_domain::ExecutionDomain, execution_resolver::ResolvedExecution,
     },
 };
 
@@ -108,31 +101,6 @@ fn validate_probe_inputs(
     Ok(meta)
 }
 
-fn ensure_unique_keys(keys: &ColumnView<'_>, key_count: usize, operation: &'static str) -> Result<()> {
-    let key_table = TableView::from_column_views(&[keys]).map_err(|e| e.reanchor_if_needed(operation))?;
-    let distinct = stream_compaction::distinct(
-        &key_table,
-        &[0],
-        stream_compaction::DuplicateKeepOption::KeepAny,
-        stream_compaction::NullEquality::Equal,
-        stream_compaction::NanEquality::AllEqual,
-    )
-    .map_err(|e| e.reanchor_if_needed(operation))?;
-    let distinct_count = distinct
-        .view()
-        .map_err(|e| e.reanchor_if_needed(operation))?
-        .num_rows()
-        .map_err(|e| e.reanchor_if_needed(operation))?;
-
-    if distinct_count != key_count {
-        return Err(Error::new_with(ErrorCode::DuplicateKey, operation, "lookup keys must be unique")
-            .with_fact(FACT_KEYS_COUNT, key_count)
-            .with_fact(FACT_DISTINCT_KEYS_COUNT, distinct_count));
-    }
-
-    Ok(())
-}
-
 struct DistinctHashJoinHandle {
     handle: NonNull<cudf_sys::cudf_distinct_hash_join_handle_state>,
     _domain: Arc<ExecutionDomain>,
@@ -201,22 +169,10 @@ impl Drop for DistinctHashJoinHandle {
     }
 }
 
-fn execute_probe(
-    input: &ColumnView<'_>,
-    keys: &ColumnView<'_>,
-    values: &ColumnView<'_>,
-    validate_unique_keys: bool,
-    operation: &'static str,
-) -> Result<Column> {
-    let ctx = ExecutionOverrides::new();
-    execute_probe_with_context(input, keys, values, validate_unique_keys, &ctx, operation)
-}
-
 fn execute_probe_with_context(
     input: &ColumnView<'_>,
     keys: &ColumnView<'_>,
     values: &ColumnView<'_>,
-    validate_unique_keys: bool,
     ctx: &ExecutionOverrides<'_>,
     operation: &'static str,
 ) -> Result<Column> {
@@ -228,10 +184,6 @@ fn execute_probe_with_context(
         operation,
     )
     .map_err(|e| meta.decorate(e, operation))?;
-
-    if validate_unique_keys {
-        ensure_unique_keys(keys, meta.keys_count, operation).map_err(|e| meta.decorate(e, operation))?;
-    }
 
     if meta.input_count == 0 {
         return Column::empty_with_dtype_in_domain(meta.values_dtype, Arc::clone(execution.output_domain()), operation)
@@ -286,83 +238,14 @@ fn execute_reusable_probe(
     Ok(columns.remove(0))
 }
 
-fn mapping_length_error(keys: &Series, values: &Series, operation: &'static str) -> Error {
-    let mut err =
-        Error::new_with(ErrorCode::ColumnLengthMismatch, operation, "lookup keys and values must have the same length")
-            .with_fact(FACT_KEYS_COUNT, keys.len())
-            .with_detail("values_count", values.len().to_string());
-
-    if let Ok(dtype) = keys.dtype() {
-        err = err.with_fact(FACT_RIGHT_TYPE_ID, dtype.id());
-    } else {
-        err = err.with_detail("keys_type_id", "?");
-    }
-
-    if let Ok(dtype) = values.dtype() {
-        err = err.with_fact(FACT_TYPE_ID, dtype.id());
-    } else {
-        err = err.with_detail("values_type_id", "?");
-    }
-
-    err
-}
-
-fn decorate_mapping_domain_error(err: Error, keys: &Series, values: &Series, operation: &'static str) -> Error {
-    err.reanchor_if_needed(operation)
-        .with_fact_if_absent(FACT_KEYS_COUNT, keys.len())
-        .with_detail_if_absent("values_count", values.len().to_string())
-}
-
-fn require_mapping_same_provenance(keys: &Series, values: &Series, operation: &'static str) -> Result<()> {
-    ExecutionDomain::require_same_device_for_mixed_inputs(
-        keys.as_column().execution_domain(),
-        values.as_column().execution_domain(),
-        operation,
-    )
-    .map_err(|e| decorate_mapping_domain_error(e, keys, values, operation))?;
-
-    ExecutionDomain::require_same_provenance(
-        keys.as_column().execution_domain(),
-        values.as_column().execution_domain(),
-        operation,
-        "lookup keys and values must share one retained provenance",
-        "use LookupTable::new_in_runtime(...) to normalize reusable lookup state into one Runtime before building it",
-    )
-    .map_err(|e| decorate_mapping_domain_error(e, keys, values, operation))
-}
-
-fn clone_or_copy_series_into_domain(
-    series: &Series,
-    output_domain: &Arc<ExecutionDomain>,
-    operation: &'static str,
-) -> Result<Series> {
-    if ExecutionDomain::same_provenance(series.as_column().execution_domain(), output_domain) {
-        return Ok(series.clone());
-    }
-
-    // copy_into_domain installs both fence directions internally.
-    let column = series
-        .as_column()
-        .copy_into_domain(Arc::clone(output_domain), operation)
-        .map_err(|e| e.with_detail("target_domain", output_domain.debug_label()))?;
-    Series::from_column(column).map_err(|e| e.reanchor_if_needed(operation))
-}
-
-/// Probe a key/value mapping with a borrowed input column.
-///
-/// The result is row-aligned with `input`, preserves input order, and returns
-/// nulls for missing keys. Duplicate lookup keys are rejected.
-pub fn probe(input: &ColumnView<'_>, keys: &ColumnView<'_>, values: &ColumnView<'_>) -> Result<Column> {
-    execute_probe(input, keys, values, true, "lookup::probe")
-}
-
 pub(crate) fn probe_prevalidated(
     input: &ColumnView<'_>,
     keys: &ColumnView<'_>,
     values: &ColumnView<'_>,
     operation: &'static str,
 ) -> Result<Column> {
-    execute_probe(input, keys, values, false, operation)
+    let ctx = ExecutionOverrides::new();
+    execute_probe_with_context(input, keys, values, &ctx, operation)
 }
 
 pub(crate) fn probe_prevalidated_in(
@@ -372,164 +255,5 @@ pub(crate) fn probe_prevalidated_in(
     ctx: &ExecutionOverrides<'_>,
     operation: &'static str,
 ) -> Result<Column> {
-    execute_probe_with_context(input, keys, values, false, ctx, operation)
-}
-
-/// An owned reusable lookup mapping for repeated probes.
-#[derive(Clone)]
-pub struct LookupTable {
-    backend: Arc<DistinctHashJoinHandle>,
-    keys: Series,
-    values: Series,
-    domain: Arc<ExecutionDomain>,
-}
-
-impl fmt::Debug for LookupTable {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("LookupTable")
-            .field("keys", &self.keys)
-            .field("values", &self.values)
-            .field("placement", &self.placement())
-            .finish()
-    }
-}
-
-impl LookupTable {
-    /// Build a reusable lookup table from owned key/value series.
-    ///
-    /// Construction validates equal lengths, rejects duplicate keys, and
-    /// rejects key/value pairs that do not already share one retained
-    /// provenance. Use [`LookupTable::new_in_runtime`] when the mapping parts
-    /// should be normalized into a specific runtime before building reusable
-    /// GPU state.
-    pub fn new(keys: Series, values: Series) -> Result<Self> {
-        let operation = "lookup_table::new";
-        Self::build_from_placed(keys, values, operation)
-    }
-
-    /// Build a reusable lookup table inside `runtime`.
-    ///
-    /// Keys and values already placed in `runtime` are shared. Other same-device
-    /// inputs are fenced and deep-copied into `runtime` before the reusable
-    /// backend is built. Cross-device inputs fail; relocate them explicitly
-    /// before construction.
-    pub fn new_in_runtime(runtime: &Runtime, keys: Series, values: Series) -> Result<Self> {
-        let operation = "lookup_table::new_in_runtime";
-        if keys.len() != values.len() {
-            return Err(mapping_length_error(&keys, &values, operation));
-        }
-
-        let keys = clone_or_copy_series_into_domain(&keys, runtime.execution_domain(), operation)?;
-        let values = clone_or_copy_series_into_domain(&values, runtime.execution_domain(), operation)?;
-        Self::build_from_placed(keys, values, operation)
-    }
-
-    fn build_from_placed(keys: Series, values: Series, operation: &'static str) -> Result<Self> {
-        if keys.len() != values.len() {
-            return Err(mapping_length_error(&keys, &values, operation));
-        }
-
-        require_mapping_same_provenance(&keys, &values, operation)?;
-        let domain = Arc::clone(keys.as_column().execution_domain());
-
-        let backend = {
-            let keys_view = keys.view().map_err(|e| e.reanchor_if_needed(operation))?;
-            ensure_unique_keys(&keys_view, keys.len(), operation)?;
-            let build_table =
-                TableView::from_column_views(&[&keys_view]).map_err(|e| e.reanchor_if_needed(operation))?;
-            DistinctHashJoinHandle::new(&build_table, keys.as_column().execution_domain(), operation)
-                .map_err(|e| e.reanchor_if_needed(operation))?
-        };
-
-        Ok(Self { backend: Arc::new(backend), keys, values, domain })
-    }
-
-    /// Copy this reusable lookup state into `runtime`.
-    ///
-    /// If the table already has the target runtime's retained provenance, this
-    /// returns a cheap clone. Otherwise keys and values are deep-copied into the
-    /// target runtime and the reusable backend is rebuilt there.
-    pub fn copy_into_runtime(&self, runtime: &Runtime) -> Result<Self> {
-        let operation = "lookup_table::copy_into_runtime";
-        if ExecutionDomain::same_provenance(&self.domain, runtime.execution_domain()) {
-            return Ok(self.clone());
-        }
-
-        let keys = clone_or_copy_series_into_domain(&self.keys, runtime.execution_domain(), operation)?;
-        let values = clone_or_copy_series_into_domain(&self.values, runtime.execution_domain(), operation)?;
-        let table = Self::build_from_placed(keys, values, operation)?;
-        record_boundary_observation_in_domain(
-            runtime.execution_domain(),
-            BoundaryObservation::new(BoundaryKind::DeviceToDeviceCopy, runtime.placement(), self.len(), 2, false)
-                .with_query_stage(QueryStageKind::OperatorOutput),
-        );
-        Ok(table)
-    }
-
-    pub fn keys(&self) -> &Series {
-        &self.keys
-    }
-
-    pub fn values(&self) -> &Series {
-        &self.values
-    }
-
-    pub fn len(&self) -> usize {
-        self.keys.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.keys.is_empty()
-    }
-
-    /// Return a diagnostic summary of where this reusable GPU lookup state is retained.
-    pub fn placement(&self) -> ExecutionPlacement {
-        self.domain.placement()
-    }
-
-    pub fn probe(&self, input: &Series) -> Result<Series> {
-        let operation = "lookup_table::probe";
-        let ctx = ExecutionOverrides::new();
-        self.probe_with_context(input, &ctx, operation)
-    }
-
-    /// Probe this reusable lookup table with a borrowed execution override.
-    ///
-    /// The output keeps the input workflow identity and uses the concrete
-    /// stream / memory-resource bundle resolved from `ctx`. The reusable table
-    /// state and the input are ordered into that output stream before libcudf
-    /// work is submitted.
-    pub fn probe_in(&self, input: &Series, ctx: &ExecutionOverrides<'_>) -> Result<Series> {
-        self.probe_with_context(input, ctx, "lookup_table::probe_in")
-    }
-
-    fn probe_with_context(
-        &self,
-        input: &Series,
-        ctx: &ExecutionOverrides<'_>,
-        operation: &'static str,
-    ) -> Result<Series> {
-        let input_view = input.view().map_err(|e| e.reanchor_if_needed(operation))?;
-        let keys_view = self.keys.view().map_err(|e| e.reanchor_if_needed(operation))?;
-        let values_view = self.values.view().map_err(|e| e.reanchor_if_needed(operation))?;
-        let meta = validate_probe_inputs(&input_view, &keys_view, &values_view, operation)?;
-        let execution = ResolvedExecution::many(
-            input_view.execution_domain(),
-            [keys_view.execution_domain(), values_view.execution_domain()],
-            ctx,
-            operation,
-        )
-        .map_err(|e| meta.decorate(e, operation))?;
-        let result = execute_reusable_probe(
-            &input_view,
-            &values_view,
-            self.backend.as_ref(),
-            &meta,
-            execution.output_domain(),
-            execution.exec_options(),
-            operation,
-        )
-        .map_err(|e| e.reanchor_if_needed(operation))?;
-        Series::from_column(result).map_err(|e| e.reanchor_if_needed(operation))
-    }
+    execute_probe_with_context(input, keys, values, ctx, operation)
 }

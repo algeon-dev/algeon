@@ -3,13 +3,12 @@ name = "cugraph-nexus"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Safe Rust bindings for NVIDIA cuGraph GPU-accelerated graph analytics"
+description = "Workspace-internal safe libcugraph execution component for DataFusion Nexus"
 license-file = "../../../LICENSE"
 repository.workspace = true
 homepage.workspace = true
 readme = "../README.md"
-documentation = "https://docs.rs/cugraph-nexus"
-categories = ["algorithms", "api-bindings", "science"]
+publish = false
 keywords = ["cugraph", "cuda", "gpu", "graph", "rapids"]
 build = "build.rs"
 
@@ -43,9 +42,4 @@ required-features = ["test-hooks"]
 [[test]]
 name = "cudf_prepared"
 path = "tests/cudf_prepared.rs"
-required-features = ["test-hooks"]
-
-[[test]]
-name = "cudf_provenance"
-path = "tests/cudf_provenance.rs"
 required-features = ["test-hooks"]

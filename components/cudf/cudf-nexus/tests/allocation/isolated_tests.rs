@@ -4,8 +4,6 @@ mod dataframe_groupby_allocation_tests;
 mod dataframe_merge_allocation_tests;
 #[path = "../ops/sorting/dataframe_sort_values_allocation_tests.rs"]
 mod dataframe_sort_values_allocation_tests;
-#[path = "../ops/misc/lookup_allocation_tests.rs"]
-mod lookup_allocation_tests;
 
 use rapids_interop::ProducerReadiness;
 

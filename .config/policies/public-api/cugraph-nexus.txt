@@ -1,0 +1,1771 @@
+pub mod cugraph
+pub mod cugraph::array
+pub struct cugraph::array::DeviceArray<T: cugraph::types::CugraphElement>
+impl<T: cugraph::types::CugraphElement> cugraph::array::DeviceArray<T>
+pub fn cugraph::array::DeviceArray<T>::from_slice(&cugraph::handle::EnteredContext<'_>, &[T]) -> cugraph::error::Result<Self>
+pub fn cugraph::array::DeviceArray<T>::new(&cugraph::handle::EnteredContext<'_>, usize) -> cugraph::error::Result<Self>
+pub fn cugraph::array::DeviceArray<T>::view(&self) -> cugraph::error::Result<cugraph::array::DeviceArrayView<'_, T>>
+impl<T: cugraph::types::CugraphElement> core::fmt::Debug for cugraph::array::DeviceArray<T>
+pub fn cugraph::array::DeviceArray<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T: cugraph::types::CugraphElement> cugraph::array::DeviceBuffer<T> for cugraph::array::DeviceArray<T>
+pub fn cugraph::array::DeviceArray<T>::device_ptr(&self) -> *mut core::ffi::c_void
+pub fn cugraph::array::DeviceArray<T>::is_empty(&self) -> bool
+pub fn cugraph::array::DeviceArray<T>::len(&self) -> usize
+pub struct cugraph::array::DeviceArrayView<'a, T: cugraph::types::CugraphElement>
+impl<'a, T: cugraph::types::CugraphElement> cugraph::array::DeviceArrayView<'a, T>
+pub fn cugraph::array::DeviceArrayView<'a, T>::device_ptr(&self) -> *mut core::ffi::c_void
+pub fn cugraph::array::DeviceArrayView<'a, T>::from_device_buffer<B>(&'a B) -> cugraph::error::Result<Self> where B: cugraph::array::DeviceBuffer<T> + ?core::marker::Sized
+pub fn cugraph::array::DeviceArrayView<'a, T>::is_empty(&self) -> bool
+pub fn cugraph::array::DeviceArrayView<'a, T>::len(&self) -> usize
+pub fn cugraph::array::DeviceArrayView<'a, T>::to_vec(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<T>>
+pub fn cugraph::array::DeviceArrayView<'a, T>::try_from_device_buffer<B>(&'a B) -> cugraph::error::Result<Self> where B: cugraph::array::DeviceBuffer<T> + ?core::marker::Sized
+impl<'a, V: cugraph::types::CugraphElement> core::convert::From<&'a cugraph::array::DeviceArrayView<'a, V>> for cugraph::VertexSelection<'a, V>
+pub fn cugraph::VertexSelection<'a, V>::from(&'a cugraph::array::DeviceArrayView<'a, V>) -> Self
+impl<T: cugraph::types::CugraphElement> core::fmt::Debug for cugraph::array::DeviceArrayView<'_, T>
+pub fn cugraph::array::DeviceArrayView<'_, T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T: cugraph::types::CugraphElement> cugraph::array::DeviceBuffer<T> for cugraph::array::DeviceArrayView<'_, T>
+pub fn cugraph::array::DeviceArrayView<'_, T>::device_ptr(&self) -> *mut core::ffi::c_void
+pub fn cugraph::array::DeviceArrayView<'_, T>::is_empty(&self) -> bool
+pub fn cugraph::array::DeviceArrayView<'_, T>::len(&self) -> usize
+pub unsafe trait cugraph::array::DeviceBuffer<T: cugraph::types::CugraphElement>
+pub fn cugraph::array::DeviceBuffer::device_ptr(&self) -> *mut core::ffi::c_void
+pub fn cugraph::array::DeviceBuffer::is_empty(&self) -> bool
+pub fn cugraph::array::DeviceBuffer::len(&self) -> usize
+impl<T: cugraph::types::CugraphElement> cugraph::array::DeviceBuffer<T> for cugraph::array::DeviceArray<T>
+pub fn cugraph::array::DeviceArray<T>::device_ptr(&self) -> *mut core::ffi::c_void
+pub fn cugraph::array::DeviceArray<T>::is_empty(&self) -> bool
+pub fn cugraph::array::DeviceArray<T>::len(&self) -> usize
+impl<T: cugraph::types::CugraphElement> cugraph::array::DeviceBuffer<T> for cugraph::array::DeviceArrayView<'_, T>
+pub fn cugraph::array::DeviceArrayView<'_, T>::device_ptr(&self) -> *mut core::ffi::c_void
+pub fn cugraph::array::DeviceArrayView<'_, T>::is_empty(&self) -> bool
+pub fn cugraph::array::DeviceArrayView<'_, T>::len(&self) -> usize
+pub mod cugraph::centrality
+pub mod cugraph::centrality::betweenness
+pub struct cugraph::centrality::betweenness::BetweennessCentralityParams
+pub cugraph::centrality::betweenness::BetweennessCentralityParams::do_expensive_check: bool
+pub cugraph::centrality::betweenness::BetweennessCentralityParams::include_endpoints: bool
+pub cugraph::centrality::betweenness::BetweennessCentralityParams::normalized: bool
+impl core::default::Default for cugraph::centrality::betweenness::BetweennessCentralityParams
+pub fn cugraph::centrality::betweenness::BetweennessCentralityParams::default() -> Self
+pub mod cugraph::centrality::edge_betweenness
+pub struct cugraph::centrality::edge_betweenness::EdgeBetweennessCentralityParams
+pub cugraph::centrality::edge_betweenness::EdgeBetweennessCentralityParams::do_expensive_check: bool
+pub cugraph::centrality::edge_betweenness::EdgeBetweennessCentralityParams::normalized: bool
+impl core::default::Default for cugraph::centrality::edge_betweenness::EdgeBetweennessCentralityParams
+pub fn cugraph::centrality::edge_betweenness::EdgeBetweennessCentralityParams::default() -> Self
+pub mod cugraph::centrality::hits
+pub struct cugraph::centrality::hits::HitsInitialHubs<'a, V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>
+pub cugraph::centrality::hits::HitsInitialHubs::values: &'a cugraph::array::DeviceArrayView<'a, W>
+pub cugraph::centrality::hits::HitsInitialHubs::vertices: &'a cugraph::array::DeviceArrayView<'a, V>
+pub struct cugraph::centrality::hits::HitsParams
+pub cugraph::centrality::hits::HitsParams::do_expensive_check: bool
+pub cugraph::centrality::hits::HitsParams::epsilon: cugraph::params::NonNegativeF64
+pub cugraph::centrality::hits::HitsParams::max_iterations: cugraph::params::IterationCount
+pub cugraph::centrality::hits::HitsParams::normalize: bool
+impl core::default::Default for cugraph::centrality::hits::HitsParams
+pub fn cugraph::centrality::hits::HitsParams::default() -> Self
+pub mod cugraph::centrality::pagerank
+pub struct cugraph::centrality::pagerank::InitialGuess<'a, V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>
+pub cugraph::centrality::pagerank::InitialGuess::values: &'a cugraph::array::DeviceArrayView<'a, W>
+pub cugraph::centrality::pagerank::InitialGuess::vertices: &'a cugraph::array::DeviceArrayView<'a, V>
+pub struct cugraph::centrality::pagerank::PageRankParams
+pub cugraph::centrality::pagerank::PageRankParams::alpha: cugraph::params::ClosedUnitF64
+pub cugraph::centrality::pagerank::PageRankParams::do_expensive_check: bool
+pub cugraph::centrality::pagerank::PageRankParams::epsilon: cugraph::params::NonNegativeF64
+pub cugraph::centrality::pagerank::PageRankParams::max_iterations: cugraph::params::IterationCount
+impl core::default::Default for cugraph::centrality::pagerank::PageRankParams
+pub fn cugraph::centrality::pagerank::PageRankParams::default() -> Self
+pub struct cugraph::centrality::pagerank::PersonalizationVector<'a, V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>
+pub cugraph::centrality::pagerank::PersonalizationVector::values: &'a cugraph::array::DeviceArrayView<'a, W>
+pub cugraph::centrality::pagerank::PersonalizationVector::vertices: &'a cugraph::array::DeviceArrayView<'a, V>
+pub struct cugraph::centrality::pagerank::PersonalizedPageRankParams
+pub cugraph::centrality::pagerank::PersonalizedPageRankParams::alpha: cugraph::params::ClosedUnitF64
+pub cugraph::centrality::pagerank::PersonalizedPageRankParams::do_expensive_check: bool
+pub cugraph::centrality::pagerank::PersonalizedPageRankParams::epsilon: cugraph::params::NonNegativeF64
+pub cugraph::centrality::pagerank::PersonalizedPageRankParams::max_iterations: cugraph::params::IterationCount
+impl core::default::Default for cugraph::centrality::pagerank::PersonalizedPageRankParams
+pub fn cugraph::centrality::pagerank::PersonalizedPageRankParams::default() -> Self
+pub struct cugraph::centrality::pagerank::PrecomputedWeights<'a, V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>
+pub cugraph::centrality::pagerank::PrecomputedWeights::sums: &'a cugraph::array::DeviceArrayView<'a, W>
+pub cugraph::centrality::pagerank::PrecomputedWeights::vertices: &'a cugraph::array::DeviceArrayView<'a, V>
+pub mod cugraph::centrality::vertex
+pub struct cugraph::centrality::vertex::EigenvectorCentralityParams
+pub cugraph::centrality::vertex::EigenvectorCentralityParams::do_expensive_check: bool
+pub cugraph::centrality::vertex::EigenvectorCentralityParams::epsilon: cugraph::params::NonNegativeF64
+pub cugraph::centrality::vertex::EigenvectorCentralityParams::max_iterations: cugraph::params::IterationCount
+impl core::default::Default for cugraph::centrality::vertex::EigenvectorCentralityParams
+pub fn cugraph::centrality::vertex::EigenvectorCentralityParams::default() -> Self
+pub struct cugraph::centrality::vertex::KatzCentralityParams
+pub cugraph::centrality::vertex::KatzCentralityParams::alpha: cugraph::params::NonNegativeF64
+pub cugraph::centrality::vertex::KatzCentralityParams::beta: cugraph::params::NonNegativeF64
+pub cugraph::centrality::vertex::KatzCentralityParams::do_expensive_check: bool
+pub cugraph::centrality::vertex::KatzCentralityParams::epsilon: cugraph::params::NonNegativeF64
+pub cugraph::centrality::vertex::KatzCentralityParams::max_iterations: cugraph::params::IterationCount
+impl core::default::Default for cugraph::centrality::vertex::KatzCentralityParams
+pub fn cugraph::centrality::vertex::KatzCentralityParams::default() -> Self
+pub struct cugraph::centrality::BetweennessCentralityParams
+pub cugraph::centrality::BetweennessCentralityParams::do_expensive_check: bool
+pub cugraph::centrality::BetweennessCentralityParams::include_endpoints: bool
+pub cugraph::centrality::BetweennessCentralityParams::normalized: bool
+impl core::default::Default for cugraph::centrality::betweenness::BetweennessCentralityParams
+pub fn cugraph::centrality::betweenness::BetweennessCentralityParams::default() -> Self
+pub struct cugraph::centrality::BetweennessCentralityResult(_)
+impl cugraph::centrality::BetweennessCentralityResult
+pub fn cugraph::centrality::BetweennessCentralityResult::scores(&self) -> cugraph::error::Result<cugraph::structure::typed_results::ScoreValues<'_>>
+pub fn cugraph::centrality::BetweennessCentralityResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl cugraph::centrality::BetweennessCentralityResult
+pub fn cugraph::centrality::BetweennessCentralityResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+impl core::fmt::Debug for cugraph::centrality::BetweennessCentralityResult
+pub fn cugraph::centrality::BetweennessCentralityResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::centrality::EdgeBetweennessCentralityParams
+pub cugraph::centrality::EdgeBetweennessCentralityParams::do_expensive_check: bool
+pub cugraph::centrality::EdgeBetweennessCentralityParams::normalized: bool
+impl core::default::Default for cugraph::centrality::edge_betweenness::EdgeBetweennessCentralityParams
+pub fn cugraph::centrality::edge_betweenness::EdgeBetweennessCentralityParams::default() -> Self
+pub struct cugraph::centrality::EdgeBetweennessCentralityResult(_)
+impl cugraph::centrality::EdgeBetweennessCentralityResult
+pub fn cugraph::centrality::EdgeBetweennessCentralityResult::destinations(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::centrality::EdgeBetweennessCentralityResult::edge_ids(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::IntegerValues<'_>>>
+pub fn cugraph::centrality::EdgeBetweennessCentralityResult::scores(&self) -> cugraph::error::Result<cugraph::structure::typed_results::ScoreValues<'_>>
+pub fn cugraph::centrality::EdgeBetweennessCentralityResult::sources(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::centrality::EdgeBetweennessCentralityResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+impl core::fmt::Debug for cugraph::centrality::EdgeBetweennessCentralityResult
+pub fn cugraph::centrality::EdgeBetweennessCentralityResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::centrality::EigenvectorCentralityParams
+pub cugraph::centrality::EigenvectorCentralityParams::do_expensive_check: bool
+pub cugraph::centrality::EigenvectorCentralityParams::epsilon: cugraph::params::NonNegativeF64
+pub cugraph::centrality::EigenvectorCentralityParams::max_iterations: cugraph::params::IterationCount
+impl core::default::Default for cugraph::centrality::vertex::EigenvectorCentralityParams
+pub fn cugraph::centrality::vertex::EigenvectorCentralityParams::default() -> Self
+pub struct cugraph::centrality::EigenvectorCentralityResult(_)
+impl cugraph::centrality::EigenvectorCentralityResult
+pub fn cugraph::centrality::EigenvectorCentralityResult::converged(&self) -> cugraph::error::Result<bool>
+pub fn cugraph::centrality::EigenvectorCentralityResult::num_iterations(&self) -> usize
+pub fn cugraph::centrality::EigenvectorCentralityResult::scores(&self) -> cugraph::error::Result<cugraph::structure::typed_results::ScoreValues<'_>>
+pub fn cugraph::centrality::EigenvectorCentralityResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::centrality::EigenvectorCentralityResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::centrality::EigenvectorCentralityResult
+pub fn cugraph::centrality::EigenvectorCentralityResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::centrality::HitsInitialHubs<'a, V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>
+pub cugraph::centrality::HitsInitialHubs::values: &'a cugraph::array::DeviceArrayView<'a, W>
+pub cugraph::centrality::HitsInitialHubs::vertices: &'a cugraph::array::DeviceArrayView<'a, V>
+pub struct cugraph::centrality::HitsParams
+pub cugraph::centrality::HitsParams::do_expensive_check: bool
+pub cugraph::centrality::HitsParams::epsilon: cugraph::params::NonNegativeF64
+pub cugraph::centrality::HitsParams::max_iterations: cugraph::params::IterationCount
+pub cugraph::centrality::HitsParams::normalize: bool
+impl core::default::Default for cugraph::centrality::hits::HitsParams
+pub fn cugraph::centrality::hits::HitsParams::default() -> Self
+pub struct cugraph::centrality::HitsResult
+impl cugraph::centrality::HitsResult
+pub fn cugraph::centrality::HitsResult::authority_scores(&self) -> cugraph::error::Result<cugraph::structure::typed_results::ScoreValues<'_>>
+pub fn cugraph::centrality::HitsResult::hub_score_differences(&self) -> f64
+pub fn cugraph::centrality::HitsResult::hub_scores(&self) -> cugraph::error::Result<cugraph::structure::typed_results::ScoreValues<'_>>
+pub fn cugraph::centrality::HitsResult::number_of_iterations(&self) -> usize
+pub fn cugraph::centrality::HitsResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::centrality::HitsResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::centrality::HitsResult
+pub fn cugraph::centrality::HitsResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for cugraph::centrality::HitsResult
+pub fn cugraph::centrality::HitsResult::drop(&mut self)
+pub struct cugraph::centrality::InitialGuess<'a, V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>
+pub cugraph::centrality::InitialGuess::values: &'a cugraph::array::DeviceArrayView<'a, W>
+pub cugraph::centrality::InitialGuess::vertices: &'a cugraph::array::DeviceArrayView<'a, V>
+pub struct cugraph::centrality::KatzCentralityParams
+pub cugraph::centrality::KatzCentralityParams::alpha: cugraph::params::NonNegativeF64
+pub cugraph::centrality::KatzCentralityParams::beta: cugraph::params::NonNegativeF64
+pub cugraph::centrality::KatzCentralityParams::do_expensive_check: bool
+pub cugraph::centrality::KatzCentralityParams::epsilon: cugraph::params::NonNegativeF64
+pub cugraph::centrality::KatzCentralityParams::max_iterations: cugraph::params::IterationCount
+impl core::default::Default for cugraph::centrality::vertex::KatzCentralityParams
+pub fn cugraph::centrality::vertex::KatzCentralityParams::default() -> Self
+pub struct cugraph::centrality::KatzCentralityResult(_)
+impl cugraph::centrality::KatzCentralityResult
+pub fn cugraph::centrality::KatzCentralityResult::converged(&self) -> cugraph::error::Result<bool>
+pub fn cugraph::centrality::KatzCentralityResult::num_iterations(&self) -> usize
+pub fn cugraph::centrality::KatzCentralityResult::scores(&self) -> cugraph::error::Result<cugraph::structure::typed_results::ScoreValues<'_>>
+pub fn cugraph::centrality::KatzCentralityResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::centrality::KatzCentralityResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::centrality::KatzCentralityResult
+pub fn cugraph::centrality::KatzCentralityResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::centrality::PageRankParams
+pub cugraph::centrality::PageRankParams::alpha: cugraph::params::ClosedUnitF64
+pub cugraph::centrality::PageRankParams::do_expensive_check: bool
+pub cugraph::centrality::PageRankParams::epsilon: cugraph::params::NonNegativeF64
+pub cugraph::centrality::PageRankParams::max_iterations: cugraph::params::IterationCount
+impl core::default::Default for cugraph::centrality::pagerank::PageRankParams
+pub fn cugraph::centrality::pagerank::PageRankParams::default() -> Self
+pub struct cugraph::centrality::PageRankResult(_)
+impl cugraph::centrality::PageRankResult
+pub fn cugraph::centrality::PageRankResult::converged(&self) -> cugraph::error::Result<bool>
+pub fn cugraph::centrality::PageRankResult::num_iterations(&self) -> usize
+pub fn cugraph::centrality::PageRankResult::scores(&self) -> cugraph::error::Result<cugraph::structure::typed_results::ScoreValues<'_>>
+pub fn cugraph::centrality::PageRankResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl cugraph::centrality::PageRankResult
+pub fn cugraph::centrality::PageRankResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+impl core::fmt::Debug for cugraph::centrality::PageRankResult
+pub fn cugraph::centrality::PageRankResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::centrality::PersonalizationVector<'a, V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>
+pub cugraph::centrality::PersonalizationVector::values: &'a cugraph::array::DeviceArrayView<'a, W>
+pub cugraph::centrality::PersonalizationVector::vertices: &'a cugraph::array::DeviceArrayView<'a, V>
+pub struct cugraph::centrality::PersonalizedPageRankParams
+pub cugraph::centrality::PersonalizedPageRankParams::alpha: cugraph::params::ClosedUnitF64
+pub cugraph::centrality::PersonalizedPageRankParams::do_expensive_check: bool
+pub cugraph::centrality::PersonalizedPageRankParams::epsilon: cugraph::params::NonNegativeF64
+pub cugraph::centrality::PersonalizedPageRankParams::max_iterations: cugraph::params::IterationCount
+impl core::default::Default for cugraph::centrality::pagerank::PersonalizedPageRankParams
+pub fn cugraph::centrality::pagerank::PersonalizedPageRankParams::default() -> Self
+pub struct cugraph::centrality::PrecomputedWeights<'a, V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>
+pub cugraph::centrality::PrecomputedWeights::sums: &'a cugraph::array::DeviceArrayView<'a, W>
+pub cugraph::centrality::PrecomputedWeights::vertices: &'a cugraph::array::DeviceArrayView<'a, V>
+pub mod cugraph::community
+pub mod cugraph::community::clustering
+pub struct cugraph::community::clustering::SpectralClusteringParams
+pub cugraph::community::clustering::SpectralClusteringParams::do_expensive_check: bool
+pub cugraph::community::clustering::SpectralClusteringParams::evs_max_iterations: cugraph::params::IterationCount
+pub cugraph::community::clustering::SpectralClusteringParams::evs_tolerance: cugraph::params::NonNegativeF64
+pub cugraph::community::clustering::SpectralClusteringParams::k_means_max_iterations: cugraph::params::IterationCount
+pub cugraph::community::clustering::SpectralClusteringParams::k_means_tolerance: cugraph::params::NonNegativeF64
+pub cugraph::community::clustering::SpectralClusteringParams::n_clusters: core::num::nonzero::NonZeroUsize
+pub cugraph::community::clustering::SpectralClusteringParams::n_eigenvectors: core::num::nonzero::NonZeroUsize
+impl core::default::Default for cugraph::community::clustering::SpectralClusteringParams
+pub fn cugraph::community::clustering::SpectralClusteringParams::default() -> Self
+pub struct cugraph::community::clustering::SpectralClusteringResult(_)
+impl cugraph::community::clustering::SpectralClusteringResult
+pub fn cugraph::community::clustering::SpectralClusteringResult::clusters(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::community::clustering::SpectralClusteringResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::community::clustering::SpectralClusteringResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::community::clustering::SpectralClusteringResult
+pub fn cugraph::community::clustering::SpectralClusteringResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub mod cugraph::community::ecg
+pub struct cugraph::community::ecg::EcgParams
+pub cugraph::community::ecg::EcgParams::do_expensive_check: bool
+pub cugraph::community::ecg::EcgParams::ensemble_size: cugraph::params::IterationCount
+pub cugraph::community::ecg::EcgParams::max_level: cugraph::params::IterationCount
+pub cugraph::community::ecg::EcgParams::min_weight: cugraph::params::NonNegativeF64
+pub cugraph::community::ecg::EcgParams::resolution: cugraph::params::PositiveF64
+pub cugraph::community::ecg::EcgParams::threshold: cugraph::params::NonNegativeF64
+impl core::default::Default for cugraph::community::ecg::EcgParams
+pub fn cugraph::community::ecg::EcgParams::default() -> Self
+pub mod cugraph::community::leiden
+pub struct cugraph::community::leiden::LeidenParams
+pub cugraph::community::leiden::LeidenParams::do_expensive_check: bool
+pub cugraph::community::leiden::LeidenParams::max_level: cugraph::params::IterationCount
+pub cugraph::community::leiden::LeidenParams::resolution: cugraph::params::PositiveF64
+pub cugraph::community::leiden::LeidenParams::theta: cugraph::params::PositiveF64
+impl core::default::Default for cugraph::community::leiden::LeidenParams
+pub fn cugraph::community::leiden::LeidenParams::default() -> Self
+pub mod cugraph::community::louvain
+pub struct cugraph::community::louvain::LouvainParams
+pub cugraph::community::louvain::LouvainParams::do_expensive_check: bool
+pub cugraph::community::louvain::LouvainParams::max_level: cugraph::params::IterationCount
+pub cugraph::community::louvain::LouvainParams::resolution: cugraph::params::PositiveF64
+pub cugraph::community::louvain::LouvainParams::threshold: cugraph::params::NonNegativeF64
+impl core::default::Default for cugraph::community::louvain::LouvainParams
+pub fn cugraph::community::louvain::LouvainParams::default() -> Self
+pub mod cugraph::community::subgraph
+pub struct cugraph::community::subgraph::ExtractEgoParams
+pub cugraph::community::subgraph::ExtractEgoParams::do_expensive_check: bool
+pub cugraph::community::subgraph::ExtractEgoParams::radius: core::num::nonzero::NonZeroUsize
+impl core::default::Default for cugraph::community::subgraph::ExtractEgoParams
+pub fn cugraph::community::subgraph::ExtractEgoParams::default() -> Self
+pub struct cugraph::community::subgraph::ExtractEgoResult(_)
+impl cugraph::community::subgraph::ExtractEgoResult
+pub fn cugraph::community::subgraph::ExtractEgoResult::destinations(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::community::subgraph::ExtractEgoResult::edge_ids(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::IntegerValues<'_>>>
+pub fn cugraph::community::subgraph::ExtractEgoResult::edge_type_ids(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::IntegerValues<'_>>>
+pub fn cugraph::community::subgraph::ExtractEgoResult::sources(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::community::subgraph::ExtractEgoResult::subgraph_offsets(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::SizeValues<'_>>>
+pub fn cugraph::community::subgraph::ExtractEgoResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::community::subgraph::ExtractEgoResult::weights(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::ScoreValues<'_>>>
+impl core::fmt::Debug for cugraph::community::subgraph::ExtractEgoResult
+pub fn cugraph::community::subgraph::ExtractEgoResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::community::subgraph::KTrussSubgraphParams
+pub cugraph::community::subgraph::KTrussSubgraphParams::do_expensive_check: bool
+pub cugraph::community::subgraph::KTrussSubgraphParams::k: core::num::nonzero::NonZeroUsize
+impl core::default::Default for cugraph::community::subgraph::KTrussSubgraphParams
+pub fn cugraph::community::subgraph::KTrussSubgraphParams::default() -> Self
+pub struct cugraph::community::subgraph::KTrussSubgraphResult(_)
+impl cugraph::community::subgraph::KTrussSubgraphResult
+pub fn cugraph::community::subgraph::KTrussSubgraphResult::destinations(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::community::subgraph::KTrussSubgraphResult::edge_ids(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::IntegerValues<'_>>>
+pub fn cugraph::community::subgraph::KTrussSubgraphResult::edge_type_ids(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::IntegerValues<'_>>>
+pub fn cugraph::community::subgraph::KTrussSubgraphResult::sources(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::community::subgraph::KTrussSubgraphResult::subgraph_offsets(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::SizeValues<'_>>>
+pub fn cugraph::community::subgraph::KTrussSubgraphResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::community::subgraph::KTrussSubgraphResult::weights(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::ScoreValues<'_>>>
+impl core::fmt::Debug for cugraph::community::subgraph::KTrussSubgraphResult
+pub fn cugraph::community::subgraph::KTrussSubgraphResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub mod cugraph::community::triangle_count
+pub struct cugraph::community::triangle_count::TriangleCountParams
+pub cugraph::community::triangle_count::TriangleCountParams::do_expensive_check: bool
+pub struct cugraph::community::triangle_count::TriangleCountResult
+impl cugraph::community::triangle_count::TriangleCountResult
+pub fn cugraph::community::triangle_count::TriangleCountResult::counts(&self) -> cugraph::error::Result<cugraph::structure::typed_results::IntegerValues<'_>>
+pub fn cugraph::community::triangle_count::TriangleCountResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::community::triangle_count::TriangleCountResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::community::triangle_count::TriangleCountResult
+pub fn cugraph::community::triangle_count::TriangleCountResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for cugraph::community::triangle_count::TriangleCountResult
+pub fn cugraph::community::triangle_count::TriangleCountResult::drop(&mut self)
+pub struct cugraph::community::EcgParams
+pub cugraph::community::EcgParams::do_expensive_check: bool
+pub cugraph::community::EcgParams::ensemble_size: cugraph::params::IterationCount
+pub cugraph::community::EcgParams::max_level: cugraph::params::IterationCount
+pub cugraph::community::EcgParams::min_weight: cugraph::params::NonNegativeF64
+pub cugraph::community::EcgParams::resolution: cugraph::params::PositiveF64
+pub cugraph::community::EcgParams::threshold: cugraph::params::NonNegativeF64
+impl core::default::Default for cugraph::community::ecg::EcgParams
+pub fn cugraph::community::ecg::EcgParams::default() -> Self
+pub struct cugraph::community::EcgResult(_)
+impl cugraph::community::EcgResult
+pub fn cugraph::community::EcgResult::clusters(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::community::EcgResult::modularity(&self) -> f64
+pub fn cugraph::community::EcgResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::community::EcgResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::community::EcgResult
+pub fn cugraph::community::EcgResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::community::ExtractEgoParams
+pub cugraph::community::ExtractEgoParams::do_expensive_check: bool
+pub cugraph::community::ExtractEgoParams::radius: core::num::nonzero::NonZeroUsize
+impl core::default::Default for cugraph::community::subgraph::ExtractEgoParams
+pub fn cugraph::community::subgraph::ExtractEgoParams::default() -> Self
+pub struct cugraph::community::ExtractEgoResult(_)
+impl cugraph::community::subgraph::ExtractEgoResult
+pub fn cugraph::community::subgraph::ExtractEgoResult::destinations(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::community::subgraph::ExtractEgoResult::edge_ids(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::IntegerValues<'_>>>
+pub fn cugraph::community::subgraph::ExtractEgoResult::edge_type_ids(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::IntegerValues<'_>>>
+pub fn cugraph::community::subgraph::ExtractEgoResult::sources(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::community::subgraph::ExtractEgoResult::subgraph_offsets(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::SizeValues<'_>>>
+pub fn cugraph::community::subgraph::ExtractEgoResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::community::subgraph::ExtractEgoResult::weights(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::ScoreValues<'_>>>
+impl core::fmt::Debug for cugraph::community::subgraph::ExtractEgoResult
+pub fn cugraph::community::subgraph::ExtractEgoResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::community::KTrussSubgraphParams
+pub cugraph::community::KTrussSubgraphParams::do_expensive_check: bool
+pub cugraph::community::KTrussSubgraphParams::k: core::num::nonzero::NonZeroUsize
+impl core::default::Default for cugraph::community::subgraph::KTrussSubgraphParams
+pub fn cugraph::community::subgraph::KTrussSubgraphParams::default() -> Self
+pub struct cugraph::community::KTrussSubgraphResult(_)
+impl cugraph::community::subgraph::KTrussSubgraphResult
+pub fn cugraph::community::subgraph::KTrussSubgraphResult::destinations(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::community::subgraph::KTrussSubgraphResult::edge_ids(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::IntegerValues<'_>>>
+pub fn cugraph::community::subgraph::KTrussSubgraphResult::edge_type_ids(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::IntegerValues<'_>>>
+pub fn cugraph::community::subgraph::KTrussSubgraphResult::sources(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::community::subgraph::KTrussSubgraphResult::subgraph_offsets(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::SizeValues<'_>>>
+pub fn cugraph::community::subgraph::KTrussSubgraphResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::community::subgraph::KTrussSubgraphResult::weights(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::ScoreValues<'_>>>
+impl core::fmt::Debug for cugraph::community::subgraph::KTrussSubgraphResult
+pub fn cugraph::community::subgraph::KTrussSubgraphResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::community::LeidenParams
+pub cugraph::community::LeidenParams::do_expensive_check: bool
+pub cugraph::community::LeidenParams::max_level: cugraph::params::IterationCount
+pub cugraph::community::LeidenParams::resolution: cugraph::params::PositiveF64
+pub cugraph::community::LeidenParams::theta: cugraph::params::PositiveF64
+impl core::default::Default for cugraph::community::leiden::LeidenParams
+pub fn cugraph::community::leiden::LeidenParams::default() -> Self
+pub struct cugraph::community::LeidenResult(_)
+impl cugraph::community::LeidenResult
+pub fn cugraph::community::LeidenResult::clusters(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::community::LeidenResult::modularity(&self) -> f64
+pub fn cugraph::community::LeidenResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::community::LeidenResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::community::LeidenResult
+pub fn cugraph::community::LeidenResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::community::LouvainParams
+pub cugraph::community::LouvainParams::do_expensive_check: bool
+pub cugraph::community::LouvainParams::max_level: cugraph::params::IterationCount
+pub cugraph::community::LouvainParams::resolution: cugraph::params::PositiveF64
+pub cugraph::community::LouvainParams::threshold: cugraph::params::NonNegativeF64
+impl core::default::Default for cugraph::community::louvain::LouvainParams
+pub fn cugraph::community::louvain::LouvainParams::default() -> Self
+pub struct cugraph::community::LouvainResult(_)
+impl cugraph::community::LouvainResult
+pub fn cugraph::community::LouvainResult::clusters(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::community::LouvainResult::modularity(&self) -> f64
+pub fn cugraph::community::LouvainResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::community::LouvainResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::community::LouvainResult
+pub fn cugraph::community::LouvainResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::community::SpectralClusteringParams
+pub cugraph::community::SpectralClusteringParams::do_expensive_check: bool
+pub cugraph::community::SpectralClusteringParams::evs_max_iterations: cugraph::params::IterationCount
+pub cugraph::community::SpectralClusteringParams::evs_tolerance: cugraph::params::NonNegativeF64
+pub cugraph::community::SpectralClusteringParams::k_means_max_iterations: cugraph::params::IterationCount
+pub cugraph::community::SpectralClusteringParams::k_means_tolerance: cugraph::params::NonNegativeF64
+pub cugraph::community::SpectralClusteringParams::n_clusters: core::num::nonzero::NonZeroUsize
+pub cugraph::community::SpectralClusteringParams::n_eigenvectors: core::num::nonzero::NonZeroUsize
+impl core::default::Default for cugraph::community::clustering::SpectralClusteringParams
+pub fn cugraph::community::clustering::SpectralClusteringParams::default() -> Self
+pub struct cugraph::community::SpectralClusteringResult(_)
+impl cugraph::community::clustering::SpectralClusteringResult
+pub fn cugraph::community::clustering::SpectralClusteringResult::clusters(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::community::clustering::SpectralClusteringResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::community::clustering::SpectralClusteringResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::community::clustering::SpectralClusteringResult
+pub fn cugraph::community::clustering::SpectralClusteringResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::community::TriangleCountParams
+pub cugraph::community::TriangleCountParams::do_expensive_check: bool
+pub struct cugraph::community::TriangleCountResult
+impl cugraph::community::triangle_count::TriangleCountResult
+pub fn cugraph::community::triangle_count::TriangleCountResult::counts(&self) -> cugraph::error::Result<cugraph::structure::typed_results::IntegerValues<'_>>
+pub fn cugraph::community::triangle_count::TriangleCountResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::community::triangle_count::TriangleCountResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::community::triangle_count::TriangleCountResult
+pub fn cugraph::community::triangle_count::TriangleCountResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for cugraph::community::triangle_count::TriangleCountResult
+pub fn cugraph::community::triangle_count::TriangleCountResult::drop(&mut self)
+pub mod cugraph::cudf_interop
+pub enum cugraph::cudf_interop::GraphConstructionPolicy
+pub cugraph::cudf_interop::GraphConstructionPolicy::PythonCugraph
+pub cugraph::cudf_interop::GraphConstructionPolicy::RawLibcugraph
+pub struct cugraph::cudf_interop::BfsSideInputPreflight
+impl cugraph::cudf_interop::BfsSideInputPreflight
+pub const fn cugraph::cudf_interop::BfsSideInputPreflight::additional_peak_bytes(self) -> u64
+pub const fn cugraph::cudf_interop::BfsSideInputPreflight::edge_mask_bytes(self) -> u64
+pub const fn cugraph::cudf_interop::BfsSideInputPreflight::peak_bytes(self) -> u64
+pub const fn cugraph::cudf_interop::BfsSideInputPreflight::predicate_bitmap_bytes(self) -> u64
+pub const fn cugraph::cudf_interop::BfsSideInputPreflight::source_copy_bytes(self) -> u64
+pub struct cugraph::cudf_interop::BfsSideInputPreflightInput
+impl cugraph::cudf_interop::BfsSideInputPreflightInput
+pub const fn cugraph::cudf_interop::BfsSideInputPreflightInput::edge_type(self) -> cugraph::types::DataType
+pub fn cugraph::cudf_interop::BfsSideInputPreflightInput::exclude_vertices_rows(self) -> core::option::Option<usize>
+pub fn cugraph::cudf_interop::BfsSideInputPreflightInput::include_edge_ids_rows(self) -> core::option::Option<usize>
+pub fn cugraph::cudf_interop::BfsSideInputPreflightInput::include_vertices_rows(self) -> core::option::Option<usize>
+pub fn cugraph::cudf_interop::BfsSideInputPreflightInput::new(cugraph::types::DataType, cugraph::types::DataType, usize, usize, usize, core::option::Option<usize>, core::option::Option<usize>, core::option::Option<usize>, core::option::Option<usize>) -> cugraph::error::Result<Self>
+pub const fn cugraph::cudf_interop::BfsSideInputPreflightInput::num_edges(self) -> usize
+pub const fn cugraph::cudf_interop::BfsSideInputPreflightInput::num_vertices(self) -> usize
+pub const fn cugraph::cudf_interop::BfsSideInputPreflightInput::source_rows(self) -> usize
+pub fn cugraph::cudf_interop::BfsSideInputPreflightInput::target_vertices_rows(self) -> core::option::Option<usize>
+pub const fn cugraph::cudf_interop::BfsSideInputPreflightInput::vertex_type(self) -> cugraph::types::DataType
+pub struct cugraph::cudf_interop::GraphConstructionPreflight
+impl cugraph::cudf_interop::GraphConstructionPreflight
+pub const fn cugraph::cudf_interop::GraphConstructionPreflight::compression_workspace_bytes(self) -> u64
+pub const fn cugraph::cudf_interop::GraphConstructionPreflight::renumber_workspace_bytes(self) -> u64
+pub struct cugraph::cudf_interop::GraphConstructionPreflightInput
+impl cugraph::cudf_interop::GraphConstructionPreflightInput
+pub const fn cugraph::cudf_interop::GraphConstructionPreflightInput::edge_type(self) -> cugraph::types::DataType
+pub const fn cugraph::cudf_interop::GraphConstructionPreflightInput::has_edge_ids(self) -> bool
+pub fn cugraph::cudf_interop::GraphConstructionPreflightInput::new(cugraph::types::DataType, cugraph::types::DataType, core::option::Option<cugraph::types::DataType>, bool, bool, bool, usize, usize) -> cugraph::error::Result<Self>
+pub const fn cugraph::cudf_interop::GraphConstructionPreflightInput::num_edges(self) -> usize
+pub const fn cugraph::cudf_interop::GraphConstructionPreflightInput::num_vertices(self) -> usize
+pub const fn cugraph::cudf_interop::GraphConstructionPreflightInput::renumber(self) -> bool
+pub const fn cugraph::cudf_interop::GraphConstructionPreflightInput::store_transposed(self) -> bool
+pub const fn cugraph::cudf_interop::GraphConstructionPreflightInput::vertex_type(self) -> cugraph::types::DataType
+pub const fn cugraph::cudf_interop::GraphConstructionPreflightInput::weight_type(self) -> core::option::Option<cugraph::types::DataType>
+pub struct cugraph::cudf_interop::PersonalizedPageRankSideInputPreflight
+impl cugraph::cudf_interop::PersonalizedPageRankSideInputPreflight
+pub const fn cugraph::cudf_interop::PersonalizedPageRankSideInputPreflight::additional_peak_bytes(self) -> u64
+pub const fn cugraph::cudf_interop::PersonalizedPageRankSideInputPreflight::copy_bytes(self) -> u64
+pub const fn cugraph::cudf_interop::PersonalizedPageRankSideInputPreflight::peak_bytes(self) -> u64
+pub struct cugraph::cudf_interop::PersonalizedPageRankSideInputPreflightInput
+impl cugraph::cudf_interop::PersonalizedPageRankSideInputPreflightInput
+pub fn cugraph::cudf_interop::PersonalizedPageRankSideInputPreflightInput::new(cugraph::types::DataType, cugraph::types::DataType, usize) -> cugraph::error::Result<Self>
+pub const fn cugraph::cudf_interop::PersonalizedPageRankSideInputPreflightInput::rows(self) -> usize
+pub const fn cugraph::cudf_interop::PersonalizedPageRankSideInputPreflightInput::vertex_type(self) -> cugraph::types::DataType
+pub const fn cugraph::cudf_interop::PersonalizedPageRankSideInputPreflightInput::weight_type(self) -> cugraph::types::DataType
+pub struct cugraph::cudf_interop::PreparedGraphOptions
+pub cugraph::cudf_interop::PreparedGraphOptions::construction_policy: cugraph::cudf_interop::GraphConstructionPolicy
+pub cugraph::cudf_interop::PreparedGraphOptions::properties: cugraph::types::GraphProperties
+pub cugraph::cudf_interop::PreparedGraphOptions::renumber: bool
+impl cugraph::cudf_interop::PreparedGraphOptions
+pub fn cugraph::cudf_interop::PreparedGraphOptions::construction_policy(self, cugraph::cudf_interop::GraphConstructionPolicy) -> Self
+pub fn cugraph::cudf_interop::PreparedGraphOptions::properties(self, cugraph::types::GraphProperties) -> Self
+pub fn cugraph::cudf_interop::PreparedGraphOptions::renumber(self) -> Self
+pub struct cugraph::cudf_interop::TableGraphOptions
+pub cugraph::cudf_interop::TableGraphOptions::construction_policy: cugraph::cudf_interop::GraphConstructionPolicy
+pub cugraph::cudf_interop::TableGraphOptions::dst_col: usize
+pub cugraph::cudf_interop::TableGraphOptions::edge_id_col: core::option::Option<usize>
+pub cugraph::cudf_interop::TableGraphOptions::properties: cugraph::types::GraphProperties
+pub cugraph::cudf_interop::TableGraphOptions::renumber: bool
+pub cugraph::cudf_interop::TableGraphOptions::src_col: usize
+pub cugraph::cudf_interop::TableGraphOptions::weight_col: core::option::Option<usize>
+impl cugraph::cudf_interop::TableGraphOptions
+pub fn cugraph::cudf_interop::TableGraphOptions::construction_policy(self, cugraph::cudf_interop::GraphConstructionPolicy) -> Self
+pub fn cugraph::cudf_interop::TableGraphOptions::edge_id_col(self, usize) -> Self
+pub fn cugraph::cudf_interop::TableGraphOptions::new(usize, usize) -> Self
+pub fn cugraph::cudf_interop::TableGraphOptions::properties(self, cugraph::types::GraphProperties) -> Self
+pub fn cugraph::cudf_interop::TableGraphOptions::renumber(self) -> Self
+pub fn cugraph::cudf_interop::TableGraphOptions::weight_col(self, usize) -> Self
+pub struct cugraph::cudf_interop::TableVertexPairOptions
+pub cugraph::cudf_interop::TableVertexPairOptions::first_col: usize
+pub cugraph::cudf_interop::TableVertexPairOptions::second_col: usize
+impl cugraph::cudf_interop::TableVertexPairOptions
+pub const fn cugraph::cudf_interop::TableVertexPairOptions::new(usize, usize) -> Self
+pub trait cugraph::cudf_interop::IntoSeries
+pub fn cugraph::cudf_interop::IntoSeries::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
+impl cugraph::cudf_interop::IntoSeries for cugraph::structure::degrees::DegreeValues<'_>
+pub fn cugraph::structure::degrees::DegreeValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
+impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::Distances<'_>
+pub fn cugraph::structure::typed_results::Distances<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
+impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::IntegerValues<'_>
+pub fn cugraph::structure::typed_results::IntegerValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
+impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::ScoreValues<'_>
+pub fn cugraph::structure::typed_results::ScoreValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
+impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::VertexIds<'_>
+pub fn cugraph::structure::typed_results::VertexIds<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
+pub fn cugraph::cudf_interop::bfs_side_input_workspace_preflight(&cugraph::cudf_interop::BfsSideInputPreflightInput) -> cugraph::error::Result<cugraph::cudf_interop::BfsSideInputPreflight>
+pub fn cugraph::cudf_interop::cudf_type_to_cugraph(cudf::core::types::TypeId) -> core::option::Option<cugraph::types::DataType>
+pub fn cugraph::cudf_interop::cugraph_type_to_cudf(cugraph::types::DataType) -> core::option::Option<cudf::core::types::TypeId>
+pub fn cugraph::cudf_interop::device_array_view_from_slice<'a, T: cugraph::types::CugraphElement>(&'a cudf::core::column::device_slice::DeviceSlice<'a>) -> cugraph::error::Result<cugraph::array::DeviceArrayView<'a, T>>
+pub fn cugraph::cudf_interop::graph_construction_workspace_preflight(&cugraph::cudf_interop::GraphConstructionPreflightInput) -> cugraph::error::Result<cugraph::cudf_interop::GraphConstructionPreflight>
+pub fn cugraph::cudf_interop::graph_from_prepared_columns<T: cugraph::graph::Transposition>(&cugraph::handle::EnteredContext<'_>, &rapids_interop::prepared::PreparedColumnExport<'_>, &rapids_interop::prepared::PreparedColumnExport<'_>, core::option::Option<&rapids_interop::prepared::PreparedColumnExport<'_>>, &cugraph::cudf_interop::PreparedGraphOptions) -> cugraph::error::Result<cugraph::graph::Graph<T>>
+pub fn cugraph::cudf_interop::graph_from_prepared_table_export<T: cugraph::graph::Transposition>(&cugraph::handle::EnteredContext<'_>, &rapids_interop::prepared::PreparedTableExport<'_>, &cugraph::cudf_interop::TableGraphOptions) -> cugraph::error::Result<cugraph::graph::Graph<T>>
+pub fn cugraph::cudf_interop::personalized_pagerank_side_input_workspace_preflight(&cugraph::cudf_interop::PersonalizedPageRankSideInputPreflightInput) -> cugraph::error::Result<cugraph::cudf_interop::PersonalizedPageRankSideInputPreflight>
+pub fn cugraph::cudf_interop::vertex_pairs_from_prepared_columns<T: cugraph::graph::Transposition>(&cugraph::handle::EnteredContext<'_>, &mut cugraph::graph::Graph<T>, &rapids_interop::prepared::PreparedColumnExport<'_>, &rapids_interop::prepared::PreparedColumnExport<'_>) -> cugraph::error::Result<cugraph::similarity::VertexPairs>
+pub fn cugraph::cudf_interop::vertex_pairs_from_prepared_table_export<T: cugraph::graph::Transposition>(&cugraph::handle::EnteredContext<'_>, &mut cugraph::graph::Graph<T>, &rapids_interop::prepared::PreparedTableExport<'_>, &cugraph::cudf_interop::TableVertexPairOptions) -> cugraph::error::Result<cugraph::similarity::VertexPairs>
+pub mod cugraph::error
+pub enum cugraph::error::AllocationSource
+pub cugraph::error::AllocationSource::RmmBadAlloc
+pub cugraph::error::AllocationSource::RmmOutOfMemory
+pub cugraph::error::AllocationSource::StdBadAlloc
+pub cugraph::error::AllocationSource::Unknown
+impl cugraph::error::AllocationSource
+pub const fn cugraph::error::AllocationSource::as_str(self) -> &'static str
+impl core::fmt::Display for cugraph::error::AllocationSource
+pub fn cugraph::error::AllocationSource::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum cugraph::error::ErrorKind
+pub cugraph::error::ErrorKind::InvalidHandle
+pub cugraph::error::ErrorKind::InvalidInput
+pub cugraph::error::ErrorKind::InvalidState
+pub cugraph::error::ErrorKind::IoError
+pub cugraph::error::ErrorKind::NonConvergence
+pub cugraph::error::ErrorKind::NotImplemented
+pub cugraph::error::ErrorKind::OutOfMemory
+pub cugraph::error::ErrorKind::Unexpected
+pub cugraph::error::ErrorKind::UnsupportedType
+impl cugraph::error::ErrorKind
+pub fn cugraph::error::ErrorKind::from_error_code(cugraph_sys::cugraph_error_code_) -> Self
+pub fn cugraph::error::ErrorKind::from_error_code_raw(u32) -> Self
+impl core::fmt::Display for cugraph::error::ErrorKind
+pub fn cugraph::error::ErrorKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum cugraph::error::ErrorStatus
+pub cugraph::error::ErrorStatus::Permanent
+pub cugraph::error::ErrorStatus::Persistent
+pub cugraph::error::ErrorStatus::Temporary
+impl core::fmt::Display for cugraph::error::ErrorStatus
+pub fn cugraph::error::ErrorStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::error::Error
+impl cugraph::error::Error
+pub fn cugraph::error::Error::allocation_source(&self) -> cugraph::error::AllocationSource
+pub fn cugraph::error::Error::context_value(&self, &str) -> core::option::Option<&str>
+pub fn cugraph::error::Error::is_permanent(&self) -> bool
+pub fn cugraph::error::Error::is_persistent(&self) -> bool
+pub fn cugraph::error::Error::is_temporary(&self) -> bool
+pub fn cugraph::error::Error::kind(&self) -> cugraph::error::ErrorKind
+pub fn cugraph::error::Error::message(&self) -> &str
+pub fn cugraph::error::Error::new(cugraph::error::ErrorKind, &'static str) -> Self
+pub fn cugraph::error::Error::operation(&self) -> &'static str
+pub fn cugraph::error::Error::set_permanent(self) -> Self
+pub fn cugraph::error::Error::set_persistent(self) -> Self
+pub fn cugraph::error::Error::set_source<E>(self, E) -> Self where E: core::error::Error + core::marker::Send + core::marker::Sync + 'static
+pub fn cugraph::error::Error::set_temporary(self) -> Self
+pub fn cugraph::error::Error::status(&self) -> cugraph::error::ErrorStatus
+pub fn cugraph::error::Error::with_context(self, &'static str, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn cugraph::error::Error::with_message(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn cugraph::error::Error::with_operation(self, &'static str) -> Self
+impl core::error::Error for cugraph::error::Error
+pub fn cugraph::error::Error::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for cugraph::error::Error
+pub fn cugraph::error::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for cugraph::error::Error
+pub fn cugraph::error::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub type cugraph::error::Result<T> = core::result::Result<T, cugraph::error::Error>
+pub mod cugraph::graph
+pub struct cugraph::graph::Forward
+impl cugraph::graph::Transposition for cugraph::graph::Forward
+pub struct cugraph::graph::Graph<T>
+impl cugraph::graph::Graph<cugraph::graph::Forward>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::analyze_clustering_edge_cut<V: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, core::num::nonzero::NonZeroUsize, &cugraph::array::DeviceArrayView<'_, V>, &cugraph::array::DeviceArrayView<'_, V>) -> cugraph::error::Result<f64>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::analyze_clustering_modularity<V: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, core::num::nonzero::NonZeroUsize, &cugraph::array::DeviceArrayView<'_, V>, &cugraph::array::DeviceArrayView<'_, V>) -> cugraph::error::Result<f64>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::analyze_clustering_ratio_cut<V: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, core::num::nonzero::NonZeroUsize, &cugraph::array::DeviceArrayView<'_, V>, &cugraph::array::DeviceArrayView<'_, V>) -> cugraph::error::Result<f64>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::bfs<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::traversal::bfs::BfsParams) -> cugraph::error::Result<cugraph::traversal::bfs::BfsResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::bfs_with_predicates<'a, V, E>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::traversal::bfs::BfsParams, &cugraph::traversal::bfs::BfsPredicateParams<'a, V, E>) -> cugraph::error::Result<cugraph::traversal::bfs::BfsResult> where V: cugraph::types::CugraphElement + 'a, E: cugraph::types::CugraphElement + 'a
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::biased_random_walks<V: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &cugraph::array::DeviceArrayView<'_, V>, &cugraph::sampling::RandomWalkParams) -> cugraph::error::Result<cugraph::sampling::RandomWalkResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::ecg(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &cugraph::community::ecg::EcgParams) -> cugraph::error::Result<cugraph::community::EcgResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::homogeneous_biased_neighbor_sample<V: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &cugraph::array::DeviceArrayView<'_, V>, core::option::Option<&cugraph::array::DeviceArrayView<'_, usize>>, &cugraph::sampling::NeighborSamplingParams) -> cugraph::error::Result<cugraph::sampling::SampleResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::homogeneous_biased_temporal_neighbor_sample<V, Tm>(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &str, &cugraph::array::DeviceArrayView<'_, V>, core::option::Option<&cugraph::array::DeviceArrayView<'_, Tm>>, core::option::Option<&cugraph::array::DeviceArrayView<'_, usize>>, &cugraph::sampling::NeighborSamplingParams) -> cugraph::error::Result<cugraph::sampling::SampleResult> where V: cugraph::types::CugraphElement, Tm: cugraph::types::CugraphElement
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::homogeneous_uniform_neighbor_sample<V: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &cugraph::array::DeviceArrayView<'_, V>, core::option::Option<&cugraph::array::DeviceArrayView<'_, usize>>, &cugraph::sampling::NeighborSamplingParams) -> cugraph::error::Result<cugraph::sampling::SampleResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::homogeneous_uniform_temporal_neighbor_sample<V, Tm>(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &str, &cugraph::array::DeviceArrayView<'_, V>, core::option::Option<&cugraph::array::DeviceArrayView<'_, Tm>>, core::option::Option<&cugraph::array::DeviceArrayView<'_, usize>>, &cugraph::sampling::NeighborSamplingParams) -> cugraph::error::Result<cugraph::sampling::SampleResult> where V: cugraph::types::CugraphElement, Tm: cugraph::types::CugraphElement
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::leiden(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &cugraph::community::leiden::LeidenParams) -> cugraph::error::Result<cugraph::community::LeidenResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::louvain(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::community::louvain::LouvainParams) -> cugraph::error::Result<cugraph::community::LouvainResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::node2vec_random_walks<V: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &cugraph::array::DeviceArrayView<'_, V>, &cugraph::sampling::Node2VecRandomWalkParams) -> cugraph::error::Result<cugraph::sampling::RandomWalkResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::spectral_modularity_maximization(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &cugraph::community::clustering::SpectralClusteringParams) -> cugraph::error::Result<cugraph::community::clustering::SpectralClusteringResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::sssp<V>(&mut self, &cugraph::handle::EnteredContext<'_>, V, &cugraph::traversal::sssp::SsspParams) -> cugraph::error::Result<cugraph::traversal::sssp::SsspResult> where V: cugraph::types::CugraphElement + core::convert::TryInto<usize> + core::marker::Copy + core::fmt::Debug
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::uniform_random_walks<V: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &cugraph::array::DeviceArrayView<'_, V>, &cugraph::sampling::RandomWalkParams) -> cugraph::error::Result<cugraph::sampling::RandomWalkResult>
+impl cugraph::graph::Graph<cugraph::graph::Transposed>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::degrees<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>) -> cugraph::error::Result<cugraph::structure::degrees::DegreesResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::degrees_all(&mut self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::structure::degrees::DegreesResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::degrees_checked<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, bool) -> cugraph::error::Result<cugraph::structure::degrees::DegreesResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::eigenvector_centrality(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::vertex::EigenvectorCentralityParams) -> cugraph::error::Result<cugraph::centrality::EigenvectorCentralityResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::hits(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::hits::HitsParams) -> cugraph::error::Result<cugraph::centrality::HitsResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::hits_with_initial_hubs<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::hits::HitsParams, core::option::Option<&cugraph::centrality::hits::HitsInitialHubs<'_, V, W>>) -> cugraph::error::Result<cugraph::centrality::HitsResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::in_degrees<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>) -> cugraph::error::Result<cugraph::structure::degrees::InDegreesResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::in_degrees_all(&mut self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::structure::degrees::InDegreesResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::in_degrees_checked<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, bool) -> cugraph::error::Result<cugraph::structure::degrees::InDegreesResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::katz_centrality(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::vertex::KatzCentralityParams) -> cugraph::error::Result<cugraph::centrality::KatzCentralityResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::pagerank(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PageRankParams) -> cugraph::error::Result<cugraph::centrality::PageRankResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::pagerank_with<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PageRankParams, core::option::Option<&cugraph::centrality::pagerank::PrecomputedWeights<'_, V, W>>, core::option::Option<&cugraph::centrality::pagerank::InitialGuess<'_, V, W>>) -> cugraph::error::Result<cugraph::centrality::PageRankResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::personalized_pagerank<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PersonalizedPageRankParams, &cugraph::centrality::pagerank::PersonalizationVector<'_, V, W>) -> cugraph::error::Result<cugraph::centrality::PageRankResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::personalized_pagerank_with<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PersonalizedPageRankParams, &cugraph::centrality::pagerank::PersonalizationVector<'_, V, W>, core::option::Option<&cugraph::centrality::pagerank::PrecomputedWeights<'_, V, W>>, core::option::Option<&cugraph::centrality::pagerank::InitialGuess<'_, V, W>>) -> cugraph::error::Result<cugraph::centrality::PageRankResult>
+impl<T: cugraph::graph::Transposition> cugraph::graph::Graph<T>
+pub fn cugraph::graph::Graph<T>::all_pairs_cosine_similarity_coefficients<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::similarity::AllPairsSimilarityParams) -> cugraph::error::Result<cugraph::similarity::CosineSimilarityResult>
+pub fn cugraph::graph::Graph<T>::all_pairs_jaccard_coefficients<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::similarity::AllPairsSimilarityParams) -> cugraph::error::Result<cugraph::similarity::JaccardSimilarityResult>
+pub fn cugraph::graph::Graph<T>::all_pairs_overlap_coefficients<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::similarity::AllPairsSimilarityParams) -> cugraph::error::Result<cugraph::similarity::OverlapSimilarityResult>
+pub fn cugraph::graph::Graph<T>::all_pairs_sorensen_coefficients<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::similarity::AllPairsSimilarityParams) -> cugraph::error::Result<cugraph::similarity::SorensenSimilarityResult>
+pub fn cugraph::graph::Graph<T>::betweenness_centrality<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::centrality::betweenness::BetweennessCentralityParams) -> cugraph::error::Result<cugraph::centrality::BetweennessCentralityResult>
+pub fn cugraph::graph::Graph<T>::betweenness_centrality_all(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::betweenness::BetweennessCentralityParams) -> cugraph::error::Result<cugraph::centrality::BetweennessCentralityResult>
+pub fn cugraph::graph::Graph<T>::core_number(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::structure::core::CoreNumberParams) -> cugraph::error::Result<cugraph::structure::core::CoreNumberResult>
+pub fn cugraph::graph::Graph<T>::cosine_similarity_coefficients(&mut self, &cugraph::handle::EnteredContext<'_>, cugraph::similarity::VertexPairs, &cugraph::similarity::SimilarityParams) -> cugraph::error::Result<cugraph::similarity::CosineSimilarityResult>
+pub fn cugraph::graph::Graph<T>::edge_betweenness_centrality<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::centrality::edge_betweenness::EdgeBetweennessCentralityParams) -> cugraph::error::Result<cugraph::centrality::EdgeBetweennessCentralityResult>
+pub fn cugraph::graph::Graph<T>::edge_betweenness_centrality_all(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::edge_betweenness::EdgeBetweennessCentralityParams) -> cugraph::error::Result<cugraph::centrality::EdgeBetweennessCentralityResult>
+pub fn cugraph::graph::Graph<T>::extract_ego<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::community::subgraph::ExtractEgoParams) -> cugraph::error::Result<cugraph::community::subgraph::ExtractEgoResult>
+pub fn cugraph::graph::Graph<T>::force_atlas2(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &cugraph::layout::force_atlas2::ForceAtlas2Params) -> cugraph::error::Result<cugraph::layout::force_atlas2::LayoutResult>
+pub fn cugraph::graph::Graph<T>::force_atlas2_with<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &cugraph::layout::force_atlas2::ForceAtlas2Params, core::option::Option<&cugraph::layout::force_atlas2::ForceAtlas2VertexAttrs<'_, V, W>>, core::option::Option<&cugraph::layout::force_atlas2::InitialPositions<'_, V, W>>) -> cugraph::error::Result<cugraph::layout::force_atlas2::LayoutResult>
+pub fn cugraph::graph::Graph<T>::jaccard_coefficients(&mut self, &cugraph::handle::EnteredContext<'_>, cugraph::similarity::VertexPairs, &cugraph::similarity::SimilarityParams) -> cugraph::error::Result<cugraph::similarity::JaccardSimilarityResult>
+pub fn cugraph::graph::Graph<T>::k_core(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::structure::core::KCoreParams) -> cugraph::error::Result<cugraph::structure::core::KCoreResult>
+pub fn cugraph::graph::Graph<T>::k_core_with_core_numbers(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::structure::core::KCoreParams, &cugraph::structure::core::CoreNumberResult) -> cugraph::error::Result<cugraph::structure::core::KCoreResult>
+pub fn cugraph::graph::Graph<T>::k_truss_subgraph(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::community::subgraph::KTrussSubgraphParams) -> cugraph::error::Result<cugraph::community::subgraph::KTrussSubgraphResult>
+pub fn cugraph::graph::Graph<T>::minimum_spanning_tree(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeParams) -> cugraph::error::Result<cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeResult>
+pub fn cugraph::graph::Graph<T>::out_degrees<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>) -> cugraph::error::Result<cugraph::structure::degrees::OutDegreesResult>
+pub fn cugraph::graph::Graph<T>::out_degrees_all(&mut self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::structure::degrees::OutDegreesResult>
+pub fn cugraph::graph::Graph<T>::out_degrees_checked<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, bool) -> cugraph::error::Result<cugraph::structure::degrees::OutDegreesResult>
+pub fn cugraph::graph::Graph<T>::overlap_coefficients(&mut self, &cugraph::handle::EnteredContext<'_>, cugraph::similarity::VertexPairs, &cugraph::similarity::SimilarityParams) -> cugraph::error::Result<cugraph::similarity::OverlapSimilarityResult>
+pub fn cugraph::graph::Graph<T>::sorensen_coefficients(&mut self, &cugraph::handle::EnteredContext<'_>, cugraph::similarity::VertexPairs, &cugraph::similarity::SimilarityParams) -> cugraph::error::Result<cugraph::similarity::SorensenSimilarityResult>
+pub fn cugraph::graph::Graph<T>::strongly_connected_components(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::labeling::connected_components::ConnectedComponentsParams) -> cugraph::error::Result<cugraph::labeling::StronglyConnectedComponentsResult>
+pub fn cugraph::graph::Graph<T>::triangle_count<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::community::triangle_count::TriangleCountParams) -> cugraph::error::Result<cugraph::community::triangle_count::TriangleCountResult>
+pub fn cugraph::graph::Graph<T>::triangle_count_all(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::community::triangle_count::TriangleCountParams) -> cugraph::error::Result<cugraph::community::triangle_count::TriangleCountResult>
+pub fn cugraph::graph::Graph<T>::vertex_pairs<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>) -> cugraph::error::Result<cugraph::similarity::VertexPairs>
+pub fn cugraph::graph::Graph<T>::weakly_connected_components(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::labeling::connected_components::ConnectedComponentsParams) -> cugraph::error::Result<cugraph::labeling::WeaklyConnectedComponentsResult>
+impl<T> cugraph::graph::Graph<T>
+pub fn cugraph::graph::Graph<T>::edge_count(&mut self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<usize>
+pub fn cugraph::graph::Graph<T>::edge_count_checked(&mut self, &cugraph::handle::EnteredContext<'_>, bool) -> cugraph::error::Result<usize>
+pub fn cugraph::graph::Graph<T>::park(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::ParkedGraph<T>> where T: core::marker::Send
+pub fn cugraph::graph::Graph<T>::properties(&self) -> cugraph::types::GraphProperties
+pub fn cugraph::graph::Graph<T>::select_random_vertices<V: cugraph::types::CugraphElement>(&self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, usize) -> cugraph::error::Result<cugraph::array::DeviceArray<V>>
+pub fn cugraph::graph::Graph<T>::vertex_dtype(&self) -> cugraph::types::DataType
+pub fn cugraph::graph::Graph<T>::weight_dtype(&self) -> cugraph::types::DataType
+impl<T> core::fmt::Debug for cugraph::graph::Graph<T>
+pub fn cugraph::graph::Graph<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T> core::ops::drop::Drop for cugraph::graph::Graph<T>
+pub fn cugraph::graph::Graph<T>::drop(&mut self)
+pub struct cugraph::graph::GraphBuilder<'a>
+impl<'a> cugraph::graph::GraphBuilder<'a>
+pub fn cugraph::graph::GraphBuilder<'a>::build<T: cugraph::graph::Transposition>(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::Graph<T>>
+pub fn cugraph::graph::GraphBuilder<'a>::do_expensive_check(self) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::drop_multi_edges(self) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::drop_self_loops(self) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::edge_end_time_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::edge_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::edge_start_time_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::edge_type_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::new<V: cugraph::types::CugraphElement>(&'a cugraph::array::DeviceArrayView<'a, V>, &'a cugraph::array::DeviceArrayView<'a, V>) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::properties(self, cugraph::types::GraphProperties) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::renumber(self) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::symmetrize(self) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::vertices<V: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, V>) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::weights<W: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, W>) -> Self
+impl core::clone::Clone for cugraph::graph::GraphBuilder<'_>
+pub fn cugraph::graph::GraphBuilder<'_>::clone(&self) -> Self
+impl core::marker::Copy for cugraph::graph::GraphBuilder<'_>
+pub struct cugraph::graph::ParkedGraph<T>
+impl<T> cugraph::graph::ParkedGraph<T>
+pub fn cugraph::graph::ParkedGraph<T>::device(&self) -> i32
+pub fn cugraph::graph::ParkedGraph<T>::properties(&self) -> cugraph::types::GraphProperties
+pub fn cugraph::graph::ParkedGraph<T>::resume(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::Graph<T>>
+pub fn cugraph::graph::ParkedGraph<T>::vertex_dtype(&self) -> cugraph::types::DataType
+pub fn cugraph::graph::ParkedGraph<T>::weight_dtype(&self) -> cugraph::types::DataType
+impl<T: core::marker::Send> core::marker::Send for cugraph::graph::ParkedGraph<T>
+impl<T> core::fmt::Debug for cugraph::graph::ParkedGraph<T>
+pub fn cugraph::graph::ParkedGraph<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T> core::ops::drop::Drop for cugraph::graph::ParkedGraph<T>
+pub fn cugraph::graph::ParkedGraph<T>::drop(&mut self)
+pub struct cugraph::graph::Transposed
+impl cugraph::graph::Transposition for cugraph::graph::Transposed
+pub trait cugraph::graph::Transposition: cugraph::graph::sealed::Sealed
+impl cugraph::graph::Transposition for cugraph::graph::Forward
+impl cugraph::graph::Transposition for cugraph::graph::Transposed
+pub mod cugraph::handle
+pub struct cugraph::handle::EnteredContext<'a>
+impl cugraph::handle::EnteredContext<'_>
+pub fn cugraph::handle::EnteredContext<'_>::device(&self) -> i32
+pub fn cugraph::handle::EnteredContext<'_>::handle_ptr(&self) -> *mut cugraph_sys::cugraph_resource_handle_t
+pub fn cugraph::handle::EnteredContext<'_>::runtime(&self) -> core::option::Option<&cudf::runtime::owner::Runtime>
+impl core::fmt::Debug for cugraph::handle::EnteredContext<'_>
+pub fn cugraph::handle::EnteredContext<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::handle::ResourceHandle
+impl cugraph::handle::ResourceHandle
+pub unsafe fn cugraph::handle::ResourceHandle::adopt_raw_resource_handle(*mut cugraph_sys::cugraph_resource_handle_t) -> cugraph::error::Result<Self>
+pub fn cugraph::handle::ResourceHandle::comm_size(&self) -> i32
+pub fn cugraph::handle::ResourceHandle::device(&self) -> i32
+pub fn cugraph::handle::ResourceHandle::enter(&self, &'static str) -> cugraph::error::Result<cugraph::handle::EnteredContext<'_>>
+pub fn cugraph::handle::ResourceHandle::for_runtime(alloc::sync::Arc<cudf::runtime::owner::Runtime>) -> cugraph::error::Result<Self>
+pub unsafe fn cugraph::handle::ResourceHandle::from_raw_resource_handle(*mut cugraph_sys::cugraph_resource_handle_t) -> cugraph::error::Result<Self>
+pub fn cugraph::handle::ResourceHandle::into_raw_resource_handle(self) -> cugraph::error::Result<*mut cugraph_sys::cugraph_resource_handle_t>
+pub fn cugraph::handle::ResourceHandle::rank(&self) -> i32
+pub fn cugraph::handle::ResourceHandle::runtime(&self) -> core::option::Option<&cudf::runtime::owner::Runtime>
+impl core::fmt::Debug for cugraph::handle::ResourceHandle
+pub fn cugraph::handle::ResourceHandle::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for cugraph::handle::ResourceHandle
+pub fn cugraph::handle::ResourceHandle::drop(&mut self)
+pub mod cugraph::labeling
+pub mod cugraph::labeling::connected_components
+pub struct cugraph::labeling::connected_components::ConnectedComponentsParams
+pub cugraph::labeling::connected_components::ConnectedComponentsParams::do_expensive_check: bool
+pub struct cugraph::labeling::ConnectedComponentsParams
+pub cugraph::labeling::ConnectedComponentsParams::do_expensive_check: bool
+pub struct cugraph::labeling::StronglyConnectedComponentsResult(_)
+impl cugraph::labeling::StronglyConnectedComponentsResult
+pub fn cugraph::labeling::StronglyConnectedComponentsResult::labels(&self) -> cugraph::error::Result<cugraph::structure::typed_results::IntegerValues<'_>>
+pub fn cugraph::labeling::StronglyConnectedComponentsResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::labeling::StronglyConnectedComponentsResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::labeling::StronglyConnectedComponentsResult
+pub fn cugraph::labeling::StronglyConnectedComponentsResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::labeling::WeaklyConnectedComponentsResult(_)
+impl cugraph::labeling::WeaklyConnectedComponentsResult
+pub fn cugraph::labeling::WeaklyConnectedComponentsResult::labels(&self) -> cugraph::error::Result<cugraph::structure::typed_results::IntegerValues<'_>>
+pub fn cugraph::labeling::WeaklyConnectedComponentsResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::labeling::WeaklyConnectedComponentsResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::labeling::WeaklyConnectedComponentsResult
+pub fn cugraph::labeling::WeaklyConnectedComponentsResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub mod cugraph::layout
+pub mod cugraph::layout::force_atlas2
+pub struct cugraph::layout::force_atlas2::ForceAtlas2Params
+pub cugraph::layout::force_atlas2::ForceAtlas2Params::barnes_hut_optimize: bool
+pub cugraph::layout::force_atlas2::ForceAtlas2Params::barnes_hut_theta: cugraph::params::ClosedUnitF64
+pub cugraph::layout::force_atlas2::ForceAtlas2Params::do_expensive_check: bool
+pub cugraph::layout::force_atlas2::ForceAtlas2Params::edge_weight_influence: cugraph::params::NonNegativeF64
+pub cugraph::layout::force_atlas2::ForceAtlas2Params::gravity: cugraph::params::NonNegativeF64
+pub cugraph::layout::force_atlas2::ForceAtlas2Params::jitter_tolerance: cugraph::params::NonNegativeF64
+pub cugraph::layout::force_atlas2::ForceAtlas2Params::lin_log_mode: bool
+pub cugraph::layout::force_atlas2::ForceAtlas2Params::max_iter: cugraph::params::IterationCount
+pub cugraph::layout::force_atlas2::ForceAtlas2Params::outbound_attraction_distribution: bool
+pub cugraph::layout::force_atlas2::ForceAtlas2Params::overlap_scaling_ratio: cugraph::params::PositiveF64
+pub cugraph::layout::force_atlas2::ForceAtlas2Params::prevent_overlapping: bool
+pub cugraph::layout::force_atlas2::ForceAtlas2Params::scaling_ratio: cugraph::params::PositiveF64
+pub cugraph::layout::force_atlas2::ForceAtlas2Params::strong_gravity_mode: bool
+pub cugraph::layout::force_atlas2::ForceAtlas2Params::verbose: bool
+impl core::default::Default for cugraph::layout::force_atlas2::ForceAtlas2Params
+pub fn cugraph::layout::force_atlas2::ForceAtlas2Params::default() -> Self
+pub struct cugraph::layout::force_atlas2::ForceAtlas2VertexAttrs<'a, V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>
+pub cugraph::layout::force_atlas2::ForceAtlas2VertexAttrs::mass: core::option::Option<(&'a cugraph::array::DeviceArrayView<'a, V>, &'a cugraph::array::DeviceArrayView<'a, W>)>
+pub cugraph::layout::force_atlas2::ForceAtlas2VertexAttrs::mobility: core::option::Option<(&'a cugraph::array::DeviceArrayView<'a, V>, &'a cugraph::array::DeviceArrayView<'a, W>)>
+pub cugraph::layout::force_atlas2::ForceAtlas2VertexAttrs::radius: core::option::Option<(&'a cugraph::array::DeviceArrayView<'a, V>, &'a cugraph::array::DeviceArrayView<'a, W>)>
+impl<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement> core::default::Default for cugraph::layout::force_atlas2::ForceAtlas2VertexAttrs<'_, V, W>
+pub fn cugraph::layout::force_atlas2::ForceAtlas2VertexAttrs<'_, V, W>::default() -> Self
+impl<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement> core::fmt::Debug for cugraph::layout::force_atlas2::ForceAtlas2VertexAttrs<'_, V, W>
+pub fn cugraph::layout::force_atlas2::ForceAtlas2VertexAttrs<'_, V, W>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::layout::force_atlas2::InitialPositions<'a, V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>
+pub cugraph::layout::force_atlas2::InitialPositions::vertices: &'a cugraph::array::DeviceArrayView<'a, V>
+pub cugraph::layout::force_atlas2::InitialPositions::x: &'a cugraph::array::DeviceArrayView<'a, W>
+pub cugraph::layout::force_atlas2::InitialPositions::y: &'a cugraph::array::DeviceArrayView<'a, W>
+impl<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement> core::fmt::Debug for cugraph::layout::force_atlas2::InitialPositions<'_, V, W>
+pub fn cugraph::layout::force_atlas2::InitialPositions<'_, V, W>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::layout::force_atlas2::LayoutResult
+impl cugraph::layout::force_atlas2::LayoutResult
+pub fn cugraph::layout::force_atlas2::LayoutResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::layout::force_atlas2::LayoutResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::layout::force_atlas2::LayoutResult::x(&self) -> cugraph::error::Result<cugraph::structure::typed_results::ScoreValues<'_>>
+pub fn cugraph::layout::force_atlas2::LayoutResult::y(&self) -> cugraph::error::Result<cugraph::structure::typed_results::ScoreValues<'_>>
+impl core::fmt::Debug for cugraph::layout::force_atlas2::LayoutResult
+pub fn cugraph::layout::force_atlas2::LayoutResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for cugraph::layout::force_atlas2::LayoutResult
+pub fn cugraph::layout::force_atlas2::LayoutResult::drop(&mut self)
+pub struct cugraph::layout::ForceAtlas2Params
+pub cugraph::layout::ForceAtlas2Params::barnes_hut_optimize: bool
+pub cugraph::layout::ForceAtlas2Params::barnes_hut_theta: cugraph::params::ClosedUnitF64
+pub cugraph::layout::ForceAtlas2Params::do_expensive_check: bool
+pub cugraph::layout::ForceAtlas2Params::edge_weight_influence: cugraph::params::NonNegativeF64
+pub cugraph::layout::ForceAtlas2Params::gravity: cugraph::params::NonNegativeF64
+pub cugraph::layout::ForceAtlas2Params::jitter_tolerance: cugraph::params::NonNegativeF64
+pub cugraph::layout::ForceAtlas2Params::lin_log_mode: bool
+pub cugraph::layout::ForceAtlas2Params::max_iter: cugraph::params::IterationCount
+pub cugraph::layout::ForceAtlas2Params::outbound_attraction_distribution: bool
+pub cugraph::layout::ForceAtlas2Params::overlap_scaling_ratio: cugraph::params::PositiveF64
+pub cugraph::layout::ForceAtlas2Params::prevent_overlapping: bool
+pub cugraph::layout::ForceAtlas2Params::scaling_ratio: cugraph::params::PositiveF64
+pub cugraph::layout::ForceAtlas2Params::strong_gravity_mode: bool
+pub cugraph::layout::ForceAtlas2Params::verbose: bool
+impl core::default::Default for cugraph::layout::force_atlas2::ForceAtlas2Params
+pub fn cugraph::layout::force_atlas2::ForceAtlas2Params::default() -> Self
+pub struct cugraph::layout::ForceAtlas2VertexAttrs<'a, V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>
+pub cugraph::layout::ForceAtlas2VertexAttrs::mass: core::option::Option<(&'a cugraph::array::DeviceArrayView<'a, V>, &'a cugraph::array::DeviceArrayView<'a, W>)>
+pub cugraph::layout::ForceAtlas2VertexAttrs::mobility: core::option::Option<(&'a cugraph::array::DeviceArrayView<'a, V>, &'a cugraph::array::DeviceArrayView<'a, W>)>
+pub cugraph::layout::ForceAtlas2VertexAttrs::radius: core::option::Option<(&'a cugraph::array::DeviceArrayView<'a, V>, &'a cugraph::array::DeviceArrayView<'a, W>)>
+impl<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement> core::default::Default for cugraph::layout::force_atlas2::ForceAtlas2VertexAttrs<'_, V, W>
+pub fn cugraph::layout::force_atlas2::ForceAtlas2VertexAttrs<'_, V, W>::default() -> Self
+impl<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement> core::fmt::Debug for cugraph::layout::force_atlas2::ForceAtlas2VertexAttrs<'_, V, W>
+pub fn cugraph::layout::force_atlas2::ForceAtlas2VertexAttrs<'_, V, W>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::layout::InitialPositions<'a, V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>
+pub cugraph::layout::InitialPositions::vertices: &'a cugraph::array::DeviceArrayView<'a, V>
+pub cugraph::layout::InitialPositions::x: &'a cugraph::array::DeviceArrayView<'a, W>
+pub cugraph::layout::InitialPositions::y: &'a cugraph::array::DeviceArrayView<'a, W>
+impl<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement> core::fmt::Debug for cugraph::layout::force_atlas2::InitialPositions<'_, V, W>
+pub fn cugraph::layout::force_atlas2::InitialPositions<'_, V, W>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::layout::LayoutResult
+impl cugraph::layout::force_atlas2::LayoutResult
+pub fn cugraph::layout::force_atlas2::LayoutResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::layout::force_atlas2::LayoutResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::layout::force_atlas2::LayoutResult::x(&self) -> cugraph::error::Result<cugraph::structure::typed_results::ScoreValues<'_>>
+pub fn cugraph::layout::force_atlas2::LayoutResult::y(&self) -> cugraph::error::Result<cugraph::structure::typed_results::ScoreValues<'_>>
+impl core::fmt::Debug for cugraph::layout::force_atlas2::LayoutResult
+pub fn cugraph::layout::force_atlas2::LayoutResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for cugraph::layout::force_atlas2::LayoutResult
+pub fn cugraph::layout::force_atlas2::LayoutResult::drop(&mut self)
+pub mod cugraph::params
+pub struct cugraph::params::BfsDepthLimit(_)
+impl cugraph::params::BfsDepthLimit
+pub const fn cugraph::params::BfsDepthLimit::from_non_zero(core::num::nonzero::NonZeroUsize) -> Self
+pub const fn cugraph::params::BfsDepthLimit::get(self) -> usize
+pub const fn cugraph::params::BfsDepthLimit::into_inner(self) -> core::num::nonzero::NonZeroUsize
+pub fn cugraph::params::BfsDepthLimit::new(usize) -> cugraph::error::Result<Self>
+impl core::convert::From<cugraph::params::BfsDepthLimit> for usize
+pub fn usize::from(cugraph::params::BfsDepthLimit) -> usize
+impl core::convert::TryFrom<i32> for cugraph::params::BfsDepthLimit
+pub type cugraph::params::BfsDepthLimit::Error = cugraph::error::Error
+pub fn cugraph::params::BfsDepthLimit::try_from(i32) -> cugraph::error::Result<Self>
+impl core::convert::TryFrom<u32> for cugraph::params::BfsDepthLimit
+pub type cugraph::params::BfsDepthLimit::Error = cugraph::error::Error
+pub fn cugraph::params::BfsDepthLimit::try_from(u32) -> cugraph::error::Result<Self>
+impl core::convert::TryFrom<usize> for cugraph::params::BfsDepthLimit
+pub type cugraph::params::BfsDepthLimit::Error = cugraph::error::Error
+pub fn cugraph::params::BfsDepthLimit::try_from(usize) -> cugraph::error::Result<Self>
+impl core::fmt::Display for cugraph::params::BfsDepthLimit
+pub fn cugraph::params::BfsDepthLimit::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::params::ClosedUnitF64(_)
+impl cugraph::params::ClosedUnitF64
+pub const fn cugraph::params::ClosedUnitF64::get(self) -> f64
+pub fn cugraph::params::ClosedUnitF64::new(f64) -> cugraph::error::Result<Self>
+impl core::convert::From<cugraph::params::ClosedUnitF64> for f64
+pub fn f64::from(cugraph::params::ClosedUnitF64) -> f64
+impl core::convert::TryFrom<f64> for cugraph::params::ClosedUnitF64
+pub type cugraph::params::ClosedUnitF64::Error = cugraph::error::Error
+pub fn cugraph::params::ClosedUnitF64::try_from(f64) -> cugraph::error::Result<Self>
+impl core::fmt::Display for cugraph::params::ClosedUnitF64
+pub fn cugraph::params::ClosedUnitF64::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::params::IterationCount(_)
+impl cugraph::params::IterationCount
+pub const fn cugraph::params::IterationCount::from_non_zero(core::num::nonzero::NonZeroU32) -> Self
+pub const fn cugraph::params::IterationCount::get(self) -> u32
+pub const fn cugraph::params::IterationCount::into_inner(self) -> core::num::nonzero::NonZeroU32
+pub fn cugraph::params::IterationCount::new(u32) -> cugraph::error::Result<Self>
+impl core::convert::From<cugraph::params::IterationCount> for u32
+pub fn u32::from(cugraph::params::IterationCount) -> u32
+impl core::convert::From<cugraph::params::IterationCount> for usize
+pub fn usize::from(cugraph::params::IterationCount) -> usize
+impl core::convert::TryFrom<cugraph::params::IterationCount> for i32
+pub type i32::Error = cugraph::error::Error
+pub fn i32::try_from(cugraph::params::IterationCount) -> cugraph::error::Result<i32>
+impl core::convert::TryFrom<i32> for cugraph::params::IterationCount
+pub type cugraph::params::IterationCount::Error = cugraph::error::Error
+pub fn cugraph::params::IterationCount::try_from(i32) -> cugraph::error::Result<Self>
+impl core::convert::TryFrom<u32> for cugraph::params::IterationCount
+pub type cugraph::params::IterationCount::Error = cugraph::error::Error
+pub fn cugraph::params::IterationCount::try_from(u32) -> cugraph::error::Result<Self>
+impl core::convert::TryFrom<usize> for cugraph::params::IterationCount
+pub type cugraph::params::IterationCount::Error = cugraph::error::Error
+pub fn cugraph::params::IterationCount::try_from(usize) -> cugraph::error::Result<Self>
+impl core::fmt::Display for cugraph::params::IterationCount
+pub fn cugraph::params::IterationCount::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::params::NonNegativeF64(_)
+impl cugraph::params::NonNegativeF64
+pub const fn cugraph::params::NonNegativeF64::get(self) -> f64
+pub fn cugraph::params::NonNegativeF64::new(f64) -> cugraph::error::Result<Self>
+impl core::convert::From<cugraph::params::NonNegativeF64> for f64
+pub fn f64::from(cugraph::params::NonNegativeF64) -> f64
+impl core::convert::TryFrom<f64> for cugraph::params::NonNegativeF64
+pub type cugraph::params::NonNegativeF64::Error = cugraph::error::Error
+pub fn cugraph::params::NonNegativeF64::try_from(f64) -> cugraph::error::Result<Self>
+impl core::fmt::Display for cugraph::params::NonNegativeF64
+pub fn cugraph::params::NonNegativeF64::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::params::PositiveF64(_)
+impl cugraph::params::PositiveF64
+pub const fn cugraph::params::PositiveF64::get(self) -> f64
+pub fn cugraph::params::PositiveF64::new(f64) -> cugraph::error::Result<Self>
+impl core::convert::From<cugraph::params::PositiveF64> for f64
+pub fn f64::from(cugraph::params::PositiveF64) -> f64
+impl core::convert::TryFrom<f64> for cugraph::params::PositiveF64
+pub type cugraph::params::PositiveF64::Error = cugraph::error::Error
+pub fn cugraph::params::PositiveF64::try_from(f64) -> cugraph::error::Result<Self>
+impl core::fmt::Display for cugraph::params::PositiveF64
+pub fn cugraph::params::PositiveF64::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::params::UnitF64(_)
+impl cugraph::params::UnitF64
+pub const fn cugraph::params::UnitF64::get(self) -> f64
+pub fn cugraph::params::UnitF64::new(f64) -> cugraph::error::Result<Self>
+impl core::convert::From<cugraph::params::UnitF64> for f64
+pub fn f64::from(cugraph::params::UnitF64) -> f64
+impl core::convert::TryFrom<f64> for cugraph::params::UnitF64
+pub type cugraph::params::UnitF64::Error = cugraph::error::Error
+pub fn cugraph::params::UnitF64::try_from(f64) -> cugraph::error::Result<Self>
+impl core::fmt::Display for cugraph::params::UnitF64
+pub fn cugraph::params::UnitF64::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub mod cugraph::random
+pub struct cugraph::random::RngState
+impl cugraph::random::RngState
+pub fn cugraph::random::RngState::new(&cugraph::handle::EnteredContext<'_>, u64) -> cugraph::error::Result<Self>
+impl core::fmt::Debug for cugraph::random::RngState
+pub fn cugraph::random::RngState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for cugraph::random::RngState
+pub fn cugraph::random::RngState::drop(&mut self)
+pub mod cugraph::sampling
+pub enum cugraph::sampling::PriorSourcesBehavior
+pub cugraph::sampling::PriorSourcesBehavior::CarryOver
+pub cugraph::sampling::PriorSourcesBehavior::Default
+pub cugraph::sampling::PriorSourcesBehavior::Exclude
+pub enum cugraph::sampling::SamplingCompression
+pub cugraph::sampling::SamplingCompression::Coo
+pub cugraph::sampling::SamplingCompression::Csc
+pub cugraph::sampling::SamplingCompression::Csr
+pub cugraph::sampling::SamplingCompression::Dcsc
+pub cugraph::sampling::SamplingCompression::Dcsr
+pub enum cugraph::sampling::TemporalSamplingComparison
+pub cugraph::sampling::TemporalSamplingComparison::Last
+pub cugraph::sampling::TemporalSamplingComparison::MonotonicallyDecreasing
+pub cugraph::sampling::TemporalSamplingComparison::MonotonicallyIncreasing
+pub cugraph::sampling::TemporalSamplingComparison::StrictlyDecreasing
+pub cugraph::sampling::TemporalSamplingComparison::StrictlyIncreasing
+pub struct cugraph::sampling::NeighborSamplingParams
+pub cugraph::sampling::NeighborSamplingParams::do_expensive_check: bool
+pub cugraph::sampling::NeighborSamplingParams::fan_out: alloc::vec::Vec<i32>
+pub cugraph::sampling::NeighborSamplingParams::options: cugraph::sampling::SamplingOptions
+impl cugraph::sampling::NeighborSamplingParams
+pub fn cugraph::sampling::NeighborSamplingParams::new(alloc::vec::Vec<i32>) -> Self
+impl core::default::Default for cugraph::sampling::NeighborSamplingParams
+pub fn cugraph::sampling::NeighborSamplingParams::default() -> Self
+pub struct cugraph::sampling::Node2VecRandomWalkParams
+pub cugraph::sampling::Node2VecRandomWalkParams::max_length: core::num::nonzero::NonZeroUsize
+pub cugraph::sampling::Node2VecRandomWalkParams::p: cugraph::params::PositiveF64
+pub cugraph::sampling::Node2VecRandomWalkParams::q: cugraph::params::PositiveF64
+impl core::default::Default for cugraph::sampling::Node2VecRandomWalkParams
+pub fn cugraph::sampling::Node2VecRandomWalkParams::default() -> Self
+pub struct cugraph::sampling::RandomWalkParams
+pub cugraph::sampling::RandomWalkParams::max_length: core::num::nonzero::NonZeroUsize
+impl core::default::Default for cugraph::sampling::RandomWalkParams
+pub fn cugraph::sampling::RandomWalkParams::default() -> Self
+pub struct cugraph::sampling::RandomWalkResult
+impl cugraph::sampling::RandomWalkResult
+pub fn cugraph::sampling::RandomWalkResult::max_path_length(&self) -> usize
+pub fn cugraph::sampling::RandomWalkResult::paths(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::sampling::RandomWalkResult::weights(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::ScoreValues<'_>>>
+impl core::fmt::Debug for cugraph::sampling::RandomWalkResult
+pub fn cugraph::sampling::RandomWalkResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for cugraph::sampling::RandomWalkResult
+pub fn cugraph::sampling::RandomWalkResult::drop(&mut self)
+pub struct cugraph::sampling::SampleResult
+impl cugraph::sampling::SampleResult
+pub fn cugraph::sampling::SampleResult::edge_end_times(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::IntegerValues<'_>>>
+pub fn cugraph::sampling::SampleResult::edge_ids(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::IntegerValues<'_>>>
+pub fn cugraph::sampling::SampleResult::edge_renumber_map(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::IntegerValues<'_>>>
+pub fn cugraph::sampling::SampleResult::edge_renumber_map_offsets(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::SizeValues<'_>>>
+pub fn cugraph::sampling::SampleResult::edge_start_times(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::IntegerValues<'_>>>
+pub fn cugraph::sampling::SampleResult::edge_types(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::IntegerValues<'_>>>
+pub fn cugraph::sampling::SampleResult::edge_weights(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::ScoreValues<'_>>>
+pub fn cugraph::sampling::SampleResult::hops(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::IntegerValues<'_>>>
+pub fn cugraph::sampling::SampleResult::label_hop_offsets(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::SizeValues<'_>>>
+pub fn cugraph::sampling::SampleResult::label_type_hop_offsets(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::SizeValues<'_>>>
+pub fn cugraph::sampling::SampleResult::major_offsets(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::SizeValues<'_>>>
+pub fn cugraph::sampling::SampleResult::majors(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::VertexIds<'_>>>
+pub fn cugraph::sampling::SampleResult::minors(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::sampling::SampleResult::renumber_map(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::VertexIds<'_>>>
+pub fn cugraph::sampling::SampleResult::renumber_map_offsets(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::SizeValues<'_>>>
+pub fn cugraph::sampling::SampleResult::start_labels(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::IntegerValues<'_>>>
+impl core::fmt::Debug for cugraph::sampling::SampleResult
+pub fn cugraph::sampling::SampleResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for cugraph::sampling::SampleResult
+pub fn cugraph::sampling::SampleResult::drop(&mut self)
+pub struct cugraph::sampling::SamplingOptions
+pub cugraph::sampling::SamplingOptions::compress_per_hop: bool
+pub cugraph::sampling::SamplingOptions::compression: cugraph::sampling::SamplingCompression
+pub cugraph::sampling::SamplingOptions::dedupe_sources: bool
+pub cugraph::sampling::SamplingOptions::disjoint_sampling: bool
+pub cugraph::sampling::SamplingOptions::prior_sources_behavior: cugraph::sampling::PriorSourcesBehavior
+pub cugraph::sampling::SamplingOptions::renumber_results: bool
+pub cugraph::sampling::SamplingOptions::retain_seeds: bool
+pub cugraph::sampling::SamplingOptions::return_hops: bool
+pub cugraph::sampling::SamplingOptions::temporal_sampling_comparison: cugraph::sampling::TemporalSamplingComparison
+pub cugraph::sampling::SamplingOptions::with_replacement: bool
+pub mod cugraph::similarity
+pub struct cugraph::similarity::AllPairsSimilarityParams
+pub cugraph::similarity::AllPairsSimilarityParams::do_expensive_check: bool
+pub cugraph::similarity::AllPairsSimilarityParams::topk: core::option::Option<core::num::nonzero::NonZeroUsize>
+pub cugraph::similarity::AllPairsSimilarityParams::use_weight: bool
+pub struct cugraph::similarity::CosineSimilarityResult(_)
+impl cugraph::similarity::CosineSimilarityResult
+pub fn cugraph::similarity::CosineSimilarityResult::first(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::similarity::CosineSimilarityResult::scores(&self) -> cugraph::error::Result<cugraph::structure::typed_results::ScoreValues<'_>>
+pub fn cugraph::similarity::CosineSimilarityResult::second(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::similarity::CosineSimilarityResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::similarity::CosineSimilarityResult::vertex_pairs(&self) -> &cugraph::similarity::VertexPairs
+impl core::fmt::Debug for cugraph::similarity::CosineSimilarityResult
+pub fn cugraph::similarity::CosineSimilarityResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::similarity::JaccardSimilarityResult(_)
+impl cugraph::similarity::JaccardSimilarityResult
+pub fn cugraph::similarity::JaccardSimilarityResult::first(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::similarity::JaccardSimilarityResult::scores(&self) -> cugraph::error::Result<cugraph::structure::typed_results::ScoreValues<'_>>
+pub fn cugraph::similarity::JaccardSimilarityResult::second(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::similarity::JaccardSimilarityResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::similarity::JaccardSimilarityResult::vertex_pairs(&self) -> &cugraph::similarity::VertexPairs
+impl core::fmt::Debug for cugraph::similarity::JaccardSimilarityResult
+pub fn cugraph::similarity::JaccardSimilarityResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::similarity::OverlapSimilarityResult(_)
+impl cugraph::similarity::OverlapSimilarityResult
+pub fn cugraph::similarity::OverlapSimilarityResult::first(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::similarity::OverlapSimilarityResult::scores(&self) -> cugraph::error::Result<cugraph::structure::typed_results::ScoreValues<'_>>
+pub fn cugraph::similarity::OverlapSimilarityResult::second(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::similarity::OverlapSimilarityResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::similarity::OverlapSimilarityResult::vertex_pairs(&self) -> &cugraph::similarity::VertexPairs
+impl core::fmt::Debug for cugraph::similarity::OverlapSimilarityResult
+pub fn cugraph::similarity::OverlapSimilarityResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::similarity::SimilarityParams
+pub cugraph::similarity::SimilarityParams::do_expensive_check: bool
+pub cugraph::similarity::SimilarityParams::use_weight: bool
+pub struct cugraph::similarity::SorensenSimilarityResult(_)
+impl cugraph::similarity::SorensenSimilarityResult
+pub fn cugraph::similarity::SorensenSimilarityResult::first(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::similarity::SorensenSimilarityResult::scores(&self) -> cugraph::error::Result<cugraph::structure::typed_results::ScoreValues<'_>>
+pub fn cugraph::similarity::SorensenSimilarityResult::second(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::similarity::SorensenSimilarityResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::similarity::SorensenSimilarityResult::vertex_pairs(&self) -> &cugraph::similarity::VertexPairs
+impl core::fmt::Debug for cugraph::similarity::SorensenSimilarityResult
+pub fn cugraph::similarity::SorensenSimilarityResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::similarity::VertexPairs
+impl cugraph::similarity::VertexPairs
+pub fn cugraph::similarity::VertexPairs::first(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::similarity::VertexPairs::is_empty(&self) -> cugraph::error::Result<bool>
+pub fn cugraph::similarity::VertexPairs::len(&self) -> cugraph::error::Result<usize>
+pub fn cugraph::similarity::VertexPairs::second(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::similarity::VertexPairs::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+impl core::fmt::Debug for cugraph::similarity::VertexPairs
+pub fn cugraph::similarity::VertexPairs::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for cugraph::similarity::VertexPairs
+pub fn cugraph::similarity::VertexPairs::drop(&mut self)
+pub mod cugraph::structure
+pub mod cugraph::structure::core
+pub enum cugraph::structure::core::KCoreDegreeType
+pub cugraph::structure::core::KCoreDegreeType::In
+pub cugraph::structure::core::KCoreDegreeType::InOut
+pub cugraph::structure::core::KCoreDegreeType::Out
+impl core::convert::From<cugraph::structure::core::KCoreDegreeType> for cugraph_sys::cugraph_k_core_degree_type_t
+pub fn cugraph_sys::cugraph_k_core_degree_type_t::from(cugraph::structure::core::KCoreDegreeType) -> Self
+pub struct cugraph::structure::core::CoreNumberParams
+pub cugraph::structure::core::CoreNumberParams::degree_type: cugraph::structure::core::KCoreDegreeType
+pub cugraph::structure::core::CoreNumberParams::do_expensive_check: bool
+pub struct cugraph::structure::core::CoreNumberResult
+impl cugraph::structure::core::CoreNumberResult
+pub fn cugraph::structure::core::CoreNumberResult::core_numbers(&self) -> cugraph::error::Result<cugraph::structure::typed_results::IntegerValues<'_>>
+pub fn cugraph::structure::core::CoreNumberResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::structure::core::CoreNumberResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::structure::core::CoreNumberResult
+pub fn cugraph::structure::core::CoreNumberResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for cugraph::structure::core::CoreNumberResult
+pub fn cugraph::structure::core::CoreNumberResult::drop(&mut self)
+pub struct cugraph::structure::core::KCoreParams
+pub cugraph::structure::core::KCoreParams::degree_type: cugraph::structure::core::KCoreDegreeType
+pub cugraph::structure::core::KCoreParams::do_expensive_check: bool
+pub cugraph::structure::core::KCoreParams::k: core::num::nonzero::NonZeroUsize
+impl core::default::Default for cugraph::structure::core::KCoreParams
+pub fn cugraph::structure::core::KCoreParams::default() -> Self
+pub struct cugraph::structure::core::KCoreResult
+impl cugraph::structure::core::KCoreResult
+pub fn cugraph::structure::core::KCoreResult::destinations(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::structure::core::KCoreResult::sources(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::structure::core::KCoreResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::structure::core::KCoreResult::weights(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::ScoreValues<'_>>>
+impl core::fmt::Debug for cugraph::structure::core::KCoreResult
+pub fn cugraph::structure::core::KCoreResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for cugraph::structure::core::KCoreResult
+pub fn cugraph::structure::core::KCoreResult::drop(&mut self)
+pub mod cugraph::structure::degrees
+pub enum cugraph::structure::degrees::DegreeValues<'a>
+pub cugraph::structure::degrees::DegreeValues::I32(cugraph::array::DeviceArrayView<'a, i32>)
+pub cugraph::structure::degrees::DegreeValues::I64(cugraph::array::DeviceArrayView<'a, i64>)
+impl<'a> cugraph::structure::degrees::DegreeValues<'a>
+pub fn cugraph::structure::degrees::DegreeValues<'a>::is_empty(&self) -> bool
+pub fn cugraph::structure::degrees::DegreeValues<'a>::len(&self) -> usize
+pub fn cugraph::structure::degrees::DegreeValues<'a>::to_vec_i32(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i32>>
+pub fn cugraph::structure::degrees::DegreeValues<'a>::to_vec_i64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i64>>
+impl cugraph::cudf_interop::IntoSeries for cugraph::structure::degrees::DegreeValues<'_>
+pub fn cugraph::structure::degrees::DegreeValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
+pub struct cugraph::structure::degrees::DegreesResult(_)
+impl cugraph::structure::degrees::DegreesResult
+pub fn cugraph::structure::degrees::DegreesResult::in_degrees(&self) -> cugraph::error::Result<cugraph::structure::degrees::DegreeValues<'_>>
+pub fn cugraph::structure::degrees::DegreesResult::out_degrees(&self) -> cugraph::error::Result<cugraph::structure::degrees::DegreeValues<'_>>
+pub fn cugraph::structure::degrees::DegreesResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::structure::degrees::DegreesResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::structure::degrees::DegreesResult
+pub fn cugraph::structure::degrees::DegreesResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::structure::degrees::InDegreesResult(_)
+impl cugraph::structure::degrees::InDegreesResult
+pub fn cugraph::structure::degrees::InDegreesResult::in_degrees(&self) -> cugraph::error::Result<cugraph::structure::degrees::DegreeValues<'_>>
+pub fn cugraph::structure::degrees::InDegreesResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::structure::degrees::InDegreesResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::structure::degrees::InDegreesResult
+pub fn cugraph::structure::degrees::InDegreesResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::structure::degrees::OutDegreesResult(_)
+impl cugraph::structure::degrees::OutDegreesResult
+pub fn cugraph::structure::degrees::OutDegreesResult::out_degrees(&self) -> cugraph::error::Result<cugraph::structure::degrees::DegreeValues<'_>>
+pub fn cugraph::structure::degrees::OutDegreesResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::structure::degrees::OutDegreesResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::structure::degrees::OutDegreesResult
+pub fn cugraph::structure::degrees::OutDegreesResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub mod cugraph::structure::typed_results
+pub enum cugraph::structure::typed_results::Distances<'a>
+pub cugraph::structure::typed_results::Distances::F32(cugraph::array::DeviceArrayView<'a, f32>)
+pub cugraph::structure::typed_results::Distances::F64(cugraph::array::DeviceArrayView<'a, f64>)
+pub cugraph::structure::typed_results::Distances::I32(cugraph::array::DeviceArrayView<'a, i32>)
+pub cugraph::structure::typed_results::Distances::I64(cugraph::array::DeviceArrayView<'a, i64>)
+impl<'a> cugraph::structure::typed_results::Distances<'a>
+pub fn cugraph::structure::typed_results::Distances<'a>::is_empty(&self) -> bool
+pub fn cugraph::structure::typed_results::Distances<'a>::len(&self) -> usize
+pub fn cugraph::structure::typed_results::Distances<'a>::to_vec_f32(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<f32>>
+pub fn cugraph::structure::typed_results::Distances<'a>::to_vec_f64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<f64>>
+pub fn cugraph::structure::typed_results::Distances<'a>::to_vec_i32(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i32>>
+pub fn cugraph::structure::typed_results::Distances<'a>::to_vec_i64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i64>>
+impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::Distances<'_>
+pub fn cugraph::structure::typed_results::Distances<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
+pub enum cugraph::structure::typed_results::IntegerValues<'a>
+pub cugraph::structure::typed_results::IntegerValues::I32(cugraph::array::DeviceArrayView<'a, i32>)
+pub cugraph::structure::typed_results::IntegerValues::I64(cugraph::array::DeviceArrayView<'a, i64>)
+impl<'a> cugraph::structure::typed_results::IntegerValues<'a>
+pub fn cugraph::structure::typed_results::IntegerValues<'a>::as_i32(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, i32>>
+pub fn cugraph::structure::typed_results::IntegerValues<'a>::as_i64(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, i64>>
+pub fn cugraph::structure::typed_results::IntegerValues<'a>::is_empty(&self) -> bool
+pub fn cugraph::structure::typed_results::IntegerValues<'a>::len(&self) -> usize
+pub fn cugraph::structure::typed_results::IntegerValues<'a>::to_vec_i32(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i32>>
+pub fn cugraph::structure::typed_results::IntegerValues<'a>::to_vec_i64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i64>>
+impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::IntegerValues<'_>
+pub fn cugraph::structure::typed_results::IntegerValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
+pub enum cugraph::structure::typed_results::ScoreValues<'a>
+pub cugraph::structure::typed_results::ScoreValues::F32(cugraph::array::DeviceArrayView<'a, f32>)
+pub cugraph::structure::typed_results::ScoreValues::F64(cugraph::array::DeviceArrayView<'a, f64>)
+impl<'a> cugraph::structure::typed_results::ScoreValues<'a>
+pub fn cugraph::structure::typed_results::ScoreValues<'a>::as_f32(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, f32>>
+pub fn cugraph::structure::typed_results::ScoreValues<'a>::as_f64(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, f64>>
+pub fn cugraph::structure::typed_results::ScoreValues<'a>::is_empty(&self) -> bool
+pub fn cugraph::structure::typed_results::ScoreValues<'a>::len(&self) -> usize
+pub fn cugraph::structure::typed_results::ScoreValues<'a>::to_vec_f32(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<f32>>
+pub fn cugraph::structure::typed_results::ScoreValues<'a>::to_vec_f64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<f64>>
+impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::ScoreValues<'_>
+pub fn cugraph::structure::typed_results::ScoreValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
+pub enum cugraph::structure::typed_results::VertexIds<'a>
+pub cugraph::structure::typed_results::VertexIds::I32(cugraph::array::DeviceArrayView<'a, i32>)
+pub cugraph::structure::typed_results::VertexIds::I64(cugraph::array::DeviceArrayView<'a, i64>)
+impl<'a> cugraph::structure::typed_results::VertexIds<'a>
+pub fn cugraph::structure::typed_results::VertexIds<'a>::as_i32(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, i32>>
+pub fn cugraph::structure::typed_results::VertexIds<'a>::as_i64(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, i64>>
+pub fn cugraph::structure::typed_results::VertexIds<'a>::is_empty(&self) -> bool
+pub fn cugraph::structure::typed_results::VertexIds<'a>::len(&self) -> usize
+pub fn cugraph::structure::typed_results::VertexIds<'a>::to_vec_i32(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i32>>
+pub fn cugraph::structure::typed_results::VertexIds<'a>::to_vec_i64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i64>>
+impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::VertexIds<'_>
+pub fn cugraph::structure::typed_results::VertexIds<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
+pub struct cugraph::structure::typed_results::SizeValues<'a>(_)
+impl<'a> cugraph::structure::typed_results::SizeValues<'a>
+pub fn cugraph::structure::typed_results::SizeValues<'a>::as_usize(&self) -> &cugraph::array::DeviceArrayView<'a, usize>
+pub fn cugraph::structure::typed_results::SizeValues<'a>::is_empty(&self) -> bool
+pub fn cugraph::structure::typed_results::SizeValues<'a>::len(&self) -> usize
+pub fn cugraph::structure::typed_results::SizeValues<'a>::to_vec_usize(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<usize>>
+pub enum cugraph::structure::DegreeValues<'a>
+pub cugraph::structure::DegreeValues::I32(cugraph::array::DeviceArrayView<'a, i32>)
+pub cugraph::structure::DegreeValues::I64(cugraph::array::DeviceArrayView<'a, i64>)
+impl<'a> cugraph::structure::degrees::DegreeValues<'a>
+pub fn cugraph::structure::degrees::DegreeValues<'a>::is_empty(&self) -> bool
+pub fn cugraph::structure::degrees::DegreeValues<'a>::len(&self) -> usize
+pub fn cugraph::structure::degrees::DegreeValues<'a>::to_vec_i32(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i32>>
+pub fn cugraph::structure::degrees::DegreeValues<'a>::to_vec_i64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i64>>
+impl cugraph::cudf_interop::IntoSeries for cugraph::structure::degrees::DegreeValues<'_>
+pub fn cugraph::structure::degrees::DegreeValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
+pub enum cugraph::structure::Distances<'a>
+pub cugraph::structure::Distances::F32(cugraph::array::DeviceArrayView<'a, f32>)
+pub cugraph::structure::Distances::F64(cugraph::array::DeviceArrayView<'a, f64>)
+pub cugraph::structure::Distances::I32(cugraph::array::DeviceArrayView<'a, i32>)
+pub cugraph::structure::Distances::I64(cugraph::array::DeviceArrayView<'a, i64>)
+impl<'a> cugraph::structure::typed_results::Distances<'a>
+pub fn cugraph::structure::typed_results::Distances<'a>::is_empty(&self) -> bool
+pub fn cugraph::structure::typed_results::Distances<'a>::len(&self) -> usize
+pub fn cugraph::structure::typed_results::Distances<'a>::to_vec_f32(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<f32>>
+pub fn cugraph::structure::typed_results::Distances<'a>::to_vec_f64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<f64>>
+pub fn cugraph::structure::typed_results::Distances<'a>::to_vec_i32(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i32>>
+pub fn cugraph::structure::typed_results::Distances<'a>::to_vec_i64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i64>>
+impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::Distances<'_>
+pub fn cugraph::structure::typed_results::Distances<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
+pub enum cugraph::structure::IntegerValues<'a>
+pub cugraph::structure::IntegerValues::I32(cugraph::array::DeviceArrayView<'a, i32>)
+pub cugraph::structure::IntegerValues::I64(cugraph::array::DeviceArrayView<'a, i64>)
+impl<'a> cugraph::structure::typed_results::IntegerValues<'a>
+pub fn cugraph::structure::typed_results::IntegerValues<'a>::as_i32(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, i32>>
+pub fn cugraph::structure::typed_results::IntegerValues<'a>::as_i64(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, i64>>
+pub fn cugraph::structure::typed_results::IntegerValues<'a>::is_empty(&self) -> bool
+pub fn cugraph::structure::typed_results::IntegerValues<'a>::len(&self) -> usize
+pub fn cugraph::structure::typed_results::IntegerValues<'a>::to_vec_i32(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i32>>
+pub fn cugraph::structure::typed_results::IntegerValues<'a>::to_vec_i64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i64>>
+impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::IntegerValues<'_>
+pub fn cugraph::structure::typed_results::IntegerValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
+pub enum cugraph::structure::KCoreDegreeType
+pub cugraph::structure::KCoreDegreeType::In
+pub cugraph::structure::KCoreDegreeType::InOut
+pub cugraph::structure::KCoreDegreeType::Out
+impl core::convert::From<cugraph::structure::core::KCoreDegreeType> for cugraph_sys::cugraph_k_core_degree_type_t
+pub fn cugraph_sys::cugraph_k_core_degree_type_t::from(cugraph::structure::core::KCoreDegreeType) -> Self
+pub enum cugraph::structure::ScoreValues<'a>
+pub cugraph::structure::ScoreValues::F32(cugraph::array::DeviceArrayView<'a, f32>)
+pub cugraph::structure::ScoreValues::F64(cugraph::array::DeviceArrayView<'a, f64>)
+impl<'a> cugraph::structure::typed_results::ScoreValues<'a>
+pub fn cugraph::structure::typed_results::ScoreValues<'a>::as_f32(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, f32>>
+pub fn cugraph::structure::typed_results::ScoreValues<'a>::as_f64(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, f64>>
+pub fn cugraph::structure::typed_results::ScoreValues<'a>::is_empty(&self) -> bool
+pub fn cugraph::structure::typed_results::ScoreValues<'a>::len(&self) -> usize
+pub fn cugraph::structure::typed_results::ScoreValues<'a>::to_vec_f32(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<f32>>
+pub fn cugraph::structure::typed_results::ScoreValues<'a>::to_vec_f64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<f64>>
+impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::ScoreValues<'_>
+pub fn cugraph::structure::typed_results::ScoreValues<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
+pub enum cugraph::structure::VertexIds<'a>
+pub cugraph::structure::VertexIds::I32(cugraph::array::DeviceArrayView<'a, i32>)
+pub cugraph::structure::VertexIds::I64(cugraph::array::DeviceArrayView<'a, i64>)
+impl<'a> cugraph::structure::typed_results::VertexIds<'a>
+pub fn cugraph::structure::typed_results::VertexIds<'a>::as_i32(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, i32>>
+pub fn cugraph::structure::typed_results::VertexIds<'a>::as_i64(&self) -> core::option::Option<&cugraph::array::DeviceArrayView<'a, i64>>
+pub fn cugraph::structure::typed_results::VertexIds<'a>::is_empty(&self) -> bool
+pub fn cugraph::structure::typed_results::VertexIds<'a>::len(&self) -> usize
+pub fn cugraph::structure::typed_results::VertexIds<'a>::to_vec_i32(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i32>>
+pub fn cugraph::structure::typed_results::VertexIds<'a>::to_vec_i64(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<i64>>
+impl cugraph::cudf_interop::IntoSeries for cugraph::structure::typed_results::VertexIds<'_>
+pub fn cugraph::structure::typed_results::VertexIds<'_>::to_series(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::series::owned::Series>
+pub enum cugraph::structure::VertexSelection<'a, V: cugraph::types::CugraphElement>
+pub cugraph::structure::VertexSelection::All
+pub cugraph::structure::VertexSelection::Device(&'a cugraph::array::DeviceArrayView<'a, V>)
+pub cugraph::structure::VertexSelection::Host(&'a [V])
+impl<'a, V: cugraph::types::CugraphElement> core::convert::From<&'a [V]> for cugraph::VertexSelection<'a, V>
+pub fn cugraph::VertexSelection<'a, V>::from(&'a [V]) -> Self
+impl<'a, V: cugraph::types::CugraphElement> core::convert::From<&'a cugraph::array::DeviceArrayView<'a, V>> for cugraph::VertexSelection<'a, V>
+pub fn cugraph::VertexSelection<'a, V>::from(&'a cugraph::array::DeviceArrayView<'a, V>) -> Self
+pub struct cugraph::structure::CoreNumberParams
+pub cugraph::structure::CoreNumberParams::degree_type: cugraph::structure::core::KCoreDegreeType
+pub cugraph::structure::CoreNumberParams::do_expensive_check: bool
+pub struct cugraph::structure::CoreNumberResult
+impl cugraph::structure::core::CoreNumberResult
+pub fn cugraph::structure::core::CoreNumberResult::core_numbers(&self) -> cugraph::error::Result<cugraph::structure::typed_results::IntegerValues<'_>>
+pub fn cugraph::structure::core::CoreNumberResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::structure::core::CoreNumberResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::structure::core::CoreNumberResult
+pub fn cugraph::structure::core::CoreNumberResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for cugraph::structure::core::CoreNumberResult
+pub fn cugraph::structure::core::CoreNumberResult::drop(&mut self)
+pub struct cugraph::structure::DegreesResult(_)
+impl cugraph::structure::degrees::DegreesResult
+pub fn cugraph::structure::degrees::DegreesResult::in_degrees(&self) -> cugraph::error::Result<cugraph::structure::degrees::DegreeValues<'_>>
+pub fn cugraph::structure::degrees::DegreesResult::out_degrees(&self) -> cugraph::error::Result<cugraph::structure::degrees::DegreeValues<'_>>
+pub fn cugraph::structure::degrees::DegreesResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::structure::degrees::DegreesResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::structure::degrees::DegreesResult
+pub fn cugraph::structure::degrees::DegreesResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::structure::InDegreesResult(_)
+impl cugraph::structure::degrees::InDegreesResult
+pub fn cugraph::structure::degrees::InDegreesResult::in_degrees(&self) -> cugraph::error::Result<cugraph::structure::degrees::DegreeValues<'_>>
+pub fn cugraph::structure::degrees::InDegreesResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::structure::degrees::InDegreesResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::structure::degrees::InDegreesResult
+pub fn cugraph::structure::degrees::InDegreesResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::structure::KCoreParams
+pub cugraph::structure::KCoreParams::degree_type: cugraph::structure::core::KCoreDegreeType
+pub cugraph::structure::KCoreParams::do_expensive_check: bool
+pub cugraph::structure::KCoreParams::k: core::num::nonzero::NonZeroUsize
+impl core::default::Default for cugraph::structure::core::KCoreParams
+pub fn cugraph::structure::core::KCoreParams::default() -> Self
+pub struct cugraph::structure::KCoreResult
+impl cugraph::structure::core::KCoreResult
+pub fn cugraph::structure::core::KCoreResult::destinations(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::structure::core::KCoreResult::sources(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::structure::core::KCoreResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::structure::core::KCoreResult::weights(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::ScoreValues<'_>>>
+impl core::fmt::Debug for cugraph::structure::core::KCoreResult
+pub fn cugraph::structure::core::KCoreResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for cugraph::structure::core::KCoreResult
+pub fn cugraph::structure::core::KCoreResult::drop(&mut self)
+pub struct cugraph::structure::OutDegreesResult(_)
+impl cugraph::structure::degrees::OutDegreesResult
+pub fn cugraph::structure::degrees::OutDegreesResult::out_degrees(&self) -> cugraph::error::Result<cugraph::structure::degrees::DegreeValues<'_>>
+pub fn cugraph::structure::degrees::OutDegreesResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::structure::degrees::OutDegreesResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::structure::degrees::OutDegreesResult
+pub fn cugraph::structure::degrees::OutDegreesResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::structure::SizeValues<'a>(_)
+impl<'a> cugraph::structure::typed_results::SizeValues<'a>
+pub fn cugraph::structure::typed_results::SizeValues<'a>::as_usize(&self) -> &cugraph::array::DeviceArrayView<'a, usize>
+pub fn cugraph::structure::typed_results::SizeValues<'a>::is_empty(&self) -> bool
+pub fn cugraph::structure::typed_results::SizeValues<'a>::len(&self) -> usize
+pub fn cugraph::structure::typed_results::SizeValues<'a>::to_vec_usize(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<usize>>
+pub mod cugraph::traversal
+pub mod cugraph::traversal::bfs
+pub struct cugraph::traversal::bfs::BfsParams
+pub cugraph::traversal::bfs::BfsParams::compute_predecessors: bool
+pub cugraph::traversal::bfs::BfsParams::depth_limit: core::option::Option<cugraph::params::BfsDepthLimit>
+pub cugraph::traversal::bfs::BfsParams::do_expensive_check: bool
+impl cugraph::traversal::bfs::BfsParams
+pub fn cugraph::traversal::bfs::BfsParams::compute_predecessors(&self) -> bool
+pub fn cugraph::traversal::bfs::BfsParams::depth_limit(&self) -> core::option::Option<cugraph::params::BfsDepthLimit>
+pub fn cugraph::traversal::bfs::BfsParams::do_expensive_check(&self) -> bool
+pub fn cugraph::traversal::bfs::BfsParams::with_depth_limit(self, cugraph::params::BfsDepthLimit) -> Self
+pub fn cugraph::traversal::bfs::BfsParams::with_expensive_check(self) -> Self
+pub fn cugraph::traversal::bfs::BfsParams::with_predecessors(self) -> Self
+pub struct cugraph::traversal::bfs::BfsPredicateParams<'a, V: cugraph::types::CugraphElement, E: cugraph::types::CugraphElement>
+pub cugraph::traversal::bfs::BfsPredicateParams::exclude_vertices: core::option::Option<&'a cugraph::array::DeviceArrayView<'a, V>>
+pub cugraph::traversal::bfs::BfsPredicateParams::include_edge_ids: core::option::Option<&'a cugraph::array::DeviceArrayView<'a, E>>
+pub cugraph::traversal::bfs::BfsPredicateParams::include_vertices: core::option::Option<&'a cugraph::array::DeviceArrayView<'a, V>>
+pub cugraph::traversal::bfs::BfsPredicateParams::stop_when_any_target_found: bool
+pub cugraph::traversal::bfs::BfsPredicateParams::target_vertices: core::option::Option<&'a cugraph::array::DeviceArrayView<'a, V>>
+impl<V: cugraph::types::CugraphElement, E: cugraph::types::CugraphElement> core::default::Default for cugraph::traversal::bfs::BfsPredicateParams<'_, V, E>
+pub fn cugraph::traversal::bfs::BfsPredicateParams<'_, V, E>::default() -> Self
+pub struct cugraph::traversal::bfs::BfsResult
+impl cugraph::traversal::bfs::BfsResult
+pub fn cugraph::traversal::bfs::BfsResult::distances(&self) -> cugraph::error::Result<cugraph::structure::typed_results::Distances<'_>>
+pub fn cugraph::traversal::bfs::BfsResult::extract_paths<'a, V: cugraph::types::CugraphElement + 'a>(&self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::graph::Graph<cugraph::graph::Forward>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>) -> cugraph::error::Result<cugraph::traversal::ExtractPathsResult>
+pub fn cugraph::traversal::bfs::BfsResult::predecessors(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::VertexIds<'_>>>
+pub fn cugraph::traversal::bfs::BfsResult::target_info(&self) -> core::option::Option<&cugraph::traversal::bfs::BfsTargetInfo>
+pub fn cugraph::traversal::bfs::BfsResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::traversal::bfs::BfsResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::traversal::bfs::BfsResult
+pub fn cugraph::traversal::bfs::BfsResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::traversal::bfs::BfsTargetInfo
+pub cugraph::traversal::bfs::BfsTargetInfo::target_distance: core::option::Option<i64>
+pub cugraph::traversal::bfs::BfsTargetInfo::target_found: bool
+pub mod cugraph::traversal::sssp
+pub struct cugraph::traversal::sssp::SsspParams
+pub cugraph::traversal::sssp::SsspParams::compute_predecessors: bool
+pub cugraph::traversal::sssp::SsspParams::cutoff: core::option::Option<cugraph::params::NonNegativeF64>
+pub cugraph::traversal::sssp::SsspParams::do_expensive_check: bool
+impl cugraph::traversal::sssp::SsspParams
+pub fn cugraph::traversal::sssp::SsspParams::compute_predecessors(&self) -> bool
+pub fn cugraph::traversal::sssp::SsspParams::cutoff(&self) -> core::option::Option<cugraph::params::NonNegativeF64>
+pub fn cugraph::traversal::sssp::SsspParams::do_expensive_check(&self) -> bool
+pub fn cugraph::traversal::sssp::SsspParams::with_cutoff(self, cugraph::params::NonNegativeF64) -> Self
+pub fn cugraph::traversal::sssp::SsspParams::with_expensive_check(self) -> Self
+pub fn cugraph::traversal::sssp::SsspParams::with_predecessors(self) -> Self
+pub struct cugraph::traversal::sssp::SsspResult
+impl cugraph::traversal::sssp::SsspResult
+pub fn cugraph::traversal::sssp::SsspResult::distances(&self) -> cugraph::error::Result<cugraph::structure::typed_results::Distances<'_>>
+pub fn cugraph::traversal::sssp::SsspResult::extract_paths<'a, V>(&self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::graph::Graph<cugraph::graph::Forward>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>) -> cugraph::error::Result<cugraph::traversal::ExtractPathsResult> where V: cugraph::types::CugraphElement + core::convert::TryInto<i64> + core::marker::Copy + core::fmt::Debug + 'a, <V as core::convert::TryInto<i64>>::Error: core::fmt::Debug
+pub fn cugraph::traversal::sssp::SsspResult::predecessors(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::VertexIds<'_>>>
+pub fn cugraph::traversal::sssp::SsspResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::traversal::sssp::SsspResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::traversal::sssp::SsspResult
+pub fn cugraph::traversal::sssp::SsspResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::traversal::sssp::SsspWorkspacePreflight
+impl cugraph::traversal::sssp::SsspWorkspacePreflight
+pub const fn cugraph::traversal::sssp::SsspWorkspacePreflight::unit_weight_bytes(self) -> u64
+pub struct cugraph::traversal::sssp::SsspWorkspacePreflightInput
+impl cugraph::traversal::sssp::SsspWorkspacePreflightInput
+pub const fn cugraph::traversal::sssp::SsspWorkspacePreflightInput::edge_count(self) -> usize
+pub const fn cugraph::traversal::sssp::SsspWorkspacePreflightInput::has_edge_weights(self) -> bool
+pub fn cugraph::traversal::sssp::SsspWorkspacePreflightInput::new(usize, cugraph::types::DataType, bool) -> cugraph::error::Result<Self>
+pub const fn cugraph::traversal::sssp::SsspWorkspacePreflightInput::weight_type(self) -> cugraph::types::DataType
+pub fn cugraph::traversal::sssp::sssp_workspace_preflight(&cugraph::traversal::sssp::SsspWorkspacePreflightInput) -> cugraph::error::Result<cugraph::traversal::sssp::SsspWorkspacePreflight>
+pub struct cugraph::traversal::BfsParams
+pub cugraph::traversal::BfsParams::compute_predecessors: bool
+pub cugraph::traversal::BfsParams::depth_limit: core::option::Option<cugraph::params::BfsDepthLimit>
+pub cugraph::traversal::BfsParams::do_expensive_check: bool
+impl cugraph::traversal::bfs::BfsParams
+pub fn cugraph::traversal::bfs::BfsParams::compute_predecessors(&self) -> bool
+pub fn cugraph::traversal::bfs::BfsParams::depth_limit(&self) -> core::option::Option<cugraph::params::BfsDepthLimit>
+pub fn cugraph::traversal::bfs::BfsParams::do_expensive_check(&self) -> bool
+pub fn cugraph::traversal::bfs::BfsParams::with_depth_limit(self, cugraph::params::BfsDepthLimit) -> Self
+pub fn cugraph::traversal::bfs::BfsParams::with_expensive_check(self) -> Self
+pub fn cugraph::traversal::bfs::BfsParams::with_predecessors(self) -> Self
+pub struct cugraph::traversal::BfsPredicateParams<'a, V: cugraph::types::CugraphElement, E: cugraph::types::CugraphElement>
+pub cugraph::traversal::BfsPredicateParams::exclude_vertices: core::option::Option<&'a cugraph::array::DeviceArrayView<'a, V>>
+pub cugraph::traversal::BfsPredicateParams::include_edge_ids: core::option::Option<&'a cugraph::array::DeviceArrayView<'a, E>>
+pub cugraph::traversal::BfsPredicateParams::include_vertices: core::option::Option<&'a cugraph::array::DeviceArrayView<'a, V>>
+pub cugraph::traversal::BfsPredicateParams::stop_when_any_target_found: bool
+pub cugraph::traversal::BfsPredicateParams::target_vertices: core::option::Option<&'a cugraph::array::DeviceArrayView<'a, V>>
+impl<V: cugraph::types::CugraphElement, E: cugraph::types::CugraphElement> core::default::Default for cugraph::traversal::bfs::BfsPredicateParams<'_, V, E>
+pub fn cugraph::traversal::bfs::BfsPredicateParams<'_, V, E>::default() -> Self
+pub struct cugraph::traversal::BfsResult
+impl cugraph::traversal::bfs::BfsResult
+pub fn cugraph::traversal::bfs::BfsResult::distances(&self) -> cugraph::error::Result<cugraph::structure::typed_results::Distances<'_>>
+pub fn cugraph::traversal::bfs::BfsResult::extract_paths<'a, V: cugraph::types::CugraphElement + 'a>(&self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::graph::Graph<cugraph::graph::Forward>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>) -> cugraph::error::Result<cugraph::traversal::ExtractPathsResult>
+pub fn cugraph::traversal::bfs::BfsResult::predecessors(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::VertexIds<'_>>>
+pub fn cugraph::traversal::bfs::BfsResult::target_info(&self) -> core::option::Option<&cugraph::traversal::bfs::BfsTargetInfo>
+pub fn cugraph::traversal::bfs::BfsResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::traversal::bfs::BfsResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::traversal::bfs::BfsResult
+pub fn cugraph::traversal::bfs::BfsResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::traversal::BfsTargetInfo
+pub cugraph::traversal::BfsTargetInfo::target_distance: core::option::Option<i64>
+pub cugraph::traversal::BfsTargetInfo::target_found: bool
+pub struct cugraph::traversal::ExtractPathsPreflight
+impl cugraph::traversal::ExtractPathsPreflight
+pub const fn cugraph::traversal::ExtractPathsPreflight::destination_copy_bytes(self) -> u64
+pub const fn cugraph::traversal::ExtractPathsPreflight::path_output_bytes(self) -> u64
+pub const fn cugraph::traversal::ExtractPathsPreflight::peak_bytes(self) -> u64
+pub const fn cugraph::traversal::ExtractPathsPreflight::predecessor_copy_bytes(self) -> u64
+pub const fn cugraph::traversal::ExtractPathsPreflight::source_bytes(self) -> u64
+pub const fn cugraph::traversal::ExtractPathsPreflight::workspace_bytes(self) -> u64
+pub struct cugraph::traversal::ExtractPathsPreflightInput
+impl cugraph::traversal::ExtractPathsPreflightInput
+pub fn cugraph::traversal::ExtractPathsPreflightInput::new(cugraph::types::DataType, usize, usize, usize, usize) -> cugraph::error::Result<Self>
+pub struct cugraph::traversal::ExtractPathsResult
+impl cugraph::traversal::ExtractPathsResult
+pub fn cugraph::traversal::ExtractPathsResult::max_path_length(&self) -> usize
+pub fn cugraph::traversal::ExtractPathsResult::paths(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::traversal::ExtractPathsResult
+pub fn cugraph::traversal::ExtractPathsResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for cugraph::traversal::ExtractPathsResult
+pub fn cugraph::traversal::ExtractPathsResult::drop(&mut self)
+pub struct cugraph::traversal::SsspParams
+pub cugraph::traversal::SsspParams::compute_predecessors: bool
+pub cugraph::traversal::SsspParams::cutoff: core::option::Option<cugraph::params::NonNegativeF64>
+pub cugraph::traversal::SsspParams::do_expensive_check: bool
+impl cugraph::traversal::sssp::SsspParams
+pub fn cugraph::traversal::sssp::SsspParams::compute_predecessors(&self) -> bool
+pub fn cugraph::traversal::sssp::SsspParams::cutoff(&self) -> core::option::Option<cugraph::params::NonNegativeF64>
+pub fn cugraph::traversal::sssp::SsspParams::do_expensive_check(&self) -> bool
+pub fn cugraph::traversal::sssp::SsspParams::with_cutoff(self, cugraph::params::NonNegativeF64) -> Self
+pub fn cugraph::traversal::sssp::SsspParams::with_expensive_check(self) -> Self
+pub fn cugraph::traversal::sssp::SsspParams::with_predecessors(self) -> Self
+pub struct cugraph::traversal::SsspResult
+impl cugraph::traversal::sssp::SsspResult
+pub fn cugraph::traversal::sssp::SsspResult::distances(&self) -> cugraph::error::Result<cugraph::structure::typed_results::Distances<'_>>
+pub fn cugraph::traversal::sssp::SsspResult::extract_paths<'a, V>(&self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::graph::Graph<cugraph::graph::Forward>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>) -> cugraph::error::Result<cugraph::traversal::ExtractPathsResult> where V: cugraph::types::CugraphElement + core::convert::TryInto<i64> + core::marker::Copy + core::fmt::Debug + 'a, <V as core::convert::TryInto<i64>>::Error: core::fmt::Debug
+pub fn cugraph::traversal::sssp::SsspResult::predecessors(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::VertexIds<'_>>>
+pub fn cugraph::traversal::sssp::SsspResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::traversal::sssp::SsspResult::vertex_ids(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+impl core::fmt::Debug for cugraph::traversal::sssp::SsspResult
+pub fn cugraph::traversal::sssp::SsspResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::traversal::SsspWorkspacePreflight
+impl cugraph::traversal::sssp::SsspWorkspacePreflight
+pub const fn cugraph::traversal::sssp::SsspWorkspacePreflight::unit_weight_bytes(self) -> u64
+pub struct cugraph::traversal::SsspWorkspacePreflightInput
+impl cugraph::traversal::sssp::SsspWorkspacePreflightInput
+pub const fn cugraph::traversal::sssp::SsspWorkspacePreflightInput::edge_count(self) -> usize
+pub const fn cugraph::traversal::sssp::SsspWorkspacePreflightInput::has_edge_weights(self) -> bool
+pub fn cugraph::traversal::sssp::SsspWorkspacePreflightInput::new(usize, cugraph::types::DataType, bool) -> cugraph::error::Result<Self>
+pub const fn cugraph::traversal::sssp::SsspWorkspacePreflightInput::weight_type(self) -> cugraph::types::DataType
+pub fn cugraph::traversal::extract_paths_preflight(&cugraph::traversal::ExtractPathsPreflightInput) -> cugraph::error::Result<cugraph::traversal::ExtractPathsPreflight>
+pub fn cugraph::traversal::sssp_workspace_preflight(&cugraph::traversal::sssp::SsspWorkspacePreflightInput) -> cugraph::error::Result<cugraph::traversal::sssp::SsspWorkspacePreflight>
+pub mod cugraph::tree
+pub mod cugraph::tree::minimum_spanning_tree
+pub struct cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeParams
+pub cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeParams::do_expensive_check: bool
+pub struct cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeResult(_)
+impl cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeResult
+pub fn cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeResult::destinations(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeResult::edge_ids(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::IntegerValues<'_>>>
+pub fn cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeResult::edge_type_ids(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::IntegerValues<'_>>>
+pub fn cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeResult::sources(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeResult::subgraph_offsets(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::SizeValues<'_>>>
+pub fn cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeResult::weights(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::ScoreValues<'_>>>
+impl core::fmt::Debug for cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeResult
+pub fn cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::tree::MinimumSpanningTreeParams
+pub cugraph::tree::MinimumSpanningTreeParams::do_expensive_check: bool
+pub struct cugraph::tree::MinimumSpanningTreeResult(_)
+impl cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeResult
+pub fn cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeResult::destinations(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeResult::edge_ids(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::IntegerValues<'_>>>
+pub fn cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeResult::edge_type_ids(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::IntegerValues<'_>>>
+pub fn cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeResult::sources(&self) -> cugraph::error::Result<cugraph::structure::typed_results::VertexIds<'_>>
+pub fn cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeResult::subgraph_offsets(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::SizeValues<'_>>>
+pub fn cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeResult::to_dataframe(&self, &cudf::runtime::owner::Runtime) -> cugraph::error::Result<cudf::frame::dataframe::owned::DataFrame>
+pub fn cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeResult::weights(&self) -> cugraph::error::Result<core::option::Option<cugraph::structure::typed_results::ScoreValues<'_>>>
+impl core::fmt::Debug for cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeResult
+pub fn cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeResult::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub mod cugraph::types
+pub enum cugraph::types::DataType
+pub cugraph::types::DataType::Bool
+pub cugraph::types::DataType::Float32
+pub cugraph::types::DataType::Float64
+pub cugraph::types::DataType::Int16
+pub cugraph::types::DataType::Int32
+pub cugraph::types::DataType::Int64
+pub cugraph::types::DataType::Int8
+pub cugraph::types::DataType::SizeT
+pub cugraph::types::DataType::Uint16
+pub cugraph::types::DataType::Uint32
+pub cugraph::types::DataType::Uint64
+pub cugraph::types::DataType::Uint8
+impl cugraph::types::DataType
+pub fn cugraph::types::DataType::is_float(&self) -> bool
+pub fn cugraph::types::DataType::is_supported_index_type(&self) -> bool
+pub fn cugraph::types::DataType::size_of(&self) -> usize
+impl core::convert::From<cugraph::types::DataType> for cugraph_sys::data_type_id_
+pub fn cugraph_sys::data_type_id_::from(cugraph::types::DataType) -> Self
+impl core::convert::TryFrom<cugraph_sys::data_type_id_> for cugraph::types::DataType
+pub type cugraph::types::DataType::Error = cugraph::error::Error
+pub fn cugraph::types::DataType::try_from(cugraph_sys::data_type_id_) -> core::result::Result<Self, Self::Error>
+impl core::fmt::Display for cugraph::types::DataType
+pub fn cugraph::types::DataType::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::types::GraphProperties
+pub cugraph::types::GraphProperties::is_multigraph: bool
+pub cugraph::types::GraphProperties::is_symmetric: bool
+impl cugraph::types::GraphProperties
+pub fn cugraph::types::GraphProperties::directed() -> Self
+pub fn cugraph::types::GraphProperties::undirected() -> Self
+impl core::convert::From<cugraph::types::GraphProperties> for cugraph_sys::cugraph_graph_properties_t
+pub fn cugraph_sys::cugraph_graph_properties_t::from(cugraph::types::GraphProperties) -> Self
+impl core::default::Default for cugraph::types::GraphProperties
+pub fn cugraph::types::GraphProperties::default() -> Self
+impl core::fmt::Display for cugraph::types::GraphProperties
+pub fn cugraph::types::GraphProperties::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub trait cugraph::types::CugraphElement: core::marker::Copy + cugraph::types::sealed::Sealed
+pub fn cugraph::types::CugraphElement::data_type() -> cugraph::types::DataType
+impl cugraph::types::CugraphElement for f32
+pub fn f32::data_type() -> cugraph::types::DataType
+impl cugraph::types::CugraphElement for f64
+pub fn f64::data_type() -> cugraph::types::DataType
+impl cugraph::types::CugraphElement for i16
+pub fn i16::data_type() -> cugraph::types::DataType
+impl cugraph::types::CugraphElement for i32
+pub fn i32::data_type() -> cugraph::types::DataType
+impl cugraph::types::CugraphElement for i64
+pub fn i64::data_type() -> cugraph::types::DataType
+impl cugraph::types::CugraphElement for i8
+pub fn i8::data_type() -> cugraph::types::DataType
+impl cugraph::types::CugraphElement for u16
+pub fn u16::data_type() -> cugraph::types::DataType
+impl cugraph::types::CugraphElement for u32
+pub fn u32::data_type() -> cugraph::types::DataType
+impl cugraph::types::CugraphElement for u64
+pub fn u64::data_type() -> cugraph::types::DataType
+impl cugraph::types::CugraphElement for u8
+pub fn u8::data_type() -> cugraph::types::DataType
+impl cugraph::types::CugraphElement for usize
+pub fn usize::data_type() -> cugraph::types::DataType
+pub enum cugraph::AllocationSource
+pub cugraph::AllocationSource::RmmBadAlloc
+pub cugraph::AllocationSource::RmmOutOfMemory
+pub cugraph::AllocationSource::StdBadAlloc
+pub cugraph::AllocationSource::Unknown
+impl cugraph::error::AllocationSource
+pub const fn cugraph::error::AllocationSource::as_str(self) -> &'static str
+impl core::fmt::Display for cugraph::error::AllocationSource
+pub fn cugraph::error::AllocationSource::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+#[non_exhaustive] pub enum cugraph::ErrorKind
+pub cugraph::ErrorKind::InvalidHandle
+pub cugraph::ErrorKind::InvalidInput
+pub cugraph::ErrorKind::InvalidState
+pub cugraph::ErrorKind::IoError
+pub cugraph::ErrorKind::NonConvergence
+pub cugraph::ErrorKind::NotImplemented
+pub cugraph::ErrorKind::OutOfMemory
+pub cugraph::ErrorKind::Unexpected
+pub cugraph::ErrorKind::UnsupportedType
+impl cugraph::error::ErrorKind
+pub fn cugraph::error::ErrorKind::from_error_code(cugraph_sys::cugraph_error_code_) -> Self
+pub fn cugraph::error::ErrorKind::from_error_code_raw(u32) -> Self
+impl core::fmt::Display for cugraph::error::ErrorKind
+pub fn cugraph::error::ErrorKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum cugraph::ErrorStatus
+pub cugraph::ErrorStatus::Permanent
+pub cugraph::ErrorStatus::Persistent
+pub cugraph::ErrorStatus::Temporary
+impl core::fmt::Display for cugraph::error::ErrorStatus
+pub fn cugraph::error::ErrorStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum cugraph::VertexSelection<'a, V: cugraph::types::CugraphElement>
+pub cugraph::VertexSelection::All
+pub cugraph::VertexSelection::Device(&'a cugraph::array::DeviceArrayView<'a, V>)
+pub cugraph::VertexSelection::Host(&'a [V])
+impl<'a, V: cugraph::types::CugraphElement> core::convert::From<&'a [V]> for cugraph::VertexSelection<'a, V>
+pub fn cugraph::VertexSelection<'a, V>::from(&'a [V]) -> Self
+impl<'a, V: cugraph::types::CugraphElement> core::convert::From<&'a cugraph::array::DeviceArrayView<'a, V>> for cugraph::VertexSelection<'a, V>
+pub fn cugraph::VertexSelection<'a, V>::from(&'a cugraph::array::DeviceArrayView<'a, V>) -> Self
+pub struct cugraph::DeviceArray<T: cugraph::types::CugraphElement>
+impl<T: cugraph::types::CugraphElement> cugraph::array::DeviceArray<T>
+pub fn cugraph::array::DeviceArray<T>::from_slice(&cugraph::handle::EnteredContext<'_>, &[T]) -> cugraph::error::Result<Self>
+pub fn cugraph::array::DeviceArray<T>::new(&cugraph::handle::EnteredContext<'_>, usize) -> cugraph::error::Result<Self>
+pub fn cugraph::array::DeviceArray<T>::view(&self) -> cugraph::error::Result<cugraph::array::DeviceArrayView<'_, T>>
+impl<T: cugraph::types::CugraphElement> core::fmt::Debug for cugraph::array::DeviceArray<T>
+pub fn cugraph::array::DeviceArray<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T: cugraph::types::CugraphElement> cugraph::array::DeviceBuffer<T> for cugraph::array::DeviceArray<T>
+pub fn cugraph::array::DeviceArray<T>::device_ptr(&self) -> *mut core::ffi::c_void
+pub fn cugraph::array::DeviceArray<T>::is_empty(&self) -> bool
+pub fn cugraph::array::DeviceArray<T>::len(&self) -> usize
+pub struct cugraph::DeviceArrayView<'a, T: cugraph::types::CugraphElement>
+impl<'a, T: cugraph::types::CugraphElement> cugraph::array::DeviceArrayView<'a, T>
+pub fn cugraph::array::DeviceArrayView<'a, T>::device_ptr(&self) -> *mut core::ffi::c_void
+pub fn cugraph::array::DeviceArrayView<'a, T>::from_device_buffer<B>(&'a B) -> cugraph::error::Result<Self> where B: cugraph::array::DeviceBuffer<T> + ?core::marker::Sized
+pub fn cugraph::array::DeviceArrayView<'a, T>::is_empty(&self) -> bool
+pub fn cugraph::array::DeviceArrayView<'a, T>::len(&self) -> usize
+pub fn cugraph::array::DeviceArrayView<'a, T>::to_vec(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<alloc::vec::Vec<T>>
+pub fn cugraph::array::DeviceArrayView<'a, T>::try_from_device_buffer<B>(&'a B) -> cugraph::error::Result<Self> where B: cugraph::array::DeviceBuffer<T> + ?core::marker::Sized
+impl<'a, V: cugraph::types::CugraphElement> core::convert::From<&'a cugraph::array::DeviceArrayView<'a, V>> for cugraph::VertexSelection<'a, V>
+pub fn cugraph::VertexSelection<'a, V>::from(&'a cugraph::array::DeviceArrayView<'a, V>) -> Self
+impl<T: cugraph::types::CugraphElement> core::fmt::Debug for cugraph::array::DeviceArrayView<'_, T>
+pub fn cugraph::array::DeviceArrayView<'_, T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T: cugraph::types::CugraphElement> cugraph::array::DeviceBuffer<T> for cugraph::array::DeviceArrayView<'_, T>
+pub fn cugraph::array::DeviceArrayView<'_, T>::device_ptr(&self) -> *mut core::ffi::c_void
+pub fn cugraph::array::DeviceArrayView<'_, T>::is_empty(&self) -> bool
+pub fn cugraph::array::DeviceArrayView<'_, T>::len(&self) -> usize
+pub struct cugraph::EnteredContext<'a>
+impl cugraph::handle::EnteredContext<'_>
+pub fn cugraph::handle::EnteredContext<'_>::device(&self) -> i32
+pub fn cugraph::handle::EnteredContext<'_>::handle_ptr(&self) -> *mut cugraph_sys::cugraph_resource_handle_t
+pub fn cugraph::handle::EnteredContext<'_>::runtime(&self) -> core::option::Option<&cudf::runtime::owner::Runtime>
+impl core::fmt::Debug for cugraph::handle::EnteredContext<'_>
+pub fn cugraph::handle::EnteredContext<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::Error
+impl cugraph::error::Error
+pub fn cugraph::error::Error::allocation_source(&self) -> cugraph::error::AllocationSource
+pub fn cugraph::error::Error::context_value(&self, &str) -> core::option::Option<&str>
+pub fn cugraph::error::Error::is_permanent(&self) -> bool
+pub fn cugraph::error::Error::is_persistent(&self) -> bool
+pub fn cugraph::error::Error::is_temporary(&self) -> bool
+pub fn cugraph::error::Error::kind(&self) -> cugraph::error::ErrorKind
+pub fn cugraph::error::Error::message(&self) -> &str
+pub fn cugraph::error::Error::new(cugraph::error::ErrorKind, &'static str) -> Self
+pub fn cugraph::error::Error::operation(&self) -> &'static str
+pub fn cugraph::error::Error::set_permanent(self) -> Self
+pub fn cugraph::error::Error::set_persistent(self) -> Self
+pub fn cugraph::error::Error::set_source<E>(self, E) -> Self where E: core::error::Error + core::marker::Send + core::marker::Sync + 'static
+pub fn cugraph::error::Error::set_temporary(self) -> Self
+pub fn cugraph::error::Error::status(&self) -> cugraph::error::ErrorStatus
+pub fn cugraph::error::Error::with_context(self, &'static str, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn cugraph::error::Error::with_message(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn cugraph::error::Error::with_operation(self, &'static str) -> Self
+impl core::error::Error for cugraph::error::Error
+pub fn cugraph::error::Error::source(&self) -> core::option::Option<&(dyn core::error::Error + 'static)>
+impl core::fmt::Debug for cugraph::error::Error
+pub fn cugraph::error::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::fmt::Display for cugraph::error::Error
+pub fn cugraph::error::Error::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cugraph::Forward
+impl cugraph::graph::Transposition for cugraph::graph::Forward
+pub struct cugraph::Graph<T>
+impl cugraph::graph::Graph<cugraph::graph::Forward>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::analyze_clustering_edge_cut<V: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, core::num::nonzero::NonZeroUsize, &cugraph::array::DeviceArrayView<'_, V>, &cugraph::array::DeviceArrayView<'_, V>) -> cugraph::error::Result<f64>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::analyze_clustering_modularity<V: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, core::num::nonzero::NonZeroUsize, &cugraph::array::DeviceArrayView<'_, V>, &cugraph::array::DeviceArrayView<'_, V>) -> cugraph::error::Result<f64>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::analyze_clustering_ratio_cut<V: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, core::num::nonzero::NonZeroUsize, &cugraph::array::DeviceArrayView<'_, V>, &cugraph::array::DeviceArrayView<'_, V>) -> cugraph::error::Result<f64>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::bfs<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::traversal::bfs::BfsParams) -> cugraph::error::Result<cugraph::traversal::bfs::BfsResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::bfs_with_predicates<'a, V, E>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::traversal::bfs::BfsParams, &cugraph::traversal::bfs::BfsPredicateParams<'a, V, E>) -> cugraph::error::Result<cugraph::traversal::bfs::BfsResult> where V: cugraph::types::CugraphElement + 'a, E: cugraph::types::CugraphElement + 'a
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::biased_random_walks<V: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &cugraph::array::DeviceArrayView<'_, V>, &cugraph::sampling::RandomWalkParams) -> cugraph::error::Result<cugraph::sampling::RandomWalkResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::ecg(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &cugraph::community::ecg::EcgParams) -> cugraph::error::Result<cugraph::community::EcgResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::homogeneous_biased_neighbor_sample<V: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &cugraph::array::DeviceArrayView<'_, V>, core::option::Option<&cugraph::array::DeviceArrayView<'_, usize>>, &cugraph::sampling::NeighborSamplingParams) -> cugraph::error::Result<cugraph::sampling::SampleResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::homogeneous_biased_temporal_neighbor_sample<V, Tm>(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &str, &cugraph::array::DeviceArrayView<'_, V>, core::option::Option<&cugraph::array::DeviceArrayView<'_, Tm>>, core::option::Option<&cugraph::array::DeviceArrayView<'_, usize>>, &cugraph::sampling::NeighborSamplingParams) -> cugraph::error::Result<cugraph::sampling::SampleResult> where V: cugraph::types::CugraphElement, Tm: cugraph::types::CugraphElement
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::homogeneous_uniform_neighbor_sample<V: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &cugraph::array::DeviceArrayView<'_, V>, core::option::Option<&cugraph::array::DeviceArrayView<'_, usize>>, &cugraph::sampling::NeighborSamplingParams) -> cugraph::error::Result<cugraph::sampling::SampleResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::homogeneous_uniform_temporal_neighbor_sample<V, Tm>(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &str, &cugraph::array::DeviceArrayView<'_, V>, core::option::Option<&cugraph::array::DeviceArrayView<'_, Tm>>, core::option::Option<&cugraph::array::DeviceArrayView<'_, usize>>, &cugraph::sampling::NeighborSamplingParams) -> cugraph::error::Result<cugraph::sampling::SampleResult> where V: cugraph::types::CugraphElement, Tm: cugraph::types::CugraphElement
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::leiden(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &cugraph::community::leiden::LeidenParams) -> cugraph::error::Result<cugraph::community::LeidenResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::louvain(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::community::louvain::LouvainParams) -> cugraph::error::Result<cugraph::community::LouvainResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::node2vec_random_walks<V: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &cugraph::array::DeviceArrayView<'_, V>, &cugraph::sampling::Node2VecRandomWalkParams) -> cugraph::error::Result<cugraph::sampling::RandomWalkResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::spectral_modularity_maximization(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &cugraph::community::clustering::SpectralClusteringParams) -> cugraph::error::Result<cugraph::community::clustering::SpectralClusteringResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::sssp<V>(&mut self, &cugraph::handle::EnteredContext<'_>, V, &cugraph::traversal::sssp::SsspParams) -> cugraph::error::Result<cugraph::traversal::sssp::SsspResult> where V: cugraph::types::CugraphElement + core::convert::TryInto<usize> + core::marker::Copy + core::fmt::Debug
+pub fn cugraph::graph::Graph<cugraph::graph::Forward>::uniform_random_walks<V: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &cugraph::array::DeviceArrayView<'_, V>, &cugraph::sampling::RandomWalkParams) -> cugraph::error::Result<cugraph::sampling::RandomWalkResult>
+impl cugraph::graph::Graph<cugraph::graph::Transposed>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::degrees<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>) -> cugraph::error::Result<cugraph::structure::degrees::DegreesResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::degrees_all(&mut self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::structure::degrees::DegreesResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::degrees_checked<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, bool) -> cugraph::error::Result<cugraph::structure::degrees::DegreesResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::eigenvector_centrality(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::vertex::EigenvectorCentralityParams) -> cugraph::error::Result<cugraph::centrality::EigenvectorCentralityResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::hits(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::hits::HitsParams) -> cugraph::error::Result<cugraph::centrality::HitsResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::hits_with_initial_hubs<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::hits::HitsParams, core::option::Option<&cugraph::centrality::hits::HitsInitialHubs<'_, V, W>>) -> cugraph::error::Result<cugraph::centrality::HitsResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::in_degrees<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>) -> cugraph::error::Result<cugraph::structure::degrees::InDegreesResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::in_degrees_all(&mut self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::structure::degrees::InDegreesResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::in_degrees_checked<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, bool) -> cugraph::error::Result<cugraph::structure::degrees::InDegreesResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::katz_centrality(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::vertex::KatzCentralityParams) -> cugraph::error::Result<cugraph::centrality::KatzCentralityResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::pagerank(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PageRankParams) -> cugraph::error::Result<cugraph::centrality::PageRankResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::pagerank_with<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PageRankParams, core::option::Option<&cugraph::centrality::pagerank::PrecomputedWeights<'_, V, W>>, core::option::Option<&cugraph::centrality::pagerank::InitialGuess<'_, V, W>>) -> cugraph::error::Result<cugraph::centrality::PageRankResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::personalized_pagerank<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PersonalizedPageRankParams, &cugraph::centrality::pagerank::PersonalizationVector<'_, V, W>) -> cugraph::error::Result<cugraph::centrality::PageRankResult>
+pub fn cugraph::graph::Graph<cugraph::graph::Transposed>::personalized_pagerank_with<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::pagerank::PersonalizedPageRankParams, &cugraph::centrality::pagerank::PersonalizationVector<'_, V, W>, core::option::Option<&cugraph::centrality::pagerank::PrecomputedWeights<'_, V, W>>, core::option::Option<&cugraph::centrality::pagerank::InitialGuess<'_, V, W>>) -> cugraph::error::Result<cugraph::centrality::PageRankResult>
+impl<T: cugraph::graph::Transposition> cugraph::graph::Graph<T>
+pub fn cugraph::graph::Graph<T>::all_pairs_cosine_similarity_coefficients<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::similarity::AllPairsSimilarityParams) -> cugraph::error::Result<cugraph::similarity::CosineSimilarityResult>
+pub fn cugraph::graph::Graph<T>::all_pairs_jaccard_coefficients<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::similarity::AllPairsSimilarityParams) -> cugraph::error::Result<cugraph::similarity::JaccardSimilarityResult>
+pub fn cugraph::graph::Graph<T>::all_pairs_overlap_coefficients<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::similarity::AllPairsSimilarityParams) -> cugraph::error::Result<cugraph::similarity::OverlapSimilarityResult>
+pub fn cugraph::graph::Graph<T>::all_pairs_sorensen_coefficients<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::similarity::AllPairsSimilarityParams) -> cugraph::error::Result<cugraph::similarity::SorensenSimilarityResult>
+pub fn cugraph::graph::Graph<T>::betweenness_centrality<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::centrality::betweenness::BetweennessCentralityParams) -> cugraph::error::Result<cugraph::centrality::BetweennessCentralityResult>
+pub fn cugraph::graph::Graph<T>::betweenness_centrality_all(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::betweenness::BetweennessCentralityParams) -> cugraph::error::Result<cugraph::centrality::BetweennessCentralityResult>
+pub fn cugraph::graph::Graph<T>::core_number(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::structure::core::CoreNumberParams) -> cugraph::error::Result<cugraph::structure::core::CoreNumberResult>
+pub fn cugraph::graph::Graph<T>::cosine_similarity_coefficients(&mut self, &cugraph::handle::EnteredContext<'_>, cugraph::similarity::VertexPairs, &cugraph::similarity::SimilarityParams) -> cugraph::error::Result<cugraph::similarity::CosineSimilarityResult>
+pub fn cugraph::graph::Graph<T>::edge_betweenness_centrality<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::centrality::edge_betweenness::EdgeBetweennessCentralityParams) -> cugraph::error::Result<cugraph::centrality::EdgeBetweennessCentralityResult>
+pub fn cugraph::graph::Graph<T>::edge_betweenness_centrality_all(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::centrality::edge_betweenness::EdgeBetweennessCentralityParams) -> cugraph::error::Result<cugraph::centrality::EdgeBetweennessCentralityResult>
+pub fn cugraph::graph::Graph<T>::extract_ego<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::community::subgraph::ExtractEgoParams) -> cugraph::error::Result<cugraph::community::subgraph::ExtractEgoResult>
+pub fn cugraph::graph::Graph<T>::force_atlas2(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &cugraph::layout::force_atlas2::ForceAtlas2Params) -> cugraph::error::Result<cugraph::layout::force_atlas2::LayoutResult>
+pub fn cugraph::graph::Graph<T>::force_atlas2_with<V: cugraph::types::CugraphElement, W: cugraph::types::CugraphElement>(&mut self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, &cugraph::layout::force_atlas2::ForceAtlas2Params, core::option::Option<&cugraph::layout::force_atlas2::ForceAtlas2VertexAttrs<'_, V, W>>, core::option::Option<&cugraph::layout::force_atlas2::InitialPositions<'_, V, W>>) -> cugraph::error::Result<cugraph::layout::force_atlas2::LayoutResult>
+pub fn cugraph::graph::Graph<T>::jaccard_coefficients(&mut self, &cugraph::handle::EnteredContext<'_>, cugraph::similarity::VertexPairs, &cugraph::similarity::SimilarityParams) -> cugraph::error::Result<cugraph::similarity::JaccardSimilarityResult>
+pub fn cugraph::graph::Graph<T>::k_core(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::structure::core::KCoreParams) -> cugraph::error::Result<cugraph::structure::core::KCoreResult>
+pub fn cugraph::graph::Graph<T>::k_core_with_core_numbers(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::structure::core::KCoreParams, &cugraph::structure::core::CoreNumberResult) -> cugraph::error::Result<cugraph::structure::core::KCoreResult>
+pub fn cugraph::graph::Graph<T>::k_truss_subgraph(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::community::subgraph::KTrussSubgraphParams) -> cugraph::error::Result<cugraph::community::subgraph::KTrussSubgraphResult>
+pub fn cugraph::graph::Graph<T>::minimum_spanning_tree(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeParams) -> cugraph::error::Result<cugraph::tree::minimum_spanning_tree::MinimumSpanningTreeResult>
+pub fn cugraph::graph::Graph<T>::out_degrees<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>) -> cugraph::error::Result<cugraph::structure::degrees::OutDegreesResult>
+pub fn cugraph::graph::Graph<T>::out_degrees_all(&mut self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::structure::degrees::OutDegreesResult>
+pub fn cugraph::graph::Graph<T>::out_degrees_checked<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, bool) -> cugraph::error::Result<cugraph::structure::degrees::OutDegreesResult>
+pub fn cugraph::graph::Graph<T>::overlap_coefficients(&mut self, &cugraph::handle::EnteredContext<'_>, cugraph::similarity::VertexPairs, &cugraph::similarity::SimilarityParams) -> cugraph::error::Result<cugraph::similarity::OverlapSimilarityResult>
+pub fn cugraph::graph::Graph<T>::sorensen_coefficients(&mut self, &cugraph::handle::EnteredContext<'_>, cugraph::similarity::VertexPairs, &cugraph::similarity::SimilarityParams) -> cugraph::error::Result<cugraph::similarity::SorensenSimilarityResult>
+pub fn cugraph::graph::Graph<T>::strongly_connected_components(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::labeling::connected_components::ConnectedComponentsParams) -> cugraph::error::Result<cugraph::labeling::StronglyConnectedComponentsResult>
+pub fn cugraph::graph::Graph<T>::triangle_count<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, &cugraph::community::triangle_count::TriangleCountParams) -> cugraph::error::Result<cugraph::community::triangle_count::TriangleCountResult>
+pub fn cugraph::graph::Graph<T>::triangle_count_all(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::community::triangle_count::TriangleCountParams) -> cugraph::error::Result<cugraph::community::triangle_count::TriangleCountResult>
+pub fn cugraph::graph::Graph<T>::vertex_pairs<'a, V: cugraph::types::CugraphElement + 'a>(&mut self, &cugraph::handle::EnteredContext<'_>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>, impl core::convert::Into<cugraph::VertexSelection<'a, V>>) -> cugraph::error::Result<cugraph::similarity::VertexPairs>
+pub fn cugraph::graph::Graph<T>::weakly_connected_components(&mut self, &cugraph::handle::EnteredContext<'_>, &cugraph::labeling::connected_components::ConnectedComponentsParams) -> cugraph::error::Result<cugraph::labeling::WeaklyConnectedComponentsResult>
+impl<T> cugraph::graph::Graph<T>
+pub fn cugraph::graph::Graph<T>::edge_count(&mut self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<usize>
+pub fn cugraph::graph::Graph<T>::edge_count_checked(&mut self, &cugraph::handle::EnteredContext<'_>, bool) -> cugraph::error::Result<usize>
+pub fn cugraph::graph::Graph<T>::park(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::ParkedGraph<T>> where T: core::marker::Send
+pub fn cugraph::graph::Graph<T>::properties(&self) -> cugraph::types::GraphProperties
+pub fn cugraph::graph::Graph<T>::select_random_vertices<V: cugraph::types::CugraphElement>(&self, &cugraph::handle::EnteredContext<'_>, &mut cugraph::random::RngState, usize) -> cugraph::error::Result<cugraph::array::DeviceArray<V>>
+pub fn cugraph::graph::Graph<T>::vertex_dtype(&self) -> cugraph::types::DataType
+pub fn cugraph::graph::Graph<T>::weight_dtype(&self) -> cugraph::types::DataType
+impl<T> core::fmt::Debug for cugraph::graph::Graph<T>
+pub fn cugraph::graph::Graph<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T> core::ops::drop::Drop for cugraph::graph::Graph<T>
+pub fn cugraph::graph::Graph<T>::drop(&mut self)
+pub struct cugraph::GraphBuilder<'a>
+impl<'a> cugraph::graph::GraphBuilder<'a>
+pub fn cugraph::graph::GraphBuilder<'a>::build<T: cugraph::graph::Transposition>(&self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::Graph<T>>
+pub fn cugraph::graph::GraphBuilder<'a>::do_expensive_check(self) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::drop_multi_edges(self) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::drop_self_loops(self) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::edge_end_time_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::edge_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::edge_start_time_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::edge_type_ids<E: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, E>) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::new<V: cugraph::types::CugraphElement>(&'a cugraph::array::DeviceArrayView<'a, V>, &'a cugraph::array::DeviceArrayView<'a, V>) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::properties(self, cugraph::types::GraphProperties) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::renumber(self) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::symmetrize(self) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::vertices<V: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, V>) -> Self
+pub fn cugraph::graph::GraphBuilder<'a>::weights<W: cugraph::types::CugraphElement>(self, &'a cugraph::array::DeviceArrayView<'a, W>) -> Self
+impl core::clone::Clone for cugraph::graph::GraphBuilder<'_>
+pub fn cugraph::graph::GraphBuilder<'_>::clone(&self) -> Self
+impl core::marker::Copy for cugraph::graph::GraphBuilder<'_>
+pub struct cugraph::ParkedGraph<T>
+impl<T> cugraph::graph::ParkedGraph<T>
+pub fn cugraph::graph::ParkedGraph<T>::device(&self) -> i32
+pub fn cugraph::graph::ParkedGraph<T>::properties(&self) -> cugraph::types::GraphProperties
+pub fn cugraph::graph::ParkedGraph<T>::resume(self, &cugraph::handle::EnteredContext<'_>) -> cugraph::error::Result<cugraph::graph::Graph<T>>
+pub fn cugraph::graph::ParkedGraph<T>::vertex_dtype(&self) -> cugraph::types::DataType
+pub fn cugraph::graph::ParkedGraph<T>::weight_dtype(&self) -> cugraph::types::DataType
+impl<T: core::marker::Send> core::marker::Send for cugraph::graph::ParkedGraph<T>
+impl<T> core::fmt::Debug for cugraph::graph::ParkedGraph<T>
+pub fn cugraph::graph::ParkedGraph<T>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl<T> core::ops::drop::Drop for cugraph::graph::ParkedGraph<T>
+pub fn cugraph::graph::ParkedGraph<T>::drop(&mut self)
+pub struct cugraph::ResourceHandle
+impl cugraph::handle::ResourceHandle
+pub unsafe fn cugraph::handle::ResourceHandle::adopt_raw_resource_handle(*mut cugraph_sys::cugraph_resource_handle_t) -> cugraph::error::Result<Self>
+pub fn cugraph::handle::ResourceHandle::comm_size(&self) -> i32
+pub fn cugraph::handle::ResourceHandle::device(&self) -> i32
+pub fn cugraph::handle::ResourceHandle::enter(&self, &'static str) -> cugraph::error::Result<cugraph::handle::EnteredContext<'_>>
+pub fn cugraph::handle::ResourceHandle::for_runtime(alloc::sync::Arc<cudf::runtime::owner::Runtime>) -> cugraph::error::Result<Self>
+pub unsafe fn cugraph::handle::ResourceHandle::from_raw_resource_handle(*mut cugraph_sys::cugraph_resource_handle_t) -> cugraph::error::Result<Self>
+pub fn cugraph::handle::ResourceHandle::into_raw_resource_handle(self) -> cugraph::error::Result<*mut cugraph_sys::cugraph_resource_handle_t>
+pub fn cugraph::handle::ResourceHandle::rank(&self) -> i32
+pub fn cugraph::handle::ResourceHandle::runtime(&self) -> core::option::Option<&cudf::runtime::owner::Runtime>
+impl core::fmt::Debug for cugraph::handle::ResourceHandle
+pub fn cugraph::handle::ResourceHandle::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl core::ops::drop::Drop for cugraph::handle::ResourceHandle
+pub fn cugraph::handle::ResourceHandle::drop(&mut self)
+pub struct cugraph::Transposed
+impl cugraph::graph::Transposition for cugraph::graph::Transposed
+pub unsafe trait cugraph::DeviceBuffer<T: cugraph::types::CugraphElement>
+pub fn cugraph::DeviceBuffer::device_ptr(&self) -> *mut core::ffi::c_void
+pub fn cugraph::DeviceBuffer::is_empty(&self) -> bool
+pub fn cugraph::DeviceBuffer::len(&self) -> usize
+impl<T: cugraph::types::CugraphElement> cugraph::array::DeviceBuffer<T> for cugraph::array::DeviceArray<T>
+pub fn cugraph::array::DeviceArray<T>::device_ptr(&self) -> *mut core::ffi::c_void
+pub fn cugraph::array::DeviceArray<T>::is_empty(&self) -> bool
+pub fn cugraph::array::DeviceArray<T>::len(&self) -> usize
+impl<T: cugraph::types::CugraphElement> cugraph::array::DeviceBuffer<T> for cugraph::array::DeviceArrayView<'_, T>
+pub fn cugraph::array::DeviceArrayView<'_, T>::device_ptr(&self) -> *mut core::ffi::c_void
+pub fn cugraph::array::DeviceArrayView<'_, T>::is_empty(&self) -> bool
+pub fn cugraph::array::DeviceArrayView<'_, T>::len(&self) -> usize
+pub trait cugraph::Transposition: cugraph::graph::sealed::Sealed
+impl cugraph::graph::Transposition for cugraph::graph::Forward
+impl cugraph::graph::Transposition for cugraph::graph::Transposed

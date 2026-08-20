@@ -117,8 +117,8 @@ fn mini_tpch_pipeline_composes_parquet_dates_decimals_like_join_groupby_sort_and
         &[
             ("orderkey", DataType::new(TypeId::Int32)),
             ("shipdate", DataType::new(TypeId::TimestampDays)),
-            ("extendedprice", DataType::fixed_point(TypeId::Decimal128, -2)),
-            ("discount", DataType::fixed_point(TypeId::Decimal128, -2)),
+            ("extendedprice", DataType::fixed_point(TypeId::Decimal128, -2).unwrap()),
+            ("discount", DataType::fixed_point(TypeId::Decimal128, -2).unwrap()),
             ("returnflag", DataType::new(TypeId::String)),
         ],
     );

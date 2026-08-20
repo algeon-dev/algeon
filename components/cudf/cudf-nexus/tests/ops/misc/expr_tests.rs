@@ -233,7 +233,7 @@ fn lit_decimal32_raw_broadcasts_dtype_scale_and_raw_values() {
     let result = eval(lit_decimal32_raw(12_345, -2).alias("amount"), &df);
 
     assert_eq!(result.len(), 3);
-    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal32, -2));
+    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal32, -2).unwrap());
     assert_eq!(host_export_dtype(&result), InteropDataType::fixed_point(rapids_interop::TypeId::Decimal32, -2));
     assert_eq!(host_export_i32_values(&result), vec![12_345, 12_345, 12_345]);
 }
@@ -244,7 +244,7 @@ fn lit_decimal64_raw_broadcasts_dtype_scale_and_raw_values() {
     let result = eval(lit_decimal64_raw(-98_765_432, -4).alias("amount"), &df);
 
     assert_eq!(result.len(), 3);
-    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4));
+    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4).unwrap());
     assert_eq!(host_export_dtype(&result), InteropDataType::fixed_point(rapids_interop::TypeId::Decimal64, -4));
     assert_eq!(host_export_i64_values(&result), vec![-98_765_432, -98_765_432, -98_765_432]);
 }
@@ -256,7 +256,7 @@ fn lit_decimal128_raw_broadcasts_dtype_scale_and_raw_values() {
     let result = eval(lit_decimal128_raw(raw, -6).alias("amount"), &df);
 
     assert_eq!(result.len(), 3);
-    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal128, -6));
+    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal128, -6).unwrap());
     assert_eq!(host_export_dtype(&result), InteropDataType::fixed_point(rapids_interop::TypeId::Decimal128, -6));
     assert_eq!(host_export_i128_values(&result), vec![raw, raw, raw]);
 }
@@ -265,13 +265,13 @@ fn lit_decimal128_raw_broadcasts_dtype_scale_and_raw_values() {
 fn binary_expr_aligns_mixed_decimal_storage_before_arithmetic() {
     let discount = crate::common::series("discount", &[5i64, 25])
         .unwrap()
-        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
         .unwrap();
     let df = df_with_series("discount", discount);
 
     let result = eval((lit_decimal128_raw(1, 0) - col("discount")).alias("net"), &df);
 
-    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal128, -2));
+    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal128, -2).unwrap());
     assert_eq!(host_export_i128_values(&result), vec![-400, -2400]);
 }
 
@@ -322,7 +322,7 @@ fn raw_literals_eval_in_use_resolved_override_domain_for_allocations() {
         assert_ne!(placement.workflow_id, override_placement.workflow_id);
     }
 
-    assert_eq!(decimal.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2));
+    assert_eq!(decimal.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2).unwrap());
     assert_eq!(host_export_i64_values(&decimal), vec![12_345; 3]);
     assert_eq!(timestamp.dtype().unwrap(), DataType::new(TypeId::TimestampMicroseconds));
     assert_eq!(host_export_i64_values(&timestamp), vec![1_700_000_123_456; 3]);
@@ -405,7 +405,7 @@ fn binary_expr_decimal128_div_with_explicit_type_preserves_fractional_scale() {
         38,
         8,
     );
-    let output_type = DataType::fixed_point(TypeId::Decimal128, -8);
+    let output_type = DataType::fixed_point(TypeId::Decimal128, -8).unwrap();
 
     let ratio = col("numerator")
         .binary_op_with_type(col("denominator"), BinaryOperator::Div, output_type)
@@ -430,7 +430,7 @@ fn with_columns_with_budget_decimal128_div_with_explicit_type_materializes_fract
         38,
         8,
     );
-    let output_type = DataType::fixed_point(TypeId::Decimal128, -8);
+    let output_type = DataType::fixed_point(TypeId::Decimal128, -8).unwrap();
     let token = Runtime::builder()
         .build()
         .unwrap()
@@ -551,7 +551,7 @@ fn round_builder_supports_decimal128() {
 
     let result = eval(col("amount").round(2).alias("rounded_amount"), &df);
 
-    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal128, -2));
+    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal128, -2).unwrap());
     assert_eq!(host_export_i128_values(&result), vec![1235, 1234, -1235]);
 }
 

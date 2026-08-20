@@ -75,8 +75,15 @@ pub fn lit_null(dtype: impl Into<DataType>) -> Expr {
     Expr::Literal(LitValue::null(dtype.into()))
 }
 
+fn decimal_literal_dtype(id: TypeId, scale: i32) -> DataType {
+    match DataType::fixed_point(id, scale) {
+        Ok(dtype) => dtype,
+        Err(_) => unreachable!("decimal literal constructors pass a decimal type"),
+    }
+}
+
 pub fn lit_decimal32_raw(raw: i32, scale: i32) -> Expr {
-    let dtype = DataType::fixed_point(TypeId::Decimal32, scale);
+    let dtype = decimal_literal_dtype(TypeId::Decimal32, scale);
     Expr::Literal(LitValue::numeric(dtype, move |domain| {
         Scalar::decimal_from_raw_in_domain(i128::from(raw), dtype, domain)
     }))
@@ -94,7 +101,7 @@ pub fn lit_decimal32_raw(raw: i32, scale: i32) -> Expr {
 /// [`Series`]. Evaluation does not intentionally synchronize the host before
 /// returning; later host-visible reads may synchronize.
 pub fn lit_decimal64_raw(raw: i64, scale: i32) -> Expr {
-    let dtype = DataType::fixed_point(TypeId::Decimal64, scale);
+    let dtype = decimal_literal_dtype(TypeId::Decimal64, scale);
     Expr::Literal(LitValue::numeric(dtype, move |domain| {
         Scalar::decimal_from_raw_in_domain(i128::from(raw), dtype, domain)
     }))
@@ -112,7 +119,7 @@ pub fn lit_decimal64_raw(raw: i64, scale: i32) -> Expr {
 /// [`Series`]. Evaluation does not intentionally synchronize the host before
 /// returning; later host-visible reads may synchronize.
 pub fn lit_decimal128_raw(raw: i128, scale: i32) -> Expr {
-    let dtype = DataType::fixed_point(TypeId::Decimal128, scale);
+    let dtype = decimal_literal_dtype(TypeId::Decimal128, scale);
     Expr::Literal(LitValue::numeric(dtype, move |domain| Scalar::decimal_from_raw_in_domain(raw, dtype, domain)))
 }
 

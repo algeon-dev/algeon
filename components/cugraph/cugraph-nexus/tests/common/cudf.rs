@@ -7,7 +7,7 @@ use std::{
 use cugraph::{
     array::DeviceArray,
     centrality::PageRankParams,
-    cudf_interop::{DataFrameGraphOptions, TableGraphOptions, graph_from_dataframe, graph_from_prepared_table_export},
+    cudf_interop::{TableGraphOptions, graph_from_prepared_table_export},
     graph::{Forward, Graph, GraphBuilder, Transposed},
     handle::{EnteredContext, ResourceHandle},
     types::GraphProperties,
@@ -52,22 +52,26 @@ pub fn build_directed_named_dataframe_graph(
     handle: &EnteredContext<'_>,
     df: &cudf::DataFrame,
 ) -> cugraph::error::Result<Graph<Forward>> {
-    let opts = DataFrameGraphOptions::new("src", "dst")
-        .weight_col("weight")
-        .properties(GraphProperties::directed())
-        .renumber();
-    graph_from_dataframe::<Forward>(handle, df, &opts)
+    let export = df.try_prepare_device_table_export().map_err(|error| {
+        cugraph::Error::new(cugraph::ErrorKind::InvalidState, "build_directed_named_dataframe_graph")
+            .with_message("failed to prepare cudf edge table")
+            .set_source(error)
+    })?;
+    let opts = TableGraphOptions::new(0, 1).weight_col(2).properties(GraphProperties::directed()).renumber();
+    graph_from_prepared_table_export::<Forward>(handle, &export, &opts)
 }
 
 pub fn build_undirected_named_dataframe_graph(
     handle: &EnteredContext<'_>,
     df: &cudf::DataFrame,
 ) -> cugraph::error::Result<Graph<Transposed>> {
-    let opts = DataFrameGraphOptions::new("src", "dst")
-        .weight_col("weight")
-        .properties(GraphProperties::undirected())
-        .renumber();
-    graph_from_dataframe::<Transposed>(handle, df, &opts)
+    let export = df.try_prepare_device_table_export().map_err(|error| {
+        cugraph::Error::new(cugraph::ErrorKind::InvalidState, "build_undirected_named_dataframe_graph")
+            .with_message("failed to prepare cudf edge table")
+            .set_source(error)
+    })?;
+    let opts = TableGraphOptions::new(0, 1).weight_col(2).properties(GraphProperties::undirected()).renumber();
+    graph_from_prepared_table_export::<Transposed>(handle, &export, &opts)
 }
 
 pub fn build_undirected_prepared_graph(

@@ -1,14 +1,14 @@
 [package]
 name = "cudf-nexus-sys"
-description = "Linux-only low-level FFI bindings to libcudf"
+description = "Workspace-internal libcudf FFI component for DataFusion Nexus"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license-file = "../../../LICENSE"
 repository.workspace = true
 homepage.workspace = true
+publish = false
 keywords = ["cuda", "cudf", "ffi", "gpu", "rapids"]
-categories = ["api-bindings", "science"]
 build = "build.rs"
 links = "cudf_rust"
 autotests = false

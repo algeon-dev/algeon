@@ -4,15 +4,6 @@ use rapids_interop::{InteropError, InteropErrorKind};
 
 use crate::error::{Error, ErrorKind, ErrorStatus};
 
-pub(super) fn map_runtime_ordering_interop_error(error: InteropError, operation: &'static str) -> Error {
-    map_interop_boundary_error(
-        error,
-        operation,
-        "failed to establish runtime-stream ordering for cudf interop input",
-        classify_runtime_ordering_interop_error,
-    )
-}
-
 pub(super) fn map_prepared_lease_activation_interop_error(error: InteropError, operation: &'static str) -> Error {
     map_interop_boundary_error(
         error,
@@ -40,15 +31,6 @@ pub(super) fn map_owned_import_interop_error(error: InteropError, operation: &'s
     )
 }
 
-pub(super) fn map_borrowed_projection_interop_error(error: InteropError, operation: &'static str) -> Error {
-    map_interop_boundary_error(
-        error,
-        operation,
-        "failed to project cudf table view into borrowed RAPIDS interop",
-        classify_projection_interop_error,
-    )
-}
-
 pub(super) fn map_prepared_projection_interop_error(error: InteropError, operation: &'static str) -> Error {
     map_interop_boundary_error(
         error,
@@ -56,24 +38,6 @@ pub(super) fn map_prepared_projection_interop_error(error: InteropError, operati
         "failed to prepare cudf-owned input for prepared device export",
         classify_projection_interop_error,
     )
-}
-
-fn classify_runtime_ordering_interop_error(kind: InteropErrorKind) -> (ErrorKind, Option<ErrorStatus>) {
-    match kind {
-        InteropErrorKind::UnsupportedType
-        | InteropErrorKind::UnsupportedLayout
-        | InteropErrorKind::PlacementUnsupported
-        | InteropErrorKind::ProfileUnsupported => (ErrorKind::UnsupportedType, Some(ErrorStatus::Permanent)),
-        InteropErrorKind::ExecutionBindingMismatch
-        | InteropErrorKind::MixedDeviceUnsupported
-        | InteropErrorKind::NullMaskUnsupported => (ErrorKind::InvalidInput, Some(ErrorStatus::Permanent)),
-        InteropErrorKind::ExecutionBindingUnavailable
-        | InteropErrorKind::NotFound
-        | InteropErrorKind::InvalidView
-        | InteropErrorKind::ReadinessMismatch
-        | InteropErrorKind::LeaseAlreadyActive => (ErrorKind::InvalidState, Some(ErrorStatus::Permanent)),
-        InteropErrorKind::ReadinessUnavailable => (ErrorKind::Unexpected, None),
-    }
 }
 
 fn classify_prepared_lease_interop_error(kind: InteropErrorKind) -> (ErrorKind, Option<ErrorStatus>) {
@@ -388,41 +352,6 @@ mod tests {
     }
 
     #[test]
-    fn runtime_ordering_interop_execution_binding_unavailable_is_invalid_state() {
-        let interop_err = InteropError::new(
-            InteropErrorKind::ExecutionBindingUnavailable,
-            "producer must provide explicit execution provenance",
-        );
-        let err = map_runtime_ordering_interop_error(interop_err, "test_op");
-        assert_eq!(err.kind(), ErrorKind::InvalidState);
-        assert!(err.is_permanent(), "missing runtime ordering provenance is a contract failure, not a retryable one");
-    }
-
-    #[test]
-    fn runtime_ordering_interop_readiness_unavailable_uses_cudf_source_status() {
-        let interop_err = InteropError::new(InteropErrorKind::ReadinessUnavailable, "failed to query producer event")
-            .set_source(cudf::testing::error::new_with_for_test(
-                cudf::ErrorCode::CudaRuntime,
-                "cudf::testing::cuda_runtime",
-                "device launch failed",
-            ));
-        let err = map_runtime_ordering_interop_error(interop_err, "test_op");
-        assert_eq!(err.kind(), ErrorKind::Unexpected);
-        assert!(err.is_temporary(), "runtime ordering should inherit retryability from the underlying CUDA failure");
-    }
-
-    #[test]
-    fn runtime_ordering_interop_readiness_unavailable_without_source_is_permanent() {
-        let interop_err = InteropError::new(InteropErrorKind::ReadinessUnavailable, "failed to query producer event");
-        let err = map_runtime_ordering_interop_error(interop_err, "test_op");
-        assert_eq!(err.kind(), ErrorKind::Unexpected);
-        assert!(
-            err.is_permanent(),
-            "runtime ordering must not invent retryability when the interop boundary did not prove it"
-        );
-    }
-
-    #[test]
     fn prepared_lease_activation_interop_lease_already_active_is_invalid_state() {
         let interop_err = InteropError::new(
             InteropErrorKind::LeaseAlreadyActive,
@@ -476,15 +405,6 @@ mod tests {
         let err = map_owned_import_interop_error(interop_err, "test_op");
         assert_eq!(err.kind(), ErrorKind::InvalidInput);
         assert!(err.is_permanent(), "cross-device import mismatches are caller input failures");
-    }
-
-    #[test]
-    fn borrowed_projection_interop_invalid_view_is_invalid_state() {
-        let interop_err =
-            InteropError::new(InteropErrorKind::InvalidView, "borrowed table view is internally inconsistent");
-        let err = map_borrowed_projection_interop_error(interop_err, "test_op");
-        assert_eq!(err.kind(), ErrorKind::InvalidState);
-        assert!(err.is_permanent(), "borrowed projection invariants should surface as invalid-state failures");
     }
 
     #[test]

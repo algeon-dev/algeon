@@ -182,7 +182,7 @@ unsafe fn create_reduce_agg_handle(agg: &ReduceAgg) -> Result<cudf_sys::cudf_red
         ReduceAgg::NUnique { null_policy } => {
             error::check_status_in(
                 // SAFETY: the null policy and out-pointer are valid.
-                unsafe { cudf_sys::cudf_reduce_aggregation_create_nunique(*null_policy as i32, &mut handle) },
+                unsafe { cudf_sys::cudf_reduce_aggregation_create_nunique(null_policy.to_raw() as i32, &mut handle) },
                 "reduction::create_reduce_agg_handle(nunique)",
             )?;
         },
