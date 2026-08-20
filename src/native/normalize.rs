@@ -5,7 +5,7 @@ use datafusion::{
     datasource::{memory::MemorySourceConfig, source::DataSourceExec},
     physical_expr::{LexOrdering, PhysicalSortExpr, expressions::Column},
     physical_plan::{
-        ExecutionPlan,
+        ExecutionPlan, ExecutionPlanProperties,
         aggregates::AggregateExec,
         coalesce_partitions::CoalescePartitionsExec,
         coop::CooperativeExec,
@@ -46,7 +46,7 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
     // projection roots first try aggregate stacks, and bare joins are input
     // roots rather than unsupported unary stacks.
     if let Some(merge) = plan.downcast_ref::<SortPreservingMergeExec>() {
-        return normalize_sort_preserving_merge_root(merge);
+        return normalize_sort_preserving_merge_root(merge, None);
     }
 
     if let Some(limit) = plan.downcast_ref::<LocalLimitExec>() {
@@ -80,6 +80,10 @@ pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<Normaliz
     }
 
     if let Some(projection) = plan.downcast_ref::<ProjectionExec>() {
+        if let Some(merge) = projection.input().downcast_ref::<SortPreservingMergeExec>() {
+            return normalize_sort_preserving_merge_root(merge, Some(projection));
+        }
+
         if let Some(limit) = projection.input().downcast_ref::<GlobalLimitExec>() {
             let limit_spec = global_limit_spec(
                 limit,
@@ -301,9 +305,10 @@ fn normalize_sort_stack<'a>(
     })
 }
 
-fn normalize_sort_preserving_merge_root(
-    merge: &SortPreservingMergeExec,
-) -> Result<NormalizedNativePlan<'_>, NativePlanRejection> {
+fn normalize_sort_preserving_merge_root<'a>(
+    merge: &'a SortPreservingMergeExec,
+    outer_projection: Option<&'a ProjectionExec>,
+) -> Result<NormalizedNativePlan<'a>, NativePlanRejection> {
     let output_schema_fields = merge.schema().fields().len();
     let root_without_child_sort = if merge.fetch().is_some() {
         NativeStackRoot::SortPreservingMergeFetch
@@ -319,11 +324,11 @@ fn normalize_sort_preserving_merge_root(
     if !sort_ordering_is_column_keyed(merge.expr()) {
         return Err(NativePlanRejection { candidate, reason: CapabilityReason::NativeSortPreservingMergeUnsupported });
     }
-    if !plan_output_ordering_matches(merge.input().as_ref(), merge.expr()) {
+    if !plan_partitions_match_ordering(merge.input().as_ref(), merge.expr()) {
         return Err(NativePlanRejection { candidate, reason: CapabilityReason::NativeSortPreservingMergeUnsupported });
     }
 
-    let (outer_projection, after_proj) = peel_root_projection(merge.input().as_ref());
+    let (inner_projection, after_proj) = peel_root_projection(merge.input().as_ref());
     if let Some(sort) = after_proj.downcast_ref::<SortExec>() {
         if merge.fetch().is_none() && sort.fetch().is_some() {
             return Err(NativePlanRejection {
@@ -339,19 +344,32 @@ fn normalize_sort_preserving_merge_root(
                 reason: CapabilityReason::NativeSortPreservingMergeUnsupported,
             });
         }
-        if sort_orderings_match(merge.expr(), sort.expr()) || outer_projection.is_some() {
+        if outer_projection.is_none() && (sort_orderings_match(merge.expr(), sort.expr()) || inner_projection.is_some())
+        {
             return normalize_sort_stack(
                 root_with_child_sort,
                 output_schema_fields,
                 sort,
                 merge.fetch().map(NativeLimitSpec::fetch),
-                outer_projection,
+                outer_projection.or(inner_projection),
             );
         }
     }
 
     let input_plan = merge.input().as_ref();
     let sort = NormalizedNativeSortExprs::from_ordering(merge.expr(), input_plan.schema(), merge.schema());
+    if let Some(outer_projection) = outer_projection {
+        return normalize_input_root(
+            outer_projection.schema().fields().len(),
+            Some(root_without_child_sort),
+            Some(sort),
+            merge.fetch().map(NativeLimitSpec::fetch),
+            Some(outer_projection),
+            input_plan,
+            candidate,
+            PostAggregateProjectionOrder::AboveSort,
+        );
+    }
     let (projection, input) = peel_root_projection(input_plan);
     normalize_input_root(
         output_schema_fields,
@@ -381,8 +399,11 @@ fn sort_preserving_merge_candidate(merge: &SortPreservingMergeExec) -> GpuCandid
     }
 }
 
-fn plan_output_ordering_matches(plan: &dyn ExecutionPlan, ordering: &LexOrdering) -> bool {
-    plan.properties().output_ordering().is_some_and(|output_ordering| sort_orderings_match(output_ordering, ordering))
+fn plan_partitions_match_ordering(plan: &dyn ExecutionPlan, ordering: &LexOrdering) -> bool {
+    plan.equivalence_properties().ordering_satisfy(ordering.iter().cloned()).unwrap_or(false)
+        || plan.downcast_ref::<UnionExec>().is_some_and(|union| {
+            union.inputs().iter().all(|input| plan_partitions_match_ordering(input.as_ref(), ordering))
+        })
 }
 
 fn normalize_global_aggregate_stack<'a>(
@@ -738,7 +759,7 @@ fn normalize_native_input(
         }));
     }
     if let Some(sort) = plan.downcast_ref::<SortExec>() {
-        if !partition_preserving_sort_is_supported(sort, false) {
+        if !partition_preserving_sort_is_supported(sort, allow_ordered_multi_partition_memory_source) {
             return Err(NativePlanRejection {
                 candidate,
                 reason: CapabilityReason::NativePartitionPreservingSortUnsupported,
@@ -766,8 +787,13 @@ fn normalize_native_input(
         }));
     }
     if let Some(join) = plan.downcast_ref::<HashJoinExec>() {
-        let left = normalize_native_input(join.left().as_ref(), candidate.clone(), false)?;
-        let right = normalize_native_input(join.right().as_ref(), candidate, false)?;
+        let left = normalize_native_input(
+            join.left().as_ref(),
+            candidate.clone(),
+            allow_ordered_multi_partition_memory_source,
+        )?;
+        let right =
+            normalize_native_input(join.right().as_ref(), candidate, allow_ordered_multi_partition_memory_source)?;
         return Ok(NormalizedNativeInput::HashJoin(NormalizedNativeHashJoin {
             join,
             fetch: join.fetch().map(NativeLimitSpec::fetch),
@@ -776,8 +802,13 @@ fn normalize_native_input(
         }));
     }
     if let Some(join) = plan.downcast_ref::<CrossJoinExec>() {
-        let left = normalize_native_input(join.left().as_ref(), candidate.clone(), false)?;
-        let right = normalize_native_input(join.right().as_ref(), candidate, false)?;
+        let left = normalize_native_input(
+            join.left().as_ref(),
+            candidate.clone(),
+            allow_ordered_multi_partition_memory_source,
+        )?;
+        let right =
+            normalize_native_input(join.right().as_ref(), candidate, allow_ordered_multi_partition_memory_source)?;
         return Ok(NormalizedNativeInput::CrossJoin(NormalizedNativeCrossJoin {
             join,
             left: Box::new(left),
@@ -785,8 +816,13 @@ fn normalize_native_input(
         }));
     }
     if let Some(join) = plan.downcast_ref::<NestedLoopJoinExec>() {
-        let left = normalize_native_input(join.left().as_ref(), candidate.clone(), false)?;
-        let right = normalize_native_input(join.right().as_ref(), candidate, false)?;
+        let left = normalize_native_input(
+            join.left().as_ref(),
+            candidate.clone(),
+            allow_ordered_multi_partition_memory_source,
+        )?;
+        let right =
+            normalize_native_input(join.right().as_ref(), candidate, allow_ordered_multi_partition_memory_source)?;
         return Ok(NormalizedNativeInput::NestedLoopJoin(NormalizedNativeNestedLoopJoin {
             join,
             left: Box::new(left),
@@ -797,7 +833,9 @@ fn normalize_native_input(
         let inputs = union
             .inputs()
             .iter()
-            .map(|input| normalize_native_input(input.as_ref(), candidate.clone(), false))
+            .map(|input| {
+                normalize_native_input(input.as_ref(), candidate.clone(), allow_ordered_multi_partition_memory_source)
+            })
             .collect::<Result<Vec<_>, _>>()?;
         return Ok(NormalizedNativeInput::Union(NormalizedNativeUnion { union, inputs }));
     }

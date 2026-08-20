@@ -223,17 +223,20 @@ fn one_row_zero_column_literal_keeps_zero_floor() {
         .resolve_reservation_envelope(reservation_policy())
         .expect("one-row zero-column placeholders do not require a literal byte owner");
     assert_eq!(envelope.required_phase_floor_bytes(), 0);
-    assert_eq!(envelope.complete_phase_peak_bytes(), None);
+    assert_eq!(envelope.complete_phase_peak_bytes(), Some(0));
+    assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::ConservativeOwnerSum));
 }
 
 #[test]
-fn generic_nonempty_literal_rejects_without_a_source_owner_bound() {
+fn nonempty_literal_owns_its_source_stage_bound() {
     let proof = QueryPlanCapabilityProof::for_query_plan(&one_row_literal_plan()).unwrap();
-    let error = proof
+    let source_terms =
+        proof.as_requirement().owner_terms.iter().filter(|term| term.is_source_stage()).collect::<Vec<_>>();
+    assert_eq!(source_terms.len(), 1);
+    let envelope = proof
         .resolve_reservation_envelope(reservation_policy())
-        .expect_err("generic nonempty literals must fail before placement");
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
-    assert_eq!(error.fact_value("reason"), Some("attempt_owner_term_literal_source_bytes_unavailable"));
+        .expect("a reachable nonempty literal must carry its checked source owner");
+    assert_eq!(envelope.complete_phase_peak_bytes(), Some(source_terms[0].bytes()));
 }
 
 #[test]
@@ -290,7 +293,7 @@ fn cugraph_side_input_frame_is_additive_and_retains_both_exact_scopes() {
 
     let generic_side_proof = QueryPlanCapabilityProof::for_query_plan(&nullable_literal_side_input_plan())
         .expect("generic side-input proof issues an exact scope");
-    let rejected = QueryPlanCapabilityProof::combine(
+    QueryPlanCapabilityProof::combine(
         QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&graph_plan)
             .expect("graph plan must issue its cuGraph capability proof")
             .with_graph_memory_admission_evidence(&evidence)
@@ -299,8 +302,7 @@ fn cugraph_side_input_frame_is_additive_and_retains_both_exact_scopes() {
     )
     .expect("generic proof composition remains structurally valid")
     .resolve_reservation_envelope(reservation_policy())
-    .expect_err("the generic predicate proof must reject its unpriced literal source");
-    assert_eq!(rejected.fact_value("reason"), Some("attempt_owner_term_literal_source_bytes_unavailable"));
+    .expect("the literal source must remain priced when its proof is composed");
 }
 
 #[test]
@@ -617,6 +619,8 @@ fn schedule_scope(scope: &str) -> AttemptReservationShape {
         output_column_evidence: crate::admission::string_payload::PlanColumnEvidence::default(),
         output_column_evidence_input_scopes: Vec::new(),
         has_local_parquet_source: false,
+        complete_literal_source: false,
+        complete_zero_byte_literal_source: false,
         source_stage_bytes: None,
         complete_zero_column_global_aggregate: None,
         complete_graph_memory_phase: None,

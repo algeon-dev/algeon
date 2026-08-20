@@ -20,7 +20,7 @@ use crate::{
     capability::CapabilityReason,
     error::{Error, ErrorCode},
     native_exec::{
-        NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig,
+        NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec,
         producer::{gpu_resident_producer_input_name, rewrite_gpu_resident_producer_for_subsumed_composed_consumer},
     },
     report::{CandidateOutcome, GpuCandidate, NativeCandidateCostEvidence, PlanningReport},
@@ -157,11 +157,6 @@ fn replace_lowered_root_or_keep_plan(
         lowering.report.wrap_selected_candidates_with_outer_operator("SortExec");
     }
     lowering.report.anchor_selected_candidates_to_plan_node(native_plan.root_id());
-    let candidate = lowering
-        .report
-        .single_selected_candidate()
-        .cloned()
-        .ok_or_else(|| native_candidate_error("native rewrite has no rewritten candidate"))?;
     if let nexus_query_engine::plan::NativePlanCostDecision::NotSelectedByCost { reason, facts } =
         nexus_query_engine::plan::native_plan_cost_decision(&native_plan, native_plan_cost_options)
     {
@@ -178,6 +173,19 @@ fn replace_lowered_root_or_keep_plan(
             rewritten: false,
         });
     }
+
+    let shared_resident = if native_plan_gpu_resident_source_names(&native_plan).is_empty() {
+        nexus_query_engine::optimizer::SharedResidentPlan { consumer: native_plan, producers: Vec::new() }
+    } else {
+        nexus_query_engine::optimizer::extract_shared_resident_subplans(native_plan)
+    };
+    let native_plan = shared_resident.consumer;
+    lowering.report.anchor_selected_candidates_to_plan_node(native_plan.root_id());
+    let candidate = lowering
+        .report
+        .single_selected_candidate()
+        .cloned()
+        .ok_or_else(|| native_candidate_error("native rewrite has no rewritten candidate"))?;
 
     if native_execution_boundary_is_rejected(&native_plan, native_execution_config)? {
         let report = native_execution_rejection_report_for_candidate(
@@ -203,6 +211,7 @@ fn replace_lowered_root_or_keep_plan(
         native_execution_config,
         &datafusion_shape,
         output_equivalence_properties.unwrap_or_else(|| plan.properties().equivalence_properties().clone()),
+        shared_resident.producers,
     )?;
     Ok(NativeOptimizationAttempt {
         plan,
@@ -248,6 +257,7 @@ fn native_datafusion_exec_for_plan(
     native_execution_config: &NexusNativeExecutionConfig,
     datafusion_shape: &str,
     eq_properties: EquivalenceProperties,
+    shared_resident_producers: Vec<nexus_query_engine::optimizer::SharedResidentProducerPlan>,
 ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
     let native_execution_config =
         native_execution_config.clone().with_plan_task_mapping_datafusion_shape(datafusion_shape);
@@ -262,7 +272,20 @@ fn native_datafusion_exec_for_plan(
         .map_err(DataFusionError::from);
     }
 
-    let gpu_inputs = gpu_resident_producer_children(&original_plan, &gpu_input_names)?;
+    let shared_input_names =
+        shared_resident_producers.iter().map(|producer| producer.input_name.clone()).collect::<BTreeSet<_>>();
+    let external_gpu_input_names = gpu_input_names.difference(&shared_input_names).cloned().collect();
+    let mut gpu_inputs = gpu_resident_producer_children(&original_plan, &external_gpu_input_names)?;
+    for producer in shared_resident_producers {
+        gpu_inputs.push(Arc::new(NexusNativeGpuProducerExec::try_new_for_shared_plan(
+            producer.input_name,
+            producer.plan,
+            &native_execution_config,
+        )?));
+    }
+    gpu_inputs.sort_by(|left, right| {
+        gpu_resident_producer_input_name(left.as_ref()).cmp(&gpu_resident_producer_input_name(right.as_ref()))
+    });
     let (native_plan, gpu_inputs) = remove_subsumed_composed_consumer(native_plan, gpu_inputs)?;
     NexusNativeComposedExec::try_new_with_equivalence_properties(
         native_plan,

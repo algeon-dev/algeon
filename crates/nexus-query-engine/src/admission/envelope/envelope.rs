@@ -72,6 +72,10 @@ impl AttemptReservationEnvelope {
                 for scope in schedule.referenced_scope_fingerprints() {
                     counts.entry(scope).or_insert(1);
                 }
+                for (scope, referenced) in schedule.referenced_composed_occurrence_scope_counts() {
+                    let count = counts.entry(scope).or_default();
+                    *count = (*count).max(referenced);
+                }
                 Ok(counts)
             })
             .transpose()?;
@@ -191,6 +195,9 @@ impl AttemptReservationEnvelope {
                 Err(error) => return Err(error),
             }
         }
+        if selected_derivation.is_none() && complete_phase_peak_bytes.is_some() {
+            selected_derivation = Some(AttemptBoundDerivation::ConservativeOwnerSum);
+        }
 
         if ordered_schedule.is_none() && has_graph_memory_phase && complete_phase_peak_bytes.is_none() {
             return Err(QueryError::new(
@@ -200,7 +207,6 @@ impl AttemptReservationEnvelope {
             )
             .with_fact("reason", GRAPH_ATTEMPT_COMPLETE_PHASE_UNMODELED_REASON));
         }
-
         Ok(Self {
             policy,
             scopes,

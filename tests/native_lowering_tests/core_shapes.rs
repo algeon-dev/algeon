@@ -602,6 +602,47 @@ fn sort_preserving_merge_over_ordered_memory_source_lowers_without_child_sort() 
 }
 
 #[test]
+fn projection_over_sort_preserving_merge_and_ordered_union_lowers() {
+    let input_schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
+    let inputs = [1, 2]
+        .into_iter()
+        .map(|key| {
+            let batch =
+                RecordBatch::try_new(Arc::clone(&input_schema), vec![Arc::new(Int32Array::from(vec![key, key]))])
+                    .unwrap();
+            let source = MemorySourceConfig::try_new(&[vec![batch]], Arc::clone(&input_schema), None).unwrap();
+            let scan = DataSourceExec::from_data_source(source) as Arc<dyn ExecutionPlan>;
+            Arc::new(ProjectionExec::try_new([(lit(ScalarValue::Int32(Some(key))), "key".to_string())], scan).unwrap())
+                as Arc<dyn ExecutionPlan>
+        })
+        .collect();
+    let union: Arc<dyn ExecutionPlan> = UnionExec::try_new(inputs).unwrap();
+    assert!(union.properties().output_ordering().is_none());
+    let ordering = LexOrdering::new([PhysicalSortExpr::new(
+        col("key", &union.schema()).unwrap(),
+        ArrowSortOptions::new(false, false),
+    )])
+    .unwrap();
+    let merge: Arc<dyn ExecutionPlan> = Arc::new(SortPreservingMergeExec::new(ordering, union));
+    let plan: Arc<dyn ExecutionPlan> =
+        Arc::new(ProjectionExec::try_new([(col("key", &merge.schema()).unwrap(), "key".to_string())], merge).unwrap());
+
+    let result = lower_physical_plan_to_native_for_test(plan);
+
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let CandidateOutcome::Selected { candidate } = &result.report.outcomes()[0] else {
+        panic!("SPM over an ordered union should lower to native");
+    };
+    assert_eq!(
+        candidate.shape,
+        "SortPreservingMergeExec(ProjectionExec(UnionExec(ProjectionExec(MemorySource),ProjectionExec(MemorySource))))"
+    );
+    assert!(result.plans[0].nodes().iter().any(|node| matches!(node.kind, PlanNode::Sort(_))));
+    assert!(result.plans[0].nodes().iter().any(|node| matches!(node.kind, PlanNode::Projection(_))));
+}
+
+#[test]
 fn partition_preserving_sort_with_single_input_partition_lowers() {
     let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![2, 1]))]).unwrap();

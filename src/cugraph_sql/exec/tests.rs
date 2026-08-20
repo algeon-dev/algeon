@@ -1323,7 +1323,7 @@ fn string_jaccard_70_by_70_retires_shared_mapping_intermediates_before_the_final
     let final_sort = plan.node(plan.root_id()).unwrap();
     let PlanNode::Sort(sort) = &final_sort.kind else { panic!("the fixture must end after decode with a sort") };
     let pair = lifetime(graph_node.inputs[1], "consumer_output");
-    let graph_output = lifetime(graph.id, "retained_output");
+    let graph_output = lifetime(graph.id, "graph_output");
     let graph_execution = lifetime(graph.id, "execution_workspace");
     let codebook_values = lifetime(
         match &codebook.kind {
@@ -2496,7 +2496,13 @@ fn filtered_native_edge_ticket_defers_graph_pricing_to_the_retained_runtime_fram
         .issue_graph_aware_ticket_after_staging(input_row_bounds, &TaskContext::default(), Some(&edge_plan))
         .expect("eligible filtered producer must mint one deferred graph ticket");
     let ticket = exec.native_execution_config.query_admission_ticket().expect("one graph-aware ticket is issued");
-    let graph = graph_ticket_proof_with_resident_edge_plan(&exec, &edge_plan);
+    let model_ask = exec
+        .graph_model_ask_bytes_for_admission_ticket()
+        .expect("the static graph shape must retain its cold model")
+        .expect("the bounded edge rows must produce cold graph evidence");
+    let graph = graph_ticket_proof_with_resident_edge_plan(&exec, &edge_plan)
+        .with_graph_memory_admission_evidence(model_ask.cold_model_evidence())
+        .expect("cold graph evidence must match the deferred graph scope");
     let expected = QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt(
         &graph_plan,
         graph,
@@ -2508,7 +2514,7 @@ fn filtered_native_edge_ticket_defers_graph_pricing_to_the_retained_runtime_fram
     .expect("Source-Filter-GPU sink is eligible");
 
     assert_eq!(ticket.attempt_capability_proof(), Some(&expected));
-    assert_eq!(expected.soft_working_set_hint_bytes(), None);
+    assert_eq!(expected.soft_working_set_hint_bytes(), Some(model_ask.cold_model_requested_bytes()));
 }
 
 #[test]
@@ -2853,15 +2859,23 @@ async fn installed_backend_datafusion_parquet_graph_ticket_keeps_post_hydration_
         .expect("metadata hydration must lower the DataFusion edge scan to its native source fragment")
         .clone_with_gpu_resident_sink();
     let source_proof =
-        nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_input_plan(&source_plan)
-            .expect("the resolved native edge source must retain its source-read capability proof");
-    let expected_proof = nexus_query_engine::admission::QueryPlanCapabilityProof::combine(
-        graph_ticket_proof_with_resident_edge_plan(&prepared, &source_plan),
-        [source_proof],
+        nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_materialized_input_producer_plan(
+            &source_plan,
+        )
+        .expect("the resolved native edge source must retain its materialized-output capability proof");
+    let (graph_plan, graph_proof) = graph_ticket_plan_and_proof_with_resident_edge_plan(&prepared, &source_plan);
+    let graph_proof = graph_proof
+        .with_graph_memory_admission_evidence(model_ask.cold_model_evidence())
+        .expect("exact graph evidence must match the graph proof scope");
+    let expected_proof = nexus_query_engine::admission::QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt_with_proofs(
+        &graph_plan,
+        graph_proof,
+        CUGRAPH_EDGE_INPUT_NAME,
+        &source_plan,
+        [(CUGRAPH_EDGE_INPUT_NAME.to_owned(), source_proof)],
     )
-    .expect("the graph root and resolved native edge source must retain one combined proof")
-    .with_graph_memory_admission_evidence(model_ask.cold_model_evidence())
-    .expect("exact graph evidence must match the graph proof scope");
+    .expect("the graph root and resolved native edge source must compile one exact schedule")
+    .expect("the resolved native edge source must be eligible for graph composition");
     assert_eq!(
         proof, &expected_proof,
         "the post-hydration ticket must retain the exact graph and resolved source proofs with phase-aware model evidence"

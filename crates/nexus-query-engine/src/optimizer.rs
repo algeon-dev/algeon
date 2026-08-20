@@ -22,6 +22,7 @@ mod outer_join_null_rejection;
 mod outer_join_null_rejection_policy;
 mod projection_simplification;
 mod rewrite;
+mod shared_resident_extraction;
 mod shared_subplan_materialization;
 mod source_target_policy;
 mod stream_fanout_replay;
@@ -83,6 +84,10 @@ pub use semijoin_reduction::{
     SemijoinReductionCostGateDiagnostics, SemijoinReductionCostSignal, SemijoinReductionDiagnostics,
     SemijoinReductionKeyMappingDiagnostics, SemijoinReductionOptions, SemijoinReductionRejectedReason,
     SemijoinReductionResult, optimize_semijoin_reduction,
+};
+#[doc(hidden)]
+pub use shared_resident_extraction::{
+    SharedResidentPlan, SharedResidentProducerPlan, extract_shared_resident_subplans,
 };
 pub use shared_subplan_materialization::{
     SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME, SharedSubplanMaterializationCandidateDiagnostics,

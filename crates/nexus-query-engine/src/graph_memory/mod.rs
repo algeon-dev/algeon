@@ -17,6 +17,7 @@ pub use evidence::{
 };
 pub(crate) use evidence::{
     GraphMemoryOwnerComponents, GraphMemoryOwnerTermFact, GraphMemoryOwnerTermRole, GraphSourceStageLifetime,
+    graph_output_is_final,
 };
 #[cfg(feature = "cugraph")]
 pub(crate) use model::bounded_similarity_pair_cardinality_for_plan;

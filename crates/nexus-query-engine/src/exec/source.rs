@@ -201,46 +201,24 @@ pub fn read_literal_batch_source(
     metrics: &mut QueryMetrics,
 ) -> Result<GpuDataFrame> {
     crate::source::validate_literal_batch_source(source)?;
-    let mut frames = Vec::with_capacity(source.batches.len());
-    for batch in &source.batches {
-        context.check_cancellation("nexus_query_engine.literal_batch_source.read")?;
-        let timer = Instant::now();
-        let frame = DataFrame::from_record_batch(&context.runtime()?, batch).map_err(|error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.literal_batch_source.read",
-                "failed to import literal Arrow batch into nexus native",
-                error,
-            )
-            .with_fact("rows", batch.num_rows())
-            .with_fact("columns", batch.num_columns())
-        })?;
-        metrics.operator_time += timer.elapsed();
-        metrics.record_input_batch(frame.num_rows() as u64);
-        metrics.boundary.record_host_to_device_upload(batch.num_rows() as u64, record_batch_memory_size(batch) as u64);
-        frames.push(frame);
-    }
-
-    let mut frames = frames.into_iter();
-    let frame = frames.next().expect("validated literal source contains at least one batch");
-    let other_frames = frames.collect::<Vec<_>>();
-    if other_frames.is_empty() {
-        return Ok(GpuDataFrame::new(frame));
-    }
-
-    let other_frame_refs = other_frames.iter().collect::<Vec<_>>();
-    let overrides_lease = execution_overrides(context)?;
-    let overrides = overrides_lease.overrides();
+    context.check_cancellation("nexus_query_engine.literal_batch_source.read")?;
     let timer = Instant::now();
-    let output = frame.with_execution(&overrides).concat_many(&other_frame_refs).map_err(|error| {
+    let frame = DataFrame::from_record_batches(&context.runtime()?, &source.batches).map_err(|error| {
         QueryError::from_cudf(
-            "nexus_query_engine.literal_batch_source.concat",
-            "failed to concatenate native literal batches",
+            "nexus_query_engine.literal_batch_source.read",
+            "failed to import literal Arrow batches into nexus native",
             error,
         )
-        .with_fact("batch_count", source.batches.len())
+        .with_fact("rows", source.row_count())
+        .with_fact("columns", source.schema.fields().len())
+        .with_fact("batches", source.batches.len())
     })?;
     metrics.operator_time += timer.elapsed();
-    Ok(GpuDataFrame::new(output))
+    for batch in &source.batches {
+        metrics.record_input_batch(batch.num_rows() as u64);
+        metrics.boundary.record_host_to_device_upload(batch.num_rows() as u64, record_batch_memory_size(batch) as u64);
+    }
+    Ok(GpuDataFrame::new(frame))
 }
 
 fn read_local_parquet_source_uncached(

@@ -239,7 +239,6 @@ fn query_service_memory_failure_callback_ignores_budget_failures() {
                 attested_cugraph_graph_execution_scopes: Vec::new(),
                 reservation_shapes: Vec::new(),
                 deferred_resident_phases: Vec::new(),
-                runtime_refinable_output_scopes: Vec::new(),
             },
         ))
         .unwrap()
@@ -570,7 +569,6 @@ fn protection_retargets_on_health_close_and_unrelated_devices_stay_work_conservi
                 attested_cugraph_graph_execution_scopes: Vec::new(),
                 reservation_shapes: Vec::new(),
                 deferred_resident_phases: Vec::new(),
-                runtime_refinable_output_scopes: Vec::new(),
             },
         ))
         .unwrap();

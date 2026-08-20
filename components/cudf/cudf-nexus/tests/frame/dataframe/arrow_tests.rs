@@ -2207,6 +2207,10 @@ fn test_from_record_batches_matches_per_batch_import() {
     let runtime = crate::common::sample_runtime();
     let batches = batches_from_ranges(&[0..3, 3..8, 8..15]);
 
+    cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
+    DataFrame::from_record_batches(&runtime, &batches[..1]).unwrap();
+    assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 1);
+
     let staged = DataFrame::from_record_batches(&runtime, &batches).unwrap();
 
     assert_eq!(staged.num_rows(), 15);

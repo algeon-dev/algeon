@@ -27,15 +27,15 @@ use nexus_query_engine::{
     runtime::{ExecutionContext, SourceStorageProfile, resident::GpuResultHandle},
 };
 
+#[cfg(any(test, feature = "test-support"))]
+use super::metrics::NativeMetricsCapture;
 use super::{
     admission::QueryAdmissionTicket,
-    common::{native_plan_one_line, native_query_runtime_error, write_native_plan_tree},
+    common::{
+        comma_separated, conservative_properties, gpu_resident_source_names, native_plan_one_line,
+        native_query_runtime_error, write_native_plan_tree,
+    },
     metrics::{NativeExecutionMetricsCapture, NexusNativeMetrics},
-};
-#[cfg(any(test, feature = "test-support"))]
-use super::{
-    common::{comma_separated, conservative_properties, gpu_resident_source_names},
-    metrics::NativeMetricsCapture,
 };
 use crate::error::{Error, ErrorCode};
 
@@ -155,6 +155,40 @@ impl NexusNativeGpuProducerExec {
         lakehouse_footer_pruning: bool,
         source_storage_profiles: Vec<SourceStorageProfile>,
     ) -> crate::error::Result<Self> {
+        let metrics_capture = Some(metrics_capture.unwrap_or_else(NativeMetricsCapture::standalone).new_execution());
+        Self::try_new_with_execution_capture(
+            input_name,
+            plan,
+            metrics_capture,
+            plan_task_mapping_datafusion_shape,
+            lakehouse_footer_pruning,
+            source_storage_profiles,
+        )
+    }
+
+    pub(crate) fn try_new_for_shared_plan(
+        input_name: impl Into<String>,
+        plan: QueryPlan,
+        execution_config: &super::NexusNativeExecutionConfig,
+    ) -> crate::error::Result<Self> {
+        Self::try_new_with_execution_capture(
+            input_name,
+            plan,
+            execution_config.new_metrics_capture(),
+            execution_config.plan_task_mapping_datafusion_shape(),
+            execution_config.lakehouse_footer_pruning(),
+            execution_config.source_storage_profiles().to_vec(),
+        )
+    }
+
+    fn try_new_with_execution_capture(
+        input_name: impl Into<String>,
+        plan: QueryPlan,
+        metrics_capture: Option<NativeExecutionMetricsCapture>,
+        plan_task_mapping_datafusion_shape: Option<&str>,
+        lakehouse_footer_pruning: bool,
+        source_storage_profiles: Vec<SourceStorageProfile>,
+    ) -> crate::error::Result<Self> {
         let input_name = input_name.into();
         if input_name.is_empty() {
             return Err(Error::new(
@@ -182,7 +216,6 @@ impl NexusNativeGpuProducerExec {
             .with_fact("gpu_resident_sources", comma_separated(source_names.iter().map(String::as_str))));
         }
 
-        let metrics_capture = Some(metrics_capture.unwrap_or_else(NativeMetricsCapture::standalone).new_execution());
         Ok(Self {
             input_name,
             cache: conservative_properties(Arc::clone(plan.output_schema())),

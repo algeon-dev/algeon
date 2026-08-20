@@ -76,6 +76,8 @@ pub(crate) struct AttemptReservationShape {
     output_column_evidence: crate::admission::string_payload::PlanColumnEvidence,
     output_column_evidence_input_scopes: Vec<(String, String)>,
     has_local_parquet_source: bool,
+    complete_literal_source: bool,
+    complete_zero_byte_literal_source: bool,
     source_stage_bytes: Option<u64>,
     complete_zero_column_global_aggregate: Option<ZeroColumnGlobalAggregateShape>,
     complete_graph_memory_phase: Option<GraphMemoryAdmissionEvidence>,
@@ -104,6 +106,8 @@ impl AttemptReservationShape {
             output_column_evidence: crate::admission::string_payload::PlanColumnEvidence::default(),
             output_column_evidence_input_scopes: Vec::new(),
             has_local_parquet_source: plan_has_reachable_local_parquet_source(plan),
+            complete_literal_source: is_complete_literal_source_plan(plan),
+            complete_zero_byte_literal_source: is_complete_zero_byte_literal_source_plan(plan),
             source_stage_bytes: estimated_reachable_local_parquet_source_bytes(plan),
             complete_zero_column_global_aggregate: zero_column_global_aggregate_shape(plan),
             complete_graph_memory_phase: None,
@@ -391,6 +395,20 @@ impl AttemptReservationShape {
         self.owner_term_rejection_reason = Some(reason.into());
     }
 
+    pub(crate) fn clear_resolved_gpu_output_owner_rejection(&mut self) {
+        if matches!(
+            self.owner_term_rejection_reason.as_deref(),
+            Some(
+                "gpu_resident_output_bytes_unavailable"
+                    | "gpu_resident_row_bound_unavailable"
+                    | "attempt_owner_term_gpu_resident_output_bytes_unavailable"
+                    | "attempt_owner_term_gpu_resident_row_bound_unavailable"
+            )
+        ) {
+            self.owner_term_rejection_reason = None;
+        }
+    }
+
     pub(crate) fn sort_metadata(&self) -> Option<&crate::admission::requirement::SortMetadataDescriptor> {
         self.sort_metadata.as_ref()
     }
@@ -408,6 +426,10 @@ impl AttemptReservationShape {
 
     pub(crate) fn has_local_parquet_source(&self) -> bool {
         self.has_local_parquet_source
+    }
+
+    pub(crate) fn is_complete_literal_source(&self) -> bool {
+        self.complete_literal_source
     }
 
     pub(crate) fn is_cugraph_graph_input_scope(&self) -> bool {
@@ -444,6 +466,12 @@ impl AttemptReservationShape {
             .with_fact("reason", reason.as_str()));
         }
         if self.accounted_by_graph_phase {
+            return Ok(ResolvedReservationShape { required_phase_floor_bytes: 0, complete_phase_peak_bytes: Some(0) });
+        }
+        if self.complete_literal_source && self.owner_term_rejection_reason.is_none() {
+            if !self.complete_zero_byte_literal_source {
+                return Ok(ResolvedReservationShape { required_phase_floor_bytes: 0, complete_phase_peak_bytes: None });
+            }
             return Ok(ResolvedReservationShape { required_phase_floor_bytes: 0, complete_phase_peak_bytes: Some(0) });
         }
         if let Some(graph_phase) = &self.complete_graph_memory_phase {
@@ -522,6 +550,31 @@ impl AttemptReservationShape {
             .ok_or_else(|| envelope_overflow_error("zero_column_global_aggregate"))?;
         Ok(ResolvedReservationShape { required_phase_floor_bytes: peak, complete_phase_peak_bytes: Some(peak) })
     }
+}
+
+fn is_complete_literal_source_plan(plan: &QueryPlan) -> bool {
+    let unreachable = plan.unreachable_node_ids();
+    let reachable = plan.nodes().iter().filter(|node| !unreachable.contains(&node.id)).collect::<Vec<_>>();
+    let [node] = reachable.as_slice() else {
+        return false;
+    };
+    matches!(
+        &node.kind,
+        PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::LiteralBatch(_))
+    ) && plan.root_id() == node.id
+}
+
+fn is_complete_zero_byte_literal_source_plan(plan: &QueryPlan) -> bool {
+    let unreachable = plan.unreachable_node_ids();
+    let reachable = plan.nodes().iter().filter(|node| !unreachable.contains(&node.id)).collect::<Vec<_>>();
+    let [node] = reachable.as_slice() else {
+        return false;
+    };
+    matches!(
+        &node.kind,
+        PlanNode::Source(source)
+            if matches!(source.as_ref(), SourceNode::LiteralBatch(source) if source.row_count() == 0 || source.schema.fields().is_empty())
+    ) && plan.root_id() == node.id
 }
 
 #[derive(Debug, Clone, Copy)]

@@ -1150,9 +1150,9 @@ pub(in crate::capability) fn validate_closed_multi_join_subtree(
         PlanNode::Source(_) => Ok(()),
         PlanNode::Filter(filter) => validate_closed_multi_join_subtree(plan, filter.input, join_count),
         PlanNode::Projection(projection) => validate_closed_multi_join_subtree(plan, projection.input, join_count),
+        PlanNode::Sort(sort) => validate_closed_multi_join_subtree(plan, sort.input, join_count),
         PlanNode::Aggregate(_)
         | PlanNode::Window(_)
-        | PlanNode::Sort(_)
         | PlanNode::Limit(_)
         | PlanNode::Union(_)
         | PlanNode::EdgeNormalize(_)

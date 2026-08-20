@@ -1,4 +1,4 @@
-fn deferred_roles_fixture() -> (
+fn shared_roles_fixture() -> (
     crate::plan::QueryPlan,
     crate::admission::QueryPlanCapabilityProof,
     std::sync::Arc<arrow::datatypes::Schema>,
@@ -58,7 +58,7 @@ fn deferred_roles_fixture() -> (
     (plan, proof, schema)
 }
 
-fn deferred_two_join_fixture() -> (
+fn shared_two_join_fixture() -> (
     crate::plan::QueryPlan,
     crate::plan::QueryPlan,
     crate::plan::QueryPlan,
@@ -73,7 +73,7 @@ fn deferred_two_join_fixture() -> (
         source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
     };
 
-    let (roles_plan, roles_proof, roles_schema) = deferred_roles_fixture();
+    let (roles_plan, roles_proof, roles_schema) = shared_roles_fixture();
     let similarity_schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![
         arrow::datatypes::Field::new("first", arrow::datatypes::DataType::Utf8, false),
         arrow::datatypes::Field::new("second", arrow::datatypes::DataType::Utf8, false),
@@ -208,10 +208,18 @@ fn deferred_two_join_fixture() -> (
 }
 
 #[test]
-fn deferred_resident_two_left_joins_activate_once_and_preserve_duplicate_multiplicity() {
+fn shared_resident_two_left_joins_preserve_duplicate_multiplicity() {
     let (consumer_plan, similarity_plan, roles_plan, proof, similarity_schema, roles_schema) =
-        deferred_two_join_fixture();
+        shared_two_join_fixture();
     assert_eq!(proof.soft_working_set_hint_bytes(), None);
+    assert!(
+        proof
+            .as_requirement()
+            .deferred_resident_phase_for_plan(&consumer_plan)
+            .expect("the composed scope must be unambiguous")
+            .is_none(),
+        "complete Parquet evidence must keep the composed joins on the static schedule"
+    );
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed admission service");
     let attempt = service
         .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof))
@@ -284,10 +292,4 @@ fn deferred_resident_two_left_joins_activate_once_and_preserve_duplicate_multipl
     let batch = result.output().as_host_arrow().expect("consumer host output");
     assert_eq!(batch.num_rows(), 12, "duplicate first-role matches must multiply six input pairs");
 
-    let mut missing = inputs.clone();
-    missing.remove("roles");
-    let error = context
-        .with_admitted_gpu_inputs(&consumer_plan, &missing)
-        .expect_err("missing resident evidence must fail before join allocation");
-    assert_eq!(error.fact_value("schedule_reason"), Some("deferred_resident_input_missing"));
 }

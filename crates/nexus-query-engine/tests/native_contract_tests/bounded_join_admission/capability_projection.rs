@@ -783,6 +783,14 @@ fn bounded_multi_join_pipeline_admits_serial_aggregate_spine_with_projection_and
 }
 
 #[test]
+fn bounded_multi_join_pipeline_admits_sort_between_joins() {
+    let plan = sort_between_two_joins_plan();
+
+    assert!(plan.capability_analysis().admits_closed_multi_join_subgraph());
+    assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
+}
+
+#[test]
 fn bounded_single_join_pipeline_rejects_aggregate_join_input_leaves() {
     for aggregate_side in [JoinSide::Left, JoinSide::Right] {
         let plan = single_join_with_aggregate_input_plan(aggregate_side);

@@ -67,6 +67,11 @@ pub struct NexusNativeComposedExec {
 }
 
 impl NexusNativeComposedExec {
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn hard_output_row_upper_bound(&self) -> Option<u64> {
+        nexus_query_engine::graph_memory::query_plan_hard_row_upper_bound(&self.plan)
+    }
+
     /// Create composed native execution from GPU-resident producer children.
     ///
     /// The final plan must use a host Arrow sink, every child must advertise a

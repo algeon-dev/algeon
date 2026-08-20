@@ -45,6 +45,7 @@ pub(crate) enum OwnerTermRole {
     GraphPersistent,
     ConstructionTransient,
     ExecutionWorkspace,
+    GraphOutput,
     SsspUnitWeights,
     GraphLiveReservationFloorTopUp,
     SideInputWorkspace,
@@ -82,6 +83,7 @@ impl OwnerTermRole {
             Self::GraphPersistent => "graph_persistent",
             Self::ConstructionTransient => "construction_transient",
             Self::ExecutionWorkspace => "execution_workspace",
+            Self::GraphOutput => "graph_output",
             Self::SsspUnitWeights => "sssp_unit_weights",
             Self::GraphLiveReservationFloorTopUp => "graph_live_reservation_floor_top_up",
             Self::SideInputWorkspace => "side_input_workspace",
@@ -129,13 +131,6 @@ impl AllocationClass {
             Self::AttemptRetained => "attempt_retained",
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum OwnerTermConstructionPolicy {
-    Generic,
-    AllowLiteralBatch,
-    PriceLiteralBatch,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -470,6 +465,7 @@ pub(crate) fn owner_term_shape_is_valid(owner: &OwnerId, role: OwnerTermRole, cl
             OwnerTermRole::GraphPersistent
             | OwnerTermRole::ConstructionTransient
             | OwnerTermRole::ExecutionWorkspace
+            | OwnerTermRole::GraphOutput
             | OwnerTermRole::SsspUnitWeights
             | OwnerTermRole::GraphLiveReservationFloorTopUp
             | OwnerTermRole::SideInputWorkspace => class == AllocationClass::ActivePhase,
@@ -663,6 +659,7 @@ impl AllocationOwnerTerm {
                 OwnerTermRole::GraphPersistent
                     | OwnerTermRole::ConstructionTransient
                     | OwnerTermRole::ExecutionWorkspace
+                    | OwnerTermRole::GraphOutput
                     | OwnerTermRole::SsspUnitWeights
                     | OwnerTermRole::GraphLiveReservationFloorTopUp
                     | OwnerTermRole::SideInputWorkspace
@@ -685,6 +682,7 @@ impl AllocationOwnerTerm {
         matches!(
             self.id.owner,
             OwnerId::Graph(_)
+                | OwnerId::Producer(_)
                 | OwnerId::Aggregate(_)
                 | OwnerId::Source(_)
                 | OwnerId::Consumer(_)
@@ -696,6 +694,9 @@ impl AllocationOwnerTerm {
 
     pub(crate) fn has_consumer_schedule_identity(&self) -> bool {
         match (&self.id.owner, self.id.role, &self.id.occurrence) {
+            (OwnerId::Producer(node_id), OwnerTermRole::RetainedOutput, OccurrenceId::PlanLocal(occurrence)) => {
+                node_id == occurrence
+            },
             (OwnerId::Graph(node_id), role, OccurrenceId::PlanLocal(occurrence)) => {
                 node_id == occurrence
                     && matches!(
@@ -703,6 +704,7 @@ impl AllocationOwnerTerm {
                         OwnerTermRole::GraphPersistent
                             | OwnerTermRole::ConstructionTransient
                             | OwnerTermRole::ExecutionWorkspace
+                            | OwnerTermRole::GraphOutput
                             | OwnerTermRole::SsspUnitWeights
                             | OwnerTermRole::GraphLiveReservationFloorTopUp
                             | OwnerTermRole::SideInputWorkspace
@@ -779,6 +781,7 @@ impl AllocationOwnerTerm {
             self.id.role,
             OwnerTermRole::GraphPersistent
                 | OwnerTermRole::ExecutionWorkspace
+                | OwnerTermRole::GraphOutput
                 | OwnerTermRole::SsspUnitWeights
                 | OwnerTermRole::GraphLiveReservationFloorTopUp
                 | OwnerTermRole::SideInputWorkspace
@@ -854,6 +857,7 @@ pub(crate) fn graph_owner_term_from_fact(fact: &GraphMemoryOwnerTermFact) -> Res
         GraphMemoryOwnerTermRole::ExecutionWorkspace => {
             (OwnerTermRole::ExecutionWorkspace, AllocationClass::ActivePhase)
         },
+        GraphMemoryOwnerTermRole::GraphOutput => (OwnerTermRole::GraphOutput, AllocationClass::ActivePhase),
         GraphMemoryOwnerTermRole::SsspUnitWeights => (OwnerTermRole::SsspUnitWeights, AllocationClass::ActivePhase),
         GraphMemoryOwnerTermRole::GraphLiveReservationFloorTopUp => {
             (OwnerTermRole::GraphLiveReservationFloorTopUp, AllocationClass::ActivePhase)
@@ -968,7 +972,6 @@ pub(crate) fn graph_owner_terms_from_evidence(
         GraphMemoryOwnerTermRole::GraphPersistent,
         GraphMemoryOwnerTermRole::ConstructionTransient,
         GraphMemoryOwnerTermRole::ExecutionWorkspace,
-        GraphMemoryOwnerTermRole::RetainedOutput,
     ];
     if required_roles.iter().any(|role| !roles.contains(role)) {
         return Err(QueryError::new(
@@ -977,6 +980,16 @@ pub(crate) fn graph_owner_terms_from_evidence(
             "graph memory evidence is missing an owner-term role",
         )
         .with_fact("reason", "graph_memory_owner_term_role_missing"));
+    }
+    if roles.contains(&GraphMemoryOwnerTermRole::GraphOutput)
+        == roles.contains(&GraphMemoryOwnerTermRole::RetainedOutput)
+    {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedPlanShape,
+            "nexus_query_engine.admission.requirement",
+            "graph memory evidence must identify exactly one graph output lifetime",
+        )
+        .with_fact("reason", "graph_memory_output_owner_ambiguous"));
     }
     Ok(terms)
 }
@@ -1043,9 +1056,10 @@ pub(crate) fn generic_gpu_resident_owner_terms(
     include_gpu_output_owner: bool,
 ) -> Result<Vec<AllocationOwnerTerm>> {
     let scope = canonical_execution_scope_fingerprint(plan);
-    if !matches!(plan.sink(), ResultSink::GpuResident { .. })
-        || plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::GraphAlgorithm(_)))
-    {
+    if !matches!(plan.sink(), ResultSink::GpuResident { .. }) {
+        return Ok(Vec::new());
+    }
+    if matches!(plan.root_node().kind, PlanNode::GraphAlgorithm(_)) {
         return Ok(Vec::new());
     }
     if !include_gpu_output_owner {
@@ -1135,6 +1149,13 @@ pub(crate) fn generic_gpu_resident_owner_terms(
         })
         .collect::<Result<Vec<_>>>()?;
     terms.extend(projection_cast_workspace_owner_terms(plan, &scope)?);
+    if plan
+        .nodes()
+        .iter()
+        .any(|node| matches!(node.kind, PlanNode::GraphAlgorithm(_)) && graph_output_is_final(plan, node.id))
+    {
+        return Ok(terms);
+    }
     terms.push(AllocationOwnerTerm::new(
         OwnerId::Producer(*input),
         OwnerTermRole::RetainedOutput,
@@ -1352,27 +1373,6 @@ pub(crate) fn aggregate_owner_terms_for_shapes(
     ])
 }
 
-pub(crate) fn literal_batch_owner_term_rejection_reason(
-    plan: &QueryPlan,
-    policy: OwnerTermConstructionPolicy,
-) -> Option<&'static str> {
-    if matches!(policy, OwnerTermConstructionPolicy::AllowLiteralBatch | OwnerTermConstructionPolicy::PriceLiteralBatch)
-    {
-        return None;
-    }
-    let unreachable = plan.unreachable_node_ids().into_iter().collect::<HashSet<_>>();
-    plan.nodes().iter().filter(|node| !unreachable.contains(&node.id)).find_map(|node| {
-        let PlanNode::Source(source) = &node.kind else {
-            return None;
-        };
-        let SourceNode::LiteralBatch(source) = source.as_ref() else {
-            return None;
-        };
-        (source.row_count() > 0 && !source.schema.fields().is_empty())
-            .then_some("attempt_owner_term_literal_source_bytes_unavailable")
-    })
-}
-
 pub(crate) fn literal_batch_source_owner_terms(plan: &QueryPlan) -> Result<Vec<AllocationOwnerTerm>> {
     let scope = canonical_execution_scope_fingerprint(plan);
     let unreachable = plan.unreachable_node_ids().into_iter().collect::<HashSet<_>>();
@@ -1389,93 +1389,34 @@ pub(crate) fn literal_batch_source_owner_terms(plan: &QueryPlan) -> Result<Vec<A
             _ => None,
         })
         .map(|(node_id, source)| {
-            let rows = u64::try_from(source.row_count()).map_err(|_| {
-                owner_term_error("literal_source_rows_exceed_u64", Some(OwnerTermRole::SourceStage), None)
-            })?;
-            let columns = literal_batch_output_columns(source)?;
-            let mut bytes = crate::exec::join_output_upper_bound_bytes(rows, &columns).map_err(|_| {
-                owner_term_error("literal_source_bytes_unavailable", Some(OwnerTermRole::SourceStage), None)
-            })?;
-            for (index, field) in source.schema.fields().iter().enumerate() {
-                if crate::datatypes::is_supported_list_carry_type(field.data_type()) {
-                    let arrays = source.batches.iter().map(|batch| Arc::clone(batch.column(index))).collect::<Vec<_>>();
-                    let list_bytes = cudf::interop::arrow_host::estimate_list_import_device_memory_bytes(&arrays)
-                        .map_err(|_| {
-                            owner_term_error("literal_source_bytes_unavailable", Some(OwnerTermRole::SourceStage), None)
-                        })?;
-                    bytes = bytes
-                        .checked_add(u64::try_from(list_bytes).map_err(|_| {
-                            owner_term_error("literal_source_bytes_saturated", Some(OwnerTermRole::SourceStage), None)
-                        })?)
-                        .ok_or_else(|| {
-                            owner_term_error("literal_source_bytes_saturated", Some(OwnerTermRole::SourceStage), None)
-                        })?;
-                }
-            }
-            if bytes == u64::MAX {
-                return Err(owner_term_error("literal_source_bytes_saturated", Some(OwnerTermRole::SourceStage), None));
-            }
-            AllocationOwnerTerm::new(
-                OwnerId::Source(node_id),
-                OwnerTermRole::SourceStage,
-                OccurrenceId::PlanLocal(node_id),
-                scope.clone(),
-                AllocationClass::ActivePhase,
-                bytes,
-                None,
-            )
+            let direct_host_sink = matches!(plan.sink(), ResultSink::HostArrow { input, .. } if *input == node_id);
+            literal_batch_source_owner_term(node_id, source, scope.clone(), direct_host_sink)
         })
         .collect()
 }
 
-pub(crate) fn literal_batch_output_columns(
+fn literal_batch_source_owner_term(
+    node_id: NodeId,
     source: &crate::source::LiteralBatchSource,
-) -> Result<Vec<crate::exec::JoinOutputColumnUpperBoundInput>> {
-    source
-        .schema
-        .fields()
-        .iter()
-        .enumerate()
-        .map(|(index, field)| {
-            if crate::datatypes::is_supported_list_carry_type(field.data_type()) {
-                return Ok(None);
-            }
-            if let Some(column) = fixed_width_consumer_output_column(field.data_type()) {
-                return Ok(Some(column));
-            }
-            let stats = source.batches.iter().try_fold((0_u64, 0_u64), |acc, batch| {
-                let array = batch.column(index);
-                let mut lengths =
-                    (0..array.len()).filter(|row| !array.is_null(*row)).map(|row| match field.data_type() {
-                        DataType::Utf8 => {
-                            array.as_any().downcast_ref::<StringArray>().map(|array| array.value(row).len())
-                        },
-                        DataType::LargeUtf8 => {
-                            array.as_any().downcast_ref::<LargeStringArray>().map(|array| array.value(row).len())
-                        },
-                        DataType::Utf8View => {
-                            array.as_any().downcast_ref::<StringViewArray>().map(|array| array.value(row).len())
-                        },
-                        _ => None,
-                    });
-                lengths.try_fold(acc, |(max_len, total_bytes), length| {
-                    let length = u64::try_from(length?).ok()?;
-                    Some((max_len.max(length), total_bytes.checked_add(length)?))
-                })
-            });
-            let Some((max_len, total_bytes)) = stats else {
-                return Err(owner_term_error(
-                    "literal_source_bytes_unavailable",
-                    Some(OwnerTermRole::SourceStage),
-                    None,
-                ));
-            };
-            Ok(Some(crate::exec::JoinOutputColumnUpperBoundInput {
-                data_type: field.data_type().clone(),
-                input_max_string_length_bytes: Some(max_len),
-                input_total_string_bytes: Some(total_bytes),
-            }))
-        })
-        .filter_map(|column| column.transpose())
-        .collect()
+    scope: String,
+    direct_host_sink: bool,
+) -> Result<AllocationOwnerTerm> {
+    let bytes = cudf::interop::arrow_host::estimate_record_batches_import_required_budget_bytes(&source.batches)
+        .map_err(|_| owner_term_error("literal_source_bytes_unavailable", Some(OwnerTermRole::SourceStage), None))?;
+    let mut bytes = u64::try_from(bytes)
+        .map_err(|_| owner_term_error("literal_source_bytes_saturated", Some(OwnerTermRole::SourceStage), None))?;
+    if direct_host_sink {
+        bytes = bytes.checked_mul(2).ok_or_else(|| {
+            owner_term_error("literal_source_bytes_saturated", Some(OwnerTermRole::SourceStage), None)
+        })?;
+    }
+    AllocationOwnerTerm::new(
+        OwnerId::Source(node_id),
+        OwnerTermRole::SourceStage,
+        OccurrenceId::PlanLocal(node_id),
+        scope,
+        AllocationClass::ActivePhase,
+        bytes,
+        None,
+    )
 }
