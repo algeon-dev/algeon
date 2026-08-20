@@ -1,7 +1,7 @@
 use std::{ffi::c_void, ptr};
 
 use crate::{
-    helpers::{make_i32_column, make_table_from_one_column, make_table_view, read_i32_column_data},
+    helpers::{make_i32_column, make_table_from_one_column, make_table_view, read_i32_column_data_with_exec},
     support::{
         CurrentDeviceResourceRestore, OwnedMemoryResource, OwnedStream, current_device_resource_raw, last_exec_mr_raw,
         last_exec_stream_value, lock_shim_state, required_exec_options, reset_exec_observation, stream_value,
@@ -113,8 +113,8 @@ fn column_len(col: cudf_sys::cudf_column_handle) -> usize {
     size as usize
 }
 
-fn read_all_i32(col: cudf_sys::cudf_column_handle) -> Vec<i32> {
-    read_i32_column_data(col, column_len(col))
+fn read_all_i32(col: cudf_sys::cudf_column_handle, exec: &cudf_sys::cudf_exec_options_t) -> Vec<i32> {
+    read_i32_column_data_with_exec(col, column_len(col), exec)
 }
 
 fn assert_size_data_payload(
@@ -159,7 +159,8 @@ fn assert_size_data_payload(
     assert!(!right_indices.is_null(), "{name} did not publish right indices");
     assert_eq!(last_exec_stream_value(), expected_stream, "{name} materialize stream");
     assert_eq!(last_exec_mr_raw(), expected_mr_raw, "{name} materialize memory resource");
-    let mut actual_pairs = read_all_i32(left_indices).into_iter().zip(read_all_i32(right_indices)).collect::<Vec<_>>();
+    let mut actual_pairs =
+        read_all_i32(left_indices, exec).into_iter().zip(read_all_i32(right_indices, exec)).collect::<Vec<_>>();
     let mut expected_pairs =
         expected_left_indices.iter().copied().zip(expected_right_indices.iter().copied()).collect::<Vec<_>>();
     actual_pairs.sort_unstable();
@@ -329,7 +330,7 @@ fn assert_single_size_data_case(name: &str, begin: BeginSizeDataExRaw, expected_
     assert!(!indices.is_null(), "{name} did not publish indices");
     assert_eq!(last_exec_stream_value(), expected_stream, "{name} materialize stream");
     assert_eq!(last_exec_mr_raw(), expected_mr_raw, "{name} materialize memory resource");
-    assert_eq!(read_all_i32(indices), expected_indices, "{name} indices");
+    assert_eq!(read_all_i32(indices, &exec), expected_indices, "{name} indices");
 
     stream.synchronize();
     unsafe {

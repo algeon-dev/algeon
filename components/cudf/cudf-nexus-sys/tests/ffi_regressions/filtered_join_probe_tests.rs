@@ -1,7 +1,7 @@
 use std::ptr;
 
 use crate::{
-    helpers::{make_i32_column, make_table_from_one_column, make_table_view, read_i32_column_data},
+    helpers::{make_i32_column, make_table_from_one_column, make_table_view, read_i32_column_data_with_exec},
     support::{
         CurrentDeviceResourceRestore, OwnedMemoryResource, OwnedStream, current_device_resource_raw, last_exec_mr_raw,
         last_exec_stream_value, lock_shim_state, required_exec_options, reset_exec_observation, stream_value,
@@ -31,8 +31,8 @@ fn column_len(col: cudf_sys::cudf_column_handle) -> usize {
     size as usize
 }
 
-fn read_all_i32(col: cudf_sys::cudf_column_handle) -> Vec<i32> {
-    read_i32_column_data(col, column_len(col))
+fn read_all_i32(col: cudf_sys::cudf_column_handle, exec: &cudf_sys::cudf_exec_options_t) -> Vec<i32> {
+    read_i32_column_data_with_exec(col, column_len(col), exec)
 }
 
 #[test]
@@ -113,7 +113,7 @@ fn filtered_join_probe_state_abi_materializes_retained_semi_and_anti_indices() {
         assert!(!indices.is_null());
         assert_eq!(last_exec_stream_value(), stream_value(stream.as_raw()));
         assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
-        assert_eq!(read_all_i32(indices), expected_indices, "{name} materialized indices");
+        assert_eq!(read_all_i32(indices, &exec), expected_indices, "{name} materialized indices");
 
         unsafe {
             cudf_sys::cudf_column_destroy(indices);
@@ -167,7 +167,7 @@ fn filtered_join_probe_state_empty_build_anti_uses_zero_byte_retained_state() {
     let mut indices: cudf_sys::cudf_column_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_filtered_join_probe_materialize_indices_ex(state, &mut indices, &exec) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
-    assert_eq!(read_all_i32(indices), vec![0, 1, 2]);
+    assert_eq!(read_all_i32(indices, &exec), vec![0, 1, 2]);
 
     unsafe {
         cudf_sys::cudf_column_destroy(indices);

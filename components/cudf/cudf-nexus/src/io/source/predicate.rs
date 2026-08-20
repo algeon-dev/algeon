@@ -557,8 +557,8 @@ fn parquet_descriptor_matches_column(descriptor: &ColumnDescriptor, column_name:
 }
 
 fn parquet_decimal_precision_scale(descriptor: &ColumnDescriptor) -> Option<(i32, i32)> {
-    if let Some(LogicalType::Decimal { precision, scale }) = descriptor.logical_type_ref() {
-        return Some((*precision, *scale));
+    if let Some(LogicalType::Decimal(decimal)) = descriptor.logical_type_ref() {
+        return Some((decimal.precision, decimal.scale));
     }
     (descriptor.converted_type() == ConvertedType::DECIMAL)
         .then(|| (descriptor.type_precision(), descriptor.type_scale()))

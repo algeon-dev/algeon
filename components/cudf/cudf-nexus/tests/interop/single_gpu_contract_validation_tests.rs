@@ -99,6 +99,7 @@ impl MockSingleGpuGraphInput {
 
 #[test]
 fn single_gpu_prepared_export_supports_graph_construction_shaped_consumption() {
+    let _event_lock = common::lock_event_observation();
     let producer_runtime = Runtime::builder().build().unwrap();
     let edges = sample_edge_list(&producer_runtime);
     let src_ptr = edges.series("src").unwrap().as_column().testing_view().unwrap().device_data_ptr().unwrap();

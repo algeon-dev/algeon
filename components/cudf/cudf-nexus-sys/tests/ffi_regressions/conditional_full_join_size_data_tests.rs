@@ -1,7 +1,10 @@
 use std::ptr;
 
 use crate::{
-    helpers::{make_i32_column, make_table_from_one_column, make_table_view, read_i32_column_data},
+    helpers::{
+        make_i32_column, make_table_from_one_column, make_table_view, read_i32_column_data,
+        read_i32_column_data_with_exec,
+    },
     support::{OwnedMemoryResource, OwnedStream, lock_shim_state, required_exec_options},
 };
 
@@ -94,6 +97,10 @@ fn read_all_i32(col: cudf_sys::cudf_column_handle) -> Vec<i32> {
     read_i32_column_data(col, column_len(col))
 }
 
+fn read_all_i32_with_exec(col: cudf_sys::cudf_column_handle, exec: &cudf_sys::cudf_exec_options_t) -> Vec<i32> {
+    read_i32_column_data_with_exec(col, column_len(col), exec)
+}
+
 #[test]
 fn conditional_full_join_size_data_reports_and_materializes_pair_contract() {
     let _shim_state = lock_shim_state();
@@ -136,8 +143,8 @@ fn conditional_full_join_size_data_reports_and_materializes_pair_contract() {
         )
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
-    assert_eq!(read_all_i32(left_indices), vec![0, 0, 1, 2, JOIN_NO_MATCH]);
-    assert_eq!(read_all_i32(right_indices), vec![1, 2, 2, JOIN_NO_MATCH, 0]);
+    assert_eq!(read_all_i32_with_exec(left_indices, &exec), vec![0, 0, 1, 2, JOIN_NO_MATCH]);
+    assert_eq!(read_all_i32_with_exec(right_indices, &exec), vec![1, 2, 2, JOIN_NO_MATCH, 0]);
 
     unsafe {
         cudf_sys::cudf_column_destroy(right_indices);
