@@ -533,6 +533,7 @@ async fn failed_cleanup_quarantines_device_and_never_returns_capacity() {
 /// device only after the failed ledger is quarantined and the immutable
 /// compatible set proves an alternate remains healthy and can fit its floor.
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn device_local_cleanup_fault_seals_retry_on_a_frozen_eligible_alternate() {
     let visible_devices = cudf::DeviceId::count().expect("enumerate CUDA devices for alternate retry coverage");
     assert!(

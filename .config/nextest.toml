@@ -6,6 +6,7 @@ nextest-version = { required = "0.9.140" }
 # schedule independent test cases across CPU cores.
 fail-fast = false
 slow-timeout = { period = "120s" }
+final-status-level = "skip"
 
 [test-groups.gpu]
 # Use every CPU core available to the current environment for shared-GPU tests.

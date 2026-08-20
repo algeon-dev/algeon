@@ -76,7 +76,7 @@ reason = "cuGraph SQL parity and algorithm tests construct and execute GPU graph
 id = "datafusion-nexus::p6_device_identity_tests"
 lane = "gpu"
 resource_class = "exclusive"
-reason = "P6 device identity coverage constructs one public backend across all four qualifying L40S devices and verifies the NVML startup records."
+reason = "P6 device identity coverage constructs one public backend across four CUDA devices and verifies the NVML startup records."
 
 [[binary]]
 id = "datafusion-nexus::cpu_contract_tests"

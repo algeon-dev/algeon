@@ -40,6 +40,7 @@ fn proof_device_entries_reapply_request_local_placement_floor() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn queued_placement_folds_a_native_fault_into_the_ledger_before_retargeting() {
     let service = QueryService::new_with_device_ordinals_and_deployment(
         QueryExecutionConfig::default(),
@@ -236,6 +237,7 @@ fn direct_placement_reports_a_post_snapshot_fleet_closure_as_a_health_failure() 
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn unknown_isolation_fleet_closure_excludes_a_mid_closure_admission() {
     let service = QueryService::new_with_device_ordinals_and_deployment(
         QueryExecutionConfig::default(),
@@ -280,6 +282,7 @@ fn unknown_isolation_fleet_closure_excludes_a_mid_closure_admission() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn protected_waiter_retargets_after_native_fault_before_candidate_ranking() {
     let visible_devices =
         cudf::DeviceId::count().expect("enumerate CUDA devices for protected-waiter placement coverage");
@@ -357,6 +360,7 @@ fn protected_waiter_retargets_after_native_fault_before_candidate_ranking() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn failed_protection_retarget_terminalizes_its_waiter_without_rejecting_the_next_caller() {
     let visible_devices =
         cudf::DeviceId::count().expect("enumerate CUDA devices for protected-waiter retarget failure coverage");

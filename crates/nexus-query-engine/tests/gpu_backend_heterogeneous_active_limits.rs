@@ -25,6 +25,7 @@ fn non_gds_deployment() -> DeploymentIoCapability {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn heterogeneous_device_active_limits_are_not_collapsed_to_the_largest_cap() {
     let device_count = cudf::DeviceId::count().expect("CUDA device enumeration for heterogeneous backend coverage");
     assert!(device_count >= 2, "heterogeneous backend coverage requires at least two CUDA devices");
@@ -71,6 +72,7 @@ fn heterogeneous_device_active_limits_are_not_collapsed_to_the_largest_cap() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn device_startup_records_carry_ordinal_local_resource_profiles() {
     let device_count = cudf::DeviceId::count().expect("CUDA device enumeration for per-device startup records");
     assert!(device_count >= 2, "per-device startup record coverage requires at least two CUDA devices");

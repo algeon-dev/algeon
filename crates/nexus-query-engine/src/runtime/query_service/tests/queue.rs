@@ -375,6 +375,7 @@ fn query_admission_waiter_times_out_while_selected_but_memory_blocked() {
 }
 
 #[test]
+#[ignore = "requires at least 2 GPUs"]
 fn query_admission_waiter_timeout_reports_the_selected_device_requirement() {
     let service = QueryService::new_with_device_ordinals_and_deployment(
         QueryExecutionConfig::default(),

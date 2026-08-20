@@ -418,9 +418,9 @@ define_phase lane-structure "test_lane_policy.py check-catalog + generated overr
 # selections are expensive.
 define_phase live-inventory "bash scripts/ci/check_gpu_test_lane.sh ${FEATURE_ARGS[*]}"
 define_phase gpu-preflight "cargo nextest show-config --color never -P ${GPU_NEXTEST_PROFILE} test-groups --workspace ${FEATURE_ARGS[*]}"
-define_phase cpu-tests "cargo nextest run --workspace ${FEATURE_ARGS[*]} -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast"
-define_phase gpu-shared-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} --workspace ${FEATURE_ARGS[*]} -E group(${GPU_NEXTEST_GROUP}) --no-fail-fast --test-threads ${gpu_threads}"
-define_phase gpu-exclusive-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} --workspace ${FEATURE_ARGS[*]} -E group(gpu-exclusive) --no-fail-fast --test-threads ${GPU_EXCLUSIVE_CAP}"
+define_phase cpu-tests "cargo nextest run --workspace ${FEATURE_ARGS[*]} -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast --final-status-level fail"
+define_phase gpu-shared-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} --workspace ${FEATURE_ARGS[*]} -E group(${GPU_NEXTEST_GROUP}) --no-fail-fast --test-threads ${gpu_threads} --final-status-level fail"
+define_phase gpu-exclusive-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} --workspace ${FEATURE_ARGS[*]} -E group(gpu-exclusive) --no-fail-fast --test-threads ${GPU_EXCLUSIVE_CAP} --final-status-level fail"
 define_phase doctests "flock ${GPU_LOCK} cargo test --workspace ${FEATURE_ARGS[*]} --doc --no-fail-fast"
 define_phase rustdoc "RUSTDOCFLAGS='${DOC_RUSTDOCFLAGS}' cargo doc --workspace ${FEATURE_ARGS[*]} --no-deps --keep-going"
 # Snapshots each tracked crate's public API (rustdoc JSON via cargo-public-api)
@@ -908,17 +908,19 @@ run_gpu_config_preflight() {
 
 cpu_test_command() {
   cargo nextest run --workspace "${FEATURE_ARGS[@]}" \
-    -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast
+    -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast --final-status-level fail
 }
 
 gpu_shared_test_command() {
   flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" \
-    --workspace "${FEATURE_ARGS[@]}" -E "group(${GPU_NEXTEST_GROUP})" --no-fail-fast --test-threads "${gpu_threads}"
+    --workspace "${FEATURE_ARGS[@]}" -E "group(${GPU_NEXTEST_GROUP})" --no-fail-fast \
+    --test-threads "${gpu_threads}" --final-status-level fail
 }
 
 gpu_exclusive_test_command() {
   flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" \
-    --workspace "${FEATURE_ARGS[@]}" -E 'group(gpu-exclusive)' --no-fail-fast --test-threads "${GPU_EXCLUSIVE_CAP}"
+    --workspace "${FEATURE_ARGS[@]}" -E 'group(gpu-exclusive)' --no-fail-fast \
+    --test-threads "${GPU_EXCLUSIVE_CAP}" --final-status-level fail
 }
 
 doctest_command() {
