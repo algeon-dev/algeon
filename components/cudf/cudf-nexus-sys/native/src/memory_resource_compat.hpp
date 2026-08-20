@@ -16,9 +16,8 @@
 RMM_NAMESPACE_BEGIN
 namespace mr {
 
-/// Project-local compatibility base for the pre-26.06 RMM device-resource
-/// surface. RMM 26.06 moved to CCCL resource concepts, but the shim still
-/// needs a stable pointer identity for FFI tests and handle provenance.
+/// Project-local compatibility base preserving the RMM resource pointer and
+/// vtable identity shared by cuDF and cuGraph interop.
 class device_memory_resource {
  public:
   device_memory_resource()                                         = default;
