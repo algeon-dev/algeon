@@ -527,6 +527,20 @@ fn validate_graph_algorithm_side_inputs(
     }
     match &graph.spec.params {
         crate::plan::GraphAlgorithmParams::Bfs(params) => {
+            if let Some(path_output) = params.path_output {
+                if path_output.max_output_rows == 0 {
+                    return Err(graph_algorithm_error("BFS path output requires a positive row bound")
+                        .with_fact("reason", "bfs_path_output_row_bound_zero"));
+                }
+                if params.predicates.target_vertices.is_none() {
+                    return Err(graph_algorithm_error("BFS path output requires a target_vertices binding")
+                        .with_fact("reason", "bfs_path_target_binding_missing"));
+                }
+                if params.return_target_info {
+                    return Err(graph_algorithm_error("BFS path output cannot also return target metadata")
+                        .with_fact("reason", "bfs_path_target_metadata_conflict"));
+                }
+            }
             validate_graph_predicate_input(
                 params.source_vertices.as_ref(),
                 "source_vertices",

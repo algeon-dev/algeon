@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use arrow::{
-    array::{ArrayRef, Int64Array, StringArray},
+    array::{ArrayRef, Float64Array, Int64Array, StringArray},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
@@ -824,6 +824,109 @@ fn empty_literal_batch_does_not_invalidate_local_source_owner_terms() {
     QueryPlanCapabilityProof { requirement }
         .resolve_reservation_envelope(reservation_policy())
         .expect("an empty literal batch does not add an unowned source allocation");
+}
+
+fn literal_path_metadata_join_plan() -> QueryPlan {
+    let path_schema = Arc::new(Schema::new(vec![
+        Field::new("path_index", DataType::Int64, false),
+        Field::new("vertex", DataType::Utf8, false),
+    ]));
+    let path_batch = RecordBatch::try_new(
+        Arc::clone(&path_schema),
+        vec![
+            Arc::new(Int64Array::from_iter_values(0..7)) as ArrayRef,
+            Arc::new(StringArray::from(vec!["a", "bb", "ccc", "dddd", "eeeee", "ffffff", "ggggggg"])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let metadata_schema = Arc::new(Schema::new(vec![
+        Field::new("vertexId", DataType::Utf8, false),
+        Field::new("vertexName", DataType::Utf8, true),
+    ]));
+    let metadata_file = LocalParquetFile::new("/tmp/literal-path-metadata.parquet")
+        .with_row_groups(vec![0])
+        .with_row_group_rows(vec![7])
+        .with_row_group_bytes(vec![512])
+        .with_projected_row_group_bytes(vec![512], vec![512])
+        .with_variable_width_payload_evidence(std::collections::BTreeMap::from([
+            (
+                0,
+                crate::parquet_stats::ParquetVariableWidthPayloadEvidence::new(
+                    0,
+                    vec![0],
+                    64,
+                    crate::parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary,
+                ),
+            ),
+            (
+                1,
+                crate::parquet_stats::ParquetVariableWidthPayloadEvidence::new(
+                    1,
+                    vec![0],
+                    128,
+                    crate::parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary,
+                ),
+            ),
+        ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("path_index", DataType::Int64, false),
+        Field::new("vertex", DataType::Utf8, false),
+        Field::new("vertexName", DataType::Utf8, true),
+    ]));
+    let mut builder = QueryPlanBuilder::new();
+    let paths = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(path_schema, vec![path_batch])));
+    let metadata = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![metadata_file],
+        metadata_schema,
+        vec!["vertexId".to_owned(), "vertexName".to_owned()],
+    )));
+    let join = builder.add_join(
+        paths,
+        metadata,
+        JoinSpec::new(
+            JoinType::Left,
+            vec![JoinKey::new(
+                crate::expr::ColumnRef::input(0, "vertex", "vertex"),
+                crate::expr::ColumnRef::input(1, "vertexId", "vertexId"),
+            )],
+        )
+        .with_build_side(JoinSide::Right)
+        .with_output_projection(vec![
+            JoinOutputColumn::left(crate::expr::ColumnRef::input(0, "path_index", "path_index"), "path_index"),
+            JoinOutputColumn::left(crate::expr::ColumnRef::input(0, "vertex", "vertex"), "vertex"),
+            JoinOutputColumn::right(crate::expr::ColumnRef::input(1, "vertexName", "vertexName"), "vertexName"),
+        ]),
+        Arc::clone(&output_schema),
+    );
+    let sorted = builder.add_sort(
+        join,
+        SortSpec::new(vec![SortExpr::new(Expr::column("path_index"), false, false)]),
+        output_schema,
+    );
+    builder.finish_with_host_sink(sorted)
+}
+
+#[test]
+fn priced_literal_path_can_join_local_parquet_metadata() {
+    let plan = literal_path_metadata_join_plan();
+    let proof = QueryPlanCapabilityProof::for_query_plan_preflighted(&plan)
+        .expect("the seven-row path enrichment plan must pass native preflight");
+    let mut source_bytes = proof
+        .as_requirement()
+        .owner_terms
+        .iter()
+        .filter(|term| term.is_source_stage())
+        .map(AllocationOwnerTerm::bytes)
+        .collect::<Vec<_>>();
+    source_bytes.sort_unstable();
+    assert_eq!(source_bytes, vec![512, 788]);
+    proof
+        .resolve_reservation_envelope(reservation_policy())
+        .expect("priced literal and Parquet source owners must resolve under one attempt envelope");
+
+    let generic = QueryPlanCapabilityProof::for_query_plan(&plan).unwrap();
+    let error = generic.resolve_reservation_envelope(reservation_policy()).unwrap_err();
+    assert_eq!(error.fact_value("reason"), Some("attempt_owner_term_literal_source_bytes_unavailable"));
 }
 
 #[test]
@@ -3412,6 +3515,116 @@ fn graph_metadata_join_consumer_with_rows(
     builder.finish_with_host_sink(limit)
 }
 
+fn graph_metadata_left_join_is_null_projection_consumer() -> QueryPlan {
+    let graph_schema = Arc::new(Schema::new(vec![
+        Field::new("vertex", DataType::Utf8, false),
+        Field::new("value", DataType::Float64, false),
+    ]));
+    let metadata_schema = Arc::new(Schema::new(vec![
+        Field::new("vertexId", DataType::Utf8, false),
+        Field::new("vertexName", DataType::Utf8, false),
+    ]));
+    let metadata_file = LocalParquetFile::new("/tmp/graph-metadata-is-null.parquet")
+        .with_row_groups(vec![0])
+        .with_row_group_rows(vec![96])
+        .with_row_group_bytes(vec![12_288])
+        .with_projected_row_group_bytes(vec![12_288], vec![12_288])
+        .with_variable_width_payload_evidence(std::collections::BTreeMap::from([
+            (
+                0,
+                crate::parquet_stats::ParquetVariableWidthPayloadEvidence::new(
+                    0,
+                    vec![0],
+                    3_840,
+                    crate::parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary,
+                ),
+            ),
+            (
+                1,
+                crate::parquet_stats::ParquetVariableWidthPayloadEvidence::new(
+                    1,
+                    vec![0],
+                    6_144,
+                    crate::parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary,
+                ),
+            ),
+        ]));
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("vertex", DataType::Utf8, false),
+        Field::new("value", DataType::Float64, false),
+        Field::new("vertexId", DataType::Utf8, true),
+        Field::new("vertexName", DataType::Utf8, true),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("vertex", DataType::Utf8, false),
+        Field::new("value", DataType::Float64, false),
+        Field::new("vertexName", DataType::Utf8, true),
+        Field::new("metadata_missing", DataType::Boolean, false),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let graph =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("pagerank", Arc::clone(&graph_schema))));
+    let sort = builder.add_sort(
+        graph,
+        SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)]),
+        Arc::clone(&graph_schema),
+    );
+    let top_k = builder.add_limit(sort, LimitSpec::fetch(100), graph_schema);
+    let metadata = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![metadata_file],
+        metadata_schema,
+        vec!["vertexId".to_owned(), "vertexName".to_owned()],
+    )));
+    let join = builder.add_join(
+        top_k,
+        metadata,
+        JoinSpec::new(
+            JoinType::Left,
+            vec![JoinKey::new(
+                crate::expr::ColumnRef::input(0, "vertex", "vertex"),
+                crate::expr::ColumnRef::input(1, "vertexId", "vertexId"),
+            )],
+        )
+        .with_build_side(JoinSide::Right)
+        .with_at_most_one_match_per_bounded_row(JoinSide::Left)
+        .with_output_projection(vec![
+            JoinOutputColumn::left(crate::expr::ColumnRef::input(0, "vertex", "vertex"), "vertex"),
+            JoinOutputColumn::left(crate::expr::ColumnRef::input(0, "value", "value"), "value"),
+            JoinOutputColumn::right(crate::expr::ColumnRef::input(1, "vertexId", "vertexId"), "vertexId"),
+            JoinOutputColumn::right(crate::expr::ColumnRef::input(1, "vertexName", "vertexName"), "vertexName"),
+        ]),
+        join_schema,
+    );
+    let projection = builder.add_projection(
+        join,
+        vec![
+            ProjectionOutput::new(Expr::column("vertex"), output_schema.field(0).as_ref().clone()),
+            ProjectionOutput::new(Expr::column("value"), output_schema.field(1).as_ref().clone()),
+            ProjectionOutput::new(Expr::column("vertexName"), output_schema.field(2).as_ref().clone()),
+            ProjectionOutput::new(Expr::is_null(Expr::column("vertexId")), output_schema.field(3).as_ref().clone()),
+        ],
+    );
+    builder.finish_with_host_sink(projection)
+}
+
+#[test]
+fn pagerank_topk_metadata_left_join_prices_is_null_projection() {
+    let producer = pagerank_like_string_producer();
+    let consumer = graph_metadata_left_join_is_null_projection_consumer();
+    let proof = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+        &consumer,
+        QueryPlanCapabilityProof::for_composed_consumer_plan(&consumer)
+            .expect("customer-shaped consumer must issue a deferred composed proof"),
+        [("pagerank".to_owned(), producer)],
+    )
+    .expect("IS NULL projection must retain a finite composed owner schedule");
+    let envelope = proof
+        .resolve_reservation_envelope(reservation_policy())
+        .expect("the customer-shaped projection must resolve before placement");
+    assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::OrderedTimeline));
+}
+
 #[test]
 fn graph_to_metadata_inner_join_uses_bounded_key_payload_evidence() {
     let producer = pagerank_like_string_producer();
@@ -3595,6 +3808,53 @@ fn graph_result_sort_plan(data_type: DataType, nullable: bool, row_bound: Option
     builder.finish_with_host_sink(sort)
 }
 
+fn graph_result_string_sort_plan(row_bound: Option<u64>) -> QueryPlan {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("first", DataType::Utf8, false),
+        Field::new("second", DataType::Utf8, false),
+        Field::new("similarity", DataType::Float64, false),
+    ]));
+    let mut builder = QueryPlanBuilder::new();
+    let mut source = GpuResidentSource::new("graph_result", Arc::clone(&schema));
+    if let Some(row_bound) = row_bound {
+        source = source.with_row_count_upper_bound(row_bound);
+    }
+    let source = builder.add_source(SourceNode::GpuResident(source));
+    let sort =
+        builder.add_sort(source, SortSpec::new(vec![SortExpr::new(Expr::column("similarity"), true, false)]), schema);
+    builder.finish_with_host_sink(sort)
+}
+
+fn graph_result_string_producer_proof() -> QueryPlanCapabilityProof {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("first", DataType::Utf8, false),
+        Field::new("second", DataType::Utf8, false),
+        Field::new("similarity", DataType::Float64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(StringArray::from(vec!["a", "bb", "ccc", "dddd", "eeeee", "ffffff"])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["gggggg", "hhhhh", "iiii", "jjj", "kk", "l"])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![0.9, 0.8, 0.7, 0.6, 0.5, 0.4])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let mut evidence_builder = QueryPlanBuilder::new();
+    let source = evidence_builder
+        .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
+    let evidence_plan = evidence_builder.finish_gpu_resident(source);
+    let output_evidence =
+        PlanColumnEvidenceAnalysis::for_plan(&evidence_plan, &HashMap::new()).unwrap().root(&evidence_plan);
+
+    let mut proof = graph_bfs_proof_with_typed_output_and_rows(0, 3);
+    let [shape] = proof.requirement.reservation_shapes.as_mut_slice() else {
+        panic!("the graph producer fixture must have one reservation shape");
+    };
+    shape.set_output_column_evidence(output_evidence);
+    proof
+}
+
 fn graph_result_sort_limit_plan(row_bound: u64, skip: usize, fetch: usize) -> QueryPlan {
     let schema = Arc::new(Schema::new(vec![
         Field::new("vertex", DataType::Int64, false),
@@ -3655,9 +3915,68 @@ fn supported_graph_result_sort_resolves_exact_owner_components_per_device() {
             .bytes(),
         0
     );
-    assert!(terms.iter().filter(|term| term.id.role != OwnerTermRole::SortKeyInput).all(|term| term.bytes() > 0));
+    assert!(
+        terms
+            .iter()
+            .filter(|term| { !matches!(term.id.role, OwnerTermRole::SortKeyInput | OwnerTermRole::SortOutputNullMask) })
+            .all(|term| term.bytes() > 0)
+    );
+    assert_eq!(
+        terms
+            .iter()
+            .find(|term| term.id.role == OwnerTermRole::SortOutputNullMask)
+            .expect("non-nullable sort output still has an explicit owner term")
+            .bytes(),
+        0
+    );
     assert!(
         terms.iter().all(|term| term.id.execution_scope_fingerprint == canonical_execution_scope_fingerprint(&plan))
+    );
+}
+
+#[test]
+fn graph_result_string_sort_uses_producer_payload_evidence() {
+    let plan = graph_result_string_sort_plan(None);
+    let proof = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
+        &plan,
+        "graph_result",
+        &graph_result_string_producer_proof(),
+    )
+    .expect("producer payload evidence must issue a bounded string-output sort proof");
+    let resolved = proof
+        .requirement_for_device_with_preflight(0, |descriptor, _| {
+            assert_eq!(descriptor.num_rows, 6);
+            assert_eq!(descriptor.output_frame_bytes, 970);
+            assert_eq!(descriptor.output_null_mask_bytes, 0);
+            Ok(SortRadixPreflight::new_for_test_with_key_input(48, 24, 24, 64, 24))
+        })
+        .expect("the six-row string-output sort must resolve through the native owner seam");
+    let terms = resolved
+        .as_requirement()
+        .owner_terms
+        .iter()
+        .filter(|term| matches!(term.id.owner, OwnerId::Sort(_)))
+        .collect::<Vec<_>>();
+    assert_eq!(terms.len(), 7);
+    assert_eq!(
+        terms
+            .iter()
+            .find(|term| term.id.role == OwnerTermRole::SortOutputFrame)
+            .expect("the sorted string frame must remain an explicit owner")
+            .bytes(),
+        970
+    );
+
+    let missing = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
+        &plan,
+        "graph_result",
+        &graph_bfs_proof_with_typed_output_and_rows(0, 3),
+    )
+    .expect("missing evidence must remain a sticky typed rejection");
+    let error = missing.resolve_reservation_envelope(reservation_policy()).unwrap_err();
+    assert_eq!(
+        error.fact_value("sort_rejection_reason"),
+        Some("sort_owner_sort_output_string_payload_evidence_missing")
     );
 }
 

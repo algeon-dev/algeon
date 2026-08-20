@@ -144,7 +144,15 @@ pub(super) fn cugraph_execution_config_with_graph_aware_ticket(
         input_row_bounds.edge_row_upper_bound()
     };
     let edge_vertex_upper_bound = edge_source_graph_vertex_estimate(edge_source).map(|estimate| estimate.count);
-    let (graph_execution_plan, graph_execution_proof) = cugraph_execution_capability_proof_with_resident_edge_plan(
+    let materialized_side_input_plans = predicate_sources
+        .iter()
+        .enumerate()
+        .map(|(index, source)| {
+            lowered_native_edge_plan(source.as_ref())
+                .map(|plan| (super::lowering::cugraph_side_input_name(index), plan.clone_with_gpu_resident_sink()))
+        })
+        .collect::<Option<Vec<_>>>();
+    let (graph_execution_plan, graph_execution_proof) = cugraph_execution_capability_proof_with_resident_input_plans(
         spec,
         edge_source.schema(),
         predicate_sources.iter().map(|source| source.schema()).collect(),
@@ -154,15 +162,8 @@ pub(super) fn cugraph_execution_config_with_graph_aware_ticket(
         edge_row_upper_bound,
         edge_vertex_upper_bound,
         exact_edge_source_gpu_plan,
+        materialized_side_input_plans.as_deref().unwrap_or_default(),
     )?;
-    let materialized_side_input_plans = predicate_sources
-        .iter()
-        .enumerate()
-        .map(|(index, source)| {
-            lowered_native_edge_plan(source.as_ref())
-                .map(|plan| (super::lowering::cugraph_side_input_name(index), plan.clone_with_gpu_resident_sink()))
-        })
-        .collect::<Option<Vec<_>>>();
     let mut graph_model_ask = if execution_config.query_admission_source().is_none() {
         None
     } else {

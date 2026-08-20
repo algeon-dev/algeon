@@ -629,6 +629,17 @@ impl GraphOperationDefinition {
     /// not part of the native IR.
     pub fn result_schema_for_params(&self, params: &GraphAlgorithmParams) -> SchemaRef {
         assert!(params.supports_algorithm(self.algorithm), "graph algorithm and parameter variant must match");
+        if let GraphAlgorithmParams::Bfs(params) = params
+            && params.path_output.is_some()
+        {
+            return Arc::new(Schema::new(vec![
+                Field::new("path_index", arrow::datatypes::DataType::Int64, false),
+                Field::new("source", arrow::datatypes::DataType::Int64, false),
+                Field::new("target", arrow::datatypes::DataType::Int64, false),
+                Field::new("vertex", arrow::datatypes::DataType::Int64, false),
+                Field::new("distance", arrow::datatypes::DataType::Int64, false),
+            ]));
+        }
         let mut fields =
             self.base_result_schema().fields().iter().map(|field| field.as_ref().clone()).collect::<Vec<_>>();
         if let GraphAlgorithmParams::Bfs(params) = params

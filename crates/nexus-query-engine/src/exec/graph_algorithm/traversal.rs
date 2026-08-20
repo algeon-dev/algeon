@@ -1,3 +1,5 @@
+use cugraph::cudf_interop::IntoSeries;
+
 use super::*;
 
 pub(super) fn execute_bfs(
@@ -131,11 +133,26 @@ pub(super) fn execute_bfs(
                     };
                     let target_info = result.target_info().copied();
                     let target_metadata = bfs_target_metadata(target_info.as_ref());
-                    let frame = result.to_dataframe(runtime).map_err(map_cugraph_error(
-                        "nexus_query_engine.graph_algorithm.bfs_result",
-                        "failed to convert cuGraph BFS result to cudf DataFrame",
-                    ))?;
-                    let frame = append_bfs_target_metadata_columns(context, params, frame, target_info)?;
+                    let frame = if params.path_output.is_some() {
+                        extract_bfs_path_frame(
+                            context,
+                            spec,
+                            params,
+                            entered,
+                            graph,
+                            &result,
+                            &sources_view,
+                            target_vertices_view.as_ref(),
+                            predicate_columns.target_vertices.as_ref(),
+                            target_info,
+                        )?
+                    } else {
+                        let frame = result.to_dataframe(runtime).map_err(map_cugraph_error(
+                            "nexus_query_engine.graph_algorithm.bfs_result",
+                            "failed to convert cuGraph BFS result to cudf DataFrame",
+                        ))?;
+                        append_bfs_target_metadata_columns(context, params, frame, target_info)?
+                    };
                     (frame, target_metadata)
                 },
                 cudf::TypeId::Int64 => {
@@ -221,11 +238,26 @@ pub(super) fn execute_bfs(
                     };
                     let target_info = result.target_info().copied();
                     let target_metadata = bfs_target_metadata(target_info.as_ref());
-                    let frame = result.to_dataframe(runtime).map_err(map_cugraph_error(
-                        "nexus_query_engine.graph_algorithm.bfs_result",
-                        "failed to convert cuGraph BFS result to cudf DataFrame",
-                    ))?;
-                    let frame = append_bfs_target_metadata_columns(context, params, frame, target_info)?;
+                    let frame = if params.path_output.is_some() {
+                        extract_bfs_path_frame(
+                            context,
+                            spec,
+                            params,
+                            entered,
+                            graph,
+                            &result,
+                            &sources_view,
+                            target_vertices_view.as_ref(),
+                            predicate_columns.target_vertices.as_ref(),
+                            target_info,
+                        )?
+                    } else {
+                        let frame = result.to_dataframe(runtime).map_err(map_cugraph_error(
+                            "nexus_query_engine.graph_algorithm.bfs_result",
+                            "failed to convert cuGraph BFS result to cudf DataFrame",
+                        ))?;
+                        append_bfs_target_metadata_columns(context, params, frame, target_info)?
+                    };
                     (frame, target_metadata)
                 },
                 _ => {
@@ -270,6 +302,128 @@ pub(super) fn execute_bfs(
             run_bfs,
         )
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn extract_bfs_path_frame<V>(
+    context: &ExecutionContext,
+    spec: &crate::plan::GraphAlgorithmSpec,
+    params: &crate::plan::GraphBfsParams,
+    entered: &cugraph::EnteredContext<'_>,
+    graph: &mut cugraph::Graph<cugraph::Forward>,
+    result: &cugraph::traversal::BfsResult,
+    sources: &cugraph::DeviceArrayView<'_, V>,
+    destinations: Option<&cugraph::DeviceArrayView<'_, V>>,
+    destination_series: Option<&cudf::Series>,
+    target_info: Option<cugraph::traversal::BfsTargetInfo>,
+) -> Result<DataFrame>
+where
+    V: cugraph::types::CugraphElement + cudf::CudfType,
+{
+    let path_output = params.path_output.ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.bfs_path",
+            "BFS path extraction requires a bounded path output request",
+        )
+    })?;
+    let destinations = destinations.ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.bfs_path",
+            "BFS path output target device view is missing",
+        )
+        .with_fact("reason", "bfs_path_target_binding_missing")
+    })?;
+    if destinations.len() != 1 {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.bfs_path",
+            "BFS path output requires exactly one target vertex",
+        )
+        .with_fact("reason", "bfs_path_target_cardinality_invalid")
+        .with_fact("target_rows", destinations.len()));
+    }
+    let target_info = target_info.ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.bfs_path",
+            "BFS path output requires predicate target metadata",
+        )
+    })?;
+    if !target_info.target_found {
+        return empty_graph_result_frame(context, &spec.output_schema);
+    }
+
+    let extracted = result.extract_paths(entered, graph, sources, destinations).map_err(map_cugraph_error(
+        "nexus_query_engine.graph_algorithm.bfs_path",
+        "failed to extract bounded BFS path on device",
+    ))?;
+    let runtime = context.runtime()?;
+    let vertex = extracted.paths().and_then(|paths| paths.to_series(&runtime)).map_err(map_cugraph_error(
+        "nexus_query_engine.graph_algorithm.bfs_path",
+        "failed to convert extracted BFS path to a cudf series",
+    ))?;
+    let rows = vertex.len();
+    if rows as u64 > path_output.max_output_rows {
+        return Err(QueryError::new(
+            QueryErrorCode::CudfInvariantViolation,
+            "nexus_query_engine.graph_algorithm.bfs_path",
+            "native BFS path output exceeded its admitted row bound",
+        )
+        .with_fact("path_rows", rows)
+        .with_fact("max_output_rows", path_output.max_output_rows));
+    }
+    let destination_series = destination_series.ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.bfs_path",
+            "BFS path output target series is missing",
+        )
+    })?;
+    let repeat = runtime.sequence(0_i32, 0_i32, rows).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.bfs_path",
+            "failed to build BFS path scalar gather map",
+            error,
+        )
+    })?;
+    let source = vertex.slice(0, 1).and_then(|source| source.gather(&repeat)).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.bfs_path",
+            "failed to materialize BFS path source column",
+            error,
+        )
+    })?;
+    let target = destination_series.slice(0, 1).and_then(|target| target.gather(&repeat)).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.bfs_path",
+            "failed to materialize BFS path target column",
+            error,
+        )
+    })?;
+    let path_index = runtime.sequence(0_i64, 1_i64, rows).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.bfs_path",
+            "failed to materialize BFS path index",
+            error,
+        )
+    })?;
+    let distance = path_index.clone();
+    DataFrame::from_series([
+        ("path_index", path_index),
+        ("source", source),
+        ("target", target),
+        ("vertex", vertex),
+        ("distance", distance),
+    ])
+    .map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.bfs_path",
+            "failed to assemble bounded BFS path frame",
+            error,
+        )
+    })
 }
 
 struct BfsPredicateColumns {

@@ -315,13 +315,15 @@ impl QueryPlanCapabilityProof {
         if !is_attested_graph_result_bounded_consumer_plan(plan, graph_result_input_name) {
             return None;
         }
-        let result = producer.requirement.retained_output_rows_for_graph_result().and_then(|row_count| {
-            Self::try_for_attested_graph_result_bounded_consumer_plan_with_row_bound(
-                plan,
-                graph_result_input_name,
-                Some(row_count),
-            )
-        });
+        let result =
+            producer.requirement.retained_output_for_graph_result().and_then(|(row_count, column_evidence)| {
+                Self::try_for_attested_graph_result_bounded_consumer_plan_with_row_bound(
+                    plan,
+                    graph_result_input_name,
+                    Some(row_count),
+                    Some(&column_evidence),
+                )
+            });
         Some(Self::bounded_consumer_proof_or_sticky_rejection(plan, result))
     }
 
@@ -334,16 +336,26 @@ impl QueryPlanCapabilityProof {
         plan: &QueryPlan,
         graph_result_input_name: &str,
     ) -> Result<Self> {
-        Self::try_for_attested_graph_result_bounded_consumer_plan_with_row_bound(plan, graph_result_input_name, None)
+        Self::try_for_attested_graph_result_bounded_consumer_plan_with_row_bound(
+            plan,
+            graph_result_input_name,
+            None,
+            None,
+        )
     }
 
-    pub(crate) fn try_for_attested_graph_result_bounded_consumer_plan_with_row_bound(
+    fn try_for_attested_graph_result_bounded_consumer_plan_with_row_bound(
         plan: &QueryPlan,
         graph_result_input_name: &str,
         producer_row_count_upper_bound: Option<u64>,
+        producer_column_evidence: Option<&PlanColumnEvidence>,
     ) -> Result<Self> {
-        let descriptor =
-            sort_metadata_for_attested_graph_result(plan, graph_result_input_name, producer_row_count_upper_bound)?;
+        let descriptor = sort_metadata_for_attested_graph_result(
+            plan,
+            graph_result_input_name,
+            producer_row_count_upper_bound,
+            producer_column_evidence,
+        )?;
         let mut requirement = AttemptCapabilityEvidence::for_query_plan(plan);
         requirement.remove_generic_gpu_resident_retained_output_terms();
         requirement.mark_attested_graph_result_bounded_consumer_scope();
@@ -1533,7 +1545,7 @@ impl AttemptCapabilityEvidence {
         Ok(*index)
     }
 
-    pub(crate) fn retained_output_rows_for_graph_result(&self) -> Result<u64> {
+    fn retained_output_for_graph_result(&self) -> Result<(u64, PlanColumnEvidence)> {
         let [scope] = self.attested_cugraph_graph_execution_scopes.as_slice() else {
             let reason = if self.attested_cugraph_graph_execution_scopes.is_empty() {
                 "producer_graph_scope_missing"
@@ -1558,7 +1570,22 @@ impl AttemptCapabilityEvidence {
         if !scope.matches_graph_memory_evidence(evidence) {
             return Err(sort_owner_error("producer_graph_scope_mismatch", "graph_result_output"));
         }
-        Ok(evidence.retained_output_rows_upper_bound())
+        for (_, input_scope) in shape.output_column_evidence_input_scopes() {
+            let matching_input_scopes = self
+                .reservation_shapes
+                .iter()
+                .filter(|candidate| candidate.execution_scope_fingerprint() == input_scope)
+                .count();
+            if matching_input_scopes != 1 {
+                let reason = if matching_input_scopes == 0 {
+                    "producer_output_evidence_scope_missing"
+                } else {
+                    "producer_output_evidence_scope_ambiguous"
+                };
+                return Err(sort_owner_error(reason, "graph_result_output"));
+            }
+        }
+        Ok((evidence.retained_output_rows_upper_bound(), shape.output_column_evidence().clone()))
     }
 
     pub(crate) fn retained_output_term_for_composition(

@@ -298,6 +298,28 @@ fn fixed_width_comparison<'a>(
     })
 }
 
+fn null_check<'a>(
+    input: &Expr,
+    rows: usize,
+    inputs: &'a BTreeMap<&str, &'a DataFrameExpressionInputColumn>,
+    components: &mut ExpressionComponents<'a>,
+) -> Result<OutputAnalysis<'a>> {
+    let Expr::Column(name) = unwrap_alias(input) else {
+        return Err(preflight_error(
+            "null_check_input_unsupported",
+            "null-check preflight requires a direct input column",
+        ));
+    };
+    let column = input_column(name, inputs)?;
+    components.referenced_columns.insert(column.name.as_str());
+    let dtype = DataType::new(TypeId::Bool8);
+    let retained_bytes = fixed_width_column_bytes(rows, dtype, false)?;
+    Ok(OutputAnalysis {
+        value: ExpressionValue { dtype, nullable: false, retained_bytes, source: None },
+        temporary_workspace_peak_bytes: 0,
+    })
+}
+
 fn supported_output<'a>(
     expr: &Expr,
     rows: usize,
@@ -319,6 +341,7 @@ fn supported_output<'a>(
             })
         },
         Expr::BinaryOp { .. } => fixed_width_comparison(expr, rows, inputs, components),
+        Expr::IsNull(input) | Expr::IsNotNull(input) => null_check(input, rows, inputs, components),
         Expr::IfElse { condition, true_val, false_val } => {
             let condition = fixed_width_comparison(condition, rows, inputs, components)?;
             if condition.value.dtype.id() != TypeId::Bool8 {
@@ -528,5 +551,61 @@ mod tests {
         )
         .expect_err("unsupported arithmetic must remain unresolved");
         assert_eq!(error.detail_value("reason"), Some("comparison_operator_unsupported"));
+    }
+
+    #[test]
+    fn null_checks_preflight_non_nullable_boolean_outputs() {
+        let rows = 1_000;
+        let bool_bytes = fixed_width_column_bytes(rows, DataType::new(TypeId::Bool8), false).unwrap();
+        for nullable in [false, true] {
+            let inputs =
+                [DataFrameExpressionInputColumn::new("vertexId", DataType::new(TypeId::String), nullable, 32_000)];
+            for expression in [col("vertexId").is_null(), col("vertexId").is_not_null()] {
+                let preflight = dataframe_expression_allocation_preflight_for_metadata(
+                    rows,
+                    &inputs,
+                    &[("metadata_missing".to_string(), expression)],
+                    false,
+                )
+                .expect("direct null checks must have a finite owner preflight");
+                assert_eq!(preflight.output_dataframe_retained_bytes(), 32_000 + bool_bytes);
+                assert_eq!(preflight.temporary_workspace_peak_bytes(), 0);
+            }
+        }
+    }
+
+    #[test]
+    fn null_check_preflight_handles_zero_rows_and_checked_output_overflow() {
+        let inputs = [DataFrameExpressionInputColumn::new("vertexId", DataType::new(TypeId::String), true, 0)];
+        let empty = dataframe_expression_allocation_preflight_for_metadata(
+            0,
+            &inputs,
+            &[("metadata_missing".to_string(), col("vertexId").is_null())],
+            false,
+        )
+        .expect("zero-row null checks must remain allocation-free");
+        assert_eq!(empty.output_dataframe_retained_bytes(), 0);
+        assert_eq!(empty.active_phase_peak_bytes(), 0);
+
+        let error = dataframe_expression_allocation_preflight_for_metadata(
+            usize::MAX,
+            &inputs,
+            &[
+                ("is_null".to_string(), col("vertexId").is_null()),
+                ("is_not_null".to_string(), col("vertexId").is_not_null()),
+            ],
+            false,
+        )
+        .expect_err("the retained output sum must use checked arithmetic");
+        assert_eq!(error.detail_value("reason"), Some("component_sum_overflowed_usize"));
+
+        let nested = dataframe_expression_allocation_preflight_for_metadata(
+            1,
+            &inputs,
+            &[("nested".to_string(), col("vertexId").is_null().is_not_null())],
+            false,
+        )
+        .expect_err("nested null checks remain outside the owner contract");
+        assert_eq!(nested.detail_value("reason"), Some("null_check_input_unsupported"));
     }
 }

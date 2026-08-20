@@ -161,6 +161,7 @@ fn bfs_predicate_side_inputs_are_explicit_native_ir_edges() {
             ..Default::default()
         },
         endpoint_policy: GraphBfsEndpointPolicy::Strict,
+        path_output: None,
         return_target_info: false,
     };
     let spec = GraphAlgorithmSpec::with_stable_schema(
@@ -308,6 +309,7 @@ fn bfs_edge_id_predicates_require_primary_edge_id_binding() {
             ..Default::default()
         },
         endpoint_policy: GraphBfsEndpointPolicy::Strict,
+        path_output: None,
         return_target_info: false,
     };
     let spec = GraphAlgorithmSpec::with_stable_schema(

@@ -4922,6 +4922,7 @@ pub fn nexus_query_engine::plan::GraphBetweennessCentralityParams::default() -> 
 pub struct nexus_query_engine::plan::GraphBfsParams
 pub nexus_query_engine::plan::GraphBfsParams::depth_limit: core::option::Option<i64>
 pub nexus_query_engine::plan::GraphBfsParams::endpoint_policy: nexus_query_engine::plan::GraphBfsEndpointPolicy
+pub nexus_query_engine::plan::GraphBfsParams::path_output: core::option::Option<nexus_query_engine::plan::GraphBfsPathOutput>
 pub nexus_query_engine::plan::GraphBfsParams::predicates: nexus_query_engine::plan::GraphBfsPredicateInputs
 pub nexus_query_engine::plan::GraphBfsParams::return_target_info: bool
 pub nexus_query_engine::plan::GraphBfsParams::source_vertex: i64
@@ -4930,6 +4931,10 @@ impl nexus_query_engine::plan::GraphBfsParams
 pub fn nexus_query_engine::plan::GraphBfsParams::has_predicates(&self) -> bool
 pub fn nexus_query_engine::plan::GraphBfsParams::new(i64, core::option::Option<i64>) -> Self
 pub fn nexus_query_engine::plan::GraphBfsParams::side_input_node_ids(&self) -> impl core::iter::traits::iterator::Iterator<Item = nexus_query_engine::plan::NodeId> + '_
+pub struct nexus_query_engine::plan::GraphBfsPathOutput
+pub nexus_query_engine::plan::GraphBfsPathOutput::max_output_rows: u64
+impl nexus_query_engine::plan::GraphBfsPathOutput
+pub const fn nexus_query_engine::plan::GraphBfsPathOutput::new(u64) -> Self
 pub struct nexus_query_engine::plan::GraphBfsPredicateInputs
 pub nexus_query_engine::plan::GraphBfsPredicateInputs::exclude_vertices: core::option::Option<nexus_query_engine::plan::GraphPredicateInput>
 pub nexus_query_engine::plan::GraphBfsPredicateInputs::include_edge_ids: core::option::Option<nexus_query_engine::plan::GraphPredicateInput>

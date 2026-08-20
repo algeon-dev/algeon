@@ -434,13 +434,14 @@ fn format_graph_algorithm_params(params: &super::GraphAlgorithmParams) -> String
             params.personalization.value,
         ),
         super::GraphAlgorithmParams::Bfs(params) => format!(
-            "source_vertex={}:source_vertices={}:depth_limit={}",
+            "source_vertex={}:source_vertices={}:depth_limit={}:path_output_rows={}",
             params.source_vertex,
             params
                 .source_vertices
                 .as_ref()
                 .map_or_else(|| "none".to_string(), |input| format!("{}:{}", input.input, input.column)),
-            params.depth_limit.map_or_else(|| "none".to_string(), |depth| depth.to_string())
+            params.depth_limit.map_or_else(|| "none".to_string(), |depth| depth.to_string()),
+            params.path_output.map_or_else(|| "none".to_string(), |path| path.max_output_rows.to_string())
         ),
         super::GraphAlgorithmParams::Louvain(params) => {
             format!("max_level={}:threshold={}:resolution={}", params.max_level, params.threshold, params.resolution)

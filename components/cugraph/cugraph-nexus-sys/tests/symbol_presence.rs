@@ -80,6 +80,7 @@ fn bindings_include_critical_core_symbols() {
         "cugraph_paths_result_get_predecessors",
         "cugraph_paths_result_free",
         "cugraph_extract_paths",
+        "cugraph_extract_paths_workspace_preflight",
         "cugraph_extract_paths_result_get_max_path_length",
         "cugraph_extract_paths_result_get_paths",
         "cugraph_extract_paths_result_free",

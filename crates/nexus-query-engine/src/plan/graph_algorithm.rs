@@ -46,8 +46,8 @@ pub use structure::{
     GraphTriangleCountAllParams,
 };
 pub use traversal::{
-    GraphBfsEndpointPolicy, GraphBfsParams, GraphBfsPredicateInputs, GraphEdgePredicateInput, GraphPredicateInput,
-    GraphSsspParams, GraphSsspSource,
+    GraphBfsEndpointPolicy, GraphBfsParams, GraphBfsPathOutput, GraphBfsPredicateInputs, GraphEdgePredicateInput,
+    GraphPredicateInput, GraphSsspParams, GraphSsspSource,
 };
 
 /// Algorithm-specific parameters.

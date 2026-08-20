@@ -319,6 +319,7 @@ fn bfs_include_edge_ids_filters_edges() {
             ..Default::default()
         },
         endpoint_policy: GraphBfsEndpointPolicy::Strict,
+        path_output: None,
         return_target_info: false,
     };
     let spec = GraphAlgorithmSpec::with_stable_schema(
@@ -410,6 +411,7 @@ fn bfs_include_edges_relation_filters_by_source_destination() {
             ..Default::default()
         },
         endpoint_policy: GraphBfsEndpointPolicy::Strict,
+        path_output: None,
         return_target_info: false,
     };
     let spec = GraphAlgorithmSpec::with_stable_schema(

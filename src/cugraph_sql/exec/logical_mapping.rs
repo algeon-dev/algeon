@@ -1,6 +1,10 @@
-use arrow::datatypes::Field;
+use arrow::{
+    array::{ArrayRef, StringArray},
+    datatypes::Field,
+};
 
 use super::*;
+use crate::cugraph_sql::types::CugraphLogicalOutputColumn;
 
 const LOGICAL_VERTEX_COLUMN: &str = "__vertex_id_str";
 const NATIVE_VERTEX_COLUMN: &str = "__vertex_id";
@@ -146,7 +150,30 @@ pub(super) fn decode_logical_graph_result(
             spec.algorithm.function_name()
         ))
     })?;
-    for column in contract.output_columns {
+    let bfs_path_outputs = [
+        CugraphLogicalOutputColumn {
+            name: "source",
+            nullable: false,
+            multiplicity: CugraphLogicalOutputMultiplicity::SideInputOccurrences,
+        },
+        CugraphLogicalOutputColumn {
+            name: "target",
+            nullable: false,
+            multiplicity: CugraphLogicalOutputMultiplicity::SideInputOccurrences,
+        },
+        CugraphLogicalOutputColumn {
+            name: "vertex",
+            nullable: false,
+            multiplicity: CugraphLogicalOutputMultiplicity::SideInputOccurrences,
+        },
+    ];
+    let output_columns = match &spec.params {
+        CugraphAlgorithmParams::Bfs(params) if params.output.mode == CugraphBfsOutputMode::Path => {
+            bfs_path_outputs.as_slice()
+        },
+        _ => contract.output_columns,
+    };
+    for column in output_columns {
         let preserves_total_payload_bound = column.multiplicity != CugraphLogicalOutputMultiplicity::OnePerVertex;
         (root, root_schema) = decode_relation_column(
             builder,
@@ -381,9 +408,14 @@ fn logical_betweenness_seed_values(seeds: &CugraphBetweennessSeeds) -> Result<(&
 fn bfs_numeric_execution_schema(params: &CugraphBfsParams) -> Result<SchemaRef> {
     let native_schema = bfs_native_result_schema(params.output.return_target_info);
     let fields: Vec<_> = match params.output.mode {
-        CugraphBfsOutputMode::Raw | CugraphBfsOutputMode::Path => {
-            native_schema.fields().iter().map(|field| field.as_ref().clone()).collect()
-        },
+        CugraphBfsOutputMode::Raw => native_schema.fields().iter().map(|field| field.as_ref().clone()).collect(),
+        CugraphBfsOutputMode::Path => vec![
+            Field::new("path_index", DataType::Int64, false),
+            Field::new("source", DataType::Int64, false),
+            Field::new("target", DataType::Int64, false),
+            Field::new("vertex", DataType::Int64, false),
+            Field::new("distance", DataType::Int64, false),
+        ],
         CugraphBfsOutputMode::Normalized => Arc::new(Schema::new(vec![
             normalized_bfs_base_field(&native_schema, "vertex", false)?,
             normalized_bfs_base_field(&native_schema, "distance", true)?,
