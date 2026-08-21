@@ -98,7 +98,7 @@ def load_policy(path: Path) -> dict[str, Any]:
         for key in required - {"rustflags"}:
             if not isinstance(profile[key], str) or not profile[key]:
                 raise PolicyError(f"profiles.{name}.{key} must be a non-empty string")
-        if profile["kind"] not in {"redistributable", "tuned-local"}:
+        if profile["kind"] not in {"redistributable"}:
             raise PolicyError(f"profiles.{name}.kind is unsupported")
         expected_flags = ["-C", f"target-cpu={profile['declared_baseline']}"]
         if profile["rustflags"] != expected_flags:

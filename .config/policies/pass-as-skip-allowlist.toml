@@ -1,3 +1,0 @@
-# Narrow exceptions require an explicit owner and reason. Canonical test roots
-# currently have no exceptions: unavailable fixtures, CUDA runtimes, and
-# sibling source trees must never turn an assertion into a successful test.

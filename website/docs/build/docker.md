@@ -108,17 +108,6 @@ x86-64-v2 is a runtime host precondition, not a friendly startup check. Code
 compiled for v2 can execute before `main`; on a pre-v2 host the process may
 terminate with `SIGILL` before it can print a diagnostic.
 
-An explicitly tuned build has a separate artifact root, deployment contract,
-provenance profile, and tag:
-
-```bash
-CPU_PACKAGE_PROFILE=tuned-local-v3 bash docker/build.sh
-# Run the printed command; it tags datafusion-nexus-server:x86-64-v3-tuned.
-```
-
-Deploy that image only to full x86-64-v3 hosts and never retag it as the
-portable `datafusion-nexus-server:x86-64-v2` image.
-
 ## Run the server
 
 For the minimal no-catalog server, run the image directly:
@@ -147,8 +136,7 @@ docker ps --filter ancestor=datafusion-nexus-server:x86-64-v2
 `docker/run.sh` is a convenience launcher for local fixture-style runs. It uses
 host networking, enables cuGraph SQL by default, sets bounded native memory
 knobs, and wires the local Iceberg REST/RustFS defaults. It defaults to
-`datafusion-nexus-server:x86-64-v2`; set `NEXUS_SERVER_IMAGE` explicitly for a
-tuned artifact:
+`datafusion-nexus-server:x86-64-v2`; set `NEXUS_SERVER_IMAGE` to override:
 
 ```bash
 flock /tmp/cudf-gpu.lock bash docker/run.sh
