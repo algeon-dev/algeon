@@ -368,6 +368,15 @@ async fn run_one(config: &HarnessConfig, ctx: &SessionContext, request: &Request
                         CandidateOutcome::Selected { candidate } => {
                             eprintln!("[planning] {} SELECTED shape={}", request.spec.label, candidate.shape);
                         },
+                        CandidateOutcome::Deferred { candidate, planning_stage, producer_binding } => {
+                            eprintln!(
+                                "[planning] {} DEFERRED shape={} stage={} reason={}",
+                                request.spec.label,
+                                candidate.shape,
+                                planning_stage,
+                                producer_binding.reason_code()
+                            );
+                        },
                         CandidateOutcome::NotSupported { candidate, capability_reason } => {
                             eprintln!(
                                 "[planning] {} NOT_SUPPORTED shape={} reason={}",

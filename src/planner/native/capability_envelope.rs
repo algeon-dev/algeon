@@ -1,7 +1,8 @@
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use nexus_query_engine::{
     admission::{
-        QueryPlanCapabilityProof, bounded_pipeline_admission_with_statistical_aggregate_mode,
+        ComposedProducerBindingDiagnostics, QueryPlanCapabilityProof,
+        bounded_pipeline_admission_with_statistical_aggregate_mode,
         bounded_pipeline_rejection_projection_with_statistical_aggregate_mode,
     },
     capability::ContractStatus,
@@ -25,6 +26,8 @@ pub const CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON: &str =
 pub struct NativeCapabilityContractDiagnostics {
     /// Candidates accepted by the optimizer with capability gate rows attached.
     pub accepted_candidates: Vec<NativeCapabilityAcceptedCandidateDiagnostics>,
+    /// Structurally supported candidates waiting for resident producer facts.
+    pub deferred_candidates: Vec<NativeCapabilityDeferredCandidateDiagnostics>,
     /// Candidates rejected before execution with their first blocking gate.
     pub rejected_candidates: Vec<NativeCapabilityRejectedCandidateDiagnostics>,
     /// Bounded non-join plans seen while compatibility reports cover compiled joins.
@@ -37,6 +40,7 @@ impl NativeCapabilityContractDiagnostics {
     /// Appends accepted/rejected candidate evidence from another optimizer stage.
     pub fn merge(&mut self, other: Self) {
         self.accepted_candidates.extend(other.accepted_candidates);
+        self.deferred_candidates.extend(other.deferred_candidates);
         self.rejected_candidates.extend(other.rejected_candidates);
         self.non_join_bounded_plan_count += other.non_join_bounded_plan_count;
         if self.non_join_bounded_plan_reason.is_none() {
@@ -47,9 +51,23 @@ impl NativeCapabilityContractDiagnostics {
     /// Returns true when no capability-contract evidence was captured.
     pub fn is_empty(&self) -> bool {
         self.accepted_candidates.is_empty()
+            && self.deferred_candidates.is_empty()
             && self.rejected_candidates.is_empty()
             && self.non_join_bounded_plan_count == 0
     }
+}
+
+/// Planner decision for a candidate whose composed proof awaits producer binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NativeCapabilityDeferredCandidateDiagnostics {
+    /// Optimizer candidate that reached the deferred capability stage.
+    pub candidate: GpuCandidate,
+    /// Stable stage that emitted this decision.
+    pub planning_stage: String,
+    /// Owner-issued producer-binding facts.
+    pub binding: ComposedProducerBindingDiagnostics,
+    /// Gate-first report carrying the deferred status without a parallel event store.
+    pub report: CapabilityContractReport,
 }
 
 /// Capability report and compiled graph facts for an accepted candidate.
@@ -116,8 +134,22 @@ pub(super) fn accepted_plan_contract_diagnostics(
     if !plan.contains_join() {
         return Ok(non_join_capability_diagnostics());
     }
-    if composed_admission_requires_producer_binding(plan) {
-        return Ok(NativeCapabilityContractDiagnostics::default());
+    if let Some(binding) = composed_admission_producer_binding(plan) {
+        let gate = CapabilityContractGateRow::from_deferred_composed_producer_binding(0).map_err(|error| {
+            capability_contract_report_error(stamp_native_error_correlation(error, execution_config))
+        })?;
+        let report = CapabilityContractReport::from_gate_rows(CapabilityEnvelopeStatus::Deferred, vec![gate]).map_err(
+            |error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)),
+        )?;
+        return Ok(NativeCapabilityContractDiagnostics {
+            deferred_candidates: vec![NativeCapabilityDeferredCandidateDiagnostics {
+                candidate,
+                planning_stage: "physical_optimizer".to_string(),
+                binding,
+                report: stamp_capability_report_correlation(report, execution_config),
+            }],
+            ..Default::default()
+        });
     }
 
     let admission = bounded_pipeline_admission_with_statistical_aggregate_mode(
@@ -140,6 +172,7 @@ pub(super) fn accepted_plan_contract_diagnostics(
             report,
             compiled_graph: NativeCapabilityCompiledGraphDiagnostics::from_pipeline(admission.pipeline()),
         }],
+        deferred_candidates: Vec::new(),
         rejected_candidates: Vec::new(),
         non_join_bounded_plan_count: 0,
         non_join_bounded_plan_reason: None,
@@ -164,9 +197,13 @@ pub(super) fn capability_envelope_admission_is_rejected(
     }
 }
 
-fn composed_admission_requires_producer_binding(plan: &QueryPlan) -> bool {
+fn composed_admission_producer_binding(plan: &QueryPlan) -> Option<ComposedProducerBindingDiagnostics> {
     QueryPlanCapabilityProof::for_composed_consumer_plan(plan)
-        .is_some_and(|proof| proof.requires_composed_producer_binding())
+        .and_then(|proof| proof.composed_producer_binding_diagnostics(plan))
+}
+
+fn composed_admission_requires_producer_binding(plan: &QueryPlan) -> bool {
+    composed_admission_producer_binding(plan).is_some()
 }
 
 pub(super) fn rejected_plan_contract_diagnostics(
@@ -183,6 +220,7 @@ pub(super) fn rejected_plan_contract_diagnostics(
     };
     Ok(NativeCapabilityContractDiagnostics {
         accepted_candidates: Vec::new(),
+        deferred_candidates: Vec::new(),
         rejected_candidates: vec![NativeCapabilityRejectedCandidateDiagnostics {
             candidate,
             blocking_contract: blocking_row,

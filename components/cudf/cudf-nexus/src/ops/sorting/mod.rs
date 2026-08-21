@@ -146,7 +146,7 @@ impl SortedOrderLexicographicPreflight {
     }
 }
 
-pub(crate) fn sorted_order_radix_key_supported(type_id: TypeId) -> bool {
+pub fn sorted_order_radix_key_supported(type_id: TypeId) -> bool {
     type_id.is_signed_int()
         || type_id.is_unsigned_int()
         || type_id.is_timestamp()
@@ -338,14 +338,14 @@ pub fn sorted_order_lexicographic_preflight(
     device: DeviceId,
 ) -> Result<SortedOrderLexicographicPreflight> {
     let operation = "sorting::sorted_order_lexicographic_preflight";
-    if key_types.len() < 2
+    if key_types.is_empty()
         || key_types.len() != null_counts.len()
         || key_types.len() != key_orders.len()
         || key_types.len() != null_precedence.len()
     {
         return Err(sorted_order_radix_preflight_unsupported(
             operation,
-            "lexicographic sort metadata requires matching vectors with at least two keys",
+            "lexicographic sort metadata requires matching non-empty vectors",
             "lexicographic_metadata_length_mismatch",
             "provide one type, null count, order, and null precedence for each sort key",
         ));

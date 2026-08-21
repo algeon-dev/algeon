@@ -87,7 +87,9 @@ pub use semijoin_reduction::{
 };
 #[doc(hidden)]
 pub use shared_resident_extraction::{
-    SharedResidentPlan, SharedResidentProducerPlan, extract_shared_resident_subplans,
+    SHARED_RESIDENT_EXTRACTION_RULE_NAME, SharedResidentExtractionCandidateDiagnostics,
+    SharedResidentExtractionDecision, SharedResidentExtractionDiagnostics, SharedResidentExtractionReason,
+    SharedResidentPlan, SharedResidentProducerPlan, optimize_shared_resident_extraction,
 };
 pub use shared_subplan_materialization::{
     SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME, SharedSubplanMaterializationCandidateDiagnostics,
@@ -186,6 +188,9 @@ impl NativeOptimizerChange {
 pub struct NativeOptimizerResult {
     /// Optimized native query plan.
     pub plan: QueryPlan,
+    /// Closed repeated fragments extracted behind resident sources.
+    #[doc(hidden)]
+    pub shared_resident_producers: Vec<SharedResidentProducerPlan>,
     /// Whether any pass changed the plan.
     pub change: NativeOptimizerChange,
     /// Rule diagnostics collected while optimizing.
@@ -223,6 +228,8 @@ pub struct NativeOptimizerDiagnostics {
     pub local_parquet_source_reuse: LocalParquetSourceReuseDiagnostics,
     /// Diagnostics from the shared-subplan materialization discovery pass.
     pub shared_subplan_materialization: SharedSubplanMaterializationDiagnostics,
+    /// Diagnostics from the shared-resident extraction stage.
+    pub shared_resident_extraction: SharedResidentExtractionDiagnostics,
     /// Diagnostics from the dynamic-filter route discovery pass.
     pub dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryDiagnostics,
 }
@@ -241,6 +248,7 @@ impl NativeOptimizerDiagnostics {
             && self.stream_fanout_replay.is_empty()
             && self.local_parquet_source_reuse.is_empty()
             && self.shared_subplan_materialization.is_empty()
+            && self.shared_resident_extraction.is_empty()
             && self.dynamic_filter_route_discovery.is_empty()
     }
 
@@ -257,6 +265,7 @@ impl NativeOptimizerDiagnostics {
         self.stream_fanout_replay.merge(other.stream_fanout_replay);
         self.local_parquet_source_reuse.merge(other.local_parquet_source_reuse);
         self.shared_subplan_materialization.merge(other.shared_subplan_materialization);
+        self.shared_resident_extraction.merge(other.shared_resident_extraction);
         self.dynamic_filter_route_discovery.merge(other.dynamic_filter_route_discovery);
     }
 }
@@ -349,6 +358,7 @@ pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) ->
         final_projection_simplification_result.plan,
         &options.dynamic_filter_route_discovery,
     );
+    let shared_resident_result = optimize_shared_resident_extraction(dynamic_filter_route_result.plan);
     let change = if projection_simplification_result.change.changed()
         || final_projection_simplification_result.change.changed()
         || semijoin_result.change.changed()
@@ -366,6 +376,7 @@ pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) ->
         || local_parquet_source_reuse_result.change.changed()
         || shared_subplan_materialization_result.change.changed()
         || dynamic_filter_route_result.change.changed()
+        || !shared_resident_result.producers.is_empty()
     {
         NativeOptimizerChange::Changed
     } else {
@@ -373,7 +384,8 @@ pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) ->
     };
     NativeOptimizerResult {
         change,
-        plan: dynamic_filter_route_result.plan,
+        plan: shared_resident_result.consumer,
+        shared_resident_producers: shared_resident_result.producers,
         diagnostics: NativeOptimizerDiagnostics {
             aggregate_join_pushdown: aggregate_join_pushdown_result.diagnostics,
             count_non_null_column_pruning: count_non_null_column_pruning_result.diagnostics,
@@ -410,6 +422,7 @@ pub fn optimize_query_plan(plan: QueryPlan, options: &NativeOptimizerOptions) ->
                 }
                 diagnostics
             },
+            shared_resident_extraction: shared_resident_result.diagnostics,
             dynamic_filter_route_discovery: dynamic_filter_route_result.diagnostics,
         },
     }

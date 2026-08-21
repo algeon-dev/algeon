@@ -1286,7 +1286,7 @@ fn outcome_stats(rule: &NexusNativePhysicalOptimizerRule) -> (usize, Vec<String>
     let mut not_selected = Vec::new();
     for outcome in report.outcomes() {
         match outcome {
-            CandidateOutcome::Selected { .. } => selected += 1,
+            CandidateOutcome::Selected { .. } | CandidateOutcome::Deferred { .. } => selected += 1,
             CandidateOutcome::NotSupported { capability_reason, .. } => {
                 not_selected.push(capability_reason.code().to_string())
             },

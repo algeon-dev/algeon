@@ -863,10 +863,12 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(
         | RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateFullScan
         | RootTopKJoinAggregateVariant::SortFetchHashJoinAggregate
         | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanIn
+        | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInIdentityArithmeticProjection
         | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInMissingFilter
         | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInWrongBuildSide
         | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInMarkerEscapes
         | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInMarkerFilterReuse
+        | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInUniqueNonAggregateRight
         | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInNonUniqueRight
         | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInMissingBranchReduction
         | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInFullBoundedReturnBuilds
@@ -966,10 +968,12 @@ pub(crate) enum RootTopKJoinAggregateVariant {
     // Null-filtered fan-in fixtures model left joins whose right-side marker is
     // filtered with IS NULL and then rewritten to a bounded anti-join contract.
     SortFetchNullFilteredLeftAggregateFanIn,
+    SortFetchNullFilteredLeftAggregateFanInIdentityArithmeticProjection,
     SortFetchNullFilteredLeftAggregateFanInMissingFilter,
     SortFetchNullFilteredLeftAggregateFanInWrongBuildSide,
     SortFetchNullFilteredLeftAggregateFanInMarkerEscapes,
     SortFetchNullFilteredLeftAggregateFanInMarkerFilterReuse,
+    SortFetchNullFilteredLeftAggregateFanInUniqueNonAggregateRight,
     SortFetchNullFilteredLeftAggregateFanInNonUniqueRight,
     SortFetchNullFilteredLeftAggregateFanInMissingBranchReduction,
     SortFetchNullFilteredLeftAggregateFanInFullBoundedReturnBuilds,
@@ -982,10 +986,12 @@ impl RootTopKJoinAggregateVariant {
         matches!(
             self,
             Self::SortFetchNullFilteredLeftAggregateFanIn
+                | Self::SortFetchNullFilteredLeftAggregateFanInIdentityArithmeticProjection
                 | Self::SortFetchNullFilteredLeftAggregateFanInMissingFilter
                 | Self::SortFetchNullFilteredLeftAggregateFanInWrongBuildSide
                 | Self::SortFetchNullFilteredLeftAggregateFanInMarkerEscapes
                 | Self::SortFetchNullFilteredLeftAggregateFanInMarkerFilterReuse
+                | Self::SortFetchNullFilteredLeftAggregateFanInUniqueNonAggregateRight
                 | Self::SortFetchNullFilteredLeftAggregateFanInNonUniqueRight
                 | Self::SortFetchNullFilteredLeftAggregateFanInMissingBranchReduction
                 | Self::SortFetchNullFilteredLeftAggregateFanInFullBoundedReturnBuilds
@@ -1033,16 +1039,44 @@ fn root_topk_null_filtered_aggregate_fan_in_plan(
         matches!(variant, RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInMarkerEscapes),
         matches!(variant, RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInMarkerFilterReuse),
     );
-    let web = null_filtered_aggregate_branch(
-        &mut builder,
-        "root-topk-null-filtered-web",
-        true,
-        other_return_shape,
-        false,
-        false,
-        false,
-        false,
-    );
+    let web = if matches!(
+        variant,
+        RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInUniqueNonAggregateRight
+    ) {
+        builder.add_source(SourceNode::GpuResident(
+            GpuResidentSource::new("root-topk-null-filtered-web", key_value_schema())
+                .with_row_count_upper_bound(100)
+                .with_unique_key_columns(std::collections::BTreeSet::from(["k".to_owned()])),
+        ))
+    } else {
+        null_filtered_aggregate_branch(
+            &mut builder,
+            "root-topk-null-filtered-web",
+            true,
+            other_return_shape,
+            false,
+            false,
+            false,
+            false,
+        )
+    };
+    let web = if matches!(
+        variant,
+        RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInIdentityArithmeticProjection
+    ) {
+        builder.add_projection(
+            web,
+            projection_outputs(
+                vec![
+                    Expr::binary(Expr::column("k"), BinaryOp::Add, Expr::literal(LiteralValue::Int32(0))),
+                    Expr::column("v"),
+                ],
+                key_value_schema(),
+            ),
+        )
+    } else {
+        web
+    };
     let catalog = null_filtered_aggregate_branch(
         &mut builder,
         "root-topk-null-filtered-catalog",

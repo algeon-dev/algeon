@@ -131,6 +131,8 @@ pub struct NativeDataFusionExecutionRow {
 pub enum NativeDataFusionPlanningOutcome {
     /// Candidate was selected for native execution.
     Selected,
+    /// Candidate was selected, but admission awaits resident producer evidence.
+    Deferred,
     /// Candidate is not supported by the native capability contract.
     NotSupported,
     /// Candidate is native-capable but was not selected by the cost model.
@@ -142,6 +144,7 @@ impl NativeDataFusionPlanningOutcome {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Selected => "selected",
+            Self::Deferred => "deferred",
             Self::NotSupported => "not_supported",
             Self::NotSelectedByCost => "not_selected_by_cost",
         }

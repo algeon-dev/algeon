@@ -199,6 +199,7 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
     validate_local_parquet_source_contract(source)?;
     validate_count_star_probe_source(source)?;
     validate_output_schema_override_contract(source)?;
+    validate_unique_key_columns(source)?;
 
     for projected_column in &source.projected_output_columns {
         if source
@@ -261,6 +262,52 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
         }
     }
 
+    Ok(())
+}
+
+fn validate_unique_key_columns(source: &LocalParquetSource) -> Result<()> {
+    for (key_index, key) in source.unique_key_columns.iter().enumerate() {
+        if key.is_empty() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.local_parquet_source.validate",
+                "local parquet source unique keys must contain at least one output column",
+            )
+            .with_fact("reason", "empty_unique_key")
+            .with_fact("key_index", key_index));
+        }
+        if source.unique_key_columns[..key_index].contains(key) {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.local_parquet_source.validate",
+                "local parquet source unique keys must not contain duplicate facts",
+            )
+            .with_fact("reason", "duplicate_unique_key")
+            .with_fact("key_index", key_index));
+        }
+        for column in key {
+            let field = source.output_schema().field_with_name(column).map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.local_parquet_source.validate",
+                    "local parquet source unique key columns must be present in the output schema",
+                )
+                .with_fact("reason", "unique_key_column_absent")
+                .with_fact("key_index", key_index)
+                .with_fact("column", column.as_str())
+            })?;
+            if field.is_nullable() {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.local_parquet_source.validate",
+                    "nullable local parquet output columns cannot prove match uniqueness",
+                )
+                .with_fact("reason", "unique_key_column_nullable")
+                .with_fact("key_index", key_index)
+                .with_fact("column", column.as_str()));
+            }
+        }
+    }
     Ok(())
 }
 

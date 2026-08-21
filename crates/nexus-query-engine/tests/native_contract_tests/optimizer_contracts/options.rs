@@ -1,5 +1,5 @@
 #[test]
-fn native_optimizer_semijoin_entry_point_returns_unchanged_plan_and_empty_diagnostics() {
+fn native_optimizer_entry_point_reports_skipped_shared_resident_candidate() {
     let plan = single_source_plan();
 
     let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::default());
@@ -7,7 +7,17 @@ fn native_optimizer_semijoin_entry_point_returns_unchanged_plan_and_empty_diagno
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert!(!result.changed());
-    assert!(result.diagnostics.is_empty());
+    assert_eq!(result.diagnostics.shared_resident_extraction.considered_count, 1);
+    assert_eq!(result.diagnostics.shared_resident_extraction.extracted_count, 0);
+    assert_eq!(result.diagnostics.shared_resident_extraction.candidates.len(), 1);
+    assert_eq!(
+        result.diagnostics.shared_resident_extraction.candidates[0].decision,
+        SharedResidentExtractionDecision::Skipped
+    );
+    assert_eq!(
+        result.diagnostics.shared_resident_extraction.candidates[0].reason,
+        SharedResidentExtractionReason::NotRepeated
+    );
     assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 0);
     assert_eq!(result.diagnostics.semijoin_reduction.applied_count, 0);
     assert!(result.diagnostics.semijoin_reduction.candidates.is_empty());
@@ -25,7 +35,8 @@ fn native_optimizer_options_can_disable_semijoin_reduction_pass() {
     assert!(!options.count_non_null_column_pruning.enabled);
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
-    assert!(result.diagnostics.is_empty());
+    assert_eq!(result.diagnostics.shared_resident_extraction.considered_count, 1);
+    assert_eq!(result.diagnostics.shared_resident_extraction.extracted_count, 0);
 }
 
 #[test]

@@ -208,18 +208,20 @@ fn report_rows_for_plan(
         .outcomes()
         .iter()
         .map(|outcome| match outcome {
-            CandidateOutcome::Selected { candidate } => NativeFallbackPressureRow {
-                query_id: query_id.clone(),
-                physical_root: physical_root.clone(),
-                physical_shape: physical_shape.clone(),
-                native_candidate_shape: Some(candidate.shape.to_string()),
-                native_candidate_shape_family: Some(candidate_shape_family(candidate)),
-                outcome: Some(NativeFallbackPressureOutcome::Selected),
-                reason_code: None,
-                unsupported_category: None,
-                join_diagnostics: join_diagnostics.clone(),
-                source_diagnostics: source_diagnostics.clone(),
-                rejected_before_execution: false,
+            CandidateOutcome::Selected { candidate } | CandidateOutcome::Deferred { candidate, .. } => {
+                NativeFallbackPressureRow {
+                    query_id: query_id.clone(),
+                    physical_root: physical_root.clone(),
+                    physical_shape: physical_shape.clone(),
+                    native_candidate_shape: Some(candidate.shape.to_string()),
+                    native_candidate_shape_family: Some(candidate_shape_family(candidate)),
+                    outcome: Some(NativeFallbackPressureOutcome::Selected),
+                    reason_code: None,
+                    unsupported_category: None,
+                    join_diagnostics: join_diagnostics.clone(),
+                    source_diagnostics: source_diagnostics.clone(),
+                    rejected_before_execution: false,
+                }
             },
             CandidateOutcome::NotSupported { candidate, capability_reason } => NativeFallbackPressureRow {
                 query_id: query_id.clone(),
@@ -318,38 +320,40 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
         .outcomes()
         .iter()
         .map(|outcome| match outcome {
-            CandidateOutcome::Selected { candidate } => NativeDataFusionPlanningRow {
-                query_id: item.query_id.clone(),
-                physical_root: native_diagnostics.input_plan_root.clone(),
-                physical_shape: native_diagnostics.input_plan_shape.clone(),
-                native_candidate_shape: Some(candidate.shape.to_string()),
-                native_candidate_shape_family: Some(candidate_shape_family(candidate)),
-                outcome: Some(NativeDataFusionPlanningOutcome::Selected),
-                reason_code: None,
-                unsupported_category: None,
-                capability_contract_rows: capability_contract_rows_for_candidate(
-                    &native_diagnostics.capability_contract,
-                    candidate,
-                    None,
-                ),
-                capability_compiled_graphs: capability_compiled_graphs_for_candidate(
-                    &native_diagnostics.capability_contract,
-                    candidate,
-                    None,
-                ),
-                native_optimizer: native_diagnostics.native_optimizer.clone(),
-                edge_normalize_inserted,
-                join_diagnostics: if post_native_coverage.final_disposition == FinalPlanDisposition::Native {
-                    post_native_join_diagnostics.clone()
-                } else {
-                    input_join_diagnostics.clone()
-                },
-                source_diagnostics: source_diagnostics.clone(),
-                post_native_plan_root: post_native_plan_root.clone(),
-                final_disposition: post_native_coverage.final_disposition,
-                native_plan_fragment_count: post_native_coverage.native_fragment_count,
-                host_datafusion_boundary_count: post_native_coverage.host_datafusion_boundary_count,
-                rejected_before_execution: false,
+            CandidateOutcome::Selected { candidate } | CandidateOutcome::Deferred { candidate, .. } => {
+                NativeDataFusionPlanningRow {
+                    query_id: item.query_id.clone(),
+                    physical_root: native_diagnostics.input_plan_root.clone(),
+                    physical_shape: native_diagnostics.input_plan_shape.clone(),
+                    native_candidate_shape: Some(candidate.shape.to_string()),
+                    native_candidate_shape_family: Some(candidate_shape_family(candidate)),
+                    outcome: Some(candidate_planning_outcome(outcome)),
+                    reason_code: candidate_deferred_reason_code(outcome),
+                    unsupported_category: None,
+                    capability_contract_rows: capability_contract_rows_for_candidate(
+                        &native_diagnostics.capability_contract,
+                        candidate,
+                        None,
+                    ),
+                    capability_compiled_graphs: capability_compiled_graphs_for_candidate(
+                        &native_diagnostics.capability_contract,
+                        candidate,
+                        None,
+                    ),
+                    native_optimizer: native_diagnostics.native_optimizer.clone(),
+                    edge_normalize_inserted,
+                    join_diagnostics: if post_native_coverage.final_disposition == FinalPlanDisposition::Native {
+                        post_native_join_diagnostics.clone()
+                    } else {
+                        input_join_diagnostics.clone()
+                    },
+                    source_diagnostics: source_diagnostics.clone(),
+                    post_native_plan_root: post_native_plan_root.clone(),
+                    final_disposition: post_native_coverage.final_disposition,
+                    native_plan_fragment_count: post_native_coverage.native_fragment_count,
+                    host_datafusion_boundary_count: post_native_coverage.host_datafusion_boundary_count,
+                    rejected_before_execution: false,
+                }
             },
             CandidateOutcome::NotSupported { candidate, capability_reason } => NativeDataFusionPlanningRow {
                 query_id: item.query_id.clone(),
@@ -427,38 +431,40 @@ fn datafusion_execution_rows_for_item(
         .outcomes()
         .iter()
         .map(|outcome| match outcome {
-            CandidateOutcome::Selected { candidate } => NativeDataFusionExecutionRow {
-                query_id: item.query_id.clone(),
-                physical_root: native_diagnostics.input_plan_root.clone(),
-                physical_shape: native_diagnostics.input_plan_shape.clone(),
-                native_candidate_shape: Some(candidate.shape.to_string()),
-                native_candidate_shape_family: Some(candidate_shape_family(candidate)),
-                planning_outcome: Some(NativeDataFusionPlanningOutcome::Selected),
-                reason_code: None,
-                unsupported_category: None,
-                capability_contract_rows: capability_contract_rows_for_candidate(
-                    &native_diagnostics.capability_contract,
-                    candidate,
-                    None,
-                ),
-                capability_compiled_graphs: capability_compiled_graphs_for_candidate(
-                    &native_diagnostics.capability_contract,
-                    candidate,
-                    None,
-                ),
-                source_diagnostics: source_diagnostics.clone(),
-                post_native_plan_root: post_native_plan_root.clone(),
-                final_disposition: post_native_coverage.final_disposition,
-                native_plan_fragment_count: post_native_coverage.native_fragment_count,
-                host_datafusion_boundary_count: post_native_coverage.host_datafusion_boundary_count,
-                rejected_before_execution: false,
-                native_runtime_started: runtime_summary.started,
-                runtime_outcome: runtime_summary.outcome,
-                runtime_failure: runtime_summary.failure.clone(),
-                output_batches: runtime_summary.output_batches,
-                output_rows: runtime_summary.output_rows,
-                output_bytes: runtime_summary.output_bytes,
-                metrics: runtime_summary.metrics.clone(),
+            CandidateOutcome::Selected { candidate } | CandidateOutcome::Deferred { candidate, .. } => {
+                NativeDataFusionExecutionRow {
+                    query_id: item.query_id.clone(),
+                    physical_root: native_diagnostics.input_plan_root.clone(),
+                    physical_shape: native_diagnostics.input_plan_shape.clone(),
+                    native_candidate_shape: Some(candidate.shape.to_string()),
+                    native_candidate_shape_family: Some(candidate_shape_family(candidate)),
+                    planning_outcome: Some(candidate_planning_outcome(outcome)),
+                    reason_code: candidate_deferred_reason_code(outcome),
+                    unsupported_category: None,
+                    capability_contract_rows: capability_contract_rows_for_candidate(
+                        &native_diagnostics.capability_contract,
+                        candidate,
+                        None,
+                    ),
+                    capability_compiled_graphs: capability_compiled_graphs_for_candidate(
+                        &native_diagnostics.capability_contract,
+                        candidate,
+                        None,
+                    ),
+                    source_diagnostics: source_diagnostics.clone(),
+                    post_native_plan_root: post_native_plan_root.clone(),
+                    final_disposition: post_native_coverage.final_disposition,
+                    native_plan_fragment_count: post_native_coverage.native_fragment_count,
+                    host_datafusion_boundary_count: post_native_coverage.host_datafusion_boundary_count,
+                    rejected_before_execution: false,
+                    native_runtime_started: runtime_summary.started,
+                    runtime_outcome: runtime_summary.outcome,
+                    runtime_failure: runtime_summary.failure.clone(),
+                    output_batches: runtime_summary.output_batches,
+                    output_rows: runtime_summary.output_rows,
+                    output_bytes: runtime_summary.output_bytes,
+                    metrics: runtime_summary.metrics.clone(),
+                }
             },
             CandidateOutcome::NotSupported { candidate, capability_reason } => NativeDataFusionExecutionRow {
                 query_id: item.query_id.clone(),
@@ -615,12 +621,42 @@ fn capability_contract_rows_for_candidate(
             .collect();
     }
 
+    let deferred = diagnostics
+        .deferred_candidates
+        .iter()
+        .filter(|entry| entry.candidate == *candidate)
+        .flat_map(|entry| entry.report.gate_rows().iter().cloned())
+        .collect::<Vec<_>>();
+    if !deferred.is_empty() {
+        return deferred;
+    }
+
     diagnostics
         .accepted_candidates
         .iter()
         .filter(|entry| entry.candidate == *candidate)
         .flat_map(|entry| entry.report.gate_rows().iter().cloned())
         .collect()
+}
+
+fn candidate_planning_outcome(outcome: &CandidateOutcome) -> NativeDataFusionPlanningOutcome {
+    match outcome {
+        CandidateOutcome::Selected { .. } => NativeDataFusionPlanningOutcome::Selected,
+        CandidateOutcome::Deferred { .. } => NativeDataFusionPlanningOutcome::Deferred,
+        CandidateOutcome::NotSupported { .. } | CandidateOutcome::NotSelectedByCost { .. } => {
+            unreachable!("candidate outcome is not selected")
+        },
+    }
+}
+
+fn candidate_deferred_reason_code(outcome: &CandidateOutcome) -> Option<String> {
+    match outcome {
+        CandidateOutcome::Deferred { producer_binding, .. } => Some(producer_binding.reason_code().to_string()),
+        CandidateOutcome::Selected { .. } => None,
+        CandidateOutcome::NotSupported { .. } | CandidateOutcome::NotSelectedByCost { .. } => {
+            unreachable!("candidate outcome is not selected")
+        },
+    }
 }
 
 fn capability_compiled_graphs_for_candidate(

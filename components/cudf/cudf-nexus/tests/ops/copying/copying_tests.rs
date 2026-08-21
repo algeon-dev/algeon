@@ -94,6 +94,7 @@ fn test_fixed_width_dont_check_preflight_components_sum() {
     let preflight = copying::gather_fixed_width_dont_check_preflight_for_metadata(
         &[(DataType::new(TypeId::Int32), false), (DataType::new(TypeId::Float64), true)],
         5,
+        5 * (std::mem::size_of::<i32>() + std::mem::size_of::<f64>()),
         DeviceId::DEFAULT,
     )
     .unwrap();
@@ -117,18 +118,47 @@ fn test_fixed_width_dont_check_preflight_components_sum() {
 }
 
 #[test]
-fn test_fixed_width_dont_check_preflight_rejects_unsupported_dtype_and_row_overflow() {
-    let unsupported = copying::gather_fixed_width_dont_check_preflight_for_metadata(
+fn test_fixed_width_dont_check_preflight_supports_bounded_string_and_rejects_nested_dtype_and_row_overflow() {
+    let string = copying::gather_fixed_width_dont_check_preflight_for_metadata(
         &[(DataType::new(TypeId::String), false)],
         1,
+        19,
         DeviceId::DEFAULT,
     )
-    .expect_err("variable-width dtype must be rejected before native sizing");
+    .unwrap();
+    assert_eq!(string.output_frame_bytes(), 19);
+
+    let underbound = copying::gather_fixed_width_dont_check_preflight_for_metadata(
+        &[(DataType::new(TypeId::String), false)],
+        1,
+        7,
+        DeviceId::DEFAULT,
+    )
+    .expect_err("a string output bound must cover the offsets allocation");
+    assert_eq!(underbound.code(), ErrorCode::ForeignInvalidArgument);
+
+    let decimal = copying::gather_fixed_width_dont_check_preflight_for_metadata(
+        &[(DataType::fixed_point(TypeId::Decimal32, -2).unwrap(), false)],
+        1,
+        4,
+        DeviceId::DEFAULT,
+    )
+    .expect_err("fixed-point dtype must be rejected before native sizing");
+    assert_eq!(decimal.code(), ErrorCode::UnsupportedDtype);
+
+    let unsupported = copying::gather_fixed_width_dont_check_preflight_for_metadata(
+        &[(DataType::new(TypeId::List), false)],
+        1,
+        0,
+        DeviceId::DEFAULT,
+    )
+    .expect_err("nested dtype must be rejected before native sizing");
     assert_eq!(unsupported.code(), ErrorCode::UnsupportedDtype);
 
     let overflow = copying::gather_fixed_width_dont_check_preflight_for_metadata(
         &[(DataType::new(TypeId::Int32), false)],
         i32::MAX as usize + 1,
+        0,
         DeviceId::DEFAULT,
     )
     .expect_err("rows above cudf::size_type must be rejected before native sizing");
@@ -139,6 +169,7 @@ fn test_fixed_width_dont_check_preflight_rejects_unsupported_dtype_and_row_overf
 fn test_fixed_width_dont_check_preflight_zero_rows_retains_nullable_workspace() {
     let preflight = copying::gather_fixed_width_dont_check_preflight_for_metadata(
         &[(DataType::new(TypeId::Int32), true)],
+        0,
         0,
         DeviceId::DEFAULT,
     )
@@ -173,6 +204,7 @@ fn test_fixed_width_dont_check_preflight_matches_budgeted_slice_peak() {
         let preflight = copying::gather_fixed_width_dont_check_preflight_for_metadata(
             &[(DataType::new(TypeId::Int32), true)],
             3,
+            3 * std::mem::size_of::<i32>(),
             runtime.device(),
         )
         .unwrap();

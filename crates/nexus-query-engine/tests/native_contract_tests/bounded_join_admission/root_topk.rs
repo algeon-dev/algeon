@@ -353,6 +353,7 @@ fn bounded_root_topk_join_aggregate_allows_sort_fetch_join_aggregate_subcontract
 fn bounded_root_topk_join_aggregate_allows_null_filtered_aggregate_fan_in_subcontract() {
     for variant in [
         RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanIn,
+        RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInIdentityArithmeticProjection,
         RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInFullBoundedReturnBuilds,
         RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInLargeReturnBuild,
     ] {
@@ -408,6 +409,10 @@ fn bounded_root_topk_join_aggregate_rejects_null_filtered_aggregate_fan_in_contr
         ),
         (
             RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInMarkerFilterReuse,
+            "root_topk_join_aggregate_requires_keyed_hash_keyless_or_cross_join",
+        ),
+        (
+            RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInUniqueNonAggregateRight,
             "root_topk_join_aggregate_requires_keyed_hash_keyless_or_cross_join",
         ),
         (
@@ -686,10 +691,12 @@ fn bounded_root_topk_join_aggregate_admission_stays_narrow() {
             | RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateSourceAdjacentFilters
             | RootTopKJoinAggregateVariant::SortFetchHashJoinAggregate
             | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanIn
+            | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInIdentityArithmeticProjection
             | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInMissingFilter
             | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInWrongBuildSide
             | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInMarkerEscapes
             | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInMarkerFilterReuse
+            | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInUniqueNonAggregateRight
             | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInNonUniqueRight
             | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInMissingBranchReduction
             | RootTopKJoinAggregateVariant::SortFetchNullFilteredLeftAggregateFanInFullBoundedReturnBuilds

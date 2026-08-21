@@ -322,6 +322,28 @@ impl CapabilityContractGateRow {
         Ok(row)
     }
 
+    /// Builds the gate row for a composed consumer waiting for resident
+    /// producer output evidence during the prepared-admission stage.
+    pub fn from_deferred_composed_producer_binding(index: usize) -> Result<Self> {
+        let row = Self {
+            execution_mode: CapabilityEnvelopeStatus::Deferred,
+            contract_scope: ReservationRequirementScope::Subgraph,
+            gate_id: CapabilityContractGateId::CapabilityRequirement {
+                scope: ReservationRequirementScope::Subgraph,
+                index,
+            },
+            owner: CapabilityContractOwner::CapabilityAdmission("composed_producer_binding"),
+            reservation_kind: ReservationKind::CapabilityContract,
+            memory_boundary: "composed_consumer",
+            required_contract: "producer_occurrence_output_evidence",
+            contract_status: ContractStatus::DeferredUntilPrerequisite,
+            contract_quality: ContractQuality::CapabilityProof,
+            unresolved_preflight_gap: None,
+        };
+        validate_report_row(&row)?;
+        Ok(row)
+    }
+
     /// Serializes this row as stable comma-separated key/value pairs.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
@@ -553,7 +575,19 @@ fn validate_report_execution_mode(
             Err(contract_report_error("rejected capability report must contain a non-modeled contract row")
                 .with_fact("report_execution_mode", execution_mode.as_str()))
         },
-        CapabilityEnvelopeStatus::Admitted | CapabilityEnvelopeStatus::Rejected => Ok(()),
+        CapabilityEnvelopeStatus::Deferred
+            if gate_rows.iter().any(|row| row.contract_status != ContractStatus::DeferredUntilPrerequisite) =>
+        {
+            Err(contract_report_error("deferred capability report can contain only deferred contract rows")
+                .with_fact("report_execution_mode", execution_mode.as_str()))
+        },
+        CapabilityEnvelopeStatus::Deferred if !has_non_modeled_row => {
+            Err(contract_report_error("deferred capability report must contain a deferred contract row")
+                .with_fact("report_execution_mode", execution_mode.as_str()))
+        },
+        CapabilityEnvelopeStatus::Admitted
+        | CapabilityEnvelopeStatus::Deferred
+        | CapabilityEnvelopeStatus::Rejected => Ok(()),
     }
 }
 

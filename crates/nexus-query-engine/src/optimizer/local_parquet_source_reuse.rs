@@ -547,7 +547,7 @@ fn push_contract_value(output: &mut String, key: &str, value: &str) {
 
 fn exact_source_key(source: &LocalParquetSource) -> String {
     format!(
-        "schema={:?};read={:?};read_idx={:?};projected={:?};projected_refs={:?};pure={:?};pure_refs={:?};predicate={}",
+        "schema={:?};read={:?};read_idx={:?};projected={:?};projected_refs={:?};pure={:?};pure_refs={:?};predicate={};unique_keys={:?}",
         source.schema,
         source.read_columns,
         source.read_column_file_indices,
@@ -555,7 +555,8 @@ fn exact_source_key(source: &LocalParquetSource) -> String {
         source.projected_output_column_source_refs,
         source.pure_filter_columns,
         source.pure_filter_column_source_refs,
-        source.reader_predicate.as_ref().map_or_else(|| "none".to_string(), ToString::to_string)
+        source.reader_predicate.as_ref().map_or_else(|| "none".to_string(), ToString::to_string),
+        source.unique_key_columns,
     )
 }
 
@@ -621,6 +622,16 @@ impl SourceReuseRewrite {
             .filter(|column| !projected_output_columns.contains(*column))
             .cloned()
             .collect::<Vec<_>>();
+        let unique_key_columns = representative
+            .source
+            .unique_key_columns
+            .iter()
+            .filter(|key| {
+                variants.iter().all(|variant| variant.source.unique_key_columns.contains(key))
+                    && key.iter().all(|column| projected_output_columns.contains(column))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
         let file_indices_by_column = superset_read_columns
             .iter()
             .map(|column| (column.name.as_str(), column.file_index))
@@ -644,7 +655,8 @@ impl SourceReuseRewrite {
                 read_column_file_indices,
                 projected_output_column_file_indices,
                 pure_filter_column_file_indices,
-            );
+            )
+            .with_unique_key_columns(unique_key_columns);
         let variants = variants.into_iter().map(|variant| (variant.source_node_id, variant)).collect();
         Self { variants, shared_source, replay_branch_predicates: true }
     }

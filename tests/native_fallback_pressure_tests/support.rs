@@ -118,6 +118,7 @@ pub(super) fn accepted_capability_contract_diagnostics() -> NativeCapabilityCont
                 sink_gate_count: 1,
             },
         }],
+        deferred_candidates: Vec::new(),
         rejected_candidates: Vec::new(),
         non_join_bounded_plan_count: 0,
         non_join_bounded_plan_reason: None,

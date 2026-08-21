@@ -157,8 +157,8 @@ cudf_status_t cudf_sorted_order_lexicographic_preflight(
     int32_t device, cudf_sorted_order_lexicographic_preflight_result_t *out) {
   CUDF_RUST_NULL_CHECK(out, "out is null");
   *out = {};
-  if (key_count < 2) {
-    set_error("key_count must be at least two");
+  if (key_count < 1) {
+    set_error("key_count must be at least one");
     return CUDF_ERROR_INVALID_OPERATION;
   }
   CUDF_RUST_NULL_CHECK(key_types, "key_types is null");

@@ -4,10 +4,8 @@
 //! a target grant, but never participate in the required floor or capability
 //! admission decision.
 
-#[cfg(test)]
-use std::collections::BTreeSet;
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     sync::Arc,
 };
 
@@ -50,7 +48,10 @@ mod composed;
 mod owner_terms;
 
 pub(crate) use capability::*;
-pub use capability::{AttemptCapabilityEvidence, ComposedGraphProducerCandidate, QueryPlanCapabilityProof};
+pub use capability::{
+    AttemptCapabilityEvidence, ComposedGraphProducerCandidate, ComposedProducerBindingDiagnostics,
+    QueryPlanCapabilityProof,
+};
 pub(crate) use composed::*;
 pub use owner_terms::EstimateQuality;
 pub(crate) use owner_terms::*;

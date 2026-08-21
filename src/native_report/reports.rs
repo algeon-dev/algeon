@@ -127,14 +127,29 @@ impl NativeDataFusionPlanningReport {
 
     /// Number of planning rows where native planning replaced at least one fragment.
     pub fn selected_count(&self) -> usize {
-        self.rows.iter().filter(|row| row.outcome == Some(NativeDataFusionPlanningOutcome::Selected)).count()
+        self.rows
+            .iter()
+            .filter(|row| {
+                matches!(
+                    row.outcome,
+                    Some(NativeDataFusionPlanningOutcome::Selected | NativeDataFusionPlanningOutcome::Deferred)
+                )
+            })
+            .count()
     }
 
     /// Number of planning rows rejected before native execution.
     pub fn not_selected_count(&self) -> usize {
         self.rows
             .iter()
-            .filter(|row| row.outcome.is_some_and(|outcome| outcome != NativeDataFusionPlanningOutcome::Selected))
+            .filter(|row| {
+                row.outcome.is_some_and(|outcome| {
+                    !matches!(
+                        outcome,
+                        NativeDataFusionPlanningOutcome::Selected | NativeDataFusionPlanningOutcome::Deferred
+                    )
+                })
+            })
             .count()
     }
 

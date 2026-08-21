@@ -886,13 +886,27 @@ impl GpuResidentProducer for CugraphAlgoExec {
     }
 
     fn unique_output_key_columns(&self) -> Option<&'static [&'static str]> {
-        let one_row_per_vertex =
-            matches!(self.spec.algorithm, CugraphAlgorithm::PageRank | CugraphAlgorithm::PersonalizedPageRank)
-                || matches!(
-                    &self.spec.params,
-                    CugraphAlgorithmParams::Bfs(params) if params.output.mode != CugraphBfsOutputMode::Path
-                );
-        one_row_per_vertex.then_some(&["vertex"])
+        cugraph_schema_query_plan(
+            &self.spec,
+            self.edge_source.schema(),
+            self.predicate_sources.iter().map(|source| source.schema()).collect(),
+            self.input_row_bounds.predicate_row_upper_bounds(),
+            &self.result_options,
+            self.edge_normalize_inserted(),
+            self.input_row_bounds.edge_row_upper_bound(),
+            edge_source_graph_vertex_estimate(self.edge_source.as_ref()).map(|estimate| estimate.count),
+        )
+        .ok()
+        .and_then(|plan| {
+            let key = plan.nodes().iter().find_map(|node| match &node.kind {
+                nexus_query_engine::plan::PlanNode::GraphAlgorithm(graph) => {
+                    Some(graph.spec.unique_output_key_columns())
+                },
+                _ => None,
+            })?;
+            (!key.is_empty() && key.iter().all(|column| plan.output_schema().field_with_name(column).is_ok()))
+                .then_some(key)
+        })
     }
 
     fn rewrite_subsumed_composed_consumer(

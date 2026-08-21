@@ -311,17 +311,11 @@ impl PlanColumnEvidenceAnalysis {
             .map_err(|error| error.with_fact("node_id", node_id))?,
             PlanNode::GraphAlgorithm(graph) => {
                 let mut output = PlanColumnEvidence::default();
-                if graph.spec.algorithm.definition().output_vertex_is_unique()
-                    && node.output_schema().field_with_name("vertex").is_ok()
+                let unique_key = graph.spec.unique_output_key_columns();
+                if !unique_key.is_empty()
+                    && unique_key.iter().all(|column| node.output_schema().field_with_name(column).is_ok())
                 {
-                    output.unique_keys.push(BTreeSet::from(["vertex".to_owned()]));
-                }
-                if matches!(
-                    &graph.spec.params,
-                    crate::plan::GraphAlgorithmParams::Bfs(params) if params.path_output.is_some()
-                ) && node.output_schema().field_with_name("path_index").is_ok()
-                {
-                    output.unique_keys.push(BTreeSet::from(["path_index".to_owned()]));
+                    output.unique_keys.push(unique_key.iter().map(|column| (*column).to_owned()).collect());
                 }
                 output
             },
@@ -330,8 +324,13 @@ impl PlanColumnEvidenceAnalysis {
     }
 }
 
+pub(crate) fn plan_node_is_unique_on(plan: &QueryPlan, node_id: NodeId, columns: &BTreeSet<String>) -> Result<bool> {
+    Ok(PlanColumnEvidenceAnalysis::for_plan(plan, &HashMap::new())?.node(node_id).is_unique_on(columns))
+}
+
 fn local_parquet_evidence(source: &crate::source::LocalParquetSource) -> PlanColumnEvidence {
-    let mut output = PlanColumnEvidence::default();
+    let mut output =
+        PlanColumnEvidence { unique_keys: source.unique_key_columns.clone(), ..PlanColumnEvidence::default() };
     for field in source.output_schema().fields() {
         if !is_string(field.data_type()) {
             continue;
@@ -758,8 +757,23 @@ fn unique_source_column<'a>(expr: &'a Expr, input_schema: Option<&arrow::datatyp
         },
         _ => return None,
     };
-    let source_type = input_schema?.field_with_name(column.name()).ok()?.data_type();
-    (source_type.is_integer() && literal.data_type().is_integer()).then_some(column.name())
+    let field = input_schema?.field_with_name(column.name()).ok()?;
+    let source_type = field.data_type();
+    (!field.is_nullable()
+        && source_type.is_integer()
+        && literal.data_type() == *source_type
+        && matches!(
+            literal,
+            LiteralValue::Int8(0)
+                | LiteralValue::Int16(0)
+                | LiteralValue::Int32(0)
+                | LiteralValue::Int64(0)
+                | LiteralValue::UInt8(0)
+                | LiteralValue::UInt16(0)
+                | LiteralValue::UInt32(0)
+                | LiteralValue::UInt64(0)
+        ))
+    .then_some(column.name())
 }
 
 fn is_string(data_type: &DataType) -> bool {
@@ -860,7 +874,7 @@ mod tests {
     }
 
     #[test]
-    fn path_index_addition_preserves_one_to_one_path_join_keys() {
+    fn unbounded_path_index_addition_does_not_claim_injective_join_keys() {
         let path_schema = Arc::new(Schema::new(vec![
             Field::new("path_index", DataType::Int64, false),
             Field::new("vertex", DataType::Utf8, false),
@@ -907,18 +921,28 @@ mod tests {
             output_schema,
         );
         let plan = builder.finish_with_host_sink(join);
-        let path_evidence = PlanColumnEvidence {
-            unique_keys: vec![BTreeSet::from(["path_index".to_owned()]), BTreeSet::from(["vertex".to_owned()])],
-            ..Default::default()
-        };
+        let path_evidence =
+            PlanColumnEvidence { unique_keys: vec![BTreeSet::from(["path_index".to_owned()])], ..Default::default() };
         let resident_outputs =
             HashMap::from([("current".to_owned(), path_evidence.clone()), ("previous".to_owned(), path_evidence)]);
         let output = PlanColumnEvidenceAnalysis::for_plan(&plan, &resident_outputs)
             .expect("bounded path join evidence must resolve")
             .root(&plan);
 
-        assert!(output.is_unique_on(&BTreeSet::from(["object_id".to_owned()])));
-        assert!(output.is_unique_on(&BTreeSet::from(["subject_id".to_owned()])));
+        assert!(!output.is_unique_on(&BTreeSet::from(["object_id".to_owned()])));
+        assert!(!output.is_unique_on(&BTreeSet::from(["subject_id".to_owned()])));
+    }
+
+    #[test]
+    fn integer_addition_requires_non_nullable_identity_without_overflow() {
+        let non_nullable = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+        let nullable = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, true)]));
+        let add = |literal| {
+            Expr::binary(Expr::column("value"), crate::expr::BinaryOp::Add, Expr::literal(LiteralValue::Int64(literal)))
+        };
+        assert_eq!(unique_source_column(&add(0), Some(&non_nullable)), Some("value"));
+        assert_eq!(unique_source_column(&add(1), Some(&non_nullable)), None);
+        assert_eq!(unique_source_column(&add(0), Some(&nullable)), None);
     }
 
     #[test]

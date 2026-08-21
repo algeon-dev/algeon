@@ -2,12 +2,9 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::{
-    common::{Constraint, JoinSide as DataFusionJoinSide, NullEquality},
+    common::{JoinSide as DataFusionJoinSide, NullEquality},
     logical_expr::JoinType,
-    physical_expr::{
-        PhysicalExpr,
-        expressions::{CastExpr, Column},
-    },
+    physical_expr::{PhysicalExpr, expressions::Column},
     physical_plan::{
         ExecutionPlan,
         joins::{NestedLoopJoinExec, PartitionMode},
@@ -15,7 +12,7 @@ use datafusion::{
 };
 use nexus_query_engine::{
     datatypes::{is_supported_list_carry_type, is_timestamp_with_timezone},
-    expr::{ColumnRef as NativeColumnRef, Expr as NativeExpr, representation_cast_preserves_identity},
+    expr::{ColumnRef as NativeColumnRef, Expr as NativeExpr},
     plan::{
         JoinKey as NativeJoinKey, JoinNullEquality as NativeJoinNullEquality, JoinSide as NativeJoinSide,
         JoinSpec as NativeJoinSpec, JoinType as NativeJoinType, QueryPlanBuilder as NativeQueryPlanBuilder,
@@ -36,10 +33,7 @@ use crate::{
     capability::CapabilityReason,
     native::{
         expression_contract::validate_join_residual,
-        normalize::{
-            NormalizedNativeCrossJoin, NormalizedNativeHashJoin, NormalizedNativeInput, NormalizedNativeNestedLoopJoin,
-            NormalizedNativeScan,
-        },
+        normalize::{NormalizedNativeCrossJoin, NormalizedNativeHashJoin, NormalizedNativeNestedLoopJoin},
     },
 };
 
@@ -450,6 +444,7 @@ pub(super) fn lower_hash_join_input(
         (left, right)
     };
     let keys = lower_prepared_join_keys(&prepared_keys.keys, &left, &right, canonical)?;
+    let inferred_lookup_side = unique_lookup_bounded_side(builder, join, canonical, &left, &right, &keys);
     let (native_left, native_right) = canonical.order_inputs(left, right);
     let build_side = native_join_build_side(canonical, keys.len(), residual.is_some());
     let datafusion_order_preserved_side = datafusion_hash_join_order_preserved_side(join, build_side);
@@ -466,7 +461,6 @@ pub(super) fn lower_hash_join_input(
     {
         spec = spec.with_mark_column_name(mark_name);
     }
-    let inferred_lookup_side = unique_lookup_bounded_side(join, canonical);
     if matches!(canonical.join_type, NativeJoinType::Inner | NativeJoinType::Left)
         && let Some(bounded_side) = inferred_lookup_side
     {
@@ -482,28 +476,25 @@ pub(super) fn lower_hash_join_input(
     }
 }
 
-fn unique_lookup_bounded_side(join: &NormalizedNativeHashJoin<'_>, canonical: CanonicalJoin) -> Option<NativeJoinSide> {
+fn unique_lookup_bounded_side(
+    builder: &NativeQueryPlanBuilder,
+    join: &NormalizedNativeHashJoin<'_>,
+    canonical: CanonicalJoin,
+    left: &LoweredNativeInput,
+    right: &LoweredNativeInput,
+    keys: &[nexus_query_engine::plan::JoinKey],
+) -> Option<NativeJoinSide> {
     if join.join.filter().is_some() || join.join.on().is_empty() {
         return None;
     }
-    let left_keys = join
-        .join
-        .on()
-        .iter()
-        .map(|(left, _)| left.downcast_ref::<Column>().map(|column| column.name().to_owned()))
-        .collect::<Option<BTreeSet<_>>>()?;
-    let right_keys = join
-        .join
-        .on()
-        .iter()
-        .map(|(_, right)| right.downcast_ref::<Column>().map(|column| column.name().to_owned()))
-        .collect::<Option<BTreeSet<_>>>()?;
-    if left_keys.len() != join.join.on().len() || right_keys.len() != join.join.on().len() {
+    let left_keys = keys.iter().map(|key| key.left.name().to_owned()).collect::<BTreeSet<_>>();
+    let right_keys = keys.iter().map(|key| key.right.name().to_owned()).collect::<BTreeSet<_>>();
+    if left_keys.len() != keys.len() || right_keys.len() != keys.len() {
         return None;
     }
 
-    let left_unique = input_is_unique_on(&join.left, &left_keys);
-    let right_unique = input_is_unique_on(&join.right, &right_keys);
+    let left_unique = builder.output_is_unique_on(left.node, &left_keys).unwrap_or(false);
+    let right_unique = builder.output_is_unique_on(right.node, &right_keys).unwrap_or(false);
     let bounded_datafusion_side = match join.join.join_type() {
         JoinType::Inner if right_unique => DataFusionJoinSide::Left,
         JoinType::Inner if left_unique => DataFusionJoinSide::Right,
@@ -512,78 +503,6 @@ fn unique_lookup_bounded_side(join: &NormalizedNativeHashJoin<'_>, canonical: Ca
         _ => return None,
     };
     canonical.native_side_for_datafusion_side(bounded_datafusion_side).ok()
-}
-
-fn input_is_unique_on(input: &NormalizedNativeInput<'_>, key_names: &BTreeSet<String>) -> bool {
-    match input {
-        NormalizedNativeInput::Source(source) => {
-            let plan: &dyn ExecutionPlan = match source.scan {
-                NormalizedNativeScan::LocalParquet(source) => source,
-                NormalizedNativeScan::TableFormat(source) => source,
-            };
-            constraints_are_unique_on(
-                plan.schema().as_ref(),
-                plan.properties().equivalence_properties().constraints(),
-                key_names,
-            )
-        },
-        NormalizedNativeInput::GpuResidentSource(source) => {
-            source.unique_output_key.as_ref().is_some_and(|unique_key| unique_key.is_subset(key_names))
-        },
-        NormalizedNativeInput::Filter(filter) => input_is_unique_on(&filter.input, key_names),
-        NormalizedNativeInput::Projection(projection) => {
-            let mut input_key_names = BTreeSet::new();
-            let input_schema = projection.projection.input().schema();
-            for key_name in key_names {
-                let Some(projection_expr) = projection.projection.expr().iter().find(|expr| expr.alias == *key_name)
-                else {
-                    return false;
-                };
-                let Some(column_index) = unique_projection_input_column(&projection_expr.expr, &input_schema) else {
-                    return false;
-                };
-                let Some(field) = input_schema.fields().get(column_index) else {
-                    return false;
-                };
-                input_key_names.insert(field.name().to_owned());
-            }
-            input_is_unique_on(&projection.input, &input_key_names)
-        },
-        NormalizedNativeInput::Limit(limit) => input_is_unique_on(&limit.input, key_names),
-        NormalizedNativeInput::Sort(sort) => input_is_unique_on(&sort.input, key_names),
-        NormalizedNativeInput::Aggregate(aggregate) => {
-            if aggregate.aggregate.group_expr().has_grouping_set() {
-                return false;
-            }
-            let group_names =
-                aggregate.aggregate.group_expr().expr().iter().map(|(_, alias)| alias.clone()).collect::<BTreeSet<_>>();
-            group_names == *key_names
-        },
-        _ => false,
-    }
-}
-
-fn constraints_are_unique_on(schema: &Schema, constraints: &[Constraint], key_names: &BTreeSet<String>) -> bool {
-    constraints.iter().any(|constraint| {
-        let indices = match constraint {
-            Constraint::PrimaryKey(indices) | Constraint::Unique(indices) => indices,
-        };
-        indices
-            .iter()
-            .map(|index| schema.fields().get(*index).map(|field| field.name().to_owned()))
-            .collect::<Option<BTreeSet<_>>>()
-            .is_some_and(|unique_key| unique_key.is_subset(key_names))
-    })
-}
-
-fn unique_projection_input_column(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Option<usize> {
-    if let Some(column) = expr.downcast_ref::<Column>() {
-        return input_schema.fields().get(column.index()).map(|_| column.index());
-    }
-    let cast = expr.downcast_ref::<CastExpr>()?;
-    let column_index = unique_projection_input_column(cast.expr(), input_schema)?;
-    let source_type = input_schema.field(column_index).data_type();
-    representation_cast_preserves_identity(source_type, cast.cast_type()).then_some(column_index)
 }
 
 pub(super) fn lower_nested_loop_join_input(
@@ -848,68 +767,5 @@ fn lower_join_null_equality(null_equality: NullEquality) -> NativeJoinNullEquali
     match null_equality {
         NullEquality::NullEqualsNothing => NativeJoinNullEquality::NullsDoNotMatch,
         NullEquality::NullEqualsNull => NativeJoinNullEquality::NullsMatch,
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use arrow::datatypes::{DataType, Field};
-    use datafusion::{
-        common::{Constraint, Constraints},
-        physical_expr::{
-            expressions::{cast, col},
-            projection::ProjectionExpr,
-        },
-        physical_plan::{ExecutionPlan, empty::EmptyExec, projection::ProjectionExec},
-    };
-
-    use super::*;
-    use crate::native::normalize::{NormalizedNativeGpuResidentSource, NormalizedNativeProjection};
-
-    #[test]
-    fn graph_resident_unique_vertex_survives_string_representation_cast() {
-        let schema = Arc::new(Schema::new(vec![Field::new("vertexId", DataType::Utf8, false)]));
-        let source = Arc::new(EmptyExec::new(Arc::clone(&schema))) as Arc<dyn ExecutionPlan>;
-        let cast_vertex = cast(col("vertexId", &schema).unwrap(), &schema, DataType::Utf8View).unwrap();
-        let projection = Arc::new(
-            ProjectionExec::try_new(
-                [ProjectionExpr { expr: cast_vertex, alias: "vertexId".to_string() }],
-                Arc::clone(&source),
-            )
-            .unwrap(),
-        );
-        let input = NormalizedNativeInput::Projection(NormalizedNativeProjection {
-            projection: projection.as_ref(),
-            input: Box::new(NormalizedNativeInput::GpuResidentSource(NormalizedNativeGpuResidentSource {
-                source_exec: source.as_ref(),
-                input_name: "pagerank-result".to_string(),
-                row_count_upper_bound: None,
-                unique_output_key: Some(BTreeSet::from(["vertexId".to_string()])),
-            })),
-        });
-
-        assert!(input_is_unique_on(&input, &BTreeSet::from(["vertexId".to_string()])));
-    }
-
-    #[test]
-    fn narrowing_cast_does_not_claim_unique_graph_key() {
-        assert!(!representation_cast_preserves_identity(&DataType::Int64, &DataType::Int32));
-        assert!(representation_cast_preserves_identity(&DataType::Utf8, &DataType::Utf8View));
-    }
-
-    #[test]
-    fn source_constraints_prove_only_declared_unique_keys() {
-        let schema = Schema::new(vec![
-            Field::new("vertexId", DataType::Utf8, false),
-            Field::new("assetType", DataType::Utf8, false),
-        ]);
-        let constraints = Constraints::new_unverified(vec![Constraint::Unique(vec![0])]);
-
-        assert!(constraints_are_unique_on(
-            &schema,
-            &constraints,
-            &BTreeSet::from(["vertexId".to_owned(), "assetType".to_owned()]),
-        ));
-        assert!(!constraints_are_unique_on(&schema, &constraints, &BTreeSet::from(["assetType".to_owned()]),));
     }
 }

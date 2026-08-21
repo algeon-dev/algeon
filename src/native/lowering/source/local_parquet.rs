@@ -22,7 +22,7 @@ use super::{
     reader_predicate_proves_local_parquet_at_most_one_row, required_scan_projection,
     required_scan_projection_needs_native_projection, required_scan_projection_requires_native_projection,
     required_scan_projection_schema, required_source_scan_output_indices, source_bindings_for_schema,
-    source_reader_pushdown_predicate,
+    source_reader_pushdown_predicate, source_unique_key_columns,
 };
 use crate::{
     capability::CapabilityReason,
@@ -101,6 +101,7 @@ pub(super) fn lower_local_parquet_source_input(
     let source_scan_limit = if scan_only_row_predicate { None } else { effective_scan_limit };
     let post_predicate_scan_limit = scan_only_row_predicate.then_some(effective_scan_limit).flatten();
 
+    let source_bindings = source_bindings_for_schema(&source_output_schema, source_exec.schema());
     let mut native_source = NativeLocalParquetSource::from_files(
         native_files,
         Arc::clone(&source_output_schema),
@@ -118,6 +119,7 @@ pub(super) fn lower_local_parquet_source_input(
     .with_file_column_count(file_scan.file_schema().fields().len())
     .with_partition_columns(column_requirements.partition_columns.clone())
     .with_missing_columns(column_requirements.missing_columns.clone())
+    .with_unique_key_columns(source_unique_key_columns(source_exec, &source_bindings))
     .with_scan_limit(source_scan_limit);
     let mut reader_pushdown_covers_filter = false;
     if let Some(predicate) = source_reader_pushdown_predicate(

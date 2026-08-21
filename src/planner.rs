@@ -26,8 +26,9 @@ mod native;
 pub use native::{
     CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME,
     NativeCapabilityAcceptedCandidateDiagnostics, NativeCapabilityCompiledGraphDiagnostics,
-    NativeCapabilityContractDiagnostics, NativeCapabilityRejectedCandidateDiagnostics, NativePlanningDiagnostics,
-    NexusFinalPlanRequirementRule, NexusNativePhysicalOptimizerRule,
+    NativeCapabilityContractDiagnostics, NativeCapabilityDeferredCandidateDiagnostics,
+    NativeCapabilityRejectedCandidateDiagnostics, NativePlanningDiagnostics, NexusFinalPlanRequirementRule,
+    NexusNativePhysicalOptimizerRule,
 };
 
 /// The execution ownership observed in a completed physical plan.

@@ -135,7 +135,9 @@ pub(crate) fn data_layout_fixable_planning_event_fields<'a>(
 fn first_not_supported_reason(report: &PlanningReport) -> Option<CapabilityReason> {
     report.outcomes().iter().find_map(|outcome| match outcome {
         CandidateOutcome::NotSupported { capability_reason, .. } => Some(*capability_reason),
-        CandidateOutcome::Selected { .. } | CandidateOutcome::NotSelectedByCost { .. } => None,
+        CandidateOutcome::Selected { .. }
+        | CandidateOutcome::Deferred { .. }
+        | CandidateOutcome::NotSelectedByCost { .. } => None,
     })
 }
 

@@ -127,6 +127,7 @@ fn replace_lowered_root_or_keep_plan(
     let optimizer_result =
         nexus_query_engine::optimizer::optimize_query_plan(lowering.plans[0].clone(), &optimizer_options);
     let native_optimizer = optimizer_result.diagnostics;
+    let shared_resident_producers = optimizer_result.shared_resident_producers;
     let ordered_output_sort_needed = plan.properties().output_ordering().is_some()
         && !crate::native::native_plan_reproduces_declared_output_ordering(&optimizer_result.plan);
     let (native_plan, appended_declared_output_sort) =
@@ -174,12 +175,6 @@ fn replace_lowered_root_or_keep_plan(
         });
     }
 
-    let shared_resident = if native_plan_gpu_resident_source_names(&native_plan).is_empty() {
-        nexus_query_engine::optimizer::SharedResidentPlan { consumer: native_plan, producers: Vec::new() }
-    } else {
-        nexus_query_engine::optimizer::extract_shared_resident_subplans(native_plan)
-    };
-    let native_plan = shared_resident.consumer;
     lowering.report.anchor_selected_candidates_to_plan_node(native_plan.root_id());
     let candidate = lowering
         .report
@@ -205,13 +200,22 @@ fn replace_lowered_root_or_keep_plan(
 
     let datafusion_shape = candidate.shape.clone();
     let capability_contract = accepted_plan_contract_diagnostics(&native_plan, candidate, native_execution_config)?;
+    if let Some(deferred) = capability_contract.deferred_candidates.first()
+        && !lowering.report.mark_selected_deferred(
+            &deferred.candidate,
+            deferred.planning_stage.clone(),
+            deferred.binding.clone(),
+        )
+    {
+        return Err(native_candidate_error("deferred capability decision has no selected candidate"));
+    }
     let plan = native_datafusion_exec_for_plan(
         Arc::clone(&plan),
         native_plan,
         native_execution_config,
         &datafusion_shape,
         output_equivalence_properties.unwrap_or_else(|| plan.properties().equivalence_properties().clone()),
-        shared_resident.producers,
+        shared_resident_producers,
     )?;
     Ok(NativeOptimizationAttempt {
         plan,
@@ -397,6 +401,11 @@ fn native_execution_cost_selection_report(
 ) -> PlanningReport {
     PlanningReport::from_outcomes(report.outcomes().iter().map(|outcome| match outcome {
         CandidateOutcome::Selected { candidate } => CandidateOutcome::NotSelectedByCost {
+            candidate: candidate.clone(),
+            cost_reason,
+            evidence: evidence.clone(),
+        },
+        CandidateOutcome::Deferred { candidate, .. } => CandidateOutcome::NotSelectedByCost {
             candidate: candidate.clone(),
             cost_reason,
             evidence: evidence.clone(),

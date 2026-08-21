@@ -260,7 +260,7 @@ fn unreachable_nonempty_literal_does_not_reject_a_reachable_empty_plan() {
 }
 
 #[test]
-fn cugraph_side_input_frame_is_additive_and_retains_both_exact_scopes() {
+fn resident_side_input_frame_is_additive_and_retains_both_exact_scopes() {
     let schema = graph_edge_schema();
     let graph_plan = graph_bfs_plan_with_gpu_resident_source(Arc::clone(&schema));
     let evidence = graph_memory_evidence(&graph_plan);
@@ -269,7 +269,7 @@ fn cugraph_side_input_frame_is_additive_and_retains_both_exact_scopes() {
         .with_graph_memory_admission_evidence(&evidence)
         .expect("finite graph evidence");
     let side_input = nullable_literal_side_input_plan();
-    let side_proof = QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&side_input)
+    let side_proof = QueryPlanCapabilityProof::try_for_resident_side_input_plan(&side_input)
         .expect("the exact nullable predicate fragment must issue a bounded side-input proof");
     let side_frame_bytes = crate::exec::join_output_upper_bound_bytes(
         2,
@@ -306,8 +306,8 @@ fn cugraph_side_input_frame_is_additive_and_retains_both_exact_scopes() {
 }
 
 #[test]
-fn cugraph_side_input_proof_prices_literal_strings_and_rejects_unbounded_string_frames() {
-    let unknown = QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&unknown_row_bound_side_input_plan())
+fn resident_side_input_proof_prices_literal_strings_and_rejects_unbounded_string_frames() {
+    let unknown = QueryPlanCapabilityProof::try_for_resident_side_input_plan(&unknown_row_bound_side_input_plan())
         .expect_err("an unknown resident row bound cannot price a side-input frame");
     assert_eq!(unknown.fact_value("reason"), Some("graph_attempt_complete_phase_unmodeled"));
     assert_eq!(unknown.fact_value("schedule_reason"), Some("side_input_row_bound_unavailable"));
@@ -318,7 +318,7 @@ fn cugraph_side_input_proof_prices_literal_strings_and_rejects_unbounded_string_
     let variable_source =
         variable_builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&variable_schema))));
     let literal = variable_builder.finish_gpu_resident(variable_source);
-    QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&literal)
+    QueryPlanCapabilityProof::try_for_resident_side_input_plan(&literal)
         .expect("an exact literal string batch has finite byte statistics");
 
     let mut resident_builder = QueryPlanBuilder::new();
@@ -326,20 +326,20 @@ fn cugraph_side_input_proof_prices_literal_strings_and_rejects_unbounded_string_
         GpuResidentSource::new("string_side_input", variable_schema).with_row_count_upper_bound(1),
     ));
     let resident = resident_builder.finish_gpu_resident(resident_source);
-    let variable_error = QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&resident)
+    let variable_error = QueryPlanCapabilityProof::try_for_resident_side_input_plan(&resident)
         .expect_err("a resident variable-width predicate lacks an exact byte bound");
     assert_eq!(variable_error.fact_value("schedule_reason"), Some("side_input_schema_unmodeled"));
 
-    let overflow = QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&overflow_row_bound_side_input_plan())
+    let overflow = QueryPlanCapabilityProof::try_for_resident_side_input_plan(&overflow_row_bound_side_input_plan())
         .expect_err("saturated side-input frame bytes must fail closed");
     assert_eq!(overflow.fact_value("schedule_reason"), Some("side_input_frame_bytes_overflow"));
 }
 
 #[test]
-fn duplicate_cugraph_side_input_identity_is_rejected() {
+fn duplicate_resident_side_input_identity_is_rejected() {
     let side_input = nullable_literal_side_input_plan();
-    let first = QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&side_input).unwrap();
-    let second = QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&side_input).unwrap();
+    let first = QueryPlanCapabilityProof::try_for_resident_side_input_plan(&side_input).unwrap();
+    let second = QueryPlanCapabilityProof::try_for_resident_side_input_plan(&side_input).unwrap();
     let error = QueryPlanCapabilityProof::combine(first, [second])
         .expect_err("one exact predicate identity cannot authorize two ambiguous side-input occurrences");
     assert_eq!(error.fact_value("reason"), Some("graph_attempt_complete_phase_unmodeled"));
@@ -448,7 +448,7 @@ fn graph_phase_rejects_an_unmodeled_marked_local_graph_input() {
         .iter()
         .find(|shape| shape.has_local_parquet_source() && !shape.has_modeled_source_stage())
         .expect("the unknown graph-input source remains an exact reservation scope");
-    assert!(!unknown_shape.is_accounted_by_graph_phase());
+    assert!(!unknown_shape.is_accounted_by_producer_phase());
 
     let error = proof
         .resolve_reservation_envelope(reservation_policy())
@@ -486,31 +486,44 @@ fn graph_phase_accounts_for_one_attested_literal_graph_input_without_widening_ot
 }
 
 #[test]
-fn graph_phase_accounts_for_one_attested_result_passthrough_without_widening_other_scopes() {
+fn graph_phase_accounts_for_one_composed_result_passthrough_without_widening_other_scopes() {
     let schema = graph_edge_schema();
     let graph_plan = graph_bfs_plan_with_gpu_resident_source(Arc::clone(&schema));
     let evidence = graph_memory_evidence(&graph_plan);
     let graph_proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&graph_plan)
         .expect("graph plan must issue its cuGraph capability proof");
     let passthrough = graph_result_passthrough_plan("graph_result");
-    let passthrough_proof =
-        QueryPlanCapabilityProof::for_attested_graph_result_passthrough_plan(&passthrough, "graph_result")
-            .expect("the exact graph-result source handoff must issue its retained-scope proof");
-    let proof = QueryPlanCapabilityProof::combine(
-        graph_proof.with_graph_memory_admission_evidence(&evidence).expect("finite graph evidence"),
-        [passthrough_proof],
+    let passthrough_proof = QueryPlanCapabilityProof::for_composed_consumer_plan(&passthrough)
+        .expect("the graph-result source handoff must issue a composed proof");
+    let graph_proof = graph_proof.with_graph_memory_admission_evidence(&evidence).expect("finite graph evidence");
+    let proof = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
+        &passthrough,
+        passthrough_proof,
+        [crate::admission::ComposedGraphProducerCandidate::new(
+            Some("graph_result".to_owned()),
+            Some("graph_result".to_owned()),
+            Some(graph_proof.clone()),
+        )],
     )
-    .expect("a refined graph proof and its graph-result passthrough proof compose");
+    .expect("a refined graph proof and its graph-result passthrough proof compose through one schedule");
     let owner_sum = proof.as_requirement().conservative_owner_sum().expect("owner inventory is finite");
 
     let envelope = proof.resolve_reservation_envelope(reservation_policy()).unwrap();
-    assert_eq!(envelope.complete_phase_peak_bytes(), Some(owner_sum));
-    assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::ConservativeOwnerSum));
+    assert!(envelope.complete_phase_peak_bytes().is_some_and(|peak| peak <= owner_sum));
+    assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::OrderedTimeline));
     assert!(envelope.scopes.iter().any(|scope| scope.matches(&passthrough)));
 
-    let different_input =
-        QueryPlanCapabilityProof::for_attested_graph_result_passthrough_plan(&passthrough, "different_graph_result");
-    assert!(different_input.is_none(), "the graph frontend must attest the exact GPU-result input name");
+    let mismatch = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
+        &passthrough,
+        QueryPlanCapabilityProof::for_composed_consumer_plan(&passthrough).unwrap(),
+        [crate::admission::ComposedGraphProducerCandidate::new(
+            Some("different_graph_result".to_owned()),
+            Some("different_graph_result".to_owned()),
+            Some(graph_proof),
+        )],
+    )
+    .expect_err("the producer occurrence must match the consumer source");
+    assert_eq!(mismatch.fact_value("schedule_reason"), Some("consumer_source_occurrence_missing"));
 
     let unmodeled =
         QueryPlanCapabilityProof::for_query_plan(&unmodeled_native_plan()).expect("unmodeled fragment has exact scope");
@@ -520,7 +533,7 @@ fn graph_phase_accounts_for_one_attested_result_passthrough_without_widening_oth
 }
 
 #[test]
-fn graph_phase_accounts_for_one_attested_bounded_sort_consumer_without_widening_other_scopes() {
+fn graph_phase_accounts_for_one_composed_bounded_sort_consumer_without_widening_other_scopes() {
     let schema = graph_edge_schema();
     let graph_plan = graph_bfs_plan_with_gpu_resident_source(Arc::clone(&schema));
     let evidence = graph_memory_evidence(&graph_plan);
@@ -529,11 +542,18 @@ fn graph_phase_accounts_for_one_attested_bounded_sort_consumer_without_widening_
         .with_graph_memory_admission_evidence(&evidence)
         .expect("finite graph evidence");
     let sort_consumer = graph_result_sort_consumer_plan("graph_result");
-    let sort_consumer_proof =
-        QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan(&sort_consumer, "graph_result")
-            .expect("the exact bounded graph-result sort must issue its retained-scope proof");
-    let proof = QueryPlanCapabilityProof::combine(graph_proof, [sort_consumer_proof])
-        .expect("a refined graph proof and its bounded sort proof compose");
+    let sort_consumer_proof = QueryPlanCapabilityProof::for_composed_consumer_plan(&sort_consumer)
+        .expect("the bounded graph-result sort must issue a composed proof");
+    let proof = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
+        &sort_consumer,
+        sort_consumer_proof,
+        [crate::admission::ComposedGraphProducerCandidate::new(
+            Some("graph_result".to_owned()),
+            Some("graph_result".to_owned()),
+            Some(graph_proof.clone()),
+        )],
+    )
+    .expect("a refined graph proof and its bounded sort proof compose through one schedule");
 
     let proof = proof
         .requirement_for_device_with_preflight(0, |_, _| {
@@ -545,10 +565,17 @@ fn graph_phase_accounts_for_one_attested_bounded_sort_consumer_without_widening_
     assert!(envelope.scopes.iter().any(|scope| scope.matches(&sort_consumer)));
 
     let unrelated = graph_result_passthrough_plan("different_graph_result");
-    assert!(
-        QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan(&unrelated, "graph_result").is_none(),
-        "the bounded consumer must consume the exact graph-result input",
-    );
+    let mismatch = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
+        &unrelated,
+        QueryPlanCapabilityProof::for_composed_consumer_plan(&unrelated).unwrap(),
+        [crate::admission::ComposedGraphProducerCandidate::new(
+            Some("graph_result".to_owned()),
+            Some("graph_result".to_owned()),
+            Some(graph_proof),
+        )],
+    )
+    .expect_err("the producer occurrence must match the consumer source");
+    assert_eq!(mismatch.fact_value("schedule_reason"), Some("consumer_source_occurrence_missing"));
 
     let unmodeled =
         QueryPlanCapabilityProof::for_query_plan(&unmodeled_native_plan()).expect("unmodeled fragment has exact scope");
@@ -624,16 +651,8 @@ fn schedule_scope(scope: &str) -> AttemptReservationShape {
         source_stage_bytes: None,
         complete_zero_column_global_aggregate: None,
         complete_graph_memory_phase: None,
-        complete_cugraph_side_input_phase_bytes: None,
-        accounted_by_graph_phase: false,
-        is_cugraph_graph_input_scope: false,
-        is_cugraph_side_input_scope: false,
-        is_attested_graph_result_passthrough_scope: false,
-        is_deferred_graph_result_passthrough_scope: false,
-        is_attested_graph_result_bounded_consumer_scope: false,
-        sort_phase_peak_bytes: None,
-        limit_phase_peak_bytes: None,
-        sort_metadata: None,
+        scope_role: AttemptReservationScopeRole::Ordinary,
+        sort_metadata: Vec::new(),
         sort_rejection_reason: None,
         owner_term_rejection_reason: None,
         producer_occurrences: Vec::new(),
@@ -854,7 +873,7 @@ fn envelope_uses_schedule_peak_as_the_composed_floor_without_deduplicating_scope
         schedule(Some(10), vec![schedule_occurrence("p", "producer", Some(20), Some(5))], Some("consumer"), Some(7));
     let producer = fixture.shape;
     let mut auxiliary = schedule_scope("auxiliary");
-    auxiliary.account_for_by_graph_phase();
+    auxiliary.account_for_by_producer_phase();
     let scopes = vec![producer, schedule_scope("producer"), auxiliary];
     let envelope = AttemptReservationEnvelope::resolve(&scopes, reservation_policy())
         .expect("auxiliary exact scopes remain valid with a complete schedule");
@@ -1041,14 +1060,12 @@ fn ordered_inventory_totality_distinguishes_scheduled_and_auxiliary_scopes() {
     producer_scope.attach_ordered_schedule(schedule).expect("ordered schedule must attach");
 
     let side_plan = nullable_literal_side_input_plan();
-    let side_proof = QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&side_plan)
+    let side_proof = QueryPlanCapabilityProof::try_for_resident_side_input_plan(&side_plan)
         .expect("side-input proof must carry a finite auxiliary frame");
     let side_term =
         side_proof.as_requirement().owner_terms.first().expect("side-input proof must carry one frame owner").clone();
     let mut side_scope = AttemptReservationShape::for_query_plan(&side_plan);
-    side_scope
-        .set_cugraph_side_input_phase_bytes(side_term.bytes())
-        .expect("side-input scope must retain its frame reservation");
+    side_scope.mark_resident_side_input_scope().expect("side-input scope must be marked once");
     let consumer_scope = AttemptReservationShape::for_query_plan(&plan);
 
     let incomplete = AttemptReservationEnvelope::resolve_with_owner_terms(

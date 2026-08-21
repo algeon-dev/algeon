@@ -2,6 +2,7 @@
 mod backend_metric_descriptor_tests;
 
 use std::{
+    collections::BTreeSet,
     fs::{self, File},
     mem::size_of,
     path::Path,

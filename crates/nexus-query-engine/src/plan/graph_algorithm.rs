@@ -178,6 +178,14 @@ impl GraphAlgorithmSpec {
         let output_schema = algorithm.definition().result_schema_for_params(&params);
         Self::new(algorithm, edge_columns, graph_options, params, output_schema)
     }
+
+    /// Unique key emitted by this exact algorithm parameterization, when proven.
+    pub fn unique_output_key_columns(&self) -> &'static [&'static str] {
+        if matches!(&self.params, GraphAlgorithmParams::Bfs(params) if params.path_output.is_some()) {
+            return &["path_index"];
+        }
+        if self.algorithm.definition().output_vertex_is_unique() { &["vertex"] } else { &[] }
+    }
 }
 
 /// Stable graph identity available to transient coalescing and resident-cache

@@ -28,7 +28,8 @@ pub(crate) use join_strategy::{CompiledJoinExecutionStrategy, CompiledJoinStrate
 pub(crate) use requirement::{AttemptBoundDerivation, AttemptCapabilityEvidence as AttemptRequirement};
 #[cfg(any(test, feature = "test-hooks"))]
 pub use requirement::{AttemptCapabilityEvidence, EstimateQuality};
-pub use requirement::{ComposedGraphProducerCandidate, QueryPlanCapabilityProof};
+pub use requirement::{ComposedGraphProducerCandidate, ComposedProducerBindingDiagnostics, QueryPlanCapabilityProof};
+pub(crate) use string_payload::plan_node_is_unique_on;
 
 use crate::{
     error::{QueryError, QueryErrorCode, Result},

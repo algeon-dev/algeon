@@ -206,8 +206,13 @@ fn graph_proof_prices_string_resident_input_after_post_graph_projection() {
             params,
         ),
     );
-    let projected = graph_builder.add_projection(
+    let filtered = graph_builder.add_filter(
         graph,
+        Expr::binary(Expr::column("value"), BinaryOp::Gt, Expr::literal(LiteralValue::Float64(0.0))),
+        Arc::clone(&graph_schema),
+    );
+    let projected = graph_builder.add_projection(
+        filtered,
         graph_schema
             .fields()
             .iter()
@@ -228,6 +233,10 @@ fn graph_proof_prices_string_resident_input_after_post_graph_projection() {
         .find(|shape| shape.matches(&graph_plan))
         .expect("the graph execution scope must remain in the proof");
     assert_eq!(shape.owner_term_rejection_reason(), None);
+    assert!(proof.as_requirement().owner_terms.iter().any(|term| {
+        term.id.role == OwnerTermRole::RetainedOutput
+            && term.execution_scope_fingerprint() == canonical_execution_scope_fingerprint(&graph_plan)
+    }));
 }
 
 #[test]
@@ -270,7 +279,7 @@ fn filtered_edge_producer_defers_only_the_graph_phase_under_one_attempt_proof() 
         Arc::clone(graph_plan.output_schema()),
     )));
     let consumer_plan = consumer_builder.finish_with_host_sink(graph_result);
-    let consumer = QueryPlanCapabilityProof::for_attested_graph_result_passthrough_plan(&consumer_plan, "graph_result")
+    let consumer = QueryPlanCapabilityProof::for_composed_consumer_plan(&consumer_plan)
         .expect("the exact deferred graph result handoff must issue a passthrough proof");
     let composed = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
         &consumer_plan,
@@ -428,7 +437,7 @@ fn non_sort_requirement_does_not_validate_candidate_device() {
         .expect("non-sort requirements do not need a CUDA device for resolution");
 
     assert_eq!(resolved.as_requirement(), proof.as_requirement());
-    assert!(resolved.as_requirement().reservation_shapes.iter().all(|shape| shape.sort_metadata().is_none()));
+    assert!(resolved.as_requirement().reservation_shapes.iter().all(|shape| shape.sort_metadata().is_empty()));
 }
 
 fn graph_bfs_proof_with_typed_output(source_vertex: i64) -> QueryPlanCapabilityProof {
@@ -993,6 +1002,27 @@ fn reservation_policy() -> AttemptReservationPolicy {
     )
 }
 
+fn try_resolve_native_sort_owners_for_test(proof: &QueryPlanCapabilityProof) -> Result<QueryPlanCapabilityProof> {
+    proof.requirement_for_device_with_preflight_and_limit(
+        0,
+        |descriptor, _| {
+            if let [key] = descriptor.keys.as_slice()
+                && cudf::ops::sorting::sorted_order_radix_key_supported(key.key_type.id())
+            {
+                Ok(SortPreflight::new_for_test_with_key_input(64, 64, 32, 128, 32))
+            } else {
+                Ok(SortPreflight::new_lexicographic_for_test(64, 128, 32))
+            }
+        },
+        |_, _| Ok(LimitRangeGatherPreflight::new_for_test(16, 32, 8, 16)),
+    )
+}
+
+fn resolve_native_sort_owners_for_test(proof: &QueryPlanCapabilityProof) -> QueryPlanCapabilityProof {
+    try_resolve_native_sort_owners_for_test(proof)
+        .expect("test owner preflights must resolve every native sort and limit descriptor")
+}
+
 #[test]
 fn known_local_parquet_sources_keep_a_separate_modeled_source_stage() {
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
@@ -1362,9 +1392,11 @@ fn composed_join_sort_limit_preserves_operator_stage_alternatives() {
     let groups = shape.consumer_peak_term_groups();
     assert_eq!(groups.len(), 3, "join, sort, and limit stages must remain sequential alternatives");
     assert!(groups[0].iter().any(|term_id| term_id.role == OwnerTermRole::ConsumerHashTable));
-    assert!(groups[1].iter().any(|term_id| term_id.role == OwnerTermRole::ConsumerOutput));
-    assert!(groups[2].iter().any(|term_id| term_id.role == OwnerTermRole::ConsumerOutput));
-    combined.resolve_reservation_envelope(reservation_policy()).expect("the exact nested schedule must resolve");
+    assert!(groups[1].iter().any(|term_id| term_id.role == OwnerTermRole::SortOutputFrame));
+    assert!(groups[2].iter().any(|term_id| term_id.role == OwnerTermRole::LimitOutputFrame));
+    resolve_native_sort_owners_for_test(&combined)
+        .resolve_reservation_envelope(reservation_policy())
+        .expect("the exact nested schedule must resolve");
 }
 
 #[test]
@@ -1386,7 +1418,7 @@ fn composed_join_accepts_duplicate_producers_with_materializing_input_schedules(
     )
     .expect("outer composition must preserve and namespace both nested producer schedules");
 
-    let envelope = combined
+    let envelope = resolve_native_sort_owners_for_test(&combined)
         .resolve_reservation_envelope(reservation_policy())
         .expect("nested producer schedules must retain one complete owner inventory");
     assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::OrderedTimeline));
@@ -1396,12 +1428,9 @@ fn composed_join_accepts_duplicate_producers_with_materializing_input_schedules(
 fn composed_filter_sort_preserves_alternative_filter_peak_group() {
     let consumer_plan = graph_result_filter_sort_plan(None);
     let producer = graph_bfs_proof_with_typed_output(0);
-    let consumer = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
-        &consumer_plan,
-        "graph_result",
-        &producer,
-    )
-    .unwrap();
+    let consumer =
+        QueryPlanCapabilityProof::composed_sort_proof_with_producer_for_test(&consumer_plan, "graph_result", &producer)
+            .unwrap();
     let combined = QueryPlanCapabilityProof::combine_composed_graph_attempt(
         &consumer_plan,
         consumer,
@@ -2021,7 +2050,7 @@ fn decimal_projection_prices_native_rescale_workspace() {
 }
 
 #[test]
-fn cugraph_side_input_disables_generic_gpu_output_ownership() {
+fn resident_side_input_disables_generic_gpu_output_ownership() {
     let schema = Arc::new(Schema::new(vec![Field::new("vertex_id", DataType::Int64, true)]));
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(
@@ -2029,7 +2058,7 @@ fn cugraph_side_input_disables_generic_gpu_output_ownership() {
     ));
     let plan = builder.finish_gpu_resident(source);
 
-    let proof = QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&plan)
+    let proof = QueryPlanCapabilityProof::try_for_resident_side_input_plan(&plan)
         .expect("a bounded GPU-resident side input must issue a proof");
     assert!(
         proof.as_requirement().owner_terms.iter().all(|term| !matches!(term.id().owner, OwnerId::Producer(_))),
@@ -2039,7 +2068,7 @@ fn cugraph_side_input_disables_generic_gpu_output_ownership() {
 }
 
 #[test]
-fn cugraph_side_input_uses_bounded_literal_and_case_payload_evidence() {
+fn resident_side_input_uses_bounded_literal_and_case_payload_evidence() {
     let input_schema = Arc::new(Schema::new(vec![Field::new("selector", DataType::Int64, false)]));
     let input_batch =
         RecordBatch::try_new(Arc::clone(&input_schema), vec![Arc::new(Int64Array::from(vec![0, 1, 2])) as ArrayRef])
@@ -2054,7 +2083,7 @@ fn cugraph_side_input_uses_bounded_literal_and_case_payload_evidence() {
         )));
         let projection = builder.add_projection(source, vec![ProjectionOutput::new(expr, output_field.clone())]);
         let plan = builder.finish_gpu_resident(projection);
-        QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&plan)
+        QueryPlanCapabilityProof::try_for_resident_side_input_plan(&plan)
     };
 
     let literal = side_input_proof(Expr::literal(LiteralValue::Utf8("seed".to_owned())))
@@ -2096,7 +2125,7 @@ fn composed_graph_schedule_charges_concurrent_side_input_with_graph_peak() {
         GpuResidentSource::new("predicate", Arc::clone(&side_schema)).with_row_count_upper_bound(2),
     ));
     let side_plan = side_builder.finish_gpu_resident(side_source);
-    let side_proof = QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&side_plan)
+    let side_proof = QueryPlanCapabilityProof::try_for_resident_side_input_plan(&side_plan)
         .expect("bounded side input must issue a finite owner proof");
     let auxiliary_peak = side_proof.as_requirement().side_input_frame_owner_term_bytes().into_iter().sum::<u64>();
     let consumer_plan = graph_output_union_consumer(&["graph"]);
@@ -2910,8 +2939,8 @@ fn graph_evidence_ignores_an_unrelated_relational_source_stage() {
     assert!(requirement.reservation_shapes.iter().any(|shape| {
         shape.has_local_parquet_source()
             && shape.has_modeled_source_stage()
-            && !shape.is_cugraph_graph_input_scope()
-            && !shape.is_accounted_by_graph_phase()
+            && !shape.is_resident_producer_input_scope()
+            && !shape.is_accounted_by_producer_phase()
     }));
     assert!(requirement.reservation_shapes.iter().any(|shape| {
         shape.graph_memory_admission_evidence().is_some()
@@ -3400,35 +3429,22 @@ fn graph_result_global_count_and_nunique_use_the_native_distinct_workspace_owner
 }
 
 #[test]
-fn graph_result_nunique_supports_grouped_and_nullable_fixed_width_arguments() {
-    for (data_type, nullable, grouped) in [(DataType::Int64, false, true), (DataType::Int64, true, false)] {
+fn graph_result_nunique_keeps_grouped_nullable_and_variable_width_shapes_unmodeled() {
+    for (data_type, nullable, grouped, expected_reason) in [
+        (DataType::Int64, false, true, "consumer_aggregate_state_unmodeled"),
+        (DataType::Int64, true, false, "consumer_aggregate_nunique_owner_preflight_unavailable"),
+        (DataType::Utf8, false, false, "consumer_aggregate_nunique_owner_preflight_unavailable"),
+    ] {
         let consumer_plan = graph_output_global_nunique_consumer(data_type, nullable, grouped);
-        let (_, owner_terms) = composed_consumer_additional_peak_bytes_for_plan(
+        let error = QueryPlanCapabilityProof::combine_composed_graph_attempt(
             &consumer_plan,
-            &[ComposedGraphProducerOutputEvidence {
-                occurrence_id: "only".to_owned(),
-                row_count_upper_bound: 64,
-                column_evidence: PlanColumnEvidence::default(),
-            }],
+            QueryPlanCapabilityProof::for_composed_consumer_plan(&consumer_plan)
+                .expect("the consumer proof stays incomplete until its producer is bound"),
+            [("only".to_owned(), graph_bfs_proof_with_typed_output_and_rows(0, 64))],
         )
-        .expect("the grouped NUnique owner preflight must bound its additional workspace");
-        assert!(owner_terms.iter().any(|term| term.id.role == OwnerTermRole::AggregateDistinctWorkspace));
+        .expect_err("the unsupported NUnique owner shape must fail closed");
+        assert_eq!(error.fact_value("schedule_reason"), Some(expected_reason));
     }
-}
-
-#[test]
-fn graph_result_nunique_rejects_variable_width_arguments_without_payload_evidence() {
-    let consumer_plan = graph_output_global_nunique_consumer(DataType::Utf8, false, false);
-    let error = composed_consumer_additional_peak_bytes_for_plan(
-        &consumer_plan,
-        &[ComposedGraphProducerOutputEvidence {
-            occurrence_id: "only".to_owned(),
-            row_count_upper_bound: 64,
-            column_evidence: PlanColumnEvidence::default(),
-        }],
-    )
-    .expect_err("variable-width NUnique without payload evidence must fail closed");
-    assert_eq!(error.fact_value("schedule_reason"), Some("consumer_aggregate_nunique_owner_preflight_unavailable"));
 }
 
 #[test]
@@ -3482,6 +3498,10 @@ fn incomplete_single_graph_candidate_fails_closed_with_structured_schedule_facts
     assert_eq!(error.fact_value("reason"), Some("graph_attempt_complete_phase_unmodeled"));
     assert_eq!(error.fact_value("schedule_reason"), Some("producer_retained_output_term_missing"));
     assert_eq!(error.fact_value("occurrence_id"), Some("only"));
+    assert_eq!(
+        error.fact_value("consumer_execution_scope_fingerprint"),
+        Some(canonical_execution_scope_fingerprint(&consumer_plan).as_str()),
+    );
 }
 
 #[test]
@@ -3497,6 +3517,10 @@ fn missing_single_graph_proof_fails_closed_with_structured_schedule_facts() {
     assert_eq!(error.fact_value("reason"), Some("graph_attempt_complete_phase_unmodeled"));
     assert_eq!(error.fact_value("schedule_reason"), Some("producer_admission_proof_missing_or_ambiguous"));
     assert_eq!(error.fact_value("occurrence_id"), Some("only"));
+    assert_eq!(
+        error.fact_value("consumer_execution_scope_fingerprint"),
+        Some(canonical_execution_scope_fingerprint(&consumer_plan).as_str()),
+    );
 }
 
 #[test]
@@ -3541,6 +3565,43 @@ fn composed_consumer_alias_column_projection_reuses_its_input_allocation() {
     )
     .expect("an exact-type alias projection must issue complete composed evidence");
     assert!(combined.resolve_reservation_envelope(reservation_policy()).unwrap().complete_phase_peak_bytes().is_some());
+}
+
+#[test]
+fn composed_resident_source_intersects_independent_hard_row_bounds() {
+    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("only", Arc::clone(&schema)).with_row_count_upper_bound(6),
+    ));
+    let plan = builder.finish_with_host_sink(source);
+    let output = ComposedGraphProducerOutputEvidence {
+        occurrence_id: "only".to_owned(),
+        row_count_upper_bound: 8,
+        column_evidence: PlanColumnEvidence::default(),
+    };
+    let outputs = HashMap::from([("only", &output)]);
+    let mut used_occurrences = HashSet::new();
+    let mut memo = HashMap::new();
+    let column_evidence = PlanColumnEvidenceAnalysis::for_plan_with_resident_rows(
+        &plan,
+        &HashMap::new(),
+        &HashMap::from([("only".to_owned(), output.row_count_upper_bound)]),
+    )
+    .expect("resident upper-bound evidence must remain finite");
+    let bound = composed_consumer_branch_bound(
+        &plan,
+        plan.root_id(),
+        &outputs,
+        &mut used_occurrences,
+        &[],
+        &column_evidence,
+        &mut memo,
+    )
+    .expect("two valid upper bounds intersect at their tighter value");
+
+    assert_eq!(bound.rows, 6);
+    assert_eq!(bound.allocation_state, AttemptReservationConsumerState::Passthrough);
 }
 
 #[test]
@@ -3735,7 +3796,7 @@ fn composed_graph_schedule_prices_one_shared_topk_across_semi_and_left_joins() {
         root_output.bytes() < managed_capacity_baseline_bytes,
         "a unique five-row graph key and LeftSemi-filtered catalog must not multiply whole-column payload by catalog rows"
     );
-    let envelope = combined
+    let envelope = resolve_native_sort_owners_for_test(&combined)
         .resolve_reservation_envelope(reservation_policy())
         .expect("the production-scale catalog enrichment must retain a complete ordered envelope");
     assert!(
@@ -4061,7 +4122,7 @@ fn pagerank_topk_metadata_left_join_prices_is_null_projection() {
         [("pagerank".to_owned(), producer)],
     )
     .expect("IS NULL projection must retain a finite composed owner schedule");
-    let envelope = proof
+    let envelope = resolve_native_sort_owners_for_test(&proof)
         .resolve_reservation_envelope(reservation_policy())
         .expect("the customer-shaped projection must resolve before placement");
     assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::OrderedTimeline));
@@ -4078,7 +4139,7 @@ fn graph_to_metadata_inner_join_uses_bounded_key_payload_evidence() {
         [("pagerank".to_owned(), producer)],
     )
     .expect("the bounded metadata key must prove the equal inner-join output key payload");
-    assert!(proof.resolve_reservation_envelope(reservation_policy()).is_ok());
+    assert!(resolve_native_sort_owners_for_test(&proof).resolve_reservation_envelope(reservation_policy()).is_ok());
 
     let left = graph_metadata_join_consumer(JoinType::Left, None, false, true);
     let proof = QueryPlanCapabilityProof::combine_composed_graph_attempt(
@@ -4088,9 +4149,9 @@ fn graph_to_metadata_inner_join_uses_bounded_key_payload_evidence() {
         [("pagerank".to_owned(), pagerank_like_string_producer())],
     )
     .expect("finite row and payload bounds must prove a non-unique left enrichment without claiming uniqueness");
-    proof
-        .resolve_reservation_envelope(reservation_policy())
-        .expect("the finite non-unique left enrichment must retain an ordered envelope");
+    let error = try_resolve_native_sort_owners_for_test(&proof)
+        .expect_err("a non-unique post-join sort above cudf::size_type must fail before placement");
+    assert_eq!(error.fact_value("reason"), Some("sort_owner_row_count_exceeds_cudf_size_type"));
 }
 
 #[test]
@@ -4104,7 +4165,7 @@ fn graph_to_metadata_left_join_uses_uniqueness_only_for_the_tight_bound() {
             [("pagerank".to_owned(), pagerank_like_string_producer())],
         )
         .expect("authoritative metadata uniqueness must bound each left graph row to one match");
-        proof
+        resolve_native_sort_owners_for_test(&proof)
             .resolve_reservation_envelope(reservation_policy())
             .expect("qualified left enrichment must resolve a finite reservation envelope");
         crate::admission::bounded_pipeline_admission(&qualified)
@@ -4118,9 +4179,16 @@ fn graph_to_metadata_left_join_uses_uniqueness_only_for_the_tight_bound() {
             [("pagerank".to_owned(), pagerank_like_string_producer())],
         )
         .expect("finite cross-product evidence must bound an unqualified lookup without treating it as unique");
-        proof
-            .resolve_reservation_envelope(reservation_policy())
-            .expect("the conservative non-unique lookup must retain an ordered envelope");
+        if top_k_before_enrichment {
+            resolve_native_sort_owners_for_test(&proof)
+                .resolve_reservation_envelope(reservation_policy())
+                .expect("the pre-join Top-K must keep the conservative non-unique lookup below the sort owner limit");
+        } else {
+            let error = try_resolve_native_sort_owners_for_test(&proof).expect_err(
+                "an unbounded-multiplicity post-join sort above cudf::size_type must fail before placement",
+            );
+            assert_eq!(error.fact_value("reason"), Some("sort_owner_row_count_exceeds_cudf_size_type"));
+        }
     }
 }
 
@@ -4148,7 +4216,7 @@ fn production_shaped_metadata_joins_retain_finite_and_authoritative_bounds() {
             })
             .expect("the composed join must own its output allocation");
         output_bytes.push(output.bytes());
-        proof
+        resolve_native_sort_owners_for_test(&proof)
             .resolve_reservation_envelope(reservation_policy())
             .expect("the production-shaped proof must be complete even when a device may reject its capacity floor");
     }
@@ -4165,6 +4233,16 @@ fn graph_to_metadata_planning_defers_footer_dependent_admission_until_hydration(
         structural.requires_composed_producer_binding(),
         "mixed graph/metadata admission must remain deferred until exact producer binding"
     );
+    let deferred = structural
+        .composed_producer_binding_diagnostics(&planning)
+        .expect("the proof owner must expose the deferred producer-binding decision");
+    assert_eq!(deferred.consumer_execution_scope_fingerprint(), canonical_execution_scope_fingerprint(&planning));
+    assert_eq!(deferred.missing_producer_occurrences(), &["pagerank".to_string()]);
+    assert_eq!(deferred.missing_fact_kind(), "producer_output_evidence");
+    assert_eq!(deferred.responsible_owner(), "gpu_resident_producer");
+    assert_eq!(deferred.reason_code(), "consumer_producer_binding_required");
+    assert!(deferred.proven_owner_terms().is_empty());
+    assert_eq!(deferred.unresolved_owner_terms(), &["owner=producer:pagerank,role=retained_output".to_string()]);
     let error = QueryPlanCapabilityProof::combine_composed_graph_attempt(
         &planning,
         structural,
@@ -4172,6 +4250,7 @@ fn graph_to_metadata_planning_defers_footer_dependent_admission_until_hydration(
     )
     .expect_err("an unhydrated metadata source cannot promise a live device grant");
     assert_eq!(error.fact_value("schedule_reason"), Some("consumer_local_source_owner_missing"));
+    assert!(error.fact_value("node_id").is_some());
 
     let prepared = graph_metadata_join_consumer(JoinType::Inner, Some(JoinSide::Right), false, true);
     let proof = QueryPlanCapabilityProof::combine_composed_graph_attempt(
@@ -4180,9 +4259,27 @@ fn graph_to_metadata_planning_defers_footer_dependent_admission_until_hydration(
         [("pagerank".to_owned(), pagerank_like_string_producer())],
     )
     .expect("hydrated source evidence must complete the same engine-owned proof");
-    proof
+    assert!(!proof.requires_composed_producer_binding());
+    assert!(proof.composed_producer_binding_diagnostics(&prepared).is_none());
+    let proof = proof
+        .requirement_for_device_with_preflight_and_limit(
+            0,
+            |_, _| Ok(SortPreflight::new_lexicographic_for_test(64, 128, 64)),
+            |_, _| Ok(LimitRangeGatherPreflight::new_for_test(16, 8, 8, 16)),
+        )
+        .expect("prepared sort and limit owners must resolve on the selected device");
+    let envelope = proof
         .resolve_reservation_envelope(reservation_policy())
         .expect("prepared proof must resolve a finite reservation envelope");
+    let projection = envelope
+        .composed_schedule_projection(
+            crate::observability::AttemptId::mint(),
+            0,
+            1,
+            envelope.required_phase_floor_bytes(),
+        )
+        .expect("prepared accepted admission must publish the correlated schedule");
+    assert_eq!(projection.consumer_scope_fingerprint, canonical_execution_scope_fingerprint(&prepared));
 }
 
 #[test]
@@ -4468,7 +4565,7 @@ fn graph_result_filter_sort_plan(row_bound: Option<u64>) -> QueryPlan {
 #[test]
 fn supported_graph_result_sort_resolves_exact_owner_components_per_device() {
     let plan = graph_result_sort_plan(DataType::Int32, false, Some(128), 1);
-    let proof = QueryPlanCapabilityProof::try_for_attested_graph_result_bounded_consumer_plan(&plan, "graph_result")
+    let proof = QueryPlanCapabilityProof::try_composed_sort_proof_for_test(&plan, "graph_result")
         .expect("supported sort metadata must issue a typed proof");
     let resolved = proof
         .requirement_for_device_with_preflight(7, |descriptor, ordinal| {
@@ -4521,7 +4618,7 @@ fn supported_graph_result_sort_resolves_exact_owner_components_per_device() {
 #[test]
 fn graph_result_string_sort_uses_producer_payload_evidence() {
     let plan = graph_result_string_sort_plan(None);
-    let proof = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
+    let proof = QueryPlanCapabilityProof::composed_sort_proof_with_producer_for_test(
         &plan,
         "graph_result",
         &graph_result_string_producer_proof(),
@@ -4530,7 +4627,7 @@ fn graph_result_string_sort_uses_producer_payload_evidence() {
     let resolved = proof
         .requirement_for_device_with_preflight(0, |descriptor, _| {
             assert_eq!(descriptor.num_rows, 6);
-            assert_eq!(descriptor.output_frame_bytes, 970);
+            assert_eq!(descriptor.output_frame_bytes, 202);
             assert_eq!(descriptor.output_null_mask_bytes, 0);
             Ok(SortPreflight::new_for_test_with_key_input(48, 24, 24, 64, 24))
         })
@@ -4548,10 +4645,10 @@ fn graph_result_string_sort_uses_producer_payload_evidence() {
             .find(|term| term.id.role == OwnerTermRole::SortOutputFrame)
             .expect("the sorted string frame must remain an explicit owner")
             .bytes(),
-        970
+        202
     );
 
-    let missing = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
+    let missing = QueryPlanCapabilityProof::composed_sort_proof_with_producer_for_test(
         &plan,
         "graph_result",
         &graph_bfs_proof_with_typed_output_and_rows(0, 3),
@@ -4568,9 +4665,8 @@ fn graph_result_string_sort_uses_producer_payload_evidence() {
 fn floating_sort_keys_issue_key_input_owner_terms() {
     for data_type in [DataType::Float32, DataType::Float64] {
         let plan = graph_result_sort_plan(data_type, false, Some(128), 1);
-        let proof =
-            QueryPlanCapabilityProof::try_for_attested_graph_result_bounded_consumer_plan(&plan, "graph_result")
-                .expect("floating radix sort metadata must be accepted");
+        let proof = QueryPlanCapabilityProof::try_composed_sort_proof_for_test(&plan, "graph_result")
+            .expect("floating radix sort metadata must be accepted");
         let resolved = proof
             .requirement_for_device_with_preflight(0, |_, _| {
                 Ok(SortPreflight::new_for_test_with_key_input(512, 128, 256, 512, 256))
@@ -4589,7 +4685,7 @@ fn floating_sort_keys_issue_key_input_owner_terms() {
 #[test]
 fn multi_key_graph_result_sort_uses_lexicographic_owner_terms() {
     let plan = graph_result_sort_plan(DataType::Int32, false, Some(128), 3);
-    let proof = QueryPlanCapabilityProof::try_for_attested_graph_result_bounded_consumer_plan(&plan, "graph_result")
+    let proof = QueryPlanCapabilityProof::try_composed_sort_proof_for_test(&plan, "graph_result")
         .expect("three non-null relational keys must issue a typed sort proof");
     let resolved = proof
         .requirement_for_device_with_preflight(5, |descriptor, ordinal| {
@@ -4638,7 +4734,7 @@ fn graph_result_sort_limit_uses_alternative_consumer_peak_groups() {
     ];
     for (sort_preflight, limit_preflight) in cases {
         let plan = graph_result_sort_limit_plan(100, 7, 2);
-        let consumer = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
+        let consumer = QueryPlanCapabilityProof::composed_sort_proof_with_producer_for_test(
             &plan,
             "graph_result",
             &graph_bfs_proof_with_typed_output_and_rows(0, 50),
@@ -4740,7 +4836,7 @@ fn graph_result_sort_limit_uses_alternative_consumer_peak_groups() {
 fn nested_top_k_graph_side_input_resolves_deferred_owner_terms_on_the_candidate_device() {
     let inner_sort_plan = pagerank_result_sort_limit_plan("inner_graph", 2, 2);
     let inner_graph = production_graph_proof(GraphAlgorithm::PageRank);
-    let inner_sort = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
+    let inner_sort = QueryPlanCapabilityProof::composed_sort_proof_with_producer_for_test(
         &inner_sort_plan,
         "inner_graph",
         &inner_graph,
@@ -4779,7 +4875,7 @@ fn nested_top_k_graph_side_input_resolves_deferred_owner_terms_on_the_candidate_
     .expect("the outer graph must preserve the nested Top-K schedule and its deferred owner IDs");
 
     let outer_sort_plan = pagerank_result_sort_limit_plan("outer_graph", 2, 1);
-    let outer_sort = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
+    let outer_sort = QueryPlanCapabilityProof::composed_sort_proof_with_producer_for_test(
         &outer_sort_plan,
         "outer_graph",
         &outer_graph,
@@ -4804,8 +4900,8 @@ fn nested_top_k_graph_side_input_resolves_deferred_owner_terms_on_the_candidate_
                 assert_eq!(ordinal, 7);
                 Ok(LimitRangeGatherPreflight::new_for_test(
                     16,
-                    32,
-                    u64::try_from(descriptor.output_rows).unwrap() * 12,
+                    descriptor.output_frame_bytes,
+                    descriptor.output_null_mask_bytes,
                     0,
                 ))
             },
@@ -4823,18 +4919,72 @@ fn nested_top_k_graph_side_input_resolves_deferred_owner_terms_on_the_candidate_
             .as_requirement()
             .owner_terms
             .iter()
-            .any(|term| { term.id.role == OwnerTermRole::LimitOutputFrame && term.id.is_composed_occurrence() })
+            .any(|term| { term.id.role == OwnerTermRole::LimitNativeWorkspace && term.id.is_composed_occurrence() })
+    );
+    assert!(
+        resolved
+            .as_requirement()
+            .owner_terms
+            .iter()
+            .any(|term| { term.id.role == OwnerTermRole::RetainedOutput && term.id.is_composed_occurrence() })
     );
     let envelope = resolved
         .resolve_reservation_envelope(reservation_policy())
         .expect("the hydrated nested schedule must resolve one finite immutable grant");
-    assert!(envelope.bound_derivation().is_some());
+    assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::OrderedTimeline));
+}
+
+#[test]
+fn passthrough_consumer_reuses_an_existing_nested_schedule() {
+    let producer = production_graph_proof(GraphAlgorithm::PageRank);
+    let inner_plan = pagerank_result_sort_limit_plan("inner_graph", 2, 1);
+    let inner = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+        &inner_plan,
+        QueryPlanCapabilityProof::for_composed_consumer_plan(&inner_plan)
+            .expect("the inner Top-K must issue one composed proof"),
+        [("inner_graph".to_owned(), producer)],
+    )
+    .expect("the inner Top-K must compile one nested schedule");
+
+    let schema = inner_plan.output_schema();
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("nested", Arc::clone(schema)).with_row_count_upper_bound(1),
+    ));
+    let passthrough = builder.finish_with_host_sink(source);
+    let reused = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
+        &passthrough,
+        QueryPlanCapabilityProof::for_composed_consumer_plan(&passthrough)
+            .expect("the passthrough must issue one composed proof"),
+        [ComposedGraphProducerCandidate::new(Some("nested".to_owned()), Some("nested".to_owned()), Some(inner))],
+    )
+    .expect("a pure passthrough must retain the producer's complete schedule");
+
+    assert!(reused.as_requirement().reservation_shapes.iter().any(|shape| shape.ordered_schedule().is_some()));
+    let reused = reused
+        .requirement_for_device_with_preflight_and_limit(
+            0,
+            |_, _| Ok(SortPreflight::new_lexicographic_for_test(64, 128, 64)),
+            |descriptor, _| {
+                Ok(LimitRangeGatherPreflight::new_for_test(
+                    16,
+                    descriptor.output_frame_bytes,
+                    descriptor.output_null_mask_bytes,
+                    0,
+                ))
+            },
+        )
+        .expect("the reused schedule must hydrate its nested sort and limit owners");
+    let envelope = reused
+        .resolve_reservation_envelope(reservation_policy())
+        .expect("the reused schedule must account for its pure resident passthrough scope");
+    assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::OrderedTimeline));
 }
 
 #[test]
 fn composed_graph_result_sort_resolves_through_the_production_schedule_seam() {
     let consumer_plan = graph_result_sort_plan(DataType::Int32, false, None, 1);
-    let consumer = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
+    let consumer = QueryPlanCapabilityProof::composed_sort_proof_with_producer_for_test(
         &consumer_plan,
         "graph_result",
         &graph_bfs_proof_with_typed_output(0),
@@ -4870,12 +5020,9 @@ fn composed_graph_result_sort_resolves_through_the_production_schedule_seam() {
 fn composed_filter_then_sort_references_filter_and_sort_owner_terms() {
     let consumer_plan = graph_result_filter_sort_plan(None);
     let producer = graph_bfs_proof_with_typed_output(0);
-    let consumer = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
-        &consumer_plan,
-        "graph_result",
-        &producer,
-    )
-    .expect("Filter then one-key integral Sort has a bounded consumer proof");
+    let consumer =
+        QueryPlanCapabilityProof::composed_sort_proof_with_producer_for_test(&consumer_plan, "graph_result", &producer)
+            .expect("Filter then one-key integral Sort has a bounded consumer proof");
     let composed = QueryPlanCapabilityProof::combine_composed_graph_attempt(
         &consumer_plan,
         consumer,
@@ -4909,12 +5056,8 @@ fn graph_result_sort_uses_the_producer_owned_row_bound_when_consumer_source_is_u
             .unwrap();
     let expected_rows = usize::try_from(producer_evidence.retained_output_rows_upper_bound()).unwrap();
     let producer = graph_bfs_proof_with_typed_output(0);
-    let proof = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
-        &plan,
-        "graph_result",
-        &producer,
-    )
-    .expect("producer-owned output rows must complete the bounded sort proof");
+    let proof = QueryPlanCapabilityProof::composed_sort_proof_with_producer_for_test(&plan, "graph_result", &producer)
+        .expect("producer-owned output rows must complete the bounded sort proof");
     let resolved = proof
         .requirement_for_device_with_preflight(3, |descriptor, ordinal| {
             assert_eq!(ordinal, 3);
@@ -4930,22 +5073,18 @@ fn graph_result_sort_uses_the_producer_owned_row_bound_when_consumer_source_is_u
 }
 
 #[test]
-fn graph_result_sort_producer_row_bound_failures_remain_sticky() {
+fn graph_result_sort_producer_scope_failures_remain_sticky() {
     let plan = graph_result_sort_plan(DataType::Int32, false, None, 1);
     let ordinary = QueryPlanCapabilityProof::for_query_plan(&ordinary_native_plan()).unwrap();
-    let missing = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
-        &plan,
-        "graph_result",
-        &ordinary,
-    )
-    .unwrap();
+    let missing =
+        QueryPlanCapabilityProof::composed_sort_proof_with_producer_for_test(&plan, "graph_result", &ordinary).unwrap();
     let missing_error = missing.resolve_reservation_envelope(reservation_policy()).unwrap_err();
     assert_eq!(missing_error.fact_value("sort_rejection_reason"), Some("sort_owner_producer_graph_scope_missing"));
 
     let ambiguous_producer =
         QueryPlanCapabilityProof::combine(graph_bfs_proof_with_typed_output(0), [graph_bfs_proof_with_typed_output(1)])
             .unwrap();
-    let ambiguous = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
+    let ambiguous = QueryPlanCapabilityProof::composed_sort_proof_with_producer_for_test(
         &plan,
         "graph_result",
         &ambiguous_producer,
@@ -4956,16 +5095,6 @@ fn graph_result_sort_producer_row_bound_failures_remain_sticky() {
         ambiguous_error.fact_value("sort_rejection_reason"),
         Some("sort_owner_producer_retained_output_ambiguous")
     );
-
-    let mismatched_plan = graph_result_sort_plan(DataType::Int32, false, Some(2), 1);
-    let mismatched = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
-        &mismatched_plan,
-        "graph_result",
-        &graph_bfs_proof_with_typed_output(0),
-    )
-    .unwrap();
-    let mismatch_error = mismatched.resolve_reservation_envelope(reservation_policy()).unwrap_err();
-    assert_eq!(mismatch_error.fact_value("sort_rejection_reason"), Some("sort_owner_graph_result_row_bound_mismatch"));
 }
 
 #[test]
@@ -4973,9 +5102,14 @@ fn composed_resolver_preserves_sticky_sort_rejection_until_envelope_resolution()
     let graph_producer = graph_bfs_proof_with_typed_output(0);
     let cases = [
         (
-            graph_result_sort_plan(DataType::Utf8, false, None, 1),
+            graph_result_sort_plan(
+                DataType::List(Arc::new(Field::new("item", DataType::Int64, false))),
+                false,
+                None,
+                1,
+            ),
             graph_producer.clone(),
-            "sort_owner_key_type_not_radix_dispatchable",
+            "sort_owner_key_type_not_lexicographic_dispatchable",
         ),
         (
             graph_result_sort_plan(DataType::Int32, false, None, 1),
@@ -4984,7 +5118,7 @@ fn composed_resolver_preserves_sticky_sort_rejection_until_envelope_resolution()
         ),
     ];
     for (consumer_plan, producer_for_sort, expected_sort_reason) in cases {
-        let consumer = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
+        let consumer = QueryPlanCapabilityProof::composed_sort_proof_with_producer_for_test(
             &consumer_plan,
             "graph_result",
             &producer_for_sort,
@@ -5012,22 +5146,57 @@ fn composed_resolver_preserves_sticky_sort_rejection_until_envelope_resolution()
 #[test]
 fn unsupported_graph_result_sort_shapes_reject_before_preflight() {
     for (plan, reason) in [
-        (graph_result_sort_plan(DataType::Utf8, false, Some(8), 1), "sort_owner_key_type_not_radix_dispatchable"),
+        (
+            graph_result_sort_plan(
+                DataType::List(Arc::new(Field::new("item", DataType::Int64, false))),
+                false,
+                Some(8),
+                1,
+            ),
+            "sort_owner_key_type_not_lexicographic_dispatchable",
+        ),
         (graph_result_sort_plan(DataType::Int32, true, Some(8), 1), "sort_owner_nullable_key_unsupported"),
-        (graph_result_sort_plan(DataType::Int32, false, None, 1), "sort_owner_row_bound_missing"),
+        (graph_result_sort_plan(DataType::Int32, false, None, 1), "sort_owner_sort_input_row_bound_unavailable"),
     ] {
-        let error =
-            QueryPlanCapabilityProof::try_for_attested_graph_result_bounded_consumer_plan(&plan, "graph_result")
-                .expect_err("unsupported sort shape must reject before native preflight");
+        let error = QueryPlanCapabilityProof::try_composed_sort_proof_for_test(&plan, "graph_result")
+            .expect_err("unsupported sort shape must reject before native preflight");
         assert_eq!(error.fact_value("reason"), Some(reason));
     }
 }
 
 #[test]
+fn single_string_sort_resolves_through_the_lexicographic_owner() {
+    let plan = graph_result_sort_plan(DataType::Utf8, false, Some(8), 1);
+    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Utf8, false)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(StringArray::from(vec!["a", "bb", "ccc"])) as ArrayRef],
+    )
+    .unwrap();
+    let mut producer_builder = QueryPlanBuilder::new();
+    let source = producer_builder
+        .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
+    let producer_plan = producer_builder.finish_gpu_resident(source);
+    let producer = QueryPlanCapabilityProof::for_cugraph_materialized_input_producer_plan(&producer_plan)
+        .expect("literal string producer must issue exact row and payload evidence");
+    let proof = QueryPlanCapabilityProof::composed_sort_proof_with_producer_for_test(&plan, "graph_result", &producer)
+        .expect("single string sort metadata must select the lexicographic owner");
+    let resolved = proof
+        .requirement_for_device_with_preflight(0, |descriptor, _| {
+            assert_eq!(descriptor.keys.len(), 1);
+            assert_eq!(descriptor.keys[0].key_type.id(), cudf::TypeId::String);
+            Ok(SortPreflight::new_lexicographic_for_test(64, 128, 32))
+        })
+        .expect("single string sort owner terms must resolve on the candidate device");
+    resolved
+        .resolve_reservation_envelope(reservation_policy())
+        .expect("single string sort must retain a complete owner-priced envelope");
+}
+
+#[test]
 fn stable_sort_metadata_rejects_before_the_fake_native_preflight() {
     let plan = graph_result_sort_plan(DataType::Int32, false, Some(8), 1);
-    let mut proof =
-        QueryPlanCapabilityProof::try_for_attested_graph_result_bounded_consumer_plan(&plan, "graph_result").unwrap();
+    let mut proof = QueryPlanCapabilityProof::try_composed_sort_proof_for_test(&plan, "graph_result").unwrap();
     proof.requirement.reservation_shapes.first_mut().unwrap().set_sort_stable_for_test(true);
     let error = proof
         .requirement_for_device_with_preflight(0, |_, _| {

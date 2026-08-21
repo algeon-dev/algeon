@@ -122,7 +122,7 @@ async fn run_datafusion_baseline_case(
     let mut rejected_reasons = Vec::new();
     for outcome in planning_report.outcomes() {
         match outcome {
-            CandidateOutcome::Selected { .. } => rewritten += 1,
+            CandidateOutcome::Selected { .. } | CandidateOutcome::Deferred { .. } => rewritten += 1,
             CandidateOutcome::NotSupported { capability_reason, .. } => {
                 rejected_reasons.push(capability_reason.code().to_string());
             },

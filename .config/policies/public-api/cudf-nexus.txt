@@ -2403,12 +2403,6 @@ pub fn cudf::frame::factorization::Factorized::decode(&self) -> cudf::core::erro
 pub fn cudf::frame::factorization::Factorized::into_parts(self) -> (cudf::frame::factorization::EncodedSeries, cudf::frame::factorization::Codebook)
 pub fn cudf::frame::factorization::Factorized::row_codes(&self) -> &cudf::frame::factorization::EncodedSeries
 pub mod cudf::frame::series
-pub struct cudf::frame::series::GroupedNuniqueWorkspacePreflight
-impl cudf::GroupedNuniqueWorkspacePreflight
-pub fn cudf::GroupedNuniqueWorkspacePreflight::active_workspace_peak_bytes(self) -> usize
-pub fn cudf::GroupedNuniqueWorkspacePreflight::argument_sanitation_bytes(self) -> usize
-pub fn cudf::GroupedNuniqueWorkspacePreflight::distinct_state_bytes(self) -> usize
-pub fn cudf::GroupedNuniqueWorkspacePreflight::for_metadata(usize, usize) -> cudf::core::error::Result<Self>
 pub struct cudf::frame::series::ScalarReductionDistinctWorkspacePreflight
 impl cudf::ScalarReductionDistinctWorkspacePreflight
 pub fn cudf::ScalarReductionDistinctWorkspacePreflight::active_workspace_peak_bytes(self) -> usize
@@ -5233,7 +5227,7 @@ pub fn cudf::ops::copying::GatherFixedWidthDontCheckPreflight::valid_count_array
 pub fn cudf::ops::copying::copy_if_else(&cudf::core::column::ColumnView<'_>, &cudf::core::column::ColumnView<'_>, &cudf::core::column::ColumnView<'_>) -> cudf::core::error::Result<cudf::core::Column>
 pub fn cudf::ops::copying::copy_if_else_in(&cudf::core::column::ColumnView<'_>, &cudf::core::column::ColumnView<'_>, &cudf::core::column::ColumnView<'_>, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<cudf::core::Column>
 pub fn cudf::ops::copying::gather(&cudf::core::table::TableView<'_>, &cudf::core::column::ColumnView<'_>) -> cudf::core::error::Result<cudf::core::Table>
-pub fn cudf::ops::copying::gather_fixed_width_dont_check_preflight_for_metadata(&[(cudf::core::types::DataType, bool)], usize, cudf::runtime::device::DeviceId) -> cudf::core::error::Result<cudf::ops::copying::GatherFixedWidthDontCheckPreflight>
+pub fn cudf::ops::copying::gather_fixed_width_dont_check_preflight_for_metadata(&[(cudf::core::types::DataType, bool)], usize, usize, cudf::runtime::device::DeviceId) -> cudf::core::error::Result<cudf::ops::copying::GatherFixedWidthDontCheckPreflight>
 pub unsafe fn cudf::ops::copying::gather_unchecked(&cudf::core::table::TableView<'_>, &cudf::core::column::ColumnView<'_>) -> cudf::core::error::Result<cudf::core::Table>
 pub fn cudf::ops::copying::scatter(&cudf::core::table::TableView<'_>, &cudf::core::column::ColumnView<'_>, &cudf::core::table::TableView<'_>) -> cudf::core::error::Result<cudf::core::Table>
 pub fn cudf::ops::copying::scatter_in(&cudf::core::table::TableView<'_>, &cudf::core::column::ColumnView<'_>, &cudf::core::table::TableView<'_>, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<cudf::core::Table>
@@ -6108,6 +6102,7 @@ pub fn cudf::ops::sorting::sort(&cudf::core::table::TableView<'_>, core::option:
 pub fn cudf::ops::sorting::sort_by_key(&cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, core::option::Option<&[cudf::ops::sorting::Order]>, core::option::Option<&[cudf::ops::sorting::NullOrder]>) -> cudf::core::error::Result<cudf::core::Table>
 pub fn cudf::ops::sorting::sorted_order(&cudf::core::table::TableView<'_>, core::option::Option<&[cudf::ops::sorting::Order]>, core::option::Option<&[cudf::ops::sorting::NullOrder]>) -> cudf::core::error::Result<cudf::core::Column>
 pub fn cudf::ops::sorting::sorted_order_lexicographic_preflight(usize, &[cudf::core::types::DataType], &[usize], bool, &[cudf::ops::sorting::Order], &[cudf::ops::sorting::NullOrder], cudf::runtime::device::DeviceId) -> cudf::core::error::Result<cudf::ops::sorting::SortedOrderLexicographicPreflight>
+pub fn cudf::ops::sorting::sorted_order_radix_key_supported(cudf::core::types::TypeId) -> bool
 pub fn cudf::ops::sorting::sorted_order_radix_preflight(usize, cudf::core::types::DataType, usize, bool, cudf::ops::sorting::Order, cudf::runtime::device::DeviceId) -> cudf::core::error::Result<cudf::ops::sorting::SortedOrderRadixPreflight>
 pub fn cudf::ops::sorting::sorted_order_reservation_size_bytes_for_len(usize) -> cudf::core::error::Result<usize>
 pub fn cudf::ops::sorting::stable_sort(&cudf::core::table::TableView<'_>, core::option::Option<&[cudf::ops::sorting::Order]>, core::option::Option<&[cudf::ops::sorting::NullOrder]>) -> cudf::core::error::Result<cudf::core::Table>
@@ -8313,12 +8308,6 @@ pub fn cudf::GroupBy<'a>::with_execution<'ctx, 'handles>(self, &'ctx cudf::runti
 pub struct cudf::GroupByOptions
 impl core::default::Default for cudf::GroupByOptions
 pub fn cudf::GroupByOptions::default() -> Self
-pub struct cudf::GroupedNuniqueWorkspacePreflight
-impl cudf::GroupedNuniqueWorkspacePreflight
-pub fn cudf::GroupedNuniqueWorkspacePreflight::active_workspace_peak_bytes(self) -> usize
-pub fn cudf::GroupedNuniqueWorkspacePreflight::argument_sanitation_bytes(self) -> usize
-pub fn cudf::GroupedNuniqueWorkspacePreflight::distinct_state_bytes(self) -> usize
-pub fn cudf::GroupedNuniqueWorkspacePreflight::for_metadata(usize, usize) -> cudf::core::error::Result<Self>
 pub struct cudf::MergeOptions
 impl cudf::MergeOptions
 pub fn cudf::MergeOptions::how(self, cudf::JoinType) -> Self

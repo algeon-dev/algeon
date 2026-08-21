@@ -2,10 +2,92 @@ use std::collections::BTreeSet;
 
 use super::rewrite;
 use crate::{
+    admission::canonical_execution_scope_fingerprint,
     graph_memory::query_plan_hard_row_upper_bound,
     plan::{NodeId, PlanFacts, PlanNode, QueryPlan, ResultSink, SchemaBehavior},
     source::{GpuResidentSource, SourceNode},
 };
+
+/// Stable optimizer rule name for shared-resident extraction diagnostics.
+pub const SHARED_RESIDENT_EXTRACTION_RULE_NAME: &str = "shared_resident_extraction";
+
+/// Decision emitted for one extraction candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharedResidentExtractionDecision {
+    /// The repeated closed subplan became a resident producer.
+    Extracted,
+    /// The candidate was left in the consumer plan.
+    Skipped,
+    /// The repeated closed candidate could not preserve the resident contract.
+    Rejected,
+}
+
+/// Stable reason for an extraction decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SharedResidentExtractionReason {
+    /// The node has fewer than two consumer occurrences.
+    NotRepeated,
+    /// Dynamic-filter route node identities cannot yet be remapped.
+    DynamicFilterRoutesUnremappable,
+    /// The subtree already consumes a resident source.
+    ContainsGpuResidentSource,
+    /// A descendant is consumed outside the candidate subtree.
+    SubplanNotClosed,
+    /// An enclosing selected subtree already contains the candidate.
+    NestedUnderSelectedSubplan,
+    /// The resident source would not carry a hard output row bound.
+    ResidentRowBoundUnavailable,
+    /// The candidate became a resident producer.
+    Extracted,
+}
+
+/// Structured decision for one inspected native-plan node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedResidentExtractionCandidateDiagnostics {
+    /// Candidate root node.
+    pub node_id: NodeId,
+    /// Canonical fingerprint of the exact candidate subplan.
+    pub subplan_fingerprint: String,
+    /// Plan nodes that consume the candidate root.
+    pub consumer_occurrences: Vec<NodeId>,
+    /// Extraction disposition.
+    pub decision: SharedResidentExtractionDecision,
+    /// Stable decision reason.
+    pub reason: SharedResidentExtractionReason,
+    /// Resident source identity created for an extracted candidate.
+    pub resident_input_name: Option<String>,
+}
+
+/// Diagnostics emitted by the named shared-resident extraction stage.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SharedResidentExtractionDiagnostics {
+    /// Number of native-plan nodes inspected.
+    pub considered_count: usize,
+    /// Number of resident producers created.
+    pub extracted_count: usize,
+    /// Number of repeated closed candidates rejected by the resident contract.
+    pub rejected_count: usize,
+    /// Decisions in candidate node order.
+    pub candidates: Vec<SharedResidentExtractionCandidateDiagnostics>,
+}
+
+impl SharedResidentExtractionDiagnostics {
+    /// Returns whether the stage inspected no nodes.
+    pub fn is_empty(&self) -> bool {
+        self.considered_count == 0
+            && self.extracted_count == 0
+            && self.rejected_count == 0
+            && self.candidates.is_empty()
+    }
+
+    /// Merges decisions from another invocation of the same stage.
+    pub fn merge(&mut self, other: Self) {
+        self.considered_count += other.considered_count;
+        self.extracted_count += other.extracted_count;
+        self.rejected_count += other.rejected_count;
+        self.candidates.extend(other.candidates);
+    }
+}
 
 /// One closed shared DAG fragment extracted behind a GPU-resident boundary.
 #[derive(Debug, Clone, PartialEq)]
@@ -23,26 +105,71 @@ pub struct SharedResidentPlan {
     pub consumer: QueryPlan,
     /// Producer plans in deterministic consumer dependency order.
     pub producers: Vec<SharedResidentProducerPlan>,
+    /// Structured decisions from the named extraction stage.
+    pub diagnostics: SharedResidentExtractionDiagnostics,
 }
 
-/// Extracts closed repeated subplans so downstream consumers can use retained runtime evidence.
-pub fn extract_shared_resident_subplans(plan: QueryPlan) -> SharedResidentPlan {
-    // Dynamic-filter routes carry node identities that extraction cannot remap yet.
-    if !plan.dynamic_filter_routes().is_empty() {
-        return SharedResidentPlan { consumer: plan, producers: Vec::new() };
+/// Runs the shared-resident extraction stage for a composed native plan.
+pub fn optimize_shared_resident_extraction(plan: QueryPlan) -> SharedResidentPlan {
+    if !plan.nodes().iter().any(|node| {
+        matches!(
+            &node.kind,
+            PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::GpuResident(_))
+        )
+    }) {
+        return SharedResidentPlan {
+            consumer: plan,
+            producers: Vec::new(),
+            diagnostics: SharedResidentExtractionDiagnostics::default(),
+        };
     }
+    extract_shared_resident_subplans(plan)
+}
 
+fn extract_shared_resident_subplans(plan: QueryPlan) -> SharedResidentPlan {
     let parents = parents_by_node(&plan);
     let mut selected = Vec::new();
+    let mut diagnostics = SharedResidentExtractionDiagnostics {
+        considered_count: plan.node_count(),
+        extracted_count: 0,
+        rejected_count: 0,
+        candidates: Vec::with_capacity(plan.node_count()),
+    };
     for node in plan.nodes().iter().rev() {
-        if parents[node.id.index()].len() < 2
-            || subtree_contains_gpu_resident_source(&plan, node.id)
-            || !subtree_is_closed(&plan, node.id, &parents)
-            || selected.iter().any(|selected_root| subtree_contains(&plan, *selected_root, node.id))
-        {
-            continue;
+        let producer = producer_plan_for_root(&plan, node.id);
+        let reason = if parents[node.id.index()].len() < 2 {
+            SharedResidentExtractionReason::NotRepeated
+        } else if !plan.dynamic_filter_routes().is_empty() {
+            SharedResidentExtractionReason::DynamicFilterRoutesUnremappable
+        } else if subtree_contains_gpu_resident_source(&plan, node.id) {
+            SharedResidentExtractionReason::ContainsGpuResidentSource
+        } else if !subtree_is_closed(&plan, node.id, &parents) {
+            SharedResidentExtractionReason::SubplanNotClosed
+        } else if selected.iter().any(|selected_root| subtree_contains(&plan, *selected_root, node.id)) {
+            SharedResidentExtractionReason::NestedUnderSelectedSubplan
+        } else if query_plan_hard_row_upper_bound(&producer).is_none() {
+            SharedResidentExtractionReason::ResidentRowBoundUnavailable
+        } else {
+            selected.push(node.id);
+            SharedResidentExtractionReason::Extracted
+        };
+        diagnostics.candidates.push(SharedResidentExtractionCandidateDiagnostics {
+            node_id: node.id,
+            subplan_fingerprint: canonical_execution_scope_fingerprint(&producer),
+            consumer_occurrences: parents[node.id.index()].clone(),
+            decision: match reason {
+                SharedResidentExtractionReason::Extracted => SharedResidentExtractionDecision::Extracted,
+                SharedResidentExtractionReason::ResidentRowBoundUnavailable => {
+                    SharedResidentExtractionDecision::Rejected
+                },
+                _ => SharedResidentExtractionDecision::Skipped,
+            },
+            reason,
+            resident_input_name: None,
+        });
+        if reason == SharedResidentExtractionReason::ResidentRowBoundUnavailable {
+            diagnostics.rejected_count += 1;
         }
-        selected.push(node.id);
     }
     selected.sort();
 
@@ -61,12 +188,7 @@ pub fn extract_shared_resident_subplans(plan: QueryPlan) -> SharedResidentPlan {
         .collect::<BTreeSet<_>>();
     let mut input_index = 0;
     for root in selected {
-        let producer = rewrite::finish_compacted_rewritten_plan(
-            plan.nodes().to_vec(),
-            root,
-            &ResultSink::GpuResident { input: root },
-        )
-        .with_rewrite_state_from(&plan);
+        let producer = producer_plan_for_root(&plan, root);
         let input_name = loop {
             let candidate = format!("__nexus_shared_resident_{input_index}");
             input_index += 1;
@@ -76,17 +198,30 @@ pub fn extract_shared_resident_subplans(plan: QueryPlan) -> SharedResidentPlan {
         };
         let schema = producer.output_schema().clone();
         let mut source = GpuResidentSource::new(&input_name, schema.clone());
-        if let Some(row_count_upper_bound) = query_plan_hard_row_upper_bound(&producer) {
-            source = source.with_row_count_upper_bound(row_count_upper_bound);
-        }
+        let row_count_upper_bound = query_plan_hard_row_upper_bound(&producer)
+            .expect("selected shared-resident producers have a hard row bound");
+        source = source.with_row_count_upper_bound(row_count_upper_bound);
         nodes[root.index()].kind = PlanNode::Source(Box::new(SourceNode::GpuResident(source)));
         nodes[root.index()].facts = PlanFacts::device(schema, SchemaBehavior::SourceOutput);
         producers.push(SharedResidentProducerPlan { input_name, plan: producer });
+        let decision = diagnostics
+            .candidates
+            .iter_mut()
+            .find(|candidate| candidate.node_id == root)
+            .expect("selected extraction root retains diagnostics");
+        decision.resident_input_name = Some(producers.last().expect("producer was appended").input_name.clone());
+        diagnostics.extracted_count += 1;
     }
 
     let consumer =
         rewrite::finish_compacted_rewritten_plan(nodes, plan.root_id(), plan.sink()).with_rewrite_state_from(&plan);
-    SharedResidentPlan { consumer, producers }
+    diagnostics.candidates.sort_by_key(|candidate| candidate.node_id);
+    SharedResidentPlan { consumer, producers, diagnostics }
+}
+
+fn producer_plan_for_root(plan: &QueryPlan, root: NodeId) -> QueryPlan {
+    rewrite::finish_compacted_rewritten_plan(plan.nodes().to_vec(), root, &ResultSink::GpuResident { input: root })
+        .with_rewrite_state_from(plan)
 }
 
 fn parents_by_node(plan: &QueryPlan) -> Vec<Vec<NodeId>> {
@@ -136,6 +271,10 @@ mod tests {
 
     use super::*;
     use crate::{
+        dynamic_filter::{
+            DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterId, DynamicFilterKind,
+            DynamicFilterProducer, DynamicFilterRoute,
+        },
         expr::{BinaryOp, ColumnRef, Expr, LiteralValue},
         plan::{JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, QueryPlanBuilder},
         source::{LocalParquetFile, LocalParquetSource},
@@ -180,9 +319,64 @@ mod tests {
             ]),
             Arc::clone(&output),
         );
-        let split = extract_shared_resident_subplans(builder.finish_with_host_sink_schema(join, output));
+        let resident = builder.add_source(SourceNode::GpuResident(
+            GpuResidentSource::new("existing-resident", Arc::clone(&schema)).with_row_count_upper_bound(8),
+        ));
+        let outer = builder.add_join(
+            join,
+            resident,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::unqualified("left_name"), ColumnRef::unqualified("name"))],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::new(JoinSide::Left, ColumnRef::unqualified("left_name"), "left_name"),
+                JoinOutputColumn::new(JoinSide::Left, ColumnRef::unqualified("right_name"), "right_name"),
+            ]),
+            Arc::clone(&output),
+        );
+        let plan = builder.finish_with_host_sink_schema(outer, output);
+        let considered_count = plan.node_count();
+        let routed = plan.clone().with_dynamic_filter_routes(vec![DynamicFilterRoute::new(
+            DynamicFilterId::new(0),
+            DynamicFilterProducer::AggregateGroupKeys { aggregate_node_id: join },
+            DynamicFilterConsumer::LocalParquetSource { source_node_id: source },
+            vec!["id".to_string()],
+            vec!["id".to_string()],
+            vec![DynamicFilterKind::Range],
+            DynamicFilterConsumerLowering::ReaderPredicate,
+        )]);
+        let routed_split = optimize_shared_resident_extraction(routed);
+        assert!(routed_split.producers.is_empty());
+        let routed_candidate = routed_split
+            .diagnostics
+            .candidates
+            .iter()
+            .find(|candidate| candidate.node_id == filtered)
+            .expect("the repeated routed subplan must retain one decision");
+        assert_eq!(routed_candidate.decision, SharedResidentExtractionDecision::Skipped);
+        assert_eq!(routed_candidate.reason, SharedResidentExtractionReason::DynamicFilterRoutesUnremappable);
+
+        let optimized = super::super::optimize_query_plan(plan, &super::super::NativeOptimizerOptions::disabled());
+        let split = SharedResidentPlan {
+            consumer: optimized.plan,
+            producers: optimized.shared_resident_producers,
+            diagnostics: optimized.diagnostics.shared_resident_extraction,
+        };
 
         assert_eq!(split.producers.len(), 1);
+        assert_eq!(split.diagnostics.considered_count, considered_count);
+        assert_eq!(split.diagnostics.extracted_count, 1);
+        let extracted = split
+            .diagnostics
+            .candidates
+            .iter()
+            .find(|candidate| candidate.decision == SharedResidentExtractionDecision::Extracted)
+            .expect("one repeated closed subplan must be extracted");
+        assert_eq!(extracted.reason, SharedResidentExtractionReason::Extracted);
+        assert_eq!(extracted.consumer_occurrences.len(), 2);
+        assert_eq!(extracted.resident_input_name.as_deref(), Some(split.producers[0].input_name.as_str()));
+        assert!(!extracted.subplan_fingerprint.is_empty());
         assert_eq!(split.producers[0].plan.root_node().output_schema(), &schema);
         let resident_sources = split
             .consumer
@@ -190,7 +384,9 @@ mod tests {
             .iter()
             .filter_map(|node| match &node.kind {
                 PlanNode::Source(source) => match source.as_ref() {
-                    SourceNode::GpuResident(source) => Some(source),
+                    SourceNode::GpuResident(source) if source.input_name.starts_with("__nexus_shared_resident_") => {
+                        Some(source)
+                    },
                     _ => None,
                 },
                 _ => None,
@@ -204,11 +400,74 @@ mod tests {
         );
     }
 
+    #[test]
+    fn repeated_closed_candidate_without_a_hard_row_bound_is_rejected() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+            vec![LocalParquetFile::new("/tmp/shared-resident-unbounded.parquet")],
+            Arc::clone(&schema),
+            vec!["id".to_string()],
+        )));
+        let filtered = builder.add_filter(
+            source,
+            Expr::binary(Expr::column("id"), BinaryOp::Eq, Expr::Literal(LiteralValue::Int64(1))),
+            Arc::clone(&schema),
+        );
+        let repeated = builder.add_join(
+            filtered,
+            filtered,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::unqualified("id"), ColumnRef::unqualified("id"))],
+            )
+            .with_output_projection(vec![JoinOutputColumn::new(
+                JoinSide::Left,
+                ColumnRef::unqualified("id"),
+                "id",
+            )]),
+            Arc::clone(&schema),
+        );
+        let resident = builder.add_source(SourceNode::GpuResident(
+            GpuResidentSource::new("existing-resident", Arc::clone(&schema)).with_row_count_upper_bound(1),
+        ));
+        let root = builder.add_join(
+            repeated,
+            resident,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::unqualified("id"), ColumnRef::unqualified("id"))],
+            )
+            .with_output_projection(vec![JoinOutputColumn::new(
+                JoinSide::Left,
+                ColumnRef::unqualified("id"),
+                "id",
+            )]),
+            Arc::clone(&schema),
+        );
+        let split = optimize_shared_resident_extraction(builder.finish_with_host_sink_schema(root, schema));
+
+        assert!(split.producers.is_empty());
+        assert_eq!(split.diagnostics.rejected_count, 1);
+        let rejected = split
+            .diagnostics
+            .candidates
+            .iter()
+            .find(|candidate| candidate.node_id == filtered)
+            .expect("the repeated closed candidate must retain its rejection");
+        assert_eq!(rejected.decision, SharedResidentExtractionDecision::Rejected);
+        assert_eq!(rejected.reason, SharedResidentExtractionReason::ResidentRowBoundUnavailable);
+    }
+
     fn resident_sources_node_id(plan: &QueryPlan) -> NodeId {
         plan.nodes()
             .iter()
             .find(|node| {
-                matches!(&node.kind, PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::GpuResident(_)))
+                matches!(
+                    &node.kind,
+                    PlanNode::Source(source)
+                        if matches!(source.as_ref(), SourceNode::GpuResident(source) if source.input_name.starts_with("__nexus_shared_resident_"))
+                )
             })
             .expect("consumer must contain the extracted resident source")
             .id

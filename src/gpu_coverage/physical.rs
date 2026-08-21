@@ -59,6 +59,16 @@ pub(super) fn candidate_outcomes_from_report(report: &PlanningReport) -> Vec<Que
                 remedy: None,
                 cost_evidence: None,
             },
+            CandidateOutcome::Deferred { candidate, producer_binding, .. } => QueryGpuCandidateOutcome {
+                selection: QueryGpuCandidateSelectionOutcome::Deferred,
+                candidate_family: candidate_shape_family(candidate),
+                reason_code: Some(producer_binding.reason_code().to_string()),
+                reason_kind: Some(QueryGpuCandidateReasonKind::PlanShape),
+                detail: candidate.shape.clone(),
+                category: Some("producer_binding".to_string()),
+                remedy: None,
+                cost_evidence: None,
+            },
             CandidateOutcome::NotSupported { candidate, capability_reason } => QueryGpuCandidateOutcome {
                 selection: QueryGpuCandidateSelectionOutcome::NotSupported,
                 candidate_family: candidate_shape_family(candidate),
@@ -173,7 +183,9 @@ pub(super) fn planning_diagnostics_did_io(diagnostics: &crate::planner::NativePl
             CandidateOutcome::NotSupported { capability_reason, .. } => {
                 capability_reason_is_table_format(*capability_reason)
             },
-            CandidateOutcome::Selected { .. } | CandidateOutcome::NotSelectedByCost { .. } => false,
+            CandidateOutcome::Selected { .. }
+            | CandidateOutcome::Deferred { .. }
+            | CandidateOutcome::NotSelectedByCost { .. } => false,
         })
 }
 

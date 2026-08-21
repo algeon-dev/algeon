@@ -515,7 +515,18 @@ impl DataFrame {
                     .map_err(|error| error.reanchor(operation))?,
                 ))
             } else {
-                None
+                Some(sorting::SortedOrderPreflight::Lexicographic(
+                    sorting::sorted_order_lexicographic_preflight(
+                        self.row_count,
+                        &[key_type],
+                        &[null_count],
+                        options.stable,
+                        &orders,
+                        null_orders.as_deref().expect("sort options always resolve null precedence"),
+                        output_domain.device_id(),
+                    )
+                    .map_err(|error| error.reanchor(operation))?,
+                ))
             }
         } else if !options.stable && by_refs.len() >= 2 {
             let metadata = key_indices

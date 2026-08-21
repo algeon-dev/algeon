@@ -177,6 +177,14 @@ impl QueryPlanBuilder {
         self.try_add_vector_algorithm(spec).expect("vector algorithm relation inputs must exist")
     }
 
+    /// Returns whether the engine-owned output facts prove uniqueness on the
+    /// requested physical columns for the current partial plan.
+    pub fn output_is_unique_on(&self, node: NodeId, columns: &std::collections::BTreeSet<String>) -> Result<bool> {
+        self.assert_input_exists(node);
+        let plan = self.clone().finish_gpu_resident(node);
+        crate::admission::plan_node_is_unique_on(&plan, node, columns)
+    }
+
     /// Adds a typed vector algorithm node and validates all relation references.
     pub fn try_add_vector_algorithm(&mut self, spec: VectorAlgorithmSpec) -> Result<NodeId> {
         let inputs = spec.params.relation_bindings().map(|binding| binding.input).collect::<Vec<_>>();
