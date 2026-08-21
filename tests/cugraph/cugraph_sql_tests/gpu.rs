@@ -493,7 +493,8 @@ async fn cugraph_sql_gpu_composed_attempt_returns_cache_checkouts_before_deferre
     let state = backend
         .install_on(SessionStateBuilder::new().with_config(config).with_default_features())
         .unwrap()
-        .with_cugraph_sql(cugraph)
+        .try_with_cugraph_sql(cugraph)
+        .expect("install cuGraph SQL")
         .build();
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("graph_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
@@ -626,7 +627,8 @@ async fn cugraph_sql_backend_session_records_query_service_admission_metrics() {
     let state = backend
         .install_on(SessionStateBuilder::new().with_config(config).with_default_features())
         .unwrap()
-        .with_cugraph_sql(cugraph)
+        .try_with_cugraph_sql(cugraph)
+        .expect("install cuGraph SQL")
         .build();
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("tiny_directed_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();

@@ -15,9 +15,12 @@ use datafusion::{
 use datafusion_nexus::{
     backend::NexusGpuBackend,
     native_report::{
-        NativePlanningFailure, NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput,
-        NativeTpcdsParityNativePlanningOutcome, NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityRow,
-        NativeTpcdsParityWorkloadItem, ParityFloatTolerance,
+        NativePlanningFailure,
+        bench_support::{
+            NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput, NativeTpcdsParityNativePlanningOutcome,
+            NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityRow, NativeTpcdsParityWorkloadItem,
+            ParityFloatTolerance,
+        },
     },
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     session::NexusSessionStateBuilderExt,

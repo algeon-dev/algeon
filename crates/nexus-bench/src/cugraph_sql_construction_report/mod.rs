@@ -75,7 +75,7 @@ async fn run_report(dir: &Path, rows: usize) -> Result<(), Box<dyn Error>> {
         .with_config(config)
         .with_default_features()
         .with_nexus_native_rule(native_rule)
-        .with_cugraph_sql(CugraphSqlConfig::default())
+        .try_with_cugraph_sql(CugraphSqlConfig::default())?
         .build();
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("synthetic_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await?;

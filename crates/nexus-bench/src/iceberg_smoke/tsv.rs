@@ -119,7 +119,6 @@ impl CapabilityReasonExt for CapabilityReason {
             CapabilityReason::IcebergResidualPredicateUnsupported,
             CapabilityReason::IcebergRowSelectionUnsupported,
             CapabilityReason::IcebergObjectStoreReadUnsupported,
-            CapabilityReason::IcebergSnapshotUnsupported,
         ]
         .into_iter()
         .find(|reason| reason.code() == code)

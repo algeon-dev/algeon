@@ -2468,7 +2468,8 @@ async fn cugraph_sql_bfs_table_function_records_graph_residency_for_datafusion_p
     let state = datafusion::execution::SessionStateBuilder::new()
         .with_config(config)
         .with_default_features()
-        .with_cugraph_sql(CugraphSqlConfig::default())
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
         .build();
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("citation_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
@@ -2739,7 +2740,8 @@ async fn cugraph_sql_bfs_table_function_records_graph_residency_with_runner_defa
     write_edge_parquet(&path);
     let state = datafusion::execution::SessionStateBuilder::new()
         .with_default_features()
-        .with_cugraph_sql(CugraphSqlConfig::default())
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
         .build();
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("citation_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();

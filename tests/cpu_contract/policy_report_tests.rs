@@ -19,17 +19,14 @@ fn capability_reason_codes_are_stable_manifest_values() {
         (CapabilityReason::NativeBoundedJoinUnsupported, "native_bounded_join_unsupported"),
         (CapabilityReason::NativeOrderedOutputUnsupported, "native_ordered_output_unsupported"),
         (CapabilityReason::NativeSourceNonLocalObjectStore, "native_source_non_local_object_store"),
-        (CapabilityReason::NativeSourcePartitionColumns, "native_source_partition_columns"),
         (CapabilityReason::NativeSourceExprAdapter, "native_source_expr_adapter"),
         (CapabilityReason::NativeSourceParquetFileReaderFactory, "native_source_parquet_file_reader_factory"),
-        (CapabilityReason::NativeSourceScanLimit, "native_source_scan_limit"),
         (CapabilityReason::NativeSourcePreserveOrder, "native_source_preserve_order"),
         (CapabilityReason::NativeSourceOutputOrdering, "native_source_output_ordering"),
         (CapabilityReason::NativeSourcePushedDownParquetPredicate, "native_source_pushed_down_parquet_predicate"),
         (CapabilityReason::NativeSourceEmpty, "native_source_empty"),
         (CapabilityReason::NativeSourcePartitionValues, "native_source_partition_values"),
         (CapabilityReason::NativeSourceByteRange, "native_source_byte_range"),
-        (CapabilityReason::NativeSourceFileOrdering, "native_source_file_ordering"),
         (CapabilityReason::NativeSourceRowSelection, "native_source_row_selection"),
         (CapabilityReason::NativeSourceSchemaMapping, "native_source_schema_mapping"),
         (CapabilityReason::TableFormatUnsupported, "table_format_unsupported"),
@@ -44,7 +41,6 @@ fn capability_reason_codes_are_stable_manifest_values() {
         (CapabilityReason::IcebergRowSelectionUnsupported, "iceberg_row_selection_unsupported"),
         (CapabilityReason::IcebergObjectStoreReadUnsupported, "iceberg_object_store_read_unsupported"),
         (CapabilityReason::IcebergFileIoSourceAccessUnverified, "iceberg_file_io_source_access_unverified"),
-        (CapabilityReason::IcebergSnapshotUnsupported, "iceberg_snapshot_unsupported"),
     ];
 
     for (reason, expected) in codes {

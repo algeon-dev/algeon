@@ -1,8 +1,4 @@
-use datafusion::{
-    common::config::{ConfigOptions, ExtensionOptions},
-    execution::SessionStateBuilder,
-    prelude::SessionConfig,
-};
+use datafusion::{common::config::ExtensionOptions, execution::SessionStateBuilder, prelude::SessionConfig};
 
 use super::*;
 use crate::{
@@ -290,6 +286,43 @@ fn backend_installs_configured_final_plan_requirements() {
 }
 
 #[test]
+fn backend_session_binding_predicate_tracks_installed_backend_identity() {
+    let backend = InstalledTestGpuBackend::new();
+
+    let bound_state = backend.install_on(SessionStateBuilder::new()).unwrap().build();
+    assert!(
+        backend.backend().is_session_state_bound(&bound_state),
+        "a session installed by this backend is bound to it"
+    );
+
+    let uninstalled_state = SessionStateBuilder::new().build();
+    assert!(
+        !backend.backend().is_session_state_bound(&uninstalled_state),
+        "a session without the native optimizer is not bound"
+    );
+
+    let planning_only_state =
+        SessionStateBuilder::new().with_nexus_native(NexusNativeOptimizerConfig::default()).build();
+    assert!(
+        !backend.backend().is_session_state_bound(&planning_only_state),
+        "an installed optimizer without admission authority is not bound"
+    );
+}
+
+#[test]
+fn backend_session_binding_predicate_rejects_sessions_from_another_backend() {
+    let first = InstalledTestGpuBackend::new();
+    let first_state = first.install_on(SessionStateBuilder::new()).unwrap().build();
+    drop(first);
+
+    let second = InstalledTestGpuBackend::new();
+    assert!(
+        !second.backend().is_session_state_bound(&first_state),
+        "a session installed by another backend is not bound"
+    );
+}
+
+#[test]
 fn backend_install_rejects_conflicting_preexisting_session_extension() {
     let backend = bounded_backend_builder(&[0]).build_test_validation_projection().unwrap();
     let mut config = SessionConfig::new();
@@ -303,14 +336,22 @@ fn backend_install_rejects_conflicting_preexisting_session_extension() {
 }
 
 #[test]
-fn backend_freeze_rejects_direct_session_config_mutation_at_planning_time() {
-    let backend = bounded_backend_builder(&[0]).build_test_validation_projection().unwrap();
-    let state = backend.install_on(SessionStateBuilder::new()).unwrap().build();
-    let mut extension = state.config_options().extensions.get::<DataFusionNexusSessionConfig>().unwrap().clone();
-    extension.native_max_source_chunk_bytes += 1;
-    let mut options = ConfigOptions::default();
-    options.extensions.insert(extension);
+fn backend_install_on_with_cugraph_sql_preserves_conflicting_reinstall_error() {
+    use crate::cugraph_sql::{CugraphGraphOptions, CugraphSqlConfig};
 
-    let error = backend.optimizer_config().with_datafusion_config_options(&options).unwrap_err();
-    assert!(error.to_string().contains("native.max_source_chunk_bytes"));
+    let backend = bounded_backend_builder(&[0]).build_test_validation_projection().unwrap();
+    let mut installed =
+        backend.install_on_with_cugraph_sql(SessionStateBuilder::new(), CugraphSqlConfig::default()).unwrap();
+    // Carry the installed catalog (including the cugraph family) into a fresh
+    // builder whose table functions are empty, so the conflicting family
+    // projection — not the preexisting-UDTF admission gate — is the failure.
+    let builder = SessionStateBuilder::new().with_config(installed.config().as_ref().unwrap().clone());
+    let conflicting = CugraphSqlConfig {
+        default_graph_options: CugraphGraphOptions { directed: false, ..Default::default() },
+        ..Default::default()
+    };
+    let error = backend.install_on_with_cugraph_sql(builder, conflicting).unwrap_err();
+    assert_eq!(error.code(), ErrorCode::InvalidRequest);
+    assert_eq!(error.operation(), "datafusion_nexus.gpu_functions.install");
+    assert!(error.message().contains("conflicting GPU function family installation"));
 }

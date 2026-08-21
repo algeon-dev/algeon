@@ -38,7 +38,7 @@ iceberg-e2e = [
   "dep:iceberg-catalog-glue",
   "datafusion-nexus/iceberg",
 ]
-server-iceberg-e2e = ["iceberg-e2e", "dep:nexus-server", "nexus-server/iceberg"]
+server-iceberg-e2e = ["iceberg-e2e", "dep:nexus-server", "nexus-server/iceberg", "datafusion-nexus/bench-support"]
 server-runtime-observability-e2e = ["server-iceberg-e2e", "dep:nexus-query-engine"]
 embedded-backend-e2e = ["server-iceberg-e2e", "dep:reqwest"]
 # The production-validation runner is intentionally opt-in. The base feature

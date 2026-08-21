@@ -5,7 +5,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use datafusion_nexus::native_report::{NativeTpcdsParityReport, ParityFloatTolerance};
+use datafusion_nexus::native_report::bench_support::{NativeTpcdsParityReport, ParityFloatTolerance};
 use nexus_bench::{
     report_metadata::ReportDatasetMetadataExt,
     report_workload::{

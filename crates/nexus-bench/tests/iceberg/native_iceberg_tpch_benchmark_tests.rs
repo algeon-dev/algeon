@@ -7,8 +7,8 @@ use arrow::{
 };
 use datafusion_nexus::{
     native_report::{
-        FinalPlanDisposition, NativeDataFusionPlanningOutcome, NativeDataFusionRuntimeOutcome, ParityComparisonMode,
-        ParityStatus,
+        FinalPlanDisposition, NativeDataFusionPlanningOutcome, NativeDataFusionRuntimeOutcome,
+        bench_support::{ParityComparisonMode, ParityStatus},
     },
     planner::NexusNativeOptimizerConfig,
     session_config::DataFusionNexusSessionConfig,
@@ -149,8 +149,8 @@ fn tpch_native_execution_profile_uses_decision_grade_source_chunk_defaults() {
         &NexusNativeOptimizerConfig::default().with_native_execution_config(config.clone()),
     );
 
-    assert_eq!(projection.native_max_source_chunk_bytes, 32 * 1024 * 1024 * 1024);
-    assert_eq!(projection.native_max_row_groups_per_chunk, 1024);
+    assert_eq!(projection.native_max_source_chunk_bytes(), 32 * 1024 * 1024 * 1024);
+    assert_eq!(projection.native_max_row_groups_per_chunk(), 1024);
     assert_eq!(config.source_scheduler_policy().max_source_reads_in_flight(), 2);
 }
 
@@ -172,7 +172,7 @@ fn iceberg_benchmark_native_optimizer_allows_source_reuse_up_to_profile_source_c
     let max_source_reads_in_flight = config.source_scheduler_policy().max_source_reads_in_flight() as u64;
     assert_eq!(
         options.local_parquet_source_reuse.max_variant_selected_bytes,
-        projection.native_max_source_chunk_bytes * max_source_reads_in_flight
+        projection.native_max_source_chunk_bytes() * max_source_reads_in_flight
     );
 
     let smoke_config = native_iceberg_smoke_report::native_execution_config_for_profile_with_env(

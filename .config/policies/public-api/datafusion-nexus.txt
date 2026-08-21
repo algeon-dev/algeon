@@ -68,19 +68,6 @@ pub use datafusion_nexus::backend::DeviceQuarantineInjection
 pub use datafusion_nexus::backend::GpuBackendFaultInjector
 pub use datafusion_nexus::backend::GpuDeviceMemoryLimit
 pub use datafusion_nexus::backend::GpuMemoryOwnership
-pub struct datafusion_nexus::backend::InstalledTestGpuBackend
-impl datafusion_nexus::backend::InstalledTestGpuBackend
-pub fn datafusion_nexus::backend::InstalledTestGpuBackend::admit_query(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::query_service::handle::QueryHandle>
-pub fn datafusion_nexus::backend::InstalledTestGpuBackend::backend(&self) -> &datafusion_nexus::backend::NexusGpuBackend
-pub fn datafusion_nexus::backend::InstalledTestGpuBackend::install_on(&self, datafusion::execution::session_state::SessionStateBuilder) -> datafusion_nexus::error::Result<datafusion::execution::session_state::SessionStateBuilder>
-pub fn datafusion_nexus::backend::InstalledTestGpuBackend::new() -> Self
-pub fn datafusion_nexus::backend::InstalledTestGpuBackend::optimizer_config(&self) -> &datafusion_nexus::planner::NexusNativeOptimizerConfig
-pub fn datafusion_nexus::backend::InstalledTestGpuBackend::with_config(datafusion_nexus::native_exec::NexusNativeExecutionConfig, datafusion_nexus::backend::NexusGpuDeviceProfile, datafusion_nexus::backend::NexusGpuQueuePolicy) -> Self
-pub fn datafusion_nexus::backend::InstalledTestGpuBackend::with_config_and_final_plan_requirements(datafusion_nexus::native_exec::NexusNativeExecutionConfig, datafusion_nexus::backend::NexusGpuDeviceProfile, datafusion_nexus::backend::NexusGpuQueuePolicy, impl core::iter::traits::collect::IntoIterator<Item = datafusion_nexus::planner::FinalPlanRequirement>) -> Self
-impl core::default::Default for datafusion_nexus::backend::InstalledTestGpuBackend
-pub fn datafusion_nexus::backend::InstalledTestGpuBackend::default() -> Self
-impl core::ops::drop::Drop for datafusion_nexus::backend::InstalledTestGpuBackend
-pub fn datafusion_nexus::backend::InstalledTestGpuBackend::drop(&mut self)
 pub struct datafusion_nexus::backend::NexusGpuBackend
 impl datafusion_nexus::backend::NexusGpuBackend
 pub fn datafusion_nexus::backend::NexusGpuBackend::admission_snapshot(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::query_service::service::api::QueryServiceAdmissionSnapshot>
@@ -107,15 +94,15 @@ pub fn datafusion_nexus::backend::NexusGpuBackend::device_profiles(&self) -> &[d
 pub fn datafusion_nexus::backend::NexusGpuBackend::device_startup_records(&self) -> &[nexus_query_engine::runtime::backend_core::GpuBackendDeviceStartupRecord]
 pub fn datafusion_nexus::backend::NexusGpuBackend::device_telemetry_snapshots(&self) -> nexus_query_engine::error::Result<alloc::vec::Vec<nexus_query_engine::runtime::gpu::inventory::DeviceTelemetrySnapshot>>
 pub fn datafusion_nexus::backend::NexusGpuBackend::fault_injector(&self) -> nexus_query_engine::runtime::backend_core::GpuBackendFaultInjector
-pub fn datafusion_nexus::backend::NexusGpuBackend::from_optimizer_config_for_admission(datafusion_nexus::planner::NexusNativeOptimizerConfig, alloc::vec::Vec<datafusion_nexus::backend::NexusGpuDeviceProfile>, alloc::vec::Vec<(usize, nexus_query_engine::runtime::backend_core::GpuMemoryOwnership)>, datafusion_nexus::backend::NexusGpuQueuePolicy) -> datafusion_nexus::error::Result<core::option::Option<Self>>
+pub fn datafusion_nexus::backend::NexusGpuBackend::from_optimizer_config_for_admission(datafusion_nexus::planner::NexusNativeOptimizerConfig, alloc::vec::Vec<datafusion_nexus::backend::NexusGpuDeviceProfile>, alloc::vec::Vec<(usize, nexus_query_engine::runtime::backend_core::GpuMemoryOwnership)>, datafusion_nexus::backend::NexusGpuQueuePolicy) -> datafusion_nexus::error::Result<Self>
 pub fn datafusion_nexus::backend::NexusGpuBackend::gpu_execution_pool_reports(&self) -> nexus_query_engine::error::Result<alloc::vec::Vec<nexus_query_engine::runtime::gpu_execution_pool::GpuExecutionPoolSnapshot>>
 pub fn datafusion_nexus::backend::NexusGpuBackend::gpu_execution_query_report(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::gpu_execution_pool::GpuExecutionQuerySnapshot>
 pub fn datafusion_nexus::backend::NexusGpuBackend::identity(&self) -> nexus_query_engine::runtime::backend_core::GpuBackendCoreIdentity
 pub fn datafusion_nexus::backend::NexusGpuBackend::install_on(&self, datafusion::execution::session_state::SessionStateBuilder) -> datafusion_nexus::error::Result<datafusion::execution::session_state::SessionStateBuilder>
 pub fn datafusion_nexus::backend::NexusGpuBackend::install_on_with_cugraph_sql(&self, datafusion::execution::session_state::SessionStateBuilder, datafusion_nexus::cugraph_sql::CugraphSqlConfig) -> datafusion_nexus::error::Result<datafusion::execution::session_state::SessionStateBuilder>
+pub fn datafusion_nexus::backend::NexusGpuBackend::is_session_state_bound(&self, &datafusion::execution::session_state::SessionState) -> bool
 pub fn datafusion_nexus::backend::NexusGpuBackend::optimizer_config(&self) -> &datafusion_nexus::planner::NexusNativeOptimizerConfig
 pub fn datafusion_nexus::backend::NexusGpuBackend::same_backend(&self, &Self) -> bool
-pub fn datafusion_nexus::backend::NexusGpuBackend::session_capability(&self) -> &nexus_query_engine::runtime::backend_core::GpuBackendSession
 pub fn datafusion_nexus::backend::NexusGpuBackend::set_cugraph_bfs_singleflight_enabled(&self, bool)
 pub fn datafusion_nexus::backend::NexusGpuBackend::try_admit_query(&self) -> nexus_query_engine::error::Result<core::option::Option<nexus_query_engine::runtime::query_service::handle::QueryHandle>>
 impl datafusion_nexus::backend::NexusGpuBackend
@@ -125,7 +112,6 @@ pub fn datafusion_nexus::backend::NexusGpuBackend::take_abandoned_attempt_report
 pub struct datafusion_nexus::backend::NexusGpuBackendBuilder
 impl datafusion_nexus::backend::NexusGpuBackendBuilder
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::build(self) -> datafusion_nexus::error::Result<datafusion_nexus::backend::NexusGpuBackend>
-pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::build_test_validation_projection(self) -> datafusion_nexus::error::Result<datafusion_nexus::backend::TestBackendValidationProjection>
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::device_memory_ownership(self, impl core::iter::traits::collect::IntoIterator<Item = (usize, nexus_query_engine::runtime::backend_core::GpuMemoryOwnership)>) -> Self
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::device_profiles(self, impl core::iter::traits::collect::IntoIterator<Item = datafusion_nexus::backend::NexusGpuDeviceProfile>) -> Self
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::queue_policy(self, datafusion_nexus::backend::NexusGpuQueuePolicy) -> Self
@@ -165,10 +151,10 @@ pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::with_memory_limit(self,
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::with_source_work_per_attempt(self, usize) -> Self
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::with_telemetry(self, bool) -> Self
 #[non_exhaustive] pub struct datafusion_nexus::backend::NexusGpuQueuePolicy
-pub datafusion_nexus::backend::NexusGpuQueuePolicy::max_overtakes_per_waiter: u32
-pub datafusion_nexus::backend::NexusGpuQueuePolicy::max_queue_wait: core::time::Duration
-pub datafusion_nexus::backend::NexusGpuQueuePolicy::max_queued_attempts: usize
 impl datafusion_nexus::backend::NexusGpuQueuePolicy
+pub fn datafusion_nexus::backend::NexusGpuQueuePolicy::max_overtakes_per_waiter(&self) -> u32
+pub fn datafusion_nexus::backend::NexusGpuQueuePolicy::max_queue_wait(&self) -> core::time::Duration
+pub fn datafusion_nexus::backend::NexusGpuQueuePolicy::max_queued_attempts(&self) -> usize
 pub fn datafusion_nexus::backend::NexusGpuQueuePolicy::with_max_overtakes_per_waiter(self, u32) -> Self
 pub fn datafusion_nexus::backend::NexusGpuQueuePolicy::with_max_queue_wait(self, core::time::Duration) -> Self
 pub fn datafusion_nexus::backend::NexusGpuQueuePolicy::with_max_queued_attempts(self, usize) -> Self
@@ -178,16 +164,6 @@ impl core::convert::From<nexus_query_engine::runtime::query_service::config::Que
 pub fn datafusion_nexus::backend::NexusGpuQueuePolicy::from(nexus_query_engine::runtime::query_service::config::QueueBounds) -> Self
 impl core::default::Default for datafusion_nexus::backend::NexusGpuQueuePolicy
 pub fn datafusion_nexus::backend::NexusGpuQueuePolicy::default() -> Self
-pub struct datafusion_nexus::backend::TestBackendValidationProjection
-impl datafusion_nexus::backend::TestBackendValidationProjection
-pub fn datafusion_nexus::backend::TestBackendValidationProjection::device_memory_ownership(&self) -> &[(usize, nexus_query_engine::runtime::backend_core::GpuMemoryOwnership)]
-pub fn datafusion_nexus::backend::TestBackendValidationProjection::device_ordinals(&self) -> &[usize]
-pub fn datafusion_nexus::backend::TestBackendValidationProjection::device_profiles(&self) -> &[datafusion_nexus::backend::NexusGpuDeviceProfile]
-pub fn datafusion_nexus::backend::TestBackendValidationProjection::install_on(&self, datafusion::execution::session_state::SessionStateBuilder) -> datafusion_nexus::error::Result<datafusion::execution::session_state::SessionStateBuilder>
-pub fn datafusion_nexus::backend::TestBackendValidationProjection::optimizer_config(&self) -> &datafusion_nexus::planner::NexusNativeOptimizerConfig
-pub fn datafusion_nexus::backend::TestBackendValidationProjection::query_execution_config(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::query_service::config::QueryExecutionConfig>
-pub fn datafusion_nexus::backend::TestBackendValidationProjection::queue_bounds(&self) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::query_service::config::QueueBounds>
-pub fn datafusion_nexus::backend::test_validation_projection_from_optimizer_config(datafusion_nexus::planner::NexusNativeOptimizerConfig, alloc::vec::Vec<datafusion_nexus::backend::NexusGpuDeviceProfile>, alloc::vec::Vec<(usize, nexus_query_engine::runtime::backend_core::GpuMemoryOwnership)>, datafusion_nexus::backend::NexusGpuQueuePolicy) -> datafusion_nexus::error::Result<core::option::Option<datafusion_nexus::backend::TestBackendValidationProjection>>
 pub mod datafusion_nexus::capability
 pub enum datafusion_nexus::capability::CapabilityReason
 pub datafusion_nexus::capability::CapabilityReason::IcebergDeleteFilesUnsupported
@@ -202,7 +178,6 @@ pub datafusion_nexus::capability::CapabilityReason::IcebergPartitionTransformUns
 pub datafusion_nexus::capability::CapabilityReason::IcebergResidualPredicateUnsupported
 pub datafusion_nexus::capability::CapabilityReason::IcebergRowSelectionUnsupported
 pub datafusion_nexus::capability::CapabilityReason::IcebergScalarValueUnsupported
-pub datafusion_nexus::capability::CapabilityReason::IcebergSnapshotUnsupported
 pub datafusion_nexus::capability::CapabilityReason::NativeBoundedJoinUnsupported
 pub datafusion_nexus::capability::CapabilityReason::NativeDistributedAggregateUnsupported
 pub datafusion_nexus::capability::CapabilityReason::NativeOrderedOutputUnsupported
@@ -211,16 +186,13 @@ pub datafusion_nexus::capability::CapabilityReason::NativeSortPreservingMergeUns
 pub datafusion_nexus::capability::CapabilityReason::NativeSourceByteRange
 pub datafusion_nexus::capability::CapabilityReason::NativeSourceEmpty
 pub datafusion_nexus::capability::CapabilityReason::NativeSourceExprAdapter
-pub datafusion_nexus::capability::CapabilityReason::NativeSourceFileOrdering
 pub datafusion_nexus::capability::CapabilityReason::NativeSourceNonLocalObjectStore
 pub datafusion_nexus::capability::CapabilityReason::NativeSourceOutputOrdering
 pub datafusion_nexus::capability::CapabilityReason::NativeSourceParquetFileReaderFactory
-pub datafusion_nexus::capability::CapabilityReason::NativeSourcePartitionColumns
 pub datafusion_nexus::capability::CapabilityReason::NativeSourcePartitionValues
 pub datafusion_nexus::capability::CapabilityReason::NativeSourcePreserveOrder
 pub datafusion_nexus::capability::CapabilityReason::NativeSourcePushedDownParquetPredicate
 pub datafusion_nexus::capability::CapabilityReason::NativeSourceRowSelection
-pub datafusion_nexus::capability::CapabilityReason::NativeSourceScanLimit
 pub datafusion_nexus::capability::CapabilityReason::NativeSourceSchemaMapping
 pub datafusion_nexus::capability::CapabilityReason::TableFormatPlanningFailed
 pub datafusion_nexus::capability::CapabilityReason::TableFormatUnsupported
@@ -1091,7 +1063,6 @@ pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_statistic
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_trace_id(self, impl core::convert::Into<nexus_query_engine::correlation::TraceId>) -> Self
 impl datafusion_nexus::native_exec::NexusNativeExecutionConfig
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::has_query_admission_authority(&self) -> bool
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::query_admission_source_matches(&self, &nexus_query_engine::runtime::backend_core::GpuBackendSession) -> bool
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_query_service_handle(self, alloc::sync::Arc<nexus_query_engine::runtime::query_service::handle::QueryHandle>) -> Self
 pub struct datafusion_nexus::native_exec::NexusNativeGpuProducerExec
 impl datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec
@@ -1204,64 +1175,6 @@ pub const fn datafusion_nexus::native_report::NativeFallbackPressureOutcome::as_
 pub enum datafusion_nexus::native_report::NativeFallbackPressureWorkloadInput
 pub datafusion_nexus::native_report::NativeFallbackPressureWorkloadInput::PhysicalPlan(alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>)
 pub datafusion_nexus::native_report::NativeFallbackPressureWorkloadInput::PlanningFailure(datafusion_nexus::native_report::NativePlanningFailure)
-pub enum datafusion_nexus::native_report::NativeTpcdsParityCpuOutcome
-pub datafusion_nexus::native_report::NativeTpcdsParityCpuOutcome::ExecutionFailed
-pub datafusion_nexus::native_report::NativeTpcdsParityCpuOutcome::ExecutionFailed::message: alloc::string::String
-pub datafusion_nexus::native_report::NativeTpcdsParityCpuOutcome::PlanningFailed(datafusion_nexus::native_report::NativePlanningFailure)
-pub datafusion_nexus::native_report::NativeTpcdsParityCpuOutcome::Succeeded
-pub datafusion_nexus::native_report::NativeTpcdsParityCpuOutcome::Succeeded::batches: alloc::vec::Vec<arrow_array::record_batch::RecordBatch>
-pub datafusion_nexus::native_report::NativeTpcdsParityCpuOutcome::Succeeded::schema: arrow_schema::schema::SchemaRef
-pub enum datafusion_nexus::native_report::NativeTpcdsParityExternalOutput
-pub datafusion_nexus::native_report::NativeTpcdsParityExternalOutput::Failed
-pub datafusion_nexus::native_report::NativeTpcdsParityExternalOutput::Failed::message: alloc::string::String
-pub datafusion_nexus::native_report::NativeTpcdsParityExternalOutput::NotConfigured
-pub datafusion_nexus::native_report::NativeTpcdsParityExternalOutput::Succeeded
-pub datafusion_nexus::native_report::NativeTpcdsParityExternalOutput::Succeeded::batches: alloc::vec::Vec<arrow_array::record_batch::RecordBatch>
-pub datafusion_nexus::native_report::NativeTpcdsParityExternalOutput::Succeeded::schema: arrow_schema::schema::SchemaRef
-pub enum datafusion_nexus::native_report::NativeTpcdsParityExternalOutputStatus
-pub datafusion_nexus::native_report::NativeTpcdsParityExternalOutputStatus::Failed
-pub datafusion_nexus::native_report::NativeTpcdsParityExternalOutputStatus::NotConfigured
-pub datafusion_nexus::native_report::NativeTpcdsParityExternalOutputStatus::Succeeded
-impl datafusion_nexus::native_report::NativeTpcdsParityExternalOutputStatus
-pub const fn datafusion_nexus::native_report::NativeTpcdsParityExternalOutputStatus::as_str(self) -> &'static str
-pub enum datafusion_nexus::native_report::NativeTpcdsParityNativePlanningOutcome
-pub datafusion_nexus::native_report::NativeTpcdsParityNativePlanningOutcome::Planned
-pub datafusion_nexus::native_report::NativeTpcdsParityNativePlanningOutcome::Planned::accepted: bool
-pub datafusion_nexus::native_report::NativeTpcdsParityNativePlanningOutcome::Planned::diagnostics: alloc::boxed::Box<datafusion_nexus::planner::NativePlanningDiagnostics>
-pub datafusion_nexus::native_report::NativeTpcdsParityNativePlanningOutcome::Planned::planned_plan: alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>
-pub datafusion_nexus::native_report::NativeTpcdsParityNativePlanningOutcome::PlanningFailed(datafusion_nexus::native_report::NativePlanningFailure)
-pub enum datafusion_nexus::native_report::NativeTpcdsParityNativeRuntimeOutcome
-pub datafusion_nexus::native_report::NativeTpcdsParityNativeRuntimeOutcome::Failed
-pub datafusion_nexus::native_report::NativeTpcdsParityNativeRuntimeOutcome::Failed::message: alloc::string::String
-pub datafusion_nexus::native_report::NativeTpcdsParityNativeRuntimeOutcome::NotStarted
-pub datafusion_nexus::native_report::NativeTpcdsParityNativeRuntimeOutcome::Succeeded
-pub datafusion_nexus::native_report::NativeTpcdsParityNativeRuntimeOutcome::Succeeded::batches: alloc::vec::Vec<arrow_array::record_batch::RecordBatch>
-pub datafusion_nexus::native_report::NativeTpcdsParityNativeRuntimeOutcome::Succeeded::metrics: datafusion_physical_expr_common::metrics::MetricsSet
-pub datafusion_nexus::native_report::NativeTpcdsParityNativeRuntimeOutcome::Succeeded::schema: arrow_schema::schema::SchemaRef
-pub enum datafusion_nexus::native_report::ParityComparisonMode
-pub datafusion_nexus::native_report::ParityComparisonMode::NotApplicable
-pub datafusion_nexus::native_report::ParityComparisonMode::OrderedExact
-pub datafusion_nexus::native_report::ParityComparisonMode::OrderedFloatTolerant
-pub datafusion_nexus::native_report::ParityComparisonMode::UnorderedExact
-pub datafusion_nexus::native_report::ParityComparisonMode::UnorderedFloatTolerant
-impl datafusion_nexus::native_report::ParityComparisonMode
-pub const fn datafusion_nexus::native_report::ParityComparisonMode::as_str(self) -> &'static str
-pub const fn datafusion_nexus::native_report::ParityComparisonMode::select(bool, bool) -> Self
-pub enum datafusion_nexus::native_report::ParityStageStatus
-pub datafusion_nexus::native_report::ParityStageStatus::Failed
-pub datafusion_nexus::native_report::ParityStageStatus::NotStarted
-pub datafusion_nexus::native_report::ParityStageStatus::Succeeded
-impl datafusion_nexus::native_report::ParityStageStatus
-pub const fn datafusion_nexus::native_report::ParityStageStatus::as_str(self) -> &'static str
-pub enum datafusion_nexus::native_report::ParityStatus
-pub datafusion_nexus::native_report::ParityStatus::CpuFailed
-pub datafusion_nexus::native_report::ParityStatus::Matched
-pub datafusion_nexus::native_report::ParityStatus::Mismatched
-pub datafusion_nexus::native_report::ParityStatus::NativeFailed
-pub datafusion_nexus::native_report::ParityStatus::NativeRejected
-pub datafusion_nexus::native_report::ParityStatus::NotCompared
-impl datafusion_nexus::native_report::ParityStatus
-pub const fn datafusion_nexus::native_report::ParityStatus::as_str(self) -> &'static str
 pub struct datafusion_nexus::native_report::NativeAggregateStrategyMetricRow
 pub datafusion_nexus::native_report::NativeAggregateStrategyMetricRow::aggregate_encoded_key_partial_low_cardinality_threshold_ppm: usize
 pub datafusion_nexus::native_report::NativeAggregateStrategyMetricRow::aggregate_encoded_key_partial_min_input_rows: usize
@@ -1852,79 +1765,6 @@ pub datafusion_nexus::native_report::NativeTaskRuntimeMetricRow::reservation_rel
 pub datafusion_nexus::native_report::NativeTaskRuntimeMetricRow::reservation_requested_bytes: usize
 impl datafusion_nexus::native_report::NativeTaskRuntimeMetricRow
 pub fn datafusion_nexus::native_report::NativeTaskRuntimeMetricRow::to_stable_kv_row(&self) -> alloc::string::String
-pub struct datafusion_nexus::native_report::NativeTpcdsParityExternalOutputSummary
-pub datafusion_nexus::native_report::NativeTpcdsParityExternalOutputSummary::cpu_parity_detail: core::option::Option<alloc::string::String>
-pub datafusion_nexus::native_report::NativeTpcdsParityExternalOutputSummary::cpu_parity_status: datafusion_nexus::native_report::ParityStatus
-pub datafusion_nexus::native_report::NativeTpcdsParityExternalOutputSummary::output_batches: core::option::Option<usize>
-pub datafusion_nexus::native_report::NativeTpcdsParityExternalOutputSummary::output_fingerprint: core::option::Option<alloc::string::String>
-pub datafusion_nexus::native_report::NativeTpcdsParityExternalOutputSummary::output_rows: core::option::Option<usize>
-pub datafusion_nexus::native_report::NativeTpcdsParityExternalOutputSummary::status: datafusion_nexus::native_report::NativeTpcdsParityExternalOutputStatus
-impl datafusion_nexus::native_report::NativeTpcdsParityExternalOutputSummary
-pub fn datafusion_nexus::native_report::NativeTpcdsParityExternalOutputSummary::not_configured() -> Self
-pub struct datafusion_nexus::native_report::NativeTpcdsParityReport
-pub datafusion_nexus::native_report::NativeTpcdsParityReport::float_tolerance: datafusion_nexus::native_report::ParityFloatTolerance
-pub datafusion_nexus::native_report::NativeTpcdsParityReport::rows: alloc::vec::Vec<datafusion_nexus::native_report::NativeTpcdsParityRow>
-pub datafusion_nexus::native_report::NativeTpcdsParityReport::statistical_aggregate_execution_mode: core::option::Option<nexus_query_engine::mode::StatisticalAggregateExecutionMode>
-pub datafusion_nexus::native_report::NativeTpcdsParityReport::workload_dataset: core::option::Option<datafusion_nexus::native_report::WorkloadDatasetMetadata>
-impl datafusion_nexus::native_report::NativeTpcdsParityReport
-pub fn datafusion_nexus::native_report::NativeTpcdsParityReport::collect(impl core::iter::traits::collect::IntoIterator<Item = datafusion_nexus::native_report::NativeTpcdsParityWorkloadItem>, datafusion_nexus::native_report::ParityFloatTolerance) -> Self
-pub fn datafusion_nexus::native_report::NativeTpcdsParityReport::from_rows(alloc::vec::Vec<datafusion_nexus::native_report::NativeTpcdsParityRow>, datafusion_nexus::native_report::ParityFloatTolerance) -> Self
-pub fn datafusion_nexus::native_report::NativeTpcdsParityReport::matched_count(&self) -> usize
-pub fn datafusion_nexus::native_report::NativeTpcdsParityReport::mismatched_count(&self) -> usize
-pub fn datafusion_nexus::native_report::NativeTpcdsParityReport::to_tsv(&self) -> alloc::string::String
-pub fn datafusion_nexus::native_report::NativeTpcdsParityReport::with_statistical_aggregate_execution_mode(self, nexus_query_engine::mode::StatisticalAggregateExecutionMode) -> Self
-pub fn datafusion_nexus::native_report::NativeTpcdsParityReport::with_workload_dataset_metadata(self, datafusion_nexus::native_report::WorkloadDatasetMetadata) -> Self
-pub struct datafusion_nexus::native_report::NativeTpcdsParityRow
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::comparison_mode: datafusion_nexus::native_report::ParityComparisonMode
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::cpu_output_batches: core::option::Option<usize>
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::cpu_output_fingerprint: core::option::Option<alloc::string::String>
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::cpu_output_rows: core::option::Option<usize>
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::cpu_planning_status: datafusion_nexus::native_report::ParityStageStatus
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::cpu_runtime_status: datafusion_nexus::native_report::ParityStageStatus
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::duckdb_output: datafusion_nexus::native_report::NativeTpcdsParityExternalOutputSummary
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::final_disposition: datafusion_nexus::planner::FinalPlanDisposition
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::host_datafusion_boundary_count: usize
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::native_output_batches: core::option::Option<usize>
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::native_output_fingerprint: core::option::Option<alloc::string::String>
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::native_output_rows: core::option::Option<usize>
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::native_plan_fragment_count: usize
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::native_planning_outcome: core::option::Option<datafusion_nexus::native_report::NativeDataFusionPlanningOutcome>
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::native_reason_code: core::option::Option<alloc::string::String>
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::native_reservation_denied_count: core::option::Option<usize>
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::native_reservation_live_peak_bytes: core::option::Option<usize>
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::native_retry_count: core::option::Option<usize>
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::native_runtime_failure: core::option::Option<alloc::string::String>
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::native_runtime_outcome: datafusion_nexus::native_report::NativeDataFusionRuntimeOutcome
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::native_runtime_started: bool
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::native_unsupported_category: core::option::Option<alloc::string::String>
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::parity_detail: core::option::Option<alloc::string::String>
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::parity_status: datafusion_nexus::native_report::ParityStatus
-pub datafusion_nexus::native_report::NativeTpcdsParityRow::query_id: alloc::string::String
-impl datafusion_nexus::native_report::NativeTpcdsParityRow
-pub fn datafusion_nexus::native_report::NativeTpcdsParityRow::from_workload_item(datafusion_nexus::native_report::NativeTpcdsParityWorkloadItem, datafusion_nexus::native_report::ParityFloatTolerance) -> Self
-pub fn datafusion_nexus::native_report::NativeTpcdsParityRow::to_tsv_line(&self) -> alloc::string::String
-pub struct datafusion_nexus::native_report::NativeTpcdsParityWorkloadItem
-pub datafusion_nexus::native_report::NativeTpcdsParityWorkloadItem::cpu_outcome: datafusion_nexus::native_report::NativeTpcdsParityCpuOutcome
-pub datafusion_nexus::native_report::NativeTpcdsParityWorkloadItem::duckdb_output: datafusion_nexus::native_report::NativeTpcdsParityExternalOutput
-pub datafusion_nexus::native_report::NativeTpcdsParityWorkloadItem::native_planning: datafusion_nexus::native_report::NativeTpcdsParityNativePlanningOutcome
-pub datafusion_nexus::native_report::NativeTpcdsParityWorkloadItem::native_runtime: datafusion_nexus::native_report::NativeTpcdsParityNativeRuntimeOutcome
-pub datafusion_nexus::native_report::NativeTpcdsParityWorkloadItem::query_id: alloc::string::String
-pub datafusion_nexus::native_report::NativeTpcdsParityWorkloadItem::sql: alloc::string::String
-pub struct datafusion_nexus::native_report::ParityComparisonResult
-pub datafusion_nexus::native_report::ParityComparisonResult::cpu_fingerprint: alloc::string::String
-pub datafusion_nexus::native_report::ParityComparisonResult::detail: core::option::Option<alloc::string::String>
-pub datafusion_nexus::native_report::ParityComparisonResult::mode: datafusion_nexus::native_report::ParityComparisonMode
-pub datafusion_nexus::native_report::ParityComparisonResult::native_fingerprint: alloc::string::String
-pub datafusion_nexus::native_report::ParityComparisonResult::status: datafusion_nexus::native_report::ParityStatus
-pub struct datafusion_nexus::native_report::ParityFloatTolerance
-pub datafusion_nexus::native_report::ParityFloatTolerance::absolute: f64
-pub datafusion_nexus::native_report::ParityFloatTolerance::relative: f64
-impl datafusion_nexus::native_report::ParityFloatTolerance
-pub const fn datafusion_nexus::native_report::ParityFloatTolerance::exact() -> Self
-pub fn datafusion_nexus::native_report::ParityFloatTolerance::is_enabled(self) -> bool
-pub const fn datafusion_nexus::native_report::ParityFloatTolerance::new(f64, f64) -> Self
-impl core::default::Default for datafusion_nexus::native_report::ParityFloatTolerance
-pub fn datafusion_nexus::native_report::ParityFloatTolerance::default() -> Self
 pub struct datafusion_nexus::native_report::WorkloadDatasetMetadata
 pub datafusion_nexus::native_report::WorkloadDatasetMetadata::content_fingerprint: core::option::Option<alloc::string::String>
 pub datafusion_nexus::native_report::WorkloadDatasetMetadata::file_count: usize
@@ -1957,8 +1797,6 @@ pub const datafusion_nexus::native_report::NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPO
 pub const datafusion_nexus::native_report::NATIVE_DATAFUSION_EXECUTION_TSV_HEADER: &str
 pub const datafusion_nexus::native_report::NATIVE_DATAFUSION_PLANNING_TSV_HEADER: &str
 pub const datafusion_nexus::native_report::NATIVE_FALLBACK_PRESSURE_TSV_HEADER: &str
-pub const datafusion_nexus::native_report::NATIVE_TPCDS_PARITY_TSV_HEADER: &str
-pub fn datafusion_nexus::native_report::compare_record_batches(&arrow_schema::schema::Schema, &[arrow_array::record_batch::RecordBatch], &arrow_schema::schema::Schema, &[arrow_array::record_batch::RecordBatch], bool, datafusion_nexus::native_report::ParityFloatTolerance) -> datafusion_nexus::native_report::ParityComparisonResult
 pub fn datafusion_nexus::native_report::format_native_aggregate_strategy_metric_rows(&[datafusion_nexus::native_report::NativeAggregateStrategyMetricRow]) -> alloc::string::String
 pub fn datafusion_nexus::native_report::format_native_dynamic_filter_runtime_metric_rows(&[datafusion_nexus::native_report::NativeDynamicFilterRuntimeMetricRow]) -> alloc::string::String
 pub fn datafusion_nexus::native_report::format_native_graph_reservation_metric_rows(&[datafusion_nexus::native_report::NativeGraphReservationMetricRow]) -> alloc::string::String
@@ -1971,8 +1809,6 @@ pub fn datafusion_nexus::native_report::format_native_task_runtime_metric_rows(&
 pub fn datafusion_nexus::native_report::native_report_metric_descriptor(&str) -> core::option::Option<nexus_query_engine::metrics::descriptor::MetricDescriptor>
 pub fn datafusion_nexus::native_report::native_report_metric_descriptors() -> alloc::vec::Vec<nexus_query_engine::metrics::descriptor::MetricDescriptor>
 pub fn datafusion_nexus::native_report::native_report_metric_names() -> alloc::vec::Vec<&'static str>
-pub fn datafusion_nexus::native_report::sql_has_top_level_order_by(&str) -> bool
-pub fn datafusion_nexus::native_report::sql_top_level_order_by_covers_output_columns(&str, &arrow_schema::schema::Schema) -> bool
 pub mod datafusion_nexus::planner
 #[non_exhaustive] pub enum datafusion_nexus::planner::FinalPlanDisposition
 pub datafusion_nexus::planner::FinalPlanDisposition::DataFusion
@@ -2129,32 +1965,28 @@ pub mod datafusion_nexus::session
 pub const datafusion_nexus::session::NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME: &str
 pub const datafusion_nexus::session::NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME: &str
 pub trait datafusion_nexus::session::NexusSessionStateBuilderExt
+pub fn datafusion_nexus::session::NexusSessionStateBuilderExt::try_with_cugraph_sql(self, datafusion_nexus::cugraph_sql::CugraphSqlConfig) -> datafusion_common::error::Result<Self> where Self: core::marker::Sized
 pub fn datafusion_nexus::session::NexusSessionStateBuilderExt::try_with_cuvs_sql(self) -> datafusion_common::error::Result<Self> where Self: core::marker::Sized
-pub fn datafusion_nexus::session::NexusSessionStateBuilderExt::with_cugraph_sql(self, datafusion_nexus::cugraph_sql::CugraphSqlConfig) -> Self
 pub fn datafusion_nexus::session::NexusSessionStateBuilderExt::with_nexus_native(self, datafusion_nexus::planner::NexusNativeOptimizerConfig) -> Self
 pub fn datafusion_nexus::session::NexusSessionStateBuilderExt::with_nexus_native_rule(self, alloc::sync::Arc<datafusion_nexus::planner::NexusNativePhysicalOptimizerRule>) -> Self
 impl datafusion_nexus::session::NexusSessionStateBuilderExt for datafusion::execution::session_state::SessionStateBuilder
+pub fn datafusion::execution::session_state::SessionStateBuilder::try_with_cugraph_sql(self, datafusion_nexus::cugraph_sql::CugraphSqlConfig) -> datafusion_common::error::Result<Self>
 pub fn datafusion::execution::session_state::SessionStateBuilder::try_with_cuvs_sql(self) -> datafusion_common::error::Result<Self>
-pub fn datafusion::execution::session_state::SessionStateBuilder::with_cugraph_sql(self, datafusion_nexus::cugraph_sql::CugraphSqlConfig) -> Self
 pub fn datafusion::execution::session_state::SessionStateBuilder::with_nexus_native(self, datafusion_nexus::planner::NexusNativeOptimizerConfig) -> Self
 pub fn datafusion::execution::session_state::SessionStateBuilder::with_nexus_native_rule(self, alloc::sync::Arc<datafusion_nexus::planner::NexusNativePhysicalOptimizerRule>) -> Self
 pub fn datafusion_nexus::session::install_nexus_native_rule_with_session_config(datafusion::execution::session_state::SessionStateBuilder, alloc::sync::Arc<datafusion_nexus::planner::NexusNativePhysicalOptimizerRule>, datafusion_nexus::session_config::DataFusionNexusSessionConfig) -> datafusion_common::error::Result<datafusion::execution::session_state::SessionStateBuilder>
-pub fn datafusion_nexus::session::installed_nexus_native_optimizer_config(&dyn datafusion_session::session::Session) -> core::option::Option<datafusion_nexus::planner::NexusNativeOptimizerConfig>
-pub fn datafusion_nexus::session::nexus_native_physical_optimizer_rules(datafusion_nexus::planner::NexusNativeOptimizerConfig) -> datafusion_nexus::session::PhysicalOptimizerRules
-pub fn datafusion_nexus::session::nexus_native_physical_optimizer_rules_with_rule(alloc::sync::Arc<datafusion_nexus::planner::NexusNativePhysicalOptimizerRule>) -> datafusion_nexus::session::PhysicalOptimizerRules
-pub type datafusion_nexus::session::PhysicalOptimizerRules = alloc::vec::Vec<alloc::sync::Arc<(dyn datafusion_session::physical_optimizer::PhysicalOptimizerRule + core::marker::Send + core::marker::Sync)>>
 pub mod datafusion_nexus::session_config
 #[non_exhaustive] pub struct datafusion_nexus::session_config::DataFusionNexusSessionConfig
-pub datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_max_retry_attempts: usize
-pub datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_max_row_groups_per_chunk: usize
-pub datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_max_source_chunk_bytes: u64
-pub datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_max_source_reads_in_flight: usize
-pub datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_source_chunk_planning_mode: nexus_query_engine::execution_contracts::SourceChunkPlanningMode
-pub datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_statistical_aggregate_execution_mode: nexus_query_engine::mode::StatisticalAggregateExecutionMode
 impl datafusion_nexus::session_config::DataFusionNexusSessionConfig
 pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::apply_to_optimizer_config(&self, datafusion_nexus::planner::NexusNativeOptimizerConfig) -> datafusion_common::error::Result<datafusion_nexus::planner::NexusNativeOptimizerConfig>
 pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::from_optimizer_config(&datafusion_nexus::planner::NexusNativeOptimizerConfig) -> Self
 pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::frozen_for_backend_admission(self) -> Self
+pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_max_retry_attempts(&self) -> usize
+pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_max_row_groups_per_chunk(&self) -> usize
+pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_max_source_chunk_bytes(&self) -> u64
+pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_max_source_reads_in_flight(&self) -> usize
+pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_source_chunk_planning_mode(&self) -> nexus_query_engine::execution_contracts::SourceChunkPlanningMode
+pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_statistical_aggregate_execution_mode(&self) -> nexus_query_engine::mode::StatisticalAggregateExecutionMode
 pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::request_graph_raw_input_edges(&self) -> core::option::Option<u64>
 pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::set_request_graph_raw_input_edges(&mut self, core::option::Option<u64>)
 pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::with_request_graph_raw_input_edges(self, core::option::Option<u64>) -> Self
@@ -2180,7 +2012,6 @@ pub const datafusion_nexus::session_config::DATAFUSION_NEXUS_SESSION_CONFIG_OPTI
 pub fn datafusion_nexus::session_config::optimizer_config_with_datafusion_options(&datafusion_nexus::planner::NexusNativeOptimizerConfig, &datafusion_common::config::ConfigOptions) -> datafusion_common::error::Result<datafusion_nexus::planner::NexusNativeOptimizerConfig>
 pub mod datafusion_nexus::source_cardinality
 pub const datafusion_nexus::source_cardinality::SOURCE_UNIQUE_KEYS_METADATA_KEY: &str
-pub fn datafusion_nexus::source_cardinality::register_source_unique_keys_for_path(impl core::convert::AsRef<std::path::Path>, &[&[&str]])
 pub fn datafusion_nexus::source_cardinality::schema_with_source_unique_keys(&arrow_schema::schema::Schema, &[&[&str]]) -> arrow_schema::schema::Schema
 pub mod datafusion_nexus::table_format
 pub mod datafusion_nexus::table_format::iceberg
@@ -2426,7 +2257,6 @@ pub datafusion_nexus::table_format::scan::TableFormatUnsupportedFeatureCode::Ice
 pub datafusion_nexus::table_format::scan::TableFormatUnsupportedFeatureCode::IcebergResidualPredicateUnsupported
 pub datafusion_nexus::table_format::scan::TableFormatUnsupportedFeatureCode::IcebergRowSelectionUnsupported
 pub datafusion_nexus::table_format::scan::TableFormatUnsupportedFeatureCode::IcebergScalarValueUnsupported
-pub datafusion_nexus::table_format::scan::TableFormatUnsupportedFeatureCode::IcebergSnapshotUnsupported
 pub datafusion_nexus::table_format::scan::TableFormatUnsupportedFeatureCode::TableFormatPlanningFailed
 pub datafusion_nexus::table_format::scan::TableFormatUnsupportedFeatureCode::TableFormatUnsupported
 impl datafusion_nexus::table_format::TableFormatUnsupportedFeatureCode
@@ -2835,7 +2665,6 @@ pub datafusion_nexus::table_format::TableFormatUnsupportedFeatureCode::IcebergPa
 pub datafusion_nexus::table_format::TableFormatUnsupportedFeatureCode::IcebergResidualPredicateUnsupported
 pub datafusion_nexus::table_format::TableFormatUnsupportedFeatureCode::IcebergRowSelectionUnsupported
 pub datafusion_nexus::table_format::TableFormatUnsupportedFeatureCode::IcebergScalarValueUnsupported
-pub datafusion_nexus::table_format::TableFormatUnsupportedFeatureCode::IcebergSnapshotUnsupported
 pub datafusion_nexus::table_format::TableFormatUnsupportedFeatureCode::TableFormatPlanningFailed
 pub datafusion_nexus::table_format::TableFormatUnsupportedFeatureCode::TableFormatUnsupported
 impl datafusion_nexus::table_format::TableFormatUnsupportedFeatureCode

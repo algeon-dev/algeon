@@ -111,19 +111,12 @@ pub const DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS: &[DataFusionNexusSessionConfi
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct DataFusionNexusSessionConfig {
-    /// Maximum source bytes planned into one native bounded source chunk.
-    pub native_max_source_chunk_bytes: u64,
-    /// Maximum source row groups planned into one native bounded source chunk.
-    pub native_max_row_groups_per_chunk: usize,
-    /// Maximum bounded retry attempts.
-    pub native_max_retry_attempts: usize,
-    /// Maximum active native source reads allowed per bounded query.
-    pub native_max_source_reads_in_flight: usize,
-    /// Bounded source chunk planning mode.
-    pub native_source_chunk_planning_mode: SourceChunkPlanningMode,
-    /// Native bounded-pipeline execution mode.
-    /// Floating statistical aggregate execution contract.
-    pub native_statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
+    native_max_source_chunk_bytes: u64,
+    native_max_row_groups_per_chunk: usize,
+    native_max_retry_attempts: usize,
+    native_max_source_reads_in_flight: usize,
+    native_source_chunk_planning_mode: SourceChunkPlanningMode,
+    native_statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
     /// Request-scoped raw edge rows before graph normalization.
     request_graph_raw_input_edges: Option<u64>,
     request_graph_raw_input_edges_configured: bool,
@@ -247,6 +240,36 @@ impl DataFusionNexusSessionConfig {
 
     pub(crate) fn graph_memory_calibration_override(&self) -> GraphMemoryCalibrationOverride {
         GraphMemoryCalibrationOverride { raw_input_edges: self.request_graph_raw_input_edges }
+    }
+
+    /// Maximum source bytes planned into one native bounded source chunk.
+    pub fn native_max_source_chunk_bytes(&self) -> u64 {
+        self.native_max_source_chunk_bytes
+    }
+
+    /// Maximum source row groups planned into one native bounded source chunk.
+    pub fn native_max_row_groups_per_chunk(&self) -> usize {
+        self.native_max_row_groups_per_chunk
+    }
+
+    /// Maximum bounded retry attempts.
+    pub fn native_max_retry_attempts(&self) -> usize {
+        self.native_max_retry_attempts
+    }
+
+    /// Maximum active native source reads allowed per bounded query.
+    pub fn native_max_source_reads_in_flight(&self) -> usize {
+        self.native_max_source_reads_in_flight
+    }
+
+    /// Bounded source chunk planning mode.
+    pub fn native_source_chunk_planning_mode(&self) -> SourceChunkPlanningMode {
+        self.native_source_chunk_planning_mode
+    }
+
+    /// Floating statistical aggregate execution contract.
+    pub fn native_statistical_aggregate_execution_mode(&self) -> StatisticalAggregateExecutionMode {
+        self.native_statistical_aggregate_execution_mode
     }
 
     /// Request-scoped raw edge rows before graph normalization.

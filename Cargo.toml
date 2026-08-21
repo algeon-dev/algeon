@@ -52,16 +52,17 @@ drop_non_drop = "deny"
 workspace = true
 
 [workspace.dependencies]
-datafusion-nexus = { path = ".", default-features = false }
+datafusion-nexus = { path = ".", version = "=0.1.0", default-features = false }
 nexus-workloads = { path = "crates/nexus-workloads" }
-nexus-query-engine = { path = "crates/nexus-query-engine", default-features = false }
+nexus-query-engine = { path = "crates/nexus-query-engine", version = "=0.1.0", default-features = false }
 nexus-server = { path = "crates/nexus-server", default-features = false }
-cudf = { package = "cudf-nexus", path = "../cudf-nexus/cudf-nexus" }
-cudf-sys = { package = "cudf-nexus-sys", path = "../cudf-nexus/cudf-nexus-sys" }
-cugraph = { package = "cugraph-nexus", path = "../cugraph-nexus/cugraph-nexus" }
-cugraph-sys = { package = "cugraph-nexus-sys", path = "../cugraph-nexus/cugraph-nexus-sys" }
-cuvs = { package = "cuvs-nexus", path = "../cuvs-nexus/cuvs-nexus" }
-cuvs-sys = { package = "cuvs-nexus-sys", path = "../cuvs-nexus/cuvs-nexus-sys" }
+nexus-iceberg = { path = "crates/nexus-iceberg", version = "=0.1.0", default-features = false }
+cudf = { package = "cudf-nexus", path = "../cudf-nexus/cudf-nexus", version = "=0.1.0" }
+cudf-sys = { package = "cudf-nexus-sys", path = "../cudf-nexus/cudf-nexus-sys", version = "=0.1.0" }
+cugraph = { package = "cugraph-nexus", path = "../cugraph-nexus/cugraph-nexus", version = "=0.1.0" }
+cugraph-sys = { package = "cugraph-nexus-sys", path = "../cugraph-nexus/cugraph-nexus-sys", version = "=0.1.0" }
+cuvs = { package = "cuvs-nexus", path = "../cuvs-nexus/cuvs-nexus", version = "=0.1.0" }
+cuvs-sys = { package = "cuvs-nexus-sys", path = "../cuvs-nexus/cuvs-nexus-sys", version = "=0.1.0" }
 anyhow = "1"
 arrow = { version = "59.2", default-features = false, features = ["ipc"] }
 arrow-flight = { version = "59.2", features = ["flight-sql-experimental"] }
@@ -98,6 +99,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [features]
 default = []
+test-support = []
+# Application/test support surface; not part of the normal embedded/server report contract.
+bench-support = []
 cugraph = ["dep:cugraph", "dep:cugraph-sys", "nexus-query-engine/cugraph"]
 cuvs = ["dep:cuvs", "dep:cuvs-sys", "nexus-query-engine/cuvs"]
 # Optional live NVML diagnostics; admission capacity and SM count remain on cudf CUDA/RMM inventory.
@@ -125,7 +129,7 @@ cuvs = { workspace = true, optional = true }
 cuvs-sys = { workspace = true, optional = true }
 nexus-query-engine = { workspace = true }
 datafusion = { workspace = true }
-nexus-iceberg = { path = "crates/nexus-iceberg", optional = true, default-features = false }
+nexus-iceberg = { workspace = true, optional = true }
 futures = { workspace = true }
 iceberg = { workspace = true, optional = true }
 iceberg-datafusion = { workspace = true, optional = true }
@@ -182,6 +186,7 @@ path = "tests/native_runtime_pruning_tests.rs"
 [[test]]
 name = "native_tpcds_parity_tests"
 path = "tests/native_tpcds_parity_tests.rs"
+required-features = ["bench-support"]
 
 [[test]]
 name = "rapids_build_support_tests"

@@ -53,10 +53,10 @@ fn server_config_accepts_bounded_native_profile() {
         config.gpu_device_profiles[0].memory_limit(),
         datafusion_nexus::backend::GpuDeviceMemoryLimit::default()
     );
-    assert_eq!(projection.native_max_source_chunk_bytes, 512);
-    assert_eq!(projection.native_max_row_groups_per_chunk, 8);
+    assert_eq!(projection.native_max_source_chunk_bytes(), 512);
+    assert_eq!(projection.native_max_row_groups_per_chunk(), 8);
     assert_eq!(
-        projection.native_max_retry_attempts,
+        projection.native_max_retry_attempts(),
         datafusion_nexus::native_exec::NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS
     );
 }
@@ -66,9 +66,9 @@ fn server_config_accepts_independent_source_chunk_limits() {
     let env = BTreeMap::from([(NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "512".to_string())]);
     let config = server_config_with_default_device_profile(env).unwrap();
     let projection = DataFusionNexusSessionConfig::from_optimizer_config(&config.native_optimizer_config);
-    assert_eq!(projection.native_max_source_chunk_bytes, 512);
+    assert_eq!(projection.native_max_source_chunk_bytes(), 512);
     assert_eq!(
-        projection.native_max_row_groups_per_chunk,
+        projection.native_max_row_groups_per_chunk(),
         datafusion_nexus::native_exec::NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK
     );
 }
@@ -128,11 +128,11 @@ max_retry_attempts = 5
 "#,
     );
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
-    assert_eq!(config.queue_policy.max_queued_attempts, 2);
+    assert_eq!(config.queue_policy.max_queued_attempts(), 2);
     let projection = DataFusionNexusSessionConfig::from_optimizer_config(&config.native_optimizer_config);
-    assert_eq!(projection.native_max_source_chunk_bytes, 512);
-    assert_eq!(projection.native_max_row_groups_per_chunk, 8);
-    assert_eq!(projection.native_max_retry_attempts, 5);
+    assert_eq!(projection.native_max_source_chunk_bytes(), 512);
+    assert_eq!(projection.native_max_row_groups_per_chunk(), 8);
+    assert_eq!(projection.native_max_retry_attempts(), 5);
 }
 
 #[test]

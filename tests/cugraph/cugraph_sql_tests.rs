@@ -24,8 +24,8 @@ use datafusion_nexus::{
     backend::{GpuMemoryOwnership, NexusGpuBackend},
     cugraph_sql::{
         CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphAlgorithmParams, CugraphBfsOutputMode, CugraphBfsSource,
-        CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphSqlConfig, parse_cugraph_algorithm_spec,
-        stable_result_schema,
+        CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphSqlConfig,
+        parse_cugraph_algorithm_spec, stable_result_schema,
     },
     error::{DataFusionErrorExt, Error, ErrorCode},
     native_exec::{NexusNativeComposedExec, NexusNativeExec},

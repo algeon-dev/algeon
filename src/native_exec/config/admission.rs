@@ -193,7 +193,10 @@ impl NexusNativeExecutionConfig {
             || self.query_admission_ticket.is_some()
     }
 
-    pub fn query_admission_source_matches(&self, session: &nexus_query_engine::runtime::GpuBackendSession) -> bool {
+    pub(crate) fn query_admission_source_matches(
+        &self,
+        session: &nexus_query_engine::runtime::GpuBackendSession,
+    ) -> bool {
         self.query_admission_source.as_ref().is_some_and(|source| source.backend_matches(session))
     }
 }

@@ -1,6 +1,5 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
-    path::{Path, PathBuf},
     sync::Arc,
 };
 
@@ -179,8 +178,6 @@ fn table_format_native_source_for_group(
     source_scan_limit: Option<usize>,
 ) -> Result<(NativeLocalParquetSource, bool), CapabilityReason> {
     let native_files = table_format_local_parquet_files_for_group(scan_plan, group)?;
-    let native_file_paths =
-        native_files.iter().filter_map(|file| file.location.as_local_path().map(Path::to_path_buf)).collect::<Vec<_>>();
     let mut native_source = NativeLocalParquetSource::from_files(
         native_files,
         Arc::clone(&group.source_schema),
@@ -218,7 +215,6 @@ fn table_format_native_source_for_group(
             file_schema,
             &group.output_schema,
             frontend_schema.as_ref(),
-            &native_file_paths.iter().map(|path| path.as_path()).collect::<Vec<_>>(),
             &predicate.expr,
         ) {
             Some(1)
@@ -250,7 +246,6 @@ fn reader_predicate_proves_table_format_source_at_most_one_row(
     file_schema: &Schema,
     source_output_schema: &Schema,
     frontend_schema: &Schema,
-    source_paths: &[&Path],
     predicate: &NativeExpr,
 ) -> bool {
     reader_predicate_proves_source_at_most_one_row(
@@ -261,7 +256,6 @@ fn reader_predicate_proves_table_format_source_at_most_one_row(
             source_output_schema,
             frontend_schema,
         ],
-        source_paths,
         predicate,
     )
 }

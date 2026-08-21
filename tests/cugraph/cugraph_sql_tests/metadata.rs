@@ -21,7 +21,10 @@ async fn validate(ctx: &SessionContext, function: &str, edges: &str, options: se
 
 #[tokio::test]
 async fn cugraph_sql_registers_only_execution_udtfs_and_the_common_catalog() {
-    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
     let functions = state.table_functions();
 
     for definition in CUGRAPH_OPERATION_REGISTRY {
@@ -48,7 +51,10 @@ async fn cugraph_sql_registers_only_execution_udtfs_and_the_common_catalog() {
 
 #[tokio::test]
 async fn cugraph_registry_projects_into_the_common_catalog() {
-    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
     let ctx = SessionContext::new_with_state(state);
     let batches = ctx
         .sql(
@@ -77,7 +83,10 @@ async fn cugraph_registry_projects_into_the_common_catalog() {
 
 #[tokio::test]
 async fn cugraph_descriptions_retain_graph_schemas_and_use_common_validation_api() {
-    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
     let ctx = SessionContext::new_with_state(state);
     let batches = ctx
         .sql("SELECT function_name, provider, domain, relation_roles_json, argument_descriptions_json, \
@@ -149,7 +158,10 @@ async fn cugraph_descriptions_retain_graph_schemas_and_use_common_validation_api
 
 #[tokio::test]
 async fn cugraph_examples_use_versioned_common_envelopes_with_flat_options() {
-    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
     let ctx = SessionContext::new_with_state(state);
 
     for definition in CUGRAPH_OPERATION_REGISTRY {
@@ -175,7 +187,10 @@ async fn cugraph_examples_use_versioned_common_envelopes_with_flat_options() {
 
 #[tokio::test]
 async fn cugraph_validation_uses_common_envelope_and_preserves_graph_facts() {
-    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
     let ctx = SessionContext::new_with_state(state);
     register_edge_memtable(&ctx, "raw_edges", DataType::Int64, DataType::Int64, DataType::Float64);
     ctx.sql("CREATE VIEW target_edges AS SELECT src, dst, weight FROM raw_edges")
@@ -215,7 +230,10 @@ async fn cugraph_validation_uses_common_envelope_and_preserves_graph_facts() {
 
 #[tokio::test]
 async fn cugraph_validation_requires_flat_common_options() {
-    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
     let ctx = SessionContext::new_with_state(state);
     register_edge_memtable(&ctx, "raw_edges", DataType::Int64, DataType::Int64, DataType::Float64);
 
@@ -239,7 +257,10 @@ async fn cugraph_validation_requires_flat_common_options() {
 
 #[tokio::test]
 async fn cugraph_validation_keeps_relation_aware_errors_structured() {
-    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
     let ctx = SessionContext::new_with_state(state);
     register_edge_memtable(&ctx, "edges", DataType::Int32, DataType::Int32, DataType::Float64);
     register_vertex_pair_memtable(&ctx, "candidate_pairs", DataType::Int32, DataType::Int32, false);
@@ -283,7 +304,10 @@ async fn cugraph_validation_keeps_relation_aware_errors_structured() {
 
 #[tokio::test]
 async fn cugraph_validation_rejects_invalid_common_envelopes_before_graph_parsing() {
-    let state = SessionStateBuilder::new_with_default_features().with_cugraph_sql(CugraphSqlConfig::default()).build();
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
     let ctx = SessionContext::new_with_state(state);
     for (call, code) in [
         (r#"{"schema_version":1,"relations":{},"options":{}}"#, "missing_relation"),
@@ -321,4 +345,23 @@ async fn cugraph_validation_rejects_invalid_common_envelopes_before_graph_parsin
     assert!(!bool_value(unknown, 0, 0));
     assert_eq!(string_value(unknown, 1, 0), "unknown_function");
     assert_eq!(string_value(unknown, 2, 0), "bfs");
+}
+
+#[tokio::test]
+async fn cugraph_reinstall_is_idempotent_and_conflicting_graph_defaults_are_rejected() {
+    let builder = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("first cuGraph install succeeds")
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("identical reinstall is idempotent");
+
+    let conflicting = CugraphSqlConfig {
+        default_graph_options: CugraphGraphOptions { directed: false, ..Default::default() },
+        ..Default::default()
+    };
+    let error = builder.try_with_cugraph_sql(conflicting).expect_err("conflicting graph defaults must be rejected");
+    let nexus = typed_nexus_error(&error);
+    assert_eq!(nexus.code(), ErrorCode::InvalidRequest);
+    assert_eq!(nexus.operation(), "datafusion_nexus.gpu_functions.install");
+    assert!(nexus.message().contains("conflicting GPU function family installation"));
 }

@@ -153,47 +153,7 @@ fn scan_plan_with_tpcds_source_unique_keys(
     scan_plan.logical_schema = Arc::new(schema_with_source_unique_keys(scan_plan.logical_schema.as_ref(), &[key]));
     scan_plan.native_source_schema =
         Arc::new(schema_with_source_unique_keys(scan_plan.native_source_schema.as_ref(), &[key]));
-    for file in &scan_plan.data_files {
-        for path in table_format_data_file_local_paths(file) {
-            register_source_unique_keys_for_path(path, &[key]);
-        }
-    }
     scan_plan
-}
-
-fn table_format_data_file_local_paths(file: &datafusion_nexus::table_format::TableFormatDataFile) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    if let Some(path) = table_format_local_path_from_location(&file.location) {
-        paths.push(path);
-    }
-    if let Some(resolved_source) = file.resolved_parquet_source.as_ref() {
-        if let Some(path) = table_format_local_path_from_location(&resolved_source.original_location) {
-            paths.push(path);
-        }
-        if matches!(
-            resolved_source.read_strategy(),
-            ParquetReadStrategy::LocalKvikio | ParquetReadStrategy::LocalCacheKvikio
-        ) {
-            paths.push(PathBuf::from(resolved_source.reader_location()));
-        }
-    }
-    paths
-}
-
-fn table_format_local_path_from_location(location: &str) -> Option<PathBuf> {
-    if let Some(path) = location.strip_prefix("file://localhost/") {
-        return Some(PathBuf::from(format!("/{path}")));
-    }
-    if let Some(path) = location.strip_prefix("file://") {
-        return Some(PathBuf::from(path));
-    }
-    if let Some(path) = location.strip_prefix("file:") {
-        return Some(PathBuf::from(path));
-    }
-    if location.contains("://") {
-        return None;
-    }
-    Some(PathBuf::from(location))
 }
 
 pub(crate) async fn stage_object_store_data_files(

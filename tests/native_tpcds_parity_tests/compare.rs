@@ -7,7 +7,7 @@ use arrow::{
 };
 use datafusion::physical_plan::{ExecutionPlan, empty::EmptyExec, metrics::MetricsSet};
 use datafusion_nexus::{
-    native_report::{
+    native_report::bench_support::{
         NativeTpcdsParityCpuOutcome, NativeTpcdsParityExternalOutput, NativeTpcdsParityNativePlanningOutcome,
         NativeTpcdsParityNativeRuntimeOutcome, NativeTpcdsParityReport, NativeTpcdsParityWorkloadItem,
         ParityComparisonMode, ParityFloatTolerance, ParityStatus, compare_record_batches, sql_has_top_level_order_by,
@@ -134,7 +134,7 @@ fn external_oracle_decimal_precision_widening_matches_cpu_value() {
         query_id: "qxx".to_string(),
         sql: "SELECT amount FROM t ORDER BY amount".to_string(),
         cpu_outcome: NativeTpcdsParityCpuOutcome::Succeeded { schema: cpu_schema, batches: vec![cpu_batch] },
-        native_planning: datafusion_nexus::native_report::NativeTpcdsParityNativePlanningOutcome::PlanningFailed(
+        native_planning: NativeTpcdsParityNativePlanningOutcome::PlanningFailed(
             datafusion_nexus::native_report::NativePlanningFailure {
                 stage: "physical_planning".to_string(),
                 reason_code: "physical_planning_failed".to_string(),
@@ -269,7 +269,7 @@ fn parity_status_for_cpu_failure_flags_cpu_failed_and_skips_comparison() {
                 message: "boom".to_string(),
             },
         ),
-        native_planning: datafusion_nexus::native_report::NativeTpcdsParityNativePlanningOutcome::PlanningFailed(
+        native_planning: NativeTpcdsParityNativePlanningOutcome::PlanningFailed(
             datafusion_nexus::native_report::NativePlanningFailure {
                 stage: "sql_to_logical_plan".to_string(),
                 reason_code: "sql_planning_failed".to_string(),

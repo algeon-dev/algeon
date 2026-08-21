@@ -1,6 +1,4 @@
-//! CPU/GPU candidate-outcome reason codes.
-//!
-//! Capability reason codes for native candidate selection.
+//! CPU/GPU candidate-outcome capability reason codes.
 //!
 //! `CapabilityReason::code()` produces the snake-case strings that planning
 //! and report projections emit verbatim. Changing a code is
@@ -39,22 +37,11 @@ pub enum CapabilityReason {
     NativeOrderedOutputUnsupported,
     /// Source uses a non-local object store unsupported by native local reads.
     NativeSourceNonLocalObjectStore,
-    /// Source partition columns cannot be mapped to native source columns.
-    ///
-    /// Reserved: no current raising site (partition failures raise
-    /// [`Self::NativeSourcePartitionValues`] or [`Self::UnsupportedType`]).
-    /// Kept because reason codes are a stable report contract.
-    NativeSourcePartitionColumns,
     /// Source expression adapter cannot be represented in native source IR.
     NativeSourceExprAdapter,
     /// The DataFusion source uses a Parquet file reader factory that the native
     /// local-Parquet adapter cannot reproduce.
     NativeSourceParquetFileReaderFactory,
-    /// Source scan limit is not supported for this native source shape.
-    ///
-    /// Reserved: no current raising site (native scan limits are supported).
-    /// Kept because reason codes are a stable report contract.
-    NativeSourceScanLimit,
     /// Source order-preservation requirements cannot be maintained natively.
     NativeSourcePreserveOrder,
     /// Source output ordering cannot be represented in native source IR.
@@ -68,22 +55,14 @@ pub enum CapabilityReason {
     NativeSourcePartitionValues,
     /// Source byte ranges are unsupported by native local reads.
     NativeSourceByteRange,
-    /// Source file ordering requirements cannot be maintained natively.
-    ///
-    /// Reserved: no current raising site (per-file ordering is carried since
-    /// declared-order native scan support). Kept because reason codes are a
-    /// stable report contract.
-    NativeSourceFileOrdering,
     /// Source row-selection metadata cannot be represented natively.
     NativeSourceRowSelection,
     /// Source schema mapping cannot be represented natively.
     NativeSourceSchemaMapping,
     /// Table-format scan requested an unsupported feature.
     TableFormatUnsupported,
-    /// Table-format planning failed before a native scan could be built.
-    ///
-    /// Reserved: no current raising site (real planning failures surface as
-    /// hard errors). Kept because reason codes are a stable report contract.
+    /// Table-format scan inspection failed or no scan plan could be built
+    /// before a native scan could be lowered.
     TableFormatPlanningFailed,
     /// Iceberg data file is not Parquet.
     IcebergNonParquetDataFile,
@@ -106,12 +85,6 @@ pub enum CapabilityReason {
     /// Iceberg remote S3 FileIO cannot be proven to use the frozen
     /// CPU/native source-access policy.
     IcebergFileIoSourceAccessUnverified,
-    /// Iceberg snapshot selection or loading is unsupported.
-    ///
-    /// Reserved: no current raising site (time travel by snapshot id works;
-    /// branch/tag refs are not modeled in scan requests). Kept because reason
-    /// codes are a stable report contract.
-    IcebergSnapshotUnsupported,
     /// Iceberg metadata contains an encrypted data or delete file.
     IcebergEncryptedFileUnsupported,
     /// An Iceberg metadata scalar cannot be materialized by the native source.
@@ -124,7 +97,7 @@ impl CapabilityReason {
     /// Internal diagnostics projections use this list to assert that a new
     /// reason cannot accidentally ship without actionable guidance.
     #[cfg(test)]
-    pub(crate) const ALL: [Self; 37] = [
+    pub(crate) const ALL: [Self; 33] = [
         Self::UnsupportedOperator,
         Self::UnsupportedExpression,
         Self::UnsupportedType,
@@ -134,17 +107,14 @@ impl CapabilityReason {
         Self::NativeBoundedJoinUnsupported,
         Self::NativeOrderedOutputUnsupported,
         Self::NativeSourceNonLocalObjectStore,
-        Self::NativeSourcePartitionColumns,
         Self::NativeSourceExprAdapter,
         Self::NativeSourceParquetFileReaderFactory,
-        Self::NativeSourceScanLimit,
         Self::NativeSourcePreserveOrder,
         Self::NativeSourceOutputOrdering,
         Self::NativeSourcePushedDownParquetPredicate,
         Self::NativeSourceEmpty,
         Self::NativeSourcePartitionValues,
         Self::NativeSourceByteRange,
-        Self::NativeSourceFileOrdering,
         Self::NativeSourceRowSelection,
         Self::NativeSourceSchemaMapping,
         Self::TableFormatUnsupported,
@@ -159,7 +129,6 @@ impl CapabilityReason {
         Self::IcebergRowSelectionUnsupported,
         Self::IcebergObjectStoreReadUnsupported,
         Self::IcebergFileIoSourceAccessUnverified,
-        Self::IcebergSnapshotUnsupported,
         Self::IcebergEncryptedFileUnsupported,
         Self::IcebergScalarValueUnsupported,
     ];
@@ -176,17 +145,14 @@ impl CapabilityReason {
             Self::NativeBoundedJoinUnsupported => "native_bounded_join_unsupported",
             Self::NativeOrderedOutputUnsupported => "native_ordered_output_unsupported",
             Self::NativeSourceNonLocalObjectStore => "native_source_non_local_object_store",
-            Self::NativeSourcePartitionColumns => "native_source_partition_columns",
             Self::NativeSourceExprAdapter => "native_source_expr_adapter",
             Self::NativeSourceParquetFileReaderFactory => "native_source_parquet_file_reader_factory",
-            Self::NativeSourceScanLimit => "native_source_scan_limit",
             Self::NativeSourcePreserveOrder => "native_source_preserve_order",
             Self::NativeSourceOutputOrdering => "native_source_output_ordering",
             Self::NativeSourcePushedDownParquetPredicate => "native_source_pushed_down_parquet_predicate",
             Self::NativeSourceEmpty => "native_source_empty",
             Self::NativeSourcePartitionValues => "native_source_partition_values",
             Self::NativeSourceByteRange => "native_source_byte_range",
-            Self::NativeSourceFileOrdering => "native_source_file_ordering",
             Self::NativeSourceRowSelection => "native_source_row_selection",
             Self::NativeSourceSchemaMapping => "native_source_schema_mapping",
             Self::TableFormatUnsupported => "table_format_unsupported",
@@ -201,7 +167,6 @@ impl CapabilityReason {
             Self::IcebergRowSelectionUnsupported => "iceberg_row_selection_unsupported",
             Self::IcebergObjectStoreReadUnsupported => "iceberg_object_store_read_unsupported",
             Self::IcebergFileIoSourceAccessUnverified => "iceberg_file_io_source_access_unverified",
-            Self::IcebergSnapshotUnsupported => "iceberg_snapshot_unsupported",
             Self::IcebergEncryptedFileUnsupported => "iceberg_encrypted_file_unsupported",
             Self::IcebergScalarValueUnsupported => "iceberg_scalar_value_unsupported",
         }
@@ -215,17 +180,14 @@ impl CapabilityReason {
             Self::UnsupportedType => TriageCode::UnsupportedType,
             Self::NativeBoundedJoinUnsupported => TriageCode::CapabilityEnvelopeRejected,
             Self::NativeSourceNonLocalObjectStore
-            | Self::NativeSourcePartitionColumns
             | Self::NativeSourceExprAdapter
             | Self::NativeSourceParquetFileReaderFactory
-            | Self::NativeSourceScanLimit
             | Self::NativeSourcePreserveOrder
             | Self::NativeSourceOutputOrdering
             | Self::NativeSourcePushedDownParquetPredicate
             | Self::NativeSourceEmpty
             | Self::NativeSourcePartitionValues
             | Self::NativeSourceByteRange
-            | Self::NativeSourceFileOrdering
             | Self::NativeSourceRowSelection
             | Self::NativeSourceSchemaMapping
             | Self::TableFormatUnsupported
@@ -239,7 +201,6 @@ impl CapabilityReason {
             | Self::IcebergRowSelectionUnsupported
             | Self::IcebergObjectStoreReadUnsupported
             | Self::IcebergFileIoSourceAccessUnverified
-            | Self::IcebergSnapshotUnsupported
             | Self::IcebergEncryptedFileUnsupported
             | Self::IcebergScalarValueUnsupported => TriageCode::UnsupportedSource,
             Self::TableFormatPlanningFailed => TriageCode::InvalidPlan,
@@ -256,8 +217,7 @@ impl CapabilityReason {
         match self {
             Self::NativeOrderedOutputUnsupported
             | Self::NativeSourceOutputOrdering
-            | Self::NativeSourcePreserveOrder
-            | Self::NativeSourceFileOrdering => Some("declared_output_ordering"),
+            | Self::NativeSourcePreserveOrder => Some("declared_output_ordering"),
             _ => None,
         }
     }

@@ -1,12 +1,17 @@
 //! Process-scoped GPU backend facade for embedded DataFusion sessions.
 
+#[cfg(any(test, feature = "test-support"))]
+use std::sync::{Mutex, MutexGuard};
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::Arc,
     time::Duration,
 };
 
-use datafusion::execution::SessionStateBuilder;
+use datafusion::{
+    common::DataFusionError,
+    execution::{SessionState, SessionStateBuilder},
+};
 use nexus_query_engine::runtime::{
     DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
     GpuBackendDeviceConfig, GpuBackendSession, KvikioCompatModeStatus, MemoryControlPolicy, NvidiaFsProbeStatus,
@@ -17,7 +22,7 @@ pub use nexus_query_engine::runtime::{
 };
 
 use crate::{
-    error::{Error, ErrorCode, Result},
+    error::{DataFusionErrorExt, Error, ErrorCode, Result},
     native_exec::{NexusNativeExecutionConfig, QueryAdmissionSource},
     planner::{FinalPlanRequirement, NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     session::{NexusSessionStateBuilderExt, install_nexus_native_rule_with_session_config},
@@ -211,18 +216,34 @@ impl NexusGpuDeviceProfile {
 /// Device-local capacity, floor, concurrency, and source-work settings belong
 /// exclusively to [`NexusGpuDeviceProfile`].  Keeping this policy queue-only
 /// prevents a scalar from being implicitly broadcast to heterogeneous devices.
+///
+/// Values are constructed from [`Default`] or [`QueueBounds`] and adjusted
+/// only through the `with_*` builders; zero bounds are rejected when the
+/// backend is built.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct NexusGpuQueuePolicy {
-    /// Maximum queued admission waiters. Default 64.
-    pub max_queued_attempts: usize,
-    /// Maximum time a waiter may queue before a structured timeout. Default 30s.
-    pub max_queue_wait: Duration,
-    /// Finite overtake budget per queued waiter before slot protection. Default 4.
-    pub max_overtakes_per_waiter: u32,
+    max_queued_attempts: usize,
+    max_queue_wait: Duration,
+    max_overtakes_per_waiter: u32,
 }
 
 impl NexusGpuQueuePolicy {
+    /// Maximum queued admission waiters. Default 64.
+    pub fn max_queued_attempts(&self) -> usize {
+        self.max_queued_attempts
+    }
+
+    /// Maximum time a waiter may queue before a structured timeout. Default 30s.
+    pub fn max_queue_wait(&self) -> Duration {
+        self.max_queue_wait
+    }
+
+    /// Finite overtake budget per queued waiter before slot protection. Default 4.
+    pub fn max_overtakes_per_waiter(&self) -> u32 {
+        self.max_overtakes_per_waiter
+    }
+
     pub fn with_max_queued_attempts(mut self, max_queued_attempts: usize) -> Self {
         self.max_queued_attempts = max_queued_attempts;
         self
@@ -294,7 +315,9 @@ impl NexusGpuBackend {
         NexusGpuBackendBuilder::default()
     }
 
-    /// Install this backend's native optimizer into a DataFusion session builder.
+    /// Canonical production install: register this backend's native optimizer
+    /// into a session builder so the installed session plans and admits
+    /// native execution through this backend's admission ledger.
     pub fn install_on(&self, builder: SessionStateBuilder) -> Result<SessionStateBuilder> {
         install_backend_optimizer_config(builder, &self.optimizer_config)
     }
@@ -302,17 +325,14 @@ impl NexusGpuBackend {
     /// Installs the native optimizer and cuGraph SQL functions.
     ///
     /// Without the `cugraph` feature, execution returns a structured feature-disabled error.
+    /// Reinstalling the `cugraph` family with a different descriptor projection returns the
+    /// structured installation error instead of panicking.
     pub fn install_on_with_cugraph_sql(
         &self,
         builder: SessionStateBuilder,
         cugraph_config: crate::cugraph_sql::CugraphSqlConfig,
     ) -> Result<SessionStateBuilder> {
-        use crate::session::NexusSessionStateBuilderExt;
-
-        let builder = self.install_on(builder)?;
-        Ok(builder.with_cugraph_sql(
-            cugraph_config.with_native_execution_config(self.optimizer_config.native_execution_config().clone()),
-        ))
+        install_cugraph_sql_on_installed_backend(self.install_on(builder)?, &self.optimizer_config, cugraph_config)
     }
 
     /// Opaque identity shared by every clone and installed session.
@@ -465,8 +485,25 @@ impl NexusGpuBackend {
         self.identity() == other.identity()
     }
 
-    pub fn session_capability(&self) -> &GpuBackendSession {
+    pub(crate) fn session_capability(&self) -> &GpuBackendSession {
         &self.session
+    }
+
+    /// Whether the session's installed native optimizer is bound to this
+    /// backend, so execution planned through it is admitted by this backend.
+    ///
+    /// Returns false when the session has no native optimizer installed, the
+    /// installed optimizer is bound to another backend, or its execution
+    /// config carries no query admission authority.
+    pub fn is_session_state_bound(&self, state: &SessionState) -> bool {
+        crate::session::installed_nexus_native_optimizer_config(state)
+            .is_some_and(|optimizer_config| self.is_execution_config_bound(optimizer_config.native_execution_config()))
+    }
+
+    /// Whether the config's query admission source is bound to this backend's
+    /// session, so execution through it is admitted by this backend.
+    pub(crate) fn is_execution_config_bound(&self, config: &NexusNativeExecutionConfig) -> bool {
+        config.query_admission_source_matches(&self.session)
     }
 
     pub fn optimizer_config(&self) -> &NexusNativeOptimizerConfig {
@@ -506,17 +543,8 @@ impl NexusGpuBackend {
         device_profiles: Vec<NexusGpuDeviceProfile>,
         device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
         queue_policy: NexusGpuQueuePolicy,
-    ) -> Result<Option<Self>> {
-        Self::from_optimizer_config_inner(optimizer_config, device_profiles, device_memory_ownership, queue_policy)
-    }
-
-    fn from_optimizer_config_inner(
-        optimizer_config: NexusNativeOptimizerConfig,
-        device_profiles: Vec<NexusGpuDeviceProfile>,
-        device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
-        queue_policy: NexusGpuQueuePolicy,
-    ) -> Result<Option<Self>> {
-        Self::build_bounded(optimizer_config, device_profiles, device_memory_ownership, queue_policy, None).map(Some)
+    ) -> Result<Self> {
+        Self::build_bounded(optimizer_config, device_profiles, device_memory_ownership, queue_policy, None)
     }
 
     fn build_bounded(
@@ -615,6 +643,8 @@ fn install_backend_optimizer_config(
 /// and cannot admit or execute a query. It exercises the same profile,
 /// ownership, queue, and core-draft validation as backend construction without
 /// creating CUDA resources.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct TestBackendValidationProjection {
     query_execution_config: QueryExecutionConfig,
@@ -625,6 +655,7 @@ pub struct TestBackendValidationProjection {
     device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl TestBackendValidationProjection {
     pub fn query_execution_config(&self) -> nexus_query_engine::error::Result<QueryExecutionConfig> {
         Ok(self.query_execution_config.clone())
@@ -653,16 +684,27 @@ impl TestBackendValidationProjection {
     pub fn install_on(&self, builder: SessionStateBuilder) -> Result<SessionStateBuilder> {
         install_backend_optimizer_config(builder, &self.optimizer_config)
     }
+
+    pub fn install_on_with_cugraph_sql(
+        &self,
+        builder: SessionStateBuilder,
+        cugraph_config: crate::cugraph_sql::CugraphSqlConfig,
+    ) -> Result<SessionStateBuilder> {
+        install_cugraph_sql_on_installed_backend(self.install_on(builder)?, &self.optimizer_config, cugraph_config)
+    }
 }
 
 /// Test fixture for paths that genuinely execute an installed GPU backend. The
 /// process lease remains production-exclusive; tests serialize construction
 /// and deterministically close the backend before releasing the fixture lock.
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
 pub struct InstalledTestGpuBackend {
     backend: Option<NexusGpuBackend>,
     _serial: MutexGuard<'static, ()>,
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl InstalledTestGpuBackend {
     pub fn new() -> Self {
         Self::with_config(
@@ -705,7 +747,7 @@ impl InstalledTestGpuBackend {
         for requirement in final_plan_requirements {
             builder = builder.with_final_plan_requirement(requirement);
         }
-        let backend = builder.build().expect("root GPU unit test backend must build");
+        let backend = builder.build().expect("test backend configuration must be valid");
         Self { backend: Some(backend), _serial: serial }
     }
 
@@ -726,12 +768,14 @@ impl InstalledTestGpuBackend {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Default for InstalledTestGpuBackend {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
 impl Drop for InstalledTestGpuBackend {
     fn drop(&mut self) {
         let Some(backend) = self.backend.take() else {
@@ -808,6 +852,8 @@ impl NexusGpuBackendBuilder {
         self.build_inner()
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    #[doc(hidden)]
     pub fn build_test_validation_projection(self) -> Result<TestBackendValidationProjection> {
         let optimizer_config = self.final_plan_requirements.into_iter().fold(
             NexusNativeOptimizerConfig::default().with_native_execution_config(self.native_execution_config),
@@ -891,6 +937,7 @@ fn validate_device_profile(profile: &NexusGpuDeviceProfile) -> Result<()> {
     Ok(())
 }
 
+#[cfg(any(test, feature = "test-support"))]
 fn build_test_validation_projection(
     optimizer_config: NexusNativeOptimizerConfig,
     configured_profiles: Vec<NexusGpuDeviceProfile>,
@@ -929,13 +976,15 @@ fn build_test_validation_projection(
     })
 }
 
+#[cfg(any(test, feature = "test-support"))]
+#[doc(hidden)]
 pub fn test_validation_projection_from_optimizer_config(
     optimizer_config: NexusNativeOptimizerConfig,
     device_profiles: Vec<NexusGpuDeviceProfile>,
     device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
     queue_policy: NexusGpuQueuePolicy,
-) -> Result<Option<TestBackendValidationProjection>> {
-    build_test_validation_projection(optimizer_config, device_profiles, device_memory_ownership, queue_policy).map(Some)
+) -> Result<TestBackendValidationProjection> {
+    build_test_validation_projection(optimizer_config, device_profiles, device_memory_ownership, queue_policy)
 }
 
 fn backend_query_execution_config(execution_config: &NexusNativeExecutionConfig) -> Result<QueryExecutionConfig> {
@@ -1067,7 +1116,37 @@ fn reject_preexisting_cugraph_sql(builder: &mut SessionStateBuilder) -> Result<(
     )
     .with_fact("reason", "preexisting_cugraph_sql_without_backend_admission")
     .with_fact("table_function", function_name)
-    .with_fact("remediation", "use install_on_with_cugraph_sql or call with_cugraph_sql after install_on"))
+    .with_fact("remediation", "use install_on_with_cugraph_sql or call try_with_cugraph_sql after install_on"))
+}
+
+fn install_cugraph_sql_on_installed_backend(
+    builder: SessionStateBuilder,
+    optimizer_config: &NexusNativeOptimizerConfig,
+    cugraph_config: crate::cugraph_sql::CugraphSqlConfig,
+) -> Result<SessionStateBuilder> {
+    use crate::session::NexusSessionStateBuilderExt;
+
+    builder
+        .try_with_cugraph_sql(
+            cugraph_config.with_native_execution_config(optimizer_config.native_execution_config().clone()),
+        )
+        .map_err(preserve_gpu_function_install_error)
+}
+
+/// Propagate a cuGraph installation failure without losing the structured
+/// Nexus classification minted by the shared catalog installer.
+fn preserve_gpu_function_install_error(error: DataFusionError) -> Error {
+    if let Some(nexus) = error.find_nexus_error() {
+        return Error::new(nexus.code(), nexus.operation(), nexus.message().to_string())
+            .with_preserved_facts(nexus.facts().clone())
+            .with_source(error);
+    }
+    Error::new(
+        ErrorCode::InvalidRequest,
+        "datafusion_nexus.backend.install_on_with_cugraph_sql",
+        "failed to install cuGraph SQL functions",
+    )
+    .with_source(error)
 }
 
 fn is_cugraph_sql_table_function_name(name: &str) -> bool {

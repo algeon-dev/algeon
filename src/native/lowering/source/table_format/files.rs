@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use arrow::datatypes::TimeUnit;
 
 use super::*;

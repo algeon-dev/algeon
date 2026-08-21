@@ -85,9 +85,7 @@ fn build_injected_test_backend(config: &mut ServerConfig) -> NexusGpuBackend {
             NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
             NexusNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS,
         ));
-    nexus_server::backend_from_server_config(config)
-        .expect("injected backend test profile must build")
-        .expect("injected backend test profile is bounded")
+    nexus_server::backend_from_server_config(config).expect("injected backend test profile must build")
 }
 use futures::TryStreamExt;
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};

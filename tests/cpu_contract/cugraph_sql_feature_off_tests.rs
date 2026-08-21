@@ -129,8 +129,10 @@ async fn feature_off_preserves_schema_validation_before_capability_rejection() {
 
 fn feature_off_context(scans: Arc<AtomicUsize>) -> SessionContext {
     let state = SessionStateBuilder::new_with_default_features()
-        .with_cugraph_sql(CugraphSqlConfig::default())
-        .with_cugraph_sql(CugraphSqlConfig::default())
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .unwrap()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .unwrap()
         .build();
     feature_off_context_with_state(state, scans)
 }
@@ -138,7 +140,8 @@ fn feature_off_context(scans: Arc<AtomicUsize>) -> SessionContext {
 fn feature_off_no_cpu_context(scans: Arc<AtomicUsize>) -> SessionContext {
     let state = SessionStateBuilder::new_with_default_features()
         .with_nexus_native(NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement())
-        .with_cugraph_sql(CugraphSqlConfig::default())
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .unwrap()
         .build();
     feature_off_context_with_state(state, scans)
 }

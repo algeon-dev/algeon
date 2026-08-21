@@ -32,12 +32,15 @@ use datafusion_nexus::{
     native_exec::NexusNativeExecutionConfig,
     native_report::{
         FinalPlanDisposition, NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome,
-        NativeDataFusionRuntimeOutcome, ParityComparisonMode, ParityFloatTolerance, ParityStatus,
-        compare_record_batches, sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
+        NativeDataFusionRuntimeOutcome,
+        bench_support::{
+            ParityComparisonMode, ParityFloatTolerance, ParityStatus, compare_record_batches,
+            sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,
+        },
     },
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     session::NexusSessionStateBuilderExt,
-    source_cardinality::{register_source_unique_keys_for_path, schema_with_source_unique_keys},
+    source_cardinality::schema_with_source_unique_keys,
     table_format::{
         AWS_ENDPOINT_URL_ENV, AWS_ENDPOINT_URL_S3_ENV, TableFormatDataFileFormat,
         TableFormatDirectDeviceReadDisposition, TableFormatParquetReadStrategyConfig, TableFormatParquetSourceMetadata,

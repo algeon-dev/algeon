@@ -664,9 +664,9 @@ pub(crate) async fn native_session_context(
         aggregate_strategy_execution_options: execution_config.aggregate_strategy_execution_options(),
         source_chunk_planning_options: execution_config.source_chunk_planning_options(),
         graph_memory_calibration_override: execution_config.graph_memory_calibration_override(),
-        max_source_chunk_bytes: execution_projection.native_max_source_chunk_bytes,
-        max_row_groups_per_chunk: execution_projection.native_max_row_groups_per_chunk,
-        max_retry_attempts: execution_projection.native_max_retry_attempts,
+        max_source_chunk_bytes: execution_projection.native_max_source_chunk_bytes(),
+        max_row_groups_per_chunk: execution_projection.native_max_row_groups_per_chunk(),
+        max_retry_attempts: execution_projection.native_max_retry_attempts(),
         min_retry_chunk_row_groups,
     };
     let backend = GpuBackendOwner::build(
@@ -711,7 +711,7 @@ pub fn native_optimizer_options_for_profile(
         );
         let max_source_reads_in_flight = execution_config.source_scheduler_policy().max_source_reads_in_flight() as u64;
         options.local_parquet_source_reuse.max_variant_selected_bytes =
-            projection.native_max_source_chunk_bytes.saturating_mul(max_source_reads_in_flight);
+            projection.native_max_source_chunk_bytes().saturating_mul(max_source_reads_in_flight);
     }
     options
 }

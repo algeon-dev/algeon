@@ -57,8 +57,8 @@ SITES = (
         "examples",
         "crates/nexus-examples/build.rs",
         "../../scripts/build/rapids.rs",
-        False,
         True,
+        False,
         False,
         False,
         True,
@@ -319,10 +319,12 @@ def assert_manifest_contract() -> None:
     assert workspace_dependencies["cuvs"] == {
         "package": "cuvs-nexus",
         "path": "../cuvs-nexus/cuvs-nexus",
+        "version": "=0.1.0",
     }
     assert workspace_dependencies["cuvs-sys"] == {
         "package": "cuvs-nexus-sys",
         "path": "../cuvs-nexus/cuvs-nexus-sys",
+        "version": "=0.1.0",
     }
     assert root["features"]["cuvs"] == ["dep:cuvs", "dep:cuvs-sys", "nexus-query-engine/cuvs"]
     assert "server" not in root["features"]

@@ -1,9 +1,10 @@
+#[cfg(feature = "bench-support")]
+use datafusion_nexus::native_report::bench_support::NATIVE_TPCDS_PARITY_TSV_HEADER;
 use datafusion_nexus::{
     native_exec::NATIVE_NEXUS_DATAFUSION_METRIC_NAMES,
     native_report::{
         NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
-        NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NATIVE_TPCDS_PARITY_TSV_HEADER, native_report_metric_descriptor,
-        native_report_metric_descriptors,
+        NATIVE_FALLBACK_PRESSURE_TSV_HEADER, native_report_metric_descriptor, native_report_metric_descriptors,
     },
 };
 use nexus_query_engine::{
@@ -437,11 +438,14 @@ fn descriptor_registry_covers_report_tsv_columns_and_datafusion_metrics() {
         NATIVE_FALLBACK_PRESSURE_TSV_HEADER,
         NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
         NATIVE_DATAFUSION_EXECUTION_TSV_HEADER,
-        NATIVE_TPCDS_PARITY_TSV_HEADER,
     ] {
         for column in header.split('\t') {
             assert!(native_report_metric_descriptor(column).is_some(), "missing descriptor for TSV column {column}");
         }
+    }
+    #[cfg(feature = "bench-support")]
+    for column in NATIVE_TPCDS_PARITY_TSV_HEADER.split('\t') {
+        assert!(native_report_metric_descriptor(column).is_some(), "missing descriptor for TSV column {column}");
     }
 
     let descriptors = QueryMetrics::descriptors();

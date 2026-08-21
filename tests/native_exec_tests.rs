@@ -11,7 +11,7 @@ use arrow::{
 };
 use datafusion::{
     common::{DataFusionError, ScalarValue, config::ConfigOptions},
-    execution::{context::TaskContext, object_store::ObjectStoreUrl},
+    execution::{SessionStateBuilder, context::TaskContext, object_store::ObjectStoreUrl},
     logical_expr::Operator,
     physical_expr::{
         LexOrdering, PhysicalSortExpr,
@@ -42,7 +42,7 @@ use datafusion_nexus::{
         classify_final_plan,
     },
     report::CandidateOutcome,
-    session::nexus_native_physical_optimizer_rules,
+    session::NexusSessionStateBuilderExt,
     session_config::DataFusionNexusSessionConfig,
 };
 use nexus_query_engine::{
@@ -117,6 +117,12 @@ fn native_optimizer_config() -> NexusNativeOptimizerConfig {
     support::native_optimizer_config().with_native_execution_config(bounded_config())
 }
 
+fn installed_physical_optimizer_rules(
+    config: NexusNativeOptimizerConfig,
+) -> Vec<Arc<dyn PhysicalOptimizerRule + Send + Sync>> {
+    SessionStateBuilder::new().with_nexus_native(config).build().physical_optimizers().to_vec()
+}
+
 #[test]
 fn native_exec_constructs_host_arrow_leaf_with_conservative_properties() {
     let native_plan = host_sink_plan();
@@ -173,14 +179,14 @@ fn bounded_auto_sized_uses_bounded_defaults_and_prefetch_scheduler() {
     );
 
     assert_eq!(
-        projection.native_max_source_chunk_bytes,
+        projection.native_max_source_chunk_bytes(),
         NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES
     );
     assert_eq!(
-        projection.native_max_row_groups_per_chunk,
+        projection.native_max_row_groups_per_chunk(),
         NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK
     );
-    assert_eq!(projection.native_max_retry_attempts, NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS);
+    assert_eq!(projection.native_max_retry_attempts(), NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS);
     assert_eq!(config.source_scheduler_policy().max_source_reads_in_flight(), 2);
     assert_eq!(config.source_chunk_planning_mode(), SourceChunkPlanningMode::Conservative);
     assert_eq!(config.lakehouse_cache_fill_config().acquire_timeout, LakehouseCacheFillConfig::DEFAULT_ACQUIRE_TIMEOUT);
@@ -221,7 +227,7 @@ fn bounded_auto_sized_uses_bounded_defaults_and_prefetch_scheduler() {
 fn optimizer_config_default_uses_bounded_native_execution() {
     let config = NexusNativeOptimizerConfig::default();
 
-    assert!(DataFusionNexusSessionConfig::from_optimizer_config(&config).native_max_source_chunk_bytes > 0);
+    assert!(DataFusionNexusSessionConfig::from_optimizer_config(&config).native_max_source_chunk_bytes() > 0);
     assert_eq!(config.native_execution_config().source_scheduler_policy().max_source_reads_in_flight(), 2);
 }
 
@@ -1096,7 +1102,7 @@ fn native_optimizer_rule_errors_for_cost_declined_plan_with_no_datafusion_cpu_re
         .with_no_datafusion_cpu_requirement()
         .with_native_execution_config(bounded_config())
         .with_native_plan_cost_options(NativePlanCostOptions::default());
-    let rules = nexus_native_physical_optimizer_rules(config);
+    let rules = installed_physical_optimizer_rules(config);
     let final_native = rules
         .iter()
         .find(|rule| rule.name() == "datafusion_nexus_native")
@@ -1126,7 +1132,7 @@ fn native_optimizer_rule_obeys_no_datafusion_cpu_requirement_for_rejected_plan()
     let config = NexusNativeOptimizerConfig::default()
         .with_no_datafusion_cpu_requirement()
         .with_native_execution_config(bounded_config());
-    let rules = nexus_native_physical_optimizer_rules(config);
+    let rules = installed_physical_optimizer_rules(config);
     let final_native = rules
         .iter()
         .find(|rule| rule.name() == "datafusion_nexus_native")
@@ -1156,7 +1162,7 @@ fn no_datafusion_cpu_count_only_probe_miss_reaches_final_native_optimizer() {
     let config = NexusNativeOptimizerConfig::default()
         .with_no_datafusion_cpu_requirement()
         .with_native_execution_config(bounded_config());
-    let rules = nexus_native_physical_optimizer_rules(config);
+    let rules = installed_physical_optimizer_rules(config);
     let count_only_probe = rules
         .iter()
         .find(|rule| rule.name() == "datafusion_nexus_native_count_only")
@@ -1205,7 +1211,7 @@ fn no_datafusion_cpu_final_rejection_replaces_count_only_probe_diagnostics_befor
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
     let plan = unsupported_try_cast_projection_aggregate_sort_limit_plan(parquet_scan(&path));
-    let rules = nexus_native_physical_optimizer_rules(
+    let rules = installed_physical_optimizer_rules(
         NexusNativeOptimizerConfig::default()
             .with_no_datafusion_cpu_requirement()
             .with_native_execution_config(bounded_config()),
@@ -1265,7 +1271,7 @@ fn no_datafusion_cpu_count_only_probe_retains_its_native_rewrite() {
     let config = NexusNativeOptimizerConfig::default()
         .with_no_datafusion_cpu_requirement()
         .with_native_execution_config(bounded_config());
-    let rules = nexus_native_physical_optimizer_rules(config);
+    let rules = installed_physical_optimizer_rules(config);
     let count_only_probe = rules
         .iter()
         .find(|rule| rule.name() == "datafusion_nexus_native_count_only")
@@ -1365,7 +1371,7 @@ fn final_plan_requirement_rejects_unsupported_relational_parent_after_datafusion
     let config = NexusNativeOptimizerConfig::default()
         .with_no_datafusion_cpu_requirement()
         .with_native_execution_config(bounded_config());
-    let rules = nexus_native_physical_optimizer_rules(config);
+    let rules = installed_physical_optimizer_rules(config);
     let final_native = rules
         .iter()
         .find(|rule| rule.name() == "datafusion_nexus_native")
@@ -1470,7 +1476,7 @@ fn native_optimizer_rule_rewrites_precision_sensitive_stddev_sort_subtree_after_
 
 #[test]
 fn native_optimizer_rule_is_inserted_before_final_validation() {
-    let rules = nexus_native_physical_optimizer_rules(native_optimizer_config());
+    let rules = installed_physical_optimizer_rules(native_optimizer_config());
     let names = rules.iter().map(|rule| rule.name()).collect::<Vec<_>>();
 
     let count_only_position = names.iter().position(|name| *name == "datafusion_nexus_native_count_only").unwrap();
@@ -1481,7 +1487,7 @@ fn native_optimizer_rule_is_inserted_before_final_validation() {
     assert!(aggregate_statistics_position < native_position);
     assert!(native_position < sanity_position);
 
-    let default_rules = nexus_native_physical_optimizer_rules(NexusNativeOptimizerConfig::default());
+    let default_rules = installed_physical_optimizer_rules(NexusNativeOptimizerConfig::default());
     let default_names = default_rules.iter().map(|rule| rule.name()).collect::<Vec<_>>();
     assert!(default_names.contains(&"datafusion_nexus_native"));
     assert!(default_names.contains(&"datafusion_nexus_native_count_only"));

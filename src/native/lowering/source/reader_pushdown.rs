@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::datasource::physical_plan::{FileSource, ParquetSource};
 use nexus_query_engine::{
@@ -28,10 +26,9 @@ pub(in crate::native::lowering) struct SourceReaderPushdownPredicate {
 pub(in crate::native::lowering) fn reader_predicate_proves_local_parquet_at_most_one_row(
     table_schema: &Schema,
     file_schema: &Schema,
-    source_paths: &[&Path],
     predicate: &NativeExpr,
 ) -> bool {
-    reader_predicate_proves_source_at_most_one_row(&[table_schema, file_schema], source_paths, predicate)
+    reader_predicate_proves_source_at_most_one_row(&[table_schema, file_schema], predicate)
 }
 
 pub(in crate::native::lowering) fn source_reader_pushdown_predicate(

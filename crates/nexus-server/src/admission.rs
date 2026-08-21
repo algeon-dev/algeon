@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::{fmt::Write, sync::Arc};
 
 #[cfg(test)]
-use nexus_query_engine::runtime::{QueryAdmissionRequest, QueryHandle};
+use nexus_query_engine::runtime::QueryHandle;
 
 use crate::{
     attempt::{AttemptOptions, NexusAttempt},
@@ -112,8 +112,7 @@ impl QueryAdmission {
     pub fn try_acquire(&self) -> Result<Option<QueryAdmissionPermit>> {
         match &self.backend {
             QueryAdmissionBackend::QueryService { backend } => backend
-                .session_capability()
-                .try_admit_query_with_request(QueryAdmissionRequest::new())
+                .try_admit_query()
                 .map(|handle| {
                     handle.map(|handle| QueryAdmissionPermit {
                         inner: QueryAdmissionPermitInner::QueryService(Arc::new(handle)),
@@ -299,7 +298,7 @@ impl Drop for QueryAdmissionPermit {
 #[cfg(test)]
 fn server_test_validation_projection_from_config(
     config: &ServerConfig,
-) -> Result<Option<crate::backend::TestBackendValidationProjection>> {
+) -> Result<crate::backend::TestBackendValidationProjection> {
     config.validate_gpu_device_profiles()?;
     crate::backend::test_validation_projection_from_optimizer_config(
         config.native_optimizer_config.clone(),
@@ -361,9 +360,7 @@ mod tests {
         ]);
         let config = declare_test_gpu_ownership(server_config_with_test_device_profile(env, Some(3072)).unwrap());
 
-        let backend = server_test_validation_projection_from_config(&config)
-            .unwrap()
-            .expect("bounded native config should project QueryService admission");
+        let backend = server_test_validation_projection_from_config(&config).unwrap();
         let controller = backend.query_execution_config().unwrap();
 
         let profile = &backend.device_profiles()[0];
@@ -411,9 +408,7 @@ mod tests {
         ]);
         let config = declare_test_gpu_ownership(server_config_with_test_device_profile(env, Some(3072)).unwrap());
 
-        let backend = server_test_validation_projection_from_config(&config)
-            .unwrap()
-            .expect("bounded native config should project QueryService admission");
+        let backend = server_test_validation_projection_from_config(&config).unwrap();
 
         assert_eq!(backend.queue_bounds().unwrap().max_wait, std::time::Duration::from_millis(250));
     }
@@ -434,9 +429,7 @@ mod tests {
         ];
         let config = declare_test_gpu_ownership(config);
 
-        let backend = server_test_validation_projection_from_config(&config)
-            .unwrap()
-            .expect("bounded native config should project QueryService admission");
+        let backend = server_test_validation_projection_from_config(&config).unwrap();
 
         assert_eq!(backend.device_ordinals(), &[0, 1]);
         assert_eq!(
@@ -453,9 +446,7 @@ mod tests {
         ]);
         let mut config = declare_test_gpu_ownership(server_config_with_test_device_profile(env, Some(1024)).unwrap());
         config.gpu_device_profiles[0] = config.gpu_device_profiles[0].clone().with_attempt_floor_bytes(Some(256));
-        let backend = crate::backend_from_server_config(&config)
-            .unwrap()
-            .expect("bounded native config should build a runtime backend");
+        let backend = crate::backend_from_server_config(&config).unwrap();
         let admission = QueryAdmission::from_backend(&backend);
         let permit = admission.try_acquire().unwrap().expect("first query should admit");
 
