@@ -20,6 +20,7 @@ rustc-ice-*.txt
 env.sh
 
 *.log
+.DS_Store
 
 # Python artifacts
 __pycache__/

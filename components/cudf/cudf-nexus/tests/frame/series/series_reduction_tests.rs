@@ -3,8 +3,8 @@
 //! All tests require a GPU.
 
 use cudf::{
-    ErrorCode, ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest, ExecutionBudgetStatus, ReduceAgg,
-    ScalarReductionDistinctWorkspacePreflight, TypeId,
+    ErrorCode, ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest, ExecutionBudgetStatus,
+    GroupedNuniqueWorkspacePreflight, ReduceAgg, ScalarReductionDistinctWorkspacePreflight, TypeId,
     core::error::{FactKeyName, FactValue},
     testing::prelude::*,
 };
@@ -155,6 +155,18 @@ fn test_distinct_workspace_preflight_zero_rows_has_no_workspace() {
     assert_eq!(preflight.static_set_storage_bytes(), 0);
     assert_eq!(preflight.insertion_count_bytes(), 0);
     assert_eq!(preflight.active_workspace_peak_bytes(), 0);
+}
+
+#[test]
+fn test_grouped_nunique_workspace_includes_argument_sanitation_and_distinct_state() {
+    let preflight = GroupedNuniqueWorkspacePreflight::for_metadata(1_024, 32_768).unwrap();
+
+    assert_eq!(preflight.argument_sanitation_bytes(), 32_768);
+    assert!(preflight.distinct_state_bytes() >= 1_024 * std::mem::size_of::<i32>());
+    assert_eq!(
+        preflight.active_workspace_peak_bytes(),
+        preflight.argument_sanitation_bytes() + preflight.distinct_state_bytes()
+    );
 }
 
 #[test]

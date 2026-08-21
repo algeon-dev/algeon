@@ -1054,6 +1054,7 @@ pub(crate) fn has_mixed_local_gpu_sources(plan: &QueryPlan) -> bool {
 pub(crate) fn generic_gpu_resident_owner_terms(
     plan: &QueryPlan,
     include_gpu_output_owner: bool,
+    resident_outputs: &HashMap<String, PlanColumnEvidence>,
 ) -> Result<Vec<AllocationOwnerTerm>> {
     let scope = canonical_execution_scope_fingerprint(plan);
     if !matches!(plan.sink(), ResultSink::GpuResident { .. }) {
@@ -1133,7 +1134,11 @@ pub(crate) fn generic_gpu_resident_owner_terms(
             let input_rows = source.row_count_upper_bound.ok_or_else(|| {
                 owner_term_error("gpu_resident_input_row_bound_unavailable", Some(OwnerTermRole::SourceStage), None)
             })?;
-            let input_bytes = bounded_consumer_frame_bytes(input_rows, &source.schema).map_err(|error| {
+            let input_bytes = match resident_outputs.get(&source.input_name) {
+                Some(evidence) => bounded_consumer_frame_bytes_with_evidence(input_rows, &source.schema, evidence),
+                None => bounded_consumer_frame_bytes(input_rows, &source.schema),
+            }
+            .map_err(|error| {
                 owner_term_error("gpu_resident_input_bytes_unavailable", Some(OwnerTermRole::SourceStage), None)
                     .with_fact("sizing_reason", error.fact_value("schedule_reason").unwrap_or("unknown"))
             })?;

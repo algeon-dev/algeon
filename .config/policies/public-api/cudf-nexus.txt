@@ -2403,6 +2403,12 @@ pub fn cudf::frame::factorization::Factorized::decode(&self) -> cudf::core::erro
 pub fn cudf::frame::factorization::Factorized::into_parts(self) -> (cudf::frame::factorization::EncodedSeries, cudf::frame::factorization::Codebook)
 pub fn cudf::frame::factorization::Factorized::row_codes(&self) -> &cudf::frame::factorization::EncodedSeries
 pub mod cudf::frame::series
+pub struct cudf::frame::series::GroupedNuniqueWorkspacePreflight
+impl cudf::GroupedNuniqueWorkspacePreflight
+pub fn cudf::GroupedNuniqueWorkspacePreflight::active_workspace_peak_bytes(self) -> usize
+pub fn cudf::GroupedNuniqueWorkspacePreflight::argument_sanitation_bytes(self) -> usize
+pub fn cudf::GroupedNuniqueWorkspacePreflight::distinct_state_bytes(self) -> usize
+pub fn cudf::GroupedNuniqueWorkspacePreflight::for_metadata(usize, usize) -> cudf::core::error::Result<Self>
 pub struct cudf::frame::series::ScalarReductionDistinctWorkspacePreflight
 impl cudf::ScalarReductionDistinctWorkspacePreflight
 pub fn cudf::ScalarReductionDistinctWorkspacePreflight::active_workspace_peak_bytes(self) -> usize
@@ -5574,6 +5580,7 @@ impl cudf::ops::expr::DataFrameExpressionAllocationPreflight
 pub fn cudf::ops::expr::DataFrameExpressionAllocationPreflight::active_phase_peak_bytes(&self) -> usize
 pub fn cudf::ops::expr::DataFrameExpressionAllocationPreflight::boolean_equality_output_bytes(&self) -> usize
 pub fn cudf::ops::expr::DataFrameExpressionAllocationPreflight::copy_if_else_output_bytes(&self) -> usize
+pub fn cudf::ops::expr::DataFrameExpressionAllocationPreflight::fixed_width_arithmetic_output_bytes(&self) -> usize
 pub fn cudf::ops::expr::DataFrameExpressionAllocationPreflight::null_float64_literal_bytes(&self) -> usize
 pub fn cudf::ops::expr::DataFrameExpressionAllocationPreflight::output_dataframe_retained_bytes(&self) -> usize
 pub fn cudf::ops::expr::DataFrameExpressionAllocationPreflight::peak_groups(&self) -> &[cudf::ops::expr::DataFrameExpressionPeakGroup; 2]
@@ -5590,6 +5597,7 @@ pub struct cudf::ops::expr::DataFrameExpressionPeakGroup
 impl cudf::ops::expr::DataFrameExpressionPeakGroup
 pub fn cudf::ops::expr::DataFrameExpressionPeakGroup::boolean_equality_output_bytes(self) -> usize
 pub fn cudf::ops::expr::DataFrameExpressionPeakGroup::copy_if_else_output_bytes(self) -> usize
+pub fn cudf::ops::expr::DataFrameExpressionPeakGroup::fixed_width_arithmetic_output_bytes(self) -> usize
 pub fn cudf::ops::expr::DataFrameExpressionPeakGroup::null_float64_literal_bytes(self) -> usize
 pub fn cudf::ops::expr::DataFrameExpressionPeakGroup::peak_bytes(self) -> usize
 pub fn cudf::ops::expr::DataFrameExpressionPeakGroup::referenced_input_relocation_bytes(self) -> usize
@@ -8305,6 +8313,12 @@ pub fn cudf::GroupBy<'a>::with_execution<'ctx, 'handles>(self, &'ctx cudf::runti
 pub struct cudf::GroupByOptions
 impl core::default::Default for cudf::GroupByOptions
 pub fn cudf::GroupByOptions::default() -> Self
+pub struct cudf::GroupedNuniqueWorkspacePreflight
+impl cudf::GroupedNuniqueWorkspacePreflight
+pub fn cudf::GroupedNuniqueWorkspacePreflight::active_workspace_peak_bytes(self) -> usize
+pub fn cudf::GroupedNuniqueWorkspacePreflight::argument_sanitation_bytes(self) -> usize
+pub fn cudf::GroupedNuniqueWorkspacePreflight::distinct_state_bytes(self) -> usize
+pub fn cudf::GroupedNuniqueWorkspacePreflight::for_metadata(usize, usize) -> cudf::core::error::Result<Self>
 pub struct cudf::MergeOptions
 impl cudf::MergeOptions
 pub fn cudf::MergeOptions::how(self, cudf::JoinType) -> Self

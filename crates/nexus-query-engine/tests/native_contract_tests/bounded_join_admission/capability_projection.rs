@@ -791,6 +791,24 @@ fn bounded_multi_join_pipeline_admits_sort_between_joins() {
 }
 
 #[test]
+fn bounded_multi_join_pipeline_admits_supported_global_row_number_between_joins() {
+    let plan = global_row_number_between_two_joins_plan();
+
+    assert!(plan.capability_analysis().admits_closed_multi_join_subgraph());
+    assert!(nexus_query_engine::admission::bounded_pipeline_admission(&plan).unwrap().is_some());
+}
+
+#[test]
+fn bounded_root_full_sort_admits_shared_projection_fanout_with_filtered_semi_join() {
+    let plan = distinct_aggregate_after_two_joins_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(analysis.admits_closed_multi_join_subgraph());
+    assert!(analysis.admits_root_full_sort_join_aggregate_pipeline());
+    assert!(nexus_query_engine::admission::bounded_pipeline_admission(&plan).unwrap().is_some());
+}
+
+#[test]
 fn bounded_multi_join_pipeline_admits_shared_topk_leaf_with_final_sort() {
     let plan = shared_topk_multi_join_final_sort_plan();
 

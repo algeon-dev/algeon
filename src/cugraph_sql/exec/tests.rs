@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     fs::File,
     sync::{
         Arc,
@@ -2780,6 +2781,70 @@ async fn cugraph_sql_bfs_table_function_records_graph_residency_for_datafusion_p
 }
 
 #[tokio::test]
+async fn cugraph_bfs_path_projection_fanout_shares_one_full_result_producer() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("edges.parquet");
+    write_edge_parquet(&path);
+    let state = datafusion::execution::SessionStateBuilder::new()
+        .with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    ctx.register_parquet("citation_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+    let target_schema = Arc::new(Schema::new(vec![Field::new("vertex", DataType::Int64, false)]));
+    let targets =
+        RecordBatch::try_new(Arc::clone(&target_schema), vec![Arc::new(Int64Array::from(vec![2])) as ArrayRef])
+            .unwrap();
+    ctx.register_table(
+        "targets",
+        Arc::new(datafusion::datasource::MemTable::try_new(target_schema, vec![vec![targets]]).unwrap()),
+    )
+    .unwrap();
+
+    let plan = ctx
+        .sql(
+            "WITH path AS (\
+             SELECT path_index, vertex FROM cugraph_bfs(\
+               'citation_edges', 0, 'src', 'dst', NULL,\
+               '{\"depth_limit\":3,\"output_mode\":\"path\",\"target_vertices_table\":\"targets\",\"target_vertex_col\":\"vertex\"}'\
+             )) \
+             SELECT curr.vertex FROM path curr \
+             JOIN path prev ON curr.path_index = prev.path_index + 1",
+        )
+        .await
+        .unwrap()
+        .create_physical_plan()
+        .await
+        .unwrap();
+    let mut producers = Vec::new();
+    collect_cugraph_execs(Arc::clone(&plan), &mut producers);
+
+    assert!(producers.len() >= 2, "the self-join should retain both projected scan occurrences");
+    assert_eq!(
+        producers.iter().map(|producer| producer.gpu_result_input_name.as_str()).collect::<BTreeSet<_>>().len(),
+        1,
+        "column pruning must not mint a second authoritative BFS occurrence"
+    );
+    let full_schema = producers[0].schema();
+    assert!(
+        full_schema.field_with_name("path_index").is_ok()
+            && full_schema.field_with_name("vertex").is_ok()
+            && producers.iter().all(|producer| producer.schema() == full_schema),
+        "each projected scan must wrap the same full path producer schema: {:?}",
+        producers
+            .iter()
+            .map(|producer| {
+                (
+                    producer.gpu_result_input_name.clone(),
+                    producer.schema().fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
 async fn installed_backend_datafusion_parquet_graph_ticket_keeps_post_hydration_model_hint() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("edges.parquet");
@@ -3144,6 +3209,16 @@ fn cugraph_exec_in_plan(plan: Arc<dyn ExecutionPlan>) -> Option<Arc<dyn Executio
         return Some(plan);
     }
     plan.children().into_iter().find_map(|child| cugraph_exec_in_plan(Arc::clone(child)))
+}
+
+fn collect_cugraph_execs(plan: Arc<dyn ExecutionPlan>, output: &mut Vec<CugraphAlgoExec>) {
+    if let Some(exec) = plan.downcast_ref::<CugraphAlgoExec>() {
+        output.push(exec.clone());
+        return;
+    }
+    for child in plan.children() {
+        collect_cugraph_execs(Arc::clone(child), output);
+    }
 }
 
 #[test]

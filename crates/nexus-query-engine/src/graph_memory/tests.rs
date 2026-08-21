@@ -1042,7 +1042,7 @@ fn bounded_graph_reservation_credits_only_its_live_normalized_input_owner() {
         estimate.estimate.clone(),
         Some(remaining_budget_bytes),
     )
-    .credit_live_graph_input(modeled_input_bytes, None, 0);
+    .credit_live_graph_input(modeled_input_bytes, None, 0, None);
     assert_eq!(admitted.model_requested_bytes, full_model_bytes);
     assert_eq!(admitted.requested_bytes, remaining_budget_bytes);
     assert_eq!(admitted.outcome, GraphReservationOutcome::Admitted);
@@ -1052,7 +1052,7 @@ fn bounded_graph_reservation_credits_only_its_live_normalized_input_owner() {
         estimate.estimate.clone(),
         Some(remaining_budget_bytes),
     )
-    .credit_live_graph_input(u64::MAX, None, 0);
+    .credit_live_graph_input(u64::MAX, None, 0, None);
     assert_eq!(capped.model_requested_bytes, full_model_bytes);
     assert_eq!(capped.requested_bytes, remaining_budget_bytes);
     assert_eq!(capped.outcome, GraphReservationOutcome::Admitted);
@@ -1062,7 +1062,7 @@ fn bounded_graph_reservation_credits_only_its_live_normalized_input_owner() {
         estimate.estimate.clone(),
         Some(remaining_budget_bytes),
     )
-    .credit_live_graph_input(modeled_input_bytes.saturating_add(raw_source_provenance_bytes), None, 0);
+    .credit_live_graph_input(modeled_input_bytes.saturating_add(raw_source_provenance_bytes), None, 0, None);
     assert_eq!(
         provenance_only.requested_bytes, remaining_budget_bytes,
         "raw source rows are provenance only; they cannot increase graph-input credit"
@@ -1073,7 +1073,7 @@ fn bounded_graph_reservation_credits_only_its_live_normalized_input_owner() {
         estimate.estimate.clone(),
         Some(remaining_budget_bytes),
     )
-    .credit_live_graph_input(modeled_input_bytes.saturating_sub(1), None, 0);
+    .credit_live_graph_input(modeled_input_bytes.saturating_sub(1), None, 0, None);
     assert_eq!(denied.model_requested_bytes, full_model_bytes);
     assert_eq!(denied.requested_bytes, remaining_budget_bytes.saturating_add(1));
     assert_eq!(denied.outcome, GraphReservationOutcome::Denied);
@@ -1086,26 +1086,26 @@ fn bounded_graph_reservation_credits_only_its_live_normalized_input_owner() {
     let exact_normalized_frame_charge_bytes = modeled_input_bytes.saturating_add(4_096);
     let exact_owner_budget_bytes = full_model_bytes.saturating_sub(exact_normalized_frame_charge_bytes);
     let normalized_and_source_budget_bytes = full_model_bytes
-        .checked_sub(modeled_input_bytes.checked_mul(2).expect("test input bytes fit u64"))
+        .checked_sub(modeled_input_bytes.checked_add(raw_source_provenance_bytes).expect("test input bytes fit u64"))
         .expect("graph model covers normalized and retained source frames");
     let normalized_and_source = GraphReservationReport::from_estimate(
         estimate.node_id,
         estimate.estimate.clone(),
         Some(normalized_and_source_budget_bytes),
     )
-    .credit_live_graph_input(modeled_input_bytes, Some(modeled_input_bytes), modeled_input_bytes);
+    .credit_live_graph_input(modeled_input_bytes, Some(modeled_input_bytes), raw_source_provenance_bytes, None);
     assert_eq!(normalized_and_source.requested_bytes, normalized_and_source_budget_bytes);
     assert_eq!(normalized_and_source.outcome, GraphReservationOutcome::Admitted);
 
     let exact_owner =
         GraphReservationReport::from_estimate(estimate.node_id, estimate.estimate, Some(exact_owner_budget_bytes))
-            .credit_live_graph_input(u64::MAX, Some(exact_normalized_frame_charge_bytes), 0);
+            .credit_live_graph_input(u64::MAX, Some(exact_normalized_frame_charge_bytes), 0, None);
     assert_eq!(exact_owner.requested_bytes, exact_owner_budget_bytes);
     assert_eq!(exact_owner.outcome, GraphReservationOutcome::Admitted);
 }
 
 #[test]
-fn normalized_graph_raw_source_count_is_provenance_not_physical_residency() {
+fn normalized_graph_prices_the_distinct_retained_raw_source_rows() {
     let spec = GraphAlgorithmSpec::with_stable_schema(
         GraphAlgorithm::ForceAtlas2,
         GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
@@ -1131,9 +1131,10 @@ fn normalized_graph_raw_source_count_is_provenance_not_physical_residency() {
     let without_raw = GraphMemoryModel.estimate_for_bounded(&spec, normalized_input).unwrap();
     let with_raw = GraphMemoryModel.estimate_for_bounded(&spec, normalized_input.with_raw_input_edges(100)).unwrap();
     assert_eq!(with_raw.raw_input_edges, Some(100));
-    assert_eq!(with_raw.construction_bytes, without_raw.construction_bytes);
+    let retained_source_delta = 100 * 24;
+    assert_eq!(without_raw.construction_bytes - with_raw.construction_bytes, retained_source_delta);
     assert_eq!(with_raw.execution_bytes, without_raw.execution_bytes);
-    assert_eq!(with_raw.requested_bytes, without_raw.requested_bytes);
+    assert_eq!(without_raw.requested_bytes - with_raw.requested_bytes, retained_source_delta);
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::GpuResident(
@@ -1660,12 +1661,99 @@ fn bounded_graph_floor_is_applied_before_live_input_credits() {
 
     let report =
         GraphReservationReport::from_estimate("n3", estimate, Some(GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES))
-            .credit_live_graph_input(6 * 8, None, 0)
+            .credit_live_graph_input(6 * 8, None, 0, None)
             .credit_live_similarity_pair_input(16);
     assert_eq!(
         report.requested_bytes,
         GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES - 6 * 8 - 16,
         "the floor applies to the complete live graph peak, so accounted input bytes reduce the incremental ask"
     );
+    assert_eq!(report.outcome, GraphReservationOutcome::Admitted);
+}
+
+#[test]
+fn bounded_graph_floor_credits_the_retained_raw_source_rowset() {
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Jaccard,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: false, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::Similarity(GraphSimilarityParams::default()),
+    );
+    let input = GraphMemoryModelInput {
+        raw_input_edges: Some(7),
+        input_edges: 6,
+        vertex_width_bytes: 8,
+        weight_width_bytes: None,
+        has_edge_id: false,
+        device_total_memory_bytes: None,
+        vertex_estimate: None,
+        statistics: None,
+        edge_normalize_inserted: true,
+        construction_workspace_bounds: Some(GraphConstructionWorkspaceBounds::new(0, 0)),
+        pair_rows: None,
+        pair_vertex_width_bytes: None,
+        pair_cardinality_source: None,
+    }
+    .with_similarity_pair_input(1, 8, GraphPairCardinalitySource::PlanHardUpperBound);
+    let estimate = GraphMemoryModel.estimate_for_bounded(&spec, input).expect("small normalized graph model");
+    assert!(estimate.requested_bytes < GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES);
+
+    let normalized_bytes = 6 * 16;
+    let retained_raw_source_bytes = 7 * 16;
+    let pair_bytes = 2 * 8;
+    let remaining =
+        GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES - normalized_bytes - retained_raw_source_bytes - pair_bytes;
+    let report = GraphReservationReport::from_estimate("n3", estimate, Some(remaining))
+        .credit_live_graph_input(normalized_bytes, Some(normalized_bytes), retained_raw_source_bytes, None)
+        .credit_live_similarity_pair_input(pair_bytes);
+
+    assert_eq!(report.requested_bytes, remaining);
+    assert_eq!(report.outcome, GraphReservationOutcome::Admitted);
+}
+
+#[test]
+fn bounded_graph_floor_uses_the_activated_source_owner_cap() {
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::Jaccard,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: false, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::Similarity(GraphSimilarityParams::default()),
+    );
+    let input = GraphMemoryModelInput {
+        raw_input_edges: None,
+        input_edges: 2,
+        vertex_width_bytes: 8,
+        weight_width_bytes: None,
+        has_edge_id: false,
+        device_total_memory_bytes: None,
+        vertex_estimate: None,
+        statistics: None,
+        edge_normalize_inserted: true,
+        construction_workspace_bounds: Some(GraphConstructionWorkspaceBounds::new(0, 0)),
+        pair_rows: None,
+        pair_vertex_width_bytes: None,
+        pair_cardinality_source: None,
+    }
+    .with_similarity_pair_input(1, 8, GraphPairCardinalitySource::PlanHardUpperBound);
+    let estimate = GraphMemoryModel.estimate_for_bounded(&spec, input).expect("small normalized graph model");
+    assert!(estimate.requested_bytes < GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES);
+
+    let normalized_owner_bytes = 48;
+    let retained_source_owner_bytes = 48;
+    let pair_bytes = 16;
+    let remaining = GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES
+        - normalized_owner_bytes
+        - retained_source_owner_bytes
+        - pair_bytes;
+    let report = GraphReservationReport::from_estimate("n3", estimate, Some(remaining))
+        .credit_live_graph_input(
+            normalized_owner_bytes,
+            Some(normalized_owner_bytes),
+            retained_source_owner_bytes,
+            Some(retained_source_owner_bytes),
+        )
+        .credit_live_similarity_pair_input(pair_bytes);
+
+    assert_eq!(report.requested_bytes, remaining);
     assert_eq!(report.outcome, GraphReservationOutcome::Admitted);
 }

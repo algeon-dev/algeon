@@ -553,6 +553,7 @@ pub(in crate::capability::admission) fn root_full_sort_join_capability_satisfies
         },
         RootFullSortJoinAggregateSubcontract::RepeatedProjectionFanout => {
             matches!(capability, JoinExecutionCapability::KeyedHash | JoinExecutionCapability::KeyedResidualMixed)
+                || root_full_sort_keyed_filtered_semi_anti_satisfies_grouped_aggregate_subcontract(join, capability)
         },
         RootFullSortJoinAggregateSubcontract::SharedAggregateFanout => {
             if shape.keyless_or_cross_join_ids.contains(&join_id) {

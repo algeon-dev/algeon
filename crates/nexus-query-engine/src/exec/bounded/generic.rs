@@ -620,6 +620,14 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
         };
+        let retained_normalization_source_credit_cap_bytes =
+            match context.activated_retained_normalization_source_model_bytes(plan) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    release_reservations_reverse(reservations, live_reservations, metrics);
+                    return Err(error.with_fact_if_absent("node_id", node_id));
+                },
+            };
         let report = match graph_memory_reservation_report(GraphMemoryReservationRequest {
             context,
             node_id,
@@ -640,6 +648,7 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
             already_accounted_normalized_graph_input_bytes,
             exact_normalized_graph_input_charge_bytes,
             retained_normalization_source_bytes,
+            retained_normalization_source_credit_cap_bytes,
             already_accounted_similarity_pair_input_bytes,
         }) {
             Ok(report) => report,
@@ -713,6 +722,14 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
         };
+        let retained_normalization_source_credit_cap_bytes =
+            match context.activated_retained_normalization_source_model_bytes(plan) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    release_reservations_reverse(reservations, live_reservations, metrics);
+                    return Err(error.with_fact_if_absent("node_id", node_id));
+                },
+            };
         let report = match graph_memory_reservation_report(GraphMemoryReservationRequest {
             context,
             node_id,
@@ -730,6 +747,7 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
             already_accounted_normalized_graph_input_bytes,
             exact_normalized_graph_input_charge_bytes,
             retained_normalization_source_bytes,
+            retained_normalization_source_credit_cap_bytes,
             already_accounted_similarity_pair_input_bytes,
         }) {
             Ok(report) => report,

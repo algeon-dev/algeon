@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use super::*;
 
 #[derive(Debug, Clone)]
@@ -383,12 +385,7 @@ pub(crate) fn composed_consumer_branch_bound_uncached(
                             Some(&source.input_name),
                         ));
                     };
-                    if !used_occurrences.insert(source.input_name.clone()) {
-                        return Err(composed_schedule_error(
-                            "consumer_source_occurrence_reused",
-                            Some(&source.input_name),
-                        ));
-                    }
+                    used_occurrences.insert(source.input_name.clone());
                     if let Some(consumer_row_count_upper_bound) = source.row_count_upper_bound
                         && consumer_row_count_upper_bound < output.row_count_upper_bound
                     {
@@ -545,11 +542,10 @@ pub(crate) fn composed_consumer_branch_bound_uncached(
                 column_evidence,
                 memo,
             )?;
-            let mut materializes_output = false;
             for output in &projection.outputs {
                 let (column, representation_cast) = if let Some(column) = alias_wrapped_column(&output.expr) {
                     (column, false)
-                } else if let Some((column, target_type)) = representation_cast_projection(&output.expr) {
+                } else if let Some((column, target_type)) = representation_cast_column(&output.expr) {
                     if *target_type != *output.field.data_type() {
                         return Err(composed_schedule_error(
                             "consumer_projection_expression_workspace_unmodeled",
@@ -557,7 +553,6 @@ pub(crate) fn composed_consumer_branch_bound_uncached(
                         )
                         .with_fact("expression", output.expr.clone()));
                     }
-                    materializes_output = true;
                     (column, true)
                 } else if projection.outputs.iter().any(|output| alias_wrapped_literal(&output.expr).is_some()) {
                     return composed_consumer_literal_projection_bound(
@@ -597,41 +592,6 @@ pub(crate) fn composed_consumer_branch_bound_uncached(
                         .with_fact("input_type", source.data_type())
                         .with_fact("output_type", output.field.data_type()));
                 }
-            }
-            if materializes_output {
-                let output_bytes = bounded_consumer_frame_bytes_with_evidence(
-                    input.rows,
-                    node.output_schema(),
-                    &column_evidence.node(node_id),
-                )?;
-                let output_term = consumer_owner_term(
-                    node_id,
-                    OwnerTermRole::ConsumerOutput,
-                    AllocationClass::ActivePhase,
-                    output_bytes,
-                    plan,
-                )?;
-                let output_term_id = output_term.id.clone();
-                let peak_owner_term_groups = consumer_unary_peak_groups(&input, [output_term_id.clone()]);
-                let peak_owner_term_ids = flatten_consumer_peak_groups(&peak_owner_term_groups);
-                let mut consumer_owner_terms = input.owner_terms;
-                consumer_owner_terms.push(output_term);
-                let mut inventory = owner_terms.to_vec();
-                inventory.extend(consumer_owner_terms.iter().cloned());
-                let additional_peak_bytes = consumer_peak_groups_bytes(&peak_owner_term_groups, &inventory)?;
-                return Ok(ComposedConsumerBranchBound {
-                    rows: input.rows,
-                    schema: node.output_schema().clone(),
-                    final_owned_bytes: output_bytes,
-                    additional_peak_bytes,
-                    owner_terms: consumer_owner_terms,
-                    peak_owner_term_groups,
-                    peak_owner_term_ids,
-                    dominated_owner_term_ids: input.dominated_owner_term_ids,
-                    final_owned_term_ids: vec![output_term_id],
-                    allocation_state: AttemptReservationConsumerState::Bounded,
-                    consumed_occurrences: Vec::new(),
-                });
             }
             Ok(ComposedConsumerBranchBound {
                 rows: input.rows,
@@ -1189,14 +1149,6 @@ pub(crate) fn consumer_unary_peak_groups(
     groups
 }
 
-pub(crate) fn representation_cast_projection(expr: &Expr) -> Option<(&crate::expr::ColumnRef, &DataType)> {
-    match expr {
-        Expr::Alias { expr, .. } => representation_cast_projection(expr),
-        Expr::Cast { expr, target_type } => alias_wrapped_column(expr).map(|column| (column, target_type)),
-        _ => None,
-    }
-}
-
 pub(crate) fn composed_consumer_union_peak_bytes(
     plan: &QueryPlan,
     node_id: NodeId,
@@ -1281,7 +1233,8 @@ pub(crate) fn composed_consumer_aggregate_peak_bytes(
         column_evidence,
         memo,
     )?;
-    let distinct_workspace_bytes = composed_global_nunique_workspace_bytes(aggregate, &input.schema, input.rows)?;
+    let distinct_workspace_bytes =
+        composed_nunique_workspace_bytes(aggregate, &input.schema, input.rows, &column_evidence.node(aggregate.input))?;
     if distinct_workspace_bytes.is_none() && !aggregate_owner_state_is_supported(aggregate) {
         return Err(composed_schedule_error("consumer_aggregate_state_unmodeled", None));
     }
@@ -1350,12 +1303,13 @@ pub(crate) fn composed_consumer_aggregate_peak_bytes(
     })
 }
 
-fn composed_global_nunique_workspace_bytes(
+fn composed_nunique_workspace_bytes(
     aggregate: &AggregateNode,
     input_schema: &SchemaRef,
     input_rows: u64,
+    input_evidence: &PlanColumnEvidence,
 ) -> Result<Option<u64>> {
-    if aggregate.spec.grouping_sets.is_some() || !aggregate.spec.group_exprs.is_empty() {
+    if aggregate.spec.grouping_sets.is_some() {
         return Ok(None);
     }
     let mut distincts = aggregate.spec.aggr_exprs.iter().filter(|expr| {
@@ -1366,18 +1320,23 @@ fn composed_global_nunique_workspace_bytes(
     };
     if distincts.next().is_some() {
         return Err(composed_schedule_error("consumer_aggregate_state_unmodeled", None)
-            .with_fact("aggregate_contract", "global_single_fixed_width_nunique"));
+            .with_fact("aggregate_contract", "single_nunique"));
     }
     for expr in &aggregate.spec.aggr_exprs {
         if expr.filter.is_some() {
             return Err(composed_schedule_error("consumer_aggregate_state_unmodeled", None)
-                .with_fact("aggregate_contract", "global_single_fixed_width_nunique"));
+                .with_fact("aggregate_contract", "single_nunique"));
         }
         if expr.function == AggregateFunction::NUnique || expr.distinct && expr.function == AggregateFunction::Count {
             continue;
-        } else if expr.function != AggregateFunction::Count || expr.distinct {
+        } else if expr.distinct
+            || !matches!(
+                expr.function,
+                AggregateFunction::Count | AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max
+            )
+        {
             return Err(composed_schedule_error("consumer_aggregate_state_unmodeled", None)
-                .with_fact("aggregate_contract", "global_single_fixed_width_nunique"));
+                .with_fact("aggregate_contract", "single_nunique"));
         }
     }
     let Expr::Column(column) = &distinct.expr else {
@@ -1389,36 +1348,38 @@ fn composed_global_nunique_workspace_bytes(
             .with_fact("aggregate_owner_reason", "nunique_input_column_missing")
             .with_fact("column", column.name())
     })?;
-    if field.is_nullable() {
-        return Err(composed_schedule_error("consumer_aggregate_nunique_owner_preflight_unavailable", None)
-            .with_fact("aggregate_owner_reason", "nunique_nullable_input_unmodeled")
-            .with_fact("column", field.name())
-            .with_fact("data_type", format!("{:?}", field.data_type())));
-    }
-    let type_id = arrow_fixed_width_cudf_type_id(field.data_type()).ok_or_else(|| {
-        composed_schedule_error("consumer_aggregate_nunique_owner_preflight_unavailable", None)
-            .with_fact("aggregate_owner_reason", "nunique_variable_width_input_unmodeled")
-            .with_fact("column", field.name())
-            .with_fact("data_type", format!("{:?}", field.data_type()))
-    })?;
+    let argument_schema = Arc::new(Schema::new(vec![field.as_ref().clone()]));
+    let argument_retained_bytes =
+        bounded_consumer_frame_bytes_with_evidence(input_rows, &argument_schema, input_evidence).map_err(|error| {
+            composed_schedule_error("consumer_aggregate_nunique_owner_preflight_unavailable", None)
+                .with_fact(
+                    "aggregate_owner_reason",
+                    error.fact_value("schedule_reason").unwrap_or("nunique_argument_retained_bytes_unavailable"),
+                )
+                .with_fact("column", field.name())
+                .with_fact("data_type", format!("{:?}", field.data_type()))
+        })?;
     let rows = usize::try_from(input_rows).map_err(|_| {
         composed_schedule_error("consumer_aggregate_nunique_owner_preflight_unavailable", None)
             .with_fact("aggregate_owner_reason", "nunique_input_rows_exceed_usize")
             .with_fact("input_rows", input_rows)
     })?;
+    let argument_retained_bytes = usize::try_from(argument_retained_bytes).map_err(|_| {
+        composed_schedule_error("consumer_aggregate_nunique_owner_preflight_unavailable", None)
+            .with_fact("aggregate_owner_reason", "nunique_argument_bytes_exceed_usize")
+            .with_fact("input_rows", input_rows)
+    })?;
     let preflight =
-        cudf::ScalarReductionDistinctWorkspacePreflight::for_metadata(rows, cudf::DataType::new(type_id), 0).map_err(
-            |error| {
-                composed_schedule_error("consumer_aggregate_nunique_owner_preflight_unavailable", None)
-                    .with_fact(
-                        "aggregate_owner_reason",
-                        error.detail_value("reason").unwrap_or("libcudf_nunique_workspace_preflight_failed"),
-                    )
-                    .with_fact("column", field.name())
-                    .with_fact("data_type", format!("{:?}", field.data_type()))
-                    .with_fact("input_rows", input_rows)
-            },
-        )?;
+        cudf::GroupedNuniqueWorkspacePreflight::for_metadata(rows, argument_retained_bytes).map_err(|error| {
+            composed_schedule_error("consumer_aggregate_nunique_owner_preflight_unavailable", None)
+                .with_fact(
+                    "aggregate_owner_reason",
+                    error.detail_value("reason").unwrap_or("libcudf_grouped_nunique_workspace_preflight_failed"),
+                )
+                .with_fact("column", field.name())
+                .with_fact("data_type", format!("{:?}", field.data_type()))
+                .with_fact("input_rows", input_rows)
+        })?;
     u64::try_from(preflight.active_workspace_peak_bytes()).map(Some).map_err(|_| {
         composed_schedule_error("consumer_aggregate_nunique_owner_preflight_unavailable", None)
             .with_fact("aggregate_owner_reason", "nunique_workspace_exceeds_u64")
@@ -1691,6 +1652,12 @@ pub(crate) fn composed_consumer_join_peak_bytes(
     };
     let build_column_evidence = column_evidence.node(build_node_id);
     let probe_column_evidence = column_evidence.node(probe_node_id);
+    let left_column_evidence = column_evidence.node(join.inputs[0]);
+    let right_column_evidence = column_evidence.node(join.inputs[1]);
+    let left_join_keys = join.spec.keys.iter().map(|key| key.left.name().to_owned()).collect::<BTreeSet<_>>();
+    let right_join_keys = join.spec.keys.iter().map(|key| key.right.name().to_owned()).collect::<BTreeSet<_>>();
+    let left_is_unique = left_column_evidence.is_unique_on(&left_join_keys);
+    let right_is_unique = right_column_evidence.is_unique_on(&right_join_keys);
     let key_metadata = build_keys
         .iter()
         .map(|key| hash_join_key_metadata(&build.schema, &build_column_evidence, build.rows, key.name()))
@@ -1715,11 +1682,18 @@ pub(crate) fn composed_consumer_join_peak_bytes(
     let output_rows = match join.spec.join_type {
         JoinType::Inner if join.spec.has_at_most_one_match_per_bounded_row(JoinSide::Left) => left.rows,
         JoinType::Inner if join.spec.has_at_most_one_match_per_bounded_row(JoinSide::Right) => right.rows,
+        JoinType::Inner if left_is_unique && right_is_unique => left.rows.min(right.rows),
+        JoinType::Inner if left_is_unique => right.rows,
+        JoinType::Inner if right_is_unique => left.rows,
         JoinType::Inner => left
             .rows
             .checked_mul(right.rows)
             .ok_or_else(|| composed_schedule_error("consumer_join_output_rows_overflow", None))?,
         JoinType::Left if join.spec.has_at_most_one_match_per_bounded_row(JoinSide::Left) => left.rows,
+        JoinType::Left if left_is_unique => left
+            .rows
+            .checked_add(right.rows)
+            .ok_or_else(|| composed_schedule_error("consumer_join_output_rows_overflow", None))?,
         JoinType::Left => left
             .rows
             .checked_mul(right.rows.max(1))

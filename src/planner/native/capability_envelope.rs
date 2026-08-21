@@ -1,7 +1,7 @@
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use nexus_query_engine::{
     admission::{
-        bounded_pipeline_admission_with_statistical_aggregate_mode,
+        QueryPlanCapabilityProof, bounded_pipeline_admission_with_statistical_aggregate_mode,
         bounded_pipeline_rejection_projection_with_statistical_aggregate_mode,
     },
     capability::ContractStatus,
@@ -116,6 +116,9 @@ pub(super) fn accepted_plan_contract_diagnostics(
     if !plan.contains_join() {
         return Ok(non_join_capability_diagnostics());
     }
+    if composed_admission_requires_producer_binding(plan) {
+        return Ok(NativeCapabilityContractDiagnostics::default());
+    }
 
     let admission = bounded_pipeline_admission_with_statistical_aggregate_mode(
         plan,
@@ -147,6 +150,9 @@ pub(super) fn capability_envelope_admission_is_rejected(
     plan: &QueryPlan,
     execution_config: &NexusNativeExecutionConfig,
 ) -> DataFusionResult<bool> {
+    if composed_admission_requires_producer_binding(plan) {
+        return Ok(false);
+    }
     match bounded_pipeline_admission_with_statistical_aggregate_mode(
         plan,
         execution_config.statistical_aggregate_execution_mode(),
@@ -156,6 +162,11 @@ pub(super) fn capability_envelope_admission_is_rejected(
         Err(error) if error.code() == nexus_query_engine::error::QueryErrorCode::UnsupportedPlanShape => Ok(true),
         Err(error) => Err(capability_contract_report_error(stamp_native_error_correlation(error, execution_config))),
     }
+}
+
+fn composed_admission_requires_producer_binding(plan: &QueryPlan) -> bool {
+    QueryPlanCapabilityProof::for_composed_consumer_plan(plan)
+        .is_some_and(|proof| proof.requires_composed_producer_binding())
 }
 
 pub(super) fn rejected_plan_contract_diagnostics(

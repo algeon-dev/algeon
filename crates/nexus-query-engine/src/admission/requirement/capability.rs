@@ -469,7 +469,7 @@ impl QueryPlanCapabilityProof {
             );
             resident_input_scopes.push((input_name.to_owned(), canonical_execution_scope_fingerprint(input_plan)));
         }
-        let mut requirement = AttemptCapabilityEvidence::for_query_plan(plan);
+        let mut requirement = AttemptCapabilityEvidence::for_query_plan_with_resident_outputs(plan, &resident_outputs);
         if let [shape] = requirement.reservation_shapes.as_mut_slice() {
             shape.set_output_column_evidence(PlanColumnEvidenceAnalysis::for_plan(plan, &resident_outputs)?.root(plan));
             shape.set_output_column_evidence_input_scopes(resident_input_scopes);
@@ -1347,6 +1347,22 @@ impl QueryPlanCapabilityProof {
         Ok(self)
     }
 
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn retained_normalization_source_model_bytes_for_plan(&self, plan: &QueryPlan) -> Result<Option<u64>> {
+        let matching = self
+            .requirement
+            .reservation_shapes
+            .iter()
+            .filter(|shape| shape.matches(plan))
+            .filter_map(AttemptReservationShape::graph_memory_admission_evidence)
+            .collect::<Vec<_>>();
+        match matching.as_slice() {
+            [] => Ok(None),
+            [evidence] => Ok(Some(evidence.retained_normalization_source_model_bytes())),
+            _ => Err(composed_schedule_error("graph_memory_evidence_scope_ambiguous", None)),
+        }
+    }
+
     /// Returns the device-capability contracts captured by the engine-issued
     /// proof. This is diagnostic-only and cannot be used to construct a new
     /// proof.
@@ -1364,6 +1380,12 @@ impl QueryPlanCapabilityProof {
     /// supplied one. This is diagnostic-only; admission remains ledger-owned.
     pub fn soft_working_set_hint_bytes(&self) -> Option<u64> {
         self.requirement.soft_working_set_hint_bytes()
+    }
+
+    /// Returns whether this consumer proof must be completed with its exact
+    /// GPU-resident producer occurrences before bounded admission can run.
+    pub fn requires_composed_producer_binding(&self) -> bool {
+        self.requirement.requires_composed_producer_binding
     }
 
     #[cfg(feature = "test-hooks")]
@@ -1624,10 +1646,25 @@ impl AttemptCapabilityEvidence {
     }
 
     pub(crate) fn for_query_plan_with_gpu_output(plan: &QueryPlan, include_gpu_output_owner: bool) -> Self {
+        Self::for_query_plan_with_gpu_output_and_resident_outputs(plan, include_gpu_output_owner, &HashMap::new())
+    }
+
+    fn for_query_plan_with_resident_outputs(
+        plan: &QueryPlan,
+        resident_outputs: &HashMap<String, PlanColumnEvidence>,
+    ) -> Self {
+        Self::for_query_plan_with_gpu_output_and_resident_outputs(plan, true, resident_outputs)
+    }
+
+    fn for_query_plan_with_gpu_output_and_resident_outputs(
+        plan: &QueryPlan,
+        include_gpu_output_owner: bool,
+        resident_outputs: &HashMap<String, PlanColumnEvidence>,
+    ) -> Self {
         let source_stage_bytes = estimated_reachable_local_parquet_source_bytes(plan);
         let source_owner_result = local_parquet_source_owner_terms(plan);
         let literal_owner_result = literal_batch_source_owner_terms(plan);
-        let gpu_owner_result = generic_gpu_resident_owner_terms(plan, include_gpu_output_owner);
+        let gpu_owner_result = generic_gpu_resident_owner_terms(plan, include_gpu_output_owner, resident_outputs);
         let aggregate_owner_result = generic_aggregate_owner_terms(plan);
         let mut source_owner_terms = Vec::new();
         if let Ok(terms) = &source_owner_result {
@@ -1661,7 +1698,7 @@ impl AttemptCapabilityEvidence {
         evidence.source_stage_bytes = source_stage_bytes;
         evidence.owner_terms = source_owner_terms;
         let mut shape = AttemptReservationShape::for_query_plan(plan);
-        let output_evidence = PlanColumnEvidenceAnalysis::for_plan(plan, &HashMap::new());
+        let output_evidence = PlanColumnEvidenceAnalysis::for_plan(plan, resident_outputs);
         if let Ok(output_evidence) = &output_evidence {
             shape.set_output_column_evidence(output_evidence.root(plan));
         }

@@ -62,6 +62,7 @@ impl StringPayloadBound {
 pub(super) struct PlanColumnEvidence {
     pub(super) string_payload_bounds: BTreeMap<String, StringPayloadBound>,
     pub(super) unique_keys: Vec<BTreeSet<String>>,
+    pub(super) equivalent_columns: Vec<BTreeSet<String>>,
 }
 
 impl PlanColumnEvidence {
@@ -71,6 +72,10 @@ impl PlanColumnEvidence {
 
     pub(super) fn is_unique_on(&self, columns: &BTreeSet<String>) -> bool {
         self.unique_keys.iter().any(|key| key.is_subset(columns))
+    }
+
+    fn columns_are_equivalent(&self, left: &str, right: &str) -> bool {
+        left == right || self.equivalent_columns.iter().any(|columns| columns.contains(left) && columns.contains(right))
     }
 }
 
@@ -233,15 +238,28 @@ impl PlanColumnEvidenceAnalysis {
                         output.string_payload_bounds.insert(projection_output.field.name().clone(), bound);
                     }
                 }
-                output.unique_keys = remap_unique_keys(
-                    &input,
-                    projection.outputs.iter().filter_map(|output| {
+                let identity_mappings = projection
+                    .outputs
+                    .iter()
+                    .filter_map(|output| {
                         Some((
                             identity_source_column(&output.expr, input_schema)?.to_owned(),
                             output.field.name().clone(),
                         ))
-                    }),
-                );
+                    })
+                    .collect::<Vec<_>>();
+                let unique_mappings = projection
+                    .outputs
+                    .iter()
+                    .filter_map(|output| {
+                        Some((
+                            unique_source_column(&output.expr, input_schema)?.to_owned(),
+                            output.field.name().clone(),
+                        ))
+                    })
+                    .collect::<Vec<_>>();
+                output.unique_keys = remap_unique_keys(&input, unique_mappings);
+                output.equivalent_columns = remap_equivalent_columns(&input, identity_mappings);
                 output
             },
             PlanNode::Aggregate(aggregate) => {
@@ -297,6 +315,13 @@ impl PlanColumnEvidenceAnalysis {
                     && node.output_schema().field_with_name("vertex").is_ok()
                 {
                     output.unique_keys.push(BTreeSet::from(["vertex".to_owned()]));
+                }
+                if matches!(
+                    &graph.spec.params,
+                    crate::plan::GraphAlgorithmParams::Bfs(params) if params.path_output.is_some()
+                ) && node.output_schema().field_with_name("path_index").is_ok()
+                {
+                    output.unique_keys.push(BTreeSet::from(["path_index".to_owned()]));
                 }
                 output
             },
@@ -490,6 +515,8 @@ fn join_evidence(
     let bounded_side = [JoinSide::Left, JoinSide::Right]
         .into_iter()
         .find(|side| join.spec.has_at_most_one_match_per_bounded_row(*side));
+    let left_is_unique = side_is_unique_on_join_keys(join, JoinSide::Left, left, right);
+    let right_is_unique = side_is_unique_on_join_keys(join, JoinSide::Right, left, right);
     let bounded_is_unique = bounded_side.is_some_and(|side| side_is_unique_on_join_keys(join, side, left, right));
     for projected in &join.spec.output_projection {
         let input = match projected.side {
@@ -497,7 +524,13 @@ fn join_evidence(
             JoinSide::Right => right,
         };
         let mut bound = input.string_payload_bound(projected.column.name()).cloned();
-        if Some(projected.side) != bounded_side
+        let input_rows_are_not_duplicated = Some(projected.side) == bounded_side
+            || matches!(join.spec.join_type, crate::plan::JoinType::LeftSemi) && projected.side == JoinSide::Left
+            || match projected.side {
+                JoinSide::Left => right_is_unique,
+                JoinSide::Right => left_is_unique,
+            };
+        if !input_rows_are_not_duplicated
             && !bounded_is_unique
             && !join.spec.preserves_total_payload_bound_for_output(&projected.output_name)
         {
@@ -512,6 +545,29 @@ fn join_evidence(
                 } else {
                     bound = Some(equivalent.clone());
                 }
+            } else if join.spec.join_type == crate::plan::JoinType::Left
+                && projected.side == JoinSide::Left
+                && left_is_unique
+                && let Some(equivalent) =
+                    equivalent_bounded_join_key_bound(join, projected, left, right, JoinSide::Right)
+                && let Some(bound) = &mut bound
+            {
+                bound.total_payload_upper_bound_bytes =
+                    match (bound.total_payload_upper_bound_bytes, equivalent.total_payload_upper_bound_bytes) {
+                        (Some(left_total), Some(right_total)) => {
+                            Some(left_total.checked_add(right_total).ok_or_else(|| {
+                                payload_row_bound_overflow("left_join_unique_key_payload")
+                                    .with_fact("column", &projected.output_name)
+                            })?)
+                        },
+                        _ => None,
+                    };
+                bound.max_single_value_length_bytes =
+                    match (bound.max_single_value_length_bytes, equivalent.max_single_value_length_bytes) {
+                        (Some(left_max), Some(right_max)) => Some(left_max.max(right_max)),
+                        (left_max, right_max) => left_max.or(right_max),
+                    };
+                bound.lineages.extend(equivalent.lineages.iter().cloned());
             } else if let Some(bound) = &mut bound {
                 let multiplicity = match projected.side {
                     JoinSide::Left => right_rows,
@@ -541,17 +597,25 @@ fn join_evidence(
         .output_projection
         .iter()
         .filter(|column| column.side == JoinSide::Left)
-        .map(|column| (column.column.name().to_owned(), column.output_name.clone()));
+        .map(|column| (column.column.name().to_owned(), column.output_name.clone()))
+        .collect::<Vec<_>>();
     let right_mapping = join
         .spec
         .output_projection
         .iter()
         .filter(|column| column.side == JoinSide::Right)
-        .map(|column| (column.column.name().to_owned(), column.output_name.clone()));
-    if bounded_side == Some(JoinSide::Left) || bounded_is_unique {
+        .map(|column| (column.column.name().to_owned(), column.output_name.clone()))
+        .collect::<Vec<_>>();
+    output.equivalent_columns.extend(remap_equivalent_columns(left, left_mapping.clone()));
+    output.equivalent_columns.extend(remap_equivalent_columns(right, right_mapping.clone()));
+    if bounded_side == Some(JoinSide::Left)
+        || bounded_is_unique
+        || right_is_unique
+        || join.spec.join_type == crate::plan::JoinType::LeftSemi
+    {
         output.unique_keys.extend(remap_unique_keys(left, left_mapping));
     }
-    if bounded_side == Some(JoinSide::Right) || bounded_is_unique {
+    if bounded_side == Some(JoinSide::Right) || bounded_is_unique || left_is_unique {
         output.unique_keys.extend(remap_unique_keys(right, right_mapping));
     }
     Ok(output)
@@ -575,10 +639,12 @@ fn equivalent_bounded_join_key_bound<'a>(
     bounded_side: JoinSide,
 ) -> Option<&'a StringPayloadBound> {
     join.spec.keys.iter().find_map(|key| match (projected.side, bounded_side) {
-        (JoinSide::Left, JoinSide::Right) if key.left.name() == projected.column.name() => {
+        (JoinSide::Left, JoinSide::Right) if left.columns_are_equivalent(key.left.name(), projected.column.name()) => {
             right.string_payload_bound(key.right.name())
         },
-        (JoinSide::Right, JoinSide::Left) if key.right.name() == projected.column.name() => {
+        (JoinSide::Right, JoinSide::Left)
+            if right.columns_are_equivalent(key.right.name(), projected.column.name()) =>
+        {
             left.string_payload_bound(key.left.name())
         },
         _ => None,
@@ -610,11 +676,54 @@ fn remap_unique_keys(
     input: &PlanColumnEvidence,
     mappings: impl IntoIterator<Item = (String, String)>,
 ) -> Vec<BTreeSet<String>> {
-    let mappings = mappings.into_iter().collect::<BTreeMap<_, _>>();
+    let mappings = mappings.into_iter().fold(BTreeMap::<_, Vec<_>>::new(), |mut mappings, (input, output)| {
+        mappings.entry(input).or_default().push(output);
+        mappings
+    });
     input
         .unique_keys
         .iter()
-        .filter_map(|key| key.iter().map(|column| mappings.get(column).cloned()).collect::<Option<BTreeSet<_>>>())
+        .flat_map(|key| {
+            key.iter()
+                .try_fold(vec![BTreeSet::new()], |keys, column| {
+                    let outputs = mappings.get(column)?;
+                    Some(
+                        keys.into_iter()
+                            .flat_map(|key| {
+                                outputs.iter().map(move |output| {
+                                    let mut key = key.clone();
+                                    key.insert(output.clone());
+                                    key
+                                })
+                            })
+                            .collect(),
+                    )
+                })
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
+fn remap_equivalent_columns(
+    input: &PlanColumnEvidence,
+    mappings: impl IntoIterator<Item = (String, String)>,
+) -> Vec<BTreeSet<String>> {
+    let mappings = mappings.into_iter().fold(BTreeMap::<_, Vec<_>>::new(), |mut mappings, (input, output)| {
+        mappings.entry(input).or_default().push(output);
+        mappings
+    });
+    mappings
+        .keys()
+        .filter_map(|input_column| {
+            let outputs = mappings
+                .iter()
+                .filter(|(candidate, _)| input.columns_are_equivalent(input_column, candidate))
+                .flat_map(|(_, outputs)| outputs.iter().cloned())
+                .collect::<BTreeSet<_>>();
+            (outputs.len() > 1).then_some(outputs)
+        })
+        .collect::<BTreeSet<_>>()
+        .into_iter()
         .collect()
 }
 
@@ -634,6 +743,23 @@ pub(crate) fn identity_source_column<'a>(
         },
         _ => None,
     }
+}
+
+fn unique_source_column<'a>(expr: &'a Expr, input_schema: Option<&arrow::datatypes::SchemaRef>) -> Option<&'a str> {
+    if let Some(column) = identity_source_column(expr, input_schema) {
+        return Some(column);
+    }
+    let Expr::Binary { left, op: crate::expr::BinaryOp::Add, right, .. } = expr else {
+        return None;
+    };
+    let (column, literal) = match (left.as_ref(), right.as_ref()) {
+        (Expr::Column(column), Expr::Literal(literal)) | (Expr::Literal(literal), Expr::Column(column)) => {
+            (column, literal)
+        },
+        _ => return None,
+    };
+    let source_type = input_schema?.field_with_name(column.name()).ok()?.data_type();
+    (source_type.is_integer() && literal.data_type().is_integer()).then_some(column.name())
 }
 
 fn is_string(data_type: &DataType) -> bool {
@@ -731,6 +857,68 @@ mod tests {
         assert_eq!(bound.max_single_value_length_bytes, None);
         assert_eq!(bound.lineages.len(), 2);
         assert!(output.is_unique_on(&BTreeSet::from(["__vertex_id".to_owned()])));
+    }
+
+    #[test]
+    fn path_index_addition_preserves_one_to_one_path_join_keys() {
+        let path_schema = Arc::new(Schema::new(vec![
+            Field::new("path_index", DataType::Int64, false),
+            Field::new("vertex", DataType::Utf8, false),
+        ]));
+        let output_schema = Arc::new(Schema::new(vec![
+            Field::new("object_id", DataType::Utf8, false),
+            Field::new("subject_id", DataType::Utf8, false),
+        ]));
+        let mut builder = QueryPlanBuilder::new();
+        let current = builder.add_source(SourceNode::GpuResident(
+            crate::source::GpuResidentSource::new("current", Arc::clone(&path_schema)).with_row_count_upper_bound(49),
+        ));
+        let previous = builder.add_source(SourceNode::GpuResident(
+            crate::source::GpuResidentSource::new("previous", Arc::clone(&path_schema)).with_row_count_upper_bound(49),
+        ));
+        let previous = builder.add_projection(
+            previous,
+            vec![
+                ProjectionOutput::new(
+                    Expr::binary(
+                        Expr::column("path_index"),
+                        crate::expr::BinaryOp::Add,
+                        Expr::literal(LiteralValue::Int64(1)),
+                    ),
+                    Field::new("next_path_index", DataType::Int64, false),
+                ),
+                ProjectionOutput::new(Expr::column("vertex"), Field::new("vertex", DataType::Utf8, false)),
+            ],
+        );
+        let join = builder.add_join(
+            current,
+            previous,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(
+                    crate::expr::ColumnRef::input(0, "path_index", "path_index"),
+                    crate::expr::ColumnRef::input(1, "next_path_index", "next_path_index"),
+                )],
+            )
+            .with_output_projection(vec![
+                JoinOutputColumn::left(crate::expr::ColumnRef::input(0, "vertex", "vertex"), "object_id"),
+                JoinOutputColumn::right(crate::expr::ColumnRef::input(1, "vertex", "vertex"), "subject_id"),
+            ]),
+            output_schema,
+        );
+        let plan = builder.finish_with_host_sink(join);
+        let path_evidence = PlanColumnEvidence {
+            unique_keys: vec![BTreeSet::from(["path_index".to_owned()]), BTreeSet::from(["vertex".to_owned()])],
+            ..Default::default()
+        };
+        let resident_outputs =
+            HashMap::from([("current".to_owned(), path_evidence.clone()), ("previous".to_owned(), path_evidence)]);
+        let output = PlanColumnEvidenceAnalysis::for_plan(&plan, &resident_outputs)
+            .expect("bounded path join evidence must resolve")
+            .root(&plan);
+
+        assert!(output.is_unique_on(&BTreeSet::from(["object_id".to_owned()])));
+        assert!(output.is_unique_on(&BTreeSet::from(["subject_id".to_owned()])));
     }
 
     #[test]

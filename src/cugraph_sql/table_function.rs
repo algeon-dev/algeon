@@ -32,6 +32,8 @@ use datafusion::{
 use datafusion::{
     datasource::{MemTable, provider_as_source},
     logical_expr::{LogicalPlanBuilder, col},
+    physical_expr::{expressions::Column, projection::ProjectionExpr},
+    physical_plan::projection::ProjectionExec,
 };
 
 use super::{
@@ -49,10 +51,7 @@ use crate::{
 };
 
 #[cfg(feature = "cugraph")]
-type CugraphScanContract = (Option<Vec<usize>>, Option<usize>);
-
-#[cfg(feature = "cugraph")]
-type ResultInputNamesByScan = BTreeMap<CugraphScanContract, String>;
+type ResultInputNamesByScan = BTreeMap<Option<usize>, String>;
 
 #[cfg(feature = "cugraph")]
 #[derive(Debug)]
@@ -120,24 +119,48 @@ impl TableProvider for CugraphAlgoTableProvider {
         let edge_source_plan = LogicalPlanBuilder::from(scan).project(edge_source_projection(&spec))?.build()?;
         let edge_source = planning_state.create_physical_plan(&edge_source_plan).await?;
         let predicate_sources = predicate_source_plans(&planning_state, session_state, &spec, &vertex_domain).await?;
-        let result_input_key = (projection.cloned(), limit);
         let gpu_result_input_name = self
             .result_input_names
             .lock()
             .expect("cuGraph result input name registry mutex cannot be poisoned")
-            .entry(result_input_key)
+            .entry(limit)
             .or_insert_with(CugraphAlgoExec::next_gpu_result_input_name)
             .clone();
-        Ok(Arc::new(CugraphAlgoExec::try_new_with_reserved_gpu_result_input_name(
+        let producer = Arc::new(CugraphAlgoExec::try_new_with_reserved_gpu_result_input_name(
             spec,
             edge_source,
             predicate_sources,
-            projection.cloned(),
+            None,
             limit,
             native_execution_config,
             gpu_result_input_name,
-        )?))
+        )?) as Arc<dyn ExecutionPlan>;
+        project_cugraph_scan(producer, projection)
     }
+}
+
+#[cfg(feature = "cugraph")]
+fn project_cugraph_scan(
+    producer: Arc<dyn ExecutionPlan>,
+    projection: Option<&Vec<usize>>,
+) -> Result<Arc<dyn ExecutionPlan>> {
+    let Some(projection) = projection else {
+        return Ok(producer);
+    };
+    let schema = producer.schema();
+    let expressions = projection
+        .iter()
+        .map(|index| {
+            let field = schema.fields().get(*index).ok_or_else(|| {
+                plan_error(format!(
+                    "cuGraph result projection index {index} is outside the {}-column output schema",
+                    schema.fields().len()
+                ))
+            })?;
+            Ok(ProjectionExpr { expr: Arc::new(Column::new(field.name(), *index)), alias: field.name().clone() })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    ProjectionExec::try_new(expressions, producer).map(|projection| Arc::new(projection) as Arc<dyn ExecutionPlan>)
 }
 
 #[cfg(feature = "cugraph")]

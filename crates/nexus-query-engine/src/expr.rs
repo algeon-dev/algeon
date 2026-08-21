@@ -42,6 +42,14 @@ pub fn representation_cast_preserves_identity(source_type: &DataType, target_typ
         )
 }
 
+pub(crate) fn representation_cast_column(expr: &Expr) -> Option<(&ColumnRef, &DataType)> {
+    match expr {
+        Expr::Alias { expr, .. } => representation_cast_column(expr),
+        Expr::Cast { expr, target_type } => alias_wrapped_column(expr).map(|column| (column, target_type)),
+        _ => None,
+    }
+}
+
 pub(crate) fn interval_month_day_nano(expr: &Expr) -> Option<(i32, i32, i64)> {
     let Expr::Literal(LiteralValue::IntervalMonthDayNano { months, days, nanoseconds }) = expr else {
         return None;
