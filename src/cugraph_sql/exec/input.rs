@@ -792,7 +792,9 @@ pub(super) fn prepare_cugraph_source_metadata(
             return Ok(plan);
         }
         let original = Arc::clone(&plan);
-        Ok(plan.with_new_children(prepared_children).unwrap_or(original))
+        Ok(plan
+            .replace_children(prepared_children, ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
+            .unwrap_or(original))
     })
 }
 

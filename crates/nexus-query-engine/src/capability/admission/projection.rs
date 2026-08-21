@@ -350,7 +350,11 @@ pub(in crate::capability::admission) fn projection_scalar_setop_scalar_join_grou
             Some(PlanNode::Join(join))
                 if matches!(
                     join_node_execution_capability(join),
-                    Some(JoinExecutionCapability::KeyedHash | JoinExecutionCapability::KeyedResidualMixed)
+                    Some(
+                        JoinExecutionCapability::KeyedHash
+                            | JoinExecutionCapability::KeyedResidualMixed
+                            | JoinExecutionCapability::KeyedFilteredSemiAnti
+                    )
                 )
         )
     })

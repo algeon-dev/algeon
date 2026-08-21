@@ -4,7 +4,13 @@ use crate::plan::{WindowFrame, WindowNode};
 pub(in crate::capability) fn root_full_sort_join_aggregate_shape_decision(
     plan: &QueryPlan,
 ) -> Result<RootFullSortJoinAggregateShape, CapabilityDecision> {
-    let final_sort_id = plan.sink().input();
+    let mut sink_input_id = plan.sink().input();
+    let mut post_sort_projection_ids = Vec::new();
+    while let Some(PlanNode::Projection(proj)) = plan.node(sink_input_id).map(|node| &node.kind) {
+        post_sort_projection_ids.push(sink_input_id);
+        sink_input_id = proj.input;
+    }
+    let final_sort_id = sink_input_id;
     let final_sort = match plan.node(final_sort_id).map(|node| &node.kind) {
         Some(PlanNode::Sort(sort)) => sort,
         Some(node) => {
@@ -90,10 +96,12 @@ pub(in crate::capability) fn root_full_sort_join_aggregate_shape_decision(
     } else {
         RootFullSortJoinAggregateSubcontract::UnsupportedSharedOrFanout
     };
-    let post_root_projection_ids = post_root_chain_ids
-        .into_iter()
-        .filter(|node_id| matches!(plan.node(*node_id).map(|node| &node.kind), Some(PlanNode::Projection(_))))
-        .collect();
+    let mut post_root_projection_ids: Vec<NodeId> = post_sort_projection_ids;
+    post_root_projection_ids.extend(
+        post_root_chain_ids
+            .into_iter()
+            .filter(|node_id| matches!(plan.node(*node_id).map(|node| &node.kind), Some(PlanNode::Projection(_)))),
+    );
 
     Ok(RootFullSortJoinAggregateShape {
         root_join_id,
@@ -336,7 +344,11 @@ fn root_full_sort_grouped_aggregate_fragment(
 }
 
 fn root_full_sort_sink_path_grouped_aggregate_id(plan: &QueryPlan) -> Option<NodeId> {
-    let mut current = match plan.node(plan.sink().input()).map(|node| &node.kind) {
+    let mut sink_input_id = plan.sink().input();
+    while let Some(PlanNode::Projection(proj)) = plan.node(sink_input_id).map(|node| &node.kind) {
+        sink_input_id = proj.input;
+    }
+    let mut current = match plan.node(sink_input_id).map(|node| &node.kind) {
         Some(PlanNode::Sort(sort)) => sort.input,
         _ => return None,
     };

@@ -8,10 +8,13 @@ use arrow::{
     record_batch::{RecordBatch, RecordBatchOptions},
 };
 use datafusion::{
-    common::{DataFusionError, Result as DataFusionResult},
+    common::{DataFusionError, Result as DataFusionResult, tree_node::TreeNodeRecursion},
     execution::{SendableRecordBatchStream, TaskContext},
-    physical_expr::EquivalenceProperties,
-    physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, stream::RecordBatchStreamAdapter},
+    physical_expr::{EquivalenceProperties, PhysicalExpr},
+    physical_plan::{
+        DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, StatisticsArgs, StatisticsContext,
+        stream::RecordBatchStreamAdapter,
+    },
 };
 use futures::TryStreamExt;
 
@@ -239,6 +242,13 @@ impl ExecutionPlan for NexusIcebergScanExec {
         &self.properties
     }
 
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+    ) -> DataFusionResult<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.cpu_delegate]
     }
@@ -291,7 +301,7 @@ impl ExecutionPlan for NexusIcebergScanExec {
     }
 
     fn partition_statistics(&self, partition: Option<usize>) -> DataFusionResult<Arc<datafusion::common::Statistics>> {
-        self.cpu_delegate.partition_statistics(partition)
+        StatisticsContext::new().compute(self.cpu_delegate.as_ref(), &StatisticsArgs::new().with_partition(partition))
     }
 }
 
@@ -768,6 +778,13 @@ mod tests {
 
         fn properties(&self) -> &Arc<PlanProperties> {
             self.properties.as_ref().unwrap_or_else(|| self.inner.properties())
+        }
+
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> DataFusionResult<TreeNodeRecursion>,
+        ) -> DataFusionResult<TreeNodeRecursion> {
+            Ok(TreeNodeRecursion::Continue)
         }
 
         fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {

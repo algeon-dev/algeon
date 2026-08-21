@@ -25,7 +25,7 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
     }
 
     let q21 = planning_replacement_row(report, "q21");
-    assert_eq!(q21.physical_root, "SortExec(TopK)");
+    assert_eq!(q21.physical_root, expected_tpch_physical_root("q21"));
     assert!(
         q21.capability_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::FinalSort
             && gate.contract_quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight

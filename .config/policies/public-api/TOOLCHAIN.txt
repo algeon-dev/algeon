@@ -1,9 +1,9 @@
 cargo-public-api: cargo-public-api 0.52.0
 nightly rustc:
-rustc 1.99.0-nightly (dc3f85158 2026-07-26)
+rustc 1.100.0-nightly (e71c0f1e3 2026-08-18)
 binary: rustc
-commit-hash: dc3f85158a955a87a6e4363af1fbe9cf2d063cce
-commit-date: 2026-07-26
+commit-hash: e71c0f1e3395b10a8c331317be1a5c107bdf7b2e
+commit-date: 2026-08-18
 host: x86_64-unknown-linux-gnu
-release: 1.99.0-nightly
-LLVM version: 22.1.8
+release: 1.100.0-nightly
+LLVM version: 23.1.0

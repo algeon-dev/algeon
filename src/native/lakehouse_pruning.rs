@@ -4,19 +4,27 @@ mod object_store;
 #[cfg(test)]
 mod product_path_tests;
 
-use std::sync::Arc;
+use std::{ops::Range, sync::Arc};
 
 use arrow::datatypes::DataType;
+use bytes::Bytes;
 use datafusion::{
     execution::runtime_env::RuntimeEnv,
     object_store::{ObjectStoreExt, path::Path as ObjectStorePath},
     parquet::{
-        arrow::{ParquetRecordBatchStreamBuilder, ProjectionMask, async_reader::ParquetObjectReader},
-        file::{metadata::ParquetMetaData, statistics::Statistics},
+        arrow::{
+            ParquetRecordBatchStreamBuilder, ProjectionMask, arrow_reader::ArrowReaderOptions,
+            async_reader::AsyncFileReader,
+        },
+        errors::ParquetError,
+        file::{
+            metadata::{ParquetMetaData, ParquetMetaDataReader},
+            statistics::Statistics,
+        },
         schema::types::SchemaDescriptor,
     },
 };
-use futures::TryStreamExt;
+use futures::{FutureExt, TryStreamExt, future::BoxFuture};
 use nexus_query_engine::{
     expr::{BinaryOp, Expr, LiteralValue},
     optimizer::{
@@ -657,7 +665,7 @@ async fn derive_dimension_key_filter(
             .head(&object.path)
             .await
             .map_err(|error| object_store_pruning_error(error, &object_context, &object.path))?;
-        let reader = ParquetObjectReader::new(store, object.path.clone()).with_file_size(object_meta.size);
+        let reader = ObjectStoreParquetReader::new(store, object.path.clone(), object_meta.size);
         let builder = ParquetRecordBatchStreamBuilder::new(reader).await.map_err(|error| {
             foreign_error_diagnostic("parquet_record_batch_stream_builder", &error, &object_context, Some(&object.path))
         })?;
@@ -695,12 +703,58 @@ async fn parquet_metadata(
     let object_context = object_error_context(source_node_id, &path);
     let object_meta =
         store.head(&path).await.map_err(|error| object_store_pruning_error(error, &object_context, &path))?;
-    let reader =
-        ParquetObjectReader::new(store, path.clone()).with_file_size(file_size_bytes.unwrap_or(object_meta.size));
+    let reader = ObjectStoreParquetReader::new(store, path.clone(), file_size_bytes.unwrap_or(object_meta.size));
     let builder = ParquetRecordBatchStreamBuilder::new(reader).await.map_err(|error| {
         foreign_error_diagnostic("parquet_record_batch_stream_builder", &error, &object_context, Some(&path))
     })?;
     Ok(Arc::clone(builder.metadata()))
+}
+
+/// Direct [`AsyncFileReader`] over one object-store location. The file size
+/// is known from the preceding `head`, so the footer loads without suffix
+/// probing.
+struct ObjectStoreParquetReader {
+    store: Arc<dyn datafusion::object_store::ObjectStore>,
+    path: ObjectStorePath,
+    file_size: u64,
+}
+
+impl ObjectStoreParquetReader {
+    fn new(store: Arc<dyn datafusion::object_store::ObjectStore>, path: ObjectStorePath, file_size: u64) -> Self {
+        Self { store, path, file_size }
+    }
+}
+
+fn object_store_parquet_error(error: datafusion::object_store::Error) -> ParquetError {
+    ParquetError::External(Box::new(error))
+}
+
+impl AsyncFileReader for ObjectStoreParquetReader {
+    fn get_bytes(&mut self, range: Range<u64>) -> BoxFuture<'_, datafusion::parquet::errors::Result<Bytes>> {
+        async move { self.store.get_range(&self.path, range).await.map_err(object_store_parquet_error) }.boxed()
+    }
+
+    fn get_byte_ranges(
+        &mut self,
+        ranges: Vec<Range<u64>>,
+    ) -> BoxFuture<'_, datafusion::parquet::errors::Result<Vec<Bytes>>> {
+        async move { self.store.get_ranges(&self.path, &ranges).await.map_err(object_store_parquet_error) }.boxed()
+    }
+
+    fn get_metadata<'a>(
+        &'a mut self,
+        options: Option<&'a ArrowReaderOptions>,
+    ) -> BoxFuture<'a, datafusion::parquet::errors::Result<Arc<ParquetMetaData>>> {
+        let file_size = self.file_size;
+        async move {
+            let metadata = ParquetMetaDataReader::new()
+                .with_arrow_reader_options(options)
+                .load_and_finish(self, file_size)
+                .await?;
+            Ok(Arc::new(metadata))
+        }
+        .boxed()
+    }
 }
 
 fn row_group_key_ranges(
@@ -971,6 +1025,48 @@ mod tests {
         assert_eq!(row_group_key_ranges(metadata, 0, &[0, 1]), vec![None, None]);
 
         fs::remove_dir_all(dir).expect("temporary lakehouse pruning directory should be removable");
+    }
+
+    #[tokio::test]
+    async fn object_store_parquet_reader_loads_metadata_and_reads_byte_ranges() {
+        let dir = unique_test_dir("lakehouse-reader-test");
+        fs::create_dir_all(&dir).expect("temporary directory should be created");
+        let path = dir.join("test.parquet");
+        write_nested_key_parquet(&path);
+
+        let bytes = fs::read(&path).expect("test parquet file bytes should be readable");
+        let file_size = bytes.len() as u64;
+
+        let store = Arc::new(datafusion::object_store::memory::InMemory::new());
+        let object_path = ObjectStorePath::parse("warehouse/test.parquet").expect("valid path");
+        store.put(&object_path, bytes.clone().into()).await.expect("put should succeed");
+
+        let mut reader = ObjectStoreParquetReader::new(store.clone(), object_path.clone(), file_size);
+
+        let metadata = reader.get_metadata(None).await.expect("metadata should load");
+        assert_eq!(metadata.file_metadata().num_rows(), 2);
+        assert_eq!(metadata.num_row_groups(), 2);
+
+        let slice = reader.get_bytes(0..16).await.expect("range read should succeed");
+        assert_eq!(slice.as_ref(), &bytes[0..16]);
+
+        let slices = reader.get_byte_ranges(vec![0..8, 8..24]).await.expect("multi range read should succeed");
+        assert_eq!(slices.len(), 2);
+        assert_eq!(slices[0].as_ref(), &bytes[0..8]);
+        assert_eq!(slices[1].as_ref(), &bytes[8..24]);
+
+        fs::remove_dir_all(dir).expect("cleanup should succeed");
+    }
+
+    #[tokio::test]
+    async fn object_store_parquet_reader_maps_errors_to_parquet_external() {
+        let store = Arc::new(datafusion::object_store::memory::InMemory::new());
+        let missing_path = ObjectStorePath::parse("warehouse/missing.parquet").expect("valid path");
+        let mut reader = ObjectStoreParquetReader::new(store, missing_path, 100);
+
+        let result = reader.get_bytes(0..10).await;
+        let err = result.expect_err("reading missing object must fail");
+        assert!(matches!(err, ParquetError::External(_)), "error should be External ParquetError: {err}");
     }
 
     fn write_nested_key_parquet(path: &Path) {

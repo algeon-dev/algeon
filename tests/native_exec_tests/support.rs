@@ -15,6 +15,7 @@ use datafusion::{
     datasource::{
         physical_plan::{FileScanConfigBuilder, ParquetSource},
         source::DataSourceExec,
+        table_schema::TableSchema,
     },
     execution::object_store::ObjectStoreUrl,
     functions_aggregate::{count::count_udaf, sum::sum_udaf},
@@ -272,6 +273,33 @@ pub(super) fn parquet_scan_with_object_store_url(
     DataSourceExec::from_data_source(file_scan)
 }
 
+/// A partition-grouped scan in its observable DataFusion 55 shape: the
+/// partition column lives in the table schema (not the file schema) and the
+/// scan declares the matching hash output partitioning.
+pub(super) fn parquet_scan_with_partition_field(
+    path: &std::path::Path,
+    partition_field: Field,
+) -> Arc<dyn ExecutionPlan> {
+    let scan = parquet_scan(path);
+    let data_source = scan.downcast_ref::<DataSourceExec>().expect("parquet scan should be DataSourceExec");
+    let (file_scan, _parquet_source) =
+        data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
+    let partition_field_name = partition_field.name().clone();
+    let table_schema = TableSchema::builder(Arc::clone(file_scan.file_schema()))
+        .with_table_partition_cols(vec![Arc::new(partition_field)])
+        .build();
+    let parquet_source = ParquetSource::new(table_schema.clone());
+    let projected_indices = (0..=file_scan.file_schema().fields().len()).collect::<Vec<_>>();
+    let partition_expr = col(&partition_field_name, table_schema.table_schema()).unwrap();
+    let file_scan = FileScanConfigBuilder::new(file_scan.object_store_url.clone(), Arc::new(parquet_source))
+        .with_file_groups(file_scan.file_groups.clone())
+        .with_projection_indices(Some(projected_indices))
+        .unwrap()
+        .with_output_partitioning(Some(datafusion::physical_expr::Partitioning::Hash(vec![partition_expr], 1)))
+        .build();
+    DataSourceExec::from_data_source(file_scan)
+}
+
 pub(super) fn parquet_scan_with_declared_output_ordering(path: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     let scan = parquet_scan(path);
     let ordering = LexOrdering::new([PhysicalSortExpr::new(
@@ -326,6 +354,7 @@ fn join_aggregate_sort_sql_plan_with_limit(
         SessionConfig::new()
             .with_repartition_file_scans(false)
             .with_repartition_joins(false)
+            .with_repartition_aggregations(false)
             .with_repartition_sorts(false)
             .with_target_partitions(1),
     );

@@ -164,7 +164,7 @@ fn row_fields(
     engine: Engine,
 ) -> Vec<String> {
     let p1 = P1BottleneckSummary::from_outcome(outcome);
-    let metrics = outcome.native_metrics.as_ref();
+    let metrics = outcome.native_metrics.as_deref();
     let fields = vec![
         engine.as_str().to_string(),
         query.id.to_string(),
@@ -347,7 +347,7 @@ struct P1BottleneckSummary {
 
 impl P1BottleneckSummary {
     fn from_outcome(outcome: &IterOutcome) -> Self {
-        let Some(metrics) = outcome.native_metrics.as_ref() else {
+        let Some(metrics) = outcome.native_metrics.as_deref() else {
             return Self {
                 runtime_operator_class: "not_run".to_string(),
                 runtime_operator_class_ms: None,

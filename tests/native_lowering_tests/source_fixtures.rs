@@ -173,16 +173,20 @@ pub(super) async fn sql_plan(path: &std::path::Path, config: SessionConfig, sql:
 }
 
 pub(super) fn sql_plan_without_scan_predicate(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-    let sort_plan = plan;
-    let sort = sort_plan.downcast_ref::<SortExec>().expect("SQL plan root should be SortExec");
-    let post_projection_plan = Arc::clone(sort.input());
-    let post_projection = post_projection_plan
-        .downcast_ref::<ProjectionExec>()
-        .expect("SQL plan should have a post-aggregate ProjectionExec");
-    let aggregate_plan = Arc::clone(post_projection.input());
+    let (root_projection, sort_plan) = if let Some(proj) = plan.downcast_ref::<ProjectionExec>() {
+        (Some(Arc::clone(&plan)), Arc::clone(proj.input()))
+    } else {
+        (None, Arc::clone(&plan))
+    };
+    let sort = sort_plan.downcast_ref::<SortExec>().expect("SQL plan should contain SortExec");
+    let (post_projection, aggregate_plan) = if let Some(proj) = sort.input().downcast_ref::<ProjectionExec>() {
+        (Some(Arc::clone(sort.input())), Arc::clone(proj.input()))
+    } else {
+        (None, Arc::clone(sort.input()))
+    };
     let aggregate = aggregate_plan
         .downcast_ref::<AggregateExec>()
-        .expect("SQL plan should have an AggregateExec below post projection");
+        .expect("SQL plan should have an AggregateExec below post projection or sort");
     let filter_plan = Arc::clone(aggregate.input());
     let filter = filter_plan.downcast_ref::<FilterExec>().expect("SQL plan should have a FilterExec below aggregate");
     let source_plan = Arc::clone(filter.input());
@@ -190,11 +194,44 @@ pub(super) fn sql_plan_without_scan_predicate(plan: Arc<dyn ExecutionPlan>) -> A
         source_plan.downcast_ref::<DataSourceExec>().expect("SQL plan filter input should be a DataSourceExec");
 
     let source_without_predicate = parquet_source_exec_without_predicate(source);
-    let filter_without_predicate = filter_plan.with_new_children(vec![source_without_predicate]).unwrap();
-    let aggregate_without_predicate = aggregate_plan.with_new_children(vec![filter_without_predicate]).unwrap();
-    let projection_without_predicate =
-        post_projection_plan.with_new_children(vec![aggregate_without_predicate]).unwrap();
-    sort_plan.with_new_children(vec![projection_without_predicate]).unwrap()
+    let filter_without_predicate = filter_plan
+        .replace_children(
+            vec![source_without_predicate],
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
+        .unwrap();
+    let aggregate_without_predicate = aggregate_plan
+        .replace_children(
+            vec![filter_without_predicate],
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
+        .unwrap();
+    let post_projection_without_predicate = if let Some(post_proj) = post_projection {
+        post_proj
+            .replace_children(
+                vec![aggregate_without_predicate],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
+            .unwrap()
+    } else {
+        aggregate_without_predicate
+    };
+    let sort_without_predicate = sort_plan
+        .replace_children(
+            vec![post_projection_without_predicate],
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
+        .unwrap();
+    if let Some(root_proj) = root_projection {
+        root_proj
+            .replace_children(
+                vec![sort_without_predicate],
+                ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+            )
+            .unwrap()
+    } else {
+        sort_without_predicate
+    }
 }
 
 pub(super) fn parquet_source_exec_without_predicate(source: &DataSourceExec) -> Arc<dyn ExecutionPlan> {
@@ -253,15 +290,24 @@ pub(super) struct DefaultDistributedSqlPlanParts {
 pub(super) fn default_distributed_sql_plan_parts(plan: Arc<dyn ExecutionPlan>) -> DefaultDistributedSqlPlanParts {
     let root = plan;
     let root_spm = root.downcast_ref::<SortPreservingMergeExec>().expect("default SQL root should be SPM");
-    let sort = Arc::clone(root_spm.input());
-    let sort_exec = sort.downcast_ref::<SortExec>().expect("default SQL SPM input should be SortExec");
-    let projection = Arc::clone(sort_exec.input());
-    let projection_exec =
-        projection.downcast_ref::<ProjectionExec>().expect("default SQL sort input should be ProjectionExec");
-    let final_aggregate = Arc::clone(projection_exec.input());
-    let final_aggregate_exec = final_aggregate
-        .downcast_ref::<AggregateExec>()
-        .expect("default SQL projection input should be final AggregateExec");
+    let (sort, projection, final_aggregate) = if let Some(sort_exec) = root_spm.input().downcast_ref::<SortExec>() {
+        let sort = Arc::clone(root_spm.input());
+        let projection = Arc::clone(sort_exec.input());
+        let projection_exec =
+            projection.downcast_ref::<ProjectionExec>().expect("default SQL sort input should be ProjectionExec");
+        let final_aggregate = Arc::clone(projection_exec.input());
+        (sort, projection, final_aggregate)
+    } else if let Some(proj_exec) = root_spm.input().downcast_ref::<ProjectionExec>() {
+        let projection = Arc::clone(root_spm.input());
+        let sort = Arc::clone(proj_exec.input());
+        let sort_exec = sort.downcast_ref::<SortExec>().expect("default SQL projection input should be SortExec");
+        let final_aggregate = Arc::clone(sort_exec.input());
+        (sort, projection, final_aggregate)
+    } else {
+        panic!("default SQL SPM input should be SortExec or ProjectionExec");
+    };
+    let final_aggregate_exec =
+        final_aggregate.downcast_ref::<AggregateExec>().expect("default SQL plan should contain final AggregateExec");
     assert!(matches!(final_aggregate_exec.mode(), AggregateMode::FinalPartitioned));
     let between_aggregate_repartition = Arc::clone(final_aggregate_exec.input());
     let repartition = between_aggregate_repartition
@@ -295,9 +341,27 @@ pub(super) fn rebuild_default_distributed_sql_plan(
     parts: &DefaultDistributedSqlPlanParts,
     final_aggregate: Arc<dyn ExecutionPlan>,
 ) -> Arc<dyn ExecutionPlan> {
-    let projection = Arc::clone(&parts.projection).with_new_children(vec![final_aggregate]).unwrap();
-    let sort = Arc::clone(&parts.sort).with_new_children(vec![projection]).unwrap();
-    Arc::clone(&parts.root).with_new_children(vec![sort]).unwrap()
+    if parts.root.children()[0].downcast_ref::<ProjectionExec>().is_some() {
+        let sort = Arc::clone(&parts.sort)
+            .replace_children(vec![final_aggregate], ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
+            .unwrap();
+        let projection = Arc::clone(&parts.projection)
+            .replace_children(vec![sort], ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
+            .unwrap();
+        Arc::clone(&parts.root)
+            .replace_children(vec![projection], ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
+            .unwrap()
+    } else {
+        let projection = Arc::clone(&parts.projection)
+            .replace_children(vec![final_aggregate], ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
+            .unwrap();
+        let sort = Arc::clone(&parts.sort)
+            .replace_children(vec![projection], ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
+            .unwrap();
+        Arc::clone(&parts.root)
+            .replace_children(vec![sort], ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
+            .unwrap()
+    }
 }
 
 pub(super) fn with_rewritten_distributed_final_aggregate(
@@ -336,9 +400,12 @@ pub(super) fn with_rewritten_distributed_partial_aggregate(
         .downcast_ref::<AggregateExec>()
         .expect("default SQL partial aggregate should be AggregateExec");
     let rewritten_partial = rewrite(partial_aggregate);
-    let repartition =
-        Arc::clone(&parts.between_aggregate_repartition).with_new_children(vec![rewritten_partial]).unwrap();
-    let final_aggregate = Arc::clone(&parts.final_aggregate).with_new_children(vec![repartition]).unwrap();
+    let repartition = Arc::clone(&parts.between_aggregate_repartition)
+        .replace_children(vec![rewritten_partial], ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
+        .unwrap();
+    let final_aggregate = Arc::clone(&parts.final_aggregate)
+        .replace_children(vec![repartition], ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
+        .unwrap();
     rebuild_default_distributed_sql_plan(&parts, final_aggregate)
 }
 
@@ -357,18 +424,25 @@ pub(super) fn with_rewritten_distributed_partial_and_final_aggregate(
         .downcast_ref::<AggregateExec>()
         .expect("default SQL final aggregate should be AggregateExec");
     let rewritten_partial = rewrite_partial(partial_aggregate);
-    let repartition =
-        Arc::clone(&parts.between_aggregate_repartition).with_new_children(vec![rewritten_partial]).unwrap();
+    let repartition = Arc::clone(&parts.between_aggregate_repartition)
+        .replace_children(vec![rewritten_partial], ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
+        .unwrap();
     let rewritten_final: Arc<dyn ExecutionPlan> =
         Arc::new(final_aggregate.with_new_aggr_exprs(vec![rewrite_final(final_aggregate)]));
-    let rewritten_final = rewritten_final.with_new_children(vec![repartition]).unwrap();
+    let rewritten_final = rewritten_final
+        .replace_children(vec![repartition], ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
+        .unwrap();
     rebuild_default_distributed_sql_plan(&parts, rewritten_final)
 }
 
 pub(super) fn with_distributed_final_input_replaced_by_scan(plan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     let parts = default_distributed_sql_plan_parts(plan);
-    let final_aggregate =
-        Arc::clone(&parts.final_aggregate).with_new_children(vec![Arc::clone(&parts.scan_input)]).unwrap();
+    let final_aggregate = Arc::clone(&parts.final_aggregate)
+        .replace_children(
+            vec![Arc::clone(&parts.scan_input)],
+            ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute),
+        )
+        .unwrap();
     rebuild_default_distributed_sql_plan(&parts, final_aggregate)
 }
 
@@ -407,7 +481,7 @@ pub(super) fn replace_parquet_scans_with_empty_file_groups(plan: Arc<dyn Executi
         .into_iter()
         .map(|child| replace_parquet_scans_with_empty_file_groups(Arc::clone(child)))
         .collect::<Vec<_>>();
-    plan.with_new_children(children).unwrap()
+    plan.replace_children(children, ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute)).unwrap()
 }
 
 pub(super) fn parquet_scan_with_pushed_down_predicate_value(
@@ -877,7 +951,9 @@ pub(super) fn parquet_scan_with_partition_field(
     let (file_scan, _parquet_source) =
         data_source.downcast_to_file_source::<ParquetSource>().expect("parquet scan should use ParquetSource");
     let projected_indices = (0..=file_scan.file_schema().fields().len()).collect::<Vec<_>>();
-    let table_schema = TableSchema::new(Arc::clone(file_scan.file_schema()), vec![Arc::new(partition_field)]);
+    let table_schema = TableSchema::builder(Arc::clone(file_scan.file_schema()))
+        .with_table_partition_cols(vec![Arc::new(partition_field)])
+        .build();
     let parquet_source = ParquetSource::new(table_schema);
     let file_scan = FileScanConfigBuilder::new(file_scan.object_store_url.clone(), Arc::new(parquet_source))
         .with_file_groups(file_scan.file_groups.clone())

@@ -160,7 +160,7 @@ struct IterOutcome {
     reservation_denied_count: Option<u64>,
     retry_count: Option<u64>,
     native_runtime_started: bool,
-    native_metrics: Option<NativeDataFusionExecutionMetrics>,
+    native_metrics: Option<Box<NativeDataFusionExecutionMetrics>>,
     timing_metrics: NativeTimingMetrics,
     failure: Option<String>,
 }
@@ -195,7 +195,7 @@ async fn run_cost_declined_datafusion_once(
     let native_planning_summary = match plan_native_cost(&native_planning.ctx, &native_planning.optimizer, query).await
     {
         Ok(summary) => summary,
-        Err(outcome) => return outcome,
+        Err(outcome) => return *outcome,
     };
 
     let Some(reason) = native_planning_summary.cost_reason.as_ref() else {
@@ -234,12 +234,12 @@ async fn plan_native_cost(
     ctx: &SessionContext,
     optimizer: &NexusNativePhysicalOptimizerRule,
     query: &TpcdsQuery,
-) -> Result<PlanningSummary, IterOutcome> {
+) -> Result<PlanningSummary, Box<IterOutcome>> {
     let started_plan = Instant::now();
     let df = match ctx.sql(query.sql).await {
         Ok(df) => df,
         Err(err) => {
-            return Err(IterOutcome {
+            return Err(Box::new(IterOutcome {
                 wall: Some(started_plan.elapsed()),
                 outcome: "native_sql_planning_failed",
                 planning_outcome: String::from("native_sql_to_logical_plan_failed"),
@@ -253,11 +253,11 @@ async fn plan_native_cost(
                 native_metrics: None,
                 timing_metrics: NativeTimingMetrics::default(),
                 failure: Some(err.to_string()),
-            });
+            }));
         },
     };
     if let Err(err) = df.create_physical_plan().await {
-        return Err(IterOutcome {
+        return Err(Box::new(IterOutcome {
             wall: Some(started_plan.elapsed()),
             outcome: "native_physical_planning_failed",
             planning_outcome: String::from("native_physical_planning_failed"),
@@ -271,7 +271,7 @@ async fn plan_native_cost(
             native_metrics: None,
             timing_metrics: NativeTimingMetrics::default(),
             failure: Some(err.to_string()),
-        });
+        }));
     }
 
     Ok(planning_summary(Some(optimizer)))
@@ -436,12 +436,12 @@ fn append_plan_metrics(metrics: &mut MetricsSet, plan: &dyn datafusion::physical
     }
 }
 
-fn native_metrics_from_metrics(metrics: Option<&MetricsSet>) -> Option<NativeDataFusionExecutionMetrics> {
+fn native_metrics_from_metrics(metrics: Option<&MetricsSet>) -> Option<Box<NativeDataFusionExecutionMetrics>> {
     let metrics = metrics?;
     metrics
         .iter()
         .any(|metric| NATIVE_NEXUS_DATAFUSION_METRIC_NAMES.contains(&metric.value().name()))
-        .then(|| NativeDataFusionExecutionMetrics::from_metrics(metrics))
+        .then(|| Box::new(NativeDataFusionExecutionMetrics::from_metrics(metrics)))
 }
 
 fn planning_summary(optimizer: Option<&NexusNativePhysicalOptimizerRule>) -> PlanningSummary {

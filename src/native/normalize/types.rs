@@ -68,6 +68,13 @@ pub(in crate::native) enum NormalizedNativeRoot<'a> {
     Input(NormalizedNativeInputRoot<'a>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(in crate::native) enum PostAggregateProjectionOrder {
+    #[default]
+    BelowSort,
+    AboveSort,
+}
+
 /// Root aggregate plus the operators that DataFusion may place immediately
 /// before or after it in the supported native shapes.
 #[derive(Debug, Clone)]
@@ -84,6 +91,7 @@ pub(in crate::native) struct NormalizedNativeAggregateRoot<'a> {
     /// partial `AggregateExec` that computes the state.
     pub(in crate::native) aggregate_output_schema: SchemaRef,
     pub(in crate::native) post_aggregate_projection: Option<&'a ProjectionExec>,
+    pub(in crate::native) projection_order: PostAggregateProjectionOrder,
 }
 
 /// Root whose result is the input subtree itself, optionally followed by a
@@ -92,6 +100,7 @@ pub(in crate::native) struct NormalizedNativeAggregateRoot<'a> {
 pub(in crate::native) struct NormalizedNativeInputRoot<'a> {
     pub(in crate::native) input: NormalizedNativeInput<'a>,
     pub(in crate::native) projection: Option<&'a ProjectionExec>,
+    pub(in crate::native) projection_order: PostAggregateProjectionOrder,
 }
 
 /// Recursive native input tree. These variants are the boundary between shape

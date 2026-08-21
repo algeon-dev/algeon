@@ -8,6 +8,7 @@
 use std::sync::Arc;
 
 use datafusion::{
+    catalog::Session,
     common::Result as DataFusionResult,
     execution::{SessionState, SessionStateBuilder},
     physical_optimizer::{PhysicalOptimizerRule, optimizer::PhysicalOptimizer},
@@ -184,8 +185,8 @@ fn build_cugraph_subplan_state(state: &SessionState, rules: PhysicalOptimizerRul
         .build()
 }
 
-pub fn installed_nexus_native_optimizer_config(state: &SessionState) -> Option<NexusNativeOptimizerConfig> {
-    installed_nexus_native_optimizer_config_from_rules(state.physical_optimizers())
+pub fn installed_nexus_native_optimizer_config(session: &dyn Session) -> Option<NexusNativeOptimizerConfig> {
+    installed_nexus_native_optimizer_config_from_rules(session.physical_optimizers())
 }
 
 #[cfg(feature = "cugraph")]

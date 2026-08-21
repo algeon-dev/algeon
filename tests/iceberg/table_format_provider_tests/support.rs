@@ -674,6 +674,14 @@ impl ExecutionPlan for UnknownStatisticsCpuExec {
         self.inner.properties()
     }
 
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn datafusion::physical_expr::PhysicalExpr>)
+            -> datafusion::common::Result<datafusion::common::tree_node::TreeNodeRecursion>,
+    ) -> datafusion::common::Result<datafusion::common::tree_node::TreeNodeRecursion> {
+        Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
+    }
+
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         Vec::new()
     }

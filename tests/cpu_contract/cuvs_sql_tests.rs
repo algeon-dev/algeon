@@ -10,10 +10,14 @@ use std::{
 #[cfg(feature = "cuvs")]
 use datafusion::prelude::SessionConfig;
 use datafusion::{
-    common::{DFSchema, config::Dialect},
+    common::{DFSchema, config::Dialect, tree_node::TreeNodeRecursion},
     execution::{SessionStateBuilder, context::TaskContext},
     logical_expr::{LogicalPlan, UserDefinedLogicalNodeCore},
-    physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream},
+    physical_expr::PhysicalExpr,
+    physical_plan::{
+        ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, ReplaceChildrenOptions,
+        SendableRecordBatchStream,
+    },
     prelude::SessionContext,
     sql::{
         parser::Statement as DataFusionStatement,
@@ -752,6 +756,13 @@ impl ExecutionPlan for ExecuteCountingExec {
         self.input.properties()
     }
 
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> datafusion::common::Result<TreeNodeRecursion>,
+    ) -> datafusion::common::Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
+    }
+
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
         vec![&self.input]
     }
@@ -801,7 +812,9 @@ async fn bounded_execution_rejects_before_any_child_execute() {
                 as Arc<dyn ExecutionPlan>
         })
         .collect();
-    let rebound = Arc::new(exec.clone()).with_new_children(children).expect("rebind counting children");
+    let rebound = Arc::new(exec.clone())
+        .replace_children(children, ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
+        .expect("rebind counting children");
     let error = match rebound.execute(0, Arc::new(TaskContext::default())) {
         Ok(_) => panic!("bounded cuVS execution must reject before creating a result stream"),
         Err(error) => error,
@@ -885,7 +898,9 @@ async fn cugraph_join_filter_projection_reaches_bounded_cuvs_rejection_before_ch
                 as Arc<dyn ExecutionPlan>
         })
         .collect();
-    let rebound = Arc::new(cuvs.clone()).with_new_children(children).expect("rebind counting children");
+    let rebound = Arc::new(cuvs.clone())
+        .replace_children(children, ReplaceChildrenOptions::new(ChildrenPropertiesMode::Recompute))
+        .expect("rebind counting children");
     let error = match rebound.execute(0, Arc::new(TaskContext::default())) {
         Ok(_) => panic!("bounded cuVS execution must reject before touching relational cuGraph inputs"),
         Err(error) => error,

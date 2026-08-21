@@ -39,7 +39,7 @@ use datafusion::{
         window::{StandardWindowExpr, WindowExpr},
     },
     physical_plan::{
-        ExecutionPlan, InputOrderMode,
+        ChildrenPropertiesMode, ExecutionPlan, InputOrderMode, ReplaceChildrenOptions,
         aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy},
         filter::FilterExec,
         joins::{

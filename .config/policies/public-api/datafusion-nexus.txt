@@ -339,6 +339,7 @@ pub struct datafusion_nexus::cugraph_sql::CugraphAlgoExec
 impl datafusion_physical_plan::display::DisplayAs for datafusion_nexus::cugraph_sql::CugraphAlgoExec
 pub fn datafusion_nexus::cugraph_sql::CugraphAlgoExec::fmt_as(&self, datafusion_physical_plan::display::DisplayFormatType, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl datafusion_physical_plan::execution_plan::ExecutionPlan for datafusion_nexus::cugraph_sql::CugraphAlgoExec
+pub fn datafusion_nexus::cugraph_sql::CugraphAlgoExec::apply_expressions(&self, &mut dyn core::ops::function::FnMut(&alloc::sync::Arc<dyn datafusion_physical_expr_common::physical_expr::PhysicalExpr>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>
 pub fn datafusion_nexus::cugraph_sql::CugraphAlgoExec::benefits_from_input_partitioning(&self) -> alloc::vec::Vec<bool>
 pub fn datafusion_nexus::cugraph_sql::CugraphAlgoExec::children(&self) -> alloc::vec::Vec<&alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
 pub fn datafusion_nexus::cugraph_sql::CugraphAlgoExec::execute(&self, usize, alloc::sync::Arc<datafusion_execution::task::TaskContext>) -> datafusion_common::error::Result<datafusion_execution::stream::SendableRecordBatchStream>
@@ -350,7 +351,7 @@ pub struct datafusion_nexus::cugraph_sql::CugraphAlgoTableProvider
 impl datafusion_nexus::cugraph_sql::CugraphAlgoTableProvider
 pub fn datafusion_nexus::cugraph_sql::CugraphAlgoTableProvider::new(datafusion_nexus::cugraph_sql::CugraphAlgorithmSpec, datafusion_nexus::native_exec::NexusNativeExecutionConfig) -> Self
 pub fn datafusion_nexus::cugraph_sql::CugraphAlgoTableProvider::spec(&self) -> &datafusion_nexus::cugraph_sql::CugraphAlgorithmSpec
-impl datafusion_catalog::table::TableProvider for datafusion_nexus::cugraph_sql::CugraphAlgoTableProvider
+impl datafusion_session::table::TableProvider for datafusion_nexus::cugraph_sql::CugraphAlgoTableProvider
 pub fn datafusion_nexus::cugraph_sql::CugraphAlgoTableProvider::scan<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 dyn datafusion_session::session::Session, core::option::Option<&'life2 alloc::vec::Vec<usize>>, &'life3 [datafusion_expr::expr::Expr], core::option::Option<usize>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn datafusion_nexus::cugraph_sql::CugraphAlgoTableProvider::schema(&self) -> arrow_schema::schema::SchemaRef
 pub fn datafusion_nexus::cugraph_sql::CugraphAlgoTableProvider::table_type(&self) -> datafusion_expr::table_source::TableType
@@ -586,7 +587,7 @@ pub const datafusion_nexus::cugraph_sql::CUGRAPH_STRONGLY_CONNECTED_COMPONENTS_F
 pub const datafusion_nexus::cugraph_sql::CUGRAPH_TRIANGLE_COUNT_ALL_FUNCTION: &str
 pub const datafusion_nexus::cugraph_sql::CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION: &str
 pub fn datafusion_nexus::cugraph_sql::bfs_result_schema(&datafusion_nexus::cugraph_sql::CugraphBfsParams) -> arrow_schema::schema::SchemaRef
-pub fn datafusion_nexus::cugraph_sql::cugraph_table_functions(datafusion_nexus::cugraph_sql::CugraphSqlConfig) -> alloc::vec::Vec<alloc::sync::Arc<datafusion_catalog::table::TableFunction>>
+pub fn datafusion_nexus::cugraph_sql::cugraph_table_functions(datafusion_nexus::cugraph_sql::CugraphSqlConfig) -> alloc::vec::Vec<alloc::sync::Arc<datafusion_session::table::TableFunction>>
 pub fn datafusion_nexus::cugraph_sql::parse_cugraph_algorithm_spec(datafusion_nexus::cugraph_sql::CugraphAlgorithm, &[datafusion_expr::expr::Expr], &datafusion_nexus::cugraph_sql::CugraphSqlConfig) -> datafusion_common::error::Result<datafusion_nexus::cugraph_sql::CugraphAlgorithmSpec>
 pub fn datafusion_nexus::cugraph_sql::register_cugraph_udtfs(&datafusion::execution::context::SessionContext, datafusion_nexus::cugraph_sql::CugraphSqlConfig)
 pub fn datafusion_nexus::cugraph_sql::result_schema_for_params(datafusion_nexus::cugraph_sql::CugraphAlgorithm, &datafusion_nexus::cugraph_sql::CugraphAlgorithmParams) -> arrow_schema::schema::SchemaRef
@@ -615,6 +616,7 @@ pub fn datafusion_nexus::cuvs_sql::CuvsAlgoExec::operation(&self) -> nexus_query
 impl datafusion_physical_plan::display::DisplayAs for datafusion_nexus::cuvs_sql::CuvsAlgoExec
 pub fn datafusion_nexus::cuvs_sql::CuvsAlgoExec::fmt_as(&self, datafusion_physical_plan::display::DisplayFormatType, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl datafusion_physical_plan::execution_plan::ExecutionPlan for datafusion_nexus::cuvs_sql::CuvsAlgoExec
+pub fn datafusion_nexus::cuvs_sql::CuvsAlgoExec::apply_expressions(&self, &mut dyn core::ops::function::FnMut(&alloc::sync::Arc<dyn datafusion_physical_expr_common::physical_expr::PhysicalExpr>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>
 pub fn datafusion_nexus::cuvs_sql::CuvsAlgoExec::benefits_from_input_partitioning(&self) -> alloc::vec::Vec<bool>
 pub fn datafusion_nexus::cuvs_sql::CuvsAlgoExec::children(&self) -> alloc::vec::Vec<&alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
 pub fn datafusion_nexus::cuvs_sql::CuvsAlgoExec::execute(&self, usize, alloc::sync::Arc<datafusion_execution::task::TaskContext>) -> datafusion_common::error::Result<datafusion_execution::stream::SendableRecordBatchStream>
@@ -623,8 +625,8 @@ pub fn datafusion_nexus::cuvs_sql::CuvsAlgoExec::name(&self) -> &str
 pub fn datafusion_nexus::cuvs_sql::CuvsAlgoExec::properties(&self) -> &alloc::sync::Arc<datafusion_physical_plan::execution_plan::PlanProperties>
 pub fn datafusion_nexus::cuvs_sql::CuvsAlgoExec::with_new_children(alloc::sync::Arc<Self>, alloc::vec::Vec<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>) -> datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
 pub struct datafusion_nexus::cuvs_sql::CuvsExtensionPlanner
-impl datafusion::physical_planner::ExtensionPlanner for datafusion_nexus::cuvs_sql::CuvsExtensionPlanner
-pub fn datafusion_nexus::cuvs_sql::CuvsExtensionPlanner::plan_extension<'life0, 'life1, 'life2, 'life3, 'life4, 'life5, 'life6, 'async_trait>(&'life0 self, &'life1 dyn datafusion::physical_planner::PhysicalPlanner, &'life2 dyn datafusion_expr::logical_plan::extension::UserDefinedLogicalNode, &'life3 [&'life4 datafusion_expr::logical_plan::plan::LogicalPlan], &'life5 [alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>], &'life6 datafusion::execution::session_state::SessionState) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_common::error::Result<core::option::Option<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait, 'life5: 'async_trait, 'life6: 'async_trait
+impl datafusion_session::planner::ExtensionPlanner for datafusion_nexus::cuvs_sql::CuvsExtensionPlanner
+pub fn datafusion_nexus::cuvs_sql::CuvsExtensionPlanner::plan_extension<'life0, 'life1, 'life2, 'life3, 'life4, 'life5, 'life6, 'life7, 'async_trait>(&'life0 self, &'life1 dyn datafusion_session::planner::PhysicalPlanner, &'life2 dyn datafusion_expr::logical_plan::extension::UserDefinedLogicalNode, &'life3 [&'life4 datafusion_expr::logical_plan::plan::LogicalPlan], &'life5 [alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>], &'life6 dyn datafusion_session::session::Session, &'life7 datafusion_expr::physical_planning_context::PhysicalPlanningContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_common::error::Result<core::option::Option<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait, 'life5: 'async_trait, 'life6: 'async_trait, 'life7: 'async_trait
 pub struct datafusion_nexus::cuvs_sql::CuvsLogicalNode
 impl datafusion_nexus::cuvs_sql::CuvsLogicalNode
 pub fn datafusion_nexus::cuvs_sql::CuvsLogicalNode::operation(&self) -> nexus_query_engine::plan::vector_algorithm::CuvsOperation
@@ -648,13 +650,13 @@ pub fn datafusion_nexus::cuvs_sql::CuvsLogicalNode::supports_limit_pushdown(&sel
 pub fn datafusion_nexus::cuvs_sql::CuvsLogicalNode::with_exprs_and_inputs(&self, alloc::vec::Vec<datafusion_expr::expr::Expr>, alloc::vec::Vec<datafusion_expr::logical_plan::plan::LogicalPlan>) -> datafusion_common::error::Result<Self>
 pub struct datafusion_nexus::cuvs_sql::CuvsQueryPlanner
 impl datafusion_nexus::cuvs_sql::CuvsQueryPlanner
-pub fn datafusion_nexus::cuvs_sql::CuvsQueryPlanner::new(alloc::vec::Vec<alloc::sync::Arc<(dyn datafusion::physical_planner::ExtensionPlanner + core::marker::Send + core::marker::Sync)>>) -> Self
+pub fn datafusion_nexus::cuvs_sql::CuvsQueryPlanner::new(alloc::vec::Vec<alloc::sync::Arc<(dyn datafusion_session::planner::ExtensionPlanner + core::marker::Send + core::marker::Sync)>>) -> Self
 impl core::default::Default for datafusion_nexus::cuvs_sql::CuvsQueryPlanner
 pub fn datafusion_nexus::cuvs_sql::CuvsQueryPlanner::default() -> Self
 impl core::fmt::Debug for datafusion_nexus::cuvs_sql::CuvsQueryPlanner
 pub fn datafusion_nexus::cuvs_sql::CuvsQueryPlanner::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl datafusion::execution::context::QueryPlanner for datafusion_nexus::cuvs_sql::CuvsQueryPlanner
-pub fn datafusion_nexus::cuvs_sql::CuvsQueryPlanner::create_physical_plan<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 datafusion_expr::logical_plan::plan::LogicalPlan, &'life2 datafusion::execution::session_state::SessionState) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
+impl datafusion_session::planner::QueryPlanner for datafusion_nexus::cuvs_sql::CuvsQueryPlanner
+pub fn datafusion_nexus::cuvs_sql::CuvsQueryPlanner::create_physical_plan<'life0, 'life1, 'life2, 'async_trait>(&'life0 self, &'life1 datafusion_expr::logical_plan::plan::LogicalPlan, &'life2 dyn datafusion_session::session::Session) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait
 pub struct datafusion_nexus::cuvs_sql::CuvsRelationPlanner
 impl datafusion_expr::planner::RelationPlanner for datafusion_nexus::cuvs_sql::CuvsRelationPlanner
 pub fn datafusion_nexus::cuvs_sql::CuvsRelationPlanner::plan_relation(&self, sqlparser::ast::query::TableFactor, &mut dyn datafusion_expr::planner::RelationPlannerContext) -> datafusion_common::error::Result<datafusion_expr::planner::RelationPlanning>
@@ -940,6 +942,7 @@ pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::try_
 impl datafusion_physical_plan::display::DisplayAs for datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec
 pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::fmt_as(&self, datafusion_physical_plan::display::DisplayFormatType, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl datafusion_physical_plan::execution_plan::ExecutionPlan for datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec
+pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::apply_expressions(&self, &mut dyn core::ops::function::FnMut(&alloc::sync::Arc<dyn datafusion_physical_expr_common::physical_expr::PhysicalExpr>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>
 pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::children(&self) -> alloc::vec::Vec<&alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
 pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::execute(&self, usize, alloc::sync::Arc<datafusion_execution::task::TaskContext>) -> datafusion_common::error::Result<datafusion_execution::stream::SendableRecordBatchStream>
 pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::metrics(&self) -> core::option::Option<datafusion_physical_expr_common::metrics::MetricsSet>
@@ -1004,6 +1007,7 @@ pub fn datafusion_nexus::native_exec::NexusNativeComposedExec::try_new(nexus_que
 impl datafusion_physical_plan::display::DisplayAs for datafusion_nexus::native_exec::NexusNativeComposedExec
 pub fn datafusion_nexus::native_exec::NexusNativeComposedExec::fmt_as(&self, datafusion_physical_plan::display::DisplayFormatType, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl datafusion_physical_plan::execution_plan::ExecutionPlan for datafusion_nexus::native_exec::NexusNativeComposedExec
+pub fn datafusion_nexus::native_exec::NexusNativeComposedExec::apply_expressions(&self, &mut dyn core::ops::function::FnMut(&alloc::sync::Arc<dyn datafusion_physical_expr_common::physical_expr::PhysicalExpr>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>
 pub fn datafusion_nexus::native_exec::NexusNativeComposedExec::benefits_from_input_partitioning(&self) -> alloc::vec::Vec<bool>
 pub fn datafusion_nexus::native_exec::NexusNativeComposedExec::children(&self) -> alloc::vec::Vec<&alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
 pub fn datafusion_nexus::native_exec::NexusNativeComposedExec::execute(&self, usize, alloc::sync::Arc<datafusion_execution::task::TaskContext>) -> datafusion_common::error::Result<datafusion_execution::stream::SendableRecordBatchStream>
@@ -1017,6 +1021,7 @@ pub fn datafusion_nexus::native_exec::NexusNativeComposedGpuProducerExec::native
 impl datafusion_physical_plan::display::DisplayAs for datafusion_nexus::native_exec::NexusNativeComposedGpuProducerExec
 pub fn datafusion_nexus::native_exec::NexusNativeComposedGpuProducerExec::fmt_as(&self, datafusion_physical_plan::display::DisplayFormatType, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl datafusion_physical_plan::execution_plan::ExecutionPlan for datafusion_nexus::native_exec::NexusNativeComposedGpuProducerExec
+pub fn datafusion_nexus::native_exec::NexusNativeComposedGpuProducerExec::apply_expressions(&self, &mut dyn core::ops::function::FnMut(&alloc::sync::Arc<dyn datafusion_physical_expr_common::physical_expr::PhysicalExpr>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>
 pub fn datafusion_nexus::native_exec::NexusNativeComposedGpuProducerExec::benefits_from_input_partitioning(&self) -> alloc::vec::Vec<bool>
 pub fn datafusion_nexus::native_exec::NexusNativeComposedGpuProducerExec::children(&self) -> alloc::vec::Vec<&alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
 pub fn datafusion_nexus::native_exec::NexusNativeComposedGpuProducerExec::execute(&self, usize, alloc::sync::Arc<datafusion_execution::task::TaskContext>) -> datafusion_common::error::Result<datafusion_execution::stream::SendableRecordBatchStream>
@@ -1031,6 +1036,7 @@ pub fn datafusion_nexus::native_exec::NexusNativeExec::try_new(nexus_query_engin
 impl datafusion_physical_plan::display::DisplayAs for datafusion_nexus::native_exec::NexusNativeExec
 pub fn datafusion_nexus::native_exec::NexusNativeExec::fmt_as(&self, datafusion_physical_plan::display::DisplayFormatType, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl datafusion_physical_plan::execution_plan::ExecutionPlan for datafusion_nexus::native_exec::NexusNativeExec
+pub fn datafusion_nexus::native_exec::NexusNativeExec::apply_expressions(&self, &mut dyn core::ops::function::FnMut(&alloc::sync::Arc<dyn datafusion_physical_expr_common::physical_expr::PhysicalExpr>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>
 pub fn datafusion_nexus::native_exec::NexusNativeExec::children(&self) -> alloc::vec::Vec<&alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
 pub fn datafusion_nexus::native_exec::NexusNativeExec::execute(&self, usize, alloc::sync::Arc<datafusion_execution::task::TaskContext>) -> datafusion_common::error::Result<datafusion_execution::stream::SendableRecordBatchStream>
 pub fn datafusion_nexus::native_exec::NexusNativeExec::metrics(&self) -> core::option::Option<datafusion_physical_expr_common::metrics::MetricsSet>
@@ -1095,6 +1101,7 @@ pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::try_
 impl datafusion_physical_plan::display::DisplayAs for datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec
 pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::fmt_as(&self, datafusion_physical_plan::display::DisplayFormatType, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl datafusion_physical_plan::execution_plan::ExecutionPlan for datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec
+pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::apply_expressions(&self, &mut dyn core::ops::function::FnMut(&alloc::sync::Arc<dyn datafusion_physical_expr_common::physical_expr::PhysicalExpr>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>
 pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::children(&self) -> alloc::vec::Vec<&alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
 pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::execute(&self, usize, alloc::sync::Arc<datafusion_execution::task::TaskContext>) -> datafusion_common::error::Result<datafusion_execution::stream::SendableRecordBatchStream>
 pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::metrics(&self) -> core::option::Option<datafusion_physical_expr_common::metrics::MetricsSet>
@@ -2016,7 +2023,7 @@ pub datafusion_nexus::planner::NativePlanningDiagnostics::source_diagnostics: al
 pub struct datafusion_nexus::planner::NexusFinalPlanRequirementRule
 impl datafusion_nexus::planner::NexusFinalPlanRequirementRule
 pub fn datafusion_nexus::planner::NexusFinalPlanRequirementRule::new(datafusion_nexus::planner::NexusNativeOptimizerConfig) -> Self
-impl datafusion_physical_optimizer::optimizer::PhysicalOptimizerRule for datafusion_nexus::planner::NexusFinalPlanRequirementRule
+impl datafusion_session::physical_optimizer::PhysicalOptimizerRule for datafusion_nexus::planner::NexusFinalPlanRequirementRule
 pub fn datafusion_nexus::planner::NexusFinalPlanRequirementRule::name(&self) -> &str
 pub fn datafusion_nexus::planner::NexusFinalPlanRequirementRule::optimize(&self, alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>, &datafusion_common::config::ConfigOptions) -> datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
 pub fn datafusion_nexus::planner::NexusFinalPlanRequirementRule::schema_check(&self) -> bool
@@ -2043,7 +2050,7 @@ pub fn datafusion_nexus::planner::NexusNativePhysicalOptimizerRule::last_plannin
 pub fn datafusion_nexus::planner::NexusNativePhysicalOptimizerRule::last_report(&self) -> core::option::Option<datafusion_nexus::report::PlanningReport>
 pub fn datafusion_nexus::planner::NexusNativePhysicalOptimizerRule::last_source_diagnostics(&self) -> alloc::vec::Vec<nexus_query_engine::source::diagnostics::SourceDiagnostics>
 pub fn datafusion_nexus::planner::NexusNativePhysicalOptimizerRule::new(datafusion_nexus::planner::NexusNativeOptimizerConfig) -> Self
-impl datafusion_physical_optimizer::optimizer::PhysicalOptimizerRule for datafusion_nexus::planner::NexusNativePhysicalOptimizerRule
+impl datafusion_session::physical_optimizer::PhysicalOptimizerRule for datafusion_nexus::planner::NexusNativePhysicalOptimizerRule
 pub fn datafusion_nexus::planner::NexusNativePhysicalOptimizerRule::name(&self) -> &str
 pub fn datafusion_nexus::planner::NexusNativePhysicalOptimizerRule::optimize(&self, alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>, &datafusion_common::config::ConfigOptions) -> datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
 pub fn datafusion_nexus::planner::NexusNativePhysicalOptimizerRule::schema_check(&self) -> bool
@@ -2132,10 +2139,10 @@ pub fn datafusion::execution::session_state::SessionStateBuilder::with_cugraph_s
 pub fn datafusion::execution::session_state::SessionStateBuilder::with_nexus_native(self, datafusion_nexus::planner::NexusNativeOptimizerConfig) -> Self
 pub fn datafusion::execution::session_state::SessionStateBuilder::with_nexus_native_rule(self, alloc::sync::Arc<datafusion_nexus::planner::NexusNativePhysicalOptimizerRule>) -> Self
 pub fn datafusion_nexus::session::install_nexus_native_rule_with_session_config(datafusion::execution::session_state::SessionStateBuilder, alloc::sync::Arc<datafusion_nexus::planner::NexusNativePhysicalOptimizerRule>, datafusion_nexus::session_config::DataFusionNexusSessionConfig) -> datafusion_common::error::Result<datafusion::execution::session_state::SessionStateBuilder>
-pub fn datafusion_nexus::session::installed_nexus_native_optimizer_config(&datafusion::execution::session_state::SessionState) -> core::option::Option<datafusion_nexus::planner::NexusNativeOptimizerConfig>
+pub fn datafusion_nexus::session::installed_nexus_native_optimizer_config(&dyn datafusion_session::session::Session) -> core::option::Option<datafusion_nexus::planner::NexusNativeOptimizerConfig>
 pub fn datafusion_nexus::session::nexus_native_physical_optimizer_rules(datafusion_nexus::planner::NexusNativeOptimizerConfig) -> datafusion_nexus::session::PhysicalOptimizerRules
 pub fn datafusion_nexus::session::nexus_native_physical_optimizer_rules_with_rule(alloc::sync::Arc<datafusion_nexus::planner::NexusNativePhysicalOptimizerRule>) -> datafusion_nexus::session::PhysicalOptimizerRules
-pub type datafusion_nexus::session::PhysicalOptimizerRules = alloc::vec::Vec<alloc::sync::Arc<(dyn datafusion_physical_optimizer::optimizer::PhysicalOptimizerRule + core::marker::Send + core::marker::Sync)>>
+pub type datafusion_nexus::session::PhysicalOptimizerRules = alloc::vec::Vec<alloc::sync::Arc<(dyn datafusion_session::physical_optimizer::PhysicalOptimizerRule + core::marker::Send + core::marker::Sync)>>
 pub mod datafusion_nexus::session_config
 #[non_exhaustive] pub struct datafusion_nexus::session_config::DataFusionNexusSessionConfig
 pub datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_max_retry_attempts: usize
@@ -2193,8 +2200,8 @@ pub fn datafusion_nexus::table_format::iceberg::catalog::IcebergProviderOptions:
 pub struct datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogProvider
 impl datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogProvider
 pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogProvider::schema_concrete(&self, &str) -> core::option::Option<alloc::sync::Arc<datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider>>
-impl datafusion_catalog::catalog::CatalogProvider for datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogProvider
-pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogProvider::schema(&self, &str) -> core::option::Option<alloc::sync::Arc<dyn datafusion_catalog::schema::SchemaProvider>>
+impl datafusion_session::catalog::CatalogProvider for datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogProvider
+pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogProvider::schema(&self, &str) -> core::option::Option<alloc::sync::Arc<dyn datafusion_session::schema::SchemaProvider>>
 pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogProvider::schema_names(&self) -> alloc::vec::Vec<alloc::string::String>
 pub struct datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource
 impl datafusion_nexus::table_format::iceberg::catalog::NexusIcebergCatalogSource
@@ -2211,9 +2218,9 @@ pub struct datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaP
 impl datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider
 pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider::known_or_seeded_table_exists(&self, &str) -> bool
 pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider::known_or_seeded_table_names(&self) -> alloc::vec::Vec<alloc::string::String>
-pub async fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider::seed_table(&self, alloc::string::String, alloc::sync::Arc<dyn datafusion_catalog::table::TableProvider>)
-impl datafusion_catalog::schema::SchemaProvider for datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider
-pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider::table<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_common::error::Result<core::option::Option<alloc::sync::Arc<dyn datafusion_catalog::table::TableProvider>>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
+pub async fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider::seed_table(&self, alloc::string::String, alloc::sync::Arc<dyn datafusion_session::table::TableProvider>)
+impl datafusion_session::schema::SchemaProvider for datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider
+pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider::table<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_common::error::Result<core::option::Option<alloc::sync::Arc<dyn datafusion_session::table::TableProvider>>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
 pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider::table_exist(&self, &str) -> bool
 pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider::table_names(&self) -> alloc::vec::Vec<alloc::string::String>
 pub fn datafusion_nexus::table_format::iceberg::catalog::NexusIcebergSchemaProvider::table_type<'life0, 'life1, 'async_trait>(&'life0 self, &'life1 str) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_common::error::Result<core::option::Option<datafusion_expr::table_source::TableType>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait
@@ -2247,7 +2254,7 @@ pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::resolve_scan(&
 pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::resolve_scan_with_deadline(&self, datafusion_nexus::table_format::TableFormatScanRequest, datafusion_nexus::table_format::TableFormatPlanningDeadline) -> futures_core::future::BoxFuture<'_, datafusion_nexus::error::Result<datafusion_nexus::table_format::TableFormatScanPlan>>
 pub struct datafusion_nexus::table_format::iceberg::NexusIcebergTableProvider
 impl datafusion_nexus::table_format::NexusIcebergTableProvider
-pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::from_cpu_provider_and_native_planner(alloc::sync::Arc<dyn datafusion_catalog::table::TableProvider>, core::option::Option<i64>, alloc::sync::Arc<(dyn datafusion_nexus::table_format::TableFormatPlanner + core::marker::Send + core::marker::Sync)>) -> Self
+pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::from_cpu_provider_and_native_planner(alloc::sync::Arc<dyn datafusion_session::table::TableProvider>, core::option::Option<i64>, alloc::sync::Arc<(dyn datafusion_nexus::table_format::TableFormatPlanner + core::marker::Send + core::marker::Sync)>) -> Self
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::native_source_storage_profile(&self) -> core::option::Option<nexus_query_engine::runtime::object_store::SourceStorageProfile>
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::try_new_resolved(nexus_iceberg::resolved::ResolvedIcebergTable) -> datafusion_nexus::error::Result<Self>
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::try_new_resolved_with_parquet_read_strategy_config(nexus_iceberg::resolved::ResolvedIcebergTable, datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig) -> datafusion_nexus::error::Result<Self>
@@ -2255,7 +2262,7 @@ pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::with_catalog_t
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::with_scan_planning_timeout(self, core::option::Option<core::time::Duration>) -> Self
 impl core::fmt::Debug for datafusion_nexus::table_format::NexusIcebergTableProvider
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl datafusion_catalog::table::TableProvider for datafusion_nexus::table_format::NexusIcebergTableProvider
+impl datafusion_session::table::TableProvider for datafusion_nexus::table_format::NexusIcebergTableProvider
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::scan<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 dyn datafusion_session::session::Session, core::option::Option<&'life2 alloc::vec::Vec<usize>>, &'life3 [datafusion_expr::expr::Expr], core::option::Option<usize>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::schema(&self) -> arrow_schema::schema::SchemaRef
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::supports_filters_pushdown(&self, &[&datafusion_expr::expr::Expr]) -> datafusion_common::error::Result<alloc::vec::Vec<datafusion_expr::table_source::TableProviderFilterPushDown>>
@@ -2691,6 +2698,7 @@ pub fn datafusion_nexus::table_format::scan_exec::NexusIcebergScanExec::try_new(
 impl datafusion_physical_plan::display::DisplayAs for datafusion_nexus::table_format::scan_exec::NexusIcebergScanExec
 pub fn datafusion_nexus::table_format::scan_exec::NexusIcebergScanExec::fmt_as(&self, datafusion_physical_plan::display::DisplayFormatType, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl datafusion_physical_plan::execution_plan::ExecutionPlan for datafusion_nexus::table_format::scan_exec::NexusIcebergScanExec
+pub fn datafusion_nexus::table_format::scan_exec::NexusIcebergScanExec::apply_expressions(&self, &mut dyn core::ops::function::FnMut(&alloc::sync::Arc<dyn datafusion_physical_expr_common::physical_expr::PhysicalExpr>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>
 pub fn datafusion_nexus::table_format::scan_exec::NexusIcebergScanExec::benefits_from_input_partitioning(&self) -> alloc::vec::Vec<bool>
 pub fn datafusion_nexus::table_format::scan_exec::NexusIcebergScanExec::children(&self) -> alloc::vec::Vec<&alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
 pub fn datafusion_nexus::table_format::scan_exec::NexusIcebergScanExec::execute(&self, usize, alloc::sync::Arc<datafusion_execution::task::TaskContext>) -> datafusion_common::error::Result<datafusion_execution::stream::SendableRecordBatchStream>
@@ -2859,6 +2867,7 @@ pub fn datafusion_nexus::table_format::scan_exec::NexusIcebergScanExec::try_new(
 impl datafusion_physical_plan::display::DisplayAs for datafusion_nexus::table_format::scan_exec::NexusIcebergScanExec
 pub fn datafusion_nexus::table_format::scan_exec::NexusIcebergScanExec::fmt_as(&self, datafusion_physical_plan::display::DisplayFormatType, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl datafusion_physical_plan::execution_plan::ExecutionPlan for datafusion_nexus::table_format::scan_exec::NexusIcebergScanExec
+pub fn datafusion_nexus::table_format::scan_exec::NexusIcebergScanExec::apply_expressions(&self, &mut dyn core::ops::function::FnMut(&alloc::sync::Arc<dyn datafusion_physical_expr_common::physical_expr::PhysicalExpr>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>
 pub fn datafusion_nexus::table_format::scan_exec::NexusIcebergScanExec::benefits_from_input_partitioning(&self) -> alloc::vec::Vec<bool>
 pub fn datafusion_nexus::table_format::scan_exec::NexusIcebergScanExec::children(&self) -> alloc::vec::Vec<&alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
 pub fn datafusion_nexus::table_format::scan_exec::NexusIcebergScanExec::execute(&self, usize, alloc::sync::Arc<datafusion_execution::task::TaskContext>) -> datafusion_common::error::Result<datafusion_execution::stream::SendableRecordBatchStream>
@@ -2870,7 +2879,7 @@ pub fn datafusion_nexus::table_format::scan_exec::NexusIcebergScanExec::properti
 pub fn datafusion_nexus::table_format::scan_exec::NexusIcebergScanExec::with_new_children(alloc::sync::Arc<Self>, alloc::vec::Vec<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>) -> datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
 pub struct datafusion_nexus::table_format::NexusIcebergTableProvider
 impl datafusion_nexus::table_format::NexusIcebergTableProvider
-pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::from_cpu_provider_and_native_planner(alloc::sync::Arc<dyn datafusion_catalog::table::TableProvider>, core::option::Option<i64>, alloc::sync::Arc<(dyn datafusion_nexus::table_format::TableFormatPlanner + core::marker::Send + core::marker::Sync)>) -> Self
+pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::from_cpu_provider_and_native_planner(alloc::sync::Arc<dyn datafusion_session::table::TableProvider>, core::option::Option<i64>, alloc::sync::Arc<(dyn datafusion_nexus::table_format::TableFormatPlanner + core::marker::Send + core::marker::Sync)>) -> Self
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::native_source_storage_profile(&self) -> core::option::Option<nexus_query_engine::runtime::object_store::SourceStorageProfile>
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::try_new_resolved(nexus_iceberg::resolved::ResolvedIcebergTable) -> datafusion_nexus::error::Result<Self>
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::try_new_resolved_with_parquet_read_strategy_config(nexus_iceberg::resolved::ResolvedIcebergTable, datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig) -> datafusion_nexus::error::Result<Self>
@@ -2878,7 +2887,7 @@ pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::with_catalog_t
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::with_scan_planning_timeout(self, core::option::Option<core::time::Duration>) -> Self
 impl core::fmt::Debug for datafusion_nexus::table_format::NexusIcebergTableProvider
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl datafusion_catalog::table::TableProvider for datafusion_nexus::table_format::NexusIcebergTableProvider
+impl datafusion_session::table::TableProvider for datafusion_nexus::table_format::NexusIcebergTableProvider
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::scan<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 dyn datafusion_session::session::Session, core::option::Option<&'life2 alloc::vec::Vec<usize>>, &'life3 [datafusion_expr::expr::Expr], core::option::Option<usize>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::schema(&self) -> arrow_schema::schema::SchemaRef
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::supports_filters_pushdown(&self, &[&datafusion_expr::expr::Expr]) -> datafusion_common::error::Result<alloc::vec::Vec<datafusion_expr::table_source::TableProviderFilterPushDown>>

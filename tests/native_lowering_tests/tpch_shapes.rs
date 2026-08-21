@@ -684,14 +684,21 @@ async fn tpch_q13_lowers_left_join_filter_aggregates_and_final_sort() {
     assert_eq!(aggregates[1].spec.group_exprs.len(), 1);
     assert_eq!(aggregates[1].spec.aggr_exprs.len(), 1);
 
-    let PlanNode::Sort(sort) = &plan.root_node().kind else {
-        panic!("q13 native root should be the final ORDER BY sort");
+    let PlanNode::Projection(proj) = &plan.root_node().kind else {
+        panic!("q13 native root should be the final projection: {plan}");
+    };
+    let sort_node = plan.node(proj.input).expect("q13 sort input should exist");
+    let PlanNode::Sort(sort) = &sort_node.kind else {
+        panic!("q13 native projection input should be the final sort: {plan}");
     };
     assert_eq!(sort.spec.expressions.len(), 2);
-    assert_eq!(sort.spec.expressions[0].expr.to_string(), "custdist");
+    assert_eq!(sort.spec.expressions[0].expr.to_string(), "count(Int64(1))");
     assert!(sort.spec.expressions[0].descending);
     assert_eq!(sort.spec.expressions[1].expr.to_string(), "c_count");
     assert!(sort.spec.expressions[1].descending);
+    assert_eq!(proj.outputs.len(), 2);
+    assert_eq!(proj.outputs[0].field.name(), "c_count");
+    assert_eq!(proj.outputs[1].field.name(), "custdist");
 
     let optimized = nexus_query_engine::optimizer::optimize_query_plan(plan.clone(), &Default::default());
     let aggregate_join_pushdown = &optimized.diagnostics.aggregate_join_pushdown;
@@ -702,18 +709,18 @@ async fn tpch_q13_lowers_left_join_filter_aggregates_and_final_sort() {
     let optimized_left_joins = native_join_ids(&optimized.plan, NativeJoinType::Left);
     assert_eq!(optimized_left_joins.len(), 1, "optimized q13 should still contain one semantic left join");
     let (_join_id, optimized_join) = optimized_left_joins[0];
-    let preaggregate_node =
+    let optimized_right_input =
         optimized.plan.node(optimized_join.inputs[1]).expect("optimized q13 right join input should exist");
-    let PlanNode::Aggregate(preaggregate) = &preaggregate_node.kind else {
+    let PlanNode::Aggregate(pre_aggregate) = &optimized_right_input.kind else {
         panic!("optimized q13 should pre-aggregate the orders side before the left join:\n{}", optimized.plan);
     };
     assert_eq!(
-        preaggregate.spec.group_exprs.iter().map(ToString::to_string).collect::<Vec<_>>(),
+        pre_aggregate.spec.group_exprs.iter().map(ToString::to_string).collect::<Vec<_>>(),
         vec!["o_custkey AS o_custkey".to_string()]
     );
-    assert_eq!(preaggregate.spec.aggr_exprs.len(), 1);
-    assert_eq!(preaggregate.spec.aggr_exprs[0].function, AggregateFunction::Count);
-    assert_eq!(preaggregate.spec.aggr_exprs[0].expr.to_string(), "o_custkey");
+    assert_eq!(pre_aggregate.spec.aggr_exprs.len(), 1);
+    assert_eq!(pre_aggregate.spec.aggr_exprs[0].function, AggregateFunction::Count);
+    assert_eq!(pre_aggregate.spec.aggr_exprs[0].expr.to_string(), "o_custkey");
     assert_eq!(optimized.diagnostics.count_non_null_column_pruning.applied_count, 1);
     let optimized_orders_source = native_local_parquet_sources(&optimized.plan)
         .into_iter()
@@ -777,16 +784,28 @@ async fn tpch_q16_lowers_multi_join_leaves_then_serial_aggregates_and_final_sort
         "optimized q16 should remain admitted as one root full-sort grouped aggregate pipeline:\n{}",
         optimized.plan
     );
-    let PlanNode::Sort(sort) = &plan.root_node().kind else {
-        panic!("q16 native root should be the final ORDER BY sort");
+    let PlanNode::Projection(projection) = &plan.root_node().kind else {
+        panic!("q16 native root should be the final projection: {plan}");
     };
-    let projection_node = plan.node(sort.input).expect("q16 sort input should exist");
-    let PlanNode::Projection(projection) = &projection_node.kind else {
-        panic!("q16 sort input should be the final projection");
+    let sort_node = plan.node(projection.input).expect("q16 sort input should exist");
+    let PlanNode::Sort(sort) = &sort_node.kind else {
+        panic!("q16 projection input should be sort: {plan}");
     };
-    let outer_aggregate_node = plan.node(projection.input).expect("q16 projection input should exist");
+    assert_eq!(sort.spec.expressions.len(), 4);
+    assert_eq!(sort.spec.expressions[0].expr.to_string(), "count(alias1)");
+    assert!(sort.spec.expressions[0].descending);
+    assert_eq!(sort.spec.expressions[1].expr.to_string(), "p_brand");
+    assert!(!sort.spec.expressions[1].descending);
+    assert_eq!(sort.spec.expressions[2].expr.to_string(), "p_type");
+    assert!(!sort.spec.expressions[2].descending);
+    assert_eq!(sort.spec.expressions[3].expr.to_string(), "p_size");
+    assert!(!sort.spec.expressions[3].descending);
+    assert_eq!(projection.outputs.len(), 4);
+    assert_eq!(projection.outputs[3].field.name(), "supplier_cnt");
+
+    let outer_aggregate_node = plan.node(sort.input).expect("q16 sort input should exist");
     let PlanNode::Aggregate(outer_aggregate) = &outer_aggregate_node.kind else {
-        panic!("q16 projection input should be the outer aggregate");
+        panic!("q16 sort input should be the outer aggregate: {plan}");
     };
     let inner_aggregate_id = skip_projection_nodes(plan, outer_aggregate.input);
     let inner_aggregate_node = plan.node(inner_aggregate_id).expect("q16 outer aggregate input should exist");

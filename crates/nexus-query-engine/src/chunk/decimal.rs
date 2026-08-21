@@ -228,8 +228,8 @@ pub(super) fn parquet_reader_decimal_types(
 }
 
 fn parquet_decimal_precision_scale(descriptor: &parquet::schema::types::ColumnDescriptor) -> Option<(u8, i8)> {
-    if let Some(LogicalType::Decimal { precision, scale }) = descriptor.logical_type_ref() {
-        return Some((u8::try_from(*precision).ok()?, i8::try_from(*scale).ok()?));
+    if let Some(LogicalType::Decimal(decimal)) = descriptor.logical_type_ref() {
+        return Some((u8::try_from(decimal.precision).ok()?, i8::try_from(decimal.scale).ok()?));
     }
     (descriptor.converted_type() == ConvertedType::DECIMAL)
         .then(|| (descriptor.type_precision(), descriptor.type_scale()))

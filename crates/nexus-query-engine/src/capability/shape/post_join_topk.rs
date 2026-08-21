@@ -4,17 +4,42 @@ pub(in crate::capability) fn hash_join_resident_grouped_aggregate_input_post_joi
     plan: &QueryPlan,
 ) -> Result<HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKShape, CapabilityDecision> {
     let final_limit_id = plan.sink().input();
-    let final_sort_id =
+    let limit_child_id =
         limit_input(plan, final_limit_id, "hash_resident_grouped_aggregate_topk_requires_final_limit", "final_limit")?;
-    let final_projection_id =
-        sort_input(plan, final_sort_id, "hash_resident_grouped_aggregate_topk_requires_final_sort", "final_sort")?;
-    let post_root_aggregate_id = projection_input_with_missing_reason(
-        plan,
-        final_projection_id,
-        "hash_resident_grouped_aggregate_topk_missing_node",
-        "hash_resident_grouped_aggregate_topk_requires_projection_before_sort",
-        "final_projection",
-    )?;
+    let (final_sort_id, final_projection_id, post_root_aggregate_id) = match plan
+        .node(limit_child_id)
+        .map(|node| &node.kind)
+    {
+        Some(PlanNode::Projection(proj)) => {
+            let sort_id = proj.input;
+            let sort_input_id =
+                sort_input(plan, sort_id, "hash_resident_grouped_aggregate_topk_requires_final_sort", "final_sort")?;
+            (sort_id, limit_child_id, sort_input_id)
+        },
+        Some(PlanNode::Sort(sort)) => {
+            let proj_id = sort.input;
+            let proj_input_id = projection_input_with_missing_reason(
+                plan,
+                proj_id,
+                "hash_resident_grouped_aggregate_topk_missing_node",
+                "hash_resident_grouped_aggregate_topk_requires_projection_before_sort",
+                "final_projection",
+            )?;
+            (limit_child_id, proj_id, proj_input_id)
+        },
+        Some(node) => {
+            return Err(CapabilityDecision::rejected(
+                "hash_resident_grouped_aggregate_topk_requires_final_sort",
+                [("node_id", limit_child_id.to_string()), ("operator", node_operator_fact(node).to_string())],
+            ));
+        },
+        None => {
+            return Err(CapabilityDecision::rejected(
+                "hash_resident_grouped_aggregate_topk_missing_node",
+                [("node_id", limit_child_id.to_string()), ("role", "final_sort".to_string())],
+            ));
+        },
+    };
     let post_root_aggregate_input =
         grouped_aggregate_input(plan, post_root_aggregate_id, "post_join_topk_requires_grouped_aggregate")?;
     let (root_join_id, post_root_projection_id) = match plan.node(post_root_aggregate_input).map(|node| &node.kind) {

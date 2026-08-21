@@ -15,20 +15,21 @@ use datafusion::{
     logical_expr::Expr,
     physical_plan::ExecutionPlan,
 };
-#[cfg(feature = "cugraph")]
-use datafusion::{
-    datasource::{MemTable, provider_as_source},
-    logical_expr::{LogicalPlanBuilder, col},
-};
 #[cfg(not(feature = "cugraph"))]
 use datafusion::{
+    common::tree_node::TreeNodeRecursion,
     execution::context::TaskContext,
-    physical_expr::{EquivalenceProperties, Partitioning},
+    physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr},
     physical_plan::{
         DisplayAs, DisplayFormatType, PlanProperties, SendableRecordBatchStream,
         execution_plan::{Boundedness, EmissionType},
         stream::RecordBatchStreamAdapter,
     },
+};
+#[cfg(feature = "cugraph")]
+use datafusion::{
+    datasource::{MemTable, provider_as_source},
+    logical_expr::{LogicalPlanBuilder, col},
 };
 
 #[cfg(feature = "cugraph")]
@@ -264,6 +265,13 @@ impl ExecutionPlan for CugraphFeatureDisabledExec {
 
     fn properties(&self) -> &Arc<PlanProperties> {
         &self.cache
+    }
+
+    fn apply_expressions(
+        &self,
+        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
+    ) -> Result<TreeNodeRecursion> {
+        Ok(TreeNodeRecursion::Continue)
     }
 
     fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {

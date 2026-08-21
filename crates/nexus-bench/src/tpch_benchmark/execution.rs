@@ -24,7 +24,7 @@ pub(super) struct PlannedCpuQuery {
 pub(super) struct CpuRunFailure {
     pub(super) runtime_started: bool,
     pub(super) message: String,
-    pub(super) details: FailureDetails,
+    pub(super) details: Box<FailureDetails>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -64,7 +64,7 @@ pub(super) struct TimedNativeQueryRun {
 pub(super) struct NativeRunFailure {
     pub(super) runtime_started: bool,
     pub(super) message: String,
-    pub(super) details: FailureDetails,
+    pub(super) details: Box<FailureDetails>,
 }
 
 #[derive(Debug, Clone)]
@@ -299,7 +299,7 @@ pub(super) async fn run_native_query_iterations(
             return Err(NativeRunFailure {
                 runtime_started: false,
                 message: format!("{} stopped being a native accepted query during warmup", query.id),
-                details: FailureDetails::default(),
+                details: Box::default(),
             });
         }
     }
@@ -314,7 +314,7 @@ pub(super) async fn run_native_query_iterations(
             return Err(NativeRunFailure {
                 runtime_started: false,
                 message: format!("{} stopped being a native accepted query during execution", query.id),
-                details: FailureDetails::default(),
+                details: Box::default(),
             });
         }
         validate_replanned_native_row(query.id, expected_planning_row, &planned.planning_row)
@@ -348,12 +348,12 @@ fn aggregate_native_execution_metrics(metrics: &[MetricsSet]) -> NativeDataFusio
 }
 
 fn native_started(error: DataFusionError) -> NativeRunFailure {
-    let details = FailureDetails::from_datafusion_error(&error);
+    let details = Box::new(FailureDetails::from_datafusion_error(&error));
     NativeRunFailure { runtime_started: true, message: error.to_string(), details }
 }
 
 fn native_not_started(error: DataFusionError) -> NativeRunFailure {
-    let details = FailureDetails::from_datafusion_error(&error);
+    let details = Box::new(FailureDetails::from_datafusion_error(&error));
     NativeRunFailure { runtime_started: false, message: error.to_string(), details }
 }
 
@@ -393,11 +393,11 @@ fn measure_output(schema: &arrow::datatypes::SchemaRef, batches: &[RecordBatch])
 }
 
 fn cpu_started(error: DataFusionError) -> CpuRunFailure {
-    let details = FailureDetails::from_datafusion_error(&error);
+    let details = Box::new(FailureDetails::from_datafusion_error(&error));
     CpuRunFailure { runtime_started: true, message: error.to_string(), details }
 }
 
 fn cpu_not_started(error: DataFusionError) -> CpuRunFailure {
-    let details = FailureDetails::from_datafusion_error(&error);
+    let details = Box::new(FailureDetails::from_datafusion_error(&error));
     CpuRunFailure { runtime_started: false, message: error.to_string(), details }
 }

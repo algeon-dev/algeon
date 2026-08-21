@@ -1026,3 +1026,167 @@ fn grouped_aggregate_late_original_index_columns_bind_after_source_compaction() 
 
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn sort_projection_sort_nested_shape_preserves_both_sort_orderings_and_fetches() {
+    let dir = unique_temp_dir("datafusion-nexus-sort-proj-sort");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+
+    let scan = parquet_scan(&path);
+    let scan_schema = scan.schema();
+
+    let inner_sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
+        col("m00", &scan_schema).unwrap(),
+        ArrowSortOptions::new(false, false),
+    )])
+    .unwrap();
+    let inner_sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(inner_sort_exprs, scan).with_fetch(Some(5)));
+
+    let inner_schema = inner_sort.schema();
+    let projection: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            vec![
+                (col("key", &inner_schema).unwrap(), "key".to_string()),
+                (col("m00", &inner_schema).unwrap(), "m00".to_string()),
+                (col("m01", &inner_schema).unwrap(), "m01".to_string()),
+            ],
+            inner_sort,
+        )
+        .unwrap(),
+    );
+
+    let proj_schema = projection.schema();
+    let outer_sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
+        col("m01", &proj_schema).unwrap(),
+        ArrowSortOptions::new(true, false),
+    )])
+    .unwrap();
+    let outer_sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(outer_sort_exprs, projection).with_fetch(Some(2)));
+
+    let result = lower_physical_plan_to_native(outer_sort);
+
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let plan = &result.plans[0];
+
+    let PlanNode::Limit(outer_limit) = &plan.root_node().kind else {
+        panic!("root should be the outer limit node: {plan}");
+    };
+    assert_eq!(outer_limit.spec.fetch, Some(2));
+
+    let outer_sort_node = plan.node(outer_limit.input).expect("outer sort node should exist");
+    let PlanNode::Sort(outer_sort) = &outer_sort_node.kind else {
+        panic!("outer limit input should be outer sort: {plan}");
+    };
+    assert_eq!(outer_sort.spec.expressions.len(), 1);
+    assert_eq!(outer_sort.spec.expressions[0].expr.to_string(), "m01");
+    assert!(outer_sort.spec.expressions[0].descending);
+
+    let proj_node = plan.node(outer_sort.input).expect("projection node should exist");
+    let PlanNode::Projection(proj) = &proj_node.kind else {
+        panic!("outer sort input should be projection: {plan}");
+    };
+    assert_eq!(proj.outputs.len(), 3);
+
+    let inner_limit_node = plan.node(proj.input).expect("inner limit node should exist");
+    let PlanNode::Limit(inner_limit) = &inner_limit_node.kind else {
+        panic!("projection input should be inner limit: {plan}");
+    };
+    assert_eq!(inner_limit.spec.fetch, Some(5));
+
+    let inner_sort_node = plan.node(inner_limit.input).expect("inner sort node should exist");
+    let PlanNode::Sort(inner_sort) = &inner_sort_node.kind else {
+        panic!("inner limit input should be inner sort: {plan}");
+    };
+    assert_eq!(inner_sort.spec.expressions.len(), 1);
+    assert_eq!(inner_sort.spec.expressions[0].expr.to_string(), "m00");
+    assert!(!inner_sort.spec.expressions[0].descending);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn projection_sort_projection_aggregate_nested_shape_preserves_both_projections() {
+    let dir = unique_temp_dir("datafusion-nexus-proj-sort-proj-agg");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+
+    let scan = parquet_scan(&path);
+    let agg = grouped_sum_aggregate_plan(scan);
+    let agg_schema = agg.schema();
+
+    let derived_expr =
+        binary(col("sum_m00", &agg_schema).unwrap(), Operator::Plus, lit(ScalarValue::Int64(Some(1))), &agg_schema)
+            .unwrap();
+    let inner_projection: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            vec![
+                (col("key", &agg_schema).unwrap(), "key".to_string()),
+                (col("sum_m00", &agg_schema).unwrap(), "sum_m00".to_string()),
+                (derived_expr, "derived".to_string()),
+            ],
+            agg,
+        )
+        .unwrap(),
+    );
+
+    let inner_proj_schema = inner_projection.schema();
+    let sort_exprs = LexOrdering::new([PhysicalSortExpr::new(
+        col("derived", &inner_proj_schema).unwrap(),
+        ArrowSortOptions::new(true, false),
+    )])
+    .unwrap();
+    let sort: Arc<dyn ExecutionPlan> = Arc::new(SortExec::new(sort_exprs, inner_projection));
+
+    let sort_schema = sort.schema();
+    let final_out_expr =
+        binary(col("derived", &sort_schema).unwrap(), Operator::Plus, lit(ScalarValue::Int64(Some(2))), &sort_schema)
+            .unwrap();
+    let outer_projection: Arc<dyn ExecutionPlan> = Arc::new(
+        ProjectionExec::try_new(
+            vec![
+                (col("key", &sort_schema).unwrap(), "key".to_string()),
+                (col("derived", &sort_schema).unwrap(), "derived".to_string()),
+                (final_out_expr, "final_out".to_string()),
+            ],
+            sort,
+        )
+        .unwrap(),
+    );
+
+    let result = lower_physical_plan_to_native(outer_projection);
+
+    assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
+    assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
+    let plan = &result.plans[0];
+
+    let PlanNode::Projection(outer_proj_node) = &plan.root_node().kind else {
+        panic!("root should be outer projection: {plan}");
+    };
+    assert_eq!(outer_proj_node.outputs.len(), 3);
+    assert_eq!(outer_proj_node.outputs[2].field.name(), "final_out");
+
+    let sort_node = plan.node(outer_proj_node.input).expect("sort node should exist");
+    let PlanNode::Sort(sort_kind) = &sort_node.kind else {
+        panic!("outer projection input should be sort: {plan}");
+    };
+    assert_eq!(sort_kind.spec.expressions.len(), 1);
+    assert_eq!(sort_kind.spec.expressions[0].expr.to_string(), "derived");
+
+    let inner_proj_node = plan.node(sort_kind.input).expect("inner projection node should exist");
+    let PlanNode::Projection(inner_proj_kind) = &inner_proj_node.kind else {
+        panic!("sort input should be inner projection: {plan}");
+    };
+    assert_eq!(inner_proj_kind.outputs.len(), 3);
+    assert_eq!(inner_proj_kind.outputs[2].field.name(), "derived");
+
+    let agg_node = plan.node(inner_proj_kind.input).expect("aggregate node should exist");
+    let PlanNode::Aggregate(agg_kind) = &agg_node.kind else {
+        panic!("inner projection input should be aggregate: {plan}");
+    };
+    assert_eq!(agg_kind.spec.group_exprs.len(), 1);
+    assert_eq!(agg_kind.spec.aggr_exprs.len(), 1);
+
+    fs::remove_dir_all(dir).unwrap();
+}

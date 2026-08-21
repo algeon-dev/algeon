@@ -2,9 +2,10 @@ use std::{fmt, sync::Arc};
 
 use async_trait::async_trait;
 use datafusion::{
+    catalog::Session,
     common::Result,
-    execution::{SessionState, context::QueryPlanner},
-    logical_expr::{LogicalPlan, UserDefinedLogicalNode},
+    execution::context::QueryPlanner,
+    logical_expr::{LogicalPlan, UserDefinedLogicalNode, physical_planning_context::PhysicalPlanningContext},
     physical_plan::ExecutionPlan,
     physical_planner::{DefaultPhysicalPlanner, ExtensionPlanner, PhysicalPlanner},
 };
@@ -44,10 +45,10 @@ impl QueryPlanner for CuvsQueryPlanner {
     async fn create_physical_plan(
         &self,
         logical_plan: &LogicalPlan,
-        session_state: &SessionState,
+        session: &dyn Session,
     ) -> Result<Arc<dyn ExecutionPlan>> {
         DefaultPhysicalPlanner::with_extension_planners(self.extension_planners.clone())
-            .create_physical_plan(logical_plan, session_state)
+            .create_physical_plan(logical_plan, session)
             .await
     }
 }
@@ -63,7 +64,8 @@ impl ExtensionPlanner for CuvsExtensionPlanner {
         node: &dyn UserDefinedLogicalNode,
         _logical_inputs: &[&LogicalPlan],
         physical_inputs: &[Arc<dyn ExecutionPlan>],
-        session_state: &SessionState,
+        session: &dyn Session,
+        _planning_ctx: &PhysicalPlanningContext,
     ) -> Result<Option<Arc<dyn ExecutionPlan>>> {
         let Some(node) = node.as_any().downcast_ref::<CuvsLogicalNode>() else {
             return Ok(None);
@@ -72,7 +74,7 @@ impl ExtensionPlanner for CuvsExtensionPlanner {
         // though current cuVS operators fail closed until they gain a
         // bounded peak-memory contract. This prevents a future supported
         // cuVS path from silently escaping the selected ledger/domain.
-        let native_execution_config = crate::session::installed_nexus_native_optimizer_config(session_state)
+        let native_execution_config = crate::session::installed_nexus_native_optimizer_config(session)
             .map(|config| config.native_execution_config().clone())
             .unwrap_or_else(NexusNativeExecutionConfig::bounded_default);
         CuvsAlgoExec::try_new(

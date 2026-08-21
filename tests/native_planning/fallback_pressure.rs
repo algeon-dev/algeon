@@ -267,10 +267,10 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     );
     assert!(text.starts_with(&format!("{NATIVE_FALLBACK_PRESSURE_TSV_HEADER}\n")));
     assert!(text.contains(&format!("{NATIVE_FALLBACK_PRESSURE_TSV_HEADER}\n")));
-    assert!(text.contains("sum_rewrite\tSortExec"));
-    assert!(text.contains("not_rewrite\tSortExec"));
-    assert!(text.contains("cast_rewrite\tSortExec"));
-    assert!(text.contains("avg_rewrite\tSortExec"));
+    assert!(text.contains("sum_rewrite\tProjectionExec"));
+    assert!(text.contains("not_rewrite\tProjectionExec"));
+    assert!(text.contains("cast_rewrite\tProjectionExec"));
+    assert!(text.contains("avg_rewrite\tProjectionExec"));
     assert!(text.contains("distributed_avg_rewrite\tSortPreservingMergeExec"));
     assert!(text.contains("count_only_rewrite\t"));
     assert!(text.contains("zero_column_count=represented"));

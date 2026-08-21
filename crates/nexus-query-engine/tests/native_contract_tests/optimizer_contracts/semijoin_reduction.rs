@@ -72,6 +72,19 @@ fn semijoin_reduction_pushes_to_deepest_safe_inner_join_subtree() {
 }
 
 #[test]
+fn semijoin_reduction_pushes_across_projections_and_filters_between_joins() {
+    let plan = root_semijoin_over_projection_filter_nested_inner_join_plan();
+
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    assert_eq!(result.diagnostics.semijoin_reduction.considered_count, 1);
+    assert_eq!(result.diagnostics.semijoin_reduction.applied_count, 1);
+    assert_eq!(result.diagnostics.semijoin_reduction.candidates[0].crossed_join_node_ids.len(), 2);
+    assert!(result.plan.unreachable_node_ids().is_empty());
+}
+
+#[test]
 fn semijoin_reduction_accepts_filtered_dimension_keyset_for_transitive_fact_filtering() {
     let plan = root_semijoin_over_fact_date_dimension_plan();
 
@@ -537,6 +550,101 @@ fn root_semijoin_over_nested_inner_join_plan() -> nexus_query_engine::plan::Quer
     );
     let semi = builder.add_join(
         abc,
+        keyset,
+        JoinSpec::new(
+            JoinType::LeftSemi,
+            vec![JoinKey::new(ColumnRef::input(0, "b_key", "b_key"), ColumnRef::input(1, "b_key", "b_key"))],
+        )
+        .with_output_projection(left_projection(&[
+            "a_key",
+            "a_payload",
+            "b_key",
+            "b_payload",
+            "c_key",
+            "c_payload",
+        ])),
+        abc_schema,
+    );
+    builder.finish_gpu_resident(semi)
+}
+
+fn root_semijoin_over_projection_filter_nested_inner_join_plan() -> nexus_query_engine::plan::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let a = builder.add_source(gpu_source("a", &["a_key", "a_payload"]));
+    let b = builder.add_source(gpu_source("b", &["b_key", "b_payload"]));
+    let c = builder.add_source(gpu_source("c", &["c_key", "c_payload"]));
+    let keyset = aggregate_keyset_source(&mut builder, "keyset", "b_key");
+
+    let ab_schema = schema(&["a_key", "a_payload", "b_key", "b_payload"]);
+    let ab = builder.add_join(
+        a,
+        b,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "a_key", "a_key"), ColumnRef::input(1, "b_key", "b_key"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "a_key", "a_key"), "a_key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "a_payload", "a_payload"), "a_payload"),
+            JoinOutputColumn::right(ColumnRef::input(1, "b_key", "b_key"), "b_key"),
+            JoinOutputColumn::right(ColumnRef::input(1, "b_payload", "b_payload"), "b_payload"),
+        ]),
+        ab_schema,
+    );
+
+    let ab_filter = builder.add_filter(
+        ab,
+        Expr::binary(Expr::column("a_key"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))),
+        schema(&["a_key", "a_payload", "b_key", "b_payload"]),
+    );
+    let ab_proj = builder.add_projection(
+        ab_filter,
+        vec![
+            ProjectionOutput::new(Expr::column("a_key"), Field::new("a_key", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::column("a_payload"), Field::new("a_payload", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::column("b_key"), Field::new("b_key", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::column("b_payload"), Field::new("b_payload", DataType::Int32, false)),
+        ],
+    );
+
+    let abc_schema = schema(&["a_key", "a_payload", "b_key", "b_payload", "c_key", "c_payload"]);
+    let abc = builder.add_join(
+        ab_proj,
+        c,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "b_key", "b_key"), ColumnRef::input(1, "c_key", "c_key"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "a_key", "a_key"), "a_key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "a_payload", "a_payload"), "a_payload"),
+            JoinOutputColumn::left(ColumnRef::input(0, "b_key", "b_key"), "b_key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "b_payload", "b_payload"), "b_payload"),
+            JoinOutputColumn::right(ColumnRef::input(1, "c_key", "c_key"), "c_key"),
+            JoinOutputColumn::right(ColumnRef::input(1, "c_payload", "c_payload"), "c_payload"),
+        ]),
+        Arc::clone(&abc_schema),
+    );
+
+    let abc_filter = builder.add_filter(
+        abc,
+        Expr::binary(Expr::column("c_key"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))),
+        Arc::clone(&abc_schema),
+    );
+    let abc_proj = builder.add_projection(
+        abc_filter,
+        vec![
+            ProjectionOutput::new(Expr::column("a_key"), Field::new("a_key", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::column("a_payload"), Field::new("a_payload", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::column("b_key"), Field::new("b_key", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::column("b_payload"), Field::new("b_payload", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::column("c_key"), Field::new("c_key", DataType::Int32, false)),
+            ProjectionOutput::new(Expr::column("c_payload"), Field::new("c_payload", DataType::Int32, false)),
+        ],
+    );
+
+    let semi = builder.add_join(
+        abc_proj,
         keyset,
         JoinSpec::new(
             JoinType::LeftSemi,

@@ -19,6 +19,31 @@ fn iceberg_schema() -> Arc<IcebergSchema> {
     )
 }
 
+/// Plain single-file task fixture. Row-level and sequence metadata stay
+/// absent because these tests exercise identity, limits, and delete facts.
+fn fixture_task(data_file_path: &str, record_count: Option<u64>, deletes: Vec<FileScanTaskDeleteFile>) -> FileScanTask {
+    FileScanTask {
+        file_size_in_bytes: 4096,
+        start: 0,
+        length: 4096,
+        record_count,
+        first_row_id: None,
+        data_sequence_number: None,
+        data_file_path: data_file_path.to_string(),
+        data_file_format: DataFileFormat::Parquet,
+        schema: iceberg_schema(),
+        project_field_ids: vec![1],
+        predicate: None,
+        deletes,
+        partition: Some(Struct::empty()),
+        partition_spec: None,
+        name_mapping: None,
+        unified_partition_type: None,
+        case_sensitive: true,
+        key_metadata: None,
+    }
+}
+
 #[test]
 fn iceberg_task_conversion_uses_injected_parquet_read_strategy_config() {
     let config = TableFormatParquetReadStrategyConfig {
@@ -28,23 +53,7 @@ fn iceberg_task_conversion_uses_injected_parquet_read_strategy_config() {
         storage_profile_id: Some("rest-s3".to_string()),
         ..Default::default()
     };
-    let task = FileScanTask {
-        file_size_in_bytes: 4096,
-        start: 0,
-        length: 4096,
-        record_count: Some(17),
-        data_file_path: "s3://bucket/table/data.parquet".to_string(),
-        data_file_format: DataFileFormat::Parquet,
-        schema: iceberg_schema(),
-        project_field_ids: vec![1],
-        predicate: None,
-        deletes: vec![],
-        partition: Some(Struct::empty()),
-        partition_spec: None,
-        name_mapping: None,
-        case_sensitive: true,
-        key_metadata: None,
-    };
+    let task = fixture_task("s3://bucket/table/data.parquet", Some(17), vec![]);
 
     let plan = iceberg_file_scan_tasks_to_table_format_scan_plan_with_config(
         Some("123".to_string()),
@@ -65,23 +74,8 @@ fn iceberg_task_conversion_uses_injected_parquet_read_strategy_config() {
 
 #[test]
 fn iceberg_snapshot_content_identity_is_complete_object_scoped() {
-    let first = FileScanTask {
-        file_size_in_bytes: 4096,
-        start: 0,
-        length: 2048,
-        record_count: None,
-        data_file_path: "s3://bucket/table/data.parquet".to_string(),
-        data_file_format: DataFileFormat::Parquet,
-        schema: iceberg_schema(),
-        project_field_ids: vec![1],
-        predicate: None,
-        deletes: vec![],
-        partition: Some(Struct::empty()),
-        partition_spec: None,
-        name_mapping: None,
-        case_sensitive: true,
-        key_metadata: None,
-    };
+    let mut first = fixture_task("s3://bucket/table/data.parquet", None, vec![]);
+    first.length = 2048;
     let second = FileScanTask { start: 2048, length: 2048, record_count: None, ..first.clone() };
 
     assert_eq!(iceberg_task_content_identity(Some("123"), &first), iceberg_task_content_identity(Some("123"), &second));
@@ -154,23 +148,7 @@ fn remote_s3_delete_source_without_file_io_policy_proof_is_native_unsupported() 
 
 #[test]
 fn iceberg_snapshot_content_identity_hashes_object_path() {
-    let task = FileScanTask {
-        file_size_in_bytes: 4096,
-        start: 0,
-        length: 4096,
-        record_count: Some(17),
-        data_file_path: "s3://secret-bucket/table/prefix/data.parquet?token=do-not-leak".to_string(),
-        data_file_format: DataFileFormat::Parquet,
-        schema: iceberg_schema(),
-        project_field_ids: vec![1],
-        predicate: None,
-        deletes: vec![],
-        partition: Some(Struct::empty()),
-        partition_spec: None,
-        name_mapping: None,
-        case_sensitive: true,
-        key_metadata: None,
-    };
+    let task = fixture_task("s3://secret-bucket/table/prefix/data.parquet?token=do-not-leak", Some(17), vec![]);
 
     let identity = iceberg_task_content_identity(Some("123"), &task).unwrap();
 
@@ -183,23 +161,8 @@ fn iceberg_snapshot_content_identity_hashes_object_path() {
 
 #[test]
 fn iceberg_data_file_id_hashes_credential_free_object_path() {
-    let task = FileScanTask {
-        file_size_in_bytes: 4096,
-        start: 0,
-        length: 4096,
-        record_count: Some(17),
-        data_file_path: "s3://secret-bucket/table/prefix/data.parquet?X-Amz-Signature=do-not-leak".to_string(),
-        data_file_format: DataFileFormat::Parquet,
-        schema: iceberg_schema(),
-        project_field_ids: vec![1],
-        predicate: None,
-        deletes: vec![],
-        partition: Some(Struct::empty()),
-        partition_spec: None,
-        name_mapping: None,
-        case_sensitive: true,
-        key_metadata: None,
-    };
+    let task =
+        fixture_task("s3://secret-bucket/table/prefix/data.parquet?X-Amz-Signature=do-not-leak", Some(17), vec![]);
 
     let plan =
         iceberg_file_scan_tasks_to_table_format_scan_plan_with_config(None, None, [task], &Default::default()).unwrap();
@@ -293,23 +256,7 @@ fn predicate_free_scan_limit_keeps_all_files_when_delete_semantics_are_present()
         equality_ids: None,
         key_metadata: None,
     };
-    let task = FileScanTask {
-        file_size_in_bytes: 4096,
-        start: 0,
-        length: 4096,
-        record_count: Some(17),
-        data_file_path: "s3://bucket/table/data.parquet".to_string(),
-        data_file_format: DataFileFormat::Parquet,
-        schema: iceberg_schema(),
-        project_field_ids: vec![1],
-        predicate: None,
-        deletes: vec![delete_file],
-        partition: Some(Struct::empty()),
-        partition_spec: None,
-        name_mapping: None,
-        case_sensitive: true,
-        key_metadata: None,
-    };
+    let task = fixture_task("s3://bucket/table/data.parquet", Some(17), vec![delete_file]);
     let mut plan =
         iceberg_file_scan_tasks_to_table_format_scan_plan_with_config(None, None, [task], &Default::default())
             .unwrap()
@@ -437,23 +384,11 @@ fn iceberg_delete_file_id_hashes_credential_free_object_path() {
         equality_ids: None,
         key_metadata: None,
     };
-    let task = FileScanTask {
-        file_size_in_bytes: 4096,
-        start: 0,
-        length: 4096,
-        record_count: Some(17),
-        data_file_path: "s3://secret-bucket/table/prefix/data.parquet?X-Amz-Signature=data-token".to_string(),
-        data_file_format: DataFileFormat::Parquet,
-        schema: iceberg_schema(),
-        project_field_ids: vec![1],
-        predicate: None,
-        deletes: vec![delete_file],
-        partition: Some(Struct::empty()),
-        partition_spec: None,
-        name_mapping: None,
-        case_sensitive: true,
-        key_metadata: None,
-    };
+    let task = fixture_task(
+        "s3://secret-bucket/table/prefix/data.parquet?X-Amz-Signature=data-token",
+        Some(17),
+        vec![delete_file],
+    );
 
     let plan =
         iceberg_file_scan_tasks_to_table_format_scan_plan_with_config(None, None, [task], &Default::default()).unwrap();
@@ -503,23 +438,7 @@ fn iceberg_position_delete_files_are_associated_for_native_execution() {
         equality_ids: None,
         key_metadata: None,
     };
-    let task = FileScanTask {
-        file_size_in_bytes: 4096,
-        start: 0,
-        length: 4096,
-        record_count: Some(17),
-        data_file_path: "s3://bucket/table/data.parquet".to_string(),
-        data_file_format: DataFileFormat::Parquet,
-        schema: iceberg_schema(),
-        project_field_ids: vec![1],
-        predicate: None,
-        deletes: vec![delete_file],
-        partition: Some(Struct::empty()),
-        partition_spec: None,
-        name_mapping: None,
-        case_sensitive: true,
-        key_metadata: None,
-    };
+    let task = fixture_task("s3://bucket/table/data.parquet", Some(17), vec![delete_file]);
 
     let plan =
         iceberg_file_scan_tasks_to_table_format_scan_plan_with_config(None, None, [task], &Default::default()).unwrap();
@@ -543,23 +462,7 @@ fn iceberg_equality_delete_files_without_footer_field_id_proof_are_structured_re
         equality_ids: Some(vec![1]),
         key_metadata: None,
     };
-    let task = FileScanTask {
-        file_size_in_bytes: 4096,
-        start: 0,
-        length: 4096,
-        record_count: Some(17),
-        data_file_path: "s3://bucket/table/data.parquet".to_string(),
-        data_file_format: DataFileFormat::Parquet,
-        schema: iceberg_schema(),
-        project_field_ids: vec![1],
-        predicate: None,
-        deletes: vec![delete_file],
-        partition: Some(Struct::empty()),
-        partition_spec: None,
-        name_mapping: None,
-        case_sensitive: true,
-        key_metadata: None,
-    };
+    let task = fixture_task("s3://bucket/table/data.parquet", Some(17), vec![delete_file]);
 
     let plan =
         iceberg_file_scan_tasks_to_table_format_scan_plan_with_config(None, None, [task], &Default::default()).unwrap();
@@ -585,23 +488,7 @@ fn iceberg_equality_delete_files_without_key_ids_remain_structured_rejections() 
         equality_ids: None,
         key_metadata: None,
     };
-    let task = FileScanTask {
-        file_size_in_bytes: 4096,
-        start: 0,
-        length: 4096,
-        record_count: Some(17),
-        data_file_path: "s3://bucket/table/data.parquet".to_string(),
-        data_file_format: DataFileFormat::Parquet,
-        schema: iceberg_schema(),
-        project_field_ids: vec![1],
-        predicate: None,
-        deletes: vec![delete_file],
-        partition: Some(Struct::empty()),
-        partition_spec: None,
-        name_mapping: None,
-        case_sensitive: true,
-        key_metadata: None,
-    };
+    let task = fixture_task("s3://bucket/table/data.parquet", Some(17), vec![delete_file]);
 
     let plan =
         iceberg_file_scan_tasks_to_table_format_scan_plan_with_config(None, None, [task], &Default::default()).unwrap();
@@ -614,23 +501,7 @@ fn iceberg_equality_delete_files_without_key_ids_remain_structured_rejections() 
 
 #[test]
 fn iceberg_task_conversion_uses_weak_identity_without_snapshot() {
-    let task = FileScanTask {
-        file_size_in_bytes: 4096,
-        start: 0,
-        length: 4096,
-        record_count: Some(17),
-        data_file_path: "s3://bucket/table/data.parquet".to_string(),
-        data_file_format: DataFileFormat::Parquet,
-        schema: iceberg_schema(),
-        project_field_ids: vec![1],
-        predicate: None,
-        deletes: vec![],
-        partition: Some(Struct::empty()),
-        partition_spec: None,
-        name_mapping: None,
-        case_sensitive: true,
-        key_metadata: None,
-    };
+    let task = fixture_task("s3://bucket/table/data.parquet", Some(17), vec![]);
 
     let plan =
         iceberg_file_scan_tasks_to_table_format_scan_plan_with_config(None, None, [task], &Default::default()).unwrap();

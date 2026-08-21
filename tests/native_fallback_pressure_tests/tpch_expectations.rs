@@ -1,10 +1,9 @@
 pub(super) fn expected_tpch_physical_root(query_id: &str) -> &'static str {
     match query_id {
-        "q02" | "q03" | "q10" | "q18" | "q21" => "SortExec(TopK)",
-        "q06" | "q14" | "q17" | "q19" => "ProjectionExec",
-        "q01" | "q04" | "q05" | "q07" | "q08" | "q09" | "q11" | "q12" | "q13" | "q15" | "q16" | "q20" | "q22" => {
-            "SortExec"
-        },
+        "q02" => "SortExec(TopK)",
+        "q08" | "q11" | "q15" | "q20" => "SortExec",
+        "q01" | "q03" | "q04" | "q05" | "q06" | "q07" | "q09" | "q10" | "q12" | "q13" | "q14" | "q16" | "q17"
+        | "q18" | "q19" | "q21" | "q22" => "ProjectionExec",
         other => panic!("missing TPC-H physical root expectation for {other}"),
     }
 }
@@ -66,7 +65,7 @@ pub(super) fn expected_tpch_native_candidate_shape(query_id: &str) -> &'static s
             "SortExec(HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan),HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan),ProjectionExec(AggregateExec(FilterExec(LocalParquetScan))))))"
         },
         "q21" => {
-            "SortExec(fetch)(ProjectionExec(AggregateExec(HashJoinExec(HashJoinExec(HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),HashJoinExec(LocalParquetScan,FilterExec(LocalParquetScan))),FilterExec(LocalParquetScan)),LocalParquetScan),FilterExec(LocalParquetScan)))))"
+            "SortExec(fetch)(ProjectionExec(AggregateExec(HashJoinExec(FilterExec(LocalParquetScan),HashJoinExec(HashJoinExec(HashJoinExec(FilterExec(LocalParquetScan),HashJoinExec(LocalParquetScan,FilterExec(LocalParquetScan))),FilterExec(LocalParquetScan)),LocalParquetScan)))))"
         },
         "q22" => {
             "SortExec(ProjectionExec(AggregateExec(ProjectionExec(NestedLoopJoinExec(ProjectionExec(HashJoinExec(FilterExec(LocalParquetScan),LocalParquetScan)),AggregateExec(FilterExec(LocalParquetScan)))))))"

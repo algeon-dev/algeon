@@ -7,8 +7,9 @@ use crate::{
     error::{QueryError, QueryErrorCode},
     expr::{ColumnQualifier, ColumnRef, Expr},
     plan::{
-        JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinType, NodeId, PlanFacts, PlanNode,
-        ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior, estimated_output_bytes, estimated_output_rows,
+        FilterNode, JoinKey, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinType, NodeId, PlanFacts,
+        PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior, estimated_output_bytes,
+        estimated_output_rows,
     },
 };
 
@@ -605,6 +606,9 @@ impl<'a> SemijoinReductionRewriter<'a> {
     }
 
     fn plan_rewrite_for_candidate(&mut self, join: &JoinNode) -> SemijoinRewriteResult {
+        if join.spec.residual_predicate.is_some() {
+            return Err(SemijoinRewriteRejection::new(SemijoinReductionRejectedReason::UnsupportedLeftShape));
+        }
         if join.spec.output_projection.iter().any(|column| column.side != JoinSide::Left) {
             return Err(SemijoinRewriteRejection::new(SemijoinReductionRejectedReason::NonLeftOnlySemiProjection));
         }
@@ -649,7 +653,12 @@ impl<'a> SemijoinReductionRewriter<'a> {
             ));
         }
 
-        let pushed_left = self.build_pushed_subtree(join.inputs[0], join, &analysis, 0);
+        let pushed_left = match self.build_pushed_subtree(join.inputs[0], join, &analysis, 0) {
+            Ok(id) => id,
+            Err(reason) => {
+                return Err(SemijoinRewriteRejection::with_analysis_and_cost_gate(reason, analysis, cost_gate));
+            },
+        };
         let new_id = self.apply_original_semijoin_projection_if_needed(join, pushed_left);
         Ok(SemijoinRewritePlan { new_id, analysis, cost_gate })
     }
@@ -660,31 +669,48 @@ impl<'a> SemijoinReductionRewriter<'a> {
         original_semijoin: &JoinNode,
         analysis: &SemijoinLineageAnalysis,
         step_index: usize,
-    ) -> NodeId {
-        if step_index == analysis.steps.len() {
-            return self.build_pushed_semijoin(current_old_id, original_semijoin, analysis);
+    ) -> Result<NodeId, SemijoinReductionRejectedReason> {
+        if current_old_id == analysis.target_subtree_id {
+            if step_index != analysis.steps.len() {
+                return Err(SemijoinReductionRejectedReason::MissingKeyLineage);
+            }
+            return Ok(self.build_pushed_semijoin(current_old_id, original_semijoin, analysis));
         }
 
-        let step = &analysis.steps[step_index];
-        debug_assert_eq!(step.crossed_join_node_id, current_old_id);
-        let node = self.original.node(current_old_id).expect("crossed join node must exist");
-        let PlanNode::Join(join) = &node.kind else {
-            panic!("lineage step must point at a join node");
-        };
+        let node = self.original.node(current_old_id).ok_or(SemijoinReductionRejectedReason::MissingKeyLineage)?;
+        match &node.kind {
+            PlanNode::Filter(filter) => {
+                let input = self.build_pushed_subtree(filter.input, original_semijoin, analysis, step_index)?;
+                let rebuilt = FilterNode { input, predicate: filter.predicate.clone() };
+                Ok(self.push_node(PlanNode::Filter(rebuilt), node.facts.clone()))
+            },
+            PlanNode::Projection(projection) => {
+                let input = self.build_pushed_subtree(projection.input, original_semijoin, analysis, step_index)?;
+                let rebuilt = ProjectionNode::new(input, projection.outputs.clone());
+                Ok(self.push_node(PlanNode::Projection(rebuilt), node.facts.clone()))
+            },
+            PlanNode::Join(join) => {
+                let step = analysis.steps.get(step_index).ok_or(SemijoinReductionRejectedReason::MissingKeyLineage)?;
+                if step.crossed_join_node_id != current_old_id {
+                    return Err(SemijoinReductionRejectedReason::MissingKeyLineage);
+                }
 
-        let left = if step.target_side == JoinSide::Left {
-            self.build_pushed_subtree(step.target_child_id, original_semijoin, analysis, step_index + 1)
-        } else {
-            self.rewrite_subtree(join.inputs[0])
-        };
-        let right = if step.target_side == JoinSide::Right {
-            self.build_pushed_subtree(step.target_child_id, original_semijoin, analysis, step_index + 1)
-        } else {
-            self.rewrite_subtree(join.inputs[1])
-        };
+                let left = if step.target_side == JoinSide::Left {
+                    self.build_pushed_subtree(step.target_child_id, original_semijoin, analysis, step_index + 1)?
+                } else {
+                    self.rewrite_subtree(join.inputs[0])
+                };
+                let right = if step.target_side == JoinSide::Right {
+                    self.build_pushed_subtree(step.target_child_id, original_semijoin, analysis, step_index + 1)?
+                } else {
+                    self.rewrite_subtree(join.inputs[1])
+                };
 
-        let rebuilt = JoinNode { inputs: [left, right], spec: join.spec.clone() };
-        self.push_node(PlanNode::Join(rebuilt), node.facts.clone())
+                let rebuilt = JoinNode { inputs: [left, right], spec: join.spec.clone() };
+                Ok(self.push_node(PlanNode::Join(rebuilt), node.facts.clone()))
+            },
+            _ => Err(SemijoinReductionRejectedReason::UnsupportedLeftShape),
+        }
     }
 
     fn build_pushed_semijoin(

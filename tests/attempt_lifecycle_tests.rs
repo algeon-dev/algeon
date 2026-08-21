@@ -366,6 +366,15 @@ async fn panic_in_result_stream_is_terminal_exactly_once_and_unwinds() {
         ) -> datafusion::common::Result<std::sync::Arc<dyn ExecutionPlan>> {
             Ok(self)
         }
+        fn apply_expressions(
+            &self,
+            _f: &mut dyn FnMut(
+                &std::sync::Arc<dyn datafusion::physical_expr::PhysicalExpr>,
+            )
+                -> datafusion::common::Result<datafusion::common::tree_node::TreeNodeRecursion>,
+        ) -> datafusion::common::Result<datafusion::common::tree_node::TreeNodeRecursion> {
+            Ok(datafusion::common::tree_node::TreeNodeRecursion::Continue)
+        }
         fn execute(
             &self,
             _partition: usize,
