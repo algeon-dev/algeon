@@ -1,5 +1,156 @@
 use super::*;
 
+/// Stable owner contract for metadata-only filtered-join allocation sizing.
+pub const FILTERED_JOIN_ALLOCATION_PREFLIGHT_CONTRACT: &str = "libcudf_filtered_join_allocation_preflight_v1";
+
+const FILTERED_JOIN_METADATA_PREFLIGHT_OPERATION: &str = "ops::join::filtered_join_allocation_preflight_for_metadata";
+
+/// Owner allocation components for a reusable filtered-join build.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilteredJoinAllocationPreflight {
+    retained_build_bytes: usize,
+    temporary_row_validity_workspace_bytes: usize,
+    active_build_phase_peak_bytes: usize,
+}
+
+impl FilteredJoinAllocationPreflight {
+    /// Bytes retained by the reusable build artifact.
+    pub fn retained_build_bytes(&self) -> usize {
+        self.retained_build_bytes
+    }
+
+    /// Temporary row-validity bytes live while the build artifact is created.
+    pub fn temporary_row_validity_workspace_bytes(&self) -> usize {
+        self.temporary_row_validity_workspace_bytes
+    }
+
+    /// Peak owner bytes during reusable build construction.
+    pub fn active_build_phase_peak_bytes(&self) -> usize {
+        self.active_build_phase_peak_bytes
+    }
+}
+
+/// Owner allocation components for one filtered semi or anti probe.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FilteredJoinProbeAllocationPreflight {
+    retained_probe_state_bytes: usize,
+    gather_map_bytes: usize,
+}
+
+impl FilteredJoinProbeAllocationPreflight {
+    /// Bytes retained by the probe membership state.
+    pub fn retained_probe_state_bytes(self) -> usize {
+        self.retained_probe_state_bytes
+    }
+
+    /// Bytes required for the output gather map.
+    pub fn gather_map_bytes(self) -> usize {
+        self.gather_map_bytes
+    }
+}
+
+fn filtered_join_preflight_error(component: &'static str) -> Error {
+    Error::new_with(
+        ErrorCode::SizeOverflow,
+        FILTERED_JOIN_METADATA_PREFLIGHT_OPERATION,
+        "filtered join allocation preflight component overflowed usize",
+    )
+    .with_detail("component", component)
+    .with_detail("required_contract", FILTERED_JOIN_ALLOCATION_PREFLIGHT_CONTRACT)
+}
+
+fn checked_filtered_join_add(lhs: usize, rhs: usize, component: &'static str) -> Result<usize> {
+    lhs.checked_add(rhs).ok_or_else(|| filtered_join_preflight_error(component))
+}
+
+fn checked_filtered_join_mul(lhs: usize, rhs: usize, component: &'static str) -> Result<usize> {
+    lhs.checked_mul(rhs).ok_or_else(|| filtered_join_preflight_error(component))
+}
+
+/// Computes reusable filtered-join build allocation bounds without device work.
+pub fn filtered_join_allocation_preflight_for_metadata(
+    keys: &[HashJoinKeyMetadata],
+    rows: u64,
+    options: FilteredJoinOptions,
+) -> Result<FilteredJoinAllocationPreflight> {
+    if keys.is_empty() {
+        return Err(Error::new_with(
+            ErrorCode::ForeignInvalidArgument,
+            FILTERED_JOIN_METADATA_PREFLIGHT_OPERATION,
+            "filtered join requires at least one key column",
+        )
+        .with_detail("required_contract", FILTERED_JOIN_ALLOCATION_PREFLIGHT_CONTRACT));
+    }
+    let rows = usize::try_from(rows).map_err(|_| filtered_join_preflight_error("rows"))?;
+    let mut flattened_types = Vec::new();
+    let mut nullable_key_count = 0usize;
+    for key in keys {
+        nullable_key_count += usize::from(key.nullable());
+        match key.storage() {
+            HashJoinKeyStorage::FixedWidth { type_id } => {
+                if type_id.size_in_bytes()?.is_none() {
+                    return Err(Error::new_with(
+                        ErrorCode::UnsupportedDtype,
+                        FILTERED_JOIN_METADATA_PREFLIGHT_OPERATION,
+                        "fixed-width filtered join key metadata carried a variable-width dtype",
+                    )
+                    .with_fact(crate::core::error::FACT_TYPE_ID, type_id)
+                    .with_detail("required_contract", FILTERED_JOIN_ALLOCATION_PREFLIGHT_CONTRACT));
+                }
+                flattened_types.push(type_id);
+            },
+            HashJoinKeyStorage::String { .. } => {
+                flattened_types.extend([TypeId::Int32, TypeId::Int8]);
+            },
+        }
+    }
+    let retained_build_bytes =
+        FilteredJoin::pre_build_reservation_size_bytes_for_fixed_width_metadata(&flattened_types, rows, options)?;
+    let temporary_row_validity_workspace_bytes = if options.null_eq() == NullEquality::Unequal && nullable_key_count > 1
+    {
+        crate::core::types::cudf_null_mask_allocation_size_bytes(rows)
+    } else {
+        0
+    };
+    let active_build_phase_peak_bytes = checked_filtered_join_add(
+        retained_build_bytes,
+        temporary_row_validity_workspace_bytes,
+        "active_build_phase_peak_bytes",
+    )?;
+    Ok(FilteredJoinAllocationPreflight {
+        retained_build_bytes,
+        temporary_row_validity_workspace_bytes,
+        active_build_phase_peak_bytes,
+    })
+}
+
+/// Computes retained probe-state and gather-map bounds from row counts.
+pub fn filtered_join_probe_allocation_preflight(
+    probe_rows: u64,
+    output_rows: u64,
+) -> Result<FilteredJoinProbeAllocationPreflight> {
+    if output_rows > probe_rows {
+        return Err(Error::new_with(
+            ErrorCode::ForeignInvalidArgument,
+            FILTERED_JOIN_METADATA_PREFLIGHT_OPERATION,
+            "filtered semi or anti join output cannot exceed its probe rows",
+        )
+        .with_detail("probe_rows", probe_rows.to_string())
+        .with_detail("output_rows", output_rows.to_string())
+        .with_detail("required_contract", FILTERED_JOIN_ALLOCATION_PREFLIGHT_CONTRACT));
+    }
+    let probe_rows = usize::try_from(probe_rows).map_err(|_| filtered_join_preflight_error("probe_rows"))?;
+    let output_rows = usize::try_from(output_rows).map_err(|_| filtered_join_preflight_error("output_rows"))?;
+    Ok(FilteredJoinProbeAllocationPreflight {
+        retained_probe_state_bytes: checked_filtered_join_mul(
+            probe_rows,
+            std::mem::size_of::<bool>(),
+            "retained_probe_state_bytes",
+        )?,
+        gather_map_bytes: checked_filtered_join_mul(output_rows, std::mem::size_of::<i32>(), "gather_map_bytes")?,
+    })
+}
+
 fn filter_join_kind_raw(join_type: JoinType) -> cudf_sys::cudf_join_kind_t {
     match join_type {
         JoinType::Inner => cudf_sys::CUDF_JOIN_KIND_INNER_JOIN,

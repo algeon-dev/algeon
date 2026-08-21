@@ -2145,6 +2145,7 @@ async fn cugraph_graph_outputs_feed_an_outer_graph_and_personalization_side_inpu
 async fn graph_results_support_aggregate_provenance_union_and_global_row_number_composition() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_edge_memtable(&ctx, "ordinary_graph_edges", DataType::Int64, DataType::Int64, DataType::Float64);
+    register_phase_c_top_k_edges(&ctx, "row_number_limit_edges", DataType::Float64);
     let queries = [
         (
             "aggregate",
@@ -2168,6 +2169,14 @@ async fn graph_results_support_aggregate_provenance_union_and_global_row_number_
              FROM cugraph_pagerank('ordinary_graph_edges', 'src', 'dst', 'weight') \
              ORDER BY row_number",
         ),
+        (
+            "global row number limit",
+            "SELECT vertex, value, \
+                    ROW_NUMBER() OVER (ORDER BY value DESC, vertex) AS row_number \
+             FROM cugraph_pagerank('row_number_limit_edges', 'src', 'dst', 'weight') \
+             ORDER BY row_number \
+             LIMIT 3",
+        ),
     ];
     for (label, sql) in queries {
         let dataframe = ctx.sql(sql).await.unwrap_or_else(|error| panic!("{label} SQL must plan: {error}"));
@@ -2183,7 +2192,12 @@ async fn graph_results_support_aggregate_provenance_union_and_global_row_number_
         let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx())
             .await
             .unwrap_or_else(|error| panic!("{label} must execute: {error}"));
-        assert!(batches.iter().map(RecordBatch::num_rows).sum::<usize>() > 0, "{label}");
+        let row_count = batches.iter().map(RecordBatch::num_rows).sum::<usize>();
+        if label == "global row number limit" {
+            assert_eq!(row_count, 3);
+        } else {
+            assert!(row_count > 0, "{label}");
+        }
     }
     drop_session_context_on_blocking_thread(ctx).await;
 }
@@ -2401,6 +2415,7 @@ async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively
     let dir = unique_temp_dir("datafusion-nexus-cugraph-string-metadata-enrichment");
     let metadata_path = dir.join("metadata.parquet");
     let unique_metadata_path = dir.join("unique-metadata.parquet");
+    let ranked_metadata_path = dir.join("ranked-metadata.parquet");
     let metadata_schema = Arc::new(Schema::new(vec![
         Field::new("vertexId", DataType::Utf8, false),
         Field::new("vertexName", DataType::Utf8, false),
@@ -2424,7 +2439,20 @@ async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively
         ],
     )
     .unwrap();
-    for (path, batch) in [(&metadata_path, metadata_batch), (&unique_metadata_path, unique_metadata_batch)] {
+    let ranked_metadata_batch = RecordBatch::try_new(
+        Arc::clone(&metadata_schema),
+        vec![
+            Arc::new(StringArray::from(vec!["a", "a", "b", "c"])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["A", "A2", "B", "C"])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![9, 10, 8, 7])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    for (path, batch) in [
+        (&metadata_path, metadata_batch),
+        (&unique_metadata_path, unique_metadata_batch),
+        (&ranked_metadata_path, ranked_metadata_batch),
+    ] {
         let mut writer =
             ArrowWriter::try_new(fs::File::create(path).unwrap(), Arc::clone(&metadata_schema), None).unwrap();
         writer.write(&batch).unwrap();
@@ -2434,6 +2462,9 @@ async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively
     let (backend, ctx) = default_backend_cugraph_sql_context();
     register_string_pagerank_parity_edges(&ctx, "string_edges", "numeric_edges");
     ctx.register_parquet("vertex_metadata", metadata_path.to_str().unwrap(), ParquetReadOptions::default())
+        .await
+        .unwrap();
+    ctx.register_parquet("ranked_metadata", ranked_metadata_path.to_str().unwrap(), ParquetReadOptions::default())
         .await
         .unwrap();
     let metadata_url = ListingTableUrl::parse(unique_metadata_path.to_str().unwrap()).unwrap();
@@ -2569,6 +2600,89 @@ async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively
     assert_eq!(batch.num_rows(), 3, "duplicate role metadata must preserve left-join multiplicity");
     assert_eq!(batch.column(0).null_count(), 0);
     assert_eq!(batch.column(1).null_count(), 1, "missing role metadata must preserve the graph result row");
+
+    let ranked_metadata_sql = "WITH ranked AS (\
+             SELECT vertex, value \
+             FROM cugraph_pagerank('string_edges', 'src', 'dst') \
+             ORDER BY value DESC, vertex \
+             LIMIT 5\
+         ), metadata AS (\
+             SELECT \"vertexId\", \"vertexName\" \
+             FROM ranked_metadata \
+             WHERE \"vertexId\" IN (SELECT vertex FROM ranked)\
+         ) \
+         SELECT r.vertex, r.value, a.\"vertexName\" \
+         FROM ranked r \
+         LEFT JOIN metadata a ON a.\"vertexId\" = r.vertex \
+         ORDER BY r.value DESC, r.vertex";
+    let attempt = backend.begin_attempt(datafusion_nexus::attempt::AttemptOptions::default()).unwrap();
+    let completion = attempt.completion();
+    let plan = attempt.plan_sql(&ctx, ranked_metadata_sql).await.unwrap();
+    assert_eq!(
+        classify_final_plan(plan.as_ref()),
+        FinalPlanDisposition::Native,
+        "shared graph Top-K metadata filter and enrichment\n{}",
+        displayable(plan.as_ref()).indent(false)
+    );
+    let composed = find_composed_exec(plan.as_ref()).expect("shared graph Top-K must use one composed execution");
+    let native_plan = composed.native_plan_for_test();
+    let graph_sources = native_plan
+        .nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Source(source) => match source.as_ref() {
+                SourceNode::GpuResident(source) => Some((node.id, source.input_name.clone())),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(graph_sources.len(), 1, "ranked must have one authoritative graph result occurrence");
+    let graph_occurrence = graph_sources[0].1.clone();
+    let shared_limits = native_plan
+        .nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Limit(limit) if limit.spec.fetch == Some(5) => Some(node.id),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(shared_limits.len(), 1, "ranked must have one authoritative Top-K occurrence");
+    let shared_limit = shared_limits[0];
+    assert_eq!(
+        native_plan.nodes().iter().filter(|node| node.input_ids().contains(&shared_limit)).count(),
+        2,
+        "metadata filtering and enrichment must consume the same ranked Top-K"
+    );
+    assert!(
+        native_plan.nodes().iter().any(|node| {
+            matches!(
+                &node.kind,
+                PlanNode::Join(join) if join.spec.join_type == nexus_query_engine::plan::JoinType::LeftSemi
+            )
+        }),
+        "the IN subquery must lower to a bounded native LeftSemi join"
+    );
+    let mut stream = attempt.execute_physical_plan(plan, &ctx).unwrap();
+    let first = stream.next().await.expect("ranked metadata enrichment must produce a batch").unwrap();
+    let active = backend.device_ledger_reports().unwrap();
+    assert_eq!(active.iter().map(|report| report.grants.len()).sum::<usize>(), 1);
+    let mut batches = vec![first];
+    while let Some(batch) = stream.next().await {
+        batches.push(batch.expect("ranked metadata enrichment must finish"));
+    }
+    let report = completion.await;
+    assert!(matches!(report.outcome, nexus_query_engine::observability::RuntimeTerminalOutcome::Succeeded));
+    let producer_occurrences = &report
+        .composed_schedule
+        .as_ref()
+        .expect("shared graph Top-K must use one ordered schedule")
+        .producer_occurrences;
+    assert_eq!(producer_occurrences.len(), 1);
+    assert_eq!(producer_occurrences[0].occurrence_id, graph_occurrence);
+    let batch = single_batch(&batches);
+    assert_eq!(batch.num_rows(), 5, "duplicate metadata must preserve LEFT JOIN multiplicity");
+    assert_eq!(batch.column(2).null_count(), 1, "missing metadata must preserve the ranked graph row");
 
     drop_session_context_on_blocking_thread(ctx).await;
     fs::remove_dir_all(dir).unwrap();

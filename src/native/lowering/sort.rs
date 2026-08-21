@@ -23,14 +23,23 @@ pub(super) fn lower_sort_ordering_with_input(
     input: LoweredNativeInput,
     required_output_fields: &RequiredFields,
 ) -> Result<LoweredNativeInput, CapabilityReason> {
+    let sorted = lower_sort_ordering_unprojected_with_input(builder, ordering, sort_input_schema, input)?;
+    project_sort_output(builder, sort_output_schema, sorted, required_output_fields)
+}
+
+pub(super) fn lower_sort_ordering_unprojected_with_input(
+    builder: &mut NativeQueryPlanBuilder,
+    ordering: &LexOrdering,
+    sort_input_schema: &SchemaRef,
+    input: LoweredNativeInput,
+) -> Result<LoweredNativeInput, CapabilityReason> {
     let prepared = materialize_sort_expressions(builder, ordering, sort_input_schema, input)?;
     let node = builder.add_sort(
         prepared.input.node,
         lower_sort_spec_with_prepared_input(ordering, &prepared.input, &prepared.sort_columns)?,
         Arc::clone(&prepared.input.schema),
     );
-    let sorted = LoweredNativeInput::with_bindings(node, prepared.input.schema, prepared.original_bindings);
-    project_sort_output(builder, sort_output_schema, sorted, required_output_fields)
+    Ok(LoweredNativeInput::with_bindings(node, prepared.input.schema, prepared.original_bindings))
 }
 
 struct PreparedSortInput {
@@ -96,7 +105,7 @@ fn materialize_sort_expressions(
     })
 }
 
-fn project_sort_output(
+pub(super) fn project_sort_output(
     builder: &mut NativeQueryPlanBuilder,
     sort_output_schema: &SchemaRef,
     sorted: LoweredNativeInput,

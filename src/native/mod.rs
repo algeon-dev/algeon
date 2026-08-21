@@ -550,9 +550,9 @@ fn native_node_reproduces_limit_output_ordering(
             native_node_reproduces_limit_output_ordering(plan, projection.input, stack)
         },
         NativePlanNode::Sort(_) => true,
+        NativePlanNode::Window(window) => native_node_reproduces_limit_output_ordering(plan, window.input, stack),
         NativePlanNode::Limit(_)
         | NativePlanNode::Aggregate(_)
-        | NativePlanNode::Window(_)
         | NativePlanNode::Join(_)
         | NativePlanNode::Union(_)
         | NativePlanNode::EdgeNormalize(_)
@@ -694,6 +694,12 @@ mod tests {
         assert!(native_plan_reproduces_declared_output_ordering(&plan), "{plan}");
     }
 
+    #[test]
+    fn order_reproduction_audit_preserves_window_input_ordering_through_limit() {
+        let plan = window_limit_plan();
+        assert!(native_plan_reproduces_declared_output_ordering(&plan), "{plan}");
+    }
+
     fn aggregate_plan() -> QueryPlan {
         let aggregate_schema = Arc::new(Schema::new(vec![
             Field::new("key", DataType::UInt32, false),
@@ -729,6 +735,31 @@ mod tests {
             window_schema,
         );
         builder.finish_with_host_sink(window)
+    }
+
+    fn window_limit_plan() -> QueryPlan {
+        let window_schema = Arc::new(Schema::new(vec![
+            Field::new("key", DataType::UInt32, false),
+            Field::new("rank", DataType::UInt64, false),
+        ]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(local_parquet_source()));
+        let sort = builder.add_sort(
+            source,
+            SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]),
+            key_schema(),
+        );
+        let window = builder.add_window(
+            sort,
+            WindowSpec::new(
+                Vec::new(),
+                vec![SortExpr::new(Expr::column("key"), false, false)],
+                vec![WindowFunction::Rank { alias: "rank".to_string() }],
+            ),
+            Arc::clone(&window_schema),
+        );
+        let limit = builder.add_limit(window, LimitSpec::fetch(3), window_schema);
+        builder.finish_with_host_sink(limit)
     }
 
     fn join_plan() -> QueryPlan {

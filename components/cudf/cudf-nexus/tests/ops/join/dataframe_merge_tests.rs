@@ -6,16 +6,19 @@ use cudf::{
     frame::dataframe::InfoDetail,
     ops::{
         ast::AstExpression,
-        join::{FilteredJoin, FilteredJoinOptions},
+        join::{
+            FilteredJoin, FilteredJoinOptions, HashJoinKeyMetadata, HashJoinStringOffsetWidth,
+            filtered_join_allocation_preflight_for_metadata, filtered_join_probe_allocation_preflight,
+        },
     },
     testing::prelude::*,
 };
 
 use crate::common::{
     assert_duplicate_name_error, assert_missing_column_error, column_from_slice, column_from_slice_nullable,
-    dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value, last_exec_stream_value,
-    last_sync_stream_value, reset_dependency_observation, reset_exec_observation, reset_sync_observation,
-    sample_runtime,
+    column_from_strs_nullable, dependency_wait_call_count_for_stream, error_context_value, last_exec_mr_value,
+    last_exec_stream_value, last_sync_stream_value, reset_dependency_observation, reset_exec_observation,
+    reset_sync_observation, sample_runtime,
 };
 
 // ---------------------------------------------------------------------------
@@ -576,6 +579,45 @@ fn test_filtered_join_fixed_width_metadata_preflight_matches_built_owner() {
 
     assert_eq!(metadata_bytes, frame_bytes);
     assert_eq!(metadata_bytes, owner.device_allocated_size_bytes().unwrap());
+}
+
+#[test]
+fn test_filtered_join_string_metadata_and_probe_preflights_match_built_owners() {
+    let rt = sample_runtime();
+    let build = DataFrame::from_series([("id", rt.series(&["a", "cc"]).unwrap())]).unwrap();
+    let probe = DataFrame::from_series([("id", rt.series(&["a", "b", "cc"]).unwrap())]).unwrap();
+    let options = DataFrameFilteredJoinOptions::new().null_equality(cudf::NullEquality::Unequal);
+    let metadata = filtered_join_allocation_preflight_for_metadata(
+        &[HashJoinKeyMetadata::string(3, HashJoinStringOffsetWidth::I32, false)],
+        build.num_rows() as u64,
+        FilteredJoinOptions::new().null_equality(cudf::NullEquality::Unequal),
+    )
+    .unwrap();
+    let owner = build.build_filtered_join(["id"], options).unwrap();
+
+    assert_eq!(metadata.retained_build_bytes(), owner.device_allocated_size_bytes().unwrap());
+    let probe_state = owner.begin_left_semi_probe(&probe, ["id"]).unwrap();
+    let probe_preflight =
+        filtered_join_probe_allocation_preflight(probe.num_rows() as u64, probe_state.output_size() as u64).unwrap();
+    assert_eq!(probe_preflight.retained_probe_state_bytes(), probe_state.device_allocated_size_bytes().unwrap());
+    assert_eq!(probe_preflight.gather_map_bytes(), probe_state.probe_gather_map_reservation_size_bytes().unwrap());
+
+    let nullable_build = crate::common::dataframe_from_columns(
+        vec!["id".to_string()],
+        vec![column_from_strs_nullable(&["a", "", "cc"], &[true, false, true]).unwrap()],
+    )
+    .unwrap();
+    let nullable_metadata = filtered_join_allocation_preflight_for_metadata(
+        &[HashJoinKeyMetadata::string(3, HashJoinStringOffsetWidth::I32, true)],
+        nullable_build.num_rows() as u64,
+        FilteredJoinOptions::new().null_equality(cudf::NullEquality::Equal),
+    )
+    .unwrap();
+    let nullable_owner = nullable_build
+        .build_filtered_join(["id"], DataFrameFilteredJoinOptions::new().null_equality(cudf::NullEquality::Equal))
+        .unwrap();
+    assert_eq!(nullable_metadata.retained_build_bytes(), nullable_owner.device_allocated_size_bytes().unwrap());
+    assert_eq!(nullable_metadata.temporary_row_validity_workspace_bytes(), 0);
 }
 
 #[test]

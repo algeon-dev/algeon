@@ -22,6 +22,7 @@ pub struct CugraphAlgoExec {
 }
 
 impl CugraphAlgoExec {
+    #[cfg(test)]
     pub(crate) fn try_new(
         spec: CugraphAlgorithmSpec,
         edge_source: Arc<dyn ExecutionPlan>,
@@ -30,7 +31,7 @@ impl CugraphAlgoExec {
         limit: Option<usize>,
         native_execution_config: NexusNativeExecutionConfig,
     ) -> Result<Self> {
-        Self::try_new_with_host_boundary_config(
+        Self::try_new_with_gpu_result_input_name(
             spec,
             edge_source,
             predicate_sources,
@@ -38,9 +39,37 @@ impl CugraphAlgoExec {
             limit,
             native_execution_config,
             GpuIslandHostBoundaryConfig::default(),
+            Self::next_gpu_result_input_name(),
         )
     }
 
+    pub(crate) fn try_new_with_reserved_gpu_result_input_name(
+        spec: CugraphAlgorithmSpec,
+        edge_source: Arc<dyn ExecutionPlan>,
+        predicate_sources: Vec<Arc<dyn ExecutionPlan>>,
+        projection: Option<Vec<usize>>,
+        limit: Option<usize>,
+        native_execution_config: NexusNativeExecutionConfig,
+        gpu_result_input_name: String,
+    ) -> Result<Self> {
+        Self::try_new_with_gpu_result_input_name(
+            spec,
+            edge_source,
+            predicate_sources,
+            projection,
+            limit,
+            native_execution_config,
+            GpuIslandHostBoundaryConfig::default(),
+            gpu_result_input_name,
+        )
+    }
+
+    pub(crate) fn next_gpu_result_input_name() -> String {
+        let id = NEXT_CUGRAPH_GPU_RESULT_INPUT_ID.fetch_add(1, Ordering::Relaxed);
+        format!("__datafusion_nexus_cugraph_result_{id}")
+    }
+
+    #[cfg(test)]
     pub(crate) fn try_new_with_host_boundary_config(
         spec: CugraphAlgorithmSpec,
         edge_source: Arc<dyn ExecutionPlan>,
@@ -50,7 +79,6 @@ impl CugraphAlgoExec {
         native_execution_config: NexusNativeExecutionConfig,
         host_boundary_config: GpuIslandHostBoundaryConfig,
     ) -> Result<Self> {
-        let id = NEXT_CUGRAPH_GPU_RESULT_INPUT_ID.fetch_add(1, Ordering::Relaxed);
         Self::try_new_with_gpu_result_input_name(
             spec,
             edge_source,
@@ -59,7 +87,7 @@ impl CugraphAlgoExec {
             limit,
             native_execution_config,
             host_boundary_config,
-            format!("__datafusion_nexus_cugraph_result_{id}"),
+            Self::next_gpu_result_input_name(),
         )
     }
 

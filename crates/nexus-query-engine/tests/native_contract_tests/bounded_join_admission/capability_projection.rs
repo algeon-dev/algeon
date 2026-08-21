@@ -791,6 +791,14 @@ fn bounded_multi_join_pipeline_admits_sort_between_joins() {
 }
 
 #[test]
+fn bounded_multi_join_pipeline_admits_shared_topk_leaf_with_final_sort() {
+    let plan = shared_topk_multi_join_final_sort_plan();
+
+    assert!(plan.capability_analysis().admits_closed_multi_join_subgraph());
+    assert!(nexus_query_engine::admission::bounded_pipeline_admission(&plan).unwrap().is_some());
+}
+
+#[test]
 fn bounded_single_join_pipeline_rejects_aggregate_join_input_leaves() {
     for aggregate_side in [JoinSide::Left, JoinSide::Right] {
         let plan = single_join_with_aggregate_input_plan(aggregate_side);
