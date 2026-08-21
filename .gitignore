@@ -27,7 +27,7 @@ __pycache__/
 # Shared local Python environment for RAPIDS/cuGraph oracle tests.
 .venv
 
-# Docker staging directory (populated by docker/build.sh, not checked in).
+# Docker staging directory (populated by docker/stage-docker-payload.sh, not checked in).
 /docker/dist/
 
 # Local Iceberg REST + RustFS loader artifacts (generated parquet + spark ivy cache).

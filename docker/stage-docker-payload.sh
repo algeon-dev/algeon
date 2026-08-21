@@ -12,7 +12,7 @@
 #
 # It stages, into docker/dist/:
 #   bin/datafusion_nexus_server        the compiled server
-#   lib/libcudf_rust.so                cudf-nexus-sys CMake FFI bridge (OUT_DIR)
+#   lib/libcudf_rust*.so               cudf-nexus-sys CMake FFI bridges (OUT_DIR)
 #   lib/libcudf.so librmm.so ...       forked RAPIDS C++ libs from cudf-nexus
 #   lib/libcugraph*.so                 forked RAPIDS C++ libs from cugraph-nexus
 #   lib/libcuvs.so* libcuvs_c.so*      canonical cuVS install (C API only for `cuvs`)
@@ -31,14 +31,13 @@
 #   - patchelf (recommended; rewrites RUNPATHs so the container is hermetic)
 #
 # Usage:
-#   bash docker/build.sh                  # iceberg,cugraph,cuvs,nvml (full)
-#   FEATURES=iceberg,nvml bash docker/build.sh # lean cudf-only (~1/3 size)
-#   NO_STRIP=1 bash docker/build.sh            # keep debug symbols
-#   SKIP_CARGO_BUILD=1 bash docker/build.sh    # reuse only verified canonical artifact
+#   bash docker/stage-docker-payload.sh                  # iceberg,cugraph,cuvs,nvml (full)
+#   FEATURES=iceberg,nvml bash docker/stage-docker-payload.sh # lean cudf-only (~1/3 size)
+#   NO_STRIP=1 bash docker/stage-docker-payload.sh            # keep debug symbols
+#   SKIP_CARGO_BUILD=1 bash docker/stage-docker-payload.sh    # reuse only verified canonical artifact
 #
 # Then:
-#   Run the exact docker build command printed by this script. Its build args
-#   bind the image labels to the staged provenance.
+#   bash docker/build-image.sh
 #
 # The image is feature-agnostic: it bundles whatever this script staged and
 # harvests only the CUDA libs the binary actually links. A lean cuDF-only
@@ -47,7 +46,7 @@
 set -euo pipefail
 
 if [[ "$#" -ne 0 ]]; then
-    echo "ERROR: docker/build.sh accepts no positional or Cargo arguments; select only declared policy inputs via environment." >&2
+    echo "ERROR: docker/stage-docker-payload.sh accepts no positional or Cargo arguments; select only declared policy inputs via environment." >&2
     exit 2
 fi
 
@@ -56,7 +55,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DIST_DIR="${CPU_PACKAGE_DIST_DIR:-$SCRIPT_DIR/dist}"
 POLICY_FILE="$REPO_ROOT/.config/policies/cpu-packaging.toml"
 POLICY_HELPER="$REPO_ROOT/scripts/build/cpu_packaging_policy.py"
-CPU_PACKAGE_PROFILE="portable"
+CPU_PACKAGE_PROFILE="${CPU_PACKAGE_PROFILE:-portable}"
 CPU_PACKAGE_TARGET_ROOT="${CPU_PACKAGE_TARGET_ROOT:-$REPO_ROOT/target/cpu-packaging}"
 FEATURES="$(python3 "$POLICY_HELPER" --policy "$POLICY_FILE" normalize-features \
     --features "${FEATURES:-iceberg,cugraph,cuvs,nvml}")"
@@ -86,11 +85,6 @@ want_cuvs_runtime=0
 [[ $want_cugraph -eq 1 || $want_cuvs -eq 1 ]] && want_cuvs_runtime=1
 
 echo "==> FEATURES            : $FEATURES   (cugraph=$want_cugraph cuvs=$want_cuvs)"
-echo "==> CPU package profile : $CPU_POLICY_PROFILE ($CPU_PROFILE_KIND)"
-echo "==> CPU baseline        : $CPU_BASELINE"
-echo "==> CPU target          : $CPU_TARGET_TRIPLE"
-echo "==> CPU rustflags       : $CPU_RUSTFLAGS_JSON"
-echo "==> Deployment requires : $CPU_DEPLOYMENT_REQUIREMENT"
 echo "==> CUDF_INSTALL_DIR    : $CUDF_INSTALL_DIR"
 [[ $want_cuvs_runtime -eq 1 ]] && echo "==> CUVS_INSTALL_DIR    : $CUVS_INSTALL_DIR"
 [[ $want_cugraph -eq 1 ]] && echo "==> CUGRAPH_CMAKE_BUILD_DIR: $CUGRAPH_CMAKE_BUILD_DIR"
@@ -100,8 +94,8 @@ cd "$REPO_ROOT"
 # ── 0. Compile or verify canonical artifact ─────────────────────────────────
 # The helper rejects every ambient codegen/config override, starts Cargo from
 # an isolated cwd/CARGO_HOME, and supplies the policy target + rustflags on the
-# command line. The profile's target root, provenance, and image labels bind
-# the artifact to the declared portable baseline.
+# command line. Profiles have separate target roots, so tuned artifacts cannot
+# masquerade as portable ones.
 CARGO_BUILD_ROOT="$CPU_PACKAGE_TARGET_ROOT/$CPU_ARTIFACT_DIR"
 BINARY="$CARGO_BUILD_ROOT/$CPU_TARGET_TRIPLE/$CPU_CARGO_PROFILE/datafusion_nexus_server"
 BUILD_PROVENANCE="$BINARY.cpu-provenance.json"
@@ -144,8 +138,8 @@ mkdir -p "$DIST_DIR/bin" "$DIST_DIR/lib"
 # ── 3. Stage the binary ─────────────────────────────────────────────────────
 cp "$BINARY" "$DIST_DIR/bin/datafusion_nexus_server"
 
-# ── 4. Locate + stage libcudf_rust.so (cudf-nexus-sys CMake FFI bridge) ───────────
-# It lives in the cudf-nexus-sys CMake OUT_DIR, referenced by the binary's RUNPATH.
+# ── 4. Locate + stage cudf-nexus-sys runtime shared objects ───────────────────────
+# They live in the cudf-nexus-sys CMake OUT_DIR, referenced by the binary's RUNPATH.
 RUNPATH=$(patchelf --print-rpath "$BINARY" 2>/dev/null \
     || readelf -d "$BINARY" 2>/dev/null \
         | awk -F'[][]+' '/\(RUNPATH\)|\(RPATH\)/{print $3}' \
@@ -162,8 +156,17 @@ if [[ -z "$CUDF_RUST_SO" ]]; then
         | head -1)
 fi
 [[ -n "$CUDF_RUST_SO" ]] || { echo "ERROR: cannot locate libcudf_rust.so." >&2; exit 1; }
+CUDF_RUST_LIB_DIR=$(dirname "$CUDF_RUST_SO")
+CUDF_RUST_RMM_INTEROP_SO="$CUDF_RUST_LIB_DIR/libcudf_rust_rmm_interop.so"
+[[ -f "$CUDF_RUST_RMM_INTEROP_SO" ]] || {
+    echo "ERROR: cannot locate libcudf_rust_rmm_interop.so beside $CUDF_RUST_SO." >&2
+    exit 1
+}
 echo "==> libcudf_rust.so     : $CUDF_RUST_SO"
 cp -L "$CUDF_RUST_SO" "$DIST_DIR/lib/libcudf_rust.so"
+# This private DT_NEEDED child must stay beside libcudf_rust.so for its $ORIGIN RUNPATH.
+echo "==> libcudf_rust_rmm_interop.so: $CUDF_RUST_RMM_INTEROP_SO"
+cp -L "$CUDF_RUST_RMM_INTEROP_SO" "$DIST_DIR/lib/libcudf_rust_rmm_interop.so"
 
 # ── 5. Stage forked cuDF / RMM libs ─────────────────────────────────────────
 # copy_lib <src-glob...> : copy each matching real file and preserve symlinks.
@@ -438,6 +441,7 @@ validate_loader_closure() {
 
 echo "==> Validating staged loader closure with readelf + ldd"
 validate_loader_closure
+echo "OK: staged loader closure passed."
 
 # ── 9. Provenance + manifest ────────────────────────────────────────────────
 python3 "$POLICY_HELPER" --policy "$POLICY_FILE" stage \
@@ -470,13 +474,5 @@ echo "==> Staged payload ($(du -sh "$DIST_DIR" | cut -f1) total):"
 echo ""
 IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-datafusion-nexus-server}"
 IMAGE_TAG="$IMAGE_REPOSITORY:$CPU_IMAGE_TAG_SUFFIX"
-echo "==> Canonical Docker command (labels and hashes must match provenance):"
-printf '    docker build'
-printf ' --build-arg %q' "CPU_BASELINE=$CPU_BASELINE"
-printf ' --build-arg %q' "CPU_ARCH=$CPU_IMAGE_ARCH"
-printf ' --build-arg %q' "CPU_PROFILE=$CPU_POLICY_PROFILE"
-printf ' --build-arg %q' "CPU_PROFILE_KIND=$CPU_PROFILE_KIND"
-printf ' --build-arg %q' "CPU_TARGET=$CPU_TARGET_TRIPLE"
-printf ' --build-arg %q' "CPU_BINARY_SHA256=$CPU_BINARY_SHA256"
-printf ' --build-arg %q' "CPU_PROVENANCE_SHA256=$CPU_PROVENANCE_SHA256"
-printf ' -t %q %q\n' "$IMAGE_TAG" "docker/"
+echo "==> SUCCESS: staging and validation passed."
+echo "==> NEXT: bash docker/build-image.sh  ($IMAGE_TAG)"

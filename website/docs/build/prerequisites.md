@@ -124,7 +124,7 @@ Normal Cargo builds for this stack require the
 ```toml
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
-rustflags = ["-C", "target-cpu=x86-64-v2", "-C", "link-arg=-fuse-ld=mold"]
+rustflags = ["-C", "target-cpu=x86-64-v4", "-C", "link-arg=-fuse-ld=mold"]
 ```
 
 Install mold and clang before the first Rust build:
@@ -146,7 +146,7 @@ linker = "clang"
 rustflags = ["-C", "link-arg=-fuse-ld=mold"]
 ```
 
-Redistributable server packaging (`docker/build.sh`) does **not** read workspace
+Redistributable server packaging (`docker/stage-docker-payload.sh`) does **not** read workspace
 or home Cargo linker config; it builds from an isolated working directory and
 clean `CARGO_HOME` with only the CPU packaging policy flags. Day-to-day source
 builds and tests still need mold on the host.

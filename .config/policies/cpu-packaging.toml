@@ -76,11 +76,22 @@ ninja = ["/usr/bin/ninja", "--version"]
 
 [profiles.portable]
 kind = "redistributable"
-declared_baseline = "x86-64-v2"
+declared_baseline = "x86-64-v4"
 target_triple = "x86_64-unknown-linux-gnu"
-rustflags = ["-C", "target-cpu=x86-64-v2"]
+rustflags = ["-C", "target-cpu=x86-64-v4"]
 cargo_profile = "release"
-artifact_dir = "portable-x86-64-v2"
-image_tag_suffix = "x86-64-v2"
+artifact_dir = "portable-x86-64-v4"
+image_tag_suffix = "x86-64-v4"
 image_arch = "amd64"
-deployment_requirement = "The host CPU must implement the full x86-64-v2 ISA; a pre-v2 host may SIGILL before main."
+deployment_requirement = "The host CPU must implement the full x86-64-v4 ISA; a pre-v4 host may SIGILL before main."
+
+[profiles.tuned-local-v3]
+kind = "tuned-local"
+declared_baseline = "x86-64-v3"
+target_triple = "x86_64-unknown-linux-gnu"
+rustflags = ["-C", "target-cpu=x86-64-v3"]
+cargo_profile = "release"
+artifact_dir = "tuned-local-x86-64-v3"
+image_tag_suffix = "x86-64-v3-tuned"
+image_arch = "amd64"
+deployment_requirement = "Deploy only to hosts that implement the full x86-64-v3 ISA; this artifact is not the default x86-64-v4 image."

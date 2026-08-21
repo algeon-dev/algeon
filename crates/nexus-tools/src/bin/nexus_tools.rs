@@ -15,8 +15,10 @@ mod gpu_backend;
 #[cfg(all(feature = "clickbench-stage-probe", not(test)))]
 #[path = "../clickbench_stage_probe.rs"]
 mod clickbench_stage_probe;
+// The timeout, exponential, and abort retry paths are only constructed by the
+// feature-gated server e2e commands, so allow dead code when they are off.
 #[cfg(any(not(test), feature = "server-runtime-observability-e2e"))]
-#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(any(test, not(feature = "server-iceberg-e2e")), allow(dead_code))]
 #[path = "../connection_retry.rs"]
 mod connection_retry;
 #[cfg(all(feature = "cugraph-oracle", not(test)))]
