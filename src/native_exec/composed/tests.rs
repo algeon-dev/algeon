@@ -555,20 +555,12 @@ fn complete_composed_admission_proof_rejects_invalid_graph_result_sorts_at_admis
     let backend = InstalledTestGpuBackend::new();
     let source = admission_source(&backend);
     let (_producer_schema, producer_proof) = typed_graph_producer_proof();
-    let cases = [
-        (
-            Arc::new(Schema::new(vec![Field::new("vertex", DataType::Int64, true)])),
-            1,
-            None,
-            "sort_owner_nullable_key_unsupported",
-        ),
-        (
-            Arc::new(Schema::new(vec![Field::new("vertex", DataType::Utf8, false)])),
-            1,
-            None,
-            "sort_owner_sort_output_string_payload_evidence_missing",
-        ),
-    ];
+    let cases = [(
+        Arc::new(Schema::new(vec![Field::new("vertex", DataType::Utf8, false)])),
+        1,
+        None,
+        "sort_owner_sort_output_string_payload_evidence_missing",
+    )];
 
     for (schema, key_count, row_count_upper_bound, sort_rejection_reason) in cases {
         let consumer_plan = sorted_consumer_plan_with_shape(Arc::clone(&schema), key_count, row_count_upper_bound);

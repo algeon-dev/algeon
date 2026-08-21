@@ -150,6 +150,60 @@ fn filtered_pagerank_plan_and_producer(with_limit: bool) -> (QueryPlan, QueryPla
     (graph_builder.finish_with_host_sink(graph), producer)
 }
 
+fn aggregate_union_forceatlas2_plan_and_producer() -> (QueryPlan, QueryPlan) {
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+    ]));
+    let edge_source = |path| {
+        LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new(path)
+                    .with_row_groups(vec![0])
+                    .with_row_group_rows(vec![4])
+                    .with_row_group_bytes(vec![64])
+                    .with_projected_row_group_bytes(vec![64], vec![64]),
+            ],
+            Arc::clone(&edge_schema),
+            vec!["src".to_owned(), "dst".to_owned()],
+        )
+    };
+    let mut producer_builder = QueryPlanBuilder::new();
+    let first_source = producer_builder
+        .add_source(SourceNode::LocalParquet(edge_source("/tmp/forceatlas2-aggregate-union-first.parquet")));
+    let first_aggregate = producer_builder.add_aggregate(
+        first_source,
+        AggregateSpec::new(vec![Expr::column("src"), Expr::column("dst")], Vec::new()),
+        Arc::clone(&edge_schema),
+    );
+    let second_source = producer_builder
+        .add_source(SourceNode::LocalParquet(edge_source("/tmp/forceatlas2-aggregate-union-second.parquet")));
+    let second_aggregate = producer_builder.add_aggregate(
+        second_source,
+        AggregateSpec::new(vec![Expr::column("src"), Expr::column("dst")], Vec::new()),
+        Arc::clone(&edge_schema),
+    );
+    let union = producer_builder.add_union(vec![first_aggregate, second_aggregate], Arc::clone(&edge_schema));
+    let producer = producer_builder.finish_gpu_resident(union);
+
+    let mut graph_builder = QueryPlanBuilder::new();
+    let resident = graph_builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("edges", Arc::clone(&edge_schema))
+            .with_row_count_upper_bound(8)
+            .with_graph_vertex_upper_bound(8),
+    ));
+    let graph = graph_builder.add_graph_algorithm(
+        resident,
+        GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::ForceAtlas2,
+            GraphEdgeColumnBindings::new("src", "dst", None::<String>),
+            GraphConstructionOptions::default(),
+            GraphAlgorithmParams::ForceAtlas2(GraphForceAtlas2Params::default()),
+        ),
+    );
+    (graph_builder.finish_with_host_sink(graph), producer)
+}
+
 fn scheduled_materializing_pagerank_proof() -> QueryPlanCapabilityProof {
     let (graph_plan, producer_plan) = materializing_pagerank_plan_and_producer();
     let evidence =
@@ -300,6 +354,57 @@ fn filtered_edge_producer_defers_only_the_graph_phase_under_one_attempt_proof() 
         .validate_composed_execution(&consumer_plan, &["different_result".to_owned()], grant_bytes)
         .expect_err("a different runtime occurrence must remain fail closed");
     assert_eq!(mismatch.fact_value("schedule_reason"), Some("runtime_occurrence_order_mismatch"));
+}
+
+#[test]
+fn aggregate_union_edge_producer_and_forceatlas2_resolve_one_ordered_grant() {
+    let (graph_plan, producer_plan) = aggregate_union_forceatlas2_plan_and_producer();
+    let evidence =
+        graph_memory_bounded_admission_evidence_for_plan(&graph_plan, GraphMemoryCalibrationOverride::none(), None)
+            .expect("bounded ForceAtlas2 must produce graph evidence");
+    let graph = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan_with_resident_inputs(
+        &graph_plan,
+        [("edges", &producer_plan)],
+    )
+    .expect("the aggregate UNION edge evidence must bind")
+    .expect("ForceAtlas2 must issue its graph proof")
+    .with_graph_memory_admission_evidence(&evidence)
+    .expect("ForceAtlas2 graph evidence must attach");
+    let combined = QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt(
+        &graph_plan,
+        graph,
+        "edges",
+        &producer_plan,
+        std::iter::empty(),
+    )
+    .expect("the aggregate UNION producer schedule must compile")
+    .expect("the direct materialized edge relation must share the graph attempt");
+
+    assert_eq!(
+        combined
+            .as_requirement()
+            .owner_terms
+            .iter()
+            .filter(|term| term.id.role == OwnerTermRole::AggregatePartialState)
+            .count(),
+        2
+    );
+    assert_eq!(
+        combined
+            .as_requirement()
+            .owner_terms
+            .iter()
+            .filter(|term| term.id.role == OwnerTermRole::AggregateOutput)
+            .count(),
+        2
+    );
+    assert!(combined.as_requirement().owner_terms.iter().any(|term| {
+        matches!(term.id.owner, OwnerId::Producer(_)) && term.id.role == OwnerTermRole::RetainedOutput
+    }));
+    let envelope = combined
+        .resolve_reservation_envelope(reservation_policy())
+        .expect("aggregate branches, UNION output, and ForceAtlas2 must resolve one immutable grant");
+    assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::OrderedTimeline));
 }
 
 #[test]
@@ -1007,6 +1112,7 @@ fn try_resolve_native_sort_owners_for_test(proof: &QueryPlanCapabilityProof) -> 
         0,
         |descriptor, _| {
             if let [key] = descriptor.keys.as_slice()
+                && key.null_count == 0
                 && cudf::ops::sorting::sorted_order_radix_key_supported(key.key_type.id())
             {
                 Ok(SortPreflight::new_for_test_with_key_input(64, 64, 32, 128, 32))
@@ -4351,6 +4457,26 @@ fn graph_result_sort_plan(data_type: DataType, nullable: bool, row_bound: Option
     builder.finish_with_host_sink(sort)
 }
 
+fn nullable_graph_metric_tiebreak_sort_plan() -> QueryPlan {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("pagerank_mass", DataType::Float64, true),
+        Field::new("partition", DataType::Int64, false),
+    ]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("graph_result", Arc::clone(&schema)).with_row_count_upper_bound(8),
+    ));
+    let sort = builder.add_sort(
+        source,
+        SortSpec::new(vec![
+            SortExpr::new(Expr::column("pagerank_mass"), true, true),
+            SortExpr::new(Expr::column("partition"), false, false),
+        ]),
+        schema,
+    );
+    builder.finish_with_host_sink(sort)
+}
+
 fn graph_result_string_sort_plan(row_bound: Option<u64>) -> QueryPlan {
     let schema = Arc::new(Schema::new(vec![
         Field::new("first", DataType::Utf8, false),
@@ -5155,13 +5281,36 @@ fn unsupported_graph_result_sort_shapes_reject_before_preflight() {
             ),
             "sort_owner_key_type_not_lexicographic_dispatchable",
         ),
-        (graph_result_sort_plan(DataType::Int32, true, Some(8), 1), "sort_owner_nullable_key_unsupported"),
         (graph_result_sort_plan(DataType::Int32, false, None, 1), "sort_owner_sort_input_row_bound_unavailable"),
     ] {
         let error = QueryPlanCapabilityProof::try_composed_sort_proof_for_test(&plan, "graph_result")
             .expect_err("unsupported sort shape must reject before native preflight");
         assert_eq!(error.fact_value("reason"), Some(reason));
     }
+}
+
+#[test]
+fn nullable_graph_metric_sort_preserves_tiebreak_and_null_precedence() {
+    let plan = nullable_graph_metric_tiebreak_sort_plan();
+    let proof = QueryPlanCapabilityProof::try_composed_sort_proof_for_test(&plan, "graph_result")
+        .expect("nullable fixed-width sort must retain bounded lexicographic metadata");
+    let resolved = proof
+        .requirement_for_device_with_preflight(0, |descriptor, _| {
+            let [metric, partition] = descriptor.keys.as_slice() else {
+                panic!("business ordering must retain the metric and deterministic partition tie-break")
+            };
+            assert_eq!(metric.null_count, descriptor.num_rows);
+            assert_eq!(metric.key_order, cudf::ops::sorting::Order::Descending);
+            assert_eq!(metric.null_precedence, cudf::ops::sorting::NullOrder::Before);
+            assert_eq!(partition.null_count, 0);
+            assert_eq!(partition.key_order, cudf::ops::sorting::Order::Ascending);
+            assert_eq!(partition.null_precedence, cudf::ops::sorting::NullOrder::After);
+            Ok(SortPreflight::new_lexicographic_for_test(64, 128, 32))
+        })
+        .expect("nullable sort must dispatch through the lexicographic owner preflight");
+    resolved
+        .resolve_reservation_envelope(reservation_policy())
+        .expect("nullable graph-result sort must retain a complete owner-priced envelope");
 }
 
 #[test]

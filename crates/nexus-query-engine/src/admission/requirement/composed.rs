@@ -2157,7 +2157,7 @@ pub(crate) fn validate_sort_metadata_descriptor(descriptor: &SortMetadataDescrip
     if descriptor.stable {
         return Err(sort_owner_error("stable_sort_unsupported", "sort_dispatch"));
     }
-    validate_sort_key_metadata(&descriptor.keys)?;
+    validate_sort_key_metadata(&descriptor.keys, descriptor.num_rows)?;
     if descriptor.num_rows > i32::MAX as usize {
         return Err(sort_owner_error("row_count_exceeds_cudf_size_type", "sort_input"));
     }
@@ -2179,13 +2179,13 @@ pub(crate) fn validate_sort_metadata_descriptor(descriptor: &SortMetadataDescrip
     Ok(())
 }
 
-fn validate_sort_key_metadata(keys: &[SortKeyMetadataDescriptor]) -> Result<()> {
+fn validate_sort_key_metadata(keys: &[SortKeyMetadataDescriptor], num_rows: usize) -> Result<()> {
     if keys.is_empty() {
         return Err(sort_owner_error("sort_key_missing", "sort_key"));
     }
     for key in keys {
-        if key.null_count != 0 {
-            return Err(sort_owner_error("nullable_key_unsupported", "sort_key"));
+        if key.null_count > num_rows {
+            return Err(sort_owner_error("null_count_exceeds_row_count", "sort_key"));
         }
         let key_type = key.key_type.id();
         let radix = key_type.is_signed_int()
@@ -2239,6 +2239,14 @@ pub(crate) fn sort_metadata_for_composed_consumer(
                 .node(sort_node.input)
                 .ok_or_else(|| sort_owner_error("sort_input_missing", "sort_input"))?
                 .output_schema();
+            let row_count = crate::graph_memory::query_plan_node_hard_row_upper_bound_with_resident_rows(
+                plan,
+                sort_node.input,
+                &resident_rows,
+            )
+            .ok_or_else(|| sort_owner_error("sort_input_row_bound_unavailable", "sort_input"))?;
+            let num_rows =
+                usize::try_from(row_count).map_err(|_| sort_owner_error("row_bound_exceeds_usize", "sort_input"))?;
             let keys = sort_node
                 .spec
                 .expressions
@@ -2249,15 +2257,11 @@ pub(crate) fn sort_metadata_for_composed_consumer(
                     let field = input_schema.field_with_name(key_column.name()).map_err(|_| {
                         sort_owner_error("sort_key_column_missing", "sort_key").with_fact("column", key_column.name())
                     })?;
-                    if field.is_nullable() {
-                        return Err(sort_owner_error("nullable_key_unsupported", "sort_key")
-                            .with_fact("column", key_column.name()));
-                    }
                     let key_type = cudf_dtype_from_arrow_type(field.data_type())
                         .ok_or_else(|| sort_owner_error("key_type_unavailable", "sort_key"))?;
                     Ok(SortKeyMetadataDescriptor {
                         key_type,
-                        null_count: 0,
+                        null_count: if field.is_nullable() { num_rows } else { 0 },
                         key_order: if sort_expr.descending {
                             cudf::ops::sorting::Order::Descending
                         } else {
@@ -2271,15 +2275,7 @@ pub(crate) fn sort_metadata_for_composed_consumer(
                     })
                 })
                 .collect::<Result<Vec<_>>>()?;
-            validate_sort_key_metadata(&keys)?;
-            let row_count = crate::graph_memory::query_plan_node_hard_row_upper_bound_with_resident_rows(
-                plan,
-                sort_node.input,
-                &resident_rows,
-            )
-            .ok_or_else(|| sort_owner_error("sort_input_row_bound_unavailable", "sort_input"))?;
-            let num_rows =
-                usize::try_from(row_count).map_err(|_| sort_owner_error("row_bound_exceeds_usize", "sort_input"))?;
+            validate_sort_key_metadata(&keys, num_rows)?;
             let sort_output_schema = plan
                 .node(sort_node_id)
                 .ok_or_else(|| sort_owner_error("sort_node_missing", "sort_plan"))?
