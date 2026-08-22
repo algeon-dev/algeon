@@ -55,7 +55,7 @@ embedded-backend-e2e = ["server-iceberg-e2e", "dep:reqwest"]
 # stays CPU-only so profile parsing, arrival planning, aggregation, and artifact
 # writing are unit-testable without CUDA.
 single-node-multi-gpu-validate = ["dep:nexus-workloads"]
-# P6.5 measured execution on the public backend and attempt API.
+# Measured execution on the public backend and attempt API.
 single-node-multi-gpu-validate-run = [
   "single-node-multi-gpu-validate",
   "dep:cudf",
@@ -65,8 +65,8 @@ single-node-multi-gpu-validate-run = [
   "dep:datafusion-nexus",
   "dep:nexus-query-engine",
   "datafusion-nexus/test-support",
-  # P6.2's device identity (model name, UUID, physical framebuffer) comes from
-  # NVML, and the artifact contract requires recording it.
+  # Device identity (model name, UUID, physical framebuffer) comes from NVML,
+  # and the artifact contract requires recording it.
   "datafusion-nexus/nvml",
 ]
 # The base run feature intentionally keeps `cugraph` off. It is the required
@@ -77,7 +77,7 @@ single-node-multi-gpu-validate-run-cugraph = [
   "dep:cugraph-sys",
   "datafusion-nexus/cugraph",
 ]
-# W8's OTLP cell exercises the public reference exporter from
+# The OTLP cell exercises the public reference exporter from
 # `nexus-examples`. That package's reference embedding is cugraph-enabled, so
 # keep it separate from the feature-off service cell.
 single-node-multi-gpu-validate-run-otlp = [

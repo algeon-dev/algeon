@@ -163,8 +163,8 @@ fn parity_oracle_lookup_reports_missing_with_refresh_hint() {
         // RefCsv-truth specs additionally require their primary
         // reference file to be present and parseable on disk. Surface
         // a missing/invalid ref CSV as a hard test failure: the GPU
-        // comparator path (Milestone 1b) relies on this file being
-        // loadable, and silently degrading would hide that gap.
+        // comparator path relies on this file being loadable, and silently
+        // degrading would hide that gap.
         if let ParityTruthSource::RefCsv { path } = spec.truth_source
             && let Err(error) = load_ref_csv_vertex_list(&loaded.data_root, path)
         {

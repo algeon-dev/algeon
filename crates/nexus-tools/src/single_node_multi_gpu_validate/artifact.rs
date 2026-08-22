@@ -89,7 +89,7 @@ impl RunArtifact {
         artifact
     }
 
-    /// Publishes the two directly comparable halves of a P6.8 cache
+    /// Publishes the two directly comparable halves of a paired cache
     /// calibration. The caller derives the disabled half from the opt-in
     /// profile, so the artifact's single profile remains the complete
     /// description of their shared workload and controller contract.
@@ -213,17 +213,17 @@ pub(super) struct MeasuredRunArtifact {
     /// in the measured payload.
     #[serde(skip)]
     pub(super) composed_schedules: Vec<ComposedScheduleArtifact>,
-    /// S7's dedicated exact-key source/BFS cohorts, when the opt-in profile
+    /// Dedicated exact-key source/BFS cohorts, when the opt-in profile
     /// asked the runner to establish cache-singleflight evidence separately
     /// from the throughput window.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) cache_same_key_probe: Option<CacheSameKeyProbeEvidence>,
-    /// S2's profile-owned QPS envelope contract.  It joins the engine-owned
+    /// Profile-owned QPS envelope contract. It joins the engine-owned
     /// queue high-watermark with sealed attempt throughput rather than
     /// treating the runner's submission loop as queue evidence.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) qps_envelope: Option<QpsEnvelopeEvidence>,
-    /// I11's graph-model calibration gate. It retains typed per-attempt
+    /// Graph-model calibration gate. It retains typed per-attempt
     /// model/request/budget/peak rows and never derives an algorithm peak from
     /// device-wide telemetry.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -239,51 +239,51 @@ pub(super) struct MeasuredRunArtifact {
     /// deadline so a run cannot mistake timeout for caller cancellation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) cancellation_barrier: Option<CancellationBarrierEvidence>,
-    /// Present only for the P6.6 controlled after-admission deadline probe.
+    /// Present only for the controlled after-admission deadline probe.
     /// It distinguishes a typed deadline at a native safe boundary from
     /// queue expiry or explicit caller cancellation.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) deadline_barrier: Option<DeadlineBarrierEvidence>,
-    /// Present only for the P6.6 ordinary domain-cap exhaustion probe. This
+    /// Present only for the ordinary domain-cap exhaustion probe. This
     /// is deliberately distinct from a physical allocator failure: the sealed
     /// allocator event must name `reservation_limit` with exact attempt
     /// provenance before the run can qualify.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) domain_exhaustion: Option<DomainExhaustionEvidence>,
-    /// Present only for the P6.6 real external allocator-pressure probe. The
+    /// Present only for the real external allocator-pressure probe. The
     /// predicate is fail-closed: it requires one sealed exact physical event,
     /// immutable logical caps above its request, verified pressure release,
     /// same-device recovery, and a quiescent backend close.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) physical_allocator_pressure: Option<PhysicalAllocatorPressureEvidence>,
-    /// Present only for the S6 repeated-quarantine probe. Each cycle reuses
+    /// Present only for the repeated-quarantine probe. Each cycle reuses
     /// the controlled-quarantine barrier semantics against a rotation target.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) quarantine_cycles: Option<QuarantineCyclesEvidence>,
-    /// Present only for the S6 close-under-saturation probe. Close begins at
+    /// Present only for the close-under-saturation probe. Close begins at
     /// the measurement-window midpoint with a cohort in flight; queued
     /// waiters must seal `backend_closing`, in-flight attempts must finish,
     /// and every submitted attempt must be accounted for exactly once.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) close_under_load: Option<CloseUnderLoadEvidence>,
-    /// I8's serialized public completion-receiver probe. It records the
+    /// The serialized public completion-receiver probe. It records the
     /// offered rate against the single sink's drain limit, then proves every
     /// submitted report was collected and the backend closed quiescently.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) completion_sink: Option<CompletionSinkEvidence>,
-    /// S1's feature-off cell. This is present only when the profile asks the
+    /// The feature-off cell. This is present only when the profile asks the
     /// base runner to issue its dedicated schema-only cuGraph UDTF request
     /// beside relational traffic.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) feature_off_cugraph: Option<FeatureOffCugraphEvidence>,
     pub(super) metrics_audit: MetricsAudit,
-    /// W8's embedded-library operability evidence. Every field is reduced
+    /// Embedded-library operability evidence. Every field is reduced
     /// from public sealed reports or public snapshot accessors.
     pub(super) operability: OperabilityEvidence,
-    /// W1 compact time series: per-device utilization/ledger/cache rows and
+    /// Compact time series: per-device utilization/ledger/cache rows and
     /// process rows at the sampler cadence, plus their pure summaries. The
     /// raw snapshots below remain the retained evidence; the series is the
-    /// queryable projection the S3/S4/S7 suites read.
+    /// queryable projection used by the telemetry, window, and cache checks.
     pub(super) time_series: TimeSeriesEvidence,
     pub(super) snapshots: Vec<BackendSnapshotSample>,
     pub(super) trace: TraceEvidence,
@@ -598,7 +598,7 @@ fn qualification_failures(
     failures
 }
 
-/// Evidence for one profile that declares the S2 QPS-envelope contract.
+/// Evidence for one profile that declares the QPS-envelope contract.
 ///
 /// The queue high-water mark comes from the service-owned public admission
 /// snapshot and is recorded cumulatively through each sequential step.  A
@@ -799,7 +799,7 @@ pub(super) struct OperabilityEvidence {
     pub(super) otlp_export: OtlpExportEvidence,
 }
 
-/// The W1 sampled time series and its reductions. `sample_interval_ns` is
+/// The sampled time series and its reductions. `sample_interval_ns` is
 /// the cadence the sampler actually used: it adapts to the configured window
 /// so a 10-minute plateau stays inside the bounded retention instead of
 /// silently truncating mid-window.
@@ -819,7 +819,7 @@ pub(super) struct TimeSeriesEvidence {
     /// absent only when this profile did not opt into a calibration gate.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) vram_calibration: Option<VramCalibrationEvidence>,
-    /// W8/I13 monitoring cost over exactly the public snapshot pulls recorded
+    /// Monitoring cost over exactly the public snapshot pulls recorded
     /// in `process_rows`.
     pub(super) observation_pull: ObservationPullSummary,
 }
@@ -836,7 +836,7 @@ pub(super) struct BackendEvidence {
     pub(super) queue_max_overtakes_per_waiter: u32,
     pub(super) device_startup_records: Value,
     /// The close result retains both pre- and post-close snapshots. It is
-    /// never omitted: P6.6 needs to distinguish a quiescent result from a
+    /// never omitted: the close result needs to distinguish a quiescent result from a
     /// timeout or cleanup failure without persisting arbitrary error text.
     pub(super) close: BackendCloseEvidence,
 }
@@ -848,7 +848,7 @@ pub(super) struct RunDeadlineEvidence {
     /// Warmup plus measurement time during which the runner may submit work.
     pub(super) measurement_window_ns: u64,
     /// Bounded post-submission allowance for already-admitted work to reach a
-    /// safe boundary and seal its report. Zero retains P6's original shape.
+    /// safe boundary and seal its report; zero means no configured drain allowance.
     pub(super) completion_drain_grace_ns: u64,
     /// The total completion deadline: `measurement_window_ns` plus the
     /// profile-owned bounded drain grace. The retained pass/fail flag below is
@@ -860,7 +860,7 @@ pub(super) struct RunDeadlineEvidence {
     pub(super) reports_sealed_within_deadline: bool,
 }
 
-/// Evidence for I8's deliberately slow, serialized completion consumer.
+/// Evidence for the deliberately slow, serialized completion consumer.
 /// `offered_rate_exceeds_serial_drain_capacity` is integer arithmetic for
 /// `offered_rate_per_second > 1 / sink_delay`; no rounded rate estimate can
 /// accidentally turn a non-probe into a pass.
@@ -939,7 +939,7 @@ impl DeadlineBarrierEvidence {
     }
 }
 
-/// S6 close-under-saturation evidence. The runner initiates close at the
+/// Close-under-saturation evidence. The runner initiates close at the
 /// measurement-window midpoint through the public `close()` path and then
 /// only observes: every fact below comes from public snapshots or sealed
 /// attempt reports, never from runner-side assumptions about who was queued.
@@ -1055,7 +1055,7 @@ pub(super) struct ArrivalPlanEvidence {
     pub(super) rate_overrun: &'static str,
     pub(super) planned_arrivals: usize,
     /// The bound every plan is checked against, recorded so a truncation flag
-    /// is auditable against the profile's intended offered process (W6).
+    /// is auditable against the profile's intended offered process.
     pub(super) max_planned_attempts: usize,
     /// Planned phase split, present only for rate mode. Concurrency mode paces
     /// closed-loop rounds and assigns phases at submission, so a planned split
@@ -1067,11 +1067,11 @@ pub(super) struct ArrivalPlanEvidence {
     /// A plan cut short by the attempt cap is disclosed, never presented as the
     /// profile's intended plan.
     pub(super) truncated_by_attempt_cap: bool,
-    /// W3 sequential phases. Present whenever the plan carried more than one
+    /// Sequential phases. Present whenever the plan carried more than one
     /// step; single-phase runs omit the section.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(super) steps: Vec<StepPlanEvidence>,
-    /// S5 storm knobs and the number of storm cancellations the driver armed.
+    /// Deadline/cancellation storm knobs and armed cancellation count.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) storm: Option<StormEvidence>,
     pub(super) dropped_overrun_arrivals: u64,
@@ -1188,7 +1188,7 @@ impl TimeSeriesEvidence {
 #[derive(Debug, Serialize)]
 pub(super) struct BackendSnapshotSample {
     pub(super) offset_ns: u64,
-    /// Exact P4 pull snapshot, retained through the engine-owned serde shape.
+    /// Exact public backend-metric pull retained through the engine-owned serde shape.
     pub(super) backend_metrics_snapshot: Value,
     pub(super) admission: Value,
     pub(super) device_ledger_reports: Value,

@@ -69,7 +69,7 @@ impl DeviceResidentCaches {
     /// Samples each enabled device's one physical cache allocator alongside
     /// activity observed from its two subdomains.  Logical resident bytes stay
     /// in `DeviceLedgerReport`; this is the independent physical comparison
-    /// surface used by service operators and S7.
+    /// surface used by service operators and cache qualification tools.
     pub(super) fn reports(&self) -> Result<Vec<crate::runtime::cache::DeviceCacheReport>> {
         self.devices
             .values()

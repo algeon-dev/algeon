@@ -87,7 +87,7 @@ impl QueryMetrics {
     /// completion sample can correlate by typed node identity rather than
     /// reparsing the rendered `node_id` string. This diagnostic projection is
     /// intentionally independent of whether the graph tier actually reserved
-    /// bytes: a non-reserved graph algorithm still needs an I11 calibration
+    /// bytes: a non-reserved graph algorithm still needs graph-model calibration
     /// row.
     pub fn record_graph_claim_calibration(&mut self, mut report: GraphReservationReport, node_id: NodeId) {
         if report.query_id.is_none() {

@@ -16,11 +16,11 @@ pub(super) struct DrivenRun {
     /// proves the configured bound through that phase without resetting or
     /// synthesizing a controller counter in the runner.
     pub(super) queue_high_watermarks: Vec<(usize, u64)>,
-    /// S5 cancellation-storm actions the driver armed and confirmed fired.
+    /// Deadline/cancellation storm actions the driver armed and confirmed fired.
     pub(super) storm_cancellations_requested: u64,
-    /// S6 repeated-quarantine barriers, one per completed cycle.
+    /// Repeated-quarantine barriers, one per completed cycle.
     pub(super) quarantine_cycle_barriers: Vec<QuarantineBarrier>,
-    /// S6 close-under-saturation facts captured at the close boundary.
+    /// Close-under-saturation facts captured at the close boundary.
     pub(super) close_under_load: Option<CloseUnderLoadBarrier>,
     /// Direct, typed feature-off UDTF source errors paired by sequence with
     /// their sealed reports. Ordinary runs leave this empty.
@@ -81,7 +81,7 @@ pub(super) async fn drive_overload_fairness(
 /// Drives an unbounded-duration closed-loop profile without first allocating a
 /// speculative arrival vector. Each round is constructed only after the
 /// preceding one drains; the wall-clock step deadline, not an arbitrary
-/// planning cap, ends the step. Fixed P6 cohorts continue through the stored
+/// planning cap, ends the step. Fixed cohorts continue through the stored
 /// plan so their exact attempt shape remains frozen.
 pub(super) async fn drive_duration_paced_concurrency(
     backend: &NexusGpuBackend,
@@ -560,7 +560,7 @@ pub(super) async fn drive_concurrent_quarantine(
     let mut begin_failures = 0_u64;
     let mut join_failures = 0_u64;
     let mut cancellation_barrier = None;
-    // Dedicated probes never arm S5 storms; the knob set stays disabled.
+    // Dedicated probes never arm deadline/cancellation storms; the knob set stays disabled.
     let mut storm_cancellers = Vec::new();
 
     for arrival in &plan.arrivals[..first_post_ack_index] {
@@ -684,9 +684,9 @@ pub(super) async fn drive_concurrent_quarantine(
     })
 }
 
-/// Drives the S6 repeated-quarantine scenario: one controlled quarantine per
+/// Drives the repeated-quarantine scenario: one controlled quarantine per
 /// cycle against a rotation of configured ordinals while sustained closed-loop
-/// load runs. Each cycle reuses the P6.6 barrier semantics — live-work
+/// load runs. Each cycle reuses the single-quarantine barrier semantics — live-work
 /// witness, synchronous injector acknowledgement, zero post-ack placements on
 /// the target, healthy progress on the remaining ordinals — so a cycle is
 /// exactly as falsifiable as the single-quarantine probe.
@@ -964,7 +964,7 @@ pub(super) async fn drive_duration_paced_quarantine_cycles(
     })
 }
 
-/// Drives the S6 close-under-saturation scenario. A closed-loop cohort
+/// Drives the close-under-saturation scenario. A closed-loop cohort
 /// oversubscribes the fleet; at the measurement-window midpoint the runner
 /// stops submitting, snapshots public admission state, and initiates the
 /// public close path. Queued waiters must seal `backend_closing`, in-flight
@@ -1233,7 +1233,7 @@ pub(super) fn is_typed_backend_closing(observation: &AttemptObservation) -> bool
 }
 
 /// Drives one attempt with a shorter caller deadline, but only accepts it as
-/// P6.6 evidence after public snapshots first witness an immutable admission
+/// evidence after public snapshots first witness an immutable admission
 /// envelope. The deadline remains the normal attempt contract: no runner task
 /// is aborted and a CUDA call already in flight may finish before the next
 /// native safe boundary observes expiry.
@@ -1263,7 +1263,7 @@ pub(super) async fn drive_deadline_after_admission(
     let mut join_failures = 0_u64;
     let mut begin_failures = 0_u64;
     let mut cancellation_barrier = None;
-    // Dedicated probes never arm S5 storms; the knob set stays disabled.
+    // Dedicated probes never arm deadline/cancellation storms; the knob set stays disabled.
     let mut storm_cancellers = Vec::new();
 
     let first = plan.arrivals[0];

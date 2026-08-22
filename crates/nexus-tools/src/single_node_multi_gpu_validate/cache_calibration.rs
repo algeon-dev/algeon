@@ -1,7 +1,7 @@
-//! Paired P6.8 cache calibration evidence.
+//! Paired cache calibration evidence.
 //!
 //! A cache-disabled companion is derived from the same validated opt-in
-//! profile by zeroing the one P5 control, `cache_cap_bytes`.  This prevents a
+//! profile by zeroing the one cache control, `cache_cap_bytes`. This prevents a
 //! calibration from silently changing its workload mix, queue contract, or
 //! device envelope while comparing the two states.
 
@@ -72,7 +72,7 @@ struct CacheActivityCounters {
     graph_duplicate_inserts: u64,
 }
 
-/// Sealed evidence from S7's dedicated, cold-cache same-key probe.  The
+/// Sealed evidence from the dedicated, cold-cache same-key probe. The
 /// probe runs source and BFS cohorts separately on a fresh single-ordinal
 /// backend; its snapshots remain public backend DTOs, not a runner-owned
 /// cache event store.
@@ -223,7 +223,7 @@ impl CacheCalibrationEvidence {
         Self { cache_disabled, cache_opt_in, sampling, same_key_probe, clauses }
     }
 
-    /// P6.8 requires direct residency evidence in both halves of the paired
+    /// Paired calibration requires direct residency evidence in both halves of the paired
     /// run, so unlike ordinary runner gaps a `not_evidenced` cache clause keeps
     /// the calibration non-qualifying.
     pub(super) fn qualifies(&self) -> bool {

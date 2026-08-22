@@ -66,7 +66,7 @@ fn grouped_partial_bound_matches_direct_join_helper_call() {
 
 #[test]
 fn global_partial_with_avg_state_uses_sum_plus_count_columns() {
-    // AVG → partial SUM + COUNT state per design v8 §F5.c.
+    // AVG expands to partial SUM + COUNT state.
     // For Decimal128 input → sum is Decimal128 (16 bytes), count is Int64 (8 bytes).
     let bound = partial_aggregate_upper_bound_bytes(
         PartialAggregateShape::Global,
@@ -86,7 +86,7 @@ fn grouped_partial_with_string_keys_uses_max_string_length() {
     // q72-shape: GROUP BY two strings (`i_item_desc`, `w_warehouse_name`) plus
     // an Int32 week_seq, with a single COUNT aggregate state column.
     // Conservative grouped row count = input_rows (every row could be a unique
-    // group). String key bound = input_rows × max_string_length per design v8.
+    // group). String key bound = input_rows × max_string_length.
     let input_rows = 1_000_000;
     let columns = [
         string_column(200), // i_item_desc
@@ -124,10 +124,9 @@ fn grouped_partial_with_zero_input_rows_returns_offset_only_bound_for_strings() 
 #[test]
 fn unsupported_partial_column_dtype_is_rejected() {
     // Binary and nested dtypes are not supported by the bounded
-    // materialize sizing path. Milestone 4.D's admission gate (`capability/node.rs
-    // join_node_executable_decision` dtype loop) is expected to reject plans
-    // that project these into the partial state, but the helper is the
-    // defense-in-depth.
+    // materialize sizing path. The admission gate's dtype loop is expected to
+    // reject plans that project these into the partial state, but the helper
+    // remains a defense-in-depth check.
     for dtype in
         [ArrowDataType::Binary, ArrowDataType::Float16, ArrowDataType::Struct(arrow::datatypes::Fields::empty())]
     {

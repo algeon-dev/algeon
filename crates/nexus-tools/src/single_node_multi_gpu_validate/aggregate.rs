@@ -21,7 +21,7 @@ use super::{artifact::ComposedScheduleArtifact, profile::FixtureKind, schedule::
 pub(super) struct AttemptObservation {
     pub(super) sequence: usize,
     pub(super) phase: SchedulePhase,
-    /// W3 step this attempt was submitted under. Single-phase runs are all
+    /// Multi-phase step this attempt was submitted under. Single-phase runs are all
     /// step zero.
     pub(super) step_index: usize,
     /// The fixture kind the query came from. Labels collide across kinds
@@ -40,7 +40,7 @@ pub(super) struct AttemptObservation {
     /// the attempt failed. Never a raw error string.
     pub(super) failure: Option<AttemptFailureClass>,
     /// Bounded, redacted facts from the canonical sealed report needed for
-    /// P6.6's deadline, fault, cleanup, and allocator evidence. This is a
+    /// Dedicated-probe deadline, fault, cleanup, and allocator evidence. This is a
     /// read-only projection, never an independent event store.
     pub(super) terminal_evidence: AttemptTerminalEvidence,
     pub(super) succeeded: bool,
@@ -184,7 +184,7 @@ pub(super) struct GraphClaimCalibrationRow {
     pub(super) graph_model_error_ratio: Option<String>,
 }
 
-/// I11 completeness result for every measurement-phase graph attempt.
+/// Graph-model calibration completeness result for every measurement-phase graph attempt.
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct GraphClaimCalibrationEvidence {
     pub(super) status: ClauseStatus,
@@ -209,7 +209,7 @@ pub(super) struct GraphClaimCalibrationAttemptEvidence {
     pub(super) snapshot: Option<GraphClaimCalibrationSnapshot>,
 }
 
-/// P6.6-relevant facts projected directly from one sealed report.
+/// Dedicated-probe facts projected directly from one sealed report.
 ///
 /// JSON retains the engine's closed serde contracts while allowing the runner
 /// to exclude arbitrary failure text before the artifact redaction guard runs.
@@ -264,7 +264,7 @@ pub(super) struct DeviceConfiguration {
     pub(super) uuid: Option<String>,
     pub(super) physical_total_bytes: Option<u64>,
     pub(super) capacity_bytes: u64,
-    /// Immutable P5 aggregate resident-cache cap for this ordinal. A zero cap
+    /// Immutable aggregate resident-cache cap for this ordinal. A zero cap
     /// means no cache domain exists on the device.
     pub(super) cache_cap_bytes: u64,
     /// Whether the resolved backend installed diagnostic telemetry for this
@@ -287,18 +287,18 @@ pub(super) struct MeasuredAggregate {
     pub(super) placement: Vec<DevicePlacement>,
     pub(super) attempts: Vec<AttemptRow>,
     pub(super) scenarios: ScenarioEvidence,
-    /// Controlled P6.6 quarantine/fallback evidence, when the explicit
+    /// Controlled quarantine/fallback evidence, when the explicit
     /// validation capability was invoked for this run.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) quarantine_fallback: Option<QuarantineFallbackEvidence>,
-    /// W3 per-step envelope aggregates. Empty for single-phase profiles, so
+    /// Per-step envelope aggregates. Empty for single-phase profiles, so
     /// their artifacts carry no per-step section.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(super) steps: Vec<StepAggregate>,
     pub(super) report_aggregate_equality: ReportAggregateEquality,
 }
 
-/// One W3 step's envelope curve point: throughput and latency computed over
+/// One step's envelope curve point: throughput and latency computed over
 /// exactly the attempts that step measured, against its own window.
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct StepAggregate {
@@ -398,7 +398,7 @@ pub(super) struct AttemptRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(super) failure: Option<AttemptFailureClass>,
     pub(super) terminal_evidence: AttemptTerminalEvidence,
-    /// W8's per-attempt public-report attribution check. This is a
+    /// Per-attempt public-report attribution check. This is a
     /// deterministic projection of the sealed facts beside it, not a second
     /// event stream or inference from runner control flow.
     pub(super) attribution: super::operability::AttemptAttribution,
@@ -443,7 +443,7 @@ pub(super) enum ClauseStatus {
 }
 
 /// Requires one unambiguous, typed model-claim/peak row for every graph
-/// attempt that entered the measurement phase. A profile opts into this I11
+/// attempt that entered the measurement phase. A profile opts into this graph-model calibration
 /// gate only for graph workload cells; non-graph attempts are deliberately
 /// outside its denominator.
 pub(super) fn graph_claim_calibration_evidence(observations: &[AttemptObservation]) -> GraphClaimCalibrationEvidence {
@@ -592,7 +592,7 @@ fn graph_memory_admission_denied_reason(
 pub(super) struct ScenarioEvidence {
     pub(super) same_device: Vec<ScenarioClause>,
     pub(super) multiple_devices: Vec<ScenarioClause>,
-    /// Present only for the explicit P6.6 bounded-overload probe. Its facts
+    /// Present only for the explicit bounded-overload probe. Its facts
     /// are all sealed report projections or resolved profile limits; no queue
     /// ordering is reconstructed from runner scheduling.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -603,7 +603,7 @@ pub(super) struct ScenarioEvidence {
     pub(super) logical_slot_occupancy: LogicalSlotOccupancyEvidence,
 }
 
-/// Evidence for the explicit P6.6 public bounded-overload and drain scenario.
+/// Evidence for the explicit public bounded-overload and drain scenario.
 ///
 /// `AttemptAdmissionWaitFact` is controller-owned and sealed with the final
 /// report. The release runner uses actual public plans, which can exercise
@@ -848,7 +848,7 @@ pub(super) struct PhysicalPressureLeaseFacts {
     pub(super) recovered_bytes: Option<u64>,
 }
 
-/// Explicit P6.6 proof for a genuine allocator failure under external CUDA
+/// Explicit proof for a genuine allocator failure under external CUDA
 /// pressure. This is separate from [`DomainExhaustionEvidence`]: a
 /// `reservation_limit` result does not establish a physical allocation
 /// failure, and conversely a physical event is rejected if the immutable
@@ -1359,7 +1359,7 @@ impl QuarantineFallbackEvidence {
     }
 }
 
-/// S6 repeated-quarantine evidence: each cycle reuses the single-quarantine
+/// Repeated-quarantine evidence: each cycle reuses the single-quarantine
 /// barrier semantics against a rotation target, and the section evidences
 /// only when every configured cycle landed with the fleet stabilizing on the
 /// remaining ordinals afterwards.
@@ -1461,7 +1461,7 @@ impl MeasuredAggregate {
         Self::reduce_full(observations, devices, occupancy, warmup_ns, measurement_ns, None, &[])
     }
 
-    /// Reduces ordinary P6.5 observations plus the optional explicit P6.6
+    /// Reduces ordinary measured observations plus the optional explicit
     /// quarantine transition. Keeping the input as a small observation DTO
     /// preserves CPU-only unit tests and keeps GPU interaction in `measure`.
     #[cfg(test)]
@@ -1476,7 +1476,7 @@ impl MeasuredAggregate {
         Self::reduce_full(observations, devices, occupancy, warmup_ns, measurement_ns, quarantine_fallback, &[])
     }
 
-    /// The complete reduction. `steps` carries the W3 per-step windows; an
+    /// The complete reduction. `steps` carries the per-step windows; an
     /// empty slice is a single-phase run and emits no per-step section.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn reduce_full(
@@ -1517,9 +1517,9 @@ impl MeasuredAggregate {
         }
     }
 
-    /// Attaches the one explicit P6.6 overload probe after its driver has
-    /// supplied the finite-cohort counters. The ordinary aggregate remains
-    /// reusable for P6.5 and P6.8 runs that did not request this scenario.
+    /// Attaches the one explicit overload probe after its driver supplies the
+    /// finite-cohort counters. The aggregate remains reusable for ordinary runs
+    /// and cache calibrations that did not request this scenario.
     pub(super) fn with_overload_fairness(mut self, evidence: OverloadFairnessEvidence) -> Self {
         self.scenarios.overload_fairness = Some(evidence);
         self
@@ -1600,7 +1600,7 @@ fn latency(measured: &[&AttemptObservation]) -> LatencyAggregate {
 }
 
 /// Nearest-rank percentile over a sorted slice. Raw samples are retained, so
-/// this needs no bucket calibration; bucket suitability is P6.7's.
+/// this needs no bucket calibration; bucket suitability is checked by the metrics audit.
 fn percentile(sorted: &[u64], percentile: f64) -> u64 {
     if sorted.is_empty() {
         return 0;

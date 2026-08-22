@@ -252,7 +252,7 @@ fn four_device_progress_and_heterogeneity_are_asserted_from_resolved_envelopes()
     assert_eq!(status("one_ordinal_per_attempt"), ClauseStatus::Evidenced);
     assert_eq!(status("progress_on_all_eligible_devices"), ClauseStatus::Evidenced);
     assert_eq!(status("heterogeneous_ordinal_profiles"), ClauseStatus::Evidenced);
-    // Quarantine fallback is a declared P6.6 gap, not a pass and not a failure.
+    // Quarantine fallback is a declared gap, not a pass and not a failure.
     assert_eq!(status("device_block_or_quarantine_fallback"), ClauseStatus::NotEvidenced);
     assert!(aggregate.placement.iter().all(|device| device.made_progress));
     assert!(scenario_clauses_pass(&aggregate.scenarios));

@@ -100,7 +100,7 @@ async fn run() -> anyhow::Result<()> {
 }
 
 /// Run two native cuDF attempts concurrently on the same explicitly owned
-/// device.  This is a public-API profiling probe, not the Phase 6 runner.
+/// device. This public-API profiling probe is not the production-validation runner.
 async fn run_same_device_native_attempts(
     backend: &NexusGpuBackend,
     ctx_a: &SessionContext,

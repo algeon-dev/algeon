@@ -804,7 +804,7 @@ fn the_shipped_measured_run_profile_parses_plans_and_is_heterogeneous() {
         .map(|device| device.installation.stream_pool_size)
         .collect::<BTreeSet<_>>();
     assert!(limits.len() > 1 && caps.len() > 1 && streams.len() > 1);
-    // The main P6.5 profile remains whole-device-exclusive; the focused
+    // The main measured profile remains whole-device-exclusive; the focused
     // StaticPartition evidence uses its own profile so neither scenario
     // dilutes the other's immutable admission envelope.
     assert!(
@@ -2236,8 +2236,8 @@ fn overload_fairness_preflight_validates_the_finite_cohort_before_fixture_access
     assert!(error.contains("reason=missing_fixture"), "{error}");
 }
 
-/// A measured run only needs the fixtures it will execute, unlike the P6.4
-/// preflight contract which requires exactly one of each kind.
+/// A measured run only needs the fixtures it will execute, unlike the
+/// fixture-preflight contract which requires exactly one of each kind.
 #[test]
 fn a_measured_run_may_execute_one_fixture_kind_while_preflight_requires_both() {
     let root = test_root("measured-single-kind");
@@ -2388,7 +2388,7 @@ fn profile_scopes_finite_round_bounds_to_closed_loop_scheduling() {
 }
 
 /// The end-to-end artifact shape for a measured run, assembled from the pure
-/// reduction so it needs no GPU. This is the schema contract P6.5 publishes.
+/// reduction so it needs no GPU. This is the schema contract published by the measured runner.
 #[test]
 fn measured_run_artifact_records_scenarios_throughput_placement_and_declared_gaps() {
     let root = test_root("measured-artifact");
@@ -2599,7 +2599,7 @@ fn a_failed_scenario_clause_marks_the_artifact_non_qualifying() {
     assert_eq!(value["status"], "measured_run_non_qualifying");
 }
 
-/// P6's C=1 composed calibration and P7/P8 contention share the same
+/// The isolated C=1 composed calibration and contention profiles share the same
 /// schedule evidence, but only the latter explicitly declares a bounded
 /// overload result. The branch matrix keeps every other composed-artifact
 /// failure fail-closed while ensuring a workload label cannot invent that

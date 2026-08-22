@@ -706,7 +706,7 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
         }
     } else if !empty_input_prevalidated {
         // BFS currently remains outside the live graph-tier reservation, but
-        // its graph memory model is still an I11 claim that must be retained
+        // its graph memory model is still a calibration claim that must be retained
         // and compared with the attempt's own measured peak.
         let device_total_memory_bytes = match graph_device_total_memory_bytes(context) {
             Ok(device_total_memory_bytes) => device_total_memory_bytes,

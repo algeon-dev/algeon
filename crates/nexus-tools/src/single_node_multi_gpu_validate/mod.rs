@@ -1,8 +1,8 @@
-//! Versioned P6 production-validation run artifacts.
+//! Versioned production-validation run artifacts.
 //!
-//! P6.3 owns the dry run, P6.4 the read-only fixture preflight, and P6.5 the
-//! measured public-API run. Config parsing, arrival planning, aggregation, and
-//! artifact writing are unit-tested library code; only `measure` touches a GPU.
+//! The dry run, read-only fixture preflight, and measured public-API run are
+//! separate modes. Config parsing, arrival planning, aggregation, and artifact
+//! writing are unit-tested library code; only `measure` touches a GPU.
 
 mod aggregate;
 mod artifact;
@@ -101,7 +101,7 @@ struct CliOptions {
     gate_log: Option<PathBuf>,
     /// An externally captured Nsight trace whose identity the artifact records.
     nsight_trace: Option<PathBuf>,
-    /// W8's explicit live reference-exporter cell. The full URL is runtime
+    /// The explicit live reference-exporter cell. The full URL is runtime
     /// input only; artifacts retain a redacted host:port identity.
     otlp_metrics_endpoint: Option<String>,
     /// Defaults in the measured-run-only exporter configuration when an
@@ -115,36 +115,36 @@ struct CliOptions {
     /// attempt after this delay. A zero delay still uses the attempt API and
     /// proves the planning boundary without needing a synthetic native fault.
     cancel_first_after: Option<std::time::Duration>,
-    /// Absolute deadline interval for a dedicated first-attempt P6.6 probe.
+    /// Absolute deadline interval for a dedicated first-attempt probe.
     /// The runner witnesses its admitted work before accepting a typed
     /// `deadline_expired` sealed report and a healthy reuse attempt.
     deadline_first_after: Option<std::time::Duration>,
-    /// Drive the dedicated P6.6 ordinary domain-cap exhaustion scenario. It
+    /// Drive the dedicated ordinary domain-cap exhaustion scenario. It
     /// reuses public SQL rather than injecting an allocator failure.
     domain_exhaustion_probe: bool,
-    /// Drive the dedicated P6.6 finite-cohort overload scenario. All outcome
+    /// Drive the dedicated finite-cohort overload scenario. All outcome
     /// proof comes from sealed reports; it never creates a synthetic queue
     /// request or infers finite overtakes from task ordering.
     overload_fairness: bool,
-    /// Drive P6.6's physical allocator pressure probe. The measured-run-only
+    /// Drive the physical allocator pressure probe. The measured-run-only
     /// helper creates external CUDA pressure; no backend mode or synthetic
     /// allocator failure exists in this runner.
     physical_allocator_pressure: bool,
-    /// Run the cache-disabled companion and configured P5 cache opt-in as a
-    /// paired P6.8 calibration.
+    /// Run the cache-disabled companion and configured cache opt-in as a paired
+    /// calibration.
     cache_calibration: bool,
-    /// S6: quarantine this many ordinals, one cycle at a time, during a
+    /// Quarantine this many ordinals, one cycle at a time, during a
     /// sustained closed-loop run. Each cycle witnesses live work on its
     /// target, injects through the public fault injector, and requires zero
     /// post-acknowledgement placements on the target with healthy fleet
     /// progress on the remaining ordinals.
     quarantine_cycles: Option<usize>,
-    /// S6: begin the public close path at the midpoint of the measurement
+    /// Begin the public close path at the midpoint of the measurement
     /// window while a load cohort is in flight. Queued waiters must seal
     /// `backend_closing`, in-flight attempts must finish, and every submitted
     /// attempt must be accounted for exactly once.
     close_under_load: bool,
-    /// I8: hold one public completion receiver at a time behind this delay.
+    /// Hold one public completion receiver at a time behind this delay.
     /// This is a dedicated rate-mode probe, never a backend behavior mode.
     slow_report_sink: Option<std::time::Duration>,
 }
@@ -431,7 +431,7 @@ fn measured_run_preflight(
     )
 }
 
-/// Extends the established measured-run preflight with I8's dedicated sink
+/// Extends the established measured-run preflight with the dedicated sink
 /// shape without widening the helpers used by the existing scenario tests.
 fn measured_run_preflight_with_completion_sink(
     profile: &RunProfile,

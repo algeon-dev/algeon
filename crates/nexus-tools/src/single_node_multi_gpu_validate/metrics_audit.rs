@@ -1,4 +1,4 @@
-//! Pure audit of P4 backend-metric snapshots.
+//! Pure audit of public backend-metric snapshots.
 //!
 //! The measured runner turns the public backend snapshot into the small DTO
 //! below.  Keeping the audit independent from CUDA and the backend types makes
@@ -32,7 +32,7 @@ pub(super) struct MetricSnapshotObservation {
     pub(super) total_duration_count: u64,
 }
 
-/// One auditable P4-metric clause.
+/// One auditable backend-metric clause.
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct MetricAuditClause {
     pub(super) clause: &'static str,
@@ -40,10 +40,10 @@ pub(super) struct MetricAuditClause {
     pub(super) detail: String,
 }
 
-/// Explicit delivery accounting for the pull-only P4 store.
+/// Explicit delivery accounting for the pull-only backend-metric store.
 ///
-/// The P6 runner reads a public snapshot directly and does not install an
-/// exporter or delivery queue.  Saying that directly is preferable to
+/// The measured runner reads a public snapshot directly and does not install
+/// an exporter or delivery queue. Saying that directly is preferable to
 /// fabricating a zero-loss exporter result.
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct DeliveryLossEvidence {
@@ -51,7 +51,7 @@ pub(super) struct DeliveryLossEvidence {
     pub(super) detail: &'static str,
 }
 
-/// Bounded P6.7 audit derived from timestamped P4 snapshots.
+/// Bounded metrics audit derived from timestamped public snapshots.
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct MetricsAudit {
     pub(super) requested_cadence_ms: u64,
@@ -68,7 +68,7 @@ impl MetricsAudit {
     /// Audits a bounded sequence of timestamped snapshots.
     ///
     /// `reported_attempts` comes from the artifact's retained report rows,
-    /// while `terminal_completed` comes from the P4 store.  They intentionally
+    /// while `terminal_completed` comes from the backend-metric store. They intentionally
     /// take different paths so a dropped report or metric projection cannot
     /// hide in one shared accumulator.
     pub(super) fn from_snapshots(
@@ -99,7 +99,7 @@ impl MetricsAudit {
     }
 
     /// A metric audit is blocking only when a projection-integrity clause
-    /// fails. Histogram saturation is an I1 usability finding: it must stay
+    /// fails. Histogram saturation is an audit usability finding: it must stay
     /// explicit in the artifact, but it cannot turn a bounded, otherwise
     /// coherent workload into a false negative simply because the metric
     /// cannot estimate that workload's p99.

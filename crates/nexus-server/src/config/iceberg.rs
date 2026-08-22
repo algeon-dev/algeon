@@ -240,7 +240,7 @@ pub(super) fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<Iceber
     let warehouse = values.required_string(NEXUS_ICEBERG_WAREHOUSE_ENV)?;
 
     // When unset, the dynamic catalog serves all tables and aliases are not
-    // required (empty vec is valid in Milestone 2).
+    // required (an empty vector is valid).
     let raw_tables = values.string(NEXUS_ICEBERG_TABLES_ENV);
     let tables = match raw_tables {
         Some(ref raw) => parse_iceberg_tables(NEXUS_ICEBERG_TABLES_ENV, raw)?,

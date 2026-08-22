@@ -1,4 +1,4 @@
-//! Versioned P6 run-profile parsing and fail-closed validation.
+//! Versioned run-profile parsing and fail-closed validation.
 
 use std::{
     collections::BTreeSet,
@@ -26,16 +26,16 @@ pub(super) struct RunProfile {
     pub(super) name: String,
     /// Extra bounded time after the warmup-plus-measurement submission window
     /// for already-admitted attempts to reach a native safe boundary, release
-    /// their grants, and seal their reports. Legacy P6 profiles leave this at
-    /// zero; sustained stress profiles make their drain allowance explicit.
+    /// their grants, and seal their reports. Profiles without a drain grace leave
+    /// this at zero; sustained stress profiles make their allowance explicit.
     #[serde(default)]
     pub(super) completion_drain_grace_seconds: u64,
-    /// Explicitly selects which P6 overlap/placement clauses are meaningful
-    /// for this profile. Absent retains the legacy P6 contract; stress
-    /// profiles opt into only the clauses their declared suite can prove.
+    /// Selects meaningful overlap/placement clauses for this profile. An absent
+    /// value requires the complete default scenario; stress profiles opt into
+    /// only the clauses their declared suite can prove.
     #[serde(default)]
     pub(super) scenario_requirements: Option<ScenarioRequirementsProfile>,
-    /// Opt-in S2 envelope contract.  The generic runner only asserts the
+    /// Opt-in QPS-envelope contract. The generic runner only asserts the
     /// queue/recovery rules when a profile explicitly declares this workload
     /// class measurement, rather than guessing from a file name.
     #[serde(default)]
@@ -46,13 +46,13 @@ pub(super) struct RunProfile {
     /// overhead and multiplicative pricing slack themselves.
     #[serde(default)]
     pub(super) vram_calibration: Option<VramCalibrationProfile>,
-    /// Explicit I11 contract for graph profiles. The artifact must retain one
+    /// Explicit graph-model calibration contract for graph profiles. The artifact must retain one
     /// typed engine model/request/budget/peak row for every measured graph
     /// attempt; missing, duplicate, unavailable, or truncated rows fail
     /// closed. This profile intentionally owns no numeric tolerance band.
     #[serde(default)]
     pub(super) graph_claim_calibration: Option<GraphClaimCalibrationProfile>,
-    /// S1's base-build cell. The runner schedules its schema-only cuGraph UDTF
+    /// The base-build feature-off cell. The runner schedules its schema-only cuGraph UDTF
     /// requests beside, but separately from, the relational mix and proves
     /// the feature-disabled contract from each structured source error and
     /// sealed report.
@@ -70,15 +70,15 @@ pub(super) struct RunProfile {
     pub(super) workloads: Vec<FixtureWorkloadProfile>,
 }
 
-/// The reusable P6 reducer carries more structural clauses than every stress
+/// The reusable validation reducer carries more structural clauses than every stress
 /// suite needs. A scan-envelope run, for example, must prove placement
 /// progress but cannot be rejected merely because it does not create two
 /// concurrent jobs on one device. This profile-owned selector prevents a raw
-/// P6 proof obligation from silently becoming a stress qualification gate.
+/// proof obligation from silently becoming a stress qualification gate.
 #[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct ScenarioRequirementsProfile {
-    /// Require the complete same-device P6 overlap/grant/domain witness.
+    /// Require the complete same-device overlap/grant/domain witness.
     #[serde(default)]
     pub(super) require_same_device_overlap: bool,
     /// Require at least one successful placement on every ordinal that was
@@ -88,14 +88,14 @@ pub(super) struct ScenarioRequirementsProfile {
     /// Require the resolved device envelopes to be heterogeneous.
     #[serde(default)]
     pub(super) require_heterogeneous_device_profiles: bool,
-    /// Require the sealed bounded-overload outcome. Only P7/P8 contention
-    /// profiles opt into this; an isolated P6 calibration never infers it
+    /// Require the sealed bounded-overload outcome. Contention profiles opt
+    /// into this; an isolated calibration never infers it
     /// from a selected workload label.
     #[serde(default)]
     pub(super) require_overload_outcome: bool,
 }
 
-/// Profile-owned S2 QPS-envelope requirements.
+/// Profile-owned QPS-envelope requirements.
 ///
 /// A measured envelope must be a real multi-phase curve, and every phase must
 /// retain some successful GPU work.  Rate profiles may additionally name a
@@ -153,7 +153,7 @@ pub(super) struct VramCalibrationProfile {
     pub(super) max_claim_to_observed_ratio_milli: u64,
 }
 
-/// Opt-in graph I11 projection contract.
+/// Opt-in graph-model calibration projection contract.
 ///
 /// The graph-memory model owns any future pricing adjustment. The stress
 /// runner only requires complete typed measurement provenance and reports the
@@ -162,7 +162,7 @@ pub(super) struct VramCalibrationProfile {
 #[serde(deny_unknown_fields)]
 pub(super) struct GraphClaimCalibrationProfile {}
 
-/// The bounded feature-off cuGraph UDTF contract exercised by S1. The graph
+/// The bounded feature-off cuGraph UDTF contract exercised by the base runner. The graph
 /// request itself is owned by the runner so this profile never needs a DBLP
 /// fixture merely to prove that disabled execution does not stage graph data.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -194,9 +194,9 @@ impl RunProfile {
     /// path. The configured value still becomes evidence in every artifact.
     pub(super) const MAX_FEATURE_OFF_CUGRAPH_REJECTION_LATENCY_MS: u64 = 1_000;
 
-    /// P6 profiles that predate the stress library omit this section and keep
-    /// their complete historical scenario contract. Stress profiles spell out
-    /// their reduced requirements instead of relying on their filename.
+    /// Profiles without this section use the complete default scenario
+    /// contract. Stress profiles spell out their reduced requirements instead
+    /// of relying on their filename.
     pub(super) const fn scenario_requirements(&self) -> ScenarioRequirementsProfile {
         match self.scenario_requirements {
             Some(requirements) => requirements,
@@ -270,7 +270,7 @@ pub(super) struct DeviceProfile {
     pub(super) source_work_per_attempt: usize,
     pub(super) max_active_attempts: usize,
     /// Whether this ordinal installs diagnostic CUDA/NVML telemetry. The
-    /// telemetry-on/off S3 pair changes only this profile-owned control.
+    /// telemetry-on/off pair changes only this profile-owned control.
     #[serde(default = "default_install_telemetry")]
     pub(super) install_telemetry: bool,
     pub(super) installation: InstallationBounds,
@@ -417,28 +417,28 @@ pub(super) struct SchedulingProfile {
     /// arrival rate.
     #[serde(default)]
     pub(super) rate_overrun: RateOverrunPolicy,
-    /// W3 multi-phase arrival. A non-empty list switches the run to steps
+    /// Multi-phase arrival. A non-empty list switches the run to steps
     /// mode: steps execute sequentially inside one run, each with its own
     /// window and its own concurrency/rate, so one artifact holds a whole
     /// envelope curve. The scalar window/rate fields stay at their defaults.
     #[serde(default)]
     pub(super) steps: Vec<ScheduleStepProfile>,
-    /// S5 deadline storm: every attempt receives a caller deadline of
+    /// Deadline storm: every attempt receives a caller deadline of
     /// `min(submission + attempt_deadline_ms, run deadline)`.
     #[serde(default)]
     pub(super) attempt_deadline_ms: Option<u64>,
-    /// S5 cancellation storm: every Nth submitted attempt is cancelled
+    /// Cancellation storm: every Nth submitted attempt is cancelled
     /// mid-flight through the public attempt cancellation handle.
     #[serde(default)]
     pub(super) cancel_every_n: Option<usize>,
-    /// S5 cancellation storm: delay before each storm cancellation fires.
+    /// Cancellation storm: delay before each storm cancellation fires.
     /// Requires `cancel_every_n`; a zero delay cancels at the planning
     /// boundary.
     #[serde(default)]
     pub(super) cancel_after_ms: Option<u64>,
 }
 
-/// One sequential phase of a W3 step schedule. Which of `concurrency` /
+/// One sequential phase of a multi-phase step schedule. Which of `concurrency` /
 /// `arrival_rate_per_second` is set must agree with the profile's
 /// `arrival_mode`.
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -505,7 +505,7 @@ const fn default_concurrency() -> usize {
 pub(super) struct CacheProfile {
     #[serde(default)]
     pub(super) mode: CacheMode,
-    /// S7's explicit evidence contract. Ordinary cache-enabled profiles keep
+    /// The explicit cache evidence contract. Ordinary cache-enabled profiles keep
     /// this absent; only a stress cell turns activity observations into hard
     /// qualification obligations.
     #[serde(default)]
@@ -526,7 +526,7 @@ pub(super) enum CacheMode {
     Enabled,
 }
 
-/// Profile-owned S7 cache evidence requirements.  The cache implementations
+/// Profile-owned cache evidence requirements. The cache implementations
 /// still own eviction, promotion, and coalescing; this merely says which
 /// public observations a named load cell must produce before it qualifies.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
@@ -558,7 +558,7 @@ pub(super) struct CacheStressProfile {
     pub(super) same_key_probe: Option<CacheSameKeyProbeProfile>,
 }
 
-/// Profile-owned exact-key cache probe used by S7.
+/// Profile-owned exact-key cache probe.
 ///
 /// The runner creates a fresh single-ordinal backend for this bounded probe,
 /// then drives source and BFS cohorts separately. That makes cold-cache,
@@ -606,10 +606,10 @@ impl RunProfile {
         self.workloads.iter().map(|workload| workload.queries.len()).sum()
     }
 
-    /// Returns the cache-disabled half of an opt-in P6.8 paired calibration.
+    /// Returns the cache-disabled half of an opt-in paired calibration.
     ///
     /// This preserves every workload, scheduling, admission, and device field
-    /// except the one P5 cache control: each ordinal-local `cache_cap_bytes`.
+    /// except the one cache control: each ordinal-local `cache_cap_bytes`.
     /// It is intentionally derived rather than read from another profile so a
     /// cache calibration cannot compare two unrelated runs.
     pub(super) fn cache_disabled_companion(&self) -> ToolResult<Self> {
@@ -626,7 +626,7 @@ impl RunProfile {
         Ok(companion)
     }
 
-    /// Validates the finite cohort used by the explicit P6.6 overload probe.
+    /// Validates the finite cohort used by the explicit overload probe.
     ///
     /// This is deliberately a profile shape rather than a second admission
     /// policy: the backend still owns queueing, finite overtakes, placement,
@@ -690,7 +690,7 @@ impl RunProfile {
         Ok(())
     }
 
-    /// Validates P6.6's fixed two-step physical allocator-pressure probe.
+    /// Validates the fixed two-step physical allocator-pressure probe.
     ///
     /// The runner establishes real external CUDA pressure before `q01`, then
     /// releases it before the `edge_scan` recovery attempt. Profile validation
@@ -1076,7 +1076,7 @@ impl RunProfile {
 
     /// The profile's cache mode must describe the single ledger-accounted
     /// cache control the backend actually receives.  A nonzero ordinal-local
-    /// cap is the P5 opt-in; there is no second cache switch in the runner.
+    /// cap is the cache opt-in; there is no second cache switch in the runner.
     fn validate_cache_mode(&self) -> ToolResult<()> {
         let enabled_ordinals = self
             .backend

@@ -3043,8 +3043,8 @@ async fn installed_backend_string_pagerank_ticket_orders_source_mapping_and_grap
     assert!(context.admission_facts().query_grant_bytes > 0);
 }
 
-/// The S2 G1 query aggregates the ForceAtlas2 output on the native side. Keep
-/// that exact terminal shape covered separately from ticket planning: a graph
+/// This query aggregates the ForceAtlas2 output on the native side. Keep that
+/// exact terminal shape covered separately from ticket planning: a graph
 /// algorithm that runs successfully but cannot feed its following COUNT/SUM
 /// aggregation is not a qualifying workload.
 #[tokio::test]

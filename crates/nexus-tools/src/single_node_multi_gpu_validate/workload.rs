@@ -39,7 +39,7 @@ pub(super) struct SelectedQuery {
     /// runner-owned feature-disabled capability probe is deliberately
     /// non-executing, and its separate operability clause owns that contract.
     pub(super) placement_required: bool,
-    /// I8's deliberately serialized public completion receiver. This is
+    /// The deliberately serialized public completion receiver. This is
     /// attached only by the dedicated slow-report-sink probe, so ordinary
     /// workload selection remains free of collector backpressure.
     completion_sink: Option<CompletionSink>,
@@ -64,7 +64,7 @@ impl SelectedQuery {
     }
 }
 
-/// One intentionally serialized completion consumer for I8. The semaphore
+/// One intentionally serialized completion consumer for the handoff-pressure probe. The semaphore
 /// permit is acquired before the public completion receiver is awaited and is
 /// held until that receiver has drained, creating the real handoff pressure
 /// the probe is meant to test rather than merely sleeping each task.
@@ -214,7 +214,7 @@ fn dblp_queries() -> Vec<(&'static str, String, bool)> {
                 .to_string(),
             false,
         ),
-        // The backend-service stress priority set (G1-G4).
+        // The backend-service stress priority set.
         (
             "force_atlas2",
             format!(
