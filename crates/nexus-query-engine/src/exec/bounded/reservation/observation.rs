@@ -129,6 +129,7 @@ impl ReservationObservation {
         let task_attempt = context.task_attempt_id.as_ref().or(self.task_attempt_id.as_ref());
         let memory_space_bytes = match context.memory_space {
             MemorySpaceId::Device { device_ordinal } => 4u64.saturating_add(decimal_digits(device_ordinal)),
+            _ => u64::MAX,
         };
         let source_location_bytes = context
             .path

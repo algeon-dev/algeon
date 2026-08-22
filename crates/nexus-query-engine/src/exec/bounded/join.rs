@@ -4,7 +4,6 @@ mod common;
 pub(in crate::exec) mod compiled;
 mod hash;
 mod leaf;
-pub(in crate::exec::bounded) mod sizing;
 
 pub(in crate::exec::bounded) use compiled::{
     BoundedCompiledJoinBuildState, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,
@@ -31,7 +30,8 @@ pub(super) use leaf::{
     stream_bounded_join_leaf_local_parquet_source_chunks, stream_bounded_join_leaf_local_parquet_source_serial,
     try_start_bounded_join_leaf_local_parquet_source_prefetch,
 };
-pub use sizing::{
+
+pub use crate::materialization_sizing::{
     JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, STRING_OFFSET_BYTES_CONSERVATIVE,
     join_output_upper_bound_bytes,
 };

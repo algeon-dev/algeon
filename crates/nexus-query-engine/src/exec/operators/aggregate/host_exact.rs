@@ -545,14 +545,6 @@ fn aggregate_function_list_for_metrics(spec: &AggregateSpec) -> String {
         .join(",")
 }
 
-pub(super) fn host_group_expr_output_name(expr: &Expr) -> String {
-    match expr {
-        Expr::Alias { alias, .. } => alias.clone(),
-        Expr::Column(column) => column.display_name().to_string(),
-        _ => expr.to_string(),
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum HostAggregateInput {
     Column(String),

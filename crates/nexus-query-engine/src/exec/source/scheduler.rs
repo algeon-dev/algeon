@@ -280,6 +280,7 @@ impl SourceReadObservation {
                     crate::runtime::DevicePlacement::SingleDevice { device_ordinal } => {
                         u32::try_from(device_ordinal).ok()
                     },
+                    _ => None,
                 };
                 RuntimeTopologyRecord::WorkerDefinition(WorkerDefinitionRow {
                     plan_execution_id: Some(scope.plan_execution_id().clone()),

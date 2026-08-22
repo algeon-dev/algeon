@@ -756,6 +756,28 @@ impl DataFrameHashJoinPairIndices {
             "dataframe::hash_join_pair_indices::reservation_size_bytes_for_len",
         )
     }
+
+    /// Returns the maximum retained bytes for any representable output at or
+    /// below the supplied logical row bound.
+    pub fn reservation_upper_bound_bytes_for_row_bound(output_row_bound: usize) -> usize {
+        output_row_bound.min(JOIN_GATHER_MAP_MAX_ROWS) * JOIN_GATHER_MAP_INDEX_SIZE_BYTES * 2
+    }
+}
+
+#[cfg(test)]
+mod gather_map_bound_tests {
+    use super::*;
+
+    #[test]
+    fn hash_join_pair_bound_caps_at_the_largest_representable_output() {
+        let maximum =
+            DataFrameHashJoinPairIndices::reservation_upper_bound_bytes_for_row_bound(JOIN_GATHER_MAP_MAX_ROWS);
+        let above =
+            DataFrameHashJoinPairIndices::reservation_upper_bound_bytes_for_row_bound(JOIN_GATHER_MAP_MAX_ROWS + 1);
+
+        assert_eq!(above, maximum);
+        assert!(DataFrameHashJoinPairIndices::reservation_size_bytes_for_len(JOIN_GATHER_MAP_MAX_ROWS + 1).is_err());
+    }
 }
 
 /// Materialized probe/build sides from a reusable DataFrame hash-join probe.

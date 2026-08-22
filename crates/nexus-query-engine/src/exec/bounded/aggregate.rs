@@ -27,7 +27,6 @@ use partitioned::{
 pub(super) use plan::{BoundedPlan, BoundedUnaryStage};
 use post_stages::{aggregate_spec_has_global_final_state, execute_final_aggregate, execute_final_aggregate_projection};
 pub(super) use post_stages::{execute_post_aggregate_stages, execute_post_sort_projections, execute_standalone_limit};
-pub use sizing::{PartialAggregateShape, partial_aggregate_upper_bound_bytes};
 use sizing::{
     partial_aggregate_upper_bound_violation_error, partial_aggregate_work_reservation_upper_bound_bytes,
     statistical_partial_aggregate_work_reservation_upper_bound_bytes,
@@ -37,6 +36,8 @@ pub(in crate::exec::bounded) use stream::{
     execute_bounded_whole_input_aggregate_from_raw_chunks, execute_compiled_bounded_aggregate_from_source_stream,
     execute_compiled_bounded_aggregate_from_stream,
 };
+
+pub use crate::materialization_sizing::{PartialAggregateShape, partial_aggregate_upper_bound_bytes};
 
 fn aggregate_source_chunk_planning_policy(
     context: &ExecutionContext,

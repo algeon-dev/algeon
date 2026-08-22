@@ -42,6 +42,7 @@ pub mod groupby;
 pub mod hashing;
 pub mod join;
 pub mod lookup;
+pub mod materialization;
 pub mod partitioning;
 pub mod reduction;
 pub mod replace;

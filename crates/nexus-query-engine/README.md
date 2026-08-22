@@ -1,26 +1,30 @@
 # nexus-query-engine
 
-`nexus-query-engine` is the DataFusion-free native engine used by
-`datafusion-nexus`. It owns the native query IR, capability admission,
-the bounded per-device resource controller, source/chunk planning, GPU
-execution, native metrics, and native error facts.
+`nexus-query-engine` is the DataFusion-free native execution owner and public
+facade used by `datafusion-nexus`. Its package and Rust import identity remain
+the compatible entry point for callers that used the native engine before the
+planning/runtime split.
 
-This crate must not depend on DataFusion. DataFusion-specific recognition,
-lowering, table-format integration, and `ExecutionPlan` wrappers belong in the
-root adapter crate.
+The crate depends on `nexus-query-planning` and `nexus-query-runtime`, re-exports
+the established planning and runtime module paths, and composes one planning
+proof with one runtime grant for native execution. It does not define another
+proof, ledger, grant, observation store, or error taxonomy.
 
-## Main Areas
+DataFusion-specific recognition, lowering, table-format integration, and
+`ExecutionPlan` wrappers belong in the root adapter crate.
 
-- `plan/`, `expr/`, `source.rs`, `datatypes.rs` - native IR and source facts.
-- `capability/` - capability-first admission and structured rejection reasons.
-- `runtime/`, `mode.rs` - execution context, immutable grant and reservation
-  policy, and bounded report evidence.
-- `pipeline/` - compiled DAG tasks, edges, gates, and resident resources.
-- `exec/` - GPU execution, bounded execution, source runtime, joins,
-  aggregates, final sort/top-k, and graph execution.
-- `optimizer/` - native IR rewrite rules and rewrite diagnostics.
-- `contract_report.rs`, `metrics.rs`, `error.rs` - runtime evidence, metrics,
-  and native errors.
+## Main areas
+
+- `exec/` owns bounded relational, graph, vector, and source execution plus
+  host/GPU-resident result handling.
+- `chunk/` composes planning chunk contracts with execution behavior.
+- `lib.rs` is the compatible facade over planning and runtime owners.
+- `execution_integration_tests/` covers planning/runtime/execution composition.
+
+See [`nexus-query-planning`](../nexus-query-planning/README.md) for IR,
+capability, proof, admission contracts, and pipelines. See
+[`nexus-query-runtime`](../nexus-query-runtime/README.md) for lifecycle, query
+service, device resources, caches, observation, and metrics.
 
 ## Validation
 
@@ -39,5 +43,5 @@ flock /tmp/cudf-gpu.lock cargo nextest run -p nexus-query-engine --all-features 
 bash scripts/check_all.sh
 ```
 
-The contract tests pin the one-controller boundary and bounded capability
-evidence.
+The contract tests pin facade compatibility, dependency direction, the single
+controller boundary, and bounded execution composition.

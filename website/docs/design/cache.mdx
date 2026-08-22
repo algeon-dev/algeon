@@ -146,10 +146,10 @@ entries before source entries, then releases the allocation-domain owner.
 | --- | --- |
 | Lakehouse configuration and source resolution | `src/table_format/scan/config.rs`, `src/table_format/scan/source_resolution.rs` |
 | Lakehouse fill, publication, pins, and retention | `crates/nexus-query-engine/src/exec/source/lakehouse_cache/` |
-| Shared GPU allocation and residency lifecycle | `crates/nexus-query-engine/src/runtime/cache/factory.rs`, `crates/nexus-query-engine/src/runtime/cache/residency.rs` |
-| Decoded source identity and caching | `crates/nexus-query-engine/src/runtime/source_identity/local_parquet.rs`, `crates/nexus-query-engine/src/runtime/cache/local_parquet/mod.rs` |
-| Resident graph keys and caching | `crates/nexus-query-engine/src/plan/graph_algorithm/residency.rs`, `crates/nexus-query-engine/src/runtime/cache/resident_graph.rs` |
-| Ledger capacity and cache metrics | `crates/nexus-query-engine/src/runtime/gpu/ledger.rs`, `crates/nexus-query-engine/src/metrics/backend_descriptor.rs`, `crates/nexus-query-engine/src/runtime/backend_metrics.rs` |
+| Shared GPU allocation and residency lifecycle | `crates/nexus-query-runtime/src/runtime/cache/factory.rs`, `crates/nexus-query-runtime/src/runtime/cache/residency.rs` |
+| Decoded source identity and caching | `crates/nexus-query-runtime/src/runtime/source_identity/local_parquet.rs`, `crates/nexus-query-runtime/src/runtime/cache/local_parquet/mod.rs` |
+| Resident graph keys and caching | `crates/nexus-query-planning/src/plan/graph_algorithm/residency.rs`, `crates/nexus-query-runtime/src/runtime/cache/resident_graph.rs` |
+| Ledger capacity and cache metrics | `crates/nexus-query-runtime/src/runtime/gpu/ledger.rs`, `crates/nexus-query-runtime/src/metrics/backend_descriptor.rs`, `crates/nexus-query-runtime/src/runtime/backend_metrics.rs` |
 
 Extend the existing owner-level tests when behavior changes. Do not add a
 second byte counter, a query-owned cache domain, or a fallback key that reuses

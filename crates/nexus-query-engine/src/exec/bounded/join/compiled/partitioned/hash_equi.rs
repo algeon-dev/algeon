@@ -141,18 +141,6 @@ fn materialize_partitioned_hash_equi_join_partition(
     txn.set_gather_map_reservation(gather_map_reservation);
     txn.set_indices(indices);
     let (left, right) = txn.sides();
-    super::super::common::trace_preflight_entry(
-        "partitioned_keyed_partition",
-        "partitioned_keyed",
-        node_id,
-        reservations,
-        0,
-        output_rows,
-        left.rows,
-        left.bytes,
-        right.rows,
-        right.bytes,
-    );
     let output_reservation_bytes = match txn.indices().output_upper_bound_size_bytes(
         context,
         node_id,
@@ -163,12 +151,8 @@ fn materialize_partitioned_hash_equi_join_partition(
         reservations,
         metrics,
     ) {
-        Ok(bytes) => {
-            super::super::common::trace_preflight_success("partitioned_keyed_partition", node_id, reservations, bytes);
-            bytes
-        },
+        Ok(bytes) => bytes,
         Err(error) => {
-            super::super::common::trace_preflight_failed("partitioned_keyed_partition", node_id, reservations, &error);
             txn.rollback(reservations, metrics);
             return Err(error);
         },

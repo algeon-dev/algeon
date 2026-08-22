@@ -88,14 +88,13 @@ fn int16_uint16_match_two_byte_size() {
 }
 
 #[test]
-fn date32_and_time32_use_four_bytes() {
+fn date32_uses_four_bytes_and_time32_uses_the_cudf_duration_width() {
     let rows = 10_000;
-    let expected = fixed_column_expected(rows, 4);
-    for dtype in
-        [ArrowDataType::Date32, ArrowDataType::Time32(TimeUnit::Second), ArrowDataType::Time32(TimeUnit::Millisecond)]
-    {
+    let date = join_output_upper_bound_bytes(rows, &[fixed_column(ArrowDataType::Date32)]).unwrap();
+    assert_eq!(date, fixed_column_expected(rows, 4));
+    for dtype in [ArrowDataType::Time32(TimeUnit::Second), ArrowDataType::Time32(TimeUnit::Millisecond)] {
         let bound = join_output_upper_bound_bytes(rows, &[fixed_column(dtype.clone())]).unwrap();
-        assert_eq!(bound, expected, "dtype {dtype:?}");
+        assert_eq!(bound, fixed_column_expected(rows, 8), "dtype {dtype:?}");
     }
 }
 

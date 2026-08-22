@@ -46,7 +46,9 @@ impl Drop for NvtxRange {
 /// admitted through the public attempt API.
 pub(in crate::exec) fn attempt_execution_range(context: &ExecutionContext) -> Option<NvtxRange> {
     let attempt_id = context.attempt_id()?;
-    let DevicePlacement::SingleDevice { device_ordinal } = context.device_placement();
+    let DevicePlacement::SingleDevice { device_ordinal } = context.device_placement() else {
+        return None;
+    };
     Some(NvtxRange::new(attempt_execution_label(attempt_id, device_ordinal)))
 }
 

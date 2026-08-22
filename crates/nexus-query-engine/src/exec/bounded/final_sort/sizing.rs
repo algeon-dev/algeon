@@ -15,27 +15,6 @@ pub(super) fn final_sort_retained_bytes(report: &ExecutionBudgetReport) -> Resul
     Ok(bytes as u64)
 }
 
-pub(in crate::exec) fn topk_candidate_rows(spec: LimitSpec) -> Result<usize> {
-    let fetch = spec.fetch.ok_or_else(|| {
-        QueryError::new(
-            QueryErrorCode::UnsupportedPlanShape,
-            "nexus_query_engine.final_sort.topk_limit",
-            "offset-only limit has no finite top-k candidate bound",
-        )
-        .with_fact("skip", spec.skip)
-        .with_fact("reason", "unbounded_fetch")
-    })?;
-    spec.skip.checked_add(fetch).ok_or_else(|| {
-        QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.final_sort.topk_limit",
-            "limit skip and fetch overflow usize",
-        )
-        .with_fact("skip", spec.skip)
-        .with_fact("fetch", fetch)
-    })
-}
-
 pub(super) fn estimated_bytes_per_row(bytes: u64, rows: usize) -> u64 {
     if rows == 0 {
         return bytes.max(1);

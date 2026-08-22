@@ -24,7 +24,10 @@ the Docker packaging path follows it in
 
 | Component | Role | Language | How it is consumed |
 | --- | --- | --- | --- |
-| Root adapter | DataFusion adapter, native engine (`nexus-query-engine`), workload contracts, benchmarks, Flight SQL server | Rust | `src/`, `crates/` |
+| Root adapter | DataFusion lowering, execution wrappers, report projection, workload contracts, benchmarks, and Flight SQL server | Rust | `src/`, adapter-support crates |
+| `nexus-query-planning` | DataFusion-free IR, optimizer, capability, proof, admission contracts, and compiled pipeline | Rust | `crates/nexus-query-planning/` |
+| `nexus-query-runtime` | Attempt lifecycle, query service, device ledger, immutable grants, cache, observation, and metrics | Rust | `crates/nexus-query-runtime/` |
+| `nexus-query-engine` | Native execution composition and the compatible public facade over planning and runtime | Rust | `crates/nexus-query-engine/` |
 | `components/cudf` | Safe Rust API over libcudf (`cudf-nexus`, `cudf-nexus-sys`, `rapids-interop`); pins the [`cudf` fork](https://github.com/DataFusion-Nexus/cudf) | Rust + C++/CUDA | one component + submodule |
 | `components/cuvs` | Safe Rust API over libcuvs (`cuvs-nexus`, `cuvs-nexus-sys`); pins official [`cuVS`](https://github.com/rapidsai/cuvs) | Rust + C++/CUDA | one component + submodule |
 | `components/cugraph` | Safe Rust API over libcugraph (`cugraph-nexus`, `cugraph-nexus-sys`); pins the [`cugraph` fork](https://github.com/DataFusion-Nexus/cugraph) | Rust + C++/CUDA | one component + submodule |
@@ -39,7 +42,8 @@ datafusion-nexus/
 ├── components/cudf/cudf/       # pinned cuDF fork submodule
 ├── components/cugraph/cugraph/ # pinned cuGraph fork submodule
 ├── components/cuvs/cuvs/       # pinned official cuVS submodule
-├── crates/ and src/             # root Rust workspace
+├── crates/                      # planning, runtime, engine, and support crates
+├── src/                         # DataFusion adapter
 └── target/native/
     ├── cudf-build/             # canonical cuDF CMake cache
     ├── cudf-install/           # canonical cuDF/RMM install prefix
@@ -56,7 +60,9 @@ libcudf ── produces ──> librmm.so
                             ├──> libcuvs
                             └──> libcugraph <── libcuvs
 
-datafusion-nexus uses the enabled cuDF, cuVS, and cuGraph Rust bindings.
+nexus-query-runtime depends on nexus-query-planning.
+nexus-query-engine depends on both and preserves the public facade.
+datafusion-nexus depends on that facade and uses the enabled cuDF, cuVS, and cuGraph Rust bindings.
 ```
 
 The full-feature build order follows those dependencies:

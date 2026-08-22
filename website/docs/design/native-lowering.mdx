@@ -175,7 +175,7 @@ Keep changes at the owner of the missing contract:
 | Change | Extend |
 | --- | --- |
 | Recognize another DataFusion physical shape | `src/native/normalize.rs`, `src/native/validate.rs`, and the existing module in `src/native/lowering/` |
-| Add or change native IR semantics | `crates/nexus-query-engine/src/plan/`, then its optimizer, capability, and execution owners |
+| Add or change native IR semantics | `crates/nexus-query-planning/src/plan/`, `crates/nexus-query-planning/src/optimizer/`, and `crates/nexus-query-planning/src/capability/`; execution changes remain in `crates/nexus-query-engine/src/exec/` |
 | Add an explicit GPU producer or graph island | The existing `GpuResidentProducer` or `GraphExecutionPlan` boundary in `src/native_exec/`, then compose through the current wrappers |
 | Add a missing cuDF or cuGraph primitive | `components/cudf` or `components/cugraph`; do not emulate it in the DataFusion adapter |
 | Add a missing cuVS primitive | `components/cuvs`; preserve runtime binding, tensor ownership, and completion contracts |

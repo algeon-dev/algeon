@@ -50,6 +50,8 @@ TOOLCHAIN_FILE="${SNAPSHOT_DIR}/TOOLCHAIN.txt"
 CRATES=(
   "datafusion-nexus"
   "nexus-query-engine"
+  "nexus-query-planning"
+  "nexus-query-runtime"
   "nexus-bench"
   "nexus-server"
   "cudf-nexus"

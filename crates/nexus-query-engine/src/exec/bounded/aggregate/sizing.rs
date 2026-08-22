@@ -24,46 +24,6 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::*;
 
-/// Row-count shape of the partial-aggregate output.
-#[derive(Debug, Clone, Copy)]
-pub enum PartialAggregateShape {
-    /// Global (no GROUP BY) — partial output has exactly 1 row.
-    Global,
-    /// Grouped — partial output has at most `input_rows` rows. This is
-    /// the conservative bound used in bounded mode until a libcudf
-    /// grouped-aggregate row-count preflight lands (Milestone 4.G follow-up
-    /// per the q72 design doc).
-    Grouped {
-        /// Input row count used as the conservative grouped-output upper bound.
-        input_rows: u64,
-    },
-}
-
-impl PartialAggregateShape {
-    /// Conservative output-row upper bound for this aggregate shape.
-    pub fn output_row_count_upper_bound(&self) -> u64 {
-        match self {
-            Self::Global => 1,
-            Self::Grouped { input_rows } => *input_rows,
-        }
-    }
-}
-
-/// Closed-form upper bound (in bytes) on the device allocation a
-/// partial-aggregate output table can occupy.
-///
-/// Delegates per-column sizing to the join helper. Returns `Ok(0)`
-/// when `columns.is_empty()`. Returns
-/// `QueryErrorCode::UnsupportedPlanShape` for any column whose Arrow
-/// dtype is not supported by bounded sizing; the caller's
-/// admission gate is expected to reject such plans earlier.
-pub fn partial_aggregate_upper_bound_bytes(
-    shape: PartialAggregateShape,
-    columns: &[JoinOutputColumnUpperBoundInput],
-) -> Result<u64> {
-    join_output_upper_bound_bytes(shape.output_row_count_upper_bound(), columns)
-}
-
 pub(super) fn partial_aggregate_work_reservation_upper_bound_bytes(
     context: &ExecutionContext,
     node_id: NodeId,

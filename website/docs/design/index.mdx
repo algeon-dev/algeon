@@ -44,9 +44,16 @@ DataFusion session.
 - **The adapter translates:** `src/` recognizes whole relational DataFusion
   physical plans as native candidates, lowers a selected candidate into
   `QueryPlan`, and exposes reports.
-- **The engine owns native execution:** `crates/nexus-query-engine` has no
-  DataFusion dependency. It owns the IR, capability analysis, execution-time
-  context, and executor.
+- **Planning owns proof:** `crates/nexus-query-planning` owns the native IR,
+  optimizer, capability analysis, proof diagnostics, admission contracts, and
+  compiled pipeline. It has no DataFusion or execution dependency.
+- **Runtime owns resources:** `crates/nexus-query-runtime` consumes planning
+  contracts and owns attempt lifecycle, query service, device ledger,
+  immutable grants, caches, observations, and metrics.
+- **The engine composes execution:** `crates/nexus-query-engine` depends on
+  planning and runtime, owns native execution, and preserves the existing
+  package and Rust import identity as the public facade. All three crates are
+  DataFusion-free.
 - **RAPIDS capability belongs below:** Missing GPU APIs, memory hooks, device
   interop, graph, or vector contracts belong in the `components/cudf` /
   `components/cugraph` / `components/cuvs` crates, not adapter workarounds.
@@ -153,12 +160,25 @@ Three deep contracts sit behind this overview, each on its own page:
         <code>src/error.rs</code> for adapter errors.</>,
     },
     {
-      kind: 'engine', name: 'nexus-query-engine', note: 'QueryPlan IR · capability · executor', tone: 'bridge',
+      kind: 'planning', name: 'nexus-query-planning', note: 'IR · optimizer · capability · proof', tone: 'plan',
+      sub: 'crates/nexus-query-planning',
+      detail: <>The closed planning contract. It owns <code>QueryPlan</code>,
+        expressions, source facts, capability-first admission, proof diagnostics,
+        and compiled pipelines. It has no DataFusion or execution dependency.</>,
+    },
+    {
+      kind: 'runtime', name: 'nexus-query-runtime', note: 'lifecycle · ledger · grant · observation', tone: 'engine',
+      sub: 'crates/nexus-query-runtime',
+      detail: <>The resource authority. It consumes planning contracts and owns
+        the query service, attempt lifecycle, device placement, the single
+        per-device ledger, immutable grants, caches, observations, and metrics.</>,
+    },
+    {
+      kind: 'engine', name: 'nexus-query-engine', note: 'execution · composition · public facade', tone: 'bridge',
       sub: 'crates/nexus-query-engine',
-      detail: <>The closed native engine. It owns <code>QueryPlan</code>,
-        expressions, sources, capability-first admission, compiled pipelines,
-        bounded execution, retained report projections, runtime metrics, and native errors.
-        It has no DataFusion dependency.</>,
+      detail: <>The native execution owner and compatible facade. It composes
+        one planning proof with one runtime grant, executes relational, graph,
+        vector, and source work, and re-exports the established public paths.</>,
     },
     {
       kind: 'bindings', name: 'components/(cudf, cugraph, cuvs, others)', note: 'safe Rust over RAPIDS', tone: 'gpu',
@@ -176,25 +196,31 @@ Three deep contracts sit behind this overview, each on its own page:
         surface in Rust as structured <code>Result</code>s.</>,
     },
   ]}
-  caption={<>The important boundary is not "host versus GPU"; it is
-  DataFusion's open <code>ExecutionPlan</code> trait versus the engine's closed,
-  owned <code>QueryPlan</code> IR.</>}
+  caption={<>The adapter lowers DataFusion's open <code>ExecutionPlan</code>
+  trait into planning's closed <code>QueryPlan</code> IR. Runtime admits that
+  proof against one resource authority, and the engine composes the admitted
+  plan into native execution.</>}
 />
 
-### Why two crates (datafusion-nexus & nexus-query-engine)
+### Why the native stack is layered
 
-The split is structural, not cosmetic. `nexus-query-engine` deliberately
-consumes a closed, owned `QueryPlan` instead of DataFusion's open
-`ExecutionPlan` trait.
+The split is structural, not cosmetic. The root adapter translates DataFusion,
+`nexus-query-planning` owns the closed plan and proof contracts,
+`nexus-query-runtime` owns resource admission, and `nexus-query-engine`
+composes native execution while preserving its established facade.
 
 - DataFusion's physical trait changes with DataFusion releases; the engine's IR
   remains a stable native execution contract.
 - Physical planning has already decided aggregate modes, partitioning,
   projection pushdown, join shape, and scan facts. Native lowering needs those
   decisions.
-- Engine tests can pin capability analysis, immutable-grant behavior,
-  reservation behavior, and executor semantics without DataFusion in scope.
-- Non-DataFusion frontends can construct the same native IR directly.
+- Planning tests can pin IR and proof behavior without compiling runtime or
+  execution; runtime tests can pin grants and lifecycle without compiling the
+  engine executor.
+- Engine contract tests still exercise end-to-end planning, runtime, and
+  execution composition without DataFusion in scope.
+- Existing callers keep using `nexus-query-engine`; the facade re-exports the
+  compatible planning and runtime paths.
 
 The current `PlanNode` variants are `Source`, `Filter`, `Projection`,
 `Aggregate`, `Window`, `Sort`, `Limit`, `Join`, `Union`, `EdgeNormalize`, and
@@ -205,8 +231,9 @@ The current `PlanNode` variants are `Source`, `Filter`, `Projection`,
 | Change | Correct home | Contract to update |
 | --- | --- | --- |
 | Support a new DataFusion physical shape | `src/native/normalize.rs`, `src/native/lowering/`, `src/native/validate*` | Planning reports, candidate outcomes, and final-plan requirements |
-| Add native IR or executor behavior | `crates/nexus-query-engine/src/plan`, `expr`, `source`, `exec`, `runtime` | Engine contract tests and metrics |
-| Admit a bounded compiled shape | `crates/nexus-query-engine/src/admission`, `capability`, `pipeline` | Capability evidence, immutable grants, and bounded-controller report projections; no family-name shortcuts |
+| Add native IR, optimizer, capability, or proof behavior | `crates/nexus-query-planning/src/plan/`, `crates/nexus-query-planning/src/expr/`, `crates/nexus-query-planning/src/source/`, `crates/nexus-query-planning/src/optimizer/`, `crates/nexus-query-planning/src/capability/`, `crates/nexus-query-planning/src/admission/`, `crates/nexus-query-planning/src/pipeline/` | Planning proof diagnostics and contract tests; no family-name shortcuts |
+| Change attempt lifecycle, device admission, grants, cache, observation, or metrics | `crates/nexus-query-runtime/src/attempt/`, `crates/nexus-query-runtime/src/runtime/`, `crates/nexus-query-runtime/src/observability/`, `crates/nexus-query-runtime/src/metrics/` | One ledger, immutable grant, and runtime observation projections |
+| Add native executor behavior or compose planning with runtime | `crates/nexus-query-engine/src/exec/` | Engine execution and integration contracts |
 | Improve GPU memory, streams, source readers, or graph interop | `cudf`, `cugraph`, `rapids-interop` crates | Binding crate API and FFI error mapping |
 | Change public evidence | `src/native_report/`, `src/native_exec/metrics/`, `src/error.rs` | Public surface schema/version constants |
 
@@ -326,8 +353,10 @@ Use this page as the routing table before changing behavior:
 | If you are changing... | Inspect first | Keep stable |
 | --- | --- | --- |
 | Native rewrite coverage | `src/native/normalize.rs`, `src/native/lowering/`, `src/native/validate*` | `PlanningReport`, `CandidateOutcome`, `CapabilityReason`, rule names |
-| Native execution semantics | `crates/nexus-query-engine/src/admission/`, `capability/`, `pipeline/`, `exec/`, `runtime/` | Immutable-grant reservation evidence and retained report projections |
-| cuGraph SQL behavior | `src/cugraph_sql/types.rs`, `parser.rs`, `exec/`, `src/gpu_functions/`, engine `exec/graph_algorithm/` | Metadata column order and validation output |
+| Native IR, capability, proof, or compiled-pipeline semantics | `crates/nexus-query-planning/src/plan/`, `crates/nexus-query-planning/src/capability/`, `crates/nexus-query-planning/src/admission/`, `crates/nexus-query-planning/src/pipeline/` | One proof path and structured planning diagnostics |
+| Runtime admission, lifecycle, ledger, grant, cache, observation, or metrics | `crates/nexus-query-runtime/src/attempt/`, `crates/nexus-query-runtime/src/runtime/`, `crates/nexus-query-runtime/src/observability/`, `crates/nexus-query-runtime/src/metrics/` | One ledger, immutable grant, attempt observation, and retained projections |
+| Native execution semantics | `crates/nexus-query-engine/src/exec/` | Planning/runtime/execution composition and facade compatibility |
+| cuGraph SQL behavior | `src/cugraph_sql/types.rs`, `src/cugraph_sql/parser.rs`, `src/cugraph_sql/exec/`, `src/gpu_functions/`, `crates/nexus-query-engine/src/exec/graph_algorithm/` | Metadata column order and validation output |
 | Iceberg/source behavior | `src/table_format/`, `src/table_format/iceberg/`, server workspace configuration | Source diagnostics and credential-safe error facts |
 | Public diagnostics | `src/native_report/schema.rs`, `src/native_exec/metrics/`, `src/error.rs` | TSV headers, metric names, `ErrorCode`s |
 

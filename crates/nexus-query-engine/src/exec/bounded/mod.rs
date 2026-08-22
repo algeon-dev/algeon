@@ -27,7 +27,6 @@ pub(in crate::exec::bounded) use aggregate::{
 use chunks::*;
 pub(in crate::exec) use facts::RuntimeResourceFacts;
 use facts::*;
-pub(in crate::exec) use final_sort::topk_candidate_rows;
 use final_sort::*;
 #[cfg(feature = "cugraph")]
 pub(in crate::exec::bounded) use generic::execute_bounded_graph_algorithm_from_inputs;

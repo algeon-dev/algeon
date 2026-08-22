@@ -42,10 +42,14 @@
 
 ## Project boundaries
 
-`datafusion-nexus` lowers DataFusion physical plans to `nexus-query-engine` IR
-and executes them via the Rust components under `components/`. DataFusion-
-dependent code belongs in the root adapter; DataFusion-independent IR and
-execution belong in `crates/nexus-query-engine`.
+`datafusion-nexus` lowers DataFusion physical plans through the compatible
+`nexus-query-engine` facade and executes them via the Rust components under
+`components/`. DataFusion-dependent code belongs in the root adapter. IR,
+optimizer, capability, proof, admission contracts, and pipeline belong in
+`crates/nexus-query-planning`; attempt lifecycle, query service, device ledger,
+immutable grants, cache, observation, and metrics belong in
+`crates/nexus-query-runtime`; native execution composition and facade
+compatibility belong in `crates/nexus-query-engine`.
 
 - `cudf-nexus`, `cugraph-nexus`, and `cuvs-nexus` are internal members of the
   root workspace. Their package and Rust import identities remain unchanged.
@@ -61,7 +65,7 @@ execution belong in `crates/nexus-query-engine`.
 ## Native GPU engine core
 
 - Support requires owner-proved allocation bounds, lifetimes, and output facts; incomplete proof is structured unsupported.
-- Native allocation owners expose hard preflights; `nexus-query-engine` composes them and never invents surrogate bounds.
+- Native allocation owners expose hard preflights; `nexus-query-planning` composes their proof contracts, runtime admits that proof, and `nexus-query-engine` executes it without inventing surrogate bounds.
 - Use one compiled schedule, per-device ledger, and immutable grant; deferred refinement stays inside that grant.
 - Admit by operator capability, never customer, SQL text, names, one-off algorithm allowlists, or plan-shape matching.
 - Keep one proof path and one truth source; consolidate and delete special constructors, flags, matchers, or ledgers.

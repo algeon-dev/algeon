@@ -135,29 +135,3 @@ fn global_count_series_impl(
         },
     }
 }
-
-pub(in crate::exec) fn global_count_star_expr(expr: &Expr) -> bool {
-    matches!(
-        expr,
-        Expr::Literal(
-            LiteralValue::Boolean(_)
-                | LiteralValue::Int8(_)
-                | LiteralValue::Int16(_)
-                | LiteralValue::Int32(_)
-                | LiteralValue::Int64(_)
-                | LiteralValue::UInt8(_)
-                | LiteralValue::UInt16(_)
-                | LiteralValue::UInt32(_)
-                | LiteralValue::UInt64(_)
-                | LiteralValue::Float32(_)
-                | LiteralValue::Float64(_)
-                | LiteralValue::Utf8(_)
-                | LiteralValue::LargeUtf8(_)
-                | LiteralValue::Decimal128 { .. }
-                | LiteralValue::Date32(_)
-                | LiteralValue::Timestamp { .. }
-                | LiteralValue::Duration { .. }
-                | LiteralValue::IntervalMonthDayNano { .. },
-        )
-    )
-}

@@ -408,7 +408,7 @@ lane_safe=1
 gpu_scheduling_summary=""
 doctest_summary="not-run"
 rustdoc_summary="not-run"
-policy_selftest_count=12
+policy_selftest_count=13
 
 PHASE_ORDER=(
   policy-selftests
@@ -939,6 +939,7 @@ run_isolated_policy_commands() {
     scripts/build/check_cpu_packaging_policy.sh \
     scripts/ci/check_iceberg_leaf_dependency.sh \
     scripts/build/check_build_support.sh \
+    scripts/ci/tests/check_dependency_direction_tests.sh \
     scripts/ci/tests/check_doctest_report_tests.sh \
     scripts/ci/tests/check_phase_test_counts_tests.sh \
     scripts/ci/tests/check_gpu_test_lane_tests.sh \
@@ -1152,7 +1153,7 @@ if [[ "${mode}" == full ]]; then
   run_or_cache_phase doctests doctest - "${GPU_LOCK}" doctest_command || true
   run_or_cache_phase rustdoc none - - rustdoc_command || true
   rustdoc_summary="command_status=${PHASE_EXIT[rustdoc]} warnings=denied"
-  run_or_cache_phase public-api-surface literal:crates=6 - - public_api_surface_command || true
+  run_or_cache_phase public-api-surface literal:crates=8 - - public_api_surface_command || true
   run_or_cache_phase clippy none - - cargo clippy --workspace --all-targets "${FEATURE_ARGS[@]}" -- -D warnings || true
 fi
 

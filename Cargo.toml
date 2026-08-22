@@ -20,6 +20,8 @@ members = [
   "crates/nexus-workloads",
   "crates/nexus-iceberg",
   "crates/nexus-query-engine",
+  "crates/nexus-query-planning",
+  "crates/nexus-query-runtime",
   "crates/nexus-server",
   "crates/nexus-bench",
   "crates/nexus-tools",
@@ -67,6 +69,8 @@ workspace = true
 datafusion-nexus = { path = ".", version = "=0.1.0", default-features = false }
 nexus-workloads = { path = "crates/nexus-workloads" }
 nexus-query-engine = { path = "crates/nexus-query-engine", version = "=0.1.0", default-features = false }
+nexus-query-planning = { path = "crates/nexus-query-planning", version = "=0.1.0", default-features = false }
+nexus-query-runtime = { path = "crates/nexus-query-runtime", version = "=0.1.0", default-features = false }
 nexus-server = { path = "crates/nexus-server", default-features = false }
 nexus-iceberg = { path = "crates/nexus-iceberg", version = "=0.1.0", default-features = false }
 cudf = { package = "cudf-nexus", path = "components/cudf/cudf-nexus", version = "=0.1.0" }

@@ -1,6 +1,7 @@
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
-use super::{lowering_policy::ExpressionLoweringPolicy, *};
+use super::*;
+use crate::expression_lowering_policy::ExpressionLoweringPolicy;
 
 mod aggregate;
 mod global_aggregate;
