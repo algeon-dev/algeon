@@ -28,6 +28,10 @@ pub(super) fn select_partial_aggregate_strategy_decision(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 pub(super) fn select_partial_aggregate_strategy_decision_with_options(
     mut decision: AggregateStrategyCapabilityDecision,
     node_id: Option<NodeId>,
@@ -1047,6 +1051,10 @@ fn update_rejected_candidate_summary(decision: &mut AggregateStrategyCapabilityD
     );
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+)]
 pub(in crate::exec) fn record_default_grouped_aggregate_strategy_decision(
     metrics: &mut QueryMetrics,
     node_id: Option<String>,
@@ -1080,7 +1088,10 @@ pub(in crate::exec) fn record_default_grouped_aggregate_strategy_decision(
     );
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "strategy-decision facts are reported individually; grouping them would be a projection DTO"
+)]
 pub(in crate::exec) fn record_grouped_aggregate_strategy_decision(
     metrics: &mut QueryMetrics,
     node_id: Option<String>,

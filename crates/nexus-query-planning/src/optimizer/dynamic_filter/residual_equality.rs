@@ -51,6 +51,7 @@ pub(super) fn residual_equality_route_candidates(
     candidates
 }
 
+#[expect(clippy::too_many_arguments, reason = "planning inputs are distinct proof and constraint values")]
 pub(super) fn residual_equality_route_candidates_for_orientation(
     plan: &QueryPlan,
     parent_counts: &[usize],

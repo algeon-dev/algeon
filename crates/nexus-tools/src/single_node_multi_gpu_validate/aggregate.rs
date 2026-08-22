@@ -891,7 +891,10 @@ pub(super) struct PhysicalAllocatorPressureEvidence {
 }
 
 impl PhysicalAllocatorPressureEvidence {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "validation measurement aggregation; each parameter is one independently reported measurement axis"
+    )]
     pub(super) fn from_observations(
         pressure: PhysicalPressureLeaseFacts,
         release: PhysicalPressureLeaseFacts,
@@ -1058,7 +1061,10 @@ fn attempt_exact_u64(evidence: &Value, field: &str) -> Option<u64> {
 }
 
 impl OverloadFairnessEvidence {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "validation measurement aggregation; each parameter is one independently reported measurement axis"
+    )]
     pub(super) fn from_observations(
         observations: &[AttemptObservation],
         devices: &[DeviceConfiguration],
@@ -1216,7 +1222,10 @@ impl QuarantineFallbackEvidence {
     pub(super) fn require_cache_residency(&mut self) {
         self.require_cache_residency = true;
     }
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "validation measurement aggregation; each parameter is one independently reported measurement axis"
+    )]
     pub(super) fn from_barrier(
         target_ordinal: usize,
         pre_ack_witness_offset_ns: u64,
@@ -1478,7 +1487,10 @@ impl MeasuredAggregate {
 
     /// The complete reduction. `steps` carries the per-step windows; an
     /// empty slice is a single-phase run and emits no per-step section.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "validation measurement aggregation; each parameter is one independently reported measurement axis"
+    )]
     pub(super) fn reduce_full(
         observations: &[AttemptObservation],
         devices: &[DeviceConfiguration],

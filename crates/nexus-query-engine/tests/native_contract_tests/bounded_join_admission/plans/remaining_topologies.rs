@@ -1110,6 +1110,7 @@ fn root_topk_null_filtered_aggregate_fan_in_plan(
     builder.finish_with_host_sink(limit)
 }
 
+#[expect(clippy::too_many_arguments, reason = "test fixture parameters are independent fixture axes")]
 fn null_filtered_aggregate_branch(
     builder: &mut QueryPlanBuilder,
     label: &str,

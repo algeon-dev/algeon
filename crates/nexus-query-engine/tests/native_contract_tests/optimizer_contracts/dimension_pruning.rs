@@ -1015,6 +1015,7 @@ fn write_record_batch_parquet(path: &Path, schema: Arc<Schema>, batch: &RecordBa
     writer.close().expect("test parquet writer should close");
 }
 
+#[expect(clippy::too_many_arguments, reason = "test fixture parameters are independent fixture axes")]
 fn write_nested_fact_parquet(
     path: &Path,
     schema: Arc<Schema>,

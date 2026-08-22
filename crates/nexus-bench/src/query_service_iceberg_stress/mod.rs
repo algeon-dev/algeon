@@ -665,6 +665,10 @@ fn build_requests(config: &StressConfig) -> Vec<StressRequest> {
     requests
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "service construction inputs are distinct admission and ownership values"
+)]
 fn failure_row(
     request: &StressRequest,
     total_wall: Duration,

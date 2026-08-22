@@ -203,6 +203,10 @@ pub(in crate::exec) fn try_grow_source_read_reservation_for_budget_correction(
     execution.try_grow(reservation, request).map_err(|error| correction.attach_to_error(error))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(in crate::exec::bounded::chunks) fn try_read_local_parquet_chunk_with_corrected_budget_after_error(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,

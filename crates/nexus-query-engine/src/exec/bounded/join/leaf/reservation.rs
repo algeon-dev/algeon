@@ -62,6 +62,10 @@ pub(super) fn join_source_read_batch_reservation_request(
     .with_source_read_contract(contract.quality.as_str(), contract.planning_bytes, contract.estimated_bytes)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(super) fn join_source_read_reservation_request_for_boundary(
     policy: MemoryControlPolicy,
     requested_bytes: u64,

@@ -432,21 +432,8 @@ fn graph_ticket_plan_and_proof_with_resident_edge_plan(
     exec: &CugraphAlgoExec,
     edge_plan: &QueryPlan,
 ) -> (nexus_query_engine::plan::QueryPlan, nexus_query_engine::admission::QueryPlanCapabilityProof) {
-    let edge_vertex_upper_bound =
-        edge_source_graph_vertex_estimate(exec.edge_source.as_ref()).map(|estimate| estimate.count);
-    cugraph_execution_capability_proof_with_resident_input_plans(
-        &exec.spec,
-        exec.edge_source.schema(),
-        exec.predicate_sources.iter().map(|source| source.schema()).collect(),
-        exec.input_row_bounds.predicate_row_upper_bounds(),
-        &exec.result_options,
-        exec.edge_normalize_inserted(),
-        exec.input_row_bounds.edge_row_upper_bound(),
-        edge_vertex_upper_bound,
-        Some(edge_plan),
-        &[],
-    )
-    .expect("prepared graph fixture must issue a resident-input-bound proof")
+    cugraph_execution_capability_proof_with_resident_input_plans(&exec.plan_definition(), Some(edge_plan), &[])
+        .expect("prepared graph fixture must issue a resident-input-bound proof")
 }
 
 fn production_string_parquet_plan(
@@ -915,16 +902,16 @@ fn cugraph_algo_exec_does_not_request_input_repartitioning() {
 #[test]
 fn logical_bfs_path_gpu_plan_decodes_the_bounded_path_schema() {
     let spec = bfs_utf8_path_spec();
-    let plan = cugraph_schema_query_plan(
-        &spec,
-        string_edge_schema(),
-        vec![Arc::new(Schema::new(vec![Field::new("target_vertex", DataType::Utf8, false)]))],
-        &[Some(1)],
-        &CugraphResultPlanOptions::default(),
-        false,
-        Some(3),
-        None,
-    )
+    let plan = cugraph_schema_query_plan(&CugraphPlanDefinition {
+        spec: spec.clone(),
+        edge_schema: string_edge_schema(),
+        predicate_schemas: vec![Arc::new(Schema::new(vec![Field::new("target_vertex", DataType::Utf8, false)]))],
+        predicate_row_upper_bounds: vec![Some(1)],
+        result_options: CugraphResultPlanOptions::default(),
+        edge_normalize_inserted: false,
+        edge_row_upper_bound: Some(3),
+        edge_vertex_upper_bound: None,
+    })
     .expect("logical BFS path GPU plan should build");
     let schema = plan.root_node().output_schema();
 
@@ -1016,16 +1003,16 @@ async fn bfs_path_materializes_only_the_bounded_frame_under_small_host_limit() {
 fn string_pagerank_plan_restores_subsumed_top_k_order_after_decode() {
     let mut result_options = CugraphResultPlanOptions::new(None, Some(3));
     result_options.subsumed_top_k_sort = Some(SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)]));
-    let plan = cugraph_schema_query_plan(
-        &pagerank_utf8_spec(),
-        string_edge_schema(),
-        Vec::new(),
-        &[],
-        &result_options,
-        false,
-        None,
-        None,
-    )
+    let plan = cugraph_schema_query_plan(&CugraphPlanDefinition {
+        spec: pagerank_utf8_spec().clone(),
+        edge_schema: string_edge_schema(),
+        predicate_schemas: Vec::new(),
+        predicate_row_upper_bounds: [].to_vec(),
+        result_options: result_options.clone(),
+        edge_normalize_inserted: false,
+        edge_row_upper_bound: None,
+        edge_vertex_upper_bound: None,
+    })
     .expect("string PageRank GPU plan should build");
 
     let codebook = plan
@@ -1092,16 +1079,16 @@ fn m1_string_algorithms_share_the_int64_codebook_and_vertex_decode_path() {
     ];
 
     for algorithm in algorithms {
-        let plan = cugraph_schema_query_plan(
-            &logical_string_spec(algorithm),
-            string_edge_schema(),
-            Vec::new(),
-            &[],
-            &CugraphResultPlanOptions::default(),
-            false,
-            Some(3),
-            None,
-        )
+        let plan = cugraph_schema_query_plan(&CugraphPlanDefinition {
+            spec: logical_string_spec(algorithm).clone(),
+            edge_schema: string_edge_schema(),
+            predicate_schemas: Vec::new(),
+            predicate_row_upper_bounds: [].to_vec(),
+            result_options: CugraphResultPlanOptions::default().clone(),
+            edge_normalize_inserted: false,
+            edge_row_upper_bound: Some(3),
+            edge_vertex_upper_bound: None,
+        })
         .unwrap_or_else(|error| panic!("{} logical plan failed: {error}", algorithm.function_name()));
         let graph = plan
             .nodes()
@@ -1143,16 +1130,16 @@ fn m3_string_selectors_lower_to_encoded_native_side_inputs_and_decode_identity_o
 
     for (spec, decoded_columns) in cases {
         let algorithm = spec.algorithm;
-        let plan = cugraph_schema_query_plan(
-            &spec,
-            string_edge_schema(),
-            Vec::new(),
-            &[],
-            &CugraphResultPlanOptions::default(),
-            false,
-            Some(3),
-            None,
-        )
+        let plan = cugraph_schema_query_plan(&CugraphPlanDefinition {
+            spec: spec.clone(),
+            edge_schema: string_edge_schema(),
+            predicate_schemas: Vec::new(),
+            predicate_row_upper_bounds: [].to_vec(),
+            result_options: CugraphResultPlanOptions::default().clone(),
+            edge_normalize_inserted: false,
+            edge_row_upper_bound: Some(3),
+            edge_vertex_upper_bound: None,
+        })
         .unwrap_or_else(|error| panic!("{} logical selector plan failed: {error}", algorithm.function_name()));
         let graph = plan
             .nodes()
@@ -1214,16 +1201,16 @@ fn string_pagerank_subsumes_only_bounded_sorts() {
 #[test]
 fn string_pagerank_large_bound_prices_one_graph_after_both_endpoint_lookups() {
     let edge_rows = 54_957_455;
-    let plan = cugraph_schema_query_plan(
-        &pagerank_utf8_spec(),
-        string_edge_schema(),
-        Vec::new(),
-        &[],
-        &CugraphResultPlanOptions::default(),
-        false,
-        Some(edge_rows),
-        None,
-    )
+    let plan = cugraph_schema_query_plan(&CugraphPlanDefinition {
+        spec: pagerank_utf8_spec().clone(),
+        edge_schema: string_edge_schema(),
+        predicate_schemas: Vec::new(),
+        predicate_row_upper_bounds: [].to_vec(),
+        result_options: CugraphResultPlanOptions::default().clone(),
+        edge_normalize_inserted: false,
+        edge_row_upper_bound: Some(edge_rows),
+        edge_vertex_upper_bound: None,
+    })
     .expect("large string PageRank plan should build without materializing rows");
 
     let endpoint_joins = plan
@@ -1278,16 +1265,16 @@ fn string_jaccard_70_by_70_retires_shared_mapping_intermediates_before_the_final
         limit: Some(70),
         ..Default::default()
     };
-    let plan = cugraph_schema_query_plan(
-        &spec,
-        string_edge_schema(),
-        vec![Arc::clone(&pair_schema)],
-        &[Some(rows)],
-        &result_options,
-        false,
-        Some(rows),
-        None,
-    )
+    let plan = cugraph_schema_query_plan(&CugraphPlanDefinition {
+        spec: spec.clone(),
+        edge_schema: string_edge_schema(),
+        predicate_schemas: vec![Arc::clone(&pair_schema)],
+        predicate_row_upper_bounds: [Some(rows)].to_vec(),
+        result_options: result_options.clone(),
+        edge_normalize_inserted: false,
+        edge_row_upper_bound: Some(rows),
+        edge_vertex_upper_bound: None,
+    })
     .expect("70-edge/70-pair logical string Jaccard plan must build");
     let source_bounds = plan
         .nodes()
@@ -1413,16 +1400,16 @@ fn string_bfs_maps_edge_relation_predicates_and_both_result_vertices() {
             Field::new("edge_dst", DataType::Utf8, false),
         ])),
     ];
-    let plan = cugraph_schema_query_plan(
-        &spec,
-        string_edge_schema(),
-        predicate_schemas.clone(),
-        &[Some(54_957_455), Some(10_446_432), Some(10_446_432), Some(54_957_455)],
-        &CugraphResultPlanOptions::default(),
-        false,
-        Some(54_957_455),
-        None,
-    )
+    let plan = cugraph_schema_query_plan(&CugraphPlanDefinition {
+        spec: spec.clone(),
+        edge_schema: string_edge_schema(),
+        predicate_schemas: predicate_schemas.clone(),
+        predicate_row_upper_bounds: [Some(54_957_455), Some(10_446_432), Some(10_446_432), Some(54_957_455)].to_vec(),
+        result_options: CugraphResultPlanOptions::default().clone(),
+        edge_normalize_inserted: false,
+        edge_row_upper_bound: Some(54_957_455),
+        edge_vertex_upper_bound: None,
+    })
     .expect("production-shaped string BFS plan should build without materializing rows");
 
     let domain = plan
@@ -1458,16 +1445,16 @@ fn string_bfs_maps_edge_relation_predicates_and_both_result_vertices() {
     );
     let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("fixture is BFS") };
     params.predicates.include_edges = None;
-    let admission_plan = cugraph_schema_query_plan(
-        &spec,
-        string_edge_schema(),
-        predicate_schemas[..3].to_vec(),
-        &[Some(10_446_432), Some(10_446_432), Some(10_446_432)],
-        &CugraphResultPlanOptions::default(),
-        false,
-        Some(54_957_455),
-        None,
-    )
+    let admission_plan = cugraph_schema_query_plan(&CugraphPlanDefinition {
+        spec: spec.clone(),
+        edge_schema: string_edge_schema(),
+        predicate_schemas: predicate_schemas[..3].to_vec(),
+        predicate_row_upper_bounds: [Some(10_446_432), Some(10_446_432), Some(10_446_432)].to_vec(),
+        result_options: CugraphResultPlanOptions::default().clone(),
+        edge_normalize_inserted: false,
+        edge_row_upper_bound: Some(54_957_455),
+        edge_vertex_upper_bound: None,
+    })
     .expect("production-shaped string BFS admission plan should build");
     let predicate_plans = vec![
         production_string_parquet_plan(

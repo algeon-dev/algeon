@@ -2,6 +2,10 @@ use parquet::file::reader::FileReader;
 
 use super::*;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(super) fn read_join_leaf_source_chunks_serial(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
@@ -30,6 +34,10 @@ pub(super) fn read_join_leaf_source_chunks_serial(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(super) fn read_join_leaf_source_batches_serial(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
@@ -89,6 +97,10 @@ pub(super) fn read_join_leaf_source_batches_serial(
     Ok(chunks)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(super) fn read_join_leaf_source_batch_or_split(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
@@ -228,6 +240,10 @@ pub(super) fn read_join_leaf_source_batch_attempt(
     Ok((frame, reservation))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(super) fn read_join_leaf_source_chunk_with_retry(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
@@ -265,6 +281,10 @@ pub(super) fn read_join_leaf_source_chunk_with_retry(
         Err(error) => Err(error),
     }
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(super) fn retry_join_leaf_source_chunk_after_error(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
@@ -313,6 +333,10 @@ pub(super) fn retry_join_leaf_source_chunk_after_error(
 
     Err(chunk_retry_facts(&chunk, execution.metrics_mut()).attach_to_error(error))
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(super) fn read_join_leaf_source_chunk_attempt(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
@@ -422,6 +446,10 @@ fn committed_join_source_chunk_row_groups(
     chunk.row_group_count() as u64
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(super) fn try_read_join_leaf_source_chunk_with_corrected_budget_after_error(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,

@@ -512,6 +512,10 @@ fn stable_fnv1a64(bytes: &[u8]) -> u64 {
     hash
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"
+)]
 fn ensure_local_cache_parquet_entry(
     context: &ExecutionContext,
     location: &crate::source::ParquetSourceLocation,
@@ -1185,6 +1189,10 @@ pub(super) fn lakehouse_cache_io_error(
     error
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"
+)]
 async fn stream_lakehouse_cache_fill(
     store: std::sync::Arc<dyn object_store::ObjectStore>,
     location: object_store::path::Path,

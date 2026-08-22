@@ -1010,7 +1010,7 @@ mod tests {
         runtime::{
             ExecutionContext,
             backend_metrics::BackendMetricsStore,
-            gpu::{DeviceCapabilities, DeviceResourceProfile},
+            gpu::{DeviceCapabilities, DeviceResourceEnvelope, DeviceResourceProfile},
             resident::GpuDataFrame,
         },
         source::LocalParquetSource,
@@ -1037,19 +1037,19 @@ mod tests {
 
     fn ledger(device_ordinal: usize, cache_cap_bytes: u64) -> DeviceLedger {
         let managed_capacity_bytes = cache_cap_bytes.saturating_mul(4).saturating_add(1024);
-        let profile = DeviceResourceProfile::resolve_with_capabilities_and_cache_cap(
+        let profile = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
             device_ordinal,
-            managed_capacity_bytes,
-            0,
-            0,
-            1,
-            1,
-            1,
-            2,
-            2,
-            DeviceCapabilities::default(),
+            configured_limit_bytes: managed_capacity_bytes,
+            headroom_bytes: 0,
+            backend_reserve_bytes: 0,
+            attempt_floor_bytes: 1,
+            max_active_attempts: 1,
+            source_work_per_attempt: 1,
+            stream_pool_size: 2,
+            worker_job_capacity: 2,
+            device_capabilities: DeviceCapabilities::default(),
             cache_cap_bytes,
-        )
+        })
         .expect("source-cache test ledger profile");
         DeviceLedger::new(profile)
     }

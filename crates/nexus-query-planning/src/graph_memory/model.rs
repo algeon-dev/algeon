@@ -792,6 +792,7 @@ fn edge_betweenness_output_row_width_model(input: GraphMemoryModelInput) -> Resu
         .ok_or_else(|| graph_memory_arithmetic_error("edge_betweenness_output_row_width", "addition"))
 }
 
+#[expect(clippy::too_many_arguments, reason = "planning inputs are distinct proof and constraint values")]
 fn workspace_bytes_model(
     algorithm: GraphAlgorithm,
     params: &GraphAlgorithmParams,

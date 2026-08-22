@@ -115,6 +115,7 @@ pub(super) fn execute_bounded_equality_left_only_filtered_join(
     let context = bounded_join_execution_context(runtime);
     execute_query_plan(&context, &plan).unwrap()
 }
+#[expect(clippy::too_many_arguments, reason = "test fixture parameters are independent fixture axes")]
 pub(super) fn keyless_conditional_join_input_subplan_plan(
     lineitem_path: &Path,
     anti_path: &Path,

@@ -445,6 +445,7 @@ fn rollup_rank_topk_plan_with_fact_file(fact_file: LocalParquetFile, include_fin
     rollup_rank_topk_plan_with_fact_file_and_join_type(fact_file, include_final_topk, JoinType::Inner)
 }
 
+#[expect(clippy::too_many_arguments, reason = "test fixture parameters are independent fixture axes")]
 fn statistical_inventory_branch(
     builder: &mut QueryPlanBuilder,
     inventory_path: &str,
@@ -1009,6 +1010,7 @@ fn rollup_rank_topk_plan_with_fact_file_and_join_type(
     builder.finish_with_host_sink(limit)
 }
 
+#[expect(clippy::too_many_arguments, reason = "test fixture parameters are independent fixture axes")]
 fn ranked_join_branch(
     builder: &mut QueryPlanBuilder,
     fact_path: &str,

@@ -576,7 +576,10 @@ fn execute_pca(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "native cuVS call parameters are fixed by the FFI signature and stay explicit"
+)]
 fn with_relation_tensor<T>(
     context: &ExecutionContext,
     plan: &QueryPlan,
@@ -765,7 +768,10 @@ fn with_relation_tensor<T>(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "native cuVS call parameters are fixed by the FFI signature and stay explicit"
+)]
 fn with_owned_relation_matrix<T>(
     context: &ExecutionContext,
     plan: &QueryPlan,
@@ -932,7 +938,10 @@ fn with_owned_relation_matrix<T>(
     body(packed, dimension)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "native cuVS call parameters are fixed by the FFI signature and stay explicit"
+)]
 fn with_uniform_list_relation_tensor<T>(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -1014,7 +1023,10 @@ fn with_uniform_list_relation_tensor<T>(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "native cuVS call parameters are fixed by the FFI signature and stay explicit"
+)]
 fn with_owned_uniform_list_relation_matrix<T>(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -1222,7 +1234,10 @@ fn matrix_layout_name(layout: MatrixLayout) -> &'static str {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "native cuVS call parameters are fixed by the FFI signature and stay explicit"
+)]
 fn observe_native<T>(
     context: &ExecutionContext,
     node_id: NodeId,

@@ -197,6 +197,7 @@ fn append_synthetic_filter_projections(
     Ok(())
 }
 
+#[expect(clippy::too_many_arguments, reason = "inputs are distinct domain values that share no owner")]
 fn append_synthetic_filter_projection(
     index: usize,
     filter: &Arc<dyn PhysicalExpr>,

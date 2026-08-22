@@ -376,18 +376,19 @@ fn test_ledger_with_explicit_profile(
     let max_active_attempts = max_active_attempts.max(1);
     let source_work = 1usize;
     let slots = max_active_attempts.saturating_mul(source_work.saturating_add(1)).max(max_active_attempts);
-    let profile = DeviceResourceProfile::resolve_with_capabilities(
-        device_ordinal,
-        managed_capacity_bytes,
-        0,
-        0,
-        attempt_floor_bytes,
-        max_active_attempts,
-        source_work,
-        slots,
-        slots,
-        device_capabilities,
-    )
+    let profile = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+            device_ordinal: device_ordinal,
+            configured_limit_bytes: managed_capacity_bytes,
+            headroom_bytes: 0,
+            backend_reserve_bytes: 0,
+            attempt_floor_bytes: attempt_floor_bytes,
+            max_active_attempts: max_active_attempts,
+            source_work_per_attempt: source_work,
+            stream_pool_size: slots,
+            worker_job_capacity: slots,
+            device_capabilities: device_capabilities,
+            cache_cap_bytes: 0,
+        })
     .expect("test ledger profile must resolve");
     DeviceLedger::new(profile)
 }

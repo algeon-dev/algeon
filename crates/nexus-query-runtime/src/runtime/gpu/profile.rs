@@ -131,74 +131,56 @@ pub struct DeviceResourceProfile {
     pub cache_cap_bytes: u64,
 }
 
+/// Immutable input contract for one device's resolved resource envelope.
+///
+/// These fields jointly define the admission envelope one device freezes at
+/// installation: capacity splits, the per-attempt floor, sloting, and cache
+/// share. `resolve` consumes the envelope; the derived capacities, lane and
+/// stream counts, and aux-source-work arithmetic stay computed outputs on
+/// [`DeviceResourceProfile`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceResourceEnvelope {
+    /// Device ordinal this envelope resolves for.
+    pub device_ordinal: usize,
+    /// Capability metadata frozen with this device's resource envelope.
+    pub device_capabilities: DeviceCapabilities,
+    /// Total configured allocation limit before headroom.
+    pub configured_limit_bytes: u64,
+    /// Headroom subtracted from the configured limit before backend reserve.
+    pub headroom_bytes: u64,
+    /// Backend-reserved bytes unavailable to managed attempts.
+    pub backend_reserve_bytes: u64,
+    /// Per-attempt floor guaranteed inside managed capacity.
+    pub attempt_floor_bytes: u64,
+    /// Maximum simultaneously admitted attempts.
+    pub max_active_attempts: usize,
+    /// Auxiliary source-work slots granted per attempt.
+    pub source_work_per_attempt: usize,
+    /// Installed stream-pool size; must cover root and auxiliary work.
+    pub stream_pool_size: usize,
+    /// Installed worker-job capacity; must cover root and auxiliary work.
+    pub worker_job_capacity: usize,
+    /// Bounded per-device cache share reserved alongside attempt floors.
+    pub cache_cap_bytes: u64,
+}
+
 impl DeviceResourceProfile {
-    /// Resolves all resource-controller arithmetic for one device.
-    pub fn resolve(
-        device_ordinal: usize,
-        configured_limit_bytes: u64,
-        headroom_bytes: u64,
-        backend_reserve_bytes: u64,
-        attempt_floor_bytes: u64,
-        max_active_attempts: usize,
-        source_work_per_attempt: usize,
-        stream_pool_size: usize,
-        worker_job_capacity: usize,
-    ) -> Result<Self> {
-        Self::resolve_with_capabilities(
+    /// Resolves all resource-controller arithmetic for one device from its
+    /// immutable resource envelope.
+    pub fn resolve(envelope: DeviceResourceEnvelope) -> Result<Self> {
+        let DeviceResourceEnvelope {
             device_ordinal,
-            configured_limit_bytes,
-            headroom_bytes,
-            backend_reserve_bytes,
-            attempt_floor_bytes,
-            max_active_attempts,
-            source_work_per_attempt,
-            stream_pool_size,
-            worker_job_capacity,
-            DeviceCapabilities::default(),
-        )
-    }
-
-    /// Resolves one profile with explicit immutable device capability metadata.
-    pub fn resolve_with_capabilities(
-        device_ordinal: usize,
-        configured_limit_bytes: u64,
-        headroom_bytes: u64,
-        backend_reserve_bytes: u64,
-        attempt_floor_bytes: u64,
-        max_active_attempts: usize,
-        source_work_per_attempt: usize,
-        stream_pool_size: usize,
-        worker_job_capacity: usize,
-        device_capabilities: DeviceCapabilities,
-    ) -> Result<Self> {
-        Self::resolve_with_capabilities_and_cache_cap(
-            device_ordinal,
-            configured_limit_bytes,
-            headroom_bytes,
-            backend_reserve_bytes,
-            attempt_floor_bytes,
-            max_active_attempts,
-            source_work_per_attempt,
-            stream_pool_size,
-            worker_job_capacity,
             device_capabilities,
-            0,
-        )
-    }
-
-    pub fn resolve_with_capabilities_and_cache_cap(
-        device_ordinal: usize,
-        configured_limit_bytes: u64,
-        headroom_bytes: u64,
-        backend_reserve_bytes: u64,
-        attempt_floor_bytes: u64,
-        max_active_attempts: usize,
-        source_work_per_attempt: usize,
-        stream_pool_size: usize,
-        worker_job_capacity: usize,
-        device_capabilities: DeviceCapabilities,
-        cache_cap_bytes: u64,
-    ) -> Result<Self> {
+            configured_limit_bytes,
+            headroom_bytes,
+            backend_reserve_bytes,
+            attempt_floor_bytes,
+            max_active_attempts,
+            source_work_per_attempt,
+            stream_pool_size,
+            worker_job_capacity,
+            cache_cap_bytes,
+        } = envelope;
         let usable_capacity_bytes = configured_limit_bytes.checked_sub(headroom_bytes).ok_or_else(|| {
             invalid(device_ordinal, "headroom_bytes", "configured limit is below reserved headroom")
                 .with_fact("reason", "configured_limit_below_headroom")
@@ -309,8 +291,33 @@ mod tests {
 
     #[test]
     fn resolves_heterogeneous_profiles_and_slot_math() {
-        let small = DeviceResourceProfile::resolve(0, 1_000, 100, 100, 100, 2, 3, 8, 8).unwrap();
-        let large = DeviceResourceProfile::resolve(1, 2_000, 200, 100, 100, 3, 1, 6, 6).unwrap();
+        let small = /*OK*/DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+            device_ordinal: 0,
+            configured_limit_bytes: 1_000,
+            headroom_bytes: 100,
+            backend_reserve_bytes: 100,
+            attempt_floor_bytes: 100,
+            max_active_attempts: 2,
+            source_work_per_attempt: 3,
+            stream_pool_size: 8,
+            worker_job_capacity: 8,
+            device_capabilities: DeviceCapabilities::default(),
+            cache_cap_bytes: 0,
+        }).unwrap();
+        let large = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+            device_ordinal: 1,
+            configured_limit_bytes: 2_000,
+            headroom_bytes: 200,
+            backend_reserve_bytes: 100,
+            attempt_floor_bytes: 100,
+            max_active_attempts: 3,
+            source_work_per_attempt: 1,
+            stream_pool_size: 6,
+            worker_job_capacity: 6,
+            device_capabilities: DeviceCapabilities::default(),
+            cache_cap_bytes: 0,
+        })
+        .unwrap();
         assert_eq!((small.usable_capacity_bytes, small.managed_capacity_bytes), (900, 800));
         assert_eq!((small.root_lane_count, small.root_stream_count, small.aux_source_work_capacity), (2, 2, 6));
         assert_eq!((large.usable_capacity_bytes, large.managed_capacity_bytes), (1_800, 1_700));
@@ -323,60 +330,125 @@ mod tests {
             (100, 0, 101, "backend_reserve_exceeds_usable_capacity"),
             (100, 0, 100, "zero_managed_capacity"),
         ] {
-            let error = DeviceResourceProfile::resolve(7, limit, headroom, reserve, 0, 1, 1, 2, 2).unwrap_err();
+            let error = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+                device_ordinal: 7,
+                configured_limit_bytes: limit,
+                headroom_bytes: headroom,
+                backend_reserve_bytes: reserve,
+                attempt_floor_bytes: 0,
+                max_active_attempts: 1,
+                source_work_per_attempt: 1,
+                stream_pool_size: 2,
+                worker_job_capacity: 2,
+                device_capabilities: DeviceCapabilities::default(),
+                cache_cap_bytes: 0,
+            })
+            .unwrap_err();
             assert_eq!(error.fact_value("device_ordinal"), Some("7"));
             assert_eq!(error.fact_value("reason"), Some(reason));
         }
-        let error = DeviceResourceProfile::resolve(7, u64::MAX, 0, 0, u64::MAX, 2, 1, 4, 4).unwrap_err();
+        let error = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+            device_ordinal: 7,
+            configured_limit_bytes: u64::MAX,
+            headroom_bytes: 0,
+            backend_reserve_bytes: 0,
+            attempt_floor_bytes: u64::MAX,
+            max_active_attempts: 2,
+            source_work_per_attempt: 1,
+            stream_pool_size: 4,
+            worker_job_capacity: 4,
+            device_capabilities: DeviceCapabilities::default(),
+            cache_cap_bytes: 0,
+        })
+        .unwrap_err();
         assert_eq!(error.fact_value("reason"), Some("attempt_floor_overflow"));
     }
 
     #[test]
     fn validates_cache_cap_against_managed_capacity_and_floor() {
-        let profile = DeviceResourceProfile::resolve_with_capabilities_and_cache_cap(
-            0,
-            1_000,
-            0,
-            0,
-            100,
-            2,
-            1,
-            4,
-            4,
-            DeviceCapabilities::default(),
-            800,
-        )
+        let profile = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+            device_ordinal: 0,
+            configured_limit_bytes: 1_000,
+            headroom_bytes: 0,
+            backend_reserve_bytes: 0,
+            attempt_floor_bytes: 100,
+            max_active_attempts: 2,
+            source_work_per_attempt: 1,
+            stream_pool_size: 4,
+            worker_job_capacity: 4,
+            device_capabilities: DeviceCapabilities::default(),
+            cache_cap_bytes: 800,
+        })
         .unwrap();
         assert_eq!(profile.cache_cap_bytes, 800);
-        let error = DeviceResourceProfile::resolve_with_capabilities_and_cache_cap(
-            0,
-            1_000,
-            0,
-            0,
-            100,
-            2,
-            1,
-            4,
-            4,
-            DeviceCapabilities::default(),
-            801,
-        )
+        let error = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+            device_ordinal: 0,
+            configured_limit_bytes: 1_000,
+            headroom_bytes: 0,
+            backend_reserve_bytes: 0,
+            attempt_floor_bytes: 100,
+            max_active_attempts: 2,
+            source_work_per_attempt: 1,
+            stream_pool_size: 4,
+            worker_job_capacity: 4,
+            device_capabilities: DeviceCapabilities::default(),
+            cache_cap_bytes: 801,
+        })
         .unwrap_err();
         assert_eq!(error.fact_value("reason"), Some("cache_cap_exceeds_managed_capacity"));
     }
 
     #[test]
     fn rejects_zero_attempt_floor_for_an_otherwise_valid_profile() {
-        let error = DeviceResourceProfile::resolve(7, 100, 0, 0, 0, 1, 1, 2, 2).unwrap_err();
+        let error = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+            device_ordinal: 7,
+            configured_limit_bytes: 100,
+            headroom_bytes: 0,
+            backend_reserve_bytes: 0,
+            attempt_floor_bytes: 0,
+            max_active_attempts: 1,
+            source_work_per_attempt: 1,
+            stream_pool_size: 2,
+            worker_job_capacity: 2,
+            device_capabilities: DeviceCapabilities::default(),
+            cache_cap_bytes: 0,
+        })
+        .unwrap_err();
         assert_eq!(error.fact_value("field"), Some("attempt_floor_bytes"));
         assert_eq!(error.fact_value("reason"), Some("zero"));
     }
 
     #[test]
     fn rejects_floor_and_slot_capacity_below_requirements() {
-        let floor = DeviceResourceProfile::resolve(3, 100, 0, 0, 51, 2, 1, 4, 4).unwrap_err();
+        let floor = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+            device_ordinal: 3,
+            configured_limit_bytes: 100,
+            headroom_bytes: 0,
+            backend_reserve_bytes: 0,
+            attempt_floor_bytes: 51,
+            max_active_attempts: 2,
+            source_work_per_attempt: 1,
+            stream_pool_size: 4,
+            worker_job_capacity: 4,
+            device_capabilities: DeviceCapabilities::default(),
+            cache_cap_bytes: 0,
+        })
+        .unwrap_err();
         assert_eq!(floor.fact_value("reason"), Some("attempt_floor_exceeds_managed_capacity"));
-        let slots = DeviceResourceProfile::resolve(3, 100, 0, 0, 10, 2, 3, 7, 7).unwrap_err();
+        let slots = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+            device_ordinal: 3,
+            configured_limit_bytes: 100,
+            headroom_bytes: 0,
+            backend_reserve_bytes: 0,
+            attempt_floor_bytes: 10,
+            max_active_attempts: 2,
+            source_work_per_attempt: 3,
+            stream_pool_size: 7,
+            worker_job_capacity: 7,
+            device_capabilities: DeviceCapabilities::default(),
+            cache_cap_bytes: 0,
+        })
+        .unwrap_err();
         assert_eq!(slots.fact_value("reason"), Some("below_required_slot_capacity"));
     }
 

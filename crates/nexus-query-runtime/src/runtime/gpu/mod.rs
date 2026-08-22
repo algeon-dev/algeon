@@ -36,7 +36,7 @@ pub use memory_failure::{DeviceMemoryFailureReport, DeviceMemoryFailureTracker};
 pub use owner::{DeviceOwnerToken, LiveBackendLease, claim_live_backend, normalize_device_ordinals};
 #[doc(hidden)]
 pub use placement::PlacementRequest;
-pub use profile::{DeviceCapabilities, DeviceCapability, DeviceResourceProfile};
+pub use profile::{DeviceCapabilities, DeviceCapability, DeviceResourceEnvelope, DeviceResourceProfile};
 pub(crate) use registry::{DeviceRegistry, DeviceRegistryConfig};
 
 /// Query placement selected by the service scheduler.

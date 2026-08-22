@@ -581,6 +581,10 @@ pub(super) fn execute_compiled_filtered_join_materialize(
     Ok(output)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+)]
 fn record_filtered_join_output_metrics(
     metrics: &mut QueryMetrics,
     node_id: NodeId,

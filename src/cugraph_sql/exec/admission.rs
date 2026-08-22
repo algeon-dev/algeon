@@ -123,6 +123,7 @@ fn compile_cugraph_occurrence_schedule(
     })
 }
 
+#[expect(clippy::too_many_arguments, reason = "execution inputs are distinct domain values that share no owner")]
 pub(super) fn cugraph_execution_config_after_staging(
     spec: &CugraphAlgorithmSpec,
     edge_source: &dyn ExecutionPlan,
@@ -181,6 +182,7 @@ fn bind_cugraph_ticket_to_attempt(
     Ok(execution_config.with_existing_query_admission_ticket(ticket))
 }
 
+#[expect(clippy::too_many_arguments, reason = "execution inputs are distinct domain values that share no owner")]
 fn compile_cugraph_admission_ticket(
     spec: &CugraphAlgorithmSpec,
     edge_source: &dyn ExecutionPlan,
@@ -196,7 +198,16 @@ fn compile_cugraph_admission_ticket(
     } else {
         input_row_bounds.edge_row_upper_bound()
     };
-    let edge_vertex_upper_bound = edge_source_graph_vertex_estimate(edge_source).map(|estimate| estimate.count);
+    let definition = CugraphPlanDefinition {
+        spec: spec.clone(),
+        edge_schema: edge_source.schema(),
+        predicate_schemas: predicate_sources.iter().map(|source| source.schema()).collect(),
+        predicate_row_upper_bounds: input_row_bounds.predicate_row_upper_bounds().to_vec(),
+        result_options: result_options.clone(),
+        edge_normalize_inserted,
+        edge_row_upper_bound,
+        edge_vertex_upper_bound: edge_source_graph_vertex_estimate(edge_source).map(|estimate| estimate.count),
+    };
     let materialized_side_input_plans = predicate_sources
         .iter()
         .enumerate()
@@ -206,14 +217,7 @@ fn compile_cugraph_admission_ticket(
         })
         .collect::<Option<Vec<_>>>();
     let (graph_execution_plan, graph_execution_proof) = cugraph_execution_capability_proof_with_resident_input_plans(
-        spec,
-        edge_source.schema(),
-        predicate_sources.iter().map(|source| source.schema()).collect(),
-        input_row_bounds.predicate_row_upper_bounds(),
-        result_options,
-        edge_normalize_inserted,
-        edge_row_upper_bound,
-        edge_vertex_upper_bound,
+        &definition,
         exact_edge_source_gpu_plan,
         materialized_side_input_plans.as_deref().unwrap_or_default(),
     )?;
@@ -302,17 +306,17 @@ pub(super) fn validate_cugraph_graph_owner_preflight(
     if execution_config.query_admission_source().is_none() {
         return Ok(());
     }
-    let edge_vertex_upper_bound = edge_source_graph_vertex_estimate(edge_source).map(|estimate| estimate.count);
-    let (graph_execution_plan, _) = cugraph_execution_capability_proof_with_edge_row_upper_bound(
-        spec,
-        edge_source.schema(),
-        predicate_sources.iter().map(|source| source.schema()).collect(),
-        input_row_bounds.predicate_row_upper_bounds(),
-        result_options,
+    let definition = CugraphPlanDefinition {
+        spec: spec.clone(),
+        edge_schema: edge_source.schema(),
+        predicate_schemas: predicate_sources.iter().map(|source| source.schema()).collect(),
+        predicate_row_upper_bounds: input_row_bounds.predicate_row_upper_bounds().to_vec(),
+        result_options: result_options.clone(),
         edge_normalize_inserted,
-        input_row_bounds.edge_row_upper_bound(),
-        edge_vertex_upper_bound,
-    )?;
+        edge_row_upper_bound: input_row_bounds.edge_row_upper_bound(),
+        edge_vertex_upper_bound: edge_source_graph_vertex_estimate(edge_source).map(|estimate| estimate.count),
+    };
+    let (graph_execution_plan, _) = cugraph_execution_capability_proof(&definition)?;
     let _ = cugraph_graph_model_ask_bytes(&graph_execution_plan, edge_source, execution_config)?;
     Ok(())
 }

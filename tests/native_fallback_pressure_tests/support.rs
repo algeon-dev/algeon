@@ -125,6 +125,7 @@ pub(super) fn accepted_capability_contract_diagnostics() -> NativeCapabilityCont
     }
 }
 
+#[expect(clippy::too_many_arguments, reason = "inputs are distinct domain values that share no owner")]
 fn bounded_gate_row(
     gate_id: CapabilityContractGateId,
     owner: CapabilityContractOwner,

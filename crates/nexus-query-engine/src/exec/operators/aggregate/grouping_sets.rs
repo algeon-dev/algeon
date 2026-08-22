@@ -109,6 +109,10 @@ pub(super) fn execute_grouping_sets_partial_aggregate_with_budget(
     Ok(GpuDataFrame::new(output))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 fn execute_grouping_sets_groupby(
     context: &ExecutionContext,
     spec: &AggregateSpec,
@@ -179,6 +183,10 @@ fn execute_grouping_sets_groupby(
     concat_grouping_set_outputs(context, outputs, token, operation)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 fn execute_prefix_rollup_grouping_sets_groupby(
     context: &ExecutionContext,
     input_schema: &ArrowSchemaRef,
@@ -308,6 +316,10 @@ fn execute_prefix_rollup_grouping_sets_groupby(
     concat_grouping_set_outputs(context, outputs, token, operation)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 fn execute_single_grouping_set_groupby(
     context: &ExecutionContext,
     input_schema: &ArrowSchemaRef,
@@ -410,6 +422,10 @@ fn is_grand_total_grouping_set(group: &[bool]) -> bool {
     !group.is_empty() && group.iter().all(|is_null| *is_null)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 fn empty_grand_total_grouping_set_frame(
     context: &ExecutionContext,
     output_schema: &ArrowSchemaRef,
@@ -703,6 +719,10 @@ fn aggregate_for_grouping_set(aggregate: &LoweredAggregate, group: &[bool]) -> L
     LoweredAggregate { key_columns, output_key_names, aggregations: aggregate.aggregations.clone(), output_names }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 fn complete_grouping_set_output(
     context: &ExecutionContext,
     output_schema: &ArrowSchemaRef,
@@ -778,6 +798,10 @@ fn complete_grouping_set_output(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 fn with_grouping_id_column(
     context: &ExecutionContext,
     output_schema: &ArrowSchemaRef,
@@ -904,6 +928,10 @@ fn aggregate_for_prefix_rollup_level(
     LoweredAggregate { key_columns, output_key_names, aggregations: aggregate.aggregations.clone(), output_names }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 fn prepare_grouping_set_frame(
     context: &ExecutionContext,
     input_schema: &ArrowSchemaRef,

@@ -406,6 +406,10 @@ fn execute_final_merge_group_attempt(
     let output_reservation = execution.try_reserve(output_request)?;
     Ok(CommittedPartial { frame, reservation: output_reservation })
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 fn merge_final_aggregate_partials(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
@@ -697,6 +701,10 @@ fn merge_partitioned_final_aggregate_partials(
     execute_final_aggregate(execution.context(), bounded, concatenated, token, false, execution.metrics_mut())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+)]
 fn record_partitioned_final_merge_strategy(
     context: &ExecutionContext,
     bounded: &BoundedPlan<'_>,

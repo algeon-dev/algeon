@@ -246,6 +246,7 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
         Ok(true)
     }
 
+    #[expect(clippy::too_many_arguments, reason = "planning inputs are distinct proof and constraint values")]
     pub(in crate::optimizer::aggregate_join_pushdown) fn rewrite_join_aggregate_with_preagg(
         &mut self,
         aggregate: &AggregateNode,

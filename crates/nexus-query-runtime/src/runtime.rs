@@ -83,9 +83,9 @@ pub use context::{
 };
 pub use gpu::{
     DeviceCapabilities, DeviceCapability, DeviceFacts, DeviceLedger, DeviceLedgerGrantRow, DeviceLedgerReport,
-    DeviceMemoryFailureReport, DeviceResourceProfile, DeviceTelemetrySnapshot, DeviceTelemetryStatus, GpuInventory,
-    GpuTelemetry, LedgerSnapshot, MemoryGrant, NexusGpuInventory, NexusNvmlTelemetry, Placement,
-    device_budget_bytes_from_facts,
+    DeviceMemoryFailureReport, DeviceResourceEnvelope, DeviceResourceProfile, DeviceTelemetrySnapshot,
+    DeviceTelemetryStatus, GpuInventory, GpuTelemetry, LedgerSnapshot, MemoryGrant, NexusGpuInventory,
+    NexusNvmlTelemetry, Placement, device_budget_bytes_from_facts,
 };
 pub(crate) use gpu::{DeviceContext, DeviceRegistry, DeviceRegistryConfig, PlacementRequest};
 pub use gpu_execution_pool::{

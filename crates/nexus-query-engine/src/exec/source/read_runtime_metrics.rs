@@ -91,6 +91,10 @@ pub(super) fn record_background_cache_chunk_fill_enqueue_runtime(
     });
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+)]
 pub(super) fn record_source_chunk_read_runtime(
     source: &LocalParquetSource,
     chunk: &SourceChunk,
@@ -148,6 +152,10 @@ pub(super) fn observed_chunk_row_group_count(chunk: &SourceChunk) -> Option<usiz
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+)]
 pub(super) fn record_source_chunk_batch_read_runtime(
     source: &LocalParquetSource,
     batch: &crate::chunk::SourceChunkBatch,
@@ -213,6 +221,10 @@ pub(super) fn record_source_chunk_batch_read_runtime(
     });
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+)]
 pub(super) fn record_source_file_read_runtime(
     source: &LocalParquetSource,
     source_node_id: NodeId,

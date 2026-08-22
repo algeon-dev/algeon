@@ -70,6 +70,90 @@ pub struct ComposedConsumerBranchBound {
     pub consumed_occurrences: Vec<String>,
 }
 
+/// One composed-consumer bound analysis traversal: the plan under analysis,
+/// its producer-output evidence, the plan-wide owner-term inventory, and the
+/// memo and consumed-occurrence state the traversal maintains.
+///
+/// Node-specific data — the recursion target [`NodeId`], the operator node,
+/// and operator inputs — stays explicit at each call site. The analysis owns
+/// exactly the values every composed-consumer bound helper shares.
+#[doc(hidden)]
+pub struct ComposedConsumerAnalysis<'a> {
+    pub(super) plan: &'a QueryPlan,
+    pub(super) outputs: HashMap<&'a str, &'a ComposedGraphProducerOutputEvidence>,
+    pub(super) owner_terms: std::borrow::Cow<'a, [AllocationOwnerTerm]>,
+    pub(super) column_evidence: &'a PlanColumnEvidenceAnalysis,
+    pub(super) used_occurrences: HashSet<String>,
+    pub(super) memo: HashMap<NodeId, ComposedConsumerBranchBound>,
+}
+
+impl<'a> ComposedConsumerAnalysis<'a> {
+    /// Builds the analysis over non-duplicate producer occurrences.
+    pub(super) fn new(
+        plan: &'a QueryPlan,
+        producer_outputs: &'a [ComposedGraphProducerOutputEvidence],
+        owner_terms: &'a [AllocationOwnerTerm],
+        column_evidence: &'a PlanColumnEvidenceAnalysis,
+    ) -> Result<Self> {
+        let mut outputs = HashMap::with_capacity(producer_outputs.len());
+        for output in producer_outputs {
+            if output.occurrence_id.is_empty() || outputs.insert(output.occurrence_id.as_str(), output).is_some() {
+                return Err(composed_schedule_error("duplicate_producer_occurrence_id", Some(&output.occurrence_id)));
+            }
+        }
+        let used_occurrences_capacity = outputs.len();
+        Ok(Self {
+            plan,
+            outputs,
+            owner_terms: std::borrow::Cow::Borrowed(owner_terms),
+            column_evidence,
+            used_occurrences: HashSet::with_capacity(used_occurrences_capacity),
+            memo: HashMap::new(),
+        })
+    }
+
+    /// Root entry: memoized bound for the plan root node.
+    pub(super) fn root_bound(&mut self) -> Result<ComposedConsumerBranchBound> {
+        self.branch_bound(self.plan.root_id())
+    }
+
+    /// Memoized bound for one node in the analysis plan.
+    pub(super) fn branch_bound(&mut self, node_id: NodeId) -> Result<ComposedConsumerBranchBound> {
+        composed_consumer_branch_bound(self, node_id)
+    }
+
+    /// Graph-algorithm peak groups over the traversal memo.
+    pub(super) fn graph_peak_groups(&mut self) -> Result<Vec<Vec<OwnerTermId>>> {
+        let mut inventory = self.owner_terms.clone().into_owned();
+        let root_bound = self
+            .memo
+            .get(&self.plan.root_id())
+            .cloned()
+            .ok_or_else(|| composed_schedule_error("consumer_root_bound_missing", None))?;
+        inventory.extend(root_bound.owner_terms.iter().cloned());
+        memoized_graph_consumer_peak_groups(self.plan, &self.memo, &inventory)
+    }
+
+    /// Runs `visit` with a temporary owner-term inventory, restoring the
+    /// plan-wide inventory afterwards. Graph side inputs extend the traversal
+    /// with the input branch's derived terms before binding their own.
+    pub(super) fn with_owner_terms_override<R>(
+        &mut self,
+        override_terms: Vec<AllocationOwnerTerm>,
+        visit: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        let plan_terms = std::mem::replace(&mut self.owner_terms, std::borrow::Cow::Owned(override_terms));
+        let result = visit(self);
+        self.owner_terms = plan_terms;
+        result
+    }
+
+    /// The producer occurrences this analysis consumed so far.
+    pub(super) fn used_occurrences(&self) -> &HashSet<String> {
+        &self.used_occurrences
+    }
+}
+
 #[cfg(test)]
 #[doc(hidden)]
 pub fn composed_consumer_additional_peak_bytes_for_plan(
@@ -90,12 +174,6 @@ pub fn composed_consumer_bound_with_peak_terms(
     if !consumer_plan.unreachable_node_ids().is_empty() {
         return Err(composed_schedule_error("consumer_contains_unreachable_nodes", None));
     }
-    let mut outputs = HashMap::with_capacity(producer_outputs.len());
-    for output in producer_outputs {
-        if output.occurrence_id.is_empty() || outputs.insert(output.occurrence_id.as_str(), output).is_some() {
-            return Err(composed_schedule_error("duplicate_producer_occurrence_id", Some(&output.occurrence_id)));
-        }
-    }
     let resident_outputs = producer_outputs
         .iter()
         .map(|output| (output.occurrence_id.clone(), output.column_evidence.clone()))
@@ -109,22 +187,10 @@ pub fn composed_consumer_bound_with_peak_terms(
         &resident_outputs,
         &resident_row_upper_bounds,
     )?;
-    let mut used_occurrences = HashSet::with_capacity(outputs.len());
-    let mut memo = HashMap::new();
-    let root = consumer_plan.root_id();
-    let mut root_bound = composed_consumer_branch_bound(
-        consumer_plan,
-        root,
-        &outputs,
-        &mut used_occurrences,
-        owner_terms,
-        &column_evidence,
-        &mut memo,
-    )?;
+    let mut analysis = ComposedConsumerAnalysis::new(consumer_plan, producer_outputs, owner_terms, &column_evidence)?;
+    let mut root_bound = analysis.root_bound()?;
     if consumer_plan.contains_graph_algorithm() {
-        let mut inventory = owner_terms.to_vec();
-        inventory.extend(root_bound.owner_terms.iter().cloned());
-        root_bound.peak_owner_term_groups = memoized_graph_consumer_peak_groups(consumer_plan, &memo, &inventory)?;
+        root_bound.peak_owner_term_groups = analysis.graph_peak_groups()?;
         root_bound.peak_owner_term_ids = flatten_consumer_peak_groups(&root_bound.peak_owner_term_groups);
     }
     for group in &mut root_bound.peak_owner_term_groups {
@@ -154,7 +220,9 @@ pub fn composed_consumer_bound_with_peak_terms(
             }
         },
     }
-    if let Some(unconsumed) = producer_outputs.iter().find(|output| !used_occurrences.contains(&output.occurrence_id)) {
+    if let Some(unconsumed) =
+        producer_outputs.iter().find(|output| !analysis.used_occurrences().contains(&output.occurrence_id))
+    {
         return Err(composed_schedule_error(
             "consumer_producer_occurrence_unconsumed",
             Some(&unconsumed.occurrence_id),
@@ -392,15 +460,10 @@ pub fn memoized_graph_consumer_peak_groups(
 
 #[doc(hidden)]
 pub fn composed_consumer_branch_bound(
-    plan: &QueryPlan,
+    analysis: &mut ComposedConsumerAnalysis<'_>,
     node_id: NodeId,
-    outputs: &HashMap<&str, &ComposedGraphProducerOutputEvidence>,
-    used_occurrences: &mut HashSet<String>,
-    owner_terms: &[AllocationOwnerTerm],
-    column_evidence: &PlanColumnEvidenceAnalysis,
-    memo: &mut HashMap<NodeId, ComposedConsumerBranchBound>,
 ) -> Result<ComposedConsumerBranchBound> {
-    if let Some(cached) = memo.get(&node_id) {
+    if let Some(cached) = analysis.memo.get(&node_id) {
         return Ok(ComposedConsumerBranchBound {
             rows: cached.rows,
             schema: Arc::clone(&cached.schema),
@@ -414,41 +477,29 @@ pub fn composed_consumer_branch_bound(
             consumed_occurrences: Vec::new(),
         });
     }
-    let bound = composed_consumer_branch_bound_uncached(
-        plan,
-        node_id,
-        outputs,
-        used_occurrences,
-        owner_terms,
-        column_evidence,
-        memo,
-    )?;
-    memo.insert(node_id, bound.clone());
+    let bound = composed_consumer_branch_bound_uncached(analysis, node_id)?;
+    analysis.memo.insert(node_id, bound.clone());
     Ok(bound)
 }
 
 #[doc(hidden)]
 pub fn composed_consumer_branch_bound_uncached(
-    plan: &QueryPlan,
+    analysis: &mut ComposedConsumerAnalysis<'_>,
     node_id: NodeId,
-    outputs: &HashMap<&str, &ComposedGraphProducerOutputEvidence>,
-    used_occurrences: &mut HashSet<String>,
-    owner_terms: &[AllocationOwnerTerm],
-    column_evidence: &PlanColumnEvidenceAnalysis,
-    memo: &mut HashMap<NodeId, ComposedConsumerBranchBound>,
 ) -> Result<ComposedConsumerBranchBound> {
-    let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
+    let node =
+        analysis.plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
     match &node.kind {
         PlanNode::Source(source) => {
             match source.as_ref() {
                 SourceNode::GpuResident(source) => {
-                    let Some(output) = outputs.get(source.input_name.as_str()) else {
+                    let Some(output) = analysis.outputs.get(source.input_name.as_str()) else {
                         return Err(composed_schedule_error(
                             "consumer_source_occurrence_missing",
                             Some(&source.input_name),
                         ));
                     };
-                    used_occurrences.insert(source.input_name.clone());
+                    analysis.used_occurrences.insert(source.input_name.clone());
                     let rows = source
                         .row_count_upper_bound
                         .map_or(output.row_count_upper_bound, |rows| rows.min(output.row_count_upper_bound));
@@ -466,11 +517,12 @@ pub fn composed_consumer_branch_bound_uncached(
                     })
                 },
                 SourceNode::LocalParquet(source) => {
-                    let source_term = owner_terms.iter().find(|term| {
+                    let source_term = analysis.owner_terms.iter().find(|term| {
                         matches!(term.id.owner, OwnerId::Source(id) if id == node_id)
                             && term.id.role == OwnerTermRole::SourceStage
                             && term.id.occurrence == OccurrenceId::PlanLocal(node_id)
-                            && term.execution_scope_fingerprint() == canonical_execution_scope_fingerprint(plan)
+                            && term.execution_scope_fingerprint()
+                                == canonical_execution_scope_fingerprint(analysis.plan)
                     });
                     let Some(source_term) = source_term else {
                         return Err(composed_schedule_error("consumer_local_source_owner_missing", None)
@@ -503,11 +555,12 @@ pub fn composed_consumer_branch_bound_uncached(
                 SourceNode::LiteralBatch(source) => {
                     let rows = u64::try_from(source.row_count())
                         .map_err(|_| composed_schedule_error("consumer_literal_source_rows_exceed_u64", None))?;
-                    let source_term = owner_terms.iter().find(|term| {
+                    let source_term = analysis.owner_terms.iter().find(|term| {
                         matches!(term.id.owner, OwnerId::Source(id) if id == node_id)
                             && term.id.role == OwnerTermRole::SourceStage
                             && term.id.occurrence == OccurrenceId::PlanLocal(node_id)
-                            && term.execution_scope_fingerprint() == canonical_execution_scope_fingerprint(plan)
+                            && term.execution_scope_fingerprint()
+                                == canonical_execution_scope_fingerprint(analysis.plan)
                     });
                     let Some(source_term) = source_term else {
                         return Err(composed_schedule_error("consumer_literal_source_owner_missing", None)
@@ -531,19 +584,11 @@ pub fn composed_consumer_branch_bound_uncached(
             }
         },
         PlanNode::Filter(filter) => {
-            let input = composed_consumer_branch_bound(
-                plan,
-                filter.input,
-                outputs,
-                used_occurrences,
-                owner_terms,
-                column_evidence,
-                memo,
-            )?;
+            let input = composed_consumer_branch_bound(analysis, filter.input)?;
             let output_bytes = bounded_consumer_frame_bytes_with_evidence(
                 input.rows,
                 node.output_schema(),
-                &column_evidence.node(node_id),
+                &analysis.column_evidence.node(node_id),
             )?;
             let predicate_mask_bytes = bounded_consumer_boolean_mask_bytes(input.rows)?;
             let output_term = consumer_owner_term(
@@ -551,14 +596,14 @@ pub fn composed_consumer_branch_bound_uncached(
                 OwnerTermRole::ConsumerOutput,
                 AllocationClass::ActivePhase,
                 output_bytes,
-                plan,
+                analysis.plan,
             )?;
             let predicate_term = consumer_owner_term(
                 node_id,
                 OwnerTermRole::ConsumerPredicateMask,
                 AllocationClass::ActivePhase,
                 predicate_mask_bytes,
-                plan,
+                analysis.plan,
             )?;
             let output_term_id = output_term.id.clone();
             let predicate_term_id = predicate_term.id.clone();
@@ -582,15 +627,7 @@ pub fn composed_consumer_branch_bound_uncached(
             })
         },
         PlanNode::Projection(projection) => {
-            let input = composed_consumer_branch_bound(
-                plan,
-                projection.input,
-                outputs,
-                used_occurrences,
-                owner_terms,
-                column_evidence,
-                memo,
-            )?;
+            let input = composed_consumer_branch_bound(analysis, projection.input)?;
             for output in &projection.outputs {
                 let (column, representation_cast) = if let Some(column) = alias_wrapped_column(&output.expr) {
                     (column, false)
@@ -611,16 +648,9 @@ pub fn composed_consumer_branch_bound_uncached(
                     return Err(composed_schedule_error("consumer_projection_expression_workspace_unmodeled", None)
                         .with_fact("expression", output.expr.clone()));
                 } else if projection.outputs.iter().any(|output| alias_wrapped_literal(&output.expr).is_some()) {
-                    return composed_consumer_literal_projection_bound(plan, node_id, node, projection, input);
+                    return composed_consumer_literal_projection_bound(analysis, node_id, node, projection, input);
                 } else {
-                    return composed_consumer_expression_projection_bound(
-                        plan,
-                        node_id,
-                        node,
-                        projection,
-                        input,
-                        column_evidence,
-                    );
+                    return composed_consumer_expression_projection_bound(analysis, node_id, node, projection, input);
                 };
                 let source = input.schema.field_with_name(column.name()).map_err(|_| {
                     composed_schedule_error("consumer_projection_source_column_missing", None)
@@ -656,110 +686,25 @@ pub fn composed_consumer_branch_bound_uncached(
                 consumed_occurrences: Vec::new(),
             })
         },
-        PlanNode::Window(window) => composed_consumer_global_row_number_peak_bytes(
-            plan,
-            node_id,
-            window,
-            outputs,
-            used_occurrences,
-            owner_terms,
-            column_evidence,
-            memo,
-        ),
-        PlanNode::Aggregate(aggregate) => composed_consumer_aggregate_peak_bytes(
-            plan,
-            node_id,
-            aggregate,
-            outputs,
-            used_occurrences,
-            owner_terms,
-            column_evidence,
-            memo,
-        ),
-        PlanNode::Join(join) => composed_consumer_join_peak_bytes(
-            plan,
-            node_id,
-            join,
-            outputs,
-            used_occurrences,
-            owner_terms,
-            column_evidence,
-            memo,
-        ),
-        PlanNode::Union(union) => composed_consumer_union_peak_bytes(
-            plan,
-            node_id,
-            union,
-            outputs,
-            used_occurrences,
-            owner_terms,
-            column_evidence,
-            memo,
-        ),
-        PlanNode::Sort(sort) => composed_consumer_sort_peak_bytes(
-            plan,
-            node_id,
-            sort,
-            outputs,
-            used_occurrences,
-            owner_terms,
-            column_evidence,
-            memo,
-        ),
-        PlanNode::Limit(limit) => composed_consumer_limit_peak_bytes(
-            plan,
-            node_id,
-            limit,
-            outputs,
-            used_occurrences,
-            owner_terms,
-            column_evidence,
-            memo,
-        ),
-        PlanNode::EdgeNormalize(normalize) => composed_consumer_edge_normalize_peak_bytes(
-            plan,
-            node_id,
-            normalize,
-            outputs,
-            used_occurrences,
-            owner_terms,
-            column_evidence,
-            memo,
-        ),
-        PlanNode::GraphAlgorithm(graph) => composed_consumer_graph_peak_bytes(
-            plan,
-            node_id,
-            graph,
-            outputs,
-            used_occurrences,
-            owner_terms,
-            column_evidence,
-            memo,
-        ),
+        PlanNode::Window(window) => composed_consumer_global_row_number_peak_bytes(analysis, node_id, window),
+        PlanNode::Aggregate(aggregate) => composed_consumer_aggregate_peak_bytes(analysis, node_id, aggregate),
+        PlanNode::Join(join) => composed_consumer_join_peak_bytes(analysis, node_id, join),
+        PlanNode::Union(union) => composed_consumer_union_peak_bytes(analysis, node_id, union),
+        PlanNode::Sort(sort) => composed_consumer_sort_peak_bytes(analysis, node_id, sort),
+        PlanNode::Limit(limit) => composed_consumer_limit_peak_bytes(analysis, node_id, limit),
+        PlanNode::EdgeNormalize(normalize) => composed_consumer_edge_normalize_peak_bytes(analysis, node_id, normalize),
+        PlanNode::GraphAlgorithm(graph) => composed_consumer_graph_peak_bytes(analysis, node_id, graph),
         _ => Err(composed_schedule_error("consumer_branch_topology_unmodeled", None)),
     }
 }
 
 #[doc(hidden)]
 pub fn composed_consumer_edge_normalize_peak_bytes(
-    plan: &QueryPlan,
+    analysis: &mut ComposedConsumerAnalysis<'_>,
     node_id: NodeId,
     normalize: &crate::plan::EdgeNormalizeNode,
-    outputs: &HashMap<&str, &ComposedGraphProducerOutputEvidence>,
-    used_occurrences: &mut HashSet<String>,
-    owner_terms: &[AllocationOwnerTerm],
-    column_evidence: &PlanColumnEvidenceAnalysis,
-    memo: &mut HashMap<NodeId, ComposedConsumerBranchBound>,
 ) -> Result<ComposedConsumerBranchBound> {
-    let input = composed_consumer_branch_bound(
-        plan,
-        normalize.input,
-        outputs,
-        used_occurrences,
-        owner_terms,
-        column_evidence,
-        memo,
-    )?;
+    let input = composed_consumer_branch_bound(analysis, normalize.input)?;
     let output_rows = if normalize.spec.add_reverse {
         input
             .rows
@@ -768,20 +713,29 @@ pub fn composed_consumer_edge_normalize_peak_bytes(
     } else {
         input.rows
     };
-    let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
-    let output_bytes =
-        bounded_consumer_frame_bytes_with_evidence(output_rows, node.output_schema(), &column_evidence.node(node_id))?;
+    let node =
+        analysis.plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
+    let output_bytes = bounded_consumer_frame_bytes_with_evidence(
+        output_rows,
+        node.output_schema(),
+        &analysis.column_evidence.node(node_id),
+    )?;
     let workspace_bytes = output_bytes
         .checked_mul(2)
         .ok_or_else(|| composed_schedule_error("consumer_edge_normalize_workspace_overflow", None))?;
-    let output_term =
-        consumer_owner_term(node_id, OwnerTermRole::ConsumerOutput, AllocationClass::ActivePhase, output_bytes, plan)?;
+    let output_term = consumer_owner_term(
+        node_id,
+        OwnerTermRole::ConsumerOutput,
+        AllocationClass::ActivePhase,
+        output_bytes,
+        analysis.plan,
+    )?;
     let workspace_term = consumer_owner_term(
         node_id,
         OwnerTermRole::ConsumerWorkspace,
         AllocationClass::ActivePhase,
         workspace_bytes,
-        plan,
+        analysis.plan,
     )?;
     let output_term_id = output_term.id.clone();
     let workspace_term_id = workspace_term.id.clone();
@@ -805,14 +759,9 @@ pub fn composed_consumer_edge_normalize_peak_bytes(
 
 #[doc(hidden)]
 pub fn composed_consumer_global_row_number_peak_bytes(
-    plan: &QueryPlan,
+    analysis: &mut ComposedConsumerAnalysis<'_>,
     node_id: NodeId,
     window: &crate::plan::WindowNode,
-    outputs: &HashMap<&str, &ComposedGraphProducerOutputEvidence>,
-    used_occurrences: &mut HashSet<String>,
-    owner_terms: &[AllocationOwnerTerm],
-    column_evidence: &PlanColumnEvidenceAnalysis,
-    memo: &mut HashMap<NodeId, ComposedConsumerBranchBound>,
 ) -> Result<ComposedConsumerBranchBound> {
     let Some(crate::plan::WindowFunction::RowNumber { alias, output_type }) = window.spec.functions.first() else {
         return Err(composed_schedule_error("consumer_window_topology_unmodeled", None));
@@ -823,24 +772,22 @@ pub fn composed_consumer_global_row_number_peak_bytes(
     {
         return Err(composed_schedule_error("consumer_window_topology_unmodeled", None));
     }
-    let input = composed_consumer_branch_bound(
-        plan,
-        window.input,
-        outputs,
-        used_occurrences,
-        owner_terms,
-        column_evidence,
-        memo,
-    )?;
-    let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
+    let input = composed_consumer_branch_bound(analysis, window.input)?;
+    let node =
+        analysis.plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
     let output_field = node.output_schema().field_with_name(alias).map_err(|_| {
         composed_schedule_error("consumer_window_output_field_missing", None).with_fact("column", alias)
     })?;
     let output_schema = Arc::new(Schema::new(vec![output_field.clone()]));
     let output_bytes =
         bounded_consumer_frame_bytes_with_evidence(input.rows, &output_schema, &PlanColumnEvidence::default())?;
-    let output_term =
-        consumer_owner_term(node_id, OwnerTermRole::ConsumerOutput, AllocationClass::ActivePhase, output_bytes, plan)?;
+    let output_term = consumer_owner_term(
+        node_id,
+        OwnerTermRole::ConsumerOutput,
+        AllocationClass::ActivePhase,
+        output_bytes,
+        analysis.plan,
+    )?;
     let output_term_id = output_term.id.clone();
     let peak_owner_term_groups = consumer_unary_peak_groups(&input, [output_term_id.clone()]);
     let peak_owner_term_ids = flatten_consumer_peak_groups(&peak_owner_term_groups);
@@ -866,43 +813,24 @@ pub fn composed_consumer_global_row_number_peak_bytes(
 
 #[doc(hidden)]
 pub fn composed_consumer_graph_peak_bytes(
-    plan: &QueryPlan,
+    analysis: &mut ComposedConsumerAnalysis<'_>,
     node_id: NodeId,
     graph: &crate::plan::GraphAlgorithmNode,
-    outputs: &HashMap<&str, &ComposedGraphProducerOutputEvidence>,
-    used_occurrences: &mut HashSet<String>,
-    owner_terms: &[AllocationOwnerTerm],
-    column_evidence: &PlanColumnEvidenceAnalysis,
-    memo: &mut HashMap<NodeId, ComposedConsumerBranchBound>,
 ) -> Result<ComposedConsumerBranchBound> {
-    let mut input = composed_consumer_branch_bound(
-        plan,
-        graph.input,
-        outputs,
-        used_occurrences,
-        owner_terms,
-        column_evidence,
-        memo,
-    )?;
+    let mut input = analysis.branch_bound(graph.input)?;
     for side_input in graph.inputs.iter().skip(1) {
-        let mut input_inventory = owner_terms.to_vec();
+        let mut input_inventory = analysis.owner_terms.clone().into_owned();
         input_inventory.extend(input.owner_terms.iter().cloned());
-        let side = composed_consumer_branch_bound(
-            plan,
-            *side_input,
-            outputs,
-            used_occurrences,
-            &input_inventory,
-            column_evidence,
-            memo,
-        )?;
+        let side =
+            analysis.with_owner_terms_override(input_inventory, |analysis| analysis.branch_bound(*side_input))?;
         input.owner_terms.extend(side.owner_terms);
         input.peak_owner_term_groups.extend(side.peak_owner_term_groups);
         input.final_owned_term_ids.extend(side.final_owned_term_ids);
         input.dominated_owner_term_ids.extend(side.dominated_owner_term_ids);
     }
-    let scope = canonical_execution_scope_fingerprint(plan);
-    let graph_terms = owner_terms
+    let scope = canonical_execution_scope_fingerprint(analysis.plan);
+    let graph_terms = analysis
+        .owner_terms
         .iter()
         .filter(|term| term.id.owner == OwnerId::Graph(node_id) && term.execution_scope_fingerprint() == scope)
         .collect::<Vec<_>>();
@@ -936,11 +864,12 @@ pub fn composed_consumer_graph_peak_bytes(
     let peak_owner_term_ids = flatten_consumer_peak_groups(&peak_owner_term_groups);
     let rows = output
         .retained_row_count_upper_bound()
-        .or_else(|| query_plan_node_hard_row_upper_bound(plan, node_id))
+        .or_else(|| query_plan_node_hard_row_upper_bound(analysis.plan, node_id))
         .ok_or_else(|| composed_schedule_error("consumer_graph_output_rows_unavailable", None))?;
     Ok(ComposedConsumerBranchBound {
         rows,
-        schema: plan
+        schema: analysis
+            .plan
             .node(node_id)
             .ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?
             .output_schema()
@@ -989,7 +918,7 @@ fn consumer_representation_cast_column<'a>(
 
 #[doc(hidden)]
 pub fn composed_consumer_literal_projection_bound(
-    plan: &QueryPlan,
+    analysis: &mut ComposedConsumerAnalysis<'_>,
     node_id: NodeId,
     node: &crate::plan::QueryNode,
     projection: &crate::plan::ProjectionNode,
@@ -1040,7 +969,7 @@ pub fn composed_consumer_literal_projection_bound(
         return Err(composed_schedule_error("consumer_projection_expression_workspace_unmodeled", None));
     }
     let literal_schema = Arc::new(Schema::new(literal_fields));
-    let mut literal_evidence = PlanColumnEvidenceAnalysis::for_plan(plan, &HashMap::new())?.node(node_id);
+    let mut literal_evidence = PlanColumnEvidenceAnalysis::for_plan(analysis.plan, &HashMap::new())?.node(node_id);
     for field in literal_schema.fields() {
         let Some(bound) = literal_evidence.string_payload_bounds.get_mut(field.name()) else {
             continue;
@@ -1057,8 +986,13 @@ pub fn composed_consumer_literal_projection_bound(
         }
     }
     let literal_bytes = bounded_consumer_frame_bytes_with_evidence(input.rows, &literal_schema, &literal_evidence)?;
-    let literal_term =
-        consumer_owner_term(node_id, OwnerTermRole::ConsumerOutput, AllocationClass::ActivePhase, literal_bytes, plan)?;
+    let literal_term = consumer_owner_term(
+        node_id,
+        OwnerTermRole::ConsumerOutput,
+        AllocationClass::ActivePhase,
+        literal_bytes,
+        analysis.plan,
+    )?;
     let literal_term_id = literal_term.id.clone();
     let peak_owner_term_groups = consumer_unary_peak_groups(&input, [literal_term_id.clone()]);
     let peak_owner_term_ids = flatten_consumer_peak_groups(&peak_owner_term_groups);
@@ -1094,16 +1028,15 @@ pub fn composed_consumer_literal_projection_bound(
 
 #[doc(hidden)]
 pub fn composed_consumer_expression_projection_bound(
-    plan: &QueryPlan,
+    analysis: &mut ComposedConsumerAnalysis<'_>,
     node_id: NodeId,
     node: &crate::plan::QueryNode,
     projection: &crate::plan::ProjectionNode,
     input: ComposedConsumerBranchBound,
-    column_evidence: &PlanColumnEvidenceAnalysis,
 ) -> Result<ComposedConsumerBranchBound> {
     let rows = usize::try_from(input.rows)
         .map_err(|_| composed_schedule_error("consumer_projection_rows_exceed_usize", None))?;
-    let input_column_evidence = column_evidence.node(projection.input);
+    let input_column_evidence = analysis.column_evidence.node(projection.input);
     let input_columns = input
         .schema
         .fields()
@@ -1148,10 +1081,18 @@ pub fn composed_consumer_expression_projection_bound(
     let workspace_bytes = preflight.temporary_workspace_peak_bytes();
     let workspace_bytes = u64::try_from(workspace_bytes)
         .map_err(|_| composed_schedule_error("consumer_projection_expression_workspace_exceeds_u64", None))?;
-    let output_bytes =
-        bounded_consumer_frame_bytes_with_evidence(input.rows, node.output_schema(), &column_evidence.node(node_id))?;
-    let output_term =
-        consumer_owner_term(node_id, OwnerTermRole::ConsumerOutput, AllocationClass::ActivePhase, output_bytes, plan)?;
+    let output_bytes = bounded_consumer_frame_bytes_with_evidence(
+        input.rows,
+        node.output_schema(),
+        &analysis.column_evidence.node(node_id),
+    )?;
+    let output_term = consumer_owner_term(
+        node_id,
+        OwnerTermRole::ConsumerOutput,
+        AllocationClass::ActivePhase,
+        output_bytes,
+        analysis.plan,
+    )?;
     let output_term_id = output_term.id.clone();
     let workspace_term = (workspace_bytes > 0)
         .then(|| {
@@ -1160,7 +1101,7 @@ pub fn composed_consumer_expression_projection_bound(
                 OwnerTermRole::ConsumerProjectionExpressionWorkspace,
                 AllocationClass::ActivePhase,
                 workspace_bytes,
-                plan,
+                analysis.plan,
             )
             .map(|term| {
                 term.with_component_preflight("expr::dataframe_expression_allocation_preflight", workspace_bytes)
@@ -1234,14 +1175,9 @@ pub fn consumer_unary_peak_groups(
 
 #[doc(hidden)]
 pub fn composed_consumer_union_peak_bytes(
-    plan: &QueryPlan,
+    analysis: &mut ComposedConsumerAnalysis<'_>,
     node_id: NodeId,
     union: &crate::plan::UnionNode,
-    outputs: &HashMap<&str, &ComposedGraphProducerOutputEvidence>,
-    used_occurrences: &mut HashSet<String>,
-    owner_terms: &[AllocationOwnerTerm],
-    column_evidence: &PlanColumnEvidenceAnalysis,
-    memo: &mut HashMap<NodeId, ComposedConsumerBranchBound>,
 ) -> Result<ComposedConsumerBranchBound> {
     let mut total_rows = 0_u64;
     let mut branch_terms = Vec::new();
@@ -1249,15 +1185,7 @@ pub fn composed_consumer_union_peak_bytes(
     let mut dominated_owner_term_ids = Vec::new();
     let mut retained_prior_term_ids = Vec::new();
     for input in &union.inputs {
-        let branch = composed_consumer_branch_bound(
-            plan,
-            *input,
-            outputs,
-            used_occurrences,
-            owner_terms,
-            column_evidence,
-            memo,
-        )?;
+        let branch = composed_consumer_branch_bound(analysis, *input)?;
         total_rows = checked_consumer_add(total_rows, branch.rows, "consumer_union_rows_overflow")?;
         for group in &branch.peak_owner_term_groups {
             let mut peak_group = retained_prior_term_ids.clone();
@@ -1268,11 +1196,20 @@ pub fn composed_consumer_union_peak_bytes(
         dominated_owner_term_ids.extend(branch.dominated_owner_term_ids);
         branch_terms.extend(branch.owner_terms);
     }
-    let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
-    let union_output =
-        bounded_consumer_frame_bytes_with_evidence(total_rows, node.output_schema(), &column_evidence.node(node_id))?;
-    let union_output_term =
-        consumer_owner_term(node_id, OwnerTermRole::ConsumerOutput, AllocationClass::ActivePhase, union_output, plan)?;
+    let node =
+        analysis.plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
+    let union_output = bounded_consumer_frame_bytes_with_evidence(
+        total_rows,
+        node.output_schema(),
+        &analysis.column_evidence.node(node_id),
+    )?;
+    let union_output_term = consumer_owner_term(
+        node_id,
+        OwnerTermRole::ConsumerOutput,
+        AllocationClass::ActivePhase,
+        union_output,
+        analysis.plan,
+    )?;
     branch_terms.push(union_output_term);
     let union_output_term_id = branch_terms.last().expect("union output term inserted").id.clone();
     let mut final_peak_group = retained_prior_term_ids;
@@ -1296,29 +1233,17 @@ pub fn composed_consumer_union_peak_bytes(
 
 #[doc(hidden)]
 pub fn composed_consumer_aggregate_peak_bytes(
-    plan: &QueryPlan,
+    analysis: &mut ComposedConsumerAnalysis<'_>,
     node_id: NodeId,
     aggregate: &AggregateNode,
-    outputs: &HashMap<&str, &ComposedGraphProducerOutputEvidence>,
-    used_occurrences: &mut HashSet<String>,
-    owner_terms: &[AllocationOwnerTerm],
-    column_evidence: &PlanColumnEvidenceAnalysis,
-    memo: &mut HashMap<NodeId, ComposedConsumerBranchBound>,
 ) -> Result<ComposedConsumerBranchBound> {
-    let input = composed_consumer_branch_bound(
-        plan,
-        aggregate.input,
-        outputs,
-        used_occurrences,
-        owner_terms,
-        column_evidence,
-        memo,
-    )?;
+    let input = composed_consumer_branch_bound(analysis, aggregate.input)?;
     let distinct_workspace = composed_global_nunique_workspace_bytes(aggregate, &input.schema, input.rows)?;
     if distinct_workspace.is_none() && !aggregate_owner_state_is_supported(aggregate) {
         return Err(composed_schedule_error("consumer_aggregate_state_unmodeled", None));
     }
-    let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
+    let node =
+        analysis.plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
     let output_schema = node.output_schema();
     let output_rows = if aggregate.spec.group_exprs.is_empty() { 1 } else { input.rows };
     let partial_shape = if aggregate.spec.group_exprs.is_empty() {
@@ -1326,9 +1251,9 @@ pub fn composed_consumer_aggregate_peak_bytes(
     } else {
         crate::materialization_sizing::PartialAggregateShape::Grouped { input_rows: input.rows }
     };
-    let node_evidence = column_evidence.node(node_id);
+    let node_evidence = analysis.column_evidence.node(node_id);
     let mut aggregate_terms = aggregate_owner_terms_for_shapes(
-        plan,
+        analysis.plan,
         node_id,
         aggregate,
         output_schema,
@@ -1354,7 +1279,7 @@ pub fn composed_consumer_aggregate_peak_bytes(
             OwnerId::Aggregate(node_id),
             OwnerTermRole::AggregateDistinctWorkspace,
             OccurrenceId::PlanLocal(node_id),
-            canonical_execution_scope_fingerprint(plan),
+            canonical_execution_scope_fingerprint(analysis.plan),
             AllocationClass::ActivePhase,
             distinct_workspace_bytes,
             None,
@@ -1466,27 +1391,15 @@ pub fn has_reachable_sort(plan: &QueryPlan) -> bool {
 
 #[doc(hidden)]
 pub fn composed_consumer_sort_peak_bytes(
-    plan: &QueryPlan,
+    analysis: &mut ComposedConsumerAnalysis<'_>,
     node_id: NodeId,
     sort: &crate::plan::SortNode,
-    outputs: &HashMap<&str, &ComposedGraphProducerOutputEvidence>,
-    used_occurrences: &mut HashSet<String>,
-    owner_terms: &[AllocationOwnerTerm],
-    column_evidence: &PlanColumnEvidenceAnalysis,
-    memo: &mut HashMap<NodeId, ComposedConsumerBranchBound>,
 ) -> Result<ComposedConsumerBranchBound> {
-    let input = composed_consumer_branch_bound(
-        plan,
-        sort.input,
-        outputs,
-        used_occurrences,
-        owner_terms,
-        column_evidence,
-        memo,
-    )?;
-    let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
+    let input = composed_consumer_branch_bound(analysis, sort.input)?;
+    let node =
+        analysis.plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
     let output_schema = node.output_schema().clone();
-    let scope = canonical_execution_scope_fingerprint(plan);
+    let scope = canonical_execution_scope_fingerprint(analysis.plan);
     let sort_terms = [
         OwnerTermRole::SortKeyInput,
         OwnerTermRole::SortKeyOutput,
@@ -1511,7 +1424,7 @@ pub fn composed_consumer_sort_peak_bytes(
         .cloned()
         .collect();
     let (output_frame_bytes, output_null_mask_bytes) =
-        bounded_consumer_frame_components(input.rows, &output_schema, Some(&column_evidence.node(node_id)))?;
+        bounded_consumer_frame_components(input.rows, &output_schema, Some(&analysis.column_evidence.node(node_id)))?;
     let final_owned_bytes = output_frame_bytes
         .checked_add(output_null_mask_bytes)
         .ok_or_else(|| composed_schedule_error("consumer_sort_output_bytes_overflow", None))?;
@@ -1533,25 +1446,13 @@ pub fn composed_consumer_sort_peak_bytes(
 
 #[doc(hidden)]
 pub fn composed_consumer_limit_peak_bytes(
-    plan: &QueryPlan,
+    analysis: &mut ComposedConsumerAnalysis<'_>,
     node_id: NodeId,
     limit: &crate::plan::LimitNode,
-    outputs: &HashMap<&str, &ComposedGraphProducerOutputEvidence>,
-    used_occurrences: &mut HashSet<String>,
-    owner_terms: &[AllocationOwnerTerm],
-    column_evidence: &PlanColumnEvidenceAnalysis,
-    memo: &mut HashMap<NodeId, ComposedConsumerBranchBound>,
 ) -> Result<ComposedConsumerBranchBound> {
-    let input = composed_consumer_branch_bound(
-        plan,
-        limit.input,
-        outputs,
-        used_occurrences,
-        owner_terms,
-        column_evidence,
-        memo,
-    )?;
-    let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
+    let input = composed_consumer_branch_bound(analysis, limit.input)?;
+    let node =
+        analysis.plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
     let output_schema = node.output_schema().clone();
     let fetch_usize =
         limit.spec.fetch.ok_or_else(|| composed_schedule_error("consumer_limit_fetch_unbounded", None))?;
@@ -1566,8 +1467,8 @@ pub fn composed_consumer_limit_peak_bytes(
         .ok_or_else(|| composed_schedule_error("consumer_limit_skip_fetch_overflow", None))?;
     let output_rows = input.rows.saturating_sub(skip).min(fetch);
 
-    if matches!(plan.node(limit.input).map(|node| &node.kind), Some(PlanNode::Sort(_))) {
-        let scope = canonical_execution_scope_fingerprint(plan);
+    if matches!(analysis.plan.node(limit.input).map(|node| &node.kind), Some(PlanNode::Sort(_))) {
+        let scope = canonical_execution_scope_fingerprint(analysis.plan);
         let limit_terms = [
             OwnerTermRole::LimitGatherMap,
             OwnerTermRole::LimitNativeWorkspace,
@@ -1589,8 +1490,11 @@ pub fn composed_consumer_limit_peak_bytes(
             })
             .cloned()
             .collect::<Vec<_>>();
-        let (output_frame_bytes, output_null_mask_bytes) =
-            bounded_consumer_frame_components(output_rows, &output_schema, Some(&column_evidence.node(node_id)))?;
+        let (output_frame_bytes, output_null_mask_bytes) = bounded_consumer_frame_components(
+            output_rows,
+            &output_schema,
+            Some(&analysis.column_evidence.node(node_id)),
+        )?;
         let final_owned_bytes = output_frame_bytes
             .checked_add(output_null_mask_bytes)
             .ok_or_else(|| composed_schedule_error("consumer_limit_output_bytes_overflow", None))?;
@@ -1610,10 +1514,18 @@ pub fn composed_consumer_limit_peak_bytes(
         });
     }
 
-    let output_bytes =
-        bounded_consumer_frame_bytes_with_evidence(output_rows, &output_schema, &column_evidence.node(node_id))?;
-    let limit_term =
-        consumer_owner_term(node_id, OwnerTermRole::ConsumerOutput, AllocationClass::ActivePhase, output_bytes, plan)?;
+    let output_bytes = bounded_consumer_frame_bytes_with_evidence(
+        output_rows,
+        &output_schema,
+        &analysis.column_evidence.node(node_id),
+    )?;
+    let limit_term = consumer_owner_term(
+        node_id,
+        OwnerTermRole::ConsumerOutput,
+        AllocationClass::ActivePhase,
+        output_bytes,
+        analysis.plan,
+    )?;
     let limit_term_id = limit_term.id.clone();
     let peak_owner_term_groups = consumer_unary_peak_groups(&input, [limit_term_id.clone()]);
     let peak_owner_term_ids = flatten_consumer_peak_groups(&peak_owner_term_groups);
@@ -1635,14 +1547,9 @@ pub fn composed_consumer_limit_peak_bytes(
 
 #[doc(hidden)]
 pub fn composed_consumer_join_peak_bytes(
-    plan: &QueryPlan,
+    analysis: &mut ComposedConsumerAnalysis<'_>,
     node_id: NodeId,
     join: &JoinNode,
-    outputs: &HashMap<&str, &ComposedGraphProducerOutputEvidence>,
-    used_occurrences: &mut HashSet<String>,
-    owner_terms: &[AllocationOwnerTerm],
-    column_evidence: &PlanColumnEvidenceAnalysis,
-    memo: &mut HashMap<NodeId, ComposedConsumerBranchBound>,
 ) -> Result<ComposedConsumerBranchBound> {
     if !matches!(join.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::LeftSemi | JoinType::LeftAnti)
         || join.spec.residual_predicate.is_some()
@@ -1657,24 +1564,8 @@ pub fn composed_consumer_join_peak_bytes(
             .with_fact("join_key_count", join.spec.keys.len())
             .with_fact("residual_predicate", join.spec.residual_predicate.is_some()));
     }
-    let left = composed_consumer_branch_bound(
-        plan,
-        join.inputs[0],
-        outputs,
-        used_occurrences,
-        owner_terms,
-        column_evidence,
-        memo,
-    )?;
-    let right = composed_consumer_branch_bound(
-        plan,
-        join.inputs[1],
-        outputs,
-        used_occurrences,
-        owner_terms,
-        column_evidence,
-        memo,
-    )?;
+    let left = composed_consumer_branch_bound(analysis, join.inputs[0])?;
+    let right = composed_consumer_branch_bound(analysis, join.inputs[1])?;
     let (build, probe, build_keys, build_node_id, probe_node_id) = match join.spec.build_side {
         JoinSide::Left => (
             &left,
@@ -1691,10 +1582,10 @@ pub fn composed_consumer_join_peak_bytes(
             join.inputs[0],
         ),
     };
-    let build_column_evidence = column_evidence.node(build_node_id);
-    let probe_column_evidence = column_evidence.node(probe_node_id);
-    let left_column_evidence = column_evidence.node(join.inputs[0]);
-    let right_column_evidence = column_evidence.node(join.inputs[1]);
+    let build_column_evidence = analysis.column_evidence.node(build_node_id);
+    let probe_column_evidence = analysis.column_evidence.node(probe_node_id);
+    let left_column_evidence = analysis.column_evidence.node(join.inputs[0]);
+    let right_column_evidence = analysis.column_evidence.node(join.inputs[1]);
     let left_join_keys = join.spec.keys.iter().map(|key| key.left.name().to_owned()).collect::<BTreeSet<_>>();
     let right_join_keys = join.spec.keys.iter().map(|key| key.right.name().to_owned()).collect::<BTreeSet<_>>();
     let left_is_unique = left_column_evidence.is_unique_on(&left_join_keys);
@@ -1710,7 +1601,7 @@ pub fn composed_consumer_join_peak_bytes(
                 .with_fact("owner_node_id", node_id)
                 .with_fact(
                     "owner_execution_scope_fingerprint",
-                    crate::admission::log_safe_fingerprint(&canonical_execution_scope_fingerprint(plan)),
+                    crate::admission::log_safe_fingerprint(&canonical_execution_scope_fingerprint(analysis.plan)),
                 )
                 .with_fact("left_rows", left.rows)
                 .with_fact("right_rows", right.rows)
@@ -1728,7 +1619,7 @@ pub fn composed_consumer_join_peak_bytes(
                     .with_fact("owner_node_id", node_id)
                     .with_fact(
                         "owner_execution_scope_fingerprint",
-                        crate::admission::log_safe_fingerprint(&canonical_execution_scope_fingerprint(plan)),
+                        crate::admission::log_safe_fingerprint(&canonical_execution_scope_fingerprint(analysis.plan)),
                     )
                     .with_fact("left_rows", left.rows)
                     .with_fact("right_rows", right.rows)
@@ -1824,22 +1715,26 @@ pub fn composed_consumer_join_peak_bytes(
             None,
         )
     };
-    let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
-    let output_bytes =
-        bounded_consumer_frame_bytes_with_evidence(output_rows, node.output_schema(), &column_evidence.node(node_id))
-            .map_err(|error| {
-            error
-                .with_fact("node_id", node_id)
-                .with_fact("left_rows", left.rows)
-                .with_fact("right_rows", right.rows)
-                .with_fact("output_rows", output_rows)
-        })?;
+    let node =
+        analysis.plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
+    let output_bytes = bounded_consumer_frame_bytes_with_evidence(
+        output_rows,
+        node.output_schema(),
+        &analysis.column_evidence.node(node_id),
+    )
+    .map_err(|error| {
+        error
+            .with_fact("node_id", node_id)
+            .with_fact("left_rows", left.rows)
+            .with_fact("right_rows", right.rows)
+            .with_fact("output_rows", output_rows)
+    })?;
     let hash_term = consumer_owner_term(
         node_id,
         OwnerTermRole::ConsumerHashTable,
         AllocationClass::ActivePhase,
         hash_table_bytes,
-        plan,
+        analysis.plan,
     )?
     .with_component_preflight(hash_component_operation, hash_table_bytes);
     let mut pair_term = consumer_owner_term(
@@ -1847,13 +1742,18 @@ pub fn composed_consumer_join_peak_bytes(
         OwnerTermRole::ConsumerPairIndices,
         AllocationClass::ActivePhase,
         pair_indices_bytes,
-        plan,
+        analysis.plan,
     )?;
     if let Some(operation) = pair_component_operation {
         pair_term = pair_term.with_component_owner_operation(operation);
     }
-    let output_term =
-        consumer_owner_term(node_id, OwnerTermRole::ConsumerOutput, AllocationClass::ActivePhase, output_bytes, plan)?;
+    let output_term = consumer_owner_term(
+        node_id,
+        OwnerTermRole::ConsumerOutput,
+        AllocationClass::ActivePhase,
+        output_bytes,
+        analysis.plan,
+    )?;
     let mut current_terms = Vec::new();
     if filtered_workspace_bytes > 0 {
         current_terms.push(consumer_owner_term(
@@ -1861,7 +1761,7 @@ pub fn composed_consumer_join_peak_bytes(
             OwnerTermRole::ConsumerWorkspace,
             AllocationClass::ActivePhase,
             filtered_workspace_bytes,
-            plan,
+            analysis.plan,
         )?);
     }
     current_terms.push(hash_term);
@@ -1872,7 +1772,7 @@ pub fn composed_consumer_join_peak_bytes(
                 OwnerTermRole::ConsumerPredicateMask,
                 AllocationClass::ActivePhase,
                 filtered_probe_state_bytes,
-                plan,
+                analysis.plan,
             )?
             .with_component_owner_operation("ops::join::filtered_join_allocation_preflight_for_metadata"),
         );

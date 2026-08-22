@@ -1118,6 +1118,10 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(in crate::exec::bounded) fn execute_bounded_generic_unary_with_work_bytes(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -1412,6 +1416,10 @@ fn execute_bounded_generic_regexp_projection(
     Ok(ResidentGpuFrame { frame, reservation: output_reservation })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -1440,6 +1448,10 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(in crate::exec::bounded) fn execute_bounded_generic_unary_consuming_input_with_reservation_kind(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -1525,6 +1537,10 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_consuming_input_wi
     Ok(ResidentGpuFrame { frame, reservation: output_reservation })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame_with_reservation_kind(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,

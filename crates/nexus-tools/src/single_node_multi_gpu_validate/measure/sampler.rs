@@ -163,7 +163,10 @@ pub(super) fn calibration_claim_stable_across_telemetry(
 /// appends the compact series rows. Raw retention may displace its tail
 /// for the terminal sample; the compact series instead keeps the whole run,
 /// since whole-window drift coverage is its purpose and its rows stay small.
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "sampling-strategy matrix helper; parameters are the independent sampling axes"
+)]
 pub(super) fn sample_once(
     backend: &NexusGpuBackend,
     started: Instant,

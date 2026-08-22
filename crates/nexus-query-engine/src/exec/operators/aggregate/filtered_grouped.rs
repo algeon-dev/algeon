@@ -196,6 +196,10 @@ pub(super) fn apply_filtered_grouped_materialization_facts(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+)]
 pub(super) fn record_filtered_grouped_segmented_failure(
     metrics: &mut QueryMetrics,
     context: &ExecutionContext,
@@ -226,6 +230,10 @@ pub(super) fn record_filtered_grouped_segmented_failure(
     );
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+)]
 pub(super) fn record_filtered_grouped_single_pass(
     metrics: &mut QueryMetrics,
     context: &ExecutionContext,
@@ -258,6 +266,10 @@ pub(super) fn record_filtered_grouped_single_pass(
     );
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 pub(super) fn execute_segmented_filtered_grouped_aggregate_with_budget(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
@@ -320,6 +332,10 @@ pub(super) fn execute_segmented_filtered_grouped_aggregate_with_budget(
     Ok(output)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 pub(super) fn execute_segmented_filtered_grouped_partial_aggregate_with_budget(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
@@ -712,6 +728,10 @@ fn concat_partial_state_frames(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+)]
 fn record_segmented_filtered_grouped_strategy(
     metrics: &mut QueryMetrics,
     context: &ExecutionContext,

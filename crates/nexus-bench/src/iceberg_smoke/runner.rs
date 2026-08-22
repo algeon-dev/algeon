@@ -502,6 +502,7 @@ where
     Ok(NexusIcebergTableProvider::from_cpu_provider_and_native_planner(cpu_provider, resolved_snapshot_id, planner)
         .with_catalog_type(catalog_type))
 }
+#[expect(clippy::too_many_arguments, reason = "benchmark harness parameters are independent measurement axes")]
 pub(crate) fn query_error_report_row(
     query_id: String,
     fixture_mode: String,
@@ -532,6 +533,7 @@ pub(crate) fn query_error_report_row(
     row
 }
 
+#[expect(clippy::too_many_arguments, reason = "benchmark harness parameters are independent measurement axes")]
 pub(crate) async fn run_query_with_registered_native_tables(
     query_id: String,
     fixture_mode: String,

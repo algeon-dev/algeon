@@ -2,6 +2,10 @@ use parquet::file::reader::FileReader;
 
 use super::*;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"
+)]
 pub(super) fn read_local_parquet_file(
     context: &ExecutionContext,
     source: &LocalParquetSource,

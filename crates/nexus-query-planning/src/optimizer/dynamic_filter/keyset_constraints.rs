@@ -22,6 +22,7 @@ pub(super) fn shared_source_filter_is_keyset_constrained(
     )
 }
 
+#[expect(clippy::too_many_arguments, reason = "planning inputs are distinct proof and constraint values")]
 fn column_consumers_are_keyset_constrained(
     plan: &QueryPlan,
     parent_counts: &[usize],
@@ -54,6 +55,7 @@ fn column_consumers_are_keyset_constrained(
     })
 }
 
+#[expect(clippy::too_many_arguments, reason = "planning inputs are distinct proof and constraint values")]
 fn parent_constrains_or_carries_column(
     plan: &QueryPlan,
     parent_counts: &[usize],
@@ -150,6 +152,7 @@ fn parent_constrains_or_carries_column(
     }
 }
 
+#[expect(clippy::too_many_arguments, reason = "planning inputs are distinct proof and constraint values")]
 fn join_constrains_or_carries_column(
     plan: &QueryPlan,
     parent_counts: &[usize],
@@ -193,6 +196,7 @@ fn join_constrains_or_carries_column(
     )
 }
 
+#[expect(clippy::too_many_arguments, reason = "planning inputs are distinct proof and constraint values")]
 fn join_directly_constrains_column(
     plan: &QueryPlan,
     parent_counts: &[usize],

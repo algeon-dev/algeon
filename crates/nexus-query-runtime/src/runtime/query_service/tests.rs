@@ -11,7 +11,10 @@ use crate::{
         QueryBoundaryKind, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeObservationPayload,
         RuntimePlanExecutionLifecycle, RuntimeTerminalOutcome, RuntimeTraceId, StreamLeaseLifecycleState,
     },
-    runtime::{DeviceResourceProfile, GdsDriverProbeStatus, KvikioCompatModeStatus, NvidiaFsProbeStatus},
+    runtime::{
+        DeviceResourceEnvelope, DeviceResourceProfile, GdsDriverProbeStatus, KvikioCompatModeStatus,
+        NvidiaFsProbeStatus,
+    },
 };
 
 include!("tests/support.rs");

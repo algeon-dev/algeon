@@ -46,6 +46,10 @@ pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_materialize_prese
     ))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_probe_chunk(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -191,6 +195,10 @@ pub(in crate::exec::bounded::join::hash) struct RootHashJoinStreamChunkOutput {
     pub(in crate::exec::bounded::join::hash) output_rows: u64,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_index_slice(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -265,6 +273,10 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_i
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_index_slice_once(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,

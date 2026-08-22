@@ -590,6 +590,7 @@ fn glue_credential_source(
     }
 }
 
+#[expect(clippy::too_many_arguments, reason = "benchmark harness parameters are independent measurement axes")]
 pub(crate) fn frozen_s3_source_access_policy(
     endpoint: Option<String>,
     region: Option<String>,

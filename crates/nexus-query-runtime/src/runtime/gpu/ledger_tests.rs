@@ -27,24 +27,37 @@ fn requirement(floor: u64, hint: Option<u64>) -> AttemptRequirement {
 }
 
 fn profile(managed: u64, floor: u64, max_active: usize) -> DeviceResourceProfile {
-    DeviceResourceProfile::resolve(0, managed, 0, 0, floor, max_active, 1, max_active * 2, max_active * 2)
-        .expect("profile must resolve")
+    /*OK*/
+    DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+        device_ordinal: 0,
+        configured_limit_bytes: managed,
+        headroom_bytes: 0,
+        backend_reserve_bytes: 0,
+        attempt_floor_bytes: floor,
+        max_active_attempts: max_active,
+        source_work_per_attempt: 1,
+        stream_pool_size: max_active * 2,
+        worker_job_capacity: max_active * 2,
+        device_capabilities: DeviceCapabilities::default(),
+        cache_cap_bytes: 0,
+    })
+    .expect("profile must resolve")
 }
 
 fn cache_profile(managed: u64, floor: u64, max_active: usize, cache_cap: u64) -> DeviceResourceProfile {
-    DeviceResourceProfile::resolve_with_capabilities_and_cache_cap(
-        0,
-        managed,
-        0,
-        0,
-        floor,
-        max_active,
-        1,
-        max_active * 2,
-        max_active * 2,
-        DeviceCapabilities::default(),
-        cache_cap,
-    )
+    DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+        device_ordinal: 0,
+        configured_limit_bytes: managed,
+        headroom_bytes: 0,
+        backend_reserve_bytes: 0,
+        attempt_floor_bytes: floor,
+        max_active_attempts: max_active,
+        source_work_per_attempt: 1,
+        stream_pool_size: max_active * 2,
+        worker_job_capacity: max_active * 2,
+        device_capabilities: DeviceCapabilities::default(),
+        cache_cap_bytes: cache_cap,
+    })
     .expect("profile must resolve")
 }
 
@@ -536,8 +549,38 @@ fn closed_health_blocks_new_admission_but_releases_still_refund() {
 
 #[test]
 fn heterogeneous_ledgers_are_independent_envelopes() {
-    let small = DeviceLedger::new(DeviceResourceProfile::resolve(0, 500, 0, 0, 100, 1, 1, 2, 2).unwrap());
-    let large = DeviceLedger::new(DeviceResourceProfile::resolve(1, 5_000, 0, 0, 100, 1, 1, 2, 2).unwrap());
+    let small = DeviceLedger::new(
+        DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+            device_ordinal: 0,
+            device_capabilities: DeviceCapabilities::default(),
+            configured_limit_bytes: 500,
+            headroom_bytes: 0,
+            backend_reserve_bytes: 0,
+            attempt_floor_bytes: 100,
+            max_active_attempts: 1,
+            source_work_per_attempt: 1,
+            stream_pool_size: 2,
+            worker_job_capacity: 2,
+            cache_cap_bytes: 0,
+        })
+        .unwrap(),
+    );
+    let large = DeviceLedger::new(
+        DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+            device_ordinal: 1,
+            configured_limit_bytes: 5_000,
+            headroom_bytes: 0,
+            backend_reserve_bytes: 0,
+            attempt_floor_bytes: 100,
+            max_active_attempts: 1,
+            source_work_per_attempt: 1,
+            stream_pool_size: 2,
+            worker_job_capacity: 2,
+            device_capabilities: DeviceCapabilities::default(),
+            cache_cap_bytes: 0,
+        })
+        .unwrap(),
+    );
     let grant = large.try_admit(request(1), &requirement(100, Some(4_000))).unwrap().expect("large admits");
     assert_eq!(grant.budget_bytes(), 4_000);
     let small_grant = small.try_admit(request(3), &requirement(100, Some(400))).unwrap().expect("small admits");
@@ -550,8 +593,38 @@ fn heterogeneous_ledgers_are_independent_envelopes() {
 
 #[test]
 fn zero_request_floor_resolves_against_each_candidate_profile() {
-    let small = DeviceLedger::new(DeviceResourceProfile::resolve(0, 64, 0, 0, 8, 2, 1, 4, 4).unwrap());
-    let large = DeviceLedger::new(DeviceResourceProfile::resolve(1, 128, 0, 0, 16, 1, 1, 2, 2).unwrap());
+    let small = DeviceLedger::new(
+        DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+            device_ordinal: 0,
+            device_capabilities: DeviceCapabilities::default(),
+            configured_limit_bytes: 64,
+            headroom_bytes: 0,
+            backend_reserve_bytes: 0,
+            attempt_floor_bytes: 8,
+            max_active_attempts: 2,
+            source_work_per_attempt: 1,
+            stream_pool_size: 4,
+            worker_job_capacity: 4,
+            cache_cap_bytes: 0,
+        })
+        .unwrap(),
+    );
+    let large = DeviceLedger::new(
+        DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+            device_ordinal: 1,
+            device_capabilities: DeviceCapabilities::default(),
+            configured_limit_bytes: 128,
+            headroom_bytes: 0,
+            backend_reserve_bytes: 0,
+            attempt_floor_bytes: 16,
+            max_active_attempts: 1,
+            source_work_per_attempt: 1,
+            stream_pool_size: 2,
+            worker_job_capacity: 2,
+            cache_cap_bytes: 0,
+        })
+        .unwrap(),
+    );
     let zero_floor = AttemptRequirement {
         configured_floor_bytes: 0,
         capability_floor_raise_bytes: 0,
@@ -729,19 +802,19 @@ fn attempt_phase_transition_rejects_before_mutation_when_bound_or_retained_input
 
 #[test]
 fn snapshot_aggregates_live_reservations_and_versions_every_observable_accounting_change() {
-    let profile = DeviceResourceProfile::resolve_with_capabilities_and_cache_cap(
-        0,
-        1_000,
-        0,
-        0,
-        100,
-        3,
-        2,
-        9,
-        9,
-        DeviceCapabilities::default(),
-        700,
-    )
+    let profile = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+        device_ordinal: 0,
+        configured_limit_bytes: 1_000,
+        headroom_bytes: 0,
+        backend_reserve_bytes: 0,
+        attempt_floor_bytes: 100,
+        max_active_attempts: 3,
+        source_work_per_attempt: 2,
+        stream_pool_size: 9,
+        worker_job_capacity: 9,
+        device_capabilities: DeviceCapabilities::default(),
+        cache_cap_bytes: 700,
+    })
     .expect("cache test profile must resolve");
     let ledger = DeviceLedger::new(profile);
     let empty = ledger.snapshot().unwrap();

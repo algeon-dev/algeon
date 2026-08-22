@@ -94,6 +94,10 @@ pub(super) fn large_small_in_list_reader_predicate_should_defer(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(super) fn source_post_decode_dynamic_filter_stages(
     source: &LocalParquetSource,
     source_node_id: NodeId,

@@ -224,6 +224,10 @@ impl StreamedOneShotJoinSummary {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+    )]
     fn record_chunk(
         &mut self,
         probe_rows: u64,
@@ -1188,6 +1192,10 @@ struct CompiledEqualityJoinPreflightIndices {
     output_rows: u64,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 fn materialize_compiled_keyed_equality_join_indices_with_preflight(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,

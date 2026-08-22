@@ -25,7 +25,7 @@ use crate::{
             DeviceCacheAllocationFactory,
             local_parquet::{GpuLocalParquetSourceCacheKey, GpuLocalParquetSourceCachePromotion},
         },
-        gpu::{DeviceAdmissionHealth, DeviceCapabilities, DeviceResourceProfile},
+        gpu::{DeviceAdmissionHealth, DeviceCapabilities, DeviceResourceEnvelope, DeviceResourceProfile},
         resident::{GpuDataFrame, GpuResultHandle},
     },
     source::LocalParquetSource,
@@ -35,19 +35,19 @@ const CACHE_CAP_BYTES: u64 = 64 * 1024 * 1024;
 
 fn cache_test_parts() -> (GpuResidentGraphCache, DeviceLedger) {
     let device = cudf::DeviceId::current().expect("resident graph cache test requires a CUDA device");
-    let profile = DeviceResourceProfile::resolve_with_capabilities_and_cache_cap(
-        device.ordinal(),
-        512 * 1024 * 1024,
-        0,
-        0,
-        1024 * 1024,
-        1,
-        1,
-        2,
-        2,
-        DeviceCapabilities::default(),
-        CACHE_CAP_BYTES,
-    )
+    let profile = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+        device_ordinal: device.ordinal(),
+        configured_limit_bytes: 512 * 1024 * 1024,
+        headroom_bytes: 0,
+        backend_reserve_bytes: 0,
+        attempt_floor_bytes: 1024 * 1024,
+        max_active_attempts: 1,
+        source_work_per_attempt: 1,
+        stream_pool_size: 2,
+        worker_job_capacity: 2,
+        device_capabilities: DeviceCapabilities::default(),
+        cache_cap_bytes: CACHE_CAP_BYTES,
+    })
     .expect("cache test profile must resolve");
     let ledger = DeviceLedger::new(profile);
     let domain = cudf::CacheAllocationDomain::new(device, CACHE_CAP_BYTES)
@@ -139,19 +139,19 @@ fn separate_resident_graph_scopes_keep_distinct_current_resource_routes() {
 #[test]
 fn graph_scope_charge_survives_source_cache_eviction_between_build_and_commit() {
     let device = cudf::DeviceId::current().expect("shared cache test requires a CUDA device");
-    let profile = DeviceResourceProfile::resolve_with_capabilities_and_cache_cap(
-        device.ordinal(),
-        512 * 1024 * 1024,
-        0,
-        0,
-        1024 * 1024,
-        1,
-        1,
-        2,
-        2,
-        DeviceCapabilities::default(),
-        CACHE_CAP_BYTES,
-    )
+    let profile = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+        device_ordinal: device.ordinal(),
+        configured_limit_bytes: 512 * 1024 * 1024,
+        headroom_bytes: 0,
+        backend_reserve_bytes: 0,
+        attempt_floor_bytes: 1024 * 1024,
+        max_active_attempts: 1,
+        source_work_per_attempt: 1,
+        stream_pool_size: 2,
+        worker_job_capacity: 2,
+        device_capabilities: DeviceCapabilities::default(),
+        cache_cap_bytes: CACHE_CAP_BYTES,
+    })
     .expect("shared cache test profile must resolve");
     let ledger = DeviceLedger::new(profile);
     let factory = DeviceCacheAllocationFactory::new(ledger.clone())

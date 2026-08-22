@@ -3946,25 +3946,16 @@ fn composed_resident_source_intersects_independent_hard_row_bounds() {
         row_count_upper_bound: 8,
         column_evidence: PlanColumnEvidence::default(),
     };
-    let outputs = HashMap::from([("only", &output)]);
-    let mut used_occurrences = HashSet::new();
-    let mut memo = HashMap::new();
     let column_evidence = PlanColumnEvidenceAnalysis::for_plan_with_resident_rows(
         &plan,
         &HashMap::new(),
         &HashMap::from([("only".to_owned(), output.row_count_upper_bound)]),
     )
     .expect("resident upper-bound evidence must remain finite");
-    let bound = composed_consumer_branch_bound(
-        &plan,
-        plan.root_id(),
-        &outputs,
-        &mut used_occurrences,
-        &[],
-        &column_evidence,
-        &mut memo,
-    )
-    .expect("two valid upper bounds intersect at their tighter value");
+    let producer_output = [output];
+    let mut analysis = ComposedConsumerAnalysis::new(&plan, &producer_output, &[], &column_evidence)
+        .expect("producer occurrences are unique");
+    let bound = analysis.branch_bound(plan.root_id()).expect("two valid upper bounds intersect at their tighter value");
 
     assert_eq!(bound.rows, 6);
     assert_eq!(bound.allocation_state, AttemptReservationConsumerState::Passthrough);
@@ -4073,21 +4064,13 @@ fn composed_consumer_case_projection_uses_cudf_owner_preflight_group() {
         row_count_upper_bound: 128,
         column_evidence: PlanColumnEvidence::default(),
     };
-    let outputs = HashMap::from([("only", &output)]);
-    let mut used_occurrences = HashSet::new();
-    let mut memo = HashMap::new();
     let column_evidence = PlanColumnEvidenceAnalysis::for_plan(&plan, &HashMap::new())
         .expect("CASE projection payload evidence analysis must succeed");
-    let bound = composed_consumer_branch_bound(
-        &plan,
-        plan.root_id(),
-        &outputs,
-        &mut used_occurrences,
-        &[],
-        &column_evidence,
-        &mut memo,
-    )
-    .expect("supported asset-score CASE must use the cudf owner preflight");
+    let producer_output = [output];
+    let mut analysis = ComposedConsumerAnalysis::new(&plan, &producer_output, &[], &column_evidence)
+        .expect("producer occurrences are unique");
+    let bound =
+        analysis.branch_bound(plan.root_id()).expect("supported asset-score CASE must use the cudf owner preflight");
 
     let workspace = bound
         .owner_terms

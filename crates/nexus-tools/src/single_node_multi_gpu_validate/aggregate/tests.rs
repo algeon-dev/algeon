@@ -19,7 +19,10 @@ fn device(ordinal: usize, capacity_bytes: u64, max_active_attempts: usize) -> De
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "fixed measurement-matrix expansion helper; each parameter is one axis of the validation matrix"
+)]
 fn attempt(
     sequence: usize,
     ordinal: usize,

@@ -816,6 +816,7 @@ fn derive_parity_outcome(
     (result.status, result.mode, result.detail, Some(result.cpu_fingerprint), Some(result.native_fingerprint))
 }
 
+#[expect(clippy::too_many_arguments, reason = "inputs are distinct domain values that share no owner")]
 fn compare_record_batches_with_sql_ordering(
     cpu_schema: &Schema,
     cpu_batches: &[RecordBatch],

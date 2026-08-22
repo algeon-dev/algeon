@@ -252,6 +252,10 @@ where
 }
 
 #[cfg(feature = "cugraph")]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "native cuDF/cuGraph/cuVS call parameters stay explicit at the FFI boundary"
+)]
 fn run_checked_out_resident_graph<T, F>(
     context: &ExecutionContext,
     attempt_runtime: &cudf::Runtime,

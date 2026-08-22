@@ -121,6 +121,10 @@ impl QueryHandleLifetime {
         self.admitted_attempt_proof.as_deref()
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "service construction inputs are distinct admission and ownership values"
+    )]
     pub(super) fn new(
         service: Arc<QueryServiceInner>,
         admission_request_id: AdmissionRequestId,

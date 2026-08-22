@@ -814,6 +814,7 @@ fn execute_row_number_window(
     Ok(output)
 }
 
+#[expect(clippy::too_many_arguments, reason = "execution inputs are distinct domain values that share no owner")]
 fn execute_lag_lead_window(
     context: &ExecutionContext,
     node: &WindowNode,

@@ -182,6 +182,10 @@ impl QueryMetrics {
     }
 
     /// Records a graph-related budget-tracking RMM resource with an explicit boundary.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+    )]
     pub fn record_graph_budget_tracking_with_boundary(
         &mut self,
         operation: impl Into<String>,
@@ -205,6 +209,10 @@ impl QueryMetrics {
     }
 
     /// Records a graph-related budget event with caller-supplied enforcement evidence.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+    )]
     pub fn record_graph_budget_tracking_with_boundary_and_enforcement(
         &mut self,
         operation: impl Into<String>,

@@ -605,6 +605,10 @@ fn partition_source_adjacent_raw_chunk(
     Ok(partitions)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 fn slice_source_adjacent_aggregate_partition(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -1022,6 +1026,10 @@ fn source_adjacent_partition_aggregate_error(error: QueryError, node_id: NodeId,
         .with_fact_if_absent("stage", SOURCE_ADJACENT_PARTITIONED_PARTIAL_AGGREGATE_STAGE)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 fn concatenate_committed_frames(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,

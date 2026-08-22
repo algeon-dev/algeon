@@ -312,6 +312,7 @@ pub(super) fn device_peaks(
         .collect()
 }
 
+#[expect(clippy::too_many_arguments, reason = "benchmark harness parameters are independent measurement axes")]
 pub(super) fn write_outputs(
     config: &HarnessConfig,
     warmup_rows: &[QueryRow],

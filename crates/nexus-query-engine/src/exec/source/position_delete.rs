@@ -184,6 +184,10 @@ pub(super) fn record_position_delete_source_chunk_top_level_metrics(chunk: &Sour
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"
+)]
 pub(super) fn apply_position_deletes_to_data_file(
     context: &ExecutionContext,
     source: &LocalParquetSource,
@@ -538,6 +542,10 @@ pub(super) fn position_delete_file_overlaps_row_range(
     true
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"
+)]
 pub(super) fn read_position_delete_file(
     context: &ExecutionContext,
     source_node_id: NodeId,

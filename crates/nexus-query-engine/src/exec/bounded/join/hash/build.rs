@@ -138,6 +138,10 @@ fn single_key_build_is_unique(frame: &DataFrame, build_keys: &[String], override
     series.nunique_in(overrides).ok().is_some_and(|unique_count| unique_count == frame.num_rows())
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(in crate::exec::bounded::join) fn reserve_and_build_bounded_hash_join(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,

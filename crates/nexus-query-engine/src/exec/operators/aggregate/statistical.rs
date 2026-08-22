@@ -150,6 +150,10 @@ pub(super) fn execute_gpu_native_statistical_aggregate(
     Ok(GpuDataFrame::new(output))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 pub(super) fn execute_gpu_native_statistical_aggregate_with_budget(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
@@ -337,6 +341,10 @@ pub(in crate::exec) fn execute_gpu_native_statistical_partial_aggregate_with_bud
     Ok(GpuDataFrame::new(output))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 pub(in crate::exec) fn execute_gpu_native_statistical_final_merge_with_budget(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
@@ -456,6 +464,10 @@ fn gpu_native_statistical_decision(
     decision
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+)]
 fn record_gpu_native_statistical_decision(
     metrics: &mut QueryMetrics,
     context: &ExecutionContext,
@@ -669,6 +681,10 @@ fn lower_gpu_native_statistical_final_merge_plan(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 fn ensure_partial_statistical_state(
     frame: &DataFrame,
     spec: &AggregateSpec,

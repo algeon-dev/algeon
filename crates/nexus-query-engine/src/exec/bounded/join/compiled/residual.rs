@@ -1,5 +1,9 @@
 use super::*;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(super) fn materialize_compiled_one_shot_residual_output(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,

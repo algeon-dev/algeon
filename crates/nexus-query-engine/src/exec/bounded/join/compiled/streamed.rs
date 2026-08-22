@@ -27,6 +27,10 @@ pub(super) fn execute_compiled_streamed_one_shot_join_materialize(
     );
     Ok(output)
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(super) fn execute_compiled_streamed_partitioned_hash_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -51,6 +55,10 @@ pub(super) fn execute_compiled_streamed_partitioned_hash_join_materialize(
     Ok(output)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+)]
 pub(super) fn record_streamed_one_shot_join_metrics(
     node_id: NodeId,
     node: &JoinNode,
@@ -129,6 +137,10 @@ pub(super) fn record_one_shot_join_chunk_metrics(
     ));
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+)]
 pub(super) fn record_streamed_partitioned_hash_join_metrics(
     node_id: NodeId,
     node: &JoinNode,
