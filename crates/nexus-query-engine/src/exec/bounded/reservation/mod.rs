@@ -10,8 +10,6 @@ use crate::{
         RuntimeEventContext, RuntimeExecutionObservationScope, RuntimeObservationPayload, RuntimeReservationAction,
         RuntimeReservationDisposition, RuntimeReservationId, RuntimeSpanId, TaskAttemptId,
     },
-    pipeline::CompiledPipeline,
-    plan::QueryPlan,
     runtime::{ExecutionContext, MemoryGrant, MemorySpaceId, gpu::ledger::MemoryGrantLiveReservation},
 };
 

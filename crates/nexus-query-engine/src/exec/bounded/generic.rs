@@ -20,18 +20,10 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_query_plan(
     let Some(device_budget_bytes) = context.bounded_device_budget_bytes() else {
         unreachable!("execute_bounded_query_plan is called only for bounded policies");
     };
-    let mut reservations =
-        ReservationTracker::new_for_context(context, device_budget_bytes, metrics, observation_scope)?;
+    let mut execution = BoundedExecutionAttempt::new(context, device_budget_bytes, metrics, observation_scope)?;
     let mut committed = {
-        let augmented_gpu_inputs = reservations.augment_gpu_inputs(gpu_inputs)?;
-        execute_bounded_generic_node(
-            context,
-            plan,
-            plan.sink().input(),
-            &augmented_gpu_inputs,
-            &mut reservations,
-            metrics,
-        )?
+        let augmented_gpu_inputs = execution.reservations().augment_gpu_inputs(gpu_inputs)?;
+        execute_bounded_generic_node(&mut execution, plan, plan.sink().input(), &augmented_gpu_inputs)?
     };
 
     match plan.sink() {
@@ -41,76 +33,63 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_query_plan(
                 .frame
                 .with_producer_execution_scope(crate::admission::canonical_execution_scope_fingerprint(plan));
             let handle = match GpuResultHandle::new_with_live_reservation(
-                context,
+                execution.context(),
                 frame,
                 Arc::clone(plan.output_schema()),
                 live_reservation,
             ) {
                 Ok(handle) => handle,
                 Err(error) => {
-                    reservations.release(committed.reservation, metrics);
+                    execution.release(committed.reservation);
                     return Err(error);
                 },
             };
-            reservations.release(committed.reservation, metrics);
-            debug_assert_eq!(reservations.reserved_bytes(), 0);
+            execution.release(committed.reservation);
+            debug_assert_eq!(execution.reservations().reserved_bytes(), 0);
             Ok(QueryOutput::GpuResident(handle))
         },
         ResultSink::HostArrow { schema, .. } => {
             let output = materialize_bounded_to_host(
-                context,
+                &mut execution,
                 committed,
                 plan.sink().input(),
                 plan.node(plan.sink().input()).expect("validated sink input exists").output_schema(),
                 schema,
-                &mut reservations,
-                metrics,
             )?;
-            debug_assert_eq!(reservations.reserved_bytes(), 0);
+            debug_assert_eq!(execution.reservations().reserved_bytes(), 0);
             Ok(QueryOutput::HostArrow(output))
         },
     }
 }
 
 fn execute_bounded_generic_node(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     plan: &QueryPlan,
     id: NodeId,
     gpu_inputs: &GpuResidentInputMap,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
-    context.check_cancellation("nexus_query_engine.exec.bounded.generic_node")?;
+    execution.context().check_cancellation("nexus_query_engine.exec.bounded.generic_node")?;
     let node = plan.node(id).expect("validated bounded generic node exists");
     let frame = match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {
             crate::source::SourceNode::LocalParquet(source) => {
-                execute_bounded_generic_local_parquet_source(context, source, id, reservations, metrics)
+                execute_bounded_generic_local_parquet_source(execution, source, id)
             },
             crate::source::SourceNode::GpuResident(source) => {
-                execute_bounded_generic_gpu_resident_source(context, source, id, gpu_inputs, reservations, metrics)
+                execute_bounded_generic_gpu_resident_source(execution, source, id, gpu_inputs)
             },
             crate::source::SourceNode::LiteralBatch(source) => {
-                execute_bounded_generic_literal_batch_source(context, source, id, reservations, metrics)
+                execute_bounded_generic_literal_batch_source(execution, source, id)
             },
         },
         PlanNode::Filter(filter) => {
             if let Some(frame) =
-                try_execute_bounded_generic_source_adjacent_stream(context, plan, id, reservations, metrics)?
+                try_execute_bounded_generic_source_adjacent_stream(execution, plan, id)?
             {
                 return Ok(frame);
             }
-            let input = execute_bounded_generic_node(context, plan, filter.input, gpu_inputs, reservations, metrics)?;
-            execute_bounded_generic_unary(
-                context,
-                id,
-                "bounded_generic_filter",
-                "bounded_generic_filter_output",
-                input,
-                reservations,
-                metrics,
-                true,
-                |context, input, token, metrics| {
+            let input = execute_bounded_generic_node(execution, plan, filter.input, gpu_inputs)?;
+            execute_bounded_generic_unary(execution, id, "bounded_generic_filter", "bounded_generic_filter_output", input, true, |context, input, token, metrics| {
                     execute_filter_with_budget(
                         context,
                         filter,
@@ -118,100 +97,53 @@ fn execute_bounded_generic_node(
                         token.expect("budget token is created for bounded generic filter stages"),
                         metrics,
                     )
-                },
-            )
+                })
         },
         PlanNode::Projection(projection) => {
             if let Some(frame) =
-                try_execute_bounded_generic_source_adjacent_stream(context, plan, id, reservations, metrics)?
+                try_execute_bounded_generic_source_adjacent_stream(execution, plan, id)?
             {
                 return Ok(frame);
             }
             let input =
-                execute_bounded_generic_node(context, plan, projection.input, gpu_inputs, reservations, metrics)?;
-            execute_bounded_generic_projection(
-                context,
-                id,
-                "bounded_generic_projection",
-                "bounded_generic_projection_output",
-                projection,
-                input,
-                reservations,
-                metrics,
-            )
+                execute_bounded_generic_node(execution, plan, projection.input, gpu_inputs)?;
+            execute_bounded_generic_projection(execution, id, "bounded_generic_projection", "bounded_generic_projection_output", projection, input)
         },
         PlanNode::Window(window) => {
-            let input = execute_bounded_generic_node(context, plan, window.input, gpu_inputs, reservations, metrics)?;
+            let input = execute_bounded_generic_node(execution, plan, window.input, gpu_inputs)?;
             let input_schema = plan
                 .node(window.input)
                 .expect("validated window input exists")
                 .output_schema()
                 .clone();
             let output_schema = node.output_schema().clone();
-            execute_bounded_generic_unary(
-                context,
-                id,
-                "bounded_generic_window",
-                "bounded_generic_window_output",
-                input,
-                reservations,
-                metrics,
-                false,
-                |context, input, _token, metrics| {
+            execute_bounded_generic_unary(execution, id, "bounded_generic_window", "bounded_generic_window_output", input, false, |context, input, _token, metrics| {
                     execute_window(context, window, &input_schema, input, &output_schema, metrics)
-                },
-            )
+                })
         },
         PlanNode::Sort(sort) => {
-            let input = execute_bounded_generic_node(context, plan, sort.input, gpu_inputs, reservations, metrics)?;
-            execute_bounded_generic_unary(
-                context,
-                id,
-                "bounded_generic_sort",
-                "bounded_generic_sort_output",
-                input,
-                reservations,
-                metrics,
-                false,
-                |context, input, _token, metrics| execute_sort(context, sort, input, metrics),
-            )
+            let input = execute_bounded_generic_node(execution, plan, sort.input, gpu_inputs)?;
+            execute_bounded_generic_unary(execution, id, "bounded_generic_sort", "bounded_generic_sort_output", input, false, |context, input, _token, metrics| execute_sort(context, sort, input, metrics))
         },
         PlanNode::Limit(limit) => {
-            let input = execute_bounded_generic_node(context, plan, limit.input, gpu_inputs, reservations, metrics)?;
-            execute_bounded_generic_unary(
-                context,
-                id,
-                "bounded_generic_limit",
-                "bounded_generic_limit_output",
-                input,
-                reservations,
-                metrics,
-                false,
-                |context, input, _token, metrics| execute_limit(context, limit, input, metrics),
-            )
+            let input = execute_bounded_generic_node(execution, plan, limit.input, gpu_inputs)?;
+            execute_bounded_generic_unary(execution, id, "bounded_generic_limit", "bounded_generic_limit_output", input, false, |context, input, _token, metrics| execute_limit(context, limit, input, metrics))
         },
         PlanNode::Union(union) => {
             let inputs = union
                 .inputs
                 .iter()
-                .map(|input| execute_bounded_generic_node(context, plan, *input, gpu_inputs, reservations, metrics))
+                .map(|input| execute_bounded_generic_node(execution, plan, *input, gpu_inputs))
                 .collect::<Result<Vec<_>>>()?;
-            execute_bounded_generic_union(context, id, inputs, reservations, metrics)
+            execute_bounded_generic_union(execution, id, inputs)
         },
         PlanNode::EdgeNormalize(edge_normalize) => {
             let input =
-                execute_bounded_generic_node(context, plan, edge_normalize.input, gpu_inputs, reservations, metrics)?;
-            execute_bounded_edge_normalize_from_input(
-                context,
-                id,
-                edge_normalize,
-                input,
-                reservations,
-                metrics,
-            )
+                execute_bounded_generic_node(execution, plan, edge_normalize.input, gpu_inputs)?;
+            execute_bounded_edge_normalize_from_input(execution, id, edge_normalize, input)
         },
         PlanNode::GraphAlgorithm(graph) => {
-            execute_bounded_generic_graph_algorithm(context, plan, id, graph, gpu_inputs, reservations, metrics)
+            execute_bounded_generic_graph_algorithm(execution, plan, id, graph, gpu_inputs)
         },
         PlanNode::VectorAlgorithm(vector) => Err(QueryError::new(
             QueryErrorCode::UnsupportedPlanShape,
@@ -224,12 +156,12 @@ fn execute_bounded_generic_node(
         PlanNode::Aggregate(aggregate) => {
             let input = match plan.node(aggregate.input).map(|node| &node.kind) {
                 Some(PlanNode::Aggregate(_)) => match BoundedPlan::analyze_aggregate_subplan(plan, aggregate.input) {
-                    Ok(bounded) => execute_bounded_aggregate_to_frame(context, &bounded, reservations, metrics)?,
+                    Ok(bounded) => execute_bounded_aggregate_to_frame(execution, &bounded)?,
                     Err(_error) => {
-                        execute_bounded_generic_node(context, plan, aggregate.input, gpu_inputs, reservations, metrics)?
+                        execute_bounded_generic_node(execution, plan, aggregate.input, gpu_inputs)?
                     },
                 },
-                _ => execute_bounded_generic_node(context, plan, aggregate.input, gpu_inputs, reservations, metrics)?,
+                _ => execute_bounded_generic_node(execution, plan, aggregate.input, gpu_inputs)?,
             };
             let input_schema = plan
                 .node(aggregate.input)
@@ -239,18 +171,8 @@ fn execute_bounded_generic_node(
             let output_schema = node.output_schema().clone();
             let input_reserved_bytes = input.reservation.bytes();
             let input_reservation = input.reservation;
-            let result = execute_compiled_bounded_aggregate_from_frame(
-                context,
-                id,
-                aggregate,
-                &input_schema,
-                &output_schema,
-                input.frame,
-                input_reserved_bytes,
-                reservations,
-                metrics,
-            );
-            reservations.release(input_reservation, metrics);
+            let result = execute_compiled_bounded_aggregate_from_frame(execution, id, aggregate, &input_schema, &output_schema, input.frame, input_reserved_bytes);
+            execution.release(input_reservation);
             result
         },
         PlanNode::Join(_) => {
@@ -267,36 +189,30 @@ fn execute_bounded_generic_node(
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_edge_normalize_from_input(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     edge_normalize: &crate::plan::EdgeNormalizeNode,
     mut input: ResidentGpuFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     if !input.frame.has_live_reservation() {
         let source_reservation = input.reservation.transfer_grant_live_reservation();
         input.frame = input.frame.with_transferred_live_reservation(source_reservation);
     }
     execute_bounded_generic_unary(
-        context,
+        execution,
         node_id,
         "bounded_generic_edge_normalize",
         "bounded_generic_edge_normalize_output",
         input,
-        reservations,
-        metrics,
         false,
         |context, input, _token, metrics| execute_edge_normalize(context, node_id, edge_normalize, input, metrics),
     )
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_generic_union(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     inputs: Vec<ResidentGpuFrame>,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     if inputs.is_empty() {
         return Err(QueryError::new(
@@ -312,17 +228,20 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_union(
 
     let output_reservation_bytes =
         inputs.iter().fold(0u64, |total, input| total.saturating_add(input.reservation.bytes()));
-    let mut output_reservation = match reservations.try_reserve(
-        MemoryReservationRequest::new(ReservationKind::OperatorOutput, output_reservation_bytes, reservations.budget())
-            .with_memory_boundary("bounded_union_concat_output")
-            .with_node_id(node_id)
-            .with_stage("bounded_union_concat")
-            .with_attempt(1, 1),
-        metrics,
+    let mut output_reservation = match execution.try_reserve(
+        MemoryReservationRequest::new(
+            ReservationKind::OperatorOutput,
+            output_reservation_bytes,
+            execution.reservations().budget(),
+        )
+        .with_memory_boundary("bounded_union_concat_output")
+        .with_node_id(node_id)
+        .with_stage("bounded_union_concat")
+        .with_attempt(1, 1),
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
-            release_resident_frames_reverse(reservations, inputs, metrics);
+            release_resident_frames_reverse(execution, inputs);
             return Err(error);
         },
     };
@@ -337,7 +256,7 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_union(
         }
         let first = frames.remove(0);
         let rest = frames.iter().collect::<Vec<_>>();
-        let overrides_lease = execution_overrides(context)?;
+        let overrides_lease = execution_overrides(execution.context())?;
         let overrides = overrides_lease.overrides();
         let timer = Instant::now();
         let output = first.with_execution(&overrides).concat_many(&rest).map_err(|error| {
@@ -349,39 +268,33 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_union(
             .with_fact("node_id", node_id)
             .with_fact("input_count", input_count)
         })?;
-        metrics.operator_time += timer.elapsed();
+        execution.metrics_mut().operator_time += timer.elapsed();
 
         let output_frame = GpuDataFrame::new(output);
-        let output_bytes = observe_device_memory_bytes(&output_frame, metrics)?;
-        let output_request =
-            MemoryReservationRequest::new(ReservationKind::OperatorOutput, output_bytes, reservations.budget())
-                .with_memory_boundary("bounded_union_concat_output")
-                .with_node_id(node_id)
-                .with_stage("bounded_union_concat")
-                .with_attempt(1, 1);
+        let output_bytes = observe_device_memory_bytes(&output_frame, execution.metrics_mut())?;
+        let output_request = MemoryReservationRequest::new(
+            ReservationKind::OperatorOutput,
+            output_bytes,
+            execution.reservations().budget(),
+        )
+        .with_memory_boundary("bounded_union_concat_output")
+        .with_node_id(node_id)
+        .with_stage("bounded_union_concat")
+        .with_attempt(1, 1);
         if output_bytes > output_reservation.bytes() {
             let delta = output_bytes.saturating_sub(output_reservation.bytes());
-            reservations.try_grow(
-                &mut output_reservation,
-                output_request.clone().with_requested_bytes(delta),
-                metrics,
-            )?;
+            execution.try_grow(&mut output_reservation, output_request.clone().with_requested_bytes(delta))?;
         } else {
-            reservations.shrink_to_observed_with_request(
-                &mut output_reservation,
-                output_bytes,
-                output_request.clone(),
-                metrics,
-            );
+            execution.shrink_to_observed_with_request(&mut output_reservation, output_bytes, output_request.clone());
         }
 
         Ok::<_, QueryError>(output_frame)
     })();
-    release_reservations_reverse(reservations, input_reservations, metrics);
+    release_reservations_reverse(execution, input_reservations);
     match output {
         Ok(frame) => Ok(ResidentGpuFrame { frame, reservation: output_reservation }),
         Err(error) => {
-            reservations.release(output_reservation, metrics);
+            execution.release(output_reservation);
             Err(error)
         },
     }
@@ -389,89 +302,66 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_union(
 
 #[cfg(not(feature = "cugraph"))]
 fn execute_bounded_generic_graph_algorithm(
-    _context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     _plan: &QueryPlan,
     node_id: NodeId,
     graph: &crate::plan::GraphAlgorithmNode,
     _gpu_inputs: &GpuResidentInputMap,
-    _reservations: &mut ReservationTracker,
-    _metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     Err(graph_algorithm_feature_disabled(node_id, graph))
 }
 
 #[cfg(feature = "cugraph")]
 fn execute_bounded_generic_graph_algorithm(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     plan: &QueryPlan,
     node_id: NodeId,
     graph: &crate::plan::GraphAlgorithmNode,
     gpu_inputs: &GpuResidentInputMap,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     let input = if let Some(raw_input_id) = graph_preparation_bypass_input(plan, graph) {
-        let raw_input = execute_bounded_generic_node(context, plan, raw_input_id, gpu_inputs, reservations, metrics)?;
+        let raw_input = execute_bounded_generic_node(execution, plan, raw_input_id, gpu_inputs)?;
         let PlanNode::EdgeNormalize(edge_normalize) =
             &plan.node(graph.input).expect("preparation bypass validated graph input").kind
         else {
             unreachable!("preparation bypass requires an edge-normalize input")
         };
-        execute_bounded_edge_normalize_from_input(
-            context,
-            graph.input,
-            edge_normalize,
-            raw_input,
-            reservations,
-            metrics,
-        )?
+        execute_bounded_edge_normalize_from_input(execution, graph.input, edge_normalize, raw_input)?
     } else {
-        execute_bounded_generic_node(context, plan, graph.input, gpu_inputs, reservations, metrics)?
+        execute_bounded_generic_node(execution, plan, graph.input, gpu_inputs)?
     };
     let mut side_inputs = std::collections::BTreeMap::new();
     for input_id in graph.inputs.iter().skip(1) {
-        match execute_bounded_generic_node(context, plan, *input_id, gpu_inputs, reservations, metrics) {
+        match execute_bounded_generic_node(execution, plan, *input_id, gpu_inputs) {
             Ok(frame) => {
                 side_inputs.insert(*input_id, frame);
             },
             Err(error) => {
                 release_resident_frames_reverse(
-                    reservations,
+                    execution,
                     std::iter::once(input).chain(side_inputs.into_values()).collect(),
-                    metrics,
                 );
                 return Err(error);
             },
         }
     }
-    execute_bounded_graph_algorithm_from_inputs(
-        context,
-        plan,
-        node_id,
-        graph,
-        input,
-        side_inputs,
-        reservations,
-        metrics,
-    )
+    execute_bounded_graph_algorithm_from_inputs(execution, plan, node_id, graph, input, side_inputs)
 }
 
 #[cfg(feature = "cugraph")]
 pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     plan: &QueryPlan,
     node_id: NodeId,
     graph: &crate::plan::GraphAlgorithmNode,
     input: ResidentGpuFrame,
     side_input_frames: std::collections::BTreeMap<NodeId, ResidentGpuFrame>,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     let ResidentGpuFrame { frame: mut input_frame, reservation: input_reservation } = input;
-    let query_memory_grant = match context.memory_grant() {
+    let query_memory_grant = match execution.context().memory_grant() {
         Ok(grant) => grant,
         Err(error) => {
-            reservations.release(input_reservation, metrics);
+            execution.release(input_reservation);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
@@ -494,23 +384,23 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
         crate::exec::graph_algorithm::memory::source_graph_vertex_estimate(input_graph_residency.as_ref());
     let source_raw_input_edges =
         crate::exec::graph_algorithm::memory::source_graph_raw_edge_row_count(input_graph_residency.as_ref());
-    let prior_null_edge_rows_dropped = graph_input_null_edge_rows_dropped(metrics, graph.input);
+    let prior_null_edge_rows_dropped = graph_input_null_edge_rows_dropped(execution.metrics_mut(), graph.input);
     let null_filter_scope = super::edge_null_filter::EdgeNullFilterScope {
         weight: graph.spec.algorithm.consumes_weight(),
         edge_id: graph.spec.edge_columns.edge_id.is_some(),
     };
     let filtered_input_frame = match super::edge_null_filter::filter_null_edge_rows(
-        context,
+        execution.context(),
         node_id,
         "graph_edge_null_filter",
         input_frame.into_frame(),
         &graph.spec.edge_columns,
         null_filter_scope,
-        metrics,
+        execution.metrics_mut(),
     ) {
         Ok(frame) => frame,
         Err(error) => {
-            reservations.release(input_reservation, metrics);
+            execution.release(input_reservation);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
@@ -536,7 +426,7 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
     {
         Ok(evidence) => evidence,
         Err(error) => {
-            reservations.release(input_reservation, metrics);
+            execution.release(input_reservation);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
@@ -555,11 +445,11 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
         side_inputs.insert(input_id, frame.frame);
     }
     if let Err(error) = validate_betweenness_static_seed_policy(&graph.spec) {
-        release_reservations_reverse(reservations, live_reservations, metrics);
+        release_reservations_reverse(execution, live_reservations);
         return Err(error.with_fact_if_absent("node_id", node_id));
     }
     let empty_input_prevalidated = match graph_empty_input_prevalidated(
-        context,
+        execution.context(),
         graph,
         filtered_input.frame(),
         &side_inputs,
@@ -568,7 +458,7 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
     ) {
         Ok(empty_input_prevalidated) => empty_input_prevalidated,
         Err(error) => {
-            release_reservations_reverse(reservations, live_reservations, metrics);
+            release_reservations_reverse(execution, live_reservations);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
@@ -584,16 +474,14 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
         && crate::graph_memory::graph_memory_reservation_required(graph.spec.algorithm)
     {
         let graph_statistics_probe = match graph_memory_vertex_estimate_with_reservation(
-            context,
+            execution,
             node_id,
             &graph.spec,
             filtered_input.frame(),
-            reservations,
-            metrics,
         ) {
             Ok(probe) => probe,
             Err(error) => {
-                release_reservations_reverse(reservations, live_reservations, metrics);
+                release_reservations_reverse(execution, live_reservations);
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
         };
@@ -601,35 +489,35 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
             && let Err(error) =
                 validate_betweenness_seed_policy_for_vertex_count(&graph.spec, probe.vertex_estimate.count)
         {
-            release_reservations_reverse(reservations, live_reservations, metrics);
+            release_reservations_reverse(execution, live_reservations);
             return Err(error.with_fact_if_absent("node_id", node_id));
         }
         runtime_spec =
             runtime_graph_spec_resolution_after_bounded_seed_validation(&graph.spec, graph_statistics_probe.is_some());
-        let device_total_memory_bytes = match graph_device_total_memory_bytes(context) {
+        let device_total_memory_bytes = match graph_device_total_memory_bytes(execution.context()) {
             Ok(device_total_memory_bytes) => device_total_memory_bytes,
             Err(error) => {
-                release_reservations_reverse(reservations, live_reservations, metrics);
+                release_reservations_reverse(execution, live_reservations);
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
         };
-        let graph_reservable_remaining_bytes = match reservations.reservable_remaining_bytes() {
+        let graph_reservable_remaining_bytes = match execution.reservations().reservable_remaining_bytes() {
             Ok(remaining) => remaining,
             Err(error) => {
-                release_reservations_reverse(reservations, live_reservations, metrics);
+                release_reservations_reverse(execution, live_reservations);
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
         };
         let retained_normalization_source_credit_cap_bytes =
-            match context.activated_retained_normalization_source_model_bytes(plan) {
+            match execution.context().activated_retained_normalization_source_model_bytes(plan) {
                 Ok(bytes) => bytes,
                 Err(error) => {
-                    release_reservations_reverse(reservations, live_reservations, metrics);
+                    release_reservations_reverse(execution, live_reservations);
                     return Err(error.with_fact_if_absent("node_id", node_id));
                 },
             };
         let report = match graph_memory_reservation_report(GraphMemoryReservationRequest {
-            context,
+            context: execution.context(),
             node_id,
             spec: &graph.spec,
             input: filtered_input.frame(),
@@ -653,29 +541,32 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
         }) {
             Ok(report) => report,
             Err(error) => {
-                release_reservations_reverse(reservations, live_reservations, metrics);
+                release_reservations_reverse(execution, live_reservations);
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
         };
         let request = MemoryReservationRequest::new(
             ReservationKind::GraphAlgorithm,
             report.requested_bytes,
-            reservations.budget(),
+            execution.reservations().budget(),
         )
         .with_memory_boundary(crate::graph_memory::GRAPH_MEMORY_BOUNDARY)
         .with_node_id(node_id)
         .with_stage("graph_memory_admission");
-        metrics.record_graph_claim_calibration(report.clone(), node_id);
-        metrics.record_graph_reservation(report.clone());
+        execution.metrics_mut().record_graph_claim_calibration(report.clone(), node_id);
+        execution.metrics_mut().record_graph_reservation(report.clone());
         if report.outcome == crate::graph_memory::GraphReservationOutcome::Denied {
-            metrics.record_graph_claim_calibration_graph_memory_admission_denied(node_id, graph.spec.algorithm);
-            metrics.record_reservation_denied_timeline_event(
+            execution
+                .metrics_mut()
+                .record_graph_claim_calibration_graph_memory_admission_denied(node_id, graph.spec.algorithm);
+            let reserved_bytes = execution.reservations().reserved_bytes();
+            execution.metrics_mut().record_reservation_denied_timeline_event(
                 &request,
                 crate::metrics::MemoryReservationEventAction::Reserve,
                 graph_reservable_remaining_bytes,
-                reservations.reserved_bytes(),
+                reserved_bytes,
             );
-            release_reservations_reverse(reservations, live_reservations, metrics);
+            release_reservations_reverse(execution, live_reservations);
             return Err(report
                 .denied_error(&request, graph_reservable_remaining_bytes)
                 .with_fact_if_absent("node_id", node_id));
@@ -693,13 +584,13 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
         let graph_execution_limit_bytes =
             report.model_requested_bytes.max(crate::graph_memory::GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES);
 
-        match reservations.try_reserve_work(request, metrics) {
+        match execution.try_reserve_work(request) {
             Ok(reservation) => {
                 graph_reservation = Some(reservation);
                 Some(graph_execution_limit_bytes)
             },
             Err(error) => {
-                release_reservations_reverse(reservations, live_reservations, metrics);
+                release_reservations_reverse(execution, live_reservations);
                 return Err(error
                     .with_fact_if_absent("reason", crate::graph_memory::GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON));
             },
@@ -708,30 +599,30 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
         // BFS currently remains outside the live graph-tier reservation, but
         // its graph memory model is still a calibration claim that must be retained
         // and compared with the attempt's own measured peak.
-        let device_total_memory_bytes = match graph_device_total_memory_bytes(context) {
+        let device_total_memory_bytes = match graph_device_total_memory_bytes(execution.context()) {
             Ok(device_total_memory_bytes) => device_total_memory_bytes,
             Err(error) => {
-                release_reservations_reverse(reservations, live_reservations, metrics);
+                release_reservations_reverse(execution, live_reservations);
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
         };
-        let graph_reservable_remaining_bytes = match reservations.reservable_remaining_bytes() {
+        let graph_reservable_remaining_bytes = match execution.reservations().reservable_remaining_bytes() {
             Ok(remaining) => remaining,
             Err(error) => {
-                release_reservations_reverse(reservations, live_reservations, metrics);
+                release_reservations_reverse(execution, live_reservations);
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
         };
         let retained_normalization_source_credit_cap_bytes =
-            match context.activated_retained_normalization_source_model_bytes(plan) {
+            match execution.context().activated_retained_normalization_source_model_bytes(plan) {
                 Ok(bytes) => bytes,
                 Err(error) => {
-                    release_reservations_reverse(reservations, live_reservations, metrics);
+                    release_reservations_reverse(execution, live_reservations);
                     return Err(error.with_fact_if_absent("node_id", node_id));
                 },
             };
         let report = match graph_memory_reservation_report(GraphMemoryReservationRequest {
-            context,
+            context: execution.context(),
             node_id,
             spec: &graph.spec,
             input: filtered_input.frame(),
@@ -752,17 +643,17 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
         }) {
             Ok(report) => report,
             Err(error) => {
-                release_reservations_reverse(reservations, live_reservations, metrics);
+                release_reservations_reverse(execution, live_reservations);
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
         };
-        metrics.record_graph_claim_calibration(report, node_id);
+        execution.metrics_mut().record_graph_claim_calibration(report, node_id);
         None
     } else {
         None
     };
     let output = match execute_graph_algorithm_sanitized(
-        context,
+        execution.context(),
         node_id,
         graph,
         runtime_spec,
@@ -773,55 +664,51 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
         input_columns,
         null_edge_rows_dropped,
         empty_input_prevalidated,
-        metrics,
+        execution.metrics_mut(),
     ) {
         Ok(output) => output,
         Err(error) => {
             if let Some(reservation) = graph_reservation.take() {
-                reservations.release(reservation, metrics);
+                execution.release(reservation);
             }
-            release_reservations_reverse(reservations, live_reservations, metrics);
+            release_reservations_reverse(execution, live_reservations);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
 
-    let output_bytes = match observe_device_memory_bytes(&output, metrics) {
+    let output_bytes = match observe_device_memory_bytes(&output, execution.metrics_mut()) {
         Ok(bytes) => bytes,
         Err(error) => {
             if let Some(reservation) = graph_reservation.take() {
-                reservations.release(reservation, metrics);
+                execution.release(reservation);
             }
-            release_reservations_reverse(reservations, live_reservations, metrics);
+            release_reservations_reverse(execution, live_reservations);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
     let output_request =
-        MemoryReservationRequest::new(ReservationKind::OperatorOutput, output_bytes, reservations.budget())
+        MemoryReservationRequest::new(ReservationKind::OperatorOutput, output_bytes, execution.reservations().budget())
             .with_memory_boundary("bounded_generic_graph_algorithm_output")
             .with_node_id(node_id)
             .with_stage("bounded_generic_graph_algorithm")
             .with_attempt(1, 1);
     let output_reservation = if let Some(mut graph_reservation) = graph_reservation {
-        release_reservations_reverse(reservations, live_reservations, metrics);
-        if let Err(error) = reconcile_work_reservation_to_output(
-            reservations,
-            &mut graph_reservation,
-            output_bytes,
-            &output_request,
-            metrics,
-        ) {
-            reservations.release(graph_reservation, metrics);
+        release_reservations_reverse(execution, live_reservations);
+        if let Err(error) =
+            execution.reconcile_work_reservation_to_output(&mut graph_reservation, output_bytes, &output_request)
+        {
+            execution.release(graph_reservation);
             return Err(error);
         }
-        reservations.transfer(graph_reservation, output_request, metrics)
+        execution.transfer(graph_reservation, output_request)
     } else {
-        match reservations.try_reserve(output_request, metrics) {
+        match execution.try_reserve(output_request) {
             Ok(reservation) => {
-                release_reservations_reverse(reservations, live_reservations, metrics);
+                release_reservations_reverse(execution, live_reservations);
                 reservation
             },
             Err(error) => {
-                release_reservations_reverse(reservations, live_reservations, metrics);
+                release_reservations_reverse(execution, live_reservations);
                 return Err(error);
             },
         }
@@ -830,12 +717,11 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
 }
 
 pub(in crate::exec::bounded) fn release_resident_frames_reverse(
-    reservations: &mut ReservationTracker,
+    execution: &mut BoundedExecutionAttempt<'_>,
     mut frames: Vec<ResidentGpuFrame>,
-    metrics: &mut QueryMetrics,
 ) {
     while let Some(frame) = frames.pop() {
-        reservations.release(frame.reservation, metrics);
+        execution.release(frame.reservation);
     }
 }
 
@@ -849,27 +735,32 @@ fn graph_vertex_estimate_for_bounded_admission(
 
 #[cfg(feature = "cugraph")]
 fn graph_memory_vertex_estimate_with_reservation(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     spec: &crate::plan::GraphAlgorithmSpec,
     input: &DataFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<Option<RuntimeGraphStatisticsProbe>> {
-    let remaining = reservations.reservable_remaining_bytes()?;
+    let remaining = execution.reservations().reservable_remaining_bytes()?;
     if remaining == 0 {
         return Ok(None);
     }
     let model_input = graph_memory_model_input_for_frame(input, spec, input.num_rows() as u64, false)?;
     let probe_bytes = crate::graph_memory::graph_runtime_statistics_probe_bytes(spec.algorithm, model_input, remaining);
-    let request = MemoryReservationRequest::new(ReservationKind::GraphAlgorithm, probe_bytes, reservations.budget())
-        .with_memory_boundary(crate::graph_memory::GRAPH_VERTEX_ESTIMATE_BOUNDARY)
-        .with_node_id(node_id)
-        .with_stage("graph_memory_vertex_estimate");
-    let reservation = reservations.try_reserve_work(request, metrics)?;
+    let request =
+        MemoryReservationRequest::new(ReservationKind::GraphAlgorithm, probe_bytes, execution.reservations().budget())
+            .with_memory_boundary(crate::graph_memory::GRAPH_VERTEX_ESTIMATE_BOUNDARY)
+            .with_node_id(node_id)
+            .with_stage("graph_memory_vertex_estimate");
+    let reservation = execution.try_reserve_work(request)?;
     let limit_bytes = reservation.bytes();
-    let estimate = runtime_graph_statistics_probe_with_budget(context, input, spec, limit_bytes, metrics);
-    reservations.release(reservation, metrics);
+    let estimate = runtime_graph_statistics_probe_with_budget(
+        execution.context(),
+        input,
+        spec,
+        limit_bytes,
+        execution.metrics_mut(),
+    );
+    execution.release(reservation);
     match estimate {
         Ok(estimate) => Ok(Some(estimate)),
         Err(error) if error.code() == QueryErrorCode::CudfResourceExhausted => Ok(None),
@@ -878,12 +769,11 @@ fn graph_memory_vertex_estimate_with_reservation(
 }
 
 pub(in crate::exec::bounded) fn release_reservations_reverse(
-    reservations: &mut ReservationTracker,
+    execution: &mut BoundedExecutionAttempt<'_>,
     mut input_reservations: Vec<ActiveReservation>,
-    metrics: &mut QueryMetrics,
 ) {
     while let Some(reservation) = input_reservations.pop() {
-        reservations.release(reservation, metrics);
+        execution.release(reservation);
     }
 }
 
@@ -894,11 +784,9 @@ enum BoundedGenericSourceAdjacentStage<'a> {
 }
 
 fn try_execute_bounded_generic_source_adjacent_stream(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     plan: &QueryPlan,
     root_id: NodeId,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<Option<ResidentGpuFrame>> {
     let Some((source_id, source, stages)) = collect_bounded_generic_source_adjacent_stages(plan, root_id)? else {
         return Ok(None);
@@ -906,8 +794,7 @@ fn try_execute_bounded_generic_source_adjacent_stream(
     if source.has_position_delete_visible_scan_limit() {
         return Ok(None);
     }
-    execute_bounded_generic_local_parquet_source_with_stages(context, source, source_id, &stages, reservations, metrics)
-        .map(Some)
+    execute_bounded_generic_local_parquet_source_with_stages(execution, source, source_id, &stages).map(Some)
 }
 
 fn collect_bounded_generic_source_adjacent_stages(
@@ -940,11 +827,9 @@ fn collect_bounded_generic_source_adjacent_stages(
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_generic_local_parquet_source(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     node_id: NodeId,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     validate_local_parquet_source(source)?;
     let chunk_plan = plan_local_parquet_source_chunks_with_execution_context(
@@ -952,45 +837,45 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_local_parquet_source(
         source,
         SourceChunkPlanningPolicy::from_memory_policy_with_mode_and_options(
             source,
-            context.memory_control_policy(),
-            context.source_chunk_planning_mode(),
-            context.source_chunk_planning_options(),
+            execution.context().memory_control_policy(),
+            execution.context().source_chunk_planning_mode(),
+            execution.context().source_chunk_planning_options(),
         ),
-        context,
+        execution.context(),
     )?;
     for chunk in &chunk_plan.chunks {
-        metrics.record_source_chunk_planned(chunk.row_group_count() as u64);
+        execution.metrics_mut().record_source_chunk_planned(chunk.row_group_count() as u64);
     }
     if chunk_plan.chunks.is_empty() {
-        let frame = crate::exec::source::read_local_parquet_source(context, node_id, source, metrics)?;
-        let requested_bytes = observe_device_memory_bytes(&frame, metrics)?;
-        let reservation = reservations.try_reserve(
-            MemoryReservationRequest::new(ReservationKind::SourceRead, requested_bytes, reservations.budget())
-                .with_memory_boundary("bounded_generic_source_read")
-                .with_node_id(node_id)
-                .with_stage("bounded_generic_source_read")
-                .with_attempt(1, 1),
-            metrics,
+        let frame = crate::exec::source::read_local_parquet_source(
+            execution.context(),
+            node_id,
+            source,
+            execution.metrics_mut(),
+        )?;
+        let requested_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+        let reservation = execution.try_reserve(
+            MemoryReservationRequest::new(
+                ReservationKind::SourceRead,
+                requested_bytes,
+                execution.reservations().budget(),
+            )
+            .with_memory_boundary("bounded_generic_source_read")
+            .with_node_id(node_id)
+            .with_stage("bounded_generic_source_read")
+            .with_attempt(1, 1),
         )?;
         return Ok(ResidentGpuFrame { frame, reservation });
     }
-    record_bounded_parquet_source_metrics(source, &chunk_plan, metrics);
+    record_bounded_parquet_source_metrics(source, &chunk_plan, execution.metrics_mut());
 
-    let chunks = read_local_parquet_chunks_required_only(
-        context,
-        source,
-        &chunk_plan.chunks,
-        reservations,
-        metrics,
-        "bounded_generic_source_read",
-    )?;
+    let chunks =
+        read_local_parquet_chunks_required_only(execution, source, &chunk_plan.chunks, "bounded_generic_source_read")?;
 
     concatenate_source_read_outputs(
-        context,
+        execution,
         node_id,
         chunks,
-        reservations,
-        metrics,
         "bounded_generic_source_concat_output",
         "nexus_query_engine.bounded.generic.source_concat",
         "failed to concatenate bounded generic local parquet source chunks",
@@ -998,47 +883,51 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_local_parquet_source(
 }
 
 fn execute_bounded_generic_local_parquet_source_with_stages(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     node_id: NodeId,
     stages: &[BoundedGenericSourceAdjacentStage<'_>],
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     validate_local_parquet_source(source)?;
     let planning_policy = SourceChunkPlanningPolicy::from_memory_policy_with_mode_and_options(
         source,
-        context.memory_control_policy(),
-        context.source_chunk_planning_mode(),
-        context.source_chunk_planning_options(),
+        execution.context().memory_control_policy(),
+        execution.context().source_chunk_planning_mode(),
+        execution.context().source_chunk_planning_options(),
     );
     let chunk_plan =
-        plan_local_parquet_source_chunks_with_execution_context(node_id, source, planning_policy, context)?;
+        plan_local_parquet_source_chunks_with_execution_context(node_id, source, planning_policy, execution.context())?;
     for chunk in &chunk_plan.chunks {
-        metrics.record_source_chunk_planned(chunk.row_group_count() as u64);
+        execution.metrics_mut().record_source_chunk_planned(chunk.row_group_count() as u64);
     }
     if chunk_plan.chunks.is_empty() {
-        let frame = crate::exec::source::read_local_parquet_source(context, node_id, source, metrics)?;
-        let requested_bytes = observe_device_memory_bytes(&frame, metrics)?;
-        let reservation = reservations.try_reserve(
-            MemoryReservationRequest::new(ReservationKind::SourceRead, requested_bytes, reservations.budget())
-                .with_memory_boundary("bounded_generic_source_read")
-                .with_node_id(node_id)
-                .with_stage("bounded_generic_source_read")
-                .with_attempt(1, 1),
-            metrics,
+        let frame = crate::exec::source::read_local_parquet_source(
+            execution.context(),
+            node_id,
+            source,
+            execution.metrics_mut(),
+        )?;
+        let requested_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+        let reservation = execution.try_reserve(
+            MemoryReservationRequest::new(
+                ReservationKind::SourceRead,
+                requested_bytes,
+                execution.reservations().budget(),
+            )
+            .with_memory_boundary("bounded_generic_source_read")
+            .with_node_id(node_id)
+            .with_stage("bounded_generic_source_read")
+            .with_attempt(1, 1),
         )?;
         let mut resident = ResidentGpuFrame { frame, reservation };
         for stage in stages {
             resident = match stage {
                 BoundedGenericSourceAdjacentStage::Filter { node_id, node } => execute_bounded_generic_unary(
-                    context,
+                    execution,
                     *node_id,
                     "bounded_generic_source_filter",
                     "bounded_generic_source_filter_output",
                     resident,
-                    reservations,
-                    metrics,
                     true,
                     |context, input, token, metrics| {
                         execute_filter_with_budget(
@@ -1051,37 +940,25 @@ fn execute_bounded_generic_local_parquet_source_with_stages(
                     },
                 )?,
                 BoundedGenericSourceAdjacentStage::Projection { node_id, node } => execute_bounded_generic_projection(
-                    context,
+                    execution,
                     *node_id,
                     "bounded_generic_source_projection",
                     "bounded_generic_source_projection_output",
                     node,
                     resident,
-                    reservations,
-                    metrics,
                 )?,
             };
         }
         return Ok(resident);
     }
-    record_bounded_parquet_source_metrics(source, &chunk_plan, metrics);
+    record_bounded_parquet_source_metrics(source, &chunk_plan, execution.metrics_mut());
 
-    let chunks = read_bounded_generic_source_adjacent_chunks(
-        context,
-        source,
-        &chunk_plan.chunks,
-        stages,
-        false,
-        reservations,
-        metrics,
-    )?;
+    let chunks = read_bounded_generic_source_adjacent_chunks(execution, source, &chunk_plan.chunks, stages, false)?;
 
     concatenate_source_read_outputs(
-        context,
+        execution,
         node_id,
         chunks,
-        reservations,
-        metrics,
         "bounded_generic_source_concat_output",
         "nexus_query_engine.bounded.generic.source_concat",
         "failed to concatenate bounded generic local parquet source chunks",
@@ -1089,50 +966,43 @@ fn execute_bounded_generic_local_parquet_source_with_stages(
 }
 
 fn read_bounded_generic_source_adjacent_chunks(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     chunks: &[SourceChunk],
     stages: &[BoundedGenericSourceAdjacentStage<'_>],
     grow_source_to_observed: bool,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
     let mut transformed = Vec::with_capacity(chunks.len());
     for chunk in chunks {
         let source_chunk = match read_local_parquet_chunks_required_only_with_observation(
-            context,
+            execution,
             source,
             std::slice::from_ref(chunk),
-            reservations,
-            metrics,
             "bounded_generic_source_read",
             grow_source_to_observed,
         ) {
             Ok(source_chunk) => source_chunk,
             Err(error) => {
-                release_source_read_outputs_reverse(reservations, transformed, metrics);
+                release_source_read_outputs_reverse(execution, transformed);
                 return Err(error);
             },
         };
-        let mut staged =
-            match apply_bounded_generic_source_adjacent_stages(context, source_chunk, stages, reservations, metrics) {
-                Ok(staged) => staged,
-                Err(error) => {
-                    release_source_read_outputs_reverse(reservations, transformed, metrics);
-                    return Err(error);
-                },
-            };
+        let mut staged = match apply_bounded_generic_source_adjacent_stages(execution, source_chunk, stages) {
+            Ok(staged) => staged,
+            Err(error) => {
+                release_source_read_outputs_reverse(execution, transformed);
+                return Err(error);
+            },
+        };
         transformed.append(&mut staged);
     }
     Ok(transformed)
 }
 
 fn apply_bounded_generic_source_adjacent_stages(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     chunks: Vec<ScheduledLocalParquetReadOutput>,
     stages: &[BoundedGenericSourceAdjacentStage<'_>],
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
     let mut pending = chunks;
     let mut transformed = Vec::with_capacity(pending.len());
@@ -1143,29 +1013,25 @@ fn apply_bounded_generic_source_adjacent_stages(
         for stage in stages {
             let result = match stage {
                 BoundedGenericSourceAdjacentStage::Filter { node_id, node } => execute_source_adjacent_chunk_unary(
-                    context,
+                    execution,
                     *node_id,
                     "bounded_generic_source_filter",
                     "bounded_generic_source_filter_output",
                     &chunk,
                     current,
-                    reservations,
-                    metrics,
                     1,
                     1,
                     |context, input, token, metrics| execute_filter_with_budget(context, node, input, token, metrics),
                 ),
                 BoundedGenericSourceAdjacentStage::Projection { node_id, node } => {
                     execute_source_adjacent_chunk_projection(
-                        context,
+                        execution,
                         *node_id,
                         "bounded_generic_source_projection",
                         "bounded_generic_source_projection_output",
                         &chunk,
                         node,
                         current,
-                        reservations,
-                        metrics,
                         1,
                         1,
                     )
@@ -1174,8 +1040,8 @@ fn apply_bounded_generic_source_adjacent_stages(
             current = match result {
                 Ok(current) => current,
                 Err(error) => {
-                    release_source_read_outputs_reverse(reservations, pending, metrics);
-                    release_source_read_outputs_reverse(reservations, transformed, metrics);
+                    release_source_read_outputs_reverse(execution, pending);
+                    release_source_read_outputs_reverse(execution, transformed);
                     return Err(error);
                 },
             };
@@ -1193,53 +1059,45 @@ fn apply_bounded_generic_source_adjacent_stages(
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_generic_gpu_resident_source(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &GpuResidentSource,
     node_id: NodeId,
     gpu_inputs: &GpuResidentInputMap,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
-    let frame = read_gpu_resident_source(context, source, gpu_inputs, metrics)?;
-    let requested_bytes = observe_device_memory_bytes(&frame, metrics)?;
-    let reservation = reservations.borrow_resident(
-        MemoryReservationRequest::new(ReservationKind::SourceRead, requested_bytes, reservations.budget())
+    let frame = read_gpu_resident_source(execution.context(), source, gpu_inputs, execution.metrics_mut())?;
+    let requested_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+    let reservation = execution.borrow_resident(
+        MemoryReservationRequest::new(ReservationKind::SourceRead, requested_bytes, execution.reservations().budget())
             .with_memory_boundary("bounded_generic_gpu_resident_source")
             .with_node_id(node_id)
             .with_stage("bounded_generic_gpu_resident_source")
             .with_attempt(1, 1),
-        metrics,
     );
     Ok(ResidentGpuFrame { frame, reservation })
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_generic_literal_batch_source(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &crate::source::LiteralBatchSource,
     node_id: NodeId,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
-    let frame = read_literal_batch_source(context, source, metrics)?;
-    let requested_bytes = observe_device_memory_bytes(&frame, metrics)?;
-    let reservation = reservations.try_reserve(
-        MemoryReservationRequest::new(ReservationKind::SourceRead, requested_bytes, reservations.budget())
+    let frame = read_literal_batch_source(execution.context(), source, execution.metrics_mut())?;
+    let requested_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+    let reservation = execution.try_reserve(
+        MemoryReservationRequest::new(ReservationKind::SourceRead, requested_bytes, execution.reservations().budget())
             .with_memory_boundary("bounded_generic_literal_batch_source")
             .with_node_id(node_id)
             .with_stage("bounded_generic_literal_batch_source")
             .with_attempt(1, 1),
-        metrics,
     )?;
     Ok(ResidentGpuFrame { frame, reservation })
 }
 pub(in crate::exec::bounded) fn execute_bounded_generic_unary(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     stage: &'static str,
     output_boundary: &'static str,
     input: ResidentGpuFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     use_budget_token: bool,
     execute: impl FnOnce(
         &ExecutionContext,
@@ -1249,13 +1107,11 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary(
     ) -> Result<GpuDataFrame>,
 ) -> Result<ResidentGpuFrame> {
     execute_bounded_generic_unary_with_work_bytes(
-        context,
+        execution,
         node_id,
         stage,
         output_boundary,
         input,
-        reservations,
-        metrics,
         use_budget_token,
         None,
         execute,
@@ -1263,13 +1119,11 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary(
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_generic_unary_with_work_bytes(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     stage: &'static str,
     output_boundary: &'static str,
     input: ResidentGpuFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     use_budget_token: bool,
     work_request_bytes: Option<u64>,
     execute: impl FnOnce(
@@ -1280,14 +1134,12 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_with_work_bytes(
     ) -> Result<GpuDataFrame>,
 ) -> Result<ResidentGpuFrame> {
     execute_bounded_generic_unary_consuming_input_with_reservation_kind(
-        context,
+        execution,
         node_id,
         stage,
         output_boundary,
         input,
         ReservationKind::OperatorOutput,
-        reservations,
-        metrics,
         use_budget_token,
         work_request_bytes,
         execute,
@@ -1295,24 +1147,20 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_with_work_bytes(
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_generic_projection(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     stage: &'static str,
     output_boundary: &'static str,
     projection: &ProjectionNode,
     input: ResidentGpuFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     if !projection.outputs.iter().any(|output| output.expr.contains_regexp_replace()) {
         return execute_bounded_generic_unary_with_work_bytes(
-            context,
+            execution,
             node_id,
             stage,
             output_boundary,
             input,
-            reservations,
-            metrics,
             true,
             None,
             |context, input, token, metrics| {
@@ -1326,41 +1174,27 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_projection(
             },
         );
     }
-    execute_bounded_generic_regexp_projection(
-        context,
-        node_id,
-        stage,
-        output_boundary,
-        projection,
-        input,
-        None,
-        reservations,
-        metrics,
-    )
+    execute_bounded_generic_regexp_projection(execution, node_id, stage, output_boundary, projection, input, None)
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_generic_projection_from_frame(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     stage: &'static str,
     output_boundary: &'static str,
     projection: &ProjectionNode,
     input: GpuDataFrame,
     input_reserved_bytes: u64,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     if !projection.outputs.iter().any(|output| output.expr.contains_regexp_replace()) {
         return execute_bounded_generic_unary_from_frame_with_reservation_kind(
-            context,
+            execution,
             node_id,
             stage,
             output_boundary,
             input,
             input_reserved_bytes,
             ReservationKind::OperatorOutput,
-            reservations,
-            metrics,
             true,
             |context, input, token, metrics| {
                 execute_projection_with_budget(
@@ -1374,40 +1208,39 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_projection_from_frame(
         );
     }
     // Wrap frame in a transient resident reservation equal to input_reserved_bytes.
-    let input_reservation = reservations.try_reserve(
-        MemoryReservationRequest::new(ReservationKind::OperatorOutput, input_reserved_bytes, reservations.budget())
-            .with_memory_boundary(stage)
-            .with_node_id(node_id)
-            .with_stage(stage)
-            .with_attempt(1, 1),
-        metrics,
+    let input_reservation = execution.try_reserve(
+        MemoryReservationRequest::new(
+            ReservationKind::OperatorOutput,
+            input_reserved_bytes,
+            execution.reservations().budget(),
+        )
+        .with_memory_boundary(stage)
+        .with_node_id(node_id)
+        .with_stage(stage)
+        .with_attempt(1, 1),
     )?;
     // The "input" reservation here only scopes prepared-path headroom until transfer.
     let input = ResidentGpuFrame { frame: input, reservation: input_reservation };
     // Drop the ownership of the synthetic wrapper on error paths inside helper.
     execute_bounded_generic_regexp_projection(
-        context,
+        execution,
         node_id,
         stage,
         output_boundary,
         projection,
         input,
         Some(input_reserved_bytes),
-        reservations,
-        metrics,
     )
 }
 
 fn execute_bounded_generic_regexp_projection(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     stage: &'static str,
     output_boundary: &'static str,
     projection: &ProjectionNode,
     input: ResidentGpuFrame,
     _seed_reserved_bytes: Option<u64>,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     let input_reserved_bytes = input.reservation.bytes();
     let input_frame = input.frame;
@@ -1416,168 +1249,176 @@ fn execute_bounded_generic_regexp_projection(
     // Start with a work reservation covering at least the input claim so prepare
     // can allocate retained state under an explicit budget token.
     let initial_work_bytes = input_reserved_bytes.max(1);
-    let mut work_reservation = match reservations.try_reserve(
-        MemoryReservationRequest::new(ReservationKind::OperatorOutput, initial_work_bytes, reservations.budget())
-            .with_memory_boundary(stage)
-            .with_node_id(node_id)
-            .with_stage(stage)
-            .with_attempt(1, 1),
-        metrics,
+    let mut work_reservation = match execution.try_reserve(
+        MemoryReservationRequest::new(
+            ReservationKind::OperatorOutput,
+            initial_work_bytes,
+            execution.reservations().budget(),
+        )
+        .with_memory_boundary(stage)
+        .with_node_id(node_id)
+        .with_stage(stage)
+        .with_attempt(1, 1),
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
-            reservations.release(input_reservation, metrics);
+            execution.release(input_reservation);
             return Err(error);
         },
     };
 
     // Prepare without a stream reservation so retained prepared state keeps the
     // input frame domain. Mint a single execute token after reservation reconcile.
-    let prepared = match projection_regexp_replace_prepare(context, projection, &input_frame, metrics) {
-        Ok(Some(prepared)) => prepared,
-        Ok(None) => {
-            // Defense in depth: no regexp after the gate above.
-            let token = match execution_budget_token_for_boundary(
-                context,
-                reservations.available_bytes_including(&work_reservation),
-                stage,
-                "nexus_query_engine.bounded_generic.budget_token",
-                "failed to create bounded native generic operator budget token",
-            ) {
-                Ok(token) => token,
-                Err(error) => {
-                    reservations.release(work_reservation, metrics);
-                    reservations.release(input_reservation, metrics);
-                    return Err(error.with_fact_if_absent("node_id", node_id));
-                },
-            };
-            match execute_projection_with_budget(context, projection, input_frame, &token, metrics) {
-                Ok(frame) => {
-                    reservations.release(input_reservation, metrics);
-                    let output_bytes = match observe_device_memory_bytes(&frame, metrics) {
-                        Ok(bytes) => bytes,
-                        Err(error) => {
-                            reservations.release(work_reservation, metrics);
-                            return Err(error.with_fact_if_absent("node_id", node_id));
-                        },
-                    };
-                    let output_request = MemoryReservationRequest::new(
-                        ReservationKind::OperatorOutput,
-                        output_bytes,
-                        reservations.budget(),
-                    )
-                    .with_memory_boundary(output_boundary)
-                    .with_node_id(node_id)
-                    .with_stage(stage)
-                    .with_attempt(1, 1);
-                    if let Err(error) = reconcile_work_reservation_to_output(
-                        reservations,
-                        &mut work_reservation,
-                        output_bytes,
-                        &output_request,
-                        metrics,
-                    ) {
-                        reservations.release(work_reservation, metrics);
-                        return Err(error);
-                    }
-                    let output_reservation = reservations.transfer(work_reservation, output_request, metrics);
-                    return Ok(ResidentGpuFrame { frame, reservation: output_reservation });
-                },
-                Err(error) => {
-                    reservations.release(work_reservation, metrics);
-                    reservations.release(input_reservation, metrics);
-                    return Err(error.with_fact_if_absent("node_id", node_id));
-                },
-            }
-        },
-        Err(error) => {
-            reservations.release(work_reservation, metrics);
-            reservations.release(input_reservation, metrics);
-            return Err(error.with_fact_if_absent("node_id", node_id));
-        },
-    };
+    let prepared =
+        match projection_regexp_replace_prepare(execution.context(), projection, &input_frame, execution.metrics_mut())
+        {
+            Ok(Some(prepared)) => prepared,
+            Ok(None) => {
+                // Defense in depth: no regexp after the gate above.
+                let token = match execution_budget_token_for_boundary(
+                    execution.context(),
+                    execution.reservations().available_bytes_including(&work_reservation),
+                    stage,
+                    "nexus_query_engine.bounded_generic.budget_token",
+                    "failed to create bounded native generic operator budget token",
+                ) {
+                    Ok(token) => token,
+                    Err(error) => {
+                        execution.release(work_reservation);
+                        execution.release(input_reservation);
+                        return Err(error.with_fact_if_absent("node_id", node_id));
+                    },
+                };
+                match execute_projection_with_budget(
+                    execution.context(),
+                    projection,
+                    input_frame,
+                    &token,
+                    execution.metrics_mut(),
+                ) {
+                    Ok(frame) => {
+                        execution.release(input_reservation);
+                        let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics_mut()) {
+                            Ok(bytes) => bytes,
+                            Err(error) => {
+                                execution.release(work_reservation);
+                                return Err(error.with_fact_if_absent("node_id", node_id));
+                            },
+                        };
+                        let output_request = MemoryReservationRequest::new(
+                            ReservationKind::OperatorOutput,
+                            output_bytes,
+                            execution.reservations().budget(),
+                        )
+                        .with_memory_boundary(output_boundary)
+                        .with_node_id(node_id)
+                        .with_stage(stage)
+                        .with_attempt(1, 1);
+                        if let Err(error) = execution.reconcile_work_reservation_to_output(
+                            &mut work_reservation,
+                            output_bytes,
+                            &output_request,
+                        ) {
+                            execution.release(work_reservation);
+                            return Err(error);
+                        }
+                        let output_reservation = execution.transfer(work_reservation, output_request);
+                        return Ok(ResidentGpuFrame { frame, reservation: output_reservation });
+                    },
+                    Err(error) => {
+                        execution.release(work_reservation);
+                        execution.release(input_reservation);
+                        return Err(error.with_fact_if_absent("node_id", node_id));
+                    },
+                }
+            },
+            Err(error) => {
+                execution.release(work_reservation);
+                execution.release(input_reservation);
+                return Err(error.with_fact_if_absent("node_id", node_id));
+            },
+        };
 
     let required = prepared.required_budget_bytes().max(input_reserved_bytes);
     if required > work_reservation.bytes() {
         let delta = required - work_reservation.bytes();
-        if let Err(error) = reservations.try_grow(
+        if let Err(error) = execution.try_grow(
             &mut work_reservation,
-            MemoryReservationRequest::new(ReservationKind::OperatorOutput, delta, reservations.budget())
+            MemoryReservationRequest::new(ReservationKind::OperatorOutput, delta, execution.reservations().budget())
                 .with_memory_boundary(stage)
                 .with_node_id(node_id)
                 .with_stage(stage)
                 .with_attempt(1, 1),
-            metrics,
         ) {
-            reservations.release(work_reservation, metrics);
-            reservations.release(input_reservation, metrics);
+            execution.release(work_reservation);
+            execution.release(input_reservation);
             return Err(error);
         }
     }
 
     let token = match execution_budget_token_for_boundary(
-        context,
-        reservations.available_bytes_including(&work_reservation),
+        execution.context(),
+        execution.reservations().available_bytes_including(&work_reservation),
         stage,
         "nexus_query_engine.bounded_generic.budget_token",
         "failed to create bounded native generic operator budget token after prepare reconcile",
     ) {
         Ok(token) => token,
         Err(error) => {
-            reservations.release(work_reservation, metrics);
-            reservations.release(input_reservation, metrics);
+            execution.release(work_reservation);
+            execution.release(input_reservation);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
 
-    let result =
-        execute_projection_with_budget_and_prepared(context, projection, input_frame, &token, Some(prepared), metrics);
+    let result = execute_projection_with_budget_and_prepared(
+        execution.context(),
+        projection,
+        input_frame,
+        &token,
+        Some(prepared),
+        execution.metrics_mut(),
+    );
     let frame = match result {
         Ok(frame) => frame,
         Err(error) => {
-            reservations.release(work_reservation, metrics);
-            reservations.release(input_reservation, metrics);
+            execution.release(work_reservation);
+            execution.release(input_reservation);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
-    reservations.release(input_reservation, metrics);
+    execution.release(input_reservation);
 
-    let output_bytes = match observe_device_memory_bytes(&frame, metrics) {
+    let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics_mut()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            reservations.release(work_reservation, metrics);
+            execution.release(work_reservation);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
     let output_request =
-        MemoryReservationRequest::new(ReservationKind::OperatorOutput, output_bytes, reservations.budget())
+        MemoryReservationRequest::new(ReservationKind::OperatorOutput, output_bytes, execution.reservations().budget())
             .with_memory_boundary(output_boundary)
             .with_node_id(node_id)
             .with_stage(stage)
             .with_attempt(1, 1);
-    if let Err(error) = reconcile_work_reservation_to_output(
-        reservations,
-        &mut work_reservation,
-        output_bytes,
-        &output_request,
-        metrics,
-    ) {
-        reservations.release(work_reservation, metrics);
+    if let Err(error) =
+        execution.reconcile_work_reservation_to_output(&mut work_reservation, output_bytes, &output_request)
+    {
+        execution.release(work_reservation);
         return Err(error);
     }
-    let output_reservation = reservations.transfer(work_reservation, output_request, metrics);
+    let output_reservation = execution.transfer(work_reservation, output_request);
     Ok(ResidentGpuFrame { frame, reservation: output_reservation })
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     stage: &'static str,
     output_boundary: &'static str,
     input: GpuDataFrame,
     input_reserved_bytes: u64,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     use_budget_token: bool,
     execute: impl FnOnce(
         &ExecutionContext,
@@ -1587,29 +1428,25 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame(
     ) -> Result<GpuDataFrame>,
 ) -> Result<ResidentGpuFrame> {
     execute_bounded_generic_unary_from_frame_with_reservation_kind(
-        context,
+        execution,
         node_id,
         stage,
         output_boundary,
         input,
         input_reserved_bytes,
         ReservationKind::OperatorOutput,
-        reservations,
-        metrics,
         use_budget_token,
         execute,
     )
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_generic_unary_consuming_input_with_reservation_kind(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     stage: &'static str,
     output_boundary: &'static str,
     input: ResidentGpuFrame,
     reservation_kind: ReservationKind,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     use_budget_token: bool,
     work_request_bytes: Option<u64>,
     execute: impl FnOnce(
@@ -1622,86 +1459,80 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_consuming_input_wi
     let input_reserved_bytes = work_request_bytes.unwrap_or_else(|| input.reservation.bytes());
     let input_frame = input.frame;
     let input_reservation = input.reservation;
-    let mut work_reservation = match reservations.try_reserve(
-        MemoryReservationRequest::new(reservation_kind, input_reserved_bytes, reservations.budget())
+    let mut work_reservation = match execution.try_reserve(
+        MemoryReservationRequest::new(reservation_kind, input_reserved_bytes, execution.reservations().budget())
             .with_memory_boundary(stage)
             .with_node_id(node_id)
             .with_stage(stage)
             .with_attempt(1, 1),
-        metrics,
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
-            reservations.release(input_reservation, metrics);
+            execution.release(input_reservation);
             return Err(error);
         },
     };
     let token = if use_budget_token {
         match execution_budget_token_for_boundary(
-            context,
-            reservations.available_bytes_including(&work_reservation),
+            execution.context(),
+            execution.reservations().available_bytes_including(&work_reservation),
             stage,
             "nexus_query_engine.bounded_generic.budget_token",
             "failed to create bounded native generic operator budget token",
         ) {
             Ok(token) => Some(token),
             Err(error) => {
-                reservations.release(work_reservation, metrics);
-                reservations.release(input_reservation, metrics);
+                execution.release(work_reservation);
+                execution.release(input_reservation);
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
         }
     } else {
         None
     };
-    let result = execute(context, input_frame, token.as_ref(), metrics);
+    let result = execute(execution.context(), input_frame, token.as_ref(), execution.metrics_mut());
     let frame = match result {
         Ok(frame) => frame,
         Err(error) => {
-            reservations.release(work_reservation, metrics);
-            reservations.release(input_reservation, metrics);
+            execution.release(work_reservation);
+            execution.release(input_reservation);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
 
-    reservations.release(input_reservation, metrics);
+    execution.release(input_reservation);
 
-    let output_bytes = match observe_device_memory_bytes(&frame, metrics) {
+    let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics_mut()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            reservations.release(work_reservation, metrics);
+            execution.release(work_reservation);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
-    let output_request = MemoryReservationRequest::new(reservation_kind, output_bytes, reservations.budget())
-        .with_memory_boundary(output_boundary)
-        .with_node_id(node_id)
-        .with_stage(stage)
-        .with_attempt(1, 1);
-    if let Err(error) = reconcile_work_reservation_to_output(
-        reservations,
-        &mut work_reservation,
-        output_bytes,
-        &output_request,
-        metrics,
-    ) {
-        reservations.release(work_reservation, metrics);
+    let output_request =
+        MemoryReservationRequest::new(reservation_kind, output_bytes, execution.reservations().budget())
+            .with_memory_boundary(output_boundary)
+            .with_node_id(node_id)
+            .with_stage(stage)
+            .with_attempt(1, 1);
+    if let Err(error) =
+        execution.reconcile_work_reservation_to_output(&mut work_reservation, output_bytes, &output_request)
+    {
+        execution.release(work_reservation);
         return Err(error);
     }
-    let output_reservation = reservations.transfer(work_reservation, output_request, metrics);
+    let output_reservation = execution.transfer(work_reservation, output_request);
     Ok(ResidentGpuFrame { frame, reservation: output_reservation })
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame_with_reservation_kind(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     stage: &'static str,
     output_boundary: &'static str,
     input: GpuDataFrame,
     input_reserved_bytes: u64,
     reservation_kind: ReservationKind,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     use_budget_token: bool,
     execute: impl FnOnce(
         &ExecutionContext,
@@ -1710,62 +1541,58 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_unary_from_frame_with_re
         &mut QueryMetrics,
     ) -> Result<GpuDataFrame>,
 ) -> Result<ResidentGpuFrame> {
-    let mut work_reservation = reservations.try_reserve(
-        MemoryReservationRequest::new(reservation_kind, input_reserved_bytes, reservations.budget())
+    let mut work_reservation = execution.try_reserve(
+        MemoryReservationRequest::new(reservation_kind, input_reserved_bytes, execution.reservations().budget())
             .with_memory_boundary(stage)
             .with_node_id(node_id)
             .with_stage(stage)
             .with_attempt(1, 1),
-        metrics,
     )?;
     let token = if use_budget_token {
         match execution_budget_token_for_boundary(
-            context,
-            reservations.available_bytes_including(&work_reservation),
+            execution.context(),
+            execution.reservations().available_bytes_including(&work_reservation),
             stage,
             "nexus_query_engine.bounded_generic.budget_token",
             "failed to create bounded native generic operator budget token",
         ) {
             Ok(token) => Some(token),
             Err(error) => {
-                reservations.release(work_reservation, metrics);
+                execution.release(work_reservation);
                 return Err(error.with_fact_if_absent("node_id", node_id));
             },
         }
     } else {
         None
     };
-    let result = execute(context, input, token.as_ref(), metrics);
+    let result = execute(execution.context(), input, token.as_ref(), execution.metrics_mut());
     let frame = match result {
         Ok(frame) => frame,
         Err(error) => {
-            reservations.release(work_reservation, metrics);
+            execution.release(work_reservation);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
-    let output_bytes = match observe_device_memory_bytes(&frame, metrics) {
+    let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics_mut()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            reservations.release(work_reservation, metrics);
+            execution.release(work_reservation);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
-    let output_request = MemoryReservationRequest::new(reservation_kind, output_bytes, reservations.budget())
-        .with_memory_boundary(output_boundary)
-        .with_node_id(node_id)
-        .with_stage(stage)
-        .with_attempt(1, 1);
-    if let Err(error) = reconcile_work_reservation_to_output(
-        reservations,
-        &mut work_reservation,
-        output_bytes,
-        &output_request,
-        metrics,
-    ) {
-        reservations.release(work_reservation, metrics);
+    let output_request =
+        MemoryReservationRequest::new(reservation_kind, output_bytes, execution.reservations().budget())
+            .with_memory_boundary(output_boundary)
+            .with_node_id(node_id)
+            .with_stage(stage)
+            .with_attempt(1, 1);
+    if let Err(error) =
+        execution.reconcile_work_reservation_to_output(&mut work_reservation, output_bytes, &output_request)
+    {
+        execution.release(work_reservation);
         return Err(error);
     }
-    let output_reservation = reservations.transfer(work_reservation, output_request, metrics);
+    let output_reservation = execution.transfer(work_reservation, output_request);
     Ok(ResidentGpuFrame { frame, reservation: output_reservation })
 }
 

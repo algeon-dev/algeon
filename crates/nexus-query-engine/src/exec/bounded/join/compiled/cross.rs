@@ -1,38 +1,32 @@
 use super::*;
 
 pub(super) fn execute_compiled_projected_cross_join_materialize(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
     left: BoundedJoinSideFrame,
     right: BoundedJoinSideFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     execute_compiled_projected_cross_join_materialize_with_strategy(
-        context,
+        execution,
         node_id,
         node,
         left,
         right,
         "bounded_projected_cross_join",
-        reservations,
-        metrics,
     )
 }
 
 fn execute_compiled_projected_cross_join_materialize_with_strategy(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
     left: BoundedJoinSideFrame,
     right: BoundedJoinSideFrame,
     execution_strategy: &'static str,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     let options = dataframe_cross_join_options(&node.spec.output_projection);
-    let overrides_lease = execution_overrides(context)?;
+    let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let plan = left.frame.projected_cross_join_plan(&right.frame, options).map_err(|error| {
@@ -53,16 +47,13 @@ fn execute_compiled_projected_cross_join_materialize_with_strategy(
             )
             .with_fact("join_type", node.spec.join_type)
         })?;
-    let output_reservation = reservations.try_reserve(
-        bounded_join_request(
-            ReservationKind::JoinOutput,
-            "join_output",
-            output_reservation_bytes,
-            reservations.budget(),
-            node_id,
-        ),
-        metrics,
-    )?;
+    let output_reservation = execution.try_reserve(bounded_join_request(
+        ReservationKind::JoinOutput,
+        "join_output",
+        output_reservation_bytes,
+        execution.reservations().budget(),
+        node_id,
+    ))?;
     let output = plan.materialize_in(&overrides).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.bounded.join.projected_cross_materialize",
@@ -72,13 +63,13 @@ fn execute_compiled_projected_cross_join_materialize_with_strategy(
         .with_fact("join_type", node.spec.join_type)
     })?;
     let output = reorder_projected_cross_join_output(output, &node.spec.output_projection)?;
-    metrics.operator_time += timer.elapsed();
+    execution.metrics_mut().operator_time += timer.elapsed();
     let output_rows = output.num_rows() as u64;
     debug_assert_eq!(output_rows, expected_output_rows);
-    let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics)?;
+    let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics_mut())?;
     let build_side = node.spec.build_side;
     let probe_side = probe_side(build_side);
-    metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
+    execution.metrics_mut().record_operator_metrics(crate::metrics::OperatorMetrics::join(
         node_id,
         crate::metrics::JoinOperatorMetrics {
             query_id: None,
@@ -106,80 +97,66 @@ fn execute_compiled_projected_cross_join_materialize_with_strategy(
 }
 
 pub(super) fn execute_compiled_keyless_outer_cross_join_materialize(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
     left: BoundedJoinSideFrame,
     right: BoundedJoinSideFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     match node.spec.join_type {
         JoinType::Left if left.rows == 0 || right.rows > 0 => {
             execute_compiled_projected_cross_join_materialize_with_strategy(
-                context,
+                execution,
                 node_id,
                 node,
                 left,
                 right,
                 "bounded_keyless_outer_cross_join",
-                reservations,
-                metrics,
             )
         },
         JoinType::Full if left.rows == 0 && right.rows == 0 => {
             execute_compiled_projected_cross_join_materialize_with_strategy(
-                context,
+                execution,
                 node_id,
                 node,
                 left,
                 right,
                 "bounded_keyless_outer_cross_join",
-                reservations,
-                metrics,
             )
         },
         JoinType::Full if left.rows > 0 && right.rows > 0 => {
             execute_compiled_projected_cross_join_materialize_with_strategy(
-                context,
+                execution,
                 node_id,
                 node,
                 left,
                 right,
                 "bounded_keyless_outer_cross_join",
-                reservations,
-                metrics,
             )
         },
         JoinType::Left => execute_compiled_keyless_outer_cross_join_from_indices(
-            context,
+            execution,
             node_id,
             node,
             left,
             right,
             PreservedKeylessOuterSide::Left,
-            reservations,
-            metrics,
         ),
         JoinType::Full if left.rows > 0 => execute_compiled_keyless_outer_cross_join_from_indices(
-            context,
+            execution,
             node_id,
             node,
             left,
             right,
             PreservedKeylessOuterSide::Left,
-            reservations,
-            metrics,
         ),
         JoinType::Full => execute_compiled_keyless_outer_cross_join_from_indices(
-            context,
+            execution,
             node_id,
             node,
             left,
             right,
             PreservedKeylessOuterSide::Right,
-            reservations,
-            metrics,
         ),
         _ => Err(unsupported_bounded_shape(
             "compiled keyless outer cross join execution supports predicate-free left and full joins",
@@ -198,14 +175,12 @@ enum PreservedKeylessOuterSide {
 }
 
 fn execute_compiled_keyless_outer_cross_join_from_indices(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
     left: BoundedJoinSideFrame,
     right: BoundedJoinSideFrame,
     preserved_side: PreservedKeylessOuterSide,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     let output_size = match preserved_side {
         PreservedKeylessOuterSide::Left => usize::try_from(left.rows),
@@ -239,20 +214,17 @@ fn execute_compiled_keyless_outer_cross_join_from_indices(
             )
             .with_fact("join_type", node.spec.join_type)
         })?;
-    let gather_map_reservation = reservations.try_reserve(
-        bounded_join_request(
-            ReservationKind::GatherMap,
-            "join_gather_map",
-            gather_map_reservation_bytes,
-            reservations.budget(),
-            node_id,
-        ),
-        metrics,
-    )?;
+    let gather_map_reservation = execution.try_reserve(bounded_join_request(
+        ReservationKind::GatherMap,
+        "join_gather_map",
+        gather_map_reservation_bytes,
+        execution.reservations().budget(),
+        node_id,
+    ))?;
     let timer = Instant::now();
-    let indices = keyless_outer_cross_join_indices(context, preserved_side, output_size, node)?;
+    let indices = keyless_outer_cross_join_indices(execution.context(), preserved_side, output_size, node)?;
     materialize_compiled_indices_output(
-        context,
+        execution,
         node,
         CompiledJoinMaterializationRequest {
             node_id,
@@ -271,8 +243,6 @@ fn execute_compiled_keyless_outer_cross_join_from_indices(
             timer,
             one_shot_index_bytes: None,
         },
-        reservations,
-        metrics,
     )
 }
 

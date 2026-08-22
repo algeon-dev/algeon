@@ -19,7 +19,7 @@ impl CompiledGpuTaskExecutor<'_> {
             observed_build_rows,
             build_side_bytes,
         ) {
-            match measure_join_build_key_unique(self.context, node, build_frame, &self.reservations, self.metrics) {
+            match measure_join_build_key_unique(&mut self.execution, node, build_frame) {
                 Ok(unique) => {
                     build_key_uniqueness_probe_status = Some("measured");
                     Some(unique)
@@ -51,7 +51,7 @@ impl CompiledGpuTaskExecutor<'_> {
             );
         }
         if let Some(facts) = strategy.facts.as_ref() {
-            self.metrics.record_join_strategy_decision(node_id, facts);
+            self.execution.metrics_mut().record_join_strategy_decision(node_id, facts);
         }
         Ok(strategy)
     }
@@ -125,7 +125,7 @@ impl CompiledGpuTaskExecutor<'_> {
             crate::exec::join_output_upper_bound_bytes(1, &output_columns)?.saturating_add(list_output_floor);
         let gather_map_floor =
             cudf::DataFrameJoinPairIndices::reservation_size_bytes_for_len(1).map(|bytes| bytes as u64).unwrap_or(64);
-        let stream_target_bytes = reusable_hash_join_stream_target_output_bytes(self.context, &self.reservations);
+        let stream_target_bytes = reusable_hash_join_stream_target_output_bytes(&self.execution);
         let stream_quantum_bytes = BoundedPartitionTargetPolicy::default().join_materialize_stream_quantum_bytes();
         Ok(output_floor
             .saturating_add(gather_map_floor)
@@ -193,7 +193,7 @@ impl CompiledGpuTaskExecutor<'_> {
     }
 
     pub(super) fn coarse_reservation_slot_bytes(&self) -> u64 {
-        match self.context.memory_control_policy() {
+        match self.execution.context().memory_control_policy() {
             MemoryControlPolicy::Bounded { device_budget_bytes, max_source_chunk_bytes, .. } => {
                 max_source_chunk_bytes.min(device_budget_bytes).max(1)
             },

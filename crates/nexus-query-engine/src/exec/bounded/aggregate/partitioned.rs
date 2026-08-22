@@ -1,27 +1,28 @@
 use super::{stream::execute_compiled_bounded_partial_aggregate_from_frame, *};
 
 pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     aggregate: &AggregateNode,
     input_schema: &arrow::datatypes::SchemaRef,
     output_schema: &arrow::datatypes::SchemaRef,
     input: GpuDataFrame,
     input_reserved_bytes: u64,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     let mut lowered_keys = lower_aggregate_spec_keys(&aggregate.spec)?;
     if aggregate.spec.grouping_sets.is_some() {
         lowered_keys.key_columns.truncate(aggregate.spec.group_exprs.len());
     }
-    let partition_count = partitioned_aggregate_partition_count(context, input_reserved_bytes);
-    let mut partition_reservation = match reservations.try_reserve_work(
-        MemoryReservationRequest::new(ReservationKind::OperatorOutput, input_reserved_bytes, reservations.budget())
-            .with_memory_boundary("compiled_aggregate_hash_partition")
-            .with_node_id(node_id)
-            .with_stage("compiled_aggregate_hash_partition"),
-        metrics,
+    let partition_count = partitioned_aggregate_partition_count(execution.context(), input_reserved_bytes);
+    let mut partition_reservation = match execution.try_reserve_work(
+        MemoryReservationRequest::new(
+            ReservationKind::OperatorOutput,
+            input_reserved_bytes,
+            execution.reservations().budget(),
+        )
+        .with_memory_boundary("compiled_aggregate_hash_partition")
+        .with_node_id(node_id)
+        .with_stage("compiled_aggregate_hash_partition"),
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
@@ -31,22 +32,22 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
     let frame = input.into_frame();
     let partitioned = {
         let token = match execution_budget_token_for_boundary(
-            context,
-            reservations.available_bytes_including(&partition_reservation),
+            execution.context(),
+            execution.reservations().available_bytes_including(&partition_reservation),
             "compiled_aggregate_hash_partition",
             "nexus_query_engine.bounded.aggregate.compiled_partitioned_hash.budget_token",
             "failed to create bounded native compiled partitioned aggregate budget token",
         ) {
             Ok(token) => token,
             Err(error) => {
-                reservations.release(partition_reservation, metrics);
+                execution.release(partition_reservation);
                 return Err(error);
             },
         };
 
         let input_rows = frame.num_rows() as u64;
         let (observation, plan_execution_id, parent_span_id) =
-            crate::observability::stage_context_from_execution(context);
+            crate::observability::stage_context_from_execution(execution.context());
         let stage_guard = crate::observability::RuntimeOperatorStageGuard::start(
             observation,
             plan_execution_id,
@@ -85,16 +86,16 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
     let partitioned = match partitioned {
         Ok(partitioned) => partitioned,
         Err(error) => {
-            reservations.release(partition_reservation, metrics);
+            execution.release(partition_reservation);
             return Err(error);
         },
     };
     let (partitioned_frame, offsets) = partitioned.into_parts();
     let partitioned_gpu = GpuDataFrame::new(partitioned_frame.clone());
-    let partitioned_bytes = match observe_device_memory_bytes(&partitioned_gpu, metrics) {
+    let partitioned_bytes = match observe_device_memory_bytes(&partitioned_gpu, execution.metrics_mut()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            reservations.release(partition_reservation, metrics);
+            execution.release(partition_reservation);
             return Err(error);
         },
     };
@@ -102,77 +103,57 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
         let grow_request = MemoryReservationRequest::new(
             ReservationKind::OperatorOutput,
             partitioned_bytes.saturating_sub(partition_reservation.bytes()),
-            reservations.budget(),
+            execution.reservations().budget(),
         )
         .with_memory_boundary("compiled_aggregate_hash_partition")
         .with_node_id(node_id)
         .with_stage("compiled_aggregate_hash_partition");
-        if let Err(error) = reservations.try_grow(&mut partition_reservation, grow_request, metrics) {
-            reservations.release(partition_reservation, metrics);
+        if let Err(error) = execution.try_grow(&mut partition_reservation, grow_request) {
+            execution.release(partition_reservation);
             return Err(error);
         }
     } else {
-        reservations.shrink_to_observed(&mut partition_reservation, partitioned_bytes, metrics);
+        execution.shrink_to_observed(&mut partition_reservation, partitioned_bytes);
     }
 
     let mut partials = Vec::with_capacity(partition_count);
     for partition in 0..partition_count {
-        let partition_frame = match slice_compiled_aggregate_partition(
-            context,
-            node_id,
-            &partitioned_frame,
-            &offsets,
-            partition,
-            reservations,
-            metrics,
-        ) {
-            Ok(frame) => frame,
-            Err(error) => {
-                release_partials_reverse(reservations, partials, metrics);
-                reservations.release(partition_reservation, metrics);
-                return Err(error);
-            },
-        };
+        let partition_frame =
+            match slice_compiled_aggregate_partition(execution, node_id, &partitioned_frame, &offsets, partition) {
+                Ok(frame) => frame,
+                Err(error) => {
+                    release_partials_reverse(execution, partials);
+                    execution.release(partition_reservation);
+                    return Err(error);
+                },
+            };
         match execute_compiled_bounded_partial_aggregate_from_frame(
-            context,
+            execution,
             node_id,
             aggregate,
             input_schema,
             output_schema,
             partition_frame,
-            reservations,
-            metrics,
         ) {
             Ok(partial) => partials.push(partial),
             Err(error) => {
-                release_partials_reverse(reservations, partials, metrics);
-                reservations.release(partition_reservation, metrics);
+                release_partials_reverse(execution, partials);
+                execution.release(partition_reservation);
                 return Err(error);
             },
         }
     }
-    reservations.release(partition_reservation, metrics);
+    execution.release(partition_reservation);
 
-    execute_compiled_bounded_final_aggregate_merge(
-        context,
-        node_id,
-        aggregate,
-        input_schema,
-        output_schema,
-        partials,
-        reservations,
-        metrics,
-    )
+    execute_compiled_bounded_final_aggregate_merge(execution, node_id, aggregate, input_schema, output_schema, partials)
 }
 
 fn slice_compiled_aggregate_partition(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     frame: &cudf::DataFrame,
     offsets: &[usize],
     partition: usize,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     let start = *offsets.get(partition).ok_or_else(|| {
         unsupported_bounded_shape(
@@ -187,7 +168,7 @@ fn slice_compiled_aggregate_partition(
         )
     })?;
     let len = end.saturating_sub(start);
-    let overrides_lease = execution_overrides(context)?;
+    let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
     let sliced = frame.with_execution(&overrides).slice(start, len).map_err(|error| {
         QueryError::from_cudf(
@@ -200,13 +181,12 @@ fn slice_compiled_aggregate_partition(
         .with_fact("partition_rows", len)
     })?;
     let gpu = GpuDataFrame::new(sliced);
-    let bytes = observe_device_memory_bytes(&gpu, metrics)?;
-    let reservation = reservations.try_reserve(
-        MemoryReservationRequest::new(ReservationKind::OperatorOutput, bytes, reservations.budget())
+    let bytes = observe_device_memory_bytes(&gpu, execution.metrics_mut())?;
+    let reservation = execution.try_reserve(
+        MemoryReservationRequest::new(ReservationKind::OperatorOutput, bytes, execution.reservations().budget())
             .with_memory_boundary("compiled_aggregate_partition")
             .with_node_id(node_id)
             .with_stage("compiled_aggregate_partition"),
-        metrics,
     )?;
     Ok(ResidentGpuFrame { frame: gpu, reservation })
 }

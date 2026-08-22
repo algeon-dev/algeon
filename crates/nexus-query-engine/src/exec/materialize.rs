@@ -17,63 +17,60 @@ pub(super) fn materialize_to_host(input: GpuResultHandle, metrics: &mut QueryMet
 }
 
 pub(super) fn materialize_bounded_to_host(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     input: CommittedPartial,
     final_node_id: NodeId,
     executable_schema: &SchemaRef,
     output_schema: &SchemaRef,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<RecordBatch> {
     let input_reserved_bytes = input.reservation.bytes();
     let result = materialize_bounded_frame_to_host(
-        context,
+        execution,
         input.frame,
         input_reserved_bytes,
         final_node_id,
         executable_schema,
         output_schema,
-        reservations,
-        metrics,
     );
-    reservations.release(input.reservation, metrics);
+    execution.release(input.reservation);
     result
 }
 
 pub(in crate::exec) fn materialize_bounded_frame_to_host(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     frame: GpuDataFrame,
     input_reserved_bytes: u64,
     final_node_id: NodeId,
     executable_schema: &SchemaRef,
     output_schema: &SchemaRef,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<RecordBatch> {
-    let request =
-        MemoryReservationRequest::new(ReservationKind::Materialization, input_reserved_bytes, reservations.budget())
-            .with_memory_boundary("host_materialization")
-            .with_node_id(final_node_id)
-            .with_stage("materialization")
-            .with_attempt(1, 1)
-            .with_task_registration(
-                format!("legacy_bounded.materialization.node{final_node_id}.attempt1"),
-                1,
-                "materialization",
-            );
-    let materialization_reservation = match reservations.try_reserve(request, metrics) {
+    let request = MemoryReservationRequest::new(
+        ReservationKind::Materialization,
+        input_reserved_bytes,
+        execution.reservations().budget(),
+    )
+    .with_memory_boundary("host_materialization")
+    .with_node_id(final_node_id)
+    .with_stage("materialization")
+    .with_attempt(1, 1)
+    .with_task_registration(
+        format!("legacy_bounded.materialization.node{final_node_id}.attempt1"),
+        1,
+        "materialization",
+    );
+    let materialization_reservation = match execution.try_reserve(request) {
         Ok(reservation) => reservation,
-        Err(error) => return Err(host_materialization_failure_facts(metrics).attach_to_error(error)),
+        Err(error) => return Err(host_materialization_failure_facts(execution.metrics_mut()).attach_to_error(error)),
     };
 
-    let handle = match GpuResultHandle::new(context, frame, Arc::clone(executable_schema)) {
+    let handle = match GpuResultHandle::new(execution.context(), frame, Arc::clone(executable_schema)) {
         Ok(handle) => handle,
         Err(error) => {
-            reservations.release(materialization_reservation, metrics);
-            return Err(host_materialization_failure_facts(metrics).attach_to_error(error));
+            execution.release(materialization_reservation);
+            return Err(host_materialization_failure_facts(execution.metrics_mut()).attach_to_error(error));
         },
     };
-    let result = materialize_to_host_with_schema(handle, output_schema, metrics).map_err(|error| {
+    let result = materialize_to_host_with_schema(handle, output_schema, execution.metrics_mut()).map_err(|error| {
         RuntimeResourceFacts {
             memory_boundary: "host_materialization",
             stage: "materialization",
@@ -81,12 +78,12 @@ pub(in crate::exec) fn materialize_bounded_frame_to_host(
             attempt: 1,
             max_attempts: 1,
             resume_boundary: "host_materialization",
-            metrics,
+            metrics: execution.metrics_mut(),
         }
         .attach_to(error)
     });
-    reservations.release(materialization_reservation, metrics);
-    result.map_err(|error| host_materialization_failure_facts(metrics).attach_to_error(error))
+    execution.release(materialization_reservation);
+    result.map_err(|error| host_materialization_failure_facts(execution.metrics_mut()).attach_to_error(error))
 }
 
 pub(super) fn materialize_gpu_frame_to_host(

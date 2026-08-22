@@ -82,7 +82,7 @@ pub use source::{
 pub mod reservation_contract_testing {
     #![allow(missing_docs)]
 
-    use super::bounded::{ReservationTracker, join::compiled::JoinMaterializationTxn};
+    use super::bounded::{BoundedExecutionAttempt, ReservationTracker, join::compiled::JoinMaterializationTxn};
     use crate::{
         error::{QueryError, Result},
         metrics::QueryMetrics,
@@ -221,31 +221,38 @@ pub mod reservation_contract_testing {
     }
 
     pub(crate) fn probe_join_materialization_txn_rollback_contract() -> Result<JoinMaterializationTxnRollbackProbe> {
+        let context = crate::runtime::ExecutionContext::builder().build()?;
         let mut metrics = QueryMetrics::default();
-        let mut tracker = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
+        let tracker = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
+        let mut execution = BoundedExecutionAttempt::for_test_tracker(&context, tracker, &mut metrics);
         let task_id = "t4";
         let operator_kind = PipelineTaskKind::JoinMaterialize.as_str();
-        metrics.record_compiled_pipeline_task_execution(task_id, operator_kind);
-        let _task_observation_scope = tracker.enter_task_observation_scope(
+        execution.metrics_mut().record_compiled_pipeline_task_execution(task_id, operator_kind);
+        let _task_observation_scope = execution.reservations().enter_task_observation_scope(
             crate::observability::task_attempt_id(task_id, 1),
             operator_kind,
             crate::observability::RuntimeSpanId::new(2),
             None::<String>,
         );
 
-        let gather_map = tracker.try_reserve_work(
-            request(ReservationKind::GatherMap, "join_one_shot_indices", 30, tracker.budget()),
-            &mut metrics,
-        )?;
-        let output = tracker.try_reserve_owned_resident(
-            request(ReservationKind::JoinOutput, "join_output", 40, tracker.budget()),
-            &mut metrics,
-        )?;
+        let gather_map = execution.try_reserve_work(request(
+            ReservationKind::GatherMap,
+            "join_one_shot_indices",
+            30,
+            execution.reservations().budget(),
+        ))?;
+        let output = execution.try_reserve_owned_resident(request(
+            ReservationKind::JoinOutput,
+            "join_output",
+            40,
+            execution.reservations().budget(),
+        ))?;
         let mut txn = JoinMaterializationTxn::new();
         txn.set_gather_map_reservation(gather_map);
         txn.set_output_reservation(output);
-        txn.rollback(&mut tracker, &mut metrics);
-        let reserved_after_rollback = tracker.reserved_bytes();
+        txn.rollback(&mut execution);
+        let reserved_after_rollback = execution.reservations().reserved_bytes();
+        drop(execution);
 
         Ok(JoinMaterializationTxnRollbackProbe { metrics, reserved_after_rollback })
     }

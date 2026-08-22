@@ -1,57 +1,38 @@
 use super::*;
 
 pub(super) fn stream_join_leaf_source_chunks_serial<F>(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     stream: &BoundedJoinLeafLocalParquetSourceStream,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     consume: &mut F,
 ) -> Result<()>
 where
-    F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
+    F: FnMut(ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
 {
-    stream_join_leaf_source_chunks_serial_from(context, stream, &stream.chunks, reservations, metrics, consume)
+    stream_join_leaf_source_chunks_serial_from(execution, stream, &stream.chunks, consume)
 }
 
 pub(super) fn stream_join_leaf_source_chunks_serial_from<F>(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     stream: &BoundedJoinLeafLocalParquetSourceStream,
     chunks: &[SourceChunk],
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     consume: &mut F,
 ) -> Result<()>
 where
-    F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
+    F: FnMut(ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
 {
     let batches = join_leaf_source_chunk_batches_for_execution(
         &stream.source,
         chunks,
         &stream.reader_dynamic_filters,
-        source_chunk_batch_target_bytes(context.memory_control_policy()),
+        source_chunk_batch_target_bytes(execution.context().memory_control_policy()),
     );
     for batch in batches {
         if batch.is_singleton() {
             let chunk = batch.chunks.into_iter().next().expect("singleton source batch has one chunk");
-            stream_join_leaf_source_chunk_with_consumer_retry(
-                context,
-                stream,
-                chunk,
-                1,
-                reservations,
-                metrics,
-                consume,
-            )?;
+            stream_join_leaf_source_chunk_with_consumer_retry(execution, stream, chunk, 1, consume)?;
             continue;
         }
-        match stream_join_leaf_source_batch_or_split_with_consumer(
-            context,
-            stream,
-            batch,
-            reservations,
-            metrics,
-            consume,
-        ) {
+        match stream_join_leaf_source_batch_or_split_with_consumer(execution, stream, batch, consume) {
             Ok(()) => {},
             Err(error) => return Err(error),
         }
@@ -60,100 +41,75 @@ where
 }
 
 pub(super) fn stream_join_leaf_source_batch_or_split_with_consumer<F>(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     stream: &BoundedJoinLeafLocalParquetSourceStream,
     batch: SourceChunkBatch,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     consume: &mut F,
 ) -> Result<()>
 where
-    F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
+    F: FnMut(ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
 {
-    context.check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_stream_batch_retry")?;
+    execution.context().check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_stream_batch_retry")?;
     if batch.is_singleton() {
         let chunk = batch.chunks.into_iter().next().expect("singleton source batch has one chunk");
-        return stream_join_leaf_source_chunk_with_consumer_retry(
-            context,
-            stream,
-            chunk,
-            1,
-            reservations,
-            metrics,
-            consume,
-        );
+        return stream_join_leaf_source_chunk_with_consumer_retry(execution, stream, chunk, 1, consume);
     }
-    match stream_join_leaf_source_batch_with_consumer(context, stream, &batch, reservations, metrics, consume) {
+    match stream_join_leaf_source_batch_with_consumer(execution, stream, &batch, consume) {
         Ok(()) => Ok(()),
         Err(error) if is_retryable_chunk_error(&error) => {
-            metrics.record_source_chunk_retry();
+            execution.metrics_mut().record_source_chunk_retry();
             let Some((left, right)) = batch.split_for_retry() else {
                 return Err(error);
             };
             crate::exec::retry::backoff_before_retry(
-                context,
+                execution.context(),
                 "nexus_query_engine.exec.bounded.join_leaf_stream_batch_split_retry",
             )?;
-            stream_join_leaf_source_batch_or_split_with_consumer(
-                context,
-                stream,
-                left,
-                reservations,
-                metrics,
-                consume,
-            )?;
-            stream_join_leaf_source_batch_or_split_with_consumer(context, stream, right, reservations, metrics, consume)
+            stream_join_leaf_source_batch_or_split_with_consumer(execution, stream, left, consume)?;
+            stream_join_leaf_source_batch_or_split_with_consumer(execution, stream, right, consume)
         },
         Err(error) => Err(error),
     }
 }
 
 pub(super) fn stream_join_leaf_source_batch_with_consumer<F>(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     stream: &BoundedJoinLeafLocalParquetSourceStream,
     batch: &SourceChunkBatch,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     consume: &mut F,
 ) -> Result<()>
 where
-    F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
+    F: FnMut(ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
 {
     let grow_source_to_observed = retain_decoded_source(stream);
     let (frame, reservation) = read_join_leaf_source_batch_attempt(
-        context,
+        execution,
         &stream.source,
-        reservations,
-        metrics,
         stream.node_id,
         batch,
         &stream.reader_dynamic_filters,
         grow_source_to_observed,
     )?;
     let input = ResidentGpuFrame { frame, reservation };
-    let output = apply_join_leaf_source_stream_stages(context, stream, input, reservations, metrics)?;
-    consume(output, reservations, metrics)
+    let output = apply_join_leaf_source_stream_stages(execution, stream, input)?;
+    consume(output, execution)
 }
 
 pub(super) fn stream_join_leaf_source_chunk_with_consumer_retry<F>(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     stream: &BoundedJoinLeafLocalParquetSourceStream,
     chunk: SourceChunk,
     attempt: usize,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     consume: &mut F,
 ) -> Result<()>
 where
-    F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
+    F: FnMut(ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
 {
-    context.check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_stream")?;
+    execution.context().check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_stream")?;
     let grow_source_to_observed = retain_decoded_source(stream);
     let (frame, reservation) = match read_join_leaf_source_chunk_attempt(
-        context,
+        execution,
         &stream.source,
-        reservations,
-        metrics,
         stream.node_id,
         &chunk,
         &stream.reader_dynamic_filters,
@@ -163,119 +119,72 @@ where
     ) {
         Ok(output) => output,
         Err(error) if is_retryable_chunk_error(&error) => {
-            return retry_join_leaf_source_stream_chunk_after_error(
-                context,
-                stream,
-                chunk,
-                error,
-                attempt,
-                reservations,
-                metrics,
-                consume,
-            );
+            return retry_join_leaf_source_stream_chunk_after_error(execution, stream, chunk, error, attempt, consume);
         },
         Err(error) => return Err(error),
     };
     let input = ResidentGpuFrame { frame, reservation };
-    let output = match apply_join_leaf_source_stream_stages(context, stream, input, reservations, metrics) {
+    let output = match apply_join_leaf_source_stream_stages(execution, stream, input) {
         Ok(output) => output,
         Err(error) if is_retryable_chunk_error(&error) => {
-            return retry_join_leaf_source_stream_chunk_after_error(
-                context,
-                stream,
-                chunk,
-                error,
-                attempt,
-                reservations,
-                metrics,
-                consume,
-            );
+            return retry_join_leaf_source_stream_chunk_after_error(execution, stream, chunk, error, attempt, consume);
         },
         Err(error) => return Err(error),
     };
-    match consume(output, reservations, metrics) {
+    match consume(output, execution) {
         Ok(()) => Ok(()),
-        Err(error) if is_retryable_chunk_error(&error) => retry_join_leaf_source_stream_chunk_after_error(
-            context,
-            stream,
-            chunk,
-            error,
-            attempt,
-            reservations,
-            metrics,
-            consume,
-        ),
+        Err(error) if is_retryable_chunk_error(&error) => {
+            retry_join_leaf_source_stream_chunk_after_error(execution, stream, chunk, error, attempt, consume)
+        },
         Err(error) => Err(error),
     }
 }
 
 pub(super) fn retry_join_leaf_source_stream_chunk_after_error<F>(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     stream: &BoundedJoinLeafLocalParquetSourceStream,
     chunk: SourceChunk,
     error: QueryError,
     attempt: usize,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     consume: &mut F,
 ) -> Result<()>
 where
-    F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
+    F: FnMut(ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
 {
-    record_chunk_retry_error(&error, metrics);
+    record_chunk_retry_error(&error, execution.metrics_mut());
     if attempt < stream.max_attempts
         && let Some((left, right)) = split_retryable_chunk(&chunk, stream.min_retry_chunk_row_groups)
     {
-        metrics.record_source_chunk_retry();
+        execution.metrics_mut().record_source_chunk_retry();
         crate::exec::retry::backoff_before_retry(
-            context,
+            execution.context(),
             "nexus_query_engine.exec.bounded.join_leaf_stream_source_split_retry",
         )?;
-        stream_join_leaf_source_chunk_with_consumer_retry(
-            context,
-            stream,
-            left,
-            attempt + 1,
-            reservations,
-            metrics,
-            consume,
-        )?;
-        stream_join_leaf_source_chunk_with_consumer_retry(
-            context,
-            stream,
-            right,
-            attempt + 1,
-            reservations,
-            metrics,
-            consume,
-        )?;
+        stream_join_leaf_source_chunk_with_consumer_retry(execution, stream, left, attempt + 1, consume)?;
+        stream_join_leaf_source_chunk_with_consumer_retry(execution, stream, right, attempt + 1, consume)?;
         return Ok(());
     }
 
-    Err(chunk_retry_facts(&chunk, metrics).attach_to_error(error))
+    Err(chunk_retry_facts(&chunk, execution.metrics_mut()).attach_to_error(error))
 }
 
 pub(super) fn stream_join_leaf_source_chunks_with_scheduler<F>(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     stream: &BoundedJoinLeafLocalParquetSourceStream,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     consume: &mut F,
 ) -> Result<()>
 where
-    F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
+    F: FnMut(ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
 {
     let grow_source_to_observed = retain_decoded_source(stream);
     let mut pending = VecDeque::new();
     let mut next_chunk_index = 0usize;
-    context.check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_stream_scheduler")?;
+    execution.context().check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_stream_scheduler")?;
     start_next_required_join_leaf_read(
-        context,
+        execution,
         &stream.source,
         &stream.chunks,
         stream.node_id,
-        reservations,
-        metrics,
         &mut pending,
         &mut next_chunk_index,
         stream.max_attempts,
@@ -283,32 +192,25 @@ where
 
     for (index, chunk) in stream.chunks.iter().enumerate() {
         if let Err(error) =
-            context.check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_stream_scheduler")
+            execution.context().check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_stream_scheduler")
         {
-            abandon_join_leaf_reads(pending, reservations, metrics);
+            abandon_join_leaf_reads(execution, pending);
             return Err(error);
         }
         let scheduled =
             pending.pop_front().expect("join leaf source scheduler should have a read for the current chunk");
         let is_prefetch = scheduled.is_prefetch();
-        let mut output = match scheduled.finish(reservations, metrics) {
+        let mut output = match scheduled.finish(execution) {
             Ok(output) => output,
             Err(error) if is_retryable_chunk_error(&error) => {
                 if is_prefetch {
-                    metrics.record_source_read_prefetch_abandoned();
+                    execution.metrics_mut().record_source_read_prefetch_abandoned();
                 }
-                abandon_join_leaf_reads(pending, reservations, metrics);
-                return stream_join_leaf_source_chunks_serial_from(
-                    context,
-                    stream,
-                    &stream.chunks[index..],
-                    reservations,
-                    metrics,
-                    consume,
-                );
+                abandon_join_leaf_reads(execution, pending);
+                return stream_join_leaf_source_chunks_serial_from(execution, stream, &stream.chunks[index..], consume);
             },
             Err(error) => {
-                abandon_join_leaf_reads(pending, reservations, metrics);
+                abandon_join_leaf_reads(execution, pending);
                 return Err(attach_join_source_read_resource_facts(
                     error,
                     stream.node_id,
@@ -319,96 +221,77 @@ where
             },
         };
         if is_prefetch {
-            metrics.record_source_read_prefetch_completed();
+            execution.metrics_mut().record_source_read_prefetch_completed();
         }
         if grow_source_to_observed {
             if let Err(error) = grow_join_source_reservation_to_observed_frame(
+                execution,
                 &output.frame,
                 &mut output.reservation,
-                reservations,
                 stream.node_id,
                 chunk,
-                metrics,
                 1,
                 stream.max_attempts,
             ) {
-                reservations.release(output.reservation, metrics);
-                abandon_join_leaf_reads(pending, reservations, metrics);
+                execution.release(output.reservation);
+                abandon_join_leaf_reads(execution, pending);
                 return Err(error);
             }
-        } else if let Err(error) = observe_device_memory_bytes(&output.frame, metrics) {
-            reservations.release(output.reservation, metrics);
-            abandon_join_leaf_reads(pending, reservations, metrics);
+        } else if let Err(error) = observe_device_memory_bytes(&output.frame, execution.metrics_mut()) {
+            execution.release(output.reservation);
+            abandon_join_leaf_reads(execution, pending);
             return Err(error);
         }
         record_dynamic_filter_reader_predicate_rows(
             &stream.reader_dynamic_filters,
             &output.chunk,
             &output.frame,
-            metrics,
+            execution.metrics_mut(),
         );
-        metrics.record_source_chunk_commit(
+        execution.metrics_mut().record_source_chunk_commit(
             output
                 .observed_row_group_count
                 .or_else(|| chunk.known_read_row_group_count().map(|row_groups| row_groups as u64))
                 .unwrap_or_else(|| chunk.row_group_count() as u64),
         );
         let input = ResidentGpuFrame { frame: output.frame, reservation: output.reservation };
-        let output = match apply_join_leaf_source_stream_stages(context, stream, input, reservations, metrics) {
+        let output = match apply_join_leaf_source_stream_stages(execution, stream, input) {
             Ok(output) => output,
             Err(error) if is_retryable_chunk_error(&error) => {
-                abandon_join_leaf_reads(pending, reservations, metrics);
-                return stream_join_leaf_source_chunks_serial_from(
-                    context,
-                    stream,
-                    &stream.chunks[index..],
-                    reservations,
-                    metrics,
-                    consume,
-                );
+                abandon_join_leaf_reads(execution, pending);
+                return stream_join_leaf_source_chunks_serial_from(execution, stream, &stream.chunks[index..], consume);
             },
             Err(error) => {
-                abandon_join_leaf_reads(pending, reservations, metrics);
+                abandon_join_leaf_reads(execution, pending);
                 return Err(error);
             },
         };
-        if let Err(error) = consume(output, reservations, metrics) {
-            abandon_join_leaf_reads(pending, reservations, metrics);
+        if let Err(error) = consume(output, execution) {
+            abandon_join_leaf_reads(execution, pending);
             if is_retryable_chunk_error(&error) {
-                return stream_join_leaf_source_chunks_serial_from(
-                    context,
-                    stream,
-                    &stream.chunks[index..],
-                    reservations,
-                    metrics,
-                    consume,
-                );
+                return stream_join_leaf_source_chunks_serial_from(execution, stream, &stream.chunks[index..], consume);
             }
             return Err(error);
         }
         if let Err(error) = fill_optional_join_leaf_reads(
-            context,
+            execution,
             &stream.source,
             &stream.chunks,
             stream.node_id,
-            reservations,
-            metrics,
             &mut pending,
             &mut next_chunk_index,
             stream.max_attempts,
         ) {
-            abandon_join_leaf_reads(pending, reservations, metrics);
+            abandon_join_leaf_reads(execution, pending);
             return Err(error);
         }
         if pending.is_empty()
             && index + 1 < stream.chunks.len()
             && let Err(error) = start_next_required_join_leaf_read(
-                context,
+                execution,
                 &stream.source,
                 &stream.chunks,
                 stream.node_id,
-                reservations,
-                metrics,
                 &mut pending,
                 &mut next_chunk_index,
                 stream.max_attempts,

@@ -30,22 +30,20 @@ pub(super) fn validate_one_shot_equi_join(node: &JoinNode) -> Result<()> {
 // The remaining prepared materializers intentionally mirror the root bounded
 // join primitives, but start after build/probe input preparation.
 pub(super) fn execute_compiled_one_shot_equi_join_materialize(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
     left: BoundedJoinSideFrame,
     right: BoundedJoinSideFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     validate_one_shot_equi_join(node)?;
     let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
     let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
-    let overrides_lease = execution_overrides(context)?;
+    let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let preflight_indices = match materialize_compiled_keyed_equality_join_indices_with_preflight(
-        context,
+        execution,
         node_id,
         node,
         &left,
@@ -54,14 +52,12 @@ pub(super) fn execute_compiled_one_shot_equi_join_materialize(
         &left_keys,
         &right_keys,
         "join_one_shot_indices",
-        reservations,
-        metrics,
         &overrides,
     ) {
         Ok(indices) => indices,
         Err(error) => {
-            release_bounded_join_side_frame(left, reservations, metrics);
-            release_bounded_join_side_frame(right, reservations, metrics);
+            release_bounded_join_side_frame(execution, left);
+            release_bounded_join_side_frame(execution, right);
             return Err(error);
         },
     };
@@ -69,7 +65,7 @@ pub(super) fn execute_compiled_one_shot_equi_join_materialize(
         preflight_indices;
     if node.spec.residual_predicate.is_some() {
         let (output, chunk_metrics) = materialize_compiled_one_shot_residual_output(
-            context,
+            execution,
             node_id,
             node,
             left,
@@ -79,8 +75,6 @@ pub(super) fn execute_compiled_one_shot_equi_join_materialize(
             gather_map_reservation,
             timer,
             index_bytes,
-            reservations,
-            metrics,
         )?;
         record_one_shot_join_chunk_metrics(
             node_id,
@@ -88,12 +82,12 @@ pub(super) fn execute_compiled_one_shot_equi_join_materialize(
             node.spec.build_side,
             probe_side(node.spec.build_side),
             &chunk_metrics,
-            metrics,
+            execution.metrics_mut(),
         );
         return Ok(output);
     }
     materialize_compiled_indices_output(
-        context,
+        execution,
         node,
         CompiledJoinMaterializationRequest {
             node_id,
@@ -112,19 +106,15 @@ pub(super) fn execute_compiled_one_shot_equi_join_materialize(
             timer,
             one_shot_index_bytes: Some(index_bytes),
         },
-        reservations,
-        metrics,
     )
 }
 
 pub(super) fn execute_compiled_one_shot_equi_join_probe_from_stream(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
     build: BoundedCompiledPreparedJoinBuildState,
     stream: BoundedJoinLeafLocalParquetSourceStream,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<BoundedCompiledJoinProbeState> {
     validate_one_shot_equi_join(node)?;
 
@@ -132,60 +122,50 @@ pub(super) fn execute_compiled_one_shot_equi_join_probe_from_stream(
     let probe_columns = compiled_join_input_columns(node, build.strategy, probe_side)?;
     let mut outputs = Vec::new();
     let mut summary = StreamedOneShotJoinSummary::new();
-    let stream_result = stream_bounded_join_leaf_local_parquet_source_serial(
-        context,
-        stream,
-        reservations,
-        metrics,
-        |input, reservations, metrics| {
-            let probe = prepare_bounded_join_side_input_from_resident_frame(
-                input,
-                &probe_columns,
-                probe_side,
-                node_id,
-                build.side,
-                reservations,
-                metrics,
-            )?;
-            let output = materialize_compiled_one_shot_equi_join_probe_chunk(
-                context,
-                node_id,
-                node,
-                build.side,
-                &build.input,
-                probe,
-                reservations,
-                metrics,
-                &mut summary,
-            )?;
-            outputs.push(output);
-            Ok(())
-        },
-    );
+    let stream_result = stream_bounded_join_leaf_local_parquet_source_serial(execution, stream, |input, execution| {
+        let probe = prepare_bounded_join_side_input_from_resident_frame(
+            execution,
+            input,
+            &probe_columns,
+            probe_side,
+            node_id,
+            build.side,
+        )?;
+        let output = materialize_compiled_one_shot_equi_join_probe_chunk(
+            execution,
+            node_id,
+            node,
+            build.side,
+            &build.input,
+            probe,
+            &mut summary,
+        )?;
+        outputs.push(output);
+        Ok(())
+    });
     match stream_result {
         Ok(()) => Ok(BoundedCompiledJoinProbeState::OneShotStreamed { build, outputs, summary }),
         Err(error) => {
-            release_streamed_join_outputs_reverse(reservations, outputs, metrics);
-            release_bounded_join_side_frame(build.input, reservations, metrics);
+            release_streamed_join_outputs_reverse(execution, outputs);
+            release_bounded_join_side_frame(execution, build.input);
             Err(error)
         },
     }
 }
 
 pub(super) fn execute_compiled_one_shot_equi_join_probe_from_frame_stream(
+    execution: &mut BoundedExecutionAttempt<'_>,
     node: &JoinNode,
     build: BoundedCompiledPreparedJoinBuildState,
     inputs: ResidentFrameStreamPayload,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<BoundedCompiledJoinProbeState> {
     validate_one_shot_equi_join(node)?;
     let probe_side = probe_side(build.side);
     let probe_columns = match compiled_join_input_columns(node, build.strategy, probe_side) {
         Ok(columns) => columns,
         Err(error) => {
-            inputs.release_all(reservations, metrics);
-            release_bounded_join_side_frame(build.input, reservations, metrics);
+            inputs.release_all(execution);
+            release_bounded_join_side_frame(execution, build.input);
             return Err(error);
         },
     };
@@ -197,7 +177,6 @@ pub(super) fn execute_compiled_one_shot_equi_join_probe_from_frame_stream(
 }
 
 pub(super) fn one_shot_equi_join_frame_stream_probe_to_payload(
-    context: &ExecutionContext,
     node_id: NodeId,
     node: &JoinNode,
     probe: OneShotEquiJoinFrameStreamProbeState,
@@ -213,7 +192,6 @@ pub(super) fn one_shot_equi_join_frame_stream_probe_to_payload(
         num_columns,
         Vec::new(),
         Box::new(OneShotEquiJoinProbeStreamSource {
-            context: context.clone(),
             node_id,
             node: node.clone(),
             build: Some(probe.build),
@@ -226,7 +204,6 @@ pub(super) fn one_shot_equi_join_frame_stream_probe_to_payload(
 }
 
 struct OneShotEquiJoinProbeStreamSource {
-    context: ExecutionContext,
     node_id: NodeId,
     node: JoinNode,
     build: Option<BoundedCompiledPreparedJoinBuildState>,
@@ -257,18 +234,14 @@ impl OneShotEquiJoinProbeStreamSource {
 }
 
 impl ResidentFrameStreamSource for OneShotEquiJoinProbeStreamSource {
-    fn next_frame(
-        &mut self,
-        reservations: &mut ReservationTracker,
-        metrics: &mut QueryMetrics,
-    ) -> Option<Result<ResidentGpuFrame>> {
+    fn next_frame(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Option<Result<ResidentGpuFrame>> {
         let inputs = self.inputs.as_mut()?;
-        let mut input = match inputs.next_yielded_frame(reservations, metrics) {
+        let mut input = match inputs.next_yielded_frame(execution) {
             Some(Ok(input)) => input,
             Some(Err(error)) => return Some(Err(error)),
             None => {
-                self.record_success_metrics(metrics);
-                self.release(reservations, metrics);
+                self.record_success_metrics(execution.metrics_mut());
+                self.release(execution);
                 return None;
             },
         };
@@ -276,54 +249,49 @@ impl ResidentFrameStreamSource for OneShotEquiJoinProbeStreamSource {
         let build = self.build.as_ref().expect("one-shot join build side released before stream end");
         let probe_side = probe_side(build.side);
         let probe = match prepare_bounded_join_side_input_from_resident_frame(
+            execution,
             input,
             &self.probe_columns,
             probe_side,
             self.node_id,
             build.side,
-            reservations,
-            metrics,
         ) {
             Ok(probe) => probe,
             Err(error) => return Some(Err(error)),
         };
         Some(materialize_compiled_one_shot_equi_join_probe_chunk(
-            &self.context,
+            execution,
             self.node_id,
             &self.node,
             build.side,
             &build.input,
             probe,
-            reservations,
-            metrics,
             &mut self.summary,
         ))
     }
 
-    fn release(&mut self, reservations: &mut ReservationTracker, metrics: &mut QueryMetrics) {
+    fn release(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
         if let Some(input) = self.inputs.take() {
-            input.release_all(reservations, metrics);
+            input.release_all(execution);
         }
         if let Some(build) = self.build.take() {
-            release_bounded_join_side_frame(build.input, reservations, metrics);
+            release_bounded_join_side_frame(execution, build.input);
         }
     }
 }
 
 pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
     build_side: JoinSide,
     build: &BoundedJoinSideFrame,
     probe: BoundedJoinSideFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     summary: &mut StreamedOneShotJoinSummary,
 ) -> Result<ResidentGpuFrame> {
     let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
     let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
-    let overrides_lease = execution_overrides(context)?;
+    let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let (left_input, right_input) = match build_side {
@@ -331,7 +299,7 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
         JoinSide::Right => (&probe, build),
     };
     let preflight_indices = match materialize_compiled_keyed_equality_join_indices_with_preflight(
-        context,
+        execution,
         node_id,
         node,
         left_input,
@@ -340,13 +308,11 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
         &left_keys,
         &right_keys,
         "join_one_shot_indices",
-        reservations,
-        metrics,
         &overrides,
     ) {
         Ok(indices) => indices,
         Err(error) => {
-            release_bounded_join_side_frame(probe, reservations, metrics);
+            release_bounded_join_side_frame(execution, probe);
             return Err(error);
         },
     };
@@ -355,17 +321,17 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
     let probe_rows = probe.rows;
     let probe_bytes = probe.bytes;
     if node.spec.residual_predicate.is_some() {
-        let build_alias = match alias_compiled_one_shot_build_chunk(node_id, build, reservations, metrics) {
+        let build_alias = match alias_compiled_one_shot_build_chunk(execution, node_id, build) {
             Ok(build_alias) => build_alias,
             Err(error) => {
-                reservations.release(gather_map_reservation, metrics);
+                execution.release(gather_map_reservation);
                 return Err(error);
             },
         };
         let probe_side = probe_side(build_side);
         let (left, right) = orient_prepared_inputs(build_side, build_alias, probe_side, probe)?;
         let (output, chunk_metrics) = materialize_compiled_one_shot_residual_output(
-            context,
+            execution,
             node_id,
             node,
             left,
@@ -375,8 +341,6 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
             gather_map_reservation,
             timer,
             index_bytes,
-            reservations,
-            metrics,
         )?;
         summary.record_chunk_metrics(&chunk_metrics);
         return Ok(output);
@@ -386,34 +350,29 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
         JoinSide::Right => (&probe, build),
     };
     let output_reservation_bytes = match indices.output_upper_bound_size_bytes(
-        context,
+        execution,
         node_id,
         &left.frame,
         &right.frame,
         output_rows,
         &node.spec.output_projection,
-        reservations,
-        metrics,
     ) {
         Ok(bytes) => bytes,
         Err(error) => {
-            reservations.release(gather_map_reservation, metrics);
+            execution.release(gather_map_reservation);
             return Err(error);
         },
     };
-    let mut output_reservation = match reservations.try_reserve(
-        bounded_join_request(
-            ReservationKind::JoinOutput,
-            "join_output",
-            output_reservation_bytes,
-            reservations.budget(),
-            node_id,
-        ),
-        metrics,
-    ) {
+    let mut output_reservation = match execution.try_reserve(bounded_join_request(
+        ReservationKind::JoinOutput,
+        "join_output",
+        output_reservation_bytes,
+        execution.reservations().budget(),
+        node_id,
+    )) {
         Ok(reservation) => reservation,
         Err(error) => {
-            reservations.release(gather_map_reservation, metrics);
+            execution.release(gather_map_reservation);
             return Err(error);
         },
     };
@@ -427,28 +386,26 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
     ) {
         Ok(output) => output,
         Err(error) => {
-            reservations.release(gather_map_reservation, metrics);
-            reservations.release(output_reservation, metrics);
+            execution.release(gather_map_reservation);
+            execution.release(output_reservation);
             return Err(error);
         },
     };
-    metrics.operator_time += timer.elapsed();
-    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics) {
+    execution.metrics_mut().operator_time += timer.elapsed();
+    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics_mut()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            reservations.release(gather_map_reservation, metrics);
-            reservations.release(output_reservation, metrics);
+            execution.release(gather_map_reservation);
+            execution.release(output_reservation);
             return Err(error);
         },
     };
-    if let Err(error) =
-        reconcile_join_output_upper_bound(node_id, &mut output_reservation, output_bytes, reservations, metrics)
-    {
-        reservations.release(gather_map_reservation, metrics);
-        reservations.release(output_reservation, metrics);
+    if let Err(error) = reconcile_join_output_upper_bound(execution, node_id, &mut output_reservation, output_bytes) {
+        execution.release(gather_map_reservation);
+        execution.release(output_reservation);
         return Err(error);
     }
-    reservations.release(gather_map_reservation, metrics);
+    execution.release(gather_map_reservation);
     summary.record_chunk(
         probe_rows,
         probe_bytes,
@@ -462,21 +419,19 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
 }
 
 fn alias_compiled_one_shot_build_chunk(
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     build: &BoundedJoinSideFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<BoundedJoinSideFrame> {
-    let reservation = reservations.alias_reservation(
+    let reservation = execution.alias_reservation(
         &build._reservation,
         bounded_join_request(
             ReservationKind::BuildSide,
             "join_build_side_stream_alias",
             build.bytes,
-            reservations.budget(),
+            execution.reservations().budget(),
             node_id,
         ),
-        metrics,
     );
     Ok(BoundedJoinSideFrame {
         frame: build.frame.clone(),

@@ -138,11 +138,9 @@ pub(super) fn join_strategy_needs_build_key_uniqueness_probe(
 }
 
 pub(super) fn measure_join_build_key_unique(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node: &JoinNode,
     build_frame: &GpuDataFrame,
-    reservations: &ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<bool> {
     let key_columns = node
         .spec
@@ -155,8 +153,8 @@ pub(super) fn measure_join_build_key_unique(
         .collect::<Vec<_>>();
     let key_refs = key_columns.iter().map(String::as_str).collect::<Vec<_>>();
     let token = execution_budget_token_for_boundary(
-        context,
-        reservations.remaining_bytes(),
+        execution.context(),
+        execution.reservations().remaining_bytes(),
         "join_build_key_uniqueness_probe",
         "nexus_query_engine.bounded.join.build_key_uniqueness_probe.budget_token",
         "failed to create join build-key uniqueness probe budget token",
@@ -166,7 +164,7 @@ pub(super) fn measure_join_build_key_unique(
     let keys = match build_frame.frame().select(key_refs.clone()) {
         Ok(keys) => keys,
         Err(error) => {
-            metrics.operator_time += timer.elapsed();
+            execution.metrics_mut().operator_time += timer.elapsed();
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.join.build_key_uniqueness_probe.input",
                 "failed to project join build-key uniqueness probe columns",
@@ -179,7 +177,7 @@ pub(super) fn measure_join_build_key_unique(
     ) {
         Ok(unique_keys) => unique_keys,
         Err(error) => {
-            metrics.operator_time += timer.elapsed();
+            execution.metrics_mut().operator_time += timer.elapsed();
             return Err(attach_budget_token_failure_facts(
                 QueryError::from_cudf(
                     "nexus_query_engine.bounded.join.build_key_uniqueness_probe.distinct_keys",
@@ -190,7 +188,7 @@ pub(super) fn measure_join_build_key_unique(
             ));
         },
     };
-    metrics.operator_time += timer.elapsed();
+    execution.metrics_mut().operator_time += timer.elapsed();
     Ok(unique_keys.num_rows() == build_frame.num_rows())
 }
 

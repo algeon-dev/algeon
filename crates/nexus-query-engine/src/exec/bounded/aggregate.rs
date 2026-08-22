@@ -102,51 +102,40 @@ pub(in crate::exec::bounded) fn is_source_adjacent_grouped_aggregate(bounded: &B
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_aggregate_to_frame(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
-    context.check_cancellation("nexus_query_engine.exec.bounded.aggregate")?;
+    execution.context().check_cancellation("nexus_query_engine.exec.bounded.aggregate")?;
     validate_local_parquet_source(bounded.source)?;
     bounded.validate_capabilities()?;
 
     let chunk_plan = plan_local_parquet_source_chunks_with_execution_context(
         bounded.source_id,
         bounded.source,
-        aggregate_source_chunk_planning_policy(context, bounded),
-        context,
+        aggregate_source_chunk_planning_policy(execution.context(), bounded),
+        execution.context(),
     )?;
     for chunk in &chunk_plan.chunks {
-        metrics.record_source_chunk_planned(chunk.row_group_count() as u64);
+        execution.metrics_mut().record_source_chunk_planned(chunk.row_group_count() as u64);
     }
-    record_bounded_parquet_source_metrics(bounded.source, &chunk_plan, metrics);
+    record_bounded_parquet_source_metrics(bounded.source, &chunk_plan, execution.metrics_mut());
     if chunk_plan.chunks.is_empty() {
-        return execute_final_aggregate_merge(context, bounded, Vec::new(), reservations, metrics);
+        return execute_final_aggregate_merge(execution, bounded, Vec::new());
     }
 
     if aggregate_spec_requires_whole_input(&bounded.aggregate.0.spec) {
-        return execute_bounded_whole_input_aggregate_from_raw_chunks(
-            context,
-            bounded,
-            &chunk_plan.chunks,
-            reservations,
-            metrics,
-        );
+        return execute_bounded_whole_input_aggregate_from_raw_chunks(execution, bounded, &chunk_plan.chunks);
     }
-    if should_execute_partitioned_source_adjacent_grouped_aggregate(context, bounded, &chunk_plan) {
+    if should_execute_partitioned_source_adjacent_grouped_aggregate(execution.context(), bounded, &chunk_plan) {
         return execute_bounded_partitioned_source_adjacent_aggregate_from_raw_chunks(
-            context,
+            execution,
             bounded,
             &chunk_plan.chunks,
-            reservations,
-            metrics,
         );
     }
 
-    let partials =
-        execute_bounded_chunks_with_source_scheduler(context, bounded, &chunk_plan.chunks, reservations, metrics)?;
-    execute_final_aggregate_merge(context, bounded, partials, reservations, metrics)
+    let partials = execute_bounded_chunks_with_source_scheduler(execution, bounded, &chunk_plan.chunks)?;
+    execute_final_aggregate_merge(execution, bounded, partials)
 }
 
 fn should_execute_partitioned_source_adjacent_grouped_aggregate(
@@ -233,52 +222,44 @@ fn source_adjacent_grouped_aggregate_has_string_key(bounded: &BoundedPlan<'_>) -
 }
 
 pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_frame(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     aggregate: &AggregateNode,
     input_schema: &ArrowSchemaRef,
     output_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
     input_reserved_bytes: u64,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
-    if should_execute_datafusion_exact_floating_statistical_aggregate(context, &aggregate.spec) {
+    if should_execute_datafusion_exact_floating_statistical_aggregate(execution.context(), &aggregate.spec) {
         return execute_compiled_bounded_exact_host_aggregate_from_frame(
-            context,
+            execution,
             node_id,
             aggregate,
             input_schema,
             output_schema,
             input,
             input_reserved_bytes,
-            reservations,
-            metrics,
         );
     }
-    if should_partition_compiled_grouped_aggregate(context, aggregate, input_reserved_bytes) {
+    if should_partition_compiled_grouped_aggregate(execution.context(), aggregate, input_reserved_bytes) {
         return execute_compiled_bounded_partitioned_aggregate_from_frame(
-            context,
+            execution,
             node_id,
             aggregate,
             input_schema,
             output_schema,
             input,
             input_reserved_bytes,
-            reservations,
-            metrics,
         );
     }
 
     execute_bounded_generic_unary_from_frame(
-        context,
+        execution,
         node_id,
         "compiled_aggregate",
         "compiled_aggregate_output",
         input,
         input_reserved_bytes,
-        reservations,
-        metrics,
         true,
         |context, input, token, metrics| {
             execute_aggregate_with_budget_for_node(
@@ -296,51 +277,48 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_frame(
 }
 
 pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_consuming_frame(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     aggregate: &AggregateNode,
     input_schema: &ArrowSchemaRef,
     output_schema: &ArrowSchemaRef,
     input: ResidentGpuFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     let input_reserved_bytes = input.reservation.bytes();
     let input_reservation = input.reservation;
     let result = execute_compiled_bounded_aggregate_from_frame(
-        context,
+        execution,
         node_id,
         aggregate,
         input_schema,
         output_schema,
         input.frame,
         input_reserved_bytes,
-        reservations,
-        metrics,
     );
-    reservations.release(input_reservation, metrics);
+    execution.release(input_reservation);
     result
 }
 
 fn execute_compiled_bounded_exact_host_aggregate_from_frame(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     aggregate: &AggregateNode,
     input_schema: &ArrowSchemaRef,
     output_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
     input_reserved_bytes: u64,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     let stage = "compiled_exact_host_welford_aggregate";
-    let mut work_reservation = match reservations.try_reserve_work(
-        MemoryReservationRequest::new(ReservationKind::OperatorOutput, input_reserved_bytes, reservations.budget())
-            .with_memory_boundary(stage)
-            .with_node_id(node_id)
-            .with_stage(stage)
-            .with_attempt(1, 1),
-        metrics,
+    let mut work_reservation = match execution.try_reserve_work(
+        MemoryReservationRequest::new(
+            ReservationKind::OperatorOutput,
+            input_reserved_bytes,
+            execution.reservations().budget(),
+        )
+        .with_memory_boundary(stage)
+        .with_node_id(node_id)
+        .with_stage(stage)
+        .with_attempt(1, 1),
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
@@ -348,182 +326,185 @@ fn execute_compiled_bounded_exact_host_aggregate_from_frame(
         },
     };
     let token = match execution_budget_token_for_boundary(
-        context,
-        reservations.available_bytes_including(&work_reservation),
+        execution.context(),
+        execution.reservations().available_bytes_including(&work_reservation),
         stage,
         "nexus_query_engine.bounded.aggregate.exact_host_welford.budget_token",
         "failed to create bounded exact host-Welford aggregate budget token",
     ) {
         Ok(token) => token,
         Err(error) => {
-            reservations.release(work_reservation, metrics);
+            execution.release(work_reservation);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
 
     let (prepared, spec, prepared_input_schema) = match prepare_filtered_aggregate_frame(
-        context,
+        execution.context(),
         input.into_frame(),
         input_schema,
         &aggregate.spec,
         Some(&token),
-        metrics,
+        execution.metrics_mut(),
     ) {
         Ok(prepared) => prepared,
         Err(error) => {
-            reservations.release(work_reservation, metrics);
+            execution.release(work_reservation);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
     let prepared = GpuDataFrame::new(prepared);
-    let (exact_input, exact_input_schema) =
-        match prepare_datafusion_exact_host_aggregate_input_frame(context, prepared, &prepared_input_schema, metrics) {
-            Ok(input) => input,
-            Err(error) => {
-                reservations.release(work_reservation, metrics);
-                return Err(error.with_fact_if_absent("node_id", node_id));
-            },
-        };
-    let exact_input_bytes = match observe_device_memory_bytes(&exact_input, metrics) {
-        Ok(bytes) => bytes,
+    let (exact_input, exact_input_schema) = match prepare_datafusion_exact_host_aggregate_input_frame(
+        execution.context(),
+        prepared,
+        &prepared_input_schema,
+        execution.metrics_mut(),
+    ) {
+        Ok(input) => input,
         Err(error) => {
-            reservations.release(work_reservation, metrics);
+            execution.release(work_reservation);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
-    let work_request =
-        MemoryReservationRequest::new(ReservationKind::OperatorOutput, exact_input_bytes, reservations.budget())
-            .with_memory_boundary(stage)
-            .with_node_id(node_id)
-            .with_stage(stage)
-            .with_attempt(1, 1);
+    let exact_input_bytes = match observe_device_memory_bytes(&exact_input, execution.metrics_mut()) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            execution.release(work_reservation);
+            return Err(error.with_fact_if_absent("node_id", node_id));
+        },
+    };
+    let work_request = MemoryReservationRequest::new(
+        ReservationKind::OperatorOutput,
+        exact_input_bytes,
+        execution.reservations().budget(),
+    )
+    .with_memory_boundary(stage)
+    .with_node_id(node_id)
+    .with_stage(stage)
+    .with_attempt(1, 1);
     if exact_input_bytes > work_reservation.bytes() {
         let delta = exact_input_bytes.saturating_sub(work_reservation.bytes());
-        if let Err(error) =
-            reservations.try_grow(&mut work_reservation, work_request.clone().with_requested_bytes(delta), metrics)
+        if let Err(error) = execution.try_grow(&mut work_reservation, work_request.clone().with_requested_bytes(delta))
         {
-            reservations.release(work_reservation, metrics);
+            execution.release(work_reservation);
             return Err(error);
         }
     } else {
-        reservations.shrink_to_observed_with_request(&mut work_reservation, exact_input_bytes, work_request, metrics);
+        execution.shrink_to_observed_with_request(&mut work_reservation, exact_input_bytes, work_request);
     }
 
-    let input_preflight_request =
-        MemoryReservationRequest::new(ReservationKind::Materialization, exact_input_bytes, reservations.budget())
-            .with_memory_boundary("host_welford_input_materialization_preflight")
-            .with_node_id(node_id)
-            .with_stage(stage)
-            .with_attempt(1, 1);
-    let input_preflight = match reservations.try_reserve_work(input_preflight_request, metrics) {
+    let input_preflight_request = MemoryReservationRequest::new(
+        ReservationKind::Materialization,
+        exact_input_bytes,
+        execution.reservations().budget(),
+    )
+    .with_memory_boundary("host_welford_input_materialization_preflight")
+    .with_node_id(node_id)
+    .with_stage(stage)
+    .with_attempt(1, 1);
+    let input_preflight = match execution.try_reserve_work(input_preflight_request) {
         Ok(reservation) => reservation,
         Err(error) => {
-            reservations.release(work_reservation, metrics);
+            execution.release(work_reservation);
             return Err(error);
         },
     };
-    let batch = match materialize_datafusion_exact_host_aggregate_input(context, exact_input, exact_input_schema) {
-        Ok(batch) => batch,
-        Err(error) => {
-            reservations.release(input_preflight, metrics);
-            reservations.release(work_reservation, metrics);
-            return Err(error.with_fact_if_absent("node_id", node_id));
-        },
-    };
-    reservations.release(input_preflight, metrics);
-    reservations.release(work_reservation, metrics);
+    let batch =
+        match materialize_datafusion_exact_host_aggregate_input(execution.context(), exact_input, exact_input_schema) {
+            Ok(batch) => batch,
+            Err(error) => {
+                execution.release(input_preflight);
+                execution.release(work_reservation);
+                return Err(error.with_fact_if_absent("node_id", node_id));
+            },
+        };
+    execution.release(input_preflight);
+    execution.release(work_reservation);
 
     let output_batch = execute_datafusion_exact_host_aggregate_batch(
-        context,
+        execution.context(),
         Some(node_id),
         &spec,
         &batch,
         output_schema,
-        metrics,
+        execution.metrics_mut(),
         None,
     )?;
     let output_upload_bytes = record_batch_memory_size(&output_batch) as u64;
-    let output_upload_request =
-        MemoryReservationRequest::new(ReservationKind::OperatorOutput, output_upload_bytes, reservations.budget())
-            .with_memory_boundary("host_welford_output_upload_reservation")
-            .with_node_id(node_id)
-            .with_stage(stage)
-            .with_attempt(1, 1);
-    let mut output_reservation = reservations.try_reserve_work(output_upload_request.clone(), metrics)?;
-    let frame = match upload_datafusion_exact_host_aggregate_output(context, &output_batch).map(GpuDataFrame::new) {
+    let output_upload_request = MemoryReservationRequest::new(
+        ReservationKind::OperatorOutput,
+        output_upload_bytes,
+        execution.reservations().budget(),
+    )
+    .with_memory_boundary("host_welford_output_upload_reservation")
+    .with_node_id(node_id)
+    .with_stage(stage)
+    .with_attempt(1, 1);
+    let mut output_reservation = execution.try_reserve_work(output_upload_request.clone())?;
+    let frame = match upload_datafusion_exact_host_aggregate_output(execution.context(), &output_batch)
+        .map(GpuDataFrame::new)
+    {
         Ok(frame) => frame,
         Err(error) => {
-            reservations.release(output_reservation, metrics);
+            execution.release(output_reservation);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
-    let output_bytes = match observe_device_memory_bytes(&frame, metrics) {
+    let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics_mut()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            reservations.release(output_reservation, metrics);
+            execution.release(output_reservation);
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
     let output_resident_request = output_upload_request.clone().with_requested_bytes(output_bytes);
-    if let Err(error) = reconcile_work_reservation_to_output(
-        reservations,
-        &mut output_reservation,
-        output_bytes,
-        &output_resident_request,
-        metrics,
-    ) {
-        reservations.release(output_reservation, metrics);
+    if let Err(error) =
+        execution.reconcile_work_reservation_to_output(&mut output_reservation, output_bytes, &output_resident_request)
+    {
+        execution.release(output_reservation);
         return Err(error);
     }
-    let output_reservation = reservations.transfer(output_reservation, output_resident_request, metrics);
+    let output_reservation = execution.transfer(output_reservation, output_resident_request);
     Ok(ResidentGpuFrame { frame, reservation: output_reservation })
 }
 
 pub(in crate::exec::bounded::aggregate) fn execute_compiled_bounded_aggregate_from_empty_input(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     aggregate: &AggregateNode,
     input_schema: &ArrowSchemaRef,
     output_schema: &ArrowSchemaRef,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     let input = empty_resident_frame_for_schema(
-        context,
+        execution,
         node_id,
         input_schema,
         ReservationKind::OperatorOutput,
         "compiled_aggregate_empty_input",
         "compiled_aggregate_empty_input",
-        reservations,
-        metrics,
     )?;
     let input_reserved_bytes = input.reservation.bytes();
     let input_reservation = input.reservation;
     let result = execute_compiled_bounded_aggregate_from_frame(
-        context,
+        execution,
         node_id,
         aggregate,
         input_schema,
         output_schema,
         input.frame,
         input_reserved_bytes,
-        reservations,
-        metrics,
     );
-    reservations.release(input_reservation, metrics);
+    execution.release(input_reservation);
     result
 }
 
 fn empty_resident_frame_for_schema(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     schema: &ArrowSchemaRef,
     reservation_kind: ReservationKind,
     memory_boundary: &'static str,
     stage: &'static str,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     let arrays = schema.fields().iter().map(|field| new_empty_array(field.data_type())).collect::<Vec<_>>();
     let batch = RecordBatch::try_new_with_options(
@@ -540,7 +521,7 @@ fn empty_resident_frame_for_schema(
         .with_fact("node_id", node_id)
         .with_source(error)
     })?;
-    let frame = DataFrame::from_record_batch(&context.runtime()?, &batch).map_err(|error| {
+    let frame = DataFrame::from_record_batch(&execution.context().runtime()?, &batch).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.bounded.aggregate.empty_input",
             "failed to upload zero-row aggregate input",
@@ -549,34 +530,31 @@ fn empty_resident_frame_for_schema(
         .with_fact("node_id", node_id)
     })?;
     let frame = GpuDataFrame::new(frame);
-    let output_bytes = observe_device_memory_bytes(&frame, metrics)?;
-    let reservation = reservations.try_reserve(
-        MemoryReservationRequest::new(reservation_kind, output_bytes, reservations.budget())
+    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+    let reservation = execution.try_reserve(
+        MemoryReservationRequest::new(reservation_kind, output_bytes, execution.reservations().budget())
             .with_memory_boundary(memory_boundary)
             .with_node_id(node_id)
             .with_stage(stage),
-        metrics,
     )?;
     Ok(ResidentGpuFrame { frame, reservation })
 }
 
 pub(in crate::exec::bounded::aggregate) fn release_partials_reverse(
-    reservations: &mut ReservationTracker,
+    execution: &mut BoundedExecutionAttempt<'_>,
     mut partials: Vec<CommittedPartial>,
-    metrics: &mut QueryMetrics,
 ) {
     while let Some(partial) = partials.pop() {
-        reservations.release(partial.reservation, metrics);
+        execution.release(partial.reservation);
     }
 }
 
 pub(in crate::exec::bounded::aggregate) fn release_nested_partials_reverse(
-    reservations: &mut ReservationTracker,
+    execution: &mut BoundedExecutionAttempt<'_>,
     mut partitions: Vec<Vec<CommittedPartial>>,
-    metrics: &mut QueryMetrics,
 ) {
     while let Some(partition) = partitions.pop() {
-        release_partials_reverse(reservations, partition, metrics);
+        release_partials_reverse(execution, partition);
     }
 }
 

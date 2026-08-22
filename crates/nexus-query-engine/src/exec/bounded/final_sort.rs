@@ -22,43 +22,38 @@ use topk_candidate::*;
 use topk_level::*;
 
 pub(super) fn execute_final_sort_limit_with_retry(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
     input: CommittedPartial,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
     let Some(sort) = bounded.sort else {
         return Ok(input);
     };
     execute_final_sort_node_with_retry(
-        context,
+        execution,
         bounded.aggregate_id,
         sort,
         bounded.limit.map(|(_, limit)| limit),
         input,
-        reservations,
-        metrics,
     )
 }
 
 pub(super) fn execute_final_sort_node_with_retry(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     sort: &SortNode,
     limit: Option<&LimitNode>,
     input: CommittedPartial,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
-    let MemoryControlPolicy::Bounded { max_retry_attempts, .. } = context.memory_control_policy() else {
+    let MemoryControlPolicy::Bounded { max_retry_attempts, .. } = execution.context().memory_control_policy() else {
         unreachable!("execute_final_sort_limit_with_retry is called only for bounded policies");
     };
     let max_attempts = max_retry_attempts.max(1);
     let timer = Instant::now();
-    let mut final_sort = FinalSortExecutor { context, node_id, sort, max_attempts, reservations, metrics };
+    let mut final_sort = FinalSortExecutor { execution, node_id, sort, max_attempts };
     let input_rows = input.frame.num_rows() as u64;
-    let (observation, plan_execution_id, parent_span_id) = crate::observability::stage_context_from_execution(context);
+    let (observation, plan_execution_id, parent_span_id) =
+        crate::observability::stage_context_from_execution(final_sort.execution.context());
     let stage_guard = crate::observability::RuntimeOperatorStageGuard::start(
         observation,
         plan_execution_id,
@@ -73,7 +68,7 @@ pub(super) fn execute_final_sort_node_with_retry(
         match final_sort.should_use_hierarchical_topk(limit, &input) {
             Ok(true) => {
                 let result = final_sort.hierarchical_topk(limit, input, 1);
-                final_sort.metrics.final_sort_time += timer.elapsed();
+                final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
                 return match result {
                     Ok(output) => {
                         stage_guard.finish(Some(output.frame.num_rows() as u64), None);
@@ -87,7 +82,7 @@ pub(super) fn execute_final_sort_node_with_retry(
             },
             Ok(false) => {},
             Err(error) => {
-                final_sort.metrics.final_sort_time += timer.elapsed();
+                final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
                 stage_guard.fail(&error);
                 return Err(error);
             },
@@ -98,18 +93,18 @@ pub(super) fn execute_final_sort_node_with_retry(
 
     match result {
         Ok(output) => {
-            final_sort.metrics.final_sort_time += timer.elapsed();
-            final_sort.reservations.release(input.reservation, final_sort.metrics);
+            final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
+            final_sort.execution.release(input.reservation);
             stage_guard.finish(Some(output.frame.num_rows() as u64), None);
             Ok(output)
         },
         Err(error) if is_retryable_final_sort_error(&error) => {
-            record_final_sort_retry_error(&error, final_sort.metrics);
+            record_final_sort_retry_error(&error, final_sort.execution.metrics_mut());
             if max_attempts > 1
                 && let Some(limit) = limit
             {
                 if let Err(backoff_error) = crate::exec::retry::backoff_before_retry(
-                    final_sort.context,
+                    final_sort.execution.context(),
                     "nexus_query_engine.exec.bounded.final_sort_hierarchical_topk_retry",
                 ) {
                     stage_guard.fail(&backoff_error);
@@ -117,28 +112,28 @@ pub(super) fn execute_final_sort_node_with_retry(
                 }
                 match final_sort.hierarchical_topk(limit, input, 2) {
                     Ok(output) => {
-                        final_sort.metrics.final_sort_time += timer.elapsed();
+                        final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
                         stage_guard.finish(Some(output.frame.num_rows() as u64), None);
                         Ok(output)
                     },
                     Err(error) => {
-                        final_sort.metrics.final_sort_time += timer.elapsed();
+                        final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
                         stage_guard.fail(&error);
                         Err(error)
                     },
                 }
             } else {
-                final_sort.metrics.final_sort_time += timer.elapsed();
-                final_sort.reservations.release(input.reservation, final_sort.metrics);
-                let error =
-                    final_sort_retry_facts("retry_attempts_exhausted", final_sort.metrics).attach_to_error(error);
+                final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
+                final_sort.execution.release(input.reservation);
+                let error = final_sort_retry_facts("retry_attempts_exhausted", final_sort.execution.metrics_mut())
+                    .attach_to_error(error);
                 stage_guard.fail(&error);
                 Err(error)
             }
         },
         Err(error) => {
-            final_sort.metrics.final_sort_time += timer.elapsed();
-            final_sort.reservations.release(input.reservation, final_sort.metrics);
+            final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
+            final_sort.execution.release(input.reservation);
             stage_guard.fail(&error);
             Err(error)
         },
@@ -146,78 +141,71 @@ pub(super) fn execute_final_sort_node_with_retry(
 }
 
 pub(in crate::exec::bounded) fn execute_final_sort_node_from_committed_with_retry(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     sort: &SortNode,
     limit: Option<&LimitNode>,
     input: ResidentGpuFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
-    execute_final_sort_node_with_retry(context, node_id, sort, limit, input, reservations, metrics)
+    execute_final_sort_node_with_retry(execution, node_id, sort, limit, input)
 }
 
 pub(in crate::exec::bounded) fn execute_final_sort_node_from_frame_with_retry(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     sort: &SortNode,
     input_frame: GpuDataFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
-    let MemoryControlPolicy::Bounded { max_retry_attempts, .. } = context.memory_control_policy() else {
+    let MemoryControlPolicy::Bounded { max_retry_attempts, .. } = execution.context().memory_control_policy() else {
         unreachable!("execute_final_sort_node_from_frame_with_retry is called only for bounded policies");
     };
     let max_attempts = max_retry_attempts.max(1);
     let timer = Instant::now();
-    let mut final_sort = FinalSortExecutor { context, node_id, sort, max_attempts, reservations, metrics };
+    let mut final_sort = FinalSortExecutor { execution, node_id, sort, max_attempts };
     let result = final_sort.full_sort_limit_attempt_from_frame(None, &input_frame, 1);
 
     match result {
         Ok(output) => {
-            final_sort.metrics.final_sort_time += timer.elapsed();
+            final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
             Ok(ResidentGpuFrame { frame: output.frame, reservation: output.reservation })
         },
         Err(error) if is_retryable_final_sort_error(&error) => {
-            record_final_sort_retry_error(&error, final_sort.metrics);
-            final_sort.metrics.final_sort_time += timer.elapsed();
-            Err(final_sort_retry_facts("retry_attempts_exhausted", final_sort.metrics).attach_to_error(error))
+            record_final_sort_retry_error(&error, final_sort.execution.metrics_mut());
+            final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
+            Err(final_sort_retry_facts("retry_attempts_exhausted", final_sort.execution.metrics_mut())
+                .attach_to_error(error))
         },
         Err(error) => {
-            final_sort.metrics.final_sort_time += timer.elapsed();
+            final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
             Err(error)
         },
     }
 }
 
 pub(in crate::exec::bounded) fn execute_final_sort_node_from_stream_with_retry(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     sort: &SortNode,
     limit: &LimitNode,
     mut input_stream: ResidentFrameStreamPayload,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
-    let MemoryControlPolicy::Bounded { max_retry_attempts, .. } = context.memory_control_policy() else {
+    let MemoryControlPolicy::Bounded { max_retry_attempts, .. } = execution.context().memory_control_policy() else {
         unreachable!("execute_final_sort_node_from_stream_with_retry is called only for bounded policies");
     };
     let max_attempts = max_retry_attempts.max(1);
     let timer = Instant::now();
-    let mut final_sort = FinalSortExecutor { context, node_id, sort, max_attempts, reservations, metrics };
+    let mut final_sort = FinalSortExecutor { execution, node_id, sort, max_attempts };
     let result = final_sort.hierarchical_topk_stream(limit, &mut input_stream, 1);
-    input_stream.release_producer_reservations(final_sort.reservations, final_sort.metrics);
-    final_sort.metrics.final_sort_time += timer.elapsed();
+    input_stream.release_producer_reservations(final_sort.execution);
+    final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
     result
 }
 
-struct FinalSortExecutor<'a> {
-    context: &'a ExecutionContext,
+struct FinalSortExecutor<'a, 'e> {
+    execution: &'a mut BoundedExecutionAttempt<'e>,
     node_id: NodeId,
     sort: &'a SortNode,
     max_attempts: usize,
-    reservations: &'a mut ReservationTracker,
-    metrics: &'a mut QueryMetrics,
 }
 
 fn final_sort_runtime_facts(
@@ -240,9 +228,9 @@ fn final_sort_runtime_facts(
     .attach_to(error)
 }
 
-impl FinalSortExecutor<'_> {
+impl FinalSortExecutor<'_, '_> {
     fn final_sort_budget_token(&self, boundary: &'static str, attempt: usize) -> Result<cudf::ExecutionBudgetToken> {
-        self.final_sort_budget_token_for_bytes(boundary, attempt, self.reservations.remaining_bytes())
+        self.final_sort_budget_token_for_bytes(boundary, attempt, self.execution.reservations().remaining_bytes())
     }
 
     fn final_sort_budget_token_including(
@@ -254,7 +242,7 @@ impl FinalSortExecutor<'_> {
         self.final_sort_budget_token_for_bytes(
             boundary,
             attempt,
-            self.reservations.available_bytes_including(reservation),
+            self.execution.reservations().available_bytes_including(reservation),
         )
     }
 
@@ -265,20 +253,14 @@ impl FinalSortExecutor<'_> {
         budget_bytes: u64,
     ) -> Result<cudf::ExecutionBudgetToken> {
         let budget = usize::try_from(budget_bytes).unwrap_or(usize::MAX);
-        self.context
+        self.execution
+            .context()
             .execution_budget_token(ExecutionBudgetRequest::new(budget).with_boundary(boundary))
             .map_err(|error| self.attach_final_sort_resource_facts(error, attempt))
     }
 
     fn reserve_estimated_final_sort_output(&mut self, output_bytes: u64, attempt: usize) -> Result<ActiveReservation> {
-        reserve_final_sort_output_bytes(
-            self.node_id,
-            output_bytes,
-            attempt,
-            self.max_attempts,
-            self.reservations,
-            self.metrics,
-        )
+        reserve_final_sort_output_bytes(self.execution, self.node_id, output_bytes, attempt, self.max_attempts)
     }
 
     fn finalize_final_sort_output_reservation(
@@ -288,13 +270,12 @@ impl FinalSortExecutor<'_> {
         attempt: usize,
     ) -> Result<CommittedPartial> {
         finalize_final_sort_output_reservation(
+            self.execution,
             self.node_id,
             frame,
             reservation,
             attempt,
             self.max_attempts,
-            self.reservations,
-            self.metrics,
         )
     }
 
@@ -329,7 +310,9 @@ impl FinalSortExecutor<'_> {
             return Ok(true);
         }
 
-        let MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } = self.context.memory_control_policy() else {
+        let MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } =
+            self.execution.context().memory_control_policy()
+        else {
             unreachable!("final sort execution is called only for bounded policies");
         };
         Ok(input_bytes > max_source_chunk_bytes && limited_output_bytes <= max_source_chunk_bytes)

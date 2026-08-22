@@ -1,80 +1,43 @@
 use super::*;
 
 pub(super) fn execute_compiled_prepared_join_materialize(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
     state: BoundedCompiledPreparedJoinProbeState,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     match state.strategy {
-        CompiledJoinExecutionStrategy::KeylessConditional { join_type } => execute_compiled_keyless_join_materialize(
-            context,
-            node_id,
-            node,
-            join_type,
-            state.left,
-            state.right,
-            reservations,
-            metrics,
-        ),
-        CompiledJoinExecutionStrategy::KeylessOuterCross => execute_compiled_keyless_outer_cross_join_materialize(
-            context,
-            node_id,
-            node,
-            state.left,
-            state.right,
-            reservations,
-            metrics,
-        ),
-        CompiledJoinExecutionStrategy::ProjectedCross => execute_compiled_projected_cross_join_materialize(
-            context,
-            node_id,
-            node,
-            state.left,
-            state.right,
-            reservations,
-            metrics,
-        ),
-        CompiledJoinExecutionStrategy::MixedKeyedResidual => execute_compiled_mixed_join_materialize(
-            context,
-            node_id,
-            node,
-            state.left,
-            state.right,
-            reservations,
-            metrics,
-        ),
-        CompiledJoinExecutionStrategy::OneShotEqui => execute_compiled_one_shot_equi_join_materialize(
-            context,
-            node_id,
-            node,
-            state.left,
-            state.right,
-            reservations,
-            metrics,
-        ),
+        CompiledJoinExecutionStrategy::KeylessConditional { join_type } => {
+            execute_compiled_keyless_join_materialize(execution, node_id, node, join_type, state.left, state.right)
+        },
+        CompiledJoinExecutionStrategy::KeylessOuterCross => {
+            execute_compiled_keyless_outer_cross_join_materialize(execution, node_id, node, state.left, state.right)
+        },
+        CompiledJoinExecutionStrategy::ProjectedCross => {
+            execute_compiled_projected_cross_join_materialize(execution, node_id, node, state.left, state.right)
+        },
+        CompiledJoinExecutionStrategy::MixedKeyedResidual => {
+            execute_compiled_mixed_join_materialize(execution, node_id, node, state.left, state.right)
+        },
+        CompiledJoinExecutionStrategy::OneShotEqui => {
+            execute_compiled_one_shot_equi_join_materialize(execution, node_id, node, state.left, state.right)
+        },
         CompiledJoinExecutionStrategy::PartitionedHashEqui => execute_compiled_partitioned_hash_equi_join_materialize(
-            context,
+            execution,
             node_id,
             node,
             state.left,
             state.right,
             state.strategy_options,
-            reservations,
-            metrics,
         ),
         CompiledJoinExecutionStrategy::PartitionedMixedKeyedResidual => {
             execute_compiled_partitioned_mixed_keyed_residual_join_materialize(
-                context,
+                execution,
                 node_id,
                 node,
                 state.left,
                 state.right,
                 state.strategy_options,
-                reservations,
-                metrics,
             )
         },
         CompiledJoinExecutionStrategy::HashEqui | CompiledJoinExecutionStrategy::FilteredSemiAnti => {

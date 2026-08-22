@@ -31,13 +31,11 @@ impl CompiledGpuTaskExecutor<'_> {
                         CompiledGpuResourcePayload::ResidentFrame { frame, .. } => {
                             let frame = self.apply_dynamic_filters_to_filter_frame(node_id, filter, *frame)?;
                             execute_bounded_generic_unary(
-                                self.context,
+                                &mut self.execution,
                                 node_id,
                                 "compiled_filter",
                                 "compiled_filter_output",
                                 frame,
-                                &mut self.reservations,
-                                self.metrics,
                                 true,
                                 |context, input, token, metrics| {
                                     crate::exec::operators::execute_filter_with_budget(
@@ -53,11 +51,10 @@ impl CompiledGpuTaskExecutor<'_> {
                         },
                         CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
                             let stream = self.apply_dynamic_filters_to_filter_stream(node_id, filter, stream)?;
-                            let stream =
-                                map_filter_resident_frame_stream(self.context, node_id, stream, filter.clone());
+                            let stream = map_filter_resident_frame_stream(node_id, stream, filter.clone());
                             if self.resource_has_multiple_consumers(output) {
                                 Ok(CompiledGpuResource::frame_stream(
-                                    stream.into_remaining_frames_owned(&mut self.reservations, self.metrics)?,
+                                    stream.into_remaining_frames_owned(&mut self.execution)?,
                                 ))
                             } else {
                                 Ok(CompiledGpuResource::frame_stream_payload(stream))
@@ -93,13 +90,11 @@ impl CompiledGpuTaskExecutor<'_> {
                             input_payload.reservation_bytes(),
                         )? {
                             execute_bounded_generic_unary(
-                                self.context,
+                                &mut self.execution,
                                 node_id,
                                 "compiled_filter",
                                 "compiled_filter_output",
                                 frame,
-                                &mut self.reservations,
-                                self.metrics,
                                 true,
                                 |context, input, token, metrics| {
                                     crate::exec::operators::execute_filter_with_budget(
@@ -114,14 +109,12 @@ impl CompiledGpuTaskExecutor<'_> {
                             .map(CompiledGpuResource::new)
                         } else {
                             execute_bounded_generic_unary_from_frame(
-                                self.context,
+                                &mut self.execution,
                                 node_id,
                                 "compiled_filter",
                                 "compiled_filter_output",
                                 input_payload.clone_frame(),
                                 input_payload.reservation_bytes(),
-                                &mut self.reservations,
-                                self.metrics,
                                 true,
                                 |context, input, token, metrics| {
                                     crate::exec::operators::execute_filter_with_budget(
@@ -148,22 +141,19 @@ impl CompiledGpuTaskExecutor<'_> {
                             ))
                         },
                         CompiledGpuResourcePayload::ResidentFrame { frame, .. } => execute_bounded_generic_projection(
-                            self.context,
+                            &mut self.execution,
                             node_id,
                             "compiled_projection",
                             "compiled_projection_output",
                             projection,
                             *frame,
-                            &mut self.reservations,
-                            self.metrics,
                         )
                         .map(CompiledGpuResource::new),
                         CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
-                            let stream =
-                                map_projection_resident_frame_stream(self.context, node_id, stream, projection.clone());
+                            let stream = map_projection_resident_frame_stream(node_id, stream, projection.clone());
                             if self.resource_has_multiple_consumers(output) {
                                 Ok(CompiledGpuResource::frame_stream(
-                                    stream.into_remaining_frames_owned(&mut self.reservations, self.metrics)?,
+                                    stream.into_remaining_frames_owned(&mut self.execution)?,
                                 ))
                             } else {
                                 Ok(CompiledGpuResource::frame_stream_payload(stream))
@@ -193,15 +183,13 @@ impl CompiledGpuTaskExecutor<'_> {
                         self.apply_ready_dynamic_filters_to_shared_source_resource(state, input)?;
                         let input_payload = state.resource_payload(input)?;
                         execute_bounded_generic_projection_from_frame(
-                            self.context,
+                            &mut self.execution,
                             node_id,
                             "compiled_projection",
                             "compiled_projection_output",
                             projection,
                             input_payload.clone_frame(),
                             input_payload.reservation_bytes(),
-                            &mut self.reservations,
-                            self.metrics,
                         )
                         .map(CompiledGpuResource::new)
                     }

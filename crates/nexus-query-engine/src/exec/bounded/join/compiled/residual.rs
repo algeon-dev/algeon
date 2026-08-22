@@ -1,7 +1,7 @@
 use super::*;
 
 pub(super) fn materialize_compiled_one_shot_residual_output(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
     left: BoundedJoinSideFrame,
@@ -11,59 +11,52 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     gather_map_reservation: ActiveReservation,
     timer: Instant,
     index_bytes: u64,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<(ResidentGpuFrame, OneShotJoinChunkMetrics)> {
     let mut txn = JoinMaterializationTxn::with_sides(left, right);
     txn.set_gather_map_reservation(gather_map_reservation);
     txn.set_indices(indices);
-    let overrides_lease = execution_overrides(context)?;
+    let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
     let residual_candidate = match one_shot_residual_candidate_projection(node) {
         Ok(candidate) => candidate,
         Err(error) => {
-            txn.rollback(reservations, metrics);
+            txn.rollback(execution);
             return Err(error);
         },
     };
     let gather_map_bytes = match txn.indices().device_allocated_size_bytes(node) {
         Ok(bytes) => bytes,
         Err(error) => {
-            txn.rollback(reservations, metrics);
+            txn.rollback(execution);
             return Err(error);
         },
     };
     debug_assert_eq!(gather_map_bytes, index_bytes);
     let (left, right) = txn.sides();
     let candidate_reservation_bytes = match txn.indices().output_upper_bound_size_bytes(
-        context,
+        execution,
         node_id,
         &left.frame,
         &right.frame,
         candidate_rows,
         &residual_candidate.projection,
-        reservations,
-        metrics,
     ) {
         Ok(bytes) => bytes,
         Err(error) => {
-            txn.rollback(reservations, metrics);
+            txn.rollback(execution);
             return Err(error);
         },
     };
-    let mut candidate_reservation = match reservations.try_reserve(
-        bounded_join_request(
-            ReservationKind::JoinOutput,
-            "join_residual_candidate_output",
-            candidate_reservation_bytes,
-            reservations.budget(),
-            node_id,
-        ),
-        metrics,
-    ) {
+    let mut candidate_reservation = match execution.try_reserve(bounded_join_request(
+        ReservationKind::JoinOutput,
+        "join_residual_candidate_output",
+        candidate_reservation_bytes,
+        execution.reservations().budget(),
+        node_id,
+    )) {
         Ok(reservation) => reservation,
         Err(error) => {
-            txn.rollback(reservations, metrics);
+            txn.rollback(execution);
             return Err(error);
         },
     };
@@ -78,73 +71,67 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     ) {
         Ok(candidate) => candidate,
         Err(error) => {
-            reservations.release(candidate_reservation, metrics);
-            txn.rollback(reservations, metrics);
+            execution.release(candidate_reservation);
+            txn.rollback(execution);
             return Err(error);
         },
     };
     let candidate_output_rows = candidate.num_rows() as u64;
     debug_assert_eq!(candidate_output_rows, candidate_rows);
-    let candidate_output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(candidate.clone()), metrics) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            reservations.release(candidate_reservation, metrics);
-            txn.rollback(reservations, metrics);
-            return Err(error);
-        },
-    };
-    if let Err(error) = reconcile_join_output_upper_bound(
-        node_id,
-        &mut candidate_reservation,
-        candidate_output_bytes,
-        reservations,
-        metrics,
-    ) {
-        reservations.release(candidate_reservation, metrics);
-        txn.rollback(reservations, metrics);
+    let candidate_output_bytes =
+        match observe_device_memory_bytes(&GpuDataFrame::new(candidate.clone()), execution.metrics_mut()) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                execution.release(candidate_reservation);
+                txn.rollback(execution);
+                return Err(error);
+            },
+        };
+    if let Err(error) =
+        reconcile_join_output_upper_bound(execution, node_id, &mut candidate_reservation, candidate_output_bytes)
+    {
+        execution.release(candidate_reservation);
+        txn.rollback(execution);
         return Err(error);
     }
     txn.drop_indices();
-    txn.release_gather_map_reservation(reservations, metrics);
+    txn.release_gather_map_reservation(execution);
 
-    let filtered_reservation = match reservations.try_reserve(
-        bounded_join_request(
-            ReservationKind::JoinOutput,
-            "join_residual_filter_output",
-            candidate_reservation_bytes,
-            reservations.budget(),
-            node_id,
-        ),
-        metrics,
-    ) {
+    let filtered_reservation = match execution.try_reserve(bounded_join_request(
+        ReservationKind::JoinOutput,
+        "join_residual_filter_output",
+        candidate_reservation_bytes,
+        execution.reservations().budget(),
+        node_id,
+    )) {
         Ok(reservation) => reservation,
         Err(error) => {
-            reservations.release(candidate_reservation, metrics);
-            txn.rollback(reservations, metrics);
+            execution.release(candidate_reservation);
+            txn.rollback(execution);
             return Err(error);
         },
     };
     let token = match execution_budget_token_for_boundary(
-        context,
-        reservations.available_bytes_including(&filtered_reservation),
+        execution.context(),
+        execution.reservations().available_bytes_including(&filtered_reservation),
         "join_residual_filter_output",
         "nexus_query_engine.bounded.join.one_shot_residual_filter.budget_token",
         "failed to create bounded native one-shot residual filter budget token",
     ) {
         Ok(token) => token,
         Err(error) => {
-            reservations.release(filtered_reservation, metrics);
-            reservations.release(candidate_reservation, metrics);
-            txn.rollback(reservations, metrics);
+            execution.release(filtered_reservation);
+            execution.release(candidate_reservation);
+            txn.rollback(execution);
             return Err(error);
         },
     };
     let predicate = match lower_expr(&residual_candidate.predicate) {
         Ok(predicate) => predicate,
         Err(error) => {
-            reservations.release(filtered_reservation, metrics);
-            reservations.release(candidate_reservation, metrics);
-            txn.rollback(reservations, metrics);
+            execution.release(filtered_reservation);
+            execution.release(candidate_reservation);
+            txn.rollback(execution);
             return Err(error);
         },
     };
@@ -152,9 +139,9 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     let filtered = match candidate.with_execution(&filter_overrides).filter_expr(predicate) {
         Ok(filtered) => filtered,
         Err(error) => {
-            reservations.release(filtered_reservation, metrics);
-            reservations.release(candidate_reservation, metrics);
-            txn.rollback(reservations, metrics);
+            execution.release(filtered_reservation);
+            execution.release(candidate_reservation);
+            txn.rollback(execution);
             return Err(attach_budget_token_failure_facts(
                 QueryError::from_cudf(
                     "nexus_query_engine.bounded.join.one_shot_residual_filter",
@@ -168,7 +155,7 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
             ));
         },
     };
-    reservations.release(candidate_reservation, metrics);
+    execution.release(candidate_reservation);
     txn.set_output_reservation(filtered_reservation);
 
     let mut final_output_names = residual_candidate.final_output_names;
@@ -176,7 +163,7 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     let output = match filtered.select(final_output_names.iter().map(String::as_str)) {
         Ok(output) => output,
         Err(error) => {
-            txn.rollback(reservations, metrics);
+            txn.rollback(execution);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.join.one_shot_residual_output_projection",
                 "failed to project compiled one-shot residual join output columns",
@@ -184,19 +171,19 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
             ));
         },
     };
-    metrics.operator_time += timer.elapsed();
+    execution.metrics_mut().operator_time += timer.elapsed();
     let output_rows = output.num_rows() as u64;
-    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics) {
+    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics_mut()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            txn.rollback(reservations, metrics);
+            txn.rollback(execution);
             return Err(error);
         },
     };
     if let Err(error) =
-        reconcile_join_output_upper_bound(node_id, txn.output_reservation_mut(), output_bytes, reservations, metrics)
+        reconcile_join_output_upper_bound(execution, node_id, txn.output_reservation_mut(), output_bytes)
     {
-        txn.rollback(reservations, metrics);
+        txn.rollback(execution);
         return Err(error);
     }
     let final_output_reservation_bytes = txn.output_reservation_mut().bytes();
@@ -214,7 +201,7 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
         output_rows,
         output_bytes,
     };
-    let output = txn.commit_frame(GpuDataFrame::new(output), reservations, metrics);
+    let output = txn.commit_frame(execution, GpuDataFrame::new(output));
     Ok((output, chunk_metrics))
 }
 

@@ -7,6 +7,7 @@ use crate::{mode::StatisticalAggregateExecutionMode, runtime::ExecutionBoundaryP
 // - remaining modules: bounded runtime/operator support; none owns a separate
 //   admission or reporting mode.
 mod aggregate;
+mod attempt;
 pub(in crate::exec) mod chunks;
 mod compiled;
 mod facts;
@@ -24,6 +25,7 @@ pub use aggregate::{PartialAggregateShape, partial_aggregate_upper_bound_bytes};
 pub(in crate::exec::bounded) use aggregate::{
     SourceAdjacentAggregateChunkCapHints, apply_source_adjacent_aggregate_chunk_caps,
 };
+pub(in crate::exec) use attempt::BoundedExecutionAttempt;
 use chunks::*;
 pub(in crate::exec) use facts::RuntimeResourceFacts;
 use facts::*;
@@ -98,15 +100,14 @@ pub(super) fn execute_bounded_query_plan(
     let Some(device_budget_bytes) = context.bounded_device_budget_bytes() else {
         unreachable!("execute_bounded_query_plan is called only for bounded policies");
     };
-    let mut reservations =
-        ReservationTracker::new_for_context(context, device_budget_bytes, metrics, observation_scope)?;
-    let frame = execute_bounded_aggregate_to_frame(context, &bounded, &mut reservations, metrics)?;
-    let frame = execute_post_aggregate_stages(context, &bounded, frame, &mut reservations, metrics)?;
-    let frame = execute_final_sort_limit_with_retry(context, &bounded, frame, &mut reservations, metrics)?;
-    let frame = execute_post_sort_projections(context, &bounded, frame, &mut reservations, metrics)?;
-    let mut frame = execute_standalone_limit(context, &bounded, frame, &mut reservations, metrics)?;
+    let mut execution = BoundedExecutionAttempt::new(context, device_budget_bytes, metrics, observation_scope)?;
+    let frame = execute_bounded_aggregate_to_frame(&mut execution, &bounded)?;
+    let frame = execute_post_aggregate_stages(&mut execution, &bounded, frame)?;
+    let frame = execute_final_sort_limit_with_retry(&mut execution, &bounded, frame)?;
+    let frame = execute_post_sort_projections(&mut execution, &bounded, frame)?;
+    let mut frame = execute_standalone_limit(&mut execution, &bounded, frame)?;
 
-    record_device_memory_observation(&frame.frame, metrics)?;
+    record_device_memory_observation(&frame.frame, execution.metrics_mut())?;
     match plan.sink() {
         ResultSink::GpuResident { .. } => {
             let live_reservation = frame.reservation.transfer_grant_live_reservation();
@@ -114,32 +115,30 @@ pub(super) fn execute_bounded_query_plan(
                 .frame
                 .with_producer_execution_scope(crate::admission::canonical_execution_scope_fingerprint(plan));
             let handle = match GpuResultHandle::new_with_live_reservation(
-                context,
+                execution.context(),
                 output_frame,
                 Arc::clone(plan.output_schema()),
                 live_reservation,
             ) {
                 Ok(handle) => handle,
                 Err(error) => {
-                    reservations.release(frame.reservation, metrics);
+                    execution.release(frame.reservation);
                     return Err(error);
                 },
             };
-            reservations.release(frame.reservation, metrics);
-            debug_assert_eq!(reservations.reserved_bytes(), 0);
+            execution.release(frame.reservation);
+            debug_assert_eq!(execution.reservations().reserved_bytes(), 0);
             Ok(QueryOutput::GpuResident(handle))
         },
         ResultSink::HostArrow { schema, .. } => {
             let output = materialize_bounded_to_host(
-                context,
+                &mut execution,
                 frame,
                 plan.sink().input(),
                 plan.node(plan.sink().input()).expect("validated sink input exists").output_schema(),
                 schema,
-                &mut reservations,
-                metrics,
             )?;
-            debug_assert_eq!(reservations.reserved_bytes(), 0);
+            debug_assert_eq!(execution.reservations().reserved_bytes(), 0);
             Ok(QueryOutput::HostArrow(output))
         },
     }

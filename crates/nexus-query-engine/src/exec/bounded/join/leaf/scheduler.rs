@@ -1,26 +1,22 @@
 use super::*;
 
 pub(super) fn read_join_leaf_source_chunks_with_scheduler(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     node_id: NodeId,
     source_chunks: &[SourceChunk],
     reader_dynamic_filters: &[BoundedJoinLeafSourceStreamDynamicFilterStage],
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     max_attempts: usize,
     grow_source_to_observed: bool,
 ) -> Result<Vec<(GpuDataFrame, ActiveReservation)>> {
     let mut pending = VecDeque::new();
     let mut next_chunk_index = 0usize;
-    context.check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_scheduler")?;
+    execution.context().check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_scheduler")?;
     start_next_required_join_leaf_read(
-        context,
+        execution,
         source,
         source_chunks,
         node_id,
-        reservations,
-        metrics,
         &mut pending,
         &mut next_chunk_index,
         max_attempts,
@@ -28,49 +24,55 @@ pub(super) fn read_join_leaf_source_chunks_with_scheduler(
 
     let mut chunks = Vec::with_capacity(source_chunks.len());
     for (index, chunk) in source_chunks.iter().enumerate() {
-        if let Err(error) = context.check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_scheduler") {
-            abandon_join_leaf_reads(pending, reservations, metrics);
-            release_join_source_chunks_reverse(reservations, chunks, metrics);
+        if let Err(error) =
+            execution.context().check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_scheduler")
+        {
+            abandon_join_leaf_reads(execution, pending);
+            release_join_source_chunks_reverse(execution, chunks);
             return Err(error);
         }
         let scheduled =
             pending.pop_front().expect("join leaf source scheduler should have a read for the current chunk");
         let is_prefetch = scheduled.is_prefetch();
-        let mut output = match scheduled.finish(reservations, metrics) {
+        let mut output = match scheduled.finish(execution) {
             Ok(output) => output,
             Err(error) => {
-                abandon_join_leaf_reads(pending, reservations, metrics);
-                release_join_source_chunks_reverse(reservations, chunks, metrics);
+                abandon_join_leaf_reads(execution, pending);
+                release_join_source_chunks_reverse(execution, chunks);
                 return Err(attach_join_source_read_resource_facts(error, node_id, chunk, 1, max_attempts));
             },
         };
         if is_prefetch {
-            metrics.record_source_read_prefetch_completed();
+            execution.metrics_mut().record_source_read_prefetch_completed();
         }
         if grow_source_to_observed {
             if let Err(error) = grow_join_source_reservation_to_observed_frame(
+                execution,
                 &output.frame,
                 &mut output.reservation,
-                reservations,
                 node_id,
                 chunk,
-                metrics,
                 1,
                 max_attempts,
             ) {
-                reservations.release(output.reservation, metrics);
-                abandon_join_leaf_reads(pending, reservations, metrics);
-                release_join_source_chunks_reverse(reservations, chunks, metrics);
+                execution.release(output.reservation);
+                abandon_join_leaf_reads(execution, pending);
+                release_join_source_chunks_reverse(execution, chunks);
                 return Err(error);
             }
-        } else if let Err(error) = observe_device_memory_bytes(&output.frame, metrics) {
-            reservations.release(output.reservation, metrics);
-            abandon_join_leaf_reads(pending, reservations, metrics);
-            release_join_source_chunks_reverse(reservations, chunks, metrics);
+        } else if let Err(error) = observe_device_memory_bytes(&output.frame, execution.metrics_mut()) {
+            execution.release(output.reservation);
+            abandon_join_leaf_reads(execution, pending);
+            release_join_source_chunks_reverse(execution, chunks);
             return Err(error);
         }
-        record_dynamic_filter_reader_predicate_rows(reader_dynamic_filters, &output.chunk, &output.frame, metrics);
-        metrics.record_source_chunk_commit(
+        record_dynamic_filter_reader_predicate_rows(
+            reader_dynamic_filters,
+            &output.chunk,
+            &output.frame,
+            execution.metrics_mut(),
+        );
+        execution.metrics_mut().record_source_chunk_commit(
             output
                 .observed_row_group_count
                 .or_else(|| chunk.known_read_row_group_count().map(|row_groups| row_groups as u64))
@@ -79,35 +81,31 @@ pub(super) fn read_join_leaf_source_chunks_with_scheduler(
         chunks.push((output.frame, output.reservation));
 
         if let Err(error) = fill_optional_join_leaf_reads(
-            context,
+            execution,
             source,
             source_chunks,
             node_id,
-            reservations,
-            metrics,
             &mut pending,
             &mut next_chunk_index,
             max_attempts,
         ) {
-            abandon_join_leaf_reads(pending, reservations, metrics);
-            release_join_source_chunks_reverse(reservations, chunks, metrics);
+            abandon_join_leaf_reads(execution, pending);
+            release_join_source_chunks_reverse(execution, chunks);
             return Err(error);
         }
         if pending.is_empty()
             && index + 1 < source_chunks.len()
             && let Err(error) = start_next_required_join_leaf_read(
-                context,
+                execution,
                 source,
                 source_chunks,
                 node_id,
-                reservations,
-                metrics,
                 &mut pending,
                 &mut next_chunk_index,
                 max_attempts,
             )
         {
-            release_join_source_chunks_reverse(reservations, chunks, metrics);
+            release_join_source_chunks_reverse(execution, chunks);
             return Err(error);
         }
     }
@@ -116,25 +114,21 @@ pub(super) fn read_join_leaf_source_chunks_with_scheduler(
 }
 
 pub(super) fn start_next_required_join_leaf_read(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     chunks: &[SourceChunk],
     node_id: NodeId,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     pending: &mut VecDeque<ScheduledLocalParquetRead>,
     next_chunk_index: &mut usize,
     max_attempts: usize,
 ) -> Result<()> {
     if let Some(chunk) = chunks.get(*next_chunk_index) {
-        let requested_bytes = chunk_requested_bytes(context.memory_control_policy(), chunk);
+        let requested_bytes = chunk_requested_bytes(execution.context().memory_control_policy(), chunk);
         pending.push_back(start_join_leaf_scheduled_source_read(
-            context,
+            execution,
             source,
             chunk,
             node_id,
-            reservations,
-            metrics,
             requested_bytes,
             "join_source_read",
             false,
@@ -147,12 +141,10 @@ pub(super) fn start_next_required_join_leaf_read(
     Ok(())
 }
 pub(super) fn fill_optional_join_leaf_reads(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     chunks: &[SourceChunk],
     node_id: NodeId,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     pending: &mut VecDeque<ScheduledLocalParquetRead>,
     next_chunk_index: &mut usize,
     max_attempts: usize,
@@ -161,27 +153,27 @@ pub(super) fn fill_optional_join_leaf_reads(
     // output preflight is still an unresolved lower-level contract, so deeper
     // speculative reads can starve the next front-of-queue read when it grows
     // to observed bytes.
-    let prefetch_target = usize::from(context.source_scheduler_policy().max_source_reads_in_flight() > 1);
+    let prefetch_target = usize::from(execution.context().source_scheduler_policy().max_source_reads_in_flight() > 1);
     while pending.len() < prefetch_target {
         let Some(chunk) = chunks.get(*next_chunk_index) else {
             break;
         };
-        let Some(requested_bytes) = join_leaf_prefetch_requested_bytes(context.memory_control_policy(), chunk) else {
-            metrics.record_source_read_prefetch_skipped();
+        let Some(requested_bytes) =
+            join_leaf_prefetch_requested_bytes(execution.context().memory_control_policy(), chunk)
+        else {
+            execution.metrics_mut().record_source_read_prefetch_skipped();
             break;
         };
-        if !reservations.can_reserve(requested_bytes) {
-            metrics.record_source_read_prefetch_skipped();
+        if !execution.reservations().can_reserve(requested_bytes) {
+            execution.metrics_mut().record_source_read_prefetch_skipped();
             break;
         }
-        metrics.record_source_read_prefetch_started();
+        execution.metrics_mut().record_source_read_prefetch_started();
         pending.push_back(start_join_leaf_scheduled_source_read(
-            context,
+            execution,
             source,
             chunk,
             node_id,
-            reservations,
-            metrics,
             requested_bytes,
             "join_source_read_prefetch",
             false,
@@ -194,12 +186,10 @@ pub(super) fn fill_optional_join_leaf_reads(
     Ok(())
 }
 pub(super) fn start_join_leaf_scheduled_source_read(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     chunk: &SourceChunk,
     node_id: NodeId,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     requested_bytes: u64,
     memory_boundary: &'static str,
     hard_token_budget: bool,
@@ -207,23 +197,26 @@ pub(super) fn start_join_leaf_scheduled_source_read(
     attempt: usize,
     max_attempts: usize,
 ) -> Result<ScheduledLocalParquetRead> {
-    context.check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_scheduler_start")?;
-    metrics.record_source_chunk_attempt();
+    execution.context().check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_scheduler_start")?;
+    execution.metrics_mut().record_source_chunk_attempt();
     let request = join_source_read_reservation_request_for_boundary(
-        context.memory_control_policy(),
+        execution.context().memory_control_policy(),
         requested_bytes,
-        reservations.budget(),
+        execution.reservations().budget(),
         node_id,
         chunk,
         memory_boundary,
         attempt,
         max_attempts,
     );
-    let reservation = reservations.try_reserve(request, metrics)?;
-    let source_token_budget =
-        if hard_token_budget { reservation.bytes() } else { reservations.available_bytes_including(&reservation) };
+    let reservation = execution.try_reserve(request)?;
+    let source_token_budget = if hard_token_budget {
+        reservation.bytes()
+    } else {
+        execution.reservations().available_bytes_including(&reservation)
+    };
     ScheduledLocalParquetRead::spawn(
-        context.clone(),
+        execution.context().clone(),
         source.clone(),
         chunk.clone(),
         reservation,
@@ -236,11 +229,10 @@ pub(super) fn start_join_leaf_scheduled_source_read(
 }
 
 pub(super) fn abandon_join_leaf_reads(
+    execution: &mut BoundedExecutionAttempt<'_>,
     mut pending: VecDeque<ScheduledLocalParquetRead>,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) {
     while let Some(prefetch) = pending.pop_back() {
-        prefetch.abandon(reservations, metrics);
+        prefetch.abandon(execution);
     }
 }

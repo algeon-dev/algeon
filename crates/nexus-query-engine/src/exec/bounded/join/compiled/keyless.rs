@@ -1,19 +1,17 @@
 use super::*;
 
 pub(super) fn execute_compiled_keyless_join_materialize(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
     join_type: KeylessConditionalJoinKind,
     left: BoundedJoinSideFrame,
     right: BoundedJoinSideFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     let residual_columns = residual_input_columns(node)?;
-    let overrides_lease = execution_overrides(context)?;
+    let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
-    let predicate = lower_join_residual_predicate(context, node, &residual_columns)?;
+    let predicate = lower_join_residual_predicate(execution.context(), node, &residual_columns)?;
     let options = dataframe_predicate_join_options(&residual_columns);
     let timer = Instant::now();
     let (size_data_bytes, expected_output_rows, gather_map_reservation_bytes, work) = if join_type
@@ -33,17 +31,14 @@ pub(super) fn execute_compiled_keyless_join_materialize(
             )
             .with_fact("join_type", node.spec.join_type)
         })?;
-        let size_data_reservation = reservations.try_reserve(
-            bounded_join_request(
-                ReservationKind::MixedSizeData,
-                "join_mixed_size_data",
-                size_data_bytes,
-                reservations.budget(),
-                node_id,
-            ),
-            metrics,
-        )?;
-        metrics.record_mixed_join_size_data_bytes(size_data_bytes);
+        let size_data_reservation = execution.try_reserve(bounded_join_request(
+            ReservationKind::MixedSizeData,
+            "join_mixed_size_data",
+            size_data_bytes,
+            execution.reservations().budget(),
+            node_id,
+        ))?;
+        execution.metrics_mut().record_mixed_join_size_data_bytes(size_data_bytes);
         let gather_map_reservation_bytes =
             size_data.gather_map_reservation_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
                 QueryError::from_cudf(
@@ -76,20 +71,17 @@ pub(super) fn execute_compiled_keyless_join_materialize(
             keyless_conditional_join_gather_map_reservation_size_bytes(join_type, node, output_size)?;
         (0, output_size as u64, gather_map_reservation_bytes, CompiledKeylessWork::Sized { output_size, options })
     };
-    let gather_map_reservation = reservations.try_reserve(
-        bounded_join_request(
-            ReservationKind::GatherMap,
-            "join_gather_map",
-            gather_map_reservation_bytes,
-            reservations.budget(),
-            node_id,
-        ),
-        metrics,
-    )?;
+    let gather_map_reservation = execution.try_reserve(bounded_join_request(
+        ReservationKind::GatherMap,
+        "join_gather_map",
+        gather_map_reservation_bytes,
+        execution.reservations().budget(),
+        node_id,
+    ))?;
     let indices = match work {
         CompiledKeylessWork::Full { size_data, size_data_reservation } => {
             let indices = (*size_data).materialize_indices_in(&overrides);
-            reservations.release(*size_data_reservation, metrics);
+            execution.release(*size_data_reservation);
             let indices = indices.map_err(|error| join_index_error(error, node))?;
             CompiledJoinIndices::Pair { left: indices.left().clone(), right: indices.right().clone() }
         },
@@ -105,7 +97,7 @@ pub(super) fn execute_compiled_keyless_join_materialize(
         )?,
     };
     materialize_compiled_indices_output(
-        context,
+        execution,
         node,
         CompiledJoinMaterializationRequest {
             node_id,
@@ -124,8 +116,6 @@ pub(super) fn execute_compiled_keyless_join_materialize(
             timer,
             one_shot_index_bytes: None,
         },
-        reservations,
-        metrics,
     )
 }
 

@@ -1,6 +1,10 @@
 use std::panic::{self, AssertUnwindSafe};
 
-use nexus_query_engine::exec::{ResidentFrameStreamProducerTestHarness, YieldedFrameCounterTestHarness};
+use nexus_query_engine::{
+    exec::{ResidentFrameStreamProducerTestHarness, YieldedFrameCounterTestHarness},
+    metrics::QueryMetrics,
+    runtime::ExecutionContext,
+};
 
 #[test]
 fn yielded_frame_explicit_release_decrements_live_counter_once() {
@@ -65,7 +69,9 @@ fn yielded_frame_multiple_yields_release_independently() {
 
 #[test]
 fn resident_frame_stream_producer_release_is_idempotent() {
-    let mut harness = ResidentFrameStreamProducerTestHarness::new(&[31, 37, 41]).unwrap();
+    let context = ExecutionContext::builder().build().expect("execution context builds");
+    let mut metrics = QueryMetrics::default();
+    let mut harness = ResidentFrameStreamProducerTestHarness::new(&context, &mut metrics, &[31, 37, 41]).unwrap();
     assert_eq!(harness.reserved_bytes(), 109);
 
     harness.release_producer_reservations();
@@ -78,7 +84,9 @@ fn resident_frame_stream_producer_release_is_idempotent() {
 #[test]
 fn resident_frame_stream_producer_release_after_partial_iteration_keeps_yielded_counter_owned_by_yields() {
     let counter = YieldedFrameCounterTestHarness::new();
-    let mut harness = ResidentFrameStreamProducerTestHarness::new(&[64]).unwrap();
+    let context = ExecutionContext::builder().build().expect("execution context builds");
+    let mut metrics = QueryMetrics::default();
+    let mut harness = ResidentFrameStreamProducerTestHarness::new(&context, &mut metrics, &[64]).unwrap();
     let mut first = counter.yield_bytes(11);
     let mut second = counter.yield_bytes(13);
     assert_eq!(counter.live_bytes(), 24);
@@ -96,7 +104,9 @@ fn resident_frame_stream_producer_release_after_partial_iteration_keeps_yielded_
 
 #[test]
 fn resident_frame_stream_collect_error_releases_producer_reservations() {
-    let mut harness = ResidentFrameStreamProducerTestHarness::new_erroring(&[29, 31]).unwrap();
+    let context = ExecutionContext::builder().build().expect("execution context builds");
+    let mut metrics = QueryMetrics::default();
+    let mut harness = ResidentFrameStreamProducerTestHarness::new_erroring(&context, &mut metrics, &[29, 31]).unwrap();
     assert_eq!(harness.reserved_bytes(), 60);
 
     let error = harness.collect_remaining_frames_owned_then_release().unwrap_err();
@@ -106,7 +116,9 @@ fn resident_frame_stream_collect_error_releases_producer_reservations() {
 
 #[test]
 fn resident_frame_stream_producer_drop_without_release_decrements_tracker_and_panics_in_debug() {
-    let mut harness = ResidentFrameStreamProducerTestHarness::new(&[19, 23]).unwrap();
+    let context = ExecutionContext::builder().build().expect("execution context builds");
+    let mut metrics = QueryMetrics::default();
+    let mut harness = ResidentFrameStreamProducerTestHarness::new(&context, &mut metrics, &[19, 23]).unwrap();
     assert_eq!(harness.reserved_bytes(), 42);
 
     let result = panic::catch_unwind(AssertUnwindSafe(|| harness.drop_payload_without_release()));

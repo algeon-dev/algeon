@@ -131,25 +131,27 @@ pub(super) fn partitioned_join_reusable_rejected_reason(
 }
 
 pub(super) fn hash_partition_join_side(
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     side: JoinSide,
     input: BoundedJoinSideFrame,
     keys: &[String],
     partition_count: usize,
     overrides: &ExecutionOverrides<'_>,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<PartitionedJoinSide> {
     let BoundedJoinSideFrame { frame, _reservation: input_reservation, rows: _, bytes } = input;
     let boundary =
         if side == JoinSide::Left { "join_hash_partitioned_left_side" } else { "join_hash_partitioned_right_side" };
-    let mut reservation = match reservations.try_reserve(
-        bounded_join_request(ReservationKind::OperatorOutput, boundary, bytes, reservations.budget(), node_id),
-        metrics,
-    ) {
+    let mut reservation = match execution.try_reserve(bounded_join_request(
+        ReservationKind::OperatorOutput,
+        boundary,
+        bytes,
+        execution.reservations().budget(),
+        node_id,
+    )) {
         Ok(reservation) => reservation,
         Err(error) => {
-            release_partition_input(frame, input_reservation, reservations, metrics);
+            release_partition_input(execution, frame, input_reservation);
             return Err(error);
         },
     };
@@ -168,67 +170,65 @@ pub(super) fn hash_partition_join_side(
         }) {
         Ok(partitioned) => partitioned,
         Err(error) => {
-            reservations.release(reservation, metrics);
-            release_partition_input(frame, input_reservation, reservations, metrics);
+            execution.release(reservation);
+            release_partition_input(execution, frame, input_reservation);
             return Err(error);
         },
     };
     let (partitioned, offsets) = partitioned.into_parts();
     let partitioned_frame = GpuDataFrame::new(partitioned.clone());
-    let partitioned_bytes = match observe_device_memory_bytes(&partitioned_frame, metrics) {
+    let partitioned_bytes = match observe_device_memory_bytes(&partitioned_frame, execution.metrics_mut()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            reservations.release(reservation, metrics);
-            release_partition_input(frame, input_reservation, reservations, metrics);
+            execution.release(reservation);
+            release_partition_input(execution, frame, input_reservation);
             return Err(error);
         },
     };
     if partitioned_bytes > reservation.bytes() {
         let delta = partitioned_bytes.saturating_sub(reservation.bytes());
-        if let Err(error) = reservations.try_grow(
+        if let Err(error) = execution.try_grow(
             &mut reservation,
-            bounded_join_request(ReservationKind::OperatorOutput, boundary, delta, reservations.budget(), node_id),
-            metrics,
+            bounded_join_request(
+                ReservationKind::OperatorOutput,
+                boundary,
+                delta,
+                execution.reservations().budget(),
+                node_id,
+            ),
         ) {
-            reservations.release(reservation, metrics);
-            release_partition_input(frame, input_reservation, reservations, metrics);
+            execution.release(reservation);
+            release_partition_input(execution, frame, input_reservation);
             return Err(error);
         }
     } else {
-        reservations.shrink_to_observed(&mut reservation, partitioned_bytes, metrics);
+        execution.shrink_to_observed(&mut reservation, partitioned_bytes);
     }
-    release_partition_input(frame, input_reservation, reservations, metrics);
+    release_partition_input(execution, frame, input_reservation);
     Ok(PartitionedJoinSide { frame: partitioned, reservation, offsets })
 }
 
 fn release_partition_input(
+    execution: &mut BoundedExecutionAttempt<'_>,
     _frame: DataFrame,
     reservation: ActiveReservation,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) {
-    reservations.release(reservation, metrics);
+    execution.release(reservation);
 }
 
-pub(super) fn release_partitioned_join_side(
-    side: PartitionedJoinSide,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
-) {
+pub(super) fn release_partitioned_join_side(execution: &mut BoundedExecutionAttempt<'_>, side: PartitionedJoinSide) {
     let PartitionedJoinSide { frame: _, reservation, .. } = side;
-    reservations.release(reservation, metrics);
+    execution.release(reservation);
 }
 
 pub(super) fn slice_partition_join_side_range(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     side: JoinSide,
     build_side: JoinSide,
     input: &PartitionedJoinSide,
     partition: usize,
     range: PartitionedJoinRowRange,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<BoundedJoinSideFrame> {
     let (partition_start, partition_len) = partition_bounds(input, partition)?;
     if range.offset > partition_len || range.len > partition_len.saturating_sub(range.offset) {
@@ -243,7 +243,7 @@ pub(super) fn slice_partition_join_side_range(
     }
     let start = partition_start.saturating_add(range.offset);
     let len = range.len;
-    let overrides_lease = execution_overrides(context)?;
+    let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
     let frame = input.frame.with_execution(&overrides).slice(start, len).map_err(|error| {
         QueryError::from_cudf(
@@ -256,13 +256,16 @@ pub(super) fn slice_partition_join_side_range(
         .with_fact("partition_rows", len)
     })?;
     let gpu = GpuDataFrame::new(frame.clone());
-    let bytes = observe_device_memory_bytes(&gpu, metrics)?;
+    let bytes = observe_device_memory_bytes(&gpu, execution.metrics_mut())?;
     let reservation_kind = if side == build_side { ReservationKind::BuildSide } else { ReservationKind::ProbeSide };
     let boundary = if side == JoinSide::Left { "join_partition_left_side" } else { "join_partition_right_side" };
-    let reservation = reservations.try_reserve(
-        bounded_join_request(reservation_kind, boundary, bytes, reservations.budget(), node_id),
-        metrics,
-    )?;
+    let reservation = execution.try_reserve(bounded_join_request(
+        reservation_kind,
+        boundary,
+        bytes,
+        execution.reservations().budget(),
+        node_id,
+    ))?;
     Ok(BoundedJoinSideFrame { frame, _reservation: reservation, rows: len as u64, bytes })
 }
 

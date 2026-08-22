@@ -1,6 +1,6 @@
 use super::*;
 
-impl FinalSortExecutor<'_> {
+impl FinalSortExecutor<'_, '_> {
     pub(super) fn full_sort_limit_attempt(
         &mut self,
         limit: Option<&LimitNode>,
@@ -36,24 +36,26 @@ impl FinalSortExecutor<'_> {
                     .map_err(|error| self.attach_final_sort_resource_facts(error, attempt))?;
                 prepared.into_parts()
             };
-            self.metrics.operator_time += timer.elapsed();
+            self.execution.metrics_mut().operator_time += timer.elapsed();
 
-            self.metrics.record_budgeted_execution("nexus_query_engine.final_sort.prepare", &prepare_report);
+            self.execution
+                .metrics_mut()
+                .record_budgeted_execution("nexus_query_engine.final_sort.prepare", &prepare_report);
             let sorted_order_bytes = final_sort_retained_bytes(&prepare_report)
                 .map_err(|error| self.attach_final_sort_resource_facts(error, attempt))?;
             let sorted_order_request = MemoryReservationRequest::new(
                 ReservationKind::FinalSort,
                 sorted_order_bytes,
-                self.reservations.budget(),
+                self.execution.reservations().budget(),
             )
             .with_memory_boundary("final_sort")
             .with_node_id(self.node_id)
             .with_stage("final_sort")
             .with_attempt(attempt, self.max_attempts);
-            let sorted_order_reservation = self.reservations.try_reserve(sorted_order_request, self.metrics)?;
+            let sorted_order_reservation = self.execution.try_reserve(sorted_order_request)?;
 
             let timer = Instant::now();
-            let materialize_overrides_lease = execution_overrides(self.context)?;
+            let materialize_overrides_lease = execution_overrides(self.execution.context())?;
             let materialize_overrides = materialize_overrides_lease.overrides();
             let materialized_output_bytes = prepared_sort
                 .materialized_output_reservation_size_bytes_in(&materialize_overrides)
@@ -73,7 +75,7 @@ impl FinalSortExecutor<'_> {
                     match self.final_sort_budget_token_including("final_sort", attempt, &materialized_reservation) {
                         Ok(token) => token,
                         Err(error) => {
-                            self.reservations.release(materialized_reservation, self.metrics);
+                            self.execution.release(materialized_reservation);
                             return Err(error);
                         },
                     };
@@ -87,7 +89,8 @@ impl FinalSortExecutor<'_> {
                         )
                     })
                     .map(|outcome| {
-                        self.metrics
+                        self.execution
+                            .metrics_mut()
                             .record_budgeted_execution("nexus_query_engine.final_sort.materialize", outcome.report());
                         GpuDataFrame::new(outcome.into_value())
                     })
@@ -95,17 +98,17 @@ impl FinalSortExecutor<'_> {
                 {
                     Ok(frame) => frame,
                     Err(error) => {
-                        self.reservations.release(materialized_reservation, self.metrics);
+                        self.execution.release(materialized_reservation);
                         return Err(error);
                     },
                 }
             };
-            self.metrics.operator_time += timer.elapsed();
-            self.metrics.record_device_memory_observation(materialized_output_bytes);
+            self.execution.metrics_mut().operator_time += timer.elapsed();
+            self.execution.metrics_mut().record_device_memory_observation(materialized_output_bytes);
 
             (materialized_frame, materialized_reservation, sorted_order_reservation)
         };
-        self.reservations.release(sorted_order_reservation, self.metrics);
+        self.execution.release(sorted_order_reservation);
 
         if let Some(limit) = limit {
             if limit_keeps_all_rows(materialized_frame.num_rows(), limit.spec)? {
@@ -123,9 +126,8 @@ impl FinalSortExecutor<'_> {
                 Ok(reservation) => reservation,
                 Err(error) => {
                     release_committed_partial(
+                        self.execution,
                         CommittedPartial { frame: materialized_frame, reservation: materialized_reservation },
-                        self.reservations,
-                        self.metrics,
                     );
                     return Err(error);
                 },
@@ -135,11 +137,10 @@ impl FinalSortExecutor<'_> {
                     Ok(token) => token,
                     Err(error) => {
                         release_committed_partial(
+                            self.execution,
                             CommittedPartial { frame: materialized_frame, reservation: materialized_reservation },
-                            self.reservations,
-                            self.metrics,
                         );
-                        self.reservations.release(output_reservation, self.metrics);
+                        self.execution.release(output_reservation);
                         return Err(error);
                     },
                 };
@@ -148,18 +149,18 @@ impl FinalSortExecutor<'_> {
                 materialized_frame,
                 &limit_token,
                 "nexus_query_engine.final_sort.limit",
-                self.metrics,
+                self.execution.metrics_mut(),
             )
             .map_err(|error| self.attach_final_sort_resource_facts(error, attempt))
             {
                 Ok(frame) => frame,
                 Err(error) => {
-                    self.reservations.release(materialized_reservation, self.metrics);
-                    self.reservations.release(output_reservation, self.metrics);
+                    self.execution.release(materialized_reservation);
+                    self.execution.release(output_reservation);
                     return Err(error);
                 },
             };
-            self.reservations.release(materialized_reservation, self.metrics);
+            self.execution.release(materialized_reservation);
             self.finalize_final_sort_output_reservation(frame, output_reservation, attempt)
         } else {
             Ok(CommittedPartial { frame: materialized_frame, reservation: materialized_reservation })
@@ -171,12 +172,15 @@ impl FinalSortExecutor<'_> {
         output_bytes: u64,
         attempt: usize,
     ) -> Result<ActiveReservation> {
-        let output_request =
-            MemoryReservationRequest::new(ReservationKind::FinalSort, output_bytes, self.reservations.budget())
-                .with_memory_boundary("final_sort")
-                .with_node_id(self.node_id)
-                .with_stage("final_sort")
-                .with_attempt(attempt, self.max_attempts);
-        self.reservations.try_reserve(output_request, self.metrics)
+        let output_request = MemoryReservationRequest::new(
+            ReservationKind::FinalSort,
+            output_bytes,
+            self.execution.reservations().budget(),
+        )
+        .with_memory_boundary("final_sort")
+        .with_node_id(self.node_id)
+        .with_stage("final_sort")
+        .with_attempt(attempt, self.max_attempts);
+        self.execution.try_reserve(output_request)
     }
 }
