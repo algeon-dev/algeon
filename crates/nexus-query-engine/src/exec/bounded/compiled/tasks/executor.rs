@@ -3,6 +3,8 @@ use super::*;
 mod admission;
 mod aggregate;
 mod dynamic_filters;
+mod edge_normalize;
+mod graph;
 mod join;
 mod routing;
 mod source;
@@ -196,6 +198,8 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
             PipelineTaskKind::FinalSort => self.execute_final_sort_task(task, state),
             PipelineTaskKind::Limit => self.execute_limit_task(task, state),
             PipelineTaskKind::Union => self.execute_union_task(task, state),
+            PipelineTaskKind::EdgeNormalize => self.execute_edge_normalize_task(task, state),
+            PipelineTaskKind::GraphAlgorithm => self.execute_graph_algorithm_task(task, state),
             PipelineTaskKind::SinkMaterialize => self.execute_sink_materialize_task(task, state),
         };
         self.metrics.record_task_budget_observations_since(task.id(), budget_event_start);

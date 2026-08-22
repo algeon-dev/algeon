@@ -9,7 +9,7 @@ pub use super::compiled::{
 #[cfg(test)]
 pub(crate) use super::compiled::{ResidentFrameStreamProducerTestHarness, YieldedFrameCounterTestHarness};
 use crate::{
-    admission::bounded_pipeline_admission_with_statistical_aggregate_mode,
+    admission::{bounded_cugraph_pipeline_admission, bounded_pipeline_admission_with_statistical_aggregate_mode},
     error::Result,
     exec::output::QueryOutput,
     metrics::QueryMetrics,
@@ -24,11 +24,15 @@ pub(in crate::exec) fn try_execute_bounded_pipeline(
     metrics: &mut QueryMetrics,
     observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
 ) -> Result<Option<QueryOutput>> {
-    let Some(admission) = bounded_pipeline_admission_with_statistical_aggregate_mode(
-        plan,
-        context.statistical_aggregate_execution_mode(),
-    )?
-    else {
+    let admission = if plan.contains_graph_algorithm() {
+        bounded_cugraph_pipeline_admission(plan)?
+    } else {
+        bounded_pipeline_admission_with_statistical_aggregate_mode(
+            plan,
+            context.statistical_aggregate_execution_mode(),
+        )?
+    };
+    let Some(admission) = admission else {
         return Ok(None);
     };
     execute_compiled_pipeline(context, plan, admission.pipeline(), gpu_inputs, metrics, observation_scope).map(Some)

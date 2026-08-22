@@ -29,15 +29,18 @@ pub(in crate::exec) use facts::RuntimeResourceFacts;
 use facts::*;
 pub(in crate::exec) use final_sort::topk_candidate_rows;
 use final_sort::*;
+#[cfg(feature = "cugraph")]
+pub(in crate::exec::bounded) use generic::execute_bounded_graph_algorithm_from_inputs;
+pub(in crate::exec::bounded) use generic::{
+    execute_bounded_edge_normalize_from_input, execute_bounded_generic_projection,
+    execute_bounded_generic_projection_from_frame, execute_bounded_generic_unary,
+    execute_bounded_generic_unary_from_frame, execute_bounded_generic_unary_from_frame_with_reservation_kind,
+};
 use generic::{
     execute_bounded_generic_gpu_resident_source, execute_bounded_generic_literal_batch_source,
     execute_bounded_generic_local_parquet_source, execute_bounded_generic_query_plan,
     execute_bounded_generic_unary_consuming_input_with_reservation_kind, execute_bounded_generic_union,
     release_reservations_reverse,
-};
-pub(in crate::exec::bounded) use generic::{
-    execute_bounded_generic_projection, execute_bounded_generic_projection_from_frame, execute_bounded_generic_unary,
-    execute_bounded_generic_unary_from_frame, execute_bounded_generic_unary_from_frame_with_reservation_kind,
 };
 pub(in crate::exec::bounded) use join::{
     BoundedCompiledJoinBuildState, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,

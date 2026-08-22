@@ -198,7 +198,7 @@ fn execute_bounded_generic_node(
         PlanNode::EdgeNormalize(edge_normalize) => {
             let input =
                 execute_bounded_generic_node(context, plan, edge_normalize.input, gpu_inputs, reservations, metrics)?;
-            execute_bounded_generic_edge_normalize_from_input(
+            execute_bounded_edge_normalize_from_input(
                 context,
                 id,
                 edge_normalize,
@@ -263,7 +263,7 @@ fn execute_bounded_generic_node(
     Ok(frame)
 }
 
-fn execute_bounded_generic_edge_normalize_from_input(
+pub(in crate::exec::bounded) fn execute_bounded_edge_normalize_from_input(
     context: &ExecutionContext,
     node_id: NodeId,
     edge_normalize: &crate::plan::EdgeNormalizeNode,
@@ -414,7 +414,7 @@ fn execute_bounded_generic_graph_algorithm(
         else {
             unreachable!("preparation bypass requires an edge-normalize input")
         };
-        execute_bounded_generic_edge_normalize_from_input(
+        execute_bounded_edge_normalize_from_input(
             context,
             graph.input,
             edge_normalize,
@@ -425,6 +425,45 @@ fn execute_bounded_generic_graph_algorithm(
     } else {
         execute_bounded_generic_node(context, plan, graph.input, gpu_inputs, reservations, metrics)?
     };
+    let mut side_inputs = std::collections::BTreeMap::new();
+    for input_id in graph.inputs.iter().skip(1) {
+        match execute_bounded_generic_node(context, plan, *input_id, gpu_inputs, reservations, metrics) {
+            Ok(frame) => {
+                side_inputs.insert(*input_id, frame);
+            },
+            Err(error) => {
+                release_resident_frames_reverse(
+                    reservations,
+                    std::iter::once(input).chain(side_inputs.into_values()).collect(),
+                    metrics,
+                );
+                return Err(error);
+            },
+        }
+    }
+    execute_bounded_graph_algorithm_from_inputs(
+        context,
+        plan,
+        node_id,
+        graph,
+        input,
+        side_inputs,
+        reservations,
+        metrics,
+    )
+}
+
+#[cfg(feature = "cugraph")]
+pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
+    context: &ExecutionContext,
+    plan: &QueryPlan,
+    node_id: NodeId,
+    graph: &crate::plan::GraphAlgorithmNode,
+    input: ResidentGpuFrame,
+    side_input_frames: std::collections::BTreeMap<NodeId, ResidentGpuFrame>,
+    reservations: &mut ReservationTracker,
+    metrics: &mut QueryMetrics,
+) -> Result<ResidentGpuFrame> {
     let ResidentGpuFrame { frame: mut input_frame, reservation: input_reservation } = input;
     let query_memory_grant = match context.memory_grant() {
         Ok(grant) => grant,
@@ -501,27 +540,16 @@ fn execute_bounded_generic_graph_algorithm(
     let mut live_reservations = vec![input_reservation];
     let mut side_inputs = std::collections::BTreeMap::new();
     let mut side_input_accounted_bytes = std::collections::BTreeMap::new();
-    for input_id in graph.inputs.iter().skip(1) {
-        match execute_bounded_generic_node(context, plan, *input_id, gpu_inputs, reservations, metrics) {
-            Ok(frame) => {
-                // A literal side input is charged by this tracker, while a
-                // GPU-resident handle may already retain bytes in this query
-                // grant. Keep the two sources distinct from the frame's raw
-                // allocation so similarity can credit only live-accounted
-                // pair columns from its incremental graph reservation.
-                let accounted_bytes = frame
-                    .reservation
-                    .charged_bytes()
-                    .max(frame.frame.live_reservation_bytes_for(query_memory_grant.as_ref()));
-                side_input_accounted_bytes.insert(*input_id, accounted_bytes);
-                live_reservations.push(frame.reservation);
-                side_inputs.insert(*input_id, frame.frame);
-            },
-            Err(error) => {
-                release_reservations_reverse(reservations, live_reservations, metrics);
-                return Err(error);
-            },
-        }
+    for (input_id, frame) in side_input_frames {
+        // A literal side input is charged by this tracker, while a GPU-resident
+        // handle may already retain bytes in this query grant. Keep the two
+        // sources distinct from the frame's raw allocation so similarity can
+        // credit only live-accounted pair columns from its graph reservation.
+        let accounted_bytes =
+            frame.reservation.charged_bytes().max(frame.frame.live_reservation_bytes_for(query_memory_grant.as_ref()));
+        side_input_accounted_bytes.insert(input_id, accounted_bytes);
+        live_reservations.push(frame.reservation);
+        side_inputs.insert(input_id, frame.frame);
     }
     if let Err(error) = validate_betweenness_static_seed_policy(&graph.spec) {
         release_reservations_reverse(reservations, live_reservations, metrics);

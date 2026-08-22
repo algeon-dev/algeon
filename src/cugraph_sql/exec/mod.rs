@@ -46,7 +46,9 @@ use nexus_query_engine::{
         execute_query_plan_observed, execute_query_plan_with_gpu_inputs_observed,
         output::{QueryExecutionOutcome, QueryOutput},
     },
-    expr::{BinaryOp, CaseWhen, Expr as NativeExpr, LimitSpec, LiteralValue},
+    expr::{
+        AggregateSpec, BinaryOp, CaseWhen, ColumnRef, Expr as NativeExpr, LimitSpec, LiteralValue, SortExpr, SortSpec,
+    },
     graph_memory::{GraphMemoryCalibrationOverride, GraphVertexEstimate, query_plan_graph_vertex_upper_bound},
     metrics::{GraphAlgorithmRuntimeMetrics, QueryMetrics},
     observability::RuntimeObservationConfig,
@@ -62,20 +64,21 @@ use nexus_query_engine::{
         GraphPageRankPersonalizationInput as NativeGraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams,
         GraphPredicateInput as NativeGraphPredicateInput, GraphResidencyDescriptor, GraphResidencyPlanAnalysis,
         GraphSccParams, GraphSourceFingerprintBypassReason, GraphSpectralClusteringParams, GraphSsspParams,
-        GraphTriangleCountAllParams, GraphWccParams, PlanNode, ProjectionOutput, QueryPlanBuilder,
-        graph_residency_descriptor_for_edge_plan, planned_resident_graph_key,
+        GraphTriangleCountAllParams, GraphWccParams, JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, PlanNode,
+        ProjectionOutput, QueryPlanBuilder, WindowFunction, WindowSpec, graph_residency_descriptor_for_edge_plan,
+        planned_resident_graph_key,
     },
     runtime::{
         ExecutionContext,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
-    source::{GpuResidentSource, SourceNode},
+    source::{GpuResidentSource, LiteralBatchSource, SourceNode},
 };
 
 use super::{
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsOutputMode, CugraphBfsParams,
     CugraphBfsSource, CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphKCoreDegreeType,
-    GpuIslandHostBoundaryConfig, plan_error,
+    GpuIslandHostBoundaryConfig, plan_error, stable_result_schema, vertex_id_domain_for_call,
 };
 use crate::{
     error::{Error, ErrorCode},
@@ -98,6 +101,19 @@ use crate::{
 
 static NEXT_CUGRAPH_GPU_RESULT_INPUT_ID: AtomicU64 = AtomicU64::new(0);
 
+#[derive(Clone, Debug, Default)]
+struct CugraphResultPlanOptions {
+    projection: Option<Vec<usize>>,
+    limit: Option<usize>,
+    pre_decode_sort: Option<SortSpec>,
+}
+
+impl CugraphResultPlanOptions {
+    fn new(projection: Option<Vec<usize>>, limit: Option<usize>) -> Self {
+        Self { projection, limit, pre_decode_sort: None }
+    }
+}
+
 fn counted_cudf_runtime(
     context: &ExecutionContext,
     operation: &'static str,
@@ -107,9 +123,9 @@ fn counted_cudf_runtime(
 }
 
 mod admission;
-mod bfs_mapping;
 mod edge_analysis;
 mod input;
+mod logical_mapping;
 mod lowering;
 mod node;
 mod path;
@@ -118,9 +134,9 @@ mod residency;
 mod tests;
 
 use admission::*;
-use bfs_mapping::*;
 use edge_analysis::*;
 use input::*;
+use logical_mapping::*;
 use lowering::*;
 pub use node::CugraphAlgoExec;
 use path::*;

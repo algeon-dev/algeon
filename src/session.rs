@@ -165,13 +165,6 @@ pub(crate) fn session_state_with_native_execution_config(
 }
 
 #[cfg(feature = "cugraph")]
-pub(crate) fn session_state_for_cugraph_host_subplan(state: &SessionState) -> SessionState {
-    let mut rules = state.physical_optimizers().to_vec();
-    remove_nexus_native_rules(&mut rules);
-    build_cugraph_subplan_state(state, rules)
-}
-
-#[cfg(feature = "cugraph")]
 fn build_cugraph_subplan_state(state: &SessionState, rules: PhysicalOptimizerRules) -> SessionState {
     // Graph edge and predicate sources feed graph construction or host-side
     // staging, so each nested scan must present one ordered run: a declared
@@ -365,20 +358,6 @@ mod tests {
 
         assert!(rules.iter().any(|rule| rule.name() == NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME));
         assert!(!rules.iter().any(|rule| rule.name() == NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME));
-    }
-
-    #[test]
-    fn cugraph_host_subplanning_removes_nexus_rules() {
-        let optimizer_config = NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement();
-        let state = SessionStateBuilder::new_with_default_features().with_nexus_native(optimizer_config).build();
-        let nested = session_state_for_cugraph_host_subplan(&state);
-        let rules = nested.physical_optimizers();
-
-        assert!(!rules.iter().any(|rule| rule.name() == NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME));
-        assert!(!rules.iter().any(|rule| rule.name() == NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME));
-        assert!(!rules.iter().any(|rule| rule.name() == NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME));
-        assert!(rules.iter().any(|rule| rule.name() == DATAFUSION_FINAL_VALIDATION_RULE_NAME));
-        assert_eq!(nested.config().target_partitions(), 1);
     }
 
     #[test]

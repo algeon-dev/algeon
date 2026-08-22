@@ -6,7 +6,10 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use arrow::datatypes::{DataType, SchemaRef, TimeUnit};
+use arrow::{
+    array::{Array, LargeStringArray, StringArray, StringViewArray},
+    datatypes::{DataType, SchemaRef, TimeUnit},
+};
 
 use crate::{
     admission::{
@@ -165,6 +168,7 @@ impl AllocationClass {
 enum OwnerTermConstructionPolicy {
     Generic,
     AllowLiteralBatch,
+    PriceLiteralBatch,
     AllowMixedSourceComposition,
 }
 
@@ -1266,7 +1270,8 @@ fn literal_batch_owner_term_rejection_reason(
     plan: &QueryPlan,
     policy: OwnerTermConstructionPolicy,
 ) -> Option<&'static str> {
-    if policy == OwnerTermConstructionPolicy::AllowLiteralBatch {
+    if matches!(policy, OwnerTermConstructionPolicy::AllowLiteralBatch | OwnerTermConstructionPolicy::PriceLiteralBatch)
+    {
         return None;
     }
     let unreachable = plan.unreachable_node_ids().into_iter().collect::<HashSet<_>>();
@@ -1280,6 +1285,93 @@ fn literal_batch_owner_term_rejection_reason(
         (source.row_count() > 0 && !source.schema.fields().is_empty())
             .then_some("attempt_owner_term_literal_source_bytes_unavailable")
     })
+}
+
+fn literal_batch_source_owner_terms(plan: &QueryPlan) -> Result<Vec<AllocationOwnerTerm>> {
+    let scope = canonical_execution_scope_fingerprint(plan);
+    let unreachable = plan.unreachable_node_ids().into_iter().collect::<HashSet<_>>();
+    plan.nodes()
+        .iter()
+        .filter(|node| !unreachable.contains(&node.id))
+        .filter_map(|node| match &node.kind {
+            PlanNode::Source(source) => match source.as_ref() {
+                SourceNode::LiteralBatch(source) if source.row_count() > 0 && !source.schema.fields().is_empty() => {
+                    Some((node.id, source))
+                },
+                _ => None,
+            },
+            _ => None,
+        })
+        .map(|(node_id, source)| {
+            let rows = u64::try_from(source.row_count()).map_err(|_| {
+                owner_term_error("literal_source_rows_exceed_u64", Some(OwnerTermRole::SourceStage), None)
+            })?;
+            let columns = literal_batch_output_columns(source)?;
+            let bytes = crate::exec::join_output_upper_bound_bytes(rows, &columns).map_err(|_| {
+                owner_term_error("literal_source_bytes_unavailable", Some(OwnerTermRole::SourceStage), None)
+            })?;
+            if bytes == u64::MAX {
+                return Err(owner_term_error("literal_source_bytes_saturated", Some(OwnerTermRole::SourceStage), None));
+            }
+            AllocationOwnerTerm::new(
+                OwnerId::Source(node_id),
+                OwnerTermRole::SourceStage,
+                OccurrenceId::PlanLocal(node_id),
+                scope.clone(),
+                AllocationClass::ActivePhase,
+                bytes,
+                None,
+            )
+        })
+        .collect()
+}
+
+fn literal_batch_output_columns(
+    source: &crate::source::LiteralBatchSource,
+) -> Result<Vec<crate::exec::JoinOutputColumnUpperBoundInput>> {
+    source
+        .schema
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            if let Some(column) = fixed_width_consumer_output_column(field.data_type()) {
+                return Ok(column);
+            }
+            let stats = source.batches.iter().try_fold((0_u64, 0_u64), |acc, batch| {
+                let array = batch.column(index);
+                let mut lengths =
+                    (0..array.len()).filter(|row| !array.is_null(*row)).map(|row| match field.data_type() {
+                        DataType::Utf8 => {
+                            array.as_any().downcast_ref::<StringArray>().map(|array| array.value(row).len())
+                        },
+                        DataType::LargeUtf8 => {
+                            array.as_any().downcast_ref::<LargeStringArray>().map(|array| array.value(row).len())
+                        },
+                        DataType::Utf8View => {
+                            array.as_any().downcast_ref::<StringViewArray>().map(|array| array.value(row).len())
+                        },
+                        _ => None,
+                    });
+                lengths.try_fold(acc, |(max_len, total_bytes), length| {
+                    let length = u64::try_from(length?).ok()?;
+                    Some((max_len.max(length), total_bytes.checked_add(length)?))
+                })
+            });
+            let Some((max_len, total_bytes)) = stats else {
+                return Err(owner_term_error(
+                    "literal_source_bytes_unavailable",
+                    Some(OwnerTermRole::SourceStage),
+                    None,
+                ));
+            };
+            Ok(crate::exec::JoinOutputColumnUpperBoundInput {
+                data_type: field.data_type().clone(),
+                input_max_string_length_bytes: Some(max_len),
+                input_total_string_bytes: Some(total_bytes),
+            })
+        })
+        .collect()
 }
 
 /// Resolved, planner-owned capability evidence for one bounded execution attempt.
@@ -1596,7 +1688,8 @@ impl QueryPlanCapabilityProof {
     /// canonicalized; all execution-relevant graph and operator facts remain
     /// exact.
     pub fn for_cugraph_graph_execution_plan(plan: &QueryPlan) -> Option<Self> {
-        let mut requirement = AttemptCapabilityEvidence::for_query_plan(plan);
+        let mut requirement =
+            AttemptCapabilityEvidence::for_query_plan_with_policy(plan, OwnerTermConstructionPolicy::PriceLiteralBatch);
         requirement.remove_generic_gpu_resident_retained_output_terms();
         let graph_requirement = generic_graph_execution_blocker();
         if !requirement.required_capabilities.contains(&graph_requirement) {
@@ -2007,10 +2100,18 @@ impl AttemptCapabilityEvidence {
     ) -> Self {
         let source_stage_bytes = estimated_reachable_local_parquet_source_bytes(plan);
         let source_owner_result = local_parquet_source_owner_terms(plan);
+        let literal_owner_result = if policy == OwnerTermConstructionPolicy::PriceLiteralBatch {
+            literal_batch_source_owner_terms(plan)
+        } else {
+            Ok(Vec::new())
+        };
         let gpu_owner_result = generic_gpu_resident_owner_terms(plan, include_gpu_output_owner);
         let aggregate_owner_result = generic_aggregate_owner_terms(plan);
         let mut source_owner_terms = Vec::new();
         if let Ok(terms) = &source_owner_result {
+            source_owner_terms.extend(terms.iter().cloned());
+        }
+        if let Ok(terms) = &literal_owner_result {
             source_owner_terms.extend(terms.iter().cloned());
         }
         if let Ok(gpu_owner_terms) = &gpu_owner_result {
@@ -2042,6 +2143,10 @@ impl AttemptCapabilityEvidence {
         if let Some(reason) = literal_rejection_reason {
             shape.set_owner_term_rejection_reason(reason);
         } else if let Err(error) = source_owner_result {
+            shape.set_owner_term_rejection_reason(
+                error.fact_value("reason").unwrap_or("attempt_owner_term_unavailable"),
+            );
+        } else if let Err(error) = literal_owner_result {
             shape.set_owner_term_rejection_reason(
                 error.fact_value("reason").unwrap_or("attempt_owner_term_unavailable"),
             );
@@ -3800,19 +3905,7 @@ fn cugraph_side_input_frame_upper_bound_bytes(plan: &QueryPlan) -> Result<u64> {
     if plan.output_schema().fields().is_empty() {
         return Err(composed_schedule_error("side_input_schema_empty", None).with_fact("phase", "side_input_frame"));
     }
-    let columns = plan
-        .output_schema()
-        .fields()
-        .iter()
-        .map(|field| {
-            fixed_width_consumer_output_column(field.data_type()).ok_or_else(|| {
-                composed_schedule_error("side_input_schema_unmodeled", None)
-                    .with_fact("phase", "side_input_frame")
-                    .with_fact("column", field.name())
-                    .with_fact("data_type", format!("{:?}", field.data_type()))
-            })
-        })
-        .collect::<Result<Vec<_>>>()?;
+    let columns = cugraph_side_input_columns(plan)?;
     let bytes = crate::exec::join_output_upper_bound_bytes(rows, &columns).map_err(|error| {
         composed_schedule_error("side_input_frame_bound_unavailable", None)
             .with_fact("phase", "side_input_frame")
@@ -3824,6 +3917,63 @@ fn cugraph_side_input_frame_upper_bound_bytes(plan: &QueryPlan) -> Result<u64> {
             .with_fact("row_bound", rows));
     }
     Ok(bytes)
+}
+
+fn cugraph_side_input_columns(plan: &QueryPlan) -> Result<Vec<crate::exec::JoinOutputColumnUpperBoundInput>> {
+    let literal = match &plan.root_node().kind {
+        PlanNode::Source(source) => match source.as_ref() {
+            SourceNode::LiteralBatch(source) => Some(source),
+            _ => None,
+        },
+        _ => None,
+    };
+    plan.output_schema()
+        .fields()
+        .iter()
+        .enumerate()
+        .map(|(index, field)| {
+            if let Some(column) = fixed_width_consumer_output_column(field.data_type()) {
+                return Ok(column);
+            }
+            let Some(literal) = literal else {
+                return Err(composed_schedule_error("side_input_schema_unmodeled", None)
+                    .with_fact("phase", "side_input_frame")
+                    .with_fact("column", field.name())
+                    .with_fact("data_type", format!("{:?}", field.data_type())));
+            };
+            let stats = literal.batches.iter().try_fold((0_u64, 0_u64), |acc, batch| {
+                let array = batch.column(index);
+                let mut lengths =
+                    (0..array.len()).filter(|row| !array.is_null(*row)).map(|row| match field.data_type() {
+                        DataType::Utf8 => {
+                            array.as_any().downcast_ref::<StringArray>().map(|array| array.value(row).len())
+                        },
+                        DataType::LargeUtf8 => {
+                            array.as_any().downcast_ref::<LargeStringArray>().map(|array| array.value(row).len())
+                        },
+                        DataType::Utf8View => {
+                            array.as_any().downcast_ref::<StringViewArray>().map(|array| array.value(row).len())
+                        },
+                        _ => None,
+                    });
+                lengths.try_fold(acc, |(max_len, total_bytes), length| {
+                    let length = u64::try_from(length?).ok()?;
+                    Some((max_len.max(length), total_bytes.checked_add(length)?))
+                })
+            });
+            let Some((max_len, total_bytes)) = stats else {
+                return Err(composed_schedule_error("side_input_literal_string_stats_unavailable", None)
+                    .with_fact("phase", "side_input_frame")
+                    .with_fact("column", field.name())
+                    .with_fact("data_type", format!("{:?}", field.data_type())));
+            };
+            Ok(crate::exec::JoinOutputColumnUpperBoundInput {
+                data_type: field.data_type().clone(),
+                input_max_string_length_bytes: Some(max_len),
+                input_total_string_bytes: Some(total_bytes),
+            })
+        })
+        .collect()
 }
 
 fn fixed_width_consumer_output_column(data_type: &DataType) -> Option<crate::exec::JoinOutputColumnUpperBoundInput> {
@@ -4276,7 +4426,11 @@ fn is_attested_graph_result_bounded_consumer_plan(plan: &QueryPlan, graph_result
 mod tests {
     use std::sync::Arc;
 
-    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::{
+        array::StringArray,
+        datatypes::{DataType, Field, Schema},
+        record_batch::RecordBatch,
+    };
 
     use super::*;
     use crate::{
@@ -5790,6 +5944,22 @@ mod tests {
             .as_requirement()
             .validate_covers_plan(&plan)
             .expect("the issued cuGraph proof must cover its exact internal plan");
+    }
+
+    #[test]
+    fn literal_string_source_owner_term_uses_exact_batch_statistics() {
+        let schema = Arc::new(Schema::new(vec![Field::new("vertex", DataType::Utf8, false)]));
+        let batch =
+            RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(StringArray::from(vec!["alpha", "b"]))]).unwrap();
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
+        let plan = builder.finish_gpu_resident(source);
+
+        let terms = literal_batch_source_owner_terms(&plan).expect("literal strings have a finite GPU frame bound");
+
+        assert_eq!(terms.len(), 1);
+        assert!(terms[0].bytes() > 0);
+        assert_eq!(terms[0].id.role, OwnerTermRole::SourceStage);
     }
 
     #[test]

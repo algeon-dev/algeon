@@ -1,4 +1,4 @@
-use super::{node::projected_schema, *};
+use super::*;
 pub(super) fn project_and_limit_host_batch(
     batch: RecordBatch,
     projection: Option<&Vec<usize>>,
@@ -9,58 +9,6 @@ pub(super) fn project_and_limit_host_batch(
         batch = batch.project(projection).map_err(DataFusionError::from)?;
     }
     Ok(batch)
-}
-
-pub(super) fn apply_host_projection_limit(
-    output: EagerCugraphHostOutput,
-    spec: &CugraphAlgorithmSpec,
-    projection: Option<&Vec<usize>>,
-    limit: Option<usize>,
-) -> Result<EagerCugraphHostOutput> {
-    if projection.is_none() && limit.is_none() {
-        return Ok(output);
-    }
-    let schema = projected_schema(&spec.output_schema, projection)?;
-    let (batches, reservation, host_evidence) = output.into_parts_with_evidence();
-    let old_bytes =
-        batches.iter().map(get_record_batch_memory_size).try_fold(0usize, |sum, bytes| sum.checked_add(bytes));
-    let old_bytes = old_bytes.ok_or_else(|| plan_error("logical BFS host output size overflowed usize"))?;
-    let mut remaining = limit;
-    let mut projected = Vec::with_capacity(batches.len());
-    for batch in batches.iter() {
-        let Some(remaining_rows) = remaining else {
-            projected.push(project_and_limit_host_batch(batch.clone(), projection, None)?);
-            continue;
-        };
-        if remaining_rows == 0 {
-            break;
-        }
-        let limited = project_and_limit_host_batch(batch.clone(), projection, Some(remaining_rows))?;
-        remaining = remaining_rows.checked_sub(limited.num_rows());
-        projected.push(limited);
-    }
-    let new_bytes =
-        projected.iter().map(get_record_batch_memory_size).try_fold(0usize, |sum, bytes| sum.checked_add(bytes));
-    let new_bytes = new_bytes.ok_or_else(|| plan_error("projected logical BFS host output size overflowed usize"))?;
-    if let Some(evidence) = host_evidence.as_ref() {
-        evidence.check_output_growth("projected_output", reservation.size(), new_bytes)?;
-    }
-    reservation.try_grow(new_bytes).map_err(|source| {
-        DataFusionError::from(
-            Error::new(
-                ErrorCode::MemoryReservationFailed,
-                "datafusion_nexus.cugraph_sql.host_staging_reservation",
-                "DataFusion host memory pool denied projected logical BFS output staging",
-            )
-            .with_fact("boundary", "projected_output")
-            .with_fact("requested_bytes", new_bytes)
-            .with_source(source),
-        )
-    })?;
-    // End the superseded batch ownership before lowering its charged output bytes.
-    drop(batches);
-    reservation.shrink(old_bytes);
-    Ok(EagerCugraphHostOutput::from_shared_parts_with_evidence(schema, Arc::new(projected), reservation, host_evidence))
 }
 
 pub(super) fn is_bfs_path_output(spec: &CugraphAlgorithmSpec) -> bool {
@@ -110,21 +58,6 @@ pub(super) struct BfsPathNode {
 pub(super) struct BoundedBfsPathTarget {
     vertex: BfsPathVertex,
     reservation: Arc<MemoryReservation>,
-}
-
-impl BoundedBfsPathTarget {
-    #[cfg(test)]
-    pub(super) fn for_test(vertex: BfsPathVertex, reservation: Arc<MemoryReservation>) -> Self {
-        Self { vertex, reservation }
-    }
-
-    pub(super) fn map_vertex(self, codebook: &HostBfsCodebook) -> Result<Self> {
-        let vertex = match self.vertex {
-            BfsPathVertex::Int64(code) => BfsPathVertex::Utf8(codebook.decode_code(code)?),
-            vertex => vertex,
-        };
-        Ok(Self { vertex, reservation: self.reservation })
-    }
 }
 
 pub(super) fn bfs_path_target_vertex(

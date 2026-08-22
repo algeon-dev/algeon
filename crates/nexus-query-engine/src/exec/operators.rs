@@ -306,8 +306,8 @@ pub(super) fn execute_window(
         }
     }
     for function in &node.spec.functions {
-        if let crate::plan::WindowFunction::RowNumber { alias } = function {
-            frame = execute_row_number_window(context, node, frame, alias.as_str(), metrics)?;
+        if let crate::plan::WindowFunction::RowNumber { alias, output_type } = function {
+            frame = execute_row_number_window(context, node, frame, alias.as_str(), output_type, metrics)?;
         }
     }
     for function in &node.spec.functions {
@@ -717,6 +717,7 @@ fn execute_row_number_window(
     node: &WindowNode,
     frame: DataFrame,
     alias: &str,
+    output_type: &ArrowDataType,
     metrics: &mut QueryMetrics,
 ) -> Result<DataFrame> {
     let overrides_lease = execution_overrides(context)?;
@@ -744,8 +745,27 @@ fn execute_row_number_window(
         )
     })?;
 
-    let uint64 = cudf::DataType::new(cudf::TypeId::UInt64);
-    let row_number_expr = (col(partition_rank_name.as_str()).cast(uint64) + lit(1u64)).alias(alias);
+    let row_number_expr = match output_type {
+        ArrowDataType::UInt64 => {
+            let uint64 = cudf::DataType::new(cudf::TypeId::UInt64);
+            (col(partition_rank_name.as_str()).cast(uint64) + lit(1u64)).alias(alias)
+        },
+        ArrowDataType::Int64 => {
+            let max_rows = usize::try_from(i64::MAX).unwrap_or(usize::MAX);
+            if output.num_rows() > max_rows {
+                return Err(QueryError::new(
+                    QueryErrorCode::SizeOverflow,
+                    "nexus_query_engine.window.row_number.output",
+                    "row_number Int64 output cannot represent the input row count",
+                )
+                .with_fact("input_rows", output.num_rows())
+                .with_fact("max_rows", max_rows));
+            }
+            let int64 = cudf::DataType::new(cudf::TypeId::Int64);
+            (col(partition_rank_name.as_str()).cast(int64) + lit(1i64)).alias(alias)
+        },
+        _ => unreachable!("row_number output type validated before execution"),
+    };
     output = output.with_execution(&overrides).with_columns([row_number_expr]).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.window.row_number.output",

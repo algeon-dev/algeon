@@ -294,6 +294,7 @@ fn native_row_number_window_counts_one_based_rows_per_partition() {
         Field::new("ord", DataType::Int32, false),
         Field::new("value", DataType::Int64, true),
         Field::new("rn", DataType::UInt64, false),
+        Field::new("rn_i64", DataType::Int64, false),
     ]));
     let batch = RecordBatch::try_new(
         Arc::clone(&input_schema),
@@ -320,7 +321,7 @@ fn native_row_number_window_counts_one_based_rows_per_partition() {
         WindowSpec::new(
             vec![Expr::column("grp")],
             vec![SortExpr::new(Expr::column("ord"), false, false)],
-            vec![WindowFunction::row_number("rn")],
+            vec![WindowFunction::row_number("rn"), WindowFunction::row_number_i64("rn_i64")],
         ),
         Arc::clone(&output_schema),
     );
@@ -343,5 +344,6 @@ fn native_row_number_window_counts_one_based_rows_per_partition() {
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 1, 1, 2, 2, 2]);
     assert_eq!(int32_array(batch, 1).values().as_ref(), &[1, 2, 3, 1, 2, 3]);
     assert_eq!(uint64_array(batch, 3).values().as_ref(), &[1, 2, 3, 1, 2, 3]);
+    assert_eq!(int64_array(batch, 4).values().as_ref(), &[1, 2, 3, 1, 2, 3]);
     admitted.finish();
 }

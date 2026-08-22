@@ -7,8 +7,7 @@ const CUGRAPH_HOST_OUTPUT_MEMORY_CONSUMER: &str = "CugraphAlgoExec[host-output-s
 pub(super) struct HostReservationEvidence {
     input_limit_bytes: usize,
     output_limit_bytes: usize,
-    logical_codebook_bytes: usize,
-    logical_encoded_input_peak_bytes: usize,
+    input_staging_peak_bytes: usize,
     aggregate_peak_bytes: usize,
 }
 
@@ -17,8 +16,7 @@ impl HostReservationEvidence {
         Self {
             input_limit_bytes,
             output_limit_bytes,
-            logical_codebook_bytes: 0,
-            logical_encoded_input_peak_bytes: 0,
+            input_staging_peak_bytes: 0,
             aggregate_peak_bytes: output_limit_bytes,
         }
     }
@@ -26,30 +24,26 @@ impl HostReservationEvidence {
     pub(super) fn record_input_peak(&mut self, reservation: &MemoryReservation) -> Result<()> {
         if reservation.size() > self.input_limit_bytes {
             return Err(host_staging_limit_error(
-                "logical_bfs",
+                "graph_input",
                 "input_evidence",
                 self.input_limit_bytes,
                 reservation.size() - self.input_limit_bytes,
                 self.input_limit_bytes,
             ));
         }
-        self.logical_encoded_input_peak_bytes = self.logical_encoded_input_peak_bytes.max(reservation.size());
+        self.input_staging_peak_bytes = self.input_staging_peak_bytes.max(reservation.size());
         self.aggregate_peak_bytes =
-            self.logical_encoded_input_peak_bytes.checked_add(self.output_limit_bytes).ok_or_else(|| {
+            self.input_staging_peak_bytes.checked_add(self.output_limit_bytes).ok_or_else(|| {
                 Error::new(
                     ErrorCode::SizeOverflow,
                     "datafusion_nexus.cugraph_sql.host_staging_evidence",
                     "host staging evidence aggregate bound overflowed usize",
                 )
                 .with_fact("reason", "host_staging_evidence_overflow")
-                .with_fact("input_peak_bytes", self.logical_encoded_input_peak_bytes)
+                .with_fact("input_peak_bytes", self.input_staging_peak_bytes)
                 .with_fact("output_limit_bytes", self.output_limit_bytes)
             })?;
         Ok(())
-    }
-
-    pub(super) fn record_codebook(&mut self, bytes: usize) {
-        self.logical_codebook_bytes = bytes;
     }
 
     pub(super) fn output_limit_bytes(&self) -> usize {
@@ -62,13 +56,8 @@ impl HostReservationEvidence {
     }
 
     #[cfg(test)]
-    pub(super) fn logical_codebook_bytes(&self) -> usize {
-        self.logical_codebook_bytes
-    }
-
-    #[cfg(test)]
-    pub(super) fn logical_encoded_input_peak_bytes(&self) -> usize {
-        self.logical_encoded_input_peak_bytes
+    pub(super) fn input_staging_peak_bytes(&self) -> usize {
+        self.input_staging_peak_bytes
     }
 
     #[cfg(test)]
@@ -85,11 +74,11 @@ impl HostReservationEvidence {
         let next_bytes = current_bytes.checked_add(requested_bytes).ok_or_else(|| {
             host_staging_limit_error("graph_result", boundary, current_bytes, requested_bytes, self.output_limit_bytes)
         })?;
-        let next_total = self.logical_encoded_input_peak_bytes.checked_add(next_bytes).ok_or_else(|| {
+        let next_total = self.input_staging_peak_bytes.checked_add(next_bytes).ok_or_else(|| {
             host_staging_limit_error(
                 "graph_result",
                 boundary,
-                self.logical_encoded_input_peak_bytes,
+                self.input_staging_peak_bytes,
                 next_bytes,
                 self.aggregate_peak_bytes,
             )
@@ -145,10 +134,7 @@ impl CugraphInputRowBounds {
 #[derive(Debug)]
 pub(super) struct StagedCugraphInputs {
     pub(super) edge: StagedCugraphSource,
-    pub(super) logical_literal_source: Option<StagedCugraphSource>,
     pub(super) predicates: Vec<StagedCugraphSource>,
-    pub(super) logical_codebook: Option<HostBfsCodebook>,
-    pub(super) execution_spec: CugraphAlgorithmSpec,
     pub(super) admitted_graph_plan: Option<nexus_query_engine::plan::QueryPlan>,
     pub(super) admitted_edge_source_gpu_plan: Option<nexus_query_engine::plan::QueryPlan>,
     pub(super) host_evidence: HostReservationEvidence,
@@ -158,9 +144,7 @@ pub(super) struct StagedCugraphInputs {
 #[derive(Debug)]
 pub(super) struct CollectedCugraphInputs {
     edge: StagedCugraphSource,
-    logical_literal_source: Option<StagedCugraphSource>,
     predicates: Vec<StagedCugraphSource>,
-    staged_bytes: usize,
     host_evidence: HostReservationEvidence,
     reservation: MemoryReservation,
 }
@@ -169,8 +153,6 @@ pub(super) struct UploadedCugraphInputs {
     pub(super) edge_schema: SchemaRef,
     pub(super) edge_frame: GpuDataFrame,
     pub(super) predicate_frames: Vec<CugraphGpuFrame>,
-    pub(super) logical_codebook: Option<HostBfsCodebook>,
-    pub(super) execution_spec: CugraphAlgorithmSpec,
     pub(super) host_evidence: HostReservationEvidence,
     pub(super) reservation: Option<MemoryReservation>,
 }
@@ -198,7 +180,7 @@ pub(super) async fn stage_cugraph_inputs(
 }
 
 pub(super) async fn collect_cugraph_inputs(
-    spec: &CugraphAlgorithmSpec,
+    _spec: &CugraphAlgorithmSpec,
     edge_source: Arc<dyn ExecutionPlan>,
     predicate_sources: Vec<Arc<dyn ExecutionPlan>>,
     task_context: Arc<TaskContext>,
@@ -228,20 +210,6 @@ pub(super) async fn collect_cugraph_inputs(
         &mut reservation,
     )
     .await?;
-    let logical_literal_source = if let Some(batch) = bfs_literal_string_source_batch(spec)? {
-        reserve_host_staging_batch(
-            "source_vertices",
-            "input",
-            &batch,
-            max_input_staging_bytes,
-            &mut staged_bytes,
-            &mut reservation,
-        )?;
-        let schema = batch.schema();
-        Some(StagedCugraphSource::Host { schema, batches: vec![batch] })
-    } else {
-        None
-    };
     let mut predicates = Vec::with_capacity(predicate_sources.len());
     for source in predicate_sources {
         predicates.push(
@@ -257,7 +225,7 @@ pub(super) async fn collect_cugraph_inputs(
             .await?,
         );
     }
-    Ok(CollectedCugraphInputs { edge, logical_literal_source, predicates, staged_bytes, host_evidence, reservation })
+    Ok(CollectedCugraphInputs { edge, predicates, host_evidence, reservation })
 }
 
 async fn stage_cugraph_source(
@@ -368,28 +336,12 @@ impl CollectedCugraphInputs {
         cugraph_input_row_bounds(&self.edge, &self.predicates)
     }
 
-    pub(super) fn prepare_logical_inputs(self, spec: &CugraphAlgorithmSpec) -> Result<StagedCugraphInputs> {
-        let Self { edge, logical_literal_source, predicates, mut staged_bytes, mut host_evidence, mut reservation } =
-            self;
-        let max_input_staging_bytes = host_evidence.input_limit_bytes;
+    pub(super) fn prepare_logical_inputs(self, _spec: &CugraphAlgorithmSpec) -> Result<StagedCugraphInputs> {
+        let Self { edge, predicates, mut host_evidence, reservation } = self;
         host_evidence.record_input_peak(&reservation)?;
-        let PreparedBfsLogicalHostInputs { edge, logical_literal_source, predicates, logical_codebook, execution_spec } =
-            prepare_bfs_logical_host_inputs(
-                spec,
-                edge,
-                logical_literal_source,
-                predicates,
-                &mut staged_bytes,
-                max_input_staging_bytes,
-                &mut reservation,
-                &mut host_evidence,
-            )?;
         Ok(StagedCugraphInputs {
             edge,
-            logical_literal_source,
             predicates,
-            logical_codebook,
-            execution_spec,
             admitted_graph_plan: None,
             admitted_edge_source_gpu_plan: None,
             host_evidence,
@@ -433,10 +385,7 @@ impl StagedCugraphInputs {
         self.validate_admission(context)?;
         let Self {
             edge,
-            logical_literal_source,
             predicates,
-            logical_codebook,
-            execution_spec,
             admitted_graph_plan: _,
             admitted_edge_source_gpu_plan,
             host_evidence,
@@ -445,33 +394,14 @@ impl StagedCugraphInputs {
         let edge_schema = edge.schema();
         let edge_frame =
             edge.upload(context, metrics, Arc::clone(&task_context), admitted_edge_source_gpu_plan).await?;
-        let logical_literal_source = match logical_literal_source {
-            Some(source) => {
-                let schema = source.schema();
-                let frame = source.upload(context, metrics, Arc::clone(&task_context), None).await?;
-                Some(CugraphGpuFrame { schema, frame })
-            },
-            None => None,
-        };
         let mut predicate_frames = Vec::with_capacity(predicates.len());
         for source in predicates {
             let schema = source.schema();
             let frame = source.upload(context, metrics, Arc::clone(&task_context), None).await?;
             predicate_frames.push(CugraphGpuFrame { schema, frame });
         }
-        if let Some(source) = logical_literal_source {
-            predicate_frames.insert(0, source);
-        }
-        let reservation = if logical_codebook.is_some() { reservation } else { None };
-        Ok(UploadedCugraphInputs {
-            edge_schema,
-            edge_frame,
-            predicate_frames,
-            logical_codebook,
-            execution_spec,
-            host_evidence,
-            reservation,
-        })
+        let _reservation = reservation;
+        Ok(UploadedCugraphInputs { edge_schema, edge_frame, predicate_frames, host_evidence, reservation: None })
     }
 }
 

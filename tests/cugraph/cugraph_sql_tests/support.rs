@@ -468,6 +468,36 @@ pub(super) fn register_string_bfs_edges(ctx: &SessionContext, table_name: &str) 
     ctx.register_table(table_name, provider).unwrap();
 }
 
+pub(super) fn register_string_pagerank_parity_edges(ctx: &SessionContext, string_table: &str, numeric_table: &str) {
+    let string_schema =
+        Arc::new(Schema::new(vec![Field::new("src", DataType::Utf8, true), Field::new("dst", DataType::Utf8, true)]));
+    let string_batch = RecordBatch::try_new(
+        Arc::clone(&string_schema),
+        vec![
+            Arc::new(StringArray::from(vec![Some("a"), Some("a"), Some("a"), Some("b"), Some("c"), None, Some("d")]))
+                as ArrayRef,
+            Arc::new(StringArray::from(vec![Some("b"), Some("b"), Some("c"), Some("d"), Some("d"), Some("a"), None]))
+                as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table(string_table, Arc::new(MemTable::try_new(string_schema, vec![vec![string_batch]]).unwrap()))
+        .unwrap();
+
+    let numeric_schema =
+        Arc::new(Schema::new(vec![Field::new("src", DataType::Int64, true), Field::new("dst", DataType::Int64, true)]));
+    let numeric_batch = RecordBatch::try_new(
+        Arc::clone(&numeric_schema),
+        vec![
+            Arc::new(Int64Array::from(vec![Some(1), Some(1), Some(1), Some(2), Some(3), None, Some(4)])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![Some(2), Some(2), Some(3), Some(4), Some(4), Some(1), None])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table(numeric_table, Arc::new(MemTable::try_new(numeric_schema, vec![vec![numeric_batch]]).unwrap()))
+        .unwrap();
+}
+
 pub(super) fn register_disconnected_string_bfs_edges(ctx: &SessionContext, table_name: &str) {
     let schema =
         Arc::new(Schema::new(vec![Field::new("src", DataType::Utf8, false), Field::new("dst", DataType::Utf8, false)]));

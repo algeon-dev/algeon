@@ -4260,8 +4260,10 @@ impl nexus_query_engine::pipeline::PipelineEdgeKind
 pub const fn nexus_query_engine::pipeline::PipelineEdgeKind::as_str(self) -> &'static str
 pub enum nexus_query_engine::pipeline::PipelineTaskKind
 pub nexus_query_engine::pipeline::PipelineTaskKind::Aggregate
+pub nexus_query_engine::pipeline::PipelineTaskKind::EdgeNormalize
 pub nexus_query_engine::pipeline::PipelineTaskKind::FinalSort
 pub nexus_query_engine::pipeline::PipelineTaskKind::GpuResidentSource
+pub nexus_query_engine::pipeline::PipelineTaskKind::GraphAlgorithm
 pub nexus_query_engine::pipeline::PipelineTaskKind::JoinBuild
 pub nexus_query_engine::pipeline::PipelineTaskKind::JoinMaterialize
 pub nexus_query_engine::pipeline::PipelineTaskKind::JoinProbe
@@ -4791,6 +4793,7 @@ pub nexus_query_engine::plan::WindowFunction::Rank
 pub nexus_query_engine::plan::WindowFunction::Rank::alias: alloc::string::String
 pub nexus_query_engine::plan::WindowFunction::RowNumber
 pub nexus_query_engine::plan::WindowFunction::RowNumber::alias: alloc::string::String
+pub nexus_query_engine::plan::WindowFunction::RowNumber::output_type: arrow_schema::datatype::DataType
 impl nexus_query_engine::plan::WindowFunction
 pub fn nexus_query_engine::plan::WindowFunction::aggregate(nexus_query_engine::expr::AggregateFunction, nexus_query_engine::expr::Expr, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn nexus_query_engine::plan::WindowFunction::alias(&self) -> &str
@@ -4799,6 +4802,7 @@ pub fn nexus_query_engine::plan::WindowFunction::lag(nexus_query_engine::expr::E
 pub fn nexus_query_engine::plan::WindowFunction::lead(nexus_query_engine::expr::Expr, u32, core::option::Option<nexus_query_engine::expr::LiteralValue>, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn nexus_query_engine::plan::WindowFunction::rank(impl core::convert::Into<alloc::string::String>) -> Self
 pub fn nexus_query_engine::plan::WindowFunction::row_number(impl core::convert::Into<alloc::string::String>) -> Self
+pub fn nexus_query_engine::plan::WindowFunction::row_number_i64(impl core::convert::Into<alloc::string::String>) -> Self
 pub struct nexus_query_engine::plan::AggregateNode
 pub nexus_query_engine::plan::AggregateNode::input: nexus_query_engine::plan::NodeId
 pub nexus_query_engine::plan::AggregateNode::spec: nexus_query_engine::expr::AggregateSpec

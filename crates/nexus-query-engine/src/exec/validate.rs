@@ -1071,15 +1071,25 @@ fn validate_window_capability(
                     .with_fact("data_type", format!("{:?}", field.data_type())));
                 }
             },
-            crate::plan::WindowFunction::RowNumber { .. } => {
-                if !matches!(field.data_type(), arrow::datatypes::DataType::UInt64) {
+            crate::plan::WindowFunction::RowNumber { output_type, .. } => {
+                if !matches!(output_type, arrow::datatypes::DataType::UInt64 | arrow::datatypes::DataType::Int64) {
                     return Err(QueryError::new(
                         QueryErrorCode::UnsupportedType,
                         "nexus_query_engine.window.validate",
-                        "native row_number output must be UInt64",
+                        "native row_number output must be UInt64 or Int64",
                     )
                     .with_fact("field", field.name())
-                    .with_fact("data_type", format!("{:?}", field.data_type())));
+                    .with_fact("data_type", format!("{output_type:?}")));
+                }
+                if field.data_type() != output_type {
+                    return Err(QueryError::new(
+                        QueryErrorCode::InvalidPlan,
+                        "nexus_query_engine.window.validate",
+                        "native row_number output field must match its declared output type",
+                    )
+                    .with_fact("field", field.name())
+                    .with_fact("field_data_type", format!("{:?}", field.data_type()))
+                    .with_fact("declared_data_type", format!("{output_type:?}")));
                 }
                 if field.is_nullable() {
                     return Err(QueryError::new(

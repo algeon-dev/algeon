@@ -7,9 +7,7 @@ use std::{
 };
 
 use arrow::{
-    array::{
-        ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, LargeStringArray, StringArray, StringViewArray,
-    },
+    array::{ArrayRef, Float64Array, Int64Array, StringArray},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
@@ -30,7 +28,7 @@ use nexus_query_engine::{
     expr::{Expr, SortExpr, SortSpec},
     graph_memory::{GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, graph_memory_bounded_admission_evidence_for_plan},
     observability::RuntimeObservationConfig,
-    plan::{ProjectionOutput, QueryPlan},
+    plan::{PlanNode, ProjectionOutput, QueryPlan, WindowFunction},
     runtime::ExecutionCancellation,
     source::{
         GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY, GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY,
@@ -47,9 +45,9 @@ use crate::{
     attempt::{AttemptOptions, NexusAttemptExtension},
     backend::InstalledTestGpuBackend,
     cugraph_sql::{
-        CugraphBfsOutputOptions, CugraphBfsParams, CugraphGraphEdgePredicateTable, CugraphGraphOptions,
-        CugraphGraphPredicateTable, CugraphPageRankParams, CugraphSqlConfig, CugraphTableReference,
-        CugraphTriangleCountAllParams, result_schema_for_params,
+        CugraphBfsOutputOptions, CugraphBfsParams, CugraphGraphOptions, CugraphGraphPredicateTable,
+        CugraphPageRankParams, CugraphSqlConfig, CugraphTableReference, CugraphTriangleCountAllParams,
+        result_schema_for_params,
     },
     error::{DataFusionErrorExt, ErrorCode},
     native_exec::{
@@ -499,6 +497,16 @@ fn pagerank_spec() -> CugraphAlgorithmSpec {
     }
 }
 
+fn pagerank_utf8_spec() -> CugraphAlgorithmSpec {
+    let mut spec = pagerank_spec();
+    spec.weight_col = None;
+    spec.output_schema = Arc::new(Schema::new(vec![
+        Field::new("vertex", DataType::Utf8, false),
+        Field::new("value", DataType::Float64, false),
+    ]));
+    spec
+}
+
 fn bfs_spec() -> CugraphAlgorithmSpec {
     let params = CugraphAlgorithmParams::Bfs(Box::new(CugraphBfsParams {
         source: CugraphBfsSource::scalar_i64(0),
@@ -613,21 +621,89 @@ fn cugraph_algo_exec_does_not_request_input_repartitioning() {
 }
 
 #[test]
-fn logical_bfs_path_decode_keeps_the_three_column_traversal_schema() {
+fn logical_bfs_path_gpu_plan_decodes_the_traversal_schema_before_host_reconstruction() {
     let spec = bfs_utf8_path_spec();
-
-    let schema = bfs_decoded_output_schema_for_host(&spec);
+    let plan = cugraph_schema_query_plan(
+        &spec,
+        string_edge_schema(),
+        Vec::new(),
+        &[],
+        &CugraphResultPlanOptions::default(),
+        false,
+        Some(3),
+        None,
+    )
+    .expect("logical BFS path GPU plan should build");
+    let schema = plan.root_node().output_schema();
 
     assert_eq!(schema.fields().len(), 3);
-    assert_eq!(schema.field(0).name(), "vertex");
+    assert_eq!(schema.field(0), &Field::new("vertex", DataType::Utf8, false));
     assert_eq!(schema.field(1).name(), "distance");
-    assert_eq!(schema.field(2).name(), "predecessor");
+    assert_eq!(schema.field(2), &Field::new("predecessor", DataType::Utf8, true));
 }
 
 #[test]
-fn logical_bfs_path_reconstruction_applies_the_final_schema_after_decode() {
+fn string_pagerank_plan_assigns_i64_ids_and_applies_top_k_before_decode() {
+    let mut result_options = CugraphResultPlanOptions::new(None, Some(3));
+    result_options.pre_decode_sort = Some(SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)]));
+    let plan = cugraph_schema_query_plan(
+        &pagerank_utf8_spec(),
+        string_edge_schema(),
+        Vec::new(),
+        &[],
+        &result_options,
+        false,
+        None,
+        None,
+    )
+    .expect("string PageRank GPU plan should build");
+
+    let codebook = plan
+        .nodes()
+        .iter()
+        .find(|node| {
+            matches!(
+                &node.kind,
+                PlanNode::Window(window)
+                    if window.spec.functions.iter().any(|function| matches!(
+                        function,
+                        WindowFunction::RowNumber { alias, output_type }
+                            if alias == "__vertex_id" && output_type == &DataType::Int64
+                    ))
+            )
+        })
+        .expect("logical mapping must assign dense Int64 IDs");
+    let graph = plan
+        .nodes()
+        .iter()
+        .find(|node| matches!(node.kind, PlanNode::GraphAlgorithm(_)))
+        .expect("logical mapping must retain the native graph node");
+    let sort = plan
+        .nodes()
+        .iter()
+        .find(|node| matches!(&node.kind, PlanNode::Sort(sort) if sort.input == graph.id))
+        .expect("logical PageRank sort must consume the numeric graph result");
+    let limit = plan
+        .nodes()
+        .iter()
+        .find(|node| matches!(&node.kind, PlanNode::Limit(limit) if limit.input == sort.id))
+        .expect("logical PageRank limit must consume the sorted numeric graph result");
+    let PlanNode::Join(decode) = &plan.root_node().kind else {
+        panic!("logical PageRank root must decode through a hash join");
+    };
+
+    assert_eq!(decode.inputs, [limit.id, codebook.id]);
+    assert_eq!(plan.output_schema().field(0), &Field::new("vertex", DataType::Utf8, false));
+}
+
+#[test]
+fn logical_bfs_path_reconstruction_applies_the_final_schema_after_gpu_decode() {
     let spec = bfs_utf8_path_spec();
-    let traversal_schema = bfs_decoded_output_schema_for_host(&spec);
+    let traversal_schema = Arc::new(Schema::new(vec![
+        Field::new("vertex", DataType::Utf8, false),
+        Field::new("distance", DataType::Int64, true),
+        Field::new("predecessor", DataType::Utf8, true),
+    ]));
     let traversal = RecordBatch::try_new(
         traversal_schema,
         vec![
@@ -639,7 +715,7 @@ fn logical_bfs_path_reconstruction_applies_the_final_schema_after_decode() {
     .unwrap();
 
     let path = reconstruct_bfs_path_batch(&spec, &traversal, BfsPathVertex::Utf8("bob".to_string()))
-        .expect("three-column traversal output should reconstruct into the five-column path schema");
+        .expect("GPU-decoded traversal output should reconstruct into the five-column path schema");
 
     assert_eq!(path.schema(), spec.output_schema);
     assert_eq!(path.num_columns(), 5);
@@ -647,545 +723,18 @@ fn logical_bfs_path_reconstruction_applies_the_final_schema_after_decode() {
 }
 
 #[test]
-fn logical_bfs_host_codebook_is_sorted_checked_and_null_preserving_for_arrow_strings() {
-    let arrays: Vec<ArrayRef> = vec![
-        Arc::new(StringArray::from(vec![Some("bob"), None, Some("alice")])) as ArrayRef,
-        Arc::new(LargeStringArray::from(vec![Some("bob"), None, Some("carol")])) as ArrayRef,
-        Arc::new(StringViewArray::from(vec![Some("carol"), None, Some("bob")])) as ArrayRef,
-    ];
-    for array in arrays {
-        let expected_first = if let Some(array) = array.as_any().downcast_ref::<StringArray>() {
-            array.value(0).to_owned()
-        } else if let Some(array) = array.as_any().downcast_ref::<LargeStringArray>() {
-            array.value(0).to_owned()
-        } else if let Some(array) = array.as_any().downcast_ref::<StringViewArray>() {
-            array.value(0).to_owned()
-        } else {
-            unreachable!("test array is one of the supported UTF8 representations")
-        };
-        let expected_sorted: &[&str] = match array.data_type() {
-            DataType::Utf8 => &["alice", "bob"],
-            DataType::LargeUtf8 | DataType::Utf8View => &["bob", "carol"],
-            data_type => unreachable!("unexpected test array type: {data_type:?}"),
-        };
-        let schema = Arc::new(Schema::new(vec![Field::new("vertex", array.data_type().clone(), true)]));
-        let source = StagedCugraphSource::Host {
-            schema: Arc::clone(&schema),
-            batches: vec![RecordBatch::try_new(Arc::clone(&schema), vec![array]).unwrap()],
-        };
-        let codebook = HostBfsCodebook::from_sources_with_limit(&[(&source, vec!["vertex".to_string()])], 8)
-            .expect("supported Arrow string arrays should build a host codebook");
-        let batch = match &source {
-            StagedCugraphSource::Host { batches, .. } => &batches[0],
-            StagedCugraphSource::Native { .. } => unreachable!("test source is host-owned"),
-        };
-        let encoded = encode_logical_array(batch.column(0).as_ref(), &codebook, "vertex")
-            .expect("host logical encoding should succeed");
-        let encoded = encoded.as_any().downcast_ref::<Int32Array>().expect("encoding must use Int32");
-        assert_eq!(codebook.decode_code(i64::from(encoded.value(0))).unwrap(), expected_first);
-        assert!(encoded.is_null(1), "nulls must remain null in the encoded domain");
-        assert_eq!(codebook.decode_code(0).unwrap(), expected_sorted[0]);
-        for (index, value) in expected_sorted.iter().enumerate() {
-            assert_eq!(codebook.code(value), Some(index as i32), "codebook code must follow sorted order");
-        }
-        assert_eq!(codebook.code("missing"), None);
-        let owned_string_bytes = expected_sorted.iter().map(|value| String::from(*value).capacity()).sum::<usize>();
-        let expected_memory = owned_string_bytes + expected_sorted.len() * std::mem::size_of::<String>();
-        assert_eq!(codebook.memory_size().unwrap(), expected_memory, "codebook memory charges one canonical vector");
-    }
-}
-
-#[test]
-fn logical_bfs_host_codebook_rejects_checked_distinct_overflow() {
-    let schema = Arc::new(Schema::new(vec![Field::new("vertex", DataType::Utf8, false)]));
-    let batch =
-        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(StringArray::from(vec!["alice", "bob"])) as ArrayRef])
-            .unwrap();
-    let source = StagedCugraphSource::Host { schema, batches: vec![batch] };
-    let error = HostBfsCodebook::from_sources_with_limit(&[(&source, vec!["vertex".to_string()])], 1)
-        .expect_err("the checked test limit must reject a second distinct vertex");
-    let nexus = error.find_nexus_error().expect("overflow remains a structured error");
-    assert_eq!(nexus.fact_value("reason"), Some("logical_bfs_codebook_overflow"));
-}
-
-#[test]
-fn logical_bfs_decode_enforces_pregrant_output_overlap_bound() {
-    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
-    let reservation = Arc::new(MemoryConsumer::new("logical-bfs-decode-test").register(&runtime.memory_pool));
-    let schema = Arc::new(Schema::new(vec![
-        Field::new("vertex", DataType::Int32, false),
-        Field::new("distance", DataType::Int64, false),
-        Field::new("predecessor", DataType::Int32, true),
-    ]));
-    let batch = RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![
-            Arc::new(Int32Array::from(vec![0])) as ArrayRef,
-            Arc::new(Int64Array::from(vec![0])) as ArrayRef,
-            Arc::new(Int32Array::from(vec![None])) as ArrayRef,
-        ],
-    )
-    .unwrap();
-    let raw_bytes = get_record_batch_memory_size(&batch);
-    reservation.try_grow(raw_bytes).unwrap();
-    let source_schema = Arc::new(Schema::new(vec![Field::new("vertex", DataType::Utf8, false)]));
-    let source = StagedCugraphSource::Host {
-        schema: Arc::clone(&source_schema),
-        batches: vec![
-            RecordBatch::try_new(
-                Arc::clone(&source_schema),
-                vec![Arc::new(StringArray::from(vec!["alice"])) as ArrayRef],
-            )
-            .unwrap(),
-        ],
-    };
-    let codebook = HostBfsCodebook::from_sources_with_limit(&[(&source, vec!["vertex".to_string()])], 4).unwrap();
-    let evidence = HostReservationEvidence::new(raw_bytes, raw_bytes);
-    let output = EagerCugraphHostOutput::from_shared_parts_with_evidence(
-        schema,
-        Arc::new(vec![batch]),
-        Arc::clone(&reservation),
-        Some(evidence),
-    );
-    let error = decode_bfs_logical_host_output(
-        output,
-        &codebook,
-        Arc::new(Schema::new(vec![
-            Field::new("vertex", DataType::Utf8, false),
-            Field::new("distance", DataType::Int64, false),
-            Field::new("predecessor", DataType::Utf8, true),
-        ])),
-    )
-    .expect_err("decoded strings must be charged while raw output remains live");
-    let nexus = error.find_nexus_error().expect("decode bound failure remains structured");
-    assert_eq!(nexus.code(), ErrorCode::HostStagingLimitExceeded);
-    assert_eq!(nexus.fact_value("boundary"), Some("decoded_output"));
-    assert_eq!(reservation.size(), raw_bytes, "failed decode must not leak a partial growth");
-}
-
-#[test]
-fn logical_bfs_decode_reservation_rejects_before_materialization() {
-    let raw_schema = Arc::new(Schema::new(vec![
-        Field::new("vertex", DataType::Int32, false),
-        Field::new("distance", DataType::Int64, false),
-        Field::new("predecessor", DataType::Int32, true),
-    ]));
-    let batch = RecordBatch::try_new(
-        Arc::clone(&raw_schema),
-        vec![
-            Arc::new(Int32Array::from(vec![0])) as ArrayRef,
-            Arc::new(Int64Array::from(vec![0])) as ArrayRef,
-            Arc::new(Int32Array::from(vec![None])) as ArrayRef,
-        ],
-    )
-    .unwrap();
-    let raw_bytes = get_record_batch_memory_size(&batch);
-    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(raw_bytes, 1.0).build().unwrap());
-    let reservation = Arc::new(MemoryConsumer::new("logical-bfs-decode-pool-test").register(&runtime.memory_pool));
-    reservation.try_grow(raw_bytes).unwrap();
-    let source_schema = Arc::new(Schema::new(vec![Field::new("vertex", DataType::Utf8, false)]));
-    let source = StagedCugraphSource::Host {
-        schema: Arc::clone(&source_schema),
-        batches: vec![
-            RecordBatch::try_new(
-                Arc::clone(&source_schema),
-                vec![Arc::new(StringArray::from(vec!["alice"])) as ArrayRef],
-            )
-            .unwrap(),
-        ],
-    };
-    let codebook = HostBfsCodebook::from_sources_with_limit(&[(&source, vec!["vertex".to_string()])], 4).unwrap();
-    let decoded_upper_bound = decoded_bfs_logical_host_batch_upper_bound(&batch, &codebook).unwrap();
-    let decoded_actual = decode_bfs_logical_host_batch(
-        &batch,
-        &codebook,
-        Arc::new(Schema::new(vec![
-            Field::new("vertex", DataType::Utf8, false),
-            Field::new("distance", DataType::Int64, false),
-            Field::new("predecessor", DataType::Utf8, true),
-        ])),
-    )
-    .unwrap();
-    assert!(
-        decoded_upper_bound > get_record_batch_memory_size(&decoded_actual),
-        "the pre-materialization bound must include Arrow builder overlap"
-    );
-    drop(decoded_actual);
-    let output = EagerCugraphHostOutput::from_shared_parts_with_evidence(
-        raw_schema,
-        Arc::new(vec![batch]),
-        Arc::clone(&reservation),
-        Some(HostReservationEvidence::new(usize::MAX, usize::MAX)),
-    );
-    let error = decode_bfs_logical_host_output(
-        output,
-        &codebook,
-        Arc::new(Schema::new(vec![
-            Field::new("vertex", DataType::Utf8, false),
-            Field::new("distance", DataType::Int64, false),
-            Field::new("predecessor", DataType::Utf8, true),
-        ])),
-    )
-    .expect_err("decoded output must reserve before the constrained pool can materialize it");
-    let nexus = error.find_nexus_error().expect("pool rejection remains structured");
-    assert_eq!(nexus.code(), ErrorCode::MemoryReservationFailed);
-    assert_eq!(nexus.fact_value("boundary"), Some("decoded_output"));
-    let requested_bytes = decoded_upper_bound.to_string();
-    assert_eq!(nexus.fact_value("requested_bytes"), Some(requested_bytes.as_str()));
-    assert_eq!(reservation.size(), raw_bytes, "failed pre-materialization reservation must not leak bytes");
-}
-
-#[test]
-fn logical_bfs_decode_preserves_nulls_and_releases_large_validity_reservation() {
-    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(16 * 1024 * 1024, 1.0).build().unwrap());
-    let reservation = Arc::new(MemoryConsumer::new("logical-bfs-decode-roundtrip-test").register(&runtime.memory_pool));
-    let row_count = 513;
-    let raw_schema = Arc::new(Schema::new(vec![
-        Field::new("vertex", DataType::Int32, true),
-        Field::new("distance", DataType::Int64, false),
-        Field::new("predecessor", DataType::Int32, true),
-    ]));
-    let mut vertices = vec![Some(0); row_count];
-    vertices[1] = None;
-    let mut predecessors = vec![Some(-1); row_count];
-    predecessors[2] = Some(0);
-    let batch = RecordBatch::try_new(
-        Arc::clone(&raw_schema),
-        vec![
-            Arc::new(Int32Array::from(vertices)) as ArrayRef,
-            Arc::new(Int64Array::from(vec![0; row_count])) as ArrayRef,
-            Arc::new(Int32Array::from(predecessors)) as ArrayRef,
-        ],
-    )
-    .unwrap();
-    let raw_bytes = get_record_batch_memory_size(&batch);
-    reservation.try_grow(raw_bytes).unwrap();
-    let source_schema = Arc::new(Schema::new(vec![Field::new("vertex", DataType::Utf8, false)]));
-    let source = StagedCugraphSource::Host {
-        schema: Arc::clone(&source_schema),
-        batches: vec![
-            RecordBatch::try_new(
-                Arc::clone(&source_schema),
-                vec![Arc::new(StringArray::from(vec!["alice"])) as ArrayRef],
-            )
-            .unwrap(),
-        ],
-    };
-    let codebook = HostBfsCodebook::from_sources_with_limit(&[(&source, vec!["vertex".to_string()])], 4).unwrap();
-    let decoded = decode_bfs_logical_host_output(
-        EagerCugraphHostOutput::from_shared_parts_with_evidence(
-            raw_schema,
-            Arc::new(vec![batch]),
-            Arc::clone(&reservation),
-            Some(HostReservationEvidence::new(usize::MAX, usize::MAX)),
-        ),
-        &codebook,
-        Arc::new(Schema::new(vec![
-            Field::new("vertex", DataType::Utf8, true),
-            Field::new("distance", DataType::Int64, false),
-            Field::new("predecessor", DataType::Utf8, true),
-        ])),
-    )
-    .expect("decoded output should fit its checked bound");
-    let (batches, decoded_reservation, _) = decoded.into_parts_with_evidence();
-    let vertex = batches[0].column(0).as_any().downcast_ref::<StringArray>().unwrap();
-    let predecessor = batches[0].column(2).as_any().downcast_ref::<StringArray>().unwrap();
-    assert_eq!(vertex.value(0), "alice");
-    assert!(vertex.is_null(1), "vertex null mask must survive decode");
-    assert!(predecessor.is_null(0), "negative predecessor sentinel must decode to null");
-    assert_eq!(predecessor.value(2), "alice");
-    assert_eq!(decoded_reservation.size(), get_record_batch_memory_size(&batches[0]));
-    drop(batches);
-    drop(decoded_reservation);
-    drop(reservation);
-    assert_eq!(runtime.memory_pool.reserved(), 0, "decoded reservation must release after output ownership ends");
-}
-
-#[test]
-fn logical_bfs_projection_enforces_pregrant_output_overlap_bound() {
-    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
-    let reservation = Arc::new(MemoryConsumer::new("logical-bfs-projection-test").register(&runtime.memory_pool));
-    let spec = bfs_utf8_spec();
-    let schema = bfs_decoded_output_schema_for_host(&spec);
-    let batch = RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![
-            Arc::new(StringArray::from(vec![Some("alice")])) as ArrayRef,
-            Arc::new(Int64Array::from(vec![0])) as ArrayRef,
-            Arc::new(StringArray::from(vec![None::<&str>])) as ArrayRef,
-            Arc::new(BooleanArray::from(vec![true])) as ArrayRef,
-        ],
-    )
-    .unwrap();
-    let old_bytes = get_record_batch_memory_size(&batch);
-    reservation.try_grow(old_bytes).unwrap();
-    let output = EagerCugraphHostOutput::from_shared_parts_with_evidence(
-        schema,
-        Arc::new(vec![batch]),
-        Arc::clone(&reservation),
-        Some(HostReservationEvidence::new(old_bytes, old_bytes)),
-    );
-    let projection = vec![0];
-    let error = apply_host_projection_limit(output, &spec, Some(&projection), None)
-        .expect_err("projection must account for old and new Arrow batches while they overlap");
-    let nexus = error.find_nexus_error().expect("projection bound failure remains structured");
-    assert_eq!(nexus.code(), ErrorCode::HostStagingLimitExceeded);
-    assert_eq!(nexus.fact_value("boundary"), Some("projected_output"));
-    assert_eq!(reservation.size(), old_bytes, "failed projection must not leak a partial growth");
-}
-
-#[test]
-fn logical_bfs_path_enforces_target_and_reconstruction_overlap_bound() {
-    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
-    let output_reservation =
-        Arc::new(MemoryConsumer::new("logical-bfs-path-output-test").register(&runtime.memory_pool));
-    let target_reservation =
-        Arc::new(MemoryConsumer::new("logical-bfs-path-target-test").register(&runtime.memory_pool));
-    let spec = bfs_utf8_path_spec();
-    let schema = bfs_decoded_output_schema_for_host(&spec);
-    let batch = RecordBatch::try_new(
-        Arc::clone(&schema),
-        vec![
-            Arc::new(StringArray::from(vec![Some("alice"), Some("bob")])) as ArrayRef,
-            Arc::new(Int64Array::from(vec![0, 1])) as ArrayRef,
-            Arc::new(StringArray::from(vec![None::<&str>, Some("alice")])) as ArrayRef,
-        ],
-    )
-    .unwrap();
-    let raw_bytes = get_record_batch_memory_size(&batch);
-    output_reservation.try_grow(raw_bytes).unwrap();
-    target_reservation.try_grow(1).unwrap();
-    let evidence = HostReservationEvidence::new(raw_bytes + 1, raw_bytes + 1);
-    let output = EagerCugraphHostOutput::from_shared_parts_with_evidence(
-        schema,
-        Arc::new(vec![batch]),
-        Arc::clone(&output_reservation),
-        Some(evidence),
-    );
-    let target = BoundedBfsPathTarget::for_test(BfsPathVertex::Utf8("bob".to_string()), target_reservation);
-    let error = materialize_bfs_path_output_from_host(output, &spec, target, None, None, raw_bytes + 1)
-        .expect_err("path reconstruction must account for traversal, target, workspace, and final output overlap");
-    let nexus = error.find_nexus_error().expect("path bound failure remains structured");
-    assert_eq!(nexus.code(), ErrorCode::HostStagingLimitExceeded);
-    assert_eq!(nexus.fact_value("boundary"), Some("reconstruction_workspace"));
-    assert_eq!(output_reservation.size(), raw_bytes, "failed path reconstruction must not leak workspace growth");
-}
-
-#[tokio::test]
-async fn logical_bfs_host_mapping_charges_codebook_and_encoded_peak_then_releases_on_failure() {
-    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(4 * 1024 * 1024, 1.0).build().unwrap());
-    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
-    let spec = bfs_utf8_spec();
-    let edge_source = memory_string_edge_source();
-    let edge_batches = collect(Arc::clone(&edge_source), Arc::clone(&task_context)).await.unwrap();
-    let edge_bytes = edge_batches.iter().map(get_record_batch_memory_size).sum::<usize>();
-    drop(edge_batches);
-    let source_batch = bfs_literal_string_source_batch(&spec).unwrap().unwrap();
-    let source_bytes = get_record_batch_memory_size(&source_batch);
-    let max_staging_bytes = edge_bytes.checked_add(source_bytes).expect("input bytes fit usize");
-    let error = stage_cugraph_inputs(
-        &spec,
-        edge_source,
-        vec![],
-        task_context,
-        &ExecutionCancellation::new(),
-        max_staging_bytes,
-    )
-    .await
-    .expect_err("the codebook owner must be charged before admission and exceed the input-only cap");
-    let nexus = error.find_nexus_error().expect("host mapping cap failure remains structured");
-    assert_eq!(nexus.code(), ErrorCode::HostStagingLimitExceeded);
-    assert_eq!(nexus.fact_value("boundary"), Some("codebook"));
-    assert_eq!(runtime.memory_pool.reserved(), 0, "failed host mapping releases all staged ownership");
-}
-
-#[tokio::test]
-async fn logical_bfs_codebook_reservation_rejects_before_graph_ticket() {
-    let backend = test_gpu_backend();
-    let config = backend_execution_config(&backend);
-    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(4 * 1024 * 1024, 1.0).build().unwrap());
-    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
-    let spec = bfs_utf8_spec();
-    let edge_source = memory_string_edge_source();
-    let edge_batches = collect(Arc::clone(&edge_source), Arc::clone(&task_context)).await.unwrap();
-    let edge_bytes = edge_batches.iter().map(get_record_batch_memory_size).sum::<usize>();
-    let source_batch = bfs_literal_string_source_batch(&spec).unwrap().unwrap();
-    let source_bytes = get_record_batch_memory_size(&source_batch);
-    let edge_staged = StagedCugraphSource::Host { schema: edge_batches[0].schema(), batches: edge_batches.clone() };
-    let source_staged =
-        StagedCugraphSource::Host { schema: source_batch.schema(), batches: vec![source_batch.clone()] };
-    let domain_sources = vec![
-        (&edge_staged, vec![spec.src_col.clone(), spec.dst_col.clone()]),
-        (&source_staged, vec!["__source_vertex".to_string()]),
-    ];
-    let codebook_bound = HostBfsCodebook::allocation_upper_bound(&domain_sources).unwrap();
-    let codebook_actual =
-        HostBfsCodebook::from_sources_with_limit(&domain_sources, i32::MAX as usize).unwrap().memory_size().unwrap();
-    assert!(codebook_bound.bytes > codebook_actual, "pre-reservation must cover compaction overlap");
-    let input_limit = edge_bytes.checked_add(source_bytes).expect("input bytes fit usize");
-    let boundary = GpuIslandHostBoundaryConfig::try_new(input_limit, 1024 * 1024).unwrap();
-    let exec =
-        CugraphAlgoExec::try_new_with_host_boundary_config(spec, edge_source, vec![], None, None, config, boundary)
-            .expect("logical BFS should build before its deliberate codebook bound");
-    let error = exec
-        .prepare_staged_attempt(task_context)
-        .await
-        .expect_err("codebook ownership must reject before ticket issuance");
-    let nexus = error.find_nexus_error().expect("codebook rejection remains structured");
-    assert_eq!(nexus.code(), ErrorCode::HostStagingLimitExceeded);
-    assert_eq!(nexus.fact_value("boundary"), Some("codebook"));
-    let requested_bytes = codebook_bound.bytes.to_string();
-    assert_eq!(nexus.fact_value("next_batch_bytes"), Some(requested_bytes.as_str()));
-    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0);
-    assert_eq!(runtime.memory_pool.reserved(), 0);
-}
-
-#[test]
-fn logical_bfs_codebook_pool_rejects_before_untracked_construction() {
-    let spec = bfs_utf8_spec();
-    let edge_schema = string_edge_schema();
-    let edge_batch = RecordBatch::try_new(
-        Arc::clone(&edge_schema),
-        vec![
-            Arc::new(StringArray::from(vec![Some("bob"), None, Some("alice")])) as ArrayRef,
-            Arc::new(StringArray::from(vec![Some("alice"), Some("bob"), None])) as ArrayRef,
-        ],
-    )
-    .unwrap();
-    let source_batch = bfs_literal_string_source_batch(&spec).unwrap().unwrap();
-    let edge = StagedCugraphSource::Host { schema: edge_schema, batches: vec![edge_batch] };
-    let source = StagedCugraphSource::Host { schema: source_batch.schema(), batches: vec![source_batch] };
-    let domain_sources =
-        vec![(&edge, vec![spec.src_col.clone(), spec.dst_col.clone()]), (&source, vec!["__source_vertex".to_string()])];
-    let codebook_bound = HostBfsCodebook::allocation_upper_bound(&domain_sources).unwrap();
-    let codebook_actual =
-        HostBfsCodebook::from_sources_with_limit(&domain_sources, i32::MAX as usize).unwrap().memory_size().unwrap();
-    assert!(codebook_bound.bytes > codebook_actual);
-    let input_bytes = [
-        match &edge {
-            StagedCugraphSource::Host { batches, .. } => get_record_batch_memory_size(&batches[0]),
-            StagedCugraphSource::Native { .. } => unreachable!(),
-        },
-        match &source {
-            StagedCugraphSource::Host { batches, .. } => get_record_batch_memory_size(&batches[0]),
-            StagedCugraphSource::Native { .. } => unreachable!(),
-        },
-    ]
-    .into_iter()
-    .sum::<usize>();
-    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(input_bytes, 1.0).build().unwrap());
-    let mut reservation = MemoryConsumer::new("logical-bfs-codebook-pool-test").register(&runtime.memory_pool);
-    reservation.try_grow(input_bytes).unwrap();
-    let max_staging_bytes = input_bytes.checked_add(codebook_bound.bytes).unwrap();
-    let mut staged_bytes = input_bytes;
-    let mut evidence = HostReservationEvidence::new(max_staging_bytes, usize::MAX);
-    let error = prepare_bfs_logical_host_inputs(
-        &spec,
-        edge,
-        Some(source),
-        vec![],
-        &mut staged_bytes,
-        max_staging_bytes,
-        &mut reservation,
-        &mut evidence,
-    )
-    .expect_err("codebook ownership must fail at the reservation boundary");
-    let nexus = error.find_nexus_error().expect("pool rejection remains structured");
-    assert_eq!(nexus.code(), ErrorCode::MemoryReservationFailed);
-    assert_eq!(nexus.fact_value("boundary"), Some("codebook"));
-    let requested_bytes = codebook_bound.bytes.to_string();
-    assert_eq!(nexus.fact_value("requested_bytes"), Some(requested_bytes.as_str()));
-    assert_eq!(reservation.size(), input_bytes, "pool rejection must not leak the input reservation");
-    assert_eq!(staged_bytes, input_bytes, "pool rejection must not advance staged accounting");
-}
-
-#[tokio::test]
-async fn logical_bfs_native_source_rejects_before_ticket_or_gpu_context() {
-    let backend = test_gpu_backend();
-    let config = backend_execution_config(&backend);
-    let schema = string_edge_schema();
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
-    let native_plan = builder.finish_with_host_sink(source);
-    let native_source = Arc::new(NexusNativeExec::try_new(native_plan, config).unwrap()) as Arc<dyn ExecutionPlan>;
-    let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
-    let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
-    let exec = CugraphAlgoExec::try_new(
-        bfs_utf8_spec(),
-        native_source,
-        vec![],
-        None,
-        None,
-        backend_execution_config(&backend),
-    )
-    .expect("logical BFS should build before native-source staging rejection");
-    let error = exec
-        .prepare_staged_attempt(task_context)
-        .await
-        .expect_err("logical BFS must not stage a native logical source");
-    let nexus = error.find_nexus_error().expect("native logical-source rejection remains structured");
-    assert_eq!(nexus.fact_value("reason"), Some("logical_bfs_native_source_unsupported"));
-    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0);
-}
-
-#[tokio::test]
-async fn cugraph_utf8_include_edges_native_predicate_rejects_owner_before_logical_staging() {
-    let backend = test_gpu_backend();
-    let config = backend_execution_config(&backend);
-    let mut spec = bfs_utf8_spec();
-    let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("test spec is BFS") };
-    params.predicates.include_edges = Some(CugraphGraphEdgePredicateTable::new(
-        CugraphTableReference::parse("allowed_edges").unwrap(),
-        "src",
-        "dst",
-        None::<String>,
-    ));
-
-    let schema = string_edge_schema();
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(Arc::clone(&schema))));
-    let native_plan = builder.finish_with_host_sink(source);
-    let native_predicate =
-        Arc::new(NexusNativeExec::try_new(native_plan, config.clone()).unwrap()) as Arc<dyn ExecutionPlan>;
-    let exec = CugraphAlgoExec::try_new(
-        spec.clone(),
+fn string_pagerank_and_bfs_are_gpu_producers_while_bfs_path_remains_host_owned() {
+    let pagerank = CugraphAlgoExec::try_new(
+        pagerank_utf8_spec(),
         memory_string_edge_source(),
-        vec![Arc::clone(&native_predicate)],
+        vec![],
         None,
         None,
-        config.clone(),
+        NexusNativeExecutionConfig::bounded_default(),
     )
-    .expect("include_edges owner rejection occurs after metadata hydration");
+    .expect("string PageRank should build as a GPU-resident graph execution");
+    assert!(crate::native_exec::producer::gpu_resident_producer(&pagerank).is_some());
 
-    let mut stream = exec.execute(0, Arc::new(TaskContext::default())).expect("cuGraph stream should build");
-    let error = futures::TryStreamExt::try_next(&mut stream)
-        .await
-        .expect_err("graph owner preflight must reject before staging the native logical predicate");
-    let nexus = error.find_nexus_error().expect("owner rejection remains structured");
-    assert_eq!(nexus.fact_value("reason"), Some("side_input_workspace_preflight_unavailable"));
-    assert_eq!(nexus.fact_value("side_input_reason"), Some("include_edges_owner_contract_missing"));
-    assert_eq!(nexus.fact_value("side_input_role"), Some("include_edges"));
-    assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0);
-
-    let producer_exec = Arc::new(
-        CugraphAlgoExec::try_new(spec, memory_string_edge_source(), vec![native_predicate], None, None, config)
-            .expect("include_edges owner rejection occurs after producer metadata hydration"),
-    );
-    let producer_result = producer_exec
-        .prepare_execution_plan(Arc::clone(&producer_exec) as Arc<dyn ExecutionPlan>, Arc::new(TaskContext::default()))
-        .await;
-    let producer_error = match producer_result {
-        Ok(_) => panic!("graph owner preflight must reject before producer staging the native logical predicate"),
-        Err(error) => error,
-    };
-    let producer_nexus = producer_error.find_nexus_error().expect("owner rejection remains structured");
-    assert_eq!(producer_nexus.fact_value("reason"), Some("side_input_workspace_preflight_unavailable"));
-    assert_eq!(producer_nexus.fact_value("side_input_reason"), Some("include_edges_owner_contract_missing"));
-    assert_eq!(producer_nexus.fact_value("side_input_role"), Some("include_edges"));
-}
-
-#[test]
-fn logical_and_path_bfs_decline_gpu_resident_producer_but_numeric_bfs_remains_a_producer() {
     let logical = CugraphAlgoExec::try_new(
         bfs_utf8_spec(),
         memory_string_edge_source(),
@@ -1194,8 +743,8 @@ fn logical_and_path_bfs_decline_gpu_resident_producer_but_numeric_bfs_remains_a_
         None,
         NexusNativeExecutionConfig::bounded_default(),
     )
-    .expect("logical BFS should build as a host-root graph execution");
-    assert!(crate::native_exec::producer::gpu_resident_producer(&logical).is_none());
+    .expect("logical BFS should build as a GPU-resident graph execution");
+    assert!(crate::native_exec::producer::gpu_resident_producer(&logical).is_some());
 
     let numeric_path = CugraphAlgoExec::try_new(
         bfs_utf8_path_spec(),
@@ -1207,17 +756,6 @@ fn logical_and_path_bfs_decline_gpu_resident_producer_but_numeric_bfs_remains_a_
     )
     .expect("logical BFS path should build as a host-root graph execution");
     assert!(crate::native_exec::producer::gpu_resident_producer(&numeric_path).is_none());
-
-    let numeric = CugraphAlgoExec::try_new(
-        bfs_spec(),
-        memory_edge_source(4),
-        vec![],
-        None,
-        None,
-        NexusNativeExecutionConfig::bounded_default(),
-    )
-    .expect("numeric non-path BFS should retain the GPU producer contract");
-    assert!(crate::native_exec::producer::gpu_resident_producer(&numeric).is_some());
 }
 
 #[test]
@@ -1345,34 +883,6 @@ async fn cugraph_staged_attempt_preserves_host_edge_and_predicate_row_order() {
     .unwrap();
     let source_plan =
         MemorySourceConfig::try_new_exec(&[vec![source_batch.clone()]], Arc::clone(&source_schema), None).unwrap();
-    let edge_schema_for_bound = string_edge_schema();
-    let edge_batch_for_bound = RecordBatch::try_new(
-        Arc::clone(&edge_schema_for_bound),
-        vec![
-            Arc::new(StringArray::from(vec![Some("bob"), None, Some("alice")])) as ArrayRef,
-            Arc::new(StringArray::from(vec![Some("alice"), Some("bob"), None])) as ArrayRef,
-        ],
-    )
-    .unwrap();
-    let edge_for_bound =
-        StagedCugraphSource::Host { schema: edge_schema_for_bound, batches: vec![edge_batch_for_bound] };
-    let source_for_bound =
-        StagedCugraphSource::Host { schema: Arc::clone(&source_schema), batches: vec![source_batch.clone()] };
-    let bound_sources = vec![
-        (&edge_for_bound, vec!["src".to_string(), "dst".to_string()]),
-        (&source_for_bound, vec!["vertex_id".to_string()]),
-    ];
-    let codebook_bound = HostBfsCodebook::allocation_upper_bound(&bound_sources).unwrap();
-    let preconstruction_input_bytes = bound_sources
-        .iter()
-        .flat_map(|(source, _)| match source {
-            StagedCugraphSource::Host { batches, .. } => {
-                batches.iter().map(get_record_batch_memory_size).collect::<Vec<_>>()
-            },
-            StagedCugraphSource::Native { .. } => Vec::new(),
-        })
-        .sum::<usize>();
-    let expected_preconstruction_peak = preconstruction_input_bytes + codebook_bound.bytes;
     let edge_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let predicate_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let edge_source =
@@ -1396,18 +906,12 @@ async fn cugraph_staged_attempt_preserves_host_edge_and_predicate_row_order() {
     assert_eq!(prepared.input_row_bounds.predicate_row_upper_bounds(), &[Some(3)]);
     assert_eq!(edge_count.load(std::sync::atomic::Ordering::SeqCst), 1);
     assert_eq!(predicate_count.load(std::sync::atomic::Ordering::SeqCst), 1);
-    assert!(staged.logical_codebook.is_some(), "logical host staging must retain its deterministic codebook");
     assert_eq!(staged.host_evidence.input_limit_bytes(), input_limit_bytes);
-    assert!(staged.host_evidence.logical_codebook_bytes() > 0);
-    assert!(
-        staged.host_evidence.logical_encoded_input_peak_bytes() >= expected_preconstruction_peak,
-        "host evidence must retain the codebook construction overlap peak",
-    );
-    assert!(staged.host_evidence.logical_encoded_input_peak_bytes() >= staged.reservation.as_ref().unwrap().size());
+    assert_eq!(staged.host_evidence.input_staging_peak_bytes(), staged.reservation.as_ref().unwrap().size());
     assert_eq!(staged.host_evidence.output_limit_bytes(), output_limit_bytes);
     assert_eq!(
         staged.host_evidence.aggregate_peak_bytes(),
-        staged.host_evidence.logical_encoded_input_peak_bytes() + staged.host_evidence.output_limit_bytes(),
+        staged.host_evidence.input_staging_peak_bytes() + staged.host_evidence.output_limit_bytes(),
         "host evidence must carry one checked aggregate peak for overlapping input and output reservations",
     );
     assert_eq!(backend.backend().admission_snapshot().unwrap().active_queries, 0);
@@ -1864,37 +1368,18 @@ async fn cugraph_producer_preparation_enforces_the_cumulative_input_cap() {
 }
 
 #[tokio::test]
-async fn cugraph_producer_preparation_charges_the_exact_utf8_literal_source_batch_to_the_input_cap() {
+async fn cugraph_producer_preparation_keeps_utf8_literal_sources_out_of_host_staging() {
     let runtime = Arc::new(RuntimeEnvBuilder::new().with_memory_limit(1024 * 1024, 1.0).build().unwrap());
     let task_context = Arc::new(TaskContext::default().with_runtime(Arc::clone(&runtime)));
     let spec = bfs_utf8_spec();
-    let source_batch = bfs_literal_string_source_batch(&spec)
-        .expect("UTF-8 BFS source batch should build")
-        .expect("UTF-8 BFS source should have a staged literal batch");
-    let source_bytes = get_record_batch_memory_size(&source_batch);
-    let max_staging_bytes = source_bytes.checked_sub(1).expect("UTF-8 source batch must retain host bytes");
     let edge_source = Arc::new(EmptyExec::new(string_edge_schema())) as Arc<dyn ExecutionPlan>;
 
-    let error = stage_cugraph_inputs(
-        &spec,
-        edge_source,
-        vec![],
-        task_context,
-        &ExecutionCancellation::new(),
-        max_staging_bytes,
-    )
-    .await
-    .expect_err("UTF-8 literal source batch larger than the island-wide cap must be rejected");
-    let nexus = error.find_nexus_error().expect("literal source staging cap failure must remain structured");
-    let source_bytes = source_bytes.to_string();
-    let max_staging_bytes = max_staging_bytes.to_string();
+    let staged = stage_cugraph_inputs(&spec, edge_source, vec![], task_context, &ExecutionCancellation::new(), 0)
+        .await
+        .expect("UTF-8 literal source should be constructed inside the native GPU plan");
 
-    assert_eq!(nexus.code(), ErrorCode::HostStagingLimitExceeded);
-    assert_eq!(nexus.fact_value("source_kind"), Some("source_vertices"));
-    assert_eq!(nexus.fact_value("staged_bytes"), Some("0"));
-    assert_eq!(nexus.fact_value("next_batch_bytes"), Some(source_bytes.as_str()));
-    assert_eq!(nexus.fact_value("max_staging_bytes"), Some(max_staging_bytes.as_str()));
-    assert_eq!(runtime.memory_pool.reserved(), 0, "failed literal staging must release its reservation");
+    assert_eq!(staged.row_bounds().unwrap().predicate_row_upper_bounds(), &[]);
+    assert_eq!(runtime.memory_pool.reserved(), 0);
 }
 
 #[tokio::test]

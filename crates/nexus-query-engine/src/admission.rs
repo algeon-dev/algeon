@@ -11,6 +11,7 @@ mod requirement;
 mod shared;
 mod support;
 
+pub(crate) use bounded::bounded_cugraph_pipeline_admission;
 pub use bounded::{
     BoundedPipelineAdmission, bounded_pipeline_admission, bounded_pipeline_admission_with_statistical_aggregate_mode,
     bounded_pipeline_rejection_projection, bounded_pipeline_rejection_projection_with_statistical_aggregate_mode,

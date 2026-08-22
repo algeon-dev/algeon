@@ -258,6 +258,10 @@ pub enum PipelineTaskKind {
     Limit,
     /// Concatenate ordered union inputs.
     Union,
+    /// Normalize an edge relation before graph execution.
+    EdgeNormalize,
+    /// Execute one graph algorithm after its edge and side-input frames are resident.
+    GraphAlgorithm,
     /// Materialize the explicit result sink.
     SinkMaterialize,
 }
@@ -278,6 +282,8 @@ impl PipelineTaskKind {
             Self::FinalSort => "final_sort",
             Self::Limit => "limit",
             Self::Union => "union",
+            Self::EdgeNormalize => "edge_normalize",
+            Self::GraphAlgorithm => "graph_algorithm",
             Self::SinkMaterialize => "sink_materialize",
         }
     }

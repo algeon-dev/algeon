@@ -381,7 +381,9 @@ fn format_window_functions(functions: &[super::WindowFunction]) -> String {
                     format!("{function:?}({expr}) {frame:?} AS {alias}")
                 },
                 super::WindowFunction::Rank { alias } => format!("RANK() AS {alias}"),
-                super::WindowFunction::RowNumber { alias } => format!("ROW_NUMBER() AS {alias}"),
+                super::WindowFunction::RowNumber { alias, output_type } => {
+                    format!("ROW_NUMBER()::{output_type:?} AS {alias}")
+                },
                 super::WindowFunction::LagLead { expr, offset, default, alias, direction } => {
                     let name = match direction {
                         super::ShiftDirection::Lag => "LAG",
