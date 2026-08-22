@@ -1198,14 +1198,13 @@ pub fn hash_join_pre_build_reservation_size_bytes_from_non_nullable_fixed_width_
     }
     for type_id in key_type_ids {
         match type_id {
-            crate::core::types::TypeId::String
-            | crate::core::types::TypeId::List
+            crate::core::types::TypeId::List
             | crate::core::types::TypeId::Struct
             | crate::core::types::TypeId::Dictionary32 => {
                 return Err(crate::core::error::Error::new_with(
                     crate::core::error::ErrorCode::ForeignInvalidArgument,
                     "ops::join::hash_join_pre_build_reservation_size_bytes_from_non_nullable_fixed_width_metadata",
-                    "only fixed-width non-nullable keys are supported",
+                    "nested and dictionary keys are not supported",
                 ));
             },
             _ => {},
