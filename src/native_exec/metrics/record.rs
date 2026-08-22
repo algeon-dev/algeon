@@ -226,12 +226,14 @@ impl GraphClaimCalibrationCapture {
     /// Records a completed exact-request BFS follower. The follower did not
     /// execute a graph algorithm; it must point at its physical leader rather
     /// than borrow or synthesize that leader's peak.
+    #[cfg(feature = "cugraph")]
     pub(crate) fn record_bfs_singleflight_follower(&self, leader_attempt_id: Option<AttemptId>) {
         self.record_execution(GraphClaimCalibrationExecution::NonPhysical(
             GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower { leader_attempt_id },
         ));
     }
 
+    #[cfg(feature = "cugraph")]
     fn record_execution(&self, execution: GraphClaimCalibrationExecution) {
         let mut state = self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.sealed {
@@ -1574,6 +1576,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "cugraph")]
     fn sealed_graph_calibration_snapshot_retains_a_nonphysical_follower_leader_link() {
         let capture = GraphClaimCalibrationCapture::default();
         let leader_attempt_id = AttemptId::mint();

@@ -570,7 +570,7 @@ pub(crate) struct GpuResidentGraphInsertTransaction {
 }
 
 impl GpuResidentGraphInsertTransaction {
-    #[cfg(test)]
+    #[cfg(all(test, feature = "cugraph"))]
     pub(crate) fn bytes(&self) -> u64 {
         self.charge.as_ref().map_or(0, CacheResidencyChargeTransaction::bytes)
     }

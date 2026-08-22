@@ -2858,6 +2858,7 @@ fn output_row_count_upper_bound_for_algorithm(
     }
 }
 
+#[cfg(any(feature = "cugraph", test))]
 fn semantic_edge_row_width_bytes(vertex_width_bytes: u64, weight_width_bytes: Option<u64>, has_edge_id: bool) -> u64 {
     semantic_edge_row_width_model(GraphMemoryModelInput {
         vertex_width_bytes,
@@ -3722,13 +3723,16 @@ mod tests {
     use arrow::datatypes::{Field, Schema};
 
     use super::*;
+    #[cfg(feature = "cugraph")]
+    use crate::plan::{
+        GraphEdgePredicateInput, GraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams,
+        GraphPredicateInput,
+    };
     use crate::{
         expr::{AggregateSpec, ColumnRef, Expr, LiteralValue},
         plan::{
-            GraphBfsParams, GraphConstructionOptions, GraphEdgePredicateInput, GraphForceAtlas2Params,
-            GraphPageRankParams, GraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams,
-            GraphPredicateInput, GraphSimilarityParams, GraphTriangleCountAllParams, JoinKey, JoinSpec,
-            QueryPlanBuilder,
+            GraphBfsParams, GraphConstructionOptions, GraphForceAtlas2Params, GraphPageRankParams,
+            GraphSimilarityParams, GraphTriangleCountAllParams, JoinKey, JoinSpec, QueryPlanBuilder,
         },
         source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
     };

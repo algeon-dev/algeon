@@ -62,6 +62,7 @@ impl QueryAdmissionSource {
         self.session.same_backend(session)
     }
 
+    #[cfg(feature = "cugraph")]
     pub(crate) fn max_device_total_memory_bytes(&self) -> u64 {
         self.max_device_total_memory_bytes
     }

@@ -32,10 +32,9 @@ use super::{
     },
     metrics::{NativeExecutionMetricsCapture, NativeMetricsCapture},
 };
-use crate::{
-    error::Error,
-    native_exec::graph::{GraphAdmissionModelAsk, GraphExecutionServices},
-};
+#[cfg(feature = "cugraph")]
+use crate::native_exec::graph::GraphExecutionServices;
+use crate::{error::Error, native_exec::graph::GraphAdmissionModelAsk};
 
 /// Adapter-side native execution configuration.
 ///
@@ -69,6 +68,7 @@ pub struct NexusNativeExecutionConfig {
     pub(super) plan_task_mapping_datafusion_shape: Option<String>,
     pub(super) metrics_capture: Option<NativeMetricsCapture>,
     pub(super) lakehouse_footer_pruning: bool,
+    #[cfg(feature = "cugraph")]
     pub(super) graph_execution_services: GraphExecutionServices,
 }
 
@@ -164,6 +164,7 @@ impl NexusNativeExecutionConfig {
             plan_task_mapping_datafusion_shape: None,
             metrics_capture: Some(NativeMetricsCapture::standalone()),
             lakehouse_footer_pruning: false,
+            #[cfg(feature = "cugraph")]
             graph_execution_services: GraphExecutionServices::default(),
         }
     }
@@ -370,14 +371,17 @@ impl NexusNativeExecutionConfig {
         &self.source_storage_profiles
     }
 
+    #[cfg(feature = "cugraph")]
     pub(crate) fn graph_execution_services(&self) -> &GraphExecutionServices {
         &self.graph_execution_services
     }
 
+    #[cfg(feature = "cugraph")]
     pub(crate) fn graph_bfs_singleflight_snapshot(&self) -> super::graph::GraphBfsSingleflightSnapshot {
         self.graph_execution_services.bfs_singleflight_snapshot()
     }
 
+    #[cfg(feature = "cugraph")]
     pub(crate) fn set_graph_bfs_singleflight_enabled(&self, enabled: bool) {
         self.graph_execution_services.set_bfs_singleflight_enabled(enabled);
     }

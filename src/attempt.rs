@@ -134,6 +134,7 @@ impl NexusAttemptExtension {
     /// Engine-minted execution identity for this invocation. Graph execution
     /// services use it only to link an intentional non-physical follower to
     /// its physical leader in the sealed diagnostic projection.
+    #[cfg(feature = "cugraph")]
     pub(crate) fn attempt_id(&self) -> AttemptId {
         self.state.handle.attempt_id()
     }

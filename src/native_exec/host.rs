@@ -113,6 +113,7 @@ impl NexusNativeExec {
         SealedAttemptMetricsTarget::new(&self.metrics, self.graph_claim_calibration_capture.clone())
     }
 
+    #[cfg(feature = "cugraph")]
     pub(crate) async fn prepare_lakehouse_metadata(&self, task_context: &TaskContext) -> Self {
         if !self.execution_config.lakehouse_footer_pruning() {
             return self.clone();

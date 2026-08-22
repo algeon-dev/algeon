@@ -7,10 +7,12 @@
 
 use std::sync::Arc;
 
+#[cfg(feature = "cugraph")]
+use datafusion::execution::SessionState;
 use datafusion::{
     catalog::Session,
     common::Result as DataFusionResult,
-    execution::{SessionState, SessionStateBuilder},
+    execution::SessionStateBuilder,
     physical_optimizer::{PhysicalOptimizerRule, optimizer::PhysicalOptimizer},
 };
 
