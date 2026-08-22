@@ -941,12 +941,17 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_local_parquet_source(
         metrics.record_source_chunk_planned(chunk.row_group_count() as u64);
     }
     if chunk_plan.chunks.is_empty() {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.bounded.generic.source",
-            "bounded generic local parquet source requires at least one planned source chunk",
-        )
-        .with_fact("source_node_id", node_id));
+        let frame = crate::exec::source::read_local_parquet_source(context, node_id, source, metrics)?;
+        let requested_bytes = observe_device_memory_bytes(&frame, metrics)?;
+        let reservation = reservations.try_reserve(
+            MemoryReservationRequest::new(ReservationKind::SourceRead, requested_bytes, reservations.budget())
+                .with_memory_boundary("bounded_generic_source_read")
+                .with_node_id(node_id)
+                .with_stage("bounded_generic_source_read")
+                .with_attempt(1, 1),
+            metrics,
+        )?;
+        return Ok(ResidentGpuFrame { frame, reservation });
     }
     record_bounded_parquet_source_metrics(source, &chunk_plan, metrics);
 
@@ -992,12 +997,51 @@ fn execute_bounded_generic_local_parquet_source_with_stages(
         metrics.record_source_chunk_planned(chunk.row_group_count() as u64);
     }
     if chunk_plan.chunks.is_empty() {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.bounded.generic.source",
-            "bounded generic local parquet source requires at least one planned source chunk",
-        )
-        .with_fact("source_node_id", node_id));
+        let frame = crate::exec::source::read_local_parquet_source(context, node_id, source, metrics)?;
+        let requested_bytes = observe_device_memory_bytes(&frame, metrics)?;
+        let reservation = reservations.try_reserve(
+            MemoryReservationRequest::new(ReservationKind::SourceRead, requested_bytes, reservations.budget())
+                .with_memory_boundary("bounded_generic_source_read")
+                .with_node_id(node_id)
+                .with_stage("bounded_generic_source_read")
+                .with_attempt(1, 1),
+            metrics,
+        )?;
+        let mut resident = ResidentGpuFrame { frame, reservation };
+        for stage in stages {
+            resident = match stage {
+                BoundedGenericSourceAdjacentStage::Filter { node_id, node } => execute_bounded_generic_unary(
+                    context,
+                    *node_id,
+                    "bounded_generic_source_filter",
+                    "bounded_generic_source_filter_output",
+                    resident,
+                    reservations,
+                    metrics,
+                    true,
+                    |context, input, token, metrics| {
+                        execute_filter_with_budget(
+                            context,
+                            node,
+                            input,
+                            token.expect("budget token is created for source filter stage"),
+                            metrics,
+                        )
+                    },
+                )?,
+                BoundedGenericSourceAdjacentStage::Projection { node_id, node } => execute_bounded_generic_projection(
+                    context,
+                    *node_id,
+                    "bounded_generic_source_projection",
+                    "bounded_generic_source_projection_output",
+                    node,
+                    resident,
+                    reservations,
+                    metrics,
+                )?,
+            };
+        }
+        return Ok(resident);
     }
     record_bounded_parquet_source_metrics(source, &chunk_plan, metrics);
 
