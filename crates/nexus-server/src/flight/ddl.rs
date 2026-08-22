@@ -28,9 +28,8 @@ impl DatafusionNexusFlightSqlService {
                 return Err(status);
             },
         };
-        let observation = match attempt.as_ref() {
-            Some(attempt) => attempt.observation_handle(),
-            None => match planning_lease.observation_handle() {
+        let coordinator_capture = if attempt.is_none() {
+            let observation = match planning_lease.observation_handle() {
                 Ok(observation) => observation,
                 Err(error) => {
                     let (status, captured) = adapter_error_to_status_and_capture(
@@ -39,7 +38,10 @@ impl DatafusionNexusFlightSqlService {
                     planning_lease.finish_captured("planning", &status, captured);
                     return Err(status);
                 },
-            },
+            };
+            Some((observation, planning_lease.activity_factory()))
+        } else {
+            None
         };
         // Keep this exact-generation callback before `into_execution` moves
         // the planning lease. Its error arm may seal the attempt only after
@@ -57,7 +59,6 @@ impl DatafusionNexusFlightSqlService {
                 return Err(status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref()));
             },
         };
-        let activity_factory = execution_lease.activity_factory();
         let coordinator_terminal = CoordinatorExecutionTerminal::new_with_attempt_report(
             execution_lease,
             query_id.clone(),
@@ -83,13 +84,16 @@ impl DatafusionNexusFlightSqlService {
         drop(_query_enter);
 
         let native_cancellation = ExecutionCancellation::new();
-        let planning = self.coordinated_query_planning(
-            &query_id,
-            correlation_id.as_deref(),
-            native_cancellation.clone(),
-            observation,
-            activity_factory,
-        );
+        let planning = match coordinator_capture {
+            Some((observation, activity_factory)) => self.coordinated_query_planning(
+                &query_id,
+                correlation_id.as_deref(),
+                native_cancellation.clone(),
+                observation,
+                activity_factory,
+            ),
+            None => self.attempt_query_planning(correlation_id.as_deref(), native_cancellation.clone()),
+        };
         let query_ctx = match attempt.as_ref() {
             Some(attempt) => match attempt.planning_context(&planning.ctx) {
                 Ok(context) => context,

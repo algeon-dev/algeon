@@ -3,10 +3,14 @@
 //! Tests and downstream report rows assert on these structured outcomes
 //! rather than parsing printed physical plans.
 
-use nexus_query_engine::{
+pub use nexus_query_engine::{
     metrics::{PlanNodeId, QueryId, TraceId},
-    plan::{NativePlanCostFacts, NativePlanCostReason},
-    triage::{TriageCode, TriageEvidenceRef, TriageSeverity, TriageSignal, TriageSummary, TriageVerdict},
+    plan::NativePlanCostReason,
+    triage::{TriageCode, TriageSummary, TriageVerdict},
+};
+use nexus_query_engine::{
+    plan::NativePlanCostFacts,
+    triage::{TriageEvidenceRef, TriageSeverity, TriageSignal},
 };
 use serde_json::{Value, json};
 

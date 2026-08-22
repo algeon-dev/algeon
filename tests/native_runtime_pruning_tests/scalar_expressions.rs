@@ -8,7 +8,7 @@ async fn native_runtime_scalar_expressions_match_cpu_and_collect_required_column
 
     let cpu_batches = cpu_sql_output(&path, SQL_SCALAR_EXPRESSIONS_QUERY).await;
     let native_physical_plan = sql_plan(&path, SessionConfig::new(), SQL_SCALAR_EXPRESSIONS_QUERY).await;
-    let lowering = lower_physical_plan_to_native(native_physical_plan);
+    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.source_diagnostics[0].read_column_count, 3);
@@ -42,7 +42,7 @@ async fn native_runtime_nullable_scalar_expressions_match_cpu() {
     let cpu_batches = cpu_sql_output(&path, SQL_NULLABLE_SCALAR_EXPRESSIONS_QUERY).await;
     let native_physical_plan = sql_plan(&path, SessionConfig::new(), SQL_NULLABLE_SCALAR_EXPRESSIONS_QUERY).await;
     let plan_display = displayable(native_physical_plan.as_ref()).indent(true).to_string();
-    let lowering = lower_physical_plan_to_native(native_physical_plan);
+    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}\n{plan_display}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}\n{plan_display}", lowering.report.outcomes());
     assert_eq!(lowering.source_diagnostics[0].read_column_count, 3);
@@ -103,7 +103,7 @@ async fn native_runtime_null_semantics_match_cpu_by_expression_family() {
         let cpu_batches = cpu_sql_output(&path, sql).await;
         let native_physical_plan = sql_plan(&path, SessionConfig::new(), sql).await;
         let plan_display = displayable(native_physical_plan.as_ref()).indent(true).to_string();
-        let lowering = lower_physical_plan_to_native(native_physical_plan);
+        let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
         assert_eq!(lowering.selected_count(), 1, "{name} outcomes={:?}\n{plan_display}", lowering.report.outcomes());
         assert_eq!(
             lowering.not_selected_count(),
@@ -135,7 +135,7 @@ async fn native_runtime_ilike_rejects_before_native_execution() {
     write_nullable_scalar_expression_input_parquet(&path);
 
     let native_physical_plan = sql_plan(&path, SessionConfig::new(), SQL_NULL_SEMANTICS_ILIKE_QUERY).await;
-    let lowering = lower_physical_plan_to_native(native_physical_plan);
+    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
 
     assert_eq!(lowering.selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
@@ -162,7 +162,7 @@ async fn native_runtime_integer_modulo_rejects_before_native_execution() {
     write_nullable_scalar_expression_input_parquet(&path);
 
     let native_physical_plan = sql_plan(&path, SessionConfig::new(), SQL_NULL_SEMANTICS_MODULO_QUERY).await;
-    let lowering = lower_physical_plan_to_native(native_physical_plan);
+    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
 
     assert_eq!(lowering.selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
@@ -195,7 +195,7 @@ async fn native_runtime_invalid_scalar_expressions_reject_before_native_executio
         write_scalar_expression_input_parquet(&path);
 
         let native_physical_plan = sql_plan(&path, SessionConfig::new(), sql).await;
-        let lowering = lower_physical_plan_to_native(native_physical_plan);
+        let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
 
         assert_eq!(lowering.selected_count(), 0, "{name} should not rewrite: {:?}", lowering.report.outcomes());
         assert_eq!(lowering.not_selected_count(), 1, "{name} should reject: {:?}", lowering.report.outcomes());
@@ -226,7 +226,7 @@ async fn native_runtime_date_trunc_calendrical_grains_reject_before_native_execu
         write_nullable_scalar_expression_input_parquet(&path);
 
         let native_physical_plan = sql_plan(&path, SessionConfig::new(), sql).await;
-        let lowering = lower_physical_plan_to_native(native_physical_plan);
+        let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
 
         assert_eq!(lowering.selected_count(), 0, "{name} should not rewrite: {:?}", lowering.report.outcomes());
         assert_eq!(lowering.not_selected_count(), 1, "{name} should reject: {:?}", lowering.report.outcomes());
@@ -253,7 +253,7 @@ async fn native_runtime_substring_max_start_length_one_is_in_contract() {
     write_scalar_expression_input_parquet(&path);
 
     let native_physical_plan = sql_plan(&path, SessionConfig::new(), SQL_SUBSTRING_MAX_START_LENGTH_ONE_QUERY).await;
-    let lowering = lower_physical_plan_to_native(native_physical_plan);
+    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
 
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());

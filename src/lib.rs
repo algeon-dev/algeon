@@ -30,6 +30,7 @@ pub mod gpu_functions;
 pub mod native;
 pub mod native_exec;
 pub mod native_report;
+pub mod observability;
 mod physical_plan;
 pub mod planner;
 pub mod report;

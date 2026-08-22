@@ -15,6 +15,8 @@ impl NexusNativeExecutionConfig {
     /// Source storage profiles are service-owned on this path. Register them
     /// on the backend configuration; per-plan config cannot inject a second
     /// runtime-owned registry.
+    #[cfg(any(feature = "test-support", feature = "bench-support"))]
+    #[doc(hidden)]
     pub fn with_query_service_handle(mut self, handle: Arc<QueryHandle>) -> Self {
         self.memory_control_policy = handle.memory_control_policy();
         self.boundary_policy = handle.boundary_policy();

@@ -41,7 +41,7 @@ use datafusion::{
 };
 use datafusion_nexus::{
     backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile, NexusGpuQueuePolicy},
-    native::lower_physical_plan_to_native,
+    native::lower_physical_plan_to_native_for_test,
     native_exec::{NexusNativeExec, NexusNativeExecutionConfig},
 };
 use nexus_query_engine::{
@@ -154,7 +154,7 @@ async fn native_runtime_median_aggregate_matches_cpu_single_stage_bounded_withou
 
     let cpu_batches = cpu_sql_output(&path, SQL_MEDIAN_AGGREGATE_QUERY).await;
     let native_physical_plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_MEDIAN_AGGREGATE_QUERY).await;
-    let lowering = lower_physical_plan_to_native(native_physical_plan);
+    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
 
@@ -275,7 +275,7 @@ async fn native_runtime_pushed_predicate_source_limit_matches_cpu() {
     );
     let cpu_batches =
         collect(Arc::clone(&scan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
-    let lowering = lower_physical_plan_to_native(scan);
+    let lowering = lower_physical_plan_to_native_for_test(scan);
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.source_diagnostics[0].predicate_disposition.as_str(), "reader_pushdown");
@@ -375,7 +375,7 @@ async fn native_runtime_bare_boolean_filter_stays_post_decode() {
     let mut config = SessionConfig::new();
     config.options_mut().execution.parquet.pushdown_filters = true;
     let native_physical_plan = sql_plan(&path, config, SQL_BARE_BOOLEAN_FILTER_QUERY).await;
-    let lowering = lower_physical_plan_to_native(native_physical_plan);
+    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.plans.len(), 1);
@@ -418,7 +418,7 @@ struct NativeQueryObservation {
 
 async fn execute_sql_native_query(path: &std::path::Path, config: SessionConfig, sql: &str) -> NativeQueryObservation {
     let native_physical_plan = sql_plan(path, config, sql).await;
-    let lowering = lower_physical_plan_to_native(native_physical_plan);
+    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.plans.len(), 1);
@@ -511,7 +511,7 @@ async fn native_runtime_discounted_revenue_global_decimal_sum_matches_cpu() {
 
     let cpu_batches = cpu_sql_output(&path, SQL_Q6_SHAPED_QUERY).await;
     let native_physical_plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_Q6_SHAPED_QUERY).await;
-    let lowering = lower_physical_plan_to_native(native_physical_plan);
+    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.plans.len(), 1);
@@ -556,7 +556,7 @@ async fn native_runtime_order_sensitive_source_scan_limit_matches_cpu() {
     let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
     let cpu_batches =
         collect(Arc::clone(&plan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
-    let lowering = lower_physical_plan_to_native(plan);
+    let lowering = lower_physical_plan_to_native_for_test(plan);
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.plans.len(), 1);
@@ -617,7 +617,7 @@ async fn native_runtime_global_decimal_avg_matches_cpu() {
     let cpu_batches = cpu_sql_output(&path, SQL_GLOBAL_DECIMAL_AVG_QUERY).await;
     let native_physical_plan =
         sql_plan(&path, direct_friendly_sql_session_config(), SQL_GLOBAL_DECIMAL_AVG_QUERY).await;
-    let lowering = lower_physical_plan_to_native(native_physical_plan);
+    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.plans.len(), 1);
@@ -648,7 +648,7 @@ async fn native_runtime_zero_column_count_matches_cpu_without_parquet_data_colum
         collect(Arc::clone(&native_physical_plan), Arc::new(datafusion::execution::context::TaskContext::default()))
             .await
             .unwrap();
-    let lowering = lower_physical_plan_to_native(native_physical_plan);
+    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.source_diagnostics[0].read_column_count, 0);
@@ -779,7 +779,7 @@ async fn assert_sql_native_parity(
 ) {
     let cpu_batches = cpu_sql_output(path, sql).await;
     let native_physical_plan = sql_plan(path, config, sql).await;
-    let lowering = lower_physical_plan_to_native(native_physical_plan);
+    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.plans.len(), 1);
@@ -817,7 +817,7 @@ async fn assert_sql_native_parity(
 async fn assert_empty_local_parquet_aggregate_parity(plan: Arc<dyn ExecutionPlan>) {
     let cpu_batches =
         collect(Arc::clone(&plan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
-    let lowering = lower_physical_plan_to_native(plan);
+    let lowering = lower_physical_plan_to_native_for_test(plan);
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert!(lowering.source_diagnostics.is_empty());
@@ -848,7 +848,7 @@ async fn assert_native_physical_plan_parity(
 ) {
     let cpu_batches =
         collect(Arc::clone(&plan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
-    let lowering = lower_physical_plan_to_native(plan);
+    let lowering = lower_physical_plan_to_native_for_test(plan);
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.plans.len(), 1);

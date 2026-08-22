@@ -42,6 +42,7 @@ impl From<RuntimeObservationOwner> for NativeRuntimeObservation {
 /// Cloneable config-time observation wiring.
 #[derive(Clone)]
 pub struct NativeMetricsCapture {
+    #[cfg(feature = "server-internal")]
     query_id: Option<Arc<str>>,
     coordinated_observation: Option<RuntimeObservationHandle>,
     coordinated_activity: Option<NativeObservationActivityFactory>,
@@ -53,6 +54,7 @@ impl NativeMetricsCapture {
     pub fn standalone() -> Self {
         let observation_config = RuntimeObservationConfig::native_execution();
         Self {
+            #[cfg(feature = "server-internal")]
             query_id: None,
             coordinated_observation: None,
             coordinated_activity: None,
@@ -61,6 +63,7 @@ impl NativeMetricsCapture {
         }
     }
 
+    #[cfg(feature = "server-internal")]
     pub fn coordinated(query_id: impl Into<Arc<str>>, observation: RuntimeObservationHandle) -> Self {
         let metric_capture_limits = observation.config().limits();
         Self {
@@ -72,10 +75,12 @@ impl NativeMetricsCapture {
         }
     }
 
+    #[cfg(feature = "server-internal")]
     pub fn query_id(&self) -> Option<&str> {
         self.query_id.as_deref()
     }
 
+    #[cfg(feature = "server-internal")]
     pub fn with_observation_activity_factory(mut self, factory: NativeObservationActivityFactory) -> Self {
         self.coordinated_activity = Some(factory);
         self
@@ -123,6 +128,20 @@ pub struct NativeExecutionMetricsCapture {
 }
 
 impl NativeExecutionMetricsCapture {
+    pub(crate) fn coordinated(observation: RuntimeObservationHandle) -> Self {
+        let metric_capture_limits = observation.config().limits();
+        Self {
+            wiring: NativeMetricsCapture {
+                #[cfg(feature = "server-internal")]
+                query_id: None,
+                coordinated_observation: Some(observation),
+                coordinated_activity: None,
+                observation_config: RuntimeObservationConfig::disabled(),
+                metric_capture_limits,
+            },
+        }
+    }
+
     pub fn new_runtime_observation(
         &self,
         query_id: impl Into<RuntimeQueryId>,

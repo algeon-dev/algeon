@@ -59,7 +59,9 @@ impl NativeTpchRuntimeResources {
 
     pub(super) fn shutdown(mut self) -> DataFusionResult<()> {
         if let Some(backend) = self.backend.take() {
-            backend.close_and_wait(Duration::from_secs(30)).map_err(native_error)?;
+            backend
+                .close_and_wait(Duration::from_secs(30))
+                .map_err(|error| DataFusionError::External(Box::new(error)))?;
         }
         Ok(())
     }

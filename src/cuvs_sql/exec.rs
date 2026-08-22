@@ -146,7 +146,7 @@ impl CuvsAlgoExec {
         self.operation
     }
 
-    pub fn native_plan(&self) -> Result<QueryPlan> {
+    pub(crate) fn native_plan(&self) -> Result<QueryPlan> {
         lower_cuvs_query_plan(
             self.operation,
             &self.options,
@@ -166,6 +166,12 @@ impl CuvsAlgoExec {
             Arc::clone(&self.output_schema),
             CuvsPlanSink::HostArrow,
         )
+    }
+
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn native_plan_for_test(&self) -> Result<QueryPlan> {
+        self.native_plan()
     }
 
     fn child_specs(&self) -> Vec<NativeChildInputSpec> {

@@ -705,7 +705,7 @@ fn test_native_producer(input_name: &str) -> (NexusNativeGpuProducerExec, Arc<Sc
     let source =
         builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
     let plan = builder.finish_with_host_sink(source).clone_with_gpu_resident_sink();
-    (NexusNativeGpuProducerExec::try_new(input_name, plan).unwrap(), schema)
+    (NexusNativeGpuProducerExec::try_new_for_test(input_name, plan).unwrap(), schema)
 }
 
 fn record_one_gpu_handoff(producer: &NexusNativeGpuProducerExec) {
@@ -1267,7 +1267,7 @@ fn coordinator_stats_do_not_mint_producer_only_composed_runtime_metrics() {
     let mut consumer_builder = QueryPlanBuilder::new();
     let source = consumer_builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("producer-only", schema)));
     let consumer = consumer_builder.finish_with_host_sink(source);
-    let composed = NexusNativeComposedExec::try_new(
+    let composed = NexusNativeComposedExec::try_new_for_test(
         consumer,
         vec![Arc::new(producer)],
         NexusNativeExecutionConfig::bounded_default(),

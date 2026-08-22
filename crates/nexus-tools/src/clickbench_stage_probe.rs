@@ -387,10 +387,10 @@ fn build_probe_backend(
 
 fn peel_native_query_plan(plan: &dyn ExecutionPlan) -> Option<QueryPlan> {
     if let Some(native) = plan.downcast_ref::<NexusNativeExec>() {
-        return Some(native.native_plan().clone());
+        return Some(native.native_plan_for_internal_consumer().clone());
     }
     if let Some(native) = plan.downcast_ref::<NexusNativeComposedExec>() {
-        return Some(native.native_plan().clone());
+        return Some(native.native_plan_for_internal_consumer().clone());
     }
     for child in plan.children() {
         if let Some(found) = peel_native_query_plan(child.as_ref()) {

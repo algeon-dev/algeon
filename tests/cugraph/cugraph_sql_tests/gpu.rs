@@ -202,7 +202,7 @@ async fn cugraph_sql_keeps_native_inputs_device_resident_for_native_downstream()
     let df = ctx.sql(CPU_INPUT_BFS_SQL).await.unwrap();
     let plan = df.create_physical_plan().await.unwrap();
     let composed = find_composed_exec(plan.as_ref()).expect("backend SQL should compose the downstream native plan");
-    let native_plan = composed.native_plan();
+    let native_plan = composed.native_plan_for_test();
     assert!(native_plan.unreachable_node_ids().is_empty(), "the composed native plan must have no detached nodes");
     assert_eq!(native_plan.nodes().len(), 2, "BFS ORDER BY should lower to one source and one sort");
     let [source_node, sort_node] = native_plan.nodes() else {
@@ -257,7 +257,7 @@ async fn cugraph_sql_keeps_native_inputs_device_resident_for_native_downstream()
     assert!(top_k_plan.schema().field_with_name("predecessor").unwrap().is_nullable());
     let top_k_composed =
         find_composed_exec(top_k_plan.as_ref()).expect("raw BFS top-k must lower to one composed native consumer");
-    let top_k_native_plan = top_k_composed.native_plan().to_string();
+    let top_k_native_plan = top_k_composed.native_plan_for_test().to_string();
     for expected in ["GpuResidentSource", "Sort", "Limit"] {
         assert!(
             top_k_native_plan.contains(expected),
@@ -321,7 +321,7 @@ async fn cugraph_sql_gpu_pagerank_forceatlas2_join_executes_as_one_scheduled_com
         assert_eq!(top_k_plan.schema().field_with_name("value").unwrap().data_type(), &DataType::Float64);
         let top_k_composed =
             find_composed_exec(top_k_plan.as_ref()).expect("PageRank top-k must lower to one composed native consumer");
-        let top_k_native_plan = top_k_composed.native_plan().to_string();
+        let top_k_native_plan = top_k_composed.native_plan_for_test().to_string();
         for expected in ["GpuResidentSource", "Sort", "Limit"] {
             assert!(
                 top_k_native_plan.contains(expected),
@@ -751,7 +751,7 @@ pub async fn run_pagerank_filter_sort_limit_acceptance() {
     );
     let composed =
         find_composed_exec(plan.as_ref()).expect("PageRank composition plan should contain NexusNativeComposedExec");
-    let native_plan = composed.native_plan().to_string();
+    let native_plan = composed.native_plan_for_test().to_string();
     for expected in ["GpuResidentSource", "Filter", "Sort", "Limit"] {
         assert!(
             native_plan.contains(expected),

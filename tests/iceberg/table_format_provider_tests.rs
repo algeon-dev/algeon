@@ -45,7 +45,7 @@ use datafusion_nexus::{
     backend::{GpuDeviceMemoryLimit, NexusGpuDeviceProfile},
     capability::CapabilityReason,
     error::{Error, ErrorCode, ErrorStatus},
-    native::lower_physical_plan_to_native,
+    native::lower_physical_plan_to_native_for_test,
     native_exec::NexusNativeExecutionConfig,
     planner::NexusNativeOptimizerConfig,
     report::CandidateOutcome,

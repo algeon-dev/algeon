@@ -6,6 +6,14 @@ pub(super) struct QueryPlanning {
     pub(super) native_rule: Arc<NexusNativePhysicalOptimizerRule>,
 }
 impl DatafusionNexusFlightSqlService {
+    pub(super) fn attempt_query_planning(
+        &self,
+        correlation_id: Option<&str>,
+        cancellation: ExecutionCancellation,
+    ) -> QueryPlanning {
+        self.query_planning_with_capture(correlation_id, cancellation, NativeMetricsCapture::standalone())
+    }
+
     pub(super) fn coordinated_query_planning(
         &self,
         query_id: &str,
@@ -32,8 +40,8 @@ impl DatafusionNexusFlightSqlService {
             .native_optimizer_config
             .native_execution_config()
             .clone()
-            .with_cancellation(cancellation)
-            .with_metrics_capture(metrics_capture);
+            .with_cancellation_for_internal_consumer(cancellation)
+            .with_metrics_capture_for_internal_consumer(metrics_capture);
         if let Some(correlation_id) = correlation_id.map(str::trim).filter(|value| !value.is_empty()) {
             execution_config = execution_config.with_trace_id(correlation_id.to_string());
         }
@@ -166,9 +174,10 @@ impl DatafusionNexusFlightSqlService {
         if let Some(attempt) = attempt.as_ref() {
             self.register_attempt_report_handoff(attempt, CoordinatorReportHandoffTerminal::planning(&planning_lease));
         }
-        let observation = match attempt.as_ref() {
-            Some(attempt) => attempt.observation_handle(),
-            None => match planning_lease.observation_handle() {
+        let planning = if attempt.is_some() {
+            self.attempt_query_planning(correlation_id.as_deref(), native_cancellation.clone())
+        } else {
+            let observation = match planning_lease.observation_handle() {
                 Ok(observation) => observation,
                 Err(error) => {
                     let (status, captured) = adapter_error_to_status_and_capture(
@@ -177,16 +186,15 @@ impl DatafusionNexusFlightSqlService {
                     planning_lease.finish_captured("planning", &status, captured);
                     return Err(status);
                 },
-            },
+            };
+            self.coordinated_query_planning(
+                &query_id,
+                correlation_id.as_deref(),
+                native_cancellation.clone(),
+                observation,
+                planning_lease.activity_factory(),
+            )
         };
-        let activity_factory = planning_lease.activity_factory();
-        let planning = self.coordinated_query_planning(
-            &query_id,
-            correlation_id.as_deref(),
-            native_cancellation.clone(),
-            observation,
-            activity_factory,
-        );
         let query_ctx = match attempt.as_ref() {
             Some(attempt) => match attempt.planning_context(&planning.ctx) {
                 Ok(context) => context,

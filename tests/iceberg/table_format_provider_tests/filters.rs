@@ -8,7 +8,7 @@ async fn iceberg_provider_accepts_inexact_filter_without_losing_filter_columns()
 
     let df = ctx.sql("select value from iceberg_t where id = 1").await.unwrap();
     let physical_plan = df.create_physical_plan().await.unwrap();
-    let result = lower_physical_plan_to_native(physical_plan);
+    let result = lower_physical_plan_to_native_for_test(physical_plan);
 
     assert_eq!(planner.requests().len(), 1);
     assert_eq!(planner.requests()[0].scan_limit, None);
@@ -42,7 +42,7 @@ async fn iceberg_provider_keeps_filter_native_when_position_deletes_are_present(
 
     let df = ctx.sql("select value from iceberg_t where id = 1").await.unwrap();
     let physical_plan = df.create_physical_plan().await.unwrap();
-    let result = lower_physical_plan_to_native(physical_plan);
+    let result = lower_physical_plan_to_native_for_test(physical_plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     let source = native_local_parquet_source(&result.plans[0]);
@@ -65,7 +65,7 @@ async fn iceberg_provider_pushes_supported_filter_conjuncts_and_keeps_native_fil
 
     let df = ctx.sql("select value from iceberg_t where id = 1 and value not like 'bad%'").await.unwrap();
     let physical_plan = df.create_physical_plan().await.unwrap();
-    let result = lower_physical_plan_to_native(physical_plan);
+    let result = lower_physical_plan_to_native_for_test(physical_plan);
 
     assert_eq!(result.selected_count(), 1);
     let source = native_local_parquet_source(&result.plans[0]);
@@ -128,7 +128,7 @@ async fn iceberg_provider_keeps_native_filter_for_temporal_table_format_predicat
 
     let df = ctx.sql("select value from iceberg_t where ship_date = date '2024-01-01'").await.unwrap();
     let physical_plan = df.create_physical_plan().await.unwrap();
-    let result = lower_physical_plan_to_native(physical_plan);
+    let result = lower_physical_plan_to_native_for_test(physical_plan);
 
     assert_eq!(result.selected_count(), 1);
     let source = native_local_parquet_source(&result.plans[0]);
@@ -225,7 +225,7 @@ fn native_lowering_rejects_iceberg_missing_predicate_column_above_hash_join() {
             .unwrap();
     let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(predicate, join).unwrap());
 
-    let result = lower_physical_plan_to_native(filter);
+    let result = lower_physical_plan_to_native_for_test(filter);
 
     assert_eq!(result.selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert!(
@@ -325,7 +325,7 @@ fn native_lowering_accepts_iceberg_same_name_signed_widened_predicate_column_abo
             .unwrap();
     let filter: Arc<dyn ExecutionPlan> = Arc::new(FilterExec::try_new(predicate, join).unwrap());
 
-    let result = lower_physical_plan_to_native(filter);
+    let result = lower_physical_plan_to_native_for_test(filter);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     let sources = native_local_parquet_sources(&result.plans[0]);

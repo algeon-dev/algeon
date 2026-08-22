@@ -35,7 +35,7 @@ cugraph-sys = { workspace = true, optional = true }
 cuvs-sys = { workspace = true, optional = true }
 dashmap = "6.2"
 datafusion = { workspace = true }
-datafusion-nexus = { workspace = true, default-features = false }
+datafusion-nexus = { workspace = true, default-features = false, features = ["server-internal"] }
 futures = { workspace = true }
 nexus-iceberg = { workspace = true, optional = true }
 nexus-query-engine = { workspace = true }

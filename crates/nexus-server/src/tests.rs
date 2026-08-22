@@ -5,7 +5,7 @@ use datafusion::execution::SessionStateBuilder;
 use super::*;
 use crate::{
     backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuDeviceProfile, NexusGpuQueuePolicy},
-    native_exec::{NativeMetricsCapture, NexusNativeExecutionConfig},
+    native_exec::{NexusNativeExecutionConfig, ServerInternalNativeMetricsCapture as NativeMetricsCapture},
     planner::NexusNativeOptimizerConfig,
 };
 

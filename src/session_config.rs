@@ -15,9 +15,9 @@ use datafusion::common::{
 };
 use nexus_query_engine::{
     graph_memory::GraphMemoryCalibrationOverride,
-    mode::StatisticalAggregateExecutionMode,
-    runtime::{MemoryControlPolicy, SourceChunkPlanningMode, SourceSchedulerPolicy},
+    runtime::{MemoryControlPolicy, SourceSchedulerPolicy},
 };
+pub use nexus_query_engine::{mode::StatisticalAggregateExecutionMode, runtime::SourceChunkPlanningMode};
 
 use crate::{native_exec::NexusNativeExecutionConfig, planner::NexusNativeOptimizerConfig};
 

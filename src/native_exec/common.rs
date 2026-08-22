@@ -373,6 +373,7 @@ pub(super) fn gpu_resident_source_names(plan: &QueryPlan) -> BTreeSet<String> {
 
 /// Joins iterator items with `,`. Used to render stable comma-separated lists
 /// for plan-display strings.
+#[cfg(any(test, feature = "test-support"))]
 pub(super) fn comma_separated<'a>(values: impl IntoIterator<Item = &'a str>) -> String {
     values.into_iter().collect::<Vec<_>>().join(",")
 }

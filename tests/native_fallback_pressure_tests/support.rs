@@ -8,7 +8,9 @@ pub(super) fn native_exec_leaf_for_report() -> Arc<dyn ExecutionPlan> {
         schema,
         vec!["key".to_string()],
     )));
-    Arc::new(NexusNativeExec::try_new(builder.finish_with_host_sink(source), native_execution_config()).unwrap())
+    Arc::new(
+        NexusNativeExec::try_new_for_test(builder.finish_with_host_sink(source), native_execution_config()).unwrap(),
+    )
 }
 
 pub(super) fn composed_native_exec_for_report() -> Arc<dyn ExecutionPlan> {
@@ -20,15 +22,18 @@ pub(super) fn composed_native_exec_for_report() -> Arc<dyn ExecutionPlan> {
         vec!["key".to_string()],
     )));
     let producer = Arc::new(
-        NexusNativeGpuProducerExec::try_new("fragment_input", producer_builder.finish_gpu_resident(producer_source))
-            .unwrap(),
+        NexusNativeGpuProducerExec::try_new_for_test(
+            "fragment_input",
+            producer_builder.finish_gpu_resident(producer_source),
+        )
+        .unwrap(),
     );
 
     let mut consumer_builder = QueryPlanBuilder::new();
     let consumer_source = consumer_builder
         .add_source(SourceNode::GpuResident(GpuResidentSource::new("fragment_input", Arc::clone(&schema))));
     Arc::new(
-        NexusNativeComposedExec::try_new(
+        NexusNativeComposedExec::try_new_for_test(
             consumer_builder.finish_with_host_sink(consumer_source),
             vec![producer],
             native_execution_config(),

@@ -7,7 +7,7 @@ async fn direct_friendly_sql_physical_plan_has_stable_native_lowering_outcome() 
     write_numeric_parquet_file(&path);
     let plan = sql_benchmark_plan(&path, direct_friendly_sql_session_config()).await;
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1);
@@ -36,7 +36,7 @@ async fn direct_friendly_sql_native_aggregate_parity_functions_lower() {
     write_numeric_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_NATIVE_AGGREGATE_PARITY_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1);
@@ -64,7 +64,7 @@ async fn direct_friendly_sql_median_aggregate_lowers_to_native_median() {
     write_numeric_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_MEDIAN_AGGREGATE_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -89,7 +89,7 @@ async fn direct_friendly_sql_mixed_median_and_statistical_aggregate_is_rejected(
     )
     .await;
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_native_rejection(&result, CapabilityReason::UnsupportedOperator);
 
@@ -103,7 +103,7 @@ async fn direct_friendly_sql_statistical_aggregate_aliases_lower() {
     write_numeric_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_NATIVE_STATISTICAL_AGGREGATE_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1);
@@ -147,7 +147,7 @@ async fn direct_physical_count_distinct_lowers_to_exact_nunique() {
     );
     let aggregate: Arc<dyn ExecutionPlan> = Arc::new(aggregate.with_new_aggr_exprs(vec![distinct_count]));
 
-    let result = lower_physical_plan_to_native(aggregate);
+    let result = lower_physical_plan_to_native_for_test(aggregate);
 
     assert_eq!(result.candidate_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -167,7 +167,7 @@ async fn direct_friendly_sql_count_star_lowers_with_synthetic_argument_column() 
     write_numeric_parquet_file(&path);
     let plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_COUNT_STAR_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.selected_count(), 1);
     assert_eq!(result.not_selected_count(), 0);
@@ -199,7 +199,7 @@ async fn direct_friendly_sql_zero_column_count_lowers_to_represented_source() {
     write_numeric_parquet_file(&path);
     let plan = count_only_sort_limit_plan(parquet_scan(&path));
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -232,7 +232,7 @@ async fn direct_friendly_sql_typed_null_count_does_not_use_zero_column_count() {
     write_numeric_parquet_file(&path);
     let plan = typed_null_count_only_sort_limit_plan(parquet_scan(&path));
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -271,7 +271,7 @@ async fn sql_count_only_lowers_to_native_zero_column_count_without_manual_plan_s
     write_numeric_parquet_file(&path);
     let plan = sql_plan(&path, count_only_sql_session_config(), SQL_COUNT_ONLY_QUERY).await;
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
@@ -311,7 +311,7 @@ async fn direct_friendly_sql_filter_plan_lowers_when_scan_predicate_is_absent() 
     let plan = sql_benchmark_plan(&path, direct_friendly_sql_session_config()).await;
     let plan = sql_plan_without_scan_predicate(plan);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1);
@@ -348,7 +348,7 @@ async fn direct_friendly_sql_not_filter_lowers_to_native_expr() {
     let predicate = Arc::new(NotExpr::new(payload_lt_10));
     let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.candidate_count(), 1);
     assert_eq!(result.selected_count(), 1);

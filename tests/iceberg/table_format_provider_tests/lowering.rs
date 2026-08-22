@@ -41,7 +41,7 @@ async fn iceberg_provider_lowers_q09_style_scalar_aggregate_subqueries_as_one_na
         .await
         .unwrap();
     let physical_plan = df.create_physical_plan().await.unwrap();
-    let result = lower_physical_plan_to_native(physical_plan);
+    let result = lower_physical_plan_to_native_for_test(physical_plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());
@@ -77,7 +77,7 @@ fn native_lowering_preserves_fetch_pushed_to_table_format_filter_and_coalesce() 
     let coalesce: Arc<dyn ExecutionPlan> = Arc::new(CoalescePartitionsExec::new(filter));
     let coalesce = coalesce.with_fetch(Some(5)).expect("CoalescePartitionsExec should accept fetch");
 
-    let result = lower_physical_plan_to_native(coalesce);
+    let result = lower_physical_plan_to_native_for_test(coalesce);
 
     assert_eq!(result.selected_count(), 1);
     assert!(native_plan_limit_count(&result.plans[0]) >= 1);
@@ -90,7 +90,7 @@ fn native_lowering_lowers_table_format_scan_to_local_parquet_source() {
     let schema = iceberg_test_schema();
     let scan = Arc::new(test_iceberg_scan_exec(native_admissible_scan_plan(Arc::clone(&schema)), schema));
 
-    let result = lower_physical_plan_to_native(scan);
+    let result = lower_physical_plan_to_native_for_test(scan);
 
     assert_eq!(result.plans.len(), 1);
     assert_eq!(result.selected_count(), 1);
@@ -122,7 +122,7 @@ fn native_lowering_lowers_s3_table_format_scan_to_object_store_parquet_source() 
     ];
     let scan = Arc::new(test_iceberg_scan_exec(plan, schema));
 
-    let result = lower_physical_plan_to_native(scan);
+    let result = lower_physical_plan_to_native_for_test(scan);
 
     assert_eq!(result.selected_count(), 1);
     assert_eq!(result.not_selected_count(), 0);
@@ -159,7 +159,7 @@ fn native_lowering_preserves_remote_direct_reader_contract_for_dispatch() {
     ];
     let scan = Arc::new(test_iceberg_scan_exec(plan, schema));
 
-    let result = lower_physical_plan_to_native(scan);
+    let result = lower_physical_plan_to_native_for_test(scan);
 
     assert_eq!(result.selected_count(), 1);
     let source = native_local_parquet_source(&result.plans[0]);
@@ -180,7 +180,7 @@ async fn table_format_scan_preserves_unsupported_feature_reason_and_executes_cpu
         ));
     let scan = Arc::new(test_iceberg_scan_exec(plan, schema));
 
-    let result = lower_physical_plan_to_native(Arc::clone(&scan) as Arc<dyn ExecutionPlan>);
+    let result = lower_physical_plan_to_native_for_test(Arc::clone(&scan) as Arc<dyn ExecutionPlan>);
 
     let CandidateOutcome::NotSupported { capability_reason, .. } = &result.report.outcomes()[0] else {
         panic!("expected unsupported native candidate");

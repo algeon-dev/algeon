@@ -15,8 +15,10 @@ pub use iceberg::{
     iceberg_schema_to_datafusion_arrow_schema,
 };
 pub use scan::{
-    AWS_ENDPOINT_URL_ENV, AWS_ENDPOINT_URL_S3_ENV, NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV,
-    NEXUS_LAKEHOUSE_CACHE_POLICY_ENV, NEXUS_LAKEHOUSE_CACHE_READ_ENV, NEXUS_LAKEHOUSE_CACHE_ROOT_ENV, TableFormat,
+    AWS_ENDPOINT_URL_ENV, AWS_ENDPOINT_URL_S3_ENV, CredentialMode, LakehouseCacheFillMode, LakehouseCacheReadMode,
+    LakehouseCacheStatus, NEXUS_LAKEHOUSE_CACHE_MAX_BYTES_ENV, NEXUS_LAKEHOUSE_CACHE_POLICY_ENV,
+    NEXUS_LAKEHOUSE_CACHE_READ_ENV, NEXUS_LAKEHOUSE_CACHE_ROOT_ENV, ParquetReadStrategy, ResolvedParquetInput,
+    ResolvedParquetSource, S3SourceStorageCredential, S3SourceStorageProfile, SourceStorageProfile, TableFormat,
     TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource, TableFormatDataFile,
     TableFormatDataFileFormat, TableFormatDeleteFile, TableFormatDeleteFileContent,
     TableFormatDirectDeviceReadDisposition, TableFormatLakehouseCachePolicy, TableFormatLakehouseCacheReadPolicy,

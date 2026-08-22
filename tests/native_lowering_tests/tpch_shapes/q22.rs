@@ -10,7 +10,7 @@ async fn tpch_q22_lowers_scalar_avg_anti_join_conditional_join_and_final_groupin
         panic!("q22 should produce a physical plan");
     };
 
-    let result = lower_physical_plan_to_native(plan);
+    let result = lower_physical_plan_to_native_for_test(plan);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());

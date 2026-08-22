@@ -8,7 +8,7 @@ use anyhow::{Context, anyhow, ensure};
 use arrow::{array::Int32Array, record_batch::RecordBatch};
 use datafusion::prelude::SessionContext;
 use datafusion_nexus::{
-    attempt::AttemptOptions,
+    attempt::{AttemptDisposition, AttemptOptions, QueryAttemptReport},
     backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile},
     native_exec::NexusNativeExecutionConfig,
 };
@@ -117,12 +117,12 @@ async fn run_same_device_native_attempts(
     let first_admission = first_report.admission.as_ref().context("first native attempt was not admitted")?;
     let second_admission = second_report.admission.as_ref().context("second native attempt was not admitted")?;
     ensure!(
-        first_report.disposition == nexus_query_engine::observability::AttemptDisposition::Native,
+        first_report.disposition == AttemptDisposition::Native,
         "first profiling attempt did not reach native cuDF execution: {:?}",
         first_report.disposition
     );
     ensure!(
-        second_report.disposition == nexus_query_engine::observability::AttemptDisposition::Native,
+        second_report.disposition == AttemptDisposition::Native,
         "second profiling attempt did not reach native cuDF execution: {:?}",
         second_report.disposition
     );
@@ -157,7 +157,7 @@ async fn run_and_capture(
     attempt: &datafusion_nexus::attempt::NexusAttempt,
     ctx: &SessionContext,
     sql: &str,
-) -> anyhow::Result<Arc<nexus_query_engine::observability::QueryAttemptReport>> {
+) -> anyhow::Result<Arc<QueryAttemptReport>> {
     let stream = attempt.sql(ctx, sql).await?;
     for batch in stream.collect::<Vec<_>>().await {
         batch.context("consume attempt result stream")?;
@@ -165,7 +165,7 @@ async fn run_and_capture(
     Ok(attempt.completion().await)
 }
 
-fn print_report(report: &nexus_query_engine::observability::QueryAttemptReport) {
+fn print_report(report: &QueryAttemptReport) {
     println!(
         "attempt_id={} disposition={:?} outcome={:?} total_ns={:?} planning_ns={:?}",
         report.attempt_id,

@@ -21,7 +21,6 @@ use datafusion_nexus::{
     report::PlanningReport,
     session::NexusSessionStateBuilderExt,
 };
-use nexus_query_engine::error::{QueryError, QueryErrorKind, QueryErrorStatus};
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -90,9 +89,9 @@ async fn plan_pipeline(State(state): State<AppState>, Path(name): Path<String>) 
 }
 
 async fn gpu(State(state): State<AppState>) -> Result<Json<Value>, AppError> {
-    let snapshot = state.backend.admission_snapshot().map_err(AppError::from_native)?;
-    let device_ledgers = state.backend.device_ledger_reports().map_err(AppError::from_native)?;
-    let memory_failures = state.backend.device_memory_failure_reports().map_err(AppError::from_native)?;
+    let snapshot = state.backend.admission_snapshot().map_err(AppError::from_adapter)?;
+    let device_ledgers = state.backend.device_ledger_reports().map_err(AppError::from_adapter)?;
+    let memory_failures = state.backend.device_memory_failure_reports().map_err(AppError::from_adapter)?;
     Ok(Json(json!({
         "admission": {
             "active_queries": snapshot.active_queries,
@@ -228,21 +227,8 @@ impl AppError {
         Self::new(status, "datafusion_error", error.to_string())
     }
 
-    fn from_native(error: QueryError) -> Self {
-        let status =
-            if error.kind() == QueryErrorKind::ResourceExhausted && error.status() == QueryErrorStatus::Temporary {
-                StatusCode::TOO_MANY_REQUESTS
-            } else {
-                StatusCode::INTERNAL_SERVER_ERROR
-            };
-        Self {
-            status,
-            code: error.code().as_str().to_string(),
-            message: error.message().to_string(),
-            // Native facts are raw in-process diagnostics, not an HTTP
-            // disclosure contract. Select client fields explicitly instead.
-            facts: Vec::new(),
-        }
+    fn from_adapter(error: Error) -> Self {
+        Self::from_adapter_error(&error)
     }
 
     fn from_adapter_error(error: &Error) -> Self {

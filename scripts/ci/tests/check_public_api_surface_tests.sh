@@ -106,6 +106,7 @@ run_check() {
   local status=0
   : >"${log}"
   PATH="${tmp_dir}/bin:${PATH}" COMMAND_LOG="${log}" PUBLIC_API_SNAPSHOT_DIR="${snapshot_dir}" \
+    PUBLIC_API_SKIP_FACADE_POLICY=1 \
     "$@" >"${output}" 2>&1 || status=$?
   printf '%s\n' "${status}" >"${tmp_dir}/${name}.status"
 }
@@ -260,5 +261,48 @@ run_check no_args "${clean_dir}" "${CHECK_SCRIPT}"
 assert_status no_args 2
 assert_contains "${tmp_dir}/no_args.output" "Usage: bash scripts/ci/check_public_api_surface.sh"
 echo "PASS: an unknown or missing mode argument is a usage error"
+
+facade_dir="${tmp_dir}/facade_policy"
+mkdir -p "${facade_dir}"
+facade_snapshot="${facade_dir}/datafusion-nexus.txt"
+facade_ledger="${facade_dir}/datafusion-nexus-engine-types.tsv"
+facade_output="${facade_dir}/output"
+facade_header=$'public_symbol\tengine_type\tconsumer\tdecision\tfacade_path\treason\tphase'
+facade_engine_type='nexus_query_engine::observability::attempt_report::AttemptId'
+printf '%s\n' \
+  'pub use datafusion_nexus::attempt::AttemptId' \
+  "pub fn datafusion_nexus::attempt::id() -> ${facade_engine_type}" \
+  >"${facade_snapshot}"
+printf '%s\n' \
+  "${facade_header}" \
+  $'datafusion_nexus::attempt::AttemptId\tnexus_query_engine::observability::attempt_report::AttemptId\tattempt lifecycle\tRE-EXPORT\tdatafusion_nexus::attempt::AttemptId\tstable immutable attempt identity\t3' \
+  >"${facade_ledger}"
+python3 scripts/ci/check_public_api_facade.py "${facade_snapshot}" "${facade_ledger}" >"${facade_output}"
+assert_contains "${facade_output}" "PASS: 1 live engine types have unique approved facade reachability"
+echo "PASS: an approved selective re-export has a reachable facade path"
+
+printf '%s\n' \
+  'pub use datafusion_nexus::attempt::AttemptId' \
+  "pub fn datafusion_nexus::attempt::id() -> ${facade_engine_type}" \
+  'pub fn datafusion_nexus::native::plan() -> nexus_query_engine::plan::core::QueryPlan' \
+  >"${facade_snapshot}"
+if python3 scripts/ci/check_public_api_facade.py "${facade_snapshot}" "${facade_ledger}" >"${facade_output}" 2>&1; then
+  echo "FAIL: an unclassified live engine type passed the facade policy" >&2
+  exit 1
+fi
+assert_contains "${facade_output}" "live engine type has no disposition: nexus_query_engine::plan::core::QueryPlan"
+echo "PASS: an unclassified live engine type fails closed"
+
+printf '%s\n' \
+  "${facade_header}" \
+  $'datafusion_nexus::attempt::AttemptId\tnexus_query_engine::observability::attempt_report::AttemptId\tattempt lifecycle\tRE-EXPORT\tdatafusion_nexus::attempt::AttemptId\tstable immutable attempt identity\t3' \
+  $'datafusion_nexus::native::plan\tnexus_query_engine::plan::core::QueryPlan\tnative IR\tHIDE\tdatafusion_nexus::report::PlanningReport\traw IR stays engine-owned\t5' \
+  >"${facade_ledger}"
+if python3 scripts/ci/check_public_api_facade.py "${facade_snapshot}" "${facade_ledger}" >"${facade_output}" 2>&1; then
+  echo "FAIL: a live HIDE engine type passed the facade policy" >&2
+  exit 1
+fi
+assert_contains "${facade_output}" "nexus_query_engine::plan::core::QueryPlan is live but disposition is HIDE"
+echo "PASS: a HIDE engine type cannot reappear in the public surface"
 
 echo "OK: public API surface snapshot check fault-injection tests passed."

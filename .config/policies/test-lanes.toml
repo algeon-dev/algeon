@@ -10,6 +10,11 @@ resource_class = "shared"
 reason = "Adapter library tests include coverage SQL and native execution context cases that create cuDF runtimes on bounded fixtures."
 
 [[binary]]
+id = "datafusion-facade-consumer"
+lane = "cpu"
+reason = "The compile-contract fixture exercises facade-only type reachability and does not initialize DataFusion or CUDA."
+
+[[binary]]
 id = "nexus-bench"
 lane = "cpu"
 reason = "Benchmark library unit tests validate workload/report construction; benchmark GPU execution is an explicit cargo-run path."

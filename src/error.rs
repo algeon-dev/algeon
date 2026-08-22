@@ -2,7 +2,7 @@
 //!
 //! Adapter errors classify failures from DataFusion planning/execution,
 //! native execution, cuDF calls made directly by the adapter, and native
-//! `nexus-query-engine` errors wrapped by [`Error::from_native`]. Native errors
+//! native execution errors wrapped at the adapter boundary. Native errors
 //! keep their original classification in `native_*` facts while this layer maps
 //! them into adapter-level [`ErrorCode`] values suitable for DataFusion.
 
@@ -466,7 +466,7 @@ impl Error {
     ///
     /// `operation` should be the stable dotted id for the adapter operation, and
     /// `message` should be human-facing adapter context.
-    pub fn from_native(
+    pub(crate) fn from_native(
         operation: &'static str,
         message: impl Into<String>,
         source: nexus_query_engine::error::QueryError,
@@ -490,6 +490,26 @@ impl Error {
             error.facts.insert_log_safe(NATIVE_FACT_COLLISION_KEYS, collision_keys.join(","));
         }
         error.with_source(source)
+    }
+
+    #[cfg(feature = "test-support")]
+    #[doc(hidden)]
+    pub fn from_native_for_test(
+        operation: &'static str,
+        message: impl Into<String>,
+        source: nexus_query_engine::error::QueryError,
+    ) -> Self {
+        Self::from_native(operation, message, source)
+    }
+
+    #[cfg(feature = "server-internal")]
+    #[doc(hidden)]
+    pub fn from_native_for_internal_consumer(
+        operation: &'static str,
+        message: impl Into<String>,
+        source: nexus_query_engine::error::QueryError,
+    ) -> Self {
+        Self::from_native(operation, message, source)
     }
 
     /// Returns the stable machine-readable adapter error code.

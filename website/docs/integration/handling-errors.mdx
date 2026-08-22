@@ -14,7 +14,7 @@ The typical native-execution path is:
 
 ~~~text
 cuDF / cuGraph / cuVS
-  -> nexus_query_engine::error::QueryError
+  -> internal native execution error
   -> datafusion_nexus::error::Error
   -> DataFusionError::External
   -> embedded application or Flight SQL status

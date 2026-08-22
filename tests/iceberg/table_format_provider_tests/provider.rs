@@ -18,7 +18,7 @@ async fn iceberg_provider_plans_structured_table_format_scan_leaf() {
 
     assert_eq!(scan.name(), "NexusIcebergScanExec");
 
-    let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
+    let lowering = lower_physical_plan_to_native_for_test(Arc::clone(&physical_plan));
     assert_eq!(lowering.selected_count(), 1);
     let source = native_local_parquet_source(&lowering.plans[0]);
     assert_eq!(source.read_columns, vec!["value".to_string()]);
@@ -390,7 +390,7 @@ async fn iceberg_provider_unprojected_unsupported_map_field_does_not_block_nativ
 
     let df = ctx.sql("select id from iceberg_t limit 1").await.unwrap();
     let physical_plan = df.create_physical_plan().await.unwrap();
-    let result = lower_physical_plan_to_native(physical_plan);
+    let result = lower_physical_plan_to_native_for_test(physical_plan);
 
     assert_eq!(planner.requests().len(), 1);
     assert_eq!(planner.requests()[0].projected_column_names.as_deref(), Some(&["id".to_string()][..]));
@@ -448,7 +448,7 @@ async fn iceberg_provider_projected_unsupported_map_field_rejects_native_project
 
     let df = ctx.sql("select * from iceberg_t limit 1").await.unwrap();
     let physical_plan = df.create_physical_plan().await.unwrap();
-    let result = lower_physical_plan_to_native(physical_plan);
+    let result = lower_physical_plan_to_native_for_test(physical_plan);
 
     assert_eq!(result.selected_count(), 0, "outcomes={:?}", result.report.outcomes());
     assert!(matches!(
@@ -508,7 +508,7 @@ async fn iceberg_provider_native_probe_failure_keeps_cpu_delegate_executable() {
     assert_eq!(scan.resolved_scan_plan().snapshot_id.as_deref(), Some("12345"));
     assert_eq!(scan.diagnostics().planned_data_file_count, 1);
 
-    let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
+    let lowering = lower_physical_plan_to_native_for_test(Arc::clone(&physical_plan));
     assert!(matches!(
         lowering.report.outcomes()[0],
         CandidateOutcome::NotSupported { capability_reason: CapabilityReason::TableFormatPlanningFailed, .. }
@@ -544,7 +544,7 @@ async fn resolved_native_capability_miss_survives_optional_inspection_failure() 
     assert_eq!(scan_plan.data_files.len(), 1);
     assert_eq!(inspection_count.load(AtomicOrdering::Relaxed), 1);
 
-    let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
+    let lowering = lower_physical_plan_to_native_for_test(Arc::clone(&physical_plan));
     assert!(matches!(
         lowering.report.outcomes()[0],
         CandidateOutcome::NotSupported { capability_reason: CapabilityReason::IcebergDeleteFilesUnsupported, .. }
@@ -594,7 +594,7 @@ async fn predicate_free_limit_inspection_can_clear_dropped_file_rejection() {
     assert!(scan_plan.unsupported_features.is_empty());
     assert_eq!(inspection_count.load(AtomicOrdering::Relaxed), 1);
 
-    let lowering = lower_physical_plan_to_native(physical_plan);
+    let lowering = lower_physical_plan_to_native_for_test(physical_plan);
     assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
     assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
 }
@@ -646,7 +646,7 @@ async fn iceberg_provider_scan_planning_timeout_preserves_cpu_delegate_and_struc
     assert_eq!(adapter_error.fact_value("timeout_budget_increase_required"), Some("true"));
     assert_eq!(adapter_error.fact_value("test_planner_fact"), Some("slow"));
 
-    let lowering = lower_physical_plan_to_native(Arc::clone(&physical_plan));
+    let lowering = lower_physical_plan_to_native_for_test(Arc::clone(&physical_plan));
     assert!(matches!(
         lowering.report.outcomes()[0],
         CandidateOutcome::NotSupported { capability_reason: CapabilityReason::TableFormatPlanningFailed, .. }
@@ -698,7 +698,7 @@ async fn iceberg_provider_plumbs_explicit_scan_limit_into_table_format_source() 
     let ctx = SessionContext::new();
     let projection = vec![1];
     let physical_plan = provider.scan(&ctx.state(), Some(&projection), &[], Some(7)).await.unwrap();
-    let result = lower_physical_plan_to_native(physical_plan);
+    let result = lower_physical_plan_to_native_for_test(physical_plan);
 
     assert_eq!(planner.requests().len(), 1);
     assert_eq!(planner.requests()[0].scan_limit, Some(7));
@@ -719,7 +719,7 @@ fn native_lowering_pushes_root_global_limit_into_table_format_source_scan_limit(
         Arc::new(test_iceberg_scan_exec(native_admissible_scan_plan(Arc::clone(&schema)), schema));
     let limited: Arc<dyn ExecutionPlan> = Arc::new(GlobalLimitExec::new(scan, 3, Some(7)));
 
-    let result = lower_physical_plan_to_native(limited);
+    let result = lower_physical_plan_to_native_for_test(limited);
 
     assert_eq!(result.selected_count(), 1, "outcomes={:?}", result.report.outcomes());
     assert_eq!(result.not_selected_count(), 0, "outcomes={:?}", result.report.outcomes());

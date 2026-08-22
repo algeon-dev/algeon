@@ -8,10 +8,11 @@ use std::{
 
 use arrow::datatypes::{DataType, Schema, SchemaRef};
 use futures::future::BoxFuture;
-use nexus_query_engine::{
-    runtime::SourceStorageProfile,
+pub use nexus_query_engine::{
+    runtime::{S3SourceStorageCredential, S3SourceStorageProfile, SourceStorageProfile},
     source::{
-        CredentialMode, LakehouseCacheFillMode, LakehouseCacheReadMode, LakehouseCacheStatus, ResolvedParquetSource,
+        CredentialMode, LakehouseCacheFillMode, LakehouseCacheReadMode, LakehouseCacheStatus, ParquetReadStrategy,
+        ResolvedParquetInput, ResolvedParquetSource,
     },
 };
 
