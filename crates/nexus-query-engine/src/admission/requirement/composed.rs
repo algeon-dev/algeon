@@ -145,6 +145,7 @@ fn transfer_gpu_sink_consumer_output(plan: &QueryPlan, bound: &mut ComposedConsu
         matches!(
             term_id.role,
             OwnerTermRole::ConsumerOutput
+                | OwnerTermRole::AggregateOutput
                 | OwnerTermRole::SortOutputFrame
                 | OwnerTermRole::SortOutputNullMask
                 | OwnerTermRole::LimitOutputFrame
@@ -562,15 +563,22 @@ pub(crate) fn composed_consumer_branch_bound_uncached(
             for output in &projection.outputs {
                 let (column, representation_cast) = if let Some(column) = alias_wrapped_column(&output.expr) {
                     (column, false)
-                } else if let Some((column, target_type)) = representation_cast_column(&output.expr) {
-                    if *target_type != *output.field.data_type() {
+                } else if let Some((column, target_type)) =
+                    consumer_representation_cast_column(&output.expr, &input.schema)
+                {
+                    if !representation_cast_preserves_identity(target_type, output.field.data_type()) {
                         return Err(composed_schedule_error(
                             "consumer_projection_expression_workspace_unmodeled",
                             None,
                         )
-                        .with_fact("expression", output.expr.clone()));
+                        .with_fact("expression", output.expr.clone())
+                        .with_fact("cast_target_type", format!("{target_type:?}"))
+                        .with_fact("output_type", format!("{:?}", output.field.data_type())));
                     }
                     (column, true)
+                } else if crate::expr::representation_cast_column(&output.expr).is_some() {
+                    return Err(composed_schedule_error("consumer_projection_expression_workspace_unmodeled", None)
+                        .with_fact("expression", output.expr.clone()));
                 } else if projection.outputs.iter().any(|output| alias_wrapped_literal(&output.expr).is_some()) {
                     return composed_consumer_literal_projection_bound(plan, node_id, node, projection, input);
                 } else {
@@ -593,7 +601,9 @@ pub(crate) fn composed_consumer_branch_bound_uncached(
                             "consumer_projection_expression_workspace_unmodeled",
                             None,
                         )
-                        .with_fact("expression", output.expr.clone()));
+                        .with_fact("expression", output.expr.clone())
+                        .with_fact("input_type", format!("{:?}", source.data_type()))
+                        .with_fact("output_type", format!("{:?}", output.field.data_type())));
                     }
                 } else if source.data_type() != output.field.data_type() {
                     return Err(composed_schedule_error("consumer_projection_output_type_mismatch", None)
@@ -916,6 +926,28 @@ pub(crate) fn alias_wrapped_literal(expr: &Expr) -> Option<&LiteralValue> {
     match expr {
         Expr::Literal(literal) => Some(literal),
         Expr::Alias { expr, .. } => alias_wrapped_literal(expr),
+        Expr::Cast { expr, target_type } => {
+            let literal = alias_wrapped_literal(expr)?;
+            representation_cast_preserves_identity(&literal.data_type(), target_type).then_some(literal)
+        },
+        _ => None,
+    }
+}
+
+fn consumer_representation_cast_column<'a>(
+    expr: &'a Expr,
+    input_schema: &'a SchemaRef,
+) -> Option<(&'a crate::expr::ColumnRef, &'a DataType)> {
+    match expr {
+        Expr::Alias { expr, .. } => consumer_representation_cast_column(expr, input_schema),
+        Expr::Cast { expr, target_type } => {
+            let (column, source_type) = match expr.as_ref() {
+                Expr::Column(column) => (column, input_schema.field_with_name(column.name()).ok()?.data_type()),
+                Expr::Alias { .. } | Expr::Cast { .. } => consumer_representation_cast_column(expr, input_schema)?,
+                _ => return None,
+            };
+            representation_cast_preserves_identity(source_type, target_type).then_some((column, target_type))
+        },
         _ => None,
     }
 }
@@ -930,12 +962,20 @@ pub(crate) fn composed_consumer_literal_projection_bound(
     let mut retains_input = false;
     let mut literal_fields = Vec::new();
     for output in &projection.outputs {
-        if let Some(column) = alias_wrapped_column(&output.expr) {
+        let identity_column = alias_wrapped_column(&output.expr).map(|column| (column, false)).or_else(|| {
+            consumer_representation_cast_column(&output.expr, &input.schema).map(|(column, _)| (column, true))
+        });
+        if let Some((column, representation_cast)) = identity_column {
             let source = input.schema.field_with_name(column.name()).map_err(|_| {
                 composed_schedule_error("consumer_projection_source_column_missing", None)
                     .with_fact("column", column.name())
             })?;
-            if source.data_type() != output.field.data_type() {
+            let type_matches = if representation_cast {
+                representation_cast_preserves_identity(source.data_type(), output.field.data_type())
+            } else {
+                source.data_type() == output.field.data_type()
+            };
+            if !type_matches {
                 return Err(composed_schedule_error("consumer_projection_output_type_mismatch", None)
                     .with_fact("column", column.name())
                     .with_fact("input_type", source.data_type())
@@ -950,7 +990,7 @@ pub(crate) fn composed_consumer_literal_projection_bound(
         };
         let string_output =
             matches!(output.field.data_type(), DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View);
-        if literal.data_type() != *output.field.data_type()
+        if !representation_cast_preserves_identity(&literal.data_type(), output.field.data_type())
             || matches!(literal, LiteralValue::Null(_)) && !output.field.is_nullable()
             || fixed_width_consumer_output_column(output.field.data_type()).is_none() && !string_output
         {
@@ -964,7 +1004,22 @@ pub(crate) fn composed_consumer_literal_projection_bound(
         return Err(composed_schedule_error("consumer_projection_expression_workspace_unmodeled", None));
     }
     let literal_schema = Arc::new(Schema::new(literal_fields));
-    let literal_evidence = PlanColumnEvidenceAnalysis::for_plan(plan, &HashMap::new())?.node(node_id);
+    let mut literal_evidence = PlanColumnEvidenceAnalysis::for_plan(plan, &HashMap::new())?.node(node_id);
+    for field in literal_schema.fields() {
+        let Some(bound) = literal_evidence.string_payload_bounds.get_mut(field.name()) else {
+            continue;
+        };
+        if bound.total_payload_upper_bound_bytes.is_none()
+            && let Some(max_length) = bound.max_single_value_length_bytes
+        {
+            bound.total_payload_upper_bound_bytes = Some(
+                input
+                    .rows
+                    .checked_mul(max_length)
+                    .ok_or_else(|| composed_schedule_error("consumer_projection_literal_payload_overflow", None))?,
+            );
+        }
+    }
     let literal_bytes = bounded_consumer_frame_bytes_with_evidence(input.rows, &literal_schema, &literal_evidence)?;
     let literal_term =
         consumer_owner_term(node_id, OwnerTermRole::ConsumerOutput, AllocationClass::ActivePhase, literal_bytes, plan)?;
@@ -1540,12 +1595,18 @@ pub(crate) fn composed_consumer_join_peak_bytes(
     column_evidence: &PlanColumnEvidenceAnalysis,
     memo: &mut HashMap<NodeId, ComposedConsumerBranchBound>,
 ) -> Result<ComposedConsumerBranchBound> {
-    if !matches!(join.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::LeftSemi)
+    if !matches!(join.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::LeftSemi | JoinType::LeftAnti)
         || join.spec.residual_predicate.is_some()
         || join.spec.keys.is_empty()
-        || (join.spec.join_type == JoinType::LeftSemi && join.spec.build_side != JoinSide::Right)
+        || (matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti)
+            && join.spec.build_side != JoinSide::Right)
     {
-        return Err(composed_schedule_error("consumer_join_topology_unmodeled", None));
+        return Err(composed_schedule_error("consumer_join_topology_unmodeled", None)
+            .with_fact("node_id", node_id)
+            .with_fact("join_type", format!("{:?}", join.spec.join_type))
+            .with_fact("build_side", format!("{:?}", join.spec.build_side))
+            .with_fact("join_key_count", join.spec.keys.len())
+            .with_fact("residual_predicate", join.spec.residual_predicate.is_some()));
     }
     let left = composed_consumer_branch_bound(
         plan,
@@ -1629,59 +1690,61 @@ pub(crate) fn composed_consumer_join_peak_bytes(
             .rows
             .checked_mul(right.rows.max(1))
             .ok_or_else(|| composed_schedule_error("consumer_join_output_rows_overflow", None))?,
-        JoinType::LeftSemi => left.rows,
+        JoinType::LeftSemi | JoinType::LeftAnti => left.rows,
         _ => return Err(composed_schedule_error("consumer_join_topology_unmodeled", None)),
     };
     let output_rows_usize = usize::try_from(output_rows)
         .map_err(|_| composed_schedule_error("consumer_join_output_rows_exceed_usize", None))?;
-    let (hash_table_bytes, pair_indices_bytes, filtered_workspace_bytes, filtered_probe_state_bytes) = if join
-        .spec
-        .join_type
-        == JoinType::LeftSemi
-    {
-        let null_equality = match join.spec.null_equality {
-            crate::plan::JoinNullEquality::NullsDoNotMatch => cudf::NullEquality::Unequal,
-            crate::plan::JoinNullEquality::NullsMatch => cudf::NullEquality::Equal,
-        };
-        let options = cudf::ops::join::FilteredJoinOptions::new().null_equality(null_equality);
-        let build_preflight =
-            cudf::ops::join::filtered_join_allocation_preflight_for_metadata(&key_metadata, build.rows, options)
+    let (hash_table_bytes, pair_indices_bytes, filtered_workspace_bytes, filtered_probe_state_bytes) =
+        if matches!(join.spec.join_type, JoinType::LeftSemi | JoinType::LeftAnti) {
+            let null_equality = match join.spec.null_equality {
+                crate::plan::JoinNullEquality::NullsDoNotMatch => cudf::NullEquality::Unequal,
+                crate::plan::JoinNullEquality::NullsMatch => cudf::NullEquality::Equal,
+            };
+            let options = cudf::ops::join::FilteredJoinOptions::new().null_equality(null_equality);
+            let build_preflight =
+                cudf::ops::join::filtered_join_allocation_preflight_for_metadata(&key_metadata, build.rows, options)
+                    .map_err(|error| {
+                        composed_schedule_error("consumer_join_filtered_build_preflight_unavailable", None)
+                            .with_fact("cudf_error", error.to_string())
+                            .with_fact(
+                                "required_contract",
+                                cudf::ops::join::FILTERED_JOIN_ALLOCATION_PREFLIGHT_CONTRACT,
+                            )
+                    })?;
+            let probe_preflight = cudf::ops::join::filtered_join_probe_allocation_preflight(probe.rows, output_rows)
                 .map_err(|error| {
-                    composed_schedule_error("consumer_join_filtered_build_preflight_unavailable", None)
+                    composed_schedule_error("consumer_join_filtered_probe_preflight_unavailable", None)
                         .with_fact("cudf_error", error.to_string())
                         .with_fact("required_contract", cudf::ops::join::FILTERED_JOIN_ALLOCATION_PREFLIGHT_CONTRACT)
                 })?;
-        let probe_preflight = cudf::ops::join::filtered_join_probe_allocation_preflight(probe.rows, output_rows)
+            let build_frame_bytes =
+                bounded_consumer_frame_bytes_with_evidence(build.rows, &build.schema, &build_column_evidence)?;
+            (
+                u64::try_from(build_preflight.active_build_phase_peak_bytes())
+                    .map_err(|_| composed_schedule_error("consumer_join_filtered_build_preflight_exceeds_u64", None))?,
+                u64::try_from(probe_preflight.gather_map_bytes())
+                    .map_err(|_| composed_schedule_error("consumer_join_pair_indices_exceed_u64", None))?,
+                build_frame_bytes,
+                u64::try_from(probe_preflight.retained_probe_state_bytes())
+                    .map_err(|_| composed_schedule_error("consumer_join_filtered_probe_state_exceeds_u64", None))?,
+            )
+        } else {
+            let preprocessing_mode = cudf::ops::join::HashJoinPreprocessingMode::for_keys(&key_metadata);
+            let hash_preflight = cudf::ops::join::hash_join_allocation_preflight_for_metadata(
+                &key_metadata,
+                build.rows,
+                cudf::DataFrameHashJoinOptions::new().load_factor_value(),
+                preprocessing_mode,
+            )
             .map_err(|error| {
-                composed_schedule_error("consumer_join_filtered_probe_preflight_unavailable", None)
+                composed_schedule_error("consumer_join_hash_preflight_unavailable", None)
                     .with_fact("cudf_error", error.to_string())
-                    .with_fact("required_contract", cudf::ops::join::FILTERED_JOIN_ALLOCATION_PREFLIGHT_CONTRACT)
+                    .with_fact("required_contract", cudf::ops::join::HASH_JOIN_ALLOCATION_PREFLIGHT_CONTRACT)
             })?;
-        let build_frame_bytes =
-            bounded_consumer_frame_bytes_with_evidence(build.rows, &build.schema, &build_column_evidence)?;
-        (
-            u64::try_from(build_preflight.active_build_phase_peak_bytes())
-                .map_err(|_| composed_schedule_error("consumer_join_filtered_build_preflight_exceeds_u64", None))?,
-            u64::try_from(probe_preflight.gather_map_bytes())
-                .map_err(|_| composed_schedule_error("consumer_join_pair_indices_exceed_u64", None))?,
-            build_frame_bytes,
-            u64::try_from(probe_preflight.retained_probe_state_bytes())
-                .map_err(|_| composed_schedule_error("consumer_join_filtered_probe_state_exceeds_u64", None))?,
-        )
-    } else {
-        let preprocessing_mode = cudf::ops::join::HashJoinPreprocessingMode::for_keys(&key_metadata);
-        let hash_preflight = cudf::ops::join::hash_join_allocation_preflight_for_metadata(
-            &key_metadata,
-            build.rows,
-            cudf::DataFrameHashJoinOptions::new().load_factor_value(),
-            preprocessing_mode,
-        )
-        .map_err(|error| {
-            composed_schedule_error("consumer_join_hash_preflight_unavailable", None)
-                .with_fact("cudf_error", error.to_string())
-                .with_fact("required_contract", cudf::ops::join::HASH_JOIN_ALLOCATION_PREFLIGHT_CONTRACT)
-        })?;
-        let pair_indices_bytes = cudf::DataFrameHashJoinPairIndices::reservation_size_bytes_for_len(output_rows_usize)
+            let pair_indices_bytes = cudf::DataFrameHashJoinPairIndices::reservation_size_bytes_for_len(
+                output_rows_usize,
+            )
             .map_err(|_| {
                 composed_join_preflight_error(
                     "consumer_join_pair_indices_preflight_unavailable",
@@ -1694,15 +1757,15 @@ pub(crate) fn composed_consumer_join_peak_bytes(
                     output_rows,
                 )
             })?;
-        (
-            u64::try_from(hash_preflight.active_phase_peak_bytes())
-                .map_err(|_| composed_schedule_error("consumer_join_hash_preflight_exceeds_u64", None))?,
-            u64::try_from(pair_indices_bytes)
-                .map_err(|_| composed_schedule_error("consumer_join_pair_indices_exceed_u64", None))?,
-            0,
-            0,
-        )
-    };
+            (
+                u64::try_from(hash_preflight.active_phase_peak_bytes())
+                    .map_err(|_| composed_schedule_error("consumer_join_hash_preflight_exceeds_u64", None))?,
+                u64::try_from(pair_indices_bytes)
+                    .map_err(|_| composed_schedule_error("consumer_join_pair_indices_exceed_u64", None))?,
+                0,
+                0,
+            )
+        };
     let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
     let output_bytes =
         bounded_consumer_frame_bytes_with_evidence(output_rows, node.output_schema(), &column_evidence.node(node_id))
@@ -1936,10 +1999,27 @@ pub(crate) fn bounded_consumer_frame_bytes_with_evidence(
     schema: &SchemaRef,
     evidence: &PlanColumnEvidence,
 ) -> Result<u64> {
+    bounded_frame_bytes_with_evidence(rows, schema, evidence, false)
+}
+
+pub(crate) fn bounded_retained_output_frame_bytes_with_evidence(
+    rows: u64,
+    schema: &SchemaRef,
+    evidence: &PlanColumnEvidence,
+) -> Result<u64> {
+    bounded_frame_bytes_with_evidence(rows, schema, evidence, false)
+}
+
+fn bounded_frame_bytes_with_evidence(
+    rows: u64,
+    schema: &SchemaRef,
+    evidence: &PlanColumnEvidence,
+    require_max_string_length: bool,
+) -> Result<u64> {
     let columns = schema
         .fields()
         .iter()
-        .map(|field| consumer_output_column_with_evidence(field, evidence))
+        .map(|field| output_column_with_evidence(field, evidence, require_max_string_length))
         .collect::<Result<Vec<_>>>()?;
     let bytes = crate::exec::join_output_upper_bound_bytes(rows, &columns)
         .map_err(|_| composed_schedule_error("consumer_frame_upper_bound_unavailable", None))?;
@@ -1964,6 +2044,14 @@ pub(crate) fn consumer_output_column_with_evidence(
     field: &arrow::datatypes::Field,
     evidence: &PlanColumnEvidence,
 ) -> Result<crate::exec::JoinOutputColumnUpperBoundInput> {
+    output_column_with_evidence(field, evidence, false)
+}
+
+fn output_column_with_evidence(
+    field: &arrow::datatypes::Field,
+    evidence: &PlanColumnEvidence,
+    require_max_string_length: bool,
+) -> Result<crate::exec::JoinOutputColumnUpperBoundInput> {
     if let Some(column) = fixed_width_consumer_output_column(field.data_type()) {
         return Ok(column);
     }
@@ -1975,9 +2063,33 @@ pub(crate) fn consumer_output_column_with_evidence(
             return Err(composed_schedule_error("consumer_string_payload_lineage_missing", None)
                 .with_fact("column", field.name()));
         }
+        let max_single_value_length_bytes = bound.max_single_value_length_bytes;
+        if require_max_string_length && max_single_value_length_bytes.is_none() {
+            return Err(composed_schedule_error("consumer_string_max_length_evidence_missing", None)
+                .with_fact("column", field.name())
+                .with_fact(
+                    "total_payload_upper_bound_bytes",
+                    bound
+                        .total_payload_upper_bound_bytes
+                        .map_or_else(|| "unknown".to_owned(), |value| value.to_string()),
+                )
+                .with_fact(
+                    "distinct_payload_upper_bound_bytes",
+                    bound
+                        .distinct_payload_upper_bound_bytes
+                        .map_or_else(|| "unknown".to_owned(), |value| value.to_string()),
+                )
+                .with_fact(
+                    "distinct_value_count_upper_bound",
+                    bound
+                        .distinct_value_count_upper_bound
+                        .map_or_else(|| "unknown".to_owned(), |value| value.to_string()),
+                )
+                .with_fact("string_payload_lineages", format!("{:?}", bound.lineages)));
+        }
         return Ok(crate::exec::JoinOutputColumnUpperBoundInput {
             data_type: field.data_type().clone(),
-            input_max_string_length_bytes: bound.max_single_value_length_bytes,
+            input_max_string_length_bytes: max_single_value_length_bytes,
             input_total_string_bytes: bound.total_payload_upper_bound_bytes,
         });
     }

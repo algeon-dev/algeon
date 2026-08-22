@@ -688,22 +688,44 @@ pub(super) fn native_algorithm_params(
                 seed: params.seed,
             })
         },
-        CugraphAlgorithmParams::ForceAtlas2(params) => GraphAlgorithmParams::ForceAtlas2(GraphForceAtlas2Params {
-            max_iter: params.max_iter,
-            outbound_attraction_distribution: params.outbound_attraction_distribution,
-            lin_log_mode: params.lin_log_mode,
-            prevent_overlapping: params.prevent_overlapping,
-            overlap_scaling_ratio: params.overlap_scaling_ratio,
-            edge_weight_influence: params.edge_weight_influence,
-            jitter_tolerance: params.jitter_tolerance,
-            barnes_hut_optimize: params.barnes_hut_optimize,
-            barnes_hut_theta: params.barnes_hut_theta,
-            scaling_ratio: params.scaling_ratio,
-            strong_gravity_mode: params.strong_gravity_mode,
-            gravity: params.gravity,
-            verbose: params.verbose,
-            seed: params.seed,
-        }),
+        CugraphAlgorithmParams::ForceAtlas2(params) => {
+            let mut next = predicate_nodes.iter().copied();
+            let vertex_attributes = params.vertex_attributes.as_ref().map(|input| {
+                GraphForceAtlas2VertexAttributesInput::new(
+                    next.next().expect("ForceAtlas2 vertex-attributes node missing"),
+                    input.vertex_col.clone(),
+                    input.radius_col.clone(),
+                    input.mobility_col.clone(),
+                    input.mass_col.clone(),
+                )
+            });
+            let initial_positions = params.initial_positions.as_ref().map(|input| {
+                GraphForceAtlas2InitialPositionsInput::new(
+                    next.next().expect("ForceAtlas2 initial-positions node missing"),
+                    input.vertex_col.clone(),
+                    input.x_col.clone(),
+                    input.y_col.clone(),
+                )
+            });
+            GraphAlgorithmParams::ForceAtlas2(GraphForceAtlas2Params {
+                max_iter: params.max_iter,
+                outbound_attraction_distribution: params.outbound_attraction_distribution,
+                lin_log_mode: params.lin_log_mode,
+                prevent_overlapping: params.prevent_overlapping,
+                overlap_scaling_ratio: params.overlap_scaling_ratio,
+                edge_weight_influence: params.edge_weight_influence,
+                jitter_tolerance: params.jitter_tolerance,
+                barnes_hut_optimize: params.barnes_hut_optimize,
+                barnes_hut_theta: params.barnes_hut_theta,
+                scaling_ratio: params.scaling_ratio,
+                strong_gravity_mode: params.strong_gravity_mode,
+                gravity: params.gravity,
+                verbose: params.verbose,
+                seed: params.seed,
+                vertex_attributes,
+                initial_positions,
+            })
+        },
         CugraphAlgorithmParams::Similarity(params) => {
             let vertex_pairs_node = predicate_nodes.first().copied().expect("similarity vertex-pairs node missing");
             GraphAlgorithmParams::Similarity(nexus_query_engine::plan::GraphSimilarityParams::new(

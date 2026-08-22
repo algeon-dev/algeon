@@ -389,6 +389,19 @@ impl LocalParquetSource {
         self.projected_output_column_source_refs = projected_output_column_source_refs;
         self.pure_filter_columns = pure_filter_columns;
         self.pure_filter_column_source_refs = pure_filter_column_source_refs;
+        if self.output_schema_override.is_none() {
+            let mut seen = BTreeSet::new();
+            let fields = self
+                .projected_output_columns
+                .iter()
+                .chain(&self.pure_filter_columns)
+                .filter(|column| seen.insert((*column).clone()))
+                .map(|column| self.schema.field_with_name(column).cloned())
+                .collect::<std::result::Result<Vec<_>, _>>();
+            if let Ok(fields) = fields {
+                self.output_schema_override = Some(Arc::new(Schema::new(fields)));
+            }
+        }
         self.refresh_diagnostics();
         self
     }
@@ -1121,6 +1134,32 @@ impl LocalParquetFile {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn column_roles_expose_projected_then_filter_only_fields_without_duplicates() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("filter", DataType::Boolean, false),
+            Field::new("shared", DataType::Utf8, true),
+            Field::new("projected", DataType::Int64, false),
+        ]));
+        let source = LocalParquetSource::from_files(
+            vec![LocalParquetFile::new("roles.parquet")],
+            schema,
+            vec!["filter".to_owned(), "shared".to_owned(), "projected".to_owned()],
+        )
+        .with_column_roles(
+            vec!["projected".to_owned(), "shared".to_owned()],
+            vec!["filter".to_owned(), "shared".to_owned()],
+        );
+
+        assert_eq!(
+            source.output_schema().fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
+            ["projected", "shared", "filter"]
+        );
+        assert_eq!(source.output_schema().field(0).data_type(), &DataType::Int64);
+        assert_eq!(source.output_schema().field(1).data_type(), &DataType::Utf8);
+        assert_eq!(source.output_schema().field(2).data_type(), &DataType::Boolean);
+    }
 
     #[test]
     fn resolved_local_file_uri_uses_filesystem_path_for_location_and_reader_path() {

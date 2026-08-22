@@ -220,7 +220,12 @@ pub(super) fn limitations_json(algorithm: CugraphAlgorithm) -> String {
         ]);
     }
     if algorithm == CugraphAlgorithm::ForceAtlas2 {
-        limitations.push("prevent_overlapping=true is rejected until vertex_radius side inputs are exposed");
+        limitations.extend([
+            "vertex_attributes and initial_positions must contain exactly one non-null row for every graph vertex",
+            "duplicate, missing, and extra ForceAtlas2 side-input vertices are rejected at execution",
+            "radius, mobility, mass, x, and y side-input columns must be Float32",
+            "prevent_overlapping=true requires a radius binding",
+        ]);
     }
     if is_similarity(algorithm) {
         limitations.extend([

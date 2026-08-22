@@ -286,7 +286,9 @@ fn common_request_error(
     if let Some(role) = request.relations.keys().find(|role| !roles.contains(&role.as_str())) {
         return Some(("unknown_relation_role", format!("unknown relation role '{role}'")));
     }
-    roles
+    descriptor
+        .required_relation_role_names()
+        .expect("catalog validates descriptor roles")
         .iter()
         .find(|role| !request.relations.contains_key(**role))
         .map(|role| ("missing_relation", format!("missing required relation role '{role}'")))

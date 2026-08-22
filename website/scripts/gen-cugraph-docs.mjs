@@ -253,8 +253,18 @@ function loadSpecs() {
     provider: 'cugraph',
     namePattern: /^cugraph_[a-z0-9_]+$/,
     validate(file, spec) {
-      if (!Array.isArray(spec.relation_roles) || spec.relation_roles.length !== 1 || spec.relation_roles[0]?.name !== 'edges') {
-        throw new Error(`${file}: cuGraph descriptor must declare exactly the edges relation role`);
+      if (!Array.isArray(spec.relation_roles) || spec.relation_roles.length === 0 || spec.relation_roles[0]?.name !== 'edges') {
+        throw new Error(`${file}: cuGraph descriptor must declare edges as its first relation role`);
+      }
+      const roleNames = new Set();
+      for (const role of spec.relation_roles) {
+        if (!role || typeof role.name !== 'string' || role.name.length === 0 || roleNames.has(role.name)) {
+          throw new Error(`${file}: cuGraph descriptor relation roles must have unique non-empty names`);
+        }
+        if ((role.required !== undefined && typeof role.required !== 'boolean') || typeof role.description !== 'string') {
+          throw new Error(`${file}: relation role ${role.name} has an invalid required or description field`);
+        }
+        roleNames.add(role.name);
       }
       validateVertexIdContract(file, spec.relation_roles[0]);
       if (!Array.isArray(spec.argument_descriptions) || !Array.isArray(spec.examples) || !Array.isArray(spec.limitations)) {
@@ -326,8 +336,20 @@ function optionTable(options) {
     ]));
 }
 
-function renderRelations() {
-  return 'The first positional argument names a registered edge table or view (the `edges` role). Parenthesized relation subqueries are not accepted; metadata validation uses the same registered name.';
+function renderRelations(spec) {
+  if (spec.relation_roles.length === 1) {
+    return 'The first positional argument names a registered edge table or view (the `edges` role). Parenthesized relation subqueries are not accepted; metadata validation uses the same registered name.';
+  }
+  const rows = spec.relation_roles.map(role => [
+    code(role.name),
+    role.required === false ? 'no' : 'yes',
+    cell(role.description),
+  ]);
+  return [
+    'The first positional argument names the registered edge table or view. Optional relations are named by their side-input table options. Parenthesized relation subqueries are not accepted; metadata validation resolves the same registered names.',
+    '',
+    table(['Role', 'Required', 'Contract'], rows),
+  ].join('\n');
 }
 
 function renderTypeList(types) {
@@ -479,7 +501,7 @@ function renderPage(spec) {
     spec,
     title,
     reference: `Official cuGraph reference: [${documentation.officialApi}](${officialDocsUrl})`,
-    relationInputs: renderRelations(),
+    relationInputs: renderRelations(spec),
     scalarArgumentsAndOptions: renderArguments(spec),
     outputSchema: renderSchemas(spec),
     examples: narrativeExampleImport(`../../_examples/${spec.function_name}.mdx`),

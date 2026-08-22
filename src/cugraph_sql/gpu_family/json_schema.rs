@@ -85,6 +85,15 @@ pub(super) fn options_schema_json(algorithm: CugraphAlgorithm, config: &CugraphS
             }),
         );
     }
+    if algorithm == CugraphAlgorithm::ForceAtlas2 {
+        schema.as_object_mut().expect("options schema is an object").insert(
+            "type_aliases".to_string(),
+            json!({
+                "vertex_domain": "same numeric or logical string domain as src_col and dst_col",
+                "Float32": "non-null Float32"
+            }),
+        );
+    }
     schema.to_string()
 }
 
@@ -456,8 +465,7 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
                     "scope": "algorithm",
                     "type": "Boolean",
                     "default": params.prevent_overlapping,
-                    "allowed_values": [false],
-                    "valid_when": "unsupported until vertex_radius side inputs are exposed by the SQL API"
+                    "valid_when": "true requires vertex_attributes_table and vertex_radius_col"
                 },
                 "overlap_scaling_ratio": {
                     "scope": "algorithm",
@@ -515,6 +523,73 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
                     "scope": "algorithm",
                     "type": "UInt64",
                     "default": params.seed
+                },
+                "vertex_attributes_table": {
+                    "scope": "side_input",
+                    "type": "Utf8|null",
+                    "default": null,
+                    "side_input": {
+                        "role": "vertex_attributes",
+                        "column_options": ["vertex_attributes_vertex_col", "vertex_radius_col", "vertex_mobility_col", "vertex_mass_col"]
+                    }
+                },
+                "vertex_attributes_vertex_col": {
+                    "scope": "side_input",
+                    "type": "Utf8|null",
+                    "default": null,
+                    "column_of": "vertex_attributes_table",
+                    "expected_type_ref": "vertex_domain"
+                },
+                "vertex_radius_col": {
+                    "scope": "side_input",
+                    "type": "Utf8|null",
+                    "default": null,
+                    "column_of": "vertex_attributes_table",
+                    "expected_type_ref": "Float32"
+                },
+                "vertex_mobility_col": {
+                    "scope": "side_input",
+                    "type": "Utf8|null",
+                    "default": null,
+                    "column_of": "vertex_attributes_table",
+                    "expected_type_ref": "Float32"
+                },
+                "vertex_mass_col": {
+                    "scope": "side_input",
+                    "type": "Utf8|null",
+                    "default": null,
+                    "column_of": "vertex_attributes_table",
+                    "expected_type_ref": "Float32"
+                },
+                "initial_positions_table": {
+                    "scope": "side_input",
+                    "type": "Utf8|null",
+                    "default": null,
+                    "side_input": {
+                        "role": "initial_positions",
+                        "column_options": ["initial_positions_vertex_col", "initial_x_col", "initial_y_col"]
+                    }
+                },
+                "initial_positions_vertex_col": {
+                    "scope": "side_input",
+                    "type": "Utf8|null",
+                    "default": null,
+                    "column_of": "initial_positions_table",
+                    "expected_type_ref": "vertex_domain"
+                },
+                "initial_x_col": {
+                    "scope": "side_input",
+                    "type": "Utf8|null",
+                    "default": null,
+                    "column_of": "initial_positions_table",
+                    "expected_type_ref": "Float32"
+                },
+                "initial_y_col": {
+                    "scope": "side_input",
+                    "type": "Utf8|null",
+                    "default": null,
+                    "column_of": "initial_positions_table",
+                    "expected_type_ref": "Float32"
                 }
             })
         },
@@ -944,7 +1019,31 @@ fn params_json(params: &CugraphAlgorithmParams) -> Value {
             json!({"n_clusters": params.n_clusters, "n_eigenvectors": params.n_eigenvectors, "evs_tolerance": params.evs_tolerance, "evs_max_iterations": params.evs_max_iterations, "k_means_tolerance": params.k_means_tolerance, "k_means_max_iterations": params.k_means_max_iterations, "seed": params.seed})
         },
         CugraphAlgorithmParams::ForceAtlas2(params) => {
-            json!({"max_iter": params.max_iter, "outbound_attraction_distribution": params.outbound_attraction_distribution, "lin_log_mode": params.lin_log_mode, "prevent_overlapping": params.prevent_overlapping, "overlap_scaling_ratio": params.overlap_scaling_ratio, "edge_weight_influence": params.edge_weight_influence, "jitter_tolerance": params.jitter_tolerance, "barnes_hut_optimize": params.barnes_hut_optimize, "barnes_hut_theta": params.barnes_hut_theta, "scaling_ratio": params.scaling_ratio, "strong_gravity_mode": params.strong_gravity_mode, "gravity": params.gravity, "verbose": params.verbose, "seed": params.seed})
+            json!({
+                "max_iter": params.max_iter,
+                "outbound_attraction_distribution": params.outbound_attraction_distribution,
+                "lin_log_mode": params.lin_log_mode,
+                "prevent_overlapping": params.prevent_overlapping,
+                "overlap_scaling_ratio": params.overlap_scaling_ratio,
+                "edge_weight_influence": params.edge_weight_influence,
+                "jitter_tolerance": params.jitter_tolerance,
+                "barnes_hut_optimize": params.barnes_hut_optimize,
+                "barnes_hut_theta": params.barnes_hut_theta,
+                "scaling_ratio": params.scaling_ratio,
+                "strong_gravity_mode": params.strong_gravity_mode,
+                "gravity": params.gravity,
+                "verbose": params.verbose,
+                "seed": params.seed,
+                "vertex_attributes_table": params.vertex_attributes.as_ref().map(|input| input.table_name.to_string()),
+                "vertex_attributes_vertex_col": params.vertex_attributes.as_ref().map(|input| input.vertex_col.as_str()),
+                "vertex_radius_col": params.vertex_attributes.as_ref().and_then(|input| input.radius_col.as_deref()),
+                "vertex_mobility_col": params.vertex_attributes.as_ref().and_then(|input| input.mobility_col.as_deref()),
+                "vertex_mass_col": params.vertex_attributes.as_ref().and_then(|input| input.mass_col.as_deref()),
+                "initial_positions_table": params.initial_positions.as_ref().map(|input| input.table_name.to_string()),
+                "initial_positions_vertex_col": params.initial_positions.as_ref().map(|input| input.vertex_col.as_str()),
+                "initial_x_col": params.initial_positions.as_ref().map(|input| input.x_col.as_str()),
+                "initial_y_col": params.initial_positions.as_ref().map(|input| input.y_col.as_str())
+            })
         },
         CugraphAlgorithmParams::Similarity(params) => json!({
             "vertex_pairs": {

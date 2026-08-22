@@ -287,23 +287,21 @@ struct CompletedComposedAdmissionProof {
 fn prepared_producer_capability_proof(
     input: &dyn ExecutionPlan,
     tickets: &[Arc<super::admission::QueryAdmissionTicket>],
-) -> Option<QueryPlanCapabilityProof> {
-    match tickets {
+) -> nexus_query_engine::error::Result<Option<QueryPlanCapabilityProof>> {
+    if let Some(producer) = input.downcast_ref::<NexusNativeComposedGpuProducerExec>() {
+        return resolve_composed_admission_capability_proof(producer.native_plan(), &producer.gpu_inputs).map(Some);
+    }
+    Ok(match tickets {
         [ticket] => ticket.attempt_capability_proof_for_rebind(),
-        [] => graph_execution_plan(input)
-            .and_then(|graph| graph.graph_execution_capability_proof().ok())
-            .or_else(|| {
+        [] => {
+            graph_execution_plan(input).and_then(|graph| graph.graph_execution_capability_proof().ok()).or_else(|| {
                 input
                     .downcast_ref::<super::producer::NexusNativeGpuProducerExec>()
                     .and_then(|producer| QueryPlanCapabilityProof::for_query_plan(producer.native_plan()))
             })
-            .or_else(|| {
-                input
-                    .downcast_ref::<NexusNativeComposedGpuProducerExec>()
-                    .and_then(|producer| QueryPlanCapabilityProof::for_query_plan(producer.native_plan()))
-            }),
+        },
         _ => None,
-    }
+    })
 }
 
 fn composed_consumer_capability_proof(consumer_plan: &QueryPlan) -> Option<QueryPlanCapabilityProof> {
@@ -332,7 +330,7 @@ fn resolve_composed_admission_capability_proof(
     let mut candidates = Vec::with_capacity(prepared_gpu_inputs.len());
     for input in prepared_gpu_inputs {
         let tickets = prepared_gpu_resident_producer_admission_tickets(input.as_ref());
-        let capability_proof = prepared_producer_capability_proof(input.as_ref(), &tickets);
+        let capability_proof = prepared_producer_capability_proof(input.as_ref(), &tickets)?;
         candidates.push(ComposedGraphProducerCandidate::new(
             gpu_resident_producer_input_name(input.as_ref()),
             graph_execution_plan(input.as_ref()).map(|graph| graph.graph_result_input_name().to_owned()),
@@ -624,7 +622,7 @@ impl ExecutionPlan for NexusNativeComposedExec {
                     .validate_admitted_composed_attempt(&plan, &runtime_occurrence_ids)
                     .map_err(|error| {
                         DataFusionError::from(mark_native_runtime_error(
-                            Error::from_native(
+                            Error::from_native_with_blocking_diagnostics(
                                 "datafusion_nexus.native_composed.admission",
                                 "the admitted composed bound does not match runtime execution",
                                 error,
@@ -662,9 +660,10 @@ impl ExecutionPlan for NexusNativeComposedExec {
                     ))
                 })?;
                 let observation = context_lease.context().runtime_observation().clone();
-                if let Some(ticket) = attempt_ticket {
+                if let Some(ticket) = &attempt_ticket {
                     ticket.record_attempt_gpu_execution_started();
                 }
+                let runtime_attempt_ticket = attempt_ticket.clone();
                 let cursor_executor = gpu_executor.clone();
                 let cursor_observation = observation.clone();
                 let cursor_metrics = metrics.clone();
@@ -701,6 +700,42 @@ impl ExecutionPlan for NexusNativeComposedExec {
                                 }
                             }
                             input_map.insert(input_name, handle);
+                        }
+
+                        let context = context.with_admitted_gpu_inputs(&plan, &input_map).map_err(|error| {
+                            DataFusionError::from(mark_native_runtime_error(
+                                Error::from_native_with_blocking_diagnostics(
+                                    "datafusion_nexus.native_composed.admission",
+                                    "failed to refine the admitted composed bound with resident evidence",
+                                    error,
+                                ),
+                                "composed_admission",
+                            ))
+                        })?;
+                        if let Some(projection) = context
+                            .validate_admitted_composed_attempt(&plan, &runtime_occurrence_ids)
+                            .map_err(|error| {
+                                DataFusionError::from(mark_native_runtime_error(
+                                    Error::from_native(
+                                        "datafusion_nexus.native_composed.admission",
+                                        "the refined composed bound does not match runtime execution",
+                                        error,
+                                    ),
+                                    "composed_admission",
+                                ))
+                            })?
+                            && let Some(ticket) = &runtime_attempt_ticket
+                        {
+                            ticket.record_attempt_composed_schedule_projection(projection).map_err(|error| {
+                                DataFusionError::from(mark_native_runtime_error(
+                                    Error::from_native(
+                                        "datafusion_nexus.native_composed.admission",
+                                        "failed to attach the refined ordered bound to the attempt lifecycle",
+                                        error,
+                                    ),
+                                    "composed_admission",
+                                ))
+                            })?;
                         }
 
                         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();

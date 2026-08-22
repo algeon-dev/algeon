@@ -610,8 +610,96 @@ fn validate_graph_algorithm_side_inputs(
             available_columns_by_node,
             node_id,
         ),
+        crate::plan::GraphAlgorithmParams::ForceAtlas2(params) => {
+            if params.prevent_overlapping
+                && params.vertex_attributes.as_ref().is_none_or(|input| input.radius.is_none())
+            {
+                return Err(graph_algorithm_error("ForceAtlas2 prevent_overlapping requires a radius binding")
+                    .with_fact("reason", "force_atlas2_radius_required"));
+            }
+            if let Some(input) = &params.vertex_attributes {
+                validate_force_atlas2_vertex_attributes(input, &vertex_type, plan, available_columns_by_node, node_id)?;
+            }
+            if let Some(input) = &params.initial_positions {
+                validate_force_atlas2_initial_positions(input, &vertex_type, plan, available_columns_by_node, node_id)?;
+            }
+            Ok(())
+        },
         _ => Ok(()),
     }
+}
+
+fn validate_force_atlas2_vertex_attributes(
+    input: &crate::plan::GraphForceAtlas2VertexAttributesInput,
+    vertex_type: &arrow::datatypes::DataType,
+    plan: &QueryPlan,
+    available_columns_by_node: &[BTreeSet<String>],
+    node_id: NodeId,
+) -> Result<()> {
+    if input.radius.is_none() && input.mobility.is_none() && input.mass.is_none() {
+        return Err(graph_algorithm_error("ForceAtlas2 vertex attributes require at least one value binding")
+            .with_fact("reason", "force_atlas2_vertex_attributes_empty"));
+    }
+    let input_node = input_node(plan, input.input, node_id)?;
+    let available = available_columns(available_columns_by_node, input.input)?;
+    validate_graph_predicate_column(
+        "force_atlas2_vertex_attributes_vertex",
+        &input.vertex,
+        input_node.output_schema(),
+        available,
+        vertex_type,
+    )?;
+    for (role, column) in [
+        ("force_atlas2_radius", input.radius.as_deref()),
+        ("force_atlas2_mobility", input.mobility.as_deref()),
+        ("force_atlas2_mass", input.mass.as_deref()),
+    ] {
+        if let Some(column) = column {
+            validate_force_atlas2_value_column(role, column, input_node.output_schema(), available)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_force_atlas2_initial_positions(
+    input: &crate::plan::GraphForceAtlas2InitialPositionsInput,
+    vertex_type: &arrow::datatypes::DataType,
+    plan: &QueryPlan,
+    available_columns_by_node: &[BTreeSet<String>],
+    node_id: NodeId,
+) -> Result<()> {
+    let input_node = input_node(plan, input.input, node_id)?;
+    let available = available_columns(available_columns_by_node, input.input)?;
+    validate_graph_predicate_column(
+        "force_atlas2_initial_positions_vertex",
+        &input.vertex,
+        input_node.output_schema(),
+        available,
+        vertex_type,
+    )?;
+    validate_force_atlas2_value_column("force_atlas2_initial_x", &input.x, input_node.output_schema(), available)?;
+    validate_force_atlas2_value_column("force_atlas2_initial_y", &input.y, input_node.output_schema(), available)
+}
+
+fn validate_force_atlas2_value_column(
+    role: &'static str,
+    column: &str,
+    input_schema: &SchemaRef,
+    input_available: &BTreeSet<String>,
+) -> Result<()> {
+    let field = graph_edge_field(role, column, input_schema, input_available)?;
+    if field.data_type() != &arrow::datatypes::DataType::Float32 {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "nexus_query_engine.graph_algorithm.validate",
+            "ForceAtlas2 side-input value columns must be Float32",
+        )
+        .with_fact("reason", "force_atlas2_side_input_value_dtype_unsupported")
+        .with_fact("role", role)
+        .with_fact("column", column)
+        .with_fact("data_type", format!("{:?}", field.data_type())));
+    }
+    Ok(())
 }
 
 fn validate_graph_vertex_pair_input(

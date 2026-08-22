@@ -438,6 +438,13 @@ pub const fn cugraph::cudf_interop::BfsSideInputPreflightInput::num_vertices(sel
 pub const fn cugraph::cudf_interop::BfsSideInputPreflightInput::source_rows(self) -> usize
 pub fn cugraph::cudf_interop::BfsSideInputPreflightInput::target_vertices_rows(self) -> core::option::Option<usize>
 pub const fn cugraph::cudf_interop::BfsSideInputPreflightInput::vertex_type(self) -> cugraph::types::DataType
+pub struct cugraph::cudf_interop::ForceAtlas2SideInputPreflight
+impl cugraph::cudf_interop::ForceAtlas2SideInputPreflight
+pub const fn cugraph::cudf_interop::ForceAtlas2SideInputPreflight::copy_bytes(self) -> u64
+pub const fn cugraph::cudf_interop::ForceAtlas2SideInputPreflight::peak_bytes(self) -> u64
+pub struct cugraph::cudf_interop::ForceAtlas2SideInputPreflightInput
+impl cugraph::cudf_interop::ForceAtlas2SideInputPreflightInput
+pub fn cugraph::cudf_interop::ForceAtlas2SideInputPreflightInput::new(cugraph::types::DataType, core::option::Option<usize>, core::option::Option<usize>, bool, bool, bool) -> cugraph::error::Result<Self>
 pub struct cugraph::cudf_interop::GraphConstructionPreflight
 impl cugraph::cudf_interop::GraphConstructionPreflight
 pub const fn cugraph::cudf_interop::GraphConstructionPreflight::compression_workspace_bytes(self) -> u64
@@ -508,6 +515,7 @@ pub fn cugraph::cudf_interop::bfs_side_input_workspace_preflight(&cugraph::cudf_
 pub fn cugraph::cudf_interop::cudf_type_to_cugraph(cudf::core::types::TypeId) -> core::option::Option<cugraph::types::DataType>
 pub fn cugraph::cudf_interop::cugraph_type_to_cudf(cugraph::types::DataType) -> core::option::Option<cudf::core::types::TypeId>
 pub fn cugraph::cudf_interop::device_array_view_from_slice<'a, T: cugraph::types::CugraphElement>(&'a cudf::core::column::device_slice::DeviceSlice<'a>) -> cugraph::error::Result<cugraph::array::DeviceArrayView<'a, T>>
+pub fn cugraph::cudf_interop::force_atlas2_side_input_workspace_preflight(&cugraph::cudf_interop::ForceAtlas2SideInputPreflightInput) -> cugraph::error::Result<cugraph::cudf_interop::ForceAtlas2SideInputPreflight>
 pub fn cugraph::cudf_interop::graph_construction_workspace_preflight(&cugraph::cudf_interop::GraphConstructionPreflightInput) -> cugraph::error::Result<cugraph::cudf_interop::GraphConstructionPreflight>
 pub fn cugraph::cudf_interop::graph_from_prepared_columns<T: cugraph::graph::Transposition>(&cugraph::handle::EnteredContext<'_>, &rapids_interop::prepared::PreparedColumnExport<'_>, &rapids_interop::prepared::PreparedColumnExport<'_>, core::option::Option<&rapids_interop::prepared::PreparedColumnExport<'_>>, &cugraph::cudf_interop::PreparedGraphOptions) -> cugraph::error::Result<cugraph::graph::Graph<T>>
 pub fn cugraph::cudf_interop::graph_from_prepared_table_export<T: cugraph::graph::Transposition>(&cugraph::handle::EnteredContext<'_>, &rapids_interop::prepared::PreparedTableExport<'_>, &cugraph::cudf_interop::TableGraphOptions) -> cugraph::error::Result<cugraph::graph::Graph<T>>

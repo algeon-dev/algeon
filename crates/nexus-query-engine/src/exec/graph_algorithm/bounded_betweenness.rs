@@ -15,14 +15,14 @@ static FORCE_NEXT_GRAPH_SEED_CHUNK_RETRY_CHUNK_ATTEMPT_RESOURCE_EXHAUSTED: Atomi
 pub(in crate::exec) enum RuntimeGraphSpecResolution {
     Unresolved,
     CheckedNoRewrite,
-    Rewritten(crate::plan::GraphAlgorithmSpec),
+    Rewritten(Box<crate::plan::GraphAlgorithmSpec>),
 }
 
 #[cfg(feature = "cugraph")]
 impl RuntimeGraphSpecResolution {
     fn from_optional(spec: Option<crate::plan::GraphAlgorithmSpec>) -> Self {
         match spec {
-            Some(spec) => Self::Rewritten(spec),
+            Some(spec) => Self::Rewritten(Box::new(spec)),
             None => Self::CheckedNoRewrite,
         }
     }
@@ -33,7 +33,7 @@ impl RuntimeGraphSpecResolution {
     ) -> &'a crate::plan::GraphAlgorithmSpec {
         match self {
             Self::Unresolved | Self::CheckedNoRewrite => fallback,
-            Self::Rewritten(spec) => spec,
+            Self::Rewritten(spec) => spec.as_ref(),
         }
     }
 }

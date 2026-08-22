@@ -153,6 +153,16 @@ fn two_modeled_attempts_leave_space_for_the_first_source_cache_promotion() {
 }
 
 #[test]
+fn unmodeled_attempt_leaves_the_uncharged_cache_share_outside_its_grant() {
+    let ledger = DeviceLedger::new(cache_profile(1_000, 100, 1, 300));
+    let attempt = ledger.try_admit(request(1), &requirement(100, None)).unwrap().expect("attempt admits");
+
+    assert_eq!(attempt.budget_bytes(), 700);
+    assert!(ledger.try_reserve_evictable_bytes(300).unwrap());
+    assert_eq!(ledger.snapshot().unwrap().cache_evictable_resident_bytes, 300);
+}
+
+#[test]
 fn pinned_cache_bytes_reduce_admission_headroom() {
     let ledger = DeviceLedger::new(cache_profile(300, 100, 1, 200));
     assert!(ledger.try_reserve_evictable_bytes(200).unwrap());

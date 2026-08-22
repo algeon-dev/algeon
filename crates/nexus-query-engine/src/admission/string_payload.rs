@@ -8,9 +8,9 @@ use cudf::{DataFrame, TypeId, frame::dataframe::InfoDetail};
 
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
-    expr::{Expr, LiteralValue, alias_wrapped_column, representation_cast_preserves_identity},
+    expr::{AggregateFunction, Expr, LiteralValue, alias_wrapped_column, representation_cast_preserves_identity},
     graph_memory::query_plan_node_hard_row_upper_bound_with_resident_rows,
-    plan::{JoinNode, JoinSide, NodeId, PlanNode, QueryPlan, WindowFunction},
+    plan::{AggregateNode, JoinNode, JoinSide, NodeId, PlanNode, QueryPlan, WindowFunction},
     source::{SourceColumnRef, SourceNode},
 };
 
@@ -19,12 +19,15 @@ pub(super) enum StringPayloadLineage {
     Parquet { stable_id: String, physical_column_index: usize, selected_row_groups: Vec<usize> },
     Literal { node_id: NodeId, column_index: usize },
     Computed { node_id: NodeId, column_index: usize },
+    PendingResident { execution_scope_fingerprint: String, occurrence_id: String, column_index: usize },
     Resident { execution_scope_fingerprint: String, occurrence_id: String, column_index: usize },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct StringPayloadBound {
     pub(super) total_payload_upper_bound_bytes: Option<u64>,
+    pub(super) distinct_payload_upper_bound_bytes: Option<u64>,
+    pub(super) distinct_value_count_upper_bound: Option<u64>,
     pub(super) max_single_value_length_bytes: Option<u64>,
     pub(super) lineages: BTreeSet<StringPayloadLineage>,
 }
@@ -46,12 +49,39 @@ impl StringPayloadBound {
             .map(|bound| bound.max_single_value_length_bytes)
             .collect::<Option<Vec<_>>>()
             .and_then(|bounds| bounds.into_iter().max());
+        let distinct_payload_upper_bound_bytes = bounds
+            .iter()
+            .all(|bound| bound.distinct_payload_upper_bound_bytes.is_some())
+            .then(|| {
+                bounds.iter().try_fold(0_u64, |total, bound| {
+                    total.checked_add(
+                        bound.distinct_payload_upper_bound_bytes.expect("all distinct payload bounds are present"),
+                    )
+                })
+            })
+            .flatten();
+        let distinct_value_count_upper_bound = bounds
+            .iter()
+            .all(|bound| bound.distinct_value_count_upper_bound.is_some())
+            .then(|| {
+                bounds.iter().try_fold(0_u64, |total, bound| {
+                    total.checked_add(
+                        bound.distinct_value_count_upper_bound.expect("all distinct count bounds are present"),
+                    )
+                })
+            })
+            .flatten();
         let mut lineages = BTreeSet::new();
         for bound in &bounds {
             lineages.extend(bound.lineages.iter().cloned());
         }
-        (total_payload_upper_bound_bytes.is_some() || max_single_value_length_bytes.is_some()).then_some(Self {
+        (total_payload_upper_bound_bytes.is_some()
+            || distinct_payload_upper_bound_bytes.is_some()
+            || max_single_value_length_bytes.is_some())
+        .then_some(Self {
             total_payload_upper_bound_bytes,
+            distinct_payload_upper_bound_bytes,
+            distinct_value_count_upper_bound,
             max_single_value_length_bytes,
             lineages,
         })
@@ -128,25 +158,47 @@ pub(crate) fn resident_frame_column_evidence(
                 .with_fact("reason", "resident_column_missing")
                 .with_fact("column", field.name())
         })?;
-        let chars_bytes = series.as_column().string_chars_size_bytes().map_err(|error| {
-            QueryError::from_cudf(operation, "failed to inspect resident string payload", error)
-                .with_fact("reason", "resident_string_payload_unavailable")
+        let (chars_bytes, max_single_value_length_bytes) = if frame.num_rows() == 0 {
+            (0, 0)
+        } else {
+            let byte_counts = series.str().byte_count().map_err(|error| {
+                QueryError::from_cudf(operation, "failed to measure resident string value lengths", error)
+                    .with_fact("column", field.name())
+            })?;
+            let chars_bytes = byte_counts.sum_value::<i64>().map_err(|error| {
+                QueryError::from_cudf(operation, "failed to sum resident string value lengths", error)
+                    .with_fact("column", field.name())
+            })?;
+            let max_length = byte_counts.max_value::<i32>().map_err(|error| {
+                QueryError::from_cudf(operation, "failed to reduce resident string value lengths", error)
+                    .with_fact("column", field.name())
+            })?;
+            let chars_bytes = u64::try_from(chars_bytes.max(0)).map_err(|_| {
+                QueryError::new(
+                    QueryErrorCode::SizeOverflow,
+                    operation,
+                    "resident string payload exceeds the admission integer range",
+                )
+                .with_fact("reason", "resident_evidence_string_payload_overflow")
                 .with_fact("column", field.name())
-        })?;
-        let chars_bytes = u64::try_from(chars_bytes).map_err(|_| {
-            QueryError::new(
-                QueryErrorCode::SizeOverflow,
-                "nexus_query_engine.admission.resident_evidence",
-                "resident string payload exceeds the admission integer range",
-            )
-            .with_fact("reason", "resident_evidence_string_payload_overflow")
-            .with_fact("column", field.name())
-        })?;
+            })?;
+            let max_length = u64::try_from(max_length.unwrap_or(0).max(0)).map_err(|_| {
+                QueryError::new(
+                    QueryErrorCode::SizeOverflow,
+                    operation,
+                    "resident string value length exceeds the admission integer range",
+                )
+                .with_fact("column", field.name())
+            })?;
+            (chars_bytes, max_length)
+        };
         evidence.string_payload_bounds.insert(
             field.name().clone(),
             StringPayloadBound {
                 total_payload_upper_bound_bytes: Some(chars_bytes),
-                max_single_value_length_bytes: Some(chars_bytes),
+                distinct_payload_upper_bound_bytes: Some(chars_bytes),
+                distinct_value_count_upper_bound: None,
+                max_single_value_length_bytes: Some(max_single_value_length_bytes),
                 lineages: BTreeSet::from([StringPayloadLineage::Resident {
                     execution_scope_fingerprint: execution_scope_fingerprint.to_owned(),
                     occurrence_id: occurrence_id.to_owned(),
@@ -201,9 +253,31 @@ impl PlanColumnEvidenceAnalysis {
         };
         Ok(match &node.kind {
             PlanNode::Source(source) => match source.as_ref() {
-                SourceNode::LocalParquet(source) => local_parquet_evidence(source),
+                SourceNode::LocalParquet(source) => {
+                    let evidence = local_parquet_evidence(source);
+                    match &source.reader_predicate {
+                        Some(predicate) => {
+                            constrained_filter_evidence(predicate, evidence, source.exact_selected_row_count(), node_id)
+                        },
+                        None => evidence,
+                    }
+                },
                 SourceNode::GpuResident(source) => {
                     let mut evidence = resident_outputs.get(&source.input_name).cloned().unwrap_or_default();
+                    for (column_index, field) in source.schema.fields().iter().enumerate() {
+                        let Some(bound) = evidence.string_payload_bounds.get_mut(field.name()) else {
+                            continue;
+                        };
+                        if bound.max_single_value_length_bytes.is_none() {
+                            bound.lineages = BTreeSet::from([StringPayloadLineage::PendingResident {
+                                execution_scope_fingerprint: crate::admission::canonical_execution_scope_fingerprint(
+                                    plan,
+                                ),
+                                occurrence_id: source.input_name.clone(),
+                                column_index,
+                            }]);
+                        }
+                    }
                     if let Some(unique_key) = &source.unique_key_columns {
                         evidence.unique_keys.push(unique_key.clone());
                     }
@@ -211,7 +285,12 @@ impl PlanColumnEvidenceAnalysis {
                 },
                 SourceNode::LiteralBatch(source) => literal_evidence(node_id, source),
             },
-            PlanNode::Filter(filter) => self.node(filter.input),
+            PlanNode::Filter(filter) => constrained_filter_evidence(
+                &filter.predicate,
+                self.node(filter.input),
+                query_plan_node_hard_row_upper_bound_with_resident_rows(plan, filter.input, resident_rows),
+                node_id,
+            ),
             PlanNode::Projection(projection) => {
                 let input = self.node(projection.input);
                 let input_schema = plan.node(projection.input).map(|node| node.output_schema());
@@ -265,26 +344,46 @@ impl PlanColumnEvidenceAnalysis {
             PlanNode::Aggregate(aggregate) => {
                 let input = self.node(aggregate.input);
                 let input_schema = plan.node(aggregate.input).map(|node| node.output_schema());
-                let mut output = PlanColumnEvidence::default();
-                if aggregate.spec.grouping_sets.is_none() {
-                    for (expression, field) in aggregate.spec.group_exprs.iter().zip(node.output_schema().fields()) {
-                        let Some(source_column) = identity_source_column(expression, input_schema) else {
-                            continue;
-                        };
-                        if let Some(bound) = input.string_payload_bound(source_column) {
-                            output.string_payload_bounds.insert(field.name().clone(), bound.clone());
-                        }
+                let input_rows =
+                    query_plan_node_hard_row_upper_bound_with_resident_rows(plan, aggregate.input, resident_rows);
+                let mut output =
+                    grouped_aggregate_evidence(aggregate, node.output_schema(), input_schema, &input, input_rows);
+                if aggregate.spec.grouping_sets.is_none()
+                    && let Some(input_node) = plan.node(aggregate.input)
+                    && let PlanNode::Union(union) = &input_node.kind
+                {
+                    let branch_outputs = union
+                        .inputs
+                        .iter()
+                        .filter_map(|input_id| {
+                            let branch_node = plan.node(*input_id)?;
+                            let branch = remap_union_input_evidence(
+                                input_node.output_schema(),
+                                branch_node.output_schema(),
+                                &self.node(*input_id),
+                            );
+                            Some(grouped_aggregate_evidence(
+                                aggregate,
+                                node.output_schema(),
+                                Some(input_node.output_schema()),
+                                &branch,
+                                query_plan_node_hard_row_upper_bound_with_resident_rows(plan, *input_id, resident_rows),
+                            ))
+                        })
+                        .collect::<Vec<_>>();
+                    if branch_outputs.len() == union.inputs.len() {
+                        output = union_evidence_from_inputs(node.output_schema(), &branch_outputs);
                     }
-                    if !aggregate.spec.group_exprs.is_empty() {
-                        output.unique_keys.push(
-                            node.output_schema()
-                                .fields()
-                                .iter()
-                                .take(aggregate.spec.group_exprs.len())
-                                .map(|field| field.name().clone())
-                                .collect(),
-                        );
-                    }
+                }
+                if aggregate.spec.grouping_sets.is_none() && !aggregate.spec.group_exprs.is_empty() {
+                    output.unique_keys.push(
+                        node.output_schema()
+                            .fields()
+                            .iter()
+                            .take(aggregate.spec.group_exprs.len())
+                            .map(|field| field.name().clone())
+                            .collect(),
+                    );
                 }
                 output
             },
@@ -324,6 +423,93 @@ impl PlanColumnEvidenceAnalysis {
     }
 }
 
+fn grouped_aggregate_evidence(
+    aggregate: &AggregateNode,
+    output_schema: &SchemaRef,
+    input_schema: Option<&SchemaRef>,
+    input: &PlanColumnEvidence,
+    input_rows: Option<u64>,
+) -> PlanColumnEvidence {
+    let mut output = PlanColumnEvidence::default();
+    if aggregate.spec.grouping_sets.is_some() {
+        return output;
+    }
+    for (group_index, (expression, field)) in aggregate.spec.group_exprs.iter().zip(output_schema.fields()).enumerate()
+    {
+        let Some(source_column) = identity_source_column(expression, input_schema) else {
+            continue;
+        };
+        let Some(bound) = input.string_payload_bound(source_column) else {
+            continue;
+        };
+        let mut output_bound = bound.clone();
+        let repeated_domain = aggregate
+            .spec
+            .group_exprs
+            .iter()
+            .enumerate()
+            .filter(|(index, _)| *index != group_index)
+            .try_fold(1_u64, |count, (_, other)| {
+                let column = identity_source_column(other, input_schema)?;
+                count.checked_mul(distinct_value_count_bound(input.string_payload_bound(column)?)?)
+            })
+            .and_then(|count| bound.distinct_payload_upper_bound_bytes?.checked_mul(count));
+        let row_payload =
+            input_rows.and_then(|rows| bound.max_single_value_length_bytes.and_then(|max| rows.checked_mul(max)));
+        output_bound.total_payload_upper_bound_bytes =
+            [bound.total_payload_upper_bound_bytes, repeated_domain, row_payload].into_iter().flatten().min();
+        if aggregate.spec.group_exprs.len() == 1 {
+            output_bound.total_payload_upper_bound_bytes = bound.distinct_payload_upper_bound_bytes;
+        }
+        output.string_payload_bounds.insert(field.name().clone(), output_bound);
+    }
+    for (expression, field) in
+        aggregate.spec.aggr_exprs.iter().zip(output_schema.fields().iter().skip(aggregate.spec.group_exprs.len()))
+    {
+        if !matches!(expression.function, AggregateFunction::Min | AggregateFunction::Max) {
+            continue;
+        }
+        let Some(source_column) = identity_source_column(&expression.expr, input_schema) else {
+            continue;
+        };
+        if let Some(bound) = input.string_payload_bound(source_column) {
+            output.string_payload_bounds.insert(field.name().clone(), bound.clone());
+        }
+    }
+    output
+}
+
+fn distinct_value_count_bound(bound: &StringPayloadBound) -> Option<u64> {
+    bound.distinct_value_count_upper_bound.or_else(|| bound.distinct_payload_upper_bound_bytes?.checked_add(2))
+}
+
+fn remap_union_input_evidence(
+    union_schema: &SchemaRef,
+    input_schema: &SchemaRef,
+    input: &PlanColumnEvidence,
+) -> PlanColumnEvidence {
+    let mut output = PlanColumnEvidence::default();
+    for (union_field, input_field) in union_schema.fields().iter().zip(input_schema.fields()) {
+        if let Some(bound) = input.string_payload_bound(input_field.name()) {
+            output.string_payload_bounds.insert(union_field.name().clone(), bound.clone());
+        }
+    }
+    output
+}
+
+fn union_evidence_from_inputs(output_schema: &SchemaRef, inputs: &[PlanColumnEvidence]) -> PlanColumnEvidence {
+    let mut output = PlanColumnEvidence::default();
+    for field in output_schema.fields() {
+        let bounds = inputs.iter().map(|input| input.string_payload_bound(field.name())).collect::<Option<Vec<_>>>();
+        if let Some(bounds) = bounds
+            && let Some(bound) = StringPayloadBound::for_union(bounds)
+        {
+            output.string_payload_bounds.insert(field.name().clone(), bound);
+        }
+    }
+    output
+}
+
 pub(crate) fn plan_node_is_unique_on(plan: &QueryPlan, node_id: NodeId, columns: &BTreeSet<String>) -> Result<bool> {
     Ok(PlanColumnEvidenceAnalysis::for_plan(plan, &HashMap::new())?.node(node_id).is_unique_on(columns))
 }
@@ -353,6 +539,8 @@ fn local_parquet_evidence(source: &crate::source::LocalParquetSource) -> PlanCol
             }
             file_bounds.push(StringPayloadBound {
                 total_payload_upper_bound_bytes: Some(evidence.payload_upper_bound_bytes),
+                distinct_payload_upper_bound_bytes: Some(evidence.payload_upper_bound_bytes),
+                distinct_value_count_upper_bound: None,
                 max_single_value_length_bytes: None,
                 lineages: BTreeSet::from([StringPayloadLineage::Parquet {
                     stable_id: file.stable_id.clone(),
@@ -398,6 +586,11 @@ fn literal_evidence(node_id: NodeId, source: &crate::source::LiteralBatchSource)
                 field.name().clone(),
                 StringPayloadBound {
                     total_payload_upper_bound_bytes: Some(total_payload_upper_bound_bytes),
+                    distinct_payload_upper_bound_bytes: Some(total_payload_upper_bound_bytes),
+                    distinct_value_count_upper_bound: u64::try_from(
+                        source.batches.iter().map(|batch| batch.num_rows()).sum::<usize>(),
+                    )
+                    .ok(),
                     max_single_value_length_bytes: Some(max_single_value_length_bytes),
                     lineages: BTreeSet::from([StringPayloadLineage::Literal { node_id, column_index }]),
                 },
@@ -405,6 +598,63 @@ fn literal_evidence(node_id: NodeId, source: &crate::source::LiteralBatchSource)
         }
     }
     output
+}
+
+fn constrained_filter_evidence(
+    predicate: &Expr,
+    mut output: PlanColumnEvidence,
+    input_rows: Option<u64>,
+    node_id: NodeId,
+) -> PlanColumnEvidence {
+    if let Expr::Binary { left, op: crate::expr::BinaryOp::And, right, .. } = predicate {
+        return constrained_filter_evidence(
+            right,
+            constrained_filter_evidence(left, output, input_rows, node_id),
+            input_rows,
+            node_id,
+        );
+    }
+    let Expr::InList { expr, list, negated: false } = predicate else {
+        return output;
+    };
+    let Some(column) = alias_wrapped_column(expr) else {
+        return output;
+    };
+    let Some(bound) = output.string_payload_bounds.get_mut(column.name()) else {
+        return output;
+    };
+    let Some(values) = list.iter().map(literal_string_value).collect::<Option<BTreeSet<_>>>() else {
+        return output;
+    };
+    let Some(total) = values.iter().try_fold(0_u64, |total, value| total.checked_add(u64::try_from(value.len()).ok()?))
+    else {
+        return output;
+    };
+    let max = values.iter().filter_map(|value| u64::try_from(value.len()).ok()).max().unwrap_or(0);
+    let occurrence = input_rows.and_then(|rows| rows.checked_mul(max));
+    bound.total_payload_upper_bound_bytes = match (bound.total_payload_upper_bound_bytes, occurrence) {
+        (Some(existing), Some(constrained)) => Some(existing.min(constrained)),
+        (existing, constrained) => existing.or(constrained),
+    };
+    bound.distinct_payload_upper_bound_bytes =
+        Some(bound.distinct_payload_upper_bound_bytes.map_or(total, |existing| existing.min(total)));
+    let count = u64::try_from(values.len()).ok();
+    bound.distinct_value_count_upper_bound = match (bound.distinct_value_count_upper_bound, count) {
+        (Some(existing), Some(constrained)) => Some(existing.min(constrained)),
+        (existing, constrained) => existing.or(constrained),
+    };
+    bound.max_single_value_length_bytes = Some(bound.max_single_value_length_bytes.map_or(max, |value| value.min(max)));
+    bound.lineages.insert(StringPayloadLineage::Computed { node_id, column_index: 0 });
+    output
+}
+
+fn literal_string_value(expr: &Expr) -> Option<&str> {
+    match expr {
+        Expr::Literal(LiteralValue::Utf8(value) | LiteralValue::LargeUtf8(value)) => Some(value),
+        Expr::Alias { expr, .. } => literal_string_value(expr),
+        Expr::Cast { expr, target_type } if is_string(target_type) => literal_string_value(expr),
+        _ => None,
+    }
 }
 
 fn computed_string_payload_bound(
@@ -416,6 +666,8 @@ fn computed_string_payload_bound(
     if let Some(length) = literal_string_value_length(expr) {
         return Some(StringPayloadBound {
             total_payload_upper_bound_bytes: Some(rows.checked_mul(length)?),
+            distinct_payload_upper_bound_bytes: Some(length),
+            distinct_value_count_upper_bound: Some(1),
             max_single_value_length_bytes: Some(length),
             lineages: BTreeSet::from([lineage]),
         });
@@ -440,12 +692,26 @@ fn computed_string_payload_bound(
                 .into_iter()
                 .max()
                 .unwrap_or(0);
+            let distinct_payload_upper_bound_bytes = bounds
+                .iter()
+                .map(|bound| bound.distinct_payload_upper_bound_bytes)
+                .collect::<Option<Vec<_>>>()?
+                .into_iter()
+                .try_fold(0_u64, u64::checked_add);
+            let distinct_value_count_upper_bound = bounds
+                .iter()
+                .map(|bound| bound.distinct_value_count_upper_bound)
+                .collect::<Option<Vec<_>>>()?
+                .into_iter()
+                .try_fold(0_u64, u64::checked_add);
             let mut lineages = BTreeSet::from([lineage]);
             for bound in bounds.drain(..) {
                 lineages.extend(bound.lineages);
             }
             Some(StringPayloadBound {
                 total_payload_upper_bound_bytes: Some(rows.checked_mul(max_single_value_length_bytes)?),
+                distinct_payload_upper_bound_bytes,
+                distinct_value_count_upper_bound,
                 max_single_value_length_bytes: Some(max_single_value_length_bytes),
                 lineages,
             })
@@ -461,6 +727,7 @@ fn literal_string_value_length(expr: &Expr) -> Option<u64> {
         },
         Expr::Literal(LiteralValue::Null(data_type)) if is_string(data_type) => Some(0),
         Expr::Alias { expr, .. } => literal_string_value_length(expr),
+        Expr::Cast { expr, target_type } if is_string(target_type) => literal_string_value_length(expr),
         _ => None,
     }
 }
@@ -472,6 +739,8 @@ fn row_independent_literal_string_payload_bound(
     let length = literal_string_value_length(expr)?;
     Some(StringPayloadBound {
         total_payload_upper_bound_bytes: None,
+        distinct_payload_upper_bound_bytes: Some(length),
+        distinct_value_count_upper_bound: Some(1),
         max_single_value_length_bytes: Some(length),
         lineages: BTreeSet::from([lineage]),
     })
@@ -524,7 +793,8 @@ fn join_evidence(
         };
         let mut bound = input.string_payload_bound(projected.column.name()).cloned();
         let input_rows_are_not_duplicated = Some(projected.side) == bounded_side
-            || matches!(join.spec.join_type, crate::plan::JoinType::LeftSemi) && projected.side == JoinSide::Left
+            || matches!(join.spec.join_type, crate::plan::JoinType::LeftSemi | crate::plan::JoinType::LeftAnti)
+                && projected.side == JoinSide::Left
             || match projected.side {
                 JoinSide::Left => right_is_unique,
                 JoinSide::Right => left_is_unique,
@@ -610,7 +880,7 @@ fn join_evidence(
     if bounded_side == Some(JoinSide::Left)
         || bounded_is_unique
         || right_is_unique
-        || join.spec.join_type == crate::plan::JoinType::LeftSemi
+        || matches!(join.spec.join_type, crate::plan::JoinType::LeftSemi | crate::plan::JoinType::LeftAnti)
     {
         output.unique_keys.extend(remap_unique_keys(left, left_mapping));
     }
@@ -736,9 +1006,9 @@ pub(crate) fn identity_source_column<'a>(
     match expr {
         Expr::Alias { expr, .. } => identity_source_column(expr, input_schema),
         Expr::Cast { expr, target_type } => {
-            let column = alias_wrapped_column(expr)?;
-            let source_type = input_schema?.field_with_name(column.name()).ok()?.data_type();
-            representation_cast_preserves_identity(source_type, target_type).then_some(column.name())
+            let column = identity_source_column(expr, input_schema)?;
+            let source_type = input_schema?.field_with_name(column).ok()?.data_type();
+            representation_cast_preserves_identity(source_type, target_type).then_some(column)
         },
         _ => None,
     }
@@ -792,7 +1062,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        expr::{AggregateSpec, CaseWhen, LiteralValue, SortExpr},
+        expr::{AggregateExpr, AggregateSpec, CaseWhen, LiteralValue, SortExpr},
         parquet_stats::{ParquetVariableWidthEncodingProof, ParquetVariableWidthPayloadEvidence},
         plan::{JoinKey, JoinOutputColumn, JoinSpec, JoinType, ProjectionOutput, QueryPlanBuilder, WindowSpec},
         source::{LiteralBatchSource, LocalParquetFile, LocalParquetSource},
@@ -871,6 +1141,39 @@ mod tests {
         assert_eq!(bound.max_single_value_length_bytes, None);
         assert_eq!(bound.lineages.len(), 2);
         assert!(output.is_unique_on(&BTreeSet::from(["__vertex_id".to_owned()])));
+    }
+
+    #[test]
+    fn grouped_string_min_max_outputs_retain_the_input_payload_bound() {
+        let source = production_endpoint_source();
+        let output_schema = Arc::new(Schema::new(vec![
+            Field::new("sourceId", DataType::Utf8, false),
+            Field::new("object_min", DataType::Utf8, true),
+            Field::new("object_max", DataType::Utf8, true),
+        ]));
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source));
+        let aggregate = builder.add_aggregate(
+            source,
+            AggregateSpec::new(
+                vec![Expr::column("sourceId")],
+                vec![
+                    AggregateExpr::new(AggregateFunction::Min, Expr::column("targetId"), "object_min"),
+                    AggregateExpr::new(AggregateFunction::Max, Expr::column("targetId"), "object_max"),
+                ],
+            ),
+            output_schema,
+        );
+        let plan = builder.finish_gpu_resident(aggregate);
+        let output = PlanColumnEvidenceAnalysis::for_plan(&plan, &HashMap::new())
+            .expect("grouped MIN/MAX payload evidence must resolve")
+            .root(&plan);
+
+        for column in ["object_min", "object_max"] {
+            let bound = output.string_payload_bound(column).expect("MIN/MAX must retain source payload evidence");
+            assert_eq!(bound.total_payload_upper_bound_bytes, Some(2_081_894_503));
+            assert_eq!(bound.lineages.len(), 1);
+        }
     }
 
     #[test]
@@ -1172,6 +1475,45 @@ mod tests {
             .cloned()
             .expect("a unique bounded key prevents decode-side value duplication");
         assert_eq!(decode_bound.total_payload_upper_bound_bytes, Some(2_081_894_503));
+
+        for join_type in [JoinType::LeftSemi, JoinType::LeftAnti] {
+            let mut builder = QueryPlanBuilder::new();
+            let relation = builder.add_source(SourceNode::LocalParquet(production_endpoint_source()));
+            let unique_relation = builder.add_aggregate(
+                relation,
+                AggregateSpec::new(vec![Expr::column("sourceId"), Expr::column("targetId")], Vec::new()),
+                Arc::new(Schema::new(vec![
+                    Field::new("sourceId", DataType::Utf8, false),
+                    Field::new("targetId", DataType::Utf8, false),
+                ])),
+            );
+            let lookup = builder.add_source(SourceNode::LocalParquet(production_endpoint_source()));
+            let selected = builder.add_join(
+                unique_relation,
+                lookup,
+                JoinSpec::new(
+                    join_type,
+                    vec![JoinKey::new(
+                        crate::expr::ColumnRef::input(0, "sourceId", "sourceId"),
+                        crate::expr::ColumnRef::input(1, "sourceId", "sourceId"),
+                    )],
+                )
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(crate::expr::ColumnRef::input(0, "sourceId", "sourceId"), "sourceId"),
+                    JoinOutputColumn::left(crate::expr::ColumnRef::input(0, "targetId", "targetId"), "targetId"),
+                ]),
+                Arc::new(Schema::new(vec![
+                    Field::new("sourceId", DataType::Utf8, false),
+                    Field::new("targetId", DataType::Utf8, false),
+                ])),
+            );
+            let plan = builder.finish_gpu_resident(selected);
+            let analysis = PlanColumnEvidenceAnalysis::for_plan(&plan, &HashMap::new()).unwrap();
+            let input = analysis.node(unique_relation);
+            let output = analysis.root(&plan);
+            assert_eq!(output.string_payload_bound("targetId"), input.string_payload_bound("targetId"));
+            assert!(output.is_unique_on(&BTreeSet::from(["sourceId".to_owned(), "targetId".to_owned()])));
+        }
 
         let mut duplicating_builder = QueryPlanBuilder::new();
         let relation = duplicating_builder.add_source(SourceNode::LocalParquet(production_endpoint_source()));

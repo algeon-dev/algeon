@@ -7,8 +7,8 @@
 use std::ptr;
 
 use cugraph_sys::{
-    cugraph_bfs_side_input_workspace_preflight, cugraph_error_t, cugraph_graph_construction_workspace_preflight,
-    cugraph_personalized_pagerank_side_input_workspace_preflight,
+    cugraph_bfs_side_input_workspace_preflight, cugraph_error_t, cugraph_force_atlas2_side_input_workspace_preflight,
+    cugraph_graph_construction_workspace_preflight, cugraph_personalized_pagerank_side_input_workspace_preflight,
 };
 
 use crate::{
@@ -19,6 +19,7 @@ use crate::{
 const OPERATION: &str = "graph_construction_workspace_preflight";
 const BFS_SIDE_INPUT_OPERATION: &str = "bfs_side_input_workspace_preflight";
 const PPR_SIDE_INPUT_OPERATION: &str = "personalized_pagerank_side_input_workspace_preflight";
+const FORCE_ATLAS2_SIDE_INPUT_OPERATION: &str = "force_atlas2_side_input_workspace_preflight";
 
 /// Exact raw single-GPU construction shape for the edgelist-sort workspace
 /// preflight.
@@ -481,9 +482,119 @@ pub fn personalized_pagerank_side_input_workspace_preflight(
     })
 }
 
+/// Exact optional side-input shape copied and reordered by single-GPU ForceAtlas2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[must_use]
+pub struct ForceAtlas2SideInputPreflightInput {
+    vertex_type: DataType,
+    initial_position_rows: Option<usize>,
+    vertex_attribute_rows: Option<usize>,
+    has_radius: bool,
+    has_mobility: bool,
+    has_mass: bool,
+}
+
+impl ForceAtlas2SideInputPreflightInput {
+    pub fn new(
+        vertex_type: DataType,
+        initial_position_rows: Option<usize>,
+        vertex_attribute_rows: Option<usize>,
+        has_radius: bool,
+        has_mobility: bool,
+        has_mass: bool,
+    ) -> Result<Self> {
+        if !vertex_type.is_supported_index_type() {
+            return Err(Error::new(ErrorKind::UnsupportedType, FORCE_ATLAS2_SIDE_INPUT_OPERATION)
+                .with_message(format!("ForceAtlas2 vertex type must be Int32 or Int64, got {vertex_type}")));
+        }
+        if vertex_attribute_rows.is_none() && (has_radius || has_mobility || has_mass) {
+            return Err(Error::new(ErrorKind::InvalidInput, FORCE_ATLAS2_SIDE_INPUT_OPERATION)
+                .with_message("ForceAtlas2 attribute flags require a vertex-attribute row bound"));
+        }
+        if vertex_attribute_rows.is_some() && !(has_radius || has_mobility || has_mass) {
+            return Err(Error::new(ErrorKind::InvalidInput, FORCE_ATLAS2_SIDE_INPUT_OPERATION)
+                .with_message("ForceAtlas2 vertex attributes require at least one value column"));
+        }
+        Ok(Self { vertex_type, initial_position_rows, vertex_attribute_rows, has_radius, has_mobility, has_mass })
+    }
+}
+
+/// Owner-reported ForceAtlas2 side-input copy and reorder peak.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[must_use]
+pub struct ForceAtlas2SideInputPreflight {
+    copy_bytes: u64,
+    peak_bytes: u64,
+}
+
+impl ForceAtlas2SideInputPreflight {
+    pub const fn copy_bytes(self) -> u64 {
+        self.copy_bytes
+    }
+
+    pub const fn peak_bytes(self) -> u64 {
+        self.peak_bytes
+    }
+}
+
+/// Query the owner-provided ForceAtlas2 side-input bound without device allocation.
+pub fn force_atlas2_side_input_workspace_preflight(
+    input: &ForceAtlas2SideInputPreflightInput,
+) -> Result<ForceAtlas2SideInputPreflight> {
+    let mut copy_bytes = 0usize;
+    let mut workspace_bytes = 0usize;
+    let mut error: *mut cugraph_error_t = ptr::null_mut();
+    // SAFETY: validated scalar input and writable outputs for a host-only C API.
+    let code = unsafe {
+        cugraph_force_atlas2_side_input_workspace_preflight(
+            input.vertex_type.into(),
+            to_bool_t(input.initial_position_rows.is_some()),
+            input.initial_position_rows.unwrap_or(0),
+            to_bool_t(input.has_radius),
+            to_bool_t(input.has_mobility),
+            to_bool_t(input.has_mass),
+            input.vertex_attribute_rows.unwrap_or(0),
+            &mut copy_bytes,
+            &mut workspace_bytes,
+            &mut error,
+        )
+    };
+    // SAFETY: consume the native error object once on failure.
+    unsafe { check_host_error(code, error, FORCE_ATLAS2_SIDE_INPUT_OPERATION) }?;
+    Ok(ForceAtlas2SideInputPreflight {
+        copy_bytes: u64::try_from(copy_bytes).map_err(|_| {
+            Error::new(ErrorKind::Unexpected, FORCE_ATLAS2_SIDE_INPUT_OPERATION)
+                .with_message("native size_t ForceAtlas2 copy bound does not fit u64")
+        })?,
+        peak_bytes: u64::try_from(workspace_bytes).map_err(|_| {
+            Error::new(ErrorKind::Unexpected, FORCE_ATLAS2_SIDE_INPUT_OPERATION)
+                .with_message("native size_t ForceAtlas2 workspace bound does not fit u64")
+        })?,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn force_atlas2_side_input_preflight_prices_copy_and_reorder_peak() {
+        let input = ForceAtlas2SideInputPreflightInput::new(DataType::Int64, Some(17), Some(17), true, false, true)
+            .expect("complete ForceAtlas2 side-input shape is valid");
+        let preflight = force_atlas2_side_input_workspace_preflight(&input)
+            .expect("native owner must price the ForceAtlas2 side-input shape");
+
+        assert!(preflight.copy_bytes() > 0);
+        assert!(preflight.peak_bytes() >= preflight.copy_bytes());
+    }
+
+    #[test]
+    fn force_atlas2_attribute_flags_require_attribute_rows() {
+        let error = ForceAtlas2SideInputPreflightInput::new(DataType::Int32, None, None, true, false, false)
+            .expect_err("attribute columns without rows cannot be admitted");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidInput);
+    }
 
     #[test]
     fn input_preserves_the_raw_unweighted_bfs_shape() {

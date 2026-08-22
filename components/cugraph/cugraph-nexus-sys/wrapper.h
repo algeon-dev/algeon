@@ -110,6 +110,18 @@ CUGRAPH_EXPORT cugraph_error_code_t cugraph_personalized_pagerank_side_input_wor
   size_t* workspace_bytes_out,
   cugraph_error_t** error);
 
+CUGRAPH_EXPORT cugraph_error_code_t cugraph_force_atlas2_side_input_workspace_preflight(
+  cugraph_data_type_id_t vertex_type,
+  bool_t has_initial_positions,
+  size_t initial_position_rows,
+  bool_t has_radius,
+  bool_t has_mobility,
+  bool_t has_mass,
+  size_t vertex_attribute_rows,
+  size_t* copy_bytes_out,
+  size_t* workspace_bytes_out,
+  cugraph_error_t** error);
+
 #ifdef __cplusplus
 }
 #endif

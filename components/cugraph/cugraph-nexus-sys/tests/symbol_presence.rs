@@ -45,6 +45,7 @@ fn bindings_include_critical_core_symbols() {
         "cugraph_graph_construction_workspace_preflight",
         "cugraph_bfs_side_input_workspace_preflight",
         "cugraph_personalized_pagerank_side_input_workspace_preflight",
+        "cugraph_force_atlas2_side_input_workspace_preflight",
         // Centrality
         "cugraph_pagerank_allow_nonconvergence",
         "cugraph_personalized_pagerank_allow_nonconvergence",

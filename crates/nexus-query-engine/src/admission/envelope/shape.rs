@@ -334,6 +334,11 @@ impl AttemptReservationShape {
         };
     }
 
+    pub(crate) fn account_for_by_passthrough_producer(&mut self, occurrence_id: String) {
+        self.account_for_by_producer_phase();
+        self.nested_consumer_occurrence_ids = Some(vec![occurrence_id]);
+    }
+
     pub(crate) fn is_accounted_by_producer_phase(&self) -> bool {
         matches!(
             self.scope_role,
@@ -548,6 +553,24 @@ impl AttemptReservationShape {
                 }
             }
             return Ok(ResolvedReservationShape { required_phase_floor_bytes: 0, complete_phase_peak_bytes: Some(0) });
+        }
+
+        if self.is_resident_producer_input_scope()
+            && let Some(owner_terms) = owner_terms
+        {
+            let source_terms = owner_terms
+                .iter()
+                .filter(|term| term.execution_scope_fingerprint() == self.execution_scope_fingerprint)
+                .collect::<Vec<_>>();
+            if !source_terms.is_empty() && source_terms.iter().all(|term| term.is_source_stage()) {
+                let source_peak = source_terms.iter().try_fold(0_u64, |total, term| {
+                    total.checked_add(term.bytes()).ok_or_else(|| envelope_overflow_error("resident_producer_source"))
+                })?;
+                return Ok(ResolvedReservationShape {
+                    required_phase_floor_bytes: source_peak,
+                    complete_phase_peak_bytes: Some(source_peak),
+                });
+            }
         }
 
         let minimum_source_read_bytes =

@@ -408,6 +408,209 @@ fn aggregate_union_edge_producer_and_forceatlas2_resolve_one_ordered_grant() {
 }
 
 #[test]
+fn materialized_string_graph_input_defers_handoff_without_inventing_a_max_length() {
+    let string_edge_schema =
+        Arc::new(Schema::new(vec![Field::new("src", DataType::Utf8, false), Field::new("dst", DataType::Utf8, false)]));
+    let graph_edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+    ]));
+    let payload_evidence = [0, 1]
+        .into_iter()
+        .map(|column| {
+            (
+                column,
+                crate::parquet_stats::ParquetVariableWidthPayloadEvidence::new(
+                    column,
+                    vec![0],
+                    128,
+                    crate::parquet_stats::ParquetVariableWidthEncodingProof::Plain,
+                ),
+            )
+        })
+        .collect();
+    let producer_file = LocalParquetFile::new("/tmp/string-aggregate-graph-input.parquet")
+        .with_row_groups(vec![0])
+        .with_row_group_rows(vec![4])
+        .with_row_group_bytes(vec![256])
+        .with_projected_row_group_bytes(vec![256], vec![256])
+        .with_variable_width_payload_evidence(payload_evidence);
+    let mut producer_builder = QueryPlanBuilder::new();
+    let producer_source = producer_builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![producer_file],
+        Arc::clone(&string_edge_schema),
+        vec!["src".to_owned(), "dst".to_owned()],
+    )));
+    let producer_plan = producer_builder.finish_gpu_resident(producer_source);
+
+    let mut graph_builder = QueryPlanBuilder::new();
+    let resident = graph_builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("edges", Arc::clone(&string_edge_schema))
+            .with_row_count_upper_bound(4)
+            .with_graph_vertex_upper_bound(8),
+    ));
+    let filtered = graph_builder.add_filter(
+        resident,
+        Expr::binary(Expr::column("src"), BinaryOp::NotEq, Expr::literal(LiteralValue::Utf8(String::new()))),
+        Arc::clone(&string_edge_schema),
+    );
+    let projected = graph_builder.add_projection(
+        filtered,
+        vec![
+            ProjectionOutput::new(Expr::literal(LiteralValue::Int64(0)), graph_edge_schema.field(0).as_ref().clone()),
+            ProjectionOutput::new(Expr::literal(LiteralValue::Int64(1)), graph_edge_schema.field(1).as_ref().clone()),
+        ],
+    );
+    let graph = graph_builder.add_graph_algorithm(
+        projected,
+        GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::PageRank,
+            GraphEdgeColumnBindings::new("src", "dst", None::<String>),
+            GraphConstructionOptions::default(),
+            GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
+        ),
+    );
+    let graph_plan = graph_builder.finish_with_host_sink(graph);
+    let graph_evidence =
+        graph_memory_bounded_admission_evidence_for_plan(&graph_plan, GraphMemoryCalibrationOverride::none(), None)
+            .expect("bounded PageRank must issue graph memory evidence");
+    let graph_proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan_with_resident_inputs(
+        &graph_plan,
+        [("edges", &producer_plan)],
+    )
+    .expect("resident producer evidence must bind to the graph plan")
+    .expect("PageRank must issue its exact graph proof")
+    .with_graph_memory_admission_evidence(&graph_evidence)
+    .expect("graph memory evidence must attach to the exact scope");
+    let mut producer_proof = QueryPlanCapabilityProof::for_cugraph_materialized_input_producer_plan(&producer_plan)
+        .expect("the exact producer must issue retained output evidence");
+    let producer_scope = canonical_execution_scope_fingerprint(&producer_plan);
+    let producer_shape = producer_proof
+        .requirement
+        .reservation_shapes
+        .iter_mut()
+        .find(|shape| shape.matches_execution_scope_fingerprint(&producer_scope))
+        .expect("the producer proof must retain its exact output shape");
+    producer_shape.set_output_column_evidence(PlanColumnEvidence {
+        string_payload_bounds: std::collections::BTreeMap::from([
+            (
+                "src".to_owned(),
+                crate::admission::string_payload::StringPayloadBound {
+                    total_payload_upper_bound_bytes: Some(128),
+                    distinct_payload_upper_bound_bytes: Some(128),
+                    distinct_value_count_upper_bound: None,
+                    max_single_value_length_bytes: None,
+                    lineages: BTreeSet::from([crate::admission::string_payload::StringPayloadLineage::Parquet {
+                        stable_id: "string-aggregate-graph-input".to_owned(),
+                        physical_column_index: 0,
+                        selected_row_groups: vec![0],
+                    }]),
+                },
+            ),
+            (
+                "dst".to_owned(),
+                crate::admission::string_payload::StringPayloadBound {
+                    total_payload_upper_bound_bytes: Some(128),
+                    distinct_payload_upper_bound_bytes: Some(128),
+                    distinct_value_count_upper_bound: None,
+                    max_single_value_length_bytes: None,
+                    lineages: BTreeSet::from([crate::admission::string_payload::StringPayloadLineage::Parquet {
+                        stable_id: "string-aggregate-graph-input".to_owned(),
+                        physical_column_index: 1,
+                        selected_row_groups: vec![0],
+                    }]),
+                },
+            ),
+        ]),
+        ..PlanColumnEvidence::default()
+    });
+    assert_eq!(
+        producer_proof
+            .requirement
+            .output_column_evidence_for_scope(&producer_scope)
+            .string_payload_bound("src")
+            .expect("the source payload bound must remain available")
+            .max_single_value_length_bytes,
+        None
+    );
+    let generic = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
+        &graph_plan,
+        graph_proof.clone(),
+        [ComposedGraphProducerCandidate::new(
+            Some("edges".to_owned()),
+            Some("edges".to_owned()),
+            Some(producer_proof.clone()),
+        )],
+    )
+    .expect("the generic resolver must retain its resident deferral");
+    let deferred = generic
+        .as_requirement()
+        .deferred_resident_phase_for_plan(&graph_plan)
+        .expect("the graph scope must be unambiguous")
+        .expect("the generic handoff must wait for exact resident max-length evidence");
+    assert!(deferred.is_composed_consumer());
+
+    let combined = QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt_with_proofs(
+        &graph_plan,
+        graph_proof,
+        "edges",
+        &producer_plan,
+        [("edges".to_owned(), producer_proof)],
+    )
+    .expect("the materialized graph input must preserve its bounded payload evidence")
+    .expect("the graph attempt must issue one proof");
+    assert!(
+        combined
+            .as_requirement()
+            .deferred_resident_phase_for_plan(&graph_plan)
+            .expect("the graph scope must be unambiguous")
+            .is_none()
+    );
+    assert_eq!(
+        combined
+            .as_requirement()
+            .output_column_evidence_for_scope(&producer_scope)
+            .string_payload_bound("src")
+            .expect("composition must preserve the producer payload evidence")
+            .max_single_value_length_bytes,
+        None
+    );
+    let envelope = combined.resolve_reservation_envelope(reservation_policy()).unwrap();
+    assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::OrderedTimeline));
+    assert!(envelope.complete_phase_peak_bytes().is_some());
+}
+
+#[test]
+fn aggregate_gpu_sink_materialized_input_retains_its_output_for_graph_consumption() {
+    let schema = Arc::new(Schema::new(vec![Field::new("vertex", DataType::Int64, false)]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/aggregate-side-input.parquet")
+                .with_row_groups(vec![0])
+                .with_row_group_rows(vec![3])
+                .with_row_group_bytes(vec![64])
+                .with_projected_row_group_bytes(vec![24], vec![64]),
+        ],
+        Arc::clone(&schema),
+        vec!["vertex".to_owned()],
+    )));
+    let aggregate = builder.add_aggregate(
+        source,
+        AggregateSpec::new(vec![Expr::column("vertex")], Vec::new()),
+        Arc::clone(&schema),
+    );
+    let plan = builder.finish_gpu_resident(aggregate);
+
+    let proof = QueryPlanCapabilityProof::for_cugraph_materialized_input_producer_plan(&plan)
+        .expect("aggregate side-input producer must issue owner evidence");
+    let retained =
+        proof.as_requirement().owner_terms.iter().filter(|term| term.is_retained_output()).collect::<Vec<_>>();
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].retained_row_count_upper_bound(), Some(3));
+}
+
+#[test]
 fn deferred_graph_with_cold_evidence_preserves_its_output_contract_and_hint() {
     let (graph_plan, producer_plan) = filtered_pagerank_plan_and_producer(false);
     let evidence =
@@ -2566,13 +2769,20 @@ fn resident_output_payload_evidence_requires_bound_producer_scope() {
     let combined =
         AttemptCapabilityEvidence::aggregate([consumer_proof.into_requirement(), producer_proof.into_requirement()])
             .expect("the bound producer and resident consumer proofs must combine");
-    assert_eq!(
-        combined
-            .output_column_evidence_for_scope(&consumer_scope)
-            .string_payload_bound("vertex")
-            .and_then(|bound| bound.total_payload_upper_bound_bytes),
-        Some(321),
-    );
+    let consumer_evidence = combined.output_column_evidence_for_scope(&consumer_scope);
+    let bound = consumer_evidence
+        .string_payload_bound("vertex")
+        .expect("bound producer payload evidence reaches its resident consumer");
+    assert_eq!(bound.total_payload_upper_bound_bytes, Some(321));
+    assert_eq!(bound.max_single_value_length_bytes, None);
+    assert!(bound.lineages.iter().any(|lineage| matches!(
+        lineage,
+        crate::admission::string_payload::StringPayloadLineage::PendingResident {
+            execution_scope_fingerprint,
+            occurrence_id,
+            column_index: 1,
+        } if execution_scope_fingerprint == &consumer_scope && occurrence_id == "codebook"
+    )));
 }
 
 #[test]
@@ -3479,7 +3689,7 @@ fn graph_result_string_filter_aggregate_uses_producer_payload_evidence() {
         [ComposedGraphProducerCandidate::new(
             Some("only".to_owned()),
             Some("only".to_owned()),
-            Some(pagerank_like_string_producer()),
+            Some(pagerank_like_string_producer_with_max(64)),
         )],
     )
     .expect("exact producer payload evidence must price the filtered string graph frame");
@@ -3744,7 +3954,10 @@ fn composed_consumer_prices_multibyte_utf8_literal_projection() {
         vec![
             ProjectionOutput::new(Expr::column("value"), Field::new("value", DataType::Int64, false)),
             ProjectionOutput::new(
-                Expr::literal(LiteralValue::Utf8("來源".to_owned())),
+                Expr::cast(
+                    Expr::cast(Expr::literal(LiteralValue::Utf8("來源".to_owned())), DataType::Utf8View),
+                    DataType::Utf8,
+                ),
                 Field::new("provenance", DataType::Utf8, false),
             ),
         ],
@@ -3781,6 +3994,17 @@ fn composed_consumer_rejects_projected_type_changes_and_missing_string_payload_e
     let (additional_peak_bytes, owner_terms) =
         composed_consumer_additional_peak_bytes_for_plan(&representation_cast, &output)
             .expect("a string representation cast reuses the same native string column");
+    assert_eq!(additional_peak_bytes, 0);
+    assert!(owner_terms.is_empty());
+
+    let nested_representation_cast = graph_output_projection_consumer_with_input(
+        DataType::Utf8,
+        Expr::cast(Expr::cast(Expr::column("value"), DataType::Utf8View), DataType::Utf8),
+        DataType::Utf8,
+    );
+    let (additional_peak_bytes, owner_terms) =
+        composed_consumer_additional_peak_bytes_for_plan(&nested_representation_cast, &output)
+            .expect("nested string representation casts reuse the same native string column");
     assert_eq!(additional_peak_bytes, 0);
     assert!(owner_terms.is_empty());
 
@@ -3880,7 +4104,7 @@ fn composed_graph_schedule_prices_one_shared_topk_across_semi_and_left_joins() {
         &plan,
         QueryPlanCapabilityProof::for_composed_consumer_plan(&plan)
             .expect("the shared Top-K consumer must issue its local-source owner proof"),
-        [("only".to_owned(), pagerank_like_string_producer())],
+        [("only".to_owned(), pagerank_like_string_producer_with_max(64))],
     )
     .expect("one ranked Top-K shared by metadata filtering and enrichment must have one complete owner schedule");
     let owner_terms = &combined.as_requirement().owner_terms;
@@ -3932,6 +4156,8 @@ fn production_shaped_string_lookup_caps_payload_without_row_multiplication() {
             "vertex".to_owned(),
             crate::admission::string_payload::StringPayloadBound {
                 total_payload_upper_bound_bytes: Some(4_706_637_611),
+                distinct_payload_upper_bound_bytes: Some(4_706_637_611),
+                distinct_value_count_upper_bound: None,
                 max_single_value_length_bytes: None,
                 lineages: endpoint_lineages,
             },
@@ -3960,7 +4186,7 @@ fn production_shaped_string_lookup_caps_payload_without_row_multiplication() {
     assert!(owner_terms.iter().all(|term| term.bytes() < 1_u64 << 40));
 }
 
-fn pagerank_like_string_producer() -> QueryPlanCapabilityProof {
+fn pagerank_like_string_producer_with_max(max_single_value_length_bytes: u64) -> QueryPlanCapabilityProof {
     let schema = Arc::new(Schema::new(vec![
         Field::new("vertex", DataType::Utf8, false),
         Field::new("value", DataType::Float64, false),
@@ -3994,7 +4220,23 @@ fn pagerank_like_string_producer() -> QueryPlanCapabilityProof {
         schema,
     );
     let plan = builder.finish_gpu_resident(aggregate);
-    QueryPlanCapabilityProof::for_query_plan(&plan).expect("PageRank-like output must issue a finite producer proof")
+    let mut proof = QueryPlanCapabilityProof::for_query_plan(&plan)
+        .expect("PageRank-like output must issue a finite producer proof");
+    let scope = canonical_execution_scope_fingerprint(&plan);
+    let mut evidence = proof.requirement.output_column_evidence_for_scope(&scope);
+    evidence
+        .string_payload_bounds
+        .get_mut("vertex")
+        .expect("the PageRank-like vertex payload must remain evidenced")
+        .max_single_value_length_bytes = Some(max_single_value_length_bytes);
+    proof
+        .requirement
+        .reservation_shapes
+        .iter_mut()
+        .find(|shape| shape.matches_execution_scope_fingerprint(&scope))
+        .expect("the producer proof must retain its output scope")
+        .set_output_column_evidence(evidence);
+    proof
 }
 
 fn graph_metadata_join_consumer(
@@ -4219,7 +4461,7 @@ fn graph_metadata_left_join_is_null_projection_consumer() -> QueryPlan {
 
 #[test]
 fn pagerank_topk_metadata_left_join_prices_is_null_projection() {
-    let producer = pagerank_like_string_producer();
+    let producer = pagerank_like_string_producer_with_max(64);
     let consumer = graph_metadata_left_join_is_null_projection_consumer();
     let proof = QueryPlanCapabilityProof::combine_composed_graph_attempt(
         &consumer,
@@ -4236,7 +4478,7 @@ fn pagerank_topk_metadata_left_join_prices_is_null_projection() {
 
 #[test]
 fn graph_to_metadata_inner_join_uses_bounded_key_payload_evidence() {
-    let producer = pagerank_like_string_producer();
+    let producer = pagerank_like_string_producer_with_max(64);
     let inner = graph_metadata_join_consumer(JoinType::Inner, Some(JoinSide::Right), false, true);
     let proof = QueryPlanCapabilityProof::combine_composed_graph_attempt(
         &inner,
@@ -4252,7 +4494,7 @@ fn graph_to_metadata_inner_join_uses_bounded_key_payload_evidence() {
         &left,
         QueryPlanCapabilityProof::for_composed_consumer_plan(&left)
             .expect("mixed LocalParquet and graph consumer must issue a structural proof"),
-        [("pagerank".to_owned(), pagerank_like_string_producer())],
+        [("pagerank".to_owned(), pagerank_like_string_producer_with_max(64))],
     )
     .expect("finite row and payload bounds must prove a non-unique left enrichment without claiming uniqueness");
     let error = try_resolve_native_sort_owners_for_test(&proof)
@@ -4268,7 +4510,7 @@ fn graph_to_metadata_left_join_uses_uniqueness_only_for_the_tight_bound() {
         let proof = QueryPlanCapabilityProof::combine_composed_graph_attempt(
             &qualified,
             QueryPlanCapabilityProof::for_composed_consumer_plan(&qualified).unwrap(),
-            [("pagerank".to_owned(), pagerank_like_string_producer())],
+            [("pagerank".to_owned(), pagerank_like_string_producer_with_max(64))],
         )
         .expect("authoritative metadata uniqueness must bound each left graph row to one match");
         resolve_native_sort_owners_for_test(&proof)
@@ -4282,7 +4524,7 @@ fn graph_to_metadata_left_join_uses_uniqueness_only_for_the_tight_bound() {
         let proof = QueryPlanCapabilityProof::combine_composed_graph_attempt(
             &unqualified,
             QueryPlanCapabilityProof::for_composed_consumer_plan(&unqualified).unwrap(),
-            [("pagerank".to_owned(), pagerank_like_string_producer())],
+            [("pagerank".to_owned(), pagerank_like_string_producer_with_max(64))],
         )
         .expect("finite cross-product evidence must bound an unqualified lookup without treating it as unique");
         if top_k_before_enrichment {
@@ -4309,7 +4551,7 @@ fn production_shaped_metadata_joins_retain_finite_and_authoritative_bounds() {
             &consumer,
             QueryPlanCapabilityProof::for_composed_consumer_plan(&consumer)
                 .expect("the production-shaped composed topology must issue a structural proof"),
-            [("pagerank".to_owned(), pagerank_like_string_producer())],
+            [("pagerank".to_owned(), pagerank_like_string_producer_with_max(64))],
         )
         .expect("10M-scale metadata must use finite multiplicity instead of missing-schedule rejection");
         let output = proof
@@ -4352,7 +4594,7 @@ fn graph_to_metadata_planning_defers_footer_dependent_admission_until_hydration(
     let error = QueryPlanCapabilityProof::combine_composed_graph_attempt(
         &planning,
         structural,
-        [("pagerank".to_owned(), pagerank_like_string_producer())],
+        [("pagerank".to_owned(), pagerank_like_string_producer_with_max(64))],
     )
     .expect_err("an unhydrated metadata source cannot promise a live device grant");
     assert_eq!(error.fact_value("schedule_reason"), Some("consumer_local_source_owner_missing"));
@@ -4362,7 +4604,7 @@ fn graph_to_metadata_planning_defers_footer_dependent_admission_until_hydration(
     let proof = QueryPlanCapabilityProof::combine_composed_graph_attempt(
         &prepared,
         QueryPlanCapabilityProof::for_composed_consumer_plan(&prepared).unwrap(),
-        [("pagerank".to_owned(), pagerank_like_string_producer())],
+        [("pagerank".to_owned(), pagerank_like_string_producer_with_max(64))],
     )
     .expect("hydrated source evidence must complete the same engine-owned proof");
     assert!(!proof.requires_composed_producer_binding());

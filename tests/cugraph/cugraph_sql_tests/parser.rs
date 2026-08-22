@@ -1197,6 +1197,8 @@ fn cugraph_sql_planning_parses_algorithm_options() {
             gravity: 2.0,
             verbose: true,
             seed: 123,
+            vertex_attributes: None,
+            initial_positions: None,
         }),
     );
     assert_error_contains(
@@ -1253,7 +1255,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
             ],
             &config,
         ),
-        "prevent_overlapping requires vertex_radius side input",
+        "prevent_overlapping=true requires vertex_attributes_table and vertex_radius_col",
     );
 }
 

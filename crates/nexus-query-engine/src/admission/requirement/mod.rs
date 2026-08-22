@@ -23,10 +23,7 @@ use crate::{
     capability::ReservationRequirement,
     datatypes::cudf_dtype_from_arrow_type,
     error::{QueryError, QueryErrorCode, Result},
-    expr::{
-        AggregateFunction, Expr, LiteralValue, alias_wrapped_column, representation_cast_column,
-        representation_cast_preserves_identity,
-    },
+    expr::{AggregateFunction, Expr, LiteralValue, alias_wrapped_column, representation_cast_preserves_identity},
     graph_memory::{
         GraphMemoryAdmissionEvidence, GraphMemoryOwnerTermFact, GraphMemoryOwnerTermRole, GraphSourceStageLifetime,
         graph_output_is_final, query_plan_hard_row_upper_bound, query_plan_node_hard_row_upper_bound,

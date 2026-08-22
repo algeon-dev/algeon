@@ -1775,12 +1775,37 @@ impl ExecutionContext {
                 && let Some(occurrence_ids) = occurrence_ids
             {
                 proof.submitted_capability_evidence().validate_covers_plan(plan)?;
-                return proof.reservation_envelope().validate_and_project_composed_execution(
+                proof.reservation_envelope().validate_execution_with_grant(
                     plan,
-                    occurrence_ids,
+                    self.memory_control_policy(),
+                    self.source_scheduler_policy,
+                    self.source_chunk_planning_mode,
+                    self.source_chunk_planning_options,
                     immutable_grant.budget_bytes(),
-                    projection_identity()?,
-                );
+                )?;
+                if descriptor.inputs().len() != occurrence_ids.len() {
+                    return Err(QueryError::new(
+                        QueryErrorCode::UnsupportedPlanShape,
+                        "nexus_query_engine.runtime.context",
+                        "the deferred composed input count differs from the admitted descriptor",
+                    )
+                    .with_fact("reason", "runtime_occurrence_count_mismatch")
+                    .with_fact("scheduled_occurrence_count", descriptor.inputs().len())
+                    .with_fact("runtime_occurrence_count", occurrence_ids.len()));
+                }
+                for (scheduled, runtime) in descriptor.inputs().iter().zip(occurrence_ids) {
+                    if scheduled.input_name() != runtime {
+                        return Err(QueryError::new(
+                            QueryErrorCode::UnsupportedPlanShape,
+                            "nexus_query_engine.runtime.context",
+                            "the deferred composed input order differs from the admitted descriptor",
+                        )
+                        .with_fact("reason", "runtime_occurrence_order_mismatch")
+                        .with_fact("scheduled_occurrence_id", scheduled.input_name())
+                        .with_fact("runtime_occurrence_id", runtime));
+                    }
+                }
+                return Ok(None);
             }
             let activated = self.activated_deferred_resident_phase.as_ref().ok_or_else(|| {
                 QueryError::new(
@@ -1811,6 +1836,32 @@ impl ExecutionContext {
                 self.source_chunk_planning_options,
                 immutable_grant.budget_bytes(),
             )?;
+            if descriptor.is_composed_consumer()
+                && let Some(occurrence_ids) = occurrence_ids
+            {
+                let identity = match activated.reservation_envelope.bound_derivation() {
+                    Some(AttemptBoundDerivation::OrderedTimeline) => Some((
+                        proof.grant_identity().attempt_id,
+                        proof.selected_device(),
+                        proof.grant_identity().generation,
+                    )),
+                    Some(AttemptBoundDerivation::ConservativeOwnerSum) => None,
+                    None => {
+                        return Err(QueryError::new(
+                            QueryErrorCode::UnsupportedPlanShape,
+                            "nexus_query_engine.runtime.context",
+                            "an activated composed execution proof has no selected bound derivation",
+                        )
+                        .with_fact("reason", "attempt_bound_derivation_unavailable"));
+                    },
+                };
+                return activated.reservation_envelope.validate_and_project_composed_execution(
+                    plan,
+                    occurrence_ids,
+                    immutable_grant.budget_bytes(),
+                    identity,
+                );
+            }
             return Ok(None);
         }
         proof.submitted_capability_evidence().validate_covers_plan(plan)?;
@@ -1846,7 +1897,9 @@ impl ExecutionContext {
         self.validate_admitted_proof(plan, None).map(|_| ())
     }
 
-    pub(crate) fn with_admitted_gpu_inputs(&self, plan: &QueryPlan, gpu_inputs: &GpuResidentInputMap) -> Result<Self> {
+    /// Refines an admitted deferred phase with the exact resident inputs that
+    /// were produced under this context's immutable grant.
+    pub fn with_admitted_gpu_inputs(&self, plan: &QueryPlan, gpu_inputs: &GpuResidentInputMap) -> Result<Self> {
         let Some((proof, immutable_grant)) = self.validated_admitted_identity(plan)? else {
             return Ok(self.clone());
         };
@@ -1870,8 +1923,10 @@ impl ExecutionContext {
         }
         if descriptor.is_composed_consumer() {
             proof.submitted_capability_evidence().validate_covers_plan(plan)?;
-            let capability_proof =
-                proof.submitted_capability_evidence().resolve_deferred_resident_consumer(plan, gpu_inputs)?;
+            let capability_proof = proof
+                .submitted_capability_evidence()
+                .resolve_deferred_resident_consumer(plan, gpu_inputs)?
+                .requirement_for_device(immutable_grant.device_ordinal())?;
             let (reservation_envelope, phase_grant) =
                 self.resolve_deferred_phase_envelope(plan, &capability_proof, &immutable_grant, None)?;
             let inputs = descriptor

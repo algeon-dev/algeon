@@ -33,7 +33,10 @@ pub use definition::{
     GraphOperationDefinition, GraphOutputSchemaKind, GraphSourceVertexRequirement, GraphVertexIdTypeSupport,
     GraphWeightPolicy,
 };
-pub use layout::{GraphForceAtlas2Params, GraphLayoutRequirement};
+pub use layout::{
+    GraphForceAtlas2InitialPositionsInput, GraphForceAtlas2Params, GraphForceAtlas2VertexAttributesInput,
+    GraphLayoutRequirement,
+};
 pub use residency::{
     GraphResidencyDescriptor, GraphResidencyOrientation, GraphResidencyPlanAnalysis, GraphSourceFingerprint,
     GraphSourceFingerprintBypassReason, ResidentGraphKey, edge_plan_has_simple_directed_edge_topology,
@@ -126,6 +129,7 @@ impl GraphAlgorithmParams {
             Self::Sssp(params) => Box::new(params.side_input_node_ids()),
             Self::BetweennessCentrality(params) => Box::new(params.side_input_node_ids()),
             Self::EdgeBetweennessCentrality(params) => Box::new(params.side_input_node_ids()),
+            Self::ForceAtlas2(params) => Box::new(params.side_input_node_ids()),
             _ => Box::new(std::iter::empty()),
         }
     }

@@ -89,21 +89,25 @@ impl GpuFunctionFamily for CugraphGpuFunctionFamily {
             );
         };
 
-        let row = validate::validate_graph_call(
-            session,
-            algorithm.function_name(),
-            &edges.table,
-            &request.options,
-            &self.config,
-        )
-        .await;
+        let mut options = request.options.clone();
+        if algorithm == CugraphAlgorithm::ForceAtlas2 {
+            let object = options.as_object_mut().expect("common validation requires an options object");
+            for (role, option) in
+                [("vertex_attributes", "vertex_attributes_table"), ("initial_positions", "initial_positions_table")]
+            {
+                if let Some(relation) = request.relations.get(role) {
+                    object.insert(option.to_string(), Value::String(relation.table.clone()));
+                }
+            }
+        }
+
+        let row =
+            validate::validate_graph_call(session, algorithm.function_name(), &edges.table, &options, &self.config)
+                .await;
         let normalized_options: Value =
             serde_json::from_str(&row.normalized_options_json).expect("cuGraph validation options JSON is valid");
-        let normalized_call = json!({
-            "schema_version": request.schema_version,
-            "relations": { "edges": { "table": edges.table } },
-            "options": normalized_options,
-        });
+        let mut normalized_call = request.normalized_json();
+        normalized_call["options"] = normalized_options;
         let output_schema: Value =
             serde_json::from_str(&row.output_schema_json).expect("cuGraph validation schema JSON is valid");
         let details = json!({
@@ -150,20 +154,35 @@ fn descriptor(
         },
         value => value,
     };
+    let mut relation_roles = vec![json!({
+        "name": "edges",
+        "description": "Required edge-list table or view for graph construction.",
+        "vertex_id_contract": json_schema::vertex_id_contract_json(algorithm),
+    })];
+    if algorithm == CugraphAlgorithm::ForceAtlas2 {
+        relation_roles.extend([
+            json!({
+                "name": "vertex_attributes",
+                "required": false,
+                "description": "Optional complete per-vertex radius, mobility, and mass relation."
+            }),
+            json!({
+                "name": "initial_positions",
+                "required": false,
+                "description": "Optional complete per-vertex Float32 x/y warm-start relation."
+            }),
+        ]);
+    }
     GpuFunctionDescriptor {
         function_name: algorithm.function_name().to_string(),
         provider: "cugraph".to_string(),
         signature: signature(algorithm),
         summary: descriptions::summary(algorithm).to_string(),
-        relation_roles: json!([{
-            "name": "edges",
-            "description": "Required edge-list table or view for graph construction.",
-            "vertex_id_contract": json_schema::vertex_id_contract_json(algorithm),
-        }]),
+        relation_roles: Value::Array(relation_roles),
         argument_descriptions: argument_descriptions(algorithm),
         options_schema: value(&json_schema::options_schema_json(algorithm, config)),
         result_schemas,
-        validation_request_schema: validation_request_schema(),
+        validation_request_schema: validation_request_schema(algorithm),
         examples: examples(algorithm),
         limitations: value(&descriptions::limitations_json(algorithm)),
         availability,
@@ -204,7 +223,29 @@ fn argument_descriptions(algorithm: CugraphAlgorithm) -> Value {
     arguments
 }
 
-fn validation_request_schema() -> Value {
+fn validation_request_schema(algorithm: CugraphAlgorithm) -> Value {
+    let mut relation_properties = serde_json::Map::from_iter([(
+        "edges".to_string(),
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["table"],
+            "properties": { "table": { "type": "string" } }
+        }),
+    )]);
+    if algorithm == CugraphAlgorithm::ForceAtlas2 {
+        for role in ["vertex_attributes", "initial_positions"] {
+            relation_properties.insert(
+                role.to_string(),
+                json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["table"],
+                    "properties": { "table": { "type": "string" } }
+                }),
+            );
+        }
+    }
     json!({
         "type": "object",
         "description": "The common validation envelope supports only version 1. There is no version 0 reader or version negotiation; any other schema_version is rejected before cuGraph family dispatch.",
@@ -219,14 +260,7 @@ fn validation_request_schema() -> Value {
                 "type": "object",
                 "additionalProperties": false,
                 "required": ["edges"],
-                "properties": {
-                    "edges": {
-                        "type": "object",
-                        "additionalProperties": false,
-                        "required": ["table"],
-                        "properties": { "table": { "type": "string" } }
-                    }
-                }
+                "properties": relation_properties
             },
             "options": {
                 "type": "object",
