@@ -2,7 +2,6 @@ use std::{collections::HashMap, hash::Hasher};
 
 use fnv::FnvHasher;
 
-#[doc(hidden)]
 pub fn max_option<T: Ord>(left: Option<T>, right: Option<T>) -> Option<T> {
     match (left, right) {
         (Some(left), Some(right)) => Some(left.max(right)),
@@ -11,7 +10,6 @@ pub fn max_option<T: Ord>(left: Option<T>, right: Option<T>) -> Option<T> {
     }
 }
 
-#[doc(hidden)]
 #[derive(Debug, Clone)]
 pub struct StableFnv1a64 {
     state: u64,
@@ -64,7 +62,6 @@ impl Default for StableFnv1a64 {
     }
 }
 
-#[doc(hidden)]
 pub fn comma_separated_usize(values: &[usize]) -> String {
     let mut output = String::new();
     for (index, value) in values.iter().enumerate() {
@@ -76,7 +73,6 @@ pub fn comma_separated_usize(values: &[usize]) -> String {
     output
 }
 
-#[doc(hidden)]
 pub fn escape_kv_delimited(value: &str) -> String {
     let mut escaped = String::with_capacity(value.len());
     for ch in value.chars() {
@@ -90,7 +86,6 @@ pub fn escape_kv_delimited(value: &str) -> String {
     escaped
 }
 
-#[doc(hidden)]
 pub fn log_safe_fingerprint(value: &str) -> String {
     format!("blake3:{}", blake3::hash(value.as_bytes()).to_hex())
 }

@@ -96,7 +96,7 @@ pub fn local_parquet_execution_frame_schema(source: &LocalParquetSource) -> crat
 /// filter-only column roles, and source diagnostics. The executor should not
 /// need frontend-specific scan metadata.
 #[derive(Debug, Clone, PartialEq)]
-#[allow(clippy::large_enum_variant)]
+#[expect(clippy::large_enum_variant, reason = "SourceNode variants represent disjoint planning sources")]
 pub enum SourceNode {
     /// Local filesystem Parquet input.
     LocalParquet(LocalParquetSource),

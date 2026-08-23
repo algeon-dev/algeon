@@ -15,7 +15,7 @@ use crate::{
     runtime::execution_domain::ExecutionDomain,
 };
 
-#[allow(dead_code)]
+#[expect(dead_code, reason = "TableViewBacking retains borrowed ColumnViews for TableView lifetime")]
 enum TableViewBacking<'a> {
     None,
     ColumnViews(Vec<ColumnView<'a>>),

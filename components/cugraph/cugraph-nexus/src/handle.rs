@@ -5,16 +5,13 @@
 //! work on the current thread. Both types are **not** `Send` or `Sync`
 //! because GPU state is thread-local.
 
-use std::{fmt, marker::PhantomData, mem::ManuallyDrop, ptr, ptr::NonNull, sync::Arc};
+use std::{fmt, marker::PhantomData, mem::ManuallyDrop, ptr::NonNull, sync::Arc};
 
 use cudf::{
     CurrentResourceRouteLease, DeviceId, DeviceMemoryManager,
     runtime::{BindingExtensionGuard, BindingExtensionInitError, BindingExtensionLease},
 };
-use cugraph_sys::{
-    cugraph_create_resource_handle, cugraph_resource_handle_get_comm_size, cugraph_resource_handle_get_rank,
-    cugraph_resource_handle_t,
-};
+use cugraph_sys::{cugraph_resource_handle_get_comm_size, cugraph_resource_handle_get_rank, cugraph_resource_handle_t};
 use rapids_interop::{ExecutionBinding, InteropError, InteropErrorKind};
 
 use crate::{
@@ -23,27 +20,39 @@ use crate::{
 };
 
 enum ResourceHandleState {
-    LocalOwned { raw: *mut cugraph_resource_handle_t, device: i32 },
-    RuntimeBound { lease: ResourceHandleLease },
-    ExternalBorrowed { raw: *mut cugraph_resource_handle_t, device: i32 },
-    ExternalOwned { raw: *mut cugraph_resource_handle_t, device: i32 },
+    #[cfg(test)]
+    LocalOwned {
+        raw: *mut cugraph_resource_handle_t,
+        device: i32,
+    },
+    RuntimeBound {
+        lease: ResourceHandleLease,
+    },
+    ExternalBorrowed {
+        raw: *mut cugraph_resource_handle_t,
+        device: i32,
+    },
+    ExternalOwned {
+        raw: *mut cugraph_resource_handle_t,
+        device: i32,
+    },
 }
 
 impl ResourceHandleState {
     fn standalone_raw(&self) -> Option<*mut cugraph_resource_handle_t> {
         match self {
-            Self::LocalOwned { raw, .. } | Self::ExternalBorrowed { raw, .. } | Self::ExternalOwned { raw, .. } => {
-                Some(*raw)
-            },
+            #[cfg(test)]
+            Self::LocalOwned { raw, .. } => Some(*raw),
+            Self::ExternalBorrowed { raw, .. } | Self::ExternalOwned { raw, .. } => Some(*raw),
             Self::RuntimeBound { .. } => None,
         }
     }
 
     fn device(&self) -> i32 {
         match self {
-            Self::LocalOwned { device, .. }
-            | Self::ExternalBorrowed { device, .. }
-            | Self::ExternalOwned { device, .. } => *device,
+            #[cfg(test)]
+            Self::LocalOwned { device, .. } => *device,
+            Self::ExternalBorrowed { device, .. } | Self::ExternalOwned { device, .. } => *device,
             Self::RuntimeBound { lease } => lease.device(),
         }
     }
@@ -51,14 +60,18 @@ impl ResourceHandleState {
     fn runtime(&self) -> Option<&cudf::Runtime> {
         match self {
             Self::RuntimeBound { lease } => Some(lease.runtime()),
-            Self::LocalOwned { .. } | Self::ExternalBorrowed { .. } | Self::ExternalOwned { .. } => None,
+            #[cfg(test)]
+            Self::LocalOwned { .. } => None,
+            Self::ExternalBorrowed { .. } | Self::ExternalOwned { .. } => None,
         }
     }
 
     fn runtime_bound_lease(&self) -> Option<ResourceHandleLease> {
         match self {
             Self::RuntimeBound { lease } => Some(lease.clone()),
-            Self::LocalOwned { .. } | Self::ExternalBorrowed { .. } | Self::ExternalOwned { .. } => None,
+            #[cfg(test)]
+            Self::LocalOwned { .. } => None,
+            Self::ExternalBorrowed { .. } | Self::ExternalOwned { .. } => None,
         }
     }
 
@@ -72,7 +85,6 @@ impl ResourceHandleState {
 }
 
 #[repr(C)]
-#[allow(non_camel_case_types)]
 struct cugraph_rs_runtime_resource_handle_t {
     _private: [u8; 0],
 }
@@ -352,13 +364,13 @@ impl ResourceHandle {
     /// Create a new resource handle with default single-GPU cuGraph resources.
     ///
     /// Internal helper for source-local tests and implementation plumbing.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn new() -> Result<Self> {
         Self::for_current_device()
     }
 
     /// Create a new resource handle on the calling thread's current CUDA device.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn for_current_device() -> Result<Self> {
         Self::new_on_device(Self::current_device_ordinal("ResourceHandle::for_current_device")?)
     }
@@ -380,6 +392,7 @@ impl ResourceHandle {
         Ok(Self { state: ResourceHandleState::RuntimeBound { lease }, _nosend_nosync: PhantomData })
     }
 
+    #[cfg(test)]
     fn new_on_device(device: i32) -> Result<Self> {
         if device < 0 {
             return Err(Error::new(ErrorKind::InvalidInput, "ResourceHandle::new_on_device")
@@ -395,7 +408,7 @@ impl ResourceHandle {
         let _guard = DeviceGuard::enter_owner_device(device, "ResourceHandle::new_on_device")?;
         // SAFETY: cuGraph creates a fresh handle and does not retain the null
         // communicator pointer beyond the call.
-        let raw = unsafe { cugraph_create_resource_handle(ptr::null_mut()) };
+        let raw = unsafe { cugraph_sys::cugraph_create_resource_handle(std::ptr::null_mut()) };
         if raw.is_null() {
             return Err(Error::new(ErrorKind::Unexpected, "ResourceHandle::new_on_device")
                 .with_message("cugraph_create_resource_handle returned NULL"));
@@ -470,7 +483,7 @@ impl ResourceHandle {
     }
 
     /// Get the raw C pointer. For internal use by other modules.
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn as_ptr(&self) -> *mut cugraph_resource_handle_t {
         self.state.standalone_raw().expect("runtime-bound handle pointers require an EnteredContext")
     }
@@ -569,9 +582,9 @@ impl ResourceHandle {
     pub fn enter(&self, operation: &'static str) -> Result<EnteredContext<'_>> {
         let runtime_extension = match &self.state {
             ResourceHandleState::RuntimeBound { lease } => Some(lease.enter(operation)?),
-            ResourceHandleState::LocalOwned { .. }
-            | ResourceHandleState::ExternalBorrowed { .. }
-            | ResourceHandleState::ExternalOwned { .. } => None,
+            #[cfg(test)]
+            ResourceHandleState::LocalOwned { .. } => None,
+            ResourceHandleState::ExternalBorrowed { .. } | ResourceHandleState::ExternalOwned { .. } => None,
         };
         let guard = DeviceGuard::enter_owner_device(self.device(), operation)?;
         Ok(EnteredContext { owner: self, _guard: guard, runtime_extension, _nosend_nosync: PhantomData })
@@ -581,7 +594,11 @@ impl ResourceHandle {
 impl Drop for ResourceHandle {
     fn drop(&mut self) {
         match &mut self.state {
-            ResourceHandleState::LocalOwned { raw, device } | ResourceHandleState::ExternalOwned { raw, device } => {
+            #[cfg(test)]
+            ResourceHandleState::LocalOwned { raw, device } => {
+                drop_device_resource(raw, *device, "ResourceHandle::drop", DeviceResourceKind::ResourceHandle);
+            },
+            ResourceHandleState::ExternalOwned { raw, device } => {
                 drop_device_resource(raw, *device, "ResourceHandle::drop", DeviceResourceKind::ResourceHandle);
             },
             ResourceHandleState::RuntimeBound { .. } | ResourceHandleState::ExternalBorrowed { .. } => {},
@@ -593,6 +610,9 @@ impl Drop for ResourceHandle {
 
 #[cfg(test)]
 mod tests {
+    use std::ptr;
+
+    use cugraph_sys::cugraph_create_resource_handle;
     use static_assertions::assert_not_impl_any;
 
     use super::*;

@@ -895,16 +895,11 @@ impl core::marker::Send for cudf::core::scalar::Scalar
 impl core::marker::Sync for cudf::core::scalar::Scalar
 impl core::ops::drop::Drop for cudf::core::scalar::Scalar
 pub fn cudf::core::scalar::Scalar::drop(&mut self)
-pub trait cudf::core::scalar::IntoRuntimeScalar
-pub fn cudf::core::scalar::IntoRuntimeScalar::into_runtime_scalar(self, &alloc::sync::Arc<ExecutionDomain>) -> cudf::core::error::Result<cudf::core::scalar::Scalar>
+pub trait cudf::core::scalar::IntoRuntimeScalar: cudf::core::scalar::sealed::Sealed
 impl cudf::core::scalar::IntoRuntimeScalar for &alloc::string::String
-pub fn &alloc::string::String::into_runtime_scalar(self, &alloc::sync::Arc<ExecutionDomain>) -> cudf::core::error::Result<cudf::core::scalar::Scalar>
 impl cudf::core::scalar::IntoRuntimeScalar for &str
-pub fn &str::into_runtime_scalar(self, &alloc::sync::Arc<ExecutionDomain>) -> cudf::core::error::Result<cudf::core::scalar::Scalar>
 impl cudf::core::scalar::IntoRuntimeScalar for alloc::string::String
-pub fn alloc::string::String::into_runtime_scalar(self, &alloc::sync::Arc<ExecutionDomain>) -> cudf::core::error::Result<cudf::core::scalar::Scalar>
 impl<T: cudf::core::types::CudfType> cudf::core::scalar::IntoRuntimeScalar for T
-pub fn T::into_runtime_scalar(self, &alloc::sync::Arc<ExecutionDomain>) -> cudf::core::error::Result<cudf::core::scalar::Scalar>
 pub mod cudf::core::table
 pub struct cudf::core::table::Table
 impl cudf::core::Table
@@ -5358,7 +5353,6 @@ pub fn cudf::Expr::le(self, impl cudf::ops::expr::IntoExpr) -> cudf::Expr
 pub fn cudf::Expr::log(self) -> cudf::Expr
 pub fn cudf::Expr::lt(self, impl cudf::ops::expr::IntoExpr) -> cudf::Expr
 pub fn cudf::Expr::ne(self, impl cudf::ops::expr::IntoExpr) -> cudf::Expr
-pub fn cudf::Expr::not(self) -> cudf::Expr
 pub fn cudf::Expr::output_name(&self) -> core::option::Option<&str>
 pub fn cudf::Expr::pow(self, impl cudf::ops::expr::IntoExpr) -> cudf::Expr
 pub fn cudf::Expr::round(self, i32) -> cudf::Expr
@@ -6323,7 +6317,6 @@ pub fn cudf::Expr::le(self, impl cudf::ops::expr::IntoExpr) -> cudf::Expr
 pub fn cudf::Expr::log(self) -> cudf::Expr
 pub fn cudf::Expr::lt(self, impl cudf::ops::expr::IntoExpr) -> cudf::Expr
 pub fn cudf::Expr::ne(self, impl cudf::ops::expr::IntoExpr) -> cudf::Expr
-pub fn cudf::Expr::not(self) -> cudf::Expr
 pub fn cudf::Expr::output_name(&self) -> core::option::Option<&str>
 pub fn cudf::Expr::pow(self, impl cudf::ops::expr::IntoExpr) -> cudf::Expr
 pub fn cudf::Expr::round(self, i32) -> cudf::Expr
@@ -7265,7 +7258,6 @@ pub fn cudf::Expr::le(self, impl cudf::ops::expr::IntoExpr) -> cudf::Expr
 pub fn cudf::Expr::log(self) -> cudf::Expr
 pub fn cudf::Expr::lt(self, impl cudf::ops::expr::IntoExpr) -> cudf::Expr
 pub fn cudf::Expr::ne(self, impl cudf::ops::expr::IntoExpr) -> cudf::Expr
-pub fn cudf::Expr::not(self) -> cudf::Expr
 pub fn cudf::Expr::output_name(&self) -> core::option::Option<&str>
 pub fn cudf::Expr::pow(self, impl cudf::ops::expr::IntoExpr) -> cudf::Expr
 pub fn cudf::Expr::round(self, i32) -> cudf::Expr
@@ -9627,16 +9619,11 @@ impl cudf::core::types::CudfType for u64
 pub const u64::TYPE_ID: cudf::core::types::TypeId
 impl cudf::core::types::CudfType for u8
 pub const u8::TYPE_ID: cudf::core::types::TypeId
-pub trait cudf::IntoRuntimeScalar
-pub fn cudf::IntoRuntimeScalar::into_runtime_scalar(self, &alloc::sync::Arc<ExecutionDomain>) -> cudf::core::error::Result<cudf::core::scalar::Scalar>
+pub trait cudf::IntoRuntimeScalar: cudf::core::scalar::sealed::Sealed
 impl cudf::core::scalar::IntoRuntimeScalar for &alloc::string::String
-pub fn &alloc::string::String::into_runtime_scalar(self, &alloc::sync::Arc<ExecutionDomain>) -> cudf::core::error::Result<cudf::core::scalar::Scalar>
 impl cudf::core::scalar::IntoRuntimeScalar for &str
-pub fn &str::into_runtime_scalar(self, &alloc::sync::Arc<ExecutionDomain>) -> cudf::core::error::Result<cudf::core::scalar::Scalar>
 impl cudf::core::scalar::IntoRuntimeScalar for alloc::string::String
-pub fn alloc::string::String::into_runtime_scalar(self, &alloc::sync::Arc<ExecutionDomain>) -> cudf::core::error::Result<cudf::core::scalar::Scalar>
 impl<T: cudf::core::types::CudfType> cudf::core::scalar::IntoRuntimeScalar for T
-pub fn T::into_runtime_scalar(self, &alloc::sync::Arc<ExecutionDomain>) -> cudf::core::error::Result<cudf::core::scalar::Scalar>
 pub trait cudf::IntoSeries
 pub fn cudf::IntoSeries::into_series(self) -> cudf::core::error::Result<cudf::Series>
 impl cudf::IntoSeries for cudf::Series

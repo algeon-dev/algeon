@@ -229,11 +229,13 @@ struct BindingExtensionSlot<T> {
     execution: Mutex<()>,
 }
 
-// MSRV 1.94 predates stable Atomic::try_update (1.95); fetch_update is the MSRV-compatible spelling.
-#[allow(deprecated)]
 impl<T> BindingExtensionSlot<T>
 where T: Any + Send + Sync
 {
+    #[expect(
+        deprecated,
+        reason = "MSRV 1.94 predates stable Atomic::try_update (1.95); fetch_update is the MSRV-compatible spelling"
+    )]
     fn new(operation: &'static str) -> Result<Self, Error> {
         let id = NEXT_SLOT_ID
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| current.checked_add(1))
@@ -263,6 +265,10 @@ where T: Any + Send + Sync
         })
     }
 
+    #[expect(
+        deprecated,
+        reason = "MSRV 1.94 predates stable Atomic::try_update (1.95); fetch_update is the MSRV-compatible spelling"
+    )]
     fn next_generation_id(&self, operation: &'static str) -> Result<u64, Error> {
         self.next_generation_id
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| current.checked_add(1))
@@ -447,6 +453,10 @@ where T: Any + Send + Sync
         self.lifecycle_changed.notify_all();
     }
 
+    #[expect(
+        deprecated,
+        reason = "MSRV 1.94 predates stable Atomic::try_update (1.95); fetch_update is the MSRV-compatible spelling"
+    )]
     fn release(self: &Arc<Self>, generation: Arc<Generation<T>>) {
         let current_thread = std::thread::current().id();
         let mut lifecycle = self.lifecycle.lock().expect("binding extension lifecycle mutex poisoned");

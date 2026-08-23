@@ -80,11 +80,7 @@ impl QueryServiceDrainPhase {
     }
 }
 
-// The `error` payload is consumed only through `Debug` diagnostics; the
-// drain loop itself reads only the phase.
-#[allow(dead_code)]
 #[derive(Debug)]
-#[doc(hidden)]
 pub enum QueryServiceDrainPhaseOutcome {
     Quiescent { phase: QueryServiceDrainPhase },
     DeadlineElapsed { phase: QueryServiceDrainPhase, error: QueryError },

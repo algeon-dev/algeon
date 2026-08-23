@@ -85,7 +85,6 @@ impl CompiledPipeline {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PipelineTaskId(usize);
 
-#[allow(missing_docs)]
 impl PipelineTaskId {
     pub const fn new(index: usize) -> Self {
         Self(index)
@@ -100,7 +99,6 @@ impl PipelineTaskId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PipelineEdgeId(usize);
 
-#[allow(missing_docs)]
 impl PipelineEdgeId {
     pub const fn new(index: usize) -> Self {
         Self(index)
@@ -115,7 +113,6 @@ impl PipelineEdgeId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PipelineBarrierId(usize);
 
-#[allow(missing_docs)]
 impl PipelineBarrierId {
     pub const fn new(index: usize) -> Self {
         Self(index)
@@ -130,7 +127,6 @@ impl PipelineBarrierId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ResidentResourceId(usize);
 
-#[allow(missing_docs)]
 impl ResidentResourceId {
     pub const fn new(index: usize) -> Self {
         Self(index)
@@ -145,7 +141,6 @@ impl ResidentResourceId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ReservationGateId(usize);
 
-#[allow(missing_docs)]
 impl ReservationGateId {
     pub const fn new(index: usize) -> Self {
         Self(index)

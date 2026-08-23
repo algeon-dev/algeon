@@ -104,7 +104,6 @@ pub struct AttemptComposedScheduleProjection {
 
 impl AttemptComposedScheduleProjection {
     #[cfg(any(test, feature = "test-hooks"))]
-    #[doc(hidden)]
     pub fn for_test(device_ordinal: usize, grant_id: u64, grant_bytes: u64) -> Self {
         let mut projection = Self {
             schema: COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1.to_owned(),
@@ -144,7 +143,6 @@ impl AttemptComposedScheduleProjection {
                 )
     }
 
-    #[doc(hidden)]
     pub fn fingerprint_for(
         attempt_wide_fixed_bytes: u64,
         producer_occurrences: &[AttemptComposedScheduleOccurrence],

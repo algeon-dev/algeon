@@ -44,8 +44,10 @@ macro_rules! define_registry {
         #[derive(Debug, Clone)]
         // Fields are written through `NexusNativeMetrics: Deref<Target = NativeMetricRegistry>`
         // from the descriptor recording macros. Keep the full ordered registry even when a
-        // particular build does not exercise every recorder path.
-        #[allow(dead_code)]
+        #[expect(
+            dead_code,
+            reason = "fields are recorded via macro and subset of metric fields may be unread depending on active plan paths"
+        )]
         pub(crate) struct NativeMetricRegistry {
             $(pub(super) $field: metric_storage_type!($kind),)*
         }

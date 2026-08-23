@@ -496,7 +496,6 @@ pub(crate) fn row_count_mismatch_error(
 
 /// Build an `UnsupportedOperation` error for a value that exceeded a
 /// hard numeric bound.
-#[allow(clippy::too_many_arguments)]
 pub(crate) fn limit_validation_error(
     operation: &'static str,
     message: impl Into<String>,

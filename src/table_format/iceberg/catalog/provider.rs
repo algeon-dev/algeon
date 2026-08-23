@@ -77,7 +77,6 @@ fn build_table_provider(
 ///
 /// Implementations should avoid leaking credentials in errors. `load_table`
 /// must accept identifiers previously returned by `list_tables`.
-#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait IcebergCatalogBackend: fmt::Debug + Send + Sync {
     /// List all top-level namespaces exposed by this catalog.

@@ -20,10 +20,8 @@ use parquet::file::{
 };
 
 /// Speculative tail size for footer-only object-store metadata reads.
-#[doc(hidden)]
 pub const PARQUET_FOOTER_PREFETCH_BYTES: u64 = 64 * 1024;
 
-#[doc(hidden)]
 pub const fn parquet_footer_prefetch_bytes(file_size: u64) -> u64 {
     if file_size < PARQUET_FOOTER_PREFETCH_BYTES { file_size } else { PARQUET_FOOTER_PREFETCH_BYTES }
 }
@@ -39,7 +37,6 @@ const FOOTER_SIDECAR_HEADER_BYTES: usize =
     FOOTER_SIDECAR_MAGIC.len() + std::mem::size_of::<u64>() + std::mem::size_of::<u64>() + std::mem::size_of::<u64>();
 
 /// Fetches Parquet footer metadata from object storage without staging the full object.
-#[doc(hidden)]
 pub async fn fetch_object_store_parquet_metadata(
     store: Arc<dyn ObjectStore>,
     location: ObjectStorePath,
@@ -115,7 +112,6 @@ pub async fn fetch_object_store_parquet_metadata(
 }
 
 /// Footer sidecar path for a complete lakehouse cache data file.
-#[doc(hidden)]
 pub fn parquet_footer_sidecar_path(data_path: &Path) -> PathBuf {
     let file_name = data_path.file_name().and_then(|value| value.to_str()).unwrap_or("cache-entry");
     data_path.with_file_name(format!(".{file_name}.footer.v1"))
@@ -125,7 +121,6 @@ pub fn parquet_footer_sidecar_path(data_path: &Path) -> PathBuf {
 ///
 /// Stale sidecars whose recorded file size or content identity does not match
 /// the data file are ignored so callers can fall back to the complete file.
-#[doc(hidden)]
 pub fn read_parquet_footer_sidecar(
     data_path: &Path,
     expected_content_identity: &str,
@@ -179,7 +174,6 @@ pub fn read_parquet_footer_sidecar(
 }
 
 /// Persists a footer sidecar beside a complete lakehouse cache data file.
-#[doc(hidden)]
 pub fn write_parquet_footer_sidecar_from_file(data_path: &Path, content_identity: &str) -> Result<()> {
     let mut file = fs::File::open(data_path).map_err(|error| {
         local_metadata_io_error("failed to open complete Parquet cache file for footer sidecar", error, data_path)
@@ -345,7 +339,6 @@ fn object_store_metadata_error(
         .with_fact("path", object_store_path_fact(location))
 }
 
-#[doc(hidden)]
 pub fn object_store_query_error(
     operation: &'static str,
     message: &'static str,
@@ -385,7 +378,6 @@ impl StdError for RedactedObjectStoreError {
     }
 }
 
-#[doc(hidden)]
 pub fn query_error_code_for_object_store_error(error: &object_store::Error) -> QueryErrorCode {
     match error {
         object_store::Error::PermissionDenied { .. } => QueryErrorCode::SourceAccessDenied,
@@ -402,7 +394,6 @@ pub fn query_error_code_for_object_store_error(error: &object_store::Error) -> Q
     }
 }
 
-#[doc(hidden)]
 pub fn object_store_error_kind(error: &object_store::Error) -> &'static str {
     match error {
         object_store::Error::PermissionDenied { .. } => "permission_denied",
@@ -417,7 +408,6 @@ pub fn object_store_error_kind(error: &object_store::Error) -> &'static str {
         object_store::Error::NotModified { .. } => "not_modified",
         object_store::Error::NotImplemented { .. } => "not_implemented",
         object_store::Error::UnknownConfigurationKey { .. } => "unknown_configuration_key",
-        #[allow(unreachable_patterns)]
         _ => "other",
     }
 }

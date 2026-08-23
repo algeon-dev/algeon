@@ -976,7 +976,6 @@ impl QueryService {
     /// admission. Any failure restores the provisional count exactly, releases
     /// every envelope component in reverse order outside the mutex, and
     /// finishes the request with the primary error.
-    #[allow(unused_mut)]
     pub(in crate::runtime::query_service) fn commit_placed_admission(
         &self,
         commit: PlacedAdmissionCommit,
@@ -996,7 +995,7 @@ impl QueryService {
             execution_cancellation,
             admitted_submission_seq,
             admission_wait_fact,
-            mut lifecycle_ticket,
+            lifecycle_ticket,
         } = commit;
         #[cfg(test)]
         let probe =
@@ -1014,6 +1013,7 @@ impl QueryService {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .take()
         {
+            let mut lifecycle_ticket = lifecycle_ticket;
             let super::super::admission::PlacedQuery { device_ordinal: _, memory_grant } = placed_query;
             let state = self.inner.admission.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             lifecycle_ticket.transition_to_cleanup().expect("injected resolution failure accounts provisional cleanup");

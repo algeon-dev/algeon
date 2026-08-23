@@ -33,7 +33,6 @@ impl ExprAggNamespace {
     /// Use [`Series::min`](crate::frame::series::Series::min) or
     /// [`Series::min_value`](crate::frame::series::Series::min_value) when you
     /// want a scalar result instead of a broadcast expression operand.
-    #[allow(clippy::should_implement_trait)]
     pub fn min(self) -> Expr {
         Expr::Reduce { input: Box::new(self.0), agg: ReduceAgg::Min }
     }

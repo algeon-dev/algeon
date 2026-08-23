@@ -19,7 +19,6 @@ use crate::{
     },
 };
 
-#[doc(hidden)]
 pub fn vector_ingress_columns_by_input(plan: &QueryPlan) -> BTreeMap<NodeId, BTreeSet<String>> {
     let mut columns_by_input = BTreeMap::<NodeId, BTreeSet<String>>::new();
     for node in plan.nodes() {
@@ -81,7 +80,6 @@ fn direct_column_name(expr: &Expr) -> Option<&str> {
     }
 }
 
-#[doc(hidden)]
 pub fn validate_vector_ingress_projection_output(
     output: &ProjectionOutput,
     input_schema: &SchemaRef,
@@ -130,7 +128,6 @@ pub fn validate_vector_ingress_projection_output(
     Ok(())
 }
 
-#[doc(hidden)]
 pub fn validate_schema_supported_with_vector_ingress(
     schema: &SchemaRef,
     operation: &'static str,
@@ -152,7 +149,6 @@ pub fn validate_schema_supported_with_vector_ingress(
     Ok(())
 }
 
-#[doc(hidden)]
 pub fn validate_vector_algorithm_node(
     vector: &VectorAlgorithmNode,
     plan: &QueryPlan,
@@ -332,7 +328,6 @@ fn validate_registry_maximum(
     Ok(())
 }
 
-#[doc(hidden)]
 pub fn validate_vector_algorithm_node_contract(
     vector: &VectorAlgorithmNode,
     plan: &QueryPlan,

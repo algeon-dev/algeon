@@ -78,8 +78,6 @@ pub use source::{
 #[cfg(test)]
 #[doc(hidden)]
 pub mod reservation_contract_testing {
-    #![allow(missing_docs)]
-
     use super::bounded::{BoundedExecutionAttempt, ReservationTracker, join::compiled::JoinMaterializationTxn};
     use crate::{
         error::{QueryError, Result},

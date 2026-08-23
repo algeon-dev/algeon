@@ -147,7 +147,10 @@ macro_rules! for_each_backend_metric {
 
 macro_rules! define_backend_metric_ids {
     ($( $field:ident => $name:literal: $unit:expr, $kind:expr, $labels:ident, $buckets:ident, $point:expr, $max:literal; )*) => {
-        #[allow(non_camel_case_types)]
+        #[expect(
+            non_camel_case_types,
+            reason = "metric identifiers are generated in snake_case matching descriptor fields"
+        )]
         #[repr(usize)]
         #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
         pub enum BackendMetric {

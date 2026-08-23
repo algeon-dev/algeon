@@ -1,4 +1,4 @@
-#[allow(dead_code)]
+#[expect(dead_code, reason = "build support module shared with build.rs")]
 #[path = "../build_support/mod.rs"]
 mod build_support;
 

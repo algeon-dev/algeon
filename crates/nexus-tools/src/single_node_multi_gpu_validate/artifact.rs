@@ -651,7 +651,6 @@ pub(super) struct QpsEnvelopeRecoveryEvidence {
 }
 
 impl QpsEnvelopeEvidence {
-    #[allow(clippy::cast_possible_truncation)]
     pub(super) fn from_measurement(
         profile: QpsEnvelopeProfile,
         aggregate: &MeasuredAggregate,

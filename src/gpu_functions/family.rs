@@ -9,7 +9,6 @@ use super::{GpuCallRequest, GpuCallValidation, GpuFunctionDescriptor};
 /// This intentionally does not abstract execution, lowering, or provider-owned
 /// relation semantics. It only lets the shared DataFusion metadata surface
 /// discover functions and delegate static validation to the owning family.
-#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub(crate) trait GpuFunctionFamily: Send + Sync {
     /// Stable unique identity for this installed family.

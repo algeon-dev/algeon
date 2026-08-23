@@ -60,6 +60,7 @@ broken_intra_doc_links = "deny"
 bare_urls = "deny"
 
 [workspace.lints.clippy]
+allow_attributes = "warn"
 coerce_container_to_any = "warn"
 debug_assert_with_mut_call = "warn"
 default_union_representation = "warn"

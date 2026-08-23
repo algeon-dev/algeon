@@ -194,7 +194,7 @@ pub(crate) fn personalized_pagerank<V: CugraphElement, W: CugraphElement>(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "all parameters required to invoke PageRank FFI")]
 fn pagerank_impl<V: CugraphElement, W: CugraphElement>(
     handle: &EnteredContext<'_>,
     graph: &mut Graph<Transposed>,

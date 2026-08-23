@@ -213,7 +213,6 @@ impl ObservationCompletionSupervisor {
     /// the supplied shutdown owner synchronously when global exit has already
     /// begun; that owner joins workers and re-enters `unregister_process_exit`.
     /// Keeping the mutex out of that callback path prevents a self-deadlock.
-    #[cfg_attr(not(test), allow(dead_code))]
     fn activate_process_exit_with(
         self: &Arc<Self>,
         register: impl FnOnce(Arc<dyn ProcessExitShutdown>) -> Option<ProcessExitRegistration>,

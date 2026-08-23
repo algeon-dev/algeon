@@ -6,7 +6,6 @@ use crate::datatypes::{
     is_timestamp_with_timezone,
 };
 
-#[doc(hidden)]
 pub fn require_boolean(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
     if matches!(data_type, ArrowDataType::Boolean) {
         Ok(())
@@ -15,7 +14,6 @@ pub fn require_boolean(data_type: &ArrowDataType, context: &'static str) -> Resu
     }
 }
 
-#[doc(hidden)]
 pub fn require_string(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
     if matches!(data_type, ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View) {
         Ok(())
@@ -24,7 +22,6 @@ pub fn require_string(data_type: &ArrowDataType, context: &'static str) -> Resul
     }
 }
 
-#[doc(hidden)]
 pub fn require_date_or_timestamp(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
     if matches!(data_type, ArrowDataType::Date32 | ArrowDataType::Timestamp(_, None)) {
         Ok(())
@@ -33,7 +30,6 @@ pub fn require_date_or_timestamp(data_type: &ArrowDataType, context: &'static st
     }
 }
 
-#[doc(hidden)]
 pub fn require_timestamp_second(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
     if matches!(data_type, ArrowDataType::Timestamp(TimeUnit::Second, None)) {
         Ok(())
@@ -42,7 +38,6 @@ pub fn require_timestamp_second(data_type: &ArrowDataType, context: &'static str
     }
 }
 
-#[doc(hidden)]
 pub fn require_timestamp(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
     if matches!(data_type, ArrowDataType::Timestamp(_, None)) {
         Ok(())
@@ -51,7 +46,6 @@ pub fn require_timestamp(data_type: &ArrowDataType, context: &'static str) -> Re
     }
 }
 
-#[doc(hidden)]
 pub fn require_timestamp_preserving_output(
     input_type: &ArrowDataType,
     output_type: &ArrowDataType,
@@ -73,7 +67,6 @@ pub fn require_timestamp_preserving_output(
     }
 }
 
-#[doc(hidden)]
 pub fn require_timezone_free_operator_key(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
     if is_timestamp_with_timezone(data_type) {
         unsupported_type(context, data_type, "expected timezone-free operator key")
@@ -84,7 +77,6 @@ pub fn require_timezone_free_operator_key(data_type: &ArrowDataType, context: &'
     }
 }
 
-#[doc(hidden)]
 pub fn require_scalar_operator_value(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
     if is_timestamp_with_timezone(data_type) {
         unsupported_type(context, data_type, "expected timezone-free scalar operator value")
@@ -95,12 +87,10 @@ pub fn require_scalar_operator_value(data_type: &ArrowDataType, context: &'stati
     }
 }
 
-#[doc(hidden)]
 pub fn require_integral_type(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
     if is_integral_type(data_type) { Ok(()) } else { unsupported_type(context, data_type, "expected integral") }
 }
 
-#[doc(hidden)]
 pub fn require_arithmetic_type(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
     if is_numeric_type(data_type) || is_decimal_type(data_type) {
         Ok(())
@@ -109,7 +99,6 @@ pub fn require_arithmetic_type(data_type: &ArrowDataType, context: &'static str)
     }
 }
 
-#[doc(hidden)]
 pub fn require_compatible_types(left: &ArrowDataType, right: &ArrowDataType, context: &'static str) -> Result<()> {
     if is_timestamp_with_timezone(left)
         || is_timestamp_with_timezone(right)
@@ -140,7 +129,6 @@ pub fn require_compatible_types(left: &ArrowDataType, right: &ArrowDataType, con
     }
 }
 
-#[doc(hidden)]
 pub fn require_comparable_types(left: &ArrowDataType, right: &ArrowDataType) -> Result<()> {
     if is_timestamp_with_timezone(left)
         || is_timestamp_with_timezone(right)
@@ -197,7 +185,6 @@ fn carry_operand_rejection_reason(
     }
 }
 
-#[doc(hidden)]
 pub fn temporal_duration_binary_output_type(
     op: BinaryOp,
     left: &ArrowDataType,
@@ -238,7 +225,6 @@ fn unsupported_type(context: &'static str, data_type: &ArrowDataType, expected: 
     .with_fact("data_type", format!("{data_type:?}")))
 }
 
-#[doc(hidden)]
 pub fn is_integral_type(data_type: &ArrowDataType) -> bool {
     matches!(
         data_type,
@@ -253,12 +239,10 @@ pub fn is_integral_type(data_type: &ArrowDataType) -> bool {
     )
 }
 
-#[doc(hidden)]
 pub fn is_numeric_type(data_type: &ArrowDataType) -> bool {
     is_integral_type(data_type) || matches!(data_type, ArrowDataType::Float32 | ArrowDataType::Float64)
 }
 
-#[doc(hidden)]
 pub fn is_decimal_type(data_type: &ArrowDataType) -> bool {
     matches!(data_type, ArrowDataType::Decimal128(_, _))
 }

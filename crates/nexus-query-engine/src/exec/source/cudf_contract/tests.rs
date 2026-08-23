@@ -1,7 +1,10 @@
 use std::{collections::BTreeMap, sync::Arc};
 
-use super::*;
-use crate::expr::{BinaryOp, Expr, LiteralValue};
+use super::{local::*, remote::*};
+use crate::{
+    exec::source::{ExecutionContext, LocalParquetFile, LocalParquetSource, QueryError, QueryErrorCode, SourceChunk},
+    expr::{BinaryOp, Expr, LiteralValue},
+};
 
 fn remote_direct_test_source() -> LocalParquetSource {
     let schema = Arc::new(arrow::datatypes::Schema::new(vec![

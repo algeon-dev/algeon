@@ -1,3 +1,6 @@
+#![allow(clippy::allow_attributes)] // reason = "shared test helper module with selectively used fixtures"
+#![allow(dead_code)]
+
 use std::{
     os::raw::{c_char, c_void},
     ptr,
@@ -15,7 +18,6 @@ type TableView = cudf_sys::cudf_table_view_handle;
 // Re-declare selected FFI functions with `i32` parameters so that tests can
 // pass deliberately invalid enum discriminants to the C shim without
 // constructing invalid Rust enum values (which is instant UB).
-#[allow(dead_code)]
 unsafe extern "C" {
     #[link_name = "cudf_ast_column_reference_create"]
     pub(crate) fn cudf_ast_column_reference_create_raw(
@@ -223,7 +225,6 @@ pub(crate) type FilterJoinIndicesExRaw = unsafe extern "C" fn(
     *const cudf_sys::cudf_exec_options_t,
 ) -> i32;
 
-#[allow(dead_code)]
 unsafe extern "C" {
     #[link_name = "cudf_conditional_inner_join_indices_ex"]
     pub(crate) fn cudf_conditional_inner_join_indices_raw(
@@ -316,7 +317,6 @@ pub(crate) type MixedSingleJoinRaw = unsafe extern "C" fn(
     *const cudf_sys::cudf_exec_options_t,
 ) -> i32;
 
-#[allow(dead_code)]
 unsafe extern "C" {
     #[link_name = "cudf_mixed_inner_join_indices_ex"]
     pub(crate) fn cudf_mixed_inner_join_indices_raw(
@@ -378,7 +378,6 @@ unsafe extern "C" {
     ) -> i32;
 }
 
-#[allow(dead_code)]
 unsafe extern "C" {
     #[link_name = "cudf_scan_aggregation_create"]
     pub(crate) fn cudf_scan_aggregation_create_raw(kind: i32, out: *mut *mut c_void) -> i32;

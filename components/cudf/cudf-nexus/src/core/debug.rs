@@ -2,7 +2,7 @@ use std::fmt;
 
 use super::{Column, ColumnView, Scalar, Table, TableView};
 
-#[allow(dead_code)]
+#[expect(dead_code, reason = "debug info fields formatted via Debug")]
 #[derive(Debug)]
 struct ExecutionDomainDebugInfo {
     kind: &'static str,
@@ -73,7 +73,7 @@ impl ColumnDebugMetadata {
     }
 }
 
-#[allow(dead_code)]
+#[expect(dead_code, reason = "debug info fields formatted via Debug")]
 #[derive(Debug)]
 struct TableColumnDebugSummary {
     index: usize,

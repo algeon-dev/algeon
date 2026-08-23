@@ -33,12 +33,11 @@ pub use aggregate::{
     lower_partial_aggregate_spec, lower_single_stage_grouped_aggregate_spec,
 };
 
-#[doc(hidden)]
 pub fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
     match expr {
         Expr::Column(column) => Ok(col(column.name())),
         Expr::Literal(value) => lower_literal(value),
-        Expr::Not(expr) => Ok(lower_expr(expr)?.not()),
+        Expr::Not(expr) => Ok(!lower_expr(expr)?),
         Expr::IsNull(expr) => Ok(lower_expr(expr)?.is_null()),
         Expr::IsNotNull(expr) => Ok(lower_expr(expr)?.is_not_null()),
         Expr::Cast { expr, target_type } => {
@@ -68,7 +67,7 @@ pub fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
                 },
                 None => lower_expr(expr)?.str().like(pattern.clone()),
             };
-            Ok(if *negated { expr.not() } else { expr })
+            Ok(if *negated { !expr } else { expr })
         },
         Expr::Substring { expr, start, length } => lower_substring(expr, *start, *length),
         Expr::Lower(expr) => Ok(lower_expr(expr)?.str().lower()),
@@ -104,10 +103,9 @@ pub fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {
     }
 }
 
-#[doc(hidden)]
 pub fn lower_filter_predicate_expr(expr: &Expr) -> Result<cudf::Expr> {
     match expr {
-        Expr::Not(expr) => Ok(lower_filter_predicate_expr(expr)?.not()),
+        Expr::Not(expr) => Ok(!lower_filter_predicate_expr(expr)?),
         Expr::IsNull(expr) => Ok(lower_filter_predicate_expr(expr)?.is_null()),
         Expr::IsNotNull(expr) => Ok(lower_filter_predicate_expr(expr)?.is_not_null()),
         Expr::Binary { left, op, right, output_type } => {

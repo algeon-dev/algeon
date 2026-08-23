@@ -172,7 +172,7 @@ macro_rules! define_contract {
         /// Recorders use these accessors instead of repeating public metric-name literals.
         /// The ordered macro emits one accessor per public metric; only the labelled-row
         /// recorders read them today.
-        #[allow(dead_code)] // macro emits one accessor per contract entry; subset is referenced
+        #[expect(dead_code, reason = "macro emits one accessor per contract entry; subset is referenced")]
         pub(super) mod metric_name {
             $(
                 pub(in crate::native_exec::metrics) const fn $field() -> &'static str {
@@ -183,7 +183,10 @@ macro_rules! define_contract {
 
         /// Type-level ids used to require one recording implementation for
         /// every ordered descriptor at compile time.
-        #[allow(non_camel_case_types)]
+        #[expect(
+            non_camel_case_types,
+            reason = "metric field names are snake_case to match contract descriptors"
+        )]
         pub(super) mod recording_marker {
             $(
                 pub(in crate::native_exec::metrics) enum $field {}

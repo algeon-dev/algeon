@@ -91,7 +91,6 @@ impl DataFrame {
         let ctx = ExecutionOverrides::new();
         self.filter_join_indices_in_context(right, left_indices, right_indices, predicate, options, join_type, &ctx)
     }
-    #[allow(clippy::too_many_arguments)]
     pub(crate) fn filter_join_indices_in_context(
         &self,
         right: &DataFrame,
