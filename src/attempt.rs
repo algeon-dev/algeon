@@ -53,11 +53,24 @@ use crate::{
 };
 
 /// Inputs used to create an execution attempt before DataFusion planning.
+///
+/// [`Self::default`] enables bounded native observation using
+/// [`RuntimeObservationConfig::NATIVE_EXECUTION_MAX_RECORDS`] and
+/// [`RuntimeObservationConfig::NATIVE_EXECUTION_MAX_BYTES`].
 #[derive(Debug, Clone)]
 pub struct AttemptOptions {
+    /// Optional caller correlation copied into the terminal attempt report.
     pub query_id: Option<String>,
+    /// Optional opaque distributed-trace correlation copied into attempt
+    /// observation and the terminal report.
     pub trace_context: Option<String>,
+    /// Invocation-owner deadline in the current process's monotonic
+    /// [`Instant`] clock domain.
+    ///
+    /// This is not a wall-clock or wire timestamp. A remote deadline must be
+    /// converted by the invocation owner before beginning the attempt.
     pub deadline: Option<Instant>,
+    /// Query-local runtime observation retention policy.
     pub observation: RuntimeObservationConfig,
 }
 

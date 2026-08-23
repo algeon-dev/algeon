@@ -3,6 +3,7 @@
 #[cfg(feature = "cugraph")]
 mod exec;
 mod gpu_family;
+#[cfg(feature = "test-support")]
 #[doc(hidden)]
 pub mod parity;
 mod parser;

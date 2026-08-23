@@ -10,10 +10,14 @@ use std::collections::{BTreeSet, HashMap};
 use arrow::datatypes::Schema;
 use nexus_query_engine::expr::{BinaryOp, Expr, LiteralValue};
 
-/// Arrow schema/field metadata key carrying comma-separated source unique-key
-/// column groups.
-pub const SOURCE_UNIQUE_KEYS_METADATA_KEY: &str = "datafusion_nexus.source_unique_keys.v1";
+/// Arrow schema/field metadata key carrying a JSON array of source unique-key
+/// column-name arrays.
+pub const SOURCE_UNIQUE_KEYS_METADATA_KEY: &str = "datafusion_nexus.source_unique_keys.v2";
 
+/// Returns a copy of `schema` with the declared source unique-key groups.
+///
+/// Column names are preserved exactly, including whitespace and punctuation.
+/// Empty key groups are omitted because they cannot prove a row bound.
 pub fn schema_with_source_unique_keys(schema: &Schema, unique_keys: &[&[&str]]) -> Schema {
     let encoded = encode_source_unique_keys(unique_keys);
     if encoded.is_empty() {
@@ -28,7 +32,7 @@ pub fn schema_with_source_unique_keys(schema: &Schema, unique_keys: &[&[&str]]) 
             let mut field = field.as_ref().clone();
             let field_unique_keys = unique_keys
                 .iter()
-                .filter(|key| key.iter().any(|column| column.trim() == field.name()))
+                .filter(|key| key.iter().any(|column| *column == field.name()))
                 .copied()
                 .collect::<Vec<_>>();
             let encoded = encode_source_unique_keys(&field_unique_keys);
@@ -60,32 +64,24 @@ fn reader_predicate_proves_unique_keys_at_most_one_row(unique_keys: Vec<Vec<Stri
 }
 
 fn encode_source_unique_keys(unique_keys: &[&[&str]]) -> String {
-    unique_keys
-        .iter()
-        .filter_map(|key| {
-            let columns =
-                key.iter().map(|column| column.trim()).filter(|column| !column.is_empty()).collect::<Vec<_>>();
-            (!columns.is_empty()).then(|| columns.join(","))
-        })
-        .collect::<Vec<_>>()
-        .join(";")
+    let unique_keys = unique_keys.iter().filter(|key| !key.is_empty()).collect::<Vec<_>>();
+    if unique_keys.is_empty() {
+        return String::new();
+    }
+    serde_json::to_string(&unique_keys).expect("string-array JSON serialization cannot fail")
 }
 
 fn source_unique_keys_from_metadata(metadata: &HashMap<String, String>) -> Vec<Vec<String>> {
-    metadata
-        .get(SOURCE_UNIQUE_KEYS_METADATA_KEY)
-        .into_iter()
-        .flat_map(|value| value.split(';'))
-        .filter_map(|key| {
-            let columns = key
-                .split(',')
-                .map(str::trim)
-                .filter(|column| !column.is_empty())
-                .map(ToOwned::to_owned)
-                .collect::<Vec<_>>();
-            (!columns.is_empty()).then_some(columns)
-        })
-        .collect()
+    let Some(value) = metadata.get(SOURCE_UNIQUE_KEYS_METADATA_KEY) else {
+        return Vec::new();
+    };
+    let Ok(unique_keys) = serde_json::from_str::<Vec<Vec<String>>>(value) else {
+        return Vec::new();
+    };
+    if unique_keys.iter().any(Vec::is_empty) {
+        return Vec::new();
+    }
+    unique_keys
 }
 
 fn source_unique_keys_from_schema(schema: &Schema) -> Vec<Vec<String>> {
@@ -171,6 +167,86 @@ mod tests {
 
         assert!(!reader_predicate_proves_source_at_most_one_row(&[&schema], &partial));
         assert!(reader_predicate_proves_source_at_most_one_row(&[&schema], &full));
+    }
+
+    #[test]
+    fn source_unique_key_metadata_preserves_semicolon_column_name() {
+        let schema = Schema::new(vec![
+            Field::new("a;b", DataType::Int32, false),
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+        ]);
+        let schema = schema_with_source_unique_keys(&schema, &[&["a;b"]]);
+        let unrelated = Expr::binary(Expr::column("a"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(7)));
+        let exact = Expr::binary(Expr::column("a;b"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(7)));
+
+        assert!(!reader_predicate_proves_source_at_most_one_row(&[&schema], &unrelated));
+        assert!(reader_predicate_proves_source_at_most_one_row(&[&schema], &exact));
+    }
+
+    #[test]
+    fn source_unique_key_metadata_preserves_comma_column_name() {
+        let schema = Schema::new(vec![
+            Field::new("a,b", DataType::Int32, false),
+            Field::new("a", DataType::Int32, false),
+            Field::new("b", DataType::Int32, false),
+        ]);
+        let schema = schema_with_source_unique_keys(&schema, &[&["a,b"]]);
+        let split_columns = Expr::binary(
+            Expr::binary(Expr::column("a"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(7))),
+            BinaryOp::And,
+            Expr::binary(Expr::column("b"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(9))),
+        );
+        let exact = Expr::binary(Expr::column("a,b"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(7)));
+
+        assert!(!reader_predicate_proves_source_at_most_one_row(&[&schema], &split_columns));
+        assert!(reader_predicate_proves_source_at_most_one_row(&[&schema], &exact));
+    }
+
+    #[test]
+    fn source_unique_key_metadata_preserves_whitespace_column_name() {
+        let schema =
+            Schema::new(vec![Field::new(" id ", DataType::Int32, false), Field::new("id", DataType::Int32, false)]);
+        let schema = schema_with_source_unique_keys(&schema, &[&[" id "]]);
+        let normalized = Expr::binary(Expr::column("id"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(7)));
+        let exact = Expr::binary(Expr::column(" id "), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(7)));
+
+        assert!(!reader_predicate_proves_source_at_most_one_row(&[&schema], &normalized));
+        assert!(reader_predicate_proves_source_at_most_one_row(&[&schema], &exact));
+    }
+
+    #[test]
+    fn source_unique_key_metadata_ignores_v1_delimiter_encoding() {
+        let schema = Schema::new_with_metadata(
+            vec![Field::new("id", DataType::Int32, false)],
+            HashMap::from([("datafusion_nexus.source_unique_keys.v1".to_string(), "id".to_string())]),
+        );
+        let predicate = Expr::binary(Expr::column("id"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(7)));
+
+        assert!(!reader_predicate_proves_source_at_most_one_row(&[&schema], &predicate));
+    }
+
+    #[test]
+    fn source_unique_key_metadata_rejects_malformed_v2_values() {
+        let predicate = Expr::binary(Expr::column("id"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(7)));
+        for value in ["not json", r#"["id"]"#, "[[]]"] {
+            let schema = Schema::new_with_metadata(
+                vec![Field::new("id", DataType::Int32, false)],
+                HashMap::from([(SOURCE_UNIQUE_KEYS_METADATA_KEY.to_string(), value.to_string())]),
+            );
+
+            assert!(!reader_predicate_proves_source_at_most_one_row(&[&schema], &predicate));
+        }
+    }
+
+    #[test]
+    fn source_unique_key_metadata_decodes_field_metadata() {
+        let field = Field::new("id", DataType::Int32, false)
+            .with_metadata(HashMap::from([(SOURCE_UNIQUE_KEYS_METADATA_KEY.to_string(), r#"[["id"]]"#.to_string())]));
+        let schema = Schema::new(vec![field]);
+        let predicate = Expr::binary(Expr::column("id"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(7)));
+
+        assert!(reader_predicate_proves_source_at_most_one_row(&[&schema], &predicate));
     }
 
     #[test]

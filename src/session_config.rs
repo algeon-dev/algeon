@@ -1,11 +1,11 @@
 //! DataFusion `ConfigExtension` surface for native query options.
 //!
-//! The Flight SQL server owns durable process config, but embedded DataFusion
-//! sessions need a DataFusion-native way to discover and override native query
-//! policy. This module provides the `datafusion_nexus.native.*` namespace used
-//! by `SessionConfig::set_str` and SQL `SET`, plus the request-scoped
-//! `datafusion_nexus.request.*` namespace read by the optimizer when it mints a
-//! plan ticket.
+//! Embedded DataFusion applications discover and configure native query policy
+//! through the `datafusion_nexus.native.*` namespace used by
+//! `SessionConfig::set_str` and SQL `SET`. The optimizer also reads the
+//! request-scoped `datafusion_nexus.request.*` namespace when it mints a plan
+//! ticket. The companion Flight SQL server projects its durable process config
+//! into the same session contract.
 
 use std::any::Any;
 

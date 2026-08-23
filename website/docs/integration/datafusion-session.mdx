@@ -16,7 +16,7 @@ Use the DataFusion version pinned by Nexus:
 
 ```toml
 [dependencies]
-datafusion = "54.1"
+datafusion = "55.0"
 datafusion-nexus = { path = "../datafusion-nexus", features = ["cugraph"] }
 futures = "0.3"
 ```
@@ -63,8 +63,11 @@ across every session and frontend instead of building another one.
 
 ## Add cuGraph SQL
 
-Install cuGraph through the backend so the functions inherit the same admission
-owner:
+`install_on` installs the backend-bound native optimizer, Nexus session config,
+GPU coverage UDTF, common GPU function catalog, and relation-aware cuVS
+planner/metadata family. It does not install cuGraph SQL. Install cuGraph
+through one of the two backend-managed paths so its functions inherit the same
+admission owner:
 
 ```rust
 use datafusion_nexus::cugraph_sql::CugraphSqlConfig;
@@ -79,13 +82,11 @@ let state = backend
 let ctx = SessionContext::new_with_state(state);
 ```
 
-The equivalent manual order is `backend.install_on(builder)?` followed by
-`with_cugraph_sql(...)`. Installing cuGraph first, or registering its table
-functions directly on an already-built context, bypasses backend admission and
-is rejected or unsafe for a backend-managed process.
-
-`install_on` also installs Nexus native rules, GPU coverage, the common GPU
-function catalog, and the relation-aware cuVS planner.
+The equivalent two-step path is `backend.install_on(builder)?` followed by
+`try_with_cugraph_sql(config)`. Installing cuGraph first, or registering its
+table functions directly on an already-built context, is rejected because the
+captured cuGraph configuration is not yet bound to the backend's admission
+authority.
 
 :::note[Current cuVS boundary]
 The `cuvs` feature supplies native bindings, but backend-managed bounded cuVS

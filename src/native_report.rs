@@ -5,6 +5,8 @@
 //! part of the report contract for consumers that parse these diagnostics.
 //! Sentinel strings such as `none`, `unknown`, `not_run`, and `not_computed`
 //! are part of the report contract when emitted by the TSV helpers.
+//! Capability rejection columns contain the stable strings returned by
+//! [`crate::capability::CapabilityReason::code`].
 
 use std::sync::Arc;
 
