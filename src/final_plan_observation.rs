@@ -76,7 +76,7 @@ fn observe_with_output_boundary(plan: &dyn ExecutionPlan, materializes_host: boo
     if plan.name() == "CooperativeExec" {
         let children = plan.children();
         if let [child] = children.as_slice() {
-            let wraps_gpu_producer = crate::native_exec::producer::gpu_resident_producer(plan).is_some();
+            let wraps_gpu_producer = crate::native_exec::gpu_resident_producer(plan).is_some();
             let wraps_graph_native_input = !materializes_host
                 && (child.downcast_ref::<NexusNativeExec>().is_some()
                     || child.downcast_ref::<NexusNativeComposedExec>().is_some());
@@ -118,8 +118,7 @@ fn observe_with_output_boundary(plan: &dyn ExecutionPlan, materializes_host: boo
         let mut observation =
             FinalPlanCoverage::new(FinalPlanDisposition::Native, 1, 0, 0, usize::from(materializes_host));
         for child_plan in plan.children() {
-            let child_is_gpu_producer =
-                crate::native_exec::producer::gpu_resident_producer(child_plan.as_ref()).is_some();
+            let child_is_gpu_producer = crate::native_exec::gpu_resident_producer(child_plan.as_ref()).is_some();
             let child = if child_is_gpu_producer {
                 observe_as_gpu_producer(child_plan.as_ref())
             } else {
@@ -139,8 +138,8 @@ fn observe_with_output_boundary(plan: &dyn ExecutionPlan, materializes_host: boo
             FinalPlanCoverage::new(FinalPlanDisposition::Native, 0, 1, 0, usize::from(materializes_host));
         for child_plan in plan.children() {
             let native_input = crate::cugraph_sql::native_graph_input_execution_plan(child_plan.as_ref());
-            let child_uses_native_gpu_input = native_input.is_some()
-                || crate::native_exec::producer::gpu_resident_producer(child_plan.as_ref()).is_some();
+            let child_uses_native_gpu_input =
+                native_input.is_some() || crate::native_exec::gpu_resident_producer(child_plan.as_ref()).is_some();
             let child = if let Some(native_input) = native_input {
                 observe_with_output_boundary(native_input, false)
             } else if child_uses_native_gpu_input {

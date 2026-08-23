@@ -106,10 +106,17 @@ pub(crate) fn register_gpu_resident_producer_discovery(discovery: GpuResidentPro
     }
 }
 
-/// Internal GPU-resident native fragment producer.
+/// GPU-resident native fragment producer for composed execution.
 ///
-/// Valid only under composed native execution; returns a device-resident handle,
-/// not a streamable DataFusion plan.
+/// Created by Nexus physical optimizer and adapter composition. The public type
+/// identity is exposed for [`ExecutionPlan`] inspection, downcasting, metrics
+/// collection, and plan diagnostics.
+///
+/// Construction remains crate-private: constructors validate GPU-resident sinks,
+/// child topologies, equivalence properties, GPU-resident input names, and
+/// admission-bound execution configuration. This node produces device-resident
+/// intermediate data and cannot directly stream Arrow through
+/// [`ExecutionPlan::execute`].
 #[derive(Debug, Clone)]
 pub struct NexusNativeGpuProducerExec {
     input_name: String,

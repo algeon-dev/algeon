@@ -25,7 +25,7 @@ use nexus_query_engine::expr::LimitSpec as NativeLimitSpec;
 
 use crate::{
     capability::CapabilityReason,
-    native_exec::producer::{gpu_resident_producer_input_name, gpu_resident_producer_unique_output_key},
+    native_exec::{gpu_resident_producer_input_name, gpu_resident_producer_unique_output_key},
     report::GpuCandidate,
     table_format::NexusIcebergScanExec,
 };
@@ -740,9 +740,7 @@ fn normalize_native_input(
         return Ok(NormalizedNativeInput::GpuResidentSource(NormalizedNativeGpuResidentSource {
             source_exec: plan,
             input_name,
-            row_count_upper_bound: crate::native_exec::producer::gpu_resident_producer_hard_output_row_upper_bound(
-                plan,
-            ),
+            row_count_upper_bound: crate::native_exec::gpu_resident_producer_hard_output_row_upper_bound(plan),
             unique_output_key: gpu_resident_producer_unique_output_key(plan),
         }));
     }

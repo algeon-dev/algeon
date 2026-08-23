@@ -902,15 +902,10 @@ pub const datafusion_nexus::gpu_coverage::EXPLAIN_GPU_SCHEMA_VERSION: u8
 pub const datafusion_nexus::gpu_coverage::NEXUS_EXPLAIN_COVERAGE_FUNCTION: &str
 pub fn datafusion_nexus::gpu_coverage::parse_explain_gpu(&str) -> datafusion_nexus::error::Result<core::option::Option<datafusion_nexus::gpu_coverage::ExplainGpuStatement>>
 pub fn datafusion_nexus::gpu_coverage::validate_query<'a>(&'a datafusion::execution::context::SessionContext, impl core::convert::AsRef<str> + core::marker::Send + 'a) -> futures_core::future::BoxFuture<'a, datafusion_nexus::error::Result<datafusion_nexus::gpu_coverage::QueryGpuCoverage>>
-pub mod datafusion_nexus::gpu_coverage_sql
-pub fn datafusion_nexus::gpu_coverage_sql::coverage_batch(&datafusion_nexus::gpu_coverage::QueryGpuCoverage, datafusion_nexus::gpu_coverage::ExplainGpuOutputMode, core::option::Option<&str>) -> datafusion_common::error::Result<arrow_array::record_batch::RecordBatch>
-pub fn datafusion_nexus::gpu_coverage_sql::coverage_schema() -> arrow_schema::schema::SchemaRef
-pub fn datafusion_nexus::gpu_coverage_sql::register_gpu_coverage_udtf(&datafusion::execution::context::SessionContext)
 pub mod datafusion_nexus::gpu_functions
 pub const datafusion_nexus::gpu_functions::GPU_DESCRIBE_FUNCTION_FUNCTION: &str
 pub const datafusion_nexus::gpu_functions::GPU_LIST_FUNCTIONS_FUNCTION: &str
 pub const datafusion_nexus::gpu_functions::GPU_VALIDATE_CALL_FUNCTION: &str
-pub fn datafusion_nexus::gpu_functions::is_builtin_gpu_metadata_table_source(&alloc::sync::Arc<dyn datafusion_expr::table_source::TableSource>) -> bool
 pub mod datafusion_nexus::native_exec
 pub use datafusion_nexus::native_exec::AggregateStrategyExecutionOptions
 pub use datafusion_nexus::native_exec::DynamicFilterExecutionOptions
@@ -928,20 +923,6 @@ pub use datafusion_nexus::native_exec::SourceSchedulerPolicy
 pub use datafusion_nexus::native_exec::SourceStorageProfile
 pub use datafusion_nexus::native_exec::StatisticalAggregateExecutionMode
 pub use datafusion_nexus::native_exec::TraceId
-pub mod datafusion_nexus::native_exec::producer
-pub struct datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec
-impl datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec
-pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::input_name(&self) -> &str
-impl datafusion_physical_plan::display::DisplayAs for datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec
-pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::fmt_as(&self, datafusion_physical_plan::display::DisplayFormatType, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl datafusion_physical_plan::execution_plan::ExecutionPlan for datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec
-pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::apply_expressions(&self, &mut dyn core::ops::function::FnMut(&alloc::sync::Arc<dyn datafusion_physical_expr_common::physical_expr::PhysicalExpr>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>
-pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::children(&self) -> alloc::vec::Vec<&alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
-pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::execute(&self, usize, alloc::sync::Arc<datafusion_execution::task::TaskContext>) -> datafusion_common::error::Result<datafusion_execution::stream::SendableRecordBatchStream>
-pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::metrics(&self) -> core::option::Option<datafusion_physical_expr_common::metrics::MetricsSet>
-pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::name(&self) -> &str
-pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::properties(&self) -> &alloc::sync::Arc<datafusion_physical_plan::execution_plan::PlanProperties>
-pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::with_new_children(alloc::sync::Arc<Self>, alloc::vec::Vec<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>) -> datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
 pub enum datafusion_nexus::native_exec::GraphClaimCalibrationExecution
 pub datafusion_nexus::native_exec::GraphClaimCalibrationExecution::NonPhysical(datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason)
 pub datafusion_nexus::native_exec::GraphClaimCalibrationExecution::Physical
@@ -1050,18 +1031,18 @@ pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_trace_id(
 impl datafusion_nexus::native_exec::NexusNativeExecutionConfig
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::has_query_admission_authority(&self) -> bool
 pub struct datafusion_nexus::native_exec::NexusNativeGpuProducerExec
-impl datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec
-pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::input_name(&self) -> &str
-impl datafusion_physical_plan::display::DisplayAs for datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec
-pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::fmt_as(&self, datafusion_physical_plan::display::DisplayFormatType, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl datafusion_physical_plan::execution_plan::ExecutionPlan for datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec
-pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::apply_expressions(&self, &mut dyn core::ops::function::FnMut(&alloc::sync::Arc<dyn datafusion_physical_expr_common::physical_expr::PhysicalExpr>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>
-pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::children(&self) -> alloc::vec::Vec<&alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
-pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::execute(&self, usize, alloc::sync::Arc<datafusion_execution::task::TaskContext>) -> datafusion_common::error::Result<datafusion_execution::stream::SendableRecordBatchStream>
-pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::metrics(&self) -> core::option::Option<datafusion_physical_expr_common::metrics::MetricsSet>
-pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::name(&self) -> &str
-pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::properties(&self) -> &alloc::sync::Arc<datafusion_physical_plan::execution_plan::PlanProperties>
-pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::with_new_children(alloc::sync::Arc<Self>, alloc::vec::Vec<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>) -> datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
+impl datafusion_nexus::native_exec::NexusNativeGpuProducerExec
+pub fn datafusion_nexus::native_exec::NexusNativeGpuProducerExec::input_name(&self) -> &str
+impl datafusion_physical_plan::display::DisplayAs for datafusion_nexus::native_exec::NexusNativeGpuProducerExec
+pub fn datafusion_nexus::native_exec::NexusNativeGpuProducerExec::fmt_as(&self, datafusion_physical_plan::display::DisplayFormatType, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+impl datafusion_physical_plan::execution_plan::ExecutionPlan for datafusion_nexus::native_exec::NexusNativeGpuProducerExec
+pub fn datafusion_nexus::native_exec::NexusNativeGpuProducerExec::apply_expressions(&self, &mut dyn core::ops::function::FnMut(&alloc::sync::Arc<dyn datafusion_physical_expr_common::physical_expr::PhysicalExpr>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>) -> datafusion_common::error::Result<datafusion_common::tree_node::TreeNodeRecursion>
+pub fn datafusion_nexus::native_exec::NexusNativeGpuProducerExec::children(&self) -> alloc::vec::Vec<&alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
+pub fn datafusion_nexus::native_exec::NexusNativeGpuProducerExec::execute(&self, usize, alloc::sync::Arc<datafusion_execution::task::TaskContext>) -> datafusion_common::error::Result<datafusion_execution::stream::SendableRecordBatchStream>
+pub fn datafusion_nexus::native_exec::NexusNativeGpuProducerExec::metrics(&self) -> core::option::Option<datafusion_physical_expr_common::metrics::MetricsSet>
+pub fn datafusion_nexus::native_exec::NexusNativeGpuProducerExec::name(&self) -> &str
+pub fn datafusion_nexus::native_exec::NexusNativeGpuProducerExec::properties(&self) -> &alloc::sync::Arc<datafusion_physical_plan::execution_plan::PlanProperties>
+pub fn datafusion_nexus::native_exec::NexusNativeGpuProducerExec::with_new_children(alloc::sync::Arc<Self>, alloc::vec::Vec<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>) -> datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
 pub struct datafusion_nexus::native_exec::SealedAttemptGraphClaimCalibrationSnapshot
 impl datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot
 pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::attempt_id(&self) -> nexus_query_planning::schedule_projection::AttemptId

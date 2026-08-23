@@ -34,13 +34,12 @@ use super::{
 use crate::{
     error::{Error, ErrorCode},
     native_exec::{
-        NativeExecutionMetricsCapture, NexusNativeExecutionConfig, NexusNativeMetrics,
+        GpuResidentProducer, NativeExecutionMetricsCapture, NexusNativeExecutionConfig, NexusNativeMetrics,
         child_inputs::{
             DEFAULT_MULTI_CHILD_HOST_STAGING_BYTES, NativeChildBinding, NativeChildInputSpec, StagedNativeChildren,
             stage_native_children,
         },
-        producer::{GpuResidentProducer, register_gpu_resident_producer_discovery},
-        run_gpu_execution_task,
+        register_gpu_resident_producer_discovery, run_gpu_execution_task,
     },
 };
 

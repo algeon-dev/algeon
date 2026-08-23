@@ -16,6 +16,13 @@ mod physical;
 mod preflight;
 mod recursion_guard;
 mod remedy;
+mod sql;
+
+#[cfg(feature = "server-internal")]
+#[doc(hidden)]
+pub mod server_internal {
+    pub use super::sql::{coverage_batch, coverage_schema};
+}
 
 #[cfg(test)]
 mod tests;
@@ -53,7 +60,10 @@ pub const EXPLAIN_GPU_SCHEMA_VERSION: u8 = 2;
 pub(crate) const COVERAGE_VALIDATOR_RECURSION_REASON_CODE: &str = "coverage_validator_recursion_unsupported";
 pub(crate) const GPU_COVERAGE_REJECTION_REASON_FACT: &str = "gpu_coverage_rejection_reason";
 
-pub(crate) use self::preflight::{coverage_validator_recursion_error, gpu_coverage_validation_in_progress};
+pub(crate) use self::{
+    preflight::{coverage_validator_recursion_error, gpu_coverage_validation_in_progress},
+    sql::gpu_coverage_table_function,
+};
 
 /// Validate a single SQL query against the native GPU planning path.
 ///

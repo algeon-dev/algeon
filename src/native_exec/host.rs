@@ -37,9 +37,15 @@ use crate::error::{Error, ErrorCode};
 
 /// Leaf DataFusion execution plan for a host-materializing native cuDF query.
 ///
-/// `NexusNativeExec` has no children and exposes exactly one output partition. It executes a
-/// DataFusion-free native `QueryPlan`, then materializes the final GPU result back to host Arrow
-/// because normal DataFusion execution consumes a `RecordBatch` stream.
+/// Created by Nexus physical optimizer and adapter composition. The public type
+/// identity is exposed for [`ExecutionPlan`] inspection, downcasting, metrics
+/// collection, and plan diagnostics.
+///
+/// Construction remains crate-private: the constructor validates host-materializing
+/// sinks, child topologies, equivalence properties, and admission-bound execution
+/// configuration. `NexusNativeExec` has no children and exposes exactly one output
+/// partition. It executes a DataFusion-free native `QueryPlan`, then materializes
+/// the final GPU result back to host Arrow for DataFusion streaming.
 #[derive(Debug, Clone)]
 pub struct NexusNativeExec {
     plan: QueryPlan,

@@ -168,7 +168,7 @@ pub(super) fn coverage_validator_recursion_rejection() -> QueryGpuRejection {
 pub(crate) fn coverage_validator_recursion_error() -> Error {
     Error::new(
         ErrorCode::DataFusionPlanning,
-        "datafusion_nexus.gpu_coverage_sql.recursion",
+        "datafusion_nexus.gpu_coverage.recursion",
         format!("{NEXUS_EXPLAIN_COVERAGE_FUNCTION} cannot validate a query that calls itself"),
     )
     .with_fact(GPU_COVERAGE_REJECTION_REASON_FACT, COVERAGE_VALIDATOR_RECURSION_REASON_CODE)
