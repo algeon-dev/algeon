@@ -292,10 +292,6 @@ impl DegreesResult {
     }
 }
 
-// ---------------------------------------------------------------------------
-// InDegreesResult
-// ---------------------------------------------------------------------------
-
 /// Result of an in-degree computation.
 ///
 /// The [`in_degrees()`](InDegreesResult::in_degrees) accessor is non-optional.
@@ -333,10 +329,6 @@ impl InDegreesResult {
             .map_err(|e| e.with_operation("InDegreesResult::to_dataframe"))
     }
 }
-
-// ---------------------------------------------------------------------------
-// OutDegreesResult
-// ---------------------------------------------------------------------------
 
 /// Result of an out-degree computation.
 ///

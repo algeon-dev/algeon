@@ -57,10 +57,6 @@ pub(crate) mod defaults {
     pub(crate) const LOUVAIN_RESOLUTION: PositiveF64 = PositiveF64(1.0);
 }
 
-// ---------------------------------------------------------------------------
-// IterationCount
-// ---------------------------------------------------------------------------
-
 /// A strictly positive iteration count.
 ///
 /// Wraps a [`NonZeroU32`] to guarantee that iteration-count parameters (like
@@ -177,10 +173,6 @@ impl TryFrom<usize> for IterationCount {
     }
 }
 
-// ---------------------------------------------------------------------------
-// BfsDepthLimit
-// ---------------------------------------------------------------------------
-
 /// A strictly positive BFS depth limit.
 ///
 /// Wraps a [`NonZeroUsize`] to guarantee that bounded BFS traversals run for
@@ -270,10 +262,6 @@ impl TryFrom<i32> for BfsDepthLimit {
     }
 }
 
-// ---------------------------------------------------------------------------
-// PositiveF64
-// ---------------------------------------------------------------------------
-
 /// A strictly positive, finite `f64` value.
 ///
 /// Used for parameters that must be greater than zero, such as scaling ratios.
@@ -339,10 +327,6 @@ impl TryFrom<f64> for PositiveF64 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// UnitF64
-// ---------------------------------------------------------------------------
-
 /// A finite `f64` value in the open interval `(0.0, 1.0)`.
 ///
 /// Used for parameters that represent fractions or probabilities, such as the
@@ -404,10 +388,6 @@ impl TryFrom<f64> for UnitF64 {
         Self::new(value)
     }
 }
-
-// ---------------------------------------------------------------------------
-// NonNegativeF64
-// ---------------------------------------------------------------------------
 
 /// A non-negative, finite `f64` value (i.e., `>= 0.0`).
 ///
@@ -473,10 +453,6 @@ impl TryFrom<f64> for NonNegativeF64 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ClosedUnitF64
-// ---------------------------------------------------------------------------
-
 /// A finite `f64` value in the closed interval `[0.0, 1.0]`.
 ///
 /// Used for parameters that represent interpolation weights or trade-offs
@@ -540,16 +516,10 @@ impl TryFrom<f64> for ClosedUnitF64 {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::error::ErrorKind;
-
-    // === IterationCount ===
 
     #[test]
     fn iteration_count_accepts_positive_values() {
@@ -643,8 +613,6 @@ mod tests {
         assert_eq!(nz.get(), 42);
     }
 
-    // === BfsDepthLimit ===
-
     #[test]
     fn bfs_depth_limit_accepts_positive_values() {
         assert_eq!(BfsDepthLimit::new(1).unwrap().get(), 1);
@@ -703,8 +671,6 @@ mod tests {
         let nz: NonZeroUsize = limit.into_inner();
         assert_eq!(nz.get(), 3);
     }
-
-    // === PositiveF64 ===
 
     #[test]
     fn positive_f64_accepts_positive_finite_values() {
@@ -765,8 +731,6 @@ mod tests {
         assert!(a < b);
     }
 
-    // === UnitF64 ===
-
     #[test]
     fn unit_f64_accepts_values_in_open_interval() {
         assert_eq!(UnitF64::new(0.5).unwrap().get(), 0.5);
@@ -826,8 +790,6 @@ mod tests {
         assert_eq!(val.to_string(), "0.85");
     }
 
-    // === NonNegativeF64 ===
-
     #[test]
     fn non_negative_f64_accepts_zero() {
         assert_eq!(NonNegativeF64::new(0.0).unwrap().get(), 0.0);
@@ -872,8 +834,6 @@ mod tests {
         let val = NonNegativeF64::new(0.0).unwrap();
         assert_eq!(val.to_string(), "0");
     }
-
-    // === ClosedUnitF64 ===
 
     #[test]
     fn closed_unit_f64_accepts_boundaries() {

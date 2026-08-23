@@ -489,7 +489,6 @@ mod tests {
         assert_eq!(dist_map[&4], 2, "vertex 4 should have distance 2");
         assert_eq!(dist_map[&5], 3, "vertex 5 should have distance 3");
 
-        // Check predecessors are present
         let preds = result.predecessors().expect("predecessors");
         assert!(preds.is_some(), "predecessors should be computed");
     }

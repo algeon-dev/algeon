@@ -21,10 +21,6 @@ use crate::{
     types::{CugraphElement, DataType},
 };
 
-// ═══════════════════════════════════════════════════════════════════════════
-// Raw (type-erased) internal types — used by FFI and algorithm result types
-// ═══════════════════════════════════════════════════════════════════════════
-
 /// Internal type-erased owning device array. Used for C API interop.
 pub(crate) struct RawDeviceArray {
     raw: *mut cugraph_type_erased_device_array_t,
