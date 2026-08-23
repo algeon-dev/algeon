@@ -109,7 +109,7 @@ fn aggregate_materialization_signature(
             source_fingerprints.join("|")
         )
     };
-    let family_key = format!("shared-subplan-v1-fnv64-{:016x}", stable_fnv1a64(family_signature.as_bytes()));
+    let family_key = format!("shared-subplan-v1-fnv64-{:016x}", fnv1a64(family_signature.as_bytes()));
 
     Some(AggregateMaterializationSignature {
         aggregate_node_id,
@@ -370,7 +370,7 @@ fn push_contract_hash(output: &mut String, key: &str, value: Option<&str>) {
         Some(value) => push_contract_value(
             output,
             key,
-            format!("fnv64:{:016x}:len:{}", stable_fnv1a64(value.as_bytes()), value.len()).as_str(),
+            format!("fnv64:{:016x}:len:{}", fnv1a64(value.as_bytes()), value.len()).as_str(),
         ),
         None => push_contract_value(output, key, "none"),
     }
@@ -565,13 +565,4 @@ fn sum_optional_u64(values: impl IntoIterator<Item = Option<u64>>) -> Option<u64
         sum = sum.checked_add(value?)?;
     }
     Some(sum)
-}
-
-fn stable_fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
 }

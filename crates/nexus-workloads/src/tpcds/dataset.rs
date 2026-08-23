@@ -11,7 +11,7 @@ use parquet::{
 };
 
 use super::{WorkloadError, WorkloadResult, fixture::write_tiny_tpcds_parquet_dataset};
-use crate::NEXUS_PARQUET_DIR_ENV;
+use crate::{NEXUS_PARQUET_DIR_ENV, metadata::DatasetFingerprint};
 
 /// Canonical TPC-DS table names in registration/report order.
 pub const TPCDS_TABLES: &[&str] = &[
@@ -447,7 +447,7 @@ fn tpcds_dataset_metadata_fingerprint(
     generation_command: &str,
     tables: &[TpcdsTableMetadata],
 ) -> String {
-    let mut hasher = StableFnv1a64::new();
+    let mut hasher = DatasetFingerprint::new();
     hasher.update_field("datafusion-nexus-tpcds-dataset-metadata-v1");
     hasher.update_field(scale_factor);
     hasher.update_field(provenance);
@@ -478,7 +478,7 @@ fn tpcds_dataset_metadata_fingerprint(
 }
 
 fn tpcds_dataset_content_fingerprint(tables: &[TpcdsTableMetadata]) -> WorkloadResult<String> {
-    let mut hasher = StableFnv1a64::new();
+    let mut hasher = DatasetFingerprint::new();
     hasher.update_field("datafusion-nexus-tpcds-dataset-content-v1");
     let mut buffer = vec![0_u8; 1024 * 1024];
     for table in tables {
@@ -524,33 +524,4 @@ fn relative_dataset_path(root: &Path, path: &Path) -> String {
 
 fn env_truthy(value: &str) -> bool {
     matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")
-}
-
-struct StableFnv1a64 {
-    state: u64,
-}
-
-impl StableFnv1a64 {
-    const OFFSET: u64 = 0xcbf29ce484222325;
-    const PRIME: u64 = 0x100000001b3;
-
-    fn new() -> Self {
-        Self { state: Self::OFFSET }
-    }
-
-    fn update_field(&mut self, value: &str) {
-        self.update_bytes(value.as_bytes());
-        self.update_bytes(&[0]);
-    }
-
-    fn update_bytes(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.state ^= u64::from(*byte);
-            self.state = self.state.wrapping_mul(Self::PRIME);
-        }
-    }
-
-    fn finish(self) -> u64 {
-        self.state
-    }
 }

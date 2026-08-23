@@ -22,6 +22,7 @@ blake3 = { workspace = true }
 bytes = { workspace = true }
 cudf = { workspace = true }
 cugraph = { workspace = true, optional = true }
+fnv = { workspace = true }
 futures = { workspace = true }
 getrandom = { workspace = true }
 nexus-query-planning = { workspace = true }

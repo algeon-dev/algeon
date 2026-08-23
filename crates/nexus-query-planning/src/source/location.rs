@@ -5,9 +5,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use super::diagnostics::{
-    object_store_diagnostic_id, redacted_debug_value, redacted_stable_id_diagnostic, stable_fnv1a64,
-};
+use super::diagnostics::{object_store_diagnostic_id, redacted_debug_value, redacted_stable_id_diagnostic};
+use crate::util::fnv1a64;
 
 /// Explicit location/read-capability model for native Parquet sources.
 #[derive(Clone, PartialEq, Eq, Hash)]
@@ -112,7 +111,7 @@ impl ParquetSourceLocation {
         match self {
             Self::LocalPath(_) => redacted_stable_id_diagnostic(stable_id),
             Self::ObjectStoreUri { scheme, .. } => {
-                format!("object_store:{scheme}:stable_id_fnv64:{:016x}", stable_fnv1a64(stable_id.as_bytes()))
+                format!("object_store:{scheme}:stable_id_fnv64:{:016x}", fnv1a64(stable_id.as_bytes()))
             },
         }
     }

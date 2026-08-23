@@ -15,6 +15,7 @@ test = false
 [dependencies]
 arrow = { workspace = true }
 datafusion = { workspace = true }
+fnv = { workspace = true }
 parquet = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -3,6 +3,7 @@
 use std::{
     error::Error as StdError,
     fmt, fs,
+    hash::Hasher,
     io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
     sync::Arc,
@@ -10,6 +11,7 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
+use fnv::FnvHasher;
 use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
 use object_store::{ObjectStore, ObjectStoreExt, path::Path as ObjectStorePath};
 use parquet::file::{
@@ -280,12 +282,9 @@ fn parquet_footer_sidecar_temp_path(sidecar_path: &Path) -> PathBuf {
 }
 
 fn stable_fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
+    let mut hasher = FnvHasher::default();
+    hasher.write(bytes);
+    hasher.finish()
 }
 
 fn file_modified_nanos(metadata: &fs::Metadata) -> Option<u64> {

@@ -1,7 +1,10 @@
 use std::{
     collections::BTreeMap,
+    hash::Hasher,
     time::{Duration, Instant},
 };
+
+use fnv::FnvHasher;
 
 use super::{
     AggregateExecutionStage, AggregateExecutionStrategy, AggregateFunction, AggregateSpec,
@@ -1195,12 +1198,9 @@ pub(super) fn aggregate_structural_key(
 }
 
 pub(super) fn stable_fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    hash
+    let mut hasher = FnvHasher::default();
+    hasher.write(bytes);
+    hasher.finish()
 }
 
 fn aggregate_function_structural_name(function: AggregateFunction) -> &'static str {

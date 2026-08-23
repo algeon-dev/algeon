@@ -1,7 +1,10 @@
 use std::{
     collections::{HashMap, HashSet},
+    hash::Hasher,
     sync::Arc,
 };
+
+use fnv::FnvHasher;
 
 use super::{
     DataContentType, DataFileFormat, DataType, Error, ErrorCode, FileIO, FileScanTask, FileScanTaskDeleteFile,
@@ -957,12 +960,9 @@ pub(super) fn iceberg_task_content_identity(snapshot_id: Option<&str>, task: &Fi
 }
 
 pub(super) fn fnv1a64_hex(bytes: &[u8]) -> String {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("{hash:016x}")
+    let mut hasher = FnvHasher::default();
+    hasher.write(bytes);
+    format!("{:016x}", hasher.finish())
 }
 
 pub(super) fn table_format_data_file_format(format: DataFileFormat) -> TableFormatDataFileFormat {

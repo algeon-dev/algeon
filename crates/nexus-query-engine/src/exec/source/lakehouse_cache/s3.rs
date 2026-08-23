@@ -1,3 +1,4 @@
+use super::cache::stable_log_hash;
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     source::{ParquetSourceLocation, ResolvedParquetSource},
@@ -80,13 +81,4 @@ pub(super) fn object_store_bucket_fact(bucket: &str) -> String {
 
 pub(super) fn object_store_key_fact(location: &::object_store::path::Path) -> String {
     crate::source::redacted_object_store_path_diagnostic(location.as_ref())
-}
-
-fn stable_log_hash(value: &str) -> String {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in value.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("{hash:016x}")
 }

@@ -1,8 +1,9 @@
 //! Byte-stable local-Parquet cache fingerprint construction.
 
-use std::fmt::Write;
+use std::{fmt::Write, hash::Hasher};
 
 use arrow::datatypes::SchemaRef;
+use fnv::FnvHasher;
 use nexus_query_planning::{
     source::{LocalParquetSource, ParquetReaderDecimalType, ResolvedParquetSource, SourceColumnRef},
     util::escape_kv_delimited,
@@ -328,12 +329,9 @@ pub(super) fn stable_hashed_string(value: &str) -> String {
 }
 
 pub(super) fn stable_fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
+    let mut hasher = FnvHasher::default();
+    hasher.write(bytes);
+    hasher.finish()
 }
 
 pub(super) fn push_token(output: &mut String, key: impl AsRef<str>, value: impl ToString) {

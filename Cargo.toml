@@ -59,10 +59,6 @@ split-debuginfo = "unpacked"
 broken_intra_doc_links = "deny"
 bare_urls = "deny"
 
-# High-signal, low-noise guards. Every entry must stay zero-hit across the
-# workspace (the canonical Clippy phase raises warn to gate failure via
-# `-D warnings`); new entries require a concrete FFI-, runtime-, or
-# path-correctness reason, verified across all targets and features.
 [workspace.lints.clippy]
 coerce_container_to_any = "warn"
 debug_assert_with_mut_call = "warn"
@@ -114,6 +110,7 @@ cmake = "0.1"
 cmake-package = "0.2.0"
 csv = "1.4"
 datafusion = "55.0"
+fnv = "1"
 futures = "0.3"
 getrandom = "0.4"
 iceberg = { git = "https://github.com/apache/iceberg-rust.git", rev = "16badac3543ae99f90e9d0e65f56068eef3751d0" }
@@ -177,6 +174,7 @@ cuvs-sys = { workspace = true, optional = true }
 nexus-query-engine = { workspace = true }
 datafusion = { workspace = true }
 nexus-iceberg = { workspace = true, optional = true }
+fnv = { workspace = true }
 futures = { workspace = true }
 iceberg = { workspace = true, optional = true }
 iceberg-datafusion = { workspace = true, optional = true }
