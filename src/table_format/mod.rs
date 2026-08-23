@@ -6,6 +6,8 @@
 
 #[cfg(feature = "iceberg")]
 pub mod iceberg;
+#[cfg(all(test, feature = "iceberg"))]
+mod provider_tests;
 pub mod scan;
 pub mod scan_exec;
 

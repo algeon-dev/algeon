@@ -15,6 +15,8 @@ cugraph = ["dep:cugraph", "dep:cugraph-sys", "nexus-query-planning/cugraph", "ne
 cuvs = ["dep:cuvs", "dep:cuvs-sys", "nexus-query-planning/cuvs", "nexus-query-runtime/cuvs"]
 # Optional live NVML diagnostics; admission capacity and SM count remain on cudf CUDA/RMM inventory.
 nvml = ["nexus-query-runtime/nvml"]
+# Forwards the controlled device-quarantine qualification capability the root adapter exposes.
+qualification = ["nexus-query-runtime/qualification"]
 # Enables the crate-private seams consumed by the registered GPU execution harness.
 test-hooks = ["nexus-query-planning/test-hooks", "nexus-query-runtime/test-hooks"]
 

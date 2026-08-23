@@ -6,6 +6,9 @@
 
 mod error;
 mod exec;
+#[cfg(test)]
+#[path = "exec_tests.rs"]
+mod exec_tests;
 mod gpu_family;
 mod logical;
 mod lowering;

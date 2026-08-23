@@ -201,4 +201,12 @@ if [[ "${PUBLIC_API_SKIP_FACADE_POLICY:-0}" != "1" ]]; then
   fi
 fi
 
+# `cargo public-api` omits `#[doc(hidden)]` items, so hidden cross-crate
+# feature contracts are license-checked against a per-symbol ledger instead.
+if [[ "${PUBLIC_API_SKIP_HIDDEN_POLICY:-0}" != "1" ]]; then
+  if ! python3 scripts/ci/check_public_api_hidden.py "${SNAPSHOT_DIR}/datafusion-nexus-hidden.tsv"; then
+    status=1
+  fi
+fi
+
 exit "${status}"

@@ -127,9 +127,15 @@ async fn flight_sql_explain_gpu_reuses_coverage_schema_and_rejects_other_endpoin
         .downcast_ref::<StringArray>()
         .unwrap();
     assert_eq!(json_row_kind.value(0), "summary");
+    let json_gpu_path = json_batches[0]
+        .column(json_batches[0].schema().index_of("gpu_path").unwrap())
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(json_gpu_path.value(0), "cpu");
     assert!(coverage_json.is_valid(0));
     let json: serde_json::Value = serde_json::from_str(coverage_json.value(0)).unwrap();
-    assert_eq!(json["overall"]["verdict"], "cpu_only");
+    assert!(json.get("overall").is_none());
 
     let regular_explain = client.execute("EXPLAIN SELECT 1 AS one".to_string(), None).await.unwrap();
     let regular_schema = regular_explain.try_decode_schema().unwrap();

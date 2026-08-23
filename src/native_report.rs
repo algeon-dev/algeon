@@ -69,6 +69,8 @@ mod dataset;
 mod descriptor;
 mod diagnostics;
 mod metrics;
+#[cfg(test)]
+mod report_execution_tests;
 mod reports;
 mod rows;
 mod runtime_summary;

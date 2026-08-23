@@ -68,6 +68,7 @@ pub datafusion_nexus::attempt::SealedAttemptNativeExecutionSnapshot::metrics: da
 pub datafusion_nexus::attempt::SealedAttemptNativeExecutionSnapshot::terminal_host_materialization_count: usize
 pub mod datafusion_nexus::backend
 pub use datafusion_nexus::backend::DeviceCapabilities
+pub use datafusion_nexus::backend::DeviceQuarantineInjection
 pub use datafusion_nexus::backend::GpuDeviceMemoryLimit
 pub use datafusion_nexus::backend::GpuMemoryOwnership
 pub struct datafusion_nexus::backend::NexusGpuBackend
@@ -94,6 +95,7 @@ pub fn datafusion_nexus::backend::NexusGpuBackend::install_on(&self, datafusion:
 pub fn datafusion_nexus::backend::NexusGpuBackend::install_on_with_cugraph_sql(&self, datafusion::execution::session_state::SessionStateBuilder, datafusion_nexus::cugraph_sql::CugraphSqlConfig) -> datafusion_nexus::error::Result<datafusion::execution::session_state::SessionStateBuilder>
 pub fn datafusion_nexus::backend::NexusGpuBackend::is_session_state_bound(&self, &datafusion::execution::session_state::SessionState) -> bool
 pub fn datafusion_nexus::backend::NexusGpuBackend::optimizer_config(&self) -> &datafusion_nexus::planner::NexusNativeOptimizerConfig
+pub fn datafusion_nexus::backend::NexusGpuBackend::quarantine_device_for_qualification(&self, usize) -> datafusion_nexus::error::Result<nexus_query_runtime::runtime::query_service::service::api::DeviceQuarantineInjection>
 pub fn datafusion_nexus::backend::NexusGpuBackend::queue_policy(&self) -> &datafusion_nexus::backend::NexusGpuQueuePolicy
 pub fn datafusion_nexus::backend::NexusGpuBackend::same_backend(&self, &Self) -> bool
 impl datafusion_nexus::backend::NexusGpuBackend

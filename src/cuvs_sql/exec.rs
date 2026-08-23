@@ -168,12 +168,6 @@ impl CuvsAlgoExec {
         )
     }
 
-    #[cfg(feature = "test-support")]
-    #[doc(hidden)]
-    pub fn native_plan_for_test(&self) -> Result<QueryPlan> {
-        self.native_plan()
-    }
-
     fn child_specs(&self) -> Vec<NativeChildInputSpec> {
         self.inputs
             .iter()

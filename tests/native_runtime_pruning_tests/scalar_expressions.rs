@@ -10,27 +10,24 @@ async fn native_runtime_scalar_expressions_match_cpu_and_collect_required_column
 
     let cpu_batches = cpu_sql_output(&path, SQL_SCALAR_EXPRESSIONS_QUERY).await;
     let native_physical_plan = sql_plan(&path, SessionConfig::new(), SQL_SCALAR_EXPRESSIONS_QUERY).await;
-    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
-    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.source_diagnostics[0].read_column_count, 3);
-    assert_eq!(lowering.source_diagnostics[0].projected_output_column_count, 3);
-    assert_eq!(lowering.source_diagnostics[0].pure_filter_column_count, 0);
+    let optimization = optimize_with_pruning_template(native_physical_plan);
+    assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.source_diagnostics[0].read_column_count, 3);
+    assert_eq!(optimization.source_diagnostics[0].projected_output_column_count, 3);
+    assert_eq!(optimization.source_diagnostics[0].pure_filter_column_count, 0);
+    assert_nexus_native_exec(&optimization.plan, "scalar plan must rewrite to NexusNativeExec");
 
-    let context = bounded_execution_context(&lowering.plans[0]);
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
-    let metrics = result.metrics();
-    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
-    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
+    let metrics = optimization.plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
+    assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
+    assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
     assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
 
-    let QueryOutput::HostArrow(native_batch) = result.output() else {
-        panic!("native host sink should return a RecordBatch");
-    };
-    assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
+    assert_batches_equal(&cpu_batches, &native_batches);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -44,27 +41,34 @@ async fn native_runtime_nullable_scalar_expressions_match_cpu() {
     let cpu_batches = cpu_sql_output(&path, SQL_NULLABLE_SCALAR_EXPRESSIONS_QUERY).await;
     let native_physical_plan = sql_plan(&path, SessionConfig::new(), SQL_NULLABLE_SCALAR_EXPRESSIONS_QUERY).await;
     let plan_display = displayable(native_physical_plan.as_ref()).indent(true).to_string();
-    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
-    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}\n{plan_display}", lowering.report.outcomes());
-    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}\n{plan_display}", lowering.report.outcomes());
-    assert_eq!(lowering.source_diagnostics[0].read_column_count, 3);
-    assert_eq!(lowering.source_diagnostics[0].projected_output_column_count, 3);
-    assert_eq!(lowering.source_diagnostics[0].pure_filter_column_count, 0);
+    let optimization = optimize_with_pruning_template(native_physical_plan);
+    assert_eq!(
+        optimization.report.selected_count(),
+        1,
+        "outcomes={:?}\n{plan_display}",
+        optimization.report.outcomes()
+    );
+    assert_eq!(
+        optimization.report.not_selected_count(),
+        0,
+        "outcomes={:?}\n{plan_display}",
+        optimization.report.outcomes()
+    );
+    assert_eq!(optimization.source_diagnostics[0].read_column_count, 3);
+    assert_eq!(optimization.source_diagnostics[0].projected_output_column_count, 3);
+    assert_eq!(optimization.source_diagnostics[0].pure_filter_column_count, 0);
+    assert_nexus_native_exec(&optimization.plan, "nullable scalar plan must rewrite to NexusNativeExec");
 
-    let context = bounded_execution_context(&lowering.plans[0]);
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
-    let metrics = result.metrics();
-    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
-    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
+    let metrics = optimization.plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
+    assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
+    assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
     assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
 
-    let QueryOutput::HostArrow(native_batch) = result.output() else {
-        panic!("native host sink should return a RecordBatch");
-    };
-    assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
+    assert_batches_equal(&cpu_batches, &native_batches);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -105,26 +109,29 @@ async fn native_runtime_null_semantics_match_cpu_by_expression_family() {
         let cpu_batches = cpu_sql_output(&path, sql).await;
         let native_physical_plan = sql_plan(&path, SessionConfig::new(), sql).await;
         let plan_display = displayable(native_physical_plan.as_ref()).indent(true).to_string();
-        let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
-        assert_eq!(lowering.selected_count(), 1, "{name} outcomes={:?}\n{plan_display}", lowering.report.outcomes());
+        let optimization = optimize_with_pruning_template(native_physical_plan);
         assert_eq!(
-            lowering.not_selected_count(),
+            optimization.report.selected_count(),
+            1,
+            "{name} outcomes={:?}\n{plan_display}",
+            optimization.report.outcomes()
+        );
+        assert_eq!(
+            optimization.report.not_selected_count(),
             0,
             "{name} outcomes={:?}\n{plan_display}",
-            lowering.report.outcomes()
+            optimization.report.outcomes()
         );
+        assert_nexus_native_exec(&optimization.plan, "{name} must rewrite to NexusNativeExec");
 
-        let context = bounded_execution_context(&lowering.plans[0]);
         let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
         cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-        let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
-        assert_eq!(result.metrics().boundary.host_to_device_uploads, 0, "{name}");
-        assert_eq!(result.metrics().boundary.device_to_host_materializations, 1, "{name}");
+        let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
+        let metrics = optimization.plan.metrics().expect("{name} must expose DataFusion metrics");
+        assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0, "{name}");
+        assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1, "{name}");
 
-        let QueryOutput::HostArrow(native_batch) = result.output() else {
-            panic!("{name} native host sink should return a RecordBatch");
-        };
-        assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
+        assert_batches_equal(&cpu_batches, &native_batches);
 
         fs::remove_dir_all(dir).unwrap();
     }
@@ -137,20 +144,20 @@ async fn native_runtime_ilike_rejects_before_native_execution() {
     write_nullable_scalar_expression_input_parquet(&path);
 
     let native_physical_plan = sql_plan(&path, SessionConfig::new(), SQL_NULL_SEMANTICS_ILIKE_QUERY).await;
-    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
+    let optimization = optimize_with_pruning_template(native_physical_plan);
 
-    assert_eq!(lowering.selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.not_selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(optimization.report.selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.report.not_selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
     assert!(
         matches!(
-            lowering.report.outcomes()[0],
+            optimization.report.outcomes()[0],
             datafusion_nexus::report::CandidateOutcome::NotSupported {
                 capability_reason: datafusion_nexus::capability::CapabilityReason::UnsupportedExpression,
                 ..
             }
         ),
         "outcomes={:?}",
-        lowering.report.outcomes()
+        optimization.report.outcomes()
     );
 
     fs::remove_dir_all(dir).unwrap();
@@ -164,20 +171,20 @@ async fn native_runtime_integer_modulo_rejects_before_native_execution() {
     write_nullable_scalar_expression_input_parquet(&path);
 
     let native_physical_plan = sql_plan(&path, SessionConfig::new(), SQL_NULL_SEMANTICS_MODULO_QUERY).await;
-    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
+    let optimization = optimize_with_pruning_template(native_physical_plan);
 
-    assert_eq!(lowering.selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.not_selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(optimization.report.selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.report.not_selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
     assert!(
         matches!(
-            lowering.report.outcomes()[0],
+            optimization.report.outcomes()[0],
             datafusion_nexus::report::CandidateOutcome::NotSupported {
                 capability_reason: datafusion_nexus::capability::CapabilityReason::UnsupportedExpression,
                 ..
             }
         ),
         "outcomes={:?}",
-        lowering.report.outcomes()
+        optimization.report.outcomes()
     );
 
     fs::remove_dir_all(dir).unwrap();
@@ -197,20 +204,30 @@ async fn native_runtime_invalid_scalar_expressions_reject_before_native_executio
         write_scalar_expression_input_parquet(&path);
 
         let native_physical_plan = sql_plan(&path, SessionConfig::new(), sql).await;
-        let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
+        let optimization = optimize_with_pruning_template(native_physical_plan);
 
-        assert_eq!(lowering.selected_count(), 0, "{name} should not rewrite: {:?}", lowering.report.outcomes());
-        assert_eq!(lowering.not_selected_count(), 1, "{name} should reject: {:?}", lowering.report.outcomes());
+        assert_eq!(
+            optimization.report.selected_count(),
+            0,
+            "{name} should not rewrite: {:?}",
+            optimization.report.outcomes()
+        );
+        assert_eq!(
+            optimization.report.not_selected_count(),
+            1,
+            "{name} should reject: {:?}",
+            optimization.report.outcomes()
+        );
         assert!(
             matches!(
-                lowering.report.outcomes()[0],
+                optimization.report.outcomes()[0],
                 datafusion_nexus::report::CandidateOutcome::NotSupported {
                     capability_reason: datafusion_nexus::capability::CapabilityReason::UnsupportedExpression,
                     ..
                 }
             ),
             "{name} outcomes={:?}",
-            lowering.report.outcomes()
+            optimization.report.outcomes()
         );
 
         fs::remove_dir_all(dir).unwrap();
@@ -228,20 +245,30 @@ async fn native_runtime_date_trunc_calendrical_grains_reject_before_native_execu
         write_nullable_scalar_expression_input_parquet(&path);
 
         let native_physical_plan = sql_plan(&path, SessionConfig::new(), sql).await;
-        let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
+        let optimization = optimize_with_pruning_template(native_physical_plan);
 
-        assert_eq!(lowering.selected_count(), 0, "{name} should not rewrite: {:?}", lowering.report.outcomes());
-        assert_eq!(lowering.not_selected_count(), 1, "{name} should reject: {:?}", lowering.report.outcomes());
+        assert_eq!(
+            optimization.report.selected_count(),
+            0,
+            "{name} should not rewrite: {:?}",
+            optimization.report.outcomes()
+        );
+        assert_eq!(
+            optimization.report.not_selected_count(),
+            1,
+            "{name} should reject: {:?}",
+            optimization.report.outcomes()
+        );
         assert!(
             matches!(
-                lowering.report.outcomes()[0],
+                optimization.report.outcomes()[0],
                 datafusion_nexus::report::CandidateOutcome::NotSupported {
                     capability_reason: datafusion_nexus::capability::CapabilityReason::UnsupportedExpression,
                     ..
                 }
             ),
             "{name} outcomes={:?}",
-            lowering.report.outcomes()
+            optimization.report.outcomes()
         );
 
         fs::remove_dir_all(dir).unwrap();
@@ -255,10 +282,10 @@ async fn native_runtime_substring_max_start_length_one_is_in_contract() {
     write_scalar_expression_input_parquet(&path);
 
     let native_physical_plan = sql_plan(&path, SessionConfig::new(), SQL_SUBSTRING_MAX_START_LENGTH_ONE_QUERY).await;
-    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
+    let optimization = optimize_with_pruning_template(native_physical_plan);
 
-    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
 
     fs::remove_dir_all(dir).unwrap();
 }

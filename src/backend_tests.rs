@@ -25,9 +25,14 @@ fn bounded_backend_builder(device_ordinals: &[usize]) -> NexusGpuBackendBuilder 
     backend_builder(device_ordinals).with_native_execution_config(bounded_execution_config(1024))
 }
 
+fn validated(builder: NexusGpuBackendBuilder) -> Result<super::ValidatedBackendConstruction> {
+    let NexusGpuBackendBuilder { optimizer_config, devices, queue_policy, .. } = builder;
+    super::validated_backend_construction(optimizer_config, devices, queue_policy)
+}
+
 #[test]
 fn backend_rejects_empty_devices_declaration() {
-    let missing = NexusGpuBackend::builder().devices([]).build_test_validation_projection().unwrap_err();
+    let missing = validated(NexusGpuBackend::builder().devices([])).unwrap_err();
     assert_eq!(missing.code(), ErrorCode::InvalidRequest);
     assert_eq!(missing.fact_value("field"), Some("devices"));
     assert_eq!(missing.fact_value("reason"), Some("missing_devices"));
@@ -35,19 +40,17 @@ fn backend_rejects_empty_devices_declaration() {
 
 #[test]
 fn backend_rejects_duplicate_devices_declaration() {
-    let duplicate = NexusGpuBackend::builder()
-        .devices([
-            NexusGpuDeviceConfig::new(
-                NexusGpuDeviceProfile::new(0).with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 }),
-                GpuMemoryOwnership::WholeDeviceExclusive,
-            ),
-            NexusGpuDeviceConfig::new(
-                NexusGpuDeviceProfile::new(0).with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 }),
-                GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 1 },
-            ),
-        ])
-        .build_test_validation_projection()
-        .unwrap_err();
+    let duplicate = validated(NexusGpuBackend::builder().devices([
+        NexusGpuDeviceConfig::new(
+            NexusGpuDeviceProfile::new(0).with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 }),
+            GpuMemoryOwnership::WholeDeviceExclusive,
+        ),
+        NexusGpuDeviceConfig::new(
+            NexusGpuDeviceProfile::new(0).with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 }),
+            GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 1 },
+        ),
+    ]))
+    .unwrap_err();
     assert_eq!(duplicate.code(), ErrorCode::InvalidRequest);
     assert_eq!(duplicate.fact_value("field"), Some("devices"));
     assert_eq!(duplicate.fact_value("reason"), Some("duplicate_device"));
@@ -70,19 +73,19 @@ fn backend_device_config_preserves_static_partitions_and_installation_bounds() {
             GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 8 * 1024 },
         ),
     ];
-    let backend = NexusGpuBackend::builder().devices(devices.clone()).build_test_validation_projection().unwrap();
-    assert_eq!(backend.devices(), &devices);
-    assert_eq!(backend.devices()[0].memory_ownership(), GpuMemoryOwnership::WholeDeviceExclusive);
+    let backend = validated(NexusGpuBackend::builder().devices(devices.clone())).unwrap();
+    assert_eq!(backend.devices, devices);
+    assert_eq!(backend.devices[0].memory_ownership(), GpuMemoryOwnership::WholeDeviceExclusive);
     assert_eq!(
-        backend.devices()[1].memory_ownership(),
+        backend.devices[1].memory_ownership(),
         GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 8 * 1024 }
     );
     assert_eq!(
-        backend.devices()[0].profile().installation_bounds(),
+        backend.devices[0].profile().installation_bounds(),
         Some(NexusGpuDeviceInstallationBounds::new(4, 2, 2))
     );
     assert_eq!(
-        backend.devices()[1].profile().installation_bounds(),
+        backend.devices[1].profile().installation_bounds(),
         Some(NexusGpuDeviceInstallationBounds::new(2, 1, 1))
     );
 }
@@ -112,20 +115,21 @@ fn backend_validation_projection_keeps_device_configs_independent() {
         ),
     ];
     let policy = NexusGpuQueuePolicy::default().with_max_queued_attempts(8);
-    let backend = NexusGpuBackend::builder()
-        .with_native_execution_config(bounded_execution_config(1024))
-        .devices(devices.clone())
-        .queue_policy(policy.clone())
-        .build_test_validation_projection()
-        .unwrap();
+    let backend = validated(
+        NexusGpuBackend::builder()
+            .with_native_execution_config(bounded_execution_config(1024))
+            .devices(devices.clone())
+            .queue_policy(policy.clone()),
+    )
+    .unwrap();
 
-    assert_eq!(backend.queue_policy().max_queued_attempts(), 8);
-    assert_eq!(backend.devices(), devices.as_slice());
+    assert_eq!(backend.queue_policy.max_queued_attempts(), 8);
+    assert_eq!(backend.devices, devices);
     // Validation preserves the configured envelopes but does not resolve a
     // runtime floor or manufacture a grant.
-    assert_eq!(backend.devices()[0].profile().attempt_floor_bytes(), Some(512));
+    assert_eq!(backend.devices[0].profile().attempt_floor_bytes(), Some(512));
     assert_eq!(
-        backend.optimizer_config().native_execution_config().memory_control_policy(),
+        backend.optimizer_config.native_execution_config().memory_control_policy(),
         MemoryControlPolicy::Bounded {
             device_budget_bytes: 1024,
             max_source_chunk_bytes: 1024,
@@ -138,9 +142,9 @@ fn backend_validation_projection_keeps_device_configs_independent() {
 
 #[test]
 fn backend_queue_policy_defaults_to_canonical_bounds() {
-    let backend = bounded_backend_builder(&[0, 1]).build_test_validation_projection().unwrap();
-    assert_eq!(backend.queue_policy(), &NexusGpuQueuePolicy::default());
-    assert!(backend.devices().iter().all(|device| device.profile().max_active_attempts() == 1));
+    let backend = validated(bounded_backend_builder(&[0, 1])).unwrap();
+    assert_eq!(backend.queue_policy, NexusGpuQueuePolicy::default());
+    assert!(backend.devices.iter().all(|device| device.profile().max_active_attempts() == 1));
 }
 
 #[test]
@@ -148,7 +152,7 @@ fn backend_default_device_profile_projects_engine_defaults_by_construction() {
     let ownership = GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 8192 };
 
     assert_eq!(
-        NexusGpuDeviceProfile::new(3).engine_config_for_test(ownership),
+        NexusGpuDeviceProfile::new(3).engine_config(ownership),
         nexus_query_engine::runtime::GpuBackendDeviceConfig::new(3, ownership),
         "the root profile must project the engine's automatic floor, source-work, and active-attempt defaults"
     );
@@ -166,7 +170,7 @@ fn backend_profile_projection_preserves_each_ordinal_local_envelope() {
         .with_installation_bounds(NexusGpuDeviceInstallationBounds::new(6, 2, 2))
         .with_device_capabilities(capabilities.clone())
         .with_telemetry(false)
-        .engine_config_for_test(GpuMemoryOwnership::WholeDeviceExclusive);
+        .engine_config(GpuMemoryOwnership::WholeDeviceExclusive);
     let second = NexusGpuDeviceProfile::new(3)
         .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 16384 })
         .with_backend_reserve_bytes(256)
@@ -175,7 +179,7 @@ fn backend_profile_projection_preserves_each_ordinal_local_envelope() {
         .with_max_active_attempts(1)
         .with_installation_bounds(NexusGpuDeviceInstallationBounds::new(2, 1, 1))
         .with_telemetry(true)
-        .engine_config_for_test(GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 8192 });
+        .engine_config(GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 8192 });
 
     assert_eq!(first.device_ordinal(), 0);
     assert_eq!(first.memory_limit(), GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 });
@@ -204,7 +208,7 @@ fn backend_rejects_invalid_queue_policy_bounds() {
         NexusGpuQueuePolicy::default().with_max_overtakes_per_waiter(0),
         NexusGpuQueuePolicy::default().with_max_queue_wait(std::time::Duration::ZERO),
     ] {
-        let error = bounded_backend_builder(&[0]).queue_policy(policy).build_test_validation_projection().unwrap_err();
+        let error = validated(bounded_backend_builder(&[0]).queue_policy(policy)).unwrap_err();
         assert_eq!(error.code(), ErrorCode::InvalidRequest);
     }
 }
@@ -218,30 +222,13 @@ fn backend_validation_preserves_explicit_floor_on_each_device_profile() {
             .with_attempt_floor_bytes(Some(60)),
         GpuMemoryOwnership::WholeDeviceExclusive,
     );
-    let backend = NexusGpuBackend::builder()
-        .with_native_execution_config(NexusNativeExecutionConfig::bounded(100, 64, 1, 1, 1))
-        .devices([device])
-        .build_test_validation_projection()
-        .unwrap();
-    assert_eq!(backend.devices()[0].profile().attempt_floor_bytes(), Some(60));
-}
-
-#[test]
-fn installed_backend_resolves_explicit_floor_in_the_real_device_ledger() {
-    let limit_bytes = 256 * 1024 * 1024;
-    let floor_bytes = 64 * 1024 * 1024;
-    let backend = InstalledTestGpuBackend::with_config(
-        NexusNativeExecutionConfig::bounded(limit_bytes, 64 * 1024 * 1024, 2, 3, 1),
-        NexusGpuDeviceProfile::new(0)
-            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes })
-            .with_attempt_floor_bytes(Some(floor_bytes)),
-        NexusGpuQueuePolicy::default(),
-    );
-
-    let handle = backend.admit_query().expect("real backend should issue an immutable grant");
-    assert!(handle.device_budget_bytes() >= floor_bytes);
-    assert!(handle.device_budget_bytes() <= limit_bytes);
-    handle.finish();
+    let backend = validated(
+        NexusGpuBackend::builder()
+            .with_native_execution_config(NexusNativeExecutionConfig::bounded(100, 64, 1, 1, 1))
+            .devices([device]),
+    )
+    .unwrap();
+    assert_eq!(backend.devices[0].profile().attempt_floor_bytes(), Some(60));
 }
 
 #[test]
@@ -263,25 +250,23 @@ fn backend_builder_preserves_full_optimizer_config_and_requirements() {
         NexusGpuDeviceProfile::new(0).with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 }),
         GpuMemoryOwnership::WholeDeviceExclusive,
     );
-    let backend = NexusGpuBackend::builder()
-        .with_optimizer_config(optimizer_config)
-        .devices([device])
-        .build_test_validation_projection()
-        .unwrap();
+    let backend =
+        validated(NexusGpuBackend::builder().with_optimizer_config(optimizer_config).devices([device])).unwrap();
 
     assert_eq!(
-        backend.optimizer_config().native_execution_config().memory_control_policy(),
+        backend.optimizer_config.native_execution_config().memory_control_policy(),
         native_execution_config.memory_control_policy()
     );
-    assert_eq!(backend.optimizer_config().final_plan_requirements(), &[FinalPlanRequirement::NoDataFusionCpu]);
-    assert_eq!(backend.optimizer_config().native_optimizer_options(), &optimizer_options);
-    assert_eq!(backend.optimizer_config().native_plan_cost_options(), &cost_options);
+    assert_eq!(backend.optimizer_config.final_plan_requirements(), &[FinalPlanRequirement::NoDataFusionCpu]);
+    assert_eq!(backend.optimizer_config.native_optimizer_options(), &optimizer_options);
+    assert_eq!(backend.optimizer_config.native_plan_cost_options(), &cost_options);
 }
 
 #[test]
 fn backend_install_freezes_native_session_keys() {
-    let backend = bounded_backend_builder(&[0]).build_test_validation_projection().unwrap();
-    let state = backend.install_on(SessionStateBuilder::new()).unwrap().build();
+    let backend = validated(bounded_backend_builder(&[0])).unwrap();
+    let state =
+        super::install_backend_optimizer_config(SessionStateBuilder::new(), &backend.optimizer_config).unwrap().build();
     let extension = state
         .config_options()
         .extensions
@@ -303,11 +288,11 @@ fn backend_install_freezes_native_session_keys() {
 
 #[test]
 fn backend_installs_configured_final_plan_requirements() {
-    let backend =
-        bounded_backend_builder(&[0]).with_no_datafusion_cpu_requirement().build_test_validation_projection().unwrap();
-    assert_eq!(backend.optimizer_config().final_plan_requirements(), &[FinalPlanRequirement::NoDataFusionCpu]);
+    let backend = validated(bounded_backend_builder(&[0]).with_no_datafusion_cpu_requirement()).unwrap();
+    assert_eq!(backend.optimizer_config.final_plan_requirements(), &[FinalPlanRequirement::NoDataFusionCpu]);
 
-    let state = backend.install_on(SessionStateBuilder::new()).unwrap().build();
+    let state =
+        super::install_backend_optimizer_config(SessionStateBuilder::new(), &backend.optimizer_config).unwrap().build();
     let installed = installed_nexus_native_optimizer_config(&state).unwrap();
     assert_eq!(installed.final_plan_requirements(), &[FinalPlanRequirement::NoDataFusionCpu]);
 }
@@ -351,13 +336,17 @@ fn backend_session_binding_predicate_rejects_sessions_from_another_backend() {
 
 #[test]
 fn backend_install_rejects_conflicting_preexisting_session_extension() {
-    let backend = bounded_backend_builder(&[0]).build_test_validation_projection().unwrap();
+    let backend = validated(bounded_backend_builder(&[0])).unwrap();
     let mut config = SessionConfig::new();
     config
         .options_mut()
         .extensions
         .insert(DataFusionNexusSessionConfig::from_optimizer_config(&NexusNativeOptimizerConfig::default()));
-    let error = backend.install_on(SessionStateBuilder::new().with_config(config)).unwrap_err();
+    let error = super::install_backend_optimizer_config(
+        SessionStateBuilder::new().with_config(config),
+        &backend.optimizer_config,
+    )
+    .unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidRequest);
     assert_eq!(error.fact_value("reason"), Some("session_config_conflicts_with_backend_admission"));
 }
@@ -366,9 +355,13 @@ fn backend_install_rejects_conflicting_preexisting_session_extension() {
 fn backend_install_on_with_cugraph_sql_preserves_conflicting_reinstall_error() {
     use crate::cugraph_sql::{CugraphGraphOptions, CugraphSqlConfig};
 
-    let backend = bounded_backend_builder(&[0]).build_test_validation_projection().unwrap();
-    let mut installed =
-        backend.install_on_with_cugraph_sql(SessionStateBuilder::new(), CugraphSqlConfig::default()).unwrap();
+    let backend = validated(bounded_backend_builder(&[0])).unwrap();
+    let mut installed = super::install_cugraph_sql_on_installed_backend(
+        super::install_backend_optimizer_config(SessionStateBuilder::new(), &backend.optimizer_config).unwrap(),
+        &backend.optimizer_config,
+        CugraphSqlConfig::default(),
+    )
+    .unwrap();
     // Carry the installed catalog (including the cugraph family) into a fresh
     // builder whose table functions are empty, so the conflicting family
     // projection — not the preexisting-UDTF admission gate — is the failure.
@@ -377,8 +370,22 @@ fn backend_install_on_with_cugraph_sql_preserves_conflicting_reinstall_error() {
         default_graph_options: CugraphGraphOptions { directed: false, ..Default::default() },
         ..Default::default()
     };
-    let error = backend.install_on_with_cugraph_sql(builder, conflicting).unwrap_err();
+    let error =
+        super::install_cugraph_sql_on_installed_backend(builder, &backend.optimizer_config, conflicting).unwrap_err();
     assert_eq!(error.code(), ErrorCode::InvalidRequest);
     assert_eq!(error.operation(), "datafusion_nexus.gpu_functions.install");
     assert!(error.message().contains("conflicting GPU function family installation"));
+}
+
+#[cfg(feature = "qualification")]
+#[test]
+fn backend_qualification_quarantine_rejects_unknown_ordinal_with_adapter_operation() {
+    let backend = InstalledTestGpuBackend::new();
+
+    let error = backend
+        .backend()
+        .quarantine_device_for_qualification(usize::MAX)
+        .expect_err("quarantine must reject an ordinal with no installed ledger");
+    assert_eq!(error.operation(), "datafusion_nexus.backend.quarantine_device_for_qualification");
+    assert!(error.fact_value("native_code").is_some());
 }

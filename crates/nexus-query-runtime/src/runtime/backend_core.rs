@@ -16,12 +16,14 @@ use std::{
 
 use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
 
+#[cfg(feature = "qualification")]
+use super::DeviceQuarantineInjection;
 #[cfg(test)]
 use super::observation_completion::ObservationCompletionWorkerLane;
 use super::{
     DeploymentIoCapability, DeviceCapabilities, DeviceFacts, DeviceLedgerReport, DeviceMemoryFailureReport,
-    DeviceQuarantineInjection, DeviceTelemetrySnapshot, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot,
-    QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueryService, QueryServiceAdmissionSnapshot,
+    DeviceTelemetrySnapshot, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, QueryAdmissionRequest,
+    QueryExecutionConfig, QueryHandle, QueryService, QueryServiceAdmissionSnapshot,
     QueryServiceDeviceAdmissionSnapshot, QueueBounds,
     backend_close::{CloseCoordinator, ConstructionRollback, reject_reentrant_observation_close},
     backend_lifecycle::{
@@ -891,11 +893,13 @@ pub struct GpuBackendCore {
 /// [`Self::quarantine_device`] changes state, and it transitions the existing
 /// per-device admission ledger rather than introducing a separate validation
 /// or production scheduler mode.
+#[cfg(feature = "qualification")]
 #[derive(Clone, Debug)]
 pub struct GpuBackendFaultInjector {
     session: GpuBackendSession,
 }
 
+#[cfg(feature = "qualification")]
 impl GpuBackendFaultInjector {
     /// Closes admission on exactly one installed device ledger.
     ///
@@ -940,6 +944,7 @@ impl GpuBackendCore {
 
     /// Returns an explicit capability for controlled device-quarantine
     /// validation. This is not a backend construction or production mode.
+    #[cfg(feature = "qualification")]
     pub fn fault_injector(&self) -> GpuBackendFaultInjector {
         GpuBackendFaultInjector { session: self.session_capability() }
     }

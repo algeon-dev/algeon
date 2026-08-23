@@ -1002,9 +1002,7 @@ mod tests {
         MeasuredRunArtifact {
             qualifying: false,
             backend: BackendEvidence {
-                resource_core: 0,
-                observation_core: 0,
-                resource_generation: 0,
+                backend_generation: 0,
                 shared_session_count: 0,
                 queue_max_queued_attempts: 0,
                 queue_max_queue_wait_ms: 0,

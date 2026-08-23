@@ -368,7 +368,27 @@ impl DatafusionNexusFlightSqlService {
 #[cfg(test)]
 pub(super) struct BoundedTestFlightSqlService {
     service: DatafusionNexusFlightSqlService,
-    _backend: crate::backend::InstalledTestGpuBackend,
+    _backend: crate::backend::NexusGpuBackend,
+}
+
+#[cfg(test)]
+pub(super) fn default_test_backend() -> crate::backend::NexusGpuBackend {
+    crate::backend::NexusGpuBackend::builder()
+        .with_native_execution_config(crate::native_exec::NexusNativeExecutionConfig::bounded(
+            256 * 1024 * 1024,
+            64 * 1024 * 1024,
+            2,
+            3,
+            1,
+        ))
+        .devices([crate::backend::NexusGpuDeviceConfig::new(
+            crate::backend::NexusGpuDeviceProfile::new(0)
+                .with_memory_limit(crate::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 }),
+            crate::backend::GpuMemoryOwnership::WholeDeviceExclusive,
+        )])
+        .queue_policy(crate::backend::NexusGpuQueuePolicy::default())
+        .build()
+        .expect("flight test backend should build")
 }
 
 #[cfg(test)]
@@ -382,14 +402,14 @@ impl std::ops::Deref for BoundedTestFlightSqlService {
 
 #[cfg(test)]
 pub(super) fn bounded_test_service(statement_ticket_ttl: Duration) -> BoundedTestFlightSqlService {
-    let backend = crate::backend::InstalledTestGpuBackend::new();
+    let backend = default_test_backend();
     let state = backend
         .install_on(SessionStateBuilder::new_with_default_features())
         .expect("bounded Flight SQL test backend should install")
         .build();
     let ctx = Arc::new(SessionContext::new_with_state(state));
     let native_optimizer_config = backend.optimizer_config().clone();
-    let admission = Arc::new(QueryAdmission::from_test_backend(backend.backend()));
+    let admission = Arc::new(QueryAdmission::from_backend(&backend));
     let service = DatafusionNexusFlightSqlService::new(
         ctx,
         native_optimizer_config,

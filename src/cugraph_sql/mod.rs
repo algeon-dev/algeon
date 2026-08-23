@@ -1,9 +1,14 @@
 //! SQL-facing cuGraph table-function contracts.
 
+#[cfg(all(test, feature = "cugraph"))]
+#[path = "composed_planning_tests.rs"]
+mod composed_planning_tests;
 #[cfg(feature = "cugraph")]
 mod exec;
 mod gpu_family;
-#[cfg(feature = "test-support")]
+/// Registry of cuGraph parity specs shared by parity tests and oracle-refresh tooling.
+/// Hidden from the normal report contract; enable the `bench-support` feature to use it.
+#[cfg(feature = "bench-support")]
 #[doc(hidden)]
 pub mod parity;
 mod parser;

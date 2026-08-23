@@ -2,9 +2,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::{fmt::Write, sync::Arc};
 
-#[cfg(test)]
-use nexus_query_engine::runtime::QueryHandle;
-
 use crate::{
     attempt::{AttemptOptions, NexusAttempt},
     backend::{NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuQueuePolicy},
@@ -31,11 +28,6 @@ pub struct QueryAdmission {
 impl QueryAdmission {
     pub(crate) fn from_backend(backend: &NexusGpuBackend) -> Self {
         Self { backend: QueryAdmissionBackend::QueryService { backend: Box::new(backend.clone()) } }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn from_test_backend(backend: &NexusGpuBackend) -> Self {
-        Self::from_backend(backend)
     }
 
     #[cfg(test)]
@@ -110,22 +102,13 @@ impl QueryAdmission {
 
     #[cfg(test)]
     pub fn try_acquire(&self) -> Result<Option<QueryAdmissionPermit>> {
-        match &self.backend {
-            QueryAdmissionBackend::QueryService { backend } => backend
-                .try_admit_query()
-                .map(|handle| {
-                    handle.map(|handle| QueryAdmissionPermit {
-                        inner: QueryAdmissionPermitInner::QueryService(Arc::new(handle)),
-                    })
-                })
-                .map_err(|error| ServerError::session("query service admission failed", error)),
-            QueryAdmissionBackend::TestOnly { closed } => {
-                if closed.load(Ordering::Acquire) {
-                    return Err(ServerError::shutdown("query_admission_closed", "query admission is closed"));
-                }
-                Ok(Some(QueryAdmissionPermit { inner: QueryAdmissionPermitInner::TestOnly }))
-            },
+        let QueryAdmissionBackend::TestOnly { closed } = &self.backend else {
+            panic!("test admission permits only exist for the test-only backend");
+        };
+        if closed.load(Ordering::Acquire) {
+            return Err(ServerError::shutdown("query_admission_closed", "query admission is closed"));
         }
+        Ok(Some(QueryAdmissionPermit))
     }
 
     pub fn log_query_service_state(&self, query_id: Option<&str>, event: &'static str) {
@@ -275,38 +258,7 @@ impl QueryAdmission {
 
 #[cfg(test)]
 #[derive(Debug)]
-pub struct QueryAdmissionPermit {
-    inner: QueryAdmissionPermitInner,
-}
-
-#[cfg(test)]
-#[derive(Debug)]
-enum QueryAdmissionPermitInner {
-    QueryService(Arc<QueryHandle>),
-    TestOnly,
-}
-
-#[cfg(test)]
-impl Drop for QueryAdmissionPermit {
-    fn drop(&mut self) {
-        if let QueryAdmissionPermitInner::QueryService(handle) = &self.inner {
-            handle.finish();
-        }
-    }
-}
-
-#[cfg(test)]
-fn server_test_validation_projection_from_config(
-    config: &ServerConfig,
-) -> Result<crate::backend::TestBackendValidationProjection> {
-    let devices = config.resolve_gpu_devices()?;
-    NexusGpuBackend::builder()
-        .with_optimizer_config(config.native_optimizer_config.clone())
-        .devices(devices)
-        .queue_policy(server_queue_policy(config))
-        .build_test_validation_projection()
-        .map_err(|error| ServerError::session("failed to project query service admission policy", error))
-}
+pub struct QueryAdmissionPermit;
 
 pub(crate) fn server_queue_policy(config: &ServerConfig) -> NexusGpuQueuePolicy {
     config.queue_policy.clone()
@@ -322,7 +274,28 @@ fn payload_value(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use futures::StreamExt;
+
     use super::*;
+
+    fn write_holder_parquet(path: &std::path::Path) {
+        use arrow::{
+            array::Int64Array,
+            datatypes::{DataType, Field, Schema},
+            record_batch::RecordBatch,
+        };
+
+        let schema = std::sync::Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let batch = RecordBatch::try_new(
+            std::sync::Arc::clone(&schema),
+            vec![std::sync::Arc::new(Int64Array::from(vec![1, 2])) as arrow::array::ArrayRef],
+        )
+        .expect("holder fixture batch");
+        let file = std::fs::File::create(path).expect("holder fixture file");
+        let mut writer = parquet::arrow::ArrowWriter::try_new(file, schema, None).expect("holder writer");
+        writer.write(&batch).expect("write holder fixture");
+        writer.close().expect("close holder fixture");
+    }
 
     fn server_config_with_test_device_profile(
         mut env: std::collections::BTreeMap<&'static str, String>,
@@ -359,27 +332,21 @@ mod tests {
         ]);
         let config = declare_test_gpu_ownership(server_config_with_test_device_profile(env, Some(3072)).unwrap());
 
-        let backend = server_test_validation_projection_from_config(&config).unwrap();
-        let controller = backend.query_execution_config().unwrap();
-
-        let profile = backend.devices()[0].profile();
+        let devices = config.resolve_gpu_devices().expect("server device mapping must resolve");
+        let profile = devices[0].profile();
         assert_eq!(profile.max_active_attempts(), 1);
         assert_eq!(profile.device_ordinal(), 0);
         assert_eq!(profile.memory_limit(), crate::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: 3072 });
-        assert_eq!(
-            profile.engine_config_for_test(crate::backend::GpuMemoryOwnership::WholeDeviceExclusive),
-            nexus_query_engine::runtime::GpuBackendDeviceConfig::new(
-                0,
-                crate::backend::GpuMemoryOwnership::WholeDeviceExclusive,
-            )
-            .with_memory_limit(crate::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: 3072 }),
-            "server profile defaults must be an engine construction projection"
-        );
-        assert_eq!(controller.source_scheduler_policy.max_source_reads_in_flight(), 2);
-        assert_eq!(backend.queue_policy(), &NexusGpuQueuePolicy::default());
-        // The validation projection intentionally stops before runtime floor
-        // resolution or grant allocation.
         assert_eq!(profile.attempt_floor_bytes(), None);
+        assert_eq!(
+            config
+                .native_optimizer_config
+                .native_execution_config()
+                .source_scheduler_policy()
+                .max_source_reads_in_flight(),
+            2
+        );
+        assert_eq!(server_queue_policy(&config), NexusGpuQueuePolicy::default());
     }
 
     #[test]
@@ -407,9 +374,7 @@ mod tests {
         ]);
         let config = declare_test_gpu_ownership(server_config_with_test_device_profile(env, Some(3072)).unwrap());
 
-        let backend = server_test_validation_projection_from_config(&config).unwrap();
-
-        assert_eq!(backend.queue_policy().max_queue_wait(), std::time::Duration::from_millis(250));
+        assert_eq!(server_queue_policy(&config).max_queue_wait(), std::time::Duration::from_millis(250));
     }
 
     #[test]
@@ -428,28 +393,52 @@ mod tests {
         ];
         let config = declare_test_gpu_ownership(config);
 
-        let backend = server_test_validation_projection_from_config(&config).unwrap();
-
-        assert_eq!(backend.devices().iter().map(|device| device.device_ordinal()).collect::<Vec<_>>(), vec![0, 1]);
+        let devices = config.resolve_gpu_devices().expect("server device mapping must resolve");
+        assert_eq!(devices.iter().map(|device| device.device_ordinal()).collect::<Vec<_>>(), vec![0, 1]);
     }
 
-    #[test]
-    fn query_service_admission_diagnostics_payload_reports_snapshot_and_governors() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn query_service_admission_diagnostics_payload_reports_snapshot_and_governors() {
         let env = std::collections::BTreeMap::from([
             (crate::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "512".to_string()),
             (crate::config::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
         ]);
-        let mut config = declare_test_gpu_ownership(server_config_with_test_device_profile(env, Some(1024)).unwrap());
+        let mut config =
+            declare_test_gpu_ownership(server_config_with_test_device_profile(env, Some(1024 * 1024)).unwrap());
         config.gpu_device_profiles[0] = config.gpu_device_profiles[0].clone().with_attempt_floor_bytes(Some(256));
         let backend = crate::backend_from_server_config(&config).unwrap();
         let admission = QueryAdmission::from_backend(&backend);
-        let permit = admission.try_acquire().unwrap().expect("first query should admit");
+
+        // Hold one admitted execution through the canonical attempt
+        // lifecycle. The stream is polled once to admit, then left
+        // suspended: the slot stays occupied until the stream drops.
+        let holder_dir = tempfile::TempDir::new().expect("holder parquet fixture");
+        let holder_path = holder_dir.path().join("holder.parquet");
+        write_holder_parquet(&holder_path);
+        let holder_state = backend
+            .install_on(datafusion::execution::SessionStateBuilder::new_with_default_features())
+            .expect("holder session should install")
+            .build();
+        let holder_ctx = datafusion::prelude::SessionContext::new_with_state(holder_state);
+        holder_ctx
+            .register_parquet(
+                "holder_t",
+                holder_path.to_str().expect("utf8 holder path"),
+                datafusion::prelude::ParquetReadOptions::default(),
+            )
+            .await
+            .expect("holder table should register");
+        let holder_attempt = backend.begin_attempt(AttemptOptions::default()).expect("holder attempt should begin");
+        let mut holder_stream =
+            holder_attempt.sql(&holder_ctx, "select id from holder_t").await.expect("holder should plan");
+        holder_stream.next().await.expect("holder admits on first poll").expect("holder batch");
+        let _held = (holder_attempt, holder_stream);
 
         let snapshot = backend.backend_metrics_snapshot();
         let device = snapshot.device(0).expect("configured device must have one bounded metrics slot");
         assert_eq!(device.admission.active_attempts, 1);
-        assert_eq!(device.admission.live_grant_bytes, 1024);
-        assert_eq!(device.admission.live_reserved_bytes, 0);
+        assert_eq!(device.admission.live_grant_bytes, 1024 * 1024);
+        assert_eq!(device.admission.live_reserved_bytes, 16);
         // The default zero-cap profile creates no cache allocation domain, so
         // its ledger-backed cache projections remain byte-for-byte zero.
         assert_eq!(device.admission.cache_evictable_resident_bytes, 0);
@@ -472,7 +461,7 @@ mod tests {
             ),
             "{payload}"
         );
-        assert!(payload.contains("\t1\t1024\t0\t0\t0\t0\tOpen\n"), "{payload}");
+        assert!(payload.contains("\t1\t1048576\t16\t65536\t0\t0\tOpen\n"), "{payload}");
         assert!(
             payload.contains(
                 "[backend_device_telemetry]\ndevice_ordinal\trefresh_source\tsampled_at_unix_ms\tage_ms\tavailability\tallocation_failure_count\tallocation_failure_bytes\tlargest_allocation_failure_bytes\n0\tnone\tnone\tnone\tnone\t0\t0\t0\n"
@@ -483,8 +472,6 @@ mod tests {
             !payload.contains("[device_ledger_grants]") && !payload.contains("[gpu_execution]"),
             "diagnostics must not combine the backend snapshot with separate service reads: {payload}"
         );
-
-        drop(permit);
     }
 
     #[test]

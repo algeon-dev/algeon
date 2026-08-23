@@ -4081,7 +4081,6 @@ dependencies = [
  "nexus-iceberg",
  "nexus-query-engine",
  "parquet",
- "proptest",
  "prost",
  "rand 0.10.1",
  "serde",

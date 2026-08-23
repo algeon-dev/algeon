@@ -179,12 +179,6 @@ impl CugraphAlgorithm {
         self.definition().native_algorithm
     }
 
-    #[cfg(feature = "test-support")]
-    #[doc(hidden)]
-    pub fn native_algorithm_for_test(self) -> NativeGraphAlgorithm {
-        self.native_algorithm()
-    }
-
     /// SQL argument counts accepted by this algorithm's table function.
     ///
     /// This is the single arity contract shared by parser admission and the
@@ -1976,5 +1970,26 @@ pub fn result_schema_for_params(algorithm: CugraphAlgorithm, params: &CugraphAlg
     match (algorithm, params) {
         (CugraphAlgorithm::Bfs, CugraphAlgorithmParams::Bfs(params)) => bfs_result_schema(params),
         _ => stable_result_schema(algorithm),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use nexus_query_engine::plan::stable_graph_result_schema;
+
+    use super::{CUGRAPH_OPERATION_REGISTRY, stable_result_schema};
+
+    #[test]
+    fn registry_algorithm_sql_output_schemas_agree_with_native_engine() {
+        for entry in CUGRAPH_OPERATION_REGISTRY {
+            let sql_schema = stable_result_schema(entry.algorithm);
+            let native_schema = stable_graph_result_schema(entry.algorithm.native_algorithm());
+            assert_eq!(
+                sql_schema.as_ref(),
+                native_schema.as_ref(),
+                "SQL-facing output schema for {} must mirror the native engine schema",
+                entry.sql_function_name,
+            );
+        }
     }
 }

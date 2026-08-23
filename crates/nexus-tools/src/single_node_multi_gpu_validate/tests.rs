@@ -2435,9 +2435,7 @@ fn measured_run_artifact_records_scenarios_throughput_placement_and_declared_gap
     let measurement = super::artifact::MeasuredRunArtifact {
         qualifying: true,
         backend: super::artifact::BackendEvidence {
-            resource_core: 1,
-            observation_core: 2,
-            resource_generation: 3,
+            backend_generation: 3,
             shared_session_count: profile.session.shared_session_count,
             queue_max_queued_attempts: profile.backend.queue.max_queued_attempts,
             queue_max_queue_wait_ms: profile.backend.queue.max_queue_wait_ms,
@@ -2553,9 +2551,7 @@ fn a_failed_scenario_clause_marks_the_artifact_non_qualifying() {
     let measurement = super::artifact::MeasuredRunArtifact {
         qualifying: false,
         backend: super::artifact::BackendEvidence {
-            resource_core: 1,
-            observation_core: 2,
-            resource_generation: 3,
+            backend_generation: 3,
             shared_session_count: 1,
             queue_max_queued_attempts: 64,
             queue_max_queue_wait_ms: 30_000,
@@ -2787,9 +2783,7 @@ fn composed_qualification_measurement(
     super::artifact::MeasuredRunArtifact {
         qualifying: true,
         backend: super::artifact::BackendEvidence {
-            resource_core: 1,
-            observation_core: 2,
-            resource_generation: 3,
+            backend_generation: 3,
             shared_session_count: 1,
             queue_max_queued_attempts: 64,
             queue_max_queue_wait_ms: 30_000,

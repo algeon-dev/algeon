@@ -331,7 +331,7 @@ fn metadata_planning_removes_only_the_three_nexus_physical_rules() {
 
 #[tokio::test]
 async fn metadata_logical_proof_rejects_user_sources_and_source_free_queries() {
-    let backend = crate::backend::InstalledTestGpuBackend::new();
+    let backend = super::service::default_test_backend();
     let state = backend
         .install_on(
             SessionStateBuilder::new_with_default_features()
@@ -345,7 +345,7 @@ async fn metadata_logical_proof_rejects_user_sources_and_source_free_queries() {
     let service = DatafusionNexusFlightSqlService::new(
         Arc::clone(&ctx),
         backend.optimizer_config().clone(),
-        Arc::new(QueryAdmission::from_test_backend(backend.backend())),
+        Arc::new(QueryAdmission::from_backend(&backend)),
         Duration::from_secs(30),
         #[cfg(feature = "cugraph")]
         None,

@@ -8,6 +8,7 @@ use arrow::{
     util::display::array_value_to_string,
 };
 use datafusion::{
+    config::ConfigOptions,
     datasource::{
         physical_plan::{
             FileGroup, FileScanConfigBuilder, ParquetSource,
@@ -24,6 +25,7 @@ use datafusion::{
         aggregate::AggregateExprBuilder,
         expressions::{CastExpr, NotExpr, binary, col, lit},
     },
+    physical_optimizer::PhysicalOptimizerRule,
     physical_plan::{
         ExecutionPlan,
         aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy},
@@ -40,15 +42,8 @@ use datafusion_nexus::{
         GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceProfile,
         NexusGpuQueuePolicy,
     },
-    native::lower_physical_plan_to_native_for_test,
     native_exec::{NexusNativeExec, NexusNativeExecutionConfig},
-};
-use nexus_query_engine::{
-    admission::QueryPlanCapabilityProof,
-    exec::{execute_query_plan, output::QueryOutput},
-    plan::{PlanNode, QueryPlan},
-    runtime::{AdmittedQueryContext, ExecutionContext, QueryHandle},
-    source::SourceNode,
+    planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
 };
 use nexus_workloads::tpch::{TPCH_QUERIES, TPCH_TABLES, write_tiny_tpch_parquet_dataset};
 use tokio::sync::Mutex;
@@ -153,23 +148,20 @@ async fn native_runtime_median_aggregate_matches_cpu_single_stage_bounded_withou
 
     let cpu_batches = cpu_sql_output(&path, SQL_MEDIAN_AGGREGATE_QUERY).await;
     let native_physical_plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_MEDIAN_AGGREGATE_QUERY).await;
-    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
-    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
+    let optimization = optimize_with_pruning_template(native_physical_plan);
+    assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
+    assert_nexus_native_exec(&optimization.plan, "median aggregate must rewrite to NexusNativeExec");
 
-    let context = bounded_execution_context(&lowering.plans[0]);
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
-    let metrics = result.metrics();
-    assert_eq!(metrics.partial_aggregate_count, 0, "median must stay single-stage in bounded execution");
-    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
-    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
+    let metrics = optimization.plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
+    assert_eq!(metric_usize(&metrics, "partial_aggregate_count"), 0, "median must stay single-stage");
+    assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
+    assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
 
-    let QueryOutput::HostArrow(native_batch) = result.output() else {
-        panic!("native host sink should return a RecordBatch");
-    };
-    assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
+    assert_batches_equal(&cpu_batches, &native_batches);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -274,33 +266,17 @@ async fn native_runtime_pushed_predicate_source_limit_matches_cpu() {
     );
     let cpu_batches =
         collect(Arc::clone(&scan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
-    let lowering = lower_physical_plan_to_native_for_test(scan);
-    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.source_diagnostics[0].predicate_disposition.as_str(), "reader_pushdown");
-    assert!(lowering.source_diagnostics[0].rejected_features.is_empty());
-    let source = lowering.plans[0]
-        .nodes()
-        .iter()
-        .find_map(|node| match &node.kind {
-            PlanNode::Source(source) => match source.as_ref() {
-                SourceNode::LocalParquet(source) => Some(source),
-                SourceNode::GpuResident(_) | SourceNode::LiteralBatch(_) => None,
-            },
-            _ => None,
-        })
-        .expect("lowered plan should contain a local parquet source");
-    assert_eq!(source.scan_limit, None, "scan limit must be applied after the pushed predicate");
-    assert!(source.reader_predicate.is_some());
+    let optimization = optimize_with_pruning_template(scan);
+    assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.source_diagnostics[0].predicate_disposition.as_str(), "reader_pushdown");
+    assert!(optimization.source_diagnostics[0].rejected_features.is_empty());
+    assert_nexus_native_exec(&optimization.plan, "pushed-predicate plan must rewrite to NexusNativeExec");
 
-    let context = bounded_execution_context(&lowering.plans[0]);
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
-    let QueryOutput::HostArrow(native_batch) = result.output() else {
-        panic!("native host sink should return a RecordBatch");
-    };
-    assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
+    let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
+    assert_batches_equal(&cpu_batches, &native_batches);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -374,36 +350,16 @@ async fn native_runtime_bare_boolean_filter_stays_post_decode() {
     let mut config = SessionConfig::new();
     config.options_mut().execution.parquet.pushdown_filters = true;
     let native_physical_plan = sql_plan(&path, config, SQL_BARE_BOOLEAN_FILTER_QUERY).await;
-    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
-    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.plans.len(), 1);
-    let sources = lowering.plans[0]
-        .nodes()
-        .iter()
-        .filter_map(|node| match &node.kind {
-            PlanNode::Source(source) => match source.as_ref() {
-                SourceNode::LocalParquet(source) => Some(source),
-                _ => None,
-            },
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(sources.len(), 1);
-    assert!(
-        sources[0].reader_predicate.is_none(),
-        "bare boolean filters must not become top-level column reader predicates"
-    );
-    assert_eq!(lowering.source_diagnostics[0].predicate_disposition.as_str(), "native_post_scan_only");
+    let optimization = optimize_with_pruning_template(native_physical_plan);
+    assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.source_diagnostics[0].predicate_disposition.as_str(), "native_post_scan_only");
+    assert_nexus_native_exec(&optimization.plan, "bare-boolean plan must rewrite to NexusNativeExec");
 
-    let context = bounded_execution_context(&lowering.plans[0]);
-    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
-    let (output, metrics) = result.into_parts();
-    let QueryOutput::HostArrow(batch) = output else {
-        panic!("native host sink should return a RecordBatch");
-    };
-    assert_eq!(batch_rows(&[batch]), vec![vec!["3".to_string()]]);
-    assert_eq!(metrics.input_rows, 6);
+    let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
+    let metrics = optimization.plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
+    assert_eq!(batch_rows(&native_batches), vec![vec!["3".to_string()]]);
+    assert_eq!(metric_usize(&metrics, "input_rows"), 6);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -417,26 +373,20 @@ struct NativeQueryObservation {
 
 async fn execute_sql_native_query(path: &std::path::Path, config: SessionConfig, sql: &str) -> NativeQueryObservation {
     let native_physical_plan = sql_plan(path, config, sql).await;
-    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
-    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.plans.len(), 1);
-    assert_eq!(lowering.source_diagnostics.len(), 1);
+    let optimization = optimize_with_pruning_template(native_physical_plan);
+    assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.source_diagnostics.len(), 1);
+    assert_nexus_native_exec(&optimization.plan, "reader-pushdown query must rewrite to NexusNativeExec");
 
-    let context = bounded_execution_context(&lowering.plans[0]);
-    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
-    let (output, metrics) = result.into_parts();
-    let QueryOutput::HostArrow(batch) = output else {
-        panic!("native host sink should return a RecordBatch");
-    };
+    let output = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
+    let metrics = optimization.plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
 
     NativeQueryObservation {
-        output: vec![batch],
-        predicate_disposition: lowering.source_diagnostics[0].predicate_disposition.as_str().to_string(),
-        input_rows: metrics.input_rows,
-        max_task_retained_bytes: metrics
-            .max_task_retained_bytes
-            .expect("bounded source read should report retained bytes"),
+        output,
+        predicate_disposition: optimization.source_diagnostics[0].predicate_disposition.as_str().to_string(),
+        input_rows: metric_usize(&metrics, "input_rows") as u64,
+        max_task_retained_bytes: metric_usize(&metrics, "max_task_retained_bytes") as u64,
     }
 }
 
@@ -510,27 +460,23 @@ async fn native_runtime_discounted_revenue_global_decimal_sum_matches_cpu() {
 
     let cpu_batches = cpu_sql_output(&path, SQL_Q6_SHAPED_QUERY).await;
     let native_physical_plan = sql_plan(&path, direct_friendly_sql_session_config(), SQL_Q6_SHAPED_QUERY).await;
-    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
-    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.plans.len(), 1);
-    assert_eq!(lowering.source_diagnostics[0].read_column_count, 4);
+    let optimization = optimize_with_pruning_template(native_physical_plan);
+    assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.source_diagnostics[0].read_column_count, 4);
+    assert_nexus_native_exec(&optimization.plan, "discounted-revenue plan must rewrite to NexusNativeExec");
 
-    let context = bounded_execution_context(&lowering.plans[0]);
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
-    let metrics = result.metrics();
-    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
-    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
+    let metrics = optimization.plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
+    assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
+    assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
     assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
 
-    let QueryOutput::HostArrow(native_batch) = result.output() else {
-        panic!("native host sink should return a RecordBatch");
-    };
-    assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
-    let revenue = decimal128_array(native_batch, 0);
+    assert_batches_equal(&cpu_batches, &native_batches);
+    let revenue = decimal128_array(&native_batches[0], 0);
     assert_eq!(revenue.value(0), 260_000);
     assert_eq!(revenue.scale(), 4);
 
@@ -555,29 +501,25 @@ async fn native_runtime_order_sensitive_source_scan_limit_matches_cpu() {
     let plan = aggregate_sort_limit_plan_with_filter(scan, predicate, Operator::Plus);
     let cpu_batches =
         collect(Arc::clone(&plan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
-    let lowering = lower_physical_plan_to_native_for_test(plan);
-    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.plans.len(), 1);
-    assert_eq!(lowering.source_diagnostics[0].scan_limit_disposition.as_str(), "represented");
+    let optimization = optimize_with_pruning_template(plan);
+    assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.source_diagnostics[0].scan_limit_disposition.as_str(), "represented");
     assert!(
-        lowering.source_diagnostics[0].rejected_features.iter().all(|feature| feature.as_str() != "preserve_order")
+        optimization.source_diagnostics[0].rejected_features.iter().all(|feature| feature.as_str() != "preserve_order")
     );
+    assert_nexus_native_exec(&optimization.plan, "order-sensitive plan must rewrite to NexusNativeExec");
 
-    let context = bounded_execution_context(&lowering.plans[0]);
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
-    let metrics = result.metrics();
-    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
-    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
+    let metrics = optimization.plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
+    assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
+    assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
     assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
 
-    let QueryOutput::HostArrow(native_batch) = result.output() else {
-        panic!("native host sink should return a RecordBatch");
-    };
-    assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
+    assert_batches_equal(&cpu_batches, &native_batches);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -616,23 +558,19 @@ async fn native_runtime_global_decimal_avg_matches_cpu() {
     let cpu_batches = cpu_sql_output(&path, SQL_GLOBAL_DECIMAL_AVG_QUERY).await;
     let native_physical_plan =
         sql_plan(&path, direct_friendly_sql_session_config(), SQL_GLOBAL_DECIMAL_AVG_QUERY).await;
-    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
-    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.plans.len(), 1);
+    let optimization = optimize_with_pruning_template(native_physical_plan);
+    assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
+    assert_nexus_native_exec(&optimization.plan, "decimal-avg plan must rewrite to NexusNativeExec");
 
-    let context = bounded_execution_context(&lowering.plans[0]);
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
-    let metrics = result.metrics();
-    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
-    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
+    let metrics = optimization.plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
+    assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
+    assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
 
-    let QueryOutput::HostArrow(native_batch) = result.output() else {
-        panic!("native host sink should return a RecordBatch");
-    };
-    assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
+    assert_batches_equal(&cpu_batches, &native_batches);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -647,28 +585,25 @@ async fn native_runtime_zero_column_count_matches_cpu_without_parquet_data_colum
         collect(Arc::clone(&native_physical_plan), Arc::new(datafusion::execution::context::TaskContext::default()))
             .await
             .unwrap();
-    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
-    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.source_diagnostics[0].read_column_count, 0);
-    assert_eq!(lowering.source_diagnostics[0].zero_column_count_disposition.as_str(), "represented");
+    let optimization = optimize_with_pruning_template(native_physical_plan);
+    assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.source_diagnostics[0].read_column_count, 0);
+    assert_eq!(optimization.source_diagnostics[0].zero_column_count_disposition.as_str(), "represented");
+    assert_nexus_native_exec(&optimization.plan, "zero-column plan must rewrite to NexusNativeExec");
 
-    let context = bounded_execution_context(&lowering.plans[0]);
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
-    let metrics = result.metrics();
-    assert_eq!(metrics.read_columns, 0);
-    assert_eq!(metrics.input_rows, 8);
-    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
-    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
+    let metrics = optimization.plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
+    assert_eq!(metric_usize(&metrics, "read_columns"), 0);
+    assert_eq!(metric_usize(&metrics, "input_rows"), 8);
+    assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
+    assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
     assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
 
-    let QueryOutput::HostArrow(native_batch) = result.output() else {
-        panic!("native host sink should return a RecordBatch");
-    };
-    assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
+    assert_batches_equal(&cpu_batches, &native_batches);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -778,67 +713,51 @@ async fn assert_sql_native_parity(
 ) {
     let cpu_batches = cpu_sql_output(path, sql).await;
     let native_physical_plan = sql_plan(path, config, sql).await;
-    let lowering = lower_physical_plan_to_native_for_test(native_physical_plan);
-    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.plans.len(), 1);
+    let optimization = optimize_with_pruning_template(native_physical_plan);
+    assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
+    assert_nexus_native_exec(&optimization.plan, "pruning template must rewrite the plan to NexusNativeExec");
     if let Some((selected_row_groups, total_row_groups)) = expected_selected_row_groups {
-        assert_eq!(lowering.source_diagnostics[0].selected_row_groups, Some(selected_row_groups));
+        assert_eq!(optimization.source_diagnostics[0].selected_row_groups, Some(selected_row_groups));
         assert!(selected_row_groups < total_row_groups);
     }
 
-    let context = bounded_execution_context(&lowering.plans[0]);
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
-    let metrics = result.metrics();
+    let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
+    let metrics = optimization.plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
 
     if let Some((selected_row_groups, total_row_groups)) = expected_selected_row_groups {
         assert_eq!(total_row_groups, 4);
-        assert_eq!(metrics.row_groups_selected, selected_row_groups as u64);
-        assert!(metrics.row_groups_selected < total_row_groups as u64);
+        assert_eq!(metric_usize(&metrics, "row_groups_selected"), selected_row_groups);
+        assert!(selected_row_groups < total_row_groups);
     }
-    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
-    assert_eq!(metrics.boundary.host_to_device_uploaded_rows, 0);
-    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
-    assert!(metrics.source_chunks_committed > 0);
-    assert!(metrics.source_chunks_committed <= metrics.source_chunks_planned);
-    assert_eq!(metrics.row_groups_planned, metrics.row_groups_committed);
+    assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
+    assert_eq!(metric_usize(&metrics, "host_to_device_uploaded_rows"), 0);
+    assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
+    assert!(metric_usize(&metrics, "source_chunks_committed") > 0);
+    assert!(metric_usize(&metrics, "source_chunks_committed") <= metric_usize(&metrics, "source_chunks_planned"));
+    assert_eq!(metric_usize(&metrics, "row_groups_planned"), metric_usize(&metrics, "row_groups_committed"));
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
     assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
 
-    let QueryOutput::HostArrow(native_batch) = result.output() else {
-        panic!("native host sink should return a RecordBatch");
-    };
-    assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
+    assert_batches_equal(&cpu_batches, &native_batches);
 }
 
 async fn assert_empty_local_parquet_aggregate_parity(plan: Arc<dyn ExecutionPlan>) {
     let cpu_batches =
         collect(Arc::clone(&plan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
-    let lowering = lower_physical_plan_to_native_for_test(plan);
-    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    assert!(lowering.source_diagnostics.is_empty());
-    assert!(lowering.plans[0].nodes().iter().any(|node| {
-        matches!(
-            &node.kind,
-            PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::LiteralBatch(_))
-        )
-    }));
-    assert!(lowering.plans[0].nodes().iter().all(|node| {
-        !matches!(
-            &node.kind,
-            PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::LocalParquet(_))
-        )
-    }));
+    let optimization = optimize_with_pruning_template(plan);
+    assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
+    assert!(optimization.source_diagnostics.is_empty());
+    assert_nexus_native_exec(&optimization.plan, "empty scan aggregate must rewrite to NexusNativeExec");
 
-    let context = bounded_execution_context(&lowering.plans[0]);
-    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
-    let QueryOutput::HostArrow(native_batch) = result.output() else {
-        panic!("native host sink should return a RecordBatch");
-    };
-    assert_batches_equal_allow_empty(&cpu_batches, std::slice::from_ref(native_batch));
+    let native_batches =
+        collect(Arc::clone(&optimization.plan), Arc::new(datafusion::execution::context::TaskContext::default()))
+            .await
+            .unwrap();
+    assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
 }
 
 async fn assert_native_physical_plan_parity(
@@ -847,31 +766,27 @@ async fn assert_native_physical_plan_parity(
 ) {
     let cpu_batches =
         collect(Arc::clone(&plan), Arc::new(datafusion::execution::context::TaskContext::default())).await.unwrap();
-    let lowering = lower_physical_plan_to_native_for_test(plan);
-    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.plans.len(), 1);
+    let optimization = optimize_with_pruning_template(plan);
+    assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
+    assert_nexus_native_exec(&optimization.plan, "pruning template must rewrite the plan to NexusNativeExec");
     if let Some((selected_row_groups, total_row_groups)) = expected_selected_row_groups {
-        assert_eq!(lowering.source_diagnostics[0].selected_row_groups, Some(selected_row_groups));
+        assert_eq!(optimization.source_diagnostics[0].selected_row_groups, Some(selected_row_groups));
         assert!(selected_row_groups < total_row_groups);
     }
 
-    let context = bounded_execution_context(&lowering.plans[0]);
     let _observation_guard = ARROW_HOST_OBSERVATION_LOCK.lock().await;
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
-    let result = execute_query_plan(&context, &lowering.plans[0]).unwrap();
-    let metrics = result.metrics();
+    let native_batches = collect(Arc::clone(&optimization.plan), Arc::new(TaskContext::default())).await.unwrap();
+    let metrics = optimization.plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
 
-    assert_eq!(metrics.boundary.host_to_device_uploads, 0);
-    assert_eq!(metrics.boundary.host_to_device_uploaded_rows, 0);
-    assert_eq!(metrics.boundary.device_to_host_materializations, 1);
+    assert_eq!(metric_usize(&metrics, "host_to_device_uploads"), 0);
+    assert_eq!(metric_usize(&metrics, "host_to_device_uploaded_rows"), 0);
+    assert_eq!(metric_usize(&metrics, "device_to_host_materializations"), 1);
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
     assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
 
-    let QueryOutput::HostArrow(native_batch) = result.output() else {
-        panic!("native host sink should return a RecordBatch");
-    };
-    assert_batches_equal(&cpu_batches, std::slice::from_ref(native_batch));
+    assert_batches_equal(&cpu_batches, &native_batches);
 }
 
 async fn cpu_sql_output(path: &std::path::Path, sql: &str) -> Vec<RecordBatch> {

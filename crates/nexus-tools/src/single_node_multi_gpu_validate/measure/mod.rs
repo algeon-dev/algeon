@@ -617,13 +617,11 @@ async fn run_measured(
         && graph_claim_calibration.as_ref().is_none_or(super::aggregate::GraphClaimCalibrationEvidence::passes)
         && otlp_export.passes()
         && close.is_quiescent();
-    let identity = backend.identity();
+    let backend_generation = backend.backend_metrics_snapshot().backend_generation;
     Ok(MeasuredRunArtifact {
         qualifying,
         backend: BackendEvidence {
-            resource_core: identity.resource_core,
-            observation_core: identity.observation_core,
-            resource_generation: identity.resource_generation,
+            backend_generation,
             shared_session_count: profile.session.shared_session_count,
             queue_max_queued_attempts: profile.backend.queue.max_queued_attempts,
             queue_max_queue_wait_ms: profile.backend.queue.max_queue_wait_ms,

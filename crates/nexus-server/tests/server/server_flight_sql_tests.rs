@@ -43,6 +43,7 @@ use datafusion::{
     sql::sqlparser::ast::TableFactor,
 };
 use datafusion_nexus::{
+    attempt::AttemptOptions,
     backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend},
     native_exec::NexusNativeExecutionConfig,
 };

@@ -47,12 +47,14 @@ use admission::{AdmissionState, DeviceAdmissionEntries, DeviceAdmissionEntry, Qu
 pub use config::{QueryExecutionConfig, QueueBounds};
 use device_waiters::{PendingDeviceSlotNotifications, notify_shared_device_admission_available};
 pub use handle::{AdmittedQueryContext, QueryHandle};
+#[cfg(feature = "qualification")]
+pub use service::DeviceQuarantineInjection;
 #[doc(hidden)]
 pub use service::QueryService;
 use service::QueryServiceInner;
 pub use service::{
-    DeviceQuarantineInjection, QueryActivityLease, QueryAdmissionOutcome, QueryAdmissionRequest,
-    QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot,
+    QueryActivityLease, QueryAdmissionOutcome, QueryAdmissionRequest, QueryServiceAdmissionSnapshot,
+    QueryServiceDeviceAdmissionSnapshot,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

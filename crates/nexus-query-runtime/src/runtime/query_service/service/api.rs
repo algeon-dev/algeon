@@ -11,6 +11,7 @@ use serde::Serialize;
 /// does not manufacture a CUDA error or mutate cuDF's process-wide device
 /// health; controlled validation uses it to exercise the same device-local
 /// scheduler transition that a proven native fault would perform.
+#[cfg(feature = "qualification")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceQuarantineInjection {
     device_ordinal: usize,
@@ -18,9 +19,9 @@ pub struct DeviceQuarantineInjection {
     newly_quarantined: bool,
 }
 
+#[cfg(feature = "qualification")]
 impl DeviceQuarantineInjection {
-    #[doc(hidden)]
-    pub fn new(device_ordinal: usize, device_health_generation: u64, newly_quarantined: bool) -> Self {
+    pub(crate) fn new(device_ordinal: usize, device_health_generation: u64, newly_quarantined: bool) -> Self {
         Self { device_ordinal, device_health_generation, newly_quarantined }
     }
 

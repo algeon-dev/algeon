@@ -210,7 +210,7 @@ impl NexusNativeExecutionConfig {
     }
 
     /// Attach a cooperative cancellation flag observed by native execution.
-    #[cfg(any(feature = "server-internal", feature = "test-support"))]
+    #[cfg(any(test, feature = "server-internal"))]
     pub(crate) fn with_cancellation(mut self, cancellation: ExecutionCancellation) -> Self {
         self.cancellation = cancellation;
         self
@@ -219,12 +219,6 @@ impl NexusNativeExecutionConfig {
     #[cfg(feature = "server-internal")]
     #[doc(hidden)]
     pub fn with_cancellation_for_internal_consumer(self, cancellation: ExecutionCancellation) -> Self {
-        self.with_cancellation(cancellation)
-    }
-
-    #[cfg(feature = "test-support")]
-    #[doc(hidden)]
-    pub fn with_cancellation_for_test(self, cancellation: ExecutionCancellation) -> Self {
         self.with_cancellation(cancellation)
     }
 

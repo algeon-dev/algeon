@@ -1,10 +1,10 @@
 use std::sync::Arc;
-#[cfg(any(feature = "test-support", feature = "bench-support"))]
+#[cfg(feature = "bench-support")]
 use std::sync::atomic::AtomicBool;
 
 use nexus_query_engine::admission::QueryPlanCapabilityProof;
 
-#[cfg(any(feature = "test-support", feature = "bench-support"))]
+#[cfg(feature = "bench-support")]
 use super::QueryHandle;
 use super::{
     GraphAdmissionModelAsk, NativeExecutionMetricsCapture, NativeMetricsCapture, NexusNativeExecutionConfig,
@@ -25,7 +25,7 @@ impl NexusNativeExecutionConfig {
     /// Source storage profiles are service-owned on this path. Register them
     /// on the backend configuration; per-plan config cannot inject a second
     /// runtime-owned registry.
-    #[cfg(any(feature = "test-support", feature = "bench-support"))]
+    #[cfg(feature = "bench-support")]
     #[doc(hidden)]
     pub fn with_query_service_handle(mut self, handle: Arc<QueryHandle>) -> Self {
         self.memory_control_policy = handle.memory_control_policy();

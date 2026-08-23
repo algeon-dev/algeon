@@ -77,23 +77,13 @@ impl NexusNativeComposedExec {
     /// The final plan must use a host Arrow sink, every child must advertise a
     /// unique GPU-resident input name, and the child names must match the
     /// consumer plan's declared GPU sources exactly.
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub(crate) fn try_new(
         plan: QueryPlan,
         gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
         execution_config: NexusNativeExecutionConfig,
     ) -> crate::error::Result<Self> {
         Self::try_new_with_cache(plan, gpu_inputs, execution_config, None)
-    }
-
-    #[cfg(feature = "test-support")]
-    #[doc(hidden)]
-    pub fn try_new_for_test(
-        plan: QueryPlan,
-        gpu_inputs: Vec<Arc<dyn ExecutionPlan>>,
-        execution_config: NexusNativeExecutionConfig,
-    ) -> crate::error::Result<Self> {
-        Self::try_new(plan, gpu_inputs, execution_config)
     }
 
     pub(crate) fn try_new_with_equivalence_properties(
@@ -206,12 +196,6 @@ impl NexusNativeComposedExec {
 
     pub(crate) fn native_plan(&self) -> &QueryPlan {
         &self.plan
-    }
-
-    #[cfg(feature = "test-support")]
-    #[doc(hidden)]
-    pub fn native_plan_for_test(&self) -> &QueryPlan {
-        self.native_plan()
     }
 
     #[cfg(feature = "bench-support")]
@@ -862,12 +846,6 @@ impl NexusNativeComposedGpuProducerExec {
 
     pub(crate) fn native_plan(&self) -> &QueryPlan {
         &self.plan
-    }
-
-    #[cfg(feature = "test-support")]
-    #[doc(hidden)]
-    pub fn native_plan_for_test(&self) -> &QueryPlan {
-        self.native_plan()
     }
 
     #[cfg(feature = "cugraph")]

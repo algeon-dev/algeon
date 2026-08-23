@@ -4,10 +4,6 @@ use datafusion::physical_plan::metrics::MetricsSet;
 
 use super::*;
 
-fn metric_usize(metrics: &MetricsSet, name: &str) -> usize {
-    metrics.sum_by_name(name).unwrap().as_usize()
-}
-
 fn assert_source_batch_metrics(metrics: &MetricsSet) {
     let planned = metric_usize(metrics, "source_chunks_planned");
     let committed = metric_usize(metrics, "source_chunks_committed");

@@ -826,9 +826,7 @@ pub(super) struct TimeSeriesEvidence {
 /// The immutable backend envelope this run measured against.
 #[derive(Debug, Serialize)]
 pub(super) struct BackendEvidence {
-    pub(super) resource_core: u64,
-    pub(super) observation_core: u64,
-    pub(super) resource_generation: u64,
+    pub(super) backend_generation: u64,
     pub(super) shared_session_count: usize,
     pub(super) queue_max_queued_attempts: usize,
     pub(super) queue_max_queue_wait_ms: u64,

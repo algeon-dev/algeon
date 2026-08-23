@@ -7,6 +7,8 @@ mod expression_contract;
 pub(crate) mod lakehouse_pruning;
 pub(crate) mod literal;
 mod lowering;
+#[cfg(test)]
+mod lowering_tests;
 mod normalize;
 mod pruning;
 mod source;
@@ -54,42 +56,25 @@ use crate::report::{GpuCandidate, PlanningReport, UnsupportedColumnDetail};
 
 const DECLARED_OUTPUT_ORDERING_SORT_OPERATOR: &str = "SortExec";
 
-macro_rules! define_native_lowering_result {
-    ($(#[$meta:meta])* $visibility:vis) => {
-        $(#[$meta])*
-        #[derive(Debug, Clone)]
-        $visibility struct NativeLoweringResult {
-            /// Native query plans produced for rewritten candidates.
-            $visibility plans: Vec<NativeQueryPlan>,
-            /// Structured candidate outcomes used by planning/report surfaces.
-            $visibility report: PlanningReport,
-            /// Source diagnostics gathered from normalized or lowered source nodes.
-            $visibility source_diagnostics: Vec<NativeSourceDiagnostics>,
-        }
-    };
+#[derive(Debug, Clone)]
+pub(crate) struct NativeLoweringResult {
+    pub(crate) plans: Vec<NativeQueryPlan>,
+    pub(crate) report: PlanningReport,
+    pub(crate) source_diagnostics: Vec<NativeSourceDiagnostics>,
 }
 
-#[cfg(feature = "test-support")]
-define_native_lowering_result!(#[doc(hidden)] pub);
-
-#[cfg(not(feature = "test-support"))]
-define_native_lowering_result!(pub(crate));
-
 impl NativeLoweringResult {
-    /// Returns the number of candidates recorded in the planning report.
-    #[cfg(feature = "test-support")]
-    pub fn candidate_count(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn candidate_count(&self) -> usize {
         self.report.outcomes().len()
     }
 
-    /// Returns the number of candidates successfully lowered.
-    pub fn selected_count(&self) -> usize {
+    pub(crate) fn selected_count(&self) -> usize {
         self.report.selected_count()
     }
 
-    /// Returns the number of rejected candidates.
-    #[cfg(feature = "test-support")]
-    pub fn not_selected_count(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn not_selected_count(&self) -> usize {
         self.report.not_selected_count()
     }
 }
@@ -97,12 +82,6 @@ impl NativeLoweringResult {
 /// Lowers a physical plan using the final native rewrite rules.
 pub(crate) fn lower_physical_plan_to_native(plan: Arc<dyn ExecutionPlan>) -> NativeLoweringResult {
     lower_physical_plan_to_native_with_mode(plan, NativeLoweringMode::Final)
-}
-
-#[cfg(feature = "test-support")]
-#[doc(hidden)]
-pub fn lower_physical_plan_to_native_for_test(plan: Arc<dyn ExecutionPlan>) -> NativeLoweringResult {
-    lower_physical_plan_to_native(plan)
 }
 
 pub(crate) fn lower_count_only_physical_plan_to_native(plan: Arc<dyn ExecutionPlan>) -> NativeLoweringResult {

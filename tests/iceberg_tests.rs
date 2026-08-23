@@ -4,5 +4,3 @@ mod iceberg_catalog_provider_tests;
 mod iceberg_public_api_tests;
 #[path = "iceberg/table_format_iceberg_planner_tests.rs"]
 mod table_format_iceberg_planner_tests;
-#[path = "iceberg/table_format_provider_tests.rs"]
-mod table_format_provider_tests;

@@ -10,6 +10,7 @@ use std::{
     time::Duration,
 };
 
+#[cfg(feature = "qualification")]
 use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
 use tokio::sync::Notify;
 
@@ -28,9 +29,11 @@ mod queue;
 mod reporting;
 mod requests;
 pub(in crate::runtime::query_service) mod transaction;
+#[cfg(feature = "qualification")]
+pub use api::DeviceQuarantineInjection;
 pub use api::{
-    DeviceQuarantineInjection, QueryActivityLease, QueryAdmissionOutcome, QueryAdmissionRequest,
-    QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot,
+    QueryActivityLease, QueryAdmissionOutcome, QueryAdmissionRequest, QueryServiceAdmissionSnapshot,
+    QueryServiceDeviceAdmissionSnapshot,
 };
 pub(in crate::runtime::query_service::service) use queue::query_service_shutdown_timeout;
 pub(in crate::runtime::query_service) use requests::PlacedAdmissionCommit;
@@ -392,7 +395,7 @@ impl QueryService {
     /// placement, takes the fleet admission gate used by placement, and leaves
     /// native cuDF health untouched. A caller can therefore validate fallback
     /// after a quarantine without claiming to have produced a real CUDA fault.
-    #[doc(hidden)]
+    #[cfg(feature = "qualification")]
     pub fn inject_device_quarantine(&self, device_ordinal: usize) -> Result<DeviceQuarantineInjection> {
         const REASON: &str = "controlled validation device quarantine";
 

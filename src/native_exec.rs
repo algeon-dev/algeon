@@ -22,6 +22,8 @@ pub use nexus_query_engine::{
     },
 };
 
+#[cfg(test)]
+mod adapter_tests;
 pub(crate) mod admission;
 pub(crate) mod child_inputs;
 mod common;
