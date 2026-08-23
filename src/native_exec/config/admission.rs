@@ -148,23 +148,6 @@ impl NexusNativeExecutionConfig {
         self
     }
 
-    /// Removes admission authority while retaining the execution policies
-    /// needed to lower a nested cuGraph input relation.
-    ///
-    /// A cuGraph table function first plans its edge and predicate relations
-    /// in a nested DataFusion state. Those relations are later executed under
-    /// the graph root's one post-metadata ticket, so letting the nested
-    /// optimizer mint a ticket would bind a source-only claim to the parent
-    /// attempt before the graph root has exact footer evidence.
-    #[cfg(feature = "cugraph")]
-    pub(crate) fn without_query_admission_for_cugraph_subplan(mut self) -> Self {
-        self.query_service_handle = None;
-        self.query_admission_facts_recorded = None;
-        self.query_admission_source = None;
-        self.query_admission_ticket = None;
-        self
-    }
-
     #[cfg(test)]
     pub(crate) fn query_admission_ticket_id(&self) -> Option<u64> {
         self.query_admission_ticket.as_ref().map(|ticket| ticket.id())

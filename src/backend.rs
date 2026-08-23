@@ -4,10 +4,7 @@
 use std::sync::{Mutex, MutexGuard};
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
-use datafusion::{
-    common::DataFusionError,
-    execution::{SessionState, SessionStateBuilder},
-};
+use datafusion::execution::{SessionState, SessionStateBuilder};
 #[cfg(feature = "qualification")]
 pub use nexus_query_engine::runtime::DeviceQuarantineInjection;
 use nexus_query_engine::runtime::{
@@ -18,7 +15,7 @@ use nexus_query_engine::runtime::{
 pub use nexus_query_engine::runtime::{DeviceCapabilities, GpuDeviceMemoryLimit, GpuMemoryOwnership};
 
 use crate::{
-    error::{DataFusionErrorExt, Error, ErrorCode, Result},
+    error::{Error, ErrorCode, Result},
     native_exec::{NexusNativeExecutionConfig, QueryAdmissionSource},
     observability::{
         BackendMetricsSnapshot, CacheSourceEventSnapshot, DeviceCacheReport, DeviceLedgerReport,
@@ -323,33 +320,15 @@ impl NexusGpuBackend {
     /// Installs the backend-managed DataFusion integration on `builder`.
     ///
     /// The installation binds the native optimizer to this backend's admission
-    /// authority, and installs the GPU coverage UDTF, common GPU function catalog,
-    /// and relation-aware cuVS planner and metadata family. The resulting session
+    /// authority, and installs the GPU coverage UDTF. The resulting session
     /// plans and admits native execution through this backend's ledger.
     ///
-    /// This method does not install cuGraph. Use
-    /// [`Self::install_on_with_cugraph_sql`], or call
+    /// This method does not install optional SQL families such as cuVS or
+    /// cuGraph. Call [`NexusSessionStateBuilderExt::try_with_cuvs_sql`] or
     /// [`NexusSessionStateBuilderExt::try_with_cugraph_sql`] on the returned
-    /// builder. Installing cuGraph first is rejected because its captured
-    /// configuration is not yet bound to this backend's admission authority.
+    /// builder when those families are required.
     pub fn install_on(&self, builder: SessionStateBuilder) -> Result<SessionStateBuilder> {
         install_backend_optimizer_config(builder, &self.optimizer_config)
-    }
-
-    /// Installs [`Self::install_on`] followed by the cuGraph SQL family.
-    ///
-    /// This is equivalent to calling [`Self::install_on`] and then
-    /// [`NexusSessionStateBuilderExt::try_with_cugraph_sql`] with `config`.
-    /// Without the `cugraph` feature, execution returns a structured
-    /// feature-disabled error. Reinstalling the family with an equal
-    /// configuration is idempotent; a different descriptor projection is a
-    /// structured installation error.
-    pub fn install_on_with_cugraph_sql(
-        &self,
-        builder: SessionStateBuilder,
-        cugraph_config: crate::cugraph_sql::CugraphSqlConfig,
-    ) -> Result<SessionStateBuilder> {
-        install_cugraph_sql_on_installed_backend(self.install_on(builder)?, &self.optimizer_config, cugraph_config)
     }
 
     /// Performs the one controlled device-quarantine transition the operator
@@ -610,19 +589,6 @@ fn install_backend_optimizer_config(
     builder: SessionStateBuilder,
     optimizer_config: &NexusNativeOptimizerConfig,
 ) -> Result<SessionStateBuilder> {
-    let builder = builder.try_with_cuvs_sql().map_err(|error| {
-        Error::new(
-            ErrorCode::InvalidRequest,
-            "datafusion_nexus.backend.install_on",
-            "failed to install the Nexus cuVS query planner",
-        )
-        .with_source(error)
-    })?;
-    let builder = {
-        let mut builder = builder;
-        reject_preexisting_cugraph_sql(&mut builder)?;
-        builder
-    };
     let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone()));
     Ok(builder.with_nexus_native_rule(rule))
 }
@@ -952,61 +918,6 @@ fn validate_positive_usize(field: &'static str, value: usize) -> Result<()> {
 
 fn invalid_backend_config(field: &'static str, message: impl Into<String>) -> Error {
     Error::new(ErrorCode::InvalidRequest, "datafusion_nexus.backend.config", message).with_fact("field", field)
-}
-
-fn reject_preexisting_cugraph_sql(builder: &mut SessionStateBuilder) -> Result<()> {
-    let Some(functions) = builder.table_functions().as_ref() else {
-        return Ok(());
-    };
-    let Some(function_name) =
-        functions.keys().filter(|name| is_cugraph_sql_table_function_name(name.as_str())).min().cloned()
-    else {
-        return Ok(());
-    };
-    Err(Error::new(
-        ErrorCode::InvalidRequest,
-        "datafusion_nexus.backend.install_on",
-        "cuGraph SQL must be registered through backend admission",
-    )
-    .with_fact("reason", "preexisting_cugraph_sql_without_backend_admission")
-    .with_fact("table_function", function_name)
-    .with_fact("remediation", "use install_on_with_cugraph_sql or call try_with_cugraph_sql after install_on"))
-}
-
-fn install_cugraph_sql_on_installed_backend(
-    builder: SessionStateBuilder,
-    optimizer_config: &NexusNativeOptimizerConfig,
-    cugraph_config: crate::cugraph_sql::CugraphSqlConfig,
-) -> Result<SessionStateBuilder> {
-    use crate::session::NexusSessionStateBuilderExt;
-
-    builder
-        .try_with_cugraph_sql(
-            cugraph_config.with_native_execution_config(optimizer_config.native_execution_config().clone()),
-        )
-        .map_err(preserve_gpu_function_install_error)
-}
-
-/// Propagate a cuGraph installation failure without losing the structured
-/// Nexus classification minted by the shared catalog installer.
-fn preserve_gpu_function_install_error(error: DataFusionError) -> Error {
-    if let Some(nexus) = error.find_nexus_error() {
-        return Error::new(nexus.code(), nexus.operation(), nexus.message().to_string())
-            .with_preserved_facts(nexus.facts().clone())
-            .with_source(error);
-    }
-    Error::new(
-        ErrorCode::InvalidRequest,
-        "datafusion_nexus.backend.install_on_with_cugraph_sql",
-        "failed to install cuGraph SQL functions",
-    )
-    .with_source(error)
-}
-
-fn is_cugraph_sql_table_function_name(name: &str) -> bool {
-    use crate::cugraph_sql::CugraphAlgorithm;
-
-    CugraphAlgorithm::all().any(|algorithm| algorithm.function_name() == name)
 }
 
 fn nongds_deployment() -> DeploymentIoCapability {

@@ -13,7 +13,7 @@ use datafusion::{
     catalog::{Session, TableFunction, TableFunctionArgs, TableFunctionImpl, TableProvider},
     common::{DataFusionError, Result},
     datasource::TableType,
-    execution::{SessionState, context::SessionContext},
+    execution::SessionState,
     logical_expr::Expr,
     physical_plan::ExecutionPlan,
 };
@@ -57,14 +57,13 @@ type ResultInputNamesByScan = BTreeMap<Option<usize>, String>;
 #[derive(Debug)]
 pub struct CugraphAlgoTableProvider {
     spec: CugraphAlgorithmSpec,
-    native_execution_config: NexusNativeExecutionConfig,
     result_input_names: Mutex<ResultInputNamesByScan>,
 }
 
 #[cfg(feature = "cugraph")]
 impl CugraphAlgoTableProvider {
-    pub fn new(spec: CugraphAlgorithmSpec, native_execution_config: NexusNativeExecutionConfig) -> Self {
-        Self { spec, native_execution_config, result_input_names: Mutex::new(BTreeMap::new()) }
+    pub fn new(spec: CugraphAlgorithmSpec) -> Self {
+        Self { spec, result_input_names: Mutex::new(BTreeMap::new()) }
     }
 
     pub fn spec(&self) -> &CugraphAlgorithmSpec {
@@ -105,14 +104,14 @@ impl TableProvider for CugraphAlgoTableProvider {
             .ok_or_else(|| plan_error(format!("No table named '{}' for cuGraph edge source", spec.table_name)))?;
         let vertex_domain = validate_edge_source_schema(&spec, &provider.schema())?;
         resolve_vertex_output_schema(&mut spec, &vertex_domain);
-        let native_execution_config = self.native_execution_config.clone();
+        let native_execution_config = crate::session::installed_nexus_native_optimizer_config(session_state)
+            .map(|optimizer_config| optimizer_config.native_execution_config().clone())
+            .unwrap_or_else(NexusNativeExecutionConfig::bounded_default);
         // This nested state lowers the edge/predicate relations only.  The
         // outer cuGraph root owns admission after footer metadata is hydrated;
-        // allowing this nested optimizer to bind a ticket would leave a
-        // source-only claim on the parent attempt and shadow that graph ticket
-        // at execution time.
-        let nested_planning_config = native_execution_config.clone().without_query_admission_for_cugraph_subplan();
-        let planning_state = session_state_with_native_execution_config(session_state, nested_planning_config)
+        // subplan planning uses subplan optimizer rules so that lowered child
+        // relations do not bind a ticket to the parent attempt.
+        let planning_state = session_state_with_native_execution_config(session_state, native_execution_config.clone())
             .unwrap_or_else(|| session_state.clone());
         let scan = LogicalPlanBuilder::scan(table_ref, provider_as_source(provider), None)?.build()?;
         let edge_source_plan = LogicalPlanBuilder::from(scan).project(edge_source_projection(&spec))?.build()?;
@@ -329,7 +328,7 @@ impl TableFunctionImpl for CugraphTableFunction {
         let spec = parse_cugraph_algorithm_spec(self.algorithm, args, &self.config)?;
         #[cfg(feature = "cugraph")]
         {
-            Ok(Arc::new(CugraphAlgoTableProvider::new(spec, self.config.native_execution_config.clone())))
+            Ok(Arc::new(CugraphAlgoTableProvider::new(spec)))
         }
         #[cfg(not(feature = "cugraph"))]
         {
@@ -342,7 +341,7 @@ impl TableFunctionImpl for CugraphTableFunction {
         {
             let mut spec = parse_cugraph_algorithm_spec(self.algorithm, args.exprs(), &self.config)?;
             maybe_resolve_vertex_output_schema(&mut spec, args.session());
-            Ok(Arc::new(CugraphAlgoTableProvider::new(spec, self.config.native_execution_config.clone())))
+            Ok(Arc::new(CugraphAlgoTableProvider::new(spec)))
         }
         #[cfg(not(feature = "cugraph"))]
         {
@@ -375,7 +374,7 @@ fn resolve_vertex_output_schema(spec: &mut CugraphAlgorithmSpec, vertex_domain: 
     spec.output_schema = result_schema_for_vertex_domain(spec.algorithm, &spec.params, Some(vertex_domain));
 }
 
-pub fn cugraph_table_functions(config: CugraphSqlConfig) -> Vec<Arc<TableFunction>> {
+pub(crate) fn cugraph_table_functions(config: CugraphSqlConfig) -> Vec<Arc<TableFunction>> {
     CugraphAlgorithm::all()
         .map(|algorithm| {
             Arc::new(TableFunction::new(
@@ -384,12 +383,6 @@ pub fn cugraph_table_functions(config: CugraphSqlConfig) -> Vec<Arc<TableFunctio
             ))
         })
         .collect()
-}
-
-pub fn register_cugraph_udtfs(ctx: &SessionContext, config: CugraphSqlConfig) {
-    for function in cugraph_table_functions(config) {
-        ctx.register_udtf(function.name(), Arc::clone(function.function()));
-    }
 }
 
 /// Resolve only catalog schemas needed by a cuGraph call.

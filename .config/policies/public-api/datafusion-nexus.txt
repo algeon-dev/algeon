@@ -92,7 +92,6 @@ pub fn datafusion_nexus::backend::NexusGpuBackend::devices(&self) -> &[datafusio
 pub fn datafusion_nexus::backend::NexusGpuBackend::gpu_execution_pool_reports(&self) -> datafusion_nexus::error::Result<alloc::vec::Vec<nexus_query_runtime::runtime::gpu_execution_pool::GpuExecutionPoolSnapshot>>
 pub fn datafusion_nexus::backend::NexusGpuBackend::gpu_execution_query_report(&self) -> datafusion_nexus::error::Result<nexus_query_runtime::runtime::gpu_execution_pool::GpuExecutionQuerySnapshot>
 pub fn datafusion_nexus::backend::NexusGpuBackend::install_on(&self, datafusion::execution::session_state::SessionStateBuilder) -> datafusion_nexus::error::Result<datafusion::execution::session_state::SessionStateBuilder>
-pub fn datafusion_nexus::backend::NexusGpuBackend::install_on_with_cugraph_sql(&self, datafusion::execution::session_state::SessionStateBuilder, datafusion_nexus::cugraph_sql::CugraphSqlConfig) -> datafusion_nexus::error::Result<datafusion::execution::session_state::SessionStateBuilder>
 pub fn datafusion_nexus::backend::NexusGpuBackend::is_session_state_bound(&self, &datafusion::execution::session_state::SessionState) -> bool
 pub fn datafusion_nexus::backend::NexusGpuBackend::optimizer_config(&self) -> &datafusion_nexus::planner::NexusNativeOptimizerConfig
 pub fn datafusion_nexus::backend::NexusGpuBackend::quarantine_device_for_qualification(&self, usize) -> datafusion_nexus::error::Result<nexus_query_runtime::runtime::query_service::service::api::DeviceQuarantineInjection>
@@ -324,7 +323,7 @@ pub fn datafusion_nexus::cugraph_sql::CugraphAlgoExec::properties(&self) -> &all
 pub fn datafusion_nexus::cugraph_sql::CugraphAlgoExec::with_new_children(alloc::sync::Arc<Self>, alloc::vec::Vec<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>) -> datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
 pub struct datafusion_nexus::cugraph_sql::CugraphAlgoTableProvider
 impl datafusion_nexus::cugraph_sql::CugraphAlgoTableProvider
-pub fn datafusion_nexus::cugraph_sql::CugraphAlgoTableProvider::new(datafusion_nexus::cugraph_sql::CugraphAlgorithmSpec, datafusion_nexus::native_exec::NexusNativeExecutionConfig) -> Self
+pub fn datafusion_nexus::cugraph_sql::CugraphAlgoTableProvider::new(datafusion_nexus::cugraph_sql::CugraphAlgorithmSpec) -> Self
 pub fn datafusion_nexus::cugraph_sql::CugraphAlgoTableProvider::spec(&self) -> &datafusion_nexus::cugraph_sql::CugraphAlgorithmSpec
 impl datafusion_session::table::TableProvider for datafusion_nexus::cugraph_sql::CugraphAlgoTableProvider
 pub fn datafusion_nexus::cugraph_sql::CugraphAlgoTableProvider::scan<'life0, 'life1, 'life2, 'life3, 'async_trait>(&'life0 self, &'life1 dyn datafusion_session::session::Session, core::option::Option<&'life2 alloc::vec::Vec<usize>>, &'life3 [datafusion_expr::expr::Expr], core::option::Option<usize>) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait
@@ -518,11 +517,6 @@ impl core::default::Default for datafusion_nexus::cugraph_sql::CugraphSpectralCl
 pub fn datafusion_nexus::cugraph_sql::CugraphSpectralClusteringParams::default() -> Self
 pub struct datafusion_nexus::cugraph_sql::CugraphSqlConfig
 pub datafusion_nexus::cugraph_sql::CugraphSqlConfig::default_graph_options: datafusion_nexus::cugraph_sql::CugraphGraphOptions
-pub datafusion_nexus::cugraph_sql::CugraphSqlConfig::native_execution_config: datafusion_nexus::native_exec::NexusNativeExecutionConfig
-impl datafusion_nexus::cugraph_sql::CugraphSqlConfig
-pub fn datafusion_nexus::cugraph_sql::CugraphSqlConfig::with_native_execution_config(self, datafusion_nexus::native_exec::NexusNativeExecutionConfig) -> Self
-impl core::default::Default for datafusion_nexus::cugraph_sql::CugraphSqlConfig
-pub fn datafusion_nexus::cugraph_sql::CugraphSqlConfig::default() -> Self
 pub struct datafusion_nexus::cugraph_sql::CugraphSsspParams
 pub datafusion_nexus::cugraph_sql::CugraphSsspParams::cutoff: core::option::Option<f64>
 pub datafusion_nexus::cugraph_sql::CugraphSsspParams::source_vertex: datafusion_nexus::cugraph_sql::CugraphVertexSelector
@@ -580,9 +574,7 @@ pub const datafusion_nexus::cugraph_sql::CUGRAPH_STRONGLY_CONNECTED_COMPONENTS_F
 pub const datafusion_nexus::cugraph_sql::CUGRAPH_TRIANGLE_COUNT_ALL_FUNCTION: &str
 pub const datafusion_nexus::cugraph_sql::CUGRAPH_WEAKLY_CONNECTED_COMPONENTS_FUNCTION: &str
 pub fn datafusion_nexus::cugraph_sql::bfs_result_schema(&datafusion_nexus::cugraph_sql::CugraphBfsParams) -> arrow_schema::schema::SchemaRef
-pub fn datafusion_nexus::cugraph_sql::cugraph_table_functions(datafusion_nexus::cugraph_sql::CugraphSqlConfig) -> alloc::vec::Vec<alloc::sync::Arc<datafusion_session::table::TableFunction>>
 pub fn datafusion_nexus::cugraph_sql::parse_cugraph_algorithm_spec(datafusion_nexus::cugraph_sql::CugraphAlgorithm, &[datafusion_expr::expr::Expr], &datafusion_nexus::cugraph_sql::CugraphSqlConfig) -> datafusion_common::error::Result<datafusion_nexus::cugraph_sql::CugraphAlgorithmSpec>
-pub fn datafusion_nexus::cugraph_sql::register_cugraph_udtfs(&datafusion::execution::context::SessionContext, datafusion_nexus::cugraph_sql::CugraphSqlConfig)
 pub fn datafusion_nexus::cugraph_sql::result_schema_for_params(datafusion_nexus::cugraph_sql::CugraphAlgorithm, &datafusion_nexus::cugraph_sql::CugraphAlgorithmParams) -> arrow_schema::schema::SchemaRef
 pub fn datafusion_nexus::cugraph_sql::stable_result_schema(datafusion_nexus::cugraph_sql::CugraphAlgorithm) -> arrow_schema::schema::SchemaRef
 pub mod datafusion_nexus::cuvs_sql

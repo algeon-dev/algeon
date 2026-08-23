@@ -2,11 +2,10 @@
 //!
 //! | Entry point | Installs | Required input | Idempotency | Owns admission |
 //! | --- | --- | --- | --- | --- |
-//! | [`NexusGpuBackend::install_on`](crate::backend::NexusGpuBackend::install_on) | backend-bound optimizer, coverage, common catalog, cuVS | built backend | same backend and no preinstalled cuGraph | yes |
-//! | [`NexusGpuBackend::install_on_with_cugraph_sql`](crate::backend::NexusGpuBackend::install_on_with_cugraph_sql) | `install_on` plus cuGraph | backend and [`CugraphSqlConfig`] | install once on a builder without cuGraph | yes |
+//! | [`NexusGpuBackend::install_on`](crate::backend::NexusGpuBackend::install_on) | backend-bound optimizer, coverage | built backend | same backend | yes |
 //! | [`NexusSessionStateBuilderExt::with_nexus_native`] | optimizer, coverage | [`NexusNativeOptimizerConfig`] | replaces existing Nexus rules | no |
 //! | [`NexusSessionStateBuilderExt::try_with_cuvs_sql`] | cuVS planner, metadata, function family | none | identical installation is a no-op | no |
-//! | [`NexusSessionStateBuilderExt::try_with_cugraph_sql`] | cuGraph function family | [`CugraphSqlConfig`] | equal config is a no-op; conflicts error | no; preserves an existing backend binding |
+//! | [`NexusSessionStateBuilderExt::try_with_cugraph_sql`] | cuGraph function family | [`CugraphSqlConfig`] | equal config is a no-op; conflicts error | no |
 //!
 //! The native physical optimizer uses two insertion points. A count-only probe
 //! precedes DataFusion aggregate statistics, and the final native rewrite
@@ -88,17 +87,42 @@ impl NexusSessionStateBuilderExt for SessionStateBuilder {
     }
 
     fn try_with_cuvs_sql(mut self) -> DataFusionResult<Self> {
-        // A cloned/session-rebuilt state can retain the cuVS planner and its
-        // immutable catalog family. Treat that exact installation as a no-op
-        // before checking the otherwise-exclusive opaque query planner.
-        if self
+        let catalog_has_cuvs = self
             .config()
             .as_ref()
             .and_then(|config| config.get_extension::<GpuFunctionCatalog>())
-            .is_some_and(|catalog| catalog.contains_family("cuvs"))
-        {
+            .is_some_and(|catalog| catalog.contains_family("cuvs"));
+
+        if catalog_has_cuvs {
+            let is_cuvs_planner = self
+                .query_planner()
+                .as_ref()
+                .is_some_and(|planner| (planner.as_ref() as &dyn std::any::Any).is::<CuvsQueryPlanner>());
+            if !is_cuvs_planner {
+                return Err(crate::error::Error::new(
+                    crate::error::ErrorCode::InvalidRequest,
+                    "datafusion_nexus.cuvs_sql.install",
+                    "cannot install cuVS SQL over an existing query planner",
+                )
+                .with_log_safe_fact("reason", "query_planner_conflict")
+                .into());
+            }
+            if let Some(relation_planners) = self.relation_planners().as_ref() {
+                let has_cuvs_relation_planner =
+                    relation_planners.iter().any(|p| format!("{p:?}").contains("CuvsRelationPlanner"));
+                if !has_cuvs_relation_planner {
+                    return Err(crate::error::Error::new(
+                        crate::error::ErrorCode::InvalidRequest,
+                        "datafusion_nexus.cuvs_sql.install",
+                        "inconsistent cuVS SQL installation: catalog contains cuVS family but relation planner is missing",
+                    )
+                    .with_log_safe_fact("reason", "inconsistent_installation")
+                    .into());
+                }
+            }
             return Ok(self);
         }
+
         if self.query_planner().is_some() {
             return Err(crate::error::Error::new(
                 crate::error::ErrorCode::InvalidRequest,
@@ -115,8 +139,6 @@ impl NexusSessionStateBuilderExt for SessionStateBuilder {
     }
 
     fn try_with_cugraph_sql(mut self, config: CugraphSqlConfig) -> DataFusionResult<Self> {
-        #[cfg(feature = "cugraph")]
-        let config = cugraph_config_with_builder_native_admission(&mut self, config);
         install_gpu_function_family(&mut self, Arc::new(CugraphGpuFunctionFamily::new(config.clone())))?;
         let functions = self.table_functions().get_or_insert_with(Default::default);
         for function in cugraph_table_functions(config) {
@@ -140,7 +162,7 @@ pub(crate) fn session_state_with_native_execution_config(
 ) -> Option<SessionState> {
     let optimizer_config =
         installed_nexus_native_optimizer_config(state)?.with_native_execution_config(native_execution_config);
-    let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
+    let rule = Arc::new(NexusNativePhysicalOptimizerRule::new_cugraph_subplan(optimizer_config));
     let mut rules = state.physical_optimizers().to_vec();
     insert_nexus_native_rules_for_cugraph_subplan(&mut rules, rule);
     Some(build_cugraph_subplan_state(state, rules))
@@ -165,42 +187,6 @@ fn build_cugraph_subplan_state(state: &SessionState, rules: PhysicalOptimizerRul
 
 pub(crate) fn installed_nexus_native_optimizer_config(session: &dyn Session) -> Option<NexusNativeOptimizerConfig> {
     installed_nexus_native_optimizer_config_from_rules(session.physical_optimizers())
-}
-
-#[cfg(feature = "cugraph")]
-fn cugraph_config_with_builder_native_admission(
-    builder: &mut SessionStateBuilder,
-    config: CugraphSqlConfig,
-) -> CugraphSqlConfig {
-    if config.native_execution_config.has_query_admission_authority() {
-        return config;
-    }
-    let Some(optimizer_config) = installed_nexus_native_optimizer_config_from_builder(builder) else {
-        return config;
-    };
-    let native_execution_config = optimizer_config.native_execution_config();
-    if native_execution_config.has_query_admission_authority() {
-        config.with_native_execution_config(native_execution_config.clone())
-    } else {
-        config
-    }
-}
-
-#[cfg(feature = "cugraph")]
-fn installed_nexus_native_optimizer_config_from_builder(
-    builder: &mut SessionStateBuilder,
-) -> Option<NexusNativeOptimizerConfig> {
-    if let Some(config) = builder
-        .physical_optimizers()
-        .as_ref()
-        .and_then(|optimizer| installed_nexus_native_optimizer_config_from_rules(&optimizer.rules))
-    {
-        return Some(config);
-    }
-    builder
-        .physical_optimizer_rules()
-        .as_ref()
-        .and_then(|rules| installed_nexus_native_optimizer_config_from_rules(rules))
 }
 
 fn installed_nexus_native_optimizer_config_from_rules(
@@ -304,22 +290,29 @@ mod tests {
     }
 
     #[test]
-    fn cugraph_sql_config_inherits_installed_backend_admission() {
+    fn cugraph_installation_order_preserves_same_backend_admission_authority() {
         let backend = InstalledTestGpuBackend::new();
-        let source = admission_source(&backend);
-        let native_execution_config =
-            NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
-        let optimizer_config =
-            NexusNativeOptimizerConfig::default().with_native_execution_config(native_execution_config.clone());
-        let mut builder = SessionStateBuilder::new().with_nexus_native(optimizer_config);
 
-        let cugraph_config = cugraph_config_with_builder_native_admission(&mut builder, CugraphSqlConfig::default());
+        let first_builder = SessionStateBuilder::new();
+        let first_builder = backend.install_on(first_builder).expect("backend install");
+        let first_builder = first_builder.try_with_cugraph_sql(CugraphSqlConfig::default()).expect("cugraph install");
+        let first_state = first_builder.build();
 
-        assert!(cugraph_config.native_execution_config.has_query_admission_authority());
-        assert_eq!(
-            cugraph_config.native_execution_config.memory_control_policy(),
-            native_execution_config.memory_control_policy()
-        );
+        let second_builder = SessionStateBuilder::new();
+        let second_builder = second_builder.try_with_cugraph_sql(CugraphSqlConfig::default()).expect("cugraph install");
+        let second_builder = backend.install_on(second_builder).expect("backend install");
+        let second_state = second_builder.build();
+
+        assert!(backend.backend().is_session_state_bound(&first_state));
+        assert!(backend.backend().is_session_state_bound(&second_state));
+
+        let first_optimizer = installed_nexus_native_optimizer_config(&first_state).unwrap();
+        let second_optimizer = installed_nexus_native_optimizer_config(&second_state).unwrap();
+        let first_source = first_optimizer.native_execution_config().query_admission_source().unwrap();
+        let second_source = second_optimizer.native_execution_config().query_admission_source().unwrap();
+        let backend_source = admission_source(&backend);
+        assert!(first_source.same_backend(&second_source));
+        assert!(first_source.same_backend(&backend_source));
     }
 
     #[test]

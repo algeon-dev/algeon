@@ -80,7 +80,7 @@ pub fn cuvs_cugraph_native_context() -> SessionContext {
         .with_nexus_native(
             NexusNativeOptimizerConfig::default().with_native_execution_config(native_execution_config.clone()),
         )
-        .try_with_cugraph_sql(CugraphSqlConfig::default().with_native_execution_config(native_execution_config))
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
         .expect("install cuGraph SQL contracts")
         .try_with_cuvs_sql()
         .expect("install native, cuGraph, and cuVS SQL contracts")

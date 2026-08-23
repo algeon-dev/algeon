@@ -81,6 +81,7 @@ use datafusion::execution::SessionStateBuilder;
 use datafusion_nexus::{
     backend::{GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceProfile},
     cugraph_sql::CugraphSqlConfig,
+    session::NexusSessionStateBuilderExt,
 };
 
 let device = NexusGpuDeviceConfig::new(NexusGpuDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive);
@@ -89,10 +90,8 @@ let backend = NexusGpuBackend::builder()
     .build()?;
 
 let state = backend
-    .install_on_with_cugraph_sql(
-        SessionStateBuilder::new_with_default_features(),
-        CugraphSqlConfig::default(),
-    )?
+    .install_on(SessionStateBuilder::new_with_default_features())?
+    .try_with_cugraph_sql(CugraphSqlConfig::default())?
     .build();
 ```
 

@@ -423,8 +423,6 @@ mod get_tables_prefilter_tests {
             NexusNativeOptimizerConfig::default(),
             Arc::new(QueryAdmission::new_for_tests()),
             Duration::from_secs(30),
-            #[cfg(feature = "cugraph")]
-            None,
         )
     }
 
