@@ -74,17 +74,10 @@ pub fn validate_query<'a>(
         mark_coverage_validation_in_progress(&mut planning_state_builder);
         let planning_state = planning_state_builder.build();
         let config = optimizer_config_for_validation(&planning_state)?;
-        let native_rule = config
-            .optimizer_config
-            .as_ref()
-            .map(|optimizer_config| Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone())));
-        let planning_state = if let Some(native_rule) = &native_rule {
-            SessionStateBuilder::new_from_existing(planning_state)
-                .with_nexus_native_rule(Arc::clone(native_rule))
-                .build()
-        } else {
-            planning_state
-        };
+        let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(config.optimizer_config.clone()));
+        let planning_state = SessionStateBuilder::new_from_existing(planning_state)
+            .with_nexus_native_rule(Arc::clone(&native_rule))
+            .build();
         let validated_under = validated_under(&planning_state, &config);
         if let Some(rejection) = preflight_single_query(&planning_state, sql) {
             return Ok(QueryGpuCoverage::rejected(validated_under, rejection));
@@ -103,7 +96,7 @@ pub fn validate_query<'a>(
         let plan = match df.create_physical_plan().await {
             Ok(plan) => plan,
             Err(error) => {
-                let diagnostics = native_rule.as_ref().and_then(|rule| rule.last_planning_diagnostics());
+                let diagnostics = native_rule.last_planning_diagnostics();
                 let phase = classify_physical_planning_error(&error);
                 let planning_did_io = planning_did_io_for_physical_error(phase, diagnostics.as_ref());
                 return Ok(QueryGpuCoverage::rejected_with_diagnostics(
@@ -115,7 +108,7 @@ pub fn validate_query<'a>(
             },
         };
 
-        let diagnostics = native_rule.as_ref().and_then(|rule| rule.last_planning_diagnostics());
+        let diagnostics = native_rule.last_planning_diagnostics();
         let observation = observe_final_plan(plan.as_ref());
         let candidate_outcomes = diagnostics
             .as_ref()

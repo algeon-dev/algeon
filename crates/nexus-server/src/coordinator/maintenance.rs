@@ -2,6 +2,7 @@
 
 use std::{sync::Arc, time::Instant};
 
+use datafusion_nexus::attempt::server_internal::NexusAttemptServerExt;
 use futures::future::BoxFuture;
 use tokio::{sync::futures::Notified, task::JoinHandle};
 use tokio_util::sync::CancellationToken;

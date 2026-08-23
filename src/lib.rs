@@ -1,6 +1,6 @@
 //! DataFusion adapter for native GPU execution.
 //!
-//! Embedded applications normally enter through three APIs:
+//! Embedded applications normally enter through:
 //!
 //! 1. Build one process-scoped [`backend::NexusGpuBackend`] and install it on
 //!    each caller-owned DataFusion session with
@@ -8,9 +8,15 @@
 //! 2. Run each query through [`backend::NexusGpuBackend::begin_attempt`] so
 //!    planning, admission, execution, and the terminal report share one
 //!    invocation lifecycle.
-//! 3. Call [`gpu_coverage::validate_query`] before execution when the
-//!    application must inspect whether supported physical-plan candidates
-//!    produce a GPU-only, mixed, or DataFusion plan.
+//!
+//! Strict production policy can enforce that no DataFusion CPU execution
+//! remains in the final physical plan by configuring
+//! [`planner::NexusNativeOptimizerConfig::with_no_datafusion_cpu_requirement`].
+//!
+//! Optional query diagnostic coverage can be inspected ahead of execution via
+//! [`gpu_coverage::validate_query`], which clones planning state and performs
+//! an isolated planning-only pass without beginning an execution attempt or
+//! acquiring admission.
 //!
 //! ```no_run
 //! use std::time::Duration;
@@ -19,7 +25,6 @@
 //! use datafusion_nexus::{
 //!     attempt::AttemptOptions,
 //!     backend::{GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile},
-//!     gpu_coverage::validate_query,
 //! };
 //! use futures::TryStreamExt;
 //!
@@ -31,14 +36,12 @@
 //! let state = backend.install_on(SessionStateBuilder::new_with_default_features())?.build();
 //! let ctx = SessionContext::new_with_state(state);
 //!
-//! let _coverage = validate_query(&ctx, "SELECT 1 AS value").await?;
 //! let attempt = backend.begin_attempt(AttemptOptions::default())?;
+//! let completion = attempt.completion();
 //! let stream = attempt.sql(&ctx, "SELECT 1 AS value").await?;
-//! let completion = stream.completion();
 //! let _batches = stream.try_collect::<Vec<_>>().await?;
 //! let _report = completion.await;
 //!
-//! drop(ctx);
 //! backend.close_and_wait(Duration::from_secs(10))?;
 //! # Ok(())
 //! # }
@@ -57,6 +60,9 @@
 //! [`report`], and [`session_config`].
 
 pub mod attempt;
+#[cfg(feature = "server-internal")]
+#[doc(hidden)]
+pub use attempt::server_internal;
 pub mod backend;
 pub mod capability;
 pub mod cugraph_sql;

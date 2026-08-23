@@ -39,6 +39,17 @@ use crate::{
 };
 
 /// Process-scoped native GPU backend shared by one or more DataFusion sessions.
+///
+/// Cloning a backend yields another shared handle to the same backend generation,
+/// not an independent backend instance. When any clone signals close, all clones
+/// and installed sessions observe the same closing gate immediately.
+///
+/// Installed [`SessionState`] instances retain only a session capability that
+/// cannot extend GPU resource ownership. An idle [`datafusion::prelude::SessionContext`]
+/// does not hold an active lease and does not need to be dropped before closing the backend.
+/// Once closing begins, new attempts and admissions are rejected fail-closed, while
+/// in-flight work drains according to contract. Published attempt reports and observation
+/// snapshots remain readable after GPU resources have achieved quiescence.
 #[derive(Debug, Clone)]
 pub struct NexusGpuBackend {
     core: GpuBackendCore,
@@ -371,24 +382,38 @@ impl NexusGpuBackend {
         self.core.device_startup_records()
     }
 
-    /// Starts shutdown; queued attempts fail while in-flight work drains.
+    /// Non-blockingly signals backend shutdown.
+    ///
+    /// New attempt admissions are rejected immediately, while active attempts drain
+    /// cooperatively. Returns `true` if this call initiated the close, or `false`
+    /// if the backend was already closing or closed.
     pub fn close(&self) -> bool {
         self.core.close()
     }
 
-    /// Returns the current two-scope backend close state without initiating a
-    /// close. Callers that own shutdown evidence can therefore distinguish a
-    /// completed close from a timeout or cleanup failure.
+    /// Returns the current two-scope backend close state without altering state or
+    /// initiating a close.
+    ///
+    /// Callers that track shutdown progression can inspect whether GPU resources
+    /// and observation records have quiesced without mutating the closing gate.
     pub fn close_snapshot(&self) -> GpuBackendCloseSnapshot {
         self.core.close_snapshot()
     }
 
+    /// Canonical shutdown path for embedded and process owners.
+    ///
+    /// Initiates backend shutdown and blocks until both GPU resources and observation
+    /// records achieve quiescence, or until `timeout` elapses.
     pub fn close_and_wait(&self, timeout: Duration) -> Result<GpuBackendCloseSnapshot> {
         self.core.close_and_wait(timeout).map_err(|error| {
             Error::from_native("datafusion_nexus.backend.close", "failed to close GPU backend before timeout", error)
         })
     }
 
+    /// Shutdown path for callers that already hold a shared absolute deadline.
+    ///
+    /// Initiates backend shutdown and blocks until quiescence or until `deadline`
+    /// is reached in the monotonic clock domain.
     pub fn close_and_wait_until(&self, deadline: std::time::Instant) -> Result<GpuBackendCloseSnapshot> {
         self.core.close_and_wait_until(deadline).map_err(|error| {
             Error::from_native("datafusion_nexus.backend.close", "failed to close GPU backend before deadline", error)

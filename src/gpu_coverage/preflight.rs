@@ -32,10 +32,10 @@ use crate::{
 pub(super) struct ValidationOptimizerConfig {
     pub(super) optimizer_config_source: &'static str,
     /// The exact caller-installed rule configuration copied into validation.
-    pub(super) optimizer_config: Option<NexusNativeOptimizerConfig>,
+    pub(super) optimizer_config: NexusNativeOptimizerConfig,
     /// The copied rule configuration after the cloned session's DataFusion
     /// options have been applied.
-    pub(super) effective_optimizer_config: Option<NexusNativeOptimizerConfig>,
+    pub(super) effective_optimizer_config: NexusNativeOptimizerConfig,
 }
 
 #[derive(Debug)]
@@ -84,60 +84,54 @@ impl QueryGpuRejection {
 }
 
 pub(super) fn optimizer_config_for_validation(state: &SessionState) -> crate::error::Result<ValidationOptimizerConfig> {
-    let (optimizer_config_source, optimizer_config, effective_optimizer_config) =
-        match installed_nexus_native_optimizer_config(state) {
-            Some(config) => {
-                let effective_config =
-                    config.with_datafusion_config_options(state.config_options()).map_err(|error| {
-                        Error::new(
-                            ErrorCode::DataFusionPlanning,
-                            "datafusion_nexus.gpu_coverage.validation_config",
-                            "failed to apply the cloned session's datafusion-nexus options for GPU coverage validation",
-                        )
-                        .with_source(error)
-                    })?;
-                ("installed_session_rule", Some(config), Some(effective_config))
-            },
-            None => ("native_rule_absent", None, None),
-        };
-    Ok(ValidationOptimizerConfig { optimizer_config_source, optimizer_config, effective_optimizer_config })
+    let config = match installed_nexus_native_optimizer_config(state) {
+        Some(config) => config,
+        None => {
+            return Err(Error::new(
+                ErrorCode::InvalidRequest,
+                "datafusion_nexus.gpu_coverage.validation_config",
+                "native optimizer rule is not installed on the validation session; install it via NexusGpuBackend::install_on or NexusSessionStateBuilderExt::with_nexus_native",
+            )
+            .with_fact("reason", "native_optimizer_rule_not_installed"));
+        },
+    };
+    let effective_config = config.with_datafusion_config_options(state.config_options()).map_err(|error| {
+        Error::new(
+            ErrorCode::DataFusionPlanning,
+            "datafusion_nexus.gpu_coverage.validation_config",
+            "failed to apply the cloned session's datafusion-nexus options for GPU coverage validation",
+        )
+        .with_source(error)
+    })?;
+    Ok(ValidationOptimizerConfig {
+        optimizer_config_source: "installed_session_rule",
+        optimizer_config: config,
+        effective_optimizer_config: effective_config,
+    })
 }
 
 pub(super) fn validated_under(state: &SessionState, config: &ValidationOptimizerConfig) -> QueryGpuValidatedUnder {
     let rules = state.physical_optimizers();
     let rule_names = rules.iter().map(|rule| rule.name()).collect::<Vec<_>>().join(",");
-    let optimizer_fingerprint_input = match &config.effective_optimizer_config {
-        Some(optimizer_config) => {
-            // The native execution config holds request-scoped IDs, service
-            // handles, cancellation state, and caches. Those values must not
-            // turn the plan-time configuration fingerprint into a per-call
-            // nonce. Project only the stable session/planner options that
-            // affect validation and lowering.
-            let session_options = DataFusionNexusSessionConfig::from_optimizer_config(optimizer_config);
-            format!(
-                "native_optimizer_rule=installed;{rule_names};session_options={session_options:?};native_optimizer_options={:?};native_plan_cost_options={:?};final_plan_requirements={:?}",
-                optimizer_config.native_optimizer_options(),
-                optimizer_config.native_plan_cost_options(),
-                optimizer_config.final_plan_requirements(),
-            )
-        },
-        None => format!("native_optimizer_rule=absent;{rule_names}"),
-    };
-    let final_plan_requirements = config
-        .effective_optimizer_config
-        .as_ref()
-        .map(|optimizer_config| {
-            optimizer_config
-                .final_plan_requirements()
-                .iter()
-                .map(|requirement| requirement.as_str().to_string())
-                .collect()
-        })
-        .unwrap_or_default();
+    let optimizer_config = &config.effective_optimizer_config;
+    // The native execution config holds request-scoped IDs, service
+    // handles, cancellation state, and caches. Those values must not
+    // turn the plan-time configuration fingerprint into a per-call
+    // nonce. Project only the stable session/planner options that
+    // affect validation and lowering.
+    let session_options = DataFusionNexusSessionConfig::from_optimizer_config(optimizer_config);
+    let optimizer_fingerprint_input = format!(
+        "native_optimizer_rule=installed;{rule_names};session_options={session_options:?};native_optimizer_options={:?};native_plan_cost_options={:?};final_plan_requirements={:?}",
+        optimizer_config.native_optimizer_options(),
+        optimizer_config.native_plan_cost_options(),
+        optimizer_config.final_plan_requirements(),
+    );
+    let final_plan_requirements =
+        optimizer_config.final_plan_requirements().iter().map(|requirement| requirement.as_str().to_string()).collect();
     QueryGpuValidatedUnder {
         optimizer_config_source: config.optimizer_config_source.to_string(),
-        native_optimizer_rule_installed: config.optimizer_config.is_some(),
-        execution_mode: config.effective_optimizer_config.as_ref().map(|_| "bounded".to_string()),
+        native_optimizer_rule_installed: true,
+        execution_mode: Some("bounded".to_string()),
         final_plan_requirements,
         session_config_fingerprint: fingerprint_session_config(state.config_options()),
         optimizer_fingerprint: fingerprint_debug(&optimizer_fingerprint_input),
