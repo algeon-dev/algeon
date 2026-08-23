@@ -79,13 +79,13 @@ pure relational session.
 ```rust
 use datafusion::execution::SessionStateBuilder;
 use datafusion_nexus::{
-    backend::{GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile},
+    backend::{GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceProfile},
     cugraph_sql::CugraphSqlConfig,
 };
 
+let device = NexusGpuDeviceConfig::new(NexusGpuDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive);
 let backend = NexusGpuBackend::builder()
-    .device_profiles([NexusGpuDeviceProfile::new(0)])
-    .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+    .devices([device])
     .build()?;
 
 let state = backend

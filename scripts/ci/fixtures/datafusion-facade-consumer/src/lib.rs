@@ -4,17 +4,15 @@ use datafusion_nexus::{
     attempt::{
         AttemptOptions, NexusAttempt, QueryAttemptReport, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
     },
-    backend::{GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile},
+    backend::{GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceProfile},
     error::{Error, ErrorCode, ErrorStatus, Result},
     observability::{BackendMetricsSnapshot, backend_metric_descriptors},
     report::PlanningReport,
 };
 
 pub fn backend_contract() -> Result<NexusGpuBackend> {
-    NexusGpuBackend::builder()
-        .device_profiles([NexusGpuDeviceProfile::new(0)])
-        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
-        .build()
+    let device = NexusGpuDeviceConfig::new(NexusGpuDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive);
+    NexusGpuBackend::builder().devices([device]).build()
 }
 
 pub fn attempt_contract(backend: &NexusGpuBackend, options: AttemptOptions) -> Result<NexusAttempt> {

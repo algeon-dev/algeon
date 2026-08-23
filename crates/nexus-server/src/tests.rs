@@ -7,7 +7,9 @@ use datafusion::execution::SessionStateBuilder;
 
 use super::*;
 use crate::{
-    backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuDeviceProfile, NexusGpuQueuePolicy},
+    backend::{
+        GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuDeviceConfig, NexusGpuDeviceProfile, NexusGpuQueuePolicy,
+    },
     native_exec::{NexusNativeExecutionConfig, ServerInternalNativeMetricsCapture as NativeMetricsCapture},
     planner::NexusNativeOptimizerConfig,
 };
@@ -77,25 +79,28 @@ fn strict_runtime_backend(max_active_attempts_per_device: usize) -> NexusGpuBack
 }
 
 fn runtime_backend_with_policy(max_active_attempts_per_device: usize, strict: bool) -> NexusGpuBackend {
+    let profile = NexusGpuDeviceProfile::new(0)
+        .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES })
+        .with_max_active_attempts(max_active_attempts_per_device);
     let builder = NexusGpuBackend::builder()
-        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+        .devices([NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive)])
         .with_native_execution_config(NexusNativeExecutionConfig::bounded(
             TEST_DEVICE_BUDGET_BYTES,
             TEST_MAX_SOURCE_CHUNK_BYTES,
             TEST_MAX_ROW_GROUPS_PER_CHUNK,
             TEST_MAX_RETRY_ATTEMPTS,
             TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
-        ))
-        .device_profiles([NexusGpuDeviceProfile::new(0)
-            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES })
-            .with_max_active_attempts(max_active_attempts_per_device)]);
+        ));
     let builder = if strict { builder.with_no_datafusion_cpu_requirement() } else { builder };
     builder.build().expect("runtime backend should build")
 }
 
 fn validation_projection(max_active_attempts_per_device: usize) -> crate::backend::TestBackendValidationProjection {
+    let profile = NexusGpuDeviceProfile::new(0)
+        .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES })
+        .with_max_active_attempts(max_active_attempts_per_device);
     NexusGpuBackend::builder()
-        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+        .devices([NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive)])
         .with_native_execution_config(NexusNativeExecutionConfig::bounded(
             TEST_DEVICE_BUDGET_BYTES,
             TEST_MAX_SOURCE_CHUNK_BYTES,
@@ -103,9 +108,6 @@ fn validation_projection(max_active_attempts_per_device: usize) -> crate::backen
             TEST_MAX_RETRY_ATTEMPTS,
             TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
         ))
-        .device_profiles([NexusGpuDeviceProfile::new(0)
-            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES })
-            .with_max_active_attempts(max_active_attempts_per_device)])
         .build_test_validation_projection()
         .expect("CUDA-free backend validation projection should build")
 }
@@ -398,8 +400,11 @@ fn builder_rejects_injected_backend_per_device_limit_conflict() {
 
 #[test]
 fn builder_accepts_matching_explicit_per_device_cap() {
+    let profile = NexusGpuDeviceProfile::new(0)
+        .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES })
+        .with_max_active_attempts(1);
     let backend = NexusGpuBackend::builder()
-        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+        .devices([NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive)])
         .with_native_execution_config(NexusNativeExecutionConfig::bounded(
             TEST_DEVICE_BUDGET_BYTES,
             TEST_MAX_SOURCE_CHUNK_BYTES,
@@ -407,9 +412,6 @@ fn builder_accepts_matching_explicit_per_device_cap() {
             TEST_MAX_RETRY_ATTEMPTS,
             TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
         ))
-        .device_profiles([NexusGpuDeviceProfile::new(0)
-            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES })
-            .with_max_active_attempts(1)])
         .build_test_validation_projection()
         .expect("CUDA-free backend validation projection should build");
     let config = bounded_config(1);

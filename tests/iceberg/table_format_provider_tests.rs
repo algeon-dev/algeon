@@ -38,7 +38,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 #[cfg(feature = "cuvs")]
-use datafusion_nexus::backend::{GpuMemoryOwnership, NexusGpuBackend};
+use datafusion_nexus::backend::{GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig};
 #[cfg(feature = "cuvs")]
 use datafusion_nexus::error::DataFusionErrorExt;
 use datafusion_nexus::{

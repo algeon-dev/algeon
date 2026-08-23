@@ -17,7 +17,7 @@ use super::{
 #[cfg(feature = "iceberg")]
 use crate::table_format::scan::{DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID, credential_free_endpoint_identity};
 use crate::{
-    backend::{GpuMemoryOwnership, NexusGpuDeviceProfile, NexusGpuQueuePolicy},
+    backend::{GpuMemoryOwnership, NexusGpuDeviceConfig, NexusGpuDeviceProfile, NexusGpuQueuePolicy},
     cugraph_sql::{CugraphGraphConstructionPolicy, CugraphGraphOptions},
     native_exec::NexusNativeExecutionConfig,
     planner::NexusNativeOptimizerConfig,
@@ -274,6 +274,52 @@ impl ServerConfig {
             .with_fact("device_ordinals", format_device_ordinals(&extra)));
         }
         Ok(())
+    }
+
+    pub(crate) fn resolve_gpu_devices(&self) -> Result<Vec<NexusGpuDeviceConfig>> {
+        self.validate_gpu_device_profiles()?;
+
+        let selected = self.gpu_devices.iter().copied().collect::<std::collections::BTreeSet<_>>();
+        let mut declared = std::collections::BTreeMap::new();
+        for (ordinal, ownership) in self.gpu_memory_ownership.iter().copied() {
+            if declared.insert(ordinal, ownership).is_some() {
+                return Err(ServerError::invalid_config(
+                    "gpu_memory_ownership",
+                    format!("contains duplicate GPU memory ownership declaration for device ordinal {ordinal}"),
+                )
+                .with_fact("reason", "duplicate_device")
+                .with_fact("device_ordinal", ordinal));
+            }
+        }
+        let declared_ordinals = declared.keys().copied().collect::<std::collections::BTreeSet<_>>();
+        let missing = selected.difference(&declared_ordinals).copied().collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(ServerError::invalid_config(
+                "gpu_memory_ownership",
+                "must declare GPU memory ownership for every selected device",
+            )
+            .with_fact("reason", "missing_devices")
+            .with_fact("device_ordinals", format_device_ordinals(&missing)));
+        }
+        let extra = declared_ordinals.difference(&selected).copied().collect::<Vec<_>>();
+        if !extra.is_empty() {
+            return Err(ServerError::invalid_config(
+                "gpu_memory_ownership",
+                "must not declare GPU memory ownership for an unselected device",
+            )
+            .with_fact("reason", "extra_devices")
+            .with_fact("device_ordinals", format_device_ordinals(&extra)));
+        }
+
+        let devices = self
+            .gpu_device_profiles
+            .iter()
+            .map(|profile| {
+                let ownership = declared[&profile.device_ordinal()];
+                NexusGpuDeviceConfig::new(profile.clone(), ownership)
+            })
+            .collect();
+        Ok(devices)
     }
 }
 

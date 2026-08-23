@@ -32,7 +32,10 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile, NexusGpuQueuePolicy},
+    backend::{
+        GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceProfile,
+        NexusGpuQueuePolicy,
+    },
     cugraph_sql::CugraphSqlConfig,
     native_exec::NexusNativeExecutionConfig,
     native_report::NativeDataFusionExecutionMetrics,
@@ -133,16 +136,12 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
     let profiler_active = Arc::new(AtomicBool::new(false));
     let profiler_error = Arc::new(Mutex::new(None::<String>));
     let run_started = Instant::now();
-    if config.uses_phased_execution() {
-        backend.set_cugraph_bfs_singleflight_enabled(false);
-    }
     let mut tasks = Vec::with_capacity(workers.len());
     for (request, ctx) in workers {
         let barrier = Arc::clone(&barrier);
         let profiler_active = Arc::clone(&profiler_active);
         let profiler_error = Arc::clone(&profiler_error);
         let config = config.clone();
-        let worker_backend = backend.clone();
         tasks.push(tokio::spawn(async move {
             barrier.wait().await;
             if config.stagger_ms > 0 && request.task_index > 0 {
@@ -165,16 +164,13 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
                 warmup.push(run_one(&config, &ctx, &request, iteration).await);
             }
 
-            if barrier.wait().await.is_leader() {
-                worker_backend.set_cugraph_bfs_singleflight_enabled(true);
-                if config.cuda_profiler_capture {
-                    match cudf::runtime::cuda_profiler_start() {
-                        Ok(()) => profiler_active.store(true, Ordering::SeqCst),
-                        Err(error) => {
-                            *profiler_error.lock().unwrap() =
-                                Some(format!("failed to start CUDA profiler capture: {error}"));
-                        },
-                    }
+            if barrier.wait().await.is_leader() && config.cuda_profiler_capture {
+                match cudf::runtime::cuda_profiler_start() {
+                    Ok(()) => profiler_active.store(true, Ordering::SeqCst),
+                    Err(error) => {
+                        *profiler_error.lock().unwrap() =
+                            Some(format!("failed to start CUDA profiler capture: {error}"));
+                    },
                 }
             }
             barrier.wait().await;
@@ -217,7 +213,6 @@ pub async fn run() -> Result<(), Box<dyn Error>> {
 
     stop_flag.store(true, Ordering::SeqCst);
     let _ = sampler_handle.join();
-    backend.set_cugraph_bfs_singleflight_enabled(true);
 
     let effective_active_max = backend.gpu_execution_query_report().unwrap().peak_active_query_jobs;
     let bfs_singleflight = backend.cugraph_bfs_singleflight_snapshot();
@@ -261,18 +256,17 @@ fn build_backend(config: &HarnessConfig) -> Result<NexusGpuBackend, Box<dyn Erro
         },
     };
     let admission = NexusGpuQueuePolicy::default().with_max_queue_wait(Duration::from_millis(config.max_queue_wait_ms));
+    let devices = config.device_ordinals.iter().copied().map(|ordinal| {
+        let profile = NexusGpuDeviceProfile::new(ordinal)
+            .with_memory_limit(memory_limit)
+            .with_attempt_floor_bytes(config.attempt_floor_bytes)
+            .with_max_active_attempts(config.max_active_attempts_per_device);
+        NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive)
+    });
     let builder = NexusGpuBackend::builder()
-        .device_memory_ownership(
-            config.device_ordinals.iter().copied().map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive)),
-        )
+        .devices(devices)
         .with_native_execution_config(execution_config)
-        .queue_policy(admission)
-        .device_profiles(config.device_ordinals.iter().copied().map(|ordinal| {
-            NexusGpuDeviceProfile::new(ordinal)
-                .with_memory_limit(memory_limit)
-                .with_attempt_floor_bytes(config.attempt_floor_bytes)
-                .with_max_active_attempts(config.max_active_attempts_per_device)
-        }));
+        .queue_policy(admission);
     Ok(builder.build()?)
 }
 

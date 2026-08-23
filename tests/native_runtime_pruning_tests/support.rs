@@ -65,6 +65,10 @@ fn pruning_test_backend() -> &'static NexusGpuBackend {
     static BACKEND: std::sync::OnceLock<NexusGpuBackend> = std::sync::OnceLock::new();
 
     BACKEND.get_or_init(|| {
+        let profile = NexusGpuDeviceProfile::new(0)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES })
+            .with_attempt_floor_bytes(Some(1));
+        let device = NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
         NexusGpuBackend::builder()
             .with_native_execution_config(NexusNativeExecutionConfig::bounded(
                 TEST_DEVICE_BUDGET_BYTES,
@@ -73,10 +77,7 @@ fn pruning_test_backend() -> &'static NexusGpuBackend {
                 3,
                 1,
             ))
-            .device_profiles([NexusGpuDeviceProfile::new(0)
-                .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES })
-                .with_attempt_floor_bytes(Some(1))])
-            .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+            .devices([device])
             .queue_policy(NexusGpuQueuePolicy::default())
             .build()
             .expect("pruning test backend must initialize")

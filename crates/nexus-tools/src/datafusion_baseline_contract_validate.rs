@@ -36,7 +36,10 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile, NexusGpuQueuePolicy},
+    backend::{
+        GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceProfile,
+        NexusGpuQueuePolicy,
+    },
     error::{DataFusionErrorExt, ErrorCode},
     native_exec::NexusNativeExecutionConfig,
     native_report::{FinalPlanDisposition, NativeDataFusionPlanningReport},
@@ -1184,13 +1187,14 @@ impl TableFormatPlanner for FixedPlanner {
 }
 
 fn build_backend(attempt_floor_bytes: u64) -> ToolResult<NexusGpuBackend> {
+    let profile = NexusGpuDeviceProfile::new(0)
+        .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })
+        .with_attempt_floor_bytes(Some(attempt_floor_bytes));
+    let device = NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
     Ok(NexusGpuBackend::builder()
-        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
         .with_native_execution_config(NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1))
         .queue_policy(NexusGpuQueuePolicy::default())
-        .device_profiles([NexusGpuDeviceProfile::new(0)
-            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })
-            .with_attempt_floor_bytes(Some(attempt_floor_bytes))])
+        .devices([device])
         .build()?)
 }
 

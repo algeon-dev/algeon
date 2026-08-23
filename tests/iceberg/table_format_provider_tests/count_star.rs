@@ -152,6 +152,9 @@ async fn iceberg_provider_count_star_fallback_executes_with_mixed_row_count_meta
     assert_eq!(fallback_source.projected_output_columns, Vec::<String>::new());
     assert_eq!(fallback_source.pure_filter_columns, vec!["id".to_string()]);
 
+    let profile = NexusGpuDeviceProfile::new(0)
+        .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 512 * 1024 * 1024 });
+    let device = NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
     let backend = datafusion_nexus::backend::NexusGpuBackend::builder()
         .with_native_execution_config(NexusNativeExecutionConfig::bounded(
             512 * 1024 * 1024,
@@ -160,9 +163,7 @@ async fn iceberg_provider_count_star_fallback_executes_with_mixed_row_count_meta
             3,
             1,
         ))
-        .device_profiles([NexusGpuDeviceProfile::new(0)
-            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 512 * 1024 * 1024 })])
-        .device_memory_ownership([(0, datafusion_nexus::backend::GpuMemoryOwnership::WholeDeviceExclusive)])
+        .devices([device])
         .build()
         .unwrap();
     let proof = QueryPlanCapabilityProof::for_query_plan(&result.plans[0]).expect("COUNT(*) plan must issue a proof");

@@ -1,4 +1,5 @@
 use datafusion::{common::config::ExtensionOptions, execution::SessionStateBuilder, prelude::SessionConfig};
+use nexus_query_engine::{optimizer::NativeOptimizerOptions, plan::NativePlanCostOptions};
 
 use super::*;
 use crate::{
@@ -7,19 +8,13 @@ use crate::{
 };
 
 fn backend_builder(device_ordinals: &[usize]) -> NexusGpuBackendBuilder {
-    NexusGpuBackend::builder().device_memory_ownership(
-        device_ordinals.iter().copied().map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive)),
-    )
-}
-
-fn explicit_profiles(device_ordinals: &[usize], limit_bytes: u64) -> Vec<NexusGpuDeviceProfile> {
-    device_ordinals
-        .iter()
-        .copied()
-        .map(|ordinal| {
-            NexusGpuDeviceProfile::new(ordinal).with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes })
-        })
-        .collect()
+    let devices = device_ordinals.iter().copied().map(|ordinal| {
+        NexusGpuDeviceConfig::new(
+            NexusGpuDeviceProfile::new(ordinal).with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 }),
+            GpuMemoryOwnership::WholeDeviceExclusive,
+        )
+    });
+    NexusGpuBackend::builder().devices(devices)
 }
 
 fn bounded_execution_config(device_budget_bytes: u64) -> NexusNativeExecutionConfig {
@@ -27,89 +22,108 @@ fn bounded_execution_config(device_budget_bytes: u64) -> NexusNativeExecutionCon
 }
 
 fn bounded_backend_builder(device_ordinals: &[usize]) -> NexusGpuBackendBuilder {
-    backend_builder(device_ordinals)
-        .with_native_execution_config(bounded_execution_config(1024))
-        .device_profiles(explicit_profiles(device_ordinals, 4096))
+    backend_builder(device_ordinals).with_native_execution_config(bounded_execution_config(1024))
 }
 
 #[test]
-fn backend_requires_an_exact_device_ownership_declaration_before_engine_build() {
-    let missing = NexusGpuBackend::builder().device_profiles(explicit_profiles(&[0], 4096)).build().unwrap_err();
+fn backend_rejects_empty_devices_declaration() {
+    let missing = NexusGpuBackend::builder().devices([]).build_test_validation_projection().unwrap_err();
     assert_eq!(missing.code(), ErrorCode::InvalidRequest);
-    assert_eq!(missing.fact_value("field"), Some("device_memory_ownership"));
+    assert_eq!(missing.fact_value("field"), Some("devices"));
     assert_eq!(missing.fact_value("reason"), Some("missing_devices"));
+}
 
-    let extra = NexusGpuBackend::builder()
-        .device_profiles(explicit_profiles(&[0], 4096))
-        .device_memory_ownership([
-            (0, GpuMemoryOwnership::WholeDeviceExclusive),
-            (1, GpuMemoryOwnership::WholeDeviceExclusive),
-        ])
-        .build()
-        .unwrap_err();
-    assert_eq!(extra.fact_value("reason"), Some("extra_devices"));
-
+#[test]
+fn backend_rejects_duplicate_devices_declaration() {
     let duplicate = NexusGpuBackend::builder()
-        .device_profiles(explicit_profiles(&[0], 4096))
-        .device_memory_ownership([
-            (0, GpuMemoryOwnership::WholeDeviceExclusive),
-            (0, GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 1 }),
+        .devices([
+            NexusGpuDeviceConfig::new(
+                NexusGpuDeviceProfile::new(0).with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 }),
+                GpuMemoryOwnership::WholeDeviceExclusive,
+            ),
+            NexusGpuDeviceConfig::new(
+                NexusGpuDeviceProfile::new(0).with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 }),
+                GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 1 },
+            ),
         ])
-        .build()
+        .build_test_validation_projection()
         .unwrap_err();
+    assert_eq!(duplicate.code(), ErrorCode::InvalidRequest);
+    assert_eq!(duplicate.fact_value("field"), Some("devices"));
     assert_eq!(duplicate.fact_value("reason"), Some("duplicate_device"));
+    assert_eq!(duplicate.fact_value("device_ordinal"), Some("0"));
 }
 
 #[test]
-fn backend_exact_ownership_validation_preserves_static_partitions() {
-    let validated = validate_device_memory_ownership(
-        &[0, 2],
-        &[
-            (2, GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 8 * 1024 }),
-            (0, GpuMemoryOwnership::WholeDeviceExclusive),
-        ],
-    )
-    .unwrap();
-    assert_eq!(validated[&0], GpuMemoryOwnership::WholeDeviceExclusive);
-    assert_eq!(validated[&2], GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 8 * 1024 });
+fn backend_device_config_preserves_static_partitions_and_installation_bounds() {
+    let devices = [
+        NexusGpuDeviceConfig::new(
+            NexusGpuDeviceProfile::new(0)
+                .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 })
+                .with_installation_bounds(NexusGpuDeviceInstallationBounds::new(4, 2, 2)),
+            GpuMemoryOwnership::WholeDeviceExclusive,
+        ),
+        NexusGpuDeviceConfig::new(
+            NexusGpuDeviceProfile::new(2)
+                .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 8192 })
+                .with_installation_bounds(NexusGpuDeviceInstallationBounds::new(2, 1, 1)),
+            GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 8 * 1024 },
+        ),
+    ];
+    let backend = NexusGpuBackend::builder().devices(devices.clone()).build_test_validation_projection().unwrap();
+    assert_eq!(backend.devices(), &devices);
+    assert_eq!(backend.devices()[0].memory_ownership(), GpuMemoryOwnership::WholeDeviceExclusive);
+    assert_eq!(
+        backend.devices()[1].memory_ownership(),
+        GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 8 * 1024 }
+    );
+    assert_eq!(
+        backend.devices()[0].profile().installation_bounds(),
+        Some(NexusGpuDeviceInstallationBounds::new(4, 2, 2))
+    );
+    assert_eq!(
+        backend.devices()[1].profile().installation_bounds(),
+        Some(NexusGpuDeviceInstallationBounds::new(2, 1, 1))
+    );
 }
 
 #[test]
-fn backend_validation_projection_keeps_device_profiles_independent() {
-    let profiles = vec![
-        NexusGpuDeviceProfile::new(0)
-            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 })
-            .with_attempt_floor_bytes(Some(512))
-            .with_source_work_per_attempt(1)
-            .with_max_active_attempts(2)
-            .with_installation_bounds(4, 2, 2)
-            .with_telemetry(false),
-        NexusGpuDeviceProfile::new(1)
-            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 8192 })
-            .with_backend_reserve_bytes(256)
-            .with_attempt_floor_bytes(Some(1024))
-            .with_source_work_per_attempt(3)
-            .with_max_active_attempts(1)
-            .with_installation_bounds(4, 1, 1),
+fn backend_validation_projection_keeps_device_configs_independent() {
+    let devices = vec![
+        NexusGpuDeviceConfig::new(
+            NexusGpuDeviceProfile::new(0)
+                .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 })
+                .with_attempt_floor_bytes(Some(512))
+                .with_source_work_per_attempt(1)
+                .with_max_active_attempts(2)
+                .with_installation_bounds(NexusGpuDeviceInstallationBounds::new(4, 2, 2))
+                .with_telemetry(false),
+            GpuMemoryOwnership::WholeDeviceExclusive,
+        ),
+        NexusGpuDeviceConfig::new(
+            NexusGpuDeviceProfile::new(1)
+                .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 8192 })
+                .with_backend_reserve_bytes(256)
+                .with_attempt_floor_bytes(Some(1024))
+                .with_source_work_per_attempt(3)
+                .with_max_active_attempts(1)
+                .with_installation_bounds(NexusGpuDeviceInstallationBounds::new(4, 1, 1)),
+            GpuMemoryOwnership::WholeDeviceExclusive,
+        ),
     ];
     let policy = NexusGpuQueuePolicy::default().with_max_queued_attempts(8);
     let backend = NexusGpuBackend::builder()
-        .device_memory_ownership([
-            (0, GpuMemoryOwnership::WholeDeviceExclusive),
-            (1, GpuMemoryOwnership::WholeDeviceExclusive),
-        ])
         .with_native_execution_config(bounded_execution_config(1024))
-        .device_profiles(profiles.clone())
+        .devices(devices.clone())
         .queue_policy(policy.clone())
         .build_test_validation_projection()
         .unwrap();
 
     assert_eq!(backend.queue_policy().max_queued_attempts(), 8);
-    assert_eq!(backend.device_ordinals(), &[0, 1]);
-    assert_eq!(backend.device_profiles(), profiles.as_slice());
+    assert_eq!(backend.devices(), devices.as_slice());
     // Validation preserves the configured envelopes but does not resolve a
     // runtime floor or manufacture a grant.
-    assert_eq!(backend.device_profiles()[0].attempt_floor_bytes(), Some(512));
+    assert_eq!(backend.devices()[0].profile().attempt_floor_bytes(), Some(512));
     assert_eq!(
         backend.optimizer_config().native_execution_config().memory_control_policy(),
         MemoryControlPolicy::Bounded {
@@ -126,7 +140,7 @@ fn backend_validation_projection_keeps_device_profiles_independent() {
 fn backend_queue_policy_defaults_to_canonical_bounds() {
     let backend = bounded_backend_builder(&[0, 1]).build_test_validation_projection().unwrap();
     assert_eq!(backend.queue_policy(), &NexusGpuQueuePolicy::default());
-    assert!(backend.device_profiles().iter().all(|profile| profile.max_active_attempts() == 1));
+    assert!(backend.devices().iter().all(|device| device.profile().max_active_attempts() == 1));
 }
 
 #[test]
@@ -149,7 +163,7 @@ fn backend_profile_projection_preserves_each_ordinal_local_envelope() {
         .with_attempt_floor_bytes(Some(512))
         .with_source_work_per_attempt(2)
         .with_max_active_attempts(2)
-        .with_installation_bounds(6, 2, 2)
+        .with_installation_bounds(NexusGpuDeviceInstallationBounds::new(6, 2, 2))
         .with_device_capabilities(capabilities.clone())
         .with_telemetry(false)
         .engine_config_for_test(GpuMemoryOwnership::WholeDeviceExclusive);
@@ -159,7 +173,7 @@ fn backend_profile_projection_preserves_each_ordinal_local_envelope() {
         .with_attempt_floor_bytes(Some(1024))
         .with_source_work_per_attempt(1)
         .with_max_active_attempts(1)
-        .with_installation_bounds(2, 1, 1)
+        .with_installation_bounds(NexusGpuDeviceInstallationBounds::new(2, 1, 1))
         .with_telemetry(true)
         .engine_config_for_test(GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: 8192 });
 
@@ -197,14 +211,19 @@ fn backend_rejects_invalid_queue_policy_bounds() {
 
 #[test]
 fn backend_validation_preserves_explicit_floor_on_each_device_profile() {
-    let backend = backend_builder(&[0])
+    let device = NexusGpuDeviceConfig::new(
+        NexusGpuDeviceProfile::new(0)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 100 })
+            .with_max_active_attempts(1)
+            .with_attempt_floor_bytes(Some(60)),
+        GpuMemoryOwnership::WholeDeviceExclusive,
+    );
+    let backend = NexusGpuBackend::builder()
         .with_native_execution_config(NexusNativeExecutionConfig::bounded(100, 64, 1, 1, 1))
-        .device_profiles(vec![
-            explicit_profiles(&[0], 100)[0].clone().with_max_active_attempts(1).with_attempt_floor_bytes(Some(60)),
-        ])
+        .devices([device])
         .build_test_validation_projection()
         .unwrap();
-    assert_eq!(backend.device_profiles()[0].attempt_floor_bytes(), Some(60));
+    assert_eq!(backend.devices()[0].profile().attempt_floor_bytes(), Some(60));
 }
 
 #[test]
@@ -226,26 +245,37 @@ fn installed_backend_resolves_explicit_floor_in_the_real_device_ledger() {
 }
 
 #[test]
-fn backend_requires_explicit_device_profiles() {
-    let error = NexusGpuBackend::builder()
-        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
-        .build_test_validation_projection()
-        .unwrap_err();
+fn backend_builder_preserves_full_optimizer_config_and_requirements() {
+    let native_execution_config = NexusNativeExecutionConfig::bounded(4096, 1024, 2, 4, 2);
+    let optimizer_options = NativeOptimizerOptions::disabled();
+    let cost_options = NativePlanCostOptions {
+        enabled: true,
+        max_small_selective_row_groups: 42,
+        ..NativePlanCostOptions::disabled()
+    };
+    let optimizer_config = NexusNativeOptimizerConfig::default()
+        .with_native_execution_config(native_execution_config.clone())
+        .with_native_optimizer_options(optimizer_options.clone())
+        .with_native_plan_cost_options(cost_options)
+        .with_final_plan_requirement(FinalPlanRequirement::NoDataFusionCpu);
 
-    assert_eq!(error.fact_value("field"), Some("device_profiles"));
-    assert_eq!(error.fact_value("reason"), Some("missing_device_profiles"));
-}
-
-#[test]
-fn backend_rejects_duplicate_device_profiles() {
-    let duplicate = NexusGpuBackend::builder()
-        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
-        .device_profiles(explicit_profiles(&[0, 0], 4096))
+    let device = NexusGpuDeviceConfig::new(
+        NexusGpuDeviceProfile::new(0).with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 }),
+        GpuMemoryOwnership::WholeDeviceExclusive,
+    );
+    let backend = NexusGpuBackend::builder()
+        .with_optimizer_config(optimizer_config)
+        .devices([device])
         .build_test_validation_projection()
-        .unwrap_err();
-    assert_eq!(duplicate.fact_value("field"), Some("device_profiles"));
-    assert_eq!(duplicate.fact_value("reason"), Some("duplicate_device"));
-    assert_eq!(duplicate.fact_value("device_ordinal"), Some("0"));
+        .unwrap();
+
+    assert_eq!(
+        backend.optimizer_config().native_execution_config().memory_control_policy(),
+        native_execution_config.memory_control_policy()
+    );
+    assert_eq!(backend.optimizer_config().final_plan_requirements(), &[FinalPlanRequirement::NoDataFusionCpu]);
+    assert_eq!(backend.optimizer_config().native_optimizer_options(), &optimizer_options);
+    assert_eq!(backend.optimizer_config().native_plan_cost_options(), &cost_options);
 }
 
 #[test]
