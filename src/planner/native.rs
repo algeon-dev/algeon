@@ -337,7 +337,7 @@ impl PhysicalOptimizerRule for NexusNativePhysicalOptimizerRule {
             physical_join_diagnostics(plan.as_ref());
 
         let attempt_extension = config.extensions.get::<NexusAttemptExtension>().cloned();
-        let effective_config = self.config.with_datafusion_config_options(config)?.with_query_id_if_absent(
+        let effective_config = self.config.clone().with_query_id_if_absent(
             attempt_extension
                 .as_ref()
                 .and_then(NexusAttemptExtension::query_id)

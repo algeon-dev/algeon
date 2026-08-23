@@ -54,7 +54,6 @@ pub struct NexusNativeExecutionConfig {
     pub(super) aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
     pub(super) source_chunk_planning_options: SourceChunkPlanningOptions,
     pub(super) graph_memory_calibration_override: GraphMemoryCalibrationOverride,
-    pub(super) graph_raw_input_edges_override_configured: bool,
     pub(super) source_storage_profiles: Vec<SourceStorageProfile>,
     pub(super) query_service_handle: Option<Arc<QueryHandle>>,
     pub(super) query_admission_facts_recorded: Option<Arc<AtomicBool>>,
@@ -150,7 +149,6 @@ impl NexusNativeExecutionConfig {
             aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
             source_chunk_planning_options: SourceChunkPlanningOptions::default(),
             graph_memory_calibration_override: GraphMemoryCalibrationOverride::default(),
-            graph_raw_input_edges_override_configured: false,
             source_storage_profiles: Vec::new(),
             query_service_handle: None,
             query_admission_facts_recorded: None,
@@ -371,13 +369,6 @@ impl NexusNativeExecutionConfig {
     /// Attach fixture/config metadata for graph memory calibration.
     pub fn with_graph_memory_calibration_override(mut self, override_: GraphMemoryCalibrationOverride) -> Self {
         self.graph_memory_calibration_override = override_;
-        self.graph_raw_input_edges_override_configured = true;
-        self
-    }
-
-    pub(crate) fn with_graph_raw_input_edges_override(mut self, raw_input_edges: Option<u64>) -> Self {
-        self.graph_memory_calibration_override.raw_input_edges = raw_input_edges;
-        self.graph_raw_input_edges_override_configured = true;
         self
     }
 
@@ -423,6 +414,35 @@ impl NexusNativeExecutionConfig {
     /// Boundary policy controlling source/build/probe/result residency.
     pub fn boundary_policy(&self) -> ExecutionBoundaryPolicy {
         self.boundary_policy
+    }
+
+    /// Maximum source bytes planned into one native bounded source chunk.
+    pub fn max_source_chunk_bytes(&self) -> u64 {
+        match self.memory_control_policy {
+            MemoryControlPolicy::Bounded { max_source_chunk_bytes, .. } => max_source_chunk_bytes,
+            MemoryControlPolicy::Unbounded => Self::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
+        }
+    }
+
+    /// Maximum source row groups planned into one native bounded source chunk.
+    pub fn max_row_groups_per_chunk(&self) -> usize {
+        match self.memory_control_policy {
+            MemoryControlPolicy::Bounded { max_row_groups_per_chunk, .. } => max_row_groups_per_chunk,
+            MemoryControlPolicy::Unbounded => Self::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,
+        }
+    }
+
+    /// Maximum bounded retry attempts.
+    pub fn max_retry_attempts(&self) -> usize {
+        match self.memory_control_policy {
+            MemoryControlPolicy::Bounded { max_retry_attempts, .. } => max_retry_attempts,
+            MemoryControlPolicy::Unbounded => Self::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS,
+        }
+    }
+
+    /// Maximum active native source reads allowed per bounded query.
+    pub fn max_source_reads_in_flight(&self) -> usize {
+        self.source_scheduler_policy.max_source_reads_in_flight()
     }
 
     /// Source scheduling policy used by bounded native source reads.

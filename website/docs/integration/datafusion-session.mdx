@@ -63,7 +63,7 @@ across every session and frontend instead of building another one.
 
 ## Add cuGraph SQL
 
-`install_on` installs the backend-bound native optimizer, Nexus session config,
+`install_on` installs the backend-bound native optimizer,
 GPU coverage UDTF, common GPU function catalog, and relation-aware cuVS
 planner/metadata family. It does not install cuGraph SQL. Install cuGraph
 through one of the two backend-managed paths so its functions inherit the same
@@ -161,15 +161,11 @@ stream is polled, and all native nodes in that attempt share the selected
 device and immutable grant. A full queue or expired wait returns structured
 `service_overloaded` backpressure.
 
-Backend-installed sessions freeze `datafusion_nexus.native.*` options because
-the shared backend owns that policy. Configure native execution with
-`with_native_execution_config(...)` before `build()`.
+Native execution policy is owned solely by the backend builder. Configure native execution with
+`with_native_execution_config(...)` on `NexusGpuBackend::builder()` before `build()`.
 
-The planner-evidence key `datafusion_nexus.request.graph_raw_input_edges`
-remains mutable and accepts a positive edge count or `none`. Set it on a
-request-local context before planning; do not mutate a shared session
-concurrently. The complete server/session key mapping is in
-[Configuration](./configuration.mdx#datafusion-and-nexus-session-keys).
+DataFusion sessions carry standard DataFusion configuration only; native execution policy
+and graph input bounds cannot be altered via SQL `SET` or session extensions.
 
 ## DataFusion fallback and GPU-only plans
 

@@ -1158,7 +1158,7 @@ fn normalized_graph_prices_the_distinct_retained_raw_source_rows() {
 }
 
 #[test]
-fn graph_memory_estimates_for_plan_can_use_configured_raw_edges_when_plan_rows_are_unknown() {
+fn graph_memory_estimates_for_plan_cannot_use_configured_raw_edges_when_plan_rows_are_unknown() {
     let source = LocalParquetSource::from_files(
         vec![LocalParquetFile::new("edges.parquet")],
         edge_schema(),
@@ -1168,12 +1168,7 @@ fn graph_memory_estimates_for_plan_can_use_configured_raw_edges_when_plan_rows_a
     let calibration = GraphMemoryCalibrationOverride::none().with_raw_input_edges(100);
 
     let estimates = graph_memory_estimates_for_plan(&plan, calibration, None).unwrap();
-
-    assert_eq!(estimates.len(), 1);
-    let estimate = &estimates[0].estimate;
-    assert_eq!(estimate.raw_input_edges, Some(100));
-    assert_eq!(estimate.input_edges, 200);
-    assert_eq!(estimate.calibration_source, GraphCalibrationSource::RawInputEdges);
+    assert!(estimates.is_empty());
 }
 
 #[test]

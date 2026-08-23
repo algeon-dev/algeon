@@ -1,17 +1,10 @@
 #[cfg(feature = "iceberg")]
 use std::path::PathBuf;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
+use datafusion_nexus::planner::FinalPlanRequirement;
 #[cfg(feature = "iceberg")]
 use datafusion_nexus::table_format::{self, TableFormatLakehouseCachePolicy};
-use datafusion_nexus::{
-    planner::FinalPlanRequirement,
-    session_config::{DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS, DataFusionNexusSessionConfig},
-};
 #[cfg(feature = "iceberg")]
 use nexus_query_engine::runtime::S3SourceStorageCredential;
 use nexus_query_engine::{mode::StatisticalAggregateExecutionMode, runtime::SourceChunkPlanningMode};

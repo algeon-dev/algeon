@@ -36,7 +36,6 @@ use datafusion_nexus::{
     native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec},
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     report::CandidateOutcome,
-    session_config::DataFusionNexusSessionConfig,
 };
 use exec_plans::*;
 use nexus_query_engine::{
@@ -127,19 +126,10 @@ fn native_exec_uses_bounded_memory_control_policy() {
 #[test]
 fn bounded_auto_sized_uses_bounded_defaults_and_prefetch_scheduler() {
     let config = NexusNativeExecutionConfig::bounded_default();
-    let projection = DataFusionNexusSessionConfig::from_optimizer_config(
-        &NexusNativeOptimizerConfig::default().with_native_execution_config(config.clone()),
-    );
 
-    assert_eq!(
-        projection.native_max_source_chunk_bytes(),
-        NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES
-    );
-    assert_eq!(
-        projection.native_max_row_groups_per_chunk(),
-        NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK
-    );
-    assert_eq!(projection.native_max_retry_attempts(), NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS);
+    assert_eq!(config.max_source_chunk_bytes(), NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES);
+    assert_eq!(config.max_row_groups_per_chunk(), NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK);
+    assert_eq!(config.max_retry_attempts(), NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS);
     assert_eq!(config.source_scheduler_policy().max_source_reads_in_flight(), 2);
     assert_eq!(config.source_chunk_planning_mode(), SourceChunkPlanningMode::Conservative);
     assert_eq!(config.lakehouse_cache_fill_config().acquire_timeout, LakehouseCacheFillConfig::DEFAULT_ACQUIRE_TIMEOUT);
@@ -180,7 +170,7 @@ fn bounded_auto_sized_uses_bounded_defaults_and_prefetch_scheduler() {
 fn optimizer_config_default_uses_bounded_native_execution() {
     let config = NexusNativeOptimizerConfig::default();
 
-    assert!(DataFusionNexusSessionConfig::from_optimizer_config(&config).native_max_source_chunk_bytes() > 0);
+    assert!(config.native_execution_config().max_source_chunk_bytes() > 0);
     assert_eq!(config.native_execution_config().source_scheduler_policy().max_source_reads_in_flight(), 2);
 }
 

@@ -653,9 +653,6 @@ pub(crate) async fn native_session_context(
     if let Some(profile) = resolve_default_chain_source_storage_profile(source_storage_profile).await? {
         execution_config = execution_config.with_source_storage_profile(profile);
     }
-    let execution_projection = datafusion_nexus::session_config::DataFusionNexusSessionConfig::from_optimizer_config(
-        &NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config.clone()),
-    );
     let MemoryControlPolicy::Bounded { device_budget_bytes, min_retry_chunk_row_groups, .. } =
         execution_config.memory_control_policy()
     else {
@@ -673,9 +670,9 @@ pub(crate) async fn native_session_context(
         aggregate_strategy_execution_options: execution_config.aggregate_strategy_execution_options(),
         source_chunk_planning_options: execution_config.source_chunk_planning_options(),
         graph_memory_calibration_override: execution_config.graph_memory_calibration_override(),
-        max_source_chunk_bytes: execution_projection.native_max_source_chunk_bytes(),
-        max_row_groups_per_chunk: execution_projection.native_max_row_groups_per_chunk(),
-        max_retry_attempts: execution_projection.native_max_retry_attempts(),
+        max_source_chunk_bytes: execution_config.max_source_chunk_bytes(),
+        max_row_groups_per_chunk: execution_config.max_row_groups_per_chunk(),
+        max_retry_attempts: execution_config.max_retry_attempts(),
         min_retry_chunk_row_groups,
     };
     let backend = GpuBackendOwner::build(
@@ -715,12 +712,9 @@ pub fn native_optimizer_options_for_profile(
 ) -> nexus_query_engine::optimizer::NativeOptimizerOptions {
     let mut options = nexus_query_engine::optimizer::NativeOptimizerOptions::default();
     if matches!(profile, NativeExecutionProfile::TpchBenchmark | NativeExecutionProfile::TpcdsBenchmark) {
-        let projection = datafusion_nexus::session_config::DataFusionNexusSessionConfig::from_optimizer_config(
-            &NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config.clone()),
-        );
         let max_source_reads_in_flight = execution_config.source_scheduler_policy().max_source_reads_in_flight() as u64;
         options.local_parquet_source_reuse.max_variant_selected_bytes =
-            projection.native_max_source_chunk_bytes().saturating_mul(max_source_reads_in_flight);
+            execution_config.max_source_chunk_bytes().saturating_mul(max_source_reads_in_flight);
     }
     options
 }

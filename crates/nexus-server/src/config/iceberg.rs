@@ -1,3 +1,4 @@
+#[cfg(feature = "iceberg")]
 use std::{fmt, path::PathBuf, time::Duration};
 
 use super::{env::EnvValues, *};

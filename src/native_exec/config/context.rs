@@ -1,9 +1,8 @@
 use std::sync::{Arc, atomic::Ordering};
 
 use super::{
-    AdmittedQueryContext, Error, ExecutionContext, GraphMemoryCalibrationOverride, IoLifecycle,
-    NexusNativeExecutionConfig, NexusNativeExecutionContext, QueryAdmissionFacts, QueryId, TaskContext,
-    TicketAdmissionContext, TraceId,
+    AdmittedQueryContext, Error, ExecutionContext, IoLifecycle, NexusNativeExecutionConfig,
+    NexusNativeExecutionContext, QueryAdmissionFacts, QueryId, TaskContext, TicketAdmissionContext, TraceId,
 };
 
 impl NexusNativeExecutionContext {
@@ -42,11 +41,6 @@ impl NexusNativeExecutionContext {
     pub(super) fn with_trace_id(mut self, trace_id: TraceId) -> nexus_query_engine::error::Result<Self> {
         self.context = self.context.with_trace_id(trace_id)?;
         Ok(self)
-    }
-
-    pub(super) fn with_graph_memory_calibration_override(mut self, override_: GraphMemoryCalibrationOverride) -> Self {
-        self.context = self.context.with_graph_memory_calibration_override(override_);
-        self
     }
 
     pub(super) fn with_io_lifecycle(mut self, lifecycle: IoLifecycle) -> Self {
@@ -175,26 +169,10 @@ impl NexusNativeExecutionConfig {
         {
             context = context.with_trace_id(trace_id)?;
         }
-        let current = context.context().graph_memory_calibration_override();
-        let graph_memory_calibration_override =
-            self.graph_memory_calibration_override_for_acquired_service_context(current);
-        if graph_memory_calibration_override != current {
-            context = context.with_graph_memory_calibration_override(graph_memory_calibration_override);
-        }
         if let Some(lifecycle) = &self.io_lifecycle {
             context = context.with_io_lifecycle(lifecycle.clone());
         }
         Ok(context)
-    }
-
-    pub(crate) fn graph_memory_calibration_override_for_acquired_service_context(
-        &self,
-        mut current: GraphMemoryCalibrationOverride,
-    ) -> GraphMemoryCalibrationOverride {
-        if self.graph_raw_input_edges_override_configured {
-            current.raw_input_edges = self.graph_memory_calibration_override.raw_input_edges;
-        }
-        current
     }
 
     pub(super) fn stamp_native_error_correlation(

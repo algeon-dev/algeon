@@ -1,6 +1,6 @@
 use std::panic;
 
-use datafusion_nexus::{native_exec::NexusNativeExecutionConfig, session_config::DataFusionNexusSessionConfig};
+use datafusion_nexus::native_exec::NexusNativeExecutionConfig;
 use nexus_bench::report_workload::clickbench::{
     CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES, CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
     CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES, CLICKBENCH_NATIVE_PROFILE_CONSERVATIVE,
@@ -127,7 +127,6 @@ fn clickbench_native_optimizer_config_uses_resolved_profile_knobs() {
         panic!("clickbench native execution config must be bounded");
     };
     assert_eq!(device_budget_bytes, CLICKBENCH_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES);
-    let projection = DataFusionNexusSessionConfig::from_optimizer_config(&config);
-    assert_eq!(projection.native_max_source_chunk_bytes(), CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES);
-    assert_eq!(projection.native_max_row_groups_per_chunk(), CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
+    assert_eq!(execution.max_source_chunk_bytes(), CLICKBENCH_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES);
+    assert_eq!(execution.max_row_groups_per_chunk(), CLICKBENCH_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
 }

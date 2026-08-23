@@ -34,29 +34,12 @@ async fn async_execution_context_requires_gpu_backend_before_resolving_cuda_stat
 }
 
 #[test]
-fn service_acquired_context_preserves_service_graph_calibration_without_adapter_override() {
-    let service_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149);
-    let config = NexusNativeExecutionConfig::bounded_default();
-
-    assert_eq!(
-        config.graph_memory_calibration_override_for_acquired_service_context(service_override),
-        service_override
-    );
-}
-
-#[test]
-fn service_acquired_context_applies_only_configured_adapter_graph_calibration_fields() {
-    let service_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(45_564_149);
-
-    let raw_reset = NexusNativeExecutionConfig::bounded_default().with_graph_raw_input_edges_override(None);
-    assert_eq!(
-        raw_reset.graph_memory_calibration_override_for_acquired_service_context(service_override),
-        GraphMemoryCalibrationOverride::default()
-    );
-
-    let full_override = GraphMemoryCalibrationOverride::default().with_raw_input_edges(99);
-    let config = NexusNativeExecutionConfig::bounded_default().with_graph_memory_calibration_override(full_override);
-    assert_eq!(config.graph_memory_calibration_override_for_acquired_service_context(service_override), full_override);
+fn native_execution_config_policy_getters_match_bounded_policy() {
+    let config = NexusNativeExecutionConfig::bounded(1024, 512, 8, 5, 1);
+    assert_eq!(config.max_source_chunk_bytes(), 512);
+    assert_eq!(config.max_row_groups_per_chunk(), 8);
+    assert_eq!(config.max_retry_attempts(), 5);
+    assert_eq!(config.max_source_reads_in_flight(), 2);
 }
 
 #[test]

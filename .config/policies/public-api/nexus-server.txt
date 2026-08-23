@@ -88,7 +88,6 @@ pub nexus_server::IcebergTableRegistrationConfig::table: alloc::string::String
 pub nexus_server::NexusServerNativeConfigOption::description: &'static str
 pub nexus_server::NexusServerNativeConfigOption::env_var: &'static str
 pub nexus_server::NexusServerNativeConfigOption::scope: nexus_server::ServerNativeConfigScope
-pub nexus_server::NexusServerNativeConfigOption::session_key: core::option::Option<&'static str>
 pub nexus_server::NexusServerNativeConfigOption::toml_field: &'static str
 pub nexus_server::NexusServerNativeConfigOption::value_type: &'static str
 pub struct nexus_server::Principal

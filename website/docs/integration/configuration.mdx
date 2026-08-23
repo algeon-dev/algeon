@@ -11,7 +11,7 @@ Nexus has three configuration owners. Keep them separate:
 | --- | --- | --- |
 | Flight SQL process | `ServerConfig`, TOML, and environment variables | Listen address, admission, auth, source catalogs, and retention |
 | Embedded GPU backend | `NexusGpuBackend::builder()` | Device ownership, capacity, queues, and final-plan requirements |
-| DataFusion session | `SessionConfig` | DataFusion behavior and request-scoped planner evidence |
+| DataFusion session | `SessionConfig` | Standard DataFusion behavior (catalogs, batch size, target partitions) |
 
 This page covers the Flight SQL process. For an embedded Rust service, use [DataFusion Session](./datafusion-session.mdx).
 
@@ -221,7 +221,7 @@ export NEXUS_SERVER_WORKSPACE_BACKING_ALIASES=citation_edges,papers,paper_author
 The backing catalog and schema must be set together. Catalog/schema default to
 `datafusion.public`, and omitting the aliases exposes every backing table.
 
-## DataFusion and Nexus session keys
+## DataFusion session configuration
 
 The server builds DataFusion's `SessionConfig` with `SessionConfig::from_env()`.
 Common keys include `DATAFUSION_EXECUTION_BATCH_SIZE`,
@@ -229,17 +229,6 @@ Common keys include `DATAFUSION_EXECUTION_BATCH_SIZE`,
 `DATAFUSION_CATALOG_DEFAULT_CATALOG`, and
 `DATAFUSION_CATALOG_DEFAULT_SCHEMA`.
 
-Nexus session options are registered later by the optimizer install; they are
-not loaded from `DATAFUSION_NEXUS_*` environment variables. Direct optimizer
-installs expose six session-scoped native fields as
-`datafusion_nexus.native.<field>`: `max_source_chunk_bytes`,
-`max_row_groups_per_chunk`, `max_retry_attempts`,
-`max_source_reads_in_flight`, `source_chunk_planning_mode`, and
-`statistical_aggregate_execution_mode`. `final_plan_requirement` has no
-session-key projection. Backend-managed sessions freeze those keys because the
-shared backend owns admission policy.
-
-The one mutable planner-evidence key is
-`datafusion_nexus.request.graph_raw_input_edges`, which accepts a positive edge
-count or `none`. Flight SQL rejects `SET datafusion_nexus.*`; configure Flight
-through the server surface instead.
+Native execution policy is owned solely by the server configuration (`[native]` TOML options and `NEXUS_SERVER_NATIVE_*` environment variables) or the embedded `NexusGpuBackendBuilder`.
+Nexus registers no session configuration extensions; DataFusion sessions carry standard DataFusion configuration only.
+SQL statements attempting `SET datafusion_nexus.*` fail with an unrecognized configuration key error.

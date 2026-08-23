@@ -14,10 +14,7 @@
 //! reclassifying. Candidate decisions stay per-candidate under
 //! [`crate::report::CandidateOutcome`].
 
-use datafusion::{
-    common::{Result as DataFusionResult, config::ConfigOptions},
-    physical_plan::ExecutionPlan,
-};
+use datafusion::physical_plan::ExecutionPlan;
 pub use nexus_query_engine::{
     contract_report::{CapabilityContractGateRow, CapabilityContractReport},
     mode::StatisticalAggregateExecutionMode,
@@ -26,7 +23,7 @@ pub use nexus_query_engine::{
     source::SourceDiagnostics,
 };
 
-use crate::{native_exec::NexusNativeExecutionConfig, session_config::optimizer_config_with_datafusion_options};
+use crate::native_exec::NexusNativeExecutionConfig;
 
 pub(crate) mod native;
 
@@ -206,11 +203,5 @@ impl NexusNativeOptimizerConfig {
         self.native_execution_config =
             self.native_execution_config.clone().with_statistical_aggregate_execution_mode(mode);
         self
-    }
-
-    /// Apply registered `datafusion_nexus.native.*` DataFusion session options
-    /// to this optimizer config.
-    pub fn with_datafusion_config_options(&self, options: &ConfigOptions) -> DataFusionResult<Self> {
-        optimizer_config_with_datafusion_options(self, options)
     }
 }

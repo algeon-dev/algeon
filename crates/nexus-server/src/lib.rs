@@ -6,7 +6,7 @@ use std::{net::SocketAddr, sync::Arc, time::Instant};
 
 pub(crate) use ::datafusion_nexus::{
     attempt, backend, capability, cugraph_sql, cuvs_sql, error as adapter_error, gpu_coverage, gpu_coverage_sql,
-    native_exec, native_report, planner, report, session as adapter_session, session_config, table_format,
+    native_exec, native_report, planner, report, session as adapter_session, table_format,
 };
 use arrow_flight::flight_service_server::FlightServiceServer;
 use datafusion::prelude::SessionContext;

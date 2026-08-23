@@ -27,8 +27,7 @@ use crate::{
         QueryServiceDeviceAdmissionSnapshot,
     },
     planner::{FinalPlanRequirement, NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
-    session::{NexusSessionStateBuilderExt, install_nexus_native_rule_with_session_config},
-    session_config::DataFusionNexusSessionConfig,
+    session::NexusSessionStateBuilderExt,
 };
 
 /// Process-scoped native GPU backend shared by one or more DataFusion sessions.
@@ -323,12 +322,10 @@ impl NexusGpuBackend {
 
     /// Installs the backend-managed DataFusion integration on `builder`.
     ///
-    /// The installation binds the native optimizer and
-    /// [`DataFusionNexusSessionConfig`]
-    /// to this backend's admission authority, and installs the GPU coverage
-    /// UDTF, common GPU function catalog, and relation-aware cuVS planner and
-    /// metadata family. The resulting session plans and admits native
-    /// execution through this backend's ledger.
+    /// The installation binds the native optimizer to this backend's admission
+    /// authority, and installs the GPU coverage UDTF, common GPU function catalog,
+    /// and relation-aware cuVS planner and metadata family. The resulting session
+    /// plans and admits native execution through this backend's ledger.
     ///
     /// This method does not install cuGraph. Use
     /// [`Self::install_on_with_cugraph_sql`], or call
@@ -627,17 +624,7 @@ fn install_backend_optimizer_config(
         builder
     };
     let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone()));
-    let session_config =
-        DataFusionNexusSessionConfig::from_optimizer_config(optimizer_config).frozen_for_backend_admission();
-    install_nexus_native_rule_with_session_config(builder, rule, session_config).map_err(|error| {
-        Error::new(
-            ErrorCode::InvalidRequest,
-            "datafusion_nexus.backend.install_on",
-            "pre-existing datafusion-nexus session config conflicts with backend admission",
-        )
-        .with_fact("reason", "session_config_conflicts_with_backend_admission")
-        .with_source(error)
-    })
+    Ok(builder.with_nexus_native_rule(rule))
 }
 
 /// Validated backend-builder input shared by production construction and root

@@ -797,10 +797,9 @@ async fn cugraph_sql_gpu_filtered_local_parquet_rejects_an_oversized_materialize
 }
 
 #[tokio::test]
-async fn cugraph_sql_gpu_betweenness_reservation_reports_request_calibration_and_seed_mode() {
+async fn cugraph_sql_gpu_betweenness_reservation_reports_source_facts_and_seed_mode() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
-    ctx.sql("SET datafusion_nexus.request.graph_raw_input_edges = '4'").await.unwrap().collect().await.unwrap();
 
     let df = ctx
         .sql(
@@ -820,16 +819,25 @@ async fn cugraph_sql_gpu_betweenness_reservation_reports_request_calibration_and
     let row = &graph_reservations[0];
     assert_eq!(row.algorithm, "betweenness_centrality");
     assert_eq!(row.outcome, "admitted");
-    assert_eq!(row.raw_input_edges, Some(4));
+    assert_eq!(row.raw_input_edges, None);
     assert_eq!(row.seed_count, Some(2));
     assert_eq!(row.seed_mode, "runtime_k_selection");
 }
 
 #[tokio::test]
-async fn cugraph_sql_gpu_raw_edge_calibration_cannot_overcredit_a_smaller_live_source() {
-    let (_backend, ctx) = default_backend_cugraph_sql_context();
+async fn cugraph_sql_gpu_memory_estimate_exceeding_budget_fails_admission() {
+    let device = NexusGpuDeviceConfig::new(
+        datafusion_nexus::backend::NexusGpuDeviceProfile::new(0)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 1024 }),
+        GpuMemoryOwnership::WholeDeviceExclusive,
+    );
+    let backend = NexusGpuBackend::builder().devices([device]).build().unwrap();
+    let state = backend
+        .install_on_with_cugraph_sql(SessionStateBuilder::new_with_default_features(), CugraphSqlConfig::default())
+        .unwrap()
+        .build();
+    let ctx = SessionContext::new_with_state(state);
     register_directed_bfs_edges(&ctx, "raw_edges");
-    ctx.sql("SET datafusion_nexus.request.graph_raw_input_edges = '45564149'").await.unwrap().collect().await.unwrap();
 
     let error = ctx
         .sql(
@@ -841,10 +849,10 @@ async fn cugraph_sql_gpu_raw_edge_calibration_cannot_overcredit_a_smaller_live_s
         .unwrap()
         .collect()
         .await
-        .expect_err("modeled source bytes absent from the live owner cannot credit the graph reservation");
+        .expect_err("small device memory budget must fail betweenness centrality admission");
     let nexus = typed_nexus_error(&error);
-    assert_eq!(nexus.code(), ErrorCode::MemoryReservationFailed);
-    assert!(nexus.message().contains("reason=graph_memory_estimate_exceeds_budget"));
+    assert_eq!(nexus.code(), ErrorCode::UnsupportedOperator);
+    assert!(nexus.message().contains("schedule_reason=immutable_grant_below_schedule_peak"));
 }
 
 /// Runs the provisioned Python-cuGraph PageRank acceptance check.

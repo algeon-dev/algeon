@@ -2,9 +2,9 @@
 //!
 //! | Entry point | Installs | Required input | Idempotency | Owns admission |
 //! | --- | --- | --- | --- | --- |
-//! | [`NexusGpuBackend::install_on`](crate::backend::NexusGpuBackend::install_on) | backend-bound optimizer, session config, coverage, common catalog, cuVS | built backend | same backend and no preinstalled cuGraph | yes |
+//! | [`NexusGpuBackend::install_on`](crate::backend::NexusGpuBackend::install_on) | backend-bound optimizer, coverage, common catalog, cuVS | built backend | same backend and no preinstalled cuGraph | yes |
 //! | [`NexusGpuBackend::install_on_with_cugraph_sql`](crate::backend::NexusGpuBackend::install_on_with_cugraph_sql) | `install_on` plus cuGraph | backend and [`CugraphSqlConfig`] | install once on a builder without cuGraph | yes |
-//! | [`NexusSessionStateBuilderExt::with_nexus_native`] | optimizer, session config, coverage | [`NexusNativeOptimizerConfig`] | replaces existing Nexus rules | no |
+//! | [`NexusSessionStateBuilderExt::with_nexus_native`] | optimizer, coverage | [`NexusNativeOptimizerConfig`] | replaces existing Nexus rules | no |
 //! | [`NexusSessionStateBuilderExt::try_with_cuvs_sql`] | cuVS planner, metadata, function family | none | identical installation is a no-op | no |
 //! | [`NexusSessionStateBuilderExt::try_with_cugraph_sql`] | cuGraph function family | [`CugraphSqlConfig`] | equal config is a no-op; conflicts error | no; preserves an existing backend binding |
 //!
@@ -36,7 +36,6 @@ use crate::{
         NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME, NexusFinalPlanRequirementRule, NexusNativeOptimizerConfig,
         NexusNativePhysicalOptimizerRule,
     },
-    session_config::DataFusionNexusSessionConfig,
 };
 
 /// Public name and deduplication key for the final native rewrite rule.
@@ -127,37 +126,11 @@ impl NexusSessionStateBuilderExt for SessionStateBuilder {
     }
 
     fn with_nexus_native_rule(mut self, rule: Arc<NexusNativePhysicalOptimizerRule>) -> Self {
-        ensure_datafusion_nexus_session_config(&mut self, rule.config());
         install_gpu_coverage_table_function(&mut self);
         let mut rules = take_physical_optimizer_rules(&mut self);
         insert_nexus_native_rules_before_final_validation(&mut rules, rule);
         self.with_physical_optimizer_rules(rules)
     }
-}
-
-/// Low-level installer for frontends that rebuild a session per request. It
-/// injects an explicit, possibly backend-admission-frozen,
-/// [`DataFusionNexusSessionConfig`] extension and registers the
-/// caller-retained rule. Backend installs and the nexus server use this
-/// path; embedded sessions should prefer
-/// [`NexusGpuBackend::install_on`](crate::backend::NexusGpuBackend::install_on) or
-/// [`NexusSessionStateBuilderExt::with_nexus_native`].
-pub fn install_nexus_native_rule_with_session_config(
-    mut builder: SessionStateBuilder,
-    rule: Arc<NexusNativePhysicalOptimizerRule>,
-    session_extension: DataFusionNexusSessionConfig,
-) -> DataFusionResult<SessionStateBuilder> {
-    let session_config = builder.config().get_or_insert_with(Default::default);
-    if session_extension.is_backend_admission_frozen()
-        && let Some(existing) = session_config.options().extensions.get::<DataFusionNexusSessionConfig>()
-    {
-        existing.validate_matches_optimizer_config(rule.config())?;
-    }
-    session_config.options_mut().extensions.insert(session_extension);
-    install_gpu_coverage_table_function(&mut builder);
-    let mut rules = take_physical_optimizer_rules(&mut builder);
-    insert_nexus_native_rules_before_final_validation(&mut rules, rule);
-    Ok(builder.with_physical_optimizer_rules(rules))
 }
 
 #[cfg(feature = "cugraph")]
@@ -241,13 +214,6 @@ fn nexus_native_optimizer_config_from_rule(
 ) -> Option<NexusNativeOptimizerConfig> {
     let rule = rule as &dyn std::any::Any;
     rule.downcast_ref::<NexusNativePhysicalOptimizerRule>().map(|native| native.config().clone())
-}
-
-fn ensure_datafusion_nexus_session_config(builder: &mut SessionStateBuilder, config: &NexusNativeOptimizerConfig) {
-    let session_config = builder.config().get_or_insert_with(Default::default);
-    if session_config.options().extensions.get::<DataFusionNexusSessionConfig>().is_none() {
-        session_config.options_mut().extensions.insert(DataFusionNexusSessionConfig::from_optimizer_config(config));
-    }
 }
 
 fn install_gpu_coverage_table_function(builder: &mut SessionStateBuilder) {

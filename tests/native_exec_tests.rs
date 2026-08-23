@@ -42,7 +42,6 @@ use datafusion_nexus::{
     },
     report::CandidateOutcome,
     session::NexusSessionStateBuilderExt,
-    session_config::DataFusionNexusSessionConfig,
 };
 use nexus_query_engine::{
     capability::ContractQuality,
@@ -588,19 +587,14 @@ fn native_execution_sort_preserving_merge_matches_datafusion_sorted_input() {
 }
 
 #[test]
-fn native_optimizer_rule_uses_datafusion_config_options_at_optimize_time() {
-    let dir = unique_temp_dir("datafusion-nexus-native-exec-optimizer-session-config");
+fn native_optimizer_rule_uses_configured_optimizer_config_at_optimize_time() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-optimizer-config");
     let path = dir.join("input.parquet");
     write_parquet_file(&path);
     let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
-    // This is a pure planning-policy override test. It intentionally starts
-    // without backend-frozen admission policy so the session option remains
-    // caller-configurable.
     let config = support::native_optimizer_config();
     let rule = NexusNativePhysicalOptimizerRule::new(config.clone());
-    let mut options = ConfigOptions::default();
-    options.extensions.insert(DataFusionNexusSessionConfig::from_optimizer_config(&config));
-    options.set("datafusion_nexus.native.max_source_chunk_bytes", "1048576").unwrap();
+    let options = ConfigOptions::default();
 
     let optimized = rule.optimize(plan, &options).unwrap();
 

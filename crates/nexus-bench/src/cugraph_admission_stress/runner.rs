@@ -78,7 +78,6 @@ struct HarnessConfig {
     max_queue_wait_ms: u64,
     budget_fraction: Option<f64>,
     device_budget_bytes: Option<u64>,
-    raw_input_edges: Option<u64>,
     sample_interval_ms: u64,
     query_timeout_ms: u64,
     out_dir: PathBuf,
@@ -304,12 +303,6 @@ async fn build_session(
     if request.spec.needs_fos {
         let path = config.fos_parquet.as_deref().ok_or_else(|| format!("{} requires {ENV_FOS}", request.spec.label))?;
         ctx.register_parquet("paper_fos", path, ParquetReadOptions::default()).await?;
-    }
-    if let Some(raw_input_edges) = config.raw_input_edges {
-        ctx.sql(&format!("SET datafusion_nexus.request.graph_raw_input_edges = {raw_input_edges}"))
-            .await?
-            .collect()
-            .await?;
     }
     Ok(ctx)
 }

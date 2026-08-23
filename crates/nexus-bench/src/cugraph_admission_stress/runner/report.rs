@@ -391,7 +391,6 @@ pub(super) fn write_outputs(
             "max_queue_wait_ms": config.max_queue_wait_ms,
             "budget_fraction": config.budget_fraction,
             "device_budget_bytes": config.device_budget_bytes,
-            "raw_input_edges": config.raw_input_edges,
             "query_timeout_ms": config.query_timeout_ms,
             "edges_parquet": config.edges_parquet,
         },

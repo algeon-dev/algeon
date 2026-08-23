@@ -16,7 +16,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    backend::{GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig},
+    backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig},
     cugraph_sql::{
         CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphAlgorithmParams, CugraphBfsOutputMode, CugraphBfsSource,
         CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphSqlConfig,
