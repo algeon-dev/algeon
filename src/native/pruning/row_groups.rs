@@ -1,8 +1,15 @@
+use std::sync::Arc;
+
 use arrow::datatypes::DataType;
 use datafusion::parquet::schema::types::SchemaDescriptor;
 use nexus_query_engine::parquet_stats::leaf_column_statistics;
 
-use super::*;
+use super::{
+    BinaryExpr, CastExpr, Column, FileReader, FileScanConfig, FileSource, FilterExec, InListExpr, IsNotNullExpr,
+    IsNullExpr, Literal, Operator, ParquetSource, PartitionedFile, PhysicalExpr, ScalarValue, SchemaRef,
+    SerializedFileReader, Statistics, coalesced_local_parquet_scan_files, local_object_path_to_filesystem,
+    validate_pruning_only_parquet_predicate,
+};
 
 pub(in crate::native) fn metadata_row_group_selections(
     files: &[&PartitionedFile],

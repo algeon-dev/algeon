@@ -1,4 +1,4 @@
-use super::*;
+use super::{QueryError, QueryMetrics, RetryFacts, SourceChunk};
 
 pub(in crate::exec::bounded) fn is_retryable_chunk_error(error: &QueryError) -> bool {
     crate::exec::retry::is_retryable_resource_error(error)

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use arrow::datatypes::{Decimal32Type, Decimal64Type, validate_decimal_precision_and_scale};
 use nexus_query_engine::datatypes::is_narrow_decimal_carry_type;
 

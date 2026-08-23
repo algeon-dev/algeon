@@ -1,4 +1,4 @@
-use std::fs::File;
+use std::{fs, fs::File, sync::Arc};
 
 use arrow::array::{Date32Array, Int32Array, Int64Array, StringArray};
 use datafusion::parquet::{arrow::ArrowWriter, file::properties::WriterProperties};

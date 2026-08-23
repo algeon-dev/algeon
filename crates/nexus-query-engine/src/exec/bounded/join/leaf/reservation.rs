@@ -1,5 +1,11 @@
-use super::*;
-use crate::exec::source::{parquet_chunk_path_fact, source_read_batch_request, source_read_request};
+use super::{
+    ActiveReservation, BoundedExecutionAttempt, GpuDataFrame, MemoryControlPolicy, MemoryReservationRequest, NodeId,
+    QueryError, ReservationKind, Result, SourceChunk, SourceChunkBatch, SourceReadReservationContractQuality,
+    observe_device_memory_bytes, source_read_batch_reservation_contract, source_read_reservation_contract,
+};
+use crate::exec::source::{
+    attach_row_group_facts_if_absent, parquet_chunk_path_fact, source_read_batch_request, source_read_request,
+};
 
 pub(super) fn attach_join_source_read_resource_facts(
     error: QueryError,
@@ -8,7 +14,7 @@ pub(super) fn attach_join_source_read_resource_facts(
     attempt: usize,
     max_attempts: usize,
 ) -> QueryError {
-    error
+    let error = error
         .with_fact_if_absent("memory_boundary", "join_source_read")
         .with_fact_if_absent("stage", "join_source_read")
         .with_fact_if_absent("node_id", node_id)
@@ -16,8 +22,8 @@ pub(super) fn attach_join_source_read_resource_facts(
         .with_fact_if_absent("max_attempts", max_attempts)
         .with_fact_if_absent("chunk_index", chunk.chunk_index)
         .with_fact_if_absent("file_index", chunk.file_index)
-        .with_fact_if_absent("path", parquet_chunk_path_fact(chunk))
-        .with_row_group_facts_if_absent(chunk)
+        .with_fact_if_absent("path", parquet_chunk_path_fact(chunk));
+    attach_row_group_facts_if_absent(error, chunk)
 }
 
 pub(super) fn join_source_read_reservation_request(

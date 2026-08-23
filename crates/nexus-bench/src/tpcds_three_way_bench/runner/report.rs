@@ -1,3 +1,5 @@
+use std::{collections::BTreeMap, time::Duration};
+
 #[cfg(test)]
 use super::config::bench_queries_from_csv;
 use super::*;

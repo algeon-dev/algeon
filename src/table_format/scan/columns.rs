@@ -1,4 +1,6 @@
-use super::*;
+use std::fmt;
+
+use super::DataType;
 
 /// Scalar value available from table-format metadata, usually partition facts.
 #[derive(Debug, Clone, PartialEq)]

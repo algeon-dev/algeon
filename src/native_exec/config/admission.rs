@@ -1,6 +1,16 @@
+use std::sync::Arc;
+#[cfg(any(feature = "test-support", feature = "bench-support"))]
+use std::sync::atomic::AtomicBool;
+
 use nexus_query_engine::admission::QueryPlanCapabilityProof;
 
-use super::*;
+#[cfg(any(feature = "test-support", feature = "bench-support"))]
+use super::QueryHandle;
+use super::{
+    GraphAdmissionModelAsk, NativeExecutionMetricsCapture, NativeMetricsCapture, NexusNativeExecutionConfig,
+    QueryAdmissionSource, QueryAdmissionTicket, QueryId, RuntimeObservationConfig, RuntimeObservationOwner,
+    RuntimeTraceId, TaskContext, query_admission_ticket_from_task_context,
+};
 use crate::attempt::NexusAttemptExtension;
 
 impl NexusNativeExecutionConfig {

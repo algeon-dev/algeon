@@ -30,10 +30,9 @@ use nexus_query_engine::source::PredicateDisposition as NativePredicateDispositi
 use super::expression_contract::validate_physical_expr;
 use crate::capability::CapabilityReason;
 
-#[path = "pruning/row_groups.rs"]
 mod row_groups;
 
-pub(super) use row_groups::*;
+pub(super) use row_groups::metadata_row_group_selections;
 
 /// Partitioned file chosen for native local Parquet scan after range coalescing.
 #[derive(Debug, Clone)]

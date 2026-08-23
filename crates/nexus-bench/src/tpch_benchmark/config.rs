@@ -1,3 +1,5 @@
+use std::{collections::BTreeSet, time::Duration};
+
 use datafusion_nexus::{
     backend::NexusGpuBackend,
     planner::{FinalPlanRequirement, NexusNativeOptimizerConfig},

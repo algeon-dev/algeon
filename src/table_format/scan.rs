@@ -1,11 +1,3 @@
-use std::{
-    collections::BTreeMap,
-    fmt,
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::{Duration, Instant},
-};
-
 use arrow::datatypes::{DataType, Schema, SchemaRef};
 use futures::future::BoxFuture;
 pub use nexus_query_engine::{

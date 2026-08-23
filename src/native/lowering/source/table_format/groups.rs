@@ -1,4 +1,17 @@
-use super::*;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
+
+use super::{
+    CapabilityReason, DataType, Field, NativeMissingColumn, NativeParquetColumnRequirements, NativePartitionColumn,
+    NativeSourceColumnRef, Schema, SchemaRef, TableFormatColumnMapping, TableFormatColumnSource,
+    TableFormatFieldIdReadBinding, TableFormatFileReadBindings, TableFormatScanPlan,
+    table_format_column_mapping_by_name, table_format_data_file_footer_arrow_schema,
+    table_format_file_field_id_read_bindings, table_format_file_schema,
+    table_format_footer_data_type_needs_logical_source_contract, table_format_requires_iceberg_field_id_bindings,
+    table_format_scalar_value_to_native_literal,
+};
 
 #[derive(Debug, Clone)]
 pub(super) struct TableFormatSourceReadGroup {

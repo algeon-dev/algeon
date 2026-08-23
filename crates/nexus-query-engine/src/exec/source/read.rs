@@ -1,6 +1,12 @@
+use std::time::Instant;
+
 use parquet::file::reader::FileReader;
 
-use super::*;
+use super::{
+    DataFrame, ExecutionContext, LocalParquetFile, LocalParquetSource, NodeId, QueryError, QueryMetrics, Result,
+    SourceReadMode, local_parquet_file_row_group_metadata_count, parquet_file_path_fact,
+    record_source_file_read_runtime,
+};
 
 #[expect(
     clippy::too_many_arguments,

@@ -1,4 +1,4 @@
-use crate::correlation::{CompiledTaskId, PlanNodeId, QueryId};
+use nexus_query_planning::correlation::{CompiledTaskId, PlanNodeId, QueryId};
 
 /// One joinable diagnostic mapping between native plan structure and compiled tasks.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

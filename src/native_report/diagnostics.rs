@@ -3,8 +3,30 @@
 //! Walks DataFusion physical plans to derive native fragment coverage, join
 //! and source diagnostics summaries, and stable unsupported-category labels
 //! used by the planning/execution/fallback-pressure surfaces.
+use std::sync::Arc;
 
-use super::*;
+use super::{
+    AggregateExec, BinaryExpr, BoundedWindowAggExec, CapabilityReason, CaseExpr, CastExpr, Column, CrossJoinExec,
+    DataSourceExec, EmptyExec, ExecutionPlan, FileSource, FilterExec, GpuCandidate, HashJoinExec, InListExpr,
+    IsNotNullExpr, IsNullExpr, LikeExpr, Literal, MemorySourceConfig,
+    NATIVE_CANDIDATE_SHAPE_FAMILY_PROJECTED_GLOBAL_HASH_JOIN_AGGREGATE,
+    NATIVE_CANDIDATE_SHAPE_FAMILY_PROJECTED_GLOBAL_LOCAL_PARQUET_AGGREGATE,
+    NATIVE_CANDIDATE_SHAPE_FAMILY_PROJECTED_GLOBAL_LOCAL_PARQUET_DISTRIBUTED_AGGREGATE,
+    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_FETCH_HASH_JOIN_AGGREGATE,
+    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_FETCH_HASH_JOIN_INPUT,
+    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_FETCH_LOCAL_PARQUET_AGGREGATE,
+    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_HASH_JOIN_AGGREGATE, NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_HASH_JOIN_INPUT,
+    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_LOCAL_PARQUET_AGGREGATE,
+    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_MIXED_HASH_NESTED_LOOP_JOIN_AGGREGATE,
+    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_MIXED_HASH_NESTED_LOOP_JOIN_INPUT,
+    NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_PRESERVING_MERGE_FETCH_LOCAL_PARQUET_DISTRIBUTED_AGGREGATE,
+    NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN, NativeDataFusionPlanCoverage,
+    NativeJoinDiagnosticSummary, NativeSourceDiagnosticSummary, NativeSourceDiagnostics, NegativeExpr,
+    NestedLoopJoinExec, NotExpr, Operator, ParquetSource, PhysicalExpr, PlaceholderRowExec, PlainAggregateWindowExpr,
+    ProjectionExec, ScalarFunctionExpr, ScalarValue, SlidingAggregateWindowExpr, SortExec, SortPreservingMergeExec,
+    StandardWindowExpr, TryCastExpr, WindowAggExec, WindowExpr, WindowFrame, WindowFrameBound, WindowFrameUnits,
+    WindowUDFExpr, is_supported_arrow_type,
+};
 
 mod expressions;
 mod shape_family;

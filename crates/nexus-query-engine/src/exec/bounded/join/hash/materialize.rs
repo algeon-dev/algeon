@@ -1,4 +1,17 @@
-use super::*;
+use super::{
+    ActiveReservation, BoundedExecutionAttempt, BoundedJoinSideFrame, BoundedRootHashJoinBuildState,
+    BoundedRootHashJoinProbeState, CommittedPartial, ExecutionOverrides, GpuDataFrame, Instant, JoinNode, JoinSide,
+    NodeId, QueryError, ReservationKind, ResidentFrameStreamPayload, ResidentGpuFrame, Result, bounded_join_request,
+    execution_overrides, join_side_output_upper_bound_bytes, materialize_join_output_projection,
+    observe_device_memory_bytes,
+    probe::reusable_hash_join_execution_strategy,
+    projected_output_columns_for_retained_sizing, reconcile_join_output_upper_bound,
+    release_bounded_root_hash_join_build_state, reusable_hash_join_stream_target_output_bytes, side_metric,
+    state::validate_root_hash_join,
+    stream::{
+        RootHashJoinMaterializeStreamSource, is_retryable_join_stream_slice_error, record_join_stream_slice_retry_error,
+    },
+};
 
 pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,

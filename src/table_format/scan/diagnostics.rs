@@ -1,4 +1,6 @@
-use super::*;
+use std::{collections::BTreeMap, fmt};
+
+use super::CapabilityReason;
 
 /// Unsupported scan fact category with a stable fallback reason.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

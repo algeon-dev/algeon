@@ -87,7 +87,7 @@ pub use gpu::{
     DeviceTelemetryStatus, GpuInventory, GpuTelemetry, LedgerSnapshot, MemoryGrant, NexusGpuInventory,
     NexusNvmlTelemetry, Placement, device_budget_bytes_from_facts,
 };
-pub(crate) use gpu::{DeviceContext, DeviceRegistry, DeviceRegistryConfig, PlacementRequest};
+pub(crate) use gpu::{DeviceContext, DeviceRegistry};
 pub use gpu_execution_pool::{
     GpuExecutionJobKind, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, GpuExecutorLease,
 };
@@ -98,6 +98,12 @@ pub use io_capability::{
     KvikioCompatModeStatus, NVIDIA_FS_PROC_PATH, NVIDIA_FS_SYSFS_PATH, NvidiaFsProbeStatus,
 };
 pub use io_lifecycle::{IoLifecycle, IoLifecycleLease};
+pub use nexus_query_planning::execution_contracts::{
+    BoundedJoinReservationContract, BoundedJoinReservationRequirement, BoundedJoinReservationStatus,
+    BuildMaterializationBoundary, DevicePlacement, ExecutionBoundaryPolicy, MemoryControlPolicy, MemoryResourcePolicy,
+    MemorySpaceId, ProbeExecutionBoundary, ReservationKind, ResultMaterializationBoundary, SourceChunkPlanningMode,
+    SourceReadBoundary, SourceSchedulerPolicy,
+};
 #[doc(hidden)]
 pub use object_store::S3ObjectStoreKey;
 pub use object_store::{S3SourceStorageCredential, S3SourceStorageProfile, SourceStorageProfile};
@@ -119,10 +125,3 @@ pub use service_stream::{
 };
 #[doc(hidden)]
 pub use service_stream::{ServiceStreamPool, SourceReadStreamLease};
-
-pub use crate::execution_contracts::{
-    BoundedJoinReservationContract, BoundedJoinReservationRequirement, BoundedJoinReservationStatus,
-    BuildMaterializationBoundary, DevicePlacement, ExecutionBoundaryPolicy, MemoryControlPolicy, MemoryResourcePolicy,
-    MemorySpaceId, ProbeExecutionBoundary, ReservationKind, ResultMaterializationBoundary, SourceChunkPlanningMode,
-    SourceReadBoundary, SourceSchedulerPolicy,
-};

@@ -9,6 +9,14 @@ use std::{
     sync::Arc,
 };
 
+use nexus_query_planning::{
+    capability::AggregateStrategyExecutionOptions,
+    chunk::SourceChunkPlanningOptions,
+    error::{QueryError, QueryErrorCode, Result},
+    graph_memory::GraphMemoryCalibrationOverride,
+    mode::StatisticalAggregateExecutionMode,
+};
+
 use super::{
     super::{
         CacheFillByteBudget, DeploymentIoCapability, ExecutionBoundaryPolicy, GpuExecutionPool,
@@ -24,12 +32,7 @@ use super::{
 #[cfg(any(test, feature = "test-hooks"))]
 use crate::observability::{RuntimeObservationConfig, RuntimeQueryId, RuntimeTraceId};
 use crate::{
-    capability::AggregateStrategyExecutionOptions,
-    chunk::SourceChunkPlanningOptions,
-    error::{QueryError, QueryErrorCode, Result},
-    graph_memory::GraphMemoryCalibrationOverride,
     metrics::{QueryId, TraceId},
-    mode::StatisticalAggregateExecutionMode,
     observability::{RuntimeObservationHandle, RuntimeObservationSession, RuntimeTerminalOutcome},
 };
 

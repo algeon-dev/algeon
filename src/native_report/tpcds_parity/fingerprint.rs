@@ -1,6 +1,8 @@
+use std::collections::HashMap;
+
 use nexus_query_engine::harness::StableFnv1a64;
 
-use super::*;
+use super::{CanonicalField, CanonicalRow, DataType, RecordBatch, Schema, collect_canonical_rows};
 
 pub(super) fn fingerprint_schema_only(schema: &Schema) -> String {
     let mut hasher = StableFnv1a64::new();

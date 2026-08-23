@@ -1,4 +1,9 @@
-use super::*;
+use std::collections::BTreeSet;
+
+use super::{
+    AggregateFunction, AggregateNode, CapabilityDecision, Expr, JoinNode, JoinSide, JoinType, NodeId, OutputLineage,
+    PlanNode, QueryPlan, SourceNode, expr_family, multi_join_subtree_join_execution_capability, node_operator_fact,
+};
 
 pub(in crate::capability) fn projection_input(
     plan: &QueryPlan,

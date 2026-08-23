@@ -1,4 +1,4 @@
-use super::*;
+use super::{LocalParquetSource, QueryError, QueryMetrics, SourceChunk, SourceChunkPlan, comma_separated_usize};
 
 pub(in crate::exec) fn record_bounded_parquet_source_metrics(
     source: &LocalParquetSource,
@@ -48,35 +48,17 @@ pub(in crate::exec) fn format_row_groups(chunk: &SourceChunk) -> String {
     comma_separated_usize(&chunk.row_group_indexes)
 }
 
-/// Chainable row-group facts for source-chunk errors.
-///
-/// `row_group_indexes` is the selected index list (`all` for full-file chunks);
-/// `row_group_count` is emitted only when the selected count is known. Keeping
-/// them separate avoids confusing index `0` with a count.
-pub(in crate::exec) trait SourceChunkRowGroupFacts {
-    #[must_use]
-    fn with_row_group_facts(self, chunk: &SourceChunk) -> Self;
-    #[must_use]
-    fn with_row_group_facts_if_absent(self, chunk: &SourceChunk) -> Self;
+pub(in crate::exec) fn attach_row_group_facts(error: QueryError, chunk: &SourceChunk) -> QueryError {
+    let error = error.with_fact("row_group_indexes", format_row_groups(chunk));
+    if chunk.reads_all_row_groups { error } else { error.with_fact("row_group_count", chunk.row_group_indexes.len()) }
 }
 
-impl SourceChunkRowGroupFacts for QueryError {
-    fn with_row_group_facts(self, chunk: &SourceChunk) -> Self {
-        let error = self.with_fact("row_group_indexes", format_row_groups(chunk));
-        if chunk.reads_all_row_groups {
-            error
-        } else {
-            error.with_fact("row_group_count", chunk.row_group_indexes.len())
-        }
-    }
-
-    fn with_row_group_facts_if_absent(self, chunk: &SourceChunk) -> Self {
-        let error = self.with_fact_if_absent("row_group_indexes", format_row_groups(chunk));
-        if chunk.reads_all_row_groups {
-            error
-        } else {
-            error.with_fact_if_absent("row_group_count", chunk.row_group_indexes.len())
-        }
+pub(in crate::exec) fn attach_row_group_facts_if_absent(error: QueryError, chunk: &SourceChunk) -> QueryError {
+    let error = error.with_fact_if_absent("row_group_indexes", format_row_groups(chunk));
+    if chunk.reads_all_row_groups {
+        error
+    } else {
+        error.with_fact_if_absent("row_group_count", chunk.row_group_indexes.len())
     }
 }
 

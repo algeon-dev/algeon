@@ -1,4 +1,8 @@
-use super::*;
+use std::collections::BTreeSet;
+
+use super::{
+    CapabilityDecision, EdgeConsumer, EdgeContract, NodeCapability, NodeId, SubgraphInvariant, SubgraphInvariantKind,
+};
 
 pub(in crate::capability::admission) fn node_ids_fact(node_ids: &[NodeId]) -> String {
     if node_ids.is_empty() {

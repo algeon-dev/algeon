@@ -1,6 +1,13 @@
 //! Service-owned runtime resources.
 
-use super::*;
+use std::{collections::HashMap, sync::Arc, time::Instant};
+
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
+
+use crate::runtime::{
+    CacheFillByteBudget, DeploymentIoCapability, GpuExecutionPool, GpuExecutionQueryTracker,
+    cache_fill::CacheFillConcurrencyGate, object_store::SourceObjectStoreRegistry,
+};
 
 /// Cache resources owned by one installed backend resource generation.
 ///

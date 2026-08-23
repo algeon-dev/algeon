@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    CapabilityDecision, EdgeContract, InvariantSelector, NodeCapability, PlanNode, QueryPlan, SubgraphInvariant,
+    closed_multi_join_subgraph_structure_decision, collect_reachable_node_ids, first_reachable_edge_rejection,
+    first_reachable_node_rejection, multi_join_aggregate_over_join_subplan_topk_shape_decision,
+    root_join_shape_decision, single_join_post_root_pipeline_shape_decision, solved_invariant_decision,
+};
 
 pub(in crate::capability) fn analyze_root_join_admission(
     plan: &QueryPlan,

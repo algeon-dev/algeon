@@ -1,4 +1,4 @@
-use std::ops::ControlFlow;
+use std::{ops::ControlFlow, sync::Arc, time::Instant};
 
 use datafusion::{
     common::{

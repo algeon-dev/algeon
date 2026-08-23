@@ -891,10 +891,6 @@ pub(super) struct PhysicalAllocatorPressureEvidence {
 }
 
 impl PhysicalAllocatorPressureEvidence {
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "validation measurement aggregation; each parameter is one independently reported measurement axis"
-    )]
     pub(super) fn from_observations(
         pressure: PhysicalPressureLeaseFacts,
         release: PhysicalPressureLeaseFacts,
@@ -1487,10 +1483,6 @@ impl MeasuredAggregate {
 
     /// The complete reduction. `steps` carries the per-step windows; an
     /// empty slice is a single-phase run and emits no per-step section.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "validation measurement aggregation; each parameter is one independently reported measurement axis"
-    )]
     pub(super) fn reduce_full(
         observations: &[AttemptObservation],
         devices: &[DeviceConfiguration],

@@ -13,15 +13,15 @@ use std::{
 };
 
 use cugraph::{ParkedGraph, Transposed, Transposition};
+use nexus_query_planning::{
+    error::{QueryError, QueryErrorCode, Result},
+    plan::{GraphResidencyOrientation, ResidentGraphKey},
+};
 
 use super::{
     CacheExecutionReservation, CacheGraphActivity, CacheResidency, CacheResidencyChargeTransaction, CacheResidencyPin,
 };
-use crate::{
-    error::{QueryError, QueryErrorCode, Result},
-    plan::{GraphResidencyOrientation, ResidentGraphKey},
-    runtime::gpu::DeviceLedger,
-};
+use crate::runtime::gpu::DeviceLedger;
 
 const OPERATION: &str = "nexus_query_engine.runtime.cache.resident_graph";
 

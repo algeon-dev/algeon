@@ -1,4 +1,11 @@
-use super::*;
+use std::collections::{BTreeMap, BTreeSet};
+
+use super::{
+    CapabilityReason, DataType, Field, NativeParquetColumnRequirements, NativeParquetFieldIdReadBinding,
+    PARQUET_FIELD_ID_META_KEY, Schema, TableFormat, TableFormatColumnMapping, TableFormatColumnSource,
+    TableFormatScanPlan, table_format_column_mapping_by_name, table_format_data_file_footer_arrow_schema,
+    table_format_footer_field_matches_mapping,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct TableFormatFieldIdReadBinding {

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::*;
 
 /// Stable owner contract for metadata-only filtered-join allocation sizing.

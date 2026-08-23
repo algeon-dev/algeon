@@ -1,7 +1,52 @@
 //! QueryService constructors and config preflight validation.
 
-use super::*;
-use crate::runtime::backend_metrics::BackendMetricsStore;
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, AtomicU64},
+    },
+};
+
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
+use tokio::sync::Notify;
+
+use super::{
+    super::{
+        admission::AdmissionState,
+        config::{QueryExecutionConfig, QueueBounds},
+        device_waiters::{notify_shared_device_admission_available, register_shared_device_admission_waiters},
+        resources::QueryServiceResources,
+    },
+    QueryService, QueryServiceInner,
+};
+#[cfg(test)]
+use crate::runtime::gpu::GpuInventory;
+use crate::runtime::{
+    CacheFillByteBudget, DeploymentIoCapability, DeviceLedger, GpuDeviceMemoryLimit, GpuMemoryOwnership,
+    NexusGpuInventory,
+    allocator_correlation::AllocatorEventCorrelationIndex,
+    backend_core::{
+        ConstructionResourceJournal, GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe,
+        GpuBackendControllerDraft, GpuBackendDeviceConfig,
+    },
+    backend_metrics::BackendMetricsStore,
+    cache_fill::{CacheFillConcurrencyGate, default_lakehouse_cache_fill_budget_bytes},
+    context::QueryServiceEpoch,
+    gpu::{
+        DeviceOwnerToken, normalize_device_ordinals,
+        registry::{
+            DeviceRegistry, DeviceRegistryCapacityPolicy, DeviceRegistryConfig, DeviceRegistryInstallProfile,
+            DeviceRegistryMemoryPartition, ResolvedDeviceInstallPlans,
+        },
+    },
+    gpu_execution_pool::{GpuExecutionPool, GpuExecutionQueryTracker},
+    object_store::{SourceObjectStoreRegistry, default_object_store_control_runtime},
+};
+#[cfg(any(test, feature = "test-hooks"))]
+use crate::runtime::{backend_core::GpuBackendCoreDraft, gpu::claim_live_backend};
 
 impl QueryService {
     #[doc(hidden)]

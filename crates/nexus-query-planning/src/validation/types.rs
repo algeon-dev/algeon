@@ -1,6 +1,6 @@
 use arrow::datatypes::{DataType as ArrowDataType, TimeUnit};
 
-use super::*;
+use super::{BinaryOp, QueryError, QueryErrorCode, Result};
 use crate::datatypes::{
     is_narrow_decimal_carry_type, is_supported_arrow_implicit_cast, is_supported_list_carry_type,
     is_timestamp_with_timezone,

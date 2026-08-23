@@ -31,17 +31,19 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_chunk(
     let cudf_chunk =
         cudf::io::source::SourceChunk::from_source_file_selection(&cudf_source, 0, chunk.chunk_index, row_groups)
             .map_err(|error| {
-                cudf_error_for_chunk(
-                    "nexus_query_engine.local_parquet_chunk.descriptor_cudf",
-                    "failed to convert native local parquet source chunk descriptor into cudf source chunk",
-                    error,
+                attach_row_group_facts(
+                    cudf_error_for_chunk(
+                        "nexus_query_engine.local_parquet_chunk.descriptor_cudf",
+                        "failed to convert native local parquet source chunk descriptor into cudf source chunk",
+                        error,
+                        chunk,
+                    )
+                    .with_fact("path", parquet_chunk_path_fact(chunk))
+                    .with_fact("chunk_index", chunk.chunk_index)
+                    .with_fact("file_index", chunk.file_index)
+                    .with_fact("read_columns", chunk.read_columns.len()),
                     chunk,
                 )
-                .with_fact("path", parquet_chunk_path_fact(chunk))
-                .with_fact("chunk_index", chunk.chunk_index)
-                .with_fact("file_index", chunk.file_index)
-                .with_fact("read_columns", chunk.read_columns.len())
-                .with_row_group_facts(chunk)
             })?;
     let predicate = lower_source_reader_predicate(context, source, &cudf_source, &cudf_chunk)?;
     let cudf_source = attach_cudf_source_reader_predicate(
@@ -115,18 +117,20 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_chunk_batch(
                 row_groups,
             )
             .map_err(|error| {
-                cudf_error_for_chunk(
-                    "nexus_query_engine.local_parquet_chunk_batch.descriptor_cudf",
-                    "failed to convert native local parquet source chunk batch descriptor into cudf source chunk",
-                    error,
+                attach_row_group_facts(
+                    cudf_error_for_chunk(
+                        "nexus_query_engine.local_parquet_chunk_batch.descriptor_cudf",
+                        "failed to convert native local parquet source chunk batch descriptor into cudf source chunk",
+                        error,
+                        chunk,
+                    )
+                    .with_fact("path", parquet_chunk_path_fact(chunk))
+                    .with_fact("chunk_index", chunk.chunk_index)
+                    .with_fact("file_index", chunk.file_index)
+                    .with_fact("batch_file_index", batch_file_index)
+                    .with_fact("read_columns", chunk.read_columns.len()),
                     chunk,
                 )
-                .with_fact("path", parquet_chunk_path_fact(chunk))
-                .with_fact("chunk_index", chunk.chunk_index)
-                .with_fact("file_index", chunk.file_index)
-                .with_fact("batch_file_index", batch_file_index)
-                .with_fact("read_columns", chunk.read_columns.len())
-                .with_row_group_facts(chunk)
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -254,12 +258,14 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_for_chunk(
         "nexus_query_engine.local_parquet_chunk.source_cudf",
     )
     .map_err(|error| {
-        error
-            .with_fact("path", parquet_chunk_path_fact(chunk))
-            .with_fact("chunk_index", chunk.chunk_index)
-            .with_fact("file_index", chunk.file_index)
-            .with_fact("read_columns", chunk.read_columns.len())
-            .with_row_group_facts(chunk)
+        attach_row_group_facts(
+            error
+                .with_fact("path", parquet_chunk_path_fact(chunk))
+                .with_fact("chunk_index", chunk.chunk_index)
+                .with_fact("file_index", chunk.file_index)
+                .with_fact("read_columns", chunk.read_columns.len()),
+            chunk,
+        )
     })
 }
 

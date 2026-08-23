@@ -35,8 +35,21 @@ mod shape;
 mod types;
 
 use distributed_aggregate::peel_distributed_aggregate_pair_if_present;
-use shape::*;
-pub(in crate::native) use types::*;
+use shape::{
+    SORT_PRESERVING_MERGE_FETCH_INPUT_SHAPE, SORT_PRESERVING_MERGE_FETCH_SHAPE, SORT_PRESERVING_MERGE_SHAPE,
+    SORT_PRESERVING_MERGE_SORT_SHAPE, UNSUPPORTED_NATIVE_PLAN_SHAPE, global_aggregate_candidate,
+    global_aggregate_candidate_for_input, input_root_candidate, native_stack_candidate,
+    native_stack_candidate_for_input,
+};
+pub(in crate::native) use types::{
+    NativeAggregateShapeKind, NativePlanRejection, NativeStackRoot, NormalizedNativeAggregate,
+    NormalizedNativeAggregateRoot, NormalizedNativeCrossJoin, NormalizedNativeFilter,
+    NormalizedNativeGpuResidentSource, NormalizedNativeHashJoin, NormalizedNativeInput, NormalizedNativeInputRoot,
+    NormalizedNativeLimit, NormalizedNativeLiteralSource, NormalizedNativeNestedLoopJoin, NormalizedNativePlan,
+    NormalizedNativeProjection, NormalizedNativeRoot, NormalizedNativeScan, NormalizedNativeSort,
+    NormalizedNativeSortExprs, NormalizedNativeSource, NormalizedNativeUnion, NormalizedNativeWindow,
+    NormalizedNativeWindowExec, PostAggregateProjectionOrder,
+};
 
 pub(super) fn normalize_native_plan(plan: &dyn ExecutionPlan) -> Result<NormalizedNativePlan<'_>, NativePlanRejection> {
     let plan = peel_repartition(plan);

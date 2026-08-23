@@ -8,18 +8,22 @@
 
 use std::collections::BTreeSet;
 
+mod executor;
+mod frame_stream;
+mod helpers;
+mod resource;
 mod scheduler;
 mod state;
-mod tasks;
 
+pub use executor::CompiledGpuTaskExecutor;
+pub(in crate::exec::bounded) use frame_stream::{ResidentFrameStreamPayload, ResidentFrameStreamSource};
+#[cfg(test)]
+pub(crate) use frame_stream::{ResidentFrameStreamProducerTestHarness, YieldedFrameCounterTestHarness};
+pub use resource::CompiledGpuResource;
 pub use scheduler::{
     CompiledPipelineScheduler, CompiledSchedulingCycle, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput,
 };
 pub use state::{CompiledPipelineState, ReleasedCompiledResource};
-pub use tasks::{CompiledGpuResource, CompiledGpuTaskExecutor};
-pub(in crate::exec::bounded) use tasks::{ResidentFrameStreamPayload, ResidentFrameStreamSource};
-#[cfg(test)]
-pub(crate) use tasks::{ResidentFrameStreamProducerTestHarness, YieldedFrameCounterTestHarness};
 
 use crate::{
     error::Result,
@@ -236,9 +240,13 @@ mod topology_tests {
     use super::*;
     use crate::{
         capability::{ContractQuality, ContractStatus, ReservationRequirementScope},
-        observability::{PlanExecutionId, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryLifecycle},
+        observability::{
+            PlanExecutionId, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryLifecycle,
+            RuntimeTopologyRecord,
+        },
         pipeline::{
-            PipelineEdge, PipelineEdgeId, PipelineEdgeKind, PipelineTask, ReservationGate, ReservationGateId,
+            CompiledPipeline, PipelineEdge, PipelineEdgeId, PipelineEdgeKind, PipelineTask, PipelineTaskId,
+            PipelineTaskKind, ReservationGate, ReservationGateId, ReservationGateOwner, ResidentLifetime,
             ResidentResource, ResidentResourceId, SinkBoundary, SinkBoundaryKind,
         },
         runtime::ReservationKind,

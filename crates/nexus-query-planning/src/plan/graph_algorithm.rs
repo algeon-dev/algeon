@@ -4,8 +4,9 @@
 //! options, edge-list normalization, parameter defaults, and result schemas.
 //! The IR can be built without the optional cuGraph feature; execution support
 //! is selected later by the adapter/runtime.
+use std::sync::Arc;
 
-use super::*;
+use super::{Expr, Field, NodeId, PlanNode, ProjectionNode, QueryPlan, Schema, SchemaRef};
 
 mod centrality;
 mod community;

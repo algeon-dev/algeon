@@ -1,6 +1,13 @@
 //! Process-wide device-slot waiter registration and wakeups.
 
-use super::*;
+use std::{
+    collections::HashMap,
+    sync::{Arc, Mutex, OnceLock, Weak},
+};
+
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
+
+use super::service::QueryServiceInner;
 
 pub(super) fn register_shared_device_admission_waiters(inner: &Arc<QueryServiceInner>) -> Result<()> {
     let Some(resources) = &inner.resources else {

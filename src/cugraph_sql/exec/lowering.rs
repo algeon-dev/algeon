@@ -1,4 +1,24 @@
-use super::{node::projected_schema, *};
+use std::sync::Arc;
+
+use super::{
+    BinaryOp, CaseWhen, CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBetweennessSeeds,
+    CugraphBfsOutputMode, CugraphGpuFrame, CugraphGraphConstructionPolicy, CugraphKCoreDegreeType,
+    CugraphResultPlanOptions, CugraphVertexSelector, DataFusionError, DataType, Error, ErrorCode, ExecutionContext,
+    ExecutionPlan, GpuDataFrame, GpuResidentInputMap, GpuResidentSource, GpuResultHandle, GraphAlgorithm,
+    GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams, GraphBfsEndpointPolicy, GraphBfsLeader,
+    GraphBfsParams, GraphConstructionOptions, GraphConstructionPolicy, GraphCoreNumberParams, GraphDegreesAllParams,
+    GraphEcgParams, GraphEdgeBetweennessCentralityParams, GraphEdgeColumnBindings, GraphEigenvectorCentralityParams,
+    GraphExecutionMetrics, GraphForceAtlas2InitialPositionsInput, GraphForceAtlas2Params,
+    GraphForceAtlas2VertexAttributesInput, GraphHitsParams, GraphInDegreesAllParams, GraphKCoreDegreeType,
+    GraphKCoreParams, GraphKatzCentralityParams, GraphLeidenParams, GraphLouvainParams, GraphMstParams,
+    GraphOutDegreesAllParams, GraphPageRankParams, GraphPersonalizedPageRankParams, GraphSccParams,
+    GraphSpectralClusteringParams, GraphSsspParams, GraphSsspSource, GraphTriangleCountAllParams, GraphWccParams,
+    LimitSpec, LiteralValue, NativeExpr, NativeGraphBetweennessSeeds, NativeGraphBfsPredicateInputs,
+    NativeGraphEdgePredicateInput, NativeGraphPageRankPersonalizationInput, NativeGraphPredicateInput,
+    ProjectionOutput, QueryOutput, QueryPlanBuilder, Result, SchemaRef, SortExpr, SortSpec, SourceNode,
+    add_logical_mapping_plan, decode_logical_graph_result, execute_query_plan_with_gpu_inputs_observed,
+    finalize_graph_query_outcome, graph_uses_logical_mapping, is_bfs_path_output, node::projected_schema, plan_error,
+};
 
 /// The graph-fragment definition shared by preflight, plan construction, and
 /// capability proof: algorithm spec, edge and predicate schemas with row
@@ -741,7 +761,8 @@ mod tests {
     use super::*;
     use crate::cugraph_sql::{
         CugraphBfsOutputMode, CugraphBfsOutputOptions, CugraphBfsParams, CugraphBfsSource,
-        CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphTableReference, result_schema_for_params,
+        CugraphGraphConstructionPolicy, CugraphGraphOptions, CugraphTableReference, exec::PlanNode,
+        result_schema_for_params,
     };
 
     fn bfs_spec(source: CugraphBfsSource, output_mode: CugraphBfsOutputMode) -> CugraphAlgorithmSpec {

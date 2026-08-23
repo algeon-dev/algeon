@@ -3,12 +3,7 @@
 //! This module consumes `iceberg-rust` planning output and preserves table
 //! format facts at the adapter boundary. It does not execute Arrow readers.
 
-use std::{
-    collections::{BTreeMap, HashMap, HashSet},
-    fmt,
-    sync::Arc,
-    time::Duration,
-};
+use std::{fmt, sync::Arc, time::Duration};
 
 use arrow::datatypes::{DataType, Field, FieldRef, Fields, Schema, SchemaRef, UnionFields};
 use async_trait::async_trait;
@@ -78,12 +73,17 @@ mod predicate;
 mod schema;
 mod tasks;
 
-use footer::*;
-use predicate::*;
+use footer::{
+    remote_iceberg_parquet_footer, remote_iceberg_parquet_footer_row_count, scan_plan_needs_field_id_footer_schema,
+};
+use predicate::{datafusion_filters_to_table_format_predicate, table_format_predicate_to_iceberg_predicate};
 pub use schema::iceberg_schema_to_datafusion_arrow_schema;
-use schema::*;
+use schema::{iceberg_field_to_arrow_data_type, iceberg_type_to_arrow_data_type, strip_arrow_schema_metadata};
 pub use tasks::iceberg_file_scan_tasks_to_table_format_scan_plan;
-use tasks::*;
+use tasks::{
+    attach_native_parquet_source_strategies, attach_remote_delete_file_row_counts_for_scan_limit,
+    attach_remote_footer_schemas_for_field_id_proof, trim_predicate_free_scan_limit_data_files,
+};
 
 type SharedTableFormatPlanner = Arc<dyn TableFormatPlanner + Send + Sync>;
 

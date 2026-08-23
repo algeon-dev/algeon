@@ -3,8 +3,11 @@
 //! This module is the public vocabulary for local node, edge, and subgraph
 //! proofs. Rejection reasons and fact keys are report-facing stable strings;
 //! add new labels instead of reusing old whole-plan family names.
+use std::collections::BTreeMap;
 
-use super::*;
+use super::{
+    AggregateFunction, AggregateStrategyCapability, GraphAlgorithm, JoinSide, JoinType, NodeId, ReservationKind,
+};
 use crate::plan::{EdgeDedupStrategy, EdgeWeightCombiner};
 
 /// Whether the engine currently proves a bounded contract.

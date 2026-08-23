@@ -1,5 +1,5 @@
 use std::{
-    sync::mpsc,
+    sync::{atomic::Ordering, mpsc},
     time::{Duration, Instant},
 };
 

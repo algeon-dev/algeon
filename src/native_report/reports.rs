@@ -1,6 +1,16 @@
+use std::{fmt::Write, sync::Arc};
+
 use nexus_query_engine::mode::StatisticalAggregateExecutionMode;
 
-use super::*;
+use super::{
+    ExecutionPlan, FinalPlanDisposition, NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
+    NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NativeDataFusionExecutionRow, NativeDataFusionExecutionWorkloadItem,
+    NativeDataFusionPlanningOutcome, NativeDataFusionPlanningRow, NativeDataFusionPlanningWorkloadItem,
+    NativeDataFusionRuntime, NativeDataFusionRuntimeSummary, NativeFallbackPressureOutcome, NativeFallbackPressureRow,
+    NativeFallbackPressureWorkloadItem, NexusNativeExecutionConfig, NexusNativePhysicalOptimizerRule, TsvRow,
+    WorkloadDatasetMetadata, datafusion_execution_rows_for_item, datafusion_planning_rows_for_item,
+    report_rows_for_item, write_workload_dataset_metadata,
+};
 
 /// In-memory fallback-pressure report.
 ///
@@ -344,6 +354,7 @@ mod tests {
     use datafusion::physical_plan::metrics::MetricsSet;
 
     use super::*;
+    use crate::native_report::{NativeDataFusionExecutionMetrics, NativeDataFusionRuntimeOutcome};
 
     #[test]
     fn server_execution_template_preserves_runtime_column_alignment() {

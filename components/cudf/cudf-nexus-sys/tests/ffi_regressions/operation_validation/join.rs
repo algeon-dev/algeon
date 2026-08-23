@@ -1,3 +1,5 @@
+use std::{os::raw::c_void, ptr};
+
 use super::*;
 
 fn column_len(col: cudf_sys::cudf_column_handle) -> usize {

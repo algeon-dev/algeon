@@ -1,7 +1,8 @@
-use crate::{
-    metrics::QueryMetrics,
-    triage::{TriageCode, TriageEvidenceRef, TriageSeverity, TriageSignal, TriageSummary, TriageVerdict},
+use nexus_query_planning::triage::{
+    TriageCode, TriageEvidenceRef, TriageSeverity, TriageSignal, TriageSummary, TriageVerdict,
 };
+
+use crate::metrics::QueryMetrics;
 
 impl QueryMetrics {
     /// Builds a compact triage summary from runtime metrics.

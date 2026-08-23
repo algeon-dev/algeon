@@ -1,3 +1,5 @@
+use std::{os::raw::c_void, ptr};
+
 use super::*;
 
 #[test]

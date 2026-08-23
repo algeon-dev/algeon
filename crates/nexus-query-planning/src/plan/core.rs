@@ -2,8 +2,12 @@
 //! [`PlanNode`]. The DAG is append-only and ends at an explicit
 //! [`ResultSink`]; native execution is GPU-resident until the sink chooses
 //! otherwise.
+use std::{fmt, sync::Arc};
 
-use super::*;
+use super::{
+    AggregateNode, EdgeNormalizeNode, FilterNode, GraphAlgorithmNode, JoinNode, LimitNode, PlanFacts, ProjectionNode,
+    ResultSink, SchemaBehavior, SchemaRef, SortNode, SortSpec, SourceNode, UnionNode, VectorAlgorithmNode, WindowNode,
+};
 use crate::{
     capability::KeyedHashJoinStrategyOptions,
     dynamic_filter::{DynamicFilterExecutionOptions, DynamicFilterRoute},
@@ -12,7 +16,7 @@ use crate::{
 /// DataFusion-free query plan consumed by the native cuDF execution engine.
 ///
 /// A plan is an append-only DAG of [`QueryNode`]s. [`NodeId`] values are indexes
-/// into `nodes` and are stable once emitted by [`QueryPlanBuilder`]; callers must
+/// into `nodes` and are stable once emitted by [`crate::plan::QueryPlanBuilder`]; callers must
 /// not infer any execution scheduling guarantee beyond the dependency edges
 /// recorded by each node.
 ///
@@ -65,7 +69,7 @@ impl QueryPlan {
 
     /// Returns the root node.
     ///
-    /// Plans built through [`QueryPlanBuilder`] guarantee that the root exists.
+    /// Plans built through [`crate::plan::QueryPlanBuilder`] guarantee that the root exists.
     pub fn root_node(&self) -> &QueryNode {
         self.node(self.root).expect("query plan root node must exist")
     }
@@ -392,7 +396,7 @@ pub enum PlanNode {
     Filter(FilterNode),
     /// Evaluates expressions and produces a projection schema.
     Projection(ProjectionNode),
-    /// Groups and aggregates rows according to an [`AggregateSpec`].
+    /// Groups and aggregates rows according to an [`crate::expr::AggregateSpec`].
     Aggregate(AggregateNode),
     /// Appends native window function outputs to each input row.
     Window(WindowNode),

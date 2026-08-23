@@ -2,16 +2,16 @@
 
 use std::sync::Arc;
 
+use nexus_query_planning::{
+    admission::AttemptRequirement,
+    error::{QueryError, QueryErrorCode, Result},
+};
+
 use super::{
     DeviceFacts, DeviceLedger, DeviceMemoryFailureReport, DeviceMemoryFailureTracker, MemoryGrant,
     registry::EngineDeviceHealthIdentity,
 };
-use crate::{
-    admission::AttemptRequirement,
-    error::{QueryError, QueryErrorCode, Result},
-    observability::AdmissionRequestId,
-    runtime::ServiceStreamPool,
-};
+use crate::{observability::AdmissionRequestId, runtime::ServiceStreamPool};
 
 /// Service runtime state for one CUDA device ordinal.
 #[derive(Debug, Clone)]

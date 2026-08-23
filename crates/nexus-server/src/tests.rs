@@ -1,4 +1,7 @@
-use std::sync::Barrier;
+use std::{
+    sync::{Arc, Barrier},
+    time::Instant,
+};
 
 use datafusion::execution::SessionStateBuilder;
 

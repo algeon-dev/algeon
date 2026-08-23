@@ -13,7 +13,7 @@ use std::{
     time::Instant,
 };
 
-use crate::error::{QueryError, QueryErrorCode, Result};
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
 
 const COUNT_BITS: u32 = (usize::BITS - 1) / 2;
 const OBSERVATION_COUNT_MASK: usize = (1usize << COUNT_BITS) - 1;

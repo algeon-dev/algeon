@@ -1,8 +1,4 @@
-#[cfg(feature = "iceberg")]
-use std::fmt;
 use std::{
-    collections::BTreeMap,
-    fs,
     net::SocketAddr,
     path::PathBuf,
     time::{Duration, Instant},

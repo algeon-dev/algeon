@@ -1,11 +1,16 @@
-use std::sync::{
-    Barrier,
-    atomic::{AtomicUsize, Ordering},
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc, Barrier, Weak,
+        atomic::{AtomicUsize, Ordering},
+    },
+    time::{Duration, Instant},
 };
+
+use nexus_query_planning::graph_memory::GraphMemoryCalibrationOverride;
 
 use super::{admission::AdmissionTicket, *};
 use crate::{
-    graph_memory::GraphMemoryCalibrationOverride,
     observability::{
         AdmissionLifecycleState, AttemptFailureCode, AttemptFailureStatus, GpuJobLifecycleState, PlanExecutionId,
         QueryBoundaryKind, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeObservationPayload,

@@ -1,4 +1,4 @@
-use super::*;
+use super::{DynamicFilterConsumer, DynamicFilterProducer, DynamicFilterRoute, JoinSide, NodeId, PlanNode, QueryPlan};
 
 pub(super) fn dynamic_filter_route_equivalent(left: &DynamicFilterRoute, right: &DynamicFilterRoute) -> bool {
     left.producer == right.producer

@@ -4,13 +4,13 @@ use arrow::datatypes::{DataType as ArrowDataType, SchemaRef};
 use cudf::ops::binary::{BinaryOperator, infer_binary_output_dtype};
 
 use super::{
+    BinaryOp, Expr, LiteralValue, QueryError, QueryErrorCode, Result, cudf_dtype_from_arrow_type,
     types::{
         is_decimal_type, is_integral_type, require_arithmetic_type, require_boolean, require_comparable_types,
         require_compatible_types, require_date_or_timestamp, require_integral_type, require_scalar_operator_value,
         require_string, require_timestamp_preserving_output, require_timestamp_second,
         temporal_duration_binary_output_type,
     },
-    *,
 };
 use crate::{
     datatypes::{is_supported_arrow_cast, is_supported_arrow_type},

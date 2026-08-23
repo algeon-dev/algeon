@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use super::*;
 
 pub(super) async fn register_tpch_tables(ctx: &SessionContext, root: &Path) -> DataFusionResult<()> {

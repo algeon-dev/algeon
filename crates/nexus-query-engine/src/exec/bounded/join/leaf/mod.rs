@@ -1,6 +1,20 @@
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::BTreeSet;
 
-use super::*;
+use super::{
+    ActiveReservation, BoundedExecutionAttempt, BoundedSourceBatchingPolicy, ExecutionBudgetToken, ExecutionContext,
+    FilterNode, GpuDataFrame, GpuResidentInputMap, Instant, LocalParquetFile, LocalParquetSource, MemoryControlPolicy,
+    MemoryReservationRequest, NodeId, ProjectionNode, QueryError, QueryErrorCode, QueryMetrics, ReservationKind,
+    ResidentGpuFrame, Result, SourceAdjacentAggregateChunkCapHints, SourceChunk, SourceChunkBatch,
+    SourceChunkPlanningPolicy, SourceTaskMemoryModel, annotate_source_chunk_batching_reasons,
+    apply_source_adjacent_aggregate_chunk_caps, chunk_requested_bytes, chunk_retry_facts,
+    execute_bounded_generic_local_parquet_source, execute_filter_with_budget, execute_projection_with_budget,
+    execution_budget_token_for_boundary, execution_overrides, is_retryable_chunk_error,
+    join_leaf_prefetch_requested_bytes, observe_device_memory_bytes,
+    plan_local_parquet_source_chunks_with_execution_context, plan_source_chunk_batches,
+    projection_regexp_replace_work_reservation_bytes, read_gpu_resident_source, read_literal_batch_source,
+    record_bounded_parquet_source_metrics, record_chunk_retry_error, split_retryable_chunk, unsupported_bounded_shape,
+    validate_local_parquet_source,
+};
 use crate::{
     dynamic_filter::{
         DynamicFilter, DynamicFilterConsumerLowering, DynamicFilterExecutionOptions, DynamicFilterId,
@@ -15,7 +29,7 @@ use crate::{
             try_grow_source_read_reservation_for_budget_correction,
         },
         source::{
-            ScheduledLocalParquetRead, SourceChunkRowGroupFacts, read_local_parquet_chunk_batch,
+            ScheduledLocalParquetRead, read_local_parquet_chunk_batch,
             read_local_parquet_chunk_with_reader_dynamic_filter_count, read_local_parquet_source,
         },
     },

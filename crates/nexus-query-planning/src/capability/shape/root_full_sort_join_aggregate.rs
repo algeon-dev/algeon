@@ -1,4 +1,12 @@
-use super::*;
+use std::collections::{BTreeMap, BTreeSet};
+
+use super::{
+    CapabilityDecision, JoinExecutionCapability, JoinSide, JoinType, KeylessConditionalJoinKind, NodeId, PlanNode,
+    QueryPlan, RootFullSortJoinAggregateShape, RootFullSortJoinAggregateSubcontract, WindowFunction,
+    collect_reachable_node_ids, collect_reachable_node_ids_from, consumer_nodes_for_reachable,
+    join_node_execution_capability, join_node_with_missing_reason, node_operator_fact,
+    peel_resident_unary_chain_for_capability,
+};
 use crate::plan::{WindowFrame, WindowNode};
 
 pub(in crate::capability) fn root_full_sort_join_aggregate_shape_decision(

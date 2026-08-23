@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::*;
 
 fn prepared_host_leaf_or_string_column_projection_from_view(

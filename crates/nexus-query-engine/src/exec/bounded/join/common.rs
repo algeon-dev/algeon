@@ -2,7 +2,12 @@ use std::collections::BTreeMap;
 
 use arrow::datatypes::DataType as ArrowDataType;
 
-use super::*;
+use super::{
+    ActiveReservation, BoundedExecutionAttempt, DataFrame, GpuDataFrame, JoinNode, JoinOutputColumn,
+    JoinOutputColumnUpperBoundInput, JoinSide, JoinType, MemoryReservationRequest, NodeId, QueryError, QueryErrorCode,
+    ReservationKind, ResidentGpuFrame, Result, execution_budget_token_for_boundary, join_input_columns_with_order,
+    join_output_upper_bound_bytes, join_side_projection_with_order, observe_device_memory_bytes, select_join_input,
+};
 
 pub(in crate::exec::bounded) struct BoundedJoinSideFrame {
     pub(in crate::exec::bounded) frame: DataFrame,

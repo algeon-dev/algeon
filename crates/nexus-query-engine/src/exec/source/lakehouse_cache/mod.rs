@@ -1,4 +1,4 @@
-use super::*;
+use super::{DataFrame, ExecutionContext, LocalParquetFile, LocalParquetSource, SourceChunk};
 
 mod cache;
 mod maintenance;
@@ -42,11 +42,12 @@ mod tests {
     use super::*;
     use crate::{
         chunk::SourceChunkBatch,
+        plan::NodeId,
         runtime::SourceChunkPlanningMode,
         source::{
             CredentialMode, LakehouseCacheFillMode, LakehouseCacheStatus, LocalParquetFile, MissingColumn,
             ParquetReaderDecimalType, ParquetReaderDecimalTypeId, ParquetSourceLocation, ResolvedParquetSource,
-            SourceColumnRef,
+            SourceColumnRef, parquet_file_path_fact, parquet_file_stable_id_fact,
         },
     };
 

@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    CapabilityDecision, NodeId, PlanNode, ProjectionGlobalLimitShape, QueryPlan, collect_reachable_node_ids_from,
+    node_operator_fact,
+};
 use crate::capability::aggregate::{AggregateStateContract, aggregate_state_contract};
 
 pub(in crate::capability) fn projection_global_limit_shape_decision(

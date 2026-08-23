@@ -1,4 +1,13 @@
-use super::*;
+use std::fs::File;
+
+use super::{
+    Array, BinaryOp, BooleanArray, DataType, Date32Array, DimensionKeyAccumulator, DimensionKeyFilter, Expr,
+    FileReader, Float32Array, Float64Array, Int32Array, Int64Array, KeyRange, LargeStringArray, LiteralValue,
+    LocalParquetSource, NodeId, ParquetRecordBatchReaderBuilder, PlanNode, ProjectionMask, QueryPlan, RecordBatch,
+    SerializedFileReader, SourceNode, StringArray, StringViewArray, UInt32Array, UInt64Array,
+    aggregate_group_output_name, reader_projection_indices, reader_projection_indices_for_exprs,
+    remap_unqualified_columns, selected_or_all_row_groups,
+};
 
 pub(super) fn dimension_scan_admitted(source: &LocalParquetSource, max_dimension_rows: u64) -> bool {
     let mut total_rows = 0u64;

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::*;
 
 fn prepare_from_column_view<'a>(

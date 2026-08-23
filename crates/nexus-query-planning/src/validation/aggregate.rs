@@ -1,6 +1,11 @@
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
-use super::*;
+use super::{
+    AggregateExpr, AggregateFunction, AggregateNode, AggregateSpec, ArrowDataType, AvgStateAliases, Expr, LiteralValue,
+    LoweredAggregate, QueryError, QueryErrorCode, Result, aggregate_spec_has_avg, aggregate_spec_has_distinct,
+    aggregate_spec_has_floating_statistical_aggregate, lower_aggregate_spec, lower_column_expr,
+    lower_final_aggregate_spec, lower_named_column_expr,
+};
 
 const GLOBAL_VALID_COUNT_STATE_ALIAS_PREFIX: &str = "__nexus_native_global_valid_count_";
 

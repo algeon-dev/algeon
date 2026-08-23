@@ -1,4 +1,18 @@
-use super::*;
+use super::{
+    BoundedCompiledJoinMaterializeOutput, BoundedExecutionAttempt, BoundedJoinSideFrame, CompiledMixedSizeData,
+    GpuDataFrame, Instant, JoinMaterializationTxn, JoinNode, JoinSide, JoinType, KeyedHashJoinStrategyOptions, NodeId,
+    PARTITIONED_MIXED_KEYED_RESIDUAL_STRATEGY, PartitionedJoinDriverPlan, PartitionedJoinInputStats,
+    PartitionedJoinOutputSummary, PartitionedJoinPartitionOutput, PartitionedJoinSide, PartitionedJoinSides,
+    ReservationKind, ResidentFrameStreamPayload, ResidentFrameStreamSource, ResidentGpuFrame, Result, VecDeque,
+    bounded_join_request, concatenate_streamed_hash_join_outputs, dataframe_mixed_join_options, execution_overrides,
+    join_index_error, join_side_output_upper_bound_bytes, lower_join_residual_predicate,
+    materialize_partitioned_join_partition_with_retry, observe_device_memory_bytes, partition_join_sides,
+    partitioned_join_target_bytes_for_context, partitioned_mixed_join_partition_count,
+    projected_output_columns_for_retained_sizing, reconcile_join_output_upper_bound,
+    record_partitioned_join_operator_metrics, record_partitioned_join_selection, record_partitioned_join_sides,
+    release_partitioned_join_side, release_streamed_join_outputs_reverse, residual_input_columns,
+    run_partitioned_join_driver, validate_partitioned_mixed_keyed_residual_join,
+};
 
 pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_mixed_keyed_residual_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,

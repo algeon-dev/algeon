@@ -3,8 +3,7 @@
 use std::fmt::Write;
 
 use arrow::datatypes::SchemaRef;
-
-use crate::{
+use nexus_query_planning::{
     source::{LocalParquetSource, ParquetReaderDecimalType, ResolvedParquetSource, SourceColumnRef},
     util::escape_kv_delimited,
 };
@@ -88,7 +87,7 @@ pub(super) fn push_resolved_source_contract(
 pub(super) fn push_position_delete_files(
     output: &mut String,
     label: impl AsRef<str>,
-    delete_files: &[crate::source::ParquetPositionDeleteFile],
+    delete_files: &[nexus_query_planning::source::ParquetPositionDeleteFile],
 ) {
     let label = label.as_ref();
     push_token(output, format!("{label}.len"), delete_files.len().to_string());
@@ -113,7 +112,7 @@ pub(super) fn push_position_delete_files(
 pub(super) fn push_equality_delete_files(
     output: &mut String,
     label: impl AsRef<str>,
-    delete_files: &[crate::source::ParquetEqualityDeleteFile],
+    delete_files: &[nexus_query_planning::source::ParquetEqualityDeleteFile],
 ) {
     let label = label.as_ref();
     push_token(output, format!("{label}.len"), delete_files.len().to_string());

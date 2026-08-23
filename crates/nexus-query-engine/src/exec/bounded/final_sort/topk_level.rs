@@ -1,4 +1,4 @@
-use super::*;
+use super::{BoundedExecutionAttempt, CommittedPartial};
 
 // Ownership action selected for one output slot of a top-k merge level.
 pub(super) enum TopKLevelItem {

@@ -14,7 +14,6 @@
 //! binaries. GPU runs must be wrapped in `flock /tmp/cudf-gpu.lock`.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
     error::Error,
     fs,
     io::Write as _,

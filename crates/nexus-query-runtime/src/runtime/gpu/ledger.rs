@@ -30,12 +30,16 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use serde::Serialize;
-
-use super::{DeviceCapabilities, DeviceResourceEnvelope, DeviceResourceProfile};
-use crate::{
+use nexus_query_planning::{
     admission::AttemptRequirement,
     error::{QueryError, QueryErrorCode, Result},
+};
+use serde::Serialize;
+
+use super::DeviceResourceProfile;
+#[cfg(any(test, feature = "test-hooks"))]
+use super::{DeviceCapabilities, DeviceResourceEnvelope};
+use crate::{
     observability::{AdmissionRequestId, AttemptId},
     runtime::context::QueryServiceResourceEpoch,
 };
@@ -436,7 +440,7 @@ impl DeviceLedger {
                 required_phase_floor_bytes: 0,
                 source_stage_bytes: None,
                 soft_working_set_hint_bytes: Some(soft_working_set_hint_bytes),
-                estimate_quality: crate::admission::EstimateQuality::Modeled,
+                estimate_quality: nexus_query_planning::admission::EstimateQuality::Modeled,
                 required_capabilities: Vec::new(),
                 owner_terms: Vec::new(),
                 bound_derivation: None,

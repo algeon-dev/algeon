@@ -3,8 +3,9 @@
 //! Join semantics, residual predicates, output projection, build-side choice,
 //! null equality, and durable build-cache identity are represented separately so
 //! optimizers and executors do not infer one contract from another.
+use std::fmt;
 
-use super::*;
+use super::{ColumnRef, Expr, NodeId};
 
 /// Binary join operation.
 ///

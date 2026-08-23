@@ -1,8 +1,4 @@
-use std::{
-    fs,
-    sync::Arc,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::{fs, sync::Arc};
 
 use arrow::{
     array::{ArrayRef, Decimal128Array},

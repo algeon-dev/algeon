@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    ActiveReservation, BoundedExecutionAttempt, BoundedJoinSideFrame, GpuHashJoinBuildHandle, Instant, JoinNode,
+    JoinSide, Result, keyed_hash_join_capable, release_bounded_join_side_frame,
+    stream::{proportional_join_stream_bytes, reusable_hash_join_stream_chunk_rows},
+    unsupported_bounded_shape, validate_executable_join_subset,
+};
 
 // Reusable build artifact plus the reservation that keeps its hash table resident.
 pub(in crate::exec::bounded) struct BoundedRootHashJoinBuildState {

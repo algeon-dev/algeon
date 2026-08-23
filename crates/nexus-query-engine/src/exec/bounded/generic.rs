@@ -1,8 +1,28 @@
-use super::*;
+use std::{sync::Arc, time::Instant};
+
+use super::{
+    ActiveReservation, BoundedExecutionAttempt, BoundedPlan, CommittedPartial, ExecutionBudgetToken, ExecutionContext,
+    FilterNode, GpuDataFrame, GpuResidentInputMap, GpuResidentSource, GpuResultHandle, LocalParquetSource,
+    MemoryReservationRequest, NodeId, PlanNode, ProjectionNode, QueryError, QueryErrorCode, QueryMetrics, QueryOutput,
+    QueryPlan, ReservationKind, ResidentGpuFrame, Result, ResultSink, SourceChunk, SourceChunkPlanningPolicy,
+    concatenate_source_read_outputs, execute_bounded_aggregate_to_frame, execute_compiled_bounded_aggregate_from_frame,
+    execute_edge_normalize, execute_filter_with_budget, execute_limit, execute_projection_with_budget,
+    execute_projection_with_budget_and_prepared, execute_sort, execute_source_adjacent_chunk_projection,
+    execute_source_adjacent_chunk_unary, execute_window, execution_budget_token_for_boundary, execution_overrides,
+    materialize_bounded_to_host, observe_device_memory_bytes, plan_local_parquet_source_chunks_with_execution_context,
+    projection_regexp_replace_prepare, read_gpu_resident_source, read_literal_batch_source,
+    read_local_parquet_chunks_required_only, read_local_parquet_chunks_required_only_with_observation,
+    reject_bounded_join_plan, release_source_read_outputs_reverse, unsupported_bounded_shape,
+    validate_local_parquet_source,
+};
+#[cfg(feature = "cugraph")]
+use super::{DataFrame, execute_graph_algorithm_sanitized, graph_preparation_bypass_input};
 #[cfg(feature = "cugraph")]
 use crate::exec::graph_algorithm::{
     bounded_betweenness::*, diagnostics::*, graph_empty_input_prevalidated, memory::*, statistics::*,
 };
+#[cfg(not(feature = "cugraph"))]
+use crate::exec::graph_algorithm_feature_disabled;
 use crate::exec::source::{ScheduledLocalParquetReadOutput, record_bounded_parquet_source_metrics};
 
 pub(in crate::exec::bounded) fn execute_bounded_generic_query_plan(
@@ -302,7 +322,7 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_union(
 
 #[cfg(not(feature = "cugraph"))]
 fn execute_bounded_generic_graph_algorithm(
-    execution: &mut BoundedExecutionAttempt<'_>,
+    _execution: &mut BoundedExecutionAttempt<'_>,
     _plan: &QueryPlan,
     node_id: NodeId,
     graph: &crate::plan::GraphAlgorithmNode,

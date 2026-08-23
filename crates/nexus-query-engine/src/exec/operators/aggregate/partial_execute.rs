@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    time::{Duration, Instant},
+};
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use cudf::PreparedDataFrameGroupBy;

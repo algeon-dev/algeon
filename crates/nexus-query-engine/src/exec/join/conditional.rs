@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    EquiJoinIndices, JoinIndexInput, JoinNode, JoinType, QueryError, QueryErrorCode, Result,
+    dataframe_predicate_join_options, join_index_error, lower_join_residual_predicate,
+};
 
 pub(super) fn execute_conditional_join_indices(
     input: &JoinIndexInput<'_, '_>,

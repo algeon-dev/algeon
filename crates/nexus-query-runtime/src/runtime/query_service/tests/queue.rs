@@ -16,8 +16,8 @@ fn query_service_reports_overload_when_queue_is_full() {
 
     let error = service.admit_query().unwrap_err();
     assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
-    assert_eq!(error.kind(), crate::error::QueryErrorKind::ResourceExhausted);
-    assert_eq!(error.status(), crate::error::QueryErrorStatus::Temporary);
+    assert_eq!(error.kind(), nexus_query_planning::error::QueryErrorKind::ResourceExhausted);
+    assert_eq!(error.status(), nexus_query_planning::error::QueryErrorStatus::Temporary);
     assert_eq!(error.fact_value("reason"), Some("admission_queue_full"));
     assert_eq!(
         QueryAdmissionOutcome::from_error_with_queue_bounds(&error, service.service.queue_bounds()),
@@ -392,20 +392,8 @@ fn query_admission_waiter_timeout_reports_the_selected_device_requirement() {
 
     let mut waiter = service.enqueue_admission().expect("request enters the shared queue");
     let entries = DeviceAdmissionEntries::from([
-        (
-            0,
-            DeviceAdmissionEntry {
-                requirement: requirement(111, Some(111)),
-                admitted_reservation_envelope: None,
-            },
-        ),
-        (
-            1,
-            DeviceAdmissionEntry {
-                requirement: requirement(222, Some(222)),
-                admitted_reservation_envelope: None,
-            },
-        ),
+        (0, DeviceAdmissionEntry { requirement: requirement(111, Some(111)), admitted_reservation_envelope: None }),
+        (1, DeviceAdmissionEntry { requirement: requirement(222, Some(222)), admitted_reservation_envelope: None }),
     ]);
     waiter.device_entries = entries.clone();
     {
@@ -674,9 +662,8 @@ fn phase_d_cancellation_and_deadline_release_pending_reservations() {
     let cancellation_service = service.clone();
     let cancellation_token = cancellation.clone();
     let cancelled = std::thread::spawn(move || {
-        cancellation_service.admit_query_with_request(
-            QueryAdmissionRequest::new().with_execution_cancellation(cancellation_token),
-        )
+        cancellation_service
+            .admit_query_with_request(QueryAdmissionRequest::new().with_execution_cancellation(cancellation_token))
     });
     pause.wait_until_entered(Duration::from_secs(1));
     cancellation.cancel();
@@ -696,10 +683,8 @@ fn phase_d_cancellation_and_deadline_release_pending_reservations() {
         std::thread::yield_now();
     }
     deadline_pause.release();
-    let error = deadline_thread
-        .join()
-        .expect("deadline submission thread joins")
-        .expect_err("queue deadline wins conversion");
+    let error =
+        deadline_thread.join().expect("deadline submission thread joins").expect_err("queue deadline wins conversion");
     assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
     assert_eq!(service.pending_preflight_len(), 0);
 
@@ -771,7 +756,8 @@ fn phase_d_close_waits_for_pending_preflight_release() {
     assert!(receiver.recv_timeout(Duration::from_secs(2)).expect("close result arrives").is_ok());
     close.join().expect("close thread joins");
     assert_eq!(service.pending_preflight_len(), 0);
-    let error = pending.join().expect("pending submission joins").expect_err("closed service rejects pending conversion");
+    let error =
+        pending.join().expect("pending submission joins").expect_err("closed service rejects pending conversion");
     assert_eq!(error.fact_value("reason"), Some("admission_closed"));
 }
 

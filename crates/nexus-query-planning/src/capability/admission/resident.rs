@@ -1,4 +1,14 @@
-use super::*;
+use super::{
+    CapabilityDecision, EdgeContract, InvariantSelector, NodeCapability, QueryPlan, SubgraphInvariant,
+    collect_reachable_node_ids, first_reachable_edge_rejection, first_reachable_node_rejection,
+    hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_shape_decision,
+    keyed_hash_join_resident_subplan_shape_decision,
+    keyless_conditional_join_aggregate_over_join_subplan_inputs_shape_decision,
+    keyless_conditional_join_input_subplan_shape_decision,
+    mixed_keyed_residual_join_resident_grouped_aggregate_input_shape_decision,
+    multi_join_resident_grouped_aggregate_subquery_filter_shape_decision,
+    rollup_rank_topk_after_aggregate_join_pushdown_shape_decision, solved_invariant_decision,
+};
 
 pub(in crate::capability) fn analyze_mixed_keyed_residual_join_resident_grouped_aggregate_input_admission(
     plan: &QueryPlan,

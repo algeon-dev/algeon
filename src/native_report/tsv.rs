@@ -10,7 +10,13 @@ use std::fmt::Write;
 use datafusion::physical_plan::metrics::MetricsSet;
 use nexus_query_engine::contract_report::CapabilityContractGateRow;
 
-use super::{metrics::NativePlanTaskMappingMetricRow, *};
+use super::{
+    NativeAggregateStrategyMetricRow, NativeDynamicFilterRuntimeMetricRow, NativeGraphReservationMetricRow,
+    NativeGraphRuntimeMetricRow, NativeJoinDiagnosticSummary, NativeJoinStrategyMetricRow,
+    NativeLakehouseCacheFillEventMetricRow, NativeSourceDiagnosticSummary, NativeSourceReadRuntimeMetricRow,
+    NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow, WorkloadDatasetMetadata,
+    metrics::NativePlanTaskMappingMetricRow,
+};
 use crate::planner::NativeCapabilityCompiledGraphDiagnostics;
 
 pub(crate) trait TsvRow {

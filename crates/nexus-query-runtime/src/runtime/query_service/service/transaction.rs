@@ -25,12 +25,13 @@ use std::{
     time::Instant,
 };
 
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
+
 use super::{
     super::admission::{AdmissionTicket, PlacedQuery},
     QueryServiceInner,
 };
 use crate::{
-    error::{QueryError, QueryErrorCode, Result},
     observability::{AttemptId, RuntimeObservationHandle, RuntimeStreamLeaseScope},
     runtime::{
         ExecutionCancellation, StreamLease, StreamPermitClass,

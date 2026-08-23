@@ -1,4 +1,21 @@
-use super::*;
+use super::{
+    super::helpers::{attach_task_facts, invalid, plan_node, single_output_resource},
+    CompiledGpuResource, CompiledGpuTaskExecutor, CompiledTaskOutput,
+};
+use crate::{
+    error::Result,
+    exec::bounded::{
+        execute_bounded_generic_gpu_resident_source, execute_bounded_generic_literal_batch_source,
+        execute_bounded_generic_local_parquet_source, execute_bounded_join_leaf_source,
+        materialize_bounded_join_leaf_local_parquet_source_stream,
+        plan_bounded_aggregate_input_local_parquet_source_stream, plan_bounded_join_leaf_local_parquet_source_stream,
+        plan_bounded_shared_join_aggregate_local_parquet_source_stream,
+        try_start_bounded_join_leaf_local_parquet_source_prefetch,
+    },
+    pipeline::PipelineTask,
+    plan::PlanNode,
+    source::SourceNode,
+};
 
 impl CompiledGpuTaskExecutor<'_> {
     pub(super) fn execute_source_task(

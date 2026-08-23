@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use super::*;
 
 pub(super) async fn run_datafusion_baseline_phase(params: &RuntimeParams, evidence: &mut RunEvidence) -> E2eResult<()> {

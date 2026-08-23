@@ -1,3 +1,5 @@
+use std::{os::raw::c_void, ptr};
+
 use super::*;
 
 fn make_bool8_column(data: &[u8]) -> cudf_sys::cudf_column_handle {

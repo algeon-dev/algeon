@@ -1,6 +1,7 @@
 //! Graph layout requirements and algorithm parameter contracts.
+use std::fmt;
 
-use super::*;
+use super::NodeId;
 
 /// Required cuGraph graph-layout state for an algorithm.
 ///

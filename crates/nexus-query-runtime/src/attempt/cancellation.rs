@@ -1,7 +1,9 @@
 //! Attempt-scoped cooperative cancellation and deadline helpers.
 use std::time::{Duration, Instant};
 
-use crate::{error::Result, runtime::ExecutionCancellation};
+use nexus_query_planning::error::Result;
+
+use crate::runtime::ExecutionCancellation;
 
 #[derive(Debug, Clone)]
 pub struct AttemptCancellation {

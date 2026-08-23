@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    CompiledTaskId, MemoryReservationEvent, MemoryReservationEventAction, MemoryReservationEventOutcome,
+    MemoryReservationRequest, MemorySpaceId, PlanNodeId, QueryId, ReservationKind, RuntimeEventContext,
+    RuntimeExecutionObservationScope, RuntimeObservationPayload, RuntimeReservationAction,
+    RuntimeReservationDisposition, RuntimeReservationId, RuntimeSpanId, TaskAttemptId,
+};
 
 #[derive(Debug, Clone)]
 pub(super) struct ReservationObservation {

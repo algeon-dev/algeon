@@ -1,4 +1,13 @@
-use super::*;
+use std::path::{Path, PathBuf};
+#[cfg(test)]
+use std::sync::Arc;
+
+#[cfg(test)]
+use super::{DataType, Schema};
+use super::{
+    LakehouseCacheFillMode, LakehouseCacheReadMode, LakehouseCacheStatus, ResolvedParquetSource, Result,
+    TableFormatLakehouseCachePolicy, TableFormatParquetReadStrategyConfig,
+};
 
 /// Read capability required for a table-format data file location.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -433,6 +442,15 @@ mod tests {
     use arrow::datatypes::{Field, Fields};
 
     use super::*;
+    use crate::table_format::{
+        CredentialMode, SourceStorageProfile, TableFormat, TableFormatColumnMapping, TableFormatColumnRole,
+        TableFormatColumnSource, TableFormatDataFile, TableFormatDataFileFormat, TableFormatDeleteFile,
+        TableFormatDeleteFileContent, TableFormatLakehouseCacheReadPolicy, TableFormatScanPlan,
+        scan::{
+            CapabilityReason, DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID,
+            table_format_parquet_read_strategy_config_from_env, table_format_source_read_contract,
+        },
+    };
 
     #[test]
     fn table_format_parquet_read_strategy_config_from_env_uses_catalog_endpoint_identity() {

@@ -5,8 +5,43 @@
 //! compatible device for later work. Finite-overtake liveness protection is
 //! part of the controller state machine.
 
-use super::*;
-use crate::runtime::gpu::placement::{PlacementCandidate, preferred_placement_candidate};
+#[cfg(test)]
+use std::sync::Mutex;
+use std::{
+    collections::VecDeque,
+    sync::{Arc, atomic::Ordering},
+    time::Instant,
+};
+
+use nexus_query_planning::{
+    admission::AttemptRequirement,
+    error::{QueryError, QueryErrorCode, Result},
+};
+
+#[cfg(test)]
+use super::QueryServiceInner;
+#[cfg(test)]
+use super::TestPauseHandle;
+use super::{
+    super::{
+        admission::{
+            AdmissionRequest, AdmissionState, DeviceAdmissionEntries, PendingPreflightReservation,
+            admission_cancellation_or_deadline_error, finish_expired_queued_requests, finish_removed_request_cancelled,
+            finish_removed_request_error, remove_queued_request, service_closed_error, service_overloaded_error,
+        },
+        admission_rejection,
+        device_waiters::notify_shared_device_admission_available,
+        record_admission_lifecycle,
+    },
+    QueryService,
+};
+use crate::{
+    observability::{AdmissionLifecycleState, AdmissionRequestId, RuntimeTerminalOutcome},
+    runtime::{
+        DeviceLedger,
+        gpu::placement::{PlacementCandidate, preferred_placement_candidate},
+    },
+};
 
 /// Returns the only ledgers on which a waiter may be placed right now.
 ///
@@ -75,7 +110,7 @@ impl QueryService {
     /// while selecting among this frozen set.
     pub(in crate::runtime::query_service) fn compatible_devices_for_capabilities(
         &self,
-        required_capabilities: &[crate::capability::ReservationRequirement],
+        required_capabilities: &[nexus_query_planning::capability::ReservationRequirement],
     ) -> Result<Vec<usize>> {
         let mut devices = match &self.inner.resources {
             Some(resources) => resources
@@ -140,7 +175,7 @@ impl QueryService {
     pub(in crate::runtime::query_service) fn device_supports_capabilities(
         &self,
         device_ordinal: usize,
-        required_capabilities: &[crate::capability::ReservationRequirement],
+        required_capabilities: &[nexus_query_planning::capability::ReservationRequirement],
     ) -> bool {
         match &self.inner.resources {
             Some(resources) => resources.devices.supports_capabilities(device_ordinal, required_capabilities),
@@ -217,7 +252,7 @@ impl QueryService {
 
     pub(in crate::runtime::query_service) fn no_capable_device_error(
         &self,
-        required_capabilities: &[crate::capability::ReservationRequirement],
+        required_capabilities: &[nexus_query_planning::capability::ReservationRequirement],
     ) -> QueryError {
         QueryError::new(
             QueryErrorCode::UnsupportedPlanShape,
@@ -236,7 +271,7 @@ impl QueryService {
     pub(in crate::runtime::query_service) fn reject_impossible_requirements(
         &self,
         device_entries: &DeviceAdmissionEntries,
-        required_capabilities: &[crate::capability::ReservationRequirement],
+        required_capabilities: &[nexus_query_planning::capability::ReservationRequirement],
     ) -> Result<()> {
         if device_entries.is_empty() && !required_capabilities.is_empty() {
             return Err(self.no_capable_device_error(required_capabilities));

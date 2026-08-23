@@ -1917,6 +1917,7 @@ pub use nexus_query_runtime::runtime::DeviceLedgerGrantRow
 pub use nexus_query_runtime::runtime::DeviceLedgerReport
 pub use nexus_query_runtime::runtime::DeviceMemoryFailureReport
 pub use nexus_query_runtime::runtime::DevicePlacement
+pub use nexus_query_runtime::runtime::DeviceResourceEnvelope
 pub use nexus_query_runtime::runtime::DeviceResourceProfile
 pub use nexus_query_runtime::runtime::DeviceTelemetrySnapshot
 pub use nexus_query_runtime::runtime::DeviceTelemetryStatus

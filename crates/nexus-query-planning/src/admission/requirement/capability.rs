@@ -1,4 +1,24 @@
-use super::*;
+use std::collections::{BTreeSet, HashMap, HashSet};
+
+use super::{
+    AllocationClass, AllocationOwnerTerm, AttemptBoundDerivation, AttemptReservationConsumerState,
+    AttemptReservationEnvelope, AttemptReservationPolicy, AttemptReservationProducerOccurrence,
+    AttemptReservationSchedule, AttemptReservationShape, ComposedConsumerBranchBound,
+    ComposedGraphProducerOutputEvidence, EstimateQuality, GraphMemoryAdmissionEvidence, GraphSourceStageLifetime,
+    LimitMetadataDescriptor, LimitRangeGatherPreflight, NodeId, NormalizedComposedProducer, OccurrenceId, OwnerId,
+    OwnerTermId, OwnerTermRole, PlanColumnEvidence, PlanColumnEvidenceAnalysis, PlanNode, QueryError, QueryErrorCode,
+    QueryPlan, ReservationRequirement, Result, ResultSink, SchemaRef, SortMetadataDescriptor, SortPreflight,
+    SourceNode, bounded_consumer_frame_bytes_with_evidence, canonical_execution_scope_fingerprint,
+    composed_consumer_bound_with_peak_terms, composed_schedule_error, cugraph_graph_execution_capability,
+    estimated_reachable_local_parquet_source_bytes, generic_aggregate_owner_terms, generic_gpu_resident_owner_terms,
+    generic_graph_execution_blocker, graph_owner_terms_from_evidence, has_mixed_local_gpu_sources, has_reachable_sort,
+    is_generic_graph_execution_blocker, limit_owner_terms, literal_batch_source_owner_terms,
+    local_parquet_source_owner_terms, merge_owner_terms, owner_derivation_error, owner_term_error,
+    query_plan_hard_row_upper_bound, resident_side_input_frame_upper_bound_bytes, sort_metadata_for_composed_consumer,
+    sort_owner_terms, validate_owner_term, validate_sort_metadata_descriptor,
+};
+#[cfg(test)]
+use super::{GraphMemoryOwnerTermRole, limit_owner_error, sort_owner_error};
 
 /// Owner-issued diagnostics for a composed consumer that is structurally
 /// supported but cannot complete admission before its resident producers bind.

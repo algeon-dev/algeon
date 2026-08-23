@@ -1,6 +1,6 @@
-use std::cell::RefCell;
-
-use super::*;
+use super::{
+    GpuDataFrame, MemoryReservationRequest, QueryError, QueryErrorCode, QueryMetrics, ReservationKind, Result,
+};
 use crate::{
     metrics::{
         CompiledTaskId, MemoryReservationEvent, MemoryReservationEventAction, MemoryReservationEventOutcome,

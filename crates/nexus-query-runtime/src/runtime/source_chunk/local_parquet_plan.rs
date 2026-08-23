@@ -2,23 +2,23 @@
 
 use std::time::Duration;
 
-use nexus_query_planning::chunk::{
-    assembly::{
-        append_row_group_chunks, planned_row_groups, single_all_row_groups_chunk, zero_column_count_identity_chunk,
+use nexus_query_planning::{
+    chunk::{
+        assembly::{
+            append_row_group_chunks, planned_row_groups, single_all_row_groups_chunk, zero_column_count_identity_chunk,
+        },
+        scan_limit::apply_source_scan_limit_to_chunks,
     },
-    scan_limit::apply_source_scan_limit_to_chunks,
+    error::{QueryError, QueryErrorCode, Result},
+    plan::NodeId,
+    source::{LocalParquetFile, LocalParquetSource},
 };
 
 use super::{
     SourceChunkPlan, SourceChunkPlanningPolicy, SourceMetadataCache,
     metadata::{SourceMetadataLoadContext, read_parquet_metadata},
 };
-use crate::{
-    error::{QueryError, QueryErrorCode, Result},
-    plan::NodeId,
-    runtime::ExecutionContext,
-    source::{LocalParquetFile, LocalParquetSource},
-};
+use crate::runtime::ExecutionContext;
 
 /// Plans chunks for a local Parquet source using a fresh footer metadata cache.
 pub fn plan_local_parquet_source_chunks(
@@ -160,7 +160,7 @@ fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
             "zero-read-column source requires parquet row-count metadata for each planned chunk",
         )
         .with_fact("reason", "row_count_metadata_unavailable")
-        .with_fact("path", crate::source::parquet_source_path_fact(&chunk.location, &chunk.path))
+        .with_fact("path", nexus_query_planning::source::parquet_source_path_fact(&chunk.location, &chunk.path))
         .with_fact("file_index", chunk.file_index)
         .with_fact("chunk_index", chunk.chunk_index));
     }

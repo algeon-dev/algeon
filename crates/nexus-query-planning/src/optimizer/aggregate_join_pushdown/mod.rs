@@ -1,8 +1,3 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-};
-
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
 use super::{
@@ -24,23 +19,27 @@ mod model;
 mod preaggregate;
 mod rewriter;
 
-#[allow(unused_imports)] // sibling resolution via use super::*
-pub(in crate::optimizer::aggregate_join_pushdown) use finalize::*;
-#[allow(unused_imports)] // sibling resolution via use super::*
-pub(in crate::optimizer::aggregate_join_pushdown) use lineage::*;
+pub(in crate::optimizer::aggregate_join_pushdown) use finalize::{
+    avg_pushdown_sum_state_data_type, final_aggregate_rewrite_after_preagg,
+};
+pub(in crate::optimizer::aggregate_join_pushdown) use lineage::{
+    AggregateJoinLineage, join_key_for_side, join_side_index, join_side_introduces_nulls, opposite_side,
+    rewritten_join_key_after_preagg,
+};
 #[doc(hidden)]
 pub use model::AggregateJoinPushdownResult;
-#[allow(unused_imports)] // sibling resolution via use super::*
-pub(in crate::optimizer::aggregate_join_pushdown) use model::*;
 // Preserve public API surface for optimizer.rs re-exports.
 pub use model::{
     AGGREGATE_JOIN_PUSHDOWN_RULE_NAME, AggregateJoinPushdownCandidateDiagnostics, AggregateJoinPushdownDiagnostics,
     AggregateJoinPushdownOptions, AggregateJoinPushdownRejectedReason,
 };
-#[allow(unused_imports)] // sibling resolution via use super::*
-pub(in crate::optimizer::aggregate_join_pushdown) use preaggregate::*;
-#[allow(unused_imports)] // sibling resolution via use super::*
-pub(in crate::optimizer::aggregate_join_pushdown) use rewriter::*;
+pub(in crate::optimizer::aggregate_join_pushdown) use preaggregate::{
+    PreAggregateColumn, PreAggregateMeasureState, append_group_projection_outputs, coalesce_preagg_projection_outputs,
+    decomposable_union_partial_aggregate_expr, final_aggregate_spec_after_union_preagg, join_with_replaced_input,
+    measure_input_projection_outputs, new_join_output_schema, preaggregate_measure_states, preaggregate_schema,
+    preaggregate_spec, preaggregate_state_aliases, push_unique_preagg_group_column, unique_measure_input_alias,
+};
+pub(in crate::optimizer::aggregate_join_pushdown) use rewriter::AggregateJoinPushdownRewriter;
 
 #[doc(hidden)]
 pub fn optimize_aggregate_join_pushdown(

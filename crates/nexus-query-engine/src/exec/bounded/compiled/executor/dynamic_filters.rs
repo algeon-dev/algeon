@@ -1,7 +1,30 @@
+use std::{collections::BTreeSet, time::Instant};
+
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
-use super::*;
-use crate::{dynamic_filter::DynamicFilterConsumerLowering, expr::Expr, metrics::DynamicFilterSourceSnapshot};
+use super::{
+    super::{ResidentFrameStreamPayload, frame_stream::map_dynamic_filter_resident_frame_stream, helpers::invalid},
+    CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskExecutor,
+};
+use crate::{
+    dynamic_filter::{
+        DynamicFilter, DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterId, DynamicFilterProducer,
+        DynamicFilterRoute, LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON,
+        dynamic_filter_consumer_source_feeds_downstream_work_fanout, dynamic_filter_i64_values,
+        dynamic_filter_predicate_for_schema,
+    },
+    error::{QueryError, Result},
+    exec::bounded::{
+        BoundedJoinLeafLocalParquetSourceStream, ResidentGpuFrame, execute_bounded_generic_unary,
+        execute_bounded_generic_unary_from_frame,
+    },
+    expr::Expr,
+    metrics::DynamicFilterSourceSnapshot,
+    pipeline::ResidentResourceId,
+    plan::{FilterNode, JoinNode, JoinNullEquality, JoinSide, NodeId, PlanNode},
+    runtime::resident::{GpuDataFrame, GpuResultHandle},
+    source::SourceNode,
+};
 
 impl CompiledGpuTaskExecutor<'_> {
     pub(super) fn produce_hash_join_build_dynamic_filters(

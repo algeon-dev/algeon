@@ -14,6 +14,8 @@ use std::{
 #[cfg(test)]
 use std::{cell::RefCell, sync::Barrier};
 
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
+
 use super::{
     context::QueryServiceResourceEpoch,
     process_exit::{
@@ -21,7 +23,6 @@ use super::{
     },
     service_stream::{ServiceStreamPool, ServiceStreamPoolInner, StreamPermitClass},
 };
-use crate::error::{QueryError, QueryErrorCode, Result};
 
 pub(super) const STREAM_CLEANUP_SUPERVISOR_BUILD_OPERATION: &str = "nexus_query_engine.service_stream_pool.build";
 

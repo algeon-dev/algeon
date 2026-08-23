@@ -1,4 +1,12 @@
-use super::*;
+use std::time::Instant;
+
+use super::{
+    BoundedExecutionAttempt, BoundedJoinSideFrame, CompiledJoinIndices, CompiledJoinMaterializationRequest,
+    CompiledKeylessWork, DataFrame, ExecutionOverrides, JoinNode, JoinSide, KeylessConditionalJoinKind, NodeId,
+    QueryError, ReservationKind, ResidentGpuFrame, Result, bounded_join_request, dataframe_predicate_join_options,
+    execution_overrides, join_index_error, lower_join_residual_predicate, materialize_compiled_indices_output,
+    residual_input_columns,
+};
 
 pub(super) fn execute_compiled_keyless_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,

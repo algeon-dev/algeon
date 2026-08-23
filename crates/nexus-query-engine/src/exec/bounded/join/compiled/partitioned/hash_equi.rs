@@ -1,4 +1,22 @@
-use super::*;
+use super::{
+    BTreeMap, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,
+    BoundedCompiledPreparedJoinBuildState, BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream,
+    BoundedJoinSideFrame, BoundedPartitionRowPolicy, CompiledEqualityJoinPreflightIndices,
+    CompiledJoinExecutionStrategy, GpuDataFrame, Instant, JoinMaterializationTxn, JoinNode, JoinSide,
+    KeyedHashJoinStrategyOptions, NodeId, PARTITIONED_HASH_EQUI_STRATEGY, PartitionedHashEquiJoinFrameStreamProbeState,
+    PartitionedJoinDriverPlan, PartitionedJoinPartitionOutput, PartitionedJoinSide, ReservationKind,
+    ResidentFrameStreamPayload, ResidentFrameStreamSource, ResidentGpuFrame, Result, StreamedPartitionedJoinSummary,
+    VecDeque, bounded_join_request, compiled_join_input_columns, concatenate_streamed_hash_join_outputs,
+    execution_overrides, hash_partition_join_side, join_keys_for_side,
+    materialize_compiled_keyed_equality_join_indices_with_preflight, materialize_partitioned_join_partition_with_retry,
+    observe_device_memory_bytes, partitioned_join_partition_count, partitioned_join_target_bytes_for_context,
+    partitioned_streaming_probe_supported, prepare_bounded_join_side_input_from_resident_frame, probe_side,
+    reconcile_join_output_upper_bound, record_partitioned_join_operator_metrics,
+    record_streamed_partitioned_hash_join_metrics, release_partitioned_join_side,
+    release_streamed_join_outputs_reverse, run_partitioned_join_driver,
+    stream_bounded_join_leaf_local_parquet_source_serial, unsupported_bounded_shape,
+    validate_partitioned_hash_equi_join,
+};
 
 pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_hash_equi_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,

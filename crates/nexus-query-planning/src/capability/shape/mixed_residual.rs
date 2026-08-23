@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    CapabilityDecision, JoinType, MixedResidualResidentGroupedAggregateInputShape, QueryPlan, join_side_index,
+    opposite_join_side, projected_output_side, projection_input,
+    projection_wrapped_grouped_local_parquet_aggregate_root, projection_wrapped_join_subtree_root, require_join_node,
+    scalar_aggregate_input,
+};
 
 pub(in crate::capability) fn mixed_keyed_residual_join_resident_grouped_aggregate_input_shape_decision(
     plan: &QueryPlan,

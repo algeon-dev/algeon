@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use cudf::{ExecutionBudgetReport, ExecutionBudgetRequest};
 
 use super::{compiled::ResidentFrameStreamPayload, *};

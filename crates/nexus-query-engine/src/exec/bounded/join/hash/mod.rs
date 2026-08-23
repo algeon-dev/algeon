@@ -1,5 +1,3 @@
-use std::collections::VecDeque;
-
 use super::{
     common::{
         BoundedJoinSideFrame, bounded_join_request, join_side_output_upper_bound_bytes,
@@ -21,29 +19,18 @@ mod state;
 mod stream;
 
 pub(in crate::exec::bounded::join) use build::reserve_and_build_bounded_hash_join;
-#[allow(unused_imports)] // sibling resolution via use super::*
-pub(in crate::exec::bounded::join::hash) use build::*;
 pub(in crate::exec::bounded) use build::{
     execute_bounded_root_hash_join_build_from_frame, execute_bounded_root_hash_join_build_from_resident_frame,
 };
-#[allow(unused_imports)] // sibling resolution via use super::*
-pub(in crate::exec::bounded::join::hash) use materialize::*;
 pub(in crate::exec::bounded) use materialize::{
     execute_bounded_root_hash_join_materialize, execute_bounded_root_hash_join_materialize_preserving_stream,
 };
-#[allow(unused_imports)] // sibling resolution via use super::*
-pub(in crate::exec::bounded::join::hash) use probe::*;
 pub(in crate::exec::bounded) use probe::{
     execute_bounded_root_hash_join_probe_chunk_stream_from_resident_frame,
     execute_bounded_root_hash_join_probe_from_frame, execute_bounded_root_hash_join_probe_from_resident_frame,
 };
-#[allow(unused_imports)] // sibling resolution via use super::*
-pub(in crate::exec::bounded::join::hash) use state::*;
-// Preserve original external visibility.
 pub(in crate::exec::bounded) use state::{
     BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState, release_bounded_root_hash_join_build_state,
     release_bounded_root_hash_join_probe_state,
 };
 pub(in crate::exec::bounded) use stream::reusable_hash_join_stream_target_output_bytes;
-#[allow(unused_imports)] // sibling resolution via use super::*
-pub(in crate::exec::bounded::join::hash) use stream::*;

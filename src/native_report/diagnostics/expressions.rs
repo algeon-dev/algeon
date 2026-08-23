@@ -1,7 +1,13 @@
+use std::sync::Arc;
+
 use arrow::datatypes::{DataType, Schema, SchemaRef};
 use datafusion::physical_expr::expressions::DynamicFilterPhysicalExpr;
 
-use super::*;
+use super::{
+    BinaryExpr, CaseExpr, CastExpr, Column, InListExpr, IsNotNullExpr, IsNullExpr, LikeExpr, Literal, NegativeExpr,
+    NotExpr, Operator, PhysicalExpr, ScalarFunctionExpr, ScalarValue, TryCastExpr, is_supported_arrow_type,
+    stable_identifier,
+};
 use crate::native::literal::{is_interval_literal_expr, literal_i32, literal_string, substring_stop_position};
 
 pub(super) fn join_residual_expression_category(

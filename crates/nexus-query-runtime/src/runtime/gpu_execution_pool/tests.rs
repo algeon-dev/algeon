@@ -1,9 +1,10 @@
 use std::{
     sync::{
-        Condvar,
-        atomic::{AtomicBool, Ordering},
+        Arc, Condvar, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc,
     },
+    task::{Context, Poll},
     thread,
     time::{Duration, Instant},
 };
@@ -627,7 +628,7 @@ fn supervisor_teardown_panic_is_permanent_and_still_joinable() {
     let deadline = Instant::now() + Duration::from_secs(5);
     let error = pool.close_and_wait_until(deadline).unwrap_err();
     assert_eq!(error.code(), QueryErrorCode::Internal);
-    assert_eq!(error.status(), crate::error::QueryErrorStatus::Permanent);
+    assert_eq!(error.status(), nexus_query_planning::error::QueryErrorStatus::Permanent);
     assert_eq!(error.fact_value("reason"), Some("runtime_supervisor_panicked"));
     assert_eq!(error.fact_value("supervisor_stage"), Some("runtime_teardown"));
     pool.join_supervisor().unwrap();
@@ -657,7 +658,7 @@ fn observed_join_panic_wins_after_an_earlier_cleanup_deadline() {
     let deadline = Instant::now() + Duration::from_secs(5);
     let error = pool.close_and_wait_until(deadline).unwrap_err();
     assert_eq!(error.code(), QueryErrorCode::Internal);
-    assert_eq!(error.status(), crate::error::QueryErrorStatus::Permanent);
+    assert_eq!(error.status(), nexus_query_planning::error::QueryErrorStatus::Permanent);
     assert_eq!(error.fact_value("reason"), Some("runtime_supervisor_panicked"));
     assert_eq!(error.fact_value("supervisor_stage"), Some("thread_join"));
     let repeated = pool.join_supervisor().unwrap_err();
@@ -670,8 +671,8 @@ async fn panicked_jobs_are_structured_permanent_internal_errors() {
     let error = pool.run(GpuExecutionJobKind::QueryExecution, async { panic!("test panic") }).await.unwrap_err();
 
     assert_eq!(error.code(), QueryErrorCode::Internal);
-    assert_eq!(error.kind(), crate::error::QueryErrorKind::Internal);
-    assert_eq!(error.status(), crate::error::QueryErrorStatus::Permanent);
+    assert_eq!(error.kind(), nexus_query_planning::error::QueryErrorKind::Internal);
+    assert_eq!(error.status(), nexus_query_planning::error::QueryErrorStatus::Permanent);
     assert_eq!(error.fact_value("device_ordinal"), Some("6"));
     assert_eq!(error.fact_value("job_kind"), Some("query_execution"));
     assert_eq!(error.fact_value("reason"), Some("job_panicked"));

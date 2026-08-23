@@ -5,8 +5,6 @@
 //! Builder, node, expression-spec, facts, and graph-algorithm modules are
 //! re-exported from here as the engine's public plan surface.
 
-use std::{fmt, sync::Arc};
-
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
 use crate::{

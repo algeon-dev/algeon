@@ -35,6 +35,14 @@ pub use lifecycle::{
     RuntimeExecutionObservationScope, RuntimePlanExecutionLifecycle, RuntimeQueryLifecycle, RuntimeTaskLifecycle,
     task_attempt_id,
 };
+pub use nexus_query_planning::{
+    error::AttemptFailureCode,
+    execution_contracts::{RuntimeAttemptId, RuntimeTaskId, TaskAttemptId},
+    schedule_projection::{
+        AttemptComposedScheduleOccurrence, AttemptComposedScheduleProjection, AttemptId,
+        COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1,
+    },
+};
 pub use operator_stage::{
     RuntimeExecutionStageContext, RuntimeOperatorStageGuard, RuntimeOperatorStageIdentity, observe_operator_stage,
     stage_context_from_execution,
@@ -64,15 +72,6 @@ pub use runtime_observation::{
     RuntimeStreamLeaseScope, RuntimeTaskLifecycleObservation, RuntimeTimelineEvent, RuntimeTopologyRecord,
     RuntimeTraceId, RuntimeWorkerId, SinkDefinitionRow, SourceReadLifecycleState, StreamLeaseAcquisition,
     StreamLeaseLifecycleState, TaskDefinitionRow, TaskLifecycleState, WorkerDefinitionRow,
-};
-
-pub use crate::{
-    error::AttemptFailureCode,
-    execution_contracts::{RuntimeAttemptId, RuntimeTaskId, TaskAttemptId},
-    schedule_projection::{
-        AttemptComposedScheduleOccurrence, AttemptComposedScheduleProjection, AttemptId,
-        COMPOSED_SCHEDULE_PROJECTION_SCHEMA_V1,
-    },
 };
 
 #[cfg(any(test, feature = "test-hooks"))]

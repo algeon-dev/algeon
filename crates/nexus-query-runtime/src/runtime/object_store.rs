@@ -8,8 +8,7 @@ use std::{
 };
 
 use bytes::Bytes;
-
-use crate::error::{QueryError, QueryErrorCode, Result};
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
 
 /// Storage profile used by native remote reads and cache maintenance.
 ///

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use arrow::{
     array::new_empty_array,
     datatypes::{DataType as ArrowDataType, SchemaRef as ArrowSchemaRef},

@@ -1,6 +1,10 @@
 use std::{sync::Arc, time::Duration};
 
 use ::object_store::ObjectStoreExt;
+use nexus_query_planning::{
+    chunk::SourceChunkPlanningOptions,
+    error::{QueryError, QueryErrorCode, Result},
+};
 use serde_json::Value;
 
 use super::{
@@ -12,10 +16,6 @@ use super::{
         nonzero_sm_count,
     },
     *,
-};
-use crate::{
-    chunk::SourceChunkPlanningOptions,
-    error::{QueryError, QueryErrorCode, Result},
 };
 
 fn p6_snapshot_json_v1_samples() -> [(&'static str, Value); 9] {

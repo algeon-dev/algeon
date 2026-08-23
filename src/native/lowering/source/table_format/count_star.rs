@@ -1,4 +1,16 @@
-use super::*;
+use std::{collections::BTreeSet, sync::Arc};
+
+use super::{
+    CapabilityReason, DataType, ExecutionPlan, Field, LoweredNativeInput, NATIVE_ZERO_COLUMN_COUNT_COLUMN,
+    NativeLiteralBatchSource, NativeLocalParquetSource, NativeParquetColumnRequirements, NativeQueryPlanBuilder,
+    NativeSourceColumnRef, NativeSourceNode, NexusIcebergScanExec, Schema, SchemaRef, TableFormat,
+    TableFormatColumnMapping, TableFormatColumnSource, TableFormatDataFile, TableFormatScanPlan,
+    available_table_format_scan_plan, is_supported_native_type,
+    table_format_arrow_data_types_match_except_list_child_names, table_format_file_schema,
+    table_format_local_footer_schema, table_format_local_parquet_files, table_format_local_parquet_files_for_group,
+    table_format_scan_plan_is_empty_admissible, table_format_scan_plan_rejection, table_format_source_read_groups,
+    validate_schema, validate_table_format_direct_file_column_field_ids, validate_table_format_scan_plan,
+};
 
 pub(in crate::native::lowering) fn lower_table_format_zero_column_count_source(
     scan_exec: &NexusIcebergScanExec,

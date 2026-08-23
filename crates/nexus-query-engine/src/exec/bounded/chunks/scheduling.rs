@@ -1,4 +1,20 @@
-use super::*;
+use std::collections::VecDeque;
+
+use super::{
+    BoundedExecutionAttempt, BoundedPlan, CommittedPartial, LocalParquetSource, MemoryControlPolicy, QueryError,
+    ReservationKind, Result, ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput, SourceChunk,
+    chunk_requested_bytes, chunk_reservation_request,
+    execution::{
+        execute_bounded_chunk_operator_from_source, execute_bounded_chunk_with_retry,
+        release_committed_partials_reverse, retain_decoded_source, retry_after_chunk_error,
+    },
+    is_prefetch_chunk_error, is_retryable_chunk_error, prefetch_requested_bytes,
+    source_adjacent::{
+        bounded_source_adjacent_chunk_batching_enabled, execute_bounded_source_adjacent_chunk_batches_serial,
+        grow_source_reservation_to_observed, shrink_source_reservation_to_observed_without_grow,
+    },
+    source_read_reservation_contract,
+};
 
 pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
     execution: &mut BoundedExecutionAttempt<'_>,

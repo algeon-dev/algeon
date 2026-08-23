@@ -4,7 +4,32 @@
 //! invariants that span more than a single node — for example, "build side of
 //! this join must dominate the resident-resource reservation gate."
 
-use super::{edge::*, graph::*, model::*, node::*, shape::*, *};
+use super::{
+    ColumnQualifier, Expr, JoinNode, JoinSide, NodeId, PlanNode, QueryPlan, ReservationKind, SourceNode,
+    edge::{edge_consumer_fact, node_operator_fact},
+    graph::{
+        GraphScheduleProof, collect_reachable_node_ids, collect_reachable_node_ids_from, consumer_nodes_for_reachable,
+        peel_projection_chain_for_capability, reachable_join_count_from_sink,
+    },
+    model::{
+        BLOCKING_ROLLUP_RANK_FULL_SCAN_REQUIRES_EXACT_CONTRACTS, CapabilityDecision, ContractQuality, EdgeConsumer,
+        EdgeContract, InvariantId, ProducedProperty, ReservationRequirement, ResidentResource, ScheduleConstraint,
+        SubgraphInvariant, SubgraphInvariantKind,
+    },
+    node::produced_properties,
+    shape::{
+        FinalRollupWidthClass, OutputLineage, RollupRankTopKAfterAggregateJoinPushdownShape,
+        RootFullSortJoinAggregateShape, RootFullSortJoinAggregateSubcontract, RootTopKJoinAggregateShape,
+        closed_multi_join_subgraph_structure_decision, expression_lineage_for_input,
+        hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_shape_decision,
+        keyless_conditional_join_aggregate_over_join_subplan_inputs_shape_decision,
+        mixed_keyed_residual_join_resident_grouped_aggregate_input_shape_decision,
+        multi_join_aggregate_over_join_subplan_topk_shape_decision, output_lineage,
+        peel_resident_unary_chain_for_capability, post_root_join_id,
+        rollup_rank_topk_after_aggregate_join_pushdown_shape_decision, root_full_sort_join_aggregate_shape_decision,
+        root_topk_join_aggregate_shape_decision,
+    },
+};
 use crate::{plan::WindowFunction, source::LocalParquetSource};
 
 /// Policy for blocking rollup/rank/top-k full-scan capability guards.

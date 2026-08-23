@@ -1,3 +1,12 @@
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Condvar, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
+
 use super::{
     super::context::{
         AttemptAuxiliaryPermit, AttemptAuxiliarySlots, QueryResourceAnchor, QueryResourceEpoch,

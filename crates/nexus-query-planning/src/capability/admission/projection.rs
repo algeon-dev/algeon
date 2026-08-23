@@ -1,4 +1,13 @@
-use super::*;
+use std::collections::{BTreeMap, BTreeSet};
+
+use super::{
+    CapabilityDecision, EdgeContract, InvariantSelector, JoinExecutionCapability, JoinNode, JoinSide, JoinType,
+    NodeCapability, NodeId, PlanNode, ProjectionScalarSetopKind, ProjectionScalarSetopShape, QueryPlan, SourceNode,
+    SubgraphInvariant, collect_reachable_node_ids, consumer_nodes_for_reachable, first_reachable_edge_rejection,
+    first_reachable_node_rejection, join_node_execution_capability, join_node_with_missing_reason, join_side_index,
+    node_ids_fact, projection_global_limit_shape_decision, projection_scalar_setop_shape_decision,
+    solved_invariant_decision,
+};
 
 pub(in crate::capability) fn analyze_projection_global_limit_admission(
     plan: &QueryPlan,

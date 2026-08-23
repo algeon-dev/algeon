@@ -5,26 +5,13 @@ struct AdmissionTestController {
 }
 
 impl AdmissionTestController {
-    fn new(
-        config: QueryExecutionConfig,
-        queue_bounds: QueueBounds,
-    ) -> Result<Self> {
-        Self::new_with_ledger(
-            config,
-            queue_bounds,
-            test_ledger(64 * 1024 * 1024, 1, Default::default()),
-        )
+    fn new(config: QueryExecutionConfig, queue_bounds: QueueBounds) -> Result<Self> {
+        Self::new_with_ledger(config, queue_bounds, test_ledger(64 * 1024 * 1024, 1, Default::default()))
     }
 
-    fn new_with_ledger(
-        config: QueryExecutionConfig,
-        queue_bounds: QueueBounds,
-        ledger: DeviceLedger,
-    ) -> Result<Self> {
-        QueryService::new_for_admission_tests(config, queue_bounds, ledger).map(|service| Self {
-            service,
-            synthetic_ticket: Arc::new(std::sync::Mutex::new(None)),
-        })
+    fn new_with_ledger(config: QueryExecutionConfig, queue_bounds: QueueBounds, ledger: DeviceLedger) -> Result<Self> {
+        QueryService::new_for_admission_tests(config, queue_bounds, ledger)
+            .map(|service| Self { service, synthetic_ticket: Arc::new(std::sync::Mutex::new(None)) })
     }
 
     fn new_with_device_capabilities(
@@ -37,10 +24,7 @@ impl AdmissionTestController {
             queue_bounds,
             test_ledger(64 * 1024 * 1024, 1, device_capabilities),
         )
-        .map(|service| Self {
-            service,
-            synthetic_ticket: Arc::new(std::sync::Mutex::new(None)),
-        })
+        .map(|service| Self { service, synthetic_ticket: Arc::new(std::sync::Mutex::new(None)) })
     }
 
     fn admit_query(&self) -> Result<AdmissionTestHandle> {
@@ -136,10 +120,9 @@ impl AdmissionTestController {
     }
 
     fn hold_admission_lock(&self) -> Result<AdmissionTestLockGuard<'_>> {
-        self.service.lock_admission().map(|state| AdmissionTestLockGuard {
-            state,
-            synthetic_ticket: Arc::clone(&self.synthetic_ticket),
-        })
+        self.service
+            .lock_admission()
+            .map(|state| AdmissionTestLockGuard { state, synthetic_ticket: Arc::clone(&self.synthetic_ticket) })
     }
 
     fn shutdown_waiter_count(&self) -> usize {
@@ -165,7 +148,6 @@ impl AdmissionTestController {
             .expect("queued request")
             .deadline = expired;
     }
-
 }
 
 #[derive(Debug)]
@@ -218,19 +200,21 @@ impl AdmissionTestHandle {
         self.handle.statistical_aggregate_execution_mode()
     }
 
-    fn dynamic_filter_execution_options(&self) -> crate::dynamic_filter::DynamicFilterExecutionOptions {
+    fn dynamic_filter_execution_options(&self) -> nexus_query_planning::dynamic_filter::DynamicFilterExecutionOptions {
         self.handle.dynamic_filter_execution_options()
     }
 
-    fn keyed_hash_join_strategy_options(&self) -> crate::capability::KeyedHashJoinStrategyOptions {
+    fn keyed_hash_join_strategy_options(&self) -> nexus_query_planning::capability::KeyedHashJoinStrategyOptions {
         self.handle.keyed_hash_join_strategy_options()
     }
 
-    fn aggregate_strategy_execution_options(&self) -> crate::capability::AggregateStrategyExecutionOptions {
+    fn aggregate_strategy_execution_options(
+        &self,
+    ) -> nexus_query_planning::capability::AggregateStrategyExecutionOptions {
         self.handle.aggregate_strategy_execution_options()
     }
 
-    fn source_chunk_planning_options(&self) -> crate::chunk::SourceChunkPlanningOptions {
+    fn source_chunk_planning_options(&self) -> nexus_query_planning::chunk::SourceChunkPlanningOptions {
         self.handle.source_chunk_planning_options()
     }
 
@@ -287,7 +271,7 @@ impl AdmissionTestWaiter {
 }
 
 fn requirement(floor: u64, hint: Option<u64>) -> AttemptRequirement {
-    use crate::admission::EstimateQuality;
+    use nexus_query_planning::admission::EstimateQuality;
     AttemptRequirement {
         configured_floor_bytes: floor,
         capability_floor_raise_bytes: 0,
@@ -377,18 +361,18 @@ fn test_ledger_with_explicit_profile(
     let source_work = 1usize;
     let slots = max_active_attempts.saturating_mul(source_work.saturating_add(1)).max(max_active_attempts);
     let profile = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
-            device_ordinal: device_ordinal,
-            configured_limit_bytes: managed_capacity_bytes,
-            headroom_bytes: 0,
-            backend_reserve_bytes: 0,
-            attempt_floor_bytes: attempt_floor_bytes,
-            max_active_attempts: max_active_attempts,
-            source_work_per_attempt: source_work,
-            stream_pool_size: slots,
-            worker_job_capacity: slots,
-            device_capabilities: device_capabilities,
-            cache_cap_bytes: 0,
-        })
+        device_ordinal,
+        configured_limit_bytes: managed_capacity_bytes,
+        headroom_bytes: 0,
+        backend_reserve_bytes: 0,
+        attempt_floor_bytes,
+        max_active_attempts,
+        source_work_per_attempt: source_work,
+        stream_pool_size: slots,
+        worker_job_capacity: slots,
+        device_capabilities,
+        cache_cap_bytes: 0,
+    })
     .expect("test ledger profile must resolve");
     DeviceLedger::new(profile)
 }
@@ -406,17 +390,19 @@ fn admission_test_service_with_profile(
     AdmissionTestController::new_with_ledger(
         config,
         queue_bounds,
-        test_ledger_with_explicit_profile(0, managed_capacity_bytes, attempt_floor_bytes, max_active_attempts, Default::default()),
+        test_ledger_with_explicit_profile(
+            0,
+            managed_capacity_bytes,
+            attempt_floor_bytes,
+            max_active_attempts,
+            Default::default(),
+        ),
     )
     .expect("explicit admission test profile must resolve")
 }
 
 fn test_service(max_active_attempts_per_device: usize, max_waiters: usize) -> AdmissionTestController {
-    let queue_bounds = QueueBounds {
-        max_waiters,
-        max_wait: Duration::from_millis(500),
-        max_overtakes_per_waiter: 4,
-    };
+    let queue_bounds = QueueBounds { max_waiters, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 };
     admission_test_service_with_profile(
         QueryExecutionConfig::default(),
         queue_bounds,
@@ -426,11 +412,7 @@ fn test_service(max_active_attempts_per_device: usize, max_waiters: usize) -> Ad
     )
 }
 fn runtime_test_service(max_active_attempts_per_device: usize, max_waiters: usize) -> QueryService {
-    let queue_bounds = QueueBounds {
-        max_waiters,
-        max_wait: Duration::from_millis(500),
-        max_overtakes_per_waiter: 4,
-    };
+    let queue_bounds = QueueBounds { max_waiters, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 };
     runtime_test_service_with_profiles(
         QueryExecutionConfig::default(),
         queue_bounds,
@@ -537,7 +519,10 @@ fn wait_for_pending_preflight_len(service: &AdmissionTestController, expected: u
         if pending == expected {
             return;
         }
-        assert!(Instant::now() < deadline, "timed out waiting for {expected} pending preflight reservations; last pending={pending}");
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for {expected} pending preflight reservations; last pending={pending}"
+        );
         std::thread::yield_now();
     }
 }

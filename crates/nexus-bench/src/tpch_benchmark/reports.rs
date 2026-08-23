@@ -1,9 +1,10 @@
+use std::collections::{BTreeMap, BTreeSet};
+
 use datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics;
 use nexus_query_engine::{contract_report::CapabilityContractGateRow, harness::max_option as max_optional_usize};
 
 use super::*;
 
-#[path = "reports/formatting.rs"]
 mod formatting;
 
 use formatting::*;

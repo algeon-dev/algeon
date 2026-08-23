@@ -13,20 +13,18 @@ use std::{
 };
 
 use arrow::datatypes::SchemaRef;
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
 
 #[doc(hidden)]
 pub use crate::runtime::source_identity::GpuLocalParquetSourceCacheKey;
-use crate::{
-    error::{QueryError, QueryErrorCode, Result},
-    runtime::{
-        ExecutionContext,
-        cache::{
-            CacheResidency, CacheResidencyChargeTransaction, CacheResidencyDestruction, CacheResidencyPin,
-            CacheSourceActivity, CacheSourceEventSnapshot, cache_observation_fingerprint,
-        },
-        gpu::DeviceLedger,
-        resident::{GpuLocalParquetCachedResult, GpuResultHandle},
+use crate::runtime::{
+    ExecutionContext,
+    cache::{
+        CacheResidency, CacheResidencyChargeTransaction, CacheResidencyDestruction, CacheResidencyPin,
+        CacheSourceActivity, CacheSourceEventSnapshot, cache_observation_fingerprint,
     },
+    gpu::DeviceLedger,
+    resident::{GpuLocalParquetCachedResult, GpuResultHandle},
 };
 
 const OPERATION: &str = "nexus_query_engine.gpu_local_parquet_source_cache";
@@ -1004,16 +1002,14 @@ mod tests {
         record_batch::RecordBatch,
     };
     use cudf::{CacheAllocationDomain, DataFrame};
+    use nexus_query_planning::source::LocalParquetSource;
 
     use super::*;
-    use crate::{
-        runtime::{
-            ExecutionContext,
-            backend_metrics::BackendMetricsStore,
-            gpu::{DeviceCapabilities, DeviceResourceEnvelope, DeviceResourceProfile},
-            resident::GpuDataFrame,
-        },
-        source::LocalParquetSource,
+    use crate::runtime::{
+        ExecutionContext,
+        backend_metrics::BackendMetricsStore,
+        gpu::{DeviceCapabilities, DeviceResourceEnvelope, DeviceResourceProfile},
+        resident::GpuDataFrame,
     };
 
     fn source_fixture() -> (Arc<ExecutionContext>, GpuResultHandle, SchemaRef, GpuLocalParquetSourceCacheKey, u64) {

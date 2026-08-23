@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::{
     core_execution::{assert_basic_list_payload_rows, basic_list_payload_batch},
     *,

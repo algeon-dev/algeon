@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use super::*;
+use super::{BoundedJoinReservationContract, BoundedJoinReservationStatus, ExecutionBoundaryPolicy};
 
 impl BoundedJoinReservationContract {
     /// Human/report-facing unsupported-shape requirement text.

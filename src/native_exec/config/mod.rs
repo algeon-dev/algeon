@@ -4,10 +4,7 @@
 //! admission supplies the installed runtime, allocator, streams, and worker
 //! executor when execution acquires the native query context.
 
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, atomic::AtomicBool};
 
 use datafusion::execution::context::TaskContext;
 use nexus_query_engine::{

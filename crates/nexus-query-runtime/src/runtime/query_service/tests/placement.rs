@@ -6,21 +6,20 @@ fn proof_device_entries_reapply_request_local_placement_floor() {
         arrow::datatypes::DataType::Int64,
         false,
     )]));
-    let mut builder = crate::plan::QueryPlanBuilder::new();
-    let source = builder.add_source(crate::source::SourceNode::GpuResident(crate::source::GpuResidentSource::new(
-        "input",
-        schema,
-    )));
+    let mut builder = nexus_query_planning::plan::QueryPlanBuilder::new();
+    let source = builder.add_source(nexus_query_planning::source::SourceNode::GpuResident(
+        nexus_query_planning::source::GpuResidentSource::new("input", schema),
+    ));
     let plan = builder.finish_with_host_sink(source);
-    let proof = crate::admission::QueryPlanCapabilityProof::for_query_plan(&plan)
+    let proof = nexus_query_planning::admission::QueryPlanCapabilityProof::for_query_plan(&plan)
         .expect("fixture plan must issue a capability proof");
     let request = QueryAdmissionRequest::new()
         .with_query_plan_capability_proof(proof.clone())
-        .with_test_placement_requirement(crate::admission::AttemptCapabilityEvidence::from_parts(
+        .with_test_placement_requirement(nexus_query_planning::admission::AttemptCapabilityEvidence::from_parts(
             0,
             0,
             Some(4096),
-            crate::admission::EstimateQuality::Measured,
+            nexus_query_planning::admission::EstimateQuality::Measured,
             Vec::new(),
         ));
 
@@ -34,9 +33,7 @@ fn proof_device_entries_reapply_request_local_placement_floor() {
 
     handle.finish();
     drop(handle);
-    service
-        .close_and_wait_for_quiescence(Duration::from_secs(2))
-        .expect("proof-backed fixture cleanup completes");
+    service.close_and_wait_for_quiescence(Duration::from_secs(2)).expect("proof-backed fixture cleanup completes");
 }
 
 #[test]
@@ -432,7 +429,7 @@ fn failed_protection_retarget_terminalizes_its_waiter_without_rejecting_the_next
 fn device_entries_keep_distinct_ordinal_requirement_and_envelope_values() {
     let service = test_service(1, 8).service;
     let policy = service.inner.config.attempt_reservation_policy();
-    let empty_envelope = crate::admission::AttemptReservationEnvelope::resolve(&[], policy)
+    let empty_envelope = nexus_query_planning::admission::AttemptReservationEnvelope::resolve(&[], policy)
         .expect("empty test envelope is finite");
     let first = requirement(128, Some(128));
     let second = requirement(256, Some(512));

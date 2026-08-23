@@ -17,10 +17,11 @@ use std::{
     time::Duration,
 };
 
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
+
 use super::process_exit::{
     ProcessExitPhase, ProcessExitRegistration, ProcessExitShutdown, register_cuda_process_exit_shutdown,
 };
-use crate::error::{QueryError, QueryErrorCode, Result};
 
 const BUILD_OPERATION: &str = "nexus_query_engine.gpu_backend_core.build";
 

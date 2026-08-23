@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::*;
 
 /// Mutates the non-root side of a keyless conditional root join. The admitted

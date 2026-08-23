@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use nexus_query_engine::plan::{
     NativePlanCostDecision, NativePlanCostOptions, NativePlanCostReason, native_plan_cost_decision,
 };

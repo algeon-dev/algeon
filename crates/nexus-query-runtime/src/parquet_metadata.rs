@@ -10,13 +10,12 @@ use std::{
 };
 
 use bytes::{Bytes, BytesMut};
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
 use object_store::{ObjectStore, ObjectStoreExt, path::Path as ObjectStorePath};
 use parquet::file::{
     FOOTER_SIZE,
     metadata::{FooterTail, ParquetMetaData, ParquetMetaDataReader},
 };
-
-use crate::error::{QueryError, QueryErrorCode, Result};
 
 /// Speculative tail size for footer-only object-store metadata reads.
 #[doc(hidden)]
@@ -493,7 +492,7 @@ fn contains_any(text: &str, needles: &[&str]) -> bool {
 }
 
 fn object_store_path_fact(location: &ObjectStorePath) -> String {
-    crate::source::redacted_object_store_path_diagnostic(location.as_ref())
+    nexus_query_planning::source::redacted_object_store_path_diagnostic(location.as_ref())
 }
 
 fn local_metadata_io_error(message: &'static str, error: std::io::Error, path: &Path) -> QueryError {

@@ -166,9 +166,7 @@ fn restore_failure_after_an_earlier_installation_rolls_back_every_new_protection
     drop(first);
     drop(second);
     let full_capacity = service
-        .admit_query_with_request(
-            QueryAdmissionRequest::new().with_attempt_requirement(raised_requirement(10, 100)),
-        )
+        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_requirement(raised_requirement(10, 100)))
         .expect("the device readmits after the rollback");
     assert_eq!(full_capacity.device_budget_bytes(), 100);
 }
@@ -342,13 +340,13 @@ fn impossible_requirement_is_rejected_at_submit_without_queueing() {
         10,
         2,
     );
-    let requirement = crate::admission::AttemptRequirement {
+    let requirement = nexus_query_planning::admission::AttemptRequirement {
         configured_floor_bytes: 10,
         capability_floor_raise_bytes: 200,
         required_phase_floor_bytes: 0,
         source_stage_bytes: None,
         soft_working_set_hint_bytes: None,
-        estimate_quality: nexus_query_engine::admission::EstimateQuality::Unknown,
+        estimate_quality: nexus_query_planning::admission::EstimateQuality::Unknown,
         required_capabilities: Vec::new(),
         owner_terms: Vec::new(),
         bound_derivation: None,

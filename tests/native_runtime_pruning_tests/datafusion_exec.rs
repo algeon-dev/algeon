@@ -1,3 +1,5 @@
+use std::{fs, sync::Arc};
+
 use datafusion::physical_plan::metrics::MetricsSet;
 
 use super::*;

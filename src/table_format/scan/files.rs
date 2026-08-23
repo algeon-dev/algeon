@@ -1,4 +1,9 @@
-use super::*;
+use std::{collections::BTreeMap, fmt};
+
+use super::{
+    ResolvedParquetSource, SchemaRef, TableFormatPartitionValue, TableFormatReadCapability, redacted_scan_debug_value,
+    redacted_scan_location_debug_value,
+};
 
 /// File format advertised by table-format metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

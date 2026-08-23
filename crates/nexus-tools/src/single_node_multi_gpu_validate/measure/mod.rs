@@ -9,11 +9,8 @@
 #[cfg(feature = "single-node-multi-gpu-validate-run-otlp")]
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::{
-        Arc, Condvar, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    collections::BTreeMap,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -788,10 +785,6 @@ fn same_key_probe_query_index(
     Ok(index)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "measurement-harness expansion; parameters are the independent measurement axes"
-)]
 async fn run_cache_same_key_cohort(
     backend: &NexusGpuBackend,
     sessions: &SessionPool,

@@ -1,3 +1,5 @@
+use std::ptr;
+
 use super::*;
 
 #[test]

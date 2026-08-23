@@ -3,8 +3,9 @@
 //! Facts describe already-established contracts such as output schema,
 //! placement, ordering, and schema provenance. They are not hidden optimizer
 //! hints.
+use std::fmt;
 
-use super::*;
+use super::{SchemaRef, SortExpr};
 
 /// Planner/executor facts attached to a node's output.
 ///

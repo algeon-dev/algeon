@@ -3,8 +3,29 @@
 //! Produces a [`NodeCapability`] for each [`QueryNode`]: operator kind,
 //! executable decision, produced properties (ordering, partitioning, etc.),
 //! local requirements on inputs, and any local reservation requirements.
+use std::collections::{BTreeMap, BTreeSet};
 
-use super::{aggregate::*, expr::*, model::*, shape::*, *};
+use super::{
+    AggregateExpr, AggregateFunction, AggregateSpec, Expr, GroupingSetsSpec, JoinExecutionCapability, JoinNode,
+    JoinSide, KeyedHashJoinStrategy, KeyedHashJoinStrategyDecision, KeylessConditionalJoinKind, LimitNode, NodeId,
+    PlanNode, QueryNode, QueryPlan, ReservationKind, SourceNode, WindowFunction,
+    aggregate::{AggregateStateContract, aggregate_state_contract},
+    expr::{
+        expression_rejection_decision, validate_aggregate_expr_capability, validate_column_expr_capability,
+        validate_general_expr_capability, validate_join_residual_expr_capability,
+        validate_named_column_expr_capability, validate_post_join_residual_expr_capability, validation_result_decision,
+    },
+    hash_join_prebuild_reservation_unsupported_build_key_for_plan, join_node_execution_capability,
+    join_residual_requires_post_join_filter, keyed_filtered_semi_anti_join_capable,
+    keyed_hash_join_strategy_decision_for_plan,
+    model::{
+        AggregateGrouping, CapabilityDecision, ContractQuality, NodeCapability, NodeOperator, OrderingRequirement,
+        ProducedProperty, ReservationRequirement, ResidualRequirement, SourceFormatCapability,
+    },
+    one_shot_equi_join_supported,
+    shape::projection_scalar_setop_shape_decision,
+    validate_local_parquet_source,
+};
 use crate::plan::UnionNode;
 
 pub(super) fn analyze_node(plan: &QueryPlan, node: &QueryNode) -> NodeCapability {

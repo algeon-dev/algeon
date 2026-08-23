@@ -7,14 +7,6 @@
 //! [`build_scoped_catalog_provider_from_backend`]; individual tables are loaded
 //! lazily on first access.
 
-use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
-    error::Error as StdError,
-    fmt,
-    sync::{Arc, RwLock as StdRwLock},
-    time::Duration,
-};
-
 use async_trait::async_trait;
 use datafusion::{
     catalog::{CatalogProvider, SchemaProvider},

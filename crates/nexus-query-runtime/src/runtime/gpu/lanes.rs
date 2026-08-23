@@ -17,7 +17,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-use crate::error::{QueryError, QueryErrorCode, Result};
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
 
 /// Per-device array of `A_d` attempt lanes.
 #[derive(Debug)]

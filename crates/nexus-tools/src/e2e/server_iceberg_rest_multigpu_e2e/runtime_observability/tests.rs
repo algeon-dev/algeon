@@ -1,3 +1,9 @@
+use std::{
+    path::PathBuf,
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
+};
+
 use super::*;
 
 const QUERY_ID: &str = "parser-fixture-query";

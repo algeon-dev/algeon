@@ -1,4 +1,6 @@
-use super::*;
+use std::{cell::RefCell, rc::Rc};
+
+use super::{RuntimeReservationDisposition, RuntimeSpanId, TaskAttemptId};
 
 #[derive(Debug, Clone)]
 pub(super) struct ReservationDiagnosticContext {

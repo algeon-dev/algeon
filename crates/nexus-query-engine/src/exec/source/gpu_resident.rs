@@ -1,4 +1,4 @@
-use super::*;
+use super::{ExecutionContext, GpuDataFrame, GpuResidentInputMap, QueryError, QueryErrorCode, QueryMetrics, Result};
 
 /// Read a caller-supplied GPU-resident source by plan-local input name.
 ///

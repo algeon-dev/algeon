@@ -3,7 +3,11 @@ use std::collections::BTreeSet;
 use arrow::datatypes::SchemaRef;
 use nexus_query_engine::expr::LimitSpec;
 
-use super::*;
+use super::{
+    AggregateExec, BoundedWindowAggExec, CapabilityReason, CrossJoinExec, DataSourceExec, ExecutionPlan, FilterExec,
+    GpuCandidate, HashJoinExec, LexOrdering, NestedLoopJoinExec, NexusIcebergScanExec, ProjectionExec, SortExec,
+    UnionExec, WindowAggExec, wrap_shape,
+};
 
 /// Borrowed, normalized representation of a DataFusion physical subtree that
 /// the native path knows how to lower.

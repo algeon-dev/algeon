@@ -1,4 +1,16 @@
-use super::*;
+use std::{borrow::Cow, sync::Arc, time::Instant};
+
+use super::{
+    ArrowDataType, BinaryOp, CudfSortOptions, DataFrame, ExecutionContext, Expr, Field, GpuDataFrame, LiteralValue,
+    LocalParquetFile, LocalParquetSource, NodeId, QueryError, QueryErrorCode, QueryMetrics, Result, Schema,
+    SourceChunk, SourceReadMode, acquire_lakehouse_cache_chunk_read_pin, acquire_lakehouse_cache_file_read_pin,
+    append_source_order_columns, apply_source_scan_limit_to_frame, attach_row_group_facts,
+    coerce_local_parquet_source_schema, col, cudf_error_for_chunk_read, cudf_local_parquet_source_chunk,
+    cudf_local_parquet_source_file_selection, empty_local_parquet_execution_frame, ensure_local_cache_parquet_chunk,
+    ensure_local_cache_parquet_file, execution_overrides, lit, parquet_chunk_path_fact, parquet_file_path_fact,
+    parquet_file_stable_id_fact, read_local_parquet_file, record_background_cache_chunk_fill_enqueue,
+    record_source_chunk_read_runtime,
+};
 
 const ICEBERG_POSITION_DELETE_FILE_PATH_COLUMN: &str = "file_path";
 const ICEBERG_POSITION_DELETE_POS_COLUMN: &str = "pos";
@@ -95,16 +107,18 @@ pub(super) fn read_position_delete_source_chunk(
         return Ok(GpuDataFrame::new(frame));
     }
     if chunk.zero_column_count {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.local_parquet_source.position_delete_chunk",
-            "Iceberg position-delete chunk reads require decoded data columns",
-        )
-        .with_fact("reason", "position_deletes_require_data_column")
-        .with_fact("path", parquet_chunk_path_fact(chunk))
-        .with_fact("chunk_index", chunk.chunk_index)
-        .with_fact("file_index", chunk.file_index)
-        .with_row_group_facts(chunk));
+        return Err(attach_row_group_facts(
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.local_parquet_source.position_delete_chunk",
+                "Iceberg position-delete chunk reads require decoded data columns",
+            )
+            .with_fact("reason", "position_deletes_require_data_column")
+            .with_fact("path", parquet_chunk_path_fact(chunk))
+            .with_fact("chunk_index", chunk.chunk_index)
+            .with_fact("file_index", chunk.file_index),
+            chunk,
+        ));
     }
 
     let _cache_read_pin =
@@ -128,17 +142,19 @@ pub(super) fn read_position_delete_source_chunk(
         SourceReadMode::ExecutionFrame,
     )
     .map_err(|error| {
-        cudf_error_for_chunk_read(
-            "nexus_query_engine.local_parquet_source.position_delete_chunk.read",
-            "failed to read native local parquet position-delete chunk with cudf",
-            error,
+        attach_row_group_facts(
+            cudf_error_for_chunk_read(
+                "nexus_query_engine.local_parquet_source.position_delete_chunk.read",
+                "failed to read native local parquet position-delete chunk with cudf",
+                error,
+                chunk,
+            )
+            .with_fact("path", parquet_chunk_path_fact(chunk))
+            .with_fact("chunk_index", chunk.chunk_index)
+            .with_fact("file_index", chunk.file_index)
+            .with_fact("read_columns", chunk.read_columns.len()),
             chunk,
         )
-        .with_fact("path", parquet_chunk_path_fact(chunk))
-        .with_fact("chunk_index", chunk.chunk_index)
-        .with_fact("file_index", chunk.file_index)
-        .with_fact("read_columns", chunk.read_columns.len())
-        .with_row_group_facts(chunk)
     })?;
     record_background_cache_chunk_fill_enqueue(context, chunk, metrics);
     let observed_row_group_count = None;

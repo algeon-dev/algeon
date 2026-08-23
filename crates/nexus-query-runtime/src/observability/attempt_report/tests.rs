@@ -17,13 +17,13 @@ fn reason(value: AttemptFailureFactValue) -> AttemptFailureFact {
 
 #[test]
 fn native_failure_summary_projects_only_known_cugraph_allocation_sources_in_key_order() {
-    let error = crate::error::QueryError::new(
-        crate::error::QueryErrorCode::CudfResourceExhausted,
+    let error = nexus_query_planning::error::QueryError::new(
+        nexus_query_planning::error::QueryErrorCode::CudfResourceExhausted,
         "nexus_query_engine.test.allocation_source",
         "cuGraph allocation failed",
     )
     .with_fact("reason", "backend_closing")
-    .with_cugraph_allocation_source(crate::error::CugraphAllocationSource::RmmBadAlloc);
+    .with_cugraph_allocation_source(nexus_query_planning::error::CugraphAllocationSource::RmmBadAlloc);
 
     let summary = AttemptFailureSummary::from_native_error(&error);
     assert_eq!(
@@ -38,11 +38,17 @@ fn native_failure_summary_projects_only_known_cugraph_allocation_sources_in_key_
     );
 
     for (source, expected) in [
-        (crate::error::CugraphAllocationSource::RmmOutOfMemory, AttemptFailureFactValue::CugraphRmmOutOfMemory),
-        (crate::error::CugraphAllocationSource::StdBadAlloc, AttemptFailureFactValue::CugraphStdBadAlloc),
+        (
+            nexus_query_planning::error::CugraphAllocationSource::RmmOutOfMemory,
+            AttemptFailureFactValue::CugraphRmmOutOfMemory,
+        ),
+        (
+            nexus_query_planning::error::CugraphAllocationSource::StdBadAlloc,
+            AttemptFailureFactValue::CugraphStdBadAlloc,
+        ),
     ] {
-        let error = crate::error::QueryError::new(
-            crate::error::QueryErrorCode::CudfResourceExhausted,
+        let error = nexus_query_planning::error::QueryError::new(
+            nexus_query_planning::error::QueryErrorCode::CudfResourceExhausted,
             "nexus_query_engine.test.allocation_source",
             "cuGraph allocation failed",
         )
@@ -53,16 +59,16 @@ fn native_failure_summary_projects_only_known_cugraph_allocation_sources_in_key_
         );
     }
 
-    let unknown = crate::error::QueryError::new(
-        crate::error::QueryErrorCode::CudfResourceExhausted,
+    let unknown = nexus_query_planning::error::QueryError::new(
+        nexus_query_planning::error::QueryErrorCode::CudfResourceExhausted,
         "nexus_query_engine.test.allocation_source",
         "cuGraph allocation failed",
     )
-    .with_cugraph_allocation_source(crate::error::CugraphAllocationSource::Unknown);
+    .with_cugraph_allocation_source(nexus_query_planning::error::CugraphAllocationSource::Unknown);
     assert!(AttemptFailureSummary::from_native_error(&unknown).facts().is_empty());
 
-    let untyped_fact = crate::error::QueryError::new(
-        crate::error::QueryErrorCode::CudfResourceExhausted,
+    let untyped_fact = nexus_query_planning::error::QueryError::new(
+        nexus_query_planning::error::QueryErrorCode::CudfResourceExhausted,
         "nexus_query_engine.test.allocation_source",
         "cuGraph allocation failed",
     )

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::*;
 #[test]
 fn bounded_native_query_executes_root_left_hash_join_with_unmatched_probe_rows() {

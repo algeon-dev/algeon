@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::*;
 
 /// Mutates the shared revenue subplan used to prove that a keyed root

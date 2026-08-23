@@ -1,7 +1,24 @@
 //! Bounded admission, placement, and query-service orchestration.
 
-use super::*;
-use crate::runtime::allocator_correlation::AllocatorEventCorrelationIndex;
+use std::sync::{
+    Arc, Condvar, Mutex,
+    atomic::{AtomicBool, AtomicU64},
+};
+#[cfg(test)]
+use std::{
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Duration,
+};
+
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
+use tokio::sync::Notify;
+
+use super::{
+    admission::AdmissionState,
+    config::{QueryExecutionConfig, QueueBounds},
+    resources::QueryServiceResources,
+};
+use crate::runtime::{DeviceLedger, allocator_correlation::AllocatorEventCorrelationIndex, context::QueryServiceEpoch};
 
 mod api;
 mod build;

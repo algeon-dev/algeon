@@ -1,60 +1,34 @@
 //! Bounded native query-service admission harness.
 
-#[cfg(test)]
-use std::sync::atomic::AtomicUsize;
-use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
-    sync::{
-        Arc, Condvar, Mutex, OnceLock, Weak,
-        atomic::{AtomicBool, AtomicU64, Ordering},
-    },
-    time::{Duration, Instant},
-};
+use std::sync::{Arc, Mutex};
 
-use tokio::{sync::Notify, time};
-
-#[cfg(any(test, feature = "test-hooks"))]
-use super::GpuBackendCoreDraft;
-#[cfg(test)]
-use super::GpuInventory;
-#[cfg(any(test, feature = "test-hooks"))]
-use super::gpu::claim_live_backend;
-use super::{
-    CacheFillByteBudget, DeploymentIoCapability, DeviceLedger, DeviceLedgerReport, DeviceMemoryFailureReport,
-    DeviceRegistry, DeviceRegistryConfig, DeviceTelemetrySnapshot, ExecutionBoundaryPolicy, ExecutionCancellation,
-    ExecutionContext, GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe, GpuBackendControllerDraft,
-    GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuExecutionJobKind, GpuExecutionPool, GpuExecutionPoolSnapshot,
-    GpuExecutionQuerySnapshot, GpuExecutionQueryTracker, GpuMemoryOwnership, GpuTelemetry, LakehouseCacheFillConfig,
-    MemoryControlPolicy, MemoryGrant, MemoryResourcePolicy, NexusGpuInventory, NexusNvmlTelemetry, PlacementRequest,
-    SourceChunkPlanningMode, SourceSchedulerPolicy, SourceStorageProfile,
-    cache_events::LakehouseCacheFillEventSink,
-    cache_fill::{CacheFillConcurrencyGate, default_lakehouse_cache_fill_budget_bytes},
-    context::{ExecutionContextParts, QueryServiceEpoch, QueryServiceEpochUser, validate_service_stream_pool_device},
-    gpu,
-    gpu::{
-        DeviceOwnerToken, normalize_device_ordinals,
-        registry::{
-            DeviceRegistryCapacityPolicy, DeviceRegistryInstallProfile, DeviceRegistryMemoryPartition,
-            ResolvedDeviceInstallPlans,
-        },
-    },
-    object_store::{SourceObjectStoreRegistry, default_object_store_control_runtime},
-};
-use crate::{
-    admission::{AttemptRequirement, AttemptReservationEnvelope},
+use nexus_query_planning::{
+    admission::AttemptRequirement,
     capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
     chunk::SourceChunkPlanningOptions,
     dynamic_filter::DynamicFilterExecutionOptions,
     error::{QueryError, QueryErrorCode, Result},
-    metrics::QueryId,
     mode::StatisticalAggregateExecutionMode,
+};
+#[cfg(test)]
+use tokio::time;
+
+#[cfg(test)]
+use super::{
+    DeploymentIoCapability, DeviceLedgerReport, GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership,
+};
+use super::{
+    DeviceLedger, DeviceRegistry, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext,
+    GpuExecutionJobKind, GpuExecutionPool, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryGrant,
+    MemoryResourcePolicy, SourceChunkPlanningMode, SourceSchedulerPolicy,
+    cache_events::LakehouseCacheFillEventSink,
+    context::{ExecutionContextParts, QueryServiceEpochUser, validate_service_stream_pool_device},
+};
+use crate::{
+    metrics::QueryId,
     observability::{
         AdmissionLifecycleState, AdmissionRequestId, RuntimeAdmissionObservation, RuntimeObservationHandle,
         RuntimeObservationOwner, RuntimeObservationPayload, RuntimeTerminalOutcome,
-    },
-    runtime::{
-        backend_core::{ConstructionResourceJournal, GpuResourcePermit, ObservationCompletionDispatcher},
-        backend_lifecycle::ObservationPermit,
     },
 };
 
@@ -67,22 +41,12 @@ mod service;
 #[cfg(test)]
 mod tests;
 
-#[doc(hidden)]
-pub use admission::QueryAdmissionWaiter;
-use admission::{
-    AdmissionRequest, AdmissionState, DeviceAdmissionEntries, DeviceAdmissionEntry, PendingPreflightReservation,
-    PlacedQuery, QueryCompletion, QueuedAdmissionTerminal, admission_cancellation_or_deadline_error,
-    admission_queue_full_error, finish_closed_queued_requests, finish_expired_queued_requests,
-    finish_removed_request_cancelled, finish_removed_request_error, remove_queued_request, service_closed_error,
-    service_overloaded_error,
-};
+use admission::QueryCompletion;
+#[cfg(test)]
+use admission::{AdmissionState, DeviceAdmissionEntries, DeviceAdmissionEntry, QueryAdmissionWaiter};
 pub use config::{QueryExecutionConfig, QueueBounds};
-use device_waiters::{
-    PendingDeviceSlotNotifications, notify_shared_device_admission_available, register_shared_device_admission_waiters,
-};
-use handle::QueryHandleLifetime;
+use device_waiters::{PendingDeviceSlotNotifications, notify_shared_device_admission_available};
 pub use handle::{AdmittedQueryContext, QueryHandle};
-use resources::QueryServiceResources;
 #[doc(hidden)]
 pub use service::QueryService;
 use service::QueryServiceInner;

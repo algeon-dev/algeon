@@ -1,5 +1,12 @@
 use std::collections::BTreeMap;
 
+use nexus_query_planning::{
+    execution_contracts::{
+        BuildMaterializationBoundary, ExecutionBoundaryPolicy, ProbeExecutionBoundary, ResultMaterializationBoundary,
+        SourceReadBoundary,
+    },
+    graph_memory::{GraphClaimCalibrationRow, GraphReservationReport},
+};
 use serde_json::{Map, Value, json};
 
 use super::{
@@ -7,13 +14,6 @@ use super::{
     GraphAlgorithmRuntimeMetrics, JoinOperatorMetrics, JoinStrategyDecisionMetrics, MemoryReservationEvent,
     OperatorMetrics, PlanNodeId, PlanTaskMapping, QueryId, QueryMetrics, SourceReadParquetEvidenceMetrics,
     SourceReadRuntimeMetrics, TaskOperatorMetrics, TaskRuntimeMetrics, TraceId,
-};
-use crate::{
-    execution_contracts::{
-        BuildMaterializationBoundary, ExecutionBoundaryPolicy, ProbeExecutionBoundary, ResultMaterializationBoundary,
-        SourceReadBoundary,
-    },
-    graph_memory::{GraphClaimCalibrationRow, GraphReservationReport},
 };
 
 impl QueryMetrics {

@@ -1,6 +1,23 @@
-use super::*;
+#[cfg(feature = "cugraph")]
+use std::collections::BTreeMap;
+
+#[cfg(feature = "cugraph")]
+use super::super::{
+    helpers::{attach_task_facts, plan_node, single_output_resource},
+    resource::CompiledGpuResourcePayload,
+};
+use super::{
+    super::helpers::invalid, CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskOutput,
+};
 #[cfg(feature = "cugraph")]
 use crate::exec::bounded::execute_bounded_graph_algorithm_from_inputs;
+use crate::{error::Result, pipeline::PipelineTask};
+#[cfg(feature = "cugraph")]
+use crate::{
+    exec::bounded::{ResidentGpuFrame, release_reservations_reverse},
+    plan::{NodeId, PlanNode},
+    runtime::{MemoryReservationRequest, ReservationKind},
+};
 
 impl CompiledGpuTaskExecutor<'_> {
     #[cfg(feature = "cugraph")]

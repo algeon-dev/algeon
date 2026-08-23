@@ -7,8 +7,6 @@
 //! contract); they use canonical capability report keys rather than
 //! execution-family labels.
 
-use std::collections::{BTreeMap, BTreeSet};
-
 use crate::{
     chunk::local_parquet_source_has_exact_read_preflight,
     error::QueryError,
@@ -47,7 +45,18 @@ pub use aggregate::{
 pub use entry::analyze_query_capabilities;
 pub use join::KeyedHashJoinStrategyOptions;
 #[doc(hidden)]
-pub use join::*;
+pub use join::{
+    JoinExecutionCapability, KeyedHashJoinStrategy, KeyedHashJoinStrategyDecision, KeyedHashJoinStrategyInputFacts,
+    KeylessConditionalJoinKind, hash_join_prebuild_reservation_unsupported_build_key_for_plan,
+    join_node_execution_capability, join_residual_requires_post_join_filter, keyed_filtered_semi_anti_join_capable,
+    keyed_hash_join_capable, keyed_hash_join_strategy_decision_for_plan,
+    keyed_hash_join_strategy_decision_for_plan_with_options, keyed_hash_join_strategy_decision_with_options,
+    keyed_hash_join_strategy_input_facts_for_plan,
+    keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness_with_options,
+    keyed_residual_mixed_join_capable, keyless_outer_cross_join_capable, multi_join_keyed_residual_mixed_join_capable,
+    multi_join_subtree_join_execution_capability, one_shot_equi_join_supported, partitioned_equi_join_supported,
+    partitioned_keyed_residual_join_supported, projected_cross_join_capable, single_join_node_execution_capability,
+};
 pub use model::{
     AggregateGrouping, BLOCKING_ROLLUP_RANK_FULL_SCAN_REQUIRES_EXACT_CONTRACTS, CapabilityAnalysis, CapabilityDecision,
     CapabilityEnvelope, CapabilityEnvelopeAdmission, CapabilityRejectionCategory, CapabilityRejectionOwner,

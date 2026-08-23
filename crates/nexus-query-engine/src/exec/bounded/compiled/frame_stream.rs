@@ -1,4 +1,18 @@
-use super::*;
+use std::{cell::Cell, collections::VecDeque, rc::Rc};
+
+#[cfg(test)]
+use crate::runtime::ExecutionContext;
+use crate::{
+    dynamic_filter::{DynamicFilter, DynamicFilterRoute},
+    error::{QueryError, QueryErrorCode, Result},
+    exec::bounded::{
+        ActiveReservation, BoundedExecutionAttempt, ResidentGpuFrame, execute_bounded_generic_projection,
+        execute_bounded_generic_unary,
+    },
+    metrics::QueryMetrics,
+    plan::{FilterNode, NodeId, ProjectionNode},
+    runtime::{MemoryReservationRequest, ReservationKind},
+};
 
 pub(in crate::exec::bounded) struct ResidentFrameStreamPayload {
     /// Worst-case bytes a single yielded "step" can occupy on the

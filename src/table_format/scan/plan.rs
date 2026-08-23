@@ -1,4 +1,11 @@
-use super::{columns::TableFormatUnsupportedColumn, *};
+use std::{fmt, sync::Arc};
+
+use super::{
+    CapabilityReason, LakehouseCacheStatus, ResolvedParquetSource, Schema, SchemaRef, TableFormat,
+    TableFormatColumnMapping, TableFormatDataFile, TableFormatDataFileFormat, TableFormatDeleteFile,
+    TableFormatDirectDeviceReadDisposition, TableFormatScanDiagnostics, TableFormatUnsupportedFeature,
+    columns::TableFormatUnsupportedColumn,
+};
 
 /// Resolved table-format scan facts consumed by later native lowering stages.
 ///

@@ -1,6 +1,7 @@
 //! Graph structure, edge normalization, and structural algorithm contracts.
+use std::fmt;
 
-use super::*;
+use super::{GraphConstructionOptions, GraphEdgeColumnBindings};
 
 /// Edge-list normalization inserted before raw cuGraph construction.
 ///
@@ -143,7 +144,7 @@ pub struct GraphOutDegreesAllParams;
 
 /// Zero-argument all-vertex triangle count.
 ///
-/// Output schema is fixed by [`stable_graph_result_schema`].
+/// Output schema is fixed by [`crate::plan::stable_graph_result_schema`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct GraphTriangleCountAllParams;
 

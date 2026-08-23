@@ -6,11 +6,12 @@
 
 use std::{collections::BTreeMap, time::Duration};
 
-use crate::{
+use nexus_query_planning::{
     execution_contracts::{ExecutionBoundaryPolicy, MemoryControlPolicy},
     graph_memory::GraphReservationReport,
-    harness::max_option,
 };
+
+use crate::harness::max_option;
 
 mod aggregate;
 mod backend_descriptor;
@@ -29,6 +30,10 @@ mod task;
 use correlation::inherited_query_id;
 #[doc(hidden)]
 pub use memory::ReservationProjectionLedgerHandle;
+pub use nexus_query_planning::{
+    correlation::{CompiledTaskId, PlanNodeId, QueryId, TraceId},
+    execution_contracts::{MemoryReservationRequest, MemorySpaceId, ReservationKind},
+};
 
 pub use self::{
     aggregate::AggregateStrategyDecisionMetrics,
@@ -51,10 +56,6 @@ pub use self::{
     source_read::{SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics},
     task::{BudgetedExecutionEvent, TaskOperatorMetrics, TaskRuntimeMetrics},
 };
-pub use crate::{
-    correlation::{CompiledTaskId, PlanNodeId, QueryId, TraceId},
-    execution_contracts::{MemoryReservationRequest, MemorySpaceId, ReservationKind},
-};
 
 /// Query-scoped metrics accumulated during native execution.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -76,7 +77,7 @@ pub struct QueryMetrics {
     /// Fixed-shape graph model-claim versus measured-peak calibration rows in
     /// observation order. These are diagnostic projections and never form
     /// admission evidence.
-    pub graph_claim_calibration_rows: Vec<crate::graph_memory::GraphClaimCalibrationRow>,
+    pub graph_claim_calibration_rows: Vec<nexus_query_planning::graph_memory::GraphClaimCalibrationRow>,
     /// Join-strategy diagnostics captured during planning/execution.
     pub join_strategy_decisions: Vec<JoinStrategyDecisionMetrics>,
     /// Aggregate-strategy diagnostics captured during planning/execution.

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::{source::record_bounded_parquet_source_metrics, *};
 use crate::{mode::StatisticalAggregateExecutionMode, runtime::ExecutionBoundaryPolicy};
 

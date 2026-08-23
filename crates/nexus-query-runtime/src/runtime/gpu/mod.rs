@@ -37,7 +37,7 @@ pub use owner::{DeviceOwnerToken, LiveBackendLease, claim_live_backend, normaliz
 #[doc(hidden)]
 pub use placement::PlacementRequest;
 pub use profile::{DeviceCapabilities, DeviceCapability, DeviceResourceEnvelope, DeviceResourceProfile};
-pub(crate) use registry::{DeviceRegistry, DeviceRegistryConfig};
+pub(crate) use registry::DeviceRegistry;
 
 /// Query placement selected by the service scheduler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -1,4 +1,6 @@
-use super::*;
+use std::time::{Duration, Instant};
+
+use super::{BoxFuture, Result, TableFormatScanPlan};
 
 /// Table format that produced a resolved scan plan.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]

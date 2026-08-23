@@ -1,9 +1,18 @@
-use std::{borrow::Cow, collections::BTreeSet, fs, time::Duration};
+use std::{fs, sync::Arc, time::Instant};
 
 use arrow::datatypes::SchemaRef;
 use parquet::file::reader::FileReader;
 
-use super::*;
+use super::{
+    ArrowDataType, BinaryOp, BoundedExecutionAttempt, CudfSortOptions, DataFrame, ExecutionBudgetRequest,
+    ExecutionBudgetToken, ExecutionContext, Expr, Field, GpuDataFrame, GpuResidentInputMap, GpuResultHandle,
+    LiteralValue, LocalParquetFile, LocalParquetSource, MemoryReservationRequest, NodeId, ParquetReadOptions,
+    QueryError, QueryErrorCode, QueryMetrics, ReservationKind, Result, Schema, SourceChunk, SourceChunkBatch,
+    SourceChunkPlan, SourceChunkPlanningPolicy, SourceReadMode, SourceReadRuntimeMetrics, ZERO_COLUMN_COUNT_COLUMN,
+    append_source_order_columns, budgeted_value, col, comma_separated_usize, cudf_dtype_from_arrow_type,
+    execution_overrides, lit, plan_local_parquet_source_chunks_with_execution_context, record_batch_memory_size,
+    timestamp_unit_to_cudf_resolution,
+};
 
 mod cache_runtime;
 mod cudf_contract;
@@ -27,7 +36,9 @@ use cudf_contract::{
 };
 pub use gpu_resident::read_gpu_resident_source;
 use lakehouse_cache::*;
-pub(super) use metrics::{SourceChunkRowGroupFacts, format_row_groups, record_bounded_parquet_source_metrics};
+pub(super) use metrics::{
+    attach_row_group_facts, attach_row_group_facts_if_absent, format_row_groups, record_bounded_parquet_source_metrics,
+};
 use partition::inject_partition_columns;
 use position_delete::*;
 use read::read_local_parquet_file;
@@ -469,23 +480,27 @@ fn read_local_parquet_chunk_uncached(
     context.check_cancellation("nexus_query_engine.local_parquet_chunk.read")?;
     if chunk.zero_column_count {
         let row_count = chunk.known_row_count.ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.local_parquet_chunk.zero_column_count",
-                "zero-column count chunk requires parquet row-count metadata",
+            attach_row_group_facts(
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.local_parquet_chunk.zero_column_count",
+                    "zero-column count chunk requires parquet row-count metadata",
+                )
+                .with_fact("path", parquet_chunk_path_fact(chunk))
+                .with_fact("chunk_index", chunk.chunk_index)
+                .with_fact("file_index", chunk.file_index),
+                chunk,
             )
-            .with_fact("path", parquet_chunk_path_fact(chunk))
-            .with_fact("chunk_index", chunk.chunk_index)
-            .with_fact("file_index", chunk.file_index)
-            .with_row_group_facts(chunk)
         })?;
         return zero_column_count_chunk_frame_with_budget(context, row_count, budget_bytes, budget_boundary, metrics)
             .map_err(|error| {
-                error
-                    .with_fact("path", parquet_chunk_path_fact(chunk))
-                    .with_fact("chunk_index", chunk.chunk_index)
-                    .with_fact("file_index", chunk.file_index)
-                    .with_row_group_facts(chunk)
+                attach_row_group_facts(
+                    error
+                        .with_fact("path", parquet_chunk_path_fact(chunk))
+                        .with_fact("chunk_index", chunk.chunk_index)
+                        .with_fact("file_index", chunk.file_index),
+                    chunk,
+                )
             });
     }
 
@@ -510,26 +525,30 @@ fn read_local_parquet_chunk_uncached(
         if file.has_position_delete_files() { crate::chunk::source_chunk_row_position_range(chunk)? } else { None };
     let (cudf_source, cudf_chunk) = cudf_local_parquet_source_chunk(context, source, chunk)?;
     let budget_bytes = usize::try_from(budget_bytes).map_err(|_error| {
-        QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.local_parquet_chunk.budget",
-            "bounded local parquet source chunk budget exceeds platform usize range",
+        attach_row_group_facts(
+            QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.local_parquet_chunk.budget",
+                "bounded local parquet source chunk budget exceeds platform usize range",
+            )
+            .with_fact("path", parquet_chunk_path_fact(chunk))
+            .with_fact("chunk_index", chunk.chunk_index)
+            .with_fact("file_index", chunk.file_index)
+            .with_fact("budget_bytes", budget_bytes),
+            chunk,
         )
-        .with_fact("path", parquet_chunk_path_fact(chunk))
-        .with_fact("chunk_index", chunk.chunk_index)
-        .with_fact("file_index", chunk.file_index)
-        .with_fact("budget_bytes", budget_bytes)
-        .with_row_group_facts(chunk)
     })?;
     let token = context
         .execution_budget_token(ExecutionBudgetRequest::new(budget_bytes).with_boundary(budget_boundary))
         .map_err(|error| {
-            error
-                .with_fact("path", parquet_chunk_path_fact(chunk))
-                .with_fact("chunk_index", chunk.chunk_index)
-                .with_fact("file_index", chunk.file_index)
-                .with_fact("read_columns", chunk.read_columns.len())
-                .with_row_group_facts(chunk)
+            attach_row_group_facts(
+                error
+                    .with_fact("path", parquet_chunk_path_fact(chunk))
+                    .with_fact("chunk_index", chunk.chunk_index)
+                    .with_fact("file_index", chunk.file_index)
+                    .with_fact("read_columns", chunk.read_columns.len()),
+                chunk,
+            )
         })?;
     let _io_lease = context.acquire_io_lease("nexus_query_engine.local_parquet_chunk.read")?;
     let read_timer = Instant::now();
@@ -541,17 +560,19 @@ fn read_local_parquet_chunk_uncached(
         &token,
     )
     .map_err(|error| {
-        cudf_error_for_chunk_with_budget_details(
-            "nexus_query_engine.local_parquet_chunk.read",
-            "failed to read bounded native local parquet source chunk with cudf",
-            error,
+        attach_row_group_facts(
+            cudf_error_for_chunk_with_budget_details(
+                "nexus_query_engine.local_parquet_chunk.read",
+                "failed to read bounded native local parquet source chunk with cudf",
+                error,
+                chunk,
+            )
+            .with_fact("path", parquet_chunk_path_fact(chunk))
+            .with_fact("chunk_index", chunk.chunk_index)
+            .with_fact("file_index", chunk.file_index)
+            .with_fact("read_columns", chunk.read_columns.len()),
             chunk,
         )
-        .with_fact("path", parquet_chunk_path_fact(chunk))
-        .with_fact("chunk_index", chunk.chunk_index)
-        .with_fact("file_index", chunk.file_index)
-        .with_fact("read_columns", chunk.read_columns.len())
-        .with_row_group_facts(chunk)
     })?;
     record_background_cache_chunk_fill_enqueue(context, chunk, metrics);
     let observed_row_group_count = None;
@@ -881,16 +902,18 @@ fn validate_local_parquet_chunk_batch(
             || !chunk.partition_values.is_empty()
             || source.files.get(chunk.file_index).is_some_and(LocalParquetFile::has_row_delete_files)
         {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.local_parquet_chunk_batch",
-                "source chunk is not eligible for multi-source Parquet batching",
-            )
-            .with_fact("reason", "ineligible_chunk")
-            .with_fact("path", parquet_chunk_path_fact(chunk))
-            .with_fact("chunk_index", chunk.chunk_index)
-            .with_fact("file_index", chunk.file_index)
-            .with_row_group_facts(chunk));
+            return Err(attach_row_group_facts(
+                QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.local_parquet_chunk_batch",
+                    "source chunk is not eligible for multi-source Parquet batching",
+                )
+                .with_fact("reason", "ineligible_chunk")
+                .with_fact("path", parquet_chunk_path_fact(chunk))
+                .with_fact("chunk_index", chunk.chunk_index)
+                .with_fact("file_index", chunk.file_index),
+                chunk,
+            ));
         }
     }
     Ok(())
@@ -941,6 +964,8 @@ fn cudf_error_for_chunk_batch_with_budget_details(
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::*;
     use crate::source::{
         CredentialMode, LakehouseCacheFillMode, MissingColumn, ParquetEqualityDeleteFile, ResolvedParquetSource,

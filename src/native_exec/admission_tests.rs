@@ -282,7 +282,15 @@ async fn admission_failure_clears_round_state_and_allows_a_retry() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn pending_context_cancellation_keeps_the_shared_grant_until_the_last_context_drops() {
-    let backend = InstalledTestGpuBackend::new();
+    let backend = InstalledTestGpuBackend::with_config(
+        NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1),
+        NexusGpuDeviceProfile::new(0)
+            .with_memory_limit(nexus_query_engine::runtime::GpuDeviceMemoryLimit::Explicit {
+                limit_bytes: 256 * 1024 * 1024,
+            })
+            .with_max_active_attempts(1),
+        NexusGpuQueuePolicy::default(),
+    );
     let owner = lifecycle_owner("pending-context-real-grant");
     let ticket = QueryAdmissionTicket::new_with_observation(admission_source(&backend), None, owner);
     let task_context = Arc::new(TaskContext::default());

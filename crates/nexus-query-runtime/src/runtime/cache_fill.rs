@@ -5,8 +5,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
+
 use super::ExecutionCancellation;
-use crate::error::{QueryError, QueryErrorCode, Result};
 
 /// Conservative fallback when physical-memory detection is unavailable.
 pub const DEFAULT_LAKEHOUSE_CACHE_FILL_BUDGET_BYTES: u64 = LakehouseCacheFillConfig::DEFAULT_BUDGET_BYTES;

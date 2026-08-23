@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::*;
 
 // Selects which leaf is wrapped in an aggregate for multi-join fixtures.

@@ -1,6 +1,19 @@
-use std::collections::BTreeSet;
+use std::{
+    collections::{BTreeSet, HashMap, HashSet},
+    sync::Arc,
+};
 
-use super::*;
+use super::{
+    AggregateFunction, AggregateNode, AllocationClass, AllocationOwnerTerm, AttemptReservationConsumerState, DataType,
+    Expr, FiniteBytes, JoinNode, JoinSide, JoinType, LimitMetadataDescriptor, LimitRangeGatherPreflight, LiteralValue,
+    NodeId, OccurrenceId, OwnerId, OwnerTermId, OwnerTermRole, PlanColumnEvidence, PlanColumnEvidenceAnalysis,
+    PlanNode, QueryError, QueryErrorCode, QueryPlan, QueryPlanCapabilityProof, ReservationKind, ReservationRequirement,
+    Result, ResultSink, Schema, SchemaRef, SortKeyMetadataDescriptor, SortMetadataDescriptor, SortPreflight,
+    SourceNode, TimeUnit, aggregate_owner_state_is_supported, aggregate_owner_terms_for_shapes, alias_wrapped_column,
+    canonical_execution_scope_fingerprint, cudf_dtype_from_arrow_type, graph_output_is_final, limit_owner_error,
+    owner_term_error, query_plan_hard_row_upper_bound, query_plan_node_hard_row_upper_bound,
+    representation_cast_preserves_identity, sort_owner_error,
+};
 
 #[derive(Debug, Clone)]
 #[doc(hidden)]

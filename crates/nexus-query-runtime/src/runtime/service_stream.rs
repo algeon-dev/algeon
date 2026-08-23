@@ -12,6 +12,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
+
 #[cfg(test)]
 use super::DeviceFacts;
 #[doc(hidden)]
@@ -33,13 +35,10 @@ use super::{
     context::{AttemptAuxiliaryPermit, QueryServiceResourceEpoch},
     stream_cleanup::{ServiceStreamTestProbeSlot, StreamCleanupCompletion, StreamCleanupSupervisor},
 };
-use crate::{
-    error::{QueryError, QueryErrorCode, Result},
-    observability::{
-        RuntimeEventContext, RuntimeObservationHandle, RuntimeObservationPayload, RuntimeResourceDomain,
-        RuntimeResourceId, RuntimeResourceRow, RuntimeStreamLeaseObservation, RuntimeStreamLeaseScope,
-        RuntimeTopologyRecord, StreamLeaseAcquisition, StreamLeaseLifecycleState,
-    },
+use crate::observability::{
+    RuntimeEventContext, RuntimeObservationHandle, RuntimeObservationPayload, RuntimeResourceDomain, RuntimeResourceId,
+    RuntimeResourceRow, RuntimeStreamLeaseObservation, RuntimeStreamLeaseScope, RuntimeTopologyRecord,
+    StreamLeaseAcquisition, StreamLeaseLifecycleState,
 };
 
 /// Fallback and upper bound for the default service stream pool size.
@@ -1150,7 +1149,7 @@ mod tests {
         let error = ServiceStreamPool::new(cudf::DeviceId::DEFAULT, 1).unwrap_err();
 
         assert_eq!(error.code(), QueryErrorCode::Internal);
-        assert_eq!(error.status(), crate::error::QueryErrorStatus::Permanent);
+        assert_eq!(error.status(), nexus_query_planning::error::QueryErrorStatus::Permanent);
         assert_eq!(error.operation(), STREAM_CLEANUP_SUPERVISOR_BUILD_OPERATION);
         assert_eq!(error.fact_value("reason"), Some("stream_cleanup_supervisor_spawn_failed"));
         assert_eq!(error.fact_value("device_ordinal"), Some("0"));
@@ -1227,7 +1226,7 @@ mod tests {
             .unwrap_err();
 
         assert_eq!(error.code(), QueryErrorCode::Internal);
-        assert_eq!(error.status(), crate::error::QueryErrorStatus::Permanent);
+        assert_eq!(error.status(), nexus_query_planning::error::QueryErrorStatus::Permanent);
         assert_eq!(error.fact_value("reason"), Some("stream_cleanup_supervisor_unexpected_exit"));
         assert_eq!(
             pool.inner.cleanup_supervisor.join_disposition.load(Ordering::Acquire),
@@ -1523,7 +1522,7 @@ mod tests {
         let error =
             pool.close_and_wait_until(deadline, "nexus_query_engine.service_stream_pool.test_join_panic").unwrap_err();
         assert_eq!(error.code(), QueryErrorCode::Internal);
-        assert_eq!(error.status(), crate::error::QueryErrorStatus::Permanent);
+        assert_eq!(error.status(), nexus_query_planning::error::QueryErrorStatus::Permanent);
         assert_eq!(error.fact_value("reason"), Some("stream_cleanup_supervisor_panicked"));
         assert_eq!(error.fact_value("supervisor_stage"), Some("thread_join"));
 

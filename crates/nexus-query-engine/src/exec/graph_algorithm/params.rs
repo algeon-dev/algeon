@@ -1,4 +1,4 @@
-use super::*;
+use super::{QueryError, QueryErrorCode, Result, map_cugraph_error};
 
 pub(super) fn similarity_params(spec: &crate::plan::GraphAlgorithmSpec) -> cugraph::similarity::SimilarityParams {
     cugraph::similarity::SimilarityParams {

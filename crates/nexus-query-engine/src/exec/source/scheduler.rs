@@ -11,7 +11,11 @@ use std::{
 
 use parquet::file::reader::FileReader;
 
-use super::*;
+use super::{
+    BoundedExecutionAttempt, ExecutionContext, GpuDataFrame, LocalParquetSource, QueryError, QueryErrorCode,
+    QueryMetrics, ReservationKind, Result, SourceChunk, attach_row_group_facts, parquet_chunk_path_fact,
+    read_local_parquet_chunk, source_read_request,
+};
 use crate::{
     exec::bounded::{
         ActiveReservation,
@@ -577,27 +581,31 @@ impl ScheduledLocalParquetRead {
         }
         let result = joined
             .ok_or_else(|| {
-                QueryError::new(
-                    QueryErrorCode::Cancelled,
-                    "nexus_query_engine.source_scheduler.join",
-                    "source read worker was stopped by process exit before consumer join",
+                attach_row_group_facts(
+                    QueryError::new(
+                        QueryErrorCode::Cancelled,
+                        "nexus_query_engine.source_scheduler.join",
+                        "source read worker was stopped by process exit before consumer join",
+                    )
+                    .with_fact("reason", "source_worker_process_exit")
+                    .with_fact("chunk_index", chunk.chunk_index)
+                    .with_fact("file_index", chunk.file_index)
+                    .with_fact("path", parquet_chunk_path_fact(&chunk)),
+                    &chunk,
                 )
-                .with_fact("reason", "source_worker_process_exit")
-                .with_fact("chunk_index", chunk.chunk_index)
-                .with_fact("file_index", chunk.file_index)
-                .with_fact("path", parquet_chunk_path_fact(&chunk))
-                .with_row_group_facts(&chunk)
             })?
             .map_err(|_panic| {
-                QueryError::new(
-                    QueryErrorCode::Internal,
-                    "nexus_query_engine.source_scheduler.join",
-                    "native source scheduler read worker panicked",
+                attach_row_group_facts(
+                    QueryError::new(
+                        QueryErrorCode::Internal,
+                        "nexus_query_engine.source_scheduler.join",
+                        "native source scheduler read worker panicked",
+                    )
+                    .with_fact("chunk_index", chunk.chunk_index)
+                    .with_fact("file_index", chunk.file_index)
+                    .with_fact("path", parquet_chunk_path_fact(&chunk)),
+                    &chunk,
                 )
-                .with_fact("chunk_index", chunk.chunk_index)
-                .with_fact("file_index", chunk.file_index)
-                .with_fact("path", parquet_chunk_path_fact(&chunk))
-                .with_row_group_facts(&chunk)
             })?;
         execution.metrics_mut().record_source_read_queue_wait(result.queue_wait);
         execution.metrics_mut().merge_from(result.metrics);

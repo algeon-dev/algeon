@@ -1,4 +1,11 @@
-use super::*;
+use super::{
+    BTreeMap, BoundedExecutionAttempt, BoundedJoinSideFrame, ExecutionContext, JoinNode, JoinSide, JoinType,
+    KeyedHashJoinStrategyOptions, MemoryControlPolicy, NodeId, PartitionedJoinPartitionOutput, PartitionedJoinRowRange,
+    PartitionedJoinSide, QueryError, QueryMetrics, ResidentGpuFrame, Result, RetryFacts, execution_overrides,
+    hash_partition_join_side, join_keys_for_side, partition_row_range, partitioned_join_reusable_rejected_reason,
+    probe_side, release_bounded_join_side_frame, release_partitioned_join_side, release_streamed_join_outputs_reverse,
+    side_metric, slice_partition_join_side_range,
+};
 
 // Retry subdivision constants are deliberately fixed because they describe the
 // deterministic shape of already-admitted partitioned-join work, not a new
@@ -872,7 +879,7 @@ fn release_partitioned_join_driver_state(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::JoinSpec;
+    use crate::{error::QueryErrorCode, plan::JoinSpec};
 
     fn retry_join_node(join_type: JoinType, build_side: JoinSide) -> JoinNode {
         JoinNode {

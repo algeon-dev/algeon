@@ -1,4 +1,13 @@
-use super::*;
+use std::collections::BTreeSet;
+
+use super::CompiledGpuTaskExecutor;
+use crate::{
+    admission::CompiledJoinExecutionStrategy,
+    exec::bounded::SourceAdjacentAggregateChunkCapHints,
+    pipeline::{PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentResourceId},
+    plan::{JoinSide, JoinType, NodeId, PlanNode},
+    source::SourceNode,
+};
 
 impl CompiledGpuTaskExecutor<'_> {
     pub(super) fn task_feeds_join_input(&self, task: PipelineTaskId) -> bool {

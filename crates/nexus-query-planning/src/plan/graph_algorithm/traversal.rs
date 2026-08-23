@@ -1,6 +1,6 @@
 //! Graph traversal algorithm parameter contracts.
 
-use super::*;
+use super::NodeId;
 
 /// Breadth-first search parameters.
 ///

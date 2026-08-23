@@ -1,4 +1,14 @@
-use super::*;
+use std::{fmt::Write, sync::Arc};
+
+use super::{
+    ExecutionPlan, FinalPlanDisposition, MetricsSet, NATIVE_TPCDS_PARITY_TSV_COLUMNS, NATIVE_TPCDS_PARITY_TSV_HEADER,
+    NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome, NativeDataFusionRuntimeOutcome,
+    NativePlanningDiagnostics, NativePlanningFailure, ParityCompareOptions, ParityComparisonResult, RecordBatch,
+    Schema, SchemaRef, StatisticalAggregateExecutionMode, TsvRow, WorkloadDatasetMetadata,
+    compare_record_batches_with_options, fingerprint_batches, post_native_plan_coverage, sql_has_top_level_order_by,
+    sql_top_level_order_by_covers_output_columns, stable_tsv_field, unsupported_category,
+    write_workload_dataset_metadata,
+};
 
 /// Stable top-level parity outcome for one query row.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

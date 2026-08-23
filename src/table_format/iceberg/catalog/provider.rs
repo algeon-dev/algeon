@@ -1,4 +1,14 @@
-use super::*;
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    fmt,
+    sync::{Arc, RwLock as StdRwLock},
+    time::Duration,
+};
+
+use super::{
+    CATALOG_BACKEND_OP, CatalogProvider, DataFusionError, Error, ErrorCode, NamespaceIdent, Result, RwLock,
+    SchemaProvider, TableFormatParquetReadStrategyConfig, TableIdent, TableProvider, async_trait,
+};
 
 fn log_iceberg_metadata_lookup(
     operation: &'static str,

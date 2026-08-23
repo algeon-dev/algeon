@@ -1,4 +1,12 @@
-use super::*;
+use std::time::Instant;
+
+use super::{
+    BoundedExecutionAttempt, BoundedJoinSideFrame, CompiledJoinIndices, CompiledJoinMaterializationRequest,
+    ExecutionContext, GpuDataFrame, JoinNode, JoinType, NodeId, QueryError, QueryErrorCode, ReservationKind,
+    ResidentGpuFrame, Result, bounded_join_request, dataframe_cross_join_options, execution_overrides,
+    materialize_compiled_indices_output, observe_device_memory_bytes, probe_side, reorder_projected_cross_join_output,
+    side_metric, unsupported_bounded_shape,
+};
 
 pub(super) fn execute_compiled_projected_cross_join_materialize(
     execution: &mut BoundedExecutionAttempt<'_>,
