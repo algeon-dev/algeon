@@ -9,13 +9,13 @@ fn benchmark_report_accepted_rows_include_bounded_status_contract_rows_and_resou
     };
     let row = NativeTpchBenchmarkRow {
         query_id: "q01".to_string(),
-        planning_outcome: Some(NativeDataFusionPlanningOutcome::Selected),
+        planning_outcome: Some(CandidateOutcomeKind::Selected),
         capability_contract_rows: Vec::new(),
         capability_compiled_graphs: Vec::new(),
         reason_code: None,
         unsupported_category: None,
         native_candidate_shape_family: Some("sort_local_parquet_aggregate".to_string()),
-        final_disposition: FinalPlanDisposition::Native,
+        final_disposition: Some(FinalPlanDisposition::Native),
         rejected_before_execution: false,
         cpu_runtime_started: true,
         native_runtime_started: true,

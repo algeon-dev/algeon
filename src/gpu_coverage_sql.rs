@@ -24,9 +24,10 @@ use crate::{
     error::{Error, ErrorCode},
     gpu_coverage::{
         EXPLAIN_GPU_SCHEMA_VERSION, ExplainGpuOutputMode, NEXUS_EXPLAIN_COVERAGE_FUNCTION, QueryGpuCoverage,
-        QueryGpuCoverageOverall, coverage_validator_recursion_error, gpu_coverage_validation_in_progress,
+        QueryGpuPlanningOutcome, coverage_validator_recursion_error, gpu_coverage_validation_in_progress,
         validate_query,
     },
+    planner::FinalPlanDisposition,
 };
 
 /// Return the SQL table function that exposes [`validate_query`].
@@ -184,26 +185,61 @@ pub fn coverage_batch(
     output_mode: ExplainGpuOutputMode,
     query_id: Option<&str>,
 ) -> Result<RecordBatch> {
-    let gpu_fragments = coverage.domains.native_fragment_count + coverage.domains.explicit_gpu_island_count;
-    let summary_detail = serde_json::json!({
-        "overall": coverage.overall.as_str(),
-        "final_disposition": coverage.final_disposition.as_str(),
-        "confidence": coverage.confidence.as_str(),
-        "planning_did_io": coverage.planning_did_io,
-        "runtime_caveat_count": coverage.runtime_caveats.len(),
-    })
-    .to_string();
+    let (gpu_path_str, gpu_fragments_val, cpu_boundaries_val, outcome_str, reason_code_val, summary_detail) =
+        match &coverage.planning_outcome {
+            QueryGpuPlanningOutcome::Planned(plan_cov) => {
+                let path = match plan_cov.disposition() {
+                    FinalPlanDisposition::Native => "native",
+                    FinalPlanDisposition::Mixed => "partial_native",
+                    FinalPlanDisposition::DataFusion => "cpu",
+                };
+                let frags = plan_cov.native_fragment_count() + plan_cov.explicit_gpu_island_count();
+                let boundaries = plan_cov.datafusion_boundary_count();
+                let outcome = match plan_cov.disposition() {
+                    FinalPlanDisposition::Native | FinalPlanDisposition::Mixed => "accepted_replaced",
+                    FinalPlanDisposition::DataFusion => "retained_datafusion",
+                };
+                let detail = serde_json::json!({
+                    "planning_outcome": "planned",
+                    "final_disposition": plan_cov.disposition().as_str(),
+                    "confidence": coverage.confidence.as_str(),
+                    "planning_did_io": coverage.planning_did_io,
+                    "runtime_caveat_count": coverage.runtime_caveats.len(),
+                })
+                .to_string();
+                (
+                    path,
+                    Some(usize_to_i64(frags, "gpu_fragments")?),
+                    Some(usize_to_i64(boundaries, "cpu_boundaries")?),
+                    outcome,
+                    None,
+                    detail,
+                )
+            },
+            QueryGpuPlanningOutcome::Rejected(rejection) => {
+                let detail = serde_json::json!({
+                    "planning_outcome": "rejected",
+                    "reason_code": rejection.reason_code,
+                    "confidence": coverage.confidence.as_str(),
+                    "planning_did_io": coverage.planning_did_io,
+                    "runtime_caveat_count": coverage.runtime_caveats.len(),
+                })
+                .to_string();
+                ("rejected", None, None, "rejected_before_execution", Some(rejection.reason_code.clone()), detail)
+            },
+        };
+
     let mut query_ids = vec![query_id.map(str::to_string)];
     let mut row_kind = vec!["summary".to_string()];
-    let mut gpu_path = vec![coverage.overall.as_gpu_path().to_string()];
-    let mut gpu_fragments_column = vec![Some(usize_to_i64(gpu_fragments, "gpu_fragments")?)];
-    let mut cpu_boundaries = vec![Some(usize_to_i64(coverage.domains.datafusion_boundary_count, "cpu_boundaries")?)];
+    let mut gpu_path = vec![gpu_path_str.to_string()];
+    let mut gpu_fragments_column = vec![gpu_fragments_val];
+    let mut cpu_boundaries = vec![cpu_boundaries_val];
     let mut physical_root = vec![coverage.input_physical_plan_root.clone()];
     let mut post_native_plan_root = vec![coverage.physical_plan_root.clone()];
     let mut candidate_shape = vec![None];
     let mut candidate_family = vec![None];
-    let mut outcome = vec![summary_outcome(coverage).to_string()];
-    let mut reason_code = vec![summary_reason_code(coverage)];
+    let mut outcome = vec![outcome_str.to_string()];
+    let mut reason_code = vec![reason_code_val];
     let mut unsupported_category = vec![None];
     let mut remedy_code = vec![None];
     let mut remedy_kind = vec![None];
@@ -215,7 +251,7 @@ pub fn coverage_batch(
         for candidate in &coverage.candidate_outcomes {
             query_ids.push(query_id.map(str::to_string));
             row_kind.push("candidate".to_string());
-            gpu_path.push(coverage.overall.as_gpu_path().to_string());
+            gpu_path.push(gpu_path_str.to_string());
             gpu_fragments_column.push(None);
             cpu_boundaries.push(None);
             physical_root.push(None);
@@ -262,23 +298,6 @@ pub fn coverage_batch(
         ],
     )
     .map_err(Into::into)
-}
-
-fn summary_outcome(coverage: &QueryGpuCoverage) -> &'static str {
-    match coverage.final_disposition {
-        crate::planner::FinalPlanDisposition::Native | crate::planner::FinalPlanDisposition::Mixed => {
-            "accepted_replaced"
-        },
-        crate::planner::FinalPlanDisposition::DataFusion => "retained_datafusion",
-        crate::planner::FinalPlanDisposition::Rejected => "rejected_before_execution",
-    }
-}
-
-fn summary_reason_code(coverage: &QueryGpuCoverage) -> Option<String> {
-    match &coverage.overall {
-        QueryGpuCoverageOverall::Rejected { reason_code, .. } => Some(reason_code.clone()),
-        _ => None,
-    }
 }
 
 fn literal_string_arg(args: &[Expr], index: usize, name: &str) -> Result<String> {
@@ -377,8 +396,9 @@ mod tests {
             Some(&EXPLAIN_GPU_SCHEMA_VERSION.to_string())
         );
         let json: serde_json::Value = serde_json::from_str(string_value(batch, 3, 0)).unwrap();
-        assert_eq!(json["overall"]["verdict"], "no_cpu_in_planned_path");
-        assert_eq!(json["final_disposition"], "native");
+        assert_eq!(json["planning_outcome"]["status"], "planned");
+        assert_eq!(json["planning_outcome"]["final_plan"]["disposition"], "native");
+        assert!(json["planning_outcome"]["rejection"].is_null());
         assert_eq!(json["validated_under"]["native_optimizer_rule_installed"], true);
         assert_eq!(json["validated_under"]["final_plan_requirements"], serde_json::json!([]));
     }
@@ -417,7 +437,7 @@ mod tests {
 
         let batches = ctx
             .sql(
-                "SELECT row_kind, reason_code, coverage_json \
+                "SELECT row_kind, reason_code, gpu_fragments, cpu_boundaries, coverage_json \
                  FROM nexus_explain_coverage('SELECT * FROM nexus_explain_coverage(''SELECT 1'')') \
                  WHERE row_kind = 'summary'",
             )
@@ -429,8 +449,14 @@ mod tests {
         let batch = &batches[0];
         assert_eq!(string_value(batch, 0, 0), "summary");
         assert_eq!(string_value(batch, 1, 0), "coverage_validator_recursion_unsupported");
-        let json: serde_json::Value = serde_json::from_str(string_value(batch, 2, 0)).unwrap();
-        assert_eq!(json["overall"]["reason_code"], "coverage_validator_recursion_unsupported");
+        let gpu_fragments = batch.column(2).as_any().downcast_ref::<Int64Array>().unwrap();
+        let cpu_boundaries = batch.column(3).as_any().downcast_ref::<Int64Array>().unwrap();
+        assert!(gpu_fragments.is_null(0), "rejected plans report null fragments, not zero");
+        assert!(cpu_boundaries.is_null(0), "rejected plans report null boundaries, not zero");
+        let json: serde_json::Value = serde_json::from_str(string_value(batch, 4, 0)).unwrap();
+        assert_eq!(json["planning_outcome"]["status"], "rejected");
+        assert!(json["planning_outcome"]["final_plan"].is_null());
+        assert_eq!(json["planning_outcome"]["rejection"]["reason_code"], "coverage_validator_recursion_unsupported");
     }
 
     #[tokio::test]
@@ -464,6 +490,8 @@ mod tests {
         assert_eq!(string_value(batch, 0, 0), "summary");
         assert_eq!(string_value(batch, 1, 0), "coverage_validator_recursion_unsupported");
         let json: serde_json::Value = serde_json::from_str(string_value(batch, 2, 0)).unwrap();
-        assert_eq!(json["overall"]["reason_code"], "coverage_validator_recursion_unsupported");
+        assert_eq!(json["planning_outcome"]["status"], "rejected");
+        assert!(json["planning_outcome"]["final_plan"].is_null());
+        assert_eq!(json["planning_outcome"]["rejection"]["reason_code"], "coverage_validator_recursion_unsupported");
     }
 }

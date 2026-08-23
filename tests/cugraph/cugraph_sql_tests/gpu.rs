@@ -9,7 +9,7 @@ use datafusion::{
     physical_optimizer::PhysicalOptimizerRule,
 };
 use datafusion_nexus::{
-    gpu_coverage::{QueryGpuCoverageOverall, validate_query},
+    gpu_coverage::validate_query,
     planner::{FinalPlanDisposition, NexusFinalPlanRequirementRule, NexusNativeOptimizerConfig, classify_final_plan},
 };
 use futures::StreamExt;
@@ -2290,9 +2290,10 @@ async fn cugraph_sql_gpu_pagerank_utf8_is_native_and_matches_dense_numeric_ids()
     let string_sql = "SELECT vertex, value FROM cugraph_pagerank('string_edges', 'src', 'dst')";
 
     let coverage = validate_query(&ctx, string_sql).await.unwrap();
-    assert_eq!(coverage.overall, QueryGpuCoverageOverall::NoCpuInPlannedPath);
-    assert_eq!(coverage.final_disposition, FinalPlanDisposition::Native);
-    assert_eq!(coverage.domains.datafusion_boundary_count, 0);
+    assert_eq!(coverage.gpu_path(), "native");
+    let plan_cov = coverage.final_plan_coverage().expect("final plan coverage");
+    assert_eq!(plan_cov.disposition(), FinalPlanDisposition::Native);
+    assert_eq!(plan_cov.datafusion_boundary_count(), 0);
 
     let string_df = ctx.sql(string_sql).await.unwrap();
     assert_eq!(string_df.schema().field(0).data_type(), &DataType::Utf8);

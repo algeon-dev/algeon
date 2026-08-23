@@ -62,12 +62,9 @@ pub fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::ro
 pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::truncated(&self) -> bool
 #[non_exhaustive] pub struct datafusion_nexus::attempt::SealedAttemptNativeExecutionSnapshot
 pub datafusion_nexus::attempt::SealedAttemptNativeExecutionSnapshot::attempt_id: nexus_query_planning::schedule_projection::AttemptId
-pub datafusion_nexus::attempt::SealedAttemptNativeExecutionSnapshot::explicit_gpu_island_count: usize
-pub datafusion_nexus::attempt::SealedAttemptNativeExecutionSnapshot::final_disposition: datafusion_nexus::planner::FinalPlanDisposition
-pub datafusion_nexus::attempt::SealedAttemptNativeExecutionSnapshot::host_datafusion_boundary_count: usize
+pub datafusion_nexus::attempt::SealedAttemptNativeExecutionSnapshot::coverage: datafusion_nexus::gpu_coverage::FinalPlanCoverage
 pub datafusion_nexus::attempt::SealedAttemptNativeExecutionSnapshot::intermediate_device_to_host_materialization_count: usize
 pub datafusion_nexus::attempt::SealedAttemptNativeExecutionSnapshot::metrics: datafusion_nexus::native_report::NativeDataFusionExecutionMetrics
-pub datafusion_nexus::attempt::SealedAttemptNativeExecutionSnapshot::native_plan_fragment_count: usize
 pub datafusion_nexus::attempt::SealedAttemptNativeExecutionSnapshot::terminal_host_materialization_count: usize
 pub mod datafusion_nexus::backend
 pub use datafusion_nexus::backend::DeviceCapabilities
@@ -797,6 +794,15 @@ pub const fn datafusion_nexus::error::kind_for_code(datafusion_nexus::error::Err
 pub const fn datafusion_nexus::error::status_for_code(datafusion_nexus::error::ErrorCode) -> datafusion_nexus::error::ErrorStatus
 pub type datafusion_nexus::error::Result<T> = core::result::Result<T, datafusion_nexus::error::Error>
 pub mod datafusion_nexus::gpu_coverage
+pub enum datafusion_nexus::gpu_coverage::CandidateOutcomeKind
+pub datafusion_nexus::gpu_coverage::CandidateOutcomeKind::Deferred
+pub datafusion_nexus::gpu_coverage::CandidateOutcomeKind::NotSelectedByCost
+pub datafusion_nexus::gpu_coverage::CandidateOutcomeKind::NotSupported
+pub datafusion_nexus::gpu_coverage::CandidateOutcomeKind::Selected
+impl datafusion_nexus::report::CandidateOutcomeKind
+pub const fn datafusion_nexus::report::CandidateOutcomeKind::as_str(self) -> &'static str
+impl core::fmt::Display for datafusion_nexus::report::CandidateOutcomeKind
+pub fn datafusion_nexus::report::CandidateOutcomeKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum datafusion_nexus::gpu_coverage::ExplainGpuOutputMode
 pub datafusion_nexus::gpu_coverage::ExplainGpuOutputMode::Json
 pub datafusion_nexus::gpu_coverage::ExplainGpuOutputMode::Rows
@@ -809,32 +815,15 @@ pub datafusion_nexus::gpu_coverage::QueryGpuCandidateReasonKind::PlanShape
 pub datafusion_nexus::gpu_coverage::QueryGpuCandidateReasonKind::Source
 impl datafusion_nexus::gpu_coverage::QueryGpuCandidateReasonKind
 pub const fn datafusion_nexus::gpu_coverage::QueryGpuCandidateReasonKind::as_str(self) -> &'static str
-pub enum datafusion_nexus::gpu_coverage::QueryGpuCandidateSelectionOutcome
-pub datafusion_nexus::gpu_coverage::QueryGpuCandidateSelectionOutcome::Deferred
-pub datafusion_nexus::gpu_coverage::QueryGpuCandidateSelectionOutcome::NotSelectedByCost
-pub datafusion_nexus::gpu_coverage::QueryGpuCandidateSelectionOutcome::NotSupported
-pub datafusion_nexus::gpu_coverage::QueryGpuCandidateSelectionOutcome::Selected
-impl datafusion_nexus::gpu_coverage::QueryGpuCandidateSelectionOutcome
-pub const fn datafusion_nexus::gpu_coverage::QueryGpuCandidateSelectionOutcome::as_str(self) -> &'static str
 pub enum datafusion_nexus::gpu_coverage::QueryGpuCoverageConfidence
 pub datafusion_nexus::gpu_coverage::QueryGpuCoverageConfidence::PlanTimeOnly
 impl datafusion_nexus::gpu_coverage::QueryGpuCoverageConfidence
 pub const fn datafusion_nexus::gpu_coverage::QueryGpuCoverageConfidence::as_str(self) -> &'static str
-pub enum datafusion_nexus::gpu_coverage::QueryGpuCoverageOverall
-pub datafusion_nexus::gpu_coverage::QueryGpuCoverageOverall::CpuOnly
-pub datafusion_nexus::gpu_coverage::QueryGpuCoverageOverall::NoCpuInPlannedPath
-pub datafusion_nexus::gpu_coverage::QueryGpuCoverageOverall::PartialGpuPlanned
-pub datafusion_nexus::gpu_coverage::QueryGpuCoverageOverall::PartialGpuPlanned::cpu_boundaries: usize
-pub datafusion_nexus::gpu_coverage::QueryGpuCoverageOverall::PartialGpuPlanned::gpu_fragments: usize
-pub datafusion_nexus::gpu_coverage::QueryGpuCoverageOverall::Rejected
-pub datafusion_nexus::gpu_coverage::QueryGpuCoverageOverall::Rejected::detail: alloc::string::String
-pub datafusion_nexus::gpu_coverage::QueryGpuCoverageOverall::Rejected::phase: datafusion_nexus::gpu_coverage::QueryGpuRejectionPhase
-pub datafusion_nexus::gpu_coverage::QueryGpuCoverageOverall::Rejected::reason_code: alloc::string::String
-pub datafusion_nexus::gpu_coverage::QueryGpuCoverageOverall::Rejected::retry_advice: datafusion_nexus::gpu_coverage::QueryGpuRetryAdviceAvailability
-pub datafusion_nexus::gpu_coverage::QueryGpuCoverageOverall::Rejected::source_error_status: core::option::Option<alloc::string::String>
-impl datafusion_nexus::gpu_coverage::QueryGpuCoverageOverall
-pub const fn datafusion_nexus::gpu_coverage::QueryGpuCoverageOverall::as_gpu_path(&self) -> &'static str
-pub const fn datafusion_nexus::gpu_coverage::QueryGpuCoverageOverall::as_str(&self) -> &'static str
+pub enum datafusion_nexus::gpu_coverage::QueryGpuPlanningOutcome
+pub datafusion_nexus::gpu_coverage::QueryGpuPlanningOutcome::Planned(datafusion_nexus::gpu_coverage::FinalPlanCoverage)
+pub datafusion_nexus::gpu_coverage::QueryGpuPlanningOutcome::Rejected(datafusion_nexus::gpu_coverage::QueryGpuPlanningRejection)
+impl datafusion_nexus::gpu_coverage::QueryGpuPlanningOutcome
+pub fn datafusion_nexus::gpu_coverage::QueryGpuPlanningOutcome::to_json(&self) -> serde_json::value::Value
 pub enum datafusion_nexus::gpu_coverage::QueryGpuRejectionPhase
 pub datafusion_nexus::gpu_coverage::QueryGpuRejectionPhase::LogicalPlanning
 pub datafusion_nexus::gpu_coverage::QueryGpuRejectionPhase::NativeLowering
@@ -851,14 +840,17 @@ pub datafusion_nexus::gpu_coverage::QueryGpuRemedyKind::EngineGap
 pub datafusion_nexus::gpu_coverage::QueryGpuRemedyKind::UserAction
 impl datafusion_nexus::gpu_coverage::QueryGpuRemedyKind
 pub const fn datafusion_nexus::gpu_coverage::QueryGpuRemedyKind::as_str(self) -> &'static str
-pub enum datafusion_nexus::gpu_coverage::QueryGpuRetryAdviceAvailability
-pub datafusion_nexus::gpu_coverage::QueryGpuRetryAdviceAvailability::NoSealedAttemptReport
-impl datafusion_nexus::gpu_coverage::QueryGpuRetryAdviceAvailability
-pub const fn datafusion_nexus::gpu_coverage::QueryGpuRetryAdviceAvailability::availability(self) -> &'static str
-pub const fn datafusion_nexus::gpu_coverage::QueryGpuRetryAdviceAvailability::reason(self) -> &'static str
 pub struct datafusion_nexus::gpu_coverage::ExplainGpuStatement
 pub datafusion_nexus::gpu_coverage::ExplainGpuStatement::inner_sql: alloc::string::String
 pub datafusion_nexus::gpu_coverage::ExplainGpuStatement::output_mode: datafusion_nexus::gpu_coverage::ExplainGpuOutputMode
+pub struct datafusion_nexus::gpu_coverage::FinalPlanCoverage
+impl datafusion_nexus::gpu_coverage::FinalPlanCoverage
+pub const fn datafusion_nexus::gpu_coverage::FinalPlanCoverage::datafusion_boundary_count(&self) -> usize
+pub const fn datafusion_nexus::gpu_coverage::FinalPlanCoverage::disposition(&self) -> datafusion_nexus::planner::FinalPlanDisposition
+pub const fn datafusion_nexus::gpu_coverage::FinalPlanCoverage::explicit_gpu_island_count(&self) -> usize
+pub const fn datafusion_nexus::gpu_coverage::FinalPlanCoverage::has_gpu_runtime(&self) -> bool
+pub const fn datafusion_nexus::gpu_coverage::FinalPlanCoverage::host_materialization_count(&self) -> usize
+pub const fn datafusion_nexus::gpu_coverage::FinalPlanCoverage::native_fragment_count(&self) -> usize
 pub struct datafusion_nexus::gpu_coverage::QueryGpuCandidateOutcome
 pub datafusion_nexus::gpu_coverage::QueryGpuCandidateOutcome::candidate_family: alloc::string::String
 pub datafusion_nexus::gpu_coverage::QueryGpuCandidateOutcome::category: core::option::Option<alloc::string::String>
@@ -867,32 +859,34 @@ pub datafusion_nexus::gpu_coverage::QueryGpuCandidateOutcome::detail: alloc::str
 pub datafusion_nexus::gpu_coverage::QueryGpuCandidateOutcome::reason_code: core::option::Option<alloc::string::String>
 pub datafusion_nexus::gpu_coverage::QueryGpuCandidateOutcome::reason_kind: core::option::Option<datafusion_nexus::gpu_coverage::QueryGpuCandidateReasonKind>
 pub datafusion_nexus::gpu_coverage::QueryGpuCandidateOutcome::remedy: core::option::Option<datafusion_nexus::gpu_coverage::QueryGpuRemedy>
-pub datafusion_nexus::gpu_coverage::QueryGpuCandidateOutcome::selection: datafusion_nexus::gpu_coverage::QueryGpuCandidateSelectionOutcome
+pub datafusion_nexus::gpu_coverage::QueryGpuCandidateOutcome::selection: datafusion_nexus::report::CandidateOutcomeKind
 pub struct datafusion_nexus::gpu_coverage::QueryGpuCoverage
 pub datafusion_nexus::gpu_coverage::QueryGpuCoverage::candidate_outcomes: alloc::vec::Vec<datafusion_nexus::gpu_coverage::QueryGpuCandidateOutcome>
 pub datafusion_nexus::gpu_coverage::QueryGpuCoverage::confidence: datafusion_nexus::gpu_coverage::QueryGpuCoverageConfidence
 pub datafusion_nexus::gpu_coverage::QueryGpuCoverage::cugraph_calls: alloc::vec::Vec<datafusion_nexus::gpu_coverage::QueryGpuCugraphCall>
-pub datafusion_nexus::gpu_coverage::QueryGpuCoverage::domains: datafusion_nexus::gpu_coverage::QueryGpuCoverageDomains
-pub datafusion_nexus::gpu_coverage::QueryGpuCoverage::final_disposition: datafusion_nexus::planner::FinalPlanDisposition
 pub datafusion_nexus::gpu_coverage::QueryGpuCoverage::input_physical_plan_root: core::option::Option<alloc::string::String>
 pub datafusion_nexus::gpu_coverage::QueryGpuCoverage::input_physical_plan_shape: core::option::Option<alloc::string::String>
-pub datafusion_nexus::gpu_coverage::QueryGpuCoverage::overall: datafusion_nexus::gpu_coverage::QueryGpuCoverageOverall
 pub datafusion_nexus::gpu_coverage::QueryGpuCoverage::physical_plan_root: core::option::Option<alloc::string::String>
 pub datafusion_nexus::gpu_coverage::QueryGpuCoverage::physical_plan_shape: core::option::Option<alloc::string::String>
 pub datafusion_nexus::gpu_coverage::QueryGpuCoverage::planning_did_io: bool
+pub datafusion_nexus::gpu_coverage::QueryGpuCoverage::planning_outcome: datafusion_nexus::gpu_coverage::QueryGpuPlanningOutcome
 pub datafusion_nexus::gpu_coverage::QueryGpuCoverage::runtime_caveats: alloc::vec::Vec<datafusion_nexus::gpu_coverage::QueryGpuRuntimeCaveat>
 pub datafusion_nexus::gpu_coverage::QueryGpuCoverage::validated_under: datafusion_nexus::gpu_coverage::QueryGpuValidatedUnder
 impl datafusion_nexus::gpu_coverage::QueryGpuCoverage
+pub fn datafusion_nexus::gpu_coverage::QueryGpuCoverage::final_plan_coverage(&self) -> core::option::Option<&datafusion_nexus::gpu_coverage::FinalPlanCoverage>
+pub fn datafusion_nexus::gpu_coverage::QueryGpuCoverage::gpu_path(&self) -> &'static str
+pub fn datafusion_nexus::gpu_coverage::QueryGpuCoverage::planning_outcome(&self) -> &datafusion_nexus::gpu_coverage::QueryGpuPlanningOutcome
+pub fn datafusion_nexus::gpu_coverage::QueryGpuCoverage::rejection(&self) -> core::option::Option<&datafusion_nexus::gpu_coverage::QueryGpuPlanningRejection>
 pub fn datafusion_nexus::gpu_coverage::QueryGpuCoverage::to_json(&self) -> serde_json::value::Value
-pub struct datafusion_nexus::gpu_coverage::QueryGpuCoverageDomains
-pub datafusion_nexus::gpu_coverage::QueryGpuCoverageDomains::datafusion_boundary_count: usize
-pub datafusion_nexus::gpu_coverage::QueryGpuCoverageDomains::explicit_gpu_island_count: usize
-pub datafusion_nexus::gpu_coverage::QueryGpuCoverageDomains::host_materialization_count: usize
-pub datafusion_nexus::gpu_coverage::QueryGpuCoverageDomains::native_fragment_count: usize
 pub struct datafusion_nexus::gpu_coverage::QueryGpuCugraphCall
 pub datafusion_nexus::gpu_coverage::QueryGpuCugraphCall::algorithm: alloc::string::String
 pub datafusion_nexus::gpu_coverage::QueryGpuCugraphCall::notes: alloc::vec::Vec<alloc::string::String>
 pub datafusion_nexus::gpu_coverage::QueryGpuCugraphCall::statically_valid: bool
+pub struct datafusion_nexus::gpu_coverage::QueryGpuPlanningRejection
+pub datafusion_nexus::gpu_coverage::QueryGpuPlanningRejection::detail: alloc::string::String
+pub datafusion_nexus::gpu_coverage::QueryGpuPlanningRejection::phase: datafusion_nexus::gpu_coverage::QueryGpuRejectionPhase
+pub datafusion_nexus::gpu_coverage::QueryGpuPlanningRejection::reason_code: alloc::string::String
+pub datafusion_nexus::gpu_coverage::QueryGpuPlanningRejection::source_error_status: core::option::Option<alloc::string::String>
 pub struct datafusion_nexus::gpu_coverage::QueryGpuRemedy
 pub datafusion_nexus::gpu_coverage::QueryGpuRemedy::code: &'static str
 pub datafusion_nexus::gpu_coverage::QueryGpuRemedy::guidance: &'static str
@@ -1087,11 +1081,19 @@ pub use datafusion_nexus::native_report::MetricDirection
 pub use datafusion_nexus::native_report::MetricUnit
 pub use datafusion_nexus::native_report::NativeOptimizerDiagnostics
 pub use datafusion_nexus::native_report::StatisticalAggregateExecutionMode
+pub enum datafusion_nexus::native_report::CandidateOutcomeKind
+pub datafusion_nexus::native_report::CandidateOutcomeKind::Deferred
+pub datafusion_nexus::native_report::CandidateOutcomeKind::NotSelectedByCost
+pub datafusion_nexus::native_report::CandidateOutcomeKind::NotSupported
+pub datafusion_nexus::native_report::CandidateOutcomeKind::Selected
+impl datafusion_nexus::report::CandidateOutcomeKind
+pub const fn datafusion_nexus::report::CandidateOutcomeKind::as_str(self) -> &'static str
+impl core::fmt::Display for datafusion_nexus::report::CandidateOutcomeKind
+pub fn datafusion_nexus::report::CandidateOutcomeKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 #[non_exhaustive] pub enum datafusion_nexus::native_report::FinalPlanDisposition
 pub datafusion_nexus::native_report::FinalPlanDisposition::DataFusion
 pub datafusion_nexus::native_report::FinalPlanDisposition::Mixed
 pub datafusion_nexus::native_report::FinalPlanDisposition::Native
-pub datafusion_nexus::native_report::FinalPlanDisposition::Rejected
 impl datafusion_nexus::planner::FinalPlanDisposition
 pub const fn datafusion_nexus::planner::FinalPlanDisposition::as_str(self) -> &'static str
 impl core::fmt::Display for datafusion_nexus::planner::FinalPlanDisposition
@@ -1102,13 +1104,6 @@ pub datafusion_nexus::native_report::NativeDataFusionExecutionWorkloadInput::Pla
 pub datafusion_nexus::native_report::NativeDataFusionExecutionWorkloadInput::Planned::planned_plan: alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionWorkloadInput::Planned::runtime: datafusion_nexus::native_report::NativeDataFusionRuntime
 pub datafusion_nexus::native_report::NativeDataFusionExecutionWorkloadInput::PlanningFailure(datafusion_nexus::native_report::NativePlanningFailure)
-pub enum datafusion_nexus::native_report::NativeDataFusionPlanningOutcome
-pub datafusion_nexus::native_report::NativeDataFusionPlanningOutcome::Deferred
-pub datafusion_nexus::native_report::NativeDataFusionPlanningOutcome::NotSelectedByCost
-pub datafusion_nexus::native_report::NativeDataFusionPlanningOutcome::NotSupported
-pub datafusion_nexus::native_report::NativeDataFusionPlanningOutcome::Selected
-impl datafusion_nexus::native_report::NativeDataFusionPlanningOutcome
-pub const fn datafusion_nexus::native_report::NativeDataFusionPlanningOutcome::as_str(self) -> &'static str
 pub enum datafusion_nexus::native_report::NativeDataFusionPlanningWorkloadInput
 pub datafusion_nexus::native_report::NativeDataFusionPlanningWorkloadInput::Planned
 pub datafusion_nexus::native_report::NativeDataFusionPlanningWorkloadInput::Planned::native_diagnostics: alloc::sync::Arc<datafusion_nexus::planner::NativePlanningDiagnostics>
@@ -1164,15 +1159,17 @@ pub datafusion_nexus::native_report::NativeDynamicFilterWorkAvoidanceStatus::Sou
 pub datafusion_nexus::native_report::NativeDynamicFilterWorkAvoidanceStatus::Unknown
 impl datafusion_nexus::native_report::NativeDynamicFilterWorkAvoidanceStatus
 pub fn datafusion_nexus::native_report::NativeDynamicFilterWorkAvoidanceStatus::as_str(self) -> &'static str
-pub enum datafusion_nexus::native_report::NativeFallbackPressureOutcome
-pub datafusion_nexus::native_report::NativeFallbackPressureOutcome::NotSelectedByCost
-pub datafusion_nexus::native_report::NativeFallbackPressureOutcome::NotSupported
-pub datafusion_nexus::native_report::NativeFallbackPressureOutcome::Selected
-impl datafusion_nexus::native_report::NativeFallbackPressureOutcome
-pub const fn datafusion_nexus::native_report::NativeFallbackPressureOutcome::as_str(self) -> &'static str
 pub enum datafusion_nexus::native_report::NativeFallbackPressureWorkloadInput
 pub datafusion_nexus::native_report::NativeFallbackPressureWorkloadInput::PhysicalPlan(alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>)
 pub datafusion_nexus::native_report::NativeFallbackPressureWorkloadInput::PlanningFailure(datafusion_nexus::native_report::NativePlanningFailure)
+pub struct datafusion_nexus::native_report::FinalPlanCoverage
+impl datafusion_nexus::gpu_coverage::FinalPlanCoverage
+pub const fn datafusion_nexus::gpu_coverage::FinalPlanCoverage::datafusion_boundary_count(&self) -> usize
+pub const fn datafusion_nexus::gpu_coverage::FinalPlanCoverage::disposition(&self) -> datafusion_nexus::planner::FinalPlanDisposition
+pub const fn datafusion_nexus::gpu_coverage::FinalPlanCoverage::explicit_gpu_island_count(&self) -> usize
+pub const fn datafusion_nexus::gpu_coverage::FinalPlanCoverage::has_gpu_runtime(&self) -> bool
+pub const fn datafusion_nexus::gpu_coverage::FinalPlanCoverage::host_materialization_count(&self) -> usize
+pub const fn datafusion_nexus::gpu_coverage::FinalPlanCoverage::native_fragment_count(&self) -> usize
 pub struct datafusion_nexus::native_report::NativeAggregateStrategyMetricRow
 pub datafusion_nexus::native_report::NativeAggregateStrategyMetricRow::aggregate_encoded_key_partial_low_cardinality_threshold_ppm: usize
 pub datafusion_nexus::native_report::NativeAggregateStrategyMetricRow::aggregate_encoded_key_partial_min_input_rows: usize
@@ -1394,19 +1391,19 @@ pub fn datafusion_nexus::native_report::NativeDataFusionExecutionReport::with_wo
 pub struct datafusion_nexus::native_report::NativeDataFusionExecutionRow
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::capability_compiled_graphs: alloc::vec::Vec<datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::capability_contract_rows: alloc::vec::Vec<nexus_query_planning::contract_report::CapabilityContractGateRow>
-pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::final_disposition: datafusion_nexus::planner::FinalPlanDisposition
-pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::host_datafusion_boundary_count: usize
+pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::final_disposition: core::option::Option<datafusion_nexus::planner::FinalPlanDisposition>
+pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::host_datafusion_boundary_count: core::option::Option<usize>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::metrics: datafusion_nexus::native_report::NativeDataFusionExecutionMetrics
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::native_candidate_shape: core::option::Option<alloc::string::String>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::native_candidate_shape_family: core::option::Option<alloc::string::String>
-pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::native_plan_fragment_count: usize
+pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::native_plan_fragment_count: core::option::Option<usize>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::native_runtime_started: bool
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::output_batches: core::option::Option<usize>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::output_bytes: core::option::Option<usize>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::output_rows: core::option::Option<usize>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::physical_root: alloc::string::String
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::physical_shape: alloc::string::String
-pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::planning_outcome: core::option::Option<datafusion_nexus::native_report::NativeDataFusionPlanningOutcome>
+pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::planning_outcome: core::option::Option<datafusion_nexus::report::CandidateOutcomeKind>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::post_native_plan_root: alloc::string::String
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::query_id: alloc::string::String
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::reason_code: core::option::Option<alloc::string::String>
@@ -1427,10 +1424,6 @@ impl datafusion_nexus::native_report::NativeDataFusionExecutionWorkloadItem
 pub fn datafusion_nexus::native_report::NativeDataFusionExecutionWorkloadItem::new(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>, datafusion_nexus::planner::NativePlanningDiagnostics, datafusion_nexus::native_report::NativeDataFusionRuntime) -> Self
 pub fn datafusion_nexus::native_report::NativeDataFusionExecutionWorkloadItem::new_shared(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>, alloc::sync::Arc<datafusion_nexus::planner::NativePlanningDiagnostics>, datafusion_nexus::native_report::NativeDataFusionRuntime) -> Self
 pub fn datafusion_nexus::native_report::NativeDataFusionExecutionWorkloadItem::planning_failure(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
-pub struct datafusion_nexus::native_report::NativeDataFusionPlanCoverage
-pub datafusion_nexus::native_report::NativeDataFusionPlanCoverage::final_disposition: datafusion_nexus::planner::FinalPlanDisposition
-pub datafusion_nexus::native_report::NativeDataFusionPlanCoverage::host_datafusion_boundary_count: usize
-pub datafusion_nexus::native_report::NativeDataFusionPlanCoverage::native_fragment_count: usize
 pub struct datafusion_nexus::native_report::NativeDataFusionPlanningReport
 pub datafusion_nexus::native_report::NativeDataFusionPlanningReport::rows: alloc::vec::Vec<datafusion_nexus::native_report::NativeDataFusionPlanningRow>
 pub datafusion_nexus::native_report::NativeDataFusionPlanningReport::workload_dataset: core::option::Option<datafusion_nexus::native_report::WorkloadDatasetMetadata>
@@ -1445,14 +1438,14 @@ pub struct datafusion_nexus::native_report::NativeDataFusionPlanningRow
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::capability_compiled_graphs: alloc::vec::Vec<datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics>
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::capability_contract_rows: alloc::vec::Vec<nexus_query_planning::contract_report::CapabilityContractGateRow>
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::edge_normalize_inserted: bool
-pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::final_disposition: datafusion_nexus::planner::FinalPlanDisposition
-pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::host_datafusion_boundary_count: usize
+pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::final_disposition: core::option::Option<datafusion_nexus::planner::FinalPlanDisposition>
+pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::host_datafusion_boundary_count: core::option::Option<usize>
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::join_diagnostics: alloc::vec::Vec<datafusion_nexus::native_report::NativeJoinDiagnosticSummary>
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::native_candidate_shape: core::option::Option<alloc::string::String>
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::native_candidate_shape_family: core::option::Option<alloc::string::String>
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::native_optimizer: nexus_query_planning::optimizer::NativeOptimizerDiagnostics
-pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::native_plan_fragment_count: usize
-pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::outcome: core::option::Option<datafusion_nexus::native_report::NativeDataFusionPlanningOutcome>
+pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::native_plan_fragment_count: core::option::Option<usize>
+pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::outcome: core::option::Option<datafusion_nexus::report::CandidateOutcomeKind>
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::physical_root: alloc::string::String
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::physical_shape: alloc::string::String
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::post_native_plan_root: alloc::string::String
@@ -1513,7 +1506,7 @@ pub struct datafusion_nexus::native_report::NativeFallbackPressureRow
 pub datafusion_nexus::native_report::NativeFallbackPressureRow::join_diagnostics: alloc::vec::Vec<datafusion_nexus::native_report::NativeJoinDiagnosticSummary>
 pub datafusion_nexus::native_report::NativeFallbackPressureRow::native_candidate_shape: core::option::Option<alloc::string::String>
 pub datafusion_nexus::native_report::NativeFallbackPressureRow::native_candidate_shape_family: core::option::Option<alloc::string::String>
-pub datafusion_nexus::native_report::NativeFallbackPressureRow::outcome: core::option::Option<datafusion_nexus::native_report::NativeFallbackPressureOutcome>
+pub datafusion_nexus::native_report::NativeFallbackPressureRow::outcome: core::option::Option<datafusion_nexus::report::CandidateOutcomeKind>
 pub datafusion_nexus::native_report::NativeFallbackPressureRow::physical_root: alloc::string::String
 pub datafusion_nexus::native_report::NativeFallbackPressureRow::physical_shape: alloc::string::String
 pub datafusion_nexus::native_report::NativeFallbackPressureRow::query_id: alloc::string::String
@@ -1878,7 +1871,6 @@ pub use datafusion_nexus::planner::StatisticalAggregateExecutionMode
 pub datafusion_nexus::planner::FinalPlanDisposition::DataFusion
 pub datafusion_nexus::planner::FinalPlanDisposition::Mixed
 pub datafusion_nexus::planner::FinalPlanDisposition::Native
-pub datafusion_nexus::planner::FinalPlanDisposition::Rejected
 impl datafusion_nexus::planner::FinalPlanDisposition
 pub const fn datafusion_nexus::planner::FinalPlanDisposition::as_str(self) -> &'static str
 impl core::fmt::Display for datafusion_nexus::planner::FinalPlanDisposition
@@ -1889,6 +1881,14 @@ impl datafusion_nexus::planner::FinalPlanRequirement
 pub const fn datafusion_nexus::planner::FinalPlanRequirement::as_str(self) -> &'static str
 impl core::fmt::Display for datafusion_nexus::planner::FinalPlanRequirement
 pub fn datafusion_nexus::planner::FinalPlanRequirement::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct datafusion_nexus::planner::FinalPlanCoverage
+impl datafusion_nexus::gpu_coverage::FinalPlanCoverage
+pub const fn datafusion_nexus::gpu_coverage::FinalPlanCoverage::datafusion_boundary_count(&self) -> usize
+pub const fn datafusion_nexus::gpu_coverage::FinalPlanCoverage::disposition(&self) -> datafusion_nexus::planner::FinalPlanDisposition
+pub const fn datafusion_nexus::gpu_coverage::FinalPlanCoverage::explicit_gpu_island_count(&self) -> usize
+pub const fn datafusion_nexus::gpu_coverage::FinalPlanCoverage::has_gpu_runtime(&self) -> bool
+pub const fn datafusion_nexus::gpu_coverage::FinalPlanCoverage::host_materialization_count(&self) -> usize
+pub const fn datafusion_nexus::gpu_coverage::FinalPlanCoverage::native_fragment_count(&self) -> usize
 pub struct datafusion_nexus::planner::NativeCapabilityAcceptedCandidateDiagnostics
 pub datafusion_nexus::planner::NativeCapabilityAcceptedCandidateDiagnostics::candidate: datafusion_nexus::report::GpuCandidate
 pub datafusion_nexus::planner::NativeCapabilityAcceptedCandidateDiagnostics::compiled_graph: datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics
@@ -1987,7 +1987,18 @@ pub datafusion_nexus::report::CandidateOutcome::NotSupported::capability_reason:
 pub datafusion_nexus::report::CandidateOutcome::Selected
 pub datafusion_nexus::report::CandidateOutcome::Selected::candidate: datafusion_nexus::report::GpuCandidate
 impl datafusion_nexus::report::CandidateOutcome
+pub const fn datafusion_nexus::report::CandidateOutcome::kind(&self) -> datafusion_nexus::report::CandidateOutcomeKind
+impl datafusion_nexus::report::CandidateOutcome
 pub fn datafusion_nexus::report::CandidateOutcome::to_json(&self) -> serde_json::value::Value
+pub enum datafusion_nexus::report::CandidateOutcomeKind
+pub datafusion_nexus::report::CandidateOutcomeKind::Deferred
+pub datafusion_nexus::report::CandidateOutcomeKind::NotSelectedByCost
+pub datafusion_nexus::report::CandidateOutcomeKind::NotSupported
+pub datafusion_nexus::report::CandidateOutcomeKind::Selected
+impl datafusion_nexus::report::CandidateOutcomeKind
+pub const fn datafusion_nexus::report::CandidateOutcomeKind::as_str(self) -> &'static str
+impl core::fmt::Display for datafusion_nexus::report::CandidateOutcomeKind
+pub fn datafusion_nexus::report::CandidateOutcomeKind::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct datafusion_nexus::report::DataLayoutFixableNotSupported<'a>
 pub datafusion_nexus::report::DataLayoutFixableNotSupported::candidate: &'a datafusion_nexus::report::GpuCandidate
 pub datafusion_nexus::report::DataLayoutFixableNotSupported::capability_reason: datafusion_nexus::capability::CapabilityReason

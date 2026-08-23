@@ -22,6 +22,7 @@ use super::{
     },
 };
 use crate::planner::{FinalPlanDisposition, NativeCapabilityCompiledGraphDiagnostics};
+pub use crate::report::CandidateOutcomeKind;
 
 /// One row in the native planning TSV.
 ///
@@ -41,7 +42,7 @@ pub struct NativeDataFusionPlanningRow {
     /// Broader native candidate shape family, or `none` when unavailable.
     pub native_candidate_shape_family: Option<String>,
     /// Planning outcome for this row.
-    pub outcome: Option<NativeDataFusionPlanningOutcome>,
+    pub outcome: Option<CandidateOutcomeKind>,
     /// Stable fallback reason code, or `none` for accepted candidates.
     pub reason_code: Option<String>,
     /// Stable unsupported-category label, or `none` when not rejected as unsupported.
@@ -60,12 +61,12 @@ pub struct NativeDataFusionPlanningRow {
     pub source_diagnostics: Vec<NativeSourceDiagnosticSummary>,
     /// Display name of the post-native-optimizer physical root.
     pub post_native_plan_root: String,
-    /// Final disposition after the native optimizer rule.
-    pub final_disposition: FinalPlanDisposition,
-    /// Number of native fragments in the post-optimizer plan.
-    pub native_plan_fragment_count: usize,
-    /// Number of host DataFusion boundaries around native fragments.
-    pub host_datafusion_boundary_count: usize,
+    /// Final disposition after the native optimizer rule, or `none` when rejected before plan completion.
+    pub final_disposition: Option<FinalPlanDisposition>,
+    /// Number of native fragments in the post-optimizer plan, or `none` when rejected.
+    pub native_plan_fragment_count: Option<usize>,
+    /// Number of host DataFusion boundaries around native fragments, or `none` when rejected.
+    pub host_datafusion_boundary_count: Option<usize>,
     /// True when planning rejected the candidate before native execution could start.
     pub rejected_before_execution: bool,
 }
@@ -89,7 +90,7 @@ pub struct NativeDataFusionExecutionRow {
     /// Broader native candidate shape family, or `none` when unavailable.
     pub native_candidate_shape_family: Option<String>,
     /// Planning outcome for this row.
-    pub planning_outcome: Option<NativeDataFusionPlanningOutcome>,
+    pub planning_outcome: Option<CandidateOutcomeKind>,
     /// Stable fallback reason code, or `none` for accepted candidates.
     pub reason_code: Option<String>,
     /// Stable unsupported-category label, or `none` when not rejected as unsupported.
@@ -102,12 +103,12 @@ pub struct NativeDataFusionExecutionRow {
     pub source_diagnostics: Vec<NativeSourceDiagnosticSummary>,
     /// Display name of the post-native-optimizer physical root.
     pub post_native_plan_root: String,
-    /// Final disposition after the native optimizer rule.
-    pub final_disposition: FinalPlanDisposition,
-    /// Number of native fragments in the post-optimizer plan.
-    pub native_plan_fragment_count: usize,
-    /// Number of host DataFusion boundaries around native fragments.
-    pub host_datafusion_boundary_count: usize,
+    /// Final disposition after the native optimizer rule, or `none` when rejected before plan completion.
+    pub final_disposition: Option<FinalPlanDisposition>,
+    /// Number of native fragments in the post-optimizer plan, or `none` when rejected.
+    pub native_plan_fragment_count: Option<usize>,
+    /// Number of host DataFusion boundaries around native fragments, or `none` when rejected.
+    pub host_datafusion_boundary_count: Option<usize>,
     /// True when planning rejected the candidate before native execution could start.
     pub rejected_before_execution: bool,
     /// True when execution reached a native execution wrapper.
@@ -124,31 +125,6 @@ pub struct NativeDataFusionExecutionRow {
     pub output_bytes: Option<usize>,
     /// Native execution metrics projected from DataFusion metrics.
     pub metrics: NativeDataFusionExecutionMetrics,
-}
-
-/// Stable planning outcomes emitted by native planning reports.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeDataFusionPlanningOutcome {
-    /// Candidate was selected for native execution.
-    Selected,
-    /// Candidate was selected, but admission awaits resident producer evidence.
-    Deferred,
-    /// Candidate is not supported by the native capability contract.
-    NotSupported,
-    /// Candidate is native-capable but was not selected by the cost model.
-    NotSelectedByCost,
-}
-
-impl NativeDataFusionPlanningOutcome {
-    /// Stable TSV label for this planning outcome.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Selected => "selected",
-            Self::Deferred => "deferred",
-            Self::NotSupported => "not_supported",
-            Self::NotSelectedByCost => "not_selected_by_cost",
-        }
-    }
 }
 
 /// Stable native runtime outcomes emitted by execution reports.
@@ -182,17 +158,6 @@ impl NativeDataFusionRuntimeOutcome {
     }
 }
 
-/// Native coverage summary for a post-optimizer DataFusion plan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NativeDataFusionPlanCoverage {
-    /// Final plan disposition after native planning.
-    pub final_disposition: FinalPlanDisposition,
-    /// Number of native fragments in the plan.
-    pub native_fragment_count: usize,
-    /// Number of host DataFusion boundaries around native fragments.
-    pub host_datafusion_boundary_count: usize,
-}
-
 /// One row in the fallback-pressure TSV.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NativeFallbackPressureRow {
@@ -207,7 +172,7 @@ pub struct NativeFallbackPressureRow {
     /// Broader native candidate shape family, or `none` when unavailable.
     pub native_candidate_shape_family: Option<String>,
     /// Fallback-pressure outcome for this candidate.
-    pub outcome: Option<NativeFallbackPressureOutcome>,
+    pub outcome: Option<CandidateOutcomeKind>,
     /// Stable fallback reason code, or `none` for rewritten candidates.
     pub reason_code: Option<String>,
     /// Stable unsupported-category label, or `none` when not rejected as unsupported.
@@ -218,28 +183,6 @@ pub struct NativeFallbackPressureRow {
     pub source_diagnostics: Vec<NativeSourceDiagnosticSummary>,
     /// True when planning rejected the candidate before native execution could start.
     pub rejected_before_execution: bool,
-}
-
-/// Stable fallback-pressure outcome strings.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NativeFallbackPressureOutcome {
-    /// Candidate was selected for native execution.
-    Selected,
-    /// Candidate is not supported by the native capability contract.
-    NotSupported,
-    /// Candidate is native-capable but was not selected by the cost model.
-    NotSelectedByCost,
-}
-
-impl NativeFallbackPressureOutcome {
-    /// Stable TSV label for this fallback-pressure outcome.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Selected => "selected",
-            Self::NotSupported => "not_supported",
-            Self::NotSelectedByCost => "not_selected_by_cost",
-        }
-    }
 }
 
 /// Compact join-shape summary used in TSV nested diagnostics.
@@ -361,9 +304,9 @@ impl TsvRow for NativeDataFusionPlanningRow {
             format_join_diagnostics(&self.join_diagnostics),
             format_source_diagnostics(&self.source_diagnostics),
             self.post_native_plan_root.clone(),
-            self.final_disposition.as_str().to_string(),
-            self.native_plan_fragment_count.to_string(),
-            self.host_datafusion_boundary_count.to_string(),
+            self.final_disposition.map_or_else(|| "none".to_string(), |d| d.as_str().to_string()),
+            self.native_plan_fragment_count.map_or_else(|| "none".to_string(), |c| c.to_string()),
+            self.host_datafusion_boundary_count.map_or_else(|| "none".to_string(), |c| c.to_string()),
             self.rejected_before_execution.to_string(),
         ]
     }
@@ -389,9 +332,9 @@ impl TsvRow for NativeDataFusionExecutionRow {
             format_capability_contract_rows(&self.capability_contract_rows),
             format_capability_compiled_graphs(&self.capability_compiled_graphs),
             self.post_native_plan_root.clone(),
-            self.final_disposition.as_str().to_string(),
-            self.native_plan_fragment_count.to_string(),
-            self.host_datafusion_boundary_count.to_string(),
+            self.final_disposition.map_or_else(|| "none".to_string(), |d| d.as_str().to_string()),
+            self.native_plan_fragment_count.map_or_else(|| "none".to_string(), |c| c.to_string()),
+            self.host_datafusion_boundary_count.map_or_else(|| "none".to_string(), |c| c.to_string()),
             self.rejected_before_execution.to_string(),
             self.metrics.admission_sequence.map_or_else(|| "none".to_string(), |value| value.to_string()),
             optional_duration_ms_text(self.metrics.admission_wait_time_ns),
@@ -526,7 +469,7 @@ mod tests {
             physical_shape: "Root(Source)".to_string(),
             native_candidate_shape: None,
             native_candidate_shape_family: None,
-            outcome: Some(NativeFallbackPressureOutcome::NotSupported),
+            outcome: Some(CandidateOutcomeKind::NotSupported),
             reason_code: Some("unsupported_operator".to_string()),
             unsupported_category: Some("operator_sort".to_string()),
             join_diagnostics: Vec::new(),
@@ -545,7 +488,7 @@ mod tests {
             physical_shape: "Root(Source)".to_string(),
             native_candidate_shape: None,
             native_candidate_shape_family: None,
-            outcome: Some(NativeDataFusionPlanningOutcome::NotSupported),
+            outcome: Some(CandidateOutcomeKind::NotSupported),
             reason_code: Some("unsupported_operator".to_string()),
             unsupported_category: Some("operator_sort".to_string()),
             capability_contract_rows: Vec::new(),
@@ -555,9 +498,9 @@ mod tests {
             join_diagnostics: Vec::new(),
             source_diagnostics: Vec::new(),
             post_native_plan_root: "Root".to_string(),
-            final_disposition: FinalPlanDisposition::DataFusion,
-            native_plan_fragment_count: 0,
-            host_datafusion_boundary_count: 0,
+            final_disposition: Some(FinalPlanDisposition::DataFusion),
+            native_plan_fragment_count: Some(0),
+            host_datafusion_boundary_count: Some(0),
             rejected_before_execution: false,
         };
         assert_eq!(planning.fields().len(), NativeDataFusionPlanningRow::COLUMNS.len());
@@ -572,16 +515,16 @@ mod tests {
             physical_shape: "Root(Source)".to_string(),
             native_candidate_shape: None,
             native_candidate_shape_family: None,
-            planning_outcome: Some(NativeDataFusionPlanningOutcome::NotSupported),
+            planning_outcome: Some(CandidateOutcomeKind::NotSupported),
             reason_code: Some("unsupported_operator".to_string()),
             unsupported_category: Some("operator_sort".to_string()),
             capability_contract_rows: Vec::new(),
             capability_compiled_graphs: Vec::new(),
             source_diagnostics: Vec::new(),
             post_native_plan_root: "Root".to_string(),
-            final_disposition: FinalPlanDisposition::DataFusion,
-            native_plan_fragment_count: 0,
-            host_datafusion_boundary_count: 0,
+            final_disposition: Some(FinalPlanDisposition::DataFusion),
+            native_plan_fragment_count: Some(0),
+            host_datafusion_boundary_count: Some(0),
             rejected_before_execution: false,
             native_runtime_started: false,
             runtime_outcome: NativeDataFusionRuntimeOutcome::NotStarted,
@@ -645,16 +588,16 @@ mod tests {
             physical_shape: "RootExec(Source)".to_string(),
             native_candidate_shape: Some("candidate_shape".to_string()),
             native_candidate_shape_family: Some("candidate_family".to_string()),
-            planning_outcome: Some(NativeDataFusionPlanningOutcome::Selected),
+            planning_outcome: Some(CandidateOutcomeKind::Selected),
             reason_code: None,
             unsupported_category: None,
             capability_contract_rows: Vec::new(),
             capability_compiled_graphs: Vec::new(),
             source_diagnostics: Vec::new(),
             post_native_plan_root: "NexusNativeExec".to_string(),
-            final_disposition: FinalPlanDisposition::Native,
-            native_plan_fragment_count: 7,
-            host_datafusion_boundary_count: 2,
+            final_disposition: Some(FinalPlanDisposition::Native),
+            native_plan_fragment_count: Some(7),
+            host_datafusion_boundary_count: Some(2),
             rejected_before_execution: false,
             native_runtime_started: true,
             runtime_outcome: NativeDataFusionRuntimeOutcome::Succeeded,

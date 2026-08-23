@@ -6,6 +6,13 @@
 //! validation. Native candidate misses preserve the DataFusion baseline plan.
 //! Final-plan requirements, when configured, inspect that exact resulting plan
 //! after native rewrite; they never trigger a second plan.
+//!
+//! [`FinalPlanDisposition`] describes one completed executable plan only
+//! (`DataFusion`, `Native`, or `Mixed`); planning failures have no disposition.
+//! [`FinalPlanCoverage`] carries the single physical-plan walk behind that
+//! verdict, and [`classify_final_plan`] reads the same coverage instead of
+//! reclassifying. Candidate decisions stay per-candidate under
+//! [`crate::report::CandidateOutcome`].
 
 use datafusion::{
     common::{Result as DataFusionResult, config::ConfigOptions},
@@ -31,11 +38,12 @@ pub use native::{
     NexusNativePhysicalOptimizerRule,
 };
 
+pub use crate::final_plan_observation::FinalPlanCoverage;
+
 /// The execution ownership observed in a completed physical plan.
 ///
 /// [`Self::DataFusion`], [`Self::Native`], and [`Self::Mixed`] are returned by
-/// [`classify_final_plan`]. [`Self::Rejected`] records the terminal outcome
-/// when a final-plan requirement rejects an otherwise completed plan.
+/// [`classify_final_plan`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub enum FinalPlanDisposition {
@@ -45,8 +53,6 @@ pub enum FinalPlanDisposition {
     Native,
     /// The final plan combines native runtime nodes with DataFusion execution.
     Mixed,
-    /// A final-plan requirement rejected the completed planning result.
-    Rejected,
 }
 
 impl FinalPlanDisposition {
@@ -56,7 +62,6 @@ impl FinalPlanDisposition {
             Self::DataFusion => "datafusion",
             Self::Native => "native",
             Self::Mixed => "mixed",
-            Self::Rejected => "rejected",
         }
     }
 }
@@ -97,7 +102,7 @@ impl std::fmt::Display for FinalPlanRequirement {
 /// around native fragments are conservative [`FinalPlanDisposition::Mixed`]
 /// plans rather than being treated as native-only.
 pub fn classify_final_plan(plan: &dyn ExecutionPlan) -> FinalPlanDisposition {
-    crate::final_plan_observation::observe_final_plan(plan).disposition
+    crate::final_plan_observation::observe_final_plan(plan).disposition()
 }
 
 /// DataFusion-facing native optimizer configuration.

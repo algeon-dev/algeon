@@ -35,9 +35,9 @@ pub struct IcebergNativeSmokeReportRow {
     pub table_ident: String,
     pub sql: String,
     pub diagnostics: TableFormatScanDiagnostics,
-    pub native_planning_outcome: Option<NativeDataFusionPlanningOutcome>,
+    pub native_planning_outcome: Option<CandidateOutcomeKind>,
     pub native_reason_code: Option<String>,
-    pub final_disposition: FinalPlanDisposition,
+    pub final_disposition: Option<FinalPlanDisposition>,
     pub staging_summary: ObjectStoreStagingSummary,
     pub cpu_arrow_reader_fallback: bool,
     pub native_runtime_started: bool,
@@ -71,11 +71,11 @@ impl IcebergNativeSmokeReportRow {
         table_ident: String,
         sql: String,
         diagnostics: TableFormatScanDiagnostics,
-        native_planning_outcome: Option<NativeDataFusionPlanningOutcome>,
+        native_planning_outcome: Option<CandidateOutcomeKind>,
         native_reason_code: Option<String>,
-        final_disposition: FinalPlanDisposition,
-        expected_count: Option<u64>,
+        final_disposition: Option<FinalPlanDisposition>,
         staging_summary: ObjectStoreStagingSummary,
+        expected_count: Option<u64>,
         credential_source: String,
     ) -> Self {
         Self {
@@ -122,7 +122,7 @@ impl IcebergNativeSmokeReportRow {
         if self.cpu_runtime_started {
             return;
         }
-        if self.native_planning_outcome != Some(NativeDataFusionPlanningOutcome::Selected) {
+        if self.native_planning_outcome != Some(CandidateOutcomeKind::Selected) {
             self.parity_status = ParityStatus::NativeRejected;
             self.parity_detail.get_or_insert_with(|| "native planning did not select GPU execution".to_string());
             return;
@@ -138,12 +138,9 @@ impl IcebergNativeSmokeReportRow {
             },
             (Some(expected), Some(actual)) => {
                 self.parity_status = ParityStatus::Mismatched;
-                self.parity_detail = Some(format!("expected_count={expected},native_count_value={actual}"));
+                self.parity_detail = Some(format!("native count value {actual} != expected {expected}"));
             },
-            _ => {
-                self.parity_status = ParityStatus::NotCompared;
-                self.parity_detail.get_or_insert_with(|| "count parity not available".to_string());
-            },
+            _ => {},
         }
     }
 
@@ -172,9 +169,9 @@ impl IcebergNativeSmokeReportRow {
             self.staging_summary.status.code().to_string(),
             self.staging_summary.staged_data_file_count.to_string(),
             self.staging_summary.staged_bytes.to_string(),
-            self.native_planning_outcome.map_or("none", NativeDataFusionPlanningOutcome::as_str).to_string(),
+            self.native_planning_outcome.map_or("none", CandidateOutcomeKind::as_str).to_string(),
             self.native_reason_code.clone().unwrap_or_else(|| "none".to_string()),
-            self.final_disposition.as_str().to_string(),
+            self.final_disposition.map_or("none", FinalPlanDisposition::as_str).to_string(),
             self.cpu_arrow_reader_fallback.to_string(),
             self.native_runtime_started.to_string(),
             self.native_runtime_outcome.as_str().to_string(),

@@ -268,10 +268,10 @@ async fn reused_plans_mint_fresh_attempts_and_never_observe_plan_lifetime_attemp
     let metrics = plan.metrics().expect("native root exposes DataFusion metrics");
     let execution = planner.sealed_native_execution_snapshot().expect("sealed native execution snapshot");
     assert_eq!(execution.attempt_id, planner_id);
-    assert_eq!(execution.final_disposition, FinalPlanDisposition::Native);
-    assert_eq!(execution.native_plan_fragment_count, 1);
-    assert_eq!(execution.explicit_gpu_island_count, 0);
-    assert_eq!(execution.host_datafusion_boundary_count, 0);
+    assert_eq!(execution.coverage.disposition(), FinalPlanDisposition::Native);
+    assert_eq!(execution.coverage.native_fragment_count(), 1);
+    assert_eq!(execution.coverage.explicit_gpu_island_count(), 0);
+    assert_eq!(execution.coverage.datafusion_boundary_count(), 0);
     assert_eq!(execution.terminal_host_materialization_count, 1);
     assert_eq!(execution.intermediate_device_to_host_materialization_count, 0);
     assert_eq!(execution.metrics, NativeDataFusionExecutionMetrics::from_metrics(&metrics));

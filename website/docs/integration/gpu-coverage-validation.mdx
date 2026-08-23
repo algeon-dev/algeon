@@ -48,9 +48,10 @@ FROM lineitem GROUP BY l_returnflag;
 Arrow schema but returns only the summary row, whose `coverage_json` contains
 all candidate evidence. `EXPLAIN GPU` is Flight SQL statement-query syntax; it
 cannot be prepared or sent to an update endpoint. Both the UDTF and Flight
-schema carry `datafusion_nexus.explain_gpu.schema_version=1` in Arrow schema
+schema carry `datafusion_nexus.explain_gpu.schema_version=2` in Arrow schema
 metadata so clients can identify this shared row contract without inspecting
-its columns.
+its columns. When planning produces no executable plan, the summary
+`gpu_fragments` and `cpu_boundaries` cells are null, not zero.
 
 | Column | Meaning |
 | --- | --- |
@@ -59,7 +60,7 @@ its columns.
 | `gpu_path` | `native`, `partial_native`, `cpu`, or terminal `rejected`. |
 | `gpu_fragments`, `cpu_boundaries` | Summary-row counts for GPU fragments and DataFusion CPU boundaries. |
 | `physical_root`, `post_native_plan_root` | Summary-row physical-plan roots. `physical_root` is the authoritative pre-native root captured by the retained optimizer diagnostics (null when no native optimizer diagnostic exists); `post_native_plan_root` is the completed executable plan's root. |
-| `candidate_shape`, `candidate_family`, `outcome` | Candidate-row shape, stable shape family, and selection (`selected`, `not_supported`, or `not_selected_by_cost`). The summary outcome is `accepted_replaced`, `retained_datafusion`, or `rejected_before_execution`. |
+| `candidate_shape`, `candidate_family`, `outcome` | Candidate-row shape, stable shape family, and selection (`selected`, `deferred`, `not_supported`, or `not_selected_by_cost`). The summary outcome is `accepted_replaced`, `retained_datafusion`, or `rejected_before_execution`. |
 | `reason_code`, `unsupported_category` | Stable candidate or terminal-rejection reason and its triage category. |
 | `remedy_code`, `remedy_kind`, `remedy` | Stable actionable advice for a non-selected candidate. Kinds include `user_action`, `config_action`, `engine_gap`, `cudf_rs_gap`, and `cpu_preferred`. |
 | `detail_json` | Summary metadata or candidate detail and cost evidence. |
@@ -72,19 +73,21 @@ to `nexus_explain_coverage` return a structured terminal result.
 ## Final disposition and GPU path
 
 The final disposition is derived by walking the executable final physical plan.
-It is not inferred from whether an optimizer attempted a native rewrite.
+It is not inferred from whether an optimizer attempted a native rewrite, and
+a single candidate outcome never determines it: one report can hold selected
+and not-supported candidates while the completed plan stays mixed.
 
 | Final disposition | `gpu_path` | Meaning |
 | --- | --- | --- |
 | `native` | `native` | The planned path contains no known DataFusion CPU execution. GPU fragments and explicit GPU islands are counted together. |
 | `mixed` | `partial_native` | The same executable plan contains GPU runtime work and at least one DataFusion CPU boundary. |
 | `datafusion` | `cpu` | The executable plan has no selected GPU runtime node. |
-| `rejected` | `rejected` | Planning returned no executable plan. |
 
-`rejected` includes the phase, stable `reason_code`, retry-advice
-availability, and safe detail in `coverage_json`. Terminal source-resolution
-failures, an unsupported required GPU island, and a failed final-plan
-requirement are planning errors.
+`rejected` is not a final disposition: it is the planning outcome when no
+executable plan exists, projected as `gpu_path=rejected` with null
+fragment/boundary cells. It carries the phase, stable `reason_code`, and safe
+detail in `coverage_json`. Terminal source-resolution failures, an unsupported
+required GPU island, and a failed final-plan requirement are planning errors.
 By contrast, an ordinary relational capability miss is not an error: the same
 query remains executable on the DataFusion baseline and normally has final
 disposition `datafusion`.
@@ -98,6 +101,7 @@ values:
 | Outcome | Meaning | Evidence |
 | --- | --- | --- |
 | `selected` | The candidate was selected for native execution. | Candidate shape (`detail`); `reason_code`, `reason_kind`, and `category` are absent. |
+| `deferred` | Selection is pending producer binding: the candidate waits on unresolved producer facts. | Candidate shape (`detail`) plus the producer-binding `reason_code`. |
 | `not_supported` | The exact relational candidate is outside the native capability contract. | `reason_code`, `reason_kind`, candidate shape (`detail`), and category. |
 | `not_selected_by_cost` | The candidate is native-capable, but an enabled preference rule retained the DataFusion plan. | The same fields plus `cost_evidence` projected from native plan-preference facts. |
 
@@ -139,35 +143,33 @@ The SQL function and Rust API use the same validation primitive:
 
 ```rust
 use datafusion_nexus::{
-    gpu_coverage::{validate_query, QueryGpuCoverageOverall},
+    gpu_coverage::{QueryGpuPlanningOutcome, validate_query},
     planner::FinalPlanDisposition,
 };
 
 let coverage = validate_query(&ctx, "SELECT count(*) FROM lineitem").await?;
 
-match coverage.final_disposition {
-    FinalPlanDisposition::Native => {}
-    FinalPlanDisposition::DataFusion | FinalPlanDisposition::Mixed => {
-        for outcome in &coverage.candidate_outcomes {
-            eprintln!(
-                "{} reason_code={} reason_kind={} category={} detail={}",
-                outcome.selection.as_str(),
-                outcome.reason_code.as_deref().unwrap_or("absent"),
-                outcome.reason_kind.map_or("absent", |kind| kind.as_str()),
-                outcome.category.as_deref().unwrap_or("absent"),
-                outcome.detail,
-            );
-            if let Some(remedy) = outcome.remedy {
-                eprintln!("{} {}: {}", remedy.code, remedy.kind.as_str(), remedy.guidance);
+match &coverage.planning_outcome {
+    QueryGpuPlanningOutcome::Planned(plan) => match plan.disposition() {
+        FinalPlanDisposition::Native => {}
+        FinalPlanDisposition::DataFusion | FinalPlanDisposition::Mixed => {
+            for outcome in &coverage.candidate_outcomes {
+                eprintln!(
+                    "{} reason_code={} reason_kind={} category={} detail={}",
+                    outcome.selection.as_str(),
+                    outcome.reason_code.as_deref().unwrap_or("absent"),
+                    outcome.reason_kind.map_or("absent", |kind| kind.as_str()),
+                    outcome.category.as_deref().unwrap_or("absent"),
+                    outcome.detail,
+                );
+                if let Some(remedy) = outcome.remedy {
+                    eprintln!("{} {}: {}", remedy.code, remedy.kind.as_str(), remedy.guidance);
+                }
             }
         }
-    }
-    FinalPlanDisposition::Rejected => {
-        if let QueryGpuCoverageOverall::Rejected { phase, reason_code, detail, .. } =
-            &coverage.overall
-        {
-            eprintln!("{} {reason_code}: {detail}", phase.as_str());
-        }
+    },
+    QueryGpuPlanningOutcome::Rejected(rejection) => {
+        eprintln!("{} {}: {}", rejection.phase.as_str(), rejection.reason_code, rejection.detail);
     }
 }
 

@@ -39,7 +39,7 @@ use datafusion_nexus::{
     error::{DataFusionErrorExt, ErrorCode},
     native::lower_physical_plan_to_native_for_test,
     native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec},
-    native_report::{NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport},
+    native_report::{CandidateOutcomeKind, NativeDataFusionPlanningReport},
     planner::{
         CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, FinalPlanDisposition, NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME,
         NexusFinalPlanRequirementRule, NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule,
@@ -573,10 +573,10 @@ fn native_optimizer_property_checked_ilike_boundary_is_mixed_and_idempotent() {
 
     assert_eq!(report.rows.len(), 1);
     let row = &report.rows[0];
-    assert_eq!(row.outcome, Some(NativeDataFusionPlanningOutcome::Selected));
-    assert_eq!(row.final_disposition, FinalPlanDisposition::Mixed);
-    assert_eq!(row.native_plan_fragment_count, 1);
-    assert_eq!(row.host_datafusion_boundary_count, 1);
+    assert_eq!(row.outcome, Some(CandidateOutcomeKind::Selected));
+    assert_eq!(row.final_disposition, Some(FinalPlanDisposition::Mixed));
+    assert_eq!(row.native_plan_fragment_count, Some(1));
+    assert_eq!(row.host_datafusion_boundary_count, Some(1));
     assert_eq!(row.source_diagnostics.len(), 1);
     assert!(row.source_diagnostics[0].direct_device_read);
 
@@ -684,9 +684,9 @@ fn native_optimizer_property_checked_ilike_boundary_is_rejected_by_no_datafusion
 
     let planned = native_rule.optimize(ilike_filter_plan(&path), &ConfigOptions::default()).unwrap();
     let report = NativeDataFusionPlanningReport::from_retained_rule("ilike_no_cpu", Arc::clone(&planned), &native_rule);
-    assert_eq!(report.rows[0].final_disposition, FinalPlanDisposition::Mixed);
-    assert_eq!(report.rows[0].native_plan_fragment_count, 1);
-    assert_eq!(report.rows[0].host_datafusion_boundary_count, 1);
+    assert_eq!(report.rows[0].final_disposition, Some(FinalPlanDisposition::Mixed));
+    assert_eq!(report.rows[0].native_plan_fragment_count, Some(1));
+    assert_eq!(report.rows[0].host_datafusion_boundary_count, Some(1));
 
     let error = requirement_rule
         .optimize(planned, &ConfigOptions::default())
@@ -848,10 +848,10 @@ proptest! {
 
         prop_assert_eq!(report.rows.len(), 1);
         let row = &report.rows[0];
-        prop_assert_eq!(row.outcome, Some(NativeDataFusionPlanningOutcome::Selected));
-        prop_assert_eq!(row.final_disposition, FinalPlanDisposition::Mixed);
-        prop_assert_eq!(row.native_plan_fragment_count, 1);
-        prop_assert_eq!(row.host_datafusion_boundary_count, 1);
+        prop_assert_eq!(row.outcome, Some(CandidateOutcomeKind::Selected));
+        prop_assert_eq!(row.final_disposition, Some(FinalPlanDisposition::Mixed));
+        prop_assert_eq!(row.native_plan_fragment_count, Some(1));
+        prop_assert_eq!(row.host_datafusion_boundary_count, Some(1));
         let filter = planned.downcast_ref::<FilterExec>().expect("mixed boundary must retain the CPU root filter");
         let native = filter.input().downcast_ref::<NexusNativeExec>().expect("mixed boundary must replace only the source leaf");
         assert_mixed_boundary_properties(filter, native);

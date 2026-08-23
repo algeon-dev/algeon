@@ -1,4 +1,13 @@
 //! Stable backend observability contracts for application exporters.
+//!
+//! This module is a type namespace: it re-exports the engine-owned snapshot
+//! and metric types that application exporters need, and it owns no data
+//! source. The only read path is the [`crate::backend::NexusGpuBackend`]
+//! snapshot methods, which project the engine-owned observation snapshot.
+//! Admission truth lives in the device ledger; cache owners contribute
+//! correlation observations and telemetry stays diagnostic-only. TSV,
+//! DataFusion metrics, and `QueryMetrics` are projections of the same
+//! runtime observation snapshot, not a second event store.
 
 pub use nexus_query_engine::{
     metrics::{

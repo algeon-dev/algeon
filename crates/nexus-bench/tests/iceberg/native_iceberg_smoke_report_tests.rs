@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use datafusion_nexus::{
     native_report::{
-        FinalPlanDisposition, NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome,
+        CandidateOutcomeKind, FinalPlanDisposition, NativeDataFusionExecutionMetrics,
         NativeLakehouseCacheFillEventMetricRow, NativeSourceReadRuntimeMetricRow,
     },
     table_format::{
@@ -288,11 +288,11 @@ fn report_tsv_distinguishes_native_source_read_from_cpu_arrow_fallback() {
         "local_db.local_table".to_string(),
         "select count(*) as row_count from local_table".to_string(),
         diagnostics,
-        Some(NativeDataFusionPlanningOutcome::Selected),
+        Some(CandidateOutcomeKind::Selected),
         None,
-        FinalPlanDisposition::Native,
-        Some(7),
+        Some(FinalPlanDisposition::Native),
         ObjectStoreStagingSummary::new(ObjectStoreStagingMode::Auto, ObjectStoreStagingStatus::NotNeeded),
+        Some(7),
         "not_applicable".to_string(),
     );
     row.native_runtime_started = true;
@@ -464,11 +464,11 @@ fn report_tsv_records_direct_s3_as_remote_direct_native_without_staging() {
         "tpch_sf1.lineitem".to_string(),
         "select count(*) as row_count from lineitem".to_string(),
         plan.diagnostics(),
-        Some(NativeDataFusionPlanningOutcome::Selected),
+        Some(CandidateOutcomeKind::Selected),
         None,
-        FinalPlanDisposition::Native,
-        None,
+        Some(FinalPlanDisposition::Native),
         ObjectStoreStagingSummary::new(ObjectStoreStagingMode::Disabled, ObjectStoreStagingStatus::DirectNative),
+        None,
         "aws_profile_env".to_string(),
     );
     let report = native_iceberg_smoke_report::IcebergNativeSmokeReport { rows: vec![row] };

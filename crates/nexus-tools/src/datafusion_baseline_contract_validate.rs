@@ -542,9 +542,9 @@ async fn run_parquet_case_inner(
     let row = report.as_ref().and_then(|r| r.rows.first());
     let (rewritten, rejected_reasons) = native_rule.map(outcome_stats).unwrap_or((0, Vec::new()));
 
-    let path = row.map(|r| r.final_disposition);
-    let fragments = row.map(|r| r.native_plan_fragment_count);
-    let host_boundaries = row.map(|r| r.host_datafusion_boundary_count);
+    let path = row.and_then(|r| r.final_disposition);
+    let fragments = row.and_then(|r| r.native_plan_fragment_count);
+    let host_boundaries = row.and_then(|r| r.host_datafusion_boundary_count);
     let plan_root = Some(plan.name().to_string());
     let contains_native = Some(plan_contains_native(plan.as_ref()));
     let contains_table_format_scan = Some(plan_contains_name(plan.as_ref(), "NexusIcebergScanExec"));
@@ -671,9 +671,9 @@ async fn run_single_table_case(
         let (rewritten, rejected_reasons) = native_rule.map(outcome_stats).unwrap_or((0, Vec::new()));
         let mut detail = format!(
             "path={:?} frag={:?} host={:?} rewritten={rewritten} rejected={rejected_reasons:?}",
-            row.map(|r| r.final_disposition),
-            row.map(|r| r.native_plan_fragment_count),
-            row.map(|r| r.host_datafusion_boundary_count),
+            row.and_then(|r| r.final_disposition),
+            row.and_then(|r| r.native_plan_fragment_count),
+            row.and_then(|r| r.host_datafusion_boundary_count),
         );
         let mut ok = true;
         let mut parity_ok = None;
@@ -698,8 +698,8 @@ async fn run_single_table_case(
             ok,
             detail,
             path: row.map(|r| format!("{:?}", r.final_disposition)),
-            fragments: row.map(|r| r.native_plan_fragment_count),
-            host_boundaries: row.map(|r| r.host_datafusion_boundary_count),
+            fragments: row.and_then(|r| r.native_plan_fragment_count),
+            host_boundaries: row.and_then(|r| r.host_datafusion_boundary_count),
             plan_root: Some(plan.name().to_string()),
             contains_native: Some(plan_contains_native(plan.as_ref())),
             contains_table_format_scan: Some(plan_contains_name(plan.as_ref(), "NexusIcebergScanExec")),
@@ -756,11 +756,11 @@ async fn run_tpch_case(tpch: &Path, backend: &NexusGpuBackend) -> CaseResult {
         fs::write(dump_dir.join(format!("{id}.plan.txt")), displayable(plan.as_ref()).indent(false).to_string())?;
 
         let path = row.final_disposition;
-        let planning_ok = matches!(path, FinalPlanDisposition::DataFusion | FinalPlanDisposition::Native);
+        let planning_ok = matches!(path, Some(FinalPlanDisposition::DataFusion) | Some(FinalPlanDisposition::Native));
 
         // Prefer full parity; if GPU collect fails, retain planning evidence and classify.
         let mut detail = format!(
-            "path={path:?} frag={} host={} rewritten={rewritten} rejected={rejected_reasons:?}",
+            "path={path:?} frag={:?} host={:?} rewritten={rewritten} rejected={rejected_reasons:?}",
             row.native_plan_fragment_count, row.host_datafusion_boundary_count
         );
         let (ok, parity_ok, error_facts) = match gpu_ctx.sql(sql).await?.collect().await {
@@ -788,8 +788,8 @@ async fn run_tpch_case(tpch: &Path, backend: &NexusGpuBackend) -> CaseResult {
             ok,
             detail,
             path: Some(format!("{path:?}")),
-            fragments: Some(row.native_plan_fragment_count),
-            host_boundaries: Some(row.host_datafusion_boundary_count),
+            fragments: row.native_plan_fragment_count,
+            host_boundaries: row.host_datafusion_boundary_count,
             plan_root: Some(plan.name().to_string()),
             contains_native: Some(plan_contains_native(plan.as_ref())),
             contains_table_format_scan: Some(false),
@@ -878,8 +878,8 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
                 row.map(|r| r.final_disposition)
             ),
             path: row.map(|r| format!("{:?}", r.final_disposition)),
-            fragments: row.map(|r| r.native_plan_fragment_count),
-            host_boundaries: row.map(|r| r.host_datafusion_boundary_count),
+            fragments: row.and_then(|r| r.native_plan_fragment_count),
+            host_boundaries: row.and_then(|r| r.host_datafusion_boundary_count),
             plan_root: Some(plan.name().to_string()),
             contains_native: Some(false),
             contains_table_format_scan: Some(false),
@@ -898,8 +898,8 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
                 ok: false,
                 detail: format!("expected runtime failure under 1-byte budget; got {} batches", batches.len()),
                 path: row.map(|r| format!("{:?}", r.final_disposition)),
-                fragments: row.map(|r| r.native_plan_fragment_count),
-                host_boundaries: row.map(|r| r.host_datafusion_boundary_count),
+                fragments: row.and_then(|r| r.native_plan_fragment_count),
+                host_boundaries: row.and_then(|r| r.host_datafusion_boundary_count),
                 plan_root: Some(plan.name().to_string()),
                 contains_native: Some(true),
                 contains_table_format_scan: Some(false),
@@ -924,8 +924,8 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
             "native plan started then failed without DataFusion replay; no_rescue={no_rescue} stage={stage:?} err={err}"
         ),
         path: row.map(|r| format!("{:?}", r.final_disposition)),
-        fragments: row.map(|r| r.native_plan_fragment_count),
-        host_boundaries: row.map(|r| r.host_datafusion_boundary_count),
+        fragments: row.and_then(|r| r.native_plan_fragment_count),
+        host_boundaries: row.and_then(|r| r.host_datafusion_boundary_count),
         plan_root: Some(plan.name().to_string()),
         contains_native: Some(true),
         contains_table_format_scan: Some(false),
@@ -999,17 +999,18 @@ async fn run_iceberg_native_group_by_rewrites(backend: &NexusGpuBackend) -> Case
         let row = report.rows.first();
         let has_scan = plan_contains_name(plan.as_ref(), "NexusIcebergScanExec");
         let has_native = plan_contains_native(plan.as_ref());
-        let ok = !has_scan
-            && has_native
-            && row.map(|r| r.final_disposition == FinalPlanDisposition::Native).unwrap_or(false);
+        let ok = !has_scan && has_native && row.and_then(|r| r.final_disposition) == Some(FinalPlanDisposition::Native);
         ToolResult::Ok(CaseResult {
             id: id.into(),
             category: RelationalExecution::NativeDefault.as_str().into(),
             ok,
-            detail: format!("has_scan={has_scan} has_native={has_native} path={:?}", row.map(|r| r.final_disposition)),
+            detail: format!(
+                "has_scan={has_scan} has_native={has_native} path={:?}",
+                row.and_then(|r| r.final_disposition)
+            ),
             path: row.map(|r| format!("{:?}", r.final_disposition)),
-            fragments: row.map(|r| r.native_plan_fragment_count),
-            host_boundaries: row.map(|r| r.host_datafusion_boundary_count),
+            fragments: row.and_then(|r| r.native_plan_fragment_count),
+            host_boundaries: row.and_then(|r| r.host_datafusion_boundary_count),
             plan_root: Some(plan.name().to_string()),
             contains_native: Some(has_native),
             contains_table_format_scan: Some(has_scan),
@@ -1053,16 +1054,16 @@ async fn run_iceberg_unsupported_expression_retains_executable_datafusion_plan(
             category: RelationalExecution::NativeDefault.as_str().into(),
             ok: has_scan
                 && !has_native
-                && row.map(|row| row.final_disposition == FinalPlanDisposition::DataFusion).unwrap_or(false)
+                && row.and_then(|row| row.final_disposition) == Some(FinalPlanDisposition::DataFusion)
                 && !batches.is_empty(),
             detail: format!(
                 "has_scan={has_scan} has_native={has_native} path={:?} batches={}",
-                row.map(|row| row.final_disposition),
+                row.and_then(|row| row.final_disposition),
                 batches.len()
             ),
             path: row.map(|row| format!("{:?}", row.final_disposition)),
-            fragments: row.map(|row| row.native_plan_fragment_count),
-            host_boundaries: row.map(|row| row.host_datafusion_boundary_count),
+            fragments: row.and_then(|row| row.native_plan_fragment_count),
+            host_boundaries: row.and_then(|row| row.host_datafusion_boundary_count),
             plan_root: Some(plan.name().to_string()),
             contains_native: Some(has_native),
             contains_table_format_scan: Some(has_scan),
@@ -1092,9 +1093,9 @@ async fn run_empty_parquet_corner(path: &Path, backend: &NexusGpuBackend) -> Cas
         let (rewritten, rejected_reasons) = native_rule.map(outcome_stats).unwrap_or((0, vec![]));
         let mut detail = format!(
             "path={:?} frag={:?} host={:?} rewritten={rewritten} rejected={rejected_reasons:?}",
-            row.map(|r| r.final_disposition),
-            row.map(|r| r.native_plan_fragment_count),
-            row.map(|r| r.host_datafusion_boundary_count)
+            row.and_then(|r| r.final_disposition),
+            row.and_then(|r| r.native_plan_fragment_count),
+            row.and_then(|r| r.host_datafusion_boundary_count)
         );
         let (ok, parity_ok, error_facts) = match gpu_ctx.sql(sql).await?.collect().await {
             Ok(gpu_batches) => {
@@ -1118,7 +1119,7 @@ async fn run_empty_parquet_corner(path: &Path, backend: &NexusGpuBackend) -> Cas
                     ));
                     true
                 } else if row.is_some()
-                    && row.map(|r| r.final_disposition == FinalPlanDisposition::DataFusion).unwrap_or(false)
+                    && row.and_then(|r| r.final_disposition) == Some(FinalPlanDisposition::DataFusion)
                 {
                     detail.push_str(&format!("; unexpected DataFusion-path collect failure: {e}"));
                     false
@@ -1135,8 +1136,8 @@ async fn run_empty_parquet_corner(path: &Path, backend: &NexusGpuBackend) -> Cas
             ok,
             detail,
             path: row.map(|r| format!("{:?}", r.final_disposition)),
-            fragments: row.map(|r| r.native_plan_fragment_count),
-            host_boundaries: row.map(|r| r.host_datafusion_boundary_count),
+            fragments: row.and_then(|r| r.native_plan_fragment_count),
+            host_boundaries: row.and_then(|r| r.host_datafusion_boundary_count),
             plan_root: Some(plan.name().to_string()),
             contains_native: Some(plan_contains_native(plan.as_ref())),
             contains_table_format_scan: Some(false),

@@ -20,13 +20,13 @@ use super::{
     NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_MIXED_HASH_NESTED_LOOP_JOIN_AGGREGATE,
     NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_MIXED_HASH_NESTED_LOOP_JOIN_INPUT,
     NATIVE_CANDIDATE_SHAPE_FAMILY_SORT_PRESERVING_MERGE_FETCH_LOCAL_PARQUET_DISTRIBUTED_AGGREGATE,
-    NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN, NativeDataFusionPlanCoverage,
-    NativeJoinDiagnosticSummary, NativeSourceDiagnosticSummary, NativeSourceDiagnostics, NegativeExpr,
-    NestedLoopJoinExec, NotExpr, Operator, ParquetSource, PhysicalExpr, PlaceholderRowExec, PlainAggregateWindowExpr,
-    ProjectionExec, ScalarFunctionExpr, ScalarValue, SlidingAggregateWindowExpr, SortExec, SortPreservingMergeExec,
-    StandardWindowExpr, TryCastExpr, WindowAggExec, WindowExpr, WindowFrame, WindowFrameBound, WindowFrameUnits,
-    WindowUDFExpr, is_supported_arrow_type,
+    NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN, NativeJoinDiagnosticSummary,
+    NativeSourceDiagnosticSummary, NativeSourceDiagnostics, NegativeExpr, NestedLoopJoinExec, NotExpr, Operator,
+    ParquetSource, PhysicalExpr, PlaceholderRowExec, PlainAggregateWindowExpr, ProjectionExec, ScalarFunctionExpr,
+    ScalarValue, SlidingAggregateWindowExpr, SortExec, SortPreservingMergeExec, StandardWindowExpr, TryCastExpr,
+    WindowAggExec, WindowExpr, WindowFrame, WindowFrameBound, WindowFrameUnits, WindowUDFExpr, is_supported_arrow_type,
 };
+use crate::planner::FinalPlanCoverage;
 
 mod expressions;
 mod shape_family;
@@ -39,13 +39,8 @@ pub(crate) use shape_family::candidate_shape_family;
 
 pub(super) use crate::physical_plan::physical_plan_shape;
 
-pub(crate) fn post_native_plan_coverage(plan: &dyn ExecutionPlan) -> NativeDataFusionPlanCoverage {
-    let observation = crate::final_plan_observation::observe_final_plan(plan);
-    NativeDataFusionPlanCoverage {
-        final_disposition: observation.disposition,
-        native_fragment_count: observation.native_fragment_count,
-        host_datafusion_boundary_count: observation.datafusion_boundary_count,
-    }
+pub(crate) fn post_native_plan_coverage(plan: &dyn ExecutionPlan) -> FinalPlanCoverage {
+    crate::final_plan_observation::observe_final_plan(plan)
 }
 
 pub(crate) fn join_diagnostics(plan: &dyn ExecutionPlan) -> Vec<NativeJoinDiagnosticSummary> {

@@ -1,4 +1,15 @@
 //! Explicit execution-attempt adapter boundary.
+//!
+//! Attempt disposition is runtime-owned: one [`QueryAttemptReport`] per sealed
+//! attempt records whether the attempt obtained a plan and how it terminated.
+//! [`AttemptDisposition`] never shares an enum with plan-time coverage because
+//! the runtime must not depend on DataFusion adapter types, and `Unplanned`
+//! describes attempt lifecycle, not physical-plan shape. The adapter maps a
+//! completed [`crate::planner::FinalPlanDisposition`] to
+//! [`AttemptDisposition`] exactly once (`DataFusion` to `CpuFallback`,
+//! `Mixed` to `PartialNative`, `Native` to `Native`); a planning failure
+//! seals as `Unplanned` by leaving the disposition unset, never by mapping
+//! from a plan classification.
 
 use std::{
     any::Any,
@@ -49,7 +60,7 @@ use crate::{
         sealed_attempt_metrics_target, transparent_root_wrapper_input,
     },
     native_report::NativeDataFusionExecutionMetrics,
-    planner::{FinalPlanDisposition, classify_final_plan},
+    planner::{FinalPlanCoverage, FinalPlanDisposition, classify_final_plan},
 };
 
 /// Inputs used to create an execution attempt before DataFusion planning.
@@ -91,10 +102,7 @@ impl Default for AttemptOptions {
 #[non_exhaustive]
 pub struct SealedAttemptNativeExecutionSnapshot {
     pub attempt_id: AttemptId,
-    pub final_disposition: FinalPlanDisposition,
-    pub native_plan_fragment_count: usize,
-    pub explicit_gpu_island_count: usize,
-    pub host_datafusion_boundary_count: usize,
+    pub coverage: FinalPlanCoverage,
     pub terminal_host_materialization_count: usize,
     pub intermediate_device_to_host_materialization_count: usize,
     pub metrics: NativeDataFusionExecutionMetrics,
@@ -117,7 +125,7 @@ struct AttemptExecutionState {
     /// attempt metric after this attempt's report has sealed. The target is
     /// consumed at seal, so no wrapper can publish a second row.
     sealed_metrics_target:
-        Mutex<Option<(SealedAttemptMetricsTarget, crate::final_plan_observation::FinalPlanObservation)>>,
+        Mutex<Option<(SealedAttemptMetricsTarget, crate::final_plan_observation::FinalPlanCoverage)>>,
     /// Typed graph claim/peak rows frozen by the elected target at the same
     /// seal point as the immutable attempt report.
     sealed_graph_claim_calibration: Mutex<Option<SealedAttemptGraphClaimCalibrationSnapshot>>,
@@ -139,17 +147,14 @@ impl AttemptExecutionState {
         if let Some((target, observation)) = target {
             let (snapshot, metrics) = target.record(report);
             let intermediate_device_to_host_materialization_count =
-                metrics.device_to_host_materializations.saturating_sub(observation.host_materialization_count);
+                metrics.device_to_host_materializations.saturating_sub(observation.host_materialization_count());
             *self.sealed_graph_claim_calibration.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
                 Some(snapshot);
             *self.sealed_native_execution.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
                 Some(SealedAttemptNativeExecutionSnapshot {
                     attempt_id: report.attempt_id,
-                    final_disposition: observation.disposition,
-                    native_plan_fragment_count: observation.native_fragment_count,
-                    explicit_gpu_island_count: observation.explicit_gpu_island_count,
-                    host_datafusion_boundary_count: observation.datafusion_boundary_count,
-                    terminal_host_materialization_count: observation.host_materialization_count,
+                    coverage: observation,
+                    terminal_host_materialization_count: observation.host_materialization_count(),
                     intermediate_device_to_host_materialization_count,
                     metrics,
                 });
@@ -639,7 +644,6 @@ fn disposition_for(disposition: FinalPlanDisposition) -> AttemptDisposition {
         FinalPlanDisposition::DataFusion => AttemptDisposition::CpuFallback,
         FinalPlanDisposition::Native => AttemptDisposition::Native,
         FinalPlanDisposition::Mixed => AttemptDisposition::PartialNative,
-        FinalPlanDisposition::Rejected => AttemptDisposition::Unplanned,
     }
 }
 

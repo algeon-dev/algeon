@@ -181,11 +181,11 @@ async fn execute_prepared_profile_request(
                 admission_facts,
                 total_wall_ms: duration_ms(total_started.elapsed()),
                 native_wall_ms: Some(duration_ms(native_started.elapsed())),
-                planning_outcome: planning_row
-                    .outcome
-                    .map_or("none", NativeDataFusionPlanningOutcome::as_str)
+                planning_outcome: planning_row.outcome.map_or("none", CandidateOutcomeKind::as_str).to_string(),
+                final_disposition: planning_row
+                    .final_disposition
+                    .map_or("none", FinalPlanDisposition::as_str)
                     .to_string(),
-                final_disposition: planning_row.final_disposition.as_str().to_string(),
                 native_runtime_outcome: "succeeded",
                 parity_status: parity,
                 cpu_output_rows: cpu.map(|cpu| cpu.output_rows),
@@ -201,8 +201,8 @@ async fn execute_prepared_profile_request(
             Some(admission_sequence),
             admission_wait_ms,
             admission_facts,
-            planning_row.outcome.map_or("none", NativeDataFusionPlanningOutcome::as_str),
-            planning_row.final_disposition.as_str(),
+            planning_row.outcome.map_or("none", CandidateOutcomeKind::as_str),
+            planning_row.final_disposition.map_or("none", FinalPlanDisposition::as_str),
             "failed",
             "native_failed",
             StructuredFailure::from_datafusion_error(&error),

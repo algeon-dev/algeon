@@ -14,7 +14,7 @@ async fn native_pipeline_analytical_olap_fallback_report_pins_lowering_diagnosti
 
     for query in ANALYTICAL_OLAP_QUERIES {
         let row = report_row(&report, query.id);
-        assert_eq!(row.outcome, Some(NativeFallbackPressureOutcome::Selected), "unexpected outcome for {}", query.id);
+        assert_eq!(row.outcome, Some(CandidateOutcomeKind::Selected), "unexpected outcome for {}", query.id);
         assert_eq!(row.reason_code, None, "unexpected reason for {}", query.id);
         assert_eq!(row.unsupported_category, None, "unexpected unsupported category for {}", query.id);
         assert!(row.native_candidate_shape.as_deref().is_some_and(|shape| shape.contains("JoinExec")));
@@ -61,7 +61,7 @@ async fn native_pipeline_analytical_olap_capability_first_planning_report_pins_c
             "{} must have an explicit admission expectation",
             query.id
         );
-        assert_eq!(row.outcome, Some(NativeDataFusionPlanningOutcome::Selected), "{}", query.id);
+        assert_eq!(row.outcome, Some(CandidateOutcomeKind::Selected), "{}", query.id);
         assert_eq!(row.reason_code, None, "{}", query.id);
         assert!(!row.rejected_before_execution, "{}", query.id);
         assert!(!row.capability_contract_rows.is_empty(), "{} should emit admission gate rows", query.id);
@@ -69,7 +69,7 @@ async fn native_pipeline_analytical_olap_capability_first_planning_report_pins_c
         if query.capability_first_admission == AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin {
             assert_eq!(
                 row.outcome,
-                Some(NativeDataFusionPlanningOutcome::Selected),
+                Some(CandidateOutcomeKind::Selected),
                 "{} expected superset win should be admitted by capability-first capability-first planning",
                 query.id
             );

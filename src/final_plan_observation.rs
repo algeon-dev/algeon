@@ -1,10 +1,3 @@
-//! Single final-physical-plan observation walk shared by planning reports and
-//! GPU coverage.
-//!
-//! `Rejected` is a terminal planning result, not an observable physical node;
-//! this walk therefore only returns executable `DataFusion`, `Native`, or
-//! `Mixed` dispositions.
-
 use datafusion::physical_plan::ExecutionPlan;
 
 #[cfg(feature = "cugraph")]
@@ -17,36 +10,66 @@ use crate::{
     planner::FinalPlanDisposition,
 };
 
-/// Final-plan facts derived from one physical-plan walk.
+/// Observable final execution-plan coverage derived from one physical-plan walk.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct FinalPlanObservation {
+pub struct FinalPlanCoverage {
     pub(crate) disposition: FinalPlanDisposition,
     pub(crate) native_fragment_count: usize,
     pub(crate) explicit_gpu_island_count: usize,
     pub(crate) datafusion_boundary_count: usize,
     pub(crate) host_materialization_count: usize,
+    pub(crate) has_gpu_runtime: bool,
 }
 
-impl FinalPlanObservation {
-    pub(crate) const fn has_gpu_runtime(self) -> bool {
-        self.native_fragment_count > 0 || self.explicit_gpu_island_count > 0
+impl FinalPlanCoverage {
+    pub(crate) const fn new(
+        disposition: FinalPlanDisposition,
+        native_fragment_count: usize,
+        explicit_gpu_island_count: usize,
+        datafusion_boundary_count: usize,
+        host_materialization_count: usize,
+    ) -> Self {
+        Self {
+            disposition,
+            native_fragment_count,
+            explicit_gpu_island_count,
+            datafusion_boundary_count,
+            host_materialization_count,
+            has_gpu_runtime: native_fragment_count > 0 || explicit_gpu_island_count > 0,
+        }
+    }
+
+    pub const fn disposition(&self) -> FinalPlanDisposition {
+        self.disposition
+    }
+
+    pub const fn native_fragment_count(&self) -> usize {
+        self.native_fragment_count
+    }
+
+    pub const fn explicit_gpu_island_count(&self) -> usize {
+        self.explicit_gpu_island_count
+    }
+
+    pub const fn datafusion_boundary_count(&self) -> usize {
+        self.datafusion_boundary_count
+    }
+
+    pub const fn host_materialization_count(&self) -> usize {
+        self.host_materialization_count
+    }
+
+    pub const fn has_gpu_runtime(&self) -> bool {
+        self.has_gpu_runtime
     }
 }
 
 /// Observe the exact executable physical plan once.
-pub(crate) fn observe_final_plan(plan: &dyn ExecutionPlan) -> FinalPlanObservation {
+pub fn observe_final_plan(plan: &dyn ExecutionPlan) -> FinalPlanCoverage {
     observe_with_output_boundary(plan, true)
 }
 
-/// Observe a node in the context in which its output is consumed.
-///
-/// Accelerator operators can execute through their ordinary DataFusion
-/// `ExecutionPlan` method or through the internal GPU-producer contract. The
-/// former owns a final device-to-host materialization; the latter must not be
-/// counted as one merely because the same concrete type also supports a host
-/// result. Keeping that context in this walk avoids reporting a false host
-/// boundary for composed graph/vector plans.
-fn observe_with_output_boundary(plan: &dyn ExecutionPlan, materializes_host: bool) -> FinalPlanObservation {
+fn observe_with_output_boundary(plan: &dyn ExecutionPlan, materializes_host: bool) -> FinalPlanCoverage {
     if let Some(input) = crate::native_exec::transparent_root_wrapper_input(plan) {
         return observe_with_output_boundary(input.as_ref(), materializes_host);
     }
@@ -58,40 +81,19 @@ fn observe_with_output_boundary(plan: &dyn ExecutionPlan, materializes_host: boo
                 && (child.downcast_ref::<NexusNativeExec>().is_some()
                     || child.downcast_ref::<NexusNativeComposedExec>().is_some());
             if wraps_gpu_producer || wraps_graph_native_input {
-                // DataFusion's one-level cooperative wrapper is
-                // scheduling-only around an internal GPU producer or a
-                // native cuGraph input. It does not change device ownership
-                // or introduce an Arrow boundary.
                 return observe_with_output_boundary(child.as_ref(), false);
             }
         }
     }
     if plan.downcast_ref::<NexusNativeExec>().is_some() {
-        return FinalPlanObservation {
-            disposition: FinalPlanDisposition::Native,
-            native_fragment_count: 1,
-            explicit_gpu_island_count: 0,
-            datafusion_boundary_count: 0,
-            host_materialization_count: usize::from(materializes_host),
-        };
+        return FinalPlanCoverage::new(FinalPlanDisposition::Native, 1, 0, 0, usize::from(materializes_host));
     }
     if plan.downcast_ref::<NexusNativeGpuProducerExec>().is_some() {
-        return FinalPlanObservation {
-            disposition: FinalPlanDisposition::Native,
-            native_fragment_count: 1,
-            explicit_gpu_island_count: 0,
-            datafusion_boundary_count: 0,
-            host_materialization_count: 0,
-        };
+        return FinalPlanCoverage::new(FinalPlanDisposition::Native, 1, 0, 0, 0);
     }
     if plan.downcast_ref::<NexusNativeComposedExec>().is_some() {
-        let mut observation = FinalPlanObservation {
-            disposition: FinalPlanDisposition::Native,
-            native_fragment_count: 1,
-            explicit_gpu_island_count: 0,
-            datafusion_boundary_count: 0,
-            host_materialization_count: usize::from(materializes_host),
-        };
+        let mut observation =
+            FinalPlanCoverage::new(FinalPlanDisposition::Native, 1, 0, 0, usize::from(materializes_host));
         for child in plan.children() {
             let child = observe_as_gpu_producer(child.as_ref());
             if child.disposition != FinalPlanDisposition::Native {
@@ -102,13 +104,7 @@ fn observe_with_output_boundary(plan: &dyn ExecutionPlan, materializes_host: boo
         return observation;
     }
     if plan.downcast_ref::<NexusNativeComposedGpuProducerExec>().is_some() {
-        let mut observation = FinalPlanObservation {
-            disposition: FinalPlanDisposition::Native,
-            native_fragment_count: 1,
-            explicit_gpu_island_count: 0,
-            datafusion_boundary_count: 0,
-            host_materialization_count: 0,
-        };
+        let mut observation = FinalPlanCoverage::new(FinalPlanDisposition::Native, 1, 0, 0, 0);
         for child in plan.children() {
             let child = observe_as_gpu_producer(child.as_ref());
             if child.disposition != FinalPlanDisposition::Native {
@@ -119,18 +115,8 @@ fn observe_with_output_boundary(plan: &dyn ExecutionPlan, materializes_host: boo
         return observation;
     }
     if plan.downcast_ref::<CuvsAlgoExec>().is_some() {
-        // cuVS owns the native vector execution and its normal `ExecutionPlan`
-        // path materializes only its final relational result.  Its children
-        // remain on the device only when they satisfy the shared producer
-        // contract; otherwise `CuvsAlgoExec` explicitly stages the Arrow
-        // child before entering its native context.
-        let mut observation = FinalPlanObservation {
-            disposition: FinalPlanDisposition::Native,
-            native_fragment_count: 1,
-            explicit_gpu_island_count: 0,
-            datafusion_boundary_count: 0,
-            host_materialization_count: usize::from(materializes_host),
-        };
+        let mut observation =
+            FinalPlanCoverage::new(FinalPlanDisposition::Native, 1, 0, 0, usize::from(materializes_host));
         for child_plan in plan.children() {
             let child_is_gpu_producer =
                 crate::native_exec::producer::gpu_resident_producer(child_plan.as_ref()).is_some();
@@ -149,13 +135,8 @@ fn observe_with_output_boundary(plan: &dyn ExecutionPlan, materializes_host: boo
     }
     #[cfg(feature = "cugraph")]
     if plan.downcast_ref::<CugraphAlgoExec>().is_some() {
-        let mut observation = FinalPlanObservation {
-            disposition: FinalPlanDisposition::Native,
-            native_fragment_count: 0,
-            explicit_gpu_island_count: 1,
-            datafusion_boundary_count: 0,
-            host_materialization_count: usize::from(materializes_host),
-        };
+        let mut observation =
+            FinalPlanCoverage::new(FinalPlanDisposition::Native, 0, 1, 0, usize::from(materializes_host));
         for child_plan in plan.children() {
             let native_input = crate::cugraph_sql::native_graph_input_execution_plan(child_plan.as_ref());
             let child_uses_native_gpu_input = native_input.is_some()
@@ -176,13 +157,7 @@ fn observe_with_output_boundary(plan: &dyn ExecutionPlan, materializes_host: boo
         return observation;
     }
 
-    let mut observation = FinalPlanObservation {
-        disposition: FinalPlanDisposition::DataFusion,
-        native_fragment_count: 0,
-        explicit_gpu_island_count: 0,
-        datafusion_boundary_count: 0,
-        host_materialization_count: 0,
-    };
+    let mut observation = FinalPlanCoverage::new(FinalPlanDisposition::DataFusion, 0, 0, 0, 0);
     let mut directly_contains_gpu_runtime = false;
     for child in plan.children() {
         let child = observe_with_output_boundary(child.as_ref(), true);
@@ -199,13 +174,14 @@ fn observe_with_output_boundary(plan: &dyn ExecutionPlan, materializes_host: boo
     observation
 }
 
-fn observe_as_gpu_producer(plan: &dyn ExecutionPlan) -> FinalPlanObservation {
+fn observe_as_gpu_producer(plan: &dyn ExecutionPlan) -> FinalPlanCoverage {
     observe_with_output_boundary(plan, false)
 }
 
-fn merge(target: &mut FinalPlanObservation, child: FinalPlanObservation) {
+fn merge(target: &mut FinalPlanCoverage, child: FinalPlanCoverage) {
     target.native_fragment_count += child.native_fragment_count;
     target.explicit_gpu_island_count += child.explicit_gpu_island_count;
     target.datafusion_boundary_count += child.datafusion_boundary_count;
     target.host_materialization_count += child.host_materialization_count;
+    target.has_gpu_runtime |= child.has_gpu_runtime;
 }

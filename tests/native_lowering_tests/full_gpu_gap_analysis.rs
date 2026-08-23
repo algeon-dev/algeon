@@ -304,13 +304,13 @@ async fn full_gpu_gap_analysis_sql_planning_coverage_is_stable() {
         let row = &report.rows[0];
         match case.expected {
             ExpectedGpuCoverageOutcome::Selected => {
-                assert_eq!(row.outcome, Some(NativeFallbackPressureOutcome::Selected), "{}", case.id);
+                assert_eq!(row.outcome, Some(CandidateOutcomeKind::Selected), "{}", case.id);
                 assert_eq!(row.reason_code, None, "{}", case.id);
                 assert_eq!(row.unsupported_category, None, "{}", case.id);
                 assert!(!row.rejected_before_execution, "{}", case.id);
             },
             ExpectedGpuCoverageOutcome::NotSupported { reason, unsupported_category } => {
-                assert_eq!(row.outcome, Some(NativeFallbackPressureOutcome::NotSupported), "{}", case.id);
+                assert_eq!(row.outcome, Some(CandidateOutcomeKind::NotSupported), "{}", case.id);
                 assert_eq!(row.reason_code.as_deref(), Some(reason.code()), "{}", case.id);
                 assert_eq!(row.unsupported_category.as_deref(), Some(unsupported_category), "{}", case.id);
                 assert!(!row.rejected_before_execution, "{}", case.id);

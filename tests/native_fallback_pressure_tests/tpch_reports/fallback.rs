@@ -19,12 +19,7 @@ async fn tpch_fallback_pressure_report_emits_one_pre_execution_reject_per_query(
     assert_eq!(actual_ids, expected_ids);
 
     for row in &report.rows {
-        assert_eq!(
-            row.outcome,
-            Some(NativeFallbackPressureOutcome::Selected),
-            "unexpected outcome for {}",
-            row.query_id
-        );
+        assert_eq!(row.outcome, Some(CandidateOutcomeKind::Selected), "unexpected outcome for {}", row.query_id);
         assert_eq!(row.reason_code.as_deref(), None, "unexpected reason for {}", row.query_id);
         assert_eq!(row.unsupported_category.as_deref(), None, "unexpected unsupported category for {}", row.query_id);
         assert_eq!(row.physical_root, expected_tpch_physical_root(row.query_id.as_str()));
@@ -106,7 +101,7 @@ async fn tpch_scalar_fallback_pressure_report_pins_expression_categories() {
 
     for (query_id, expected_category) in expected {
         let row = report_row(&report, query_id);
-        assert_eq!(row.outcome, Some(NativeFallbackPressureOutcome::NotSupported), "unexpected outcome for {query_id}");
+        assert_eq!(row.outcome, Some(CandidateOutcomeKind::NotSupported), "unexpected outcome for {query_id}");
         assert_eq!(row.reason_code.as_deref(), Some("unsupported_expression"), "unexpected reason for {query_id}");
         assert_eq!(row.unsupported_category.as_deref(), Some(expected_category), "unexpected category for {query_id}");
         assert!(!row.rejected_before_execution, "{query_id} should remain on the executable DataFusion baseline");

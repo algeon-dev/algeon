@@ -136,7 +136,7 @@ async fn run_datafusion_baseline_case(
     let gpu_batches = match gpu_ctx.sql(case.sql).await.expect(case.id).collect().await {
         Ok(batches) => batches,
         Err(error) => panic!(
-            "{}: GPU collect failed: {error:#}\npath={:?} fragments={} host_boundaries={} rewritten={rewritten} rejected={rejected_reasons:?}",
+            "{}: GPU collect failed: {error:#}\npath={:?} fragments={:?} host_boundaries={:?} rewritten={rewritten} rejected={rejected_reasons:?}",
             case.id, row.final_disposition, row.native_plan_fragment_count, row.host_datafusion_boundary_count,
         ),
     };
@@ -155,12 +155,16 @@ async fn run_datafusion_baseline_case(
     );
 
     assert_eq!(
-        row.final_disposition, case.expected_path,
-        "{}: unexpected final_disposition (fragments={}, host_boundaries={}, rewritten={rewritten}, rejected={rejected_reasons:?})",
-        case.id, row.native_plan_fragment_count, row.host_datafusion_boundary_count
+        row.final_disposition,
+        Some(case.expected_path),
+        "{}: unexpected final_disposition (fragments={:?}, host_boundaries={:?}, rewritten={rewritten}, rejected={rejected_reasons:?})",
+        case.id,
+        row.native_plan_fragment_count,
+        row.host_datafusion_boundary_count
     );
     assert_eq!(
-        row.native_plan_fragment_count, case.expected_native_fragment_count,
+        row.native_plan_fragment_count,
+        Some(case.expected_native_fragment_count),
         "{}: unexpected native fragment count",
         case.id,
     );
@@ -178,7 +182,8 @@ async fn run_datafusion_baseline_case(
                 case.id
             );
             assert_eq!(
-                row.host_datafusion_boundary_count, 0,
+                row.host_datafusion_boundary_count,
+                Some(0),
                 "{}: ordinary relational DataFusion baseline must not create a host/native boundary",
                 case.id
             );
@@ -187,7 +192,8 @@ async fn run_datafusion_baseline_case(
             assert_eq!(rewritten, 1, "{}: supported whole plan should have one rewrite", case.id);
             assert!(rejected_reasons.is_empty(), "{}: supported whole plan should not have rejections", case.id);
             assert_eq!(
-                row.host_datafusion_boundary_count, 0,
+                row.host_datafusion_boundary_count,
+                Some(0),
                 "{}: whole native plan should have no host boundary",
                 case.id
             );

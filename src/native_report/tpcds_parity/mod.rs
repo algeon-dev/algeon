@@ -24,8 +24,8 @@ use datafusion::physical_plan::{ExecutionPlan, metrics::MetricsSet};
 use nexus_query_engine::mode::StatisticalAggregateExecutionMode;
 
 use super::{
-    FinalPlanDisposition, NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome,
-    NativeDataFusionRuntimeOutcome, NativePlanningFailure, WorkloadDatasetMetadata,
+    CandidateOutcomeKind, FinalPlanDisposition, NativeDataFusionExecutionMetrics, NativeDataFusionRuntimeOutcome,
+    NativePlanningFailure, WorkloadDatasetMetadata,
     diagnostics::{post_native_plan_coverage, unsupported_category},
     tsv::{TsvRow, stable_tsv_field, write_workload_dataset_metadata},
 };

@@ -130,28 +130,28 @@ async fn validate_query_rejects_multiple_statements_but_not_semicolon_literal() 
     let ctx = SessionContext::new_with_state(state);
 
     let literal = validate_query(&ctx, "SELECT ';' AS marker").await.unwrap();
-    assert!(!matches!(literal.overall, QueryGpuCoverageOverall::Rejected { .. }));
+    assert!(literal.rejection().is_none());
 
     let literal_function_name =
         validate_query(&ctx, "SELECT 'nexus_explain_coverage(''SELECT 1'')' AS marker").await.unwrap();
-    assert!(!matches!(literal_function_name.overall, QueryGpuCoverageOverall::Rejected { .. }));
+    assert!(literal_function_name.rejection().is_none());
 
     let empty = validate_query(&ctx, "").await.unwrap();
     assert!(matches!(
-        empty.overall,
-        QueryGpuCoverageOverall::Rejected { phase: QueryGpuRejectionPhase::Parsing, ref reason_code, .. }
-            if reason_code == "empty_sql"
+        empty.planning_outcome,
+        QueryGpuPlanningOutcome::Rejected(ref rejection)
+            if rejection.phase == QueryGpuRejectionPhase::Parsing && rejection.reason_code == "empty_sql"
     ));
     let empty_json = empty.to_json();
-    assert_eq!(empty_json["overall"]["retry_advice"]["availability"], "unavailable");
-    assert_eq!(empty_json["overall"]["retry_advice"]["reason"], "no_sealed_attempt_report");
-    assert!(empty_json["overall"].get("retryable").is_none());
+    assert_eq!(empty_json["planning_outcome"]["status"], "rejected");
+    assert_eq!(empty_json["planning_outcome"]["rejection"]["reason_code"], "empty_sql");
+    assert!(empty_json.get("overall").is_none());
 
     let rejected = validate_query(&ctx, "SELECT ';' AS marker; SELECT 1").await.unwrap();
     assert!(matches!(
-        rejected.overall,
-        QueryGpuCoverageOverall::Rejected { phase: QueryGpuRejectionPhase::Parsing, ref reason_code, .. }
-            if reason_code == "multi_statement_unsupported"
+        rejected.planning_outcome,
+        QueryGpuPlanningOutcome::Rejected(ref rejection)
+            if rejection.phase == QueryGpuRejectionPhase::Parsing && rejection.reason_code == "multi_statement_unsupported"
     ));
 
     let recursive_exists =
@@ -159,9 +159,9 @@ async fn validate_query_rejects_multiple_statements_but_not_semicolon_literal() 
             .await
             .unwrap();
     assert!(matches!(
-        recursive_exists.overall,
-        QueryGpuCoverageOverall::Rejected { phase: QueryGpuRejectionPhase::Parsing, ref reason_code, .. }
-            if reason_code == "coverage_validator_recursion_unsupported"
+        recursive_exists.planning_outcome,
+        QueryGpuPlanningOutcome::Rejected(ref rejection)
+            if rejection.phase == QueryGpuRejectionPhase::Parsing && rejection.reason_code == "coverage_validator_recursion_unsupported"
     ));
 
     let recursive_array =
@@ -169,9 +169,9 @@ async fn validate_query_rejects_multiple_statements_but_not_semicolon_literal() 
             .await
             .unwrap();
     assert!(matches!(
-        recursive_array.overall,
-        QueryGpuCoverageOverall::Rejected { phase: QueryGpuRejectionPhase::Parsing, ref reason_code, .. }
-            if reason_code == "coverage_validator_recursion_unsupported"
+        recursive_array.planning_outcome,
+        QueryGpuPlanningOutcome::Rejected(ref rejection)
+            if rejection.phase == QueryGpuRejectionPhase::Parsing && rejection.reason_code == "coverage_validator_recursion_unsupported"
     ));
 
     let recursive_pipe_where =
@@ -179,9 +179,9 @@ async fn validate_query_rejects_multiple_statements_but_not_semicolon_literal() 
             .await
             .unwrap();
     assert!(matches!(
-        recursive_pipe_where.overall,
-        QueryGpuCoverageOverall::Rejected { phase: QueryGpuRejectionPhase::Parsing, ref reason_code, .. }
-            if reason_code == "coverage_validator_recursion_unsupported"
+        recursive_pipe_where.planning_outcome,
+        QueryGpuPlanningOutcome::Rejected(ref rejection)
+            if rejection.phase == QueryGpuRejectionPhase::Parsing && rejection.reason_code == "coverage_validator_recursion_unsupported"
     ));
 
     let recursive_pipe_select = validate_query(
@@ -191,9 +191,9 @@ async fn validate_query_rejects_multiple_statements_but_not_semicolon_literal() 
     .await
     .unwrap();
     assert!(matches!(
-        recursive_pipe_select.overall,
-        QueryGpuCoverageOverall::Rejected { phase: QueryGpuRejectionPhase::Parsing, ref reason_code, .. }
-            if reason_code == "coverage_validator_recursion_unsupported"
+        recursive_pipe_select.planning_outcome,
+        QueryGpuPlanningOutcome::Rejected(ref rejection)
+            if rejection.phase == QueryGpuRejectionPhase::Parsing && rejection.reason_code == "coverage_validator_recursion_unsupported"
     ));
 
     let recursive_unnest =
@@ -201,9 +201,9 @@ async fn validate_query_rejects_multiple_statements_but_not_semicolon_literal() 
             .await
             .unwrap();
     assert!(matches!(
-        recursive_unnest.overall,
-        QueryGpuCoverageOverall::Rejected { phase: QueryGpuRejectionPhase::Parsing, ref reason_code, .. }
-            if reason_code == "coverage_validator_recursion_unsupported"
+        recursive_unnest.planning_outcome,
+        QueryGpuPlanningOutcome::Rejected(ref rejection)
+            if rejection.phase == QueryGpuRejectionPhase::Parsing && rejection.reason_code == "coverage_validator_recursion_unsupported"
     ));
 
     let recursive_named_window = validate_query(
@@ -215,9 +215,9 @@ async fn validate_query_rejects_multiple_statements_but_not_semicolon_literal() 
     .await
     .unwrap();
     assert!(matches!(
-        recursive_named_window.overall,
-        QueryGpuCoverageOverall::Rejected { phase: QueryGpuRejectionPhase::Parsing, ref reason_code, .. }
-            if reason_code == "coverage_validator_recursion_unsupported"
+        recursive_named_window.planning_outcome,
+        QueryGpuPlanningOutcome::Rejected(ref rejection)
+            if rejection.phase == QueryGpuRejectionPhase::Parsing && rejection.reason_code == "coverage_validator_recursion_unsupported"
     ));
 }
 
@@ -237,22 +237,23 @@ async fn validate_query_reports_capability_misses_without_terminal_rejection() {
     let ctx = validation_context(bounded_optimizer_config());
 
     let cpu = validate_query(&ctx, "SELECT random() AS r").await.unwrap();
-    assert_eq!(cpu.overall, QueryGpuCoverageOverall::CpuOnly);
-    assert_eq!(cpu.final_disposition, FinalPlanDisposition::DataFusion);
-    assert_eq!(cpu.domains.native_fragment_count, 0);
-    assert!(cpu.candidate_outcomes.iter().any(|outcome| outcome.selection
-        == QueryGpuCandidateSelectionOutcome::NotSupported
+    assert_eq!(cpu.gpu_path(), "cpu");
+    let cpu_cov = cpu.final_plan_coverage().expect("cpu final plan coverage");
+    assert_eq!(cpu_cov.disposition(), FinalPlanDisposition::DataFusion);
+    assert_eq!(cpu_cov.native_fragment_count(), 0);
+    assert!(cpu.candidate_outcomes.iter().any(|outcome| outcome.selection == CandidateOutcomeKind::NotSupported
         && outcome.reason_code.as_deref() == Some(CapabilityReason::UnsupportedExpression.code())
         && outcome.reason_kind == Some(QueryGpuCandidateReasonKind::Expression)
         && outcome.remedy.as_ref().is_some_and(|remedy| remedy.code == "rewrite_expression")));
 
     let unsupported = validate_query(&ctx, "SELECT CAST('1' AS DECIMAL(39, 0)) AS values").await.unwrap();
-    assert_eq!(unsupported.overall, QueryGpuCoverageOverall::CpuOnly);
-    assert_eq!(unsupported.final_disposition, FinalPlanDisposition::DataFusion);
-    assert_eq!(unsupported.domains.native_fragment_count, 0);
-    assert_eq!(unsupported.domains.datafusion_boundary_count, 0);
+    assert_eq!(unsupported.gpu_path(), "cpu");
+    let unsup_cov = unsupported.final_plan_coverage().expect("unsupported final plan coverage");
+    assert_eq!(unsup_cov.disposition(), FinalPlanDisposition::DataFusion);
+    assert_eq!(unsup_cov.native_fragment_count(), 0);
+    assert_eq!(unsup_cov.datafusion_boundary_count(), 0);
     assert!(unsupported.candidate_outcomes.iter().any(|outcome| outcome.selection
-        == QueryGpuCandidateSelectionOutcome::NotSupported
+        == CandidateOutcomeKind::NotSupported
         && outcome.reason_code.as_deref() == Some(CapabilityReason::UnsupportedType.code())
         && outcome.reason_kind == Some(QueryGpuCandidateReasonKind::ArrowType)
         && outcome.remedy.as_ref().is_some_and(|remedy| remedy.code == "cast_or_exclude_type")));
@@ -267,7 +268,7 @@ fn candidate_outcomes_retain_selected_candidates_without_selection_reasons() {
     let outcomes = candidate_outcomes_from_report(&report);
 
     assert_eq!(outcomes.len(), 1);
-    assert_eq!(outcomes[0].selection, QueryGpuCandidateSelectionOutcome::Selected);
+    assert_eq!(outcomes[0].selection, CandidateOutcomeKind::Selected);
     assert_eq!(outcomes[0].detail, "ProjectionExec");
     assert_eq!(outcomes[0].candidate_family, "other_local_parquet_input");
     assert_eq!(outcomes[0].reason_code, None);
@@ -304,7 +305,7 @@ fn candidate_outcomes_classify_cost_decisions_as_cost() {
     let outcomes = candidate_outcomes_from_report(&report);
 
     assert_eq!(outcomes.len(), 1);
-    assert_eq!(outcomes[0].selection, QueryGpuCandidateSelectionOutcome::NotSelectedByCost);
+    assert_eq!(outcomes[0].selection, CandidateOutcomeKind::NotSelectedByCost);
     assert_eq!(outcomes[0].reason_kind, Some(QueryGpuCandidateReasonKind::Cost));
     assert_eq!(outcomes[0].category.as_deref(), Some("cost"));
     assert_eq!(outcomes[0].reason_code.as_deref(), Some("native_small_selective_topk_not_selected_by_cost"));
@@ -321,7 +322,7 @@ fn candidate_outcomes_retain_shape_families_for_unsupported_candidates() {
     let outcomes = candidate_outcomes_from_report(&report);
 
     assert_eq!(outcomes.len(), 1);
-    assert_eq!(outcomes[0].selection, QueryGpuCandidateSelectionOutcome::NotSupported);
+    assert_eq!(outcomes[0].selection, CandidateOutcomeKind::NotSupported);
     assert_eq!(outcomes[0].candidate_family, "unsupported_native_physical_plan");
     assert_eq!(outcomes[0].reason_kind, Some(QueryGpuCandidateReasonKind::Expression));
 }
@@ -331,24 +332,16 @@ async fn validate_query_preserves_the_installed_final_plan_requirement() {
     let ctx = validation_context(bounded_optimizer_config().with_no_datafusion_cpu_requirement());
     let coverage = validate_query(&ctx, "SELECT random() AS r").await.unwrap();
 
-    assert!(
-        matches!(
-            coverage.overall,
-            QueryGpuCoverageOverall::Rejected { phase: QueryGpuRejectionPhase::PhysicalPlanning, .. }
-        ),
-        "coverage={coverage:?}"
-    );
-    assert_eq!(coverage.final_disposition, FinalPlanDisposition::Rejected);
+    let rejection = coverage.rejection().expect("rejection");
+    assert_eq!(rejection.phase, QueryGpuRejectionPhase::PhysicalPlanning);
+    assert_eq!(coverage.gpu_path(), "rejected");
     assert!(
         coverage
             .candidate_outcomes
             .iter()
             .any(|outcome| outcome.reason_code.as_deref() == Some("unsupported_expression"))
     );
-    assert!(
-        matches!(&coverage.overall, QueryGpuCoverageOverall::Rejected { detail, .. } if detail.contains("final physical plan")),
-        "coverage={coverage:?}"
-    );
+    assert!(rejection.detail.contains("final physical plan"), "coverage={coverage:?}");
     assert_eq!(coverage.validated_under.final_plan_requirements, ["no_datafusion_cpu"]);
 }
 
@@ -369,10 +362,10 @@ async fn validate_query_with_installed_rule_and_unsupported_candidate_produces_c
 
     let coverage = validate_query(&ctx, "SELECT random() AS r").await.unwrap();
 
-    assert_eq!(coverage.overall, QueryGpuCoverageOverall::CpuOnly);
+    assert_eq!(coverage.gpu_path(), "cpu");
     assert!(coverage.validated_under.native_optimizer_rule_installed);
     assert_eq!(coverage.validated_under.optimizer_config_source, "installed_session_rule");
-    assert_eq!(coverage.final_disposition, FinalPlanDisposition::DataFusion);
+    assert_eq!(coverage.final_plan_coverage().unwrap().disposition(), FinalPlanDisposition::DataFusion);
 }
 
 #[tokio::test]
@@ -433,10 +426,10 @@ async fn validate_query_concurrent_calls_do_not_share_retained_rule_state() {
     let native = native.unwrap();
     let cpu = cpu.unwrap();
 
-    assert_eq!(native.overall, QueryGpuCoverageOverall::NoCpuInPlannedPath);
-    assert_eq!(native.final_disposition, FinalPlanDisposition::Native);
+    assert_eq!(native.gpu_path(), "native");
+    assert_eq!(native.final_plan_coverage().unwrap().disposition(), FinalPlanDisposition::Native);
     assert!(native.candidate_outcomes.iter().any(|outcome| {
-        outcome.selection == QueryGpuCandidateSelectionOutcome::Selected
+        outcome.selection == CandidateOutcomeKind::Selected
             && outcome.reason_code.is_none()
             && outcome.reason_kind.is_none()
             && !outcome.candidate_family.is_empty()
@@ -456,7 +449,7 @@ async fn validate_query_concurrent_calls_do_not_share_retained_rule_state() {
                 && outcome["cost_evidence"].is_null()
         })
     }));
-    assert_eq!(cpu.overall, QueryGpuCoverageOverall::CpuOnly);
+    assert_eq!(cpu.gpu_path(), "cpu");
     assert!(cpu.candidate_outcomes.iter().any(|outcome| {
         outcome.reason_code.as_deref() == Some("unsupported_expression") && !outcome.candidate_family.is_empty()
     }));
@@ -523,9 +516,10 @@ fn generic_cpu_parent_over_native_fragment_is_partial() {
         None,
     );
 
-    assert!(matches!(coverage.overall, QueryGpuCoverageOverall::PartialGpuPlanned { .. }));
-    assert_eq!(coverage.final_disposition, FinalPlanDisposition::Mixed);
-    assert_eq!(coverage.domains.datafusion_boundary_count, 1);
+    assert_eq!(coverage.gpu_path(), "partial_native");
+    let plan_cov = coverage.final_plan_coverage().unwrap();
+    assert_eq!(plan_cov.disposition(), FinalPlanDisposition::Mixed);
+    assert_eq!(plan_cov.datafusion_boundary_count(), 1);
 }
 
 #[cfg(feature = "cugraph")]
@@ -683,11 +677,12 @@ mod cugraph {
             None,
         );
 
-        assert_eq!(coverage.overall, QueryGpuCoverageOverall::NoCpuInPlannedPath);
-        assert_eq!(coverage.final_disposition, FinalPlanDisposition::Native);
-        assert_eq!(coverage.domains.native_fragment_count, 1);
-        assert_eq!(coverage.domains.explicit_gpu_island_count, 1);
-        assert_eq!(coverage.domains.datafusion_boundary_count, 0);
+        assert_eq!(coverage.gpu_path(), "native");
+        let plan_cov = coverage.final_plan_coverage().unwrap();
+        assert_eq!(plan_cov.disposition(), FinalPlanDisposition::Native);
+        assert_eq!(plan_cov.native_fragment_count(), 1);
+        assert_eq!(plan_cov.explicit_gpu_island_count(), 1);
+        assert_eq!(plan_cov.datafusion_boundary_count(), 0);
     }
 
     #[test]
@@ -706,11 +701,12 @@ mod cugraph {
             None,
         );
 
-        assert!(matches!(coverage.overall, QueryGpuCoverageOverall::PartialGpuPlanned { .. }));
-        assert_eq!(coverage.final_disposition, FinalPlanDisposition::Mixed);
-        assert_eq!(coverage.domains.native_fragment_count, 1);
-        assert_eq!(coverage.domains.explicit_gpu_island_count, 1);
-        assert!(coverage.domains.datafusion_boundary_count > 0);
+        assert_eq!(coverage.gpu_path(), "partial_native");
+        let plan_cov = coverage.final_plan_coverage().unwrap();
+        assert_eq!(plan_cov.disposition(), FinalPlanDisposition::Mixed);
+        assert_eq!(plan_cov.native_fragment_count(), 1);
+        assert_eq!(plan_cov.explicit_gpu_island_count(), 1);
+        assert!(plan_cov.datafusion_boundary_count() > 0);
     }
 
     #[test]
@@ -729,9 +725,10 @@ mod cugraph {
             None,
         );
 
-        assert_eq!(coverage.overall, QueryGpuCoverageOverall::NoCpuInPlannedPath);
-        assert_eq!(coverage.final_disposition, FinalPlanDisposition::Native);
-        assert_eq!(coverage.domains.datafusion_boundary_count, 0);
+        assert_eq!(coverage.gpu_path(), "native");
+        let plan_cov = coverage.final_plan_coverage().unwrap();
+        assert_eq!(plan_cov.disposition(), FinalPlanDisposition::Native);
+        assert_eq!(plan_cov.datafusion_boundary_count(), 0);
         assert!(!coverage.runtime_caveats.is_empty());
     }
 }

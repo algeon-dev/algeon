@@ -1,5 +1,5 @@
 use datafusion_nexus::native_report::{
-    FinalPlanDisposition, NativeDataFusionPlanningOutcome,
+    CandidateOutcomeKind, FinalPlanDisposition,
     bench_support::{
         NATIVE_TPCDS_PARITY_TSV_HEADER, NativeTpcdsParityExternalOutputSummary, NativeTpcdsParityReport,
         NativeTpcdsParityRow, ParityComparisonMode, ParityFloatTolerance, ParityStageStatus, ParityStatus,
@@ -52,12 +52,12 @@ fn parity_report_to_tsv_emits_metadata_and_header() {
         query_id: "q01".to_string(),
         cpu_planning_status: ParityStageStatus::Succeeded,
         cpu_runtime_status: ParityStageStatus::Succeeded,
-        native_planning_outcome: Some(NativeDataFusionPlanningOutcome::NotSupported),
+        native_planning_outcome: Some(CandidateOutcomeKind::NotSupported),
         native_reason_code: Some("unsupported_operator".to_string()),
         native_unsupported_category: Some("operator_join".to_string()),
-        final_disposition: FinalPlanDisposition::DataFusion,
-        native_plan_fragment_count: 0,
-        host_datafusion_boundary_count: 0,
+        final_disposition: Some(FinalPlanDisposition::DataFusion),
+        native_plan_fragment_count: Some(0),
+        host_datafusion_boundary_count: Some(0),
         native_runtime_started: false,
         native_runtime_outcome: datafusion_nexus::native_report::NativeDataFusionRuntimeOutcome::NotStarted,
         parity_status: ParityStatus::NativeRejected,
