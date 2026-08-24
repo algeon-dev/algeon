@@ -1,6 +1,23 @@
 use super::*;
 
 impl DataFrame {
+    /// Returns the componentized owner allocation preflight for named build keys.
+    pub fn hash_join_allocation_preflight<I, S>(
+        &self,
+        build_on: I,
+        options: DataFrameHashJoinOptions,
+    ) -> Result<join::HashJoinAllocationPreflight>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        let operation = "dataframe::hash_join_allocation_preflight";
+        let build_keys = build_on.into_iter().map(|key| key.as_ref().to_string()).collect::<Vec<_>>();
+        validate_hash_join_key_names(&build_keys, operation)?;
+        let build_key_frame = self.select(build_keys).map_err(|error| error.reanchor(operation))?;
+        hash_join_allocation_preflight_for_key_frame(&build_key_frame, options, operation)
+    }
+
     /// Return exact device bytes that must be reserved before building a
     /// reusable hash-join artifact from this DataFrame's named key columns.
     ///
@@ -90,11 +107,24 @@ impl DataFrame {
         let build_key_refs = build_keys.iter().map(|key| key.as_str()).collect::<Vec<_>>();
         resolve_column_names(self.columns_map(), &build_key_refs, operation)?;
         let build_key_frame = self.select(build_keys.clone()).map_err(|error| error.reanchor(operation))?;
+        let allocation_preflight = hash_join_allocation_preflight_for_key_frame(&build_key_frame, options, operation)?;
         let build_key_table = build_key_frame.to_table_copy().map_err(|error| error.reanchor(operation))?;
         let join = join::HashJoin::new_in(build_key_table, options.to_hash_join_options(), ctx)
             .map_err(|error| error.reanchor(operation))?;
+        let actual_retained_bytes = join.device_allocated_size_bytes().map_err(|error| error.reanchor(operation))?;
+        if actual_retained_bytes > allocation_preflight.retained_bytes() {
+            return Err(Error::new_with(
+                ErrorCode::ForeignInvariantViolation,
+                operation,
+                "runtime hash-join retained allocation exceeded its owner preflight",
+            )
+            .with_detail("reason", "runtime_retained_allocation_exceeded_preflight")
+            .with_detail("actual_retained_bytes", actual_retained_bytes.to_string())
+            .with_detail("preflight_retained_bytes", allocation_preflight.retained_bytes().to_string())
+            .with_detail("required_contract", join::HASH_JOIN_ALLOCATION_PREFLIGHT_CONTRACT));
+        }
 
-        Ok(DataFrameHashJoin { join, build: self.clone(), build_keys, options })
+        Ok(DataFrameHashJoin { join, build: self.clone(), build_keys, options, allocation_preflight })
     }
 
     /// Merge using a borrowed per-operation execution override.
@@ -706,6 +736,51 @@ impl DataFrame {
             right: DataFrame::from_table(result.right, right_schema_names)?,
         })
     }
+}
+
+fn hash_join_allocation_preflight_for_key_frame(
+    build_key_frame: &DataFrame,
+    options: DataFrameHashJoinOptions,
+    operation: &'static str,
+) -> Result<join::HashJoinAllocationPreflight> {
+    let info = build_key_frame
+        .info_with(InfoDetail::COLUMNS | InfoDetail::PAYLOAD_BYTES)
+        .map_err(|error| error.reanchor(operation))?;
+    let keys = info
+        .columns
+        .expect("COLUMNS detail always populates column metadata")
+        .into_iter()
+        .map(|column| {
+            if column.data_type.id() == TypeId::String {
+                let payload_upper_bound_bytes =
+                    column.memory_accounting.and_then(|memory| memory.payload_bytes).ok_or_else(|| {
+                        Error::new_with(
+                            ErrorCode::ForeignInvariantViolation,
+                            operation,
+                            "string hash key payload accounting was unavailable",
+                        )
+                        .with_column(column.name.clone())
+                        .with_detail("reason", "string_payload_accounting_missing")
+                    })?;
+                Ok(join::HashJoinKeyMetadata::string(
+                    payload_upper_bound_bytes,
+                    join::HashJoinStringOffsetWidth::I32,
+                    column.nullable,
+                ))
+            } else {
+                Ok(join::HashJoinKeyMetadata::fixed_width(column.data_type.id(), column.nullable))
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let preprocessing_mode = join::HashJoinPreprocessingMode::for_keys(&keys);
+    join::hash_join_allocation_preflight_for_metadata(
+        &keys,
+        u64::try_from(info.row_count)
+            .map_err(|_| Error::new_with(ErrorCode::SizeOverflow, operation, "hash key row count exceeds u64"))?,
+        options.load_factor_value(),
+        preprocessing_mode,
+    )
+    .map_err(|error| error.reanchor_if_needed(operation))
 }
 
 impl DataFrameHashJoin {

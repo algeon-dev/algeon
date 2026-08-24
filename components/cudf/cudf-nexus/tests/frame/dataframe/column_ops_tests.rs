@@ -3,7 +3,10 @@
 use arrow::{array::Decimal128Array, datatypes::DataType as ArrowDataType};
 use cudf::{
     DataFrame, DataType, ErrorCode, ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
-    ExecutionBudgetStatus, TypeId, frame::dataframe::InfoDetail, testing::prelude::*,
+    ExecutionBudgetStatus, TypeId,
+    frame::dataframe::InfoDetail,
+    ops::{col, lit_null, when},
+    testing::prelude::*,
 };
 
 use crate::common::{
@@ -355,6 +358,36 @@ fn test_with_columns_with_budget_reports_output_and_routes_allocator() {
     );
     assert_eq!(result.testing_execution_domain_mr_value(), token.memory_resource().testing_raw_handle_value());
     assert_all_observed_exec_mrs_are_manager_mr(&token);
+}
+
+#[test]
+fn test_with_columns_with_budget_case_report_uses_owner_preflight() {
+    let df = crate::common::dataframe_from_columns(
+        vec!["score".to_string(), "fallback".to_string()],
+        vec![column_from_slice(&[1.0f64, 2.0, 3.0]).unwrap(), column_from_slice(&[1.0f64, 9.0, 3.0]).unwrap()],
+    )
+    .unwrap();
+    let token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("case_preflight"))
+            .unwrap()
+    });
+    let expr = when(col("score").eq(col("fallback"))).then(col("score")).otherwise(lit_null(TypeId::Float64));
+
+    let outcome = df.with_columns_with_budget([("derived_score", expr)], &token).unwrap();
+    let report = outcome.report();
+    let output_bytes = dataframe_device_allocated_size_bytes(outcome.value());
+    let facts = report.context_facts();
+    let retained_preflight = facts["expression_output_dataframe_retained_preflight_bytes"].parse::<usize>().unwrap();
+
+    assert_eq!(report.unresolved_contract(), None);
+    assert_eq!(facts["expression_preflight_contract"], "libcudf_dataframe_expression_allocation_preflight_v1");
+    assert!(facts["expression_boolean_equality_output_bytes"].parse::<usize>().unwrap() > 0);
+    assert!(facts["expression_null_float64_literal_bytes"].parse::<usize>().unwrap() > 0);
+    assert!(facts["expression_copy_if_else_output_bytes"].parse::<usize>().unwrap() > 0);
+    assert!(output_bytes <= retained_preflight);
+    assert_eq!(report.output_bytes(), Some(output_bytes));
+    assert_eq!(outcome.value().series("derived_score").unwrap().null_count(), 1);
 }
 
 #[test]

@@ -206,6 +206,7 @@ mod agg;
 mod core;
 mod datetime;
 mod lit;
+mod preflight;
 mod strings;
 mod when;
 
@@ -216,6 +217,11 @@ pub use datetime::ExprDatetimeNamespace;
 pub use lit::{
     IntoLit, LitValue, lit, lit_decimal32_raw, lit_decimal64_raw, lit_decimal128_raw, lit_duration_raw, lit_null,
     lit_timestamp_raw,
+};
+pub use preflight::{
+    DATAFRAME_EXPRESSION_ALLOCATION_PREFLIGHT_CONTRACT, DataFrameExpressionAllocationPreflight,
+    DataFrameExpressionInputColumn, DataFrameExpressionPeakGroup,
+    dataframe_expression_allocation_preflight_for_metadata,
 };
 pub use strings::{ExprStringNamespace, StringOperator};
 pub use when::{ThenBuilder, WhenBuilder, when};

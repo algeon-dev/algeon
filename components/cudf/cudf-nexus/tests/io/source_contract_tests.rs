@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use cudf::{
     DataType, ErrorCode, TimestampResolution, TypeId,
@@ -9,7 +9,8 @@ use cudf::{
             remote_parquet_backend_build_status, remote_parquet_capability,
         },
         source::{
-            ByteRangeDisposition, LocalParquetFile, LocalParquetSource, LocalParquetSourceKind, PartitionColumn,
+            ByteRangeDisposition, LocalParquetFile, LocalParquetSource, LocalParquetSourceKind,
+            ParquetVariableWidthEncodingProof, ParquetVariableWidthPayloadEvidence, PartitionColumn,
             PartitionColumnDisposition, PartitionValue, PredicateDisposition, RejectedSourceFeature,
             SchemaMappingDisposition, SourceChunkPlanningPolicy, SourceColumn, SourceColumnRef, SourceColumnRole,
             SourceFormat, SourceOutputColumn, SourceRequiredColumn, SourceSchema, ZERO_COLUMN_COUNT_COLUMN,
@@ -81,6 +82,33 @@ fn data_source_derives_diagnostics_and_read_column_refs_are_decoded_ordinals() {
     assert_eq!(diagnostics.output_column_count(), 3);
     assert_eq!(diagnostics.pure_filter_column_count(), 1);
     assert!(diagnostics.rejected_features().is_empty());
+}
+
+#[test]
+fn empty_variable_width_payload_evidence_propagates_through_source_descriptor() {
+    let evidence = ParquetVariableWidthPayloadEvidence::new(1, Vec::new(), 0, ParquetVariableWidthEncodingProof::Empty);
+    let file = LocalParquetFile::new("empty.parquet", "empty", [])
+        .unwrap()
+        .with_row_groups(Some(Vec::new()))
+        .with_variable_width_payload_evidence(BTreeMap::from([(1, evidence.clone())]));
+    let source = LocalParquetSource::data(
+        [file],
+        SourceSchema::new([SourceColumn::new("payload", dtype(TypeId::String), true).unwrap()]).unwrap(),
+        ["payload"],
+        [SourceOutputColumn::new("payload", SourceColumnRef::ReadColumn(0)).unwrap()],
+        [],
+        [],
+    )
+    .unwrap();
+
+    let propagated = source.files()[0]
+        .variable_width_payload_evidence()
+        .get(&1)
+        .expect("empty variable-width evidence propagates through the source descriptor");
+    assert_eq!(propagated, &evidence);
+    assert!(propagated.selected_row_groups.is_empty());
+    assert_eq!(propagated.payload_upper_bound_bytes, 0);
+    assert_eq!(propagated.encoding_proof, ParquetVariableWidthEncodingProof::Empty);
 }
 
 #[test]

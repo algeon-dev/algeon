@@ -57,16 +57,19 @@ fn query_memory_manager_surface_is_publicly_importable() {
 #[test]
 fn join_indices_and_hash_join_slice6_surface_is_publicly_importable() {
     use cudf::{
-        DataFrame, DataFrameProjectedCrossJoinPlan,
+        DataFrame, DataFrameHashJoin, DataFrameProjectedCrossJoinPlan,
         ops::join::{
-            HashJoin, HashJoinOptions, JoinIndices, NullEquality, full_join_indices, full_join_indices_in,
-            inner_join_indices, inner_join_indices_in, left_join_indices, left_join_indices_in,
+            HashJoin, HashJoinAllocationPreflight, HashJoinKeyMetadata, HashJoinOptions, HashJoinPreprocessingMode,
+            HashJoinStringOffsetWidth, JoinIndices, NullEquality, full_join_indices, full_join_indices_in,
+            hash_join_allocation_preflight_for_metadata, inner_join_indices, inner_join_indices_in, left_join_indices,
+            left_join_indices_in,
         },
     };
 
     let _options = HashJoinOptions::new().null_equality(NullEquality::Equal);
     let _: Option<HashJoin> = None;
     let _: Option<JoinIndices> = None;
+    let _: Option<HashJoinAllocationPreflight> = None;
     let _: Option<DataFrameProjectedCrossJoinPlan> = None;
     let _ = (
         HashJoin::new,
@@ -94,6 +97,15 @@ fn join_indices_and_hash_join_slice6_surface_is_publicly_importable() {
         HashJoin::device_allocated_size_bytes,
     );
     let _ = DataFrame::hash_join_pre_build_reservation_size_bytes::<[&str; 1], &str>;
+    let _ = DataFrame::hash_join_allocation_preflight::<[&str; 1], &str>;
+    let _ = DataFrameHashJoin::allocation_preflight;
+    let _ = (
+        HashJoinKeyMetadata::fixed_width,
+        HashJoinKeyMetadata::string,
+        HashJoinStringOffsetWidth::I32,
+        HashJoinPreprocessingMode::for_keys,
+        hash_join_allocation_preflight_for_metadata,
+    );
     let _ = DataFrame::materialize_join_indices_reservation_size_bytes::<[&str; 1], &str>;
     let _ = DataFrame::projected_cross_join_plan;
     let _ = (
@@ -411,4 +423,17 @@ fn query_expression_surface_is_publicly_importable() {
     assert!(sort.stable());
     assert!(sort.expressions()[0].is_descending());
     assert!(sort.expressions()[0].nulls_first());
+}
+
+#[test]
+fn expression_allocation_preflight_surface_is_publicly_importable() {
+    use cudf::ops::expr::{
+        DataFrameExpressionAllocationPreflight, DataFrameExpressionInputColumn, DataFrameExpressionPeakGroup,
+        dataframe_expression_allocation_preflight_for_metadata,
+    };
+
+    let _: Option<DataFrameExpressionAllocationPreflight> = None;
+    let _: Option<DataFrameExpressionPeakGroup> = None;
+    let input = DataFrameExpressionInputColumn::new("value", cudf::DataType::new(cudf::TypeId::Int32), false, 4);
+    let _ = dataframe_expression_allocation_preflight_for_metadata(0, &[input], &[], false);
 }

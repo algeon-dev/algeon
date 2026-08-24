@@ -79,6 +79,7 @@ pub use diagnostics::{
 };
 pub use local_parquet::{
     LocalParquetFile, LocalParquetSource, LocalParquetSourceKind, ParquetReaderDecimalType, ParquetSourceLocation,
+    ParquetVariableWidthEncodingProof, ParquetVariableWidthPayloadEvidence,
 };
 pub use partition::{PartitionColumn, PartitionValue};
 pub use predicate::{

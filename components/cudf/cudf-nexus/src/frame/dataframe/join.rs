@@ -6,7 +6,7 @@ use crate::{
     frame::{dataframe::DataFrame, series::Series},
     ops::join::{
         ConditionalFullJoinSizeData, FilteredJoin, FilteredJoinOptions, FilteredJoinProbeState, HashJoin,
-        HashJoinOptions, MixedJoinSizeData, MixedSingleSideJoinSizeData, NullableJoin,
+        HashJoinAllocationPreflight, HashJoinOptions, MixedJoinSizeData, MixedSingleSideJoinSizeData, NullableJoin,
     },
     runtime::ExecutionPlacement,
 };
@@ -779,6 +779,7 @@ pub struct DataFrameHashJoin {
     pub(crate) build: DataFrame,
     pub(crate) build_keys: Vec<String>,
     pub(crate) options: DataFrameHashJoinOptions,
+    pub(crate) allocation_preflight: HashJoinAllocationPreflight,
 }
 
 /// Reusable DataFrame-level filtered-join build artifact for equality left
@@ -862,6 +863,11 @@ impl DataFrameHashJoin {
     /// Returns the options used to construct this artifact.
     pub fn options(&self) -> DataFrameHashJoinOptions {
         self.options
+    }
+
+    /// Returns the componentized owner preflight consumed before this artifact was built.
+    pub fn allocation_preflight(&self) -> &HashJoinAllocationPreflight {
+        &self.allocation_preflight
     }
 
     /// Returns bytes retained by this reusable hash-join build artifact.

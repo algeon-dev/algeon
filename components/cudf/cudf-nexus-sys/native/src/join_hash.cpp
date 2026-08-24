@@ -1,6 +1,130 @@
 #include "join_common.hpp"
 
+#include <cudf/column/column_device_view.cuh>
+
+#include <algorithm>
+#include <bit>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <stdexcept>
+
 using namespace cudf_rust::join;
+
+namespace {
+std::size_t checked_metadata_add(std::size_t lhs, std::size_t rhs)
+{
+  CUDF_EXPECTS(lhs <= std::numeric_limits<std::size_t>::max() - rhs,
+               "hash join metadata-only owner preflight size overflow",
+               std::overflow_error);
+  return lhs + rhs;
+}
+
+std::size_t checked_metadata_mul(std::size_t lhs, std::size_t rhs)
+{
+  CUDF_EXPECTS(rhs == 0 || lhs <= std::numeric_limits<std::size_t>::max() / rhs,
+               "hash join metadata-only owner preflight size overflow",
+               std::overflow_error);
+  return lhs * rhs;
+}
+
+std::uint64_t metadata_mod_mul(std::uint64_t lhs, std::uint64_t rhs, std::uint64_t modulus)
+{
+#if defined(__SIZEOF_INT128__)
+  return static_cast<std::uint64_t>((static_cast<unsigned __int128>(lhs) * rhs) % modulus);
+#else
+  std::uint64_t result = 0;
+  lhs %= modulus;
+  while (rhs != 0) {
+    if ((rhs & 1) != 0) {
+      result = result >= modulus - lhs ? result - (modulus - lhs) : result + lhs;
+    }
+    lhs = lhs >= modulus - lhs ? lhs - (modulus - lhs) : lhs + lhs;
+    rhs >>= 1;
+  }
+  return result;
+#endif
+}
+
+std::uint64_t metadata_mod_pow(std::uint64_t base, std::uint64_t exponent, std::uint64_t modulus)
+{
+  std::uint64_t result = 1;
+  base %= modulus;
+  while (exponent != 0) {
+    if ((exponent & 1) != 0) { result = metadata_mod_mul(result, base, modulus); }
+    base = metadata_mod_mul(base, base, modulus);
+    exponent >>= 1;
+  }
+  return result;
+}
+
+bool metadata_miller_rabin_test(std::uint64_t value,
+                                std::uint64_t witness,
+                                std::uint64_t odd_factor,
+                                std::uint32_t powers_of_two)
+{
+  auto residue = metadata_mod_pow(witness % value, odd_factor, value);
+  if (residue == 1 || residue == value - 1) { return true; }
+  for (std::uint32_t power = 1; power < powers_of_two; ++power) {
+    residue = metadata_mod_mul(residue, residue, value);
+    if (residue == value - 1) { return true; }
+  }
+  return false;
+}
+
+bool metadata_is_prime(std::uint64_t value)
+{
+  if (value < 2) { return false; }
+  for (auto const small_prime :
+       {2ULL, 3ULL, 5ULL, 7ULL, 11ULL, 13ULL, 17ULL, 19ULL, 23ULL, 29ULL, 31ULL, 37ULL}) {
+    if (value % small_prime == 0) { return value == small_prime; }
+  }
+
+  auto odd_factor             = value - 1;
+  std::uint32_t powers_of_two = 0;
+  while ((odd_factor & 1) == 0) {
+    odd_factor >>= 1;
+    ++powers_of_two;
+  }
+  for (auto const witness :
+       {2ULL, 325ULL, 9375ULL, 28178ULL, 450775ULL, 9780504ULL, 1795265022ULL}) {
+    if (!metadata_miller_rabin_test(value, witness, odd_factor, powers_of_two)) { return false; }
+  }
+  return true;
+}
+
+std::uint64_t metadata_next_prime(std::uint64_t value)
+{
+  if (value <= 2) { return 2; }
+  value |= 1;
+  while (!metadata_is_prime(value)) {
+    CUDF_EXPECTS(value <= std::numeric_limits<std::uint64_t>::max() - 2,
+                 "hash join metadata-only owner preflight prime capacity overflow",
+                 std::overflow_error);
+    value += 2;
+  }
+  return value;
+}
+
+std::size_t hash_join_slot_storage_reservation_size(cudf::size_type rows, double load_factor)
+{
+  constexpr auto slot_bytes   = sizeof(cudf::hash_value_type) + sizeof(cudf::size_type);
+  constexpr auto stride       = std::size_t{2} * 2;
+  auto const requested_double = std::ceil(static_cast<double>(rows) / load_factor);
+  CUDF_EXPECTS(std::isfinite(requested_double) &&
+                 requested_double < static_cast<double>(std::numeric_limits<std::size_t>::max()),
+               "hash join metadata-only owner preflight capacity overflow",
+               std::overflow_error);
+  auto const requested     = static_cast<std::size_t>(requested_double);
+  auto const minimum_slots = std::max<std::size_t>(requested, 1);
+  auto const size          = minimum_slots / stride + (minimum_slots % stride != 0);
+  auto const capacity_slots =
+    checked_metadata_mul(static_cast<std::size_t>(metadata_next_prime(size)), stride);
+  constexpr auto alignment   = std::min(std::bit_ceil(slot_bytes * 2), std::size_t{16});
+  constexpr auto extra_slots = (alignment - 1) / slot_bytes + 1;
+  return checked_metadata_mul(checked_metadata_add(capacity_slots, extra_slots), slot_bytes);
+}
+}  // namespace
 
 extern "C" {
 cudf_status_t cudf_inner_join_ex(cudf_table_view_handle left_keys,
@@ -551,6 +675,40 @@ cudf_status_t cudf_hash_join_pre_build_reservation_size_ex(cudf_table_view_handl
     auto* build_view = reinterpret_cast<cudf::table_view*>(build);
     *out             = cudf::hash_join::pre_build_reservation_size(
       *build_view, load_factor, exec->stream, *exec->mr);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_hash_join_metadata_only_owner_preflight_ex(
+  size_t rows,
+  double load_factor,
+  size_t flat_device_view_count,
+  size_t* hash_table_storage_bytes,
+  size_t* retained_key_view_storage_bytes)
+{
+  CUDF_RUST_NULL_CHECK(hash_table_storage_bytes, "hash_table_storage_bytes is null");
+  *hash_table_storage_bytes = 0;
+  CUDF_RUST_NULL_CHECK(retained_key_view_storage_bytes, "retained_key_view_storage_bytes is null");
+  *retained_key_view_storage_bytes = 0;
+  CUDF_RUST_TRY
+  {
+    CUDF_EXPECTS(rows <= static_cast<size_t>(std::numeric_limits<cudf::size_type>::max()),
+                 "hash join metadata-only owner preflight row count exceeds "
+                 "cudf::size_type",
+                 std::overflow_error);
+    CUDF_EXPECTS(load_factor > 0 && load_factor <= 1,
+                 "Invalid load factor: must be greater than 0 and less than or "
+                 "equal to 1.",
+                 std::invalid_argument);
+
+    auto const rows_i32         = static_cast<cudf::size_type>(rows);
+    auto const hash_table_bytes = hash_join_slot_storage_reservation_size(rows_i32, load_factor);
+    auto const key_view_bytes   = checked_metadata_add(
+      checked_metadata_mul(flat_device_view_count, sizeof(cudf::column_device_view)),
+      alignof(cudf::column_device_view) - 1);
+    *hash_table_storage_bytes        = hash_table_bytes;
+    *retained_key_view_storage_bytes = key_view_bytes;
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

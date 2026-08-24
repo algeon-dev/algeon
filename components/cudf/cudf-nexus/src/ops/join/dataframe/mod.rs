@@ -4,6 +4,7 @@ use crate::{
     core::{
         column::Column,
         error::{Error, ErrorCode, FACT_KEYS_COUNT, FACT_LEFT_TYPE_ID, FACT_RIGHT_TYPE_ID, Result},
+        types::TypeId,
     },
     frame::{
         dataframe::{
@@ -12,7 +13,8 @@ use crate::{
             DataFrameHashJoinMaterialized, DataFrameHashJoinOptions, DataFrameHashJoinPairIndices,
             DataFrameJoinIndices, DataFrameJoinOptions, DataFrameJoinPairIndices, DataFrameJoinSides,
             DataFrameMixedJoinOptions, DataFrameMixedJoinSizeData, DataFrameMixedSingleSideJoinSizeData,
-            DataFramePredicateJoinOptions, DataFrameProjectedCrossJoinPlan, derive_frame_domain_from_columns,
+            DataFramePredicateJoinOptions, DataFrameProjectedCrossJoinPlan, InfoDetail,
+            derive_frame_domain_from_columns,
         },
         series::Series,
     },

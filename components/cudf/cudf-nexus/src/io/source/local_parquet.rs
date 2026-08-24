@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use super::*;
 
 /// Explicit Parquet source location represented by the checked source
@@ -702,6 +704,44 @@ impl LocalParquetSourceKind {
     }
 }
 
+/// Footer proof for the value encoding family used by a variable-width column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ParquetVariableWidthEncodingProof {
+    /// No row group is selected, so the payload is exactly zero bytes.
+    Empty,
+    /// Every selected chunk has a PLAIN value encoding.
+    Plain,
+    /// Every selected chunk has a dictionary-family value encoding.
+    Dictionary,
+    /// The selected chunks use both PLAIN and dictionary-family encodings.
+    PlainAndDictionary,
+}
+
+/// Source-coupled upper bound for one variable-width Parquet file column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParquetVariableWidthPayloadEvidence {
+    /// Zero-based physical root-column index in the Parquet file schema.
+    pub physical_column_index: usize,
+    /// Exact physical row-group IDs included in this bound.
+    pub selected_row_groups: Vec<usize>,
+    /// Checked sum of selected column-chunk uncompressed sizes.
+    pub payload_upper_bound_bytes: u64,
+    /// Encoding-family proof established from every selected column chunk.
+    pub encoding_proof: ParquetVariableWidthEncodingProof,
+}
+
+impl ParquetVariableWidthPayloadEvidence {
+    /// Creates one source-coupled payload fact.
+    pub fn new(
+        physical_column_index: usize,
+        selected_row_groups: Vec<usize>,
+        payload_upper_bound_bytes: u64,
+        encoding_proof: ParquetVariableWidthEncodingProof,
+    ) -> Self {
+        Self { physical_column_index, selected_row_groups, payload_upper_bound_bytes, encoding_proof }
+    }
+}
+
 /// File-local facts for a local Parquet source.
 #[derive(Debug, Clone, PartialEq)]
 pub struct LocalParquetFile {
@@ -716,6 +756,7 @@ pub struct LocalParquetFile {
     pub(super) pure_filter_row_group_compressed_bytes: Option<Vec<u64>>,
     pub(super) pure_filter_row_group_uncompressed_bytes: Option<Vec<u64>>,
     pub(super) row_group_rows: Option<Vec<u64>>,
+    pub(super) variable_width_payload_evidence: BTreeMap<usize, ParquetVariableWidthPayloadEvidence>,
     pub(super) reader_decimal_types: Vec<ParquetReaderDecimalType>,
     pub(super) partition_values: Vec<PartitionValue>,
 }
@@ -785,6 +826,7 @@ impl LocalParquetFile {
             pure_filter_row_group_compressed_bytes: None,
             pure_filter_row_group_uncompressed_bytes: None,
             row_group_rows: None,
+            variable_width_payload_evidence: BTreeMap::new(),
             reader_decimal_types: Vec::new(),
             partition_values: partition_values.into_iter().collect(),
         })
@@ -822,6 +864,7 @@ impl LocalParquetFile {
             pure_filter_row_group_compressed_bytes: None,
             pure_filter_row_group_uncompressed_bytes: None,
             row_group_rows: None,
+            variable_width_payload_evidence: BTreeMap::new(),
             reader_decimal_types: Vec::new(),
             partition_values: partition_values.into_iter().collect(),
         })
@@ -934,6 +977,15 @@ impl LocalParquetFile {
         Ok(self)
     }
 
+    /// Attach footer-proven variable-width payload bounds keyed by physical root-column index.
+    pub fn with_variable_width_payload_evidence(
+        mut self,
+        evidence: BTreeMap<usize, ParquetVariableWidthPayloadEvidence>,
+    ) -> Self {
+        self.variable_width_payload_evidence = evidence;
+        self
+    }
+
     /// Attach per-read-column decimal storage types proven from Parquet metadata.
     pub fn with_reader_decimal_types<I>(mut self, reader_decimal_types: I) -> Result<Self>
     where I: IntoIterator<Item = ParquetReaderDecimalType> {
@@ -989,6 +1041,11 @@ impl LocalParquetFile {
     /// Pure-filter uncompressed byte metadata, if supplied.
     pub fn pure_filter_row_group_uncompressed_bytes(&self) -> Option<&[u64]> {
         self.pure_filter_row_group_uncompressed_bytes.as_deref()
+    }
+
+    /// Footer-proven variable-width payload bounds keyed by physical root-column index.
+    pub fn variable_width_payload_evidence(&self) -> &BTreeMap<usize, ParquetVariableWidthPayloadEvidence> {
+        &self.variable_width_payload_evidence
     }
 
     /// Row-group row-count metadata, if supplied.

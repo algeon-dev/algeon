@@ -58,6 +58,30 @@ where S: Into<String>
     }
 }
 
+fn resolve_with_column_exprs<I, T>(exprs: I, operation: &'static str) -> Result<Vec<(String, ops::expr::Expr)>>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<WithColumnExpr>,
+{
+    exprs
+        .into_iter()
+        .map(|expr| {
+            let (explicit_name, expr) = expr.into().into_parts();
+            let name = explicit_name.as_deref().or_else(|| expr.output_name()).ok_or_else(|| {
+                Error::new_with(
+                    ErrorCode::UnsupportedOperation,
+                    operation,
+                    "expression has no output name; use .alias() to name it",
+                )
+                .with_detail("resource", "output_name")
+                .with_detail("reason", "missing_output_name")
+                .with_detail("remedy", "use .alias(...) or provide an explicit (name, expr) pair")
+            })?;
+            Ok((name.to_string(), expr))
+        })
+        .collect()
+}
+
 impl DataFrame {
     /// Return a new DataFrame with a single column added or replaced.
     ///
@@ -245,16 +269,67 @@ impl DataFrame {
     {
         let operation = "dataframe::with_columns_with_budget";
         let ctx = token.execution_overrides();
+        let exprs = resolve_with_column_exprs(exprs, operation)?;
+        let output_domain = ctx.resolve_output_domain(self.execution_domain())?;
+        let relocation_required = !ExecutionDomain::same_provenance(self.execution_domain(), &output_domain);
+        let input_columns = self.expression_preflight_input_columns(operation)?;
+        let preflight = ops::expr::dataframe_expression_allocation_preflight_for_metadata(
+            self.num_rows(),
+            &input_columns,
+            &exprs,
+            relocation_required,
+        );
         let output = self
-            .with_columns_in_context(exprs, &ctx, operation)
+            .with_resolved_columns_in_context(&exprs, &ctx, operation)
             .map_err(|error| annotate_dataframe_budget_execution_error(error, token, operation))?;
         let output_bytes = output.device_allocated_size_bytes().map_err(|error| error.reanchor_if_needed(operation))?;
-        let report = token
+        let mut report = token
             .reservation_enforced_report()
             .with_retained_bytes(output_bytes)
             .with_output_bytes(output_bytes)
-            .with_output_rows(output.num_rows())
-            .with_unresolved_contract(DATAFRAME_EXPRESSION_TEMPORARY_WORKSPACE_AND_RELOCATION_CONTRACT_GAP);
+            .with_output_rows(output.num_rows());
+        match preflight {
+            Ok(preflight) => {
+                if output_bytes > preflight.output_dataframe_retained_bytes() {
+                    return Err(annotate_dataframe_budget_execution_error(
+                        Error::new_with(
+                            ErrorCode::ForeignInvariantViolation,
+                            operation,
+                            "expression output exceeded its metadata allocation preflight",
+                        )
+                        .with_detail("resource", "output_dataframe_retained_bytes")
+                        .with_detail("reason", "runtime_output_exceeded_preflight")
+                        .with_detail("preflight_bytes", preflight.output_dataframe_retained_bytes().to_string())
+                        .with_detail("actual_bytes", output_bytes.to_string()),
+                        token,
+                        operation,
+                    ));
+                }
+                report = report.with_context_facts([
+                    (
+                        "expression_preflight_contract",
+                        ops::expr::DATAFRAME_EXPRESSION_ALLOCATION_PREFLIGHT_CONTRACT.to_string(),
+                    ),
+                    ("expression_boolean_equality_output_bytes", preflight.boolean_equality_output_bytes().to_string()),
+                    ("expression_null_float64_literal_bytes", preflight.null_float64_literal_bytes().to_string()),
+                    ("expression_copy_if_else_output_bytes", preflight.copy_if_else_output_bytes().to_string()),
+                    (
+                        "expression_output_dataframe_retained_preflight_bytes",
+                        preflight.output_dataframe_retained_bytes().to_string(),
+                    ),
+                    (
+                        "expression_unchanged_column_relocation_bytes",
+                        preflight.unchanged_column_relocation_bytes().to_string(),
+                    ),
+                    ("expression_active_phase_peak_bytes", preflight.active_phase_peak_bytes().to_string()),
+                ]);
+            },
+            Err(error) if error.code() == ErrorCode::UnsupportedOperation => {
+                report = report
+                    .with_unresolved_contract(DATAFRAME_EXPRESSION_TEMPORARY_WORKSPACE_AND_RELOCATION_CONTRACT_GAP);
+            },
+            Err(error) => return Err(annotate_dataframe_budget_execution_error(error, token, operation)),
+        }
 
         Ok(BudgetedExecutionOutcome::new(output, report))
     }
@@ -269,28 +344,42 @@ impl DataFrame {
         I: IntoIterator<Item = T>,
         T: Into<WithColumnExpr>,
     {
-        let exprs: Vec<(Option<String>, ops::expr::Expr)> =
-            exprs.into_iter().map(|expr| expr.into().into_parts()).collect();
+        let exprs = resolve_with_column_exprs(exprs, operation)?;
+        self.with_resolved_columns_in_context(&exprs, ctx, operation)
+    }
 
-        let names: Vec<String> = exprs
-            .iter()
-            .map(|(explicit_name, expr)| {
-                explicit_name.as_deref().or_else(|| expr.output_name()).map(str::to_string).ok_or_else(|| {
-                    Error::new_with(
-                        ErrorCode::UnsupportedOperation,
-                        operation,
-                        "expression has no output name; use .alias() to name it",
-                    )
-                    .with_detail("resource", "output_name")
-                    .with_detail("reason", "missing_output_name")
-                    .with_detail("remedy", "use .alias(...) or provide an explicit (name, expr) pair")
-                })
-            })
-            .collect::<Result<_>>()?;
-
+    fn with_resolved_columns_in_context(
+        &self,
+        exprs: &[(String, ops::expr::Expr)],
+        ctx: &ExecutionOverrides<'_>,
+        operation: &'static str,
+    ) -> Result<Self> {
         let (output_domain, results) =
             ops::expr::eval_many_in_context(self, ctx, operation, exprs.iter().map(|(_, expr)| expr))?;
-        self.assemble_with_columns_in_domain(names, results, output_domain, operation)
+        self.assemble_with_columns_in_domain(
+            exprs.iter().map(|(name, _)| name.clone()).collect(),
+            results,
+            output_domain,
+            operation,
+        )
+    }
+
+    fn expression_preflight_input_columns(
+        &self,
+        operation: &'static str,
+    ) -> Result<Vec<ops::expr::DataFrameExpressionInputColumn>> {
+        self.columns
+            .iter()
+            .map(|(name, column)| {
+                let view = column.view().map_err(|error| error.reanchor_if_needed(operation))?;
+                Ok(ops::expr::DataFrameExpressionInputColumn::new(
+                    name,
+                    view.data_type().map_err(|error| error.reanchor_if_needed(operation))?,
+                    view.nullable().map_err(|error| error.reanchor_if_needed(operation))?,
+                    column.device_allocated_size_bytes().map_err(|error| error.reanchor_if_needed(operation))?,
+                ))
+            })
+            .collect()
     }
 
     fn assemble_with_columns_in_domain(
