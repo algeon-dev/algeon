@@ -2,7 +2,7 @@ use std::{collections::BTreeSet, time::Duration};
 
 use datafusion_nexus::{
     backend::NexusGpuBackend,
-    planner::{FinalPlanRequirement, NexusNativeOptimizerConfig},
+    planner::{DataFusionCpuExecutionPolicy, NexusNativeOptimizerConfig},
 };
 
 use super::*;
@@ -150,7 +150,7 @@ impl NativeTpchBenchmarkConfig {
             },
             self.max_source_reads_in_flight,
             1,
-            Some(FinalPlanRequirement::NoDataFusionCpu),
+            DataFusionCpuExecutionPolicy::Reject,
         )
         .map_err(|error| DataFusionError::External(Box::new(error)))?;
         Ok(NativeTpchRuntimeResources { backend: Some(backend) })

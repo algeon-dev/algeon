@@ -113,26 +113,44 @@ impl fmt::Debug for GpuMemoryFraction {
     }
 }
 
+/// Explicit installation limits for one device profile.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct GpuBackendDeviceInstallationBounds {
+    pub stream_pool_size: usize,
+    pub worker_count: usize,
+    pub lane_count: usize,
+}
+
+impl GpuBackendDeviceInstallationBounds {
+    /// Creates explicit stream, worker, and execution-lane bounds.
+    pub const fn new(stream_pool_size: usize, worker_count: usize, lane_count: usize) -> Self {
+        Self { stream_pool_size, worker_count, lane_count }
+    }
+}
+
 /// Pure per-device construction profile validated before owner acquisition.
+///
+/// This is the sole owner of device-local resource policy and defaults:
+/// capacity, reserve, floor, active-attempt count, source work, installation
+/// bounds, capabilities, and telemetry. It takes no memory ownership; the
+/// deployment owner binds one profile with an explicit [`GpuMemoryOwnership`]
+/// through [`GpuBackendDeviceConfig::new`].
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GpuBackendDeviceConfig {
+pub struct GpuBackendDeviceProfile {
     device_ordinal: usize,
     device_capabilities: DeviceCapabilities,
-    memory_ownership: GpuMemoryOwnership,
     memory_limit: GpuDeviceMemoryLimit,
     backend_reserve_bytes: u64,
     cache_cap_bytes: u64,
     attempt_floor_bytes: Option<u64>,
     source_work_per_attempt: usize,
     max_active_attempts: usize,
-    stream_pool_size: usize,
-    worker_count: usize,
-    lane_count: usize,
-    installation_bounds_set: bool,
+    installation_bounds: Option<GpuBackendDeviceInstallationBounds>,
     install_telemetry: bool,
 }
 
-impl GpuBackendDeviceConfig {
+impl GpuBackendDeviceProfile {
     /// Absence asks the engine to derive the immutable floor from the
     /// installed device's managed capacity and active-attempt limit.
     pub const DEFAULT_ATTEMPT_FLOOR_BYTES: Option<u64> = None;
@@ -143,21 +161,19 @@ impl GpuBackendDeviceConfig {
     /// explicitly freezes a different per-device limit.
     pub const DEFAULT_MAX_ACTIVE_ATTEMPTS: usize = 1;
 
-    pub fn new(device_ordinal: usize, memory_ownership: GpuMemoryOwnership) -> Self {
+    /// Starts a profile with automatic capacity discovery and one active
+    /// attempt. Callers may override any device-local bound below.
+    pub fn new(device_ordinal: usize) -> Self {
         Self {
             device_ordinal,
             device_capabilities: DeviceCapabilities::default(),
-            memory_ownership,
             memory_limit: GpuDeviceMemoryLimit::default(),
             backend_reserve_bytes: 0,
             cache_cap_bytes: 0,
             attempt_floor_bytes: Self::DEFAULT_ATTEMPT_FLOOR_BYTES,
             source_work_per_attempt: Self::DEFAULT_SOURCE_WORK_PER_ATTEMPT,
             max_active_attempts: Self::DEFAULT_MAX_ACTIVE_ATTEMPTS,
-            stream_pool_size: 1,
-            worker_count: 1,
-            lane_count: 1,
-            installation_bounds_set: false,
+            installation_bounds: None,
             install_telemetry: true,
         }
     }
@@ -215,11 +231,8 @@ impl GpuBackendDeviceConfig {
         self
     }
 
-    pub fn with_installation_bounds(mut self, stream_pool_size: usize, worker_count: usize, lane_count: usize) -> Self {
-        self.stream_pool_size = stream_pool_size;
-        self.worker_count = worker_count;
-        self.lane_count = lane_count;
-        self.installation_bounds_set = true;
+    pub fn with_installation_bounds(mut self, installation_bounds: GpuBackendDeviceInstallationBounds) -> Self {
+        self.installation_bounds = Some(installation_bounds);
         self
     }
 
@@ -235,10 +248,6 @@ impl GpuBackendDeviceConfig {
     /// Immutable native execution capabilities selected for this device.
     pub fn device_capabilities(&self) -> &DeviceCapabilities {
         &self.device_capabilities
-    }
-
-    pub fn memory_ownership(&self) -> GpuMemoryOwnership {
-        self.memory_ownership
     }
 
     pub fn memory_limit(&self) -> GpuDeviceMemoryLimit {
@@ -261,6 +270,80 @@ impl GpuBackendDeviceConfig {
         self.max_active_attempts
     }
 
+    pub fn installation_bounds(&self) -> Option<GpuBackendDeviceInstallationBounds> {
+        self.installation_bounds
+    }
+
+    pub fn install_telemetry(&self) -> bool {
+        self.install_telemetry
+    }
+}
+
+/// Pure per-device construction value binding a profile to deployment ownership.
+///
+/// The profile owns every device-local default; this value only completes the
+/// binding with the process owner's explicit [`GpuMemoryOwnership`]. Backend
+/// construction resolves installation bounds and validates the bound value.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GpuBackendDeviceConfig {
+    profile: GpuBackendDeviceProfile,
+    memory_ownership: GpuMemoryOwnership,
+    stream_pool_size: usize,
+    worker_count: usize,
+    lane_count: usize,
+    installation_bounds_set: bool,
+}
+
+impl GpuBackendDeviceConfig {
+    pub fn new(profile: GpuBackendDeviceProfile, memory_ownership: GpuMemoryOwnership) -> Self {
+        let (stream_pool_size, worker_count, lane_count, installation_bounds_set) = match profile.installation_bounds {
+            Some(bounds) => (bounds.stream_pool_size, bounds.worker_count, bounds.lane_count, true),
+            None => (1, 1, 1, false),
+        };
+        Self { profile, memory_ownership, stream_pool_size, worker_count, lane_count, installation_bounds_set }
+    }
+
+    pub fn profile(&self) -> &GpuBackendDeviceProfile {
+        &self.profile
+    }
+
+    pub fn device_ordinal(&self) -> usize {
+        self.profile.device_ordinal
+    }
+
+    /// Immutable native execution capabilities selected for this device.
+    pub fn device_capabilities(&self) -> &DeviceCapabilities {
+        &self.profile.device_capabilities
+    }
+
+    pub fn memory_ownership(&self) -> GpuMemoryOwnership {
+        self.memory_ownership
+    }
+
+    pub fn memory_limit(&self) -> GpuDeviceMemoryLimit {
+        self.profile.memory_limit
+    }
+
+    pub fn backend_reserve_bytes(&self) -> u64 {
+        self.profile.backend_reserve_bytes
+    }
+
+    pub fn cache_cap_bytes(&self) -> u64 {
+        self.profile.cache_cap_bytes
+    }
+
+    pub fn attempt_floor_bytes(&self) -> Option<u64> {
+        self.profile.attempt_floor_bytes
+    }
+
+    pub fn source_work_per_attempt(&self) -> usize {
+        self.profile.source_work_per_attempt
+    }
+
+    pub fn max_active_attempts(&self) -> usize {
+        self.profile.max_active_attempts
+    }
+
     pub fn stream_pool_size(&self) -> usize {
         self.stream_pool_size
     }
@@ -274,7 +357,7 @@ impl GpuBackendDeviceConfig {
     }
 
     pub fn install_telemetry(&self) -> bool {
-        self.install_telemetry
+        self.profile.install_telemetry
     }
 }
 
@@ -345,7 +428,7 @@ impl GpuBackendCoreDraft {
 
     pub fn derived_global_max_active_attempts(&self) -> Result<usize> {
         self.devices.iter().try_fold(0usize, |sum, device| {
-            sum.checked_add(device.max_active_attempts).ok_or_else(|| {
+            sum.checked_add(device.profile.max_active_attempts).ok_or_else(|| {
                 invalid_config("max_active_attempts", "derived global maximum overflowed")
                     .with_fact("reason", "derived_global_max_overflow")
             })
@@ -360,44 +443,44 @@ impl GpuBackendCoreDraft {
     #[doc(hidden)]
     pub fn normalize_installation_bounds(&mut self) -> Result<()> {
         for device in &mut self.devices {
-            let source_work = device.source_work_per_attempt;
-            let aux = device.max_active_attempts.checked_mul(source_work).ok_or_else(|| {
-                invalid_device_config(device.device_ordinal, "source_work_per_attempt", "overflowed")
+            let source_work = device.profile.source_work_per_attempt;
+            let aux = device.profile.max_active_attempts.checked_mul(source_work).ok_or_else(|| {
+                invalid_device_config(device.profile.device_ordinal, "source_work_per_attempt", "overflowed")
                     .with_fact("reason", "aux_source_work_overflow")
             })?;
-            let required = device.max_active_attempts.checked_add(aux).ok_or_else(|| {
-                invalid_device_config(device.device_ordinal, "stream_pool_size", "overflowed")
+            let required = device.profile.max_active_attempts.checked_add(aux).ok_or_else(|| {
+                invalid_device_config(device.profile.device_ordinal, "stream_pool_size", "overflowed")
                     .with_fact("reason", "required_slot_overflow")
             })?;
             if device.installation_bounds_set {
                 if device.stream_pool_size < required {
                     return Err(invalid_device_config(
-                        device.device_ordinal,
+                        device.profile.device_ordinal,
                         "stream_pool_size",
                         "must cover root and auxiliary source work for every active attempt",
                     )
                     .with_fact("reason", "stream_pool_below_required_formula")
                     .with_fact("stream_pool_size", device.stream_pool_size)
                     .with_fact("required_slot_capacity", required)
-                    .with_fact("max_active_attempts", device.max_active_attempts)
+                    .with_fact("max_active_attempts", device.profile.max_active_attempts)
                     .with_fact("source_work_per_attempt", source_work));
                 }
             } else {
                 device.stream_pool_size = required;
-                device.lane_count = device.max_active_attempts;
+                device.lane_count = device.profile.max_active_attempts;
                 // One root worker scope exists for every concurrently
                 // admitted attempt. Auxiliary work remains bounded by its
                 // class permits and stream slots; leaving the constructor's
                 // single-worker default here would make a public `A_d > 1`
                 // profile fail validation after automatic derivation.
-                device.worker_count = device.max_active_attempts;
+                device.worker_count = device.profile.max_active_attempts;
             }
         }
         Ok(())
     }
 
     pub fn validate(&self) -> Result<()> {
-        let ordinals = self.devices.iter().map(|device| device.device_ordinal).collect::<Vec<_>>();
+        let ordinals = self.devices.iter().map(|device| device.profile.device_ordinal).collect::<Vec<_>>();
         normalize_device_ordinals(&ordinals)?;
         for device in &self.devices {
             validate_device_config(device)?;
@@ -421,49 +504,55 @@ fn validate_controller_draft(controller: &GpuBackendControllerDraft, ordinals: &
 
 fn validate_device_config(device: &GpuBackendDeviceConfig) -> Result<()> {
     for (field, value) in [
-        ("max_active_attempts", device.max_active_attempts),
-        ("source_work_per_attempt", device.source_work_per_attempt),
+        ("max_active_attempts", device.profile.max_active_attempts),
+        ("source_work_per_attempt", device.profile.source_work_per_attempt),
         ("stream_pool_size", device.stream_pool_size),
         ("worker_count", device.worker_count),
         ("lane_count", device.lane_count),
     ] {
         if value == 0 {
-            return Err(invalid_device_config(device.device_ordinal, field, "must be greater than zero")
+            return Err(invalid_device_config(device.profile.device_ordinal, field, "must be greater than zero")
                 .with_fact("reason", "zero"));
         }
     }
-    if device.attempt_floor_bytes == Some(0) {
-        return Err(invalid_device_config(device.device_ordinal, "attempt_floor_bytes", "must be greater than zero")
-            .with_fact("reason", "zero"));
+    if device.profile.attempt_floor_bytes == Some(0) {
+        return Err(invalid_device_config(
+            device.profile.device_ordinal,
+            "attempt_floor_bytes",
+            "must be greater than zero",
+        )
+        .with_fact("reason", "zero"));
     }
     for (field, value) in [
         ("stream_pool_size", device.stream_pool_size),
         ("worker_count", device.worker_count),
         ("lane_count", device.lane_count),
     ] {
-        if value < device.max_active_attempts {
+        if value < device.profile.max_active_attempts {
             return Err(invalid_device_config(
-                device.device_ordinal,
+                device.profile.device_ordinal,
                 field,
                 "must cover every configured active query slot",
             )
             .with_fact("reason", "installation_bound_below_active_limit")
             .with_fact("installation_bound", value)
-            .with_fact("max_active_attempts", device.max_active_attempts));
+            .with_fact("max_active_attempts", device.profile.max_active_attempts));
         }
     }
-    match device.memory_limit {
+    match device.profile.memory_limit {
         GpuDeviceMemoryLimit::Automatic { fallback_bytes: 0, .. } => {
             return Err(invalid_device_config(
-                device.device_ordinal,
+                device.profile.device_ordinal,
                 "memory_limit.fallback_bytes",
                 "must be greater than zero",
             )
             .with_fact("reason", "zero"));
         },
-        GpuDeviceMemoryLimit::Automatic { fallback_bytes, .. } if device.backend_reserve_bytes >= fallback_bytes => {
+        GpuDeviceMemoryLimit::Automatic { fallback_bytes, .. }
+            if device.profile.backend_reserve_bytes >= fallback_bytes =>
+        {
             return Err(invalid_device_config(
-                device.device_ordinal,
+                device.profile.device_ordinal,
                 "backend_reserve_bytes",
                 "must be below the automatic fallback capacity",
             )
@@ -472,15 +561,15 @@ fn validate_device_config(device: &GpuBackendDeviceConfig) -> Result<()> {
         },
         GpuDeviceMemoryLimit::Explicit { limit_bytes: 0 } => {
             return Err(invalid_device_config(
-                device.device_ordinal,
+                device.profile.device_ordinal,
                 "memory_limit.limit_bytes",
                 "must be greater than zero",
             )
             .with_fact("reason", "zero"));
         },
-        GpuDeviceMemoryLimit::Explicit { limit_bytes } if device.backend_reserve_bytes >= limit_bytes => {
+        GpuDeviceMemoryLimit::Explicit { limit_bytes } if device.profile.backend_reserve_bytes >= limit_bytes => {
             return Err(invalid_device_config(
-                device.device_ordinal,
+                device.profile.device_ordinal,
                 "backend_reserve_bytes",
                 "must be below the explicit device memory limit",
             )
@@ -492,27 +581,27 @@ fn validate_device_config(device: &GpuBackendDeviceConfig) -> Result<()> {
     if let GpuMemoryOwnership::StaticPartition { allocation_limit_bytes } = device.memory_ownership {
         if allocation_limit_bytes == 0 {
             return Err(invalid_device_config(
-                device.device_ordinal,
+                device.profile.device_ordinal,
                 "memory_ownership.allocation_limit_bytes",
                 "must be greater than zero",
             )
             .with_fact("reason", "zero"));
         }
         native_allocation_limit_bytes(device)?;
-        if device.backend_reserve_bytes >= allocation_limit_bytes {
+        if device.profile.backend_reserve_bytes >= allocation_limit_bytes {
             return Err(invalid_device_config(
-                device.device_ordinal,
+                device.profile.device_ordinal,
                 "backend_reserve_bytes",
                 "must be below the enforced static partition",
             )
             .with_fact("reason", "reserve_exhausts_static_partition")
             .with_fact("allocation_limit_bytes", allocation_limit_bytes));
         }
-        if let GpuDeviceMemoryLimit::Explicit { limit_bytes } = device.memory_limit
+        if let GpuDeviceMemoryLimit::Explicit { limit_bytes } = device.profile.memory_limit
             && limit_bytes > allocation_limit_bytes
         {
             return Err(invalid_device_config(
-                device.device_ordinal,
+                device.profile.device_ordinal,
                 "memory_limit.limit_bytes",
                 "cannot exceed the enforced static partition",
             )
@@ -524,7 +613,7 @@ fn validate_device_config(device: &GpuBackendDeviceConfig) -> Result<()> {
     cudf::DeviceMemoryManagerOptions { allocation_limit_bytes, ..Default::default() }.validate().map_err(|error| {
         QueryError::from_cudf(BUILD_OPERATION, "invalid per-device memory manager installation options", error)
             .with_fact("field", "device_memory_manager_options")
-            .with_fact("device_ordinal", device.device_ordinal)
+            .with_fact("device_ordinal", device.profile.device_ordinal)
             .with_fact("reason", "invalid_device_memory_manager_options")
     })?;
     Ok(())
@@ -537,7 +626,7 @@ fn native_allocation_limit_bytes(device: &GpuBackendDeviceConfig) -> Result<Opti
         .map(|limit| {
             usize::try_from(limit).map_err(|_error| {
                 invalid_device_config(
-                    device.device_ordinal,
+                    device.profile.device_ordinal,
                     "memory_ownership.allocation_limit_bytes",
                     "does not fit the native allocation-size type",
                 )
@@ -647,7 +736,7 @@ impl GpuBackendCoreBuilder {
         let observation_completion_executor_factory = Arc::clone(&self.observation_completion_executor_factory);
         let GpuBackendCoreDraft { devices, controller, deployment_io_capability, attempt_completion_queue_capacity } =
             self.draft;
-        let ordinals = devices.iter().map(|device| device.device_ordinal).collect::<Vec<_>>();
+        let ordinals = devices.iter().map(|device| device.device_ordinal()).collect::<Vec<_>>();
         let generation_id = next_backend_identity();
         let backend_metrics = BackendMetricsStore::new(generation_id, &ordinals)?;
         let owner_lease = claim_live_backend(&ordinals)?;
@@ -732,7 +821,7 @@ impl GpuBackendCoreBuilder {
             for profile in &devices {
                 let (facts, capacity_bytes, installation, health_identity, resource_profile) = observed
                     .iter()
-                    .find(|(facts, _, _, _, _)| facts.device == profile.device_ordinal)
+                    .find(|(facts, _, _, _, _)| facts.device == profile.device_ordinal())
                     .cloned()
                     .ok_or_else(|| {
                         QueryError::new(
@@ -741,11 +830,11 @@ impl GpuBackendCoreBuilder {
                             "validated device has no immutable startup record",
                         )
                         .with_fact("reason", "device_startup_record_missing")
-                        .with_fact("device_ordinal", profile.device_ordinal)
+                        .with_fact("device_ordinal", profile.device_ordinal())
                     })?;
                 let worker_pool = worker_pools
                     .iter()
-                    .find(|pool| pool.device_ordinal == profile.device_ordinal)
+                    .find(|pool| pool.device_ordinal == profile.device_ordinal())
                     .ok_or_else(|| {
                         QueryError::new(
                             QueryErrorCode::Internal,
@@ -753,7 +842,7 @@ impl GpuBackendCoreBuilder {
                             "validated device has no GPU worker pool",
                         )
                         .with_fact("reason", "device_worker_pool_missing")
-                        .with_fact("device_ordinal", profile.device_ordinal)
+                        .with_fact("device_ordinal", profile.device_ordinal())
                     })?;
                 if worker_pool.worker_count != profile.worker_count {
                     return Err(QueryError::new(
@@ -762,7 +851,7 @@ impl GpuBackendCoreBuilder {
                         "GPU worker pool does not match its validated device profile",
                     )
                     .with_fact("reason", "device_worker_pool_mismatch")
-                    .with_fact("device_ordinal", profile.device_ordinal)
+                    .with_fact("device_ordinal", profile.device_ordinal())
                     .with_fact("profile_worker_count", profile.worker_count)
                     .with_fact("installed_worker_count", worker_pool.worker_count));
                 }
@@ -776,7 +865,7 @@ impl GpuBackendCoreBuilder {
                         "device memory manager record does not match its validated installation profile",
                     )
                     .with_fact("reason", "device_memory_manager_record_mismatch")
-                    .with_fact("device_ordinal", profile.device_ordinal)
+                    .with_fact("device_ordinal", profile.device_ordinal())
                     .with_fact("expected_allocation_limit_bytes", format!("{allocation_limit_bytes:?}"))
                     .with_fact("installed_options", format!("{:?}", installation.effective_options)));
                 }
@@ -789,13 +878,13 @@ impl GpuBackendCoreBuilder {
                     capacity_bytes,
                     resource_profile,
                     memory_ownership: profile.memory_ownership,
-                    memory_limit: profile.memory_limit,
-                    backend_reserve_bytes: profile.backend_reserve_bytes,
-                    max_active_attempts: profile.max_active_attempts,
+                    memory_limit: profile.memory_limit(),
+                    backend_reserve_bytes: profile.backend_reserve_bytes(),
+                    max_active_attempts: profile.max_active_attempts(),
                     stream_pool_size: profile.stream_pool_size,
                     worker_count: worker_pool.worker_count,
-                    lane_count: profile.lane_count,
-                    install_telemetry: profile.install_telemetry,
+                    lane_count: profile.lane_count(),
+                    install_telemetry: profile.install_telemetry(),
                     memory_manager_installation: installation,
                     device_health_generation: health_identity.device_health_generation,
                     backend_health_generation: health_identity.backend_health_generation,
@@ -1776,7 +1865,10 @@ mod tests {
 
     fn one_device_backend_draft(device_ordinal: usize) -> GpuBackendCoreDraft {
         GpuBackendCoreDraft::new(
-            vec![GpuBackendDeviceConfig::new(device_ordinal, GpuMemoryOwnership::WholeDeviceExclusive)],
+            vec![GpuBackendDeviceConfig::new(
+                GpuBackendDeviceProfile::new(device_ordinal),
+                GpuMemoryOwnership::WholeDeviceExclusive,
+            )],
             controller(QueryExecutionConfig::default()),
             deployment(),
         )
@@ -1803,7 +1895,10 @@ mod tests {
     #[test]
     fn pure_config_rejects_invalid_device_profiles_before_construction() {
         let config = GpuBackendCoreDraft::new(
-            vec![GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive).with_max_active_attempts(0)],
+            vec![GpuBackendDeviceConfig::new(
+                GpuBackendDeviceProfile::new(0).with_max_active_attempts(0),
+                GpuMemoryOwnership::WholeDeviceExclusive,
+            )],
             controller(QueryExecutionConfig::default()),
             deployment(),
         );
@@ -1815,7 +1910,10 @@ mod tests {
     #[test]
     fn pure_config_rejects_explicit_zero_attempt_floor_before_construction() {
         let config = GpuBackendCoreDraft::new(
-            vec![GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive).with_attempt_floor_bytes(0)],
+            vec![GpuBackendDeviceConfig::new(
+                GpuBackendDeviceProfile::new(0).with_attempt_floor_bytes(0),
+                GpuMemoryOwnership::WholeDeviceExclusive,
+            )],
             controller(QueryExecutionConfig::default()),
             deployment(),
         );
@@ -1855,10 +1953,10 @@ mod tests {
     #[test]
     fn invalid_config_records_no_construction_probe_activity() {
         let config = GpuBackendCoreDraft::new(
-            vec![
-                GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)
-                    .with_backend_reserve_bytes(256 * 1024 * 1024),
-            ],
+            vec![GpuBackendDeviceConfig::new(
+                GpuBackendDeviceProfile::new(0).with_backend_reserve_bytes(256 * 1024 * 1024),
+                GpuMemoryOwnership::WholeDeviceExclusive,
+            )],
             controller(QueryExecutionConfig::default()),
             deployment(),
         );
@@ -1874,8 +1972,8 @@ mod tests {
     fn derived_global_limit_is_checked_and_defaults_to_one_per_device() {
         let config = GpuBackendCoreDraft::new(
             vec![
-                GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive),
-                GpuBackendDeviceConfig::new(1, GpuMemoryOwnership::WholeDeviceExclusive),
+                GpuBackendDeviceConfig::new(GpuBackendDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive),
+                GpuBackendDeviceConfig::new(GpuBackendDeviceProfile::new(1), GpuMemoryOwnership::WholeDeviceExclusive),
             ],
             controller(QueryExecutionConfig::default()),
             deployment(),
@@ -1886,7 +1984,10 @@ mod tests {
     #[test]
     fn automatic_installation_bounds_cover_every_active_attempt() {
         let mut draft = GpuBackendCoreDraft::new(
-            vec![GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive).with_max_active_attempts(2)],
+            vec![GpuBackendDeviceConfig::new(
+                GpuBackendDeviceProfile::new(0).with_max_active_attempts(2),
+                GpuMemoryOwnership::WholeDeviceExclusive,
+            )],
             controller(QueryExecutionConfig::default()),
             deployment(),
         );
@@ -1906,7 +2007,10 @@ mod tests {
             ..QueryExecutionConfig::default()
         };
         let mut draft = GpuBackendCoreDraft::new(
-            vec![GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive).with_max_active_attempts(2)],
+            vec![GpuBackendDeviceConfig::new(
+                GpuBackendDeviceProfile::new(0).with_max_active_attempts(2),
+                GpuMemoryOwnership::WholeDeviceExclusive,
+            )],
             controller(execution),
             deployment(),
         );
@@ -2012,11 +2116,12 @@ mod tests {
     fn reentrant_activity_close_does_not_block_later_query_stream_cleanup() {
         let _owner_test = live_backend_test_lock();
         let backend = GpuBackendCore::builder(GpuBackendCoreDraft::new(
-            vec![
-                GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)
+            vec![GpuBackendDeviceConfig::new(
+                GpuBackendDeviceProfile::new(0)
                     .with_max_active_attempts(2)
-                    .with_installation_bounds(6, 2, 2),
-            ],
+                    .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(6, 2, 2)),
+                GpuMemoryOwnership::WholeDeviceExclusive,
+            )],
             controller(QueryExecutionConfig::default()),
             deployment(),
         ))
@@ -2266,6 +2371,7 @@ mod tests {
         begin.owner.commit_terminal(crate::observability::RuntimeTerminalOutcome::Succeeded).unwrap();
         let report = begin
             .completion
+            .completion()
             .wait_timeout(Duration::from_secs(5))
             .expect("the attempt publishes its report during close");
         assert!(matches!(report.outcome, crate::observability::RuntimeTerminalOutcome::Succeeded));
@@ -2281,7 +2387,8 @@ mod tests {
         let begin = backend.begin_attempt(BeginAttemptRequest::default()).expect("attempt begins before close");
 
         begin.owner.commit_terminal(crate::observability::RuntimeTerminalOutcome::Succeeded).unwrap();
-        let report = begin.completion.wait_timeout(Duration::from_secs(2)).expect("report is ready before close");
+        let completion = begin.completion.completion();
+        let report = completion.wait_timeout(Duration::from_secs(2)).expect("report is ready before close");
         assert!(matches!(report.outcome, crate::observability::RuntimeTerminalOutcome::Succeeded));
 
         assert!(backend.close());
@@ -2290,7 +2397,7 @@ mod tests {
             .expect("reported attempt no longer holds close observation scope");
         assert!(close.gpu_resource_quiescent);
         assert!(close.observation_quiescent);
-        assert!(begin.completion.is_ready(), "the caller may retain its completed result after backend close");
+        assert!(completion.is_ready(), "the caller may retain its completed result after backend close");
     }
 
     #[test]
@@ -2323,8 +2430,11 @@ mod tests {
             let attempts_begun = match begin {
                 Ok(begin) => {
                     begin.owner.commit_terminal(crate::observability::RuntimeTerminalOutcome::Succeeded).unwrap();
-                    let report =
-                        begin.completion.wait_timeout(Duration::from_secs(2)).expect("winning begin publishes");
+                    let report = begin
+                        .completion
+                        .completion()
+                        .wait_timeout(Duration::from_secs(2))
+                        .expect("winning begin publishes");
                     assert!(matches!(report.outcome, crate::observability::RuntimeTerminalOutcome::Succeeded));
                     1
                 },

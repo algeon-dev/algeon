@@ -36,9 +36,9 @@ use datafusion_nexus::{
     native_exec::{NexusNativeExec, NexusNativeExecutionConfig},
     native_report::{CandidateOutcomeKind, NativeDataFusionPlanningReport},
     planner::{
-        CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, FinalPlanDisposition, NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME,
-        NexusFinalPlanRequirementRule, NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule,
-        classify_final_plan,
+        CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, DataFusionCpuExecutionPolicy, FinalPlanDisposition,
+        NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME, NexusFinalPlanRequirementRule, NexusNativeOptimizerConfig,
+        NexusNativePhysicalOptimizerRule, classify_final_plan,
     },
     report::CandidateOutcome,
     session::NexusSessionStateBuilderExt,
@@ -250,7 +250,7 @@ fn native_optimizer_property_checked_ilike_boundary_is_rejected_by_no_datafusion
     let path = dir.join("input.parquet");
     write_ilike_parquet_file(&path);
     let config = NexusNativeOptimizerConfig::default()
-        .with_no_datafusion_cpu_requirement()
+        .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
         .with_native_execution_config(bounded_config());
     let native_rule = NexusNativePhysicalOptimizerRule::new(config.clone());
     let requirement_rule = NexusFinalPlanRequirementRule::new(config);
@@ -389,7 +389,7 @@ proptest! {
             Arc::new(TaskContext::default()),
         ))
         .unwrap();
-        let config = native_optimizer_config().with_no_datafusion_cpu_requirement();
+        let config = native_optimizer_config().with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject);
         let native_rule = NexusNativePhysicalOptimizerRule::new(config.clone());
         let planned = native_rule
             .optimize(ilike_filter_plan_with_pattern(&path, pattern), &ConfigOptions::default())
@@ -702,7 +702,7 @@ fn native_optimizer_rule_does_not_select_small_selective_full_sort_join_by_cost_
 }
 
 #[test]
-fn native_optimizer_rule_errors_for_cost_declined_plan_with_no_datafusion_cpu_requirement() {
+fn native_optimizer_rule_errors_for_cost_declined_plan_with_reject_cpu_policy() {
     let dir = unique_temp_dir("datafusion-nexus-native-exec-cost-no-datafusion-cpu");
     let left = dir.join("left.parquet");
     let right = dir.join("right.parquet");
@@ -710,7 +710,7 @@ fn native_optimizer_rule_errors_for_cost_declined_plan_with_no_datafusion_cpu_re
     write_parquet_file(&right);
     let plan = join_aggregate_sort_limit_sql_plan(&left, &right);
     let config = NexusNativeOptimizerConfig::default()
-        .with_no_datafusion_cpu_requirement()
+        .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
         .with_native_execution_config(bounded_config())
         .with_native_plan_cost_options(NativePlanCostOptions::default());
     let rules = installed_physical_optimizer_rules(config);
@@ -741,7 +741,7 @@ fn native_optimizer_rule_obeys_no_datafusion_cpu_requirement_for_rejected_plan()
     write_parquet_file(&path);
     let plan = unsupported_try_cast_projection_aggregate_sort_limit_plan(parquet_scan(&path));
     let config = NexusNativeOptimizerConfig::default()
-        .with_no_datafusion_cpu_requirement()
+        .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
         .with_native_execution_config(bounded_config());
     let rules = installed_physical_optimizer_rules(config);
     let final_native = rules
@@ -791,7 +791,7 @@ fn final_plan_requirement_reports_first_unsupported_projected_column() {
     writer.close().unwrap();
 
     let config = NexusNativeOptimizerConfig::default()
-        .with_no_datafusion_cpu_requirement()
+        .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
         .with_native_execution_config(bounded_config());
     let rules = installed_physical_optimizer_rules(config);
     let native_rule = rules
@@ -828,7 +828,7 @@ fn no_datafusion_cpu_count_only_probe_miss_reaches_final_native_optimizer() {
     write_parquet_file(&path);
     let plan = aggregate_sort_limit_plan(parquet_scan(&path), Operator::Plus);
     let config = NexusNativeOptimizerConfig::default()
-        .with_no_datafusion_cpu_requirement()
+        .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
         .with_native_execution_config(bounded_config());
     let rules = installed_physical_optimizer_rules(config);
     let count_only_probe = rules
@@ -881,7 +881,7 @@ fn no_datafusion_cpu_final_rejection_replaces_count_only_probe_diagnostics_befor
     let plan = unsupported_try_cast_projection_aggregate_sort_limit_plan(parquet_scan(&path));
     let rules = installed_physical_optimizer_rules(
         NexusNativeOptimizerConfig::default()
-            .with_no_datafusion_cpu_requirement()
+            .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
             .with_native_execution_config(bounded_config()),
     );
     let count_only_probe = rules
@@ -937,7 +937,7 @@ fn no_datafusion_cpu_count_only_probe_retains_its_native_rewrite() {
     write_parquet_file(&path);
     let plan = count_only_sort_limit_plan(parquet_scan(&path));
     let config = NexusNativeOptimizerConfig::default()
-        .with_no_datafusion_cpu_requirement()
+        .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
         .with_native_execution_config(bounded_config());
     let rules = installed_physical_optimizer_rules(config);
     let count_only_probe = rules
@@ -979,7 +979,7 @@ fn no_datafusion_cpu_count_only_probe_rewrites_materialized_memory_table() {
     let plan = count_only_plan(scan);
     let rules = installed_physical_optimizer_rules(
         NexusNativeOptimizerConfig::default()
-            .with_no_datafusion_cpu_requirement()
+            .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
             .with_native_execution_config(bounded_config()),
     );
     let count_only_probe = rules
@@ -1063,7 +1063,7 @@ fn final_plan_requirement_rejects_unsupported_relational_parent_after_datafusion
         .unwrap(),
     );
     let config = NexusNativeOptimizerConfig::default()
-        .with_no_datafusion_cpu_requirement()
+        .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
         .with_native_execution_config(bounded_config());
     let rules = installed_physical_optimizer_rules(config);
     let final_native = rules

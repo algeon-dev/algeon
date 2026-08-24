@@ -5,14 +5,15 @@ use datafusion_nexus::{
         NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceInstallationBounds, NexusGpuDeviceProfile,
         NexusGpuQueuePolicy,
     },
-    planner::{FinalPlanRequirement, NexusNativeOptimizerConfig},
+    planner::{DataFusionCpuExecutionPolicy, NexusNativeOptimizerConfig},
 };
 use nexus_query_engine::{
     error::{QueryError, QueryErrorCode, Result},
     runtime::{
         DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
-        GpuBackendDeviceConfig, GpuBackendSession, GpuDeviceMemoryLimit, GpuMemoryOwnership, KvikioCompatModeStatus,
-        NvidiaFsProbeStatus, QueryExecutionConfig, QueueBounds,
+        GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuBackendSession,
+        GpuDeviceMemoryLimit, GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryExecutionConfig,
+        QueueBounds,
     },
 };
 
@@ -23,11 +24,10 @@ pub(crate) fn build_installed_gpu_backend(
     device_memory_limit: GpuDeviceMemoryLimit,
     source_work_per_attempt: usize,
     max_active_attempts: usize,
-    final_plan_requirement: Option<FinalPlanRequirement>,
+    datafusion_cpu_execution_policy: DataFusionCpuExecutionPolicy,
 ) -> datafusion_nexus::error::Result<NexusGpuBackend> {
-    let native_optimizer_config = final_plan_requirement
-        .into_iter()
-        .fold(native_optimizer_config, |config, requirement| config.with_final_plan_requirement(requirement));
+    let native_optimizer_config =
+        native_optimizer_config.with_datafusion_cpu_execution_policy(datafusion_cpu_execution_policy);
     let stream_pool_size =
         max_active_attempts.saturating_mul(source_work_per_attempt.max(1).saturating_add(1)).max(max_active_attempts);
     let device_profile = NexusGpuDeviceProfile::new(0)
@@ -67,10 +67,17 @@ impl GpuBackendOwner {
     ) -> GpuBackendDeviceConfig {
         let streams =
             max_active_attempts.saturating_mul(source_reads.max(1).saturating_add(1)).max(max_active_attempts);
-        GpuBackendDeviceConfig::new(device_ordinal, GpuMemoryOwnership::WholeDeviceExclusive)
-            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: capacity_bytes })
-            .with_max_active_attempts(max_active_attempts)
-            .with_installation_bounds(streams, max_active_attempts, max_active_attempts)
+        GpuBackendDeviceConfig::new(
+            GpuBackendDeviceProfile::new(device_ordinal)
+                .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: capacity_bytes })
+                .with_max_active_attempts(max_active_attempts)
+                .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(
+                    streams,
+                    max_active_attempts,
+                    max_active_attempts,
+                )),
+            GpuMemoryOwnership::WholeDeviceExclusive,
+        )
     }
 
     pub(crate) fn build(

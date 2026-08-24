@@ -67,7 +67,7 @@ fn pruning_test_backend() -> &'static NexusGpuBackend {
     BACKEND.get_or_init(|| {
         let profile = NexusGpuDeviceProfile::new(0)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES })
-            .with_attempt_floor_bytes(Some(1));
+            .with_attempt_floor_bytes(1);
         let device = NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
         NexusGpuBackend::builder()
             .with_native_execution_config(NexusNativeExecutionConfig::bounded(

@@ -59,7 +59,7 @@ fn attempt_binding_identity_survives_request_placement_and_handle_commit() {
     );
     let attempt_id = attempt.owner.attempt_id();
     let attempt_owner = attempt.owner;
-    let completion = attempt.completion;
+    let completion = attempt.completion.completion();
     let attempt_handle = attempt_owner.handle();
     attempt_handle.record_planning_started().unwrap();
     attempt_handle.record_planning_finished().unwrap();

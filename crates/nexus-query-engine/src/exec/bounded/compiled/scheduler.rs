@@ -837,7 +837,7 @@ mod tests {
             None,
         );
         let owner = begin.owner;
-        let completion = begin.completion;
+        let completion = begin.completion.completion();
         let attempt_handle = owner.handle();
         attempt_handle.record_planning_started().expect("planning starts");
         attempt_handle.record_planning_finished().expect("planning finishes");

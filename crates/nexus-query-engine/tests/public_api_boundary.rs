@@ -28,13 +28,15 @@
 //! same fact for free, in the same build the rest of this binary already
 //! pays for.
 
+#[cfg(feature = "qualification")]
+use nexus_query_engine::runtime::GpuBackendFaultInjector;
 use nexus_query_engine::{
     error::Result,
     observability::RuntimeObservationHandle,
     runtime::{
         AdmittedQueryContext, DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus,
         GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
-        GpuBackendFaultInjector, GpuBackendSession, GpuExecutionJobKind, GpuExecutorLease, GpuMemoryOwnership,
+        GpuBackendDeviceProfile, GpuBackendSession, GpuExecutionJobKind, GpuExecutorLease, GpuMemoryOwnership,
         KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryExecutionConfig, QueryHandle, QueueBounds,
     },
 };
@@ -58,6 +60,7 @@ fn use_session(core: &GpuBackendCore) -> GpuBackendSession {
     core.session_capability()
 }
 
+#[cfg(feature = "qualification")]
 fn use_fault_injector(core: &GpuBackendCore) -> GpuBackendFaultInjector {
     core.fault_injector()
 }
@@ -96,12 +99,13 @@ fn supported_core_session_path_compiles() {
     );
     let controller = GpuBackendControllerDraft::new(QueryExecutionConfig::default(), QueueBounds::default());
     let draft = GpuBackendCoreDraft::new(
-        vec![GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)],
+        vec![GpuBackendDeviceConfig::new(GpuBackendDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive)],
         controller,
         deployment,
     );
     let _builder = GpuBackendCore::builder(draft);
     let _supported_session_factory: fn(&GpuBackendCore) -> GpuBackendSession = use_session;
+    #[cfg(feature = "qualification")]
     let _supported_fault_injector_factory: fn(&GpuBackendCore) -> GpuBackendFaultInjector = use_fault_injector;
     let _supported_executor_api = use_executor;
     let _supported_context_executor: fn(&ExecutionContext) -> Result<GpuExecutorLease> = context_executor;

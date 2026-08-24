@@ -43,7 +43,7 @@ use datafusion_nexus::{
     error::{DataFusionErrorExt, ErrorCode},
     native_exec::NexusNativeExecutionConfig,
     native_report::{FinalPlanDisposition, NativeDataFusionPlanningReport},
-    planner::NexusNativePhysicalOptimizerRule,
+    planner::{DataFusionCpuExecutionPolicy, NexusNativePhysicalOptimizerRule},
     report::CandidateOutcome,
     session::{NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME, NexusSessionStateBuilderExt},
     table_format::{
@@ -853,7 +853,7 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
     // device_budget_bytes=1 forces a memory reservation failure after native start.
     let profile = NexusGpuDeviceProfile::new(0)
         .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })
-        .with_attempt_floor_bytes(Some(1));
+        .with_attempt_floor_bytes(1);
     let device = NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
     let backend = NexusGpuBackend::builder()
         .with_native_execution_config(NexusNativeExecutionConfig::bounded(1, 1024 * 1024, 1, 1, 1))
@@ -1199,7 +1199,7 @@ impl TableFormatPlanner for FixedPlanner {
 fn build_backend(attempt_floor_bytes: u64) -> ToolResult<NexusGpuBackend> {
     let profile = NexusGpuDeviceProfile::new(0)
         .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })
-        .with_attempt_floor_bytes(Some(attempt_floor_bytes));
+        .with_attempt_floor_bytes(attempt_floor_bytes);
     let device = NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
     Ok(NexusGpuBackend::builder()
         .with_native_execution_config(NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1))
@@ -1213,9 +1213,14 @@ fn relational_ctx(selection: RelationalExecution, backend: &NexusGpuBackend) -> 
     let state = match selection {
         RelationalExecution::DataFusionBaseline => builder.build(),
         RelationalExecution::NativeDefault => backend.install_on(builder)?.build(),
-        RelationalExecution::RequireNoDataFusionCpu => {
-            builder.with_nexus_native(backend.optimizer_config().clone().with_no_datafusion_cpu_requirement()).build()
-        },
+        RelationalExecution::RequireNoDataFusionCpu => builder
+            .with_nexus_native(
+                backend
+                    .optimizer_config()
+                    .clone()
+                    .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
+            )
+            .build(),
     };
     Ok(SessionContext::new_with_state(state))
 }

@@ -2,7 +2,8 @@
 //!
 //! This module answers the developer-facing planning question: whether the
 //! optimized physical path contains known DataFusion CPU execution. It is a
-//! plan-time validation surface, not a runtime admission or success guarantee.
+//! plan-time diagnosis surface only, not runtime admission, not an execution
+//! verdict, and not sealed-attempt retry advice.
 //!
 //! Each validation produces one [`QueryGpuPlanningOutcome`]: either a planned
 //! [`FinalPlanCoverage`] describing the single completed executable plan, or

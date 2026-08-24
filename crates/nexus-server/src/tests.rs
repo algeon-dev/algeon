@@ -71,18 +71,21 @@ fn bounded_config(max_active_attempts_per_device: usize) -> ServerConfig {
 }
 
 fn runtime_backend(max_active_attempts_per_device: usize) -> NexusGpuBackend {
-    runtime_backend_with_policy(max_active_attempts_per_device, false)
+    runtime_backend_with_policy(max_active_attempts_per_device, crate::planner::DataFusionCpuExecutionPolicy::Allow)
 }
 
 fn strict_runtime_backend(max_active_attempts_per_device: usize) -> NexusGpuBackend {
-    runtime_backend_with_policy(max_active_attempts_per_device, true)
+    runtime_backend_with_policy(max_active_attempts_per_device, crate::planner::DataFusionCpuExecutionPolicy::Reject)
 }
 
-fn runtime_backend_with_policy(max_active_attempts_per_device: usize, strict: bool) -> NexusGpuBackend {
+fn runtime_backend_with_policy(
+    max_active_attempts_per_device: usize,
+    datafusion_cpu_execution_policy: crate::planner::DataFusionCpuExecutionPolicy,
+) -> NexusGpuBackend {
     let profile = NexusGpuDeviceProfile::new(0)
         .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES })
         .with_max_active_attempts(max_active_attempts_per_device);
-    let builder = NexusGpuBackend::builder()
+    NexusGpuBackend::builder()
         .devices([NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive)])
         .with_native_execution_config(NexusNativeExecutionConfig::bounded(
             TEST_DEVICE_BUDGET_BYTES,
@@ -90,9 +93,10 @@ fn runtime_backend_with_policy(max_active_attempts_per_device: usize, strict: bo
             TEST_MAX_ROW_GROUPS_PER_CHUNK,
             TEST_MAX_RETRY_ATTEMPTS,
             TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
-        ));
-    let builder = if strict { builder.with_no_datafusion_cpu_requirement() } else { builder };
-    builder.build().expect("runtime backend should build")
+        ))
+        .with_datafusion_cpu_execution_policy(datafusion_cpu_execution_policy)
+        .build()
+        .expect("runtime backend should build")
 }
 
 #[test]
@@ -349,7 +353,7 @@ fn builder_rejects_injected_backend_admission_conflict() {
 fn builder_rejects_injected_backend_attempt_floor_conflict() {
     let backend = runtime_backend(1);
     let mut config = bounded_config(1);
-    config.gpu_device_profiles[0] = config.gpu_device_profiles[0].clone().with_attempt_floor_bytes(Some(256));
+    config.gpu_device_profiles[0] = config.gpu_device_profiles[0].clone().with_attempt_floor_bytes(256);
 
     let error = validate_injected_backend_matches_config(&backend, &config).unwrap_err();
 

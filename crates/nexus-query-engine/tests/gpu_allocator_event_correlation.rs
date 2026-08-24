@@ -13,9 +13,9 @@ use nexus_query_engine::{
     },
     runtime::{
         AdmittedQueryContext, DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore,
-        GpuBackendCoreDraft, GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuExecutionJobKind, GpuMemoryOwnership,
-        KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle,
-        QueueBounds,
+        GpuBackendCoreDraft, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile,
+        GpuDeviceMemoryLimit, GpuExecutionJobKind, GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus,
+        QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds,
     },
 };
 
@@ -45,23 +45,24 @@ fn test_backend(device: DeviceId) -> GpuBackendCore {
         QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(10), max_overtakes_per_waiter: 1 },
     );
     let device = GpuBackendDeviceConfig::new(
-        device.ordinal(),
+        GpuBackendDeviceProfile::new(device.ordinal())
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: STATIC_PARTITION_BYTES })
+            .with_attempt_floor_bytes(ATTEMPT_FLOOR_BYTES)
+            .with_source_work_per_attempt(1)
+            .with_max_active_attempts(2)
+            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(4, 2, 2)),
         GpuMemoryOwnership::StaticPartition { allocation_limit_bytes: STATIC_PARTITION_BYTES },
-    )
-    .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: STATIC_PARTITION_BYTES })
-    .with_attempt_floor_bytes(ATTEMPT_FLOOR_BYTES)
-    .with_source_work_per_attempt(1)
-    .with_max_active_attempts(2)
-    .with_installation_bounds(4, 2, 2);
+    );
     GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller, non_gds_deployment()))
         .build()
         .expect("two-attempt physical allocator-correlation backend builds")
 }
 
 fn admit_attempt(core: &GpuBackendCore) -> AdmittedAttempt {
-    let AttemptBegin { owner, completion } = core
+    let AttemptBegin { owner, completion: factory } = core
         .begin_attempt(BeginAttemptRequest::default())
         .expect("backend begins a physical allocator-correlation attempt");
+    let completion = factory.completion();
     let attempt = owner.handle();
     attempt.record_planning_started().expect("planning starts");
     attempt.record_planning_finished().expect("planning finishes");

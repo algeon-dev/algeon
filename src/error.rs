@@ -1,10 +1,12 @@
-//! Error taxonomy for the DataFusion adapter boundary.
+//! One error taxonomy for the DataFusion adapter boundary.
 //!
 //! Adapter errors classify failures from DataFusion planning/execution,
 //! native execution, cuDF calls made directly by the adapter, and native
-//! engine errors wrapped at the adapter boundary. Native errors
-//! keep their original classification in `native_*` facts while this layer maps
-//! them into adapter-level [`ErrorCode`] values suitable for DataFusion.
+//! engine errors wrapped at the adapter boundary. The stable
+//! machine-readable [`ErrorCode`] is the contract; the human message is
+//! diagnostic only. Native errors keep their original classification in
+//! `native_*` facts while this layer maps them into adapter-level
+//! [`ErrorCode`] values suitable for DataFusion.
 
 use std::{
     collections::{BTreeMap, BTreeSet},

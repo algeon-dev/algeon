@@ -96,7 +96,7 @@ pub struct nexus_server::ServerConfig
 pub nexus_server::ServerConfig::auth: nexus_server::AuthConfig
 pub nexus_server::ServerConfig::bind_addr: core::net::socket_addr::SocketAddr
 pub nexus_server::ServerConfig::cugraph: core::option::Option<nexus_server::CugraphServerConfig>
-pub nexus_server::ServerConfig::gpu_device_profiles: alloc::vec::Vec<datafusion_nexus::backend::NexusGpuDeviceProfile>
+pub nexus_server::ServerConfig::gpu_device_profiles: alloc::vec::Vec<nexus_query_runtime::runtime::backend_core::GpuBackendDeviceProfile>
 pub nexus_server::ServerConfig::gpu_devices: alloc::vec::Vec<usize>
 pub nexus_server::ServerConfig::gpu_memory_ownership: alloc::vec::Vec<(usize, nexus_query_runtime::runtime::backend_core::GpuMemoryOwnership)>
 pub nexus_server::ServerConfig::iceberg: core::option::Option<nexus_server::IcebergServerConfig>

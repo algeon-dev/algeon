@@ -6,8 +6,9 @@ use std::{
 use nexus_query_planning::admission::{AttemptRequirement, EstimateQuality};
 
 use crate::runtime::{
-    DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership,
-    KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryExecutionConfig, QueryService, QueueBounds,
+    DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds,
+    GpuBackendDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus,
+    QueryExecutionConfig, QueryService, QueueBounds,
 };
 
 const TEST_DEVICE_CAPACITY_BYTES: u64 = 64 * 1024 * 1024;
@@ -56,12 +57,19 @@ fn test_device_profiles(
         .iter()
         .copied()
         .map(|device_ordinal| {
-            GpuBackendDeviceConfig::new(device_ordinal, GpuMemoryOwnership::WholeDeviceExclusive)
-                .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_CAPACITY_BYTES })
-                .with_attempt_floor_bytes(attempt_floor_bytes)
-                .with_source_work_per_attempt(1)
-                .with_max_active_attempts(max_active_attempts)
-                .with_installation_bounds(stream_pool_size, max_active_attempts, max_active_attempts)
+            GpuBackendDeviceConfig::new(
+                GpuBackendDeviceProfile::new(device_ordinal)
+                    .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_CAPACITY_BYTES })
+                    .with_attempt_floor_bytes(attempt_floor_bytes)
+                    .with_source_work_per_attempt(1)
+                    .with_max_active_attempts(max_active_attempts)
+                    .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(
+                        stream_pool_size,
+                        max_active_attempts,
+                        max_active_attempts,
+                    )),
+                GpuMemoryOwnership::WholeDeviceExclusive,
+            )
         })
         .collect()
 }

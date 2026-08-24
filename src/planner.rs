@@ -4,8 +4,8 @@
 //! inserts it in two optimizer stages: a count-only probe before DataFusion aggregate
 //! statistics and the final native rewrite immediately before final plan
 //! validation. Native candidate misses preserve the DataFusion baseline plan.
-//! Final-plan requirements, when configured, inspect that exact resulting plan
-//! after native rewrite; they never trigger a second plan.
+//! A reject DataFusion CPU policy, when configured, inspects that exact
+//! resulting plan after native rewrite; it never triggers a second plan.
 //!
 //! [`FinalPlanDisposition`] describes one completed executable plan only
 //! (`DataFusion`, `Native`, or `Mixed`); planning failures have no disposition.
@@ -69,27 +69,15 @@ impl std::fmt::Display for FinalPlanDisposition {
     }
 }
 
-/// A non-default constraint applied to the completed physical plan.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// Policy for DataFusion CPU execution in the completed physical plan.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 #[non_exhaustive]
-pub enum FinalPlanRequirement {
-    /// Reject a final plan that executes any DataFusion CPU operator.
-    NoDataFusionCpu,
-}
-
-impl FinalPlanRequirement {
-    /// Stable label used in structured requirement errors.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::NoDataFusionCpu => "no_datafusion_cpu",
-        }
-    }
-}
-
-impl std::fmt::Display for FinalPlanRequirement {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
+pub enum DataFusionCpuExecutionPolicy {
+    /// Preserve the DataFusion baseline when native candidates are not accepted.
+    #[default]
+    Allow,
+    /// Reject a completed plan that executes any DataFusion CPU operator.
+    Reject,
 }
 
 /// Classify the exact completed physical plan without invoking planning.
@@ -115,7 +103,7 @@ pub struct NexusNativeOptimizerConfig {
     native_execution_config: NexusNativeExecutionConfig,
     native_optimizer_options: NativeOptimizerOptions,
     native_plan_cost_options: NativePlanCostOptions,
-    final_plan_requirements: Vec<FinalPlanRequirement>,
+    datafusion_cpu_execution_policy: DataFusionCpuExecutionPolicy,
 }
 
 impl Default for NexusNativeOptimizerConfig {
@@ -124,7 +112,7 @@ impl Default for NexusNativeOptimizerConfig {
             native_execution_config: NexusNativeExecutionConfig::bounded_default(),
             native_optimizer_options: NativeOptimizerOptions::default(),
             native_plan_cost_options: NativePlanCostOptions::disabled(),
-            final_plan_requirements: Vec::new(),
+            datafusion_cpu_execution_policy: DataFusionCpuExecutionPolicy::Allow,
         }
     }
 }
@@ -149,23 +137,16 @@ impl NexusNativeOptimizerConfig {
         &self.native_plan_cost_options
     }
 
-    /// Completed-plan constraints enforced after native rewriting, without
-    /// planning a second time.
-    pub fn final_plan_requirements(&self) -> &[FinalPlanRequirement] {
-        &self.final_plan_requirements
+    /// Completed-plan DataFusion CPU policy enforced after native rewriting,
+    /// without planning a second time.
+    pub fn datafusion_cpu_execution_policy(&self) -> DataFusionCpuExecutionPolicy {
+        self.datafusion_cpu_execution_policy
     }
 
-    /// Add a completed-plan requirement. Repeating a requirement is idempotent.
-    pub fn with_final_plan_requirement(mut self, requirement: FinalPlanRequirement) -> Self {
-        if !self.final_plan_requirements.contains(&requirement) {
-            self.final_plan_requirements.push(requirement);
-        }
+    /// Set the completed-plan DataFusion CPU policy.
+    pub fn with_datafusion_cpu_execution_policy(mut self, policy: DataFusionCpuExecutionPolicy) -> Self {
+        self.datafusion_cpu_execution_policy = policy;
         self
-    }
-
-    /// Require the exact completed physical plan to contain no DataFusion CPU execution.
-    pub fn with_no_datafusion_cpu_requirement(self) -> Self {
-        self.with_final_plan_requirement(FinalPlanRequirement::NoDataFusionCpu)
     }
 
     /// Floating statistical aggregate execution contract used by native execution.

@@ -1,6 +1,8 @@
 //! Public report and TSV contracts for native planning/execution diagnostics.
 //!
-//! The constants and row structs re-exported from this module are consumed by
+//! This module consumes the shared [`crate::report`] and
+//! [`crate::planner::FinalPlanCoverage`] evidence; it authors no verdict of
+//! its own. The constants and row structs re-exported here are consumed by
 //! benchmark binaries and external comparison scripts. TSV header order is
 //! part of the report contract for consumers that parse these diagnostics.
 //! Sentinel strings such as `none`, `unknown`, `not_run`, and `not_computed`

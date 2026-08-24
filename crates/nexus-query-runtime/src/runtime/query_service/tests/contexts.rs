@@ -118,7 +118,7 @@ fn attempt_bound_context_carries_its_engine_identity_for_gpu_execution_annotatio
     );
     let attempt_id = attempt.owner.attempt_id();
     let attempt_owner = attempt.owner;
-    let completion = attempt.completion;
+    let completion = attempt.completion.completion();
     let attempt_handle = attempt_owner.handle();
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
@@ -161,10 +161,16 @@ fn cache_enabled_context_exposes_source_and_graph_leases_from_one_domain() {
     let service = runtime_test_service_with_profiles(
         QueryExecutionConfig::default(),
         QueueBounds::default(),
-        vec![
-            runtime_test_device_profile_with_limits(0, 64 * 1024 * 1024, 8 * 1024 * 1024, 1, 3, 1, 1)
+        vec![GpuBackendDeviceConfig::new(
+            GpuBackendDeviceProfile::new(0)
+                .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 64 * 1024 * 1024 })
+                .with_attempt_floor_bytes(8 * 1024 * 1024)
+                .with_source_work_per_attempt(2)
+                .with_max_active_attempts(1)
+                .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(3, 1, 1))
                 .with_cache_cap_bytes(CACHE_CAP_BYTES),
-        ],
+            GpuMemoryOwnership::WholeDeviceExclusive,
+        )],
     )
     .expect("cache-enabled runtime service");
     let handle = service.admit_query().expect("admission");
@@ -1103,7 +1109,7 @@ async fn close_during_admitted_execution_waits_for_the_job_and_seals_before_quie
         None,
     );
     let attempt_owner = attempt.owner;
-    let completion = attempt.completion;
+    let completion = attempt.completion.completion();
     let attempt_handle = attempt_owner.handle();
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");

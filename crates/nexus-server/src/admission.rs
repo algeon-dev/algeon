@@ -405,7 +405,7 @@ mod tests {
         ]);
         let mut config =
             declare_test_gpu_ownership(server_config_with_test_device_profile(env, Some(1024 * 1024)).unwrap());
-        config.gpu_device_profiles[0] = config.gpu_device_profiles[0].clone().with_attempt_floor_bytes(Some(256));
+        config.gpu_device_profiles[0] = config.gpu_device_profiles[0].clone().with_attempt_floor_bytes(256);
         let backend = crate::backend_from_server_config(&config).unwrap();
         let admission = QueryAdmission::from_backend(&backend);
 

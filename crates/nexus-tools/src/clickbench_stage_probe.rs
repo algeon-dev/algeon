@@ -39,8 +39,8 @@ use nexus_query_engine::{
     },
     plan::QueryPlan,
     runtime::{
-        ExecutionCancellation, GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership, QueryExecutionConfig,
-        QueryHandle,
+        ExecutionCancellation, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile,
+        GpuDeviceMemoryLimit, GpuMemoryOwnership, QueryExecutionConfig, QueryHandle,
     },
 };
 use nexus_workloads::clickbench::{
@@ -378,10 +378,13 @@ fn build_probe_backend(
         min_retry_chunk_row_groups: profile.min_retry_chunk_row_groups,
         ..QueryExecutionConfig::default()
     };
-    let device = GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)
-        .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: profile.device_budget_bytes })
-        .with_max_active_attempts(1)
-        .with_installation_bounds(2, 1, 1);
+    let device = GpuBackendDeviceConfig::new(
+        GpuBackendDeviceProfile::new(0)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: profile.device_budget_bytes })
+            .with_max_active_attempts(1)
+            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(2, 1, 1)),
+        GpuMemoryOwnership::WholeDeviceExclusive,
+    );
     Ok(ToolGpuBackend::build(service_config, device)?)
 }
 

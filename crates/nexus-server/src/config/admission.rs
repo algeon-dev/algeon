@@ -157,7 +157,7 @@ fn profile_from_file(raw: &super::file::ServerAdmissionDeviceProfileFileConfig) 
         profile = profile.with_cache_cap_bytes(cache_cap_bytes);
     }
     if let Some(attempt_floor_bytes) = raw.attempt_floor_bytes {
-        profile = profile.with_attempt_floor_bytes(Some(attempt_floor_bytes));
+        profile = profile.with_attempt_floor_bytes(attempt_floor_bytes);
     }
     if let Some(source_work_per_attempt) = raw.source_work_per_attempt {
         profile = profile.with_source_work_per_attempt(source_work_per_attempt);

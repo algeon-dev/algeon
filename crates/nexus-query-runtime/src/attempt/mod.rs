@@ -11,8 +11,8 @@ pub use cancellation::{
 pub use lifecycle::AttemptLifecycle;
 pub use lifecycle::AttemptLifecycleError;
 pub use owner::{
-    AttemptAdmissionBinding, AttemptAdmissionRejection, AttemptBegin, AttemptCompletion, AttemptHandle, AttemptOwner,
-    BeginAttemptRequest,
+    AttemptAdmissionBinding, AttemptAdmissionRejection, AttemptBegin, AttemptCompletion, AttemptCompletionFactory,
+    AttemptHandle, AttemptOwner, BeginAttemptRequest,
 };
 #[doc(hidden)]
 pub use owner::{AttemptFinalizer, AttemptFinalizerSlot};

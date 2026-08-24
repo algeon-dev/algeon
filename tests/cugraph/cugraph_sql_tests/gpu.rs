@@ -10,7 +10,10 @@ use datafusion::{
 };
 use datafusion_nexus::{
     gpu_coverage::validate_query,
-    planner::{FinalPlanDisposition, NexusFinalPlanRequirementRule, NexusNativeOptimizerConfig, classify_final_plan},
+    planner::{
+        DataFusionCpuExecutionPolicy, FinalPlanDisposition, NexusFinalPlanRequirementRule, NexusNativeOptimizerConfig,
+        classify_final_plan,
+    },
 };
 use futures::StreamExt;
 
@@ -188,8 +191,10 @@ async fn cugraph_sql_cpu_to_gpu_to_cpu_projects_away_unsupported_upstream_type()
     );
     assert!(!plan_contains_native_exec(edge_input.as_ref()), "the upstream view must execute through DataFusion CPU");
 
-    let requirement =
-        NexusFinalPlanRequirementRule::new(NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement());
+    let requirement = NexusFinalPlanRequirementRule::new(
+        NexusNativeOptimizerConfig::default()
+            .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
+    );
     let error = requirement
         .optimize(Arc::clone(&plan), &ConfigOptions::default())
         .expect_err("NoDataFusionCpu must reject this exact already-planned mixed island");
@@ -1539,8 +1544,10 @@ async fn cugraph_sql_bfs_path_ordering_satisfies_strict_final_plan_without_sort_
 
     assert!(find_cugraph_algo_exec(plan.as_ref()).is_some());
     assert!(!plan_contains_named_node(plan.as_ref(), "SortExec"));
-    let requirement =
-        NexusFinalPlanRequirementRule::new(NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement());
+    let requirement = NexusFinalPlanRequirementRule::new(
+        NexusNativeOptimizerConfig::default()
+            .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
+    );
     requirement
         .optimize(Arc::clone(&plan), &ConfigOptions::default())
         .expect("path_index ordering must satisfy NoDataFusionCpu without a DataFusion sort");

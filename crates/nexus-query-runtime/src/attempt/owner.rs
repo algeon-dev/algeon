@@ -65,10 +65,10 @@ impl fmt::Debug for BeginAttemptRequest {
     }
 }
 
-/// The attempt owner and its independent completion, created together at begin.
+/// The attempt owner and its completion factory, created together at begin.
 pub struct AttemptBegin {
     pub owner: AttemptOwner,
-    pub completion: AttemptCompletion,
+    pub completion: AttemptCompletionFactory,
 }
 
 impl fmt::Debug for AttemptBegin {
@@ -149,13 +149,12 @@ impl Clone for AttemptAdmissionRejection {
 /// Cloning or dropping receivers never cancels cleanup, report production, or
 /// exact metric updates, and holding a receiver retains no device lease.
 ///
-/// Receivers are counted so publication can route never-received reports to
-/// the optional abandoned-report queue. Adapter internals hold
-/// [`Self::uncounted`] factories instead, so an attempt object or result
+/// Every receiver is counted so publication can route never-received reports
+/// to the optional abandoned-report queue. Adapter internals hold an
+/// [`AttemptCompletionFactory`] instead, so an attempt object or result
 /// stream never masks caller abandonment.
 pub struct AttemptCompletion {
     cell: Arc<AttemptCompletionCell>,
-    counted: bool,
 }
 
 impl Clone for AttemptCompletion {
@@ -163,7 +162,42 @@ impl Clone for AttemptCompletion {
         let mut state = self.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         state.receivers = state.receivers.saturating_add(1);
         drop(state);
-        Self { cell: Arc::clone(&self.cell), counted: true }
+        Self { cell: Arc::clone(&self.cell) }
+    }
+}
+
+/// Adapter-internal minting capability for one attempt's completion receivers.
+///
+/// The factory crosses crates so the adapter attempt object can hand out
+/// independent counted receivers on demand and read the sealed report for its
+/// seal observer. It is never an application receiver itself: cloning or
+/// dropping a factory never changes the active receiver count, so it cannot
+/// mask caller abandonment. It cannot terminalize the attempt or store a
+/// second report.
+pub struct AttemptCompletionFactory {
+    cell: Arc<AttemptCompletionCell>,
+}
+
+impl Clone for AttemptCompletionFactory {
+    fn clone(&self) -> Self {
+        Self { cell: Arc::clone(&self.cell) }
+    }
+}
+
+impl AttemptCompletionFactory {
+    /// Mints one independent counted receiver for the attempt's immutable
+    /// terminal report.
+    pub fn completion(&self) -> AttemptCompletion {
+        let mut state = self.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.receivers = state.receivers.saturating_add(1);
+        drop(state);
+        AttemptCompletion { cell: Arc::clone(&self.cell) }
+    }
+
+    /// Returns the published report without waiting, when ready.
+    pub fn try_report(&self) -> Option<Arc<QueryAttemptReport>> {
+        let state = self.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.report_visible.then(|| state.report.as_ref().map(Arc::clone)).flatten()
     }
 }
 
@@ -514,7 +548,7 @@ impl AttemptOwner {
                 report_visible: false,
                 sealed_report_sinks: Vec::new(),
                 wakers: Vec::new(),
-                receivers: 1,
+                receivers: 0,
             }),
             changed: Condvar::new(),
         });
@@ -559,7 +593,7 @@ impl AttemptOwner {
         core.observation_permit.lock().unwrap_or_else(std::sync::PoisonError::into_inner).replace(permit);
         AttemptBegin {
             owner: Self(Arc::new(AttemptInner { core, observation_owner: owner, finalizer_slot })),
-            completion: AttemptCompletion { cell, counted: true },
+            completion: AttemptCompletionFactory { cell },
         }
     }
 
@@ -610,7 +644,7 @@ impl AttemptOwner {
     /// An independent receiver for the terminal report.
     pub fn completion(&self) -> AttemptCompletion {
         self.0.core.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).receivers += 1;
-        AttemptCompletion { cell: Arc::clone(&self.0.core.cell), counted: true }
+        AttemptCompletion { cell: Arc::clone(&self.0.core.cell) }
     }
 
     /// The attempt-scoped cooperative cancellation signal and deadline.
@@ -1011,13 +1045,6 @@ impl AttemptHandle {
 }
 
 impl AttemptCompletion {
-    /// An uncounted handle for adapter internals that mint counted receivers
-    /// on demand. It awaits and reads the report exactly like a receiver but
-    /// is invisible to the abandoned-report decision.
-    pub fn uncounted(&self) -> Self {
-        Self { cell: Arc::clone(&self.cell), counted: false }
-    }
-
     /// Returns whether the terminal report has been published.
     pub fn is_ready(&self) -> bool {
         self.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner).report_visible
@@ -1061,16 +1088,20 @@ impl Future for AttemptCompletion {
 
 impl Drop for AttemptCompletion {
     fn drop(&mut self) {
-        if self.counted {
-            let mut state = self.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            state.receivers = state.receivers.saturating_sub(1);
-        }
+        let mut state = self.cell.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        state.receivers = state.receivers.saturating_sub(1);
     }
 }
 
 impl fmt::Debug for AttemptCompletion {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.debug_struct("AttemptCompletion").field("ready", &self.is_ready()).finish_non_exhaustive()
+    }
+}
+
+impl fmt::Debug for AttemptCompletionFactory {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_struct("AttemptCompletionFactory").finish_non_exhaustive()
     }
 }
 
@@ -1115,7 +1146,7 @@ mod tests {
     #[test]
     fn non_admitted_commit_publishes_immediately_in_order() {
         let (begin, clock, counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
-        let completion = begin.completion.clone();
+        let completion = begin.completion.completion();
         native_disposition(&begin);
         clock.set_monotonic_ns(10);
         begin.owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
@@ -1155,8 +1186,9 @@ mod tests {
     #[test]
     fn sealed_report_sink_receives_the_exact_report_before_completion_visibility() {
         let (begin, _clock, _counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
-        let completion = begin.completion.uncounted();
-        let completion_for_sink = completion.uncounted();
+        let factory = begin.completion.clone();
+        let completion_for_sink = factory.clone();
+        let completion = factory.completion();
         let delivered = Arc::new(Mutex::new(Vec::new()));
         let delivered_for_sink = Arc::clone(&delivered);
         let observed_before_completion = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1180,7 +1212,7 @@ mod tests {
     #[test]
     fn seal_uses_the_attempt_terminal_outcome_for_footer_report_and_boundary() {
         let (begin, _clock, _counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
-        let completion = begin.completion.clone();
+        let completion = begin.completion.completion();
         native_disposition(&begin);
         let observation_owner = begin.owner.observation_owner_for_test();
         observation_owner.record_terminal_outcome(RuntimeTerminalOutcome::Failed {
@@ -1208,7 +1240,7 @@ mod tests {
     #[test]
     fn admitted_commit_defers_until_post_cleanup_seal() {
         let (begin, clock, _counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
-        let completion = begin.completion.clone();
+        let completion = begin.completion.completion();
         native_disposition(&begin);
         let handle = begin.owner.handle();
         let (_, finalizer_slot) = begin.owner.admission_binding().into_parts();
@@ -1317,7 +1349,7 @@ mod tests {
             .unwrap();
         begin.owner.observation_owner_for_test().finish_query(Some(RuntimeTerminalOutcome::Succeeded));
 
-        let report = begin.completion.wait_timeout(Duration::from_secs(1)).expect("report");
+        let report = begin.completion.completion().wait_timeout(Duration::from_secs(1)).expect("report");
         assert_eq!(report.capacity_disposition, AttemptCapacityDisposition::RetainedQuarantine);
         assert_eq!(report.health_transition, Some(AttemptHealthTransition::DeviceQuarantined));
         assert_eq!(report.native_fault_evidence, Some(native_fault_evidence));
@@ -1326,7 +1358,7 @@ mod tests {
     #[test]
     fn terminal_commit_projects_actual_cleanup_and_capacity_before_seal() {
         let (begin, clock, _counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
-        let completion = begin.completion.clone();
+        let completion = begin.completion.completion();
         native_disposition(&begin);
         let handle = begin.owner.handle();
         let (_, finalizer_slot) = begin.owner.admission_binding().into_parts();
@@ -1379,14 +1411,14 @@ mod tests {
             begin.owner.commit_terminal(RuntimeTerminalOutcome::Succeeded),
             Err(AttemptLifecycleError::DoubleTerminalization)
         );
-        let report = begin.completion.wait_timeout(Duration::from_secs(1)).expect("report");
+        let report = begin.completion.completion().wait_timeout(Duration::from_secs(1)).expect("report");
         assert!(matches!(report.outcome, RuntimeTerminalOutcome::Dropped));
     }
 
     #[test]
     fn owner_drop_backstop_never_loses_the_report() {
         let (begin, _clock, _counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
-        let completion = begin.completion.clone();
+        let completion = begin.completion.completion();
         drop(begin.owner);
         let report = completion.wait_timeout(Duration::from_secs(1)).expect("drop publishes the report");
         assert!(matches!(report.outcome, RuntimeTerminalOutcome::Dropped));
@@ -1396,7 +1428,7 @@ mod tests {
     fn fixed_summary_survives_disabled_and_zero_limit_diagnostics() {
         for observation in [RuntimeObservationConfig::disabled(), RuntimeObservationConfig::bounded(0, 0)] {
             let (begin, _clock, _counters) = test_begin(observation, None);
-            let completion = begin.completion.clone();
+            let completion = begin.completion.completion();
             native_disposition(&begin);
             begin
                 .owner
@@ -1419,7 +1451,7 @@ mod tests {
         let (begin, _clock, counters) =
             test_begin(RuntimeObservationConfig::native_execution(), Some(Arc::clone(&queue)));
         // Abandon the only receiver before the report exists.
-        drop(begin.completion);
+        drop(begin.completion.completion());
         begin.owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
         assert_eq!(counters.snapshot().reports_ready, 1);
         assert_eq!(counters.snapshot().completion_queue_pushed, 1);
@@ -1431,12 +1463,12 @@ mod tests {
         // Second abandoned report overflows the capacity-one queue.
         let (begin2, _clock2, counters2) =
             test_begin(RuntimeObservationConfig::native_execution(), Some(Arc::clone(&queue)));
-        drop(begin2.completion);
+        drop(begin2.completion.completion());
         begin2.owner.commit_terminal(RuntimeTerminalOutcome::Dropped).unwrap();
         assert_eq!(counters2.snapshot().completion_queue_pushed, 1);
         let (begin3, _clock3, counters3) =
             test_begin(RuntimeObservationConfig::native_execution(), Some(Arc::clone(&queue)));
-        drop(begin3.completion);
+        drop(begin3.completion.completion());
         begin3.owner.commit_terminal(RuntimeTerminalOutcome::Dropped).unwrap();
         assert_eq!(counters3.snapshot().completion_queue_overflowed, 1);
         // The capacity-one queue still holds the second report; the third was
@@ -1448,7 +1480,7 @@ mod tests {
     fn held_receivers_do_not_route_to_the_abandoned_queue() {
         let queue = Arc::new(AttemptCompletionQueue::new(4).expect("queue"));
         let (begin, _clock, counters) = test_begin(RuntimeObservationConfig::native_execution(), Some(queue.clone()));
-        let _held = begin.completion.clone();
+        let _held = begin.completion.completion();
         begin.owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();
         assert_eq!(counters.snapshot().completion_queue_pushed, 0);
         assert!(queue.drain(4).is_empty());
@@ -1489,7 +1521,7 @@ mod tests {
             error_code: AttemptFailureCode::CudfTemporaryFailure,
             error_status: AttemptFailureStatus::Temporary,
         }));
-        let report = begin.completion.wait_timeout(Duration::from_secs(1)).expect("report");
+        let report = begin.completion.completion().wait_timeout(Duration::from_secs(1)).expect("report");
         assert_eq!(report.cleanup_failure_count, 2);
         assert!(report.cleanup_failure_count_complete);
         assert_eq!(report.cleanup_disposition, AttemptCleanupDisposition::CompletedWithFailures);
@@ -1526,7 +1558,7 @@ mod tests {
         begin.owner.commit_query_error(&error).unwrap();
 
         assert_eq!(error.source_error().map(ToString::to_string).as_deref(), Some("original source cause"));
-        let report = begin.completion.wait_timeout(Duration::from_secs(1)).expect("report");
+        let report = begin.completion.completion().wait_timeout(Duration::from_secs(1)).expect("report");
         let summary = report.primary_failure.as_ref().expect("borrowed native summary");
         assert_eq!(summary.code(), AttemptFailureCode::CudfTemporaryFailure);
         assert_eq!(summary.status(), AttemptFailureStatus::Temporary);
@@ -1574,7 +1606,7 @@ mod tests {
         begin.owner.observation_owner_for_test().finish_query(Some(terminal));
 
         assert_eq!(error.source_error().map(ToString::to_string).as_deref(), Some("original source cause"));
-        let report = begin.completion.wait_timeout(Duration::from_secs(1)).expect("report");
+        let report = begin.completion.completion().wait_timeout(Duration::from_secs(1)).expect("report");
         assert!(matches!(
             report.outcome,
             RuntimeTerminalOutcome::Failed {
@@ -1621,7 +1653,7 @@ mod tests {
             .unwrap();
         begin.owner.observation_owner_for_test().finish_query(Some(RuntimeTerminalOutcome::Succeeded));
 
-        let report = begin.completion.wait_timeout(Duration::from_secs(1)).expect("report");
+        let report = begin.completion.completion().wait_timeout(Duration::from_secs(1)).expect("report");
         assert_eq!(report.cleanup_failure_count, 1);
         assert!(report.cleanup_failure_count_complete);
         assert_eq!(
@@ -1646,7 +1678,7 @@ mod tests {
 
         begin.owner.commit_query_error(&error).unwrap();
 
-        let report = begin.completion.wait_timeout(Duration::from_secs(1)).expect("report");
+        let report = begin.completion.completion().wait_timeout(Duration::from_secs(1)).expect("report");
         assert_eq!(report.outcome, RuntimeTerminalOutcome::Cancelled);
         let summary = report.primary_failure.as_ref().expect("deadline summary");
         assert_eq!(summary.code(), AttemptFailureCode::Cancelled);
@@ -1665,7 +1697,7 @@ mod tests {
             let (begin, _clock, _counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
             begin.owner.commit_query_error(&error).unwrap();
 
-            let report = begin.completion.wait_timeout(Duration::from_secs(1)).expect("report");
+            let report = begin.completion.completion().wait_timeout(Duration::from_secs(1)).expect("report");
             assert_eq!(report.outcome, RuntimeTerminalOutcome::Cancelled);
             let summary = report.primary_failure.as_ref().expect("control cancellation summary");
             assert_eq!(summary.code(), AttemptFailureCode::Cancelled);
@@ -1683,7 +1715,7 @@ mod tests {
         ] {
             let (begin, _clock, _counters) = test_begin(RuntimeObservationConfig::native_execution(), None);
             begin.owner.commit_terminal(outcome).unwrap();
-            let report = begin.completion.wait_timeout(Duration::from_secs(1)).expect("report");
+            let report = begin.completion.completion().wait_timeout(Duration::from_secs(1)).expect("report");
             let summary = report.primary_failure.as_ref().expect("control summary");
             assert_eq!(summary.code(), code);
             assert_eq!(summary.origin(), crate::observability::AttemptFailureOrigin::AttemptControl);
@@ -1743,7 +1775,7 @@ mod terminalize_race_tests {
             error_code: AttemptFailureCode::ServiceOverloaded,
             error_status: AttemptFailureStatus::Temporary,
         }));
-        let report = begin.completion.wait_timeout(Duration::from_secs(1)).expect("report");
+        let report = begin.completion.completion().wait_timeout(Duration::from_secs(1)).expect("report");
         assert!(matches!(
             report.outcome,
             RuntimeTerminalOutcome::Failed { ref error_code, .. }
@@ -1781,7 +1813,7 @@ mod abandonment_race_tests {
         for _ in 0..64 {
             let queue = Arc::new(AttemptCompletionQueue::new(4).expect("queue"));
             let begin = begin(Some(Arc::clone(&queue)));
-            let completion = begin.completion;
+            let completion = begin.completion.completion();
             let (dropped_tx, dropped_rx) = std::sync::mpsc::channel::<()>();
             let publisher = std::thread::spawn(move || {
                 dropped_rx.recv().expect("drop signal");
@@ -1803,13 +1835,12 @@ mod abandonment_race_tests {
         for _ in 0..64 {
             let queue = Arc::new(AttemptCompletionQueue::new(4).expect("queue"));
             let begin = begin(Some(Arc::clone(&queue)));
-            let factory = begin.completion.uncounted();
-            drop(begin.completion);
+            let factory = begin.completion.clone();
             let (go_tx, go_rx) = std::sync::mpsc::channel::<()>();
-            let cloner_factory = factory.uncounted();
+            let cloner_factory = factory.clone();
             let cloner = std::thread::spawn(move || {
                 go_rx.recv().expect("go");
-                cloner_factory.clone()
+                cloner_factory.completion()
             });
             go_tx.send(()).expect("go");
             begin.owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).unwrap();

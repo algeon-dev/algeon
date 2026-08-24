@@ -368,12 +368,17 @@ async fn strict_flight_sql_metadata_domain_uses_cpu_without_attempt_or_user_scan
     let mut config = test_server_config();
     declare_test_gpu_ownership(&mut config);
     config.bind_addr = addr;
-    config.native_optimizer_config = config.native_optimizer_config.clone().with_no_datafusion_cpu_requirement();
+    config.native_optimizer_config = config
+        .native_optimizer_config
+        .clone()
+        .with_datafusion_cpu_execution_policy(
+            datafusion_nexus::planner::DataFusionCpuExecutionPolicy::Reject,
+        );
     let backend = build_injected_test_backend(&mut config);
     config.native_optimizer_config = datafusion_nexus::planner::NexusNativeOptimizerConfig::default();
     assert_eq!(
-        backend.optimizer_config().final_plan_requirements(),
-        &[datafusion_nexus::planner::FinalPlanRequirement::NoDataFusionCpu]
+        backend.optimizer_config().datafusion_cpu_execution_policy(),
+        datafusion_nexus::planner::DataFusionCpuExecutionPolicy::Reject
     );
     let ctx = nexus_server::build_session_context_with_backend(&config, &backend).await.unwrap();
     assert_eq!(ctx.state().config_options().execution.target_partitions, 1);

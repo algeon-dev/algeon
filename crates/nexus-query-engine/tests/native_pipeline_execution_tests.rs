@@ -51,9 +51,10 @@ use nexus_query_engine::{
     },
     runtime::{
         AdmittedQueryContext, DeploymentIoCapability, ExecutionBoundaryPolicy, ExecutionContext, GdsDriverProbeStatus,
-        GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig, GpuMemoryOwnership,
-        KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle,
-        QueueBounds, ReservationKind, resident::GpuResidentInputMap,
+        GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft, GpuBackendDeviceConfig,
+        GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuMemoryOwnership, KvikioCompatModeStatus,
+        NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds, ReservationKind,
+        resident::GpuResidentInputMap,
     },
     source::{
         GpuResidentSource, LocalParquetFile, LocalParquetSource as NativeLocalParquetSource, PartitionColumn,
@@ -113,8 +114,10 @@ fn build_suite_backend() -> Result<GpuBackendCore> {
     };
     let controller = GpuBackendControllerDraft::new(policy, QueueBounds::default());
     // One backend owns the suite; each exact-plan context acquires its own handle.
-    let device =
-        GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive).with_installation_bounds(3, 1, 1);
+    let device = GpuBackendDeviceConfig::new(
+        GpuBackendDeviceProfile::new(0).with_installation_bounds(GpuBackendDeviceInstallationBounds::new(3, 1, 1)),
+        GpuMemoryOwnership::WholeDeviceExclusive,
+    );
     GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller, deployment)).build()
 }
 

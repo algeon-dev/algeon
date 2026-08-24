@@ -1,5 +1,9 @@
 //! Planning report shape: capability, cost-selection, and final-plan evidence.
 //!
+//! Each report answers one receiver: [`CandidateOutcome`] answers the
+//! optimizer with one row per candidate, the final-plan coverage in
+//! [`crate::gpu_coverage`] answers the developer with the completed plan, and
+//! the terminal attempt report answers the caller with how execution ended.
 //! Tests and downstream report rows assert on these structured outcomes
 //! rather than parsing printed physical plans.
 //!
