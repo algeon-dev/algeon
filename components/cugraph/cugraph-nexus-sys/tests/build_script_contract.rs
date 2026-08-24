@@ -6,8 +6,6 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-const TEST_CUVS_REVISION: &str = "2bd7cd71d31e39eb9ee00c2a250085a1afb84977";
-
 struct ManualBuildFixture {
     root: PathBuf,
     script: PathBuf,
@@ -33,18 +31,6 @@ impl ManualBuildFixture {
         fs::write(&upstream, "#!/usr/bin/env bash\nexit 0\n").expect("write fixture upstream build script");
         fs::set_permissions(&upstream, fs::Permissions::from_mode(0o755))
             .expect("make fixture build script executable");
-
-        let init =
-            Command::new("git").arg("-C").arg(&sibling).args(["init", "--quiet"]).status().expect("run git init");
-        assert!(init.success(), "initialize sibling cuVS fixture");
-        let cacheinfo = format!("160000,{TEST_CUVS_REVISION},cuvs");
-        let update = Command::new("git")
-            .arg("-C")
-            .arg(&sibling)
-            .args(["update-index", "--add", "--cacheinfo", &cacheinfo])
-            .status()
-            .expect("record sibling cuVS gitlink");
-        assert!(update.success(), "record sibling cuVS fixture gitlink");
 
         if let Some(marker) = marker {
             let marker_path = default_install.join("share/cuvs-nexus/source-revision");
@@ -258,7 +244,7 @@ fn build_rs_emits_runtime_library_metadata_for_downstream_consumers() {
 }
 
 #[test]
-fn manual_and_cargo_builds_share_canonical_cuvs_contract() {
+fn manual_and_cargo_builds_share_runtime_cuvs_contract() {
     let build_rs = read_build_rs();
     let build_support = read_build_support_rs();
     let manual_script = read_manual_build_script();
@@ -286,18 +272,15 @@ fn manual_and_cargo_builds_share_canonical_cuvs_contract() {
         "the Cargo resolver must compare the default marker with the sibling cuVS stage-0 gitlink"
     );
     assert!(
-        manual_script.contains("git -C \"${workspace_parent}/cuvs-nexus\" ls-files --stage -- cuvs"),
-        "the manual build must compare the default marker with the sibling cuVS stage-0 gitlink"
+        build_support.contains("installed_revision.trim() != *expected_revision"),
+        "the Cargo resolver must reject a default source marker that differs from the sibling cuVS gitlink"
     );
-    assert!(
-        manual_script.contains("^160000[[:space:]]+([[:xdigit:]]+)[[:space:]]+0[[:space:]]+cuvs$"),
-        "the manual build must require an exact stage-0 cuVS gitlink"
-    );
-    assert!(
-        build_support.contains("installed_revision.trim() != *expected_revision")
-            && manual_script.contains("[[ \"${installed_cuvs_revision}\" != \"${expected_cuvs_revision}\" ]]"),
-        "both build paths must reject a default source marker that differs from the sibling cuVS gitlink"
-    );
+    for pinned_fragment in ["ls-files --stage -- cuvs", "expected_cuvs_revision", "does not match sibling gitlink"] {
+        assert!(
+            !manual_script.contains(pinned_fragment),
+            "the shared manual build must not pin cuVS through '{pinned_fragment}'"
+        );
+    }
     assert!(
         manual_script.contains("if [[ \"${cuvs_install_dir}\" == \"${default_cuvs_install_dir}\" ]]; then"),
         "the manual build must validate an explicit or symlinked default cuVS prefix too"
@@ -305,34 +288,26 @@ fn manual_and_cargo_builds_share_canonical_cuvs_contract() {
 }
 
 #[test]
-fn manual_build_executes_default_sibling_marker_validation() {
+fn manual_build_enforces_unpinned_source_marker_policy() {
     let missing = ManualBuildFixture::new(None);
     let output = missing.run(None);
     assert!(!output.status.success());
     assert_stderr_contains(&output, "missing 'share/cuvs-nexus/source-revision'");
 
-    let stale = ManualBuildFixture::new(Some("stale-revision"));
-    let output = stale.run(None);
-    assert!(!output.status.success());
-    assert_stderr_contains(&output, "does not match sibling gitlink");
-
-    let alias = stale.root.join("default-cuvs-alias");
-    symlink(stale.default_install(), &alias).expect("create default prefix alias");
-    let output = stale.run(Some(&alias));
-    assert!(!output.status.success());
-    assert_stderr_contains(&output, "does not match sibling gitlink");
-}
-
-#[test]
-fn manual_build_accepts_matching_default_and_marker_free_external_prefixes() {
-    let matching = ManualBuildFixture::new(Some(TEST_CUVS_REVISION));
-    let output = matching.run(None);
+    let marked = ManualBuildFixture::new(Some("active-checkout-revision"));
+    let output = marked.run(None);
     assert!(!output.status.success());
     assert_stderr_contains(&output, "does not export cuVS's CMake package");
 
-    let external = matching.root.join("external-cuvs");
+    let alias = marked.root.join("default-cuvs-alias");
+    symlink(marked.default_install(), &alias).expect("create default prefix alias");
+    let output = marked.run(Some(&alias));
+    assert!(!output.status.success());
+    assert_stderr_contains(&output, "does not export cuVS's CMake package");
+
+    let external = missing.root.join("external-cuvs");
     fs::create_dir_all(&external).expect("create external cuVS prefix");
-    let output = matching.run(Some(&external));
+    let output = missing.run(Some(&external));
     assert!(!output.status.success());
     assert_stderr_contains(&output, "does not export cuVS's CMake package");
 }

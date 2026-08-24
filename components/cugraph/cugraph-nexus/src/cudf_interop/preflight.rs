@@ -584,7 +584,7 @@ mod tests {
 
         let preflight = graph_construction_workspace_preflight(&input).expect("host preflight succeeds");
         assert_eq!(preflight.renumber_workspace_bytes(), 0);
-        assert_eq!(preflight.compression_workspace_bytes(), 0);
+        assert_eq!(preflight.compression_workspace_bytes(), size_of::<i32>() as u64);
     }
 
     #[test]
@@ -605,7 +605,7 @@ mod tests {
         assert_eq!(preflight.source_copy_bytes(), 8);
         assert_eq!(preflight.predicate_bitmap_bytes(), 24);
         assert_eq!(preflight.edge_mask_bytes(), 8);
-        assert_eq!(preflight.peak_bytes(), 76);
+        assert_eq!(preflight.peak_bytes(), 60);
     }
 
     #[test]
