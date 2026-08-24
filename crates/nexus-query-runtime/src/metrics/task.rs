@@ -2,10 +2,7 @@ use std::{collections::BTreeMap, time::Duration};
 
 use cudf::ExecutionBudgetReport;
 
-use super::{
-    CompiledTaskId, MemoryReservationEvent, MemoryReservationEventAction, MemoryReservationEventOutcome, PlanNodeId,
-    PlanTaskMapping, QueryId, QueryMetrics,
-};
+use super::{CompiledTaskId, PlanNodeId, PlanTaskMapping, QueryId, QueryMetrics};
 use crate::harness::max_option;
 
 /// Metrics aggregated across tasks of the same operator kind.
@@ -19,57 +16,18 @@ pub struct TaskOperatorMetrics {
     pub task_count: u64,
     /// Cumulative elapsed time across tasks.
     pub elapsed_time: Duration,
-    /// Cumulative reservation bytes requested.
-    pub reservation_requested_bytes: u64,
-    /// Cumulative reservation bytes granted.
-    pub reservation_granted_bytes: u64,
-    /// Cumulative reservation bytes released.
-    pub reservation_released_bytes: u64,
-    /// Peak live reserved bytes for this operator kind.
-    pub reservation_live_peak_bytes: u64,
     /// Largest lower-level observed allocator peak for this operator kind.
     pub max_observed_peak_bytes: Option<u64>,
     /// Largest lower-level retained byte count for this operator kind.
     pub max_retained_bytes: Option<u64>,
-    #[doc(hidden)]
-    pub live_reserved_bytes: u64,
 }
 
 impl TaskOperatorMetrics {
-    pub(super) fn reset_reservation_projection(&mut self) {
-        self.reservation_requested_bytes = 0;
-        self.reservation_granted_bytes = 0;
-        self.reservation_released_bytes = 0;
-        self.reservation_live_peak_bytes = 0;
-        self.live_reserved_bytes = 0;
-    }
-
-    fn record_reservation_event(&mut self, event: &MemoryReservationEvent) {
-        if matches!(event.action, MemoryReservationEventAction::Reserve | MemoryReservationEventAction::Grow) {
-            self.reservation_requested_bytes = self.reservation_requested_bytes.saturating_add(event.requested_bytes);
-        }
-        if event.outcome != MemoryReservationEventOutcome::Denied && event.charged_delta_bytes > 0 {
-            let granted = u64::try_from(event.charged_delta_bytes).unwrap_or(u64::MAX);
-            self.reservation_granted_bytes = self.reservation_granted_bytes.saturating_add(granted);
-        }
-        if event.charged_delta_bytes < 0 {
-            let released = u64::try_from(-event.charged_delta_bytes).unwrap_or(u64::MAX);
-            self.reservation_released_bytes = self.reservation_released_bytes.saturating_add(released);
-        }
-    }
-
     pub(super) fn merge_from(&mut self, other: Self) {
         self.task_count = self.task_count.saturating_add(other.task_count);
         self.elapsed_time += other.elapsed_time;
-        self.reservation_requested_bytes =
-            self.reservation_requested_bytes.saturating_add(other.reservation_requested_bytes);
-        self.reservation_granted_bytes = self.reservation_granted_bytes.saturating_add(other.reservation_granted_bytes);
-        self.reservation_released_bytes =
-            self.reservation_released_bytes.saturating_add(other.reservation_released_bytes);
-        self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(other.reservation_live_peak_bytes);
         self.max_observed_peak_bytes = max_option(self.max_observed_peak_bytes, other.max_observed_peak_bytes);
         self.max_retained_bytes = max_option(self.max_retained_bytes, other.max_retained_bytes);
-        self.live_reserved_bytes = self.live_reserved_bytes.saturating_add(other.live_reserved_bytes);
     }
 }
 
@@ -84,67 +42,20 @@ pub struct TaskRuntimeMetrics {
     pub operator_kind: String,
     /// Cumulative elapsed task time.
     pub elapsed_time: Duration,
-    /// Cumulative reservation bytes requested by the task.
-    pub reservation_requested_bytes: u64,
-    /// Cumulative reservation bytes granted to the task.
-    pub reservation_granted_bytes: u64,
-    /// Cumulative reservation bytes released by the task.
-    pub reservation_released_bytes: u64,
-    /// Peak live reserved bytes for the task.
-    pub reservation_live_peak_bytes: u64,
     /// Largest lower-level observed allocator peak for the task.
     pub max_observed_peak_bytes: Option<u64>,
     /// Largest lower-level retained byte count for the task.
     pub max_retained_bytes: Option<u64>,
-    #[doc(hidden)]
-    pub live_reserved_bytes: u64,
 }
 
 impl TaskRuntimeMetrics {
-    pub(super) fn reset_reservation_projection(&mut self) {
-        self.reservation_requested_bytes = 0;
-        self.reservation_granted_bytes = 0;
-        self.reservation_released_bytes = 0;
-        self.reservation_live_peak_bytes = 0;
-        self.live_reserved_bytes = 0;
-    }
-
-    fn record_reservation_event(&mut self, event: &MemoryReservationEvent) {
-        if matches!(event.action, MemoryReservationEventAction::Reserve | MemoryReservationEventAction::Grow) {
-            self.reservation_requested_bytes = self.reservation_requested_bytes.saturating_add(event.requested_bytes);
-        }
-        if event.outcome != MemoryReservationEventOutcome::Denied && event.charged_delta_bytes > 0 {
-            let granted = u64::try_from(event.charged_delta_bytes).unwrap_or(u64::MAX);
-            self.reservation_granted_bytes = self.reservation_granted_bytes.saturating_add(granted);
-        }
-        if event.charged_delta_bytes < 0 {
-            let released = u64::try_from(-event.charged_delta_bytes).unwrap_or(u64::MAX);
-            self.reservation_released_bytes = self.reservation_released_bytes.saturating_add(released);
-        }
-        if event.charged_delta_bytes >= 0 {
-            self.live_reserved_bytes =
-                self.live_reserved_bytes.saturating_add(u64::try_from(event.charged_delta_bytes).unwrap_or(u64::MAX));
-        } else {
-            self.live_reserved_bytes =
-                self.live_reserved_bytes.saturating_sub(u64::try_from(-event.charged_delta_bytes).unwrap_or(u64::MAX));
-        }
-        self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(self.live_reserved_bytes);
-    }
-
     pub(super) fn merge_from(&mut self, other: Self) {
         if self.operator_kind.is_empty() || self.operator_kind == "unknown" {
             self.operator_kind = other.operator_kind;
         }
         self.elapsed_time += other.elapsed_time;
-        self.reservation_requested_bytes =
-            self.reservation_requested_bytes.saturating_add(other.reservation_requested_bytes);
-        self.reservation_granted_bytes = self.reservation_granted_bytes.saturating_add(other.reservation_granted_bytes);
-        self.reservation_released_bytes =
-            self.reservation_released_bytes.saturating_add(other.reservation_released_bytes);
-        self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(other.reservation_live_peak_bytes);
         self.max_observed_peak_bytes = max_option(self.max_observed_peak_bytes, other.max_observed_peak_bytes);
         self.max_retained_bytes = max_option(self.max_retained_bytes, other.max_retained_bytes);
-        self.live_reserved_bytes = self.live_reserved_bytes.saturating_add(other.live_reserved_bytes);
     }
 }
 
@@ -171,8 +82,6 @@ pub struct BudgetedExecutionEvent {
     pub output_bytes: Option<u64>,
     /// Output rows reported by lower layers.
     pub output_rows: Option<u64>,
-    /// Unresolved contract label when the lower layer reports one.
-    pub unresolved_contract: Option<String>,
     /// Additional lower-level context facts.
     pub context_facts: BTreeMap<String, String>,
 }
@@ -190,7 +99,6 @@ impl BudgetedExecutionEvent {
             retained_bytes: report.retained_bytes().map(|bytes| bytes as u64),
             output_bytes: report.output_bytes().map(|bytes| bytes as u64),
             output_rows: report.output_rows().map(|rows| rows as u64),
-            unresolved_contract: report.unresolved_contract().map(str::to_string),
             context_facts: report.context_facts().clone(),
         }
     }
@@ -313,72 +221,6 @@ impl QueryMetrics {
         operator.elapsed_time += elapsed;
     }
 
-    pub(super) fn record_task_reservation_event(&mut self, event: &MemoryReservationEvent) {
-        let Some(compiled_task_id) = event.compiled_task_id.as_ref().map(|value| value.as_str()) else {
-            return;
-        };
-        self.record_task_runtime_reservation_event(compiled_task_id, event);
-        if matches!(
-            event.action,
-            MemoryReservationEventAction::Reserve
-                | MemoryReservationEventAction::Grow
-                | MemoryReservationEventAction::Shrink
-        ) && event.outcome != MemoryReservationEventOutcome::Denied
-        {
-            let event_reservation_bytes = if event.charged_delta_bytes > 0 {
-                u64::try_from(event.charged_delta_bytes).unwrap_or(u64::MAX)
-            } else {
-                event.granted_bytes
-            };
-            self.max_task_reservation_bytes = self.max_task_reservation_bytes.max(event_reservation_bytes);
-        }
-
-        let Some(operator_kind) = self.task_kind_by_compiled_task_id.get(compiled_task_id).cloned() else {
-            return;
-        };
-        let query_id = event.query_id.clone().or_else(|| self.inherited_query_id());
-        let row = self.task_operator_metrics.entry(operator_kind.clone()).or_insert_with(|| TaskOperatorMetrics {
-            query_id: query_id.clone(),
-            operator_kind,
-            ..Default::default()
-        });
-        if event.charged_delta_bytes >= 0 {
-            row.live_reserved_bytes =
-                row.live_reserved_bytes.saturating_add(u64::try_from(event.charged_delta_bytes).unwrap_or(u64::MAX));
-        } else {
-            row.live_reserved_bytes =
-                row.live_reserved_bytes.saturating_sub(u64::try_from(-event.charged_delta_bytes).unwrap_or(u64::MAX));
-        }
-        row.reservation_live_peak_bytes = row.reservation_live_peak_bytes.max(row.live_reserved_bytes);
-    }
-
-    fn record_task_runtime_reservation_event(&mut self, compiled_task_id: &str, event: &MemoryReservationEvent) {
-        let operator_kind =
-            self.task_kind_by_compiled_task_id.get(compiled_task_id).cloned().unwrap_or_else(|| "unknown".to_string());
-        let query_id = event.query_id.clone().or_else(|| self.inherited_query_id());
-        let row = self.task_runtime_metrics.entry(compiled_task_id.to_string()).or_insert_with(|| TaskRuntimeMetrics {
-            query_id: query_id.clone(),
-            compiled_task_id: compiled_task_id.to_string(),
-            operator_kind: operator_kind.clone(),
-            ..Default::default()
-        });
-        if row.query_id.is_none() {
-            row.query_id = query_id.clone();
-        }
-        row.operator_kind = operator_kind.clone();
-        row.record_reservation_event(event);
-
-        let operator = self.task_operator_metrics.entry(operator_kind.clone()).or_insert_with(|| TaskOperatorMetrics {
-            query_id: query_id.clone(),
-            operator_kind,
-            ..Default::default()
-        });
-        if operator.query_id.is_none() {
-            operator.query_id = query_id;
-        }
-        operator.record_reservation_event(event);
-    }
-
     pub(super) fn record_task_budget_observation(
         &mut self,
         compiled_task_id: &str,
@@ -422,29 +264,6 @@ impl QueryMetrics {
             );
             mappings.entry(key).or_insert(mapping);
         }
-        for event in &self.reservation_events {
-            let plan_node_id = event.node_id.clone();
-            let compiled_task_id = event.compiled_task_id.clone();
-            if plan_node_id.is_none() && compiled_task_id.is_none() {
-                continue;
-            }
-            let operator_kind = compiled_task_id
-                .as_ref()
-                .and_then(|task_id| self.task_kind_by_compiled_task_id.get(task_id.as_str()))
-                .cloned();
-            let key = (
-                plan_node_id.as_ref().map(|value| value.as_str().to_string()),
-                compiled_task_id.as_ref().map(|value| value.as_str().to_string()),
-                operator_kind.clone(),
-            );
-            mappings.entry(key).or_insert_with(|| PlanTaskMapping {
-                query_id: event.query_id.clone().unwrap_or_else(|| self.query_id.clone()),
-                plan_node_id,
-                compiled_task_id,
-                operator_kind,
-                datafusion_shape: self.plan_task_mapping_datafusion_shape.clone(),
-            });
-        }
         for (compiled_task_id, runtime) in &self.task_runtime_metrics {
             let key = (None, Some(compiled_task_id.clone()), Some(runtime.operator_kind.clone()));
             mappings.entry(key).or_insert_with(|| PlanTaskMapping {
@@ -472,12 +291,6 @@ impl QueryMetrics {
     pub fn record_retry_resource_exhausted(&mut self) {
         self.retry_count = self.retry_count.saturating_add(1);
         self.retry_resource_exhausted_count = self.retry_resource_exhausted_count.saturating_add(1);
-    }
-
-    /// Records one retry caused by reservation failure.
-    pub fn record_retry_reservation_failure(&mut self) {
-        self.retry_count = self.retry_count.saturating_add(1);
-        self.retry_reservation_failure_count = self.retry_reservation_failure_count.saturating_add(1);
     }
 
     /// Records one compiled-pipeline execution attempt.

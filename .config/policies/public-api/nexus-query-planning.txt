@@ -1,53 +1,12 @@
 pub mod nexus_query_planning
 pub mod nexus_query_planning::admission
-pub enum nexus_query_planning::admission::EstimateQuality
-pub nexus_query_planning::admission::EstimateQuality::Measured
-pub nexus_query_planning::admission::EstimateQuality::Modeled
-pub nexus_query_planning::admission::EstimateQuality::Unknown
-pub struct nexus_query_planning::admission::AttemptCapabilityEvidence
-impl nexus_query_planning::admission::AttemptCapabilityEvidence
-pub fn nexus_query_planning::admission::AttemptCapabilityEvidence::from_parts(u64, u64, core::option::Option<u64>, nexus_query_planning::admission::EstimateQuality, alloc::vec::Vec<nexus_query_planning::capability::ReservationRequirement>) -> Self
 pub struct nexus_query_planning::admission::BoundedPipelineAdmission
 impl nexus_query_planning::admission::BoundedPipelineAdmission
 pub fn nexus_query_planning::admission::BoundedPipelineAdmission::analysis(&self) -> &nexus_query_planning::capability::CapabilityAnalysis
 pub const fn nexus_query_planning::admission::BoundedPipelineAdmission::envelope(&self) -> nexus_query_planning::capability::CapabilityEnvelope
 pub fn nexus_query_planning::admission::BoundedPipelineAdmission::pipeline(&self) -> &nexus_query_planning::pipeline::CompiledPipeline
-pub struct nexus_query_planning::admission::ComposedGraphProducerCandidate
-impl nexus_query_planning::admission::ComposedGraphProducerCandidate
-pub fn nexus_query_planning::admission::ComposedGraphProducerCandidate::new(core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>, core::option::Option<nexus_query_planning::admission::QueryPlanCapabilityProof>) -> Self
-pub struct nexus_query_planning::admission::ComposedProducerBindingDiagnostics
-impl nexus_query_planning::admission::ComposedProducerBindingDiagnostics
-pub fn nexus_query_planning::admission::ComposedProducerBindingDiagnostics::consumer_execution_scope_fingerprint(&self) -> &str
-pub const fn nexus_query_planning::admission::ComposedProducerBindingDiagnostics::missing_fact_kind(&self) -> &'static str
-pub fn nexus_query_planning::admission::ComposedProducerBindingDiagnostics::missing_producer_occurrences(&self) -> &[alloc::string::String]
-pub fn nexus_query_planning::admission::ComposedProducerBindingDiagnostics::proven_owner_terms(&self) -> &[alloc::string::String]
-pub const fn nexus_query_planning::admission::ComposedProducerBindingDiagnostics::reason_code(&self) -> &'static str
-pub const fn nexus_query_planning::admission::ComposedProducerBindingDiagnostics::responsible_owner(&self) -> &'static str
-pub fn nexus_query_planning::admission::ComposedProducerBindingDiagnostics::unresolved_owner_terms(&self) -> &[alloc::string::String]
-pub struct nexus_query_planning::admission::QueryPlanCapabilityProof
-impl nexus_query_planning::admission::QueryPlanCapabilityProof
-pub fn nexus_query_planning::admission::QueryPlanCapabilityProof::combine(Self, impl core::iter::traits::collect::IntoIterator<Item = Self>) -> nexus_query_planning::error::Result<Self>
-pub fn nexus_query_planning::admission::QueryPlanCapabilityProof::combine_composed_graph_attempt(&nexus_query_planning::plan::QueryPlan, Self, impl core::iter::traits::collect::IntoIterator<Item = (alloc::string::String, Self)>) -> nexus_query_planning::error::Result<Self>
-pub fn nexus_query_planning::admission::QueryPlanCapabilityProof::composed_producer_binding_diagnostics(&self, &nexus_query_planning::plan::QueryPlan) -> core::option::Option<nexus_query_planning::admission::ComposedProducerBindingDiagnostics>
-pub fn nexus_query_planning::admission::QueryPlanCapabilityProof::for_composed_consumer_plan(&nexus_query_planning::plan::QueryPlan) -> core::option::Option<Self>
-pub fn nexus_query_planning::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&nexus_query_planning::plan::QueryPlan) -> core::option::Option<Self>
-pub fn nexus_query_planning::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan_with_resident_inputs<'a>(&nexus_query_planning::plan::QueryPlan, impl core::iter::traits::collect::IntoIterator<Item = (&'a str, &'a nexus_query_planning::plan::QueryPlan)>) -> nexus_query_planning::error::Result<core::option::Option<Self>>
-pub fn nexus_query_planning::admission::QueryPlanCapabilityProof::for_cugraph_graph_input_plan(&nexus_query_planning::plan::QueryPlan) -> core::option::Option<Self>
-pub fn nexus_query_planning::admission::QueryPlanCapabilityProof::for_cugraph_materialized_input_producer_plan(&nexus_query_planning::plan::QueryPlan) -> nexus_query_planning::error::Result<Self>
-pub fn nexus_query_planning::admission::QueryPlanCapabilityProof::for_query_plan(&nexus_query_planning::plan::QueryPlan) -> core::option::Option<Self>
-pub fn nexus_query_planning::admission::QueryPlanCapabilityProof::for_query_plan_preflighted(&nexus_query_planning::plan::QueryPlan) -> nexus_query_planning::error::Result<Self>
-pub fn nexus_query_planning::admission::QueryPlanCapabilityProof::required_capabilities(&self) -> &[nexus_query_planning::capability::ReservationRequirement]
-pub fn nexus_query_planning::admission::QueryPlanCapabilityProof::required_floor_bytes_for(&self, u64) -> nexus_query_planning::error::Result<u64>
-pub fn nexus_query_planning::admission::QueryPlanCapabilityProof::requirement_for_device(&self, usize) -> nexus_query_planning::error::Result<Self>
-pub fn nexus_query_planning::admission::QueryPlanCapabilityProof::requires_composed_producer_binding(&self) -> bool
-pub fn nexus_query_planning::admission::QueryPlanCapabilityProof::resolve_composed_graph_attempt(&nexus_query_planning::plan::QueryPlan, Self, impl core::iter::traits::collect::IntoIterator<Item = nexus_query_planning::admission::ComposedGraphProducerCandidate>) -> nexus_query_planning::error::Result<Self>
-pub fn nexus_query_planning::admission::QueryPlanCapabilityProof::soft_working_set_hint_bytes(&self) -> core::option::Option<u64>
-pub fn nexus_query_planning::admission::QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt<'a>(&nexus_query_planning::plan::QueryPlan, Self, &str, &nexus_query_planning::plan::QueryPlan, impl core::iter::traits::collect::IntoIterator<Item = (alloc::string::String, &'a nexus_query_planning::plan::QueryPlan)>) -> nexus_query_planning::error::Result<core::option::Option<Self>>
-pub fn nexus_query_planning::admission::QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt_with_proofs(&nexus_query_planning::plan::QueryPlan, Self, &str, &nexus_query_planning::plan::QueryPlan, impl core::iter::traits::collect::IntoIterator<Item = (alloc::string::String, Self)>) -> nexus_query_planning::error::Result<core::option::Option<Self>>
-pub fn nexus_query_planning::admission::QueryPlanCapabilityProof::try_for_resident_side_input_plan(&nexus_query_planning::plan::QueryPlan) -> nexus_query_planning::error::Result<Self>
-pub fn nexus_query_planning::admission::QueryPlanCapabilityProof::with_graph_memory_admission_evidence(self, &nexus_query_planning::graph_memory::GraphMemoryAdmissionEvidence) -> nexus_query_planning::error::Result<Self>
-pub fn nexus_query_planning::admission::bounded_join_modeled_facts(&nexus_query_planning::plan::QueryPlan, crate::execution_contracts::ExecutionBoundaryPolicy) -> core::option::Option<alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>>
-pub fn nexus_query_planning::admission::bounded_join_unsupported_shape_facts(&nexus_query_planning::plan::QueryPlan, crate::execution_contracts::ExecutionBoundaryPolicy) -> core::option::Option<alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>>
+pub fn nexus_query_planning::admission::bounded_join_modeled_facts(&nexus_query_planning::plan::QueryPlan) -> core::option::Option<alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>>
+pub fn nexus_query_planning::admission::bounded_join_unsupported_shape_facts(&nexus_query_planning::plan::QueryPlan) -> core::option::Option<alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>>
 pub fn nexus_query_planning::admission::bounded_pipeline_admission(&nexus_query_planning::plan::QueryPlan) -> nexus_query_planning::error::Result<core::option::Option<nexus_query_planning::admission::BoundedPipelineAdmission>>
 pub fn nexus_query_planning::admission::bounded_pipeline_admission_with_statistical_aggregate_mode(&nexus_query_planning::plan::QueryPlan, nexus_query_planning::mode::StatisticalAggregateExecutionMode) -> nexus_query_planning::error::Result<core::option::Option<nexus_query_planning::admission::BoundedPipelineAdmission>>
 pub fn nexus_query_planning::admission::bounded_pipeline_rejection_projection(&nexus_query_planning::plan::QueryPlan) -> nexus_query_planning::error::Result<core::option::Option<nexus_query_planning::capability::CapabilityRejectionProjection>>
@@ -108,7 +67,6 @@ pub nexus_query_planning::capability::CapabilityEnvelopeAdmission::Rejected
 pub nexus_query_planning::capability::CapabilityEnvelopeAdmission::Rejected::projection: nexus_query_planning::capability::CapabilityRejectionProjection
 pub enum nexus_query_planning::capability::CapabilityRejectionCategory
 pub nexus_query_planning::capability::CapabilityRejectionCategory::MissingEdgeContract
-pub nexus_query_planning::capability::CapabilityRejectionCategory::MissingLowerLevelContract
 pub nexus_query_planning::capability::CapabilityRejectionCategory::MissingSubgraphInvariant
 pub nexus_query_planning::capability::CapabilityRejectionCategory::UnsupportedArrowDtype
 pub nexus_query_planning::capability::CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope
@@ -124,29 +82,18 @@ pub nexus_query_planning::capability::CapabilityRejectionOwner::Edge::consumer: 
 pub nexus_query_planning::capability::CapabilityRejectionOwner::Edge::producer: nexus_query_planning::plan::NodeId
 pub nexus_query_planning::capability::CapabilityRejectionOwner::Invariant(nexus_query_planning::capability::InvariantId)
 pub nexus_query_planning::capability::CapabilityRejectionOwner::Node(nexus_query_planning::plan::NodeId)
+pub enum nexus_query_planning::capability::CapabilityScope
+pub nexus_query_planning::capability::CapabilityScope::Edge
+pub nexus_query_planning::capability::CapabilityScope::Node
+pub nexus_query_planning::capability::CapabilityScope::Subgraph
+impl nexus_query_planning::capability::CapabilityScope
+pub const fn nexus_query_planning::capability::CapabilityScope::as_str(self) -> &'static str
 pub enum nexus_query_planning::capability::ConstraintScope
 pub nexus_query_planning::capability::ConstraintScope::Edge
 pub nexus_query_planning::capability::ConstraintScope::Edge::consumer: nexus_query_planning::capability::EdgeConsumer
 pub nexus_query_planning::capability::ConstraintScope::Edge::producer: nexus_query_planning::plan::NodeId
 pub nexus_query_planning::capability::ConstraintScope::Invariant(nexus_query_planning::capability::InvariantId)
 pub nexus_query_planning::capability::ConstraintScope::Node(nexus_query_planning::plan::NodeId)
-pub enum nexus_query_planning::capability::ContractQuality
-pub nexus_query_planning::capability::ContractQuality::CapabilityProof
-pub nexus_query_planning::capability::ContractQuality::ExactPreflight
-pub nexus_query_planning::capability::ContractQuality::HardBudgetedReportWithUnresolvedPreflight
-pub nexus_query_planning::capability::ContractQuality::MetadataBound
-pub nexus_query_planning::capability::ContractQuality::ObservedRetainedState
-pub nexus_query_planning::capability::ContractQuality::QueryEngineOwnedBoundary
-pub nexus_query_planning::capability::ContractQuality::QueryEngineOwnedOrdering
-impl nexus_query_planning::capability::ContractQuality
-pub const fn nexus_query_planning::capability::ContractQuality::as_str(self) -> &'static str
-pub enum nexus_query_planning::capability::ContractStatus
-pub nexus_query_planning::capability::ContractStatus::BlockedByLowerLevel
-pub nexus_query_planning::capability::ContractStatus::DeferredUntilPrerequisite
-pub nexus_query_planning::capability::ContractStatus::Modeled
-pub nexus_query_planning::capability::ContractStatus::RejectedByCapability
-impl nexus_query_planning::capability::ContractStatus
-pub const fn nexus_query_planning::capability::ContractStatus::as_str(self) -> &'static str
 pub enum nexus_query_planning::capability::EdgeConsumer
 pub nexus_query_planning::capability::EdgeConsumer::Node(nexus_query_planning::plan::NodeId)
 pub nexus_query_planning::capability::EdgeConsumer::Sink(nexus_query_planning::capability::ResultSinkKind)
@@ -224,12 +171,6 @@ pub nexus_query_planning::capability::ProducedProperty::ResidentFrame
 pub nexus_query_planning::capability::ProducedProperty::ScalarFrame
 pub enum nexus_query_planning::capability::RequiredProperty
 pub nexus_query_planning::capability::RequiredProperty::ResidentFrame
-pub enum nexus_query_planning::capability::ReservationRequirementScope
-pub nexus_query_planning::capability::ReservationRequirementScope::Edge
-pub nexus_query_planning::capability::ReservationRequirementScope::Node
-pub nexus_query_planning::capability::ReservationRequirementScope::Subgraph
-impl nexus_query_planning::capability::ReservationRequirementScope
-pub const fn nexus_query_planning::capability::ReservationRequirementScope::as_str(self) -> &'static str
 pub enum nexus_query_planning::capability::ResidentResource
 pub nexus_query_planning::capability::ResidentResource::JoinBuildInput
 pub nexus_query_planning::capability::ResidentResource::JoinBuildInput::input: nexus_query_planning::plan::NodeId
@@ -257,7 +198,6 @@ pub nexus_query_planning::capability::SourceFormatCapability::LiteralBatch
 pub nexus_query_planning::capability::SourceFormatCapability::LocalParquet
 pub enum nexus_query_planning::capability::SubgraphInvariantKind
 pub nexus_query_planning::capability::SubgraphInvariantKind::AggregateDerivesFromSharedProducer
-pub nexus_query_planning::capability::SubgraphInvariantKind::BlockingRollupRankTopKFullScan
 pub nexus_query_planning::capability::SubgraphInvariantKind::BuildBeforeProbe
 pub nexus_query_planning::capability::SubgraphInvariantKind::BuildBeforeProbe::join_id: nexus_query_planning::plan::NodeId
 pub nexus_query_planning::capability::SubgraphInvariantKind::ClosedJoinSubtree
@@ -354,7 +294,6 @@ pub nexus_query_planning::capability::CapabilityAnalysis::multi_join_resident_gr
 pub nexus_query_planning::capability::CapabilityAnalysis::nodes: alloc::vec::Vec<nexus_query_planning::capability::NodeCapability>
 pub nexus_query_planning::capability::CapabilityAnalysis::projection_global_limit_admission: nexus_query_planning::capability::CapabilityDecision
 pub nexus_query_planning::capability::CapabilityAnalysis::projection_scalar_setop_admission: nexus_query_planning::capability::CapabilityDecision
-pub nexus_query_planning::capability::CapabilityAnalysis::requirements: alloc::vec::Vec<nexus_query_planning::capability::ReservationRequirement>
 pub nexus_query_planning::capability::CapabilityAnalysis::rollup_rank_topk_after_aggregate_join_pushdown_admission: nexus_query_planning::capability::CapabilityDecision
 pub nexus_query_planning::capability::CapabilityAnalysis::root_full_sort_join_aggregate_admission: nexus_query_planning::capability::CapabilityDecision
 pub nexus_query_planning::capability::CapabilityAnalysis::root_join_admission: nexus_query_planning::capability::CapabilityDecision
@@ -382,10 +321,10 @@ pub fn nexus_query_planning::capability::CapabilityAnalysis::capability_envelope
 pub fn nexus_query_planning::capability::CapabilityAnalysis::first_rejection_projection(&self) -> core::option::Option<nexus_query_planning::capability::CapabilityRejectionProjection>
 pub fn nexus_query_planning::capability::CapabilityAnalysis::has_rejections(&self) -> bool
 pub struct nexus_query_planning::capability::CapabilityRejectionProjection
+pub nexus_query_planning::capability::CapabilityRejectionProjection::boundary: &'static str
 pub nexus_query_planning::capability::CapabilityRejectionProjection::category: nexus_query_planning::capability::CapabilityRejectionCategory
-pub nexus_query_planning::capability::CapabilityRejectionProjection::contract_scope: nexus_query_planning::capability::ReservationRequirementScope
+pub nexus_query_planning::capability::CapabilityRejectionProjection::contract_scope: nexus_query_planning::capability::CapabilityScope
 pub nexus_query_planning::capability::CapabilityRejectionProjection::facts: alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>
-pub nexus_query_planning::capability::CapabilityRejectionProjection::memory_boundary: &'static str
 pub nexus_query_planning::capability::CapabilityRejectionProjection::owner: nexus_query_planning::capability::CapabilityRejectionOwner
 pub nexus_query_planning::capability::CapabilityRejectionProjection::reason: &'static str
 pub struct nexus_query_planning::capability::ConstraintRef
@@ -402,7 +341,6 @@ pub nexus_query_planning::capability::EdgeContract::decision: nexus_query_planni
 pub nexus_query_planning::capability::EdgeContract::input_role: nexus_query_planning::capability::InputRole
 pub nexus_query_planning::capability::EdgeContract::producer: nexus_query_planning::plan::NodeId
 pub nexus_query_planning::capability::EdgeContract::required_properties: alloc::vec::Vec<nexus_query_planning::capability::RequiredProperty>
-pub nexus_query_planning::capability::EdgeContract::reservation_requirements: alloc::vec::Vec<nexus_query_planning::capability::ReservationRequirement>
 pub struct nexus_query_planning::capability::InvariantId(pub usize)
 impl nexus_query_planning::capability::InvariantId
 pub const fn nexus_query_planning::capability::InvariantId::index(self) -> usize
@@ -437,20 +375,9 @@ impl core::default::Default for nexus_query_planning::capability::KeyedHashJoinS
 pub fn nexus_query_planning::capability::KeyedHashJoinStrategyOptions::default() -> Self
 pub struct nexus_query_planning::capability::NodeCapability
 pub nexus_query_planning::capability::NodeCapability::executable: nexus_query_planning::capability::CapabilityDecision
-pub nexus_query_planning::capability::NodeCapability::local_requirements: alloc::vec::Vec<nexus_query_planning::capability::ReservationRequirement>
 pub nexus_query_planning::capability::NodeCapability::node_id: nexus_query_planning::plan::NodeId
 pub nexus_query_planning::capability::NodeCapability::operator: nexus_query_planning::capability::NodeOperator
 pub nexus_query_planning::capability::NodeCapability::produced_properties: alloc::vec::Vec<nexus_query_planning::capability::ProducedProperty>
-pub struct nexus_query_planning::capability::ReservationRequirement
-pub nexus_query_planning::capability::ReservationRequirement::kind: crate::execution_contracts::ReservationKind
-pub nexus_query_planning::capability::ReservationRequirement::memory_boundary: &'static str
-pub nexus_query_planning::capability::ReservationRequirement::quality: nexus_query_planning::capability::ContractQuality
-pub nexus_query_planning::capability::ReservationRequirement::required_contract: &'static str
-pub nexus_query_planning::capability::ReservationRequirement::scope: nexus_query_planning::capability::ReservationRequirementScope
-pub nexus_query_planning::capability::ReservationRequirement::status: nexus_query_planning::capability::ContractStatus
-impl nexus_query_planning::capability::ReservationRequirement
-pub fn nexus_query_planning::capability::ReservationRequirement::blocked_by_lower_level(ReservationKind, &'static str, &'static str, nexus_query_planning::capability::ContractQuality) -> Self
-pub fn nexus_query_planning::capability::ReservationRequirement::modeled(ReservationKind, &'static str, &'static str, nexus_query_planning::capability::ContractQuality) -> Self
 pub struct nexus_query_planning::capability::SubgraphInvariant
 pub nexus_query_planning::capability::SubgraphInvariant::decision: nexus_query_planning::capability::CapabilityDecision
 pub nexus_query_planning::capability::SubgraphInvariant::invariant_id: nexus_query_planning::capability::InvariantId
@@ -458,21 +385,9 @@ pub nexus_query_planning::capability::SubgraphInvariant::kind: nexus_query_plann
 pub nexus_query_planning::capability::SubgraphInvariant::nodes: alloc::vec::Vec<nexus_query_planning::plan::NodeId>
 pub nexus_query_planning::capability::SubgraphInvariant::required_resources: alloc::vec::Vec<nexus_query_planning::capability::ResidentResource>
 pub nexus_query_planning::capability::SubgraphInvariant::required_schedule: nexus_query_planning::capability::ScheduleConstraint
-pub nexus_query_planning::capability::SubgraphInvariant::reservation_requirements: alloc::vec::Vec<nexus_query_planning::capability::ReservationRequirement>
-pub struct nexus_query_planning::capability::UnresolvedPreflightGap
-pub nexus_query_planning::capability::UnresolvedPreflightGap::kind: crate::execution_contracts::ReservationKind
-pub nexus_query_planning::capability::UnresolvedPreflightGap::required_contract: &'static str
-pub nexus_query_planning::capability::UnresolvedPreflightGap::retirement_requirement: &'static str
-pub nexus_query_planning::capability::UnresolvedPreflightGap::unresolved_gap: &'static str
-pub const nexus_query_planning::capability::BLOCKING_ROLLUP_RANK_FULL_SCAN_REQUIRES_EXACT_CONTRACTS: &str
 pub const nexus_query_planning::capability::STATISTICAL_JOIN_FINAL_SORT_REQUIRES_EXACT_CONTRACTS: &str
-pub const nexus_query_planning::capability::UNRESOLVED_PREFLIGHT_GAPS: &[nexus_query_planning::capability::UnresolvedPreflightGap]
 pub fn nexus_query_planning::capability::aggregate_strategy_capability_decision(&nexus_query_planning::expr::AggregateSpec, &arrow_schema::schema::Schema, nexus_query_planning::capability::AggregateExecutionStage) -> nexus_query_planning::capability::AggregateStrategyCapabilityDecision
 pub fn nexus_query_planning::capability::analyze_query_capabilities(&nexus_query_planning::plan::QueryPlan) -> nexus_query_planning::capability::CapabilityAnalysis
-pub fn nexus_query_planning::capability::lower_level_unresolved_preflight_gap(crate::execution_contracts::ReservationKind, &str) -> core::option::Option<&'static str>
-pub fn nexus_query_planning::capability::lower_level_unresolved_preflight_gap_for_contract(&str) -> core::option::Option<&'static str>
-pub const fn nexus_query_planning::capability::reservation_requirement_scope(crate::execution_contracts::ReservationKind) -> nexus_query_planning::capability::ReservationRequirementScope
-pub fn nexus_query_planning::capability::unresolved_preflight_gap(crate::execution_contracts::ReservationKind, &str) -> core::option::Option<&'static nexus_query_planning::capability::UnresolvedPreflightGap>
 pub mod nexus_query_planning::chunk
 pub struct nexus_query_planning::chunk::SourceChunk
 pub nexus_query_planning::chunk::SourceChunk::chunk_index: usize
@@ -584,23 +499,20 @@ pub fn nexus_query_planning::chunk::annotate_source_chunk_batching_reasons(&mut 
 pub fn nexus_query_planning::chunk::local_parquet_source_has_exact_read_preflight(&nexus_query_planning::source::LocalParquetSource) -> bool
 pub fn nexus_query_planning::chunk::plan_source_chunk_batches(&[nexus_query_planning::chunk::SourceChunk], core::option::Option<u64>) -> alloc::vec::Vec<nexus_query_planning::chunk::SourceChunkBatch>
 pub mod nexus_query_planning::contract_report
-pub enum nexus_query_planning::contract_report::CapabilityContractGateId
-pub nexus_query_planning::contract_report::CapabilityContractGateId::CapabilityRequirement
-pub nexus_query_planning::contract_report::CapabilityContractGateId::CapabilityRequirement::index: usize
-pub nexus_query_planning::contract_report::CapabilityContractGateId::CapabilityRequirement::scope: nexus_query_planning::capability::ReservationRequirementScope
-pub nexus_query_planning::contract_report::CapabilityContractGateId::Compiled(nexus_query_planning::pipeline::ReservationGateId)
-impl core::fmt::Display for nexus_query_planning::contract_report::CapabilityContractGateId
-pub fn nexus_query_planning::contract_report::CapabilityContractGateId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum nexus_query_planning::contract_report::CapabilityContractOwner
-pub nexus_query_planning::contract_report::CapabilityContractOwner::CapabilityAdmission(&'static str)
-pub nexus_query_planning::contract_report::CapabilityContractOwner::CapabilityEdge
-pub nexus_query_planning::contract_report::CapabilityContractOwner::CapabilityEdge::consumer: nexus_query_planning::capability::EdgeConsumer
-pub nexus_query_planning::contract_report::CapabilityContractOwner::CapabilityEdge::producer: nexus_query_planning::plan::NodeId
-pub nexus_query_planning::contract_report::CapabilityContractOwner::CapabilityNode(nexus_query_planning::plan::NodeId)
-pub nexus_query_planning::contract_report::CapabilityContractOwner::CapabilitySubgraph(nexus_query_planning::capability::InvariantId)
-pub nexus_query_planning::contract_report::CapabilityContractOwner::Compiled(nexus_query_planning::pipeline::ReservationGateOwner)
-impl core::fmt::Display for nexus_query_planning::contract_report::CapabilityContractOwner
-pub fn nexus_query_planning::contract_report::CapabilityContractOwner::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum nexus_query_planning::contract_report::CapabilityDecisionOwner
+pub nexus_query_planning::contract_report::CapabilityDecisionOwner::Admission(&'static str)
+pub nexus_query_planning::contract_report::CapabilityDecisionOwner::Edge
+pub nexus_query_planning::contract_report::CapabilityDecisionOwner::Edge::consumer: nexus_query_planning::capability::EdgeConsumer
+pub nexus_query_planning::contract_report::CapabilityDecisionOwner::Edge::producer: nexus_query_planning::plan::NodeId
+pub nexus_query_planning::contract_report::CapabilityDecisionOwner::Node(nexus_query_planning::plan::NodeId)
+pub nexus_query_planning::contract_report::CapabilityDecisionOwner::Subgraph(nexus_query_planning::capability::InvariantId)
+impl core::fmt::Display for nexus_query_planning::contract_report::CapabilityDecisionOwner
+pub fn nexus_query_planning::contract_report::CapabilityDecisionOwner::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum nexus_query_planning::contract_report::CapabilityDecisionStatus
+pub nexus_query_planning::contract_report::CapabilityDecisionStatus::Deferred
+pub nexus_query_planning::contract_report::CapabilityDecisionStatus::Rejected
+impl nexus_query_planning::contract_report::CapabilityDecisionStatus
+pub const fn nexus_query_planning::contract_report::CapabilityDecisionStatus::as_str(self) -> &'static str
 pub enum nexus_query_planning::contract_report::CapabilityEnvelopeStatus
 pub nexus_query_planning::contract_report::CapabilityEnvelopeStatus::Admitted
 pub nexus_query_planning::contract_report::CapabilityEnvelopeStatus::Deferred
@@ -609,31 +521,13 @@ impl nexus_query_planning::mode::CapabilityEnvelopeStatus
 pub const fn nexus_query_planning::mode::CapabilityEnvelopeStatus::as_str(self) -> &'static str
 impl core::fmt::Display for nexus_query_planning::mode::CapabilityEnvelopeStatus
 pub fn nexus_query_planning::mode::CapabilityEnvelopeStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct nexus_query_planning::contract_report::CapabilityContractGateRow
-pub nexus_query_planning::contract_report::CapabilityContractGateRow::contract_quality: nexus_query_planning::capability::ContractQuality
-pub nexus_query_planning::contract_report::CapabilityContractGateRow::contract_scope: nexus_query_planning::capability::ReservationRequirementScope
-pub nexus_query_planning::contract_report::CapabilityContractGateRow::contract_status: nexus_query_planning::capability::ContractStatus
-pub nexus_query_planning::contract_report::CapabilityContractGateRow::execution_mode: nexus_query_planning::mode::CapabilityEnvelopeStatus
-pub nexus_query_planning::contract_report::CapabilityContractGateRow::gate_id: nexus_query_planning::contract_report::CapabilityContractGateId
-pub nexus_query_planning::contract_report::CapabilityContractGateRow::memory_boundary: &'static str
-pub nexus_query_planning::contract_report::CapabilityContractGateRow::owner: nexus_query_planning::contract_report::CapabilityContractOwner
-pub nexus_query_planning::contract_report::CapabilityContractGateRow::required_contract: &'static str
-pub nexus_query_planning::contract_report::CapabilityContractGateRow::reservation_kind: crate::execution_contracts::ReservationKind
-pub nexus_query_planning::contract_report::CapabilityContractGateRow::unresolved_preflight_gap: core::option::Option<&'static str>
-impl nexus_query_planning::contract_report::CapabilityContractGateRow
-pub fn nexus_query_planning::contract_report::CapabilityContractGateRow::from_capability_rejection_projection(nexus_query_planning::mode::CapabilityEnvelopeStatus, usize, &nexus_query_planning::capability::CapabilityRejectionProjection) -> nexus_query_planning::error::Result<Self>
-pub fn nexus_query_planning::contract_report::CapabilityContractGateRow::from_deferred_composed_producer_binding(usize) -> nexus_query_planning::error::Result<Self>
-pub fn nexus_query_planning::contract_report::CapabilityContractGateRow::to_json(&self) -> serde_json::value::Value
-pub fn nexus_query_planning::contract_report::CapabilityContractGateRow::to_stable_kv_row(&self) -> alloc::string::String
-impl core::fmt::Display for nexus_query_planning::contract_report::CapabilityContractGateRow
-pub fn nexus_query_planning::contract_report::CapabilityContractGateRow::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct nexus_query_planning::contract_report::CapabilityContractReport
 impl nexus_query_planning::contract_report::CapabilityContractReport
+pub fn nexus_query_planning::contract_report::CapabilityContractReport::decision_rows(&self) -> &[nexus_query_planning::contract_report::CapabilityDecisionRow]
 pub fn nexus_query_planning::contract_report::CapabilityContractReport::execution_mode(&self) -> nexus_query_planning::mode::CapabilityEnvelopeStatus
 pub fn nexus_query_planning::contract_report::CapabilityContractReport::from_capability_analysis(&nexus_query_planning::capability::CapabilityAnalysis) -> nexus_query_planning::error::Result<Self>
 pub fn nexus_query_planning::contract_report::CapabilityContractReport::from_compiled_pipeline(&nexus_query_planning::capability::CapabilityAnalysis, &nexus_query_planning::pipeline::CompiledPipeline) -> nexus_query_planning::error::Result<Self>
-pub fn nexus_query_planning::contract_report::CapabilityContractReport::from_gate_rows(nexus_query_planning::mode::CapabilityEnvelopeStatus, alloc::vec::Vec<nexus_query_planning::contract_report::CapabilityContractGateRow>) -> nexus_query_planning::error::Result<Self>
-pub fn nexus_query_planning::contract_report::CapabilityContractReport::gate_rows(&self) -> &[nexus_query_planning::contract_report::CapabilityContractGateRow]
+pub fn nexus_query_planning::contract_report::CapabilityContractReport::from_decision_rows(nexus_query_planning::mode::CapabilityEnvelopeStatus, alloc::vec::Vec<nexus_query_planning::contract_report::CapabilityDecisionRow>) -> nexus_query_planning::error::Result<Self>
 pub fn nexus_query_planning::contract_report::CapabilityContractReport::is_ready(&self) -> bool
 pub fn nexus_query_planning::contract_report::CapabilityContractReport::query_id(&self) -> core::option::Option<&QueryId>
 pub fn nexus_query_planning::contract_report::CapabilityContractReport::stable_kv_rows(&self) -> alloc::vec::Vec<alloc::string::String>
@@ -643,6 +537,28 @@ pub fn nexus_query_planning::contract_report::CapabilityContractReport::with_que
 pub fn nexus_query_planning::contract_report::CapabilityContractReport::with_trace_id(self, impl core::convert::Into<TraceId>) -> Self
 impl nexus_query_planning::contract_report::CapabilityContractReport
 pub fn nexus_query_planning::contract_report::CapabilityContractReport::triage_summary(&self) -> nexus_query_planning::triage::TriageSummary
+pub struct nexus_query_planning::contract_report::CapabilityDecisionId
+pub nexus_query_planning::contract_report::CapabilityDecisionId::index: usize
+pub nexus_query_planning::contract_report::CapabilityDecisionId::scope: nexus_query_planning::capability::CapabilityScope
+impl core::fmt::Display for nexus_query_planning::contract_report::CapabilityDecisionId
+pub fn nexus_query_planning::contract_report::CapabilityDecisionId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct nexus_query_planning::contract_report::CapabilityDecisionRow
+pub nexus_query_planning::contract_report::CapabilityDecisionRow::boundary: &'static str
+pub nexus_query_planning::contract_report::CapabilityDecisionRow::category: core::option::Option<nexus_query_planning::capability::CapabilityRejectionCategory>
+pub nexus_query_planning::contract_report::CapabilityDecisionRow::decision_id: nexus_query_planning::contract_report::CapabilityDecisionId
+pub nexus_query_planning::contract_report::CapabilityDecisionRow::execution_mode: nexus_query_planning::mode::CapabilityEnvelopeStatus
+pub nexus_query_planning::contract_report::CapabilityDecisionRow::facts: alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>
+pub nexus_query_planning::contract_report::CapabilityDecisionRow::owner: nexus_query_planning::contract_report::CapabilityDecisionOwner
+pub nexus_query_planning::contract_report::CapabilityDecisionRow::reason: &'static str
+pub nexus_query_planning::contract_report::CapabilityDecisionRow::scope: nexus_query_planning::capability::CapabilityScope
+pub nexus_query_planning::contract_report::CapabilityDecisionRow::status: nexus_query_planning::contract_report::CapabilityDecisionStatus
+impl nexus_query_planning::contract_report::CapabilityDecisionRow
+pub fn nexus_query_planning::contract_report::CapabilityDecisionRow::deferred_composed_producer_binding(usize) -> nexus_query_planning::error::Result<Self>
+pub fn nexus_query_planning::contract_report::CapabilityDecisionRow::from_rejection_projection(usize, &nexus_query_planning::capability::CapabilityRejectionProjection) -> nexus_query_planning::error::Result<Self>
+pub fn nexus_query_planning::contract_report::CapabilityDecisionRow::to_json(&self) -> serde_json::value::Value
+pub fn nexus_query_planning::contract_report::CapabilityDecisionRow::to_stable_kv_row(&self) -> alloc::string::String
+impl core::fmt::Display for nexus_query_planning::contract_report::CapabilityDecisionRow
+pub fn nexus_query_planning::contract_report::CapabilityDecisionRow::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub mod nexus_query_planning::datatypes
 pub fn nexus_query_planning::datatypes::arrow_decimal_scale_to_cudf_scale(i8) -> i32
 pub fn nexus_query_planning::datatypes::arrow_field_metadata_matches_except_parquet_field_id(&std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>, &std::collections::hash::map::HashMap<alloc::string::String, alloc::string::String>) -> bool
@@ -1196,263 +1112,33 @@ pub nexus_query_planning::expr::SortSpec::expressions: alloc::vec::Vec<nexus_que
 impl nexus_query_planning::expr::SortSpec
 pub fn nexus_query_planning::expr::SortSpec::new(alloc::vec::Vec<nexus_query_planning::expr::SortExpr>) -> Self
 pub fn nexus_query_planning::expr::representation_cast_preserves_identity(&arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType) -> bool
-pub mod nexus_query_planning::graph_memory
-pub enum nexus_query_planning::graph_memory::GraphCalibrationSource
-pub nexus_query_planning::graph_memory::GraphCalibrationSource::None
-pub nexus_query_planning::graph_memory::GraphCalibrationSource::RawInputEdges
-impl nexus_query_planning::graph_memory::GraphCalibrationSource
-pub const fn nexus_query_planning::graph_memory::GraphCalibrationSource::as_str(self) -> &'static str
-impl core::fmt::Display for nexus_query_planning::graph_memory::GraphCalibrationSource
-pub fn nexus_query_planning::graph_memory::GraphCalibrationSource::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum nexus_query_planning::graph_memory::GraphClaimExecutionState
-pub nexus_query_planning::graph_memory::GraphClaimExecutionState::AlgorithmStarted
-pub nexus_query_planning::graph_memory::GraphClaimExecutionState::GraphMemoryAdmissionDenied
-pub nexus_query_planning::graph_memory::GraphClaimExecutionState::Pending
-impl nexus_query_planning::graph_memory::GraphClaimExecutionState
-pub const fn nexus_query_planning::graph_memory::GraphClaimExecutionState::as_str(self) -> &'static str
-impl core::fmt::Display for nexus_query_planning::graph_memory::GraphClaimExecutionState
-pub fn nexus_query_planning::graph_memory::GraphClaimExecutionState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum nexus_query_planning::graph_memory::GraphMeasuredPeakProvenance
-pub nexus_query_planning::graph_memory::GraphMeasuredPeakProvenance::CacheScopeHighWater
-pub nexus_query_planning::graph_memory::GraphMeasuredPeakProvenance::PoolDelta
-pub nexus_query_planning::graph_memory::GraphMeasuredPeakProvenance::ReservationHighWater
-pub nexus_query_planning::graph_memory::GraphMeasuredPeakProvenance::Unavailable
-impl nexus_query_planning::graph_memory::GraphMeasuredPeakProvenance
-pub const fn nexus_query_planning::graph_memory::GraphMeasuredPeakProvenance::as_str(self) -> &'static str
-impl core::fmt::Display for nexus_query_planning::graph_memory::GraphMeasuredPeakProvenance
-pub fn nexus_query_planning::graph_memory::GraphMeasuredPeakProvenance::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum nexus_query_planning::graph_memory::GraphMemoryClass
-pub nexus_query_planning::graph_memory::GraphMemoryClass::MultiArray
-pub nexus_query_planning::graph_memory::GraphMemoryClass::OutputSized
-pub nexus_query_planning::graph_memory::GraphMemoryClass::PairOutputSized
-pub nexus_query_planning::graph_memory::GraphMemoryClass::WorkspaceHeavyDataDependent
-pub nexus_query_planning::graph_memory::GraphMemoryClass::WorkspaceHeavySeedDependent
-impl nexus_query_planning::graph_memory::GraphMemoryClass
-pub const fn nexus_query_planning::graph_memory::GraphMemoryClass::as_str(self) -> &'static str
-impl core::fmt::Display for nexus_query_planning::graph_memory::GraphMemoryClass
-pub fn nexus_query_planning::graph_memory::GraphMemoryClass::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum nexus_query_planning::graph_memory::GraphPairCardinalityAdmissionMode
-pub nexus_query_planning::graph_memory::GraphPairCardinalityAdmissionMode::Bounded
-pub nexus_query_planning::graph_memory::GraphPairCardinalityAdmissionMode::Unbounded
-impl nexus_query_planning::graph_memory::GraphPairCardinalityAdmissionMode
-pub const fn nexus_query_planning::graph_memory::GraphPairCardinalityAdmissionMode::as_str(self) -> &'static str
-impl core::fmt::Display for nexus_query_planning::graph_memory::GraphPairCardinalityAdmissionMode
-pub fn nexus_query_planning::graph_memory::GraphPairCardinalityAdmissionMode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum nexus_query_planning::graph_memory::GraphPairCardinalitySource
-pub nexus_query_planning::graph_memory::GraphPairCardinalitySource::PlanExact
-pub nexus_query_planning::graph_memory::GraphPairCardinalitySource::PlanHardUpperBound
-pub nexus_query_planning::graph_memory::GraphPairCardinalitySource::RuntimeMaterialized
-impl nexus_query_planning::graph_memory::GraphPairCardinalitySource
-pub const fn nexus_query_planning::graph_memory::GraphPairCardinalitySource::as_str(self) -> &'static str
-impl core::fmt::Display for nexus_query_planning::graph_memory::GraphPairCardinalitySource
-pub fn nexus_query_planning::graph_memory::GraphPairCardinalitySource::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum nexus_query_planning::graph_memory::GraphReservationOutcome
-pub nexus_query_planning::graph_memory::GraphReservationOutcome::Admitted
-pub nexus_query_planning::graph_memory::GraphReservationOutcome::Denied
-pub nexus_query_planning::graph_memory::GraphReservationOutcome::NotBounded
-impl nexus_query_planning::graph_memory::GraphReservationOutcome
-pub const fn nexus_query_planning::graph_memory::GraphReservationOutcome::as_str(self) -> &'static str
-impl core::fmt::Display for nexus_query_planning::graph_memory::GraphReservationOutcome
-pub fn nexus_query_planning::graph_memory::GraphReservationOutcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum nexus_query_planning::graph_memory::GraphSeedMode
-pub nexus_query_planning::graph_memory::GraphSeedMode::AllVertices
-pub nexus_query_planning::graph_memory::GraphSeedMode::ExplicitSeedList
-pub nexus_query_planning::graph_memory::GraphSeedMode::RuntimeKSelection
-impl nexus_query_planning::graph_memory::GraphSeedMode
-pub const fn nexus_query_planning::graph_memory::GraphSeedMode::as_str(self) -> &'static str
-impl core::fmt::Display for nexus_query_planning::graph_memory::GraphSeedMode
-pub fn nexus_query_planning::graph_memory::GraphSeedMode::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum nexus_query_planning::graph_memory::GraphVertexEstimateSource
-pub nexus_query_planning::graph_memory::GraphVertexEstimateSource::EdgeEndpointUpperBound
-pub nexus_query_planning::graph_memory::GraphVertexEstimateSource::GraphMetadata
-pub nexus_query_planning::graph_memory::GraphVertexEstimateSource::RuntimeExactDistinct
-pub nexus_query_planning::graph_memory::GraphVertexEstimateSource::SourceStatistics
-impl nexus_query_planning::graph_memory::GraphVertexEstimateSource
-pub const fn nexus_query_planning::graph_memory::GraphVertexEstimateSource::as_str(self) -> &'static str
-impl core::fmt::Display for nexus_query_planning::graph_memory::GraphVertexEstimateSource
-pub fn nexus_query_planning::graph_memory::GraphVertexEstimateSource::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct nexus_query_planning::graph_memory::GraphClaimCalibrationRow
-pub nexus_query_planning::graph_memory::GraphClaimCalibrationRow::algorithm: nexus_query_planning::plan::GraphAlgorithm
-pub nexus_query_planning::graph_memory::GraphClaimCalibrationRow::budget_bytes: core::option::Option<u64>
-pub nexus_query_planning::graph_memory::GraphClaimCalibrationRow::execution_state: nexus_query_planning::graph_memory::GraphClaimExecutionState
-pub nexus_query_planning::graph_memory::GraphClaimCalibrationRow::graph_model_error_ratio: core::option::Option<nexus_query_planning::graph_memory::GraphModelErrorRatio>
-pub nexus_query_planning::graph_memory::GraphClaimCalibrationRow::measured_peak_bytes: core::option::Option<u64>
-pub nexus_query_planning::graph_memory::GraphClaimCalibrationRow::measured_peak_provenance: nexus_query_planning::graph_memory::GraphMeasuredPeakProvenance
-pub nexus_query_planning::graph_memory::GraphClaimCalibrationRow::model_requested_bytes: u64
-pub nexus_query_planning::graph_memory::GraphClaimCalibrationRow::node_id: alloc::string::String
-pub nexus_query_planning::graph_memory::GraphClaimCalibrationRow::node_index: usize
-pub nexus_query_planning::graph_memory::GraphClaimCalibrationRow::query_id: core::option::Option<crate::correlation::QueryId>
-pub nexus_query_planning::graph_memory::GraphClaimCalibrationRow::requested_bytes: u64
-impl nexus_query_planning::graph_memory::GraphClaimCalibrationRow
-pub fn nexus_query_planning::graph_memory::GraphClaimCalibrationRow::from_reservation_report(&nexus_query_planning::graph_memory::GraphReservationReport, nexus_query_planning::plan::NodeId) -> Self
-pub fn nexus_query_planning::graph_memory::GraphClaimCalibrationRow::record_measured_peak(&mut self, core::option::Option<u64>, nexus_query_planning::graph_memory::GraphMeasuredPeakProvenance)
-impl nexus_query_planning::graph_memory::GraphClaimCalibrationRow
-pub fn nexus_query_planning::graph_memory::GraphClaimCalibrationRow::to_json(&self) -> serde_json::value::Value
-pub struct nexus_query_planning::graph_memory::GraphConstructionWorkspaceBounds
-impl nexus_query_planning::graph_memory::GraphConstructionWorkspaceBounds
-pub const fn nexus_query_planning::graph_memory::GraphConstructionWorkspaceBounds::compression_workspace_bytes(self) -> u64
-pub const fn nexus_query_planning::graph_memory::GraphConstructionWorkspaceBounds::new(u64, u64) -> Self
-pub const fn nexus_query_planning::graph_memory::GraphConstructionWorkspaceBounds::renumber_workspace_bytes(self) -> u64
-pub struct nexus_query_planning::graph_memory::GraphMemoryAdmissionEvidence
-impl nexus_query_planning::graph_memory::GraphMemoryAdmissionEvidence
-pub fn nexus_query_planning::graph_memory::GraphMemoryAdmissionEvidence::cold_model_requested_bytes(&self) -> u64
-pub fn nexus_query_planning::graph_memory::GraphMemoryAdmissionEvidence::retained_output(&self) -> nexus_query_planning::graph_memory::GraphMemoryRetainedOutputContribution
-pub fn nexus_query_planning::graph_memory::GraphMemoryAdmissionEvidence::retained_output_bytes(&self) -> u64
-pub fn nexus_query_planning::graph_memory::GraphMemoryAdmissionEvidence::retained_output_rows_upper_bound(&self) -> u64
-pub fn nexus_query_planning::graph_memory::GraphMemoryAdmissionEvidence::warm_model_requested_bytes(&self) -> u64
-pub struct nexus_query_planning::graph_memory::GraphMemoryCalibrationOverride
-pub nexus_query_planning::graph_memory::GraphMemoryCalibrationOverride::raw_input_edges: core::option::Option<u64>
-impl nexus_query_planning::graph_memory::GraphMemoryCalibrationOverride
-pub fn nexus_query_planning::graph_memory::GraphMemoryCalibrationOverride::apply_to_input(self, nexus_query_planning::graph_memory::GraphMemoryModelInput) -> nexus_query_planning::graph_memory::GraphMemoryModelInput
-pub const fn nexus_query_planning::graph_memory::GraphMemoryCalibrationOverride::none() -> Self
-pub const fn nexus_query_planning::graph_memory::GraphMemoryCalibrationOverride::with_raw_input_edges(self, u64) -> Self
-pub struct nexus_query_planning::graph_memory::GraphMemoryEstimate
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::algorithm: nexus_query_planning::plan::GraphAlgorithm
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::calibration_source: nexus_query_planning::graph_memory::GraphCalibrationSource
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::class: nexus_query_planning::graph_memory::GraphMemoryClass
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::construction_bytes: u64
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::construction_policy: nexus_query_planning::plan::GraphConstructionPolicy
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::data_dependent: bool
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::directed: bool
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::edge_normalize_inserted: bool
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::execution_bytes: u64
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::has_edge_id: bool
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::input_edges: u64
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::pair_cardinality_admission_mode: core::option::Option<nexus_query_planning::graph_memory::GraphPairCardinalityAdmissionMode>
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::pair_cardinality_source: core::option::Option<nexus_query_planning::graph_memory::GraphPairCardinalitySource>
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::pair_rows: core::option::Option<u64>
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::pair_vertex_width_bytes: core::option::Option<u64>
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::raw_input_edges: core::option::Option<u64>
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::renumber: bool
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::requested_bytes: u64
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::retained_output_bytes: nexus_query_planning::graph_memory::GraphMemoryRetainedOutputContribution
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::seed_count: core::option::Option<u64>
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::seed_mode: core::option::Option<nexus_query_planning::graph_memory::GraphSeedMode>
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::vertex_estimate: u64
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::vertex_estimate_source: nexus_query_planning::graph_memory::GraphVertexEstimateSource
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::vertex_upper_bound: u64
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::vertex_width_bytes: u64
-pub nexus_query_planning::graph_memory::GraphMemoryEstimate::weight_width_bytes: core::option::Option<u64>
-pub struct nexus_query_planning::graph_memory::GraphMemoryModel
-impl nexus_query_planning::graph_memory::GraphMemoryModel
-pub fn nexus_query_planning::graph_memory::GraphMemoryModel::estimate(&self, &nexus_query_planning::plan::GraphAlgorithmSpec, nexus_query_planning::graph_memory::GraphMemoryModelInput) -> nexus_query_planning::error::Result<nexus_query_planning::graph_memory::GraphMemoryEstimate>
-pub fn nexus_query_planning::graph_memory::GraphMemoryModel::reservation_request(&self, impl alloc::string::ToString, &nexus_query_planning::graph_memory::GraphReservationReport, MemorySpaceId) -> core::option::Option<MemoryReservationRequest>
-pub struct nexus_query_planning::graph_memory::GraphMemoryModelInput
-pub nexus_query_planning::graph_memory::GraphMemoryModelInput::construction_workspace_bounds: core::option::Option<nexus_query_planning::graph_memory::GraphConstructionWorkspaceBounds>
-pub nexus_query_planning::graph_memory::GraphMemoryModelInput::device_total_memory_bytes: core::option::Option<u64>
-pub nexus_query_planning::graph_memory::GraphMemoryModelInput::edge_normalize_inserted: bool
-pub nexus_query_planning::graph_memory::GraphMemoryModelInput::has_edge_id: bool
-pub nexus_query_planning::graph_memory::GraphMemoryModelInput::input_edges: u64
-pub nexus_query_planning::graph_memory::GraphMemoryModelInput::pair_cardinality_source: core::option::Option<nexus_query_planning::graph_memory::GraphPairCardinalitySource>
-pub nexus_query_planning::graph_memory::GraphMemoryModelInput::pair_rows: core::option::Option<u64>
-pub nexus_query_planning::graph_memory::GraphMemoryModelInput::pair_vertex_width_bytes: core::option::Option<u64>
-pub nexus_query_planning::graph_memory::GraphMemoryModelInput::raw_input_edges: core::option::Option<u64>
-pub nexus_query_planning::graph_memory::GraphMemoryModelInput::statistics: core::option::Option<nexus_query_planning::graph_memory::GraphStatistics>
-pub nexus_query_planning::graph_memory::GraphMemoryModelInput::vertex_estimate: core::option::Option<nexus_query_planning::graph_memory::GraphVertexEstimate>
-pub nexus_query_planning::graph_memory::GraphMemoryModelInput::vertex_width_bytes: u64
-pub nexus_query_planning::graph_memory::GraphMemoryModelInput::weight_width_bytes: core::option::Option<u64>
-impl nexus_query_planning::graph_memory::GraphMemoryModelInput
-pub fn nexus_query_planning::graph_memory::GraphMemoryModelInput::raw_edge_count(self) -> u64
-pub fn nexus_query_planning::graph_memory::GraphMemoryModelInput::vertex_upper_bound(self) -> nexus_query_planning::error::Result<u64>
-pub fn nexus_query_planning::graph_memory::GraphMemoryModelInput::with_construction_workspace_bounds(self, nexus_query_planning::graph_memory::GraphConstructionWorkspaceBounds) -> Self
-pub fn nexus_query_planning::graph_memory::GraphMemoryModelInput::with_device_total_memory_bytes(self, u64) -> Self
-pub fn nexus_query_planning::graph_memory::GraphMemoryModelInput::with_edge_normalize_inserted(self, bool) -> Self
-pub fn nexus_query_planning::graph_memory::GraphMemoryModelInput::with_raw_input_edges(self, u64) -> Self
-pub fn nexus_query_planning::graph_memory::GraphMemoryModelInput::with_similarity_pair_input(self, u64, u64, nexus_query_planning::graph_memory::GraphPairCardinalitySource) -> Self
-pub fn nexus_query_planning::graph_memory::GraphMemoryModelInput::with_statistics(self, nexus_query_planning::graph_memory::GraphStatistics) -> Self
-pub fn nexus_query_planning::graph_memory::GraphMemoryModelInput::with_vertex_estimate(self, nexus_query_planning::graph_memory::GraphVertexEstimate) -> Self
-pub struct nexus_query_planning::graph_memory::GraphMemoryRetainedOutputContribution
-impl nexus_query_planning::graph_memory::GraphMemoryRetainedOutputContribution
-pub const fn nexus_query_planning::graph_memory::GraphMemoryRetainedOutputContribution::bytes(self) -> u64
-pub const fn nexus_query_planning::graph_memory::GraphMemoryRetainedOutputContribution::row_count_upper_bound(self) -> u64
-pub struct nexus_query_planning::graph_memory::GraphModelErrorRatio
-impl nexus_query_planning::graph_memory::GraphModelErrorRatio
-pub fn nexus_query_planning::graph_memory::GraphModelErrorRatio::as_decimal_string(self) -> alloc::string::String
-pub fn nexus_query_planning::graph_memory::GraphModelErrorRatio::from_requested_and_measured(u64, u64) -> core::option::Option<Self>
-impl core::fmt::Display for nexus_query_planning::graph_memory::GraphModelErrorRatio
-pub fn nexus_query_planning::graph_memory::GraphModelErrorRatio::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct nexus_query_planning::graph_memory::GraphPlanMemoryEstimate
-pub nexus_query_planning::graph_memory::GraphPlanMemoryEstimate::estimate: nexus_query_planning::graph_memory::GraphMemoryEstimate
-pub nexus_query_planning::graph_memory::GraphPlanMemoryEstimate::node_id: nexus_query_planning::plan::NodeId
-pub struct nexus_query_planning::graph_memory::GraphReservationReport
-pub nexus_query_planning::graph_memory::GraphReservationReport::algorithm: nexus_query_planning::plan::GraphAlgorithm
-pub nexus_query_planning::graph_memory::GraphReservationReport::budget_bytes: core::option::Option<u64>
-pub nexus_query_planning::graph_memory::GraphReservationReport::calibration_source: nexus_query_planning::graph_memory::GraphCalibrationSource
-pub nexus_query_planning::graph_memory::GraphReservationReport::class: nexus_query_planning::graph_memory::GraphMemoryClass
-pub nexus_query_planning::graph_memory::GraphReservationReport::construction_policy: nexus_query_planning::plan::GraphConstructionPolicy
-pub nexus_query_planning::graph_memory::GraphReservationReport::data_dependent: bool
-pub nexus_query_planning::graph_memory::GraphReservationReport::directed: bool
-pub nexus_query_planning::graph_memory::GraphReservationReport::edge_normalize_inserted: bool
-pub nexus_query_planning::graph_memory::GraphReservationReport::graph_model_error_ratio: core::option::Option<nexus_query_planning::graph_memory::GraphModelErrorRatio>
-pub nexus_query_planning::graph_memory::GraphReservationReport::has_edge_id: bool
-pub nexus_query_planning::graph_memory::GraphReservationReport::input_edges: u64
-pub nexus_query_planning::graph_memory::GraphReservationReport::measured_peak_bytes: core::option::Option<u64>
-pub nexus_query_planning::graph_memory::GraphReservationReport::model_requested_bytes: u64
-pub nexus_query_planning::graph_memory::GraphReservationReport::node_id: alloc::string::String
-pub nexus_query_planning::graph_memory::GraphReservationReport::outcome: nexus_query_planning::graph_memory::GraphReservationOutcome
-pub nexus_query_planning::graph_memory::GraphReservationReport::pair_cardinality_admission_mode: core::option::Option<nexus_query_planning::graph_memory::GraphPairCardinalityAdmissionMode>
-pub nexus_query_planning::graph_memory::GraphReservationReport::pair_cardinality_source: core::option::Option<nexus_query_planning::graph_memory::GraphPairCardinalitySource>
-pub nexus_query_planning::graph_memory::GraphReservationReport::pair_rows: core::option::Option<u64>
-pub nexus_query_planning::graph_memory::GraphReservationReport::pair_vertex_width_bytes: core::option::Option<u64>
-pub nexus_query_planning::graph_memory::GraphReservationReport::query_id: core::option::Option<crate::correlation::QueryId>
-pub nexus_query_planning::graph_memory::GraphReservationReport::raw_input_edges: core::option::Option<u64>
-pub nexus_query_planning::graph_memory::GraphReservationReport::reason: core::option::Option<&'static str>
-pub nexus_query_planning::graph_memory::GraphReservationReport::renumber: bool
-pub nexus_query_planning::graph_memory::GraphReservationReport::requested_bytes: u64
-pub nexus_query_planning::graph_memory::GraphReservationReport::seed_count: core::option::Option<u64>
-pub nexus_query_planning::graph_memory::GraphReservationReport::seed_mode: core::option::Option<nexus_query_planning::graph_memory::GraphSeedMode>
-pub nexus_query_planning::graph_memory::GraphReservationReport::statistics: core::option::Option<nexus_query_planning::graph_memory::GraphStatistics>
-pub nexus_query_planning::graph_memory::GraphReservationReport::vertex_estimate: u64
-pub nexus_query_planning::graph_memory::GraphReservationReport::vertex_estimate_source: nexus_query_planning::graph_memory::GraphVertexEstimateSource
-pub nexus_query_planning::graph_memory::GraphReservationReport::vertex_upper_bound: u64
-pub nexus_query_planning::graph_memory::GraphReservationReport::vertex_width_bytes: u64
-pub nexus_query_planning::graph_memory::GraphReservationReport::weight_width_bytes: core::option::Option<u64>
-impl nexus_query_planning::graph_memory::GraphReservationReport
-pub fn nexus_query_planning::graph_memory::GraphReservationReport::credit_live_similarity_pair_input(self, u64) -> Self
-pub fn nexus_query_planning::graph_memory::GraphReservationReport::denied_error(&self, &MemoryReservationRequest, u64) -> nexus_query_planning::error::QueryError
-pub fn nexus_query_planning::graph_memory::GraphReservationReport::from_estimate(impl alloc::string::ToString, nexus_query_planning::graph_memory::GraphMemoryEstimate, core::option::Option<u64>) -> Self
-pub fn nexus_query_planning::graph_memory::GraphReservationReport::record_model_error_ratio(&mut self, u64)
-pub fn nexus_query_planning::graph_memory::GraphReservationReport::with_statistics(self, nexus_query_planning::graph_memory::GraphStatistics) -> Self
-impl nexus_query_planning::graph_memory::GraphReservationReport
-pub fn nexus_query_planning::graph_memory::GraphReservationReport::to_json(&self) -> serde_json::value::Value
-pub struct nexus_query_planning::graph_memory::GraphStatistics
-pub nexus_query_planning::graph_memory::GraphStatistics::degree_max: core::option::Option<u64>
-pub nexus_query_planning::graph_memory::GraphStatistics::degree_p99: core::option::Option<u64>
-pub nexus_query_planning::graph_memory::GraphStatistics::exact_vertices: u64
-pub nexus_query_planning::graph_memory::GraphStatistics::oriented_edge_count: core::option::Option<u64>
-pub nexus_query_planning::graph_memory::GraphStatistics::peak_chunk_min_degree_sum: core::option::Option<u64>
-pub nexus_query_planning::graph_memory::GraphStatistics::sum_min_degree_oriented: core::option::Option<u64>
-pub nexus_query_planning::graph_memory::GraphStatistics::sum_out_degree: core::option::Option<u64>
-impl nexus_query_planning::graph_memory::GraphStatistics
-pub const fn nexus_query_planning::graph_memory::GraphStatistics::runtime_exact_vertices(u64) -> Self
-pub const fn nexus_query_planning::graph_memory::GraphStatistics::with_degree_distribution(self, u64, u64) -> Self
-pub const fn nexus_query_planning::graph_memory::GraphStatistics::with_sum_out_degree(self, u64) -> Self
-pub const fn nexus_query_planning::graph_memory::GraphStatistics::with_triangle_min_degree(self, u64, u64, u64) -> Self
-pub struct nexus_query_planning::graph_memory::GraphVertexEstimate
-pub nexus_query_planning::graph_memory::GraphVertexEstimate::count: u64
-pub nexus_query_planning::graph_memory::GraphVertexEstimate::source: nexus_query_planning::graph_memory::GraphVertexEstimateSource
-impl nexus_query_planning::graph_memory::GraphVertexEstimate
-pub const fn nexus_query_planning::graph_memory::GraphVertexEstimate::graph_metadata(u64) -> Self
-pub const fn nexus_query_planning::graph_memory::GraphVertexEstimate::runtime_exact_distinct(u64) -> Self
-pub const fn nexus_query_planning::graph_memory::GraphVertexEstimate::source_statistics(u64) -> Self
-pub const nexus_query_planning::graph_memory::GRAPH_MEMORY_BOUNDARY: &str
-pub const nexus_query_planning::graph_memory::GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES: u64
-pub const nexus_query_planning::graph_memory::GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON: &str
-pub const nexus_query_planning::graph_memory::GRAPH_VERTEX_ESTIMATE_BOUNDARY: &str
-pub const nexus_query_planning::graph_memory::GRAPH_VERTEX_ESTIMATE_PROBE_MIN_BYTES: u64
-pub fn nexus_query_planning::graph_memory::graph_edge_list_output_rows_for_plan(&nexus_query_planning::plan::QueryPlan) -> core::option::Option<u64>
-pub fn nexus_query_planning::graph_memory::graph_memory_bounded_admission_evidence_for_plan(&nexus_query_planning::plan::QueryPlan, nexus_query_planning::graph_memory::GraphMemoryCalibrationOverride, core::option::Option<u64>) -> nexus_query_planning::error::Result<nexus_query_planning::graph_memory::GraphMemoryAdmissionEvidence>
-pub const fn nexus_query_planning::graph_memory::graph_memory_class(nexus_query_planning::plan::GraphAlgorithm) -> nexus_query_planning::graph_memory::GraphMemoryClass
-pub fn nexus_query_planning::graph_memory::graph_memory_estimate_for_edge_list(&nexus_query_planning::plan::GraphAlgorithmSpec, &arrow_schema::schema::SchemaRef, u64, core::option::Option<u64>, nexus_query_planning::graph_memory::GraphMemoryCalibrationOverride, core::option::Option<u64>) -> nexus_query_planning::error::Result<nexus_query_planning::graph_memory::GraphMemoryEstimate>
-pub fn nexus_query_planning::graph_memory::graph_memory_estimate_for_edge_list_with_vertex_estimate(&nexus_query_planning::plan::GraphAlgorithmSpec, &arrow_schema::schema::SchemaRef, u64, core::option::Option<u64>, core::option::Option<nexus_query_planning::graph_memory::GraphVertexEstimate>, nexus_query_planning::graph_memory::GraphMemoryCalibrationOverride, core::option::Option<u64>) -> nexus_query_planning::error::Result<nexus_query_planning::graph_memory::GraphMemoryEstimate>
-pub fn nexus_query_planning::graph_memory::graph_memory_estimates_for_plan(&nexus_query_planning::plan::QueryPlan, nexus_query_planning::graph_memory::GraphMemoryCalibrationOverride, core::option::Option<u64>) -> nexus_query_planning::error::Result<alloc::vec::Vec<nexus_query_planning::graph_memory::GraphPlanMemoryEstimate>>
-pub fn nexus_query_planning::graph_memory::graph_memory_model_input(u64, u64, &nexus_query_planning::plan::GraphEdgeColumnBindings, bool, core::option::Option<u64>) -> nexus_query_planning::graph_memory::GraphMemoryModelInput
-pub const fn nexus_query_planning::graph_memory::graph_memory_reservation_required(nexus_query_planning::plan::GraphAlgorithm) -> bool
-pub fn nexus_query_planning::graph_memory::graph_runtime_statistics_probe_bytes(nexus_query_planning::plan::GraphAlgorithm, nexus_query_planning::graph_memory::GraphMemoryModelInput, u64) -> u64
-pub fn nexus_query_planning::graph_memory::graph_vertex_estimate_probe_bytes(nexus_query_planning::graph_memory::GraphMemoryModelInput, u64) -> u64
-pub fn nexus_query_planning::graph_memory::query_plan_graph_vertex_upper_bound(&nexus_query_planning::plan::QueryPlan) -> core::option::Option<u64>
-pub fn nexus_query_planning::graph_memory::query_plan_hard_row_upper_bound(&nexus_query_planning::plan::QueryPlan) -> core::option::Option<u64>
-pub fn nexus_query_planning::graph_memory::triangle_count_peak_chunk_min_degree_pricing_term(u64, u64, core::option::Option<u32>) -> nexus_query_planning::error::Result<u64>
+pub mod nexus_query_planning::graph_observation
+pub enum nexus_query_planning::graph_observation::GraphClaimExecutionState
+pub nexus_query_planning::graph_observation::GraphClaimExecutionState::AlgorithmStarted
+pub nexus_query_planning::graph_observation::GraphClaimExecutionState::Pending
+impl nexus_query_planning::graph_observation::GraphClaimExecutionState
+pub const fn nexus_query_planning::graph_observation::GraphClaimExecutionState::as_str(self) -> &'static str
+impl core::fmt::Display for nexus_query_planning::graph_observation::GraphClaimExecutionState
+pub fn nexus_query_planning::graph_observation::GraphClaimExecutionState::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub enum nexus_query_planning::graph_observation::GraphMeasuredPeakProvenance
+pub nexus_query_planning::graph_observation::GraphMeasuredPeakProvenance::CacheScopeHighWater
+pub nexus_query_planning::graph_observation::GraphMeasuredPeakProvenance::Unavailable
+impl nexus_query_planning::graph_observation::GraphMeasuredPeakProvenance
+pub const fn nexus_query_planning::graph_observation::GraphMeasuredPeakProvenance::as_str(self) -> &'static str
+impl core::fmt::Display for nexus_query_planning::graph_observation::GraphMeasuredPeakProvenance
+pub fn nexus_query_planning::graph_observation::GraphMeasuredPeakProvenance::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct nexus_query_planning::graph_observation::GraphMeasuredPeakRow
+pub nexus_query_planning::graph_observation::GraphMeasuredPeakRow::algorithm: nexus_query_planning::plan::GraphAlgorithm
+pub nexus_query_planning::graph_observation::GraphMeasuredPeakRow::execution_state: nexus_query_planning::graph_observation::GraphClaimExecutionState
+pub nexus_query_planning::graph_observation::GraphMeasuredPeakRow::measured_peak_bytes: core::option::Option<u64>
+pub nexus_query_planning::graph_observation::GraphMeasuredPeakRow::measured_peak_provenance: nexus_query_planning::graph_observation::GraphMeasuredPeakProvenance
+pub nexus_query_planning::graph_observation::GraphMeasuredPeakRow::node_id: alloc::string::String
+pub nexus_query_planning::graph_observation::GraphMeasuredPeakRow::node_index: usize
+pub nexus_query_planning::graph_observation::GraphMeasuredPeakRow::query_id: core::option::Option<crate::correlation::QueryId>
+impl nexus_query_planning::graph_observation::GraphMeasuredPeakRow
+pub fn nexus_query_planning::graph_observation::GraphMeasuredPeakRow::pending(core::option::Option<QueryId>, impl core::convert::Into<alloc::string::String>, usize, nexus_query_planning::plan::GraphAlgorithm) -> Self
+pub fn nexus_query_planning::graph_observation::GraphMeasuredPeakRow::record_measured_peak(&mut self, core::option::Option<u64>, nexus_query_planning::graph_observation::GraphMeasuredPeakProvenance)
+pub fn nexus_query_planning::graph_observation::GraphMeasuredPeakRow::to_json(&self) -> serde_json::value::Value
 pub mod nexus_query_planning::mode
 pub enum nexus_query_planning::mode::CapabilityEnvelopeStatus
 pub nexus_query_planning::mode::CapabilityEnvelopeStatus::Admitted
@@ -2134,13 +1820,6 @@ pub nexus_query_planning::pipeline::PipelineTaskKind::Union
 pub nexus_query_planning::pipeline::PipelineTaskKind::Window
 impl nexus_query_planning::pipeline::PipelineTaskKind
 pub const fn nexus_query_planning::pipeline::PipelineTaskKind::as_str(self) -> &'static str
-pub enum nexus_query_planning::pipeline::ReservationGateOwner
-pub nexus_query_planning::pipeline::ReservationGateOwner::Barrier(nexus_query_planning::pipeline::PipelineBarrierId)
-pub nexus_query_planning::pipeline::ReservationGateOwner::Edge(nexus_query_planning::pipeline::PipelineEdgeId)
-pub nexus_query_planning::pipeline::ReservationGateOwner::SinkBoundary
-pub nexus_query_planning::pipeline::ReservationGateOwner::Task(nexus_query_planning::pipeline::PipelineTaskId)
-impl core::fmt::Display for nexus_query_planning::pipeline::ReservationGateOwner
-pub fn nexus_query_planning::pipeline::ReservationGateOwner::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum nexus_query_planning::pipeline::ResidentLifetime
 pub nexus_query_planning::pipeline::ResidentLifetime::BetweenTasks
 pub nexus_query_planning::pipeline::ResidentLifetime::BetweenTasks::producer: nexus_query_planning::pipeline::PipelineTaskId
@@ -2160,8 +1839,7 @@ impl nexus_query_planning::pipeline::CompiledPipeline
 pub fn nexus_query_planning::pipeline::CompiledPipeline::barriers(&self) -> &[nexus_query_planning::pipeline::PipelineBarrier]
 pub fn nexus_query_planning::pipeline::CompiledPipeline::debug_render(&self) -> alloc::string::String
 pub fn nexus_query_planning::pipeline::CompiledPipeline::edges(&self) -> &[nexus_query_planning::pipeline::PipelineEdge]
-pub fn nexus_query_planning::pipeline::CompiledPipeline::gates(&self) -> &[nexus_query_planning::pipeline::ReservationGate]
-pub fn nexus_query_planning::pipeline::CompiledPipeline::new(alloc::vec::Vec<nexus_query_planning::pipeline::PipelineTask>, alloc::vec::Vec<nexus_query_planning::pipeline::PipelineEdge>, alloc::vec::Vec<nexus_query_planning::pipeline::PipelineBarrier>, alloc::vec::Vec<nexus_query_planning::pipeline::ResidentResource>, alloc::vec::Vec<nexus_query_planning::pipeline::ReservationGate>, nexus_query_planning::pipeline::SinkBoundary) -> Self
+pub fn nexus_query_planning::pipeline::CompiledPipeline::new(alloc::vec::Vec<nexus_query_planning::pipeline::PipelineTask>, alloc::vec::Vec<nexus_query_planning::pipeline::PipelineEdge>, alloc::vec::Vec<nexus_query_planning::pipeline::PipelineBarrier>, alloc::vec::Vec<nexus_query_planning::pipeline::ResidentResource>, nexus_query_planning::pipeline::SinkBoundary) -> Self
 pub fn nexus_query_planning::pipeline::CompiledPipeline::resources(&self) -> &[nexus_query_planning::pipeline::ResidentResource]
 pub fn nexus_query_planning::pipeline::CompiledPipeline::sink(&self) -> &nexus_query_planning::pipeline::SinkBoundary
 pub fn nexus_query_planning::pipeline::CompiledPipeline::tasks(&self) -> &[nexus_query_planning::pipeline::PipelineTask]
@@ -2171,13 +1849,11 @@ pub fn nexus_query_planning::pipeline::CompiledPipeline::fmt(&self, &mut core::f
 pub struct nexus_query_planning::pipeline::PipelineBarrier
 impl nexus_query_planning::pipeline::PipelineBarrier
 pub fn nexus_query_planning::pipeline::PipelineBarrier::downstream_tasks(&self) -> &[nexus_query_planning::pipeline::PipelineTaskId]
-pub fn nexus_query_planning::pipeline::PipelineBarrier::gates(&self) -> &[nexus_query_planning::pipeline::ReservationGateId]
 pub fn nexus_query_planning::pipeline::PipelineBarrier::id(&self) -> nexus_query_planning::pipeline::PipelineBarrierId
 pub fn nexus_query_planning::pipeline::PipelineBarrier::kind(&self) -> nexus_query_planning::pipeline::PipelineBarrierKind
 pub fn nexus_query_planning::pipeline::PipelineBarrier::new(nexus_query_planning::pipeline::PipelineBarrierId, nexus_query_planning::pipeline::PipelineBarrierKind) -> Self
 pub fn nexus_query_planning::pipeline::PipelineBarrier::upstream_tasks(&self) -> &[nexus_query_planning::pipeline::PipelineTaskId]
 pub fn nexus_query_planning::pipeline::PipelineBarrier::with_downstream_tasks(self, alloc::vec::Vec<nexus_query_planning::pipeline::PipelineTaskId>) -> Self
-pub fn nexus_query_planning::pipeline::PipelineBarrier::with_gates(self, alloc::vec::Vec<nexus_query_planning::pipeline::ReservationGateId>) -> Self
 pub fn nexus_query_planning::pipeline::PipelineBarrier::with_upstream_tasks(self, alloc::vec::Vec<nexus_query_planning::pipeline::PipelineTaskId>) -> Self
 pub struct nexus_query_planning::pipeline::PipelineBarrierId(_)
 impl nexus_query_planning::pipeline::PipelineBarrierId
@@ -2188,13 +1864,11 @@ pub fn nexus_query_planning::pipeline::PipelineBarrierId::fmt(&self, &mut core::
 pub struct nexus_query_planning::pipeline::PipelineEdge
 impl nexus_query_planning::pipeline::PipelineEdge
 pub fn nexus_query_planning::pipeline::PipelineEdge::from(&self) -> nexus_query_planning::pipeline::PipelineTaskId
-pub fn nexus_query_planning::pipeline::PipelineEdge::gates(&self) -> &[nexus_query_planning::pipeline::ReservationGateId]
 pub fn nexus_query_planning::pipeline::PipelineEdge::id(&self) -> nexus_query_planning::pipeline::PipelineEdgeId
 pub fn nexus_query_planning::pipeline::PipelineEdge::kind(&self) -> nexus_query_planning::pipeline::PipelineEdgeKind
 pub fn nexus_query_planning::pipeline::PipelineEdge::new(nexus_query_planning::pipeline::PipelineEdgeId, nexus_query_planning::pipeline::PipelineTaskId, nexus_query_planning::pipeline::PipelineTaskId, nexus_query_planning::pipeline::PipelineEdgeKind) -> Self
 pub fn nexus_query_planning::pipeline::PipelineEdge::resources(&self) -> &[nexus_query_planning::pipeline::ResidentResourceId]
 pub fn nexus_query_planning::pipeline::PipelineEdge::to(&self) -> nexus_query_planning::pipeline::PipelineTaskId
-pub fn nexus_query_planning::pipeline::PipelineEdge::with_gates(self, alloc::vec::Vec<nexus_query_planning::pipeline::ReservationGateId>) -> Self
 pub fn nexus_query_planning::pipeline::PipelineEdge::with_resources(self, alloc::vec::Vec<nexus_query_planning::pipeline::ResidentResourceId>) -> Self
 pub struct nexus_query_planning::pipeline::PipelineEdgeId(_)
 impl nexus_query_planning::pipeline::PipelineEdgeId
@@ -2205,14 +1879,12 @@ pub fn nexus_query_planning::pipeline::PipelineEdgeId::fmt(&self, &mut core::fmt
 pub struct nexus_query_planning::pipeline::PipelineTask
 impl nexus_query_planning::pipeline::PipelineTask
 pub fn nexus_query_planning::pipeline::PipelineTask::for_plan_node(nexus_query_planning::pipeline::PipelineTaskId, nexus_query_planning::pipeline::PipelineTaskKind, nexus_query_planning::plan::NodeId) -> Self
-pub fn nexus_query_planning::pipeline::PipelineTask::gates(&self) -> &[nexus_query_planning::pipeline::ReservationGateId]
 pub fn nexus_query_planning::pipeline::PipelineTask::id(&self) -> nexus_query_planning::pipeline::PipelineTaskId
 pub fn nexus_query_planning::pipeline::PipelineTask::input_resources(&self) -> &[nexus_query_planning::pipeline::ResidentResourceId]
 pub fn nexus_query_planning::pipeline::PipelineTask::kind(&self) -> nexus_query_planning::pipeline::PipelineTaskKind
 pub fn nexus_query_planning::pipeline::PipelineTask::new(nexus_query_planning::pipeline::PipelineTaskId, nexus_query_planning::pipeline::PipelineTaskKind) -> Self
 pub fn nexus_query_planning::pipeline::PipelineTask::output_resources(&self) -> &[nexus_query_planning::pipeline::ResidentResourceId]
 pub fn nexus_query_planning::pipeline::PipelineTask::plan_node(&self) -> core::option::Option<nexus_query_planning::plan::NodeId>
-pub fn nexus_query_planning::pipeline::PipelineTask::with_gates(self, alloc::vec::Vec<nexus_query_planning::pipeline::ReservationGateId>) -> Self
 pub fn nexus_query_planning::pipeline::PipelineTask::with_input_resources(self, alloc::vec::Vec<nexus_query_planning::pipeline::ResidentResourceId>) -> Self
 pub fn nexus_query_planning::pipeline::PipelineTask::with_output_resources(self, alloc::vec::Vec<nexus_query_planning::pipeline::ResidentResourceId>) -> Self
 pub struct nexus_query_planning::pipeline::PipelineTaskId(_)
@@ -2221,24 +1893,6 @@ pub const fn nexus_query_planning::pipeline::PipelineTaskId::index(self) -> usiz
 pub const fn nexus_query_planning::pipeline::PipelineTaskId::new(usize) -> Self
 impl core::fmt::Display for nexus_query_planning::pipeline::PipelineTaskId
 pub fn nexus_query_planning::pipeline::PipelineTaskId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct nexus_query_planning::pipeline::ReservationGate
-impl nexus_query_planning::pipeline::ReservationGate
-pub fn nexus_query_planning::pipeline::ReservationGate::from_requirement(nexus_query_planning::pipeline::ReservationGateId, nexus_query_planning::pipeline::ReservationGateOwner, nexus_query_planning::capability::ReservationRequirement) -> Self
-pub fn nexus_query_planning::pipeline::ReservationGate::id(&self) -> nexus_query_planning::pipeline::ReservationGateId
-pub fn nexus_query_planning::pipeline::ReservationGate::memory_boundary(&self) -> &'static str
-pub fn nexus_query_planning::pipeline::ReservationGate::new(nexus_query_planning::pipeline::ReservationGateId, nexus_query_planning::pipeline::ReservationGateOwner, ReservationKind, nexus_query_planning::capability::ReservationRequirementScope, &'static str, &'static str, nexus_query_planning::capability::ContractStatus, nexus_query_planning::capability::ContractQuality) -> Self
-pub fn nexus_query_planning::pipeline::ReservationGate::owner(&self) -> nexus_query_planning::pipeline::ReservationGateOwner
-pub fn nexus_query_planning::pipeline::ReservationGate::quality(&self) -> nexus_query_planning::capability::ContractQuality
-pub fn nexus_query_planning::pipeline::ReservationGate::required_contract(&self) -> &'static str
-pub fn nexus_query_planning::pipeline::ReservationGate::requirement(&self) -> &nexus_query_planning::capability::ReservationRequirement
-pub fn nexus_query_planning::pipeline::ReservationGate::reservation_kind(&self) -> ReservationKind
-pub fn nexus_query_planning::pipeline::ReservationGate::status(&self) -> nexus_query_planning::capability::ContractStatus
-pub struct nexus_query_planning::pipeline::ReservationGateId(_)
-impl nexus_query_planning::pipeline::ReservationGateId
-pub const fn nexus_query_planning::pipeline::ReservationGateId::index(self) -> usize
-pub const fn nexus_query_planning::pipeline::ReservationGateId::new(usize) -> Self
-impl core::fmt::Display for nexus_query_planning::pipeline::ReservationGateId
-pub fn nexus_query_planning::pipeline::ReservationGateId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct nexus_query_planning::pipeline::ResidentResource
 impl nexus_query_planning::pipeline::ResidentResource
 pub fn nexus_query_planning::pipeline::ResidentResource::consumers(&self) -> &[nexus_query_planning::pipeline::PipelineTaskId]
@@ -2254,13 +1908,18 @@ impl core::fmt::Display for nexus_query_planning::pipeline::ResidentResourceId
 pub fn nexus_query_planning::pipeline::ResidentResourceId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct nexus_query_planning::pipeline::SinkBoundary
 impl nexus_query_planning::pipeline::SinkBoundary
-pub fn nexus_query_planning::pipeline::SinkBoundary::gates(&self) -> &[nexus_query_planning::pipeline::ReservationGateId]
 pub fn nexus_query_planning::pipeline::SinkBoundary::input(&self) -> nexus_query_planning::pipeline::PipelineTaskId
 pub fn nexus_query_planning::pipeline::SinkBoundary::kind(&self) -> nexus_query_planning::pipeline::SinkBoundaryKind
 pub fn nexus_query_planning::pipeline::SinkBoundary::new(nexus_query_planning::pipeline::SinkBoundaryKind, nexus_query_planning::pipeline::PipelineTaskId) -> Self
-pub fn nexus_query_planning::pipeline::SinkBoundary::with_gates(self, alloc::vec::Vec<nexus_query_planning::pipeline::ReservationGateId>) -> Self
 pub fn nexus_query_planning::pipeline::compile_pipeline(&nexus_query_planning::plan::QueryPlan, &nexus_query_planning::capability::CapabilityAnalysis) -> nexus_query_planning::error::Result<nexus_query_planning::pipeline::CompiledPipeline>
 pub mod nexus_query_planning::plan
+pub mod nexus_query_planning::plan::row_bounds
+pub enum nexus_query_planning::plan::row_bounds::RowBoundProvenance
+pub nexus_query_planning::plan::row_bounds::RowBoundProvenance::PlanExact
+pub nexus_query_planning::plan::row_bounds::RowBoundProvenance::PlanHardUpperBound
+impl nexus_query_planning::plan::row_bounds::RowBoundProvenance
+pub const fn nexus_query_planning::plan::row_bounds::RowBoundProvenance::as_str(self) -> &'static str
+pub fn nexus_query_planning::plan::row_bounds::query_plan_hard_row_upper_bound(&nexus_query_planning::plan::QueryPlan) -> core::option::Option<u64>
 pub enum nexus_query_planning::plan::CuvsDenseVectorBinding
 pub nexus_query_planning::plan::CuvsDenseVectorBinding::Columns(alloc::vec::Vec<alloc::string::String>)
 pub nexus_query_planning::plan::CuvsDenseVectorBinding::VectorColumn(alloc::string::String)
@@ -2722,9 +2381,6 @@ pub nexus_query_planning::plan::EmptyGraphInputPolicy::side_inputs: nexus_query_
 pub struct nexus_query_planning::plan::FilterNode
 pub nexus_query_planning::plan::FilterNode::input: nexus_query_planning::plan::NodeId
 pub nexus_query_planning::plan::FilterNode::predicate: nexus_query_planning::expr::Expr
-pub struct nexus_query_planning::plan::GraphAlgorithmLowerLevelContract
-pub nexus_query_planning::plan::GraphAlgorithmLowerLevelContract::name: &'static str
-pub nexus_query_planning::plan::GraphAlgorithmLowerLevelContract::required_surface: &'static str
 pub struct nexus_query_planning::plan::GraphAlgorithmNode
 pub nexus_query_planning::plan::GraphAlgorithmNode::input: nexus_query_planning::plan::NodeId
 pub nexus_query_planning::plan::GraphAlgorithmNode::inputs: alloc::vec::Vec<nexus_query_planning::plan::NodeId>
@@ -3221,12 +2877,7 @@ pub const nexus_query_planning::plan::CUVS_KMEANS_FUNCTION: &str
 pub const nexus_query_planning::plan::CUVS_OPERATION_REGISTRY: &[nexus_query_planning::plan::CuvsOperationDescriptor]
 pub const nexus_query_planning::plan::CUVS_PCA_FUNCTION: &str
 pub const nexus_query_planning::plan::DEFAULT_BETWEENNESS_EXACT_VERTEX_THRESHOLD: u64
-pub const nexus_query_planning::plan::GRAPH_ALGORITHM_CAPABILITY_LOWER_LEVEL_CONTRACTS: &[nexus_query_planning::plan::GraphAlgorithmLowerLevelContract]
-pub const nexus_query_planning::plan::GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY: &str
-pub const nexus_query_planning::plan::GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT: &str
 pub const nexus_query_planning::plan::GRAPH_OPERATION_REGISTRY: &[nexus_query_planning::plan::GraphOperationDefinition]
-pub const nexus_query_planning::plan::VECTOR_ALGORITHM_BOUNDED_MEMORY_BOUNDARY: &str
-pub const nexus_query_planning::plan::VECTOR_ALGORITHM_BOUNDED_REQUIRED_CONTRACT: &str
 pub fn nexus_query_planning::plan::canonicalize_cuvs_options(nexus_query_planning::plan::CuvsOperation, &str) -> core::result::Result<serde_json::value::Value, nexus_query_planning::plan::CuvsOptionValidationError>
 pub fn nexus_query_planning::plan::edge_plan_has_simple_directed_edge_topology(&nexus_query_planning::plan::QueryPlan, &str, &str) -> bool
 pub fn nexus_query_planning::plan::graph_residency_descriptor_for_edge_plan(&nexus_query_planning::plan::QueryPlan, &nexus_query_planning::plan::GraphAlgorithmSpec) -> nexus_query_planning::plan::GraphResidencyPlanAnalysis

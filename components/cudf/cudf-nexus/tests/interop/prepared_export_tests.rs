@@ -265,12 +265,8 @@ mod lease_contracts {
 
         let message = err.to_string();
         assert!(message.contains("device ordinal"));
-        // Under the truthful-error contract (§4.5), structured data such as the
-        // failing ordinal lives in facts/details, not string-formatted into
-        // `message`. The InteropError's top-level message is the one-line
-        // summary ("device ordinal out of range") while the numeric ordinal is
-        // asserted via the preserved cudf source's Display (which surfaces its
-        // details) and via the InteropError's context below.
+        // Structured data such as the failing ordinal lives in facts and
+        // details rather than being formatted into the top-level message.
         assert!(!message.contains("InvalidOperation"));
         assert!(!message.contains("at DeviceId::new"));
         assert!(!message.contains("context:"));

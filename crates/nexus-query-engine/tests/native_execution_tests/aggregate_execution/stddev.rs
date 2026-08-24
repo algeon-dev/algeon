@@ -841,10 +841,6 @@ fn bounded_grouped_stddev_samp_over_empty_join_stream_returns_empty_batch() {
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.compiled_pipeline_attempts, 1);
-    assert!(
-        metrics.reservation_events.iter().any(|event| event.memory_boundary == "join_output_stream_chunk"),
-        "empty join stream should materialize a schema-correct zero-row join output"
-    );
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
@@ -1299,30 +1295,6 @@ fn bounded_tolerant_grouped_statistical_aggregate_streams_partial_moments() {
     assert!(
         result.metrics().partial_aggregate_count > 1,
         "bounded join stream should execute more than one statistical moment partial"
-    );
-    let statistical_partial_work_reserves = result
-        .metrics()
-        .reservation_events
-        .iter()
-        .filter(|event| {
-            event.memory_boundary == "compiled_statistical_aggregate_partial_state_work"
-                && event.action == MemoryReservationEventAction::Reserve
-        })
-        .collect::<Vec<_>>();
-    assert!(
-        statistical_partial_work_reserves.len() > 1,
-        "bounded statistical moments should reserve every partial-state upper bound before execution"
-    );
-    assert!(
-        statistical_partial_work_reserves.iter().all(|event| event.requested_bytes > 0),
-        "statistical partial-state work reservations must carry a closed-form nonzero bound"
-    );
-    assert!(
-        result.metrics().reservation_events.iter().all(|event| {
-            event.memory_boundary != "compiled_statistical_aggregate_partial_state"
-                || event.action != MemoryReservationEventAction::Grow
-        }),
-        "statistical partial-state retention must not grow after observing output"
     );
 
     fs::remove_dir_all(dir).unwrap();

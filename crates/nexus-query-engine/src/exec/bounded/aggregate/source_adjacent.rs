@@ -73,8 +73,8 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
         let raw_inputs = match execute_source_adjacent_raw_source_batch(execution, bounded, batch) {
             Ok(raw_inputs) => raw_inputs,
             Err(error) => {
-                release_nested_partition_inputs_reverse(execution, partition_inputs.take().unwrap_or_default());
-                release_aligned_partials_reverse(execution, aggregate_outputs);
+                release_nested_partition_inputs_reverse(partition_inputs.take().unwrap_or_default());
+                release_aligned_partials_reverse(aggregate_outputs);
                 return Err(error);
             },
         };
@@ -98,8 +98,8 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
             ) {
                 Ok(partitions) => partitions,
                 Err(error) => {
-                    release_nested_partition_inputs_reverse(execution, partition_inputs.take().unwrap_or_default());
-                    release_aligned_partials_reverse(execution, aggregate_outputs);
+                    release_nested_partition_inputs_reverse(partition_inputs.take().unwrap_or_default());
+                    release_aligned_partials_reverse(aggregate_outputs);
                     return Err(error);
                 },
             };
@@ -144,8 +144,8 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
             }
         }
         if let Some(error) = partition_error {
-            release_nested_partition_inputs_reverse(execution, partition_inputs.take().unwrap_or_default());
-            release_aligned_partials_reverse(execution, aggregate_outputs);
+            release_nested_partition_inputs_reverse(partition_inputs.take().unwrap_or_default());
+            release_aligned_partials_reverse(aggregate_outputs);
             return Err(error);
         }
     }
@@ -165,8 +165,8 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
         ) {
             Ok(mut outputs) => aggregate_outputs.append(&mut outputs),
             Err(error) => {
-                release_partition_inputs_reverse(execution, inputs);
-                release_aligned_partials_reverse(execution, aggregate_outputs);
+                release_partition_inputs_reverse(inputs);
+                release_aligned_partials_reverse(aggregate_outputs);
                 return Err(error);
             },
         }
@@ -229,7 +229,7 @@ fn execute_source_adjacent_raw_source_batch(
                     Ok(raw_inputs)
                 },
                 Err(error) => {
-                    release_raw_source_inputs_reverse(execution, raw_inputs);
+                    release_raw_source_inputs_reverse(raw_inputs);
                     Err(error)
                 },
             }
@@ -238,13 +238,8 @@ fn execute_source_adjacent_raw_source_batch(
     }
 }
 
-fn release_raw_source_inputs_reverse(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    mut inputs: Vec<(Vec<SourceChunk>, RawSourceInput)>,
-) {
-    while let Some((_chunks, raw)) = inputs.pop() {
-        execution.release(raw.partial.reservation);
-    }
+fn release_raw_source_inputs_reverse(mut inputs: Vec<(Vec<SourceChunk>, RawSourceInput)>) {
+    while inputs.pop().is_some() {}
 }
 
 fn source_adjacent_raw_source_batches(
@@ -326,7 +321,7 @@ fn source_adjacent_partition_batch_reserved_bytes(inputs: &[SourceAdjacentPartit
     }
     inputs
         .iter()
-        .map(|input| input.partial.reservation.bytes())
+        .map(|input| input.partial.device_bytes())
         .try_fold(0u64, |total, bytes| total.checked_add(bytes))
         .unwrap_or(u64::MAX)
 }
@@ -420,40 +415,15 @@ fn partition_source_adjacent_raw_chunk(
     partition_count: usize,
     partitioner: &SourceAdjacentAggregatePartitioner,
 ) -> Result<Vec<Option<CommittedPartial>>> {
-    let input_reserved_bytes = raw.reservation.bytes();
-    let hash_task_id = source_adjacent_aggregate_task_id(
-        node_id,
-        "source_adjacent_aggregate_hash_partition",
-        format!("chunk{chunk_index}"),
-    );
-    let mut partition_reservation = match execution.try_reserve_work(
-        MemoryReservationRequest::new(
-            ReservationKind::OperatorOutput,
-            input_reserved_bytes,
-            execution.reservations().budget(),
-        )
-        .with_memory_boundary("source_adjacent_aggregate_hash_partition")
-        .with_node_id(node_id)
-        .with_stage("source_adjacent_aggregate_hash_partition")
-        .with_task_registration(hash_task_id.clone(), 1, "aggregate"),
-    ) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            execution.release(raw.reservation);
-            return Err(error);
-        },
-    };
     let token = match execution_budget_token_for_boundary(
         execution.context(),
-        execution.reservations().available_bytes_including(&partition_reservation),
+        execution.device_budget_bytes(),
         "source_adjacent_aggregate_hash_partition",
         "nexus_query_engine.bounded.aggregate.source_adjacent_partitioned_hash.budget_token",
         "failed to create source-adjacent partitioned aggregate budget token",
     ) {
         Ok(token) => token,
         Err(error) => {
-            execution.release(partition_reservation);
-            execution.release(raw.reservation);
             return Err(error);
         },
     };
@@ -498,8 +468,6 @@ fn partition_source_adjacent_raw_chunk(
                 Ok(frame) => frame,
                 Err(error) => {
                     stage_guard.fail(&error);
-                    execution.release(raw.reservation);
-                    execution.release(partition_reservation);
                     return Err(error);
                 },
             };
@@ -547,40 +515,20 @@ fn partition_source_adjacent_raw_chunk(
             Err(error)
         },
     };
-    execution.release(raw.reservation);
 
     let partitioned = match partitioned {
         Ok(partitioned) => partitioned,
         Err(error) => {
-            execution.release(partition_reservation);
             return Err(error);
         },
     };
     let (partitioned_frame, offsets) = partitioned.into_parts();
     let partitioned_gpu = GpuDataFrame::new(partitioned_frame.clone());
-    let partitioned_bytes = match observe_device_memory_bytes(&partitioned_gpu, execution.metrics_mut()) {
-        Ok(bytes) => bytes,
+    match observe_device_memory_bytes(&partitioned_gpu, execution.metrics_mut()) {
+        Ok(_) => {},
         Err(error) => {
-            execution.release(partition_reservation);
             return Err(error);
         },
-    };
-    if partitioned_bytes > partition_reservation.bytes() {
-        let grow_request = MemoryReservationRequest::new(
-            ReservationKind::OperatorOutput,
-            partitioned_bytes.saturating_sub(partition_reservation.bytes()),
-            execution.reservations().budget(),
-        )
-        .with_memory_boundary("source_adjacent_aggregate_hash_partition")
-        .with_node_id(node_id)
-        .with_stage("source_adjacent_aggregate_hash_partition")
-        .with_task_registration(hash_task_id.clone(), 1, "aggregate");
-        if let Err(error) = execution.try_grow(&mut partition_reservation, grow_request) {
-            execution.release(partition_reservation);
-            return Err(error);
-        }
-    } else {
-        execution.shrink_to_observed(&mut partition_reservation, partitioned_bytes);
     }
 
     let mut partitions = Vec::with_capacity(partition_count);
@@ -591,33 +539,25 @@ fn partition_source_adjacent_raw_chunk(
             &partitioned_frame,
             &offsets,
             original_columns.as_deref(),
-            chunk_index,
             partition,
             partitioner.retain_empty_partition(partition),
         ) {
             Ok(frame) => partitions.push(frame),
             Err(error) => {
-                release_optional_partials_reverse(execution, partitions);
-                execution.release(partition_reservation);
+                release_optional_partials_reverse(partitions);
                 return Err(error);
             },
         }
     }
-    execution.release(partition_reservation);
     Ok(partitions)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
-)]
 fn slice_source_adjacent_aggregate_partition(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     frame: &cudf::DataFrame,
     offsets: &[usize],
     output_columns: Option<&[String]>,
-    chunk_index: usize,
     partition: usize,
     retain_empty: bool,
 ) -> Result<Option<CommittedPartial>> {
@@ -666,22 +606,7 @@ fn slice_source_adjacent_aggregate_partition(
     };
     let gpu = GpuDataFrame::new(sliced);
     let bytes = observe_device_memory_bytes(&gpu, execution.metrics_mut())?;
-    let reservation = execution.try_reserve(
-        MemoryReservationRequest::new(ReservationKind::OperatorOutput, bytes, execution.reservations().budget())
-            .with_memory_boundary("source_adjacent_aggregate_partition")
-            .with_node_id(node_id)
-            .with_stage("source_adjacent_aggregate_partition")
-            .with_task_registration(
-                source_adjacent_aggregate_task_id(
-                    node_id,
-                    "source_adjacent_aggregate_partition",
-                    format!("chunk{chunk_index}.partition{partition}"),
-                ),
-                1,
-                "aggregate",
-            ),
-    )?;
-    Ok(Some(CommittedPartial { frame: gpu, reservation }))
+    Ok(Some(ResidentGpuFrame::with_device_bytes(gpu, bytes)))
 }
 
 fn concatenate_partition_inputs(
@@ -723,7 +648,6 @@ fn execute_source_adjacent_partition_aggregate_with_retry(
 ) -> Result<Vec<CommittedPartial>> {
     let upper_bound_bytes = match partial_aggregate_work_reservation_upper_bound_bytes(
         execution,
-        bounded.aggregate_id,
         bounded.aggregate.0,
         bounded.aggregate_input_schema,
         bounded.aggregate.1,
@@ -731,7 +655,6 @@ fn execute_source_adjacent_partition_aggregate_with_retry(
     ) {
         Ok(bytes) => bytes,
         Err(error) => {
-            execution.release(input.reservation);
             return Err(source_adjacent_partition_aggregate_error(error, bounded.aggregate_id, partition_index));
         },
     };
@@ -739,14 +662,13 @@ fn execute_source_adjacent_partition_aggregate_with_retry(
         input.frame.num_rows(),
         upper_bound_bytes,
         retry_budget,
-        execution.reservations().remaining_bytes(),
+        execution.device_budget_bytes(),
     ) {
-        execution.metrics_mut().record_retry_reservation_failure();
+        execution.metrics_mut().record_retry_resource_exhausted();
         if let Err(error) = crate::exec::retry::backoff_before_retry(
             execution.context(),
             "nexus_query_engine.exec.bounded.source_adjacent_partition_aggregate_split_retry",
         ) {
-            execution.release(input.reservation);
             return Err(source_adjacent_partition_aggregate_error(error, bounded.aggregate_id, partition_index));
         }
         let (left, right) =
@@ -761,7 +683,6 @@ fn execute_source_adjacent_partition_aggregate_with_retry(
         ) {
             Ok(partials) => partials,
             Err(error) => {
-                execution.release(right.reservation);
                 return Err(error);
             },
         };
@@ -778,7 +699,7 @@ fn execute_source_adjacent_partition_aggregate_with_retry(
                 Ok(partials)
             },
             Err(error) => {
-                release_partials_reverse(execution, partials);
+                release_partials_reverse(partials);
                 Err(error)
             },
         }
@@ -805,41 +726,21 @@ fn execute_source_adjacent_partition_aggregate_with_upper_bound(
 ) -> Result<CommittedPartial> {
     let input_rows = input.frame.num_rows() as u64;
     let input_frame = input.frame;
-    let input_reservation = input.reservation;
     let task_id = source_adjacent_aggregate_task_id(
         bounded.aggregate_id,
         SOURCE_ADJACENT_PARTITIONED_PARTIAL_AGGREGATE_STAGE,
         format!("partition{partition_index}"),
     );
-    let mut work_reservation = match execution.try_reserve_work(
-        MemoryReservationRequest::new(
-            ReservationKind::PartialState,
-            upper_bound_bytes,
-            execution.reservations().budget(),
-        )
-        .with_memory_boundary(SOURCE_ADJACENT_PARTITIONED_PARTIAL_AGGREGATE_STAGE)
-        .with_node_id(bounded.aggregate_id)
-        .with_stage(SOURCE_ADJACENT_PARTITIONED_PARTIAL_AGGREGATE_STAGE)
-        .with_attempt(1, 1)
-        .with_task_registration(task_id.clone(), 1, "aggregate"),
-    ) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            execution.release(input_reservation);
-            return Err(source_adjacent_partition_aggregate_error(error, bounded.aggregate_id, partition_index));
-        },
-    };
+    let _ = upper_bound_bytes;
     let token = match execution_budget_token_for_boundary(
         execution.context(),
-        execution.reservations().available_bytes_including(&work_reservation),
+        execution.device_budget_bytes(),
         SOURCE_ADJACENT_PARTITIONED_PARTIAL_AGGREGATE_STAGE,
         "nexus_query_engine.bounded.aggregate.source_adjacent_partial.budget_token",
         "failed to create source-adjacent partial aggregate budget token",
     ) {
         Ok(token) => token,
         Err(error) => {
-            execution.release(work_reservation);
-            execution.release(input_reservation);
             return Err(source_adjacent_partition_aggregate_error(error, bounded.aggregate_id, partition_index));
         },
     };
@@ -861,40 +762,17 @@ fn execute_source_adjacent_partition_aggregate_with_upper_bound(
     let frame = match result {
         Ok(frame) => frame,
         Err(error) => {
-            execution.release(work_reservation);
-            execution.release(input_reservation);
             return Err(source_adjacent_partition_aggregate_error(error, bounded.aggregate_id, partition_index));
         },
     };
-    execution.release(input_reservation);
     let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics_mut()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            execution.release(work_reservation);
             return Err(source_adjacent_partition_aggregate_error(error, bounded.aggregate_id, partition_index));
         },
     };
-    let output_request =
-        MemoryReservationRequest::new(ReservationKind::PartialState, output_bytes, execution.reservations().budget())
-            .with_memory_boundary("source_adjacent_partitioned_partial_aggregate_output")
-            .with_node_id(bounded.aggregate_id)
-            .with_stage(SOURCE_ADJACENT_PARTITIONED_PARTIAL_AGGREGATE_STAGE)
-            .with_attempt(1, 1)
-            .with_task_registration(task_id, 1, "aggregate");
-    if output_bytes > work_reservation.bytes() {
-        let error =
-            partial_aggregate_upper_bound_violation_error(bounded.aggregate_id, work_reservation.bytes(), output_bytes);
-        execution.release(work_reservation);
-        return Err(source_adjacent_partition_aggregate_error(error, bounded.aggregate_id, partition_index));
-    }
-    execution.shrink_to_observed_with_request(&mut work_reservation, output_bytes, output_request.clone());
-    let output_reservation = execution.transfer(work_reservation, output_request);
-    let output = CommittedPartial { frame, reservation: output_reservation };
-    execution.metrics_mut().record_partial_aggregate(
-        input_rows,
-        output.frame.num_rows() as u64,
-        output.reservation.bytes(),
-    );
+    let output = ResidentGpuFrame::with_device_bytes(frame, output_bytes);
+    execution.metrics_mut().record_partial_aggregate(input_rows, output.frame.num_rows() as u64, output.device_bytes());
     Ok(output)
 }
 
@@ -923,7 +801,6 @@ fn split_source_adjacent_partition_aggregate_input(
     let input_rows = input.frame.num_rows();
     let split_at = input_rows / 2;
     if split_at == 0 || split_at == input_rows {
-        execution.release(input.reservation);
         return Err(source_adjacent_partition_aggregate_error(
             unsupported_bounded_shape(
                 "source-adjacent partitioned aggregate input cannot be split further",
@@ -934,12 +811,10 @@ fn split_source_adjacent_partition_aggregate_input(
             partition_index,
         ));
     }
-    let source_reservation = input.reservation;
     let source_frame = input.frame.into_frame();
     let overrides_lease = match execution_overrides(execution.context()) {
         Ok(lease) => lease,
         Err(error) => {
-            execution.release(source_reservation);
             return Err(source_adjacent_partition_aggregate_error(error, node_id, partition_index));
         },
     };
@@ -947,7 +822,6 @@ fn split_source_adjacent_partition_aggregate_input(
     let left = match source_frame.with_execution(&overrides).slice(0, split_at) {
         Ok(frame) => frame,
         Err(error) => {
-            execution.release(source_reservation);
             return Err(source_adjacent_partition_aggregate_error(
                 QueryError::from_cudf(
                     "nexus_query_engine.bounded.aggregate.source_adjacent_partition_split",
@@ -966,7 +840,6 @@ fn split_source_adjacent_partition_aggregate_input(
     let right = match source_frame.with_execution(&overrides).slice(split_at, right_len) {
         Ok(frame) => frame,
         Err(error) => {
-            execution.release(source_reservation);
             return Err(source_adjacent_partition_aggregate_error(
                 QueryError::from_cudf(
                     "nexus_query_engine.bounded.aggregate.source_adjacent_partition_split",
@@ -981,7 +854,6 @@ fn split_source_adjacent_partition_aggregate_input(
             ));
         },
     };
-    execution.release(source_reservation);
     let left = GpuDataFrame::new(left);
     let right = GpuDataFrame::new(right);
     let left_bytes = match observe_device_memory_bytes(&left, execution.metrics_mut()) {
@@ -992,33 +864,7 @@ fn split_source_adjacent_partition_aggregate_input(
         Ok(bytes) => bytes,
         Err(error) => return Err(source_adjacent_partition_aggregate_error(error, node_id, partition_index)),
     };
-    let left_reservation = match execution.try_reserve(
-        MemoryReservationRequest::new(ReservationKind::OperatorOutput, left_bytes, execution.reservations().budget())
-            .with_memory_boundary("source_adjacent_partitioned_partial_aggregate_split")
-            .with_node_id(node_id)
-            .with_stage(SOURCE_ADJACENT_PARTITIONED_PARTIAL_AGGREGATE_STAGE)
-            .with_attempt(1, 1),
-    ) {
-        Ok(reservation) => reservation,
-        Err(error) => return Err(source_adjacent_partition_aggregate_error(error, node_id, partition_index)),
-    };
-    let right_reservation = match execution.try_reserve(
-        MemoryReservationRequest::new(ReservationKind::OperatorOutput, right_bytes, execution.reservations().budget())
-            .with_memory_boundary("source_adjacent_partitioned_partial_aggregate_split")
-            .with_node_id(node_id)
-            .with_stage(SOURCE_ADJACENT_PARTITIONED_PARTIAL_AGGREGATE_STAGE)
-            .with_attempt(1, 1),
-    ) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            execution.release(left_reservation);
-            return Err(source_adjacent_partition_aggregate_error(error, node_id, partition_index));
-        },
-    };
-    Ok((
-        CommittedPartial { frame: left, reservation: left_reservation },
-        CommittedPartial { frame: right, reservation: right_reservation },
-    ))
+    Ok((ResidentGpuFrame::with_device_bytes(left, left_bytes), ResidentGpuFrame::with_device_bytes(right, right_bytes)))
 }
 
 fn source_adjacent_partition_aggregate_error(error: QueryError, node_id: NodeId, partition_index: usize) -> QueryError {
@@ -1054,38 +900,21 @@ fn concatenate_committed_frames(
         .with_fact("node_id", node_id)
         .with_fact("partition", partition_index));
     }
-    let requested_bytes = inputs.iter().map(|input| input.reservation.bytes()).sum::<u64>();
-    let task_id = source_adjacent_aggregate_task_id(node_id, stage, format!("partition{partition_index}"));
-    let mut concat_reservation = match execution.try_reserve_work(
-        MemoryReservationRequest::new(reservation_kind, requested_bytes, execution.reservations().budget())
-            .with_memory_boundary(stage)
-            .with_node_id(node_id)
-            .with_stage(stage)
-            .with_task_registration(task_id.clone(), 1, "aggregate"),
-    ) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            release_partials_reverse(execution, inputs);
-            return Err(error);
-        },
-    };
     let token = match execution_budget_token_for_boundary(
         execution.context(),
-        execution.reservations().available_bytes_including(&concat_reservation),
+        execution.device_budget_bytes(),
         stage,
         token_operation,
         token_message,
     ) {
         Ok(token) => token,
         Err(error) => {
-            execution.release(concat_reservation);
-            release_partials_reverse(execution, inputs);
+            release_partials_reverse(inputs);
             return Err(error);
         },
     };
 
     let first = inputs.remove(0);
-    let first_reservation = first.reservation;
     let first_frame = first.frame.into_frame();
     let concatenated = {
         let other_frames = inputs.iter().map(|input| input.frame.frame().clone()).collect::<Vec<_>>();
@@ -1100,75 +929,40 @@ fn concatenate_committed_frames(
             )
         })
     };
-    execution.release(first_reservation);
-    release_partials_reverse(execution, inputs);
+    release_partials_reverse(inputs);
 
     let concatenated = match concatenated {
         Ok(frame) => GpuDataFrame::new(frame),
         Err(error) => {
-            execution.release(concat_reservation);
             return Err(error);
         },
     };
     let output_bytes = match observe_device_memory_bytes(&concatenated, execution.metrics_mut()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            execution.release(concat_reservation);
             return Err(error);
         },
     };
-    let output_request =
-        MemoryReservationRequest::new(reservation_kind, output_bytes, execution.reservations().budget())
-            .with_memory_boundary(output_boundary)
-            .with_node_id(node_id)
-            .with_stage(stage)
-            .with_task_registration(task_id.clone(), 1, "aggregate");
-    if let Err(error) =
-        execution.reconcile_work_reservation_to_output(&mut concat_reservation, output_bytes, &output_request)
-    {
-        execution.release(concat_reservation);
-        return Err(error);
-    }
-    let output_reservation = execution.transfer(concat_reservation, output_request);
-    Ok(CommittedPartial { frame: concatenated, reservation: output_reservation })
+    let _ = (reservation_kind, output_boundary);
+    Ok(ResidentGpuFrame::with_device_bytes(concatenated, output_bytes))
 }
 
-fn release_nested_partition_inputs_reverse(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    mut partitions: Vec<Vec<SourceAdjacentPartitionInput>>,
-) {
+fn release_nested_partition_inputs_reverse(mut partitions: Vec<Vec<SourceAdjacentPartitionInput>>) {
     while let Some(partition) = partitions.pop() {
-        release_partition_inputs_reverse(execution, partition);
+        release_partition_inputs_reverse(partition);
     }
 }
 
-fn release_partition_inputs_reverse(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    mut inputs: Vec<SourceAdjacentPartitionInput>,
-) {
-    while let Some(input) = inputs.pop() {
-        execution.release(input.partial.reservation);
-    }
+fn release_partition_inputs_reverse(mut inputs: Vec<SourceAdjacentPartitionInput>) {
+    while inputs.pop().is_some() {}
 }
 
-fn release_optional_partials_reverse(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    mut partials: Vec<Option<CommittedPartial>>,
-) {
-    while let Some(partial) = partials.pop() {
-        if let Some(partial) = partial {
-            execution.release(partial.reservation);
-        }
-    }
+fn release_optional_partials_reverse(mut partials: Vec<Option<CommittedPartial>>) {
+    while partials.pop().is_some() {}
 }
 
-fn release_aligned_partials_reverse(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    mut partials: Vec<SourceAdjacentAlignedPartial>,
-) {
-    while let Some(partial) = partials.pop() {
-        execution.release(partial.partial.reservation);
-    }
+fn release_aligned_partials_reverse(mut partials: Vec<SourceAdjacentAlignedPartial>) {
+    while partials.pop().is_some() {}
 }
 
 fn unique_source_adjacent_partition_column_name(frame: &cudf::DataFrame) -> String {
@@ -1177,7 +971,7 @@ fn unique_source_adjacent_partition_column_name(frame: &cudf::DataFrame) -> Stri
 }
 
 fn source_adjacent_aggregate_task_id(node_id: NodeId, stage: &'static str, suffix: impl std::fmt::Display) -> String {
-    format!("legacy_bounded.aggregate.node{node_id}.{stage}.{suffix}")
+    format!("aggregate.node{node_id}.{stage}.{suffix}")
 }
 
 fn source_adjacent_partitioned_aggregate_min_partition_count(chunk_count: usize) -> usize {
@@ -1214,21 +1008,5 @@ mod tests {
         assert!(!source_adjacent_partition_aggregate_should_split(2, 101, 0, 100));
         assert!(!source_adjacent_partition_aggregate_should_split(2, 100, 1, 100));
         assert!(source_adjacent_partition_aggregate_should_split(2, 101, 1, 100));
-    }
-
-    #[test]
-    fn source_adjacent_partial_aggregate_upper_bound_failure_keeps_partition_attribution() {
-        let node_id = NodeId::from_index_for_internal_use(7);
-        let error = source_adjacent_partition_aggregate_error(
-            partial_aggregate_upper_bound_violation_error(node_id, 64, 65),
-            node_id,
-            3,
-        );
-
-        assert_eq!(error.fact_value("node_id"), Some("n7"));
-        assert_eq!(error.fact_value("partition"), Some("3"));
-        assert_eq!(error.fact_value("stage"), Some(SOURCE_ADJACENT_PARTITIONED_PARTIAL_AGGREGATE_STAGE));
-        assert_eq!(error.fact_value("upper_bound_bytes"), Some("64"));
-        assert_eq!(error.fact_value("observed_bytes"), Some("65"));
     }
 }

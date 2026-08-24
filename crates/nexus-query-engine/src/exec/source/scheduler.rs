@@ -13,17 +13,10 @@ use parquet::file::reader::FileReader;
 
 use super::{
     BoundedExecutionAttempt, ExecutionContext, GpuDataFrame, LocalParquetSource, QueryError, QueryErrorCode,
-    QueryMetrics, ReservationKind, Result, SourceChunk, attach_row_group_facts, parquet_chunk_path_fact,
-    read_local_parquet_chunk, source_read_request,
+    QueryMetrics, Result, SourceChunk, attach_row_group_facts, parquet_chunk_path_fact, read_local_parquet_chunk,
 };
 use crate::{
-    exec::bounded::{
-        ActiveReservation,
-        chunks::{
-            SourceReadReservationContractQuality, record_chunk_retry_error, source_read_budget_correction_from_error,
-            try_grow_source_read_reservation_for_budget_correction,
-        },
-    },
+    exec::bounded::chunks::{record_chunk_retry_error, source_read_budget_correction_from_error},
     observability::{
         RuntimeEventContext, RuntimeObservationHandle, RuntimeObservationPayload, RuntimePlanNodeId,
         RuntimeSourceReadObservation, RuntimeSpanId, RuntimeTaskId, RuntimeTopologyRecord, RuntimeWorkerId,
@@ -40,13 +33,13 @@ static NEXT_SOURCE_READ_SPAN_ID: AtomicU64 = AtomicU64::new(10_000);
 pub(in crate::exec) struct ScheduledLocalParquetRead {
     chunk: SourceChunk,
     state: ScheduledLocalParquetReadState,
+    budget_bytes: u64,
     budget_boundary: &'static str,
     prefetch: bool,
 }
 
 enum ScheduledLocalParquetReadState {
     Running {
-        reservation: Box<ActiveReservation>,
         worker: SourceReadWorker<ScheduledLocalParquetReadResult>,
         source_read_lease: Box<crate::runtime::SourceReadStreamLease>,
         source: Box<LocalParquetSource>,
@@ -59,7 +52,6 @@ enum ScheduledLocalParquetReadState {
 pub(in crate::exec) struct ScheduledLocalParquetReadOutput {
     pub(in crate::exec) chunk: SourceChunk,
     pub(in crate::exec) frame: GpuDataFrame,
-    pub(in crate::exec) reservation: ActiveReservation,
     pub(in crate::exec) observed_bytes: u64,
     pub(in crate::exec) observed_row_group_count: Option<u64>,
 }
@@ -466,7 +458,6 @@ impl ScheduledLocalParquetRead {
         context: ExecutionContext,
         source: LocalParquetSource,
         chunk: SourceChunk,
-        reservation: ActiveReservation,
         budget_bytes: u64,
         budget_boundary: &'static str,
         prefetch: bool,
@@ -528,7 +519,6 @@ impl ScheduledLocalParquetRead {
         Ok(Self {
             chunk,
             state: ScheduledLocalParquetReadState::Running {
-                reservation: Box::new(reservation),
                 worker,
                 source_read_lease: Box::new(source_read_lease),
                 source: Box::new(source),
@@ -536,6 +526,7 @@ impl ScheduledLocalParquetRead {
                 max_attempts,
                 observation,
             },
+            budget_bytes,
             budget_boundary,
             prefetch,
         })
@@ -545,30 +536,24 @@ impl ScheduledLocalParquetRead {
         self.prefetch
     }
 
-    pub(in crate::exec) fn budget_boundary(&self) -> &'static str {
-        self.budget_boundary
-    }
-
-    pub(in crate::exec) fn reservation_bytes(&self) -> u64 {
-        let ScheduledLocalParquetReadState::Running { reservation, .. } = &self.state;
-        reservation.bytes()
+    pub(in crate::exec) const fn budget_bytes(&self) -> u64 {
+        self.budget_bytes
     }
 
     pub(in crate::exec) fn finish(
         self,
         execution: &mut BoundedExecutionAttempt<'_>,
     ) -> Result<ScheduledLocalParquetReadOutput> {
-        let ScheduledLocalParquetRead { chunk, state, budget_boundary, prefetch: _ } = self;
-        let (mut reservation, worker, retry_context, observation) = match state {
+        let ScheduledLocalParquetRead { chunk, state, budget_boundary, .. } = self;
+        let (worker, retry_context, observation) = match state {
             ScheduledLocalParquetReadState::Running {
-                reservation,
                 worker,
                 source_read_lease,
                 source,
                 attempt,
                 max_attempts,
                 observation,
-            } => (*reservation, worker, Some((*source_read_lease, *source, attempt, max_attempts)), observation),
+            } => (worker, Some((*source_read_lease, *source, attempt, max_attempts)), observation),
         };
         if let Some(observation) = &observation {
             observation.record(SourceReadLifecycleState::ConsumerJoinStarted);
@@ -613,7 +598,6 @@ impl ScheduledLocalParquetRead {
             Ok(frame) => Ok(ScheduledLocalParquetReadOutput {
                 chunk,
                 frame,
-                reservation,
                 observed_bytes: 0,
                 observed_row_group_count: result.observed_row_group_count,
             }),
@@ -623,7 +607,6 @@ impl ScheduledLocalParquetRead {
                         execution,
                         &source,
                         &chunk,
-                        &mut reservation,
                         budget_boundary,
                         &error,
                         attempt,
@@ -633,12 +616,10 @@ impl ScheduledLocalParquetRead {
                     return Ok(ScheduledLocalParquetReadOutput {
                         chunk,
                         frame: retry.frame,
-                        reservation,
                         observed_bytes: 0,
                         observed_row_group_count: retry.observed_row_group_count,
                     });
                 }
-                execution.release(reservation);
                 Err(error)
             },
         }
@@ -647,7 +628,7 @@ impl ScheduledLocalParquetRead {
     pub(in crate::exec) fn abandon(self, execution: &mut BoundedExecutionAttempt<'_>) {
         let ScheduledLocalParquetRead { state, .. } = self;
         let result = match state {
-            ScheduledLocalParquetReadState::Running { reservation, worker, observation, .. } => {
+            ScheduledLocalParquetReadState::Running { worker, observation, .. } => {
                 if let Some(observation) = &observation {
                     observation.record(SourceReadLifecycleState::ConsumerJoinStarted);
                 }
@@ -658,7 +639,6 @@ impl ScheduledLocalParquetRead {
                         join_duration_ns: join_started_at.elapsed().as_nanos() as u64,
                     });
                 }
-                execution.release(*reservation);
                 result
             },
         };
@@ -670,15 +650,10 @@ impl ScheduledLocalParquetRead {
     }
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"
-)]
 fn try_finish_scheduled_source_read_with_corrected_budget(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     chunk: &SourceChunk,
-    reservation: &mut ActiveReservation,
     budget_boundary: &'static str,
     error: &QueryError,
     attempt: usize,
@@ -688,28 +663,12 @@ fn try_finish_scheduled_source_read_with_corrected_budget(
     if attempt >= max_attempts {
         return Ok(None);
     }
-    let Some(correction) = source_read_budget_correction_from_error(execution, error, reservation) else {
+    let Some(correction) = source_read_budget_correction_from_error(execution, error) else {
         return Ok(None);
     };
     record_chunk_retry_error(error, execution.metrics_mut());
     execution.metrics_mut().record_source_chunk_retry();
     crate::exec::retry::backoff_before_retry(execution.context(), "nexus_query_engine.source_scheduler.budget_retry")?;
-    let request = source_read_request(
-        ReservationKind::SourceRead,
-        budget_boundary,
-        0,
-        execution.reservations().budget(),
-        chunk.source_node_id,
-        chunk,
-        attempt + 1,
-        max_attempts,
-    )
-    .with_source_read_contract(
-        SourceReadReservationContractQuality::CorrectedLowerLevelBudget.as_str(),
-        Some(correction.previous_budget_bytes()),
-        Some(correction.corrected_budget_bytes()),
-    );
-    try_grow_source_read_reservation_for_budget_correction(execution, reservation, correction, request)?;
     execution.metrics_mut().record_source_chunk_attempt();
     let selected_row_groups_before_read = execution.metrics_mut().row_groups_selected;
     let frame = read_local_parquet_chunk(

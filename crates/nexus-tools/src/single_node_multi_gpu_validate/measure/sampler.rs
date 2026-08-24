@@ -220,7 +220,7 @@ pub(super) fn sample_once(
         });
         entry.peak_active_attempts = entry.peak_active_attempts.max(ledger.active_attempts);
         entry.peak_live_grants_bytes = entry.peak_live_grants_bytes.max(ledger.live_grants_bytes);
-        entry.peak_live_reserved_bytes = entry.peak_live_reserved_bytes.max(ledger.live_reserved_bytes);
+        entry.peak_resident_owner_bytes = entry.peak_resident_owner_bytes.max(ledger.resident_owner_bytes);
         entry.min_root_streams_available = entry.min_root_streams_available.min(ledger.root_streams_available);
         entry.min_root_worker_slots_available =
             entry.min_root_worker_slots_available.min(ledger.root_worker_slots_available);
@@ -273,7 +273,7 @@ pub(super) fn sample_once(
             managed_capacity_bytes: ledger.managed_capacity_bytes,
             live_grants_bytes: ledger.live_grants_bytes,
             live_grant_ids: ledger.grants.iter().map(|grant| grant.grant_id).collect(),
-            live_reserved_bytes: ledger.live_reserved_bytes,
+            resident_owner_bytes: ledger.resident_owner_bytes,
             cache_evictable_resident_bytes: ledger.cache_evictable_resident_bytes,
             cache_pinned_in_use_bytes: ledger.cache_pinned_in_use_bytes,
             cache_physical_current_bytes: cache_report.map(|report| report.physical_current_bytes),

@@ -68,9 +68,8 @@ identity. `librapids_logger.so` is bundled only when a staged ELF has a
 Use a `cuvs` image for `cuvs_brute_force_knn`, `cuvs_kmeans`, and
 `cuvs_pca`. Their relation arguments are parenthesized SQL subqueries, so the
 same call shape works over normal tables, Parquet, Iceberg, or cuGraph-derived
-relations. Until the lower-level vector peak-memory preflight contract exists,
-the bounded server rejects execution with a structured `unsupported_operator`
-response. It never selects a CPU fallback or an unadmitted GPU path.
+relations. The bounded server runs them inside the admitted query domain, whose
+allocator enforces the query's memory cap.
 
 ## Image size
 

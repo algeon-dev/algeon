@@ -5,9 +5,9 @@
 
 mod bounded;
 mod diagnostics;
-mod envelope;
+mod evidence;
 mod join_strategy;
-mod requirement;
+mod scope;
 mod shared;
 mod support;
 
@@ -23,14 +23,14 @@ pub use diagnostics::{
     bounded_join_unsupported_shape_facts_with_projection, insert_bounded_join_rejection_projection_error_facts,
 };
 #[doc(hidden)]
-pub use envelope::{AttemptReservationEnvelope, AttemptReservationPolicy};
+pub use evidence::{
+    AttemptCapabilityEvidence, AttemptCapabilityEvidence as AttemptRequirement, AttestedCugraphGraphExecutionScope,
+    CUGRAPH_GRAPH_EXECUTION_CAPABILITY, ExecutionCapability,
+};
 #[doc(hidden)]
 pub use join_strategy::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection};
 #[doc(hidden)]
-pub use requirement::{AttemptBoundDerivation, AttemptCapabilityEvidence as AttemptRequirement};
-#[cfg(any(test, feature = "test-hooks"))]
-pub use requirement::{AttemptCapabilityEvidence, EstimateQuality};
-pub use requirement::{ComposedGraphProducerCandidate, ComposedProducerBindingDiagnostics, QueryPlanCapabilityProof};
+pub use scope::{AttemptExecutionScope, AttemptProducerOccurrence};
 #[doc(hidden)]
 pub use support::{
     CompiledBoundedPipelineSupport, compiled_bounded_pipeline_support, compiled_bounded_query_plan_support,

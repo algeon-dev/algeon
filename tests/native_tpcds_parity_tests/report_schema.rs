@@ -38,8 +38,6 @@ fn parity_tsv_header_pins_columns() {
             "duckdb_output_rows",
             "duckdb_output_batches",
             "duckdb_output_fingerprint",
-            "native_reservation_live_peak_bytes",
-            "native_reservation_denied_count",
             "native_retry_count",
             "native_runtime_failure",
         ]
@@ -70,8 +68,6 @@ fn parity_report_to_tsv_emits_metadata_and_header() {
         native_output_fingerprint: None,
         comparison_mode: ParityComparisonMode::NotApplicable,
         duckdb_output: NativeTpcdsParityExternalOutputSummary::not_configured(),
-        native_reservation_live_peak_bytes: None,
-        native_reservation_denied_count: None,
         native_retry_count: None,
         native_runtime_failure: None,
     };
@@ -85,7 +81,7 @@ fn parity_report_to_tsv_emits_metadata_and_header() {
     assert!(tsv.contains("# statistical_aggregate_execution_mode=gpu_native_tolerant\n"));
     assert!(tsv.contains("# statistical_aggregate_tolerance_contract=float_tolerant\n"));
     assert!(tsv.contains(NATIVE_TPCDS_PARITY_TSV_HEADER));
-    // 30 columns separated by tabs in the data row.
+    // 28 columns separated by tabs in the data row.
     let data_line = tsv.lines().find(|line| line.starts_with("q01\t")).expect("data row should exist");
-    assert_eq!(data_line.split('\t').count(), 30);
+    assert_eq!(data_line.split('\t').count(), 28);
 }

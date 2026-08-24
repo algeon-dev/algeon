@@ -356,13 +356,13 @@ async fn run_one(config: &HarnessConfig, ctx: &SessionContext, request: &Request
                         CandidateOutcome::Selected { candidate } => {
                             eprintln!("[planning] {} SELECTED shape={}", request.spec.label, candidate.shape);
                         },
-                        CandidateOutcome::Deferred { candidate, planning_stage, producer_binding } => {
+                        CandidateOutcome::Deferred { candidate, planning_stage } => {
                             eprintln!(
                                 "[planning] {} DEFERRED shape={} stage={} reason={}",
                                 request.spec.label,
                                 candidate.shape,
                                 planning_stage,
-                                producer_binding.reason_code()
+                                datafusion_nexus::report::DEFERRED_PRODUCER_BINDING_REASON_CODE
                             );
                         },
                         CandidateOutcome::NotSupported { candidate, capability_reason } => {
@@ -487,42 +487,13 @@ struct QueryRow {
     admission_wait_ms: Option<f64>,
     device_ordinal: Option<usize>,
     query_grant_bytes: Option<usize>,
-    reservation_requested_bytes: usize,
-    reservation_granted_bytes: usize,
-    reservation_live_peak_bytes: usize,
-    reservation_denied_count: usize,
     allocator_high_water_bytes: Option<usize>,
     max_task_observed_peak_bytes: Option<usize>,
-    max_task_reservation_bytes: usize,
     graph_algorithm: Option<String>,
-    graph_class: Option<String>,
-    graph_outcome: Option<String>,
-    graph_raw_input_edges: Option<usize>,
-    graph_input_edges: Option<usize>,
-    graph_vertex_estimate: Option<usize>,
-    graph_vertex_estimate_source: Option<String>,
-    graph_vertex_width_bytes: Option<usize>,
-    graph_weight_width_bytes: Option<usize>,
     graph_directed: Option<bool>,
     graph_renumber: Option<bool>,
     graph_construction_policy: Option<String>,
-    graph_edge_normalize_inserted: Option<bool>,
-    graph_calibration_source: Option<String>,
-    graph_seed_count: Option<usize>,
-    graph_seed_mode: Option<String>,
-    graph_model_requested_bytes: Option<usize>,
-    graph_requested_bytes: Option<usize>,
-    graph_budget_bytes: Option<usize>,
-    graph_model_error_ratio: Option<String>,
-    graph_statistics_exact_vertices: Option<usize>,
-    graph_statistics_degree_max: Option<usize>,
-    graph_statistics_degree_p99: Option<usize>,
-    graph_statistics_sum_min_degree_oriented: Option<usize>,
-    graph_statistics_oriented_edge_count: Option<usize>,
-    graph_statistics_peak_chunk_min_degree_sum: Option<usize>,
-    graph_statistics_sum_out_degree: Option<usize>,
     graph_peak_bytes: Option<usize>,
-    graph_reason: Option<String>,
     graph_elapsed_ms: Option<f64>,
     graph_output_device_bytes: Option<usize>,
     output_rows: Option<usize>,

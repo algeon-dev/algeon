@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 
 use super::{
-    AggregateNode, AggregateSpec, CapabilityDecision, Expr, FinalRollupWidthClass, JoinNode, JoinSide, JoinType,
-    NodeId, PlanNode, QueryPlan, RollupRankTopKAfterAggregateJoinPushdownShape, SourceNode, WindowFunction,
-    collect_reachable_node_ids_from, join_node_with_missing_reason, node_kind_for_fact, node_operator_fact,
-    peel_projection_chain_ids_for_shape, sort_input_with_missing_reason, validate_bounded_join_subtree_for_capability,
+    AggregateNode, AggregateSpec, CapabilityDecision, Expr, JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan,
+    RollupRankTopKAfterAggregateJoinPushdownShape, SourceNode, WindowFunction, collect_reachable_node_ids_from,
+    join_node_with_missing_reason, node_kind_for_fact, node_operator_fact, peel_projection_chain_ids_for_shape,
+    sort_input_with_missing_reason, validate_bounded_join_subtree_for_capability,
 };
 
 pub(in crate::capability) fn rollup_rank_topk_after_aggregate_join_pushdown_shape_decision(
@@ -27,8 +27,6 @@ pub(in crate::capability) fn rollup_rank_topk_after_aggregate_join_pushdown_shap
         final_grouping_aggregate_id,
         "rollup_rank_topk_after_pushdown_requires_final_grouping_set_aggregate",
     )?;
-    let final_rollup_width =
-        require_supported_final_rollup_width(final_grouping_aggregate_id, final_grouping_aggregate)?;
     require_plain_column_aggregate_inputs(final_grouping_aggregate_id, &final_grouping_aggregate.spec)?;
 
     let (root_join_id, _) = peel_projection_chain_ids_for_shape(plan, final_grouping_aggregate.input)?;
@@ -59,7 +57,6 @@ pub(in crate::capability) fn rollup_rank_topk_after_aggregate_join_pushdown_shap
         detail_pre_aggregate_id: detail_pre_aggregate_input.node_id,
         root_join_id,
         final_grouping_aggregate_id,
-        final_rollup_width,
         rank_sort_id,
         rank_window_id,
         rank_filter_id: rank_path.rank_filter_id,
@@ -229,50 +226,6 @@ fn grouped_non_grouping_sets_aggregate<'a>(
         ));
     }
     Ok(aggregate)
-}
-
-fn require_supported_final_rollup_width(
-    aggregate_id: NodeId,
-    aggregate: &AggregateNode,
-) -> Result<FinalRollupWidthClass, CapabilityDecision> {
-    let grouping_set_count = aggregate.spec.grouping_sets.as_ref().map_or(0, |sets| sets.groups.len());
-    if aggregate.spec.group_exprs.len() <= 3 && grouping_set_count <= 4 {
-        return Ok(FinalRollupWidthClass::Narrow);
-    }
-    if aggregate.spec.group_exprs.len() == 8
-        && grouping_set_count == 9
-        && aggregate
-            .spec
-            .grouping_sets
-            .as_ref()
-            .is_some_and(|sets| grouping_sets_are_suffix_rollup_masks(aggregate.spec.group_exprs.len(), &sets.groups))
-    {
-        return Ok(FinalRollupWidthClass::Wide);
-    }
-    Err(CapabilityDecision::rejected(
-        "rollup_rank_topk_after_pushdown_requires_bounded_final_rollup_width",
-        [
-            ("node_id", aggregate_id.to_string()),
-            ("group_expr_count", aggregate.spec.group_exprs.len().to_string()),
-            ("grouping_set_count", grouping_set_count.to_string()),
-            ("max_group_expr_count", "3".to_string()),
-            ("max_grouping_set_count", "4".to_string()),
-            ("modeled_wide_group_expr_count", "8".to_string()),
-            ("modeled_wide_grouping_set_count", "9".to_string()),
-            ("modeled_wide_grouping_mask_contract", "suffix_rollup".to_string()),
-        ],
-    ))
-}
-
-fn grouping_sets_are_suffix_rollup_masks(group_expr_count: usize, groups: &[Vec<bool>]) -> bool {
-    if groups.len() != group_expr_count + 1 {
-        return false;
-    }
-    let actual = groups.iter().cloned().collect::<BTreeSet<_>>();
-    let expected = (0..=group_expr_count)
-        .map(|rolled_count| (0..group_expr_count).map(|idx| idx >= group_expr_count - rolled_count).collect::<Vec<_>>())
-        .collect::<BTreeSet<_>>();
-    actual == expected
 }
 
 fn aggregate_node<'a>(

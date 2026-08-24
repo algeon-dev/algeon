@@ -11,7 +11,6 @@ use nexus_query_engine::{
     capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
     chunk::SourceChunkPlanningOptions,
     dynamic_filter::DynamicFilterExecutionOptions,
-    graph_memory::GraphMemoryCalibrationOverride,
     metrics::{QueryId, TraceId},
     mode::StatisticalAggregateExecutionMode,
     observability::{RuntimeObservationConfig, RuntimeObservationOwner, RuntimeTraceId},
@@ -29,9 +28,9 @@ use super::{
     },
     metrics::{NativeExecutionMetricsCapture, NativeMetricsCapture},
 };
+use crate::error::Error;
 #[cfg(feature = "cugraph")]
 use crate::native_exec::graph::GraphExecutionServices;
-use crate::{error::Error, native_exec::graph::GraphAdmissionModelAsk};
 
 /// Adapter-side native execution configuration.
 ///
@@ -53,7 +52,6 @@ pub struct NexusNativeExecutionConfig {
     pub(super) keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions,
     pub(super) aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
     pub(super) source_chunk_planning_options: SourceChunkPlanningOptions,
-    pub(super) graph_memory_calibration_override: GraphMemoryCalibrationOverride,
     pub(super) source_storage_profiles: Vec<SourceStorageProfile>,
     pub(super) query_service_handle: Option<Arc<QueryHandle>>,
     pub(super) query_admission_facts_recorded: Option<Arc<AtomicBool>>,
@@ -148,7 +146,6 @@ impl NexusNativeExecutionConfig {
             keyed_hash_join_strategy_options: KeyedHashJoinStrategyOptions::default(),
             aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
             source_chunk_planning_options: SourceChunkPlanningOptions::default(),
-            graph_memory_calibration_override: GraphMemoryCalibrationOverride::default(),
             source_storage_profiles: Vec::new(),
             query_service_handle: None,
             query_admission_facts_recorded: None,
@@ -364,17 +361,6 @@ impl NexusNativeExecutionConfig {
     pub fn with_source_chunk_planning_options(mut self, options: SourceChunkPlanningOptions) -> Self {
         self.source_chunk_planning_options = options;
         self
-    }
-
-    /// Attach fixture/config metadata for graph memory calibration.
-    pub fn with_graph_memory_calibration_override(mut self, override_: GraphMemoryCalibrationOverride) -> Self {
-        self.graph_memory_calibration_override = override_;
-        self
-    }
-
-    /// Fixture/config metadata used by graph memory calibration.
-    pub fn graph_memory_calibration_override(&self) -> GraphMemoryCalibrationOverride {
-        self.graph_memory_calibration_override
     }
 
     /// Source object-store profiles registered for native remote source

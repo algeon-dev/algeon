@@ -23,7 +23,7 @@ fn bounded_mixed_residual_semi_anti_root_support_requires_left_only_right_build_
     );
 
     assert!(plan.capability_analysis().admits_root_join());
-    assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
+    assert!(unsupported_facts(&plan).is_none());
 
     let right_projection_schema = Arc::new(Schema::new(vec![Field::new("right_payload", DataType::Int32, false)]));
     let plan = mixed_residual_join_plan(
@@ -35,18 +35,14 @@ fn bounded_mixed_residual_semi_anti_root_support_requires_left_only_right_build_
         vec![JoinOutputColumn::right(ColumnRef::input(1, "right_payload", "right_payload"), "right_payload")],
     );
     assert!(!plan.capability_analysis().admits_root_join());
-    let facts = unsupported_facts(&plan, ExecutionBoundaryPolicy::default())
-        .expect("unsupported mixed semi root shape should produce facts");
+    let facts = unsupported_facts(&plan).expect("unsupported mixed semi root shape should produce facts");
     assert_rejection_facts_are_family_free(&facts, "mixed_semi_root_right_projection");
-    assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
     assert_eq!(
         facts.get("bounded_join_rejection_reason").map(String::as_str),
         Some("unsupported_join_node_capability")
     );
     assert_eq!(facts.get("bounded_join_rejection_scope").map(String::as_str), Some("node"));
     assert_eq!(facts.get("bounded_join_rejection_category").map(String::as_str), Some("unsupported_node_operator"));
-    assert_eq!(facts.get("bounded_join_required_shape_contract"), None);
-    assert_eq!(facts.get("bounded_join_required_lower_level_contract").map(String::as_str), None);
 
     let plan = mixed_residual_join_plan(
         left_schema,
@@ -57,17 +53,14 @@ fn bounded_mixed_residual_semi_anti_root_support_requires_left_only_right_build_
         vec![JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload")],
     );
     assert!(!plan.capability_analysis().admits_root_join());
-    let facts = unsupported_facts(&plan, ExecutionBoundaryPolicy::default())
-        .expect("unsupported mixed anti root shape should produce facts");
+    let facts = unsupported_facts(&plan).expect("unsupported mixed anti root shape should produce facts");
     assert_rejection_facts_are_family_free(&facts, "mixed_anti_root_left_build");
-    assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
     assert_eq!(
         facts.get("bounded_join_rejection_reason").map(String::as_str),
         Some("unsupported_join_node_capability")
     );
     assert_eq!(facts.get("bounded_join_rejection_scope").map(String::as_str), Some("node"));
     assert_eq!(facts.get("bounded_join_rejection_category").map(String::as_str), Some("unsupported_node_operator"));
-    assert_eq!(facts.get("bounded_join_required_lower_level_contract").map(String::as_str), None);
 }
 
 #[test]
@@ -121,5 +114,5 @@ fn bounded_mixed_residual_full_root_supports_pair_projection() {
     );
 
     assert!(plan.capability_analysis().admits_root_join());
-    assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
+    assert!(unsupported_facts(&plan).is_none());
 }

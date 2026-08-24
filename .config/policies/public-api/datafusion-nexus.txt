@@ -8,7 +8,7 @@ pub use datafusion_nexus::attempt::AttemptDisposition
 pub use datafusion_nexus::attempt::AttemptId
 pub use datafusion_nexus::attempt::AttemptQueryId
 pub use datafusion_nexus::attempt::AttemptTraceContext
-pub use datafusion_nexus::attempt::GraphClaimCalibrationRow
+pub use datafusion_nexus::attempt::GraphMeasuredPeakRow
 pub use datafusion_nexus::attempt::QueryAttemptReport
 pub use datafusion_nexus::attempt::RuntimeObservationConfig
 pub use datafusion_nexus::attempt::RuntimeTerminalOutcome
@@ -19,7 +19,6 @@ pub datafusion_nexus::attempt::GraphClaimCalibrationExecution::Physical
 pub enum datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason
 pub datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower
 pub datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower::leader_attempt_id: core::option::Option<nexus_query_planning::schedule_projection::AttemptId>
-pub datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason::GraphMemoryAdmissionDenied
 pub struct datafusion_nexus::attempt::AttemptOptions
 pub datafusion_nexus::attempt::AttemptOptions::deadline: core::option::Option<std::time::Instant>
 pub datafusion_nexus::attempt::AttemptOptions::observation: nexus_query_runtime::observability::recorder::RuntimeObservationConfig
@@ -58,7 +57,7 @@ impl datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot
 pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::attempt_id(&self) -> nexus_query_planning::schedule_projection::AttemptId
 pub fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::execution(&self) -> core::option::Option<&datafusion_nexus::attempt::GraphClaimCalibrationExecution>
 pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::execution_complete(&self) -> bool
-pub fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::rows(&self) -> &[nexus_query_planning::graph_memory::evidence::GraphClaimCalibrationRow]
+pub fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::rows(&self) -> &[nexus_query_planning::graph_observation::GraphMeasuredPeakRow]
 pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::truncated(&self) -> bool
 #[non_exhaustive] pub struct datafusion_nexus::attempt::SealedAttemptNativeExecutionSnapshot
 pub datafusion_nexus::attempt::SealedAttemptNativeExecutionSnapshot::attempt_id: nexus_query_planning::schedule_projection::AttemptId
@@ -884,7 +883,6 @@ pub mod datafusion_nexus::native_exec
 pub use datafusion_nexus::native_exec::AggregateStrategyExecutionOptions
 pub use datafusion_nexus::native_exec::DynamicFilterExecutionOptions
 pub use datafusion_nexus::native_exec::ExecutionBoundaryPolicy
-pub use datafusion_nexus::native_exec::GraphMemoryCalibrationOverride
 pub use datafusion_nexus::native_exec::KeyedHashJoinStrategyOptions
 pub use datafusion_nexus::native_exec::LakehouseCacheFillConfig
 pub use datafusion_nexus::native_exec::MemoryControlPolicy
@@ -903,7 +901,6 @@ pub datafusion_nexus::native_exec::GraphClaimCalibrationExecution::Physical
 pub enum datafusion_nexus::native_exec::GraphClaimCalibrationNonPhysicalReason
 pub datafusion_nexus::native_exec::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower
 pub datafusion_nexus::native_exec::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower::leader_attempt_id: core::option::Option<nexus_query_planning::schedule_projection::AttemptId>
-pub datafusion_nexus::native_exec::GraphClaimCalibrationNonPhysicalReason::GraphMemoryAdmissionDenied
 pub struct datafusion_nexus::native_exec::GraphBfsSingleflightEventSnapshot
 pub datafusion_nexus::native_exec::GraphBfsSingleflightEventSnapshot::action: &'static str
 pub datafusion_nexus::native_exec::GraphBfsSingleflightEventSnapshot::correlation_fingerprint: core::option::Option<alloc::string::String>
@@ -969,7 +966,6 @@ pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::boundary_polic
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::bounded(u64, u64, usize, usize, usize) -> Self
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::bounded_default() -> Self
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::dynamic_filter_execution_options(&self) -> nexus_query_planning::dynamic_filter::DynamicFilterExecutionOptions
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::graph_memory_calibration_override(&self) -> nexus_query_planning::graph_memory::GraphMemoryCalibrationOverride
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::host_output_memory_pool_accounting(&self) -> bool
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::keyed_hash_join_strategy_options(&self) -> nexus_query_planning::capability::join::KeyedHashJoinStrategyOptions
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::lakehouse_cache_fill_config(&self) -> &nexus_query_runtime::runtime::cache_fill::LakehouseCacheFillConfig
@@ -989,7 +985,6 @@ pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::trace_id(&self
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_aggregate_strategy_execution_options(self, nexus_query_planning::capability::aggregate::AggregateStrategyExecutionOptions) -> Self
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_boundary_policy(self, nexus_query_planning::execution_contracts::ExecutionBoundaryPolicy) -> Self
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_dynamic_filter_execution_options(self, nexus_query_planning::dynamic_filter::DynamicFilterExecutionOptions) -> Self
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_graph_memory_calibration_override(self, nexus_query_planning::graph_memory::GraphMemoryCalibrationOverride) -> Self
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_host_output_memory_pool_accounting(self, bool) -> Self
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_keyed_hash_join_strategy_options(self, nexus_query_planning::capability::join::KeyedHashJoinStrategyOptions) -> Self
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_lakehouse_cache_fill_config(self, nexus_query_runtime::runtime::cache_fill::LakehouseCacheFillConfig) -> Self
@@ -1022,12 +1017,12 @@ impl datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot
 pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::attempt_id(&self) -> nexus_query_planning::schedule_projection::AttemptId
 pub fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::execution(&self) -> core::option::Option<&datafusion_nexus::attempt::GraphClaimCalibrationExecution>
 pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::execution_complete(&self) -> bool
-pub fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::rows(&self) -> &[nexus_query_planning::graph_memory::evidence::GraphClaimCalibrationRow]
+pub fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::rows(&self) -> &[nexus_query_planning::graph_observation::GraphMeasuredPeakRow]
 pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::truncated(&self) -> bool
 pub const datafusion_nexus::native_exec::NATIVE_NEXUS_DATAFUSION_METRIC_NAMES: &[&str]
 pub const datafusion_nexus::native_exec::SERVER_CAPTURE_LOSS_METRIC_NAME: &str
 pub mod datafusion_nexus::native_report
-pub use datafusion_nexus::native_report::CapabilityContractGateRow
+pub use datafusion_nexus::native_report::CapabilityDecisionRow
 pub use datafusion_nexus::native_report::MetricAggregation
 pub use datafusion_nexus::native_report::MetricDescriptor
 pub use datafusion_nexus::native_report::MetricDirection
@@ -1180,7 +1175,6 @@ pub datafusion_nexus::native_report::NativeAggregateStrategyMetricRow::filtered_
 pub datafusion_nexus::native_report::NativeAggregateStrategyMetricRow::filtered_grouped_rows_per_chunk: usize
 pub datafusion_nexus::native_report::NativeAggregateStrategyMetricRow::filtered_grouped_segment_target_temporary_bytes: usize
 pub datafusion_nexus::native_report::NativeAggregateStrategyMetricRow::filtered_grouped_state_rows_merged: usize
-pub datafusion_nexus::native_report::NativeAggregateStrategyMetricRow::filtered_input_lower_level_unresolved_contracts: alloc::string::String
 pub datafusion_nexus::native_report::NativeAggregateStrategyMetricRow::filtered_input_materialization_budget_bytes: usize
 pub datafusion_nexus::native_report::NativeAggregateStrategyMetricRow::filtered_input_materialization_estimated_bytes: usize
 pub datafusion_nexus::native_report::NativeAggregateStrategyMetricRow::filtered_input_materialization_strategy: alloc::string::String
@@ -1265,7 +1259,6 @@ pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::final_mer
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::final_merge_levels: usize
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::final_merge_max_fan_in: usize
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::gpu_resident_input_handoffs: usize
-pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::graph_reservation_rows: alloc::vec::Vec<datafusion_nexus::native_report::NativeGraphReservationMetricRow>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::graph_runtime_rows: alloc::vec::Vec<datafusion_nexus::native_report::NativeGraphRuntimeMetricRow>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::hash_join_build_count: usize
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::hash_join_cache_hits: usize
@@ -1278,7 +1271,6 @@ pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::join_gath
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::join_strategy_rows: alloc::vec::Vec<datafusion_nexus::native_report::NativeJoinStrategyMetricRow>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::lakehouse_cache_fill_event_snapshot_rows: alloc::vec::Vec<datafusion_nexus::native_report::NativeLakehouseCacheFillEventMetricRow>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::max_task_observed_peak_bytes: core::option::Option<usize>
-pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::max_task_reservation_bytes: usize
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::max_task_retained_bytes: core::option::Option<usize>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::mixed_join_size_data_bytes: usize
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::one_shot_join_count: usize
@@ -1294,13 +1286,8 @@ pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::partial_a
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::plan_task_mapping_rows: alloc::vec::Vec<datafusion_nexus::native_report::NativePlanTaskMappingMetricRow>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::query_grant_bytes: core::option::Option<usize>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::read_columns: usize
-pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::reservation_denied_count: usize
-pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::reservation_granted_bytes: usize
-pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::reservation_live_peak_bytes: usize
-pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::reservation_requested_bytes: usize
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::resident_dataframe_peak_bytes: core::option::Option<usize>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::retry_count: usize
-pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::retry_reservation_failure_count: usize
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::retry_resource_exhausted_count: usize
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::row_groups_committed: usize
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::row_groups_planned: usize
@@ -1343,7 +1330,7 @@ pub fn datafusion_nexus::native_report::NativeDataFusionExecutionReport::with_st
 pub fn datafusion_nexus::native_report::NativeDataFusionExecutionReport::with_workload_dataset_metadata(self, datafusion_nexus::native_report::WorkloadDatasetMetadata) -> Self
 pub struct datafusion_nexus::native_report::NativeDataFusionExecutionRow
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::capability_compiled_graphs: alloc::vec::Vec<datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics>
-pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::capability_contract_rows: alloc::vec::Vec<nexus_query_planning::contract_report::CapabilityContractGateRow>
+pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::capability_decision_rows: alloc::vec::Vec<nexus_query_planning::contract_report::CapabilityDecisionRow>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::final_disposition: core::option::Option<datafusion_nexus::planner::FinalPlanDisposition>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::host_datafusion_boundary_count: core::option::Option<usize>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::metrics: datafusion_nexus::native_report::NativeDataFusionExecutionMetrics
@@ -1389,7 +1376,7 @@ pub fn datafusion_nexus::native_report::NativeDataFusionPlanningReport::to_tsv(&
 pub fn datafusion_nexus::native_report::NativeDataFusionPlanningReport::with_workload_dataset_metadata(self, datafusion_nexus::native_report::WorkloadDatasetMetadata) -> Self
 pub struct datafusion_nexus::native_report::NativeDataFusionPlanningRow
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::capability_compiled_graphs: alloc::vec::Vec<datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics>
-pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::capability_contract_rows: alloc::vec::Vec<nexus_query_planning::contract_report::CapabilityContractGateRow>
+pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::capability_decision_rows: alloc::vec::Vec<nexus_query_planning::contract_report::CapabilityDecisionRow>
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::edge_normalize_inserted: bool
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::final_disposition: core::option::Option<datafusion_nexus::planner::FinalPlanDisposition>
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::host_datafusion_boundary_count: core::option::Option<usize>
@@ -1473,46 +1460,6 @@ pub datafusion_nexus::native_report::NativeFallbackPressureWorkloadItem::query_i
 impl datafusion_nexus::native_report::NativeFallbackPressureWorkloadItem
 pub fn datafusion_nexus::native_report::NativeFallbackPressureWorkloadItem::new(impl core::convert::Into<alloc::string::String>, alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>) -> Self
 pub fn datafusion_nexus::native_report::NativeFallbackPressureWorkloadItem::planning_failure(impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
-pub struct datafusion_nexus::native_report::NativeGraphReservationMetricRow
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::algorithm: alloc::string::String
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::budget_bytes: core::option::Option<usize>
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::calibration_source: alloc::string::String
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::class: alloc::string::String
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::construction_policy: alloc::string::String
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::data_dependent: bool
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::directed: bool
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::edge_normalize_inserted: bool
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::graph_model_error_ratio: core::option::Option<alloc::string::String>
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::graph_statistics_degree_max: core::option::Option<usize>
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::graph_statistics_degree_p99: core::option::Option<usize>
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::graph_statistics_exact_vertices: core::option::Option<usize>
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::graph_statistics_oriented_edge_count: core::option::Option<usize>
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::graph_statistics_peak_chunk_min_degree_sum: core::option::Option<usize>
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::graph_statistics_sum_min_degree_oriented: core::option::Option<usize>
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::graph_statistics_sum_out_degree: core::option::Option<usize>
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::has_edge_id: bool
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::input_edges: usize
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::measured_peak_bytes: core::option::Option<usize>
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::model_requested_bytes: usize
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::node_id: alloc::string::String
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::outcome: alloc::string::String
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::pair_cardinality_admission_mode: alloc::string::String
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::pair_cardinality_source: alloc::string::String
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::pair_rows: core::option::Option<usize>
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::pair_vertex_width_bytes: core::option::Option<usize>
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::raw_input_edges: core::option::Option<usize>
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::reason: alloc::string::String
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::renumber: bool
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::requested_bytes: usize
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::seed_count: core::option::Option<usize>
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::seed_mode: alloc::string::String
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::vertex_estimate: usize
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::vertex_estimate_source: alloc::string::String
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::vertex_upper_bound: usize
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::vertex_width_bytes: usize
-pub datafusion_nexus::native_report::NativeGraphReservationMetricRow::weight_width_bytes: core::option::Option<usize>
-impl datafusion_nexus::native_report::NativeGraphReservationMetricRow
-pub fn datafusion_nexus::native_report::NativeGraphReservationMetricRow::to_stable_kv_row(&self) -> alloc::string::String
 pub struct datafusion_nexus::native_report::NativeGraphRuntimeMetricRow
 pub datafusion_nexus::native_report::NativeGraphRuntimeMetricRow::algorithm: alloc::string::String
 pub datafusion_nexus::native_report::NativeGraphRuntimeMetricRow::algorithm_metadata: alloc::string::String
@@ -1690,10 +1637,6 @@ pub datafusion_nexus::native_report::NativeTaskOperatorMetricRow::elapsed_ns: us
 pub datafusion_nexus::native_report::NativeTaskOperatorMetricRow::max_observed_peak_bytes: core::option::Option<usize>
 pub datafusion_nexus::native_report::NativeTaskOperatorMetricRow::max_retained_bytes: core::option::Option<usize>
 pub datafusion_nexus::native_report::NativeTaskOperatorMetricRow::operator_kind: alloc::string::String
-pub datafusion_nexus::native_report::NativeTaskOperatorMetricRow::reservation_granted_bytes: usize
-pub datafusion_nexus::native_report::NativeTaskOperatorMetricRow::reservation_live_peak_bytes: usize
-pub datafusion_nexus::native_report::NativeTaskOperatorMetricRow::reservation_released_bytes: usize
-pub datafusion_nexus::native_report::NativeTaskOperatorMetricRow::reservation_requested_bytes: usize
 pub datafusion_nexus::native_report::NativeTaskOperatorMetricRow::task_count: usize
 impl datafusion_nexus::native_report::NativeTaskOperatorMetricRow
 pub fn datafusion_nexus::native_report::NativeTaskOperatorMetricRow::to_stable_kv_row(&self) -> alloc::string::String
@@ -1703,10 +1646,6 @@ pub datafusion_nexus::native_report::NativeTaskRuntimeMetricRow::elapsed_ns: usi
 pub datafusion_nexus::native_report::NativeTaskRuntimeMetricRow::max_observed_peak_bytes: core::option::Option<usize>
 pub datafusion_nexus::native_report::NativeTaskRuntimeMetricRow::max_retained_bytes: core::option::Option<usize>
 pub datafusion_nexus::native_report::NativeTaskRuntimeMetricRow::operator_kind: alloc::string::String
-pub datafusion_nexus::native_report::NativeTaskRuntimeMetricRow::reservation_granted_bytes: usize
-pub datafusion_nexus::native_report::NativeTaskRuntimeMetricRow::reservation_live_peak_bytes: usize
-pub datafusion_nexus::native_report::NativeTaskRuntimeMetricRow::reservation_released_bytes: usize
-pub datafusion_nexus::native_report::NativeTaskRuntimeMetricRow::reservation_requested_bytes: usize
 impl datafusion_nexus::native_report::NativeTaskRuntimeMetricRow
 pub fn datafusion_nexus::native_report::NativeTaskRuntimeMetricRow::to_stable_kv_row(&self) -> alloc::string::String
 pub struct datafusion_nexus::native_report::WorkloadDatasetMetadata
@@ -1743,7 +1682,6 @@ pub const datafusion_nexus::native_report::NATIVE_DATAFUSION_PLANNING_TSV_HEADER
 pub const datafusion_nexus::native_report::NATIVE_FALLBACK_PRESSURE_TSV_HEADER: &str
 pub fn datafusion_nexus::native_report::format_native_aggregate_strategy_metric_rows(&[datafusion_nexus::native_report::NativeAggregateStrategyMetricRow]) -> alloc::string::String
 pub fn datafusion_nexus::native_report::format_native_dynamic_filter_runtime_metric_rows(&[datafusion_nexus::native_report::NativeDynamicFilterRuntimeMetricRow]) -> alloc::string::String
-pub fn datafusion_nexus::native_report::format_native_graph_reservation_metric_rows(&[datafusion_nexus::native_report::NativeGraphReservationMetricRow]) -> alloc::string::String
 pub fn datafusion_nexus::native_report::format_native_graph_runtime_metric_rows(&[datafusion_nexus::native_report::NativeGraphRuntimeMetricRow]) -> alloc::string::String
 pub fn datafusion_nexus::native_report::format_native_join_strategy_metric_rows(&[datafusion_nexus::native_report::NativeJoinStrategyMetricRow]) -> alloc::string::String
 pub fn datafusion_nexus::native_report::format_native_lakehouse_cache_fill_event_metric_rows(&[datafusion_nexus::native_report::NativeLakehouseCacheFillEventMetricRow]) -> alloc::string::String
@@ -1813,8 +1751,8 @@ pub use datafusion_nexus::observability::SealedRuntimeObservationSnapshot
 pub use datafusion_nexus::observability::backend_metric_descriptors
 pub use datafusion_nexus::observability::write_runtime_observation_jsonl
 pub mod datafusion_nexus::planner
-pub use datafusion_nexus::planner::CapabilityContractGateRow
 pub use datafusion_nexus::planner::CapabilityContractReport
+pub use datafusion_nexus::planner::CapabilityDecisionRow
 pub use datafusion_nexus::planner::NativeOptimizerDiagnostics
 pub use datafusion_nexus::planner::NativeOptimizerOptions
 pub use datafusion_nexus::planner::NativePlanCostOptions
@@ -1846,9 +1784,7 @@ pub datafusion_nexus::planner::NativeCapabilityAcceptedCandidateDiagnostics::rep
 pub struct datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics
 pub datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics::barrier_count: usize
 pub datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics::edge_count: usize
-pub datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics::gate_count: usize
 pub datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics::resource_count: usize
-pub datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics::sink_gate_count: usize
 pub datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics::sink_kind: alloc::string::String
 pub datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics::task_count: usize
 pub struct datafusion_nexus::planner::NativeCapabilityContractDiagnostics
@@ -1861,12 +1797,11 @@ impl datafusion_nexus::planner::NativeCapabilityContractDiagnostics
 pub fn datafusion_nexus::planner::NativeCapabilityContractDiagnostics::is_empty(&self) -> bool
 pub fn datafusion_nexus::planner::NativeCapabilityContractDiagnostics::merge(&mut self, Self)
 pub struct datafusion_nexus::planner::NativeCapabilityDeferredCandidateDiagnostics
-pub datafusion_nexus::planner::NativeCapabilityDeferredCandidateDiagnostics::binding: nexus_query_planning::admission::requirement::capability::ComposedProducerBindingDiagnostics
 pub datafusion_nexus::planner::NativeCapabilityDeferredCandidateDiagnostics::candidate: datafusion_nexus::report::GpuCandidate
 pub datafusion_nexus::planner::NativeCapabilityDeferredCandidateDiagnostics::planning_stage: alloc::string::String
 pub datafusion_nexus::planner::NativeCapabilityDeferredCandidateDiagnostics::report: nexus_query_planning::contract_report::CapabilityContractReport
 pub struct datafusion_nexus::planner::NativeCapabilityRejectedCandidateDiagnostics
-pub datafusion_nexus::planner::NativeCapabilityRejectedCandidateDiagnostics::blocking_contract: nexus_query_planning::contract_report::CapabilityContractGateRow
+pub datafusion_nexus::planner::NativeCapabilityRejectedCandidateDiagnostics::blocking_contract: nexus_query_planning::contract_report::CapabilityDecisionRow
 pub datafusion_nexus::planner::NativeCapabilityRejectedCandidateDiagnostics::candidate: datafusion_nexus::report::GpuCandidate
 pub struct datafusion_nexus::planner::NativePlanningDiagnostics
 pub datafusion_nexus::planner::NativePlanningDiagnostics::capability_contract: datafusion_nexus::planner::NativeCapabilityContractDiagnostics
@@ -1912,7 +1847,6 @@ pub const datafusion_nexus::planner::CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_RE
 pub const datafusion_nexus::planner::NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME: &str
 pub fn datafusion_nexus::planner::classify_final_plan(&dyn datafusion_physical_plan::execution_plan::ExecutionPlan) -> datafusion_nexus::planner::FinalPlanDisposition
 pub mod datafusion_nexus::report
-pub use datafusion_nexus::report::ComposedProducerBindingDiagnostics
 pub use datafusion_nexus::report::NativePlanCostReason
 pub use datafusion_nexus::report::PlanNodeId
 pub use datafusion_nexus::report::QueryId
@@ -1924,7 +1858,6 @@ pub enum datafusion_nexus::report::CandidateOutcome
 pub datafusion_nexus::report::CandidateOutcome::Deferred
 pub datafusion_nexus::report::CandidateOutcome::Deferred::candidate: datafusion_nexus::report::GpuCandidate
 pub datafusion_nexus::report::CandidateOutcome::Deferred::planning_stage: alloc::string::String
-pub datafusion_nexus::report::CandidateOutcome::Deferred::producer_binding: nexus_query_planning::admission::requirement::capability::ComposedProducerBindingDiagnostics
 pub datafusion_nexus::report::CandidateOutcome::NotSelectedByCost
 pub datafusion_nexus::report::CandidateOutcome::NotSelectedByCost::candidate: datafusion_nexus::report::GpuCandidate
 pub datafusion_nexus::report::CandidateOutcome::NotSelectedByCost::cost_reason: nexus_query_planning::plan::preference::NativePlanCostReason
@@ -2003,6 +1936,7 @@ pub fn datafusion_nexus::report::PlanningReport::triage_summary(&self) -> nexus_
 pub fn datafusion_nexus::report::PlanningReport::with_correlation_from(self, &datafusion_nexus::report::PlanningReport) -> Self
 pub fn datafusion_nexus::report::PlanningReport::with_query_id(self, impl core::convert::Into<nexus_query_planning::correlation::QueryId>) -> Self
 pub fn datafusion_nexus::report::PlanningReport::with_trace_id(self, impl core::convert::Into<nexus_query_planning::correlation::TraceId>) -> Self
+pub const datafusion_nexus::report::DEFERRED_PRODUCER_BINDING_REASON_CODE: &str
 pub mod datafusion_nexus::session
 pub const datafusion_nexus::session::NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME: &str
 pub const datafusion_nexus::session::NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME: &str

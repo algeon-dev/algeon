@@ -4,14 +4,13 @@ use super::{
     BoundedJoinSideFrame, BoundedPartitionRowPolicy, CompiledEqualityJoinPreflightIndices,
     CompiledJoinExecutionStrategy, GpuDataFrame, Instant, JoinMaterializationTxn, JoinNode, JoinSide,
     KeyedHashJoinStrategyOptions, NodeId, PARTITIONED_HASH_EQUI_STRATEGY, PartitionedHashEquiJoinFrameStreamProbeState,
-    PartitionedJoinDriverPlan, PartitionedJoinPartitionOutput, PartitionedJoinSide, ReservationKind,
-    ResidentFrameStreamPayload, ResidentFrameStreamSource, ResidentGpuFrame, Result, StreamedPartitionedJoinSummary,
-    VecDeque, bounded_join_request, compiled_join_input_columns, concatenate_streamed_hash_join_outputs,
-    execution_overrides, hash_partition_join_side, join_keys_for_side,
-    materialize_compiled_keyed_equality_join_indices_with_preflight, materialize_partitioned_join_partition_with_retry,
-    observe_device_memory_bytes, partitioned_join_partition_count, partitioned_join_target_bytes_for_context,
-    partitioned_streaming_probe_supported, prepare_bounded_join_side_input_from_resident_frame, probe_side,
-    reconcile_join_output_upper_bound, record_partitioned_join_operator_metrics,
+    PartitionedJoinDriverPlan, PartitionedJoinPartitionOutput, PartitionedJoinSide, ResidentFrameStreamPayload,
+    ResidentFrameStreamSource, ResidentGpuFrame, Result, StreamedPartitionedJoinSummary, VecDeque,
+    compiled_join_input_columns, concatenate_streamed_hash_join_outputs, execution_overrides, hash_partition_join_side,
+    join_keys_for_side, materialize_compiled_keyed_equality_join_indices_with_preflight,
+    materialize_partitioned_join_partition_with_retry, observe_device_memory_bytes, partitioned_join_partition_count,
+    partitioned_join_target_bytes_for_context, partitioned_streaming_probe_supported,
+    prepare_bounded_join_side_input_from_resident_frame, probe_side, record_partitioned_join_operator_metrics,
     record_streamed_partitioned_hash_join_metrics, release_partitioned_join_side,
     release_streamed_join_outputs_reverse, run_partitioned_join_driver,
     stream_bounded_join_leaf_local_parquet_source_serial, unsupported_bounded_shape,
@@ -117,25 +116,21 @@ fn materialize_partitioned_hash_equi_join_partition(
     let (left, right) = txn.sides();
     let preflight_indices = match materialize_compiled_keyed_equality_join_indices_with_preflight(
         execution,
-        node_id,
         node,
         left,
         right,
         node.spec.build_side,
         &left_keys,
         &right_keys,
-        "join_partition_indices",
         &overrides,
     ) {
         Ok(indices) => indices,
         Err(error) => {
-            txn.rollback(execution);
+            txn.rollback();
             return Err(error);
         },
     };
-    let CompiledEqualityJoinPreflightIndices { indices, gather_map_reservation, index_bytes, output_rows } =
-        preflight_indices;
-    txn.set_gather_map_reservation(gather_map_reservation);
+    let CompiledEqualityJoinPreflightIndices { indices, index_bytes, output_rows } = preflight_indices;
     txn.set_indices(indices);
     let (left, right) = txn.sides();
     let output_reservation_bytes = match txn.indices().output_upper_bound_size_bytes(
@@ -148,24 +143,10 @@ fn materialize_partitioned_hash_equi_join_partition(
     ) {
         Ok(bytes) => bytes,
         Err(error) => {
-            txn.rollback(execution);
+            txn.rollback();
             return Err(error);
         },
     };
-    let output_reservation = match execution.try_reserve(bounded_join_request(
-        ReservationKind::JoinOutput,
-        "join_partition_output",
-        output_reservation_bytes,
-        execution.reservations().budget(),
-        node_id,
-    )) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            txn.rollback(execution);
-            return Err(error);
-        },
-    };
-    txn.set_output_reservation(output_reservation);
     let (left, right) = txn.sides();
     let output = match txn.indices().materialize_output(
         &left.frame,
@@ -177,7 +158,7 @@ fn materialize_partitioned_hash_equi_join_partition(
     ) {
         Ok(output) => output,
         Err(error) => {
-            txn.rollback(execution);
+            txn.rollback();
             return Err(error);
         },
     };
@@ -185,19 +166,12 @@ fn materialize_partitioned_hash_equi_join_partition(
     let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics_mut()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            txn.rollback(execution);
+            txn.rollback();
             return Err(error);
         },
     };
-    if let Err(error) =
-        reconcile_join_output_upper_bound(execution, node_id, txn.output_reservation_mut(), output_bytes)
-    {
-        txn.rollback(execution);
-        return Err(error);
-    }
-    txn.release_gather_map_reservation(execution);
     Ok(PartitionedJoinPartitionOutput {
-        frame: txn.commit_frame(execution, GpuDataFrame::new(output)),
+        frame: txn.commit_frame(GpuDataFrame::new(output), output_bytes),
         index_bytes,
         mixed_size_data_bytes: 0,
         output_reservation_bytes,
@@ -235,16 +209,9 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     let probe_keys = join_keys_for_side(node, probe_side);
     let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
-    let build_partitioned = hash_partition_join_side(
-        execution,
-        node_id,
-        build_side,
-        build.input,
-        &build_keys,
-        partition_count,
-        &overrides,
-    )?;
-    let build_partitioned_bytes = build_partitioned.reservation.bytes();
+    let build_partitioned =
+        hash_partition_join_side(execution, build_side, build.input, &build_keys, partition_count, &overrides)?;
+    let build_partitioned_bytes = build_partitioned.device_bytes();
     let mut outputs = Vec::new();
     let mut summary =
         StreamedPartitionedJoinSummary::new(partition_count, partition_target_bytes, build_partitioned_bytes);
@@ -270,19 +237,12 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     let probe_columns =
         compiled_join_input_columns(node, CompiledJoinExecutionStrategy::PartitionedHashEqui, probe_side)?;
     let stream_result = stream_bounded_join_leaf_local_parquet_source_serial(execution, stream, |input, execution| {
-        let probe = prepare_bounded_join_side_input_from_resident_frame(
-            execution,
-            input,
-            &probe_columns,
-            probe_side,
-            node_id,
-            build_side,
-        )?;
+        let probe = prepare_bounded_join_side_input_from_resident_frame(execution, input, &probe_columns, probe_side)?;
         let probe_rows = probe.rows;
         let probe_bytes = probe.bytes;
         let probe_partitioned =
-            hash_partition_join_side(execution, node_id, probe_side, probe, &probe_keys, partition_count, &overrides)?;
-        let probe_partitioned_bytes = probe_partitioned.reservation.bytes();
+            hash_partition_join_side(execution, probe_side, probe, &probe_keys, partition_count, &overrides)?;
+        let probe_partitioned_bytes = probe_partitioned.device_bytes();
         summary.record_probe_partitioned_chunk(probe_rows, probe_bytes, probe_partitioned_bytes);
         for partition in 0..partition_count {
             let (left_partitioned, right_partitioned) = match build_side {
@@ -304,12 +264,12 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
                     }
                 },
                 Err(error) => {
-                    release_partitioned_join_side(execution, probe_partitioned);
+                    release_partitioned_join_side(probe_partitioned);
                     return Err(error);
                 },
             }
         }
-        release_partitioned_join_side(execution, probe_partitioned);
+        release_partitioned_join_side(probe_partitioned);
         Ok(())
     });
     match stream_result {
@@ -324,7 +284,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
                     ("probe_partitioned_bytes", summary.probe_partitioned_bytes.to_string()),
                 ]),
             );
-            release_partitioned_join_side(execution, build_partitioned);
+            release_partitioned_join_side(build_partitioned);
             Ok(BoundedCompiledJoinProbeState::PartitionedStreamed {
                 build_side,
                 build_rows,
@@ -334,8 +294,8 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
             })
         },
         Err(error) => {
-            release_streamed_join_outputs_reverse(execution, outputs);
-            release_partitioned_join_side(execution, build_partitioned);
+            release_streamed_join_outputs_reverse(outputs);
+            release_partitioned_join_side(build_partitioned);
             Err(error)
         },
     }
@@ -370,16 +330,9 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     let probe_keys = join_keys_for_side(node, probe_side);
     let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
-    let build_partitioned = hash_partition_join_side(
-        execution,
-        node_id,
-        build_side,
-        build.input,
-        &build_keys,
-        partition_count,
-        &overrides,
-    )?;
-    let build_partitioned_bytes = build_partitioned.reservation.bytes();
+    let build_partitioned =
+        hash_partition_join_side(execution, build_side, build.input, &build_keys, partition_count, &overrides)?;
+    let build_partitioned_bytes = build_partitioned.device_bytes();
     execution.metrics_mut().record_join_strategy_decision(
         node_id,
         &BTreeMap::from([
@@ -396,7 +349,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
             Ok(columns) => columns,
             Err(error) => {
                 inputs.release_all(execution);
-                release_partitioned_join_side(execution, build_partitioned);
+                release_partitioned_join_side(build_partitioned);
                 return Err(error);
             },
         };
@@ -452,7 +405,6 @@ pub(in crate::exec::bounded::join::compiled) fn partitioned_hash_equi_join_frame
         aggregate_reservation_bytes,
         aggregate_num_rows,
         num_columns,
-        Vec::new(),
         Box::new(source),
     )
 }
@@ -509,8 +461,6 @@ impl PartitionedHashEquiJoinProbeStreamSource {
             input,
             &self.probe_columns,
             probe_side,
-            self.node_id,
-            self.build_side,
         ) {
             Ok(probe) => probe,
             Err(error) => return Some(Err(error)),
@@ -524,7 +474,6 @@ impl PartitionedHashEquiJoinProbeStreamSource {
         let overrides = overrides_lease.overrides();
         let probe_partitioned = match hash_partition_join_side(
             execution,
-            self.node_id,
             probe_side,
             probe,
             &self.probe_keys,
@@ -534,7 +483,7 @@ impl PartitionedHashEquiJoinProbeStreamSource {
             Ok(partitioned) => partitioned,
             Err(error) => return Some(Err(error)),
         };
-        let probe_partitioned_bytes = probe_partitioned.reservation.bytes();
+        let probe_partitioned_bytes = probe_partitioned.device_bytes();
         self.summary.record_probe_partitioned_chunk(probe_rows, probe_bytes, probe_partitioned_bytes);
         self.active_probe_partitioned = Some(probe_partitioned);
         self.next_partition = 0;
@@ -572,7 +521,7 @@ impl PartitionedHashEquiJoinProbeStreamSource {
             &mut materialize_partitioned_hash_equi_join_partition,
         )?;
         if is_last_active_partition {
-            self.release_active_probe_partitioned(execution);
+            self.release_active_probe_partitioned();
         }
         for output in outputs {
             self.summary.record_output(&output);
@@ -581,9 +530,9 @@ impl PartitionedHashEquiJoinProbeStreamSource {
         Ok(())
     }
 
-    fn release_active_probe_partitioned(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
+    fn release_active_probe_partitioned(&mut self) {
         if let Some(probe_partitioned) = self.active_probe_partitioned.take() {
-            release_partitioned_join_side(execution, probe_partitioned);
+            release_partitioned_join_side(probe_partitioned);
         }
     }
 }
@@ -604,7 +553,7 @@ impl ResidentFrameStreamSource for PartitionedHashEquiJoinProbeStreamSource {
                         },
                     }
                 }
-                self.release_active_probe_partitioned(execution);
+                self.release_active_probe_partitioned();
             }
 
             match self.load_next_probe_chunk(execution) {
@@ -624,13 +573,13 @@ impl ResidentFrameStreamSource for PartitionedHashEquiJoinProbeStreamSource {
     }
 
     fn release(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
-        release_streamed_join_outputs_reverse(execution, self.pending_outputs.drain(..).collect());
-        self.release_active_probe_partitioned(execution);
+        release_streamed_join_outputs_reverse(self.pending_outputs.drain(..).collect());
+        self.release_active_probe_partitioned();
         if let Some(input) = self.inputs.take() {
             input.release_all(execution);
         }
         if let Some(build_partitioned) = self.build_partitioned.take() {
-            release_partitioned_join_side(execution, build_partitioned);
+            release_partitioned_join_side(build_partitioned);
         }
     }
 }

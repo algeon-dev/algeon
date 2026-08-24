@@ -174,11 +174,6 @@ impl_query_count_recording! {
     device_to_host_materialized_bytes => boundary.device_to_host_materialized_bytes,
     device_to_device_copies => boundary.device_to_device_copies,
     device_to_device_copied_bytes => boundary.device_to_device_copied_bytes,
-    reservation_requested_bytes => reservation_requested_bytes,
-    reservation_granted_bytes => reservation_granted_bytes,
-    reservation_live_peak_bytes => reservation_live_peak_bytes,
-    reservation_denied_count => reservation_denied_count,
-    max_task_reservation_bytes => max_task_reservation_bytes,
     source_chunks_planned => source_chunks_planned,
     source_chunks_attempted => source_chunks_attempted,
     source_chunks_committed => source_chunks_committed,
@@ -205,7 +200,6 @@ impl_query_count_recording! {
     read_columns => read_columns,
     retry_count => retry_count,
     retry_resource_exhausted_count => retry_resource_exhausted_count,
-    retry_reservation_failure_count => retry_reservation_failure_count,
     dynamic_filter_produced_count => dynamic_filter_produced_count,
     dynamic_filter_skipped_count => dynamic_filter_skipped_count,
     dynamic_filter_applied_count => dynamic_filter_applied_count,
@@ -262,7 +256,6 @@ impl_query_timer_recording! {
 }
 
 impl_query_rows_recording! {
-    native_graph_reservation_rows => record_graph_reservation_rows,
     native_graph_runtime_rows => record_graph_runtime_rows,
     native_task_operator_rows => record_task_operator_rows,
     native_task_runtime_rows => record_task_runtime_rows,

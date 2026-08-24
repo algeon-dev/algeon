@@ -21,7 +21,7 @@ use super::{
 };
 
 /// The graph-fragment definition shared by preflight, plan construction, and
-/// capability proof: algorithm spec, edge and predicate schemas with row
+/// capability evidence: algorithm spec, edge and predicate schemas with row
 /// cardinality evidence, result options, and the shape bounds the planner
 /// inserted. Every cugraph plan consumer binds the same definition; GPU
 /// frames, resident-input provenance, and metrics stay separate concerns.
@@ -273,47 +273,13 @@ pub(super) fn cugraph_schema_query_plan(
     Ok(builder.finish_gpu_resident(root))
 }
 
-pub(super) fn cugraph_execution_capability_proof(
+pub(super) fn cugraph_execution_capability_evidence(
     definition: &CugraphPlanDefinition,
-) -> Result<(nexus_query_engine::plan::QueryPlan, nexus_query_engine::admission::QueryPlanCapabilityProof)> {
-    cugraph_execution_capability_proof_with_resident_input_plans(definition, None, &[])
-}
-
-pub(super) fn cugraph_execution_capability_proof_with_resident_input_plans(
-    definition: &CugraphPlanDefinition,
-    resident_edge_plan: Option<&nexus_query_engine::plan::QueryPlan>,
-    resident_side_input_plans: &[(String, nexus_query_engine::plan::QueryPlan)],
-) -> Result<(nexus_query_engine::plan::QueryPlan, nexus_query_engine::admission::QueryPlanCapabilityProof)> {
+) -> Result<(nexus_query_engine::plan::QueryPlan, nexus_query_engine::admission::AttemptCapabilityEvidence)> {
     let plan = cugraph_schema_query_plan(definition)?;
-    let mut resident_inputs =
-        Vec::with_capacity(usize::from(resident_edge_plan.is_some()) + resident_side_input_plans.len());
-    if let Some(edge_plan) = resident_edge_plan {
-        resident_inputs.push((CUGRAPH_EDGE_INPUT_NAME, edge_plan));
-    }
-    resident_inputs.extend(resident_side_input_plans.iter().map(|(name, plan)| (name.as_str(), plan)));
-    let graph_proof = if resident_inputs.is_empty() {
-        nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&plan)
-    } else {
-        nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan_with_resident_inputs(
-            &plan,
-            resident_inputs,
-        )
-        .map_err(|error| {
-            DataFusionError::from(Error::from_native(
-                "datafusion_nexus.cugraph_sql.plan_capability_proof",
-                "native cuGraph resident input evidence did not match the execution plan",
-                error,
-            ))
-        })?
-    }
-    .ok_or_else(|| {
-        DataFusionError::from(Error::new(
-            ErrorCode::InvalidExecutionPlan,
-            "datafusion_nexus.cugraph_sql.plan_capability_proof",
-            "native cuGraph query plan did not expose capability evidence",
-        ))
-    })?;
-    Ok((plan, graph_proof))
+    let mut graph_evidence = nexus_query_engine::admission::AttemptCapabilityEvidence::for_query_plan(&plan);
+    graph_evidence.attest_cugraph_graph_execution_scope(&plan);
+    Ok((plan, graph_evidence))
 }
 
 pub(super) fn bind_predicate_gpu_inputs(
@@ -796,7 +762,7 @@ mod tests {
         ]))
     }
 
-    fn assert_admission_proof_matches_runtime_prepared_plan(
+    fn assert_admission_evidence_matches_runtime_prepared_plan(
         spec: &CugraphAlgorithmSpec,
         edge_schema: SchemaRef,
         projection: Option<&Vec<usize>>,
@@ -814,31 +780,30 @@ mod tests {
             edge_row_upper_bound: None,
             edge_vertex_upper_bound: None,
         };
-        let (_, admission_proof) =
-            cugraph_execution_capability_proof(&definition).expect("cuGraph plan must expose a capability proof");
+        let (_, admission_evidence) =
+            cugraph_execution_capability_evidence(&definition).expect("cuGraph plan must expose a capability evidence");
 
         let runtime_plan = cugraph_schema_query_plan(&definition).expect("prepared runtime graph plan must build");
-        let graph_runtime_proof =
-            nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&runtime_plan)
-                .expect("prepared runtime graph plan must expose a capability proof");
-        let runtime_proof = graph_runtime_proof;
+        let mut runtime_evidence =
+            nexus_query_engine::admission::AttemptCapabilityEvidence::for_query_plan(&runtime_plan);
+        runtime_evidence.attest_cugraph_graph_execution_scope(&runtime_plan);
 
         assert_eq!(
-            admission_proof, runtime_proof,
+            admission_evidence, runtime_evidence,
             "admission must attest the exact prepared graph and logical-output fragments runtime executes"
         );
     }
 
     #[test]
-    fn admission_proof_matches_runtime_bfs_logical_and_path_prepared_shapes() {
+    fn admission_evidence_matches_runtime_bfs_logical_and_path_prepared_shapes() {
         let projection = vec![0];
-        assert_admission_proof_matches_runtime_prepared_plan(
+        assert_admission_evidence_matches_runtime_prepared_plan(
             &bfs_spec(CugraphBfsSource::scalar_utf8("alice"), CugraphBfsOutputMode::Normalized),
             edge_schema(DataType::Utf8),
             Some(&projection),
             Some(2),
         );
-        assert_admission_proof_matches_runtime_prepared_plan(
+        assert_admission_evidence_matches_runtime_prepared_plan(
             &bfs_spec(CugraphBfsSource::scalar_i64(0), CugraphBfsOutputMode::Path),
             edge_schema(DataType::Int64),
             Some(&projection),
@@ -860,8 +825,8 @@ mod tests {
             edge_row_upper_bound: Some(5),
             edge_vertex_upper_bound: Some(11),
         };
-        let (admission_plan, admission_proof) =
-            cugraph_execution_capability_proof(&definition).expect("admission plan must build");
+        let (admission_plan, admission_evidence) =
+            cugraph_execution_capability_evidence(&definition).expect("admission plan must build");
         let runtime_plan =
             cugraph_schema_query_plan(&definition).expect("runtime plan must build with the same source bounds");
 
@@ -880,10 +845,11 @@ mod tests {
         };
         assert_eq!(source_metadata(&admission_plan), Some((Some(5), Some(11))));
         assert_eq!(source_metadata(&runtime_plan), Some((Some(5), Some(11))));
+        let mut expected_runtime_evidence =
+            nexus_query_engine::admission::AttemptCapabilityEvidence::for_query_plan(&runtime_plan);
+        expected_runtime_evidence.attest_cugraph_graph_execution_scope(&runtime_plan);
         assert_eq!(
-            admission_proof,
-            nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&runtime_plan)
-                .expect("runtime plan must issue the same graph proof"),
+            admission_evidence, expected_runtime_evidence,
             "runtime actual rows must not replace the admitted source-bound scope metadata"
         );
     }

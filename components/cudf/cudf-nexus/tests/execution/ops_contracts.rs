@@ -2,7 +2,7 @@
 mod datetime_tests;
 mod join_hash_join_execution_tests {
     use cudf::{
-        DataFrame, DataFrameHashJoinOptions, ErrorCode, ErrorKind, ExecutionOverrides, Runtime,
+        DataFrame, ErrorCode, ErrorKind, ExecutionOverrides, Runtime,
         core::Table,
         frame::dataframe::JsonReadOptions,
         ops::{
@@ -373,25 +373,6 @@ mod join_hash_join_execution_tests {
             &build_keys,
             HashJoinOptions::new().null_equality(NullEquality::Equal),
         );
-    }
-
-    #[test]
-    fn dataframe_string_hash_build_consumes_owner_preflight() {
-        let build = read_json_dataframe(
-            "hash_join_owner_preflight.jsonl",
-            "{\"key\":\"alpha\"}\n{\"key\":\"beta\"}\n{\"key\":\"gamma\"}\n",
-        );
-        let options = DataFrameHashJoinOptions::new().no_nulls();
-        let planned = build.hash_join_allocation_preflight(["key"], options).unwrap();
-        let built = build.build_hash_join(["key"], options).unwrap();
-        let actual = built.device_allocated_size_bytes().unwrap();
-
-        assert_eq!(built.allocation_preflight(), &planned);
-        assert!(planned.hash_table_storage_bytes() > 0);
-        assert!(planned.retained_key_view_storage_bytes() > 0);
-        assert_eq!(planned.preprocessed_string_payload_bytes(), 0);
-        assert!(actual <= planned.retained_bytes());
-        assert!(planned.retained_bytes() <= planned.active_phase_peak_bytes());
     }
 
     #[test]

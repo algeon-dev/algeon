@@ -1,19 +1,16 @@
 use std::time::Instant;
 
 use super::{
-    ActiveReservation, BoundedExecutionAttempt, BoundedPlan, BoundedSourceBatchingPolicy,
-    BoundedSourceReservationPolicy, CommittedPartial, ExecutionBudgetToken, ExecutionContext, GpuDataFrame,
-    LocalParquetFile, LocalParquetSource, NodeId, ParquetReadStrategy, PartialAggregateInputEvidence, ProjectionNode,
-    QueryMetrics, ReservationKind, Result, ScheduledLocalParquetReadOutput, SourceChunk, SourceChunkBatch,
-    attach_chunk_resource_facts, attach_source_batch_resource_facts, chunk_reservation_request,
-    execute_filter_with_budget, execute_partial_aggregate_with_budget, execute_projection_with_budget,
-    execute_projection_with_budget_and_prepared,
+    BoundedExecutionAttempt, BoundedPlan, BoundedSourceBatchingPolicy, CommittedPartial, ExecutionBudgetToken,
+    ExecutionContext, GpuDataFrame, LocalParquetFile, LocalParquetSource, ParquetReadStrategy,
+    PartialAggregateInputEvidence, ProjectionNode, QueryMetrics, Result, ScheduledLocalParquetReadOutput, SourceChunk,
+    SourceChunkBatch, attach_chunk_resource_facts, execute_filter_with_budget, execute_partial_aggregate_with_budget,
+    execute_projection_with_budget, execute_projection_with_budget_and_prepared,
     execution::{execute_bounded_chunk_with_retry, release_committed_partials_reverse, sum_optional_u64},
     execution_budget_token_for_boundary, is_retryable_chunk_error, is_source_adjacent_grouped_aggregate,
-    observe_device_memory_bytes, observed_source_read_reservation_request, partial_aggregate_source_chunk_fingerprint,
-    plan_source_chunk_batches, projection_regexp_replace_prepare,
-    read_local_parquet_chunk_batch_required_only_no_commit, record_chunk_retry_error,
-    reservation_contract::observed_source_read_batch_reservation_request,
+    observe_device_memory_bytes, partial_aggregate_source_chunk_fingerprint, plan_source_chunk_batches,
+    projection_regexp_replace_prepare, read_local_parquet_chunk_batch_required_only_no_commit,
+    record_chunk_retry_error,
 };
 
 pub(in crate::exec::bounded::chunks) fn bounded_source_adjacent_chunk_batching_enabled(
@@ -108,7 +105,7 @@ pub(in crate::exec::bounded::chunks) fn execute_bounded_source_adjacent_chunk_ba
                 partials.append(&mut batch_partials);
             },
             Err(error) => {
-                release_committed_partials_reverse(execution, partials);
+                release_committed_partials_reverse(partials);
                 return Err(error);
             },
         }
@@ -145,7 +142,7 @@ pub(in crate::exec::bounded::chunks) fn execute_bounded_source_adjacent_chunk_ba
                     Ok(partials)
                 },
                 Err(error) => {
-                    release_committed_partials_reverse(execution, partials);
+                    release_committed_partials_reverse(partials);
                     Err(error)
                 },
             }
@@ -159,13 +156,8 @@ pub(in crate::exec::bounded::chunks) fn execute_bounded_source_adjacent_chunk_ba
     bounded: &BoundedPlan<'_>,
     batch: &SourceChunkBatch,
 ) -> Result<CommittedPartial> {
-    let output = read_local_parquet_chunk_batch_required_only_no_commit(
-        execution,
-        bounded.source,
-        batch,
-        "source_chunk_read",
-        true,
-    )?;
+    let output =
+        read_local_parquet_chunk_batch_required_only_no_commit(execution, bounded.source, batch, "source_chunk_read")?;
     execute_bounded_chunk_batch_operator_from_source(execution, bounded, batch, output)
 }
 
@@ -176,32 +168,13 @@ pub(in crate::exec::bounded::chunks) fn execute_bounded_chunk_batch_operator_fro
     source: ScheduledLocalParquetReadOutput,
 ) -> Result<CommittedPartial> {
     let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
-    let ScheduledLocalParquetReadOutput { frame, reservation: source_reservation, .. } = source;
-    if let Err(error) = execution.context().check_cancellation("nexus_query_engine.exec.bounded.chunk_batch_operator") {
-        execution.release(source_reservation);
-        return Err(error);
-    }
-    let mut input = CommittedPartial { frame, reservation: source_reservation };
+    let ScheduledLocalParquetReadOutput { frame, observed_bytes, .. } = source;
+    execution.context().check_cancellation("nexus_query_engine.exec.bounded.chunk_batch_operator")?;
+    let mut input = CommittedPartial::with_device_bytes(frame, observed_bytes);
     input = execute_source_adjacent_chunk_stages(execution, bounded, first_chunk, input, 1, 1)?;
-    let CommittedPartial { frame, reservation: source_reservation } = input;
+    let CommittedPartial { frame, .. } = input;
 
-    let operator_request = chunk_reservation_request(
-        ReservationKind::ChunkOperator,
-        "chunk_operator",
-        source_reservation.bytes().min(execution.reservations().remaining_bytes()),
-        execution.reservations().budget(),
-        first_chunk,
-        1,
-        1,
-    );
-    let operator_reservation = match execution.try_reserve(operator_request) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            execution.release(source_reservation);
-            return Err(error);
-        },
-    };
-    let operator_token_budget = execution.reservations().available_bytes_including(&operator_reservation);
+    let operator_token_budget = execution.device_budget_bytes();
     let operator_token = match execution_budget_token_for_boundary(
         execution.context(),
         operator_token_budget,
@@ -211,8 +184,6 @@ pub(in crate::exec::bounded::chunks) fn execute_bounded_chunk_batch_operator_fro
     ) {
         Ok(token) => token,
         Err(error) => {
-            execution.release(operator_reservation);
-            execution.release(source_reservation);
             return Err(attach_chunk_resource_facts(
                 error,
                 first_chunk,
@@ -257,8 +228,6 @@ pub(in crate::exec::bounded::chunks) fn execute_bounded_chunk_batch_operator_fro
     let frame = match chunk_output {
         Ok(frame) => frame,
         Err(error) => {
-            execution.release(operator_reservation);
-            execution.release(source_reservation);
             return Err(attach_chunk_resource_facts(
                 error,
                 first_chunk,
@@ -270,32 +239,15 @@ pub(in crate::exec::bounded::chunks) fn execute_bounded_chunk_batch_operator_fro
         },
     };
 
-    execution.release(operator_reservation);
-    execution.release(source_reservation);
-
     let partial_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut()).map_err(|error| {
         attach_chunk_resource_facts(error, first_chunk, "partial_state", 1, 1, execution.metrics_mut())
     })?;
-    let partial_request = chunk_reservation_request(
-        ReservationKind::PartialState,
-        "partial_state",
-        partial_bytes,
-        execution.reservations().budget(),
-        first_chunk,
-        1,
-        1,
-    );
-    let partial_reservation = execution.try_reserve(partial_request)?;
     execution
         .metrics_mut()
         .record_source_chunk_commit_count(batch.chunk_count() as u64, batch.row_group_count() as u64);
-    execution.metrics_mut().record_partial_aggregate(
-        partial_input_rows,
-        frame.num_rows() as u64,
-        partial_reservation.bytes(),
-    );
+    execution.metrics_mut().record_partial_aggregate(partial_input_rows, frame.num_rows() as u64, partial_bytes);
 
-    Ok(CommittedPartial { frame, reservation: partial_reservation })
+    Ok(CommittedPartial::with_device_bytes(frame, partial_bytes))
 }
 
 pub(in crate::exec::bounded::chunks) fn execute_source_adjacent_chunk_stages(
@@ -310,7 +262,6 @@ pub(in crate::exec::bounded::chunks) fn execute_source_adjacent_chunk_stages(
         debug_assert_eq!(projection.output_schema().as_ref(), output_schema.as_ref());
         input = execute_source_adjacent_chunk_projection(
             execution,
-            bounded.source_id,
             "source_chunk_projection",
             "source_chunk_projection_output",
             chunk,
@@ -323,7 +274,6 @@ pub(in crate::exec::bounded::chunks) fn execute_source_adjacent_chunk_stages(
     if let Some(filter) = bounded.filter {
         input = execute_source_adjacent_chunk_unary(
             execution,
-            bounded.source_id,
             "source_chunk_filter",
             "source_chunk_filter_output",
             chunk,
@@ -337,7 +287,6 @@ pub(in crate::exec::bounded::chunks) fn execute_source_adjacent_chunk_stages(
         debug_assert_eq!(projection.output_schema().as_ref(), output_schema.as_ref());
         input = execute_source_adjacent_chunk_projection(
             execution,
-            bounded.source_id,
             "source_chunk_projection",
             "source_chunk_projection_output",
             chunk,
@@ -356,7 +305,6 @@ pub(in crate::exec::bounded::chunks) fn execute_source_adjacent_chunk_stages(
 )]
 pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_projection(
     execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
     stage: &'static str,
     output_boundary: &'static str,
     chunk: &SourceChunk,
@@ -365,19 +313,13 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_projection(
     attempt: usize,
     max_attempts: usize,
 ) -> Result<CommittedPartial> {
-    let default_work_bytes = source_adjacent_chunk_unary_work_request_bytes(
-        input.reservation.bytes(),
-        execution.reservations().remaining_bytes(),
-    );
     if !projection.outputs.iter().any(|output| output.expr.contains_regexp_replace()) {
-        return execute_source_adjacent_chunk_unary_with_work_bytes(
+        return execute_source_adjacent_chunk_unary(
             execution,
-            node_id,
             stage,
             output_boundary,
             chunk,
             input,
-            default_work_bytes,
             attempt,
             max_attempts,
             |context, input, token, metrics| execute_projection_with_budget(context, projection, input, token, metrics),
@@ -385,29 +327,6 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_projection(
     }
 
     let input_frame = input.frame;
-    let input_reservation = input.reservation;
-    let mut work_reservation = match execution.try_reserve_work(
-        chunk_reservation_request(
-            ReservationKind::ChunkOperator,
-            stage,
-            default_work_bytes.max(1),
-            execution.reservations().budget(),
-            chunk,
-            attempt,
-            max_attempts,
-        )
-        .with_node_id(node_id)
-        .with_stage(stage),
-    ) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            execution.release(input_reservation);
-            return Err(error);
-        },
-    };
-    // Prepare without a stream reservation so retained prepared state keeps the
-    // input frame domain. Mint a single execute token only after reconciling the
-    // work reservation to the exact prepared budget.
     let prepared =
         match projection_regexp_replace_prepare(execution.context(), projection, &input_frame, execution.metrics_mut())
         {
@@ -415,15 +334,13 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_projection(
             Ok(None) => {
                 let token = match execution_budget_token_for_boundary(
                     execution.context(),
-                    execution.reservations().available_bytes_including(&work_reservation),
+                    execution.device_budget_bytes(),
                     stage,
                     "nexus_query_engine.source_chunk_unary.budget_token",
                     "failed to create bounded native source-adjacent chunk operator budget token",
                 ) {
                     Ok(token) => token,
                     Err(error) => {
-                        execution.release(work_reservation);
-                        execution.release(input_reservation);
                         return Err(attach_chunk_resource_facts(
                             error,
                             chunk,
@@ -443,20 +360,15 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_projection(
                 );
                 return finish_source_adjacent_chunk_unary(
                     execution,
-                    node_id,
                     stage,
                     output_boundary,
                     chunk,
-                    input_reservation,
-                    work_reservation,
                     result,
                     attempt,
                     max_attempts,
                 );
             },
             Err(error) => {
-                execution.release(work_reservation);
-                execution.release(input_reservation);
                 return Err(attach_chunk_resource_facts(
                     error,
                     chunk,
@@ -468,46 +380,15 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_projection(
             },
         };
 
-    let required = prepared.required_budget_bytes().max(default_work_bytes).max(1);
-    if required > work_reservation.bytes() {
-        let delta = required - work_reservation.bytes();
-        if let Err(error) = execution.try_grow(
-            &mut work_reservation,
-            chunk_reservation_request(
-                ReservationKind::ChunkOperator,
-                stage,
-                delta,
-                execution.reservations().budget(),
-                chunk,
-                attempt,
-                max_attempts,
-            )
-            .with_node_id(node_id)
-            .with_stage(stage),
-        ) {
-            execution.release(work_reservation);
-            execution.release(input_reservation);
-            return Err(attach_chunk_resource_facts(
-                error,
-                chunk,
-                stage,
-                attempt,
-                max_attempts,
-                execution.metrics_mut(),
-            ));
-        }
-    }
     let token = match execution_budget_token_for_boundary(
         execution.context(),
-        execution.reservations().available_bytes_including(&work_reservation),
+        execution.device_budget_bytes(),
         stage,
         "nexus_query_engine.source_chunk_unary.budget_token",
         "failed to create bounded native source-adjacent chunk operator budget token after prepare reconcile",
     ) {
         Ok(token) => token,
         Err(error) => {
-            execution.release(work_reservation);
-            execution.release(input_reservation);
             return Err(attach_chunk_resource_facts(
                 error,
                 chunk,
@@ -527,44 +408,21 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_projection(
         Some(prepared),
         execution.metrics_mut(),
     );
-    finish_source_adjacent_chunk_unary(
-        execution,
-        node_id,
-        stage,
-        output_boundary,
-        chunk,
-        input_reservation,
-        work_reservation,
-        result,
-        attempt,
-        max_attempts,
-    )
+    finish_source_adjacent_chunk_unary(execution, stage, output_boundary, chunk, result, attempt, max_attempts)
 }
 
-#[expect(
-    clippy::too_many_arguments,
-    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
-)]
 fn finish_source_adjacent_chunk_unary(
     execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
     stage: &'static str,
     output_boundary: &'static str,
     chunk: &SourceChunk,
-    input_reservation: crate::exec::bounded::reservation::ActiveReservation,
-    mut work_reservation: crate::exec::bounded::reservation::ActiveReservation,
     result: Result<GpuDataFrame>,
     attempt: usize,
     max_attempts: usize,
 ) -> Result<CommittedPartial> {
     let frame = match result {
-        Ok(frame) => {
-            execution.release(input_reservation);
-            frame
-        },
+        Ok(frame) => frame,
         Err(error) => {
-            execution.release(work_reservation);
-            execution.release(input_reservation);
             return Err(attach_chunk_resource_facts(
                 error,
                 chunk,
@@ -578,7 +436,6 @@ fn finish_source_adjacent_chunk_unary(
     let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics_mut()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            execution.release(work_reservation);
             return Err(attach_chunk_resource_facts(
                 error,
                 chunk,
@@ -589,33 +446,7 @@ fn finish_source_adjacent_chunk_unary(
             ));
         },
     };
-    let output_request = chunk_reservation_request(
-        ReservationKind::ChunkOperator,
-        output_boundary,
-        output_bytes,
-        execution.reservations().budget(),
-        chunk,
-        attempt,
-        max_attempts,
-    )
-    .with_node_id(node_id)
-    .with_stage(stage);
-    if let Err(error) =
-        execution.reconcile_work_reservation_to_output(&mut work_reservation, output_bytes, &output_request)
-    {
-        execution.release(work_reservation);
-        return Err(attach_chunk_resource_facts(
-            error,
-            chunk,
-            output_boundary,
-            attempt,
-            max_attempts,
-            execution.metrics_mut(),
-        ));
-    }
-    let output_reservation = execution.transfer(work_reservation, output_request);
-    let _ = execution.context();
-    Ok(CommittedPartial { frame, reservation: output_reservation })
+    Ok(CommittedPartial::with_device_bytes(frame, output_bytes))
 }
 
 #[expect(
@@ -624,7 +455,6 @@ fn finish_source_adjacent_chunk_unary(
 )]
 pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_unary(
     execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
     stage: &'static str,
     output_boundary: &'static str,
     chunk: &SourceChunk,
@@ -633,70 +463,15 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_unary(
     max_attempts: usize,
     execute: impl FnOnce(&ExecutionContext, GpuDataFrame, &ExecutionBudgetToken, &mut QueryMetrics) -> Result<GpuDataFrame>,
 ) -> Result<CommittedPartial> {
-    let work_request_bytes = source_adjacent_chunk_unary_work_request_bytes(
-        intermediate_input.reservation.bytes(),
-        execution.reservations().remaining_bytes(),
-    );
-    execute_source_adjacent_chunk_unary_with_work_bytes(
-        execution,
-        node_id,
-        stage,
-        output_boundary,
-        chunk,
-        intermediate_input,
-        work_request_bytes,
-        attempt,
-        max_attempts,
-        execute,
-    )
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
-)]
-fn execute_source_adjacent_chunk_unary_with_work_bytes(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
-    stage: &'static str,
-    output_boundary: &'static str,
-    chunk: &SourceChunk,
-    input: CommittedPartial,
-    work_request_bytes: u64,
-    attempt: usize,
-    max_attempts: usize,
-    execute: impl FnOnce(&ExecutionContext, GpuDataFrame, &ExecutionBudgetToken, &mut QueryMetrics) -> Result<GpuDataFrame>,
-) -> Result<CommittedPartial> {
-    let mut work_reservation = match execution.try_reserve_work(
-        chunk_reservation_request(
-            ReservationKind::ChunkOperator,
-            stage,
-            work_request_bytes,
-            execution.reservations().budget(),
-            chunk,
-            attempt,
-            max_attempts,
-        )
-        .with_node_id(node_id)
-        .with_stage(stage),
-    ) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            execution.release(input.reservation);
-            return Err(error);
-        },
-    };
     let token = match execution_budget_token_for_boundary(
         execution.context(),
-        execution.reservations().available_bytes_including(&work_reservation),
+        execution.device_budget_bytes(),
         stage,
         "nexus_query_engine.source_chunk_unary.budget_token",
         "failed to create bounded native source-adjacent chunk operator budget token",
     ) {
         Ok(token) => token,
         Err(error) => {
-            execution.release(work_reservation);
-            execution.release(input.reservation);
             return Err(attach_chunk_resource_facts(
                 error,
                 chunk,
@@ -707,15 +482,10 @@ fn execute_source_adjacent_chunk_unary_with_work_bytes(
             ));
         },
     };
-    let result = execute(execution.context(), input.frame, &token, execution.metrics_mut());
+    let result = execute(execution.context(), intermediate_input.frame, &token, execution.metrics_mut());
     let frame = match result {
-        Ok(frame) => {
-            execution.release(input.reservation);
-            frame
-        },
+        Ok(frame) => frame,
         Err(error) => {
-            execution.release(work_reservation);
-            execution.release(input.reservation);
             return Err(attach_chunk_resource_facts(
                 error,
                 chunk,
@@ -729,7 +499,6 @@ fn execute_source_adjacent_chunk_unary_with_work_bytes(
     let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics_mut()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            execution.release(work_reservation);
             return Err(attach_chunk_resource_facts(
                 error,
                 chunk,
@@ -740,189 +509,7 @@ fn execute_source_adjacent_chunk_unary_with_work_bytes(
             ));
         },
     };
-    let output_request = chunk_reservation_request(
-        ReservationKind::ChunkOperator,
-        output_boundary,
-        output_bytes,
-        execution.reservations().budget(),
-        chunk,
-        attempt,
-        max_attempts,
-    )
-    .with_node_id(node_id)
-    .with_stage(stage);
-    if output_bytes > work_reservation.bytes() {
-        let delta = output_bytes.saturating_sub(work_reservation.bytes());
-        if let Err(error) =
-            execution.try_grow(&mut work_reservation, output_request.clone().with_requested_bytes(delta))
-        {
-            execution.release(work_reservation);
-            return Err(error);
-        }
-    } else {
-        execution.shrink_to_observed(&mut work_reservation, output_bytes);
-    }
-    let output_reservation = execution.transfer(work_reservation, output_request);
-    Ok(CommittedPartial { frame, reservation: output_reservation })
-}
-
-pub(in crate::exec::bounded::chunks) fn source_adjacent_chunk_unary_work_request_bytes(
-    input_reserved_bytes: u64,
-    remaining_bytes: u64,
-) -> u64 {
-    BoundedSourceReservationPolicy::default()
-        .source_adjacent_unary_work_request_bytes(input_reserved_bytes, remaining_bytes)
-}
-pub(in crate::exec::bounded::chunks) fn grow_source_reservation_to_observed(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    frame: &GpuDataFrame,
-    source_reservation: &mut ActiveReservation,
-    chunk: &SourceChunk,
-    memory_boundary: &'static str,
-    attempt: usize,
-    max_attempts: usize,
-) -> Result<u64> {
-    let source_observed_bytes = match observe_device_memory_bytes(frame, execution.metrics_mut()) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            return Err(attach_chunk_resource_facts(
-                error,
-                chunk,
-                memory_boundary,
-                attempt,
-                max_attempts,
-                execution.metrics_mut(),
-            ));
-        },
-    };
-    if source_observed_bytes <= source_reservation.bytes() {
-        execution.shrink_to_observed_with_request(
-            source_reservation,
-            source_observed_bytes,
-            observed_source_read_reservation_request(
-                memory_boundary,
-                execution.reservations().budget(),
-                chunk,
-                attempt,
-                max_attempts,
-            ),
-        );
-        return Ok(source_observed_bytes);
-    }
-
-    let source_delta = source_observed_bytes.saturating_sub(source_reservation.bytes());
-    let grow_request = observed_source_read_reservation_request(
-        memory_boundary,
-        execution.reservations().budget(),
-        chunk,
-        attempt,
-        max_attempts,
-    )
-    .with_requested_bytes(source_delta);
-    execution.try_grow(source_reservation, grow_request)?;
-    Ok(source_observed_bytes)
-}
-
-pub(in crate::exec::bounded::chunks) fn grow_source_batch_reservation_to_observed(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    frame: &GpuDataFrame,
-    source_reservation: &mut ActiveReservation,
-    batch: &SourceChunkBatch,
-    memory_boundary: &'static str,
-    attempt: usize,
-    max_attempts: usize,
-) -> Result<u64> {
-    let source_observed_bytes = match observe_device_memory_bytes(frame, execution.metrics_mut()) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            return Err(attach_source_batch_resource_facts(
-                error,
-                batch,
-                memory_boundary,
-                attempt,
-                max_attempts,
-                execution.metrics_mut(),
-            ));
-        },
-    };
-    let observed_request = observed_source_read_batch_reservation_request(
-        memory_boundary,
-        execution.reservations().budget(),
-        batch,
-        attempt,
-        max_attempts,
-    );
-    if source_observed_bytes <= source_reservation.bytes() {
-        execution.shrink_to_observed_with_request(source_reservation, source_observed_bytes, observed_request);
-        return Ok(source_observed_bytes);
-    }
-
-    let source_delta = source_observed_bytes.saturating_sub(source_reservation.bytes());
-    execution.try_grow(source_reservation, observed_request.with_requested_bytes(source_delta))?;
-    Ok(source_observed_bytes)
-}
-
-pub(in crate::exec::bounded::chunks) fn shrink_source_reservation_to_observed_without_grow(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    frame: &GpuDataFrame,
-    source_reservation: &mut ActiveReservation,
-    chunk: &SourceChunk,
-    memory_boundary: &'static str,
-    attempt: usize,
-    max_attempts: usize,
-) -> Result<u64> {
-    let source_observed_bytes = observe_device_memory_bytes(frame, execution.metrics_mut()).map_err(|error| {
-        attach_chunk_resource_facts(error, chunk, memory_boundary, attempt, max_attempts, execution.metrics_mut())
-    })?;
-    if source_observed_bytes <= source_reservation.bytes() {
-        execution.shrink_to_observed_with_request(
-            source_reservation,
-            source_observed_bytes,
-            observed_source_read_reservation_request(
-                memory_boundary,
-                execution.reservations().budget(),
-                chunk,
-                attempt,
-                max_attempts,
-            ),
-        );
-    }
-    Ok(source_observed_bytes)
-}
-
-pub(in crate::exec::bounded::chunks) fn shrink_source_batch_reservation_to_observed_without_grow(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    frame: &GpuDataFrame,
-    source_reservation: &mut ActiveReservation,
-    batch: &SourceChunkBatch,
-    memory_boundary: &'static str,
-    attempt: usize,
-    max_attempts: usize,
-) -> Result<u64> {
-    let source_observed_bytes = observe_device_memory_bytes(frame, execution.metrics_mut()).map_err(|error| {
-        attach_source_batch_resource_facts(
-            error,
-            batch,
-            memory_boundary,
-            attempt,
-            max_attempts,
-            execution.metrics_mut(),
-        )
-    })?;
-    if source_observed_bytes <= source_reservation.bytes() {
-        execution.shrink_to_observed_with_request(
-            source_reservation,
-            source_observed_bytes,
-            observed_source_read_batch_reservation_request(
-                memory_boundary,
-                execution.reservations().budget(),
-                batch,
-                attempt,
-                max_attempts,
-            ),
-        );
-    }
-    Ok(source_observed_bytes)
+    Ok(CommittedPartial::with_device_bytes(frame, output_bytes))
 }
 
 #[cfg(test)]
@@ -961,7 +548,7 @@ mod tests {
     fn remote_direct_chunk(chunk_index: usize, estimated_source_read_bytes: u64) -> SourceChunk {
         let resolved_source = remote_direct_resolved_source();
         SourceChunk {
-            source_node_id: NodeId::from_index_for_internal_use(0),
+            source_node_id: crate::plan::NodeId::from_index_for_internal_use(0),
             chunk_index,
             file_index: 0,
             location: ParquetSourceLocation::object_store_uri("s3://bucket/table.parquet").unwrap(),

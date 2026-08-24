@@ -14,7 +14,11 @@ fn bfs_drops_null_edge_rows_before_graph_construction() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
+        "edges",
+        Arc::clone(&edge_schema),
+        &edge_batch,
+    )));
     let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -57,15 +61,7 @@ fn bfs_drops_null_edge_rows_before_graph_construction() {
     assert_eq!(graph_metrics.len(), 1);
     assert!(graph_metrics[0].algorithm_metadata.contains("null_edge_rows_dropped=2"));
     assert!(!graph_metrics[0].algorithm_metadata.contains("graph_cache="));
-    assert!(graph_metrics[0].graph_peak_bytes.is_some());
-    assert!(result.metrics().graph_reservation_rows.is_empty());
-    assert!(result.metrics().budgeted_execution_events.iter().any(|event| {
-        event.operation == "datafusion_nexus_cugraph_bfs"
-            && event.boundary == "graph_memory"
-            && event.enforcement == "query_domain_member"
-            && event.status == "reservation_enforced"
-            && event.allocator_high_water_bytes.is_some()
-    }));
+    assert_eq!(graph_metrics[0].graph_peak_bytes, None);
 
     let null_filter = result
         .metrics()
@@ -94,7 +90,11 @@ fn bfs_python_cugraph_reports_null_edges_dropped_before_edge_normalize() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
+        "edges",
+        Arc::clone(&edge_schema),
+        &edge_batch,
+    )));
     let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
@@ -121,15 +121,7 @@ fn bfs_python_cugraph_reports_null_edges_dropped_before_edge_normalize() {
     let graph_metrics = &result.metrics().graph_algorithm_runtime_rows;
     assert_eq!(graph_metrics.len(), 1);
     assert!(graph_metrics[0].algorithm_metadata.contains("null_edge_rows_dropped=2"));
-    assert!(graph_metrics[0].graph_peak_bytes.is_some());
-    assert!(result.metrics().graph_reservation_rows.is_empty());
-    assert!(result.metrics().budgeted_execution_events.iter().any(|event| {
-        event.operation == "datafusion_nexus_cugraph_bfs"
-            && event.boundary == "graph_memory"
-            && event.enforcement == "query_domain_member"
-            && event.status == "reservation_enforced"
-            && event.allocator_high_water_bytes.is_some()
-    }));
+    assert_eq!(graph_metrics[0].graph_peak_bytes, None);
     admitted.finish();
 }
 
@@ -159,7 +151,11 @@ fn bfs_keeps_null_weight_edges_but_drops_null_edge_id_rows() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
+        "edges",
+        Arc::clone(&edge_schema),
+        &edge_batch,
+    )));
     let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", Some("weight")).with_edge_id("edge_id"),
@@ -239,7 +235,11 @@ fn bfs_null_weight_does_not_drop_reachable_edges() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
+        "edges",
+        Arc::clone(&edge_schema),
+        &edge_batch,
+    )));
     let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
@@ -308,8 +308,16 @@ fn bfs_include_edge_ids_filters_edges() {
         RecordBatch::try_new(Arc::clone(&allowed_schema), vec![Arc::new(Int32Array::from(vec![11, 13]))]).unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
-    let allowed = builder.add_source(SourceNode::GpuResident(gpu_resident_source("allowed", Arc::clone(&allowed_schema), &allowed_batch)));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
+        "edges",
+        Arc::clone(&edge_schema),
+        &edge_batch,
+    )));
+    let allowed = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
+        "allowed",
+        Arc::clone(&allowed_schema),
+        &allowed_batch,
+    )));
     let params = GraphBfsParams {
         source_vertex: 0,
         source_vertices: None,
@@ -400,8 +408,16 @@ fn bfs_include_edges_relation_filters_by_source_destination() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
-    let allowed = builder.add_source(SourceNode::GpuResident(gpu_resident_source("allowed", Arc::clone(&allowed_schema), &allowed_batch)));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
+        "edges",
+        Arc::clone(&edge_schema),
+        &edge_batch,
+    )));
+    let allowed = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
+        "allowed",
+        Arc::clone(&allowed_schema),
+        &allowed_batch,
+    )));
     let params = GraphBfsParams {
         source_vertex: 0,
         source_vertices: None,
@@ -452,8 +468,7 @@ fn bfs_include_edges_relation_filters_by_source_destination() {
     let vertices = graph_vertex_values(batch, 0);
     let distances = int64_array(batch, 1);
     let distance_for = |vertex: i64| {
-        (0..batch.num_rows())
-            .find_map(|row| (vertices.value(row) == vertex).then(|| distances.value(row)))
+        (0..batch.num_rows()).find_map(|row| (vertices.value(row) == vertex).then(|| distances.value(row)))
     };
     assert_eq!(distance_for(0), Some(0));
     assert_eq!(distance_for(1), None);
@@ -484,8 +499,16 @@ fn bfs_source_vertices_side_input_accepts_multiple_rows() {
         RecordBatch::try_new(Arc::clone(&source_schema), vec![Arc::new(Int32Array::from(vec![0, 10]))]).unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
-    let sources = builder.add_source(SourceNode::GpuResident(gpu_resident_source("sources", Arc::clone(&source_schema), &source_batch)));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
+        "edges",
+        Arc::clone(&edge_schema),
+        &edge_batch,
+    )));
+    let sources = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
+        "sources",
+        Arc::clone(&source_schema),
+        &source_batch,
+    )));
     let mut params = GraphBfsParams::new(0, None);
     params.source_vertices = Some(GraphPredicateInput::new(sources, "source_vertex"));
     let spec = int32_graph_spec(
@@ -556,8 +579,16 @@ fn bfs_source_vertices_side_input_rejects_empty_source_set() {
         RecordBatch::try_new(Arc::clone(&source_schema), vec![Arc::new(Int32Array::from(Vec::<i32>::new()))]).unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
-    let sources = builder.add_source(SourceNode::GpuResident(gpu_resident_source("sources", Arc::clone(&source_schema), &source_batch)));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
+        "edges",
+        Arc::clone(&edge_schema),
+        &edge_batch,
+    )));
+    let sources = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
+        "sources",
+        Arc::clone(&source_schema),
+        &source_batch,
+    )));
     let mut params = GraphBfsParams::new(0, None);
     params.source_vertices = Some(GraphPredicateInput::new(sources, "source_vertex"));
     let spec = int32_graph_spec(
@@ -629,10 +660,26 @@ fn bfs_empty_path_endpoint_policy_returns_empty_after_edge_filter() {
     .unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
-    let sources = builder.add_source(SourceNode::GpuResident(gpu_resident_source("sources", Arc::clone(&source_schema), &source_batch)));
-    let targets = builder.add_source(SourceNode::GpuResident(gpu_resident_source("targets", Arc::clone(&target_schema), &target_batch)));
-    let allowed = builder.add_source(SourceNode::GpuResident(gpu_resident_source("allowed", Arc::clone(&allowed_schema), &allowed_batch)));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
+        "edges",
+        Arc::clone(&edge_schema),
+        &edge_batch,
+    )));
+    let sources = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
+        "sources",
+        Arc::clone(&source_schema),
+        &source_batch,
+    )));
+    let targets = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
+        "targets",
+        Arc::clone(&target_schema),
+        &target_batch,
+    )));
+    let allowed = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
+        "allowed",
+        Arc::clone(&allowed_schema),
+        &allowed_batch,
+    )));
     let mut params = GraphBfsParams::new(0, None);
     params.source_vertices = Some(GraphPredicateInput::new(sources, "source_vertex"));
     params.predicates.target_vertices = Some(GraphPredicateInput::new(targets, "vertex_id"));
@@ -695,8 +742,16 @@ fn bfs_target_metadata_columns_are_shaped_when_requested() {
         RecordBatch::try_new(Arc::clone(&target_schema), vec![Arc::new(Int32Array::from(vec![2]))]).unwrap();
 
     let mut builder = QueryPlanBuilder::new();
-    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
-    let targets = builder.add_source(SourceNode::GpuResident(gpu_resident_source("targets", Arc::clone(&target_schema), &target_batch)));
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
+        "edges",
+        Arc::clone(&edge_schema),
+        &edge_batch,
+    )));
+    let targets = builder.add_source(SourceNode::GpuResident(gpu_resident_source(
+        "targets",
+        Arc::clone(&target_schema),
+        &target_batch,
+    )));
     let mut params = GraphBfsParams::new(0, None);
     params.predicates.target_vertices = Some(GraphPredicateInput::new(targets, "vertex_id"));
     params.return_target_info = true;

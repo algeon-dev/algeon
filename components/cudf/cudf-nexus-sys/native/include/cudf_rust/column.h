@@ -223,6 +223,15 @@ cudf_status_t cudf_column_payload_size_ex(cudf_column_handle handle,
 /// This forwards to libcudf `column::alloc_size()` and includes padding.
 cudf_status_t cudf_column_device_allocated_size(cudf_column_handle handle, size_t* out);
 
+/// Copy the base device pointers retained by this owning column.
+///
+/// Pass `out == NULL` and `capacity == 0` to query the required count. Shared
+/// or nested buffers are returned once per owning column.
+cudf_status_t cudf_column_backing_allocation_pointers(cudf_column_handle handle,
+                                                       void** out,
+                                                       size_t capacity,
+                                                       size_t* count);
+
 /// Destroy an owning column handle.
 ///
 /// Ownership is consumed on call, including on failure. CUDF_SUCCESS means

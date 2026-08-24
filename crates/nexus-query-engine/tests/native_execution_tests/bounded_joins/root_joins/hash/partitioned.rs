@@ -44,7 +44,6 @@ fn bounded_native_query_routes_large_keyed_inner_build_to_partitioned_hash_join(
     let metrics = result.metrics();
     assert_eq!(metrics.hash_join_build_count, 0);
     assert_eq!(metrics.one_shot_join_count, 0);
-    assert_temporary_hash_preflight_reserved(metrics);
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
     assert_eq!(join_metrics.execution_strategy, "bounded_partitioned_hash_equi_join");
@@ -117,15 +116,6 @@ fn bounded_native_query_feeds_partitioned_root_join_stream_to_topk_without_conca
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
     assert_eq!(join_metrics.execution_strategy, "bounded_partitioned_hash_equi_join");
-    assert!(
-        metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_output_stream_concat"),
-        "root join stream feeding TopK should not materialize one concatenated join output"
-    );
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.outcome.as_str() == "granted"
-            && event.reservation_kind == ReservationKind::FinalSort
-            && event.memory_boundary == "final_sort_topk_stream_chunk"
-    }));
     assert!(metrics.budgeted_execution_events.iter().any(|event| {
         event.operation == "nexus_query_engine.final_sort.topk_prepare"
             && event.boundary == "final_sort_topk_stream_chunk"
@@ -245,19 +235,6 @@ fn bounded_native_query_aliases_shared_partitioned_join_stream_for_probe_fanout(
     let context = bounded_join_execution_context(&runtime);
 
     let result = execute_query_plan(&context, &plan).unwrap();
-    let metrics = result.metrics();
-    assert!(
-        metrics.reservation_events.iter().all(|event| {
-            event.memory_boundary != "join_output_stream_concat" || event.node_id.as_deref() != Some("n2")
-        }),
-        "shared partitioned join output should remain chunked instead of concatenating for fan-out"
-    );
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.outcome.as_str() == "applied"
-            && event.action == MemoryReservationEventAction::AliasAcquire
-            && event.memory_boundary == "compiled_join_probe_stream_alias"
-    }));
-
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };
@@ -376,24 +353,6 @@ fn bounded_native_query_streams_shared_reusable_join_output_for_probe_fanout() {
         decision.node_id == "n2"
             && decision.facts.get("join_strategy").is_some_and(|strategy| strategy == "reusable_hash_equi")
     }));
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.outcome.as_str() == "granted"
-            && event.node_id.as_deref() == Some("n2")
-            && event.reservation_kind == ReservationKind::JoinOutput
-            && event.memory_boundary == "join_output_stream_chunk"
-    }));
-    assert!(
-        metrics
-            .reservation_events
-            .iter()
-            .all(|event| { event.node_id.as_deref() != Some("n2") || event.memory_boundary != "join_output" }),
-        "shared reusable join output should be chunked instead of materialized as one resident frame"
-    );
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.outcome.as_str() == "applied"
-            && event.action == MemoryReservationEventAction::AliasAcquire
-            && event.memory_boundary == "compiled_join_probe_stream_alias"
-    }));
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -451,16 +410,6 @@ fn bounded_native_query_routes_large_keyed_inner_residual_build_to_partitioned_m
     assert_eq!(metrics.hash_join_build_count, 0);
     assert_eq!(metrics.one_shot_join_count, 0);
     assert!(metrics.mixed_join_size_data_bytes > 0);
-    assert!(
-        metrics.reservation_events.iter().all(|event| !matches!(event.reservation_kind, ReservationKind::HashTable)),
-        "large partitioned residual join should not reserve reusable hash-table memory"
-    );
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.outcome.as_str() == "granted" && event.memory_boundary == "join_partition_mixed_size_data"
-    }));
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.outcome.as_str() == "granted" && event.memory_boundary == "join_partition_mixed_indices"
-    }));
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
     assert_eq!(join_metrics.execution_strategy, "bounded_partitioned_mixed_keyed_residual_join");
@@ -632,43 +581,6 @@ fn bounded_native_query_streams_partitioned_mixed_join_into_grouped_aggregate() 
                 .and_then(|value| value.parse::<usize>().ok())
                 .is_some_and(|partition_count| partition_count > 1)
     }));
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.outcome.as_str() == "granted" && event.memory_boundary == "join_partition_mixed_size_data"
-    }));
-    assert!(
-        metrics
-            .reservation_events
-            .iter()
-            .any(|event| { event.outcome.as_str() == "granted" && event.memory_boundary == "join_partition_output" })
-    );
-    assert!(
-        metrics
-            .reservation_events
-            .iter()
-            .all(|event| { event.memory_boundary != "join_partition_mixed_size_data_forecast" })
-    );
-    let first_partial_work = metrics
-        .reservation_events
-        .iter()
-        .position(|event| {
-            event.outcome.as_str() == "granted"
-                && event.action == MemoryReservationEventAction::Reserve
-                && event.memory_boundary == "compiled_aggregate_partial_state_work"
-        })
-        .expect("aggregate should reserve partial work while consuming the join stream");
-    let last_join_output = metrics
-        .reservation_events
-        .iter()
-        .rposition(|event| {
-            event.outcome.as_str() == "granted"
-                && event.action == MemoryReservationEventAction::Reserve
-                && event.memory_boundary == "join_partition_output"
-        })
-        .expect("partitioned mixed join should reserve partition outputs");
-    assert!(
-        first_partial_work < last_join_output,
-        "aggregate partial work should begin before the final join partition output is reserved"
-    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -761,9 +673,6 @@ fn bounded_native_query_executes_q72_shaped_flat_string_hash_prebuild() {
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.hash_join_build_count, 1);
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.outcome.as_str() == "granted" && event.memory_boundary == "join_hash_table" && event.granted_bytes > 0
-    }));
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -909,7 +818,6 @@ fn bounded_native_query_routes_large_keyed_left_build_to_partitioned_hash_with_n
     let metrics = result.metrics();
     assert_eq!(metrics.hash_join_build_count, 0);
     assert_eq!(metrics.one_shot_join_count, 0);
-    assert_temporary_hash_preflight_reserved(metrics);
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
     assert_eq!(join_metrics.join_type, "left");
@@ -994,7 +902,6 @@ fn bounded_native_query_routes_large_keyed_full_build_to_partitioned_hash_with_n
     let metrics = result.metrics();
     assert_eq!(metrics.hash_join_build_count, 0);
     assert_eq!(metrics.one_shot_join_count, 0);
-    assert_temporary_hash_preflight_reserved(metrics);
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
     assert_eq!(join_metrics.join_type, "full");
@@ -1141,22 +1048,6 @@ fn bounded_native_query_consumes_partitioned_join_stream_directly_in_grouped_agg
         metrics.partial_aggregate_count,
         metrics.source_chunks_committed
     );
-    assert!(
-        metrics.reservation_events.iter().all(|event| event.memory_boundary != "compiled_aggregate"),
-        "direct join-output stream should not fall back to one full-frame compiled aggregate"
-    );
-    assert!(
-        metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_output_stream_concat"),
-        "direct join-output stream should feed grouped aggregate without a full join-output concat"
-    );
-    assert!(
-        metrics.reservation_events.iter().any(|event| {
-            event.action == MemoryReservationEventAction::Transfer
-                && event.reservation_kind == ReservationKind::PartialState
-                && event.memory_boundary == "compiled_aggregate_partial_state"
-        }),
-        "direct stream aggregate should retain per-batch partial aggregate states"
-    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -1280,10 +1171,6 @@ fn bounded_native_query_preserves_partitioned_join_stream_through_filtered_join_
         "filtered direct join-output aggregate should keep stream partial count proportional to source chunks, partials={}, source_chunks={}",
         metrics.partial_aggregate_count,
         metrics.source_chunks_committed
-    );
-    assert!(
-        metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_output_stream_concat"),
-        "join streams feeding filtered join and aggregate should not concatenate at the join output boundary"
     );
 
     let QueryOutput::HostArrow(batch) = result.output() else {

@@ -22,6 +22,8 @@ pub use inventory::{
 };
 #[doc(hidden)]
 pub use lanes::{DeviceLanePermit, DeviceWorkerScope};
+#[doc(hidden)]
+pub use ledger::LedgerTransition;
 #[cfg(test)]
 #[doc(hidden)]
 pub use ledger::LedgerTransitionKind;
@@ -29,8 +31,6 @@ pub use ledger::{
     DeviceAdmissionHealth, DeviceLedger, DeviceLedgerGrantRow, DeviceLedgerReport, GrantIdentity, LedgerSnapshot,
     MemoryGrant,
 };
-#[doc(hidden)]
-pub use ledger::{LedgerTransition, MemoryGrantPhase};
 pub use memory_failure::{DeviceMemoryFailureReport, DeviceMemoryFailureTracker};
 #[doc(hidden)]
 pub use owner::{DeviceOwnerToken, LiveBackendLease, claim_live_backend, normalize_device_ordinals};

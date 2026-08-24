@@ -14,9 +14,6 @@ use crate::common::{
     lock_event_observation, observed_exec_mr_values, reset_exec_observation, scalar, with_test_runtime,
 };
 
-const DATAFRAME_EXPRESSION_TEMPORARY_WORKSPACE_AND_RELOCATION_CONTRACT_GAP: &str =
-    "libcudf_dataframe_expression_temporary_workspace_and_transient_relocation_preflight_unavailable";
-
 fn decimal128_scale_zero_frame() -> DataFrame {
     let amount = crate::common::series::<i64>("amount", &[1, -2, 0])
         .unwrap()
@@ -352,7 +349,6 @@ fn test_with_columns_with_budget_reports_output_and_routes_allocator() {
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(3));
-    assert_eq!(report.unresolved_contract(), None);
     assert_eq!(result.testing_execution_domain_mr_value(), token.memory_resource().testing_raw_handle_value());
     assert_all_observed_exec_mrs_are_manager_mr(&token);
 }
@@ -377,7 +373,6 @@ fn test_with_columns_with_budget_case_report_uses_owner_preflight() {
     let facts = report.context_facts();
     let retained_preflight = facts["expression_output_dataframe_retained_preflight_bytes"].parse::<usize>().unwrap();
 
-    assert_eq!(report.unresolved_contract(), None);
     assert_eq!(facts["expression_preflight_contract"], "libcudf_dataframe_expression_allocation_preflight_v1");
     assert!(facts["expression_boolean_equality_output_bytes"].parse::<usize>().unwrap() > 0);
     assert!(facts["expression_null_float64_literal_bytes"].parse::<usize>().unwrap() > 0);
@@ -415,10 +410,6 @@ fn test_cast_column_with_budget_reports_output_and_routes_allocator() {
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(3));
-    assert_eq!(
-        report.unresolved_contract(),
-        Some(DATAFRAME_EXPRESSION_TEMPORARY_WORKSPACE_AND_RELOCATION_CONTRACT_GAP)
-    );
     assert_eq!(result.testing_execution_domain_mr_value(), token.memory_resource().testing_raw_handle_value());
     assert_all_observed_exec_mrs_are_manager_mr(&token);
 }
@@ -456,10 +447,6 @@ fn test_cast_column_with_budget_decimal128_scale_to_scale_reports_output_and_rou
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(3));
-    assert_eq!(
-        report.unresolved_contract(),
-        Some(DATAFRAME_EXPRESSION_TEMPORARY_WORKSPACE_AND_RELOCATION_CONTRACT_GAP)
-    );
     let usage = token.reservation_usage().unwrap();
     assert!(usage.peak_aligned_bytes > 0);
     assert!(usage.peak_aligned_bytes <= report.request().budget_bytes() as u64);

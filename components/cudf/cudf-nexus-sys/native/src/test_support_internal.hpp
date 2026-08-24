@@ -38,6 +38,9 @@ void record_row_predicate_final_filter();
 void record_event_synchronize(std::uintptr_t event_handle_raw);
 bool event_synchronize_should_fail();
 void wait_for_event_synchronize_release();
+void record_stream_synchronize();
+bool stream_synchronize_should_fail();
+void wait_for_stream_synchronize_release();
 void record_stream_wait(std::uintptr_t stream_raw, std::uintptr_t event_raw);
 void record_raw_event_record(std::uintptr_t stream_raw, std::uintptr_t event_raw);
 void record_allocation_attempt(std::size_t bytes) noexcept;
@@ -78,6 +81,9 @@ inline void record_row_predicate_final_filter() {}
 inline void record_event_synchronize(std::uintptr_t) {}
 inline bool event_synchronize_should_fail() { return false; }
 inline void wait_for_event_synchronize_release() {}
+inline void record_stream_synchronize() {}
+inline bool stream_synchronize_should_fail() { return false; }
+inline void wait_for_stream_synchronize_release() {}
 inline void record_stream_wait(std::uintptr_t, std::uintptr_t) {}
 inline void record_raw_event_record(std::uintptr_t, std::uintptr_t) {}
 inline void record_allocation_attempt(std::size_t) noexcept {}

@@ -6,7 +6,6 @@ use super::{
 #[cfg(feature = "cugraph")]
 pub(super) fn run_with_cugraph_graph<T, F>(
     context: &ExecutionContext,
-    graph_memory_limit_bytes: Option<u64>,
     edges: DataFrame,
     options: cugraph::cudf_interop::TableGraphOptions,
     operation: &'static str,
@@ -20,7 +19,7 @@ where
         &mut cugraph::Graph<T>,
     ) -> Result<GraphAlgorithmExecutionResult>,
 {
-    run_with_uncached_cugraph_graph(context, graph_memory_limit_bytes, edges, options, operation, f)
+    run_with_uncached_cugraph_graph(context, edges, options, operation, f)
 }
 
 /// Executes an eligible graph through the per-device resident-cache domain.
@@ -33,7 +32,6 @@ where
 #[cfg(feature = "cugraph")]
 pub(super) fn run_with_accounted_resident_cugraph_graph<T, F>(
     context: &ExecutionContext,
-    graph_memory_limit_bytes: Option<u64>,
     edges: DataFrame,
     options: cugraph::cudf_interop::TableGraphOptions,
     resident_key: Option<crate::plan::ResidentGraphKey>,
@@ -49,10 +47,10 @@ where
     ) -> Result<GraphAlgorithmExecutionResult>,
 {
     let Some(resident_key) = resident_key else {
-        return run_with_uncached_cugraph_graph(context, graph_memory_limit_bytes, edges, options, operation, f);
+        return run_with_uncached_cugraph_graph(context, edges, options, operation, f);
     };
     let Some(cache) = context.resident_graph_cache() else {
-        return run_with_uncached_cugraph_graph(context, graph_memory_limit_bytes, edges, options, operation, f);
+        return run_with_uncached_cugraph_graph(context, edges, options, operation, f);
     };
     let attempt_runtime = context.runtime()?;
     if cache.device() != attempt_runtime.device() {
@@ -73,7 +71,6 @@ where
             &attempt_runtime,
             cache,
             checkout,
-            graph_memory_limit_bytes,
             edges,
             options,
             operation,
@@ -87,10 +84,10 @@ where
     // post-park graph-scope usage before it can become an evictable entry.
     let reservation_bytes = cache.available_reservation_bytes()?;
     if reservation_bytes == 0 {
-        return run_with_uncached_cugraph_graph(context, graph_memory_limit_bytes, edges, options, operation, f);
+        return run_with_uncached_cugraph_graph(context, edges, options, operation, f);
     }
     let Some(mut transaction) = cache.begin_insert(reservation_bytes)? else {
-        return run_with_uncached_cugraph_graph(context, graph_memory_limit_bytes, edges, options, operation, f);
+        return run_with_uncached_cugraph_graph(context, edges, options, operation, f);
     };
     // Cache insertion uses a child allocation scope, so its allocator failures
     // are not present in the admitted attempt domain's event ring.
@@ -105,7 +102,7 @@ where
                 correlation.finish();
             }
             transaction.abort_after_candidate_destroyed()?;
-            return run_with_uncached_cugraph_graph(context, graph_memory_limit_bytes, edges, options, operation, f);
+            return run_with_uncached_cugraph_graph(context, edges, options, operation, f);
         },
         Err(error) => {
             let primary = QueryError::from_cudf(
@@ -264,7 +261,6 @@ fn run_checked_out_resident_graph<T, F>(
     attempt_runtime: &cudf::Runtime,
     cache: crate::runtime::cache::resident_graph::GpuResidentGraphCache,
     mut checkout: crate::runtime::cache::resident_graph::GpuResidentGraphCheckout<T>,
-    graph_memory_limit_bytes: Option<u64>,
     edges: DataFrame,
     options: cugraph::cudf_interop::TableGraphOptions,
     operation: &'static str,
@@ -283,7 +279,7 @@ where
         // Return the parked graph before the uncached fallback so this miss on
         // executable capacity cannot strand a resident entry or its charge.
         drop(checkout);
-        return run_with_uncached_cugraph_graph(context, graph_memory_limit_bytes, edges, options, operation, f);
+        return run_with_uncached_cugraph_graph(context, edges, options, operation, f);
     };
     // A resident checkout is exclusive, so its scope ring can be bounded to
     // this attempt until the graph is returned to the cache.

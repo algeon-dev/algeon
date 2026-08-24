@@ -7,7 +7,7 @@ use arrow::record_batch::RecordBatch;
 
 use super::{
     CompiledGpuResource,
-    helpers::{invalid, task_diagnostic_resident_resource},
+    helpers::invalid,
     resource::CompiledGpuResourcePayload,
     scheduler::{CompiledSchedulingCycle, CompiledTaskExecutor, CompiledTaskOutput},
     state::CompiledPipelineState,
@@ -16,8 +16,8 @@ use crate::{
     dynamic_filter::{DynamicFilterId, DynamicFilterSet},
     error::{QueryError, QueryErrorCode, Result},
     exec::bounded::{
-        BoundedCompiledJoinBuildState, BoundedCompiledJoinProbeState, BoundedExecutionAttempt, ReservationTracker,
-        ResidentGpuFrame, release_bounded_compiled_join_build_state, release_bounded_compiled_join_probe_state,
+        BoundedCompiledJoinBuildState, BoundedCompiledJoinProbeState, BoundedExecutionAttempt, ResidentGpuFrame,
+        release_bounded_compiled_join_probe_state,
     },
     metrics::QueryMetrics,
     pipeline::{CompiledPipeline, PipelineTask, PipelineTaskKind, ResidentResourceId, SinkBoundaryKind},
@@ -77,7 +77,7 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                 .with_fact("memory_control_policy", context.memory_control_policy().as_str()));
         };
         let execution = BoundedExecutionAttempt::new(context, device_budget_bytes, metrics, observation_scope)?;
-        let gpu_inputs = execution.reservations().augment_gpu_inputs(gpu_inputs)?;
+        let gpu_inputs = gpu_inputs.clone();
         Ok(Self {
             execution,
             plan,
@@ -91,19 +91,8 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         })
     }
 
-    pub fn reserved_bytes(&self) -> u64 {
-        self.execution.reservations().reserved_bytes()
-    }
-
     pub fn remaining_bytes(&self) -> u64 {
-        self.execution.reservations().remaining_bytes()
-    }
-
-    pub(in crate::exec::bounded) fn into_reservations(self) -> ReservationTracker {
-        let Self { gpu_inputs, execution, .. } = self;
-        // The post-execution invariant must observe the tracker after all augmented input guards release.
-        drop(gpu_inputs);
-        execution.into_reservations()
+        self.execution.device_budget_bytes()
     }
 
     pub fn take_host_output(&mut self) -> Result<RecordBatch> {
@@ -140,27 +129,25 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
                     .with_fact("sink_boundary_kind", self.pipeline.sink().kind().as_str()));
             },
         };
-        let ResidentGpuFrame { frame, mut reservation } = *frame;
+        let ResidentGpuFrame { frame, .. } = *frame;
         let output_bytes = frame.device_allocated_size_bytes()?;
-        let live_reservation = reservation.retain_escaping_resident_output(output_bytes)?;
+        let resident_owner = self.execution.context().retain_resident_output_owner(output_bytes)?;
         let frame =
             frame.with_producer_execution_scope(crate::admission::canonical_execution_scope_fingerprint(self.plan));
-        let handle = match GpuResultHandle::new_with_live_reservation(
+        let handle = match GpuResultHandle::new_with_resident_owner(
             self.execution.context(),
             frame,
             self.plan.output_schema().clone(),
-            live_reservation,
+            resident_owner,
         ) {
             Ok(handle) => handle,
             Err(error) => {
-                self.execution.release(reservation);
                 return Err(error
                     .with_fact_if_absent("sink_boundary_task_id", self.pipeline.sink().input())
                     .with_fact_if_absent("resident_resource_id", resource)
                     .with_fact_if_absent("sink_boundary_kind", self.pipeline.sink().kind().as_str()));
             },
         };
-        self.execution.release(reservation);
         Ok(handle)
     }
 }
@@ -173,18 +160,6 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
         task: &PipelineTask,
         state: &mut CompiledPipelineState<Self::Resource>,
     ) -> Result<CompiledTaskOutput<Self::Resource>> {
-        let attempt_id = crate::observability::task_attempt_id(task.id().to_string(), 1);
-        let span_id = crate::observability::RuntimeSpanId::new((task.id().index() as u64).saturating_add(2));
-        self.execute_task_attempt(task, state, &attempt_id, span_id)
-    }
-
-    fn execute_task_attempt(
-        &mut self,
-        task: &PipelineTask,
-        state: &mut CompiledPipelineState<Self::Resource>,
-        attempt_id: &crate::observability::TaskAttemptId,
-        span_id: crate::observability::RuntimeSpanId,
-    ) -> Result<CompiledTaskOutput<Self::Resource>> {
         self.execution.context().check_cancellation("nexus_query_engine.exec.bounded.compiled.task")?;
         self.execution.metrics_mut().record_compiled_pipeline_task_mapping(
             task.id(),
@@ -192,12 +167,6 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
             task.plan_node(),
         );
         self.execution.metrics_mut().record_compiled_pipeline_task_execution(task.id(), task.kind().as_str());
-        let _task_observation_scope = self.execution.reservations().enter_task_observation_scope(
-            attempt_id.clone(),
-            task.kind().as_str(),
-            span_id,
-            task_diagnostic_resident_resource(task),
-        );
         let budget_event_start = self.execution.metrics_mut().budgeted_execution_event_count();
         let timer = Instant::now();
         let result = match task.kind() {
@@ -222,12 +191,9 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
         result
     }
 
-    fn release_resource(&mut self, resource: ResidentResourceId, payload: Self::Resource) -> Result<()> {
-        let _resource_observation_scope = self.execution.reservations().enter_resource_observation_scope(resource);
+    fn release_resource(&mut self, _resource: ResidentResourceId, payload: Self::Resource) -> Result<()> {
         match payload.payload {
-            CompiledGpuResourcePayload::ResidentFrame { frame, .. } => {
-                self.execution.release(frame.reservation);
-            },
+            CompiledGpuResourcePayload::ResidentFrame { .. } => {},
             CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
                 stream.release_all(&mut self.execution);
             },
@@ -240,36 +206,18 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
     }
 
     fn cleanup_resource(&mut self, resource: ResidentResourceId, payload: Self::Resource) -> Result<()> {
-        let _cleanup_observation_scope = self
-            .execution
-            .reservations()
-            .enter_release_observation_scope(crate::observability::RuntimeReservationDisposition::CleanupRelease);
         self.release_resource(resource, payload)
     }
 
     fn cleanup_after_error(&mut self) -> Result<()> {
-        let _cleanup_observation_scope = self
-            .execution
-            .reservations()
-            .enter_release_observation_scope(crate::observability::RuntimeReservationDisposition::CleanupRelease);
         while let Some((_, probe)) = self.join_probes.pop_first() {
             release_bounded_compiled_join_probe_state(&mut self.execution, probe);
         }
-        while let Some((_, build)) = self.join_builds.pop_first() {
-            release_bounded_compiled_join_build_state(&mut self.execution, build);
-        }
+        self.join_builds.clear();
         Ok(())
     }
 
     fn before_scheduling_cycle(&mut self) -> Result<CompiledSchedulingCycle> {
         Ok(CompiledSchedulingCycle)
-    }
-
-    fn live_reserved_bytes(&self) -> Option<u64> {
-        Some(self.reserved_bytes())
-    }
-
-    fn remaining_reserved_bytes(&self) -> Option<u64> {
-        Some(self.remaining_bytes())
     }
 }

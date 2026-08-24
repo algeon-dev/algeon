@@ -4,26 +4,20 @@
 //! match their position in the corresponding vector. Builders do not validate
 //! cross references; call [`CompiledPipeline::validate`] before execution.
 
-use crate::{
-    capability::{ContractQuality, ContractStatus, ReservationRequirement, ReservationRequirementScope},
-    execution_contracts::ReservationKind,
-    plan::NodeId,
-};
+use crate::plan::NodeId;
 
 /// Mode-agnostic compiled graph for a native query DAG.
 ///
 /// This structure records task order, resource lifetimes, barriers, sink
-/// boundaries, and reservation gates. The capability-first bounded executor
-/// consumes it. Task, edge, barrier, resource, and gate ids are local index
-/// spaces owned by one compiled graph and are validated for topological
-/// consistency before use.
+/// boundaries. The capability-first bounded executor consumes it. Task, edge,
+/// barrier, and resource ids are local index spaces owned by one compiled graph
+/// and are validated for topological consistency before use.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompiledPipeline {
     tasks: Vec<PipelineTask>,
     edges: Vec<PipelineEdge>,
     barriers: Vec<PipelineBarrier>,
     resources: Vec<ResidentResource>,
-    gates: Vec<ReservationGate>,
     sink: SinkBoundary,
 }
 
@@ -34,10 +28,9 @@ impl CompiledPipeline {
         edges: Vec<PipelineEdge>,
         barriers: Vec<PipelineBarrier>,
         resources: Vec<ResidentResource>,
-        gates: Vec<ReservationGate>,
         sink: SinkBoundary,
     ) -> Self {
-        Self { tasks, edges, barriers, resources, gates, sink }
+        Self { tasks, edges, barriers, resources, sink }
     }
 
     /// Symbolic tasks in local id order.
@@ -60,11 +53,6 @@ impl CompiledPipeline {
         &self.resources
     }
 
-    /// Reservation gates in local id order.
-    pub fn gates(&self) -> &[ReservationGate] {
-        &self.gates
-    }
-
     /// Final sink boundary for the compiled graph.
     pub fn sink(&self) -> &SinkBoundary {
         &self.sink
@@ -75,7 +63,7 @@ impl CompiledPipeline {
         self.to_string()
     }
 
-    /// Validate id positions, cross references, resource flow, and gate contracts.
+    /// Validate id positions, cross references, and resource flow.
     pub fn validate(&self) -> crate::error::Result<()> {
         super::validate::validate_pipeline(self)
     }
@@ -137,20 +125,6 @@ impl ResidentResourceId {
     }
 }
 
-/// Local identifier for a reservation gate in the compiled graph.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ReservationGateId(usize);
-
-impl ReservationGateId {
-    pub const fn new(index: usize) -> Self {
-        Self(index)
-    }
-
-    pub const fn index(self) -> usize {
-        self.0
-    }
-}
-
 /// One symbolic unit of native work.
 ///
 /// A task names the operator work to perform and the resident resources it
@@ -163,13 +137,12 @@ pub struct PipelineTask {
     plan_node: Option<NodeId>,
     input_resources: Vec<ResidentResourceId>,
     output_resources: Vec<ResidentResourceId>,
-    gates: Vec<ReservationGateId>,
 }
 
 impl PipelineTask {
     /// Create a task that is not tied to one native plan node.
     pub fn new(id: PipelineTaskId, kind: PipelineTaskKind) -> Self {
-        Self { id, kind, plan_node: None, input_resources: Vec::new(), output_resources: Vec::new(), gates: Vec::new() }
+        Self { id, kind, plan_node: None, input_resources: Vec::new(), output_resources: Vec::new() }
     }
 
     /// Create a task associated with a native plan node.
@@ -186,12 +159,6 @@ impl PipelineTask {
     /// Attach resident resources produced by this task.
     pub fn with_output_resources(mut self, output_resources: Vec<ResidentResourceId>) -> Self {
         self.output_resources = output_resources;
-        self
-    }
-
-    /// Attach reservation gates owned by this task.
-    pub fn with_gates(mut self, gates: Vec<ReservationGateId>) -> Self {
-        self.gates = gates;
         self
     }
 
@@ -218,11 +185,6 @@ impl PipelineTask {
     /// Resident resources produced by this task.
     pub fn output_resources(&self) -> &[ResidentResourceId] {
         &self.output_resources
-    }
-
-    /// Reservation gates owned by this task.
-    pub fn gates(&self) -> &[ReservationGateId] {
-        &self.gates
     }
 }
 
@@ -292,24 +254,17 @@ pub struct PipelineEdge {
     to: PipelineTaskId,
     kind: PipelineEdgeKind,
     resources: Vec<ResidentResourceId>,
-    gates: Vec<ReservationGateId>,
 }
 
 impl PipelineEdge {
     /// Create an edge between two tasks.
     pub fn new(id: PipelineEdgeId, from: PipelineTaskId, to: PipelineTaskId, kind: PipelineEdgeKind) -> Self {
-        Self { id, from, to, kind, resources: Vec::new(), gates: Vec::new() }
+        Self { id, from, to, kind, resources: Vec::new() }
     }
 
     /// Attach resident resources that flow across this edge.
     pub fn with_resources(mut self, resources: Vec<ResidentResourceId>) -> Self {
         self.resources = resources;
-        self
-    }
-
-    /// Attach reservation gates owned by this edge.
-    pub fn with_gates(mut self, gates: Vec<ReservationGateId>) -> Self {
-        self.gates = gates;
         self
     }
 
@@ -336,11 +291,6 @@ impl PipelineEdge {
     /// Resident resources transferred or referenced by this edge.
     pub fn resources(&self) -> &[ResidentResourceId] {
         &self.resources
-    }
-
-    /// Reservation gates owned by this edge.
-    pub fn gates(&self) -> &[ReservationGateId] {
-        &self.gates
     }
 }
 
@@ -385,13 +335,12 @@ pub struct PipelineBarrier {
     kind: PipelineBarrierKind,
     upstream_tasks: Vec<PipelineTaskId>,
     downstream_tasks: Vec<PipelineTaskId>,
-    gates: Vec<ReservationGateId>,
 }
 
 impl PipelineBarrier {
-    /// Create a barrier with no attached tasks or gates.
+    /// Create a barrier with no attached tasks.
     pub fn new(id: PipelineBarrierId, kind: PipelineBarrierKind) -> Self {
-        Self { id, kind, upstream_tasks: Vec::new(), downstream_tasks: Vec::new(), gates: Vec::new() }
+        Self { id, kind, upstream_tasks: Vec::new(), downstream_tasks: Vec::new() }
     }
 
     /// Attach tasks that must complete before this barrier.
@@ -403,12 +352,6 @@ impl PipelineBarrier {
     /// Attach tasks dominated by this barrier.
     pub fn with_downstream_tasks(mut self, downstream_tasks: Vec<PipelineTaskId>) -> Self {
         self.downstream_tasks = downstream_tasks;
-        self
-    }
-
-    /// Attach reservation gates owned by this barrier.
-    pub fn with_gates(mut self, gates: Vec<ReservationGateId>) -> Self {
-        self.gates = gates;
         self
     }
 
@@ -430,11 +373,6 @@ impl PipelineBarrier {
     /// Tasks that run after the barrier is satisfied.
     pub fn downstream_tasks(&self) -> &[PipelineTaskId] {
         &self.downstream_tasks
-    }
-
-    /// Reservation gates owned by this barrier.
-    pub fn gates(&self) -> &[ReservationGateId] {
-        &self.gates
     }
 }
 
@@ -530,112 +468,17 @@ pub enum ResidentLifetime {
     },
 }
 
-/// Memory or execution-boundary gate attached to its most local pipeline owner.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReservationGate {
-    id: ReservationGateId,
-    owner: ReservationGateOwner,
-    requirement: ReservationRequirement,
-}
-
-impl ReservationGate {
-    /// Create a gate from individual reservation requirement fields.
-    #[expect(clippy::too_many_arguments, reason = "planning inputs are distinct proof and constraint values")]
-    pub fn new(
-        id: ReservationGateId,
-        owner: ReservationGateOwner,
-        kind: ReservationKind,
-        scope: ReservationRequirementScope,
-        memory_boundary: &'static str,
-        required_contract: &'static str,
-        status: ContractStatus,
-        quality: ContractQuality,
-    ) -> Self {
-        let requirement = ReservationRequirement { kind, scope, memory_boundary, required_contract, status, quality };
-        Self { id, owner, requirement }
-    }
-
-    /// Create a gate from an existing reservation requirement.
-    pub fn from_requirement(
-        id: ReservationGateId,
-        owner: ReservationGateOwner,
-        requirement: ReservationRequirement,
-    ) -> Self {
-        Self { id, owner, requirement }
-    }
-
-    /// Local reservation-gate id.
-    pub fn id(&self) -> ReservationGateId {
-        self.id
-    }
-
-    /// Graph object that owns the gate.
-    pub fn owner(&self) -> ReservationGateOwner {
-        self.owner
-    }
-
-    /// Reservation requirement enforced or reported by this gate.
-    pub fn requirement(&self) -> &ReservationRequirement {
-        &self.requirement
-    }
-
-    /// Reservation kind associated with the gate.
-    pub fn reservation_kind(&self) -> ReservationKind {
-        self.requirement.kind
-    }
-
-    /// Stable memory-boundary diagnostic string.
-    pub fn memory_boundary(&self) -> &'static str {
-        self.requirement.memory_boundary
-    }
-
-    /// Required contract diagnostic string.
-    pub fn required_contract(&self) -> &'static str {
-        self.requirement.required_contract
-    }
-
-    /// Modeling status for the gate requirement.
-    pub fn status(&self) -> ContractStatus {
-        self.requirement.status
-    }
-
-    /// Evidence quality for the gate requirement.
-    pub fn quality(&self) -> ContractQuality {
-        self.requirement.quality
-    }
-}
-
-/// The graph object that owns a reservation gate.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ReservationGateOwner {
-    /// Gate is owned by a task-local operation.
-    Task(PipelineTaskId),
-    /// Gate is owned by a producer-consumer edge.
-    Edge(PipelineEdgeId),
-    /// Gate is owned by a blocking or ordering barrier.
-    Barrier(PipelineBarrierId),
-    /// Gate is owned by the final sink boundary.
-    SinkBoundary,
-}
-
 /// Explicit result boundary for a compiled pipeline graph.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SinkBoundary {
     kind: SinkBoundaryKind,
     input: PipelineTaskId,
-    gates: Vec<ReservationGateId>,
 }
 
 impl SinkBoundary {
     /// Create a sink boundary fed by `input`.
     pub fn new(kind: SinkBoundaryKind, input: PipelineTaskId) -> Self {
-        Self { kind, input, gates: Vec::new() }
-    }
-
-    /// Attach reservation gates owned by the sink boundary.
-    pub fn with_gates(mut self, gates: Vec<ReservationGateId>) -> Self {
-        self.gates = gates;
-        self
+        Self { kind, input }
     }
 
     /// Sink boundary kind.
@@ -646,11 +489,6 @@ impl SinkBoundary {
     /// Task that produces the sink input resource.
     pub fn input(&self) -> PipelineTaskId {
         self.input
-    }
-
-    /// Reservation gates owned by the sink boundary.
-    pub fn gates(&self) -> &[ReservationGateId] {
-        &self.gates
     }
 }
 

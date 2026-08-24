@@ -104,17 +104,17 @@ impl StatisticalAggregateToleranceContract {
     }
 }
 
-/// Capability-envelope status used by gate-first contract reports.
+/// Capability-envelope status used by admission reports.
 ///
 /// The single bounded controller owns admission. [`Self::as_str`] emits the
 /// stable serialized wire labels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CapabilityEnvelopeStatus {
-    /// Every reported gate is modeled for bounded execution.
+    /// The plan is ready for bounded execution.
     Admitted,
     /// Structural support is known, but a prerequisite owner fact is not yet bound.
     Deferred,
-    /// At least one gate or capability proof blocks bounded execution.
+    /// At least one capability decision blocks bounded execution.
     Rejected,
 }
 

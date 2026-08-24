@@ -141,7 +141,6 @@ pub fn nexus_query_runtime::attempt::cancellation_state_at(nexus_query_runtime::
 pub fn nexus_query_runtime::attempt::effective_queue_expiry(std::time::Instant, core::option::Option<std::time::Instant>, core::time::Duration) -> std::time::Instant
 pub mod nexus_query_runtime::metrics
 pub use nexus_query_runtime::metrics::CompiledTaskId
-pub use nexus_query_runtime::metrics::MemoryReservationRequest
 pub use nexus_query_runtime::metrics::MemorySpaceId
 pub use nexus_query_runtime::metrics::PlanNodeId
 pub use nexus_query_runtime::metrics::QueryId
@@ -159,8 +158,8 @@ pub fn nexus_query_runtime::metrics::BackendDurationProjectionError::fmt(&self, 
 #[repr(usize)] pub enum nexus_query_runtime::metrics::BackendMetric
 pub nexus_query_runtime::metrics::BackendMetric::admission_active_attempts
 pub nexus_query_runtime::metrics::BackendMetric::admission_live_grant_bytes
-pub nexus_query_runtime::metrics::BackendMetric::admission_live_reserved_bytes
-pub nexus_query_runtime::metrics::BackendMetric::admission_max_live_reserved_bytes
+pub nexus_query_runtime::metrics::BackendMetric::admission_max_resident_owner_bytes
+pub nexus_query_runtime::metrics::BackendMetric::admission_resident_owner_bytes
 pub nexus_query_runtime::metrics::BackendMetric::attempts_completed
 pub nexus_query_runtime::metrics::BackendMetric::attempts_duration
 pub nexus_query_runtime::metrics::BackendMetric::cache_evictable_resident_bytes
@@ -184,27 +183,6 @@ pub enum nexus_query_runtime::metrics::BackendMetricUpdatePoint
 pub nexus_query_runtime::metrics::BackendMetricUpdatePoint::LedgerTransition
 pub nexus_query_runtime::metrics::BackendMetricUpdatePoint::ReportReady
 pub nexus_query_runtime::metrics::BackendMetricUpdatePoint::TelemetryRefresh
-pub enum nexus_query_runtime::metrics::MemoryReservationEventAction
-pub nexus_query_runtime::metrics::MemoryReservationEventAction::AliasAcquire
-pub nexus_query_runtime::metrics::MemoryReservationEventAction::AliasRelabel
-pub nexus_query_runtime::metrics::MemoryReservationEventAction::AliasRelease
-pub nexus_query_runtime::metrics::MemoryReservationEventAction::Grow
-pub nexus_query_runtime::metrics::MemoryReservationEventAction::Release
-pub nexus_query_runtime::metrics::MemoryReservationEventAction::Reserve
-pub nexus_query_runtime::metrics::MemoryReservationEventAction::Shrink
-pub nexus_query_runtime::metrics::MemoryReservationEventAction::Transfer
-impl nexus_query_runtime::metrics::MemoryReservationEventAction
-pub const fn nexus_query_runtime::metrics::MemoryReservationEventAction::as_str(self) -> &'static str
-impl core::fmt::Display for nexus_query_runtime::metrics::MemoryReservationEventAction
-pub fn nexus_query_runtime::metrics::MemoryReservationEventAction::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub enum nexus_query_runtime::metrics::MemoryReservationEventOutcome
-pub nexus_query_runtime::metrics::MemoryReservationEventOutcome::Applied
-pub nexus_query_runtime::metrics::MemoryReservationEventOutcome::Denied
-pub nexus_query_runtime::metrics::MemoryReservationEventOutcome::Granted
-impl nexus_query_runtime::metrics::MemoryReservationEventOutcome
-pub const fn nexus_query_runtime::metrics::MemoryReservationEventOutcome::as_str(self) -> &'static str
-impl core::fmt::Display for nexus_query_runtime::metrics::MemoryReservationEventOutcome
-pub fn nexus_query_runtime::metrics::MemoryReservationEventOutcome::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum nexus_query_runtime::metrics::MetricAggregation
 pub nexus_query_runtime::metrics::MetricAggregation::Last
 pub nexus_query_runtime::metrics::MetricAggregation::Peak
@@ -278,7 +256,6 @@ pub nexus_query_runtime::metrics::BudgetedExecutionEvent::output_rows: core::opt
 pub nexus_query_runtime::metrics::BudgetedExecutionEvent::query_id: core::option::Option<nexus_query_planning::correlation::QueryId>
 pub nexus_query_runtime::metrics::BudgetedExecutionEvent::retained_bytes: core::option::Option<u64>
 pub nexus_query_runtime::metrics::BudgetedExecutionEvent::status: alloc::string::String
-pub nexus_query_runtime::metrics::BudgetedExecutionEvent::unresolved_contract: core::option::Option<alloc::string::String>
 impl nexus_query_runtime::metrics::BudgetedExecutionEvent
 pub fn nexus_query_runtime::metrics::BudgetedExecutionEvent::to_json(&self) -> serde_json::value::Value
 pub struct nexus_query_runtime::metrics::DynamicFilterRuntimeMetrics
@@ -373,38 +350,6 @@ pub nexus_query_runtime::metrics::JoinStrategyDecisionMetrics::node_id: alloc::s
 pub nexus_query_runtime::metrics::JoinStrategyDecisionMetrics::query_id: core::option::Option<nexus_query_planning::correlation::QueryId>
 impl nexus_query_runtime::metrics::JoinStrategyDecisionMetrics
 pub fn nexus_query_runtime::metrics::JoinStrategyDecisionMetrics::to_json(&self) -> serde_json::value::Value
-pub struct nexus_query_runtime::metrics::MemoryReservationEvent
-pub nexus_query_runtime::metrics::MemoryReservationEvent::action: nexus_query_runtime::metrics::MemoryReservationEventAction
-pub nexus_query_runtime::metrics::MemoryReservationEvent::attempt: core::option::Option<usize>
-pub nexus_query_runtime::metrics::MemoryReservationEvent::budget_bytes: u64
-pub nexus_query_runtime::metrics::MemoryReservationEvent::charged_delta_bytes: i128
-pub nexus_query_runtime::metrics::MemoryReservationEvent::chunk_index: core::option::Option<usize>
-pub nexus_query_runtime::metrics::MemoryReservationEvent::compiled_task_id: core::option::Option<nexus_query_planning::correlation::CompiledTaskId>
-pub nexus_query_runtime::metrics::MemoryReservationEvent::current_reserved_bytes: u64
-pub nexus_query_runtime::metrics::MemoryReservationEvent::file_index: core::option::Option<usize>
-pub nexus_query_runtime::metrics::MemoryReservationEvent::granted_bytes: u64
-pub nexus_query_runtime::metrics::MemoryReservationEvent::max_attempts: core::option::Option<usize>
-pub nexus_query_runtime::metrics::MemoryReservationEvent::memory_boundary: alloc::string::String
-pub nexus_query_runtime::metrics::MemoryReservationEvent::memory_space: nexus_query_planning::execution_contracts::MemorySpaceId
-pub nexus_query_runtime::metrics::MemoryReservationEvent::node_id: core::option::Option<nexus_query_planning::correlation::PlanNodeId>
-pub nexus_query_runtime::metrics::MemoryReservationEvent::outcome: nexus_query_runtime::metrics::MemoryReservationEventOutcome
-pub nexus_query_runtime::metrics::MemoryReservationEvent::path: core::option::Option<alloc::string::String>
-pub nexus_query_runtime::metrics::MemoryReservationEvent::query_id: core::option::Option<nexus_query_planning::correlation::QueryId>
-pub nexus_query_runtime::metrics::MemoryReservationEvent::requested_bytes: u64
-pub nexus_query_runtime::metrics::MemoryReservationEvent::reservation_kind: nexus_query_planning::execution_contracts::ReservationKind
-pub nexus_query_runtime::metrics::MemoryReservationEvent::resident_resource_id: core::option::Option<alloc::string::String>
-pub nexus_query_runtime::metrics::MemoryReservationEvent::row_groups: core::option::Option<alloc::vec::Vec<usize>>
-pub nexus_query_runtime::metrics::MemoryReservationEvent::source_read_contract_quality: core::option::Option<alloc::string::String>
-pub nexus_query_runtime::metrics::MemoryReservationEvent::source_read_estimated_bytes: core::option::Option<u64>
-pub nexus_query_runtime::metrics::MemoryReservationEvent::source_read_planning_bytes: core::option::Option<u64>
-pub nexus_query_runtime::metrics::MemoryReservationEvent::stage: core::option::Option<alloc::string::String>
-impl nexus_query_runtime::metrics::MemoryReservationEvent
-pub fn nexus_query_runtime::metrics::MemoryReservationEvent::denied(&nexus_query_planning::execution_contracts::MemoryReservationRequest, u64) -> Self
-pub fn nexus_query_runtime::metrics::MemoryReservationEvent::from_request(&nexus_query_planning::execution_contracts::MemoryReservationRequest, nexus_query_runtime::metrics::MemoryReservationEventOutcome, nexus_query_runtime::metrics::MemoryReservationEventAction, u64, i128, u64) -> Self
-pub fn nexus_query_runtime::metrics::MemoryReservationEvent::granted(&nexus_query_planning::execution_contracts::MemoryReservationRequest, u64) -> Self
-pub fn nexus_query_runtime::metrics::MemoryReservationEvent::to_stable_debug_row(&self) -> alloc::string::String
-impl nexus_query_runtime::metrics::MemoryReservationEvent
-pub fn nexus_query_runtime::metrics::MemoryReservationEvent::to_json(&self) -> serde_json::value::Value
 pub struct nexus_query_runtime::metrics::MetricDescriptor
 pub nexus_query_runtime::metrics::MetricDescriptor::aggregation: nexus_query_runtime::metrics::MetricAggregation
 pub nexus_query_runtime::metrics::MetricDescriptor::direction: core::option::Option<nexus_query_runtime::metrics::MetricDirection>
@@ -469,8 +414,7 @@ pub nexus_query_runtime::metrics::QueryMetrics::final_merge_max_fan_in: u64
 pub nexus_query_runtime::metrics::QueryMetrics::final_merge_time: core::time::Duration
 pub nexus_query_runtime::metrics::QueryMetrics::final_sort_time: core::time::Duration
 pub nexus_query_runtime::metrics::QueryMetrics::graph_algorithm_runtime_rows: alloc::vec::Vec<nexus_query_runtime::metrics::GraphAlgorithmRuntimeMetrics>
-pub nexus_query_runtime::metrics::QueryMetrics::graph_claim_calibration_rows: alloc::vec::Vec<nexus_query_planning::graph_memory::evidence::GraphClaimCalibrationRow>
-pub nexus_query_runtime::metrics::QueryMetrics::graph_reservation_rows: alloc::vec::Vec<nexus_query_planning::graph_memory::evidence::GraphReservationReport>
+pub nexus_query_runtime::metrics::QueryMetrics::graph_claim_calibration_rows: alloc::vec::Vec<nexus_query_planning::graph_observation::GraphMeasuredPeakRow>
 pub nexus_query_runtime::metrics::QueryMetrics::hash_join_build_count: u64
 pub nexus_query_runtime::metrics::QueryMetrics::hash_join_cache_hits: u64
 pub nexus_query_runtime::metrics::QueryMetrics::hash_join_cache_misses: u64
@@ -480,7 +424,6 @@ pub nexus_query_runtime::metrics::QueryMetrics::input_rows: u64
 pub nexus_query_runtime::metrics::QueryMetrics::join_strategy_decisions: alloc::vec::Vec<nexus_query_runtime::metrics::JoinStrategyDecisionMetrics>
 pub nexus_query_runtime::metrics::QueryMetrics::materialization_time: core::time::Duration
 pub nexus_query_runtime::metrics::QueryMetrics::max_task_observed_peak_bytes: core::option::Option<u64>
-pub nexus_query_runtime::metrics::QueryMetrics::max_task_reservation_bytes: u64
 pub nexus_query_runtime::metrics::QueryMetrics::max_task_retained_bytes: core::option::Option<u64>
 pub nexus_query_runtime::metrics::QueryMetrics::memory_control_policy: nexus_query_planning::execution_contracts::MemoryControlPolicy
 pub nexus_query_runtime::metrics::QueryMetrics::mixed_join_size_data_bytes: u64
@@ -502,14 +445,8 @@ pub nexus_query_runtime::metrics::QueryMetrics::plan_task_mapping_datafusion_sha
 pub nexus_query_runtime::metrics::QueryMetrics::plan_task_mapping_rows: alloc::vec::Vec<nexus_query_runtime::metrics::PlanTaskMapping>
 pub nexus_query_runtime::metrics::QueryMetrics::query_id: nexus_query_planning::correlation::QueryId
 pub nexus_query_runtime::metrics::QueryMetrics::read_columns: u64
-pub nexus_query_runtime::metrics::QueryMetrics::reservation_denied_count: u64
-pub nexus_query_runtime::metrics::QueryMetrics::reservation_events: alloc::vec::Vec<nexus_query_runtime::metrics::MemoryReservationEvent>
-pub nexus_query_runtime::metrics::QueryMetrics::reservation_granted_bytes: u64
-pub nexus_query_runtime::metrics::QueryMetrics::reservation_live_peak_bytes: u64
-pub nexus_query_runtime::metrics::QueryMetrics::reservation_requested_bytes: u64
 pub nexus_query_runtime::metrics::QueryMetrics::resident_dataframe_peak_bytes: core::option::Option<u64>
 pub nexus_query_runtime::metrics::QueryMetrics::retry_count: u64
-pub nexus_query_runtime::metrics::QueryMetrics::retry_reservation_failure_count: u64
 pub nexus_query_runtime::metrics::QueryMetrics::retry_resource_exhausted_count: u64
 pub nexus_query_runtime::metrics::QueryMetrics::row_groups_committed: u64
 pub nexus_query_runtime::metrics::QueryMetrics::row_groups_planned: u64
@@ -538,7 +475,6 @@ pub fn nexus_query_runtime::metrics::QueryMetrics::record_compiled_pipeline_host
 pub fn nexus_query_runtime::metrics::QueryMetrics::record_compiled_pipeline_task_execution(&mut self, impl alloc::string::ToString, impl core::convert::Into<alloc::string::String>)
 pub fn nexus_query_runtime::metrics::QueryMetrics::record_compiled_pipeline_task_mapping(&mut self, impl alloc::string::ToString, impl core::convert::Into<alloc::string::String>, core::option::Option<impl core::convert::Into<nexus_query_planning::correlation::PlanNodeId>>)
 pub fn nexus_query_runtime::metrics::QueryMetrics::record_compiled_pipeline_tasks_executed(&mut self, u64)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_retry_reservation_failure(&mut self)
 pub fn nexus_query_runtime::metrics::QueryMetrics::record_retry_resource_exhausted(&mut self)
 pub fn nexus_query_runtime::metrics::QueryMetrics::record_task_budget_observations_since(&mut self, impl alloc::string::ToString, usize)
 pub fn nexus_query_runtime::metrics::QueryMetrics::record_task_elapsed(&mut self, impl alloc::string::ToString, impl core::convert::Into<alloc::string::String>, core::time::Duration)
@@ -547,16 +483,11 @@ pub fn nexus_query_runtime::metrics::QueryMetrics::register_task_definition(&mut
 impl nexus_query_runtime::metrics::QueryMetrics
 pub fn nexus_query_runtime::metrics::QueryMetrics::descriptors() -> &'static [nexus_query_runtime::metrics::MetricDescriptor]
 impl nexus_query_runtime::metrics::QueryMetrics
-pub fn nexus_query_runtime::metrics::QueryMetrics::graph_claim_calibration_rows(&self) -> &[nexus_query_planning::graph_memory::evidence::GraphClaimCalibrationRow]
+pub fn nexus_query_runtime::metrics::QueryMetrics::graph_claim_calibration_rows(&self) -> &[nexus_query_planning::graph_observation::GraphMeasuredPeakRow]
 pub fn nexus_query_runtime::metrics::QueryMetrics::record_graph_algorithm_runtime(&mut self, nexus_query_runtime::metrics::GraphAlgorithmRuntimeMetrics)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_graph_budget_tracking_with_boundary(&mut self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, core::option::Option<alloc::string::String>, u64, core::option::Option<u64>, impl core::convert::Into<alloc::string::String>, alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_graph_budget_tracking_with_boundary_and_enforcement(&mut self, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, core::option::Option<alloc::string::String>, u64, impl core::convert::Into<alloc::string::String>, core::option::Option<u64>, impl core::convert::Into<alloc::string::String>, alloc::collections::btree::map::BTreeMap<alloc::string::String, alloc::string::String>)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_graph_claim_calibration(&mut self, nexus_query_planning::graph_memory::evidence::GraphReservationReport, nexus_query_planning::plan::core::NodeId)
+pub fn nexus_query_runtime::metrics::QueryMetrics::record_graph_claim_calibration(&mut self, nexus_query_planning::plan::core::NodeId, nexus_query_planning::plan::graph_algorithm::definition::GraphAlgorithm)
 pub fn nexus_query_runtime::metrics::QueryMetrics::record_graph_claim_calibration_algorithm_started(&mut self, nexus_query_planning::plan::core::NodeId, nexus_query_planning::plan::graph_algorithm::definition::GraphAlgorithm)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_graph_claim_calibration_graph_memory_admission_denied(&mut self, nexus_query_planning::plan::core::NodeId, nexus_query_planning::plan::graph_algorithm::definition::GraphAlgorithm)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_graph_claim_calibration_measurement(&mut self, nexus_query_planning::plan::core::NodeId, nexus_query_planning::plan::graph_algorithm::definition::GraphAlgorithm, core::option::Option<u64>, nexus_query_planning::graph_memory::evidence::GraphMeasuredPeakProvenance)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_graph_model_error_ratio(&mut self, &str, &str, core::option::Option<u64>)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_graph_reservation(&mut self, nexus_query_planning::graph_memory::evidence::GraphReservationReport)
+pub fn nexus_query_runtime::metrics::QueryMetrics::record_graph_claim_calibration_measurement(&mut self, nexus_query_planning::plan::core::NodeId, nexus_query_planning::plan::graph_algorithm::definition::GraphAlgorithm, core::option::Option<u64>, nexus_query_planning::graph_observation::GraphMeasuredPeakProvenance)
 impl nexus_query_runtime::metrics::QueryMetrics
 pub fn nexus_query_runtime::metrics::QueryMetrics::merge_from(&mut self, nexus_query_runtime::metrics::QueryMetrics)
 pub fn nexus_query_runtime::metrics::QueryMetrics::new(impl core::convert::Into<nexus_query_planning::correlation::QueryId>) -> Self
@@ -571,13 +502,6 @@ pub fn nexus_query_runtime::metrics::QueryMetrics::record_final_merge_level(&mut
 pub fn nexus_query_runtime::metrics::QueryMetrics::record_partial_aggregate(&mut self, u64, u64, u64)
 impl nexus_query_runtime::metrics::QueryMetrics
 pub fn nexus_query_runtime::metrics::QueryMetrics::record_device_memory_observation(&mut self, u64)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_reservation_denied(&mut self, u64)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_reservation_denied_event(&mut self, &nexus_query_planning::execution_contracts::MemoryReservationRequest, u64)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_reservation_denied_timeline_event(&mut self, &nexus_query_planning::execution_contracts::MemoryReservationRequest, nexus_query_runtime::metrics::MemoryReservationEventAction, u64, u64)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_reservation_granted(&mut self, u64, u64)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_reservation_granted_event(&mut self, &nexus_query_planning::execution_contracts::MemoryReservationRequest, u64)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_reservation_granted_timeline_event(&mut self, &nexus_query_planning::execution_contracts::MemoryReservationRequest, nexus_query_runtime::metrics::MemoryReservationEventAction, u64, i128, u64)
-pub fn nexus_query_runtime::metrics::QueryMetrics::record_reservation_timeline_event(&mut self, nexus_query_runtime::metrics::MemoryReservationEvent)
 impl nexus_query_runtime::metrics::QueryMetrics
 pub fn nexus_query_runtime::metrics::QueryMetrics::record_dynamic_filter_applied(&mut self, &nexus_query_planning::dynamic_filter::DynamicFilterRoute, &nexus_query_planning::dynamic_filter::DynamicFilter, nexus_query_runtime::metrics::DynamicFilterSourceSnapshot, nexus_query_runtime::metrics::DynamicFilterSourceSnapshot)
 pub fn nexus_query_runtime::metrics::QueryMetrics::record_dynamic_filter_applied_post_decode(&mut self, &nexus_query_planning::dynamic_filter::DynamicFilterRoute, &nexus_query_planning::dynamic_filter::DynamicFilter, core::option::Option<u64>, core::option::Option<u64>)
@@ -678,10 +602,6 @@ pub nexus_query_runtime::metrics::TaskOperatorMetrics::max_observed_peak_bytes: 
 pub nexus_query_runtime::metrics::TaskOperatorMetrics::max_retained_bytes: core::option::Option<u64>
 pub nexus_query_runtime::metrics::TaskOperatorMetrics::operator_kind: alloc::string::String
 pub nexus_query_runtime::metrics::TaskOperatorMetrics::query_id: core::option::Option<nexus_query_planning::correlation::QueryId>
-pub nexus_query_runtime::metrics::TaskOperatorMetrics::reservation_granted_bytes: u64
-pub nexus_query_runtime::metrics::TaskOperatorMetrics::reservation_live_peak_bytes: u64
-pub nexus_query_runtime::metrics::TaskOperatorMetrics::reservation_released_bytes: u64
-pub nexus_query_runtime::metrics::TaskOperatorMetrics::reservation_requested_bytes: u64
 pub nexus_query_runtime::metrics::TaskOperatorMetrics::task_count: u64
 impl nexus_query_runtime::metrics::TaskOperatorMetrics
 pub fn nexus_query_runtime::metrics::TaskOperatorMetrics::to_json(&self) -> serde_json::value::Value
@@ -692,10 +612,6 @@ pub nexus_query_runtime::metrics::TaskRuntimeMetrics::max_observed_peak_bytes: c
 pub nexus_query_runtime::metrics::TaskRuntimeMetrics::max_retained_bytes: core::option::Option<u64>
 pub nexus_query_runtime::metrics::TaskRuntimeMetrics::operator_kind: alloc::string::String
 pub nexus_query_runtime::metrics::TaskRuntimeMetrics::query_id: core::option::Option<nexus_query_planning::correlation::QueryId>
-pub nexus_query_runtime::metrics::TaskRuntimeMetrics::reservation_granted_bytes: u64
-pub nexus_query_runtime::metrics::TaskRuntimeMetrics::reservation_live_peak_bytes: u64
-pub nexus_query_runtime::metrics::TaskRuntimeMetrics::reservation_released_bytes: u64
-pub nexus_query_runtime::metrics::TaskRuntimeMetrics::reservation_requested_bytes: u64
 impl nexus_query_runtime::metrics::TaskRuntimeMetrics
 pub fn nexus_query_runtime::metrics::TaskRuntimeMetrics::to_json(&self) -> serde_json::value::Value
 pub const nexus_query_runtime::metrics::BACKEND_ATTEMPT_DURATION_BUCKETS_NS: [u64; 7]
@@ -927,9 +843,6 @@ pub nexus_query_runtime::observability::RuntimeObservationRecord::PlanEdge::sequ
 pub nexus_query_runtime::observability::RuntimeObservationRecord::PlanNode
 pub nexus_query_runtime::observability::RuntimeObservationRecord::PlanNode::row: nexus_query_runtime::observability::PlanNodeRow
 pub nexus_query_runtime::observability::RuntimeObservationRecord::PlanNode::sequence: nexus_query_runtime::observability::ObservationSequence
-pub nexus_query_runtime::observability::RuntimeObservationRecord::ReservationGate
-pub nexus_query_runtime::observability::RuntimeObservationRecord::ReservationGate::row: nexus_query_runtime::observability::ReservationGateRow
-pub nexus_query_runtime::observability::RuntimeObservationRecord::ReservationGate::sequence: nexus_query_runtime::observability::ObservationSequence
 pub nexus_query_runtime::observability::RuntimeObservationRecord::Resource
 pub nexus_query_runtime::observability::RuntimeObservationRecord::Resource::row: nexus_query_runtime::observability::RuntimeResourceRow
 pub nexus_query_runtime::observability::RuntimeObservationRecord::Resource::sequence: nexus_query_runtime::observability::ObservationSequence
@@ -949,7 +862,6 @@ pub nexus_query_runtime::observability::RuntimeObservationRecordClass::CompiledE
 pub nexus_query_runtime::observability::RuntimeObservationRecordClass::JobDefinition
 pub nexus_query_runtime::observability::RuntimeObservationRecordClass::PlanEdge
 pub nexus_query_runtime::observability::RuntimeObservationRecordClass::PlanNode
-pub nexus_query_runtime::observability::RuntimeObservationRecordClass::ReservationGate
 pub nexus_query_runtime::observability::RuntimeObservationRecordClass::Resource
 pub nexus_query_runtime::observability::RuntimeObservationRecordClass::SinkDefinition
 pub nexus_query_runtime::observability::RuntimeObservationRecordClass::TaskDefinition
@@ -1035,7 +947,6 @@ pub nexus_query_runtime::observability::RuntimeTopologyRecord::CompiledEdge(nexu
 pub nexus_query_runtime::observability::RuntimeTopologyRecord::JobDefinition(nexus_query_runtime::observability::JobDefinitionRow)
 pub nexus_query_runtime::observability::RuntimeTopologyRecord::PlanEdge(nexus_query_runtime::observability::PlanEdgeRow)
 pub nexus_query_runtime::observability::RuntimeTopologyRecord::PlanNode(nexus_query_runtime::observability::PlanNodeRow)
-pub nexus_query_runtime::observability::RuntimeTopologyRecord::ReservationGate(nexus_query_runtime::observability::ReservationGateRow)
 pub nexus_query_runtime::observability::RuntimeTopologyRecord::Resource(nexus_query_runtime::observability::RuntimeResourceRow)
 pub nexus_query_runtime::observability::RuntimeTopologyRecord::SinkDefinition(nexus_query_runtime::observability::SinkDefinitionRow)
 pub nexus_query_runtime::observability::RuntimeTopologyRecord::TaskDefinition(nexus_query_runtime::observability::TaskDefinitionRow)
@@ -1197,12 +1108,12 @@ pub nexus_query_runtime::observability::AttemptResourceEvidence::headroom_bytes:
 pub nexus_query_runtime::observability::AttemptResourceEvidence::ledger_sample_ns: nexus_query_runtime::observability::AttemptEvidenceField<u64>
 pub nexus_query_runtime::observability::AttemptResourceEvidence::ledger_sequence: nexus_query_runtime::observability::AttemptEvidenceField<u64>
 pub nexus_query_runtime::observability::AttemptResourceEvidence::live_grants_bytes: nexus_query_runtime::observability::AttemptEvidenceField<u64>
-pub nexus_query_runtime::observability::AttemptResourceEvidence::live_reserved_bytes: nexus_query_runtime::observability::AttemptEvidenceField<u64>
 pub nexus_query_runtime::observability::AttemptResourceEvidence::managed_capacity_bytes: nexus_query_runtime::observability::AttemptEvidenceField<u64>
 pub nexus_query_runtime::observability::AttemptResourceEvidence::outcome_terminal_usage: nexus_query_runtime::observability::AttemptEvidenceField<nexus_query_runtime::observability::AttemptTimedDomainUsage>
 pub nexus_query_runtime::observability::AttemptResourceEvidence::post_cleanup_usage: nexus_query_runtime::observability::AttemptEvidenceField<nexus_query_runtime::observability::AttemptTimedDomainUsage>
 pub nexus_query_runtime::observability::AttemptResourceEvidence::protected_reserve_bytes: nexus_query_runtime::observability::AttemptEvidenceField<u64>
 pub nexus_query_runtime::observability::AttemptResourceEvidence::protected_slot: nexus_query_runtime::observability::AttemptEvidenceField<bool>
+pub nexus_query_runtime::observability::AttemptResourceEvidence::resident_owner_bytes: nexus_query_runtime::observability::AttemptEvidenceField<u64>
 pub nexus_query_runtime::observability::AttemptResourceEvidence::unattributed_device_allocator_event: nexus_query_runtime::observability::AttemptEvidenceField<nexus_query_runtime::observability::AttemptUnattributedAllocatorEvent>
 impl nexus_query_runtime::observability::AttemptResourceEvidence
 pub const fn nexus_query_runtime::observability::AttemptResourceEvidence::unavailable() -> Self
@@ -1246,7 +1157,6 @@ pub struct nexus_query_runtime::observability::BarrierDefinitionRow
 pub nexus_query_runtime::observability::BarrierDefinitionRow::barrier_id: nexus_query_runtime::observability::RuntimeBarrierId
 pub nexus_query_runtime::observability::BarrierDefinitionRow::barrier_kind: alloc::string::String
 pub nexus_query_runtime::observability::BarrierDefinitionRow::downstream_task_ids: alloc::vec::Vec<nexus_query_planning::execution_contracts::RuntimeTaskId>
-pub nexus_query_runtime::observability::BarrierDefinitionRow::gate_ids: alloc::vec::Vec<nexus_query_runtime::observability::RuntimeReservationGateId>
 pub nexus_query_runtime::observability::BarrierDefinitionRow::plan_execution_id: nexus_query_runtime::observability::PlanExecutionId
 pub nexus_query_runtime::observability::BarrierDefinitionRow::upstream_task_ids: alloc::vec::Vec<nexus_query_planning::execution_contracts::RuntimeTaskId>
 pub struct nexus_query_runtime::observability::CleanupFailureSummary
@@ -1261,7 +1171,6 @@ pub struct nexus_query_runtime::observability::CompiledEdgeRow
 pub nexus_query_runtime::observability::CompiledEdgeRow::edge_id: nexus_query_runtime::observability::RuntimePipelineEdgeId
 pub nexus_query_runtime::observability::CompiledEdgeRow::edge_kind: alloc::string::String
 pub nexus_query_runtime::observability::CompiledEdgeRow::from_task_id: nexus_query_planning::execution_contracts::RuntimeTaskId
-pub nexus_query_runtime::observability::CompiledEdgeRow::gate_ids: alloc::vec::Vec<nexus_query_runtime::observability::RuntimeReservationGateId>
 pub nexus_query_runtime::observability::CompiledEdgeRow::plan_execution_id: nexus_query_runtime::observability::PlanExecutionId
 pub nexus_query_runtime::observability::CompiledEdgeRow::resource_ids: alloc::vec::Vec<nexus_query_runtime::observability::RuntimeResourceId>
 pub nexus_query_runtime::observability::CompiledEdgeRow::to_task_id: nexus_query_planning::execution_contracts::RuntimeTaskId
@@ -1352,17 +1261,6 @@ impl nexus_query_runtime::observability::QueryAttemptReport
 pub fn nexus_query_runtime::observability::QueryAttemptReport::sealed_projection(&self) -> nexus_query_runtime::observability::SealedAttemptProjection
 impl core::convert::From<&nexus_query_runtime::observability::QueryAttemptReport> for nexus_query_runtime::observability::SealedAttemptProjection
 pub fn nexus_query_runtime::observability::SealedAttemptProjection::from(&nexus_query_runtime::observability::QueryAttemptReport) -> Self
-pub struct nexus_query_runtime::observability::ReservationGateRow
-pub nexus_query_runtime::observability::ReservationGateRow::contract_quality: alloc::string::String
-pub nexus_query_runtime::observability::ReservationGateRow::contract_status: alloc::string::String
-pub nexus_query_runtime::observability::ReservationGateRow::gate_id: nexus_query_runtime::observability::RuntimeReservationGateId
-pub nexus_query_runtime::observability::ReservationGateRow::memory_boundary: alloc::string::String
-pub nexus_query_runtime::observability::ReservationGateRow::owner_id: alloc::string::String
-pub nexus_query_runtime::observability::ReservationGateRow::owner_kind: alloc::string::String
-pub nexus_query_runtime::observability::ReservationGateRow::plan_execution_id: nexus_query_runtime::observability::PlanExecutionId
-pub nexus_query_runtime::observability::ReservationGateRow::required_contract: alloc::string::String
-pub nexus_query_runtime::observability::ReservationGateRow::requirement_scope: alloc::string::String
-pub nexus_query_runtime::observability::ReservationGateRow::reservation_kind: alloc::string::String
 pub struct nexus_query_runtime::observability::RuntimeAdmissionObservation
 pub nexus_query_runtime::observability::RuntimeAdmissionObservation::admission_request_id: nexus_query_runtime::observability::AdmissionRequestId
 pub nexus_query_runtime::observability::RuntimeAdmissionObservation::device_ordinal: core::option::Option<u32>
@@ -1663,16 +1561,6 @@ pub fn nexus_query_runtime::observability::RuntimeQueryLifecycle::plan_execution
 pub const fn nexus_query_runtime::observability::RuntimeQueryLifecycle::plan_span_id(&self) -> nexus_query_runtime::observability::RuntimeSpanId
 impl core::ops::drop::Drop for nexus_query_runtime::observability::RuntimeQueryLifecycle
 pub fn nexus_query_runtime::observability::RuntimeQueryLifecycle::drop(&mut self)
-pub struct nexus_query_runtime::observability::RuntimeReservationGateId(_)
-impl nexus_query_runtime::observability::RuntimeReservationGateId
-pub fn nexus_query_runtime::observability::RuntimeReservationGateId::as_str(&self) -> &str
-pub fn nexus_query_runtime::observability::RuntimeReservationGateId::new(impl core::convert::Into<alloc::string::String>) -> Self
-impl core::convert::From<&str> for nexus_query_runtime::observability::RuntimeReservationGateId
-pub fn nexus_query_runtime::observability::RuntimeReservationGateId::from(&str) -> Self
-impl core::convert::From<alloc::string::String> for nexus_query_runtime::observability::RuntimeReservationGateId
-pub fn nexus_query_runtime::observability::RuntimeReservationGateId::from(alloc::string::String) -> Self
-impl core::fmt::Display for nexus_query_runtime::observability::RuntimeReservationGateId
-pub fn nexus_query_runtime::observability::RuntimeReservationGateId::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct nexus_query_runtime::observability::RuntimeReservationId(_)
 impl nexus_query_runtime::observability::RuntimeReservationId
 pub fn nexus_query_runtime::observability::RuntimeReservationId::as_str(&self) -> &str
@@ -1862,7 +1750,6 @@ pub fn nexus_query_runtime::observability::SealedRuntimeObservationSnapshot::top
 impl nexus_query_runtime::observability::SealedRuntimeObservationSnapshot
 pub fn nexus_query_runtime::observability::SealedRuntimeObservationSnapshot::is_same_snapshot(&self, &Self) -> bool
 pub struct nexus_query_runtime::observability::SinkDefinitionRow
-pub nexus_query_runtime::observability::SinkDefinitionRow::gate_ids: alloc::vec::Vec<nexus_query_runtime::observability::RuntimeReservationGateId>
 pub nexus_query_runtime::observability::SinkDefinitionRow::input_task_id: nexus_query_planning::execution_contracts::RuntimeTaskId
 pub nexus_query_runtime::observability::SinkDefinitionRow::plan_execution_id: nexus_query_runtime::observability::PlanExecutionId
 pub nexus_query_runtime::observability::SinkDefinitionRow::sink_id: nexus_query_runtime::observability::RuntimeSinkId
@@ -1908,9 +1795,6 @@ pub fn nexus_query_runtime::observability::stage_context_from_execution(&impl ne
 pub fn nexus_query_runtime::observability::task_attempt_id(impl core::convert::Into<nexus_query_planning::execution_contracts::RuntimeTaskId>, u32) -> nexus_query_planning::execution_contracts::TaskAttemptId
 pub fn nexus_query_runtime::observability::write_runtime_observation_jsonl<W: core::io::write::Write>(&nexus_query_runtime::observability::SealedRuntimeObservationSnapshot, &mut W) -> core::result::Result<(), nexus_query_runtime::observability::RuntimeObservationExportError>
 pub mod nexus_query_runtime::runtime
-pub use nexus_query_runtime::runtime::BoundedJoinReservationContract
-pub use nexus_query_runtime::runtime::BoundedJoinReservationRequirement
-pub use nexus_query_runtime::runtime::BoundedJoinReservationStatus
 pub use nexus_query_runtime::runtime::BuildMaterializationBoundary
 pub use nexus_query_runtime::runtime::CacheGraphActivity
 pub use nexus_query_runtime::runtime::CacheSourceActivity
@@ -1934,7 +1818,6 @@ pub use nexus_query_runtime::runtime::GpuTelemetry
 pub use nexus_query_runtime::runtime::LedgerSnapshot
 pub use nexus_query_runtime::runtime::MemoryControlPolicy
 pub use nexus_query_runtime::runtime::MemoryGrant
-pub use nexus_query_runtime::runtime::MemoryReservationRequest
 pub use nexus_query_runtime::runtime::MemoryResourcePolicy
 pub use nexus_query_runtime::runtime::MemorySpaceId
 pub use nexus_query_runtime::runtime::NexusGpuInventory
@@ -2181,8 +2064,8 @@ pub nexus_query_runtime::runtime::BackendAdmissionMetricsSnapshot::cache_evictab
 pub nexus_query_runtime::runtime::BackendAdmissionMetricsSnapshot::cache_pinned_in_use_bytes: u64
 pub nexus_query_runtime::runtime::BackendAdmissionMetricsSnapshot::health: nexus_query_runtime::runtime::BackendAdmissionHealth
 pub nexus_query_runtime::runtime::BackendAdmissionMetricsSnapshot::live_grant_bytes: u64
-pub nexus_query_runtime::runtime::BackendAdmissionMetricsSnapshot::live_reserved_bytes: u64
-pub nexus_query_runtime::runtime::BackendAdmissionMetricsSnapshot::max_live_reserved_bytes: u64
+pub nexus_query_runtime::runtime::BackendAdmissionMetricsSnapshot::max_resident_owner_bytes: u64
+pub nexus_query_runtime::runtime::BackendAdmissionMetricsSnapshot::resident_owner_bytes: u64
 pub struct nexus_query_runtime::runtime::BackendAttemptDurations
 pub nexus_query_runtime::runtime::BackendAttemptDurations::physical_execution_ns: core::option::Option<u64>
 pub nexus_query_runtime::runtime::BackendAttemptDurations::planning_ns: core::option::Option<u64>
@@ -2309,7 +2192,6 @@ pub fn nexus_query_runtime::runtime::ExecutionContext::execution_budget_token(&s
 pub fn nexus_query_runtime::runtime::ExecutionContext::from_runtime(cudf::runtime::owner::Runtime) -> nexus_query_planning::error::Result<Self>
 pub fn nexus_query_runtime::runtime::ExecutionContext::from_shared_runtime(alloc::sync::Arc<cudf::runtime::owner::Runtime>) -> nexus_query_planning::error::Result<Self>
 pub fn nexus_query_runtime::runtime::ExecutionContext::gpu_executor(&self) -> nexus_query_planning::error::Result<nexus_query_runtime::runtime::GpuExecutorLease>
-pub fn nexus_query_runtime::runtime::ExecutionContext::graph_memory_calibration_override(&self) -> nexus_query_planning::graph_memory::GraphMemoryCalibrationOverride
 pub fn nexus_query_runtime::runtime::ExecutionContext::is_query_service_admitted(&self) -> bool
 pub fn nexus_query_runtime::runtime::ExecutionContext::lakehouse_cache_fill_acquire_timeout(&self) -> core::time::Duration
 pub fn nexus_query_runtime::runtime::ExecutionContext::lakehouse_cache_fill_budget(&self) -> nexus_query_runtime::runtime::CacheFillByteBudget
@@ -2333,7 +2215,6 @@ pub fn nexus_query_runtime::runtime::ExecutionContext::trace_id(&self) -> core::
 pub fn nexus_query_runtime::runtime::ExecutionContext::validate_admitted_composed_attempt(&self, &nexus_query_planning::plan::core::QueryPlan, &[alloc::string::String]) -> nexus_query_planning::error::Result<core::option::Option<nexus_query_planning::schedule_projection::AttemptComposedScheduleProjection>>
 pub fn nexus_query_runtime::runtime::ExecutionContext::validate_admitted_plan_capabilities(&self, &nexus_query_planning::plan::core::QueryPlan) -> nexus_query_planning::error::Result<()>
 pub fn nexus_query_runtime::runtime::ExecutionContext::with_admitted_gpu_inputs(&self, &nexus_query_planning::plan::core::QueryPlan, &nexus_query_runtime::runtime::resident::GpuResidentInputMap) -> nexus_query_planning::error::Result<Self>
-pub fn nexus_query_runtime::runtime::ExecutionContext::with_graph_memory_calibration_override(&self, nexus_query_planning::graph_memory::GraphMemoryCalibrationOverride) -> Self
 pub fn nexus_query_runtime::runtime::ExecutionContext::with_io_lifecycle(self, nexus_query_runtime::runtime::IoLifecycle) -> Self
 pub fn nexus_query_runtime::runtime::ExecutionContext::with_owned_stream_lease(&self, nexus_query_runtime::runtime::StreamLease) -> nexus_query_planning::error::Result<nexus_query_runtime::runtime::LeasedExecutionContext>
 pub fn nexus_query_runtime::runtime::ExecutionContext::with_query_id(&self, impl core::convert::Into<nexus_query_planning::correlation::QueryId>) -> nexus_query_planning::error::Result<Self>
@@ -2560,22 +2441,20 @@ pub nexus_query_runtime::runtime::QueryAdmissionRequest::execution_cancellation:
 pub nexus_query_runtime::runtime::QueryAdmissionRequest::queue_deadline: core::option::Option<std::time::Instant>
 impl nexus_query_runtime::runtime::QueryAdmissionRequest
 pub fn nexus_query_runtime::runtime::QueryAdmissionRequest::new() -> Self
-pub fn nexus_query_runtime::runtime::QueryAdmissionRequest::planned_capability_proof(&self) -> core::option::Option<&nexus_query_planning::admission::requirement::capability::QueryPlanCapabilityProof>
+pub fn nexus_query_runtime::runtime::QueryAdmissionRequest::planned_capability_evidence(&self) -> core::option::Option<&nexus_query_planning::admission::evidence::AttemptCapabilityEvidence>
 pub fn nexus_query_runtime::runtime::QueryAdmissionRequest::with_attempt_binding(self, nexus_query_runtime::attempt::AttemptAdmissionBinding) -> Self
 pub fn nexus_query_runtime::runtime::QueryAdmissionRequest::with_execution_cancellation(self, nexus_query_runtime::runtime::ExecutionCancellation) -> Self
 pub fn nexus_query_runtime::runtime::QueryAdmissionRequest::with_query_cap_bytes(self, u64) -> Self
-pub fn nexus_query_runtime::runtime::QueryAdmissionRequest::with_query_plan_capability_proof(self, nexus_query_planning::admission::requirement::capability::QueryPlanCapabilityProof) -> Self
+pub fn nexus_query_runtime::runtime::QueryAdmissionRequest::with_query_plan_capability_evidence(self, nexus_query_planning::admission::evidence::AttemptCapabilityEvidence) -> Self
 pub fn nexus_query_runtime::runtime::QueryAdmissionRequest::with_queue_deadline(self, std::time::Instant) -> Self
 pub fn nexus_query_runtime::runtime::QueryAdmissionRequest::with_runtime_observation_activity(self, nexus_query_runtime::runtime::QueryActivityLease) -> Self
 pub fn nexus_query_runtime::runtime::QueryAdmissionRequest::with_runtime_observation_activity_result(self, nexus_query_planning::error::Result<nexus_query_runtime::runtime::QueryActivityLease>) -> Self
 pub fn nexus_query_runtime::runtime::QueryAdmissionRequest::with_runtime_observation_handle(self, nexus_query_runtime::observability::RuntimeObservationHandle) -> Self
 pub fn nexus_query_runtime::runtime::QueryAdmissionRequest::with_runtime_observation_owner(self, nexus_query_runtime::observability::RuntimeObservationOwner) -> Self
-pub fn nexus_query_runtime::runtime::QueryAdmissionRequest::with_test_placement_requirement(self, nexus_query_planning::admission::requirement::capability::AttemptCapabilityEvidence) -> Self
 pub struct nexus_query_runtime::runtime::QueryExecutionConfig
 pub nexus_query_runtime::runtime::QueryExecutionConfig::aggregate_strategy_execution_options: nexus_query_planning::capability::aggregate::AggregateStrategyExecutionOptions
 pub nexus_query_runtime::runtime::QueryExecutionConfig::boundary_policy: nexus_query_planning::execution_contracts::ExecutionBoundaryPolicy
 pub nexus_query_runtime::runtime::QueryExecutionConfig::dynamic_filter_execution_options: nexus_query_planning::dynamic_filter::DynamicFilterExecutionOptions
-pub nexus_query_runtime::runtime::QueryExecutionConfig::graph_memory_calibration_override: nexus_query_planning::graph_memory::GraphMemoryCalibrationOverride
 pub nexus_query_runtime::runtime::QueryExecutionConfig::keyed_hash_join_strategy_options: nexus_query_planning::capability::join::KeyedHashJoinStrategyOptions
 pub nexus_query_runtime::runtime::QueryExecutionConfig::lakehouse_cache_fill: nexus_query_runtime::runtime::LakehouseCacheFillConfig
 pub nexus_query_runtime::runtime::QueryExecutionConfig::max_retry_attempts: usize

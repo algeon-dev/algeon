@@ -9,13 +9,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    capability::{ContractQuality, ContractStatus, ReservationRequirementScope, unresolved_preflight_gap},
     error::{QueryError, QueryErrorCode},
-    execution_contracts::ReservationKind,
     pipeline::model::{
         CompiledPipeline, PipelineBarrierId, PipelineBarrierKind, PipelineEdgeId, PipelineEdgeKind, PipelineTaskId,
-        PipelineTaskKind, ReservationGateId, ReservationGateOwner, ResidentLifetime, ResidentResource,
-        ResidentResourceId, SinkBoundaryKind,
+        PipelineTaskKind, ResidentLifetime, ResidentResource, ResidentResourceId, SinkBoundaryKind,
     },
 };
 
@@ -23,10 +20,9 @@ const OPERATION: &str = "nexus_query_engine.pipeline.validate";
 
 pub(super) fn validate_pipeline(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
     let task_ids = validate_tasks(pipeline)?;
-    let edge_ids = validate_edges(pipeline, &task_ids)?;
-    let barrier_ids = validate_barriers(pipeline, &task_ids)?;
+    validate_edges(pipeline, &task_ids)?;
+    validate_barriers(pipeline, &task_ids)?;
     let resource_ids = validate_resources(pipeline, &task_ids)?;
-    let gate_ids = validate_gates(pipeline, &task_ids, &edge_ids, &barrier_ids)?;
 
     validate_task_dependencies(pipeline, &task_ids)?;
     validate_task_graph_is_acyclic(pipeline)?;
@@ -34,9 +30,6 @@ pub(super) fn validate_pipeline(pipeline: &CompiledPipeline) -> crate::error::Re
     validate_resource_flow(pipeline)?;
     validate_sink_output_lifetimes(pipeline)?;
     validate_barrier_dominance(pipeline)?;
-    validate_gate_references(pipeline, &gate_ids)?;
-    validate_gate_owner_references(pipeline)?;
-    validate_reservation_gate_contracts(pipeline)?;
 
     if !task_ids.contains(&pipeline.sink().input()) {
         return Err(invalid("pipeline sink input task does not exist").with_fact("task_id", pipeline.sink().input()));
@@ -173,47 +166,6 @@ fn validate_lifetime(
         },
     }
     Ok(())
-}
-
-fn validate_gates(
-    pipeline: &CompiledPipeline,
-    task_ids: &BTreeSet<PipelineTaskId>,
-    edge_ids: &BTreeSet<PipelineEdgeId>,
-    barrier_ids: &BTreeSet<PipelineBarrierId>,
-) -> crate::error::Result<BTreeSet<ReservationGateId>> {
-    let mut ids = BTreeSet::new();
-    for (index, gate) in pipeline.gates().iter().enumerate() {
-        if gate.id().index() != index {
-            return Err(invalid("pipeline reservation gate id does not match gate position")
-                .with_fact("gate_id", gate.id())
-                .with_fact("position", index));
-        }
-        if !ids.insert(gate.id()) {
-            return Err(invalid("pipeline reservation gate id is duplicated").with_fact("gate_id", gate.id()));
-        }
-        match gate.owner() {
-            ReservationGateOwner::Task(task) if !task_ids.contains(&task) => {
-                return Err(invalid("pipeline reservation gate task owner does not exist")
-                    .with_fact("gate_id", gate.id())
-                    .with_fact("task_id", task));
-            },
-            ReservationGateOwner::Edge(edge) if !edge_ids.contains(&edge) => {
-                return Err(invalid("pipeline reservation gate edge owner does not exist")
-                    .with_fact("gate_id", gate.id())
-                    .with_fact("edge_id", edge));
-            },
-            ReservationGateOwner::Barrier(barrier) if !barrier_ids.contains(&barrier) => {
-                return Err(invalid("pipeline reservation gate barrier owner does not exist")
-                    .with_fact("gate_id", gate.id())
-                    .with_fact("barrier_id", barrier));
-            },
-            ReservationGateOwner::Task(_)
-            | ReservationGateOwner::Edge(_)
-            | ReservationGateOwner::Barrier(_)
-            | ReservationGateOwner::SinkBoundary => {},
-        }
-    }
-    Ok(ids)
 }
 
 fn validate_task_dependencies(
@@ -693,154 +645,6 @@ fn validate_barrier_upstream_kinds(
                 .with_fact("task_id", task_id)
                 .with_fact("expected_kind", expected.iter().map(|kind| kind.as_str()).collect::<Vec<_>>().join("|"))
                 .with_fact("actual_kind", task.kind().as_str()));
-        }
-    }
-    Ok(())
-}
-
-fn validate_gate_references(
-    pipeline: &CompiledPipeline,
-    gate_ids: &BTreeSet<ReservationGateId>,
-) -> crate::error::Result<()> {
-    for task in pipeline.tasks() {
-        for gate in task.gates() {
-            if !gate_ids.contains(gate) {
-                return Err(invalid("pipeline task references missing reservation gate")
-                    .with_fact("task_id", task.id())
-                    .with_fact("gate_id", gate));
-            }
-        }
-    }
-    for edge in pipeline.edges() {
-        for gate in edge.gates() {
-            if !gate_ids.contains(gate) {
-                return Err(invalid("pipeline edge references missing reservation gate")
-                    .with_fact("edge_id", edge.id())
-                    .with_fact("gate_id", gate));
-            }
-        }
-    }
-    for barrier in pipeline.barriers() {
-        for gate in barrier.gates() {
-            if !gate_ids.contains(gate) {
-                return Err(invalid("pipeline barrier references missing reservation gate")
-                    .with_fact("barrier_id", barrier.id())
-                    .with_fact("gate_id", gate));
-            }
-        }
-    }
-    for gate in pipeline.sink().gates() {
-        if !gate_ids.contains(gate) {
-            return Err(
-                invalid("pipeline sink boundary references missing reservation gate").with_fact("gate_id", gate)
-            );
-        }
-    }
-    Ok(())
-}
-
-fn validate_gate_owner_references(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
-    for gate in pipeline.gates() {
-        let owner_references_gate = match gate.owner() {
-            ReservationGateOwner::Task(task_id) => {
-                pipeline.tasks().iter().any(|task| task.id() == task_id && task.gates().contains(&gate.id()))
-            },
-            ReservationGateOwner::Edge(edge_id) => {
-                pipeline.edges().iter().any(|edge| edge.id() == edge_id && edge.gates().contains(&gate.id()))
-            },
-            ReservationGateOwner::Barrier(barrier_id) => pipeline
-                .barriers()
-                .iter()
-                .any(|barrier| barrier.id() == barrier_id && barrier.gates().contains(&gate.id())),
-            ReservationGateOwner::SinkBoundary => pipeline.sink().gates().contains(&gate.id()),
-        };
-        if !owner_references_gate {
-            return Err(invalid("pipeline reservation gate owner does not reference gate")
-                .with_fact("gate_id", gate.id())
-                .with_fact("gate_owner", gate.owner().to_string()));
-        }
-    }
-    Ok(())
-}
-
-fn validate_reservation_gate_contracts(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
-    for gate in pipeline.gates() {
-        if gate.memory_boundary().is_empty() {
-            return Err(invalid("pipeline reservation gate has empty memory boundary").with_fact("gate_id", gate.id()));
-        }
-        if gate.required_contract().is_empty() {
-            return Err(
-                invalid("pipeline reservation gate has empty required contract").with_fact("gate_id", gate.id())
-            );
-        }
-        validate_gate_scope(gate.id(), gate.owner(), gate.requirement().scope, gate.reservation_kind())?;
-        validate_unresolved_preflight_label(
-            gate.id(),
-            gate.reservation_kind(),
-            gate.required_contract(),
-            gate.status(),
-            gate.quality(),
-        )?;
-    }
-    Ok(())
-}
-
-fn validate_gate_scope(
-    gate: ReservationGateId,
-    owner: ReservationGateOwner,
-    scope: ReservationRequirementScope,
-    kind: ReservationKind,
-) -> crate::error::Result<()> {
-    let valid = match (scope, owner) {
-        (ReservationRequirementScope::Node, ReservationGateOwner::Task(_)) => true,
-        (ReservationRequirementScope::Edge, ReservationGateOwner::Edge(_)) => true,
-        (ReservationRequirementScope::Edge, ReservationGateOwner::SinkBoundary) => {
-            sink_boundary_edge_gate_kind_is_allowed(kind)
-        },
-        (ReservationRequirementScope::Subgraph, ReservationGateOwner::Barrier(_)) => true,
-        _ => false,
-    };
-    if !valid {
-        return Err(invalid("pipeline reservation gate owner does not match requirement scope")
-            .with_fact("gate_id", gate)
-            .with_fact("gate_owner", owner.to_string())
-            .with_fact("requirement_scope", scope.as_str())
-            .with_fact("reservation_kind", kind.as_str()));
-    }
-    Ok(())
-}
-
-fn sink_boundary_edge_gate_kind_is_allowed(kind: ReservationKind) -> bool {
-    matches!(
-        kind,
-        ReservationKind::SourceRead
-            | ReservationKind::GatherMap
-            | ReservationKind::JoinOutput
-            | ReservationKind::Materialization
-    )
-}
-
-fn validate_unresolved_preflight_label(
-    gate: ReservationGateId,
-    kind: ReservationKind,
-    required_contract: &'static str,
-    status: ContractStatus,
-    quality: ContractQuality,
-) -> crate::error::Result<()> {
-    let unresolved_gap = unresolved_preflight_gap(kind, required_contract);
-    if quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight {
-        if status != ContractStatus::Modeled {
-            return Err(invalid("pipeline hard-budgeted unresolved-preflight gate must remain modeled")
-                .with_fact("gate_id", gate)
-                .with_fact("reservation_kind", kind.as_str())
-                .with_fact("contract_status", status.as_str())
-                .with_fact("contract_quality", quality.as_str()));
-        }
-        if unresolved_gap.is_none() {
-            return Err(invalid("pipeline hard-budgeted gate is missing lower-level unresolved preflight gap")
-                .with_fact("gate_id", gate)
-                .with_fact("reservation_kind", kind.as_str())
-                .with_fact("required_contract", required_contract));
         }
     }
     Ok(())

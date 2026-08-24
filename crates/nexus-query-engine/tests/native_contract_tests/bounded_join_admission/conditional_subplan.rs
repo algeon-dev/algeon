@@ -7,7 +7,7 @@ fn bounded_keyless_conditional_join_input_subplan_pipeline_admits_only_keyless_i
     assert!(plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
     assert!(!plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
     assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
-    assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
+    assert!(unsupported_facts(&plan).is_none());
 
     for variant in [
         KeylessInputSubplanVariant::GroupedAggregate,
@@ -27,18 +27,15 @@ fn bounded_keyless_conditional_join_input_subplan_pipeline_admits_only_keyless_i
             "{variant:?}"
         );
         assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph(), "{variant:?}");
-        let facts = unsupported_facts(&plan, ExecutionBoundaryPolicy::default())
-            .expect("unsupported keyless input-subplan subplan shape should produce facts");
-        assert_eq!(
-            facts.get("bounded_join_keyless_conditional_join_input_subplan_pipeline_capability").map(String::as_str),
-            Some("keyless_conditional_join_input_subplan_pipeline")
-        );
-        assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
+        let facts =
+            unsupported_facts(&plan).expect("unsupported keyless input-subplan subplan shape should produce facts");
+        assert_rejection_facts_are_family_free(&facts, "unsupported_keyless_input_subplan");
+        assert!(facts.contains_key("bounded_join_rejection_reason"), "{variant:?}");
     }
 }
 
 #[test]
-fn bounded_keyless_conditional_join_input_subplan_admission_uses_capability_proof() {
+fn bounded_keyless_conditional_join_input_subplan_admission_uses_capability_evidence() {
     let plan = keyless_conditional_join_input_subplan_plan(KeylessInputSubplanVariant::Admitted);
     let analysis = plan.capability_analysis();
 

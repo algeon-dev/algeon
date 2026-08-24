@@ -1,51 +1,5 @@
 #[test]
-fn bounded_keyed_hash_join_resident_subplan_pipeline_is_executable_with_modeled_contracts() {
-    let plan =
-        keyed_hash_join_resident_subplan_pipeline_plan(KeyedHashJoinResidentSubplanPipelineVariant::BlockedFamily);
-
-    assert!(!plan.capability_analysis().admits_root_join());
-    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
-    assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
-    assert!(!plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
-    assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
-    assert!(!plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
-    assert!(plan.capability_analysis().admits_keyed_hash_join_resident_subplan_pipeline());
-    assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
-    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
-        .expect("keyed hash join resident subplan pipeline should produce modeled bounded facts");
-    assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some("enabled"));
-    assert_eq!(facts.get("bounded_join_execution_family"), None);
-    assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
-    assert_eq!(facts.get("blocked_reservations").map(String::as_str), Some(""));
-    assert_eq!(facts.get("missing_reservations").map(String::as_str), Some(""));
-    assert!(facts.get("bounded_join_reservation_statuses").is_some_and(|value| {
-        value.contains("source_read:modeled")
-            && value.contains("operator_output:modeled")
-            && value.contains("final_sort:modeled")
-    }));
-    let reservation_requirements = facts
-        .get("bounded_join_reservation_requirements")
-        .expect("resident subplan pipeline should report shape-local reservation requirements");
-    assert!(
-        reservation_requirements.contains("source_read:source_contract:hard_budgeted_report_with_unresolved_preflight")
-    );
-    assert!(
-        reservation_requirements
-            .contains("operator_output:aggregate_contract:hard_budgeted_report_with_unresolved_preflight")
-    );
-    assert!(
-        reservation_requirements
-            .contains("final_sort:final_sort_contract:hard_budgeted_report_with_unresolved_preflight")
-    );
-    assert_eq!(facts.get("bounded_join_contract_modes"), None);
-    assert_eq!(facts.get("bounded_join_unresolved_preflight_contracts"), None);
-    assert_eq!(facts.get("bounded_join_contract_report_fields"), None);
-    assert_eq!(facts.get("bounded_join_required_lower_level_contract").map(String::as_str), None);
-    assert_modeled_reservation_facts_are_consistent(&facts, "keyed_hash_join_resident_subplan_pipeline");
-}
-
-#[test]
-fn bounded_keyed_hash_join_resident_subplan_admission_uses_capability_proof() {
+fn bounded_keyed_hash_join_resident_subplan_admission_uses_capability_evidence() {
     let plan =
         keyed_hash_join_resident_subplan_pipeline_plan(KeyedHashJoinResidentSubplanPipelineVariant::BlockedFamily);
     let analysis = plan.capability_analysis();
@@ -115,8 +69,8 @@ fn bounded_keyed_hash_join_resident_subplan_non_matching_variants_use_full_sort_
 
         assert!(!analysis.admits_keyed_hash_join_resident_subplan_pipeline(), "{variant:?}");
         assert!(analysis.admits_root_full_sort_join_aggregate_pipeline(), "{variant:?}");
-        assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none(), "{variant:?}");
-        assert!(modeled_facts(&plan, ExecutionBoundaryPolicy::default()).is_some(), "{variant:?}");
+        assert!(unsupported_facts(&plan).is_none(), "{variant:?}");
+        assert!(modeled_facts(&plan).is_some(), "{variant:?}");
     }
 }
 
@@ -134,64 +88,11 @@ fn bounded_keyed_hash_join_resident_subplan_pipeline_admission_stays_narrow() {
         assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph(), "{variant:?}");
         assert!(!plan.capability_analysis().admits_root_full_sort_join_aggregate_pipeline(), "{variant:?}");
         assert!(!plan.capability_analysis().admits_keyed_hash_join_resident_subplan_pipeline(), "{variant:?}");
-        let facts = unsupported_facts(&plan, ExecutionBoundaryPolicy::default())
+        let facts = unsupported_facts(&plan)
             .expect("unsupported keyed hash join resident subplan variant should produce facts");
         assert_rejection_facts_are_family_free(&facts, "unsupported_keyed_hash_resident_subplan");
         assert!(facts.contains_key("bounded_join_rejection_reason"), "{variant:?}");
-        assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
     }
-}
-
-#[test]
-fn bounded_multi_join_aggregate_over_join_subplan_topk_pipeline_is_executable() {
-    let plan = aggregate_over_join_subplan_topk_plan(false);
-    let analysis = plan.capability_analysis();
-
-    assert!(!plan.capability_analysis().admits_root_join());
-    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
-    assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
-    assert!(!plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
-    assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
-    assert!(plan.capability_analysis().admits_multi_join_aggregate_over_join_subplan_topk_pipeline());
-    assert!(analysis.admits_multi_join_aggregate_over_join_subplan_topk_pipeline());
-    assert!(!plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
-    assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
-    assert!(analysis.edges.iter().any(|edge| {
-        matches!(edge.input_role, InputRole::JoinBuildInput { .. })
-            && edge.reservation_requirements.iter().any(|requirement| {
-                requirement.kind == ReservationKind::BuildSide
-                    && requirement.status == ContractStatus::Modeled
-                    && requirement.quality == ContractQuality::ExactPreflight
-            })
-    }));
-    assert!(
-        analysis
-            .invariants
-            .iter()
-            .any(|invariant| matches!(invariant.kind, SubgraphInvariantKind::PostRootStageOrder { .. }))
-    );
-    assert!(analysis.requirements.iter().any(|requirement| {
-        requirement.kind == ReservationKind::FinalSort
-            && requirement.status == ContractStatus::Modeled
-            && requirement.quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight
-    }));
-
-    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
-        .expect("aggregate-over-join subplan TopK pipeline should produce modeled bounded facts");
-    assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some("enabled"));
-    assert_eq!(facts.get("bounded_join_execution_family"), None);
-    assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
-    assert_eq!(facts.get("blocked_reservations").map(String::as_str), Some(""));
-    assert_eq!(facts.get("missing_reservations").map(String::as_str), Some(""));
-    assert!(facts.get("bounded_join_reservation_statuses").is_some_and(|value| {
-        value.contains("source_read:modeled")
-            && value.contains("operator_output:modeled")
-            && value.contains("final_sort:modeled")
-    }));
-    assert!(facts.get("bounded_join_reservation_requirements").is_some_and(|value| {
-        value.contains("final_sort:final_sort_contract:hard_budgeted_report_with_unresolved_preflight")
-    }));
-    assert_modeled_reservation_facts_are_consistent(&facts, "multi_join_with_aggregate_over_join_subplan_topk");
 }
 
 #[test]
@@ -245,7 +146,7 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_preserves_node_failure_lo
 }
 
 #[test]
-fn bounded_multi_join_aggregate_over_join_subplan_topk_capability_proof_stays_narrow() {
+fn bounded_multi_join_aggregate_over_join_subplan_topk_capability_evidence_stays_narrow() {
     for variant in [
         AggregateOverJoinSubplanTopKVariant::MissingFetchLimit,
         AggregateOverJoinSubplanTopKVariant::ScalarAggregateSubplan,
@@ -256,55 +157,20 @@ fn bounded_multi_join_aggregate_over_join_subplan_topk_capability_proof_stays_na
 
         assert!(
             !plan.capability_analysis().admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
-            "{variant:?} must not satisfy the aggregate-over-join TopK capability proof"
+            "{variant:?} must not satisfy the aggregate-over-join TopK capability evidence"
         );
         assert!(
-            unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_some(),
+            unsupported_facts(&plan).is_some(),
             "{variant:?} should remain rejected with bounded unsupported-shape facts"
         );
-        let facts = unsupported_facts(&plan, ExecutionBoundaryPolicy::default())
-            .expect("rejected aggregate-over-join TopK variant should produce facts");
+        let facts = unsupported_facts(&plan).expect("rejected aggregate-over-join TopK variant should produce facts");
         assert_rejection_facts_are_family_free(&facts, "unsupported_aggregate_over_join_topk");
         assert!(facts.contains_key("bounded_join_rejection_reason"), "{variant:?}");
     }
 }
 
 #[test]
-fn bounded_multi_join_resident_grouped_aggregate_subquery_filter_pipeline_is_executable() {
-    let plan = resident_grouped_aggregate_subquery_filter_plan(false);
-
-    assert!(!plan.capability_analysis().admits_root_join());
-    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
-    assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
-    assert!(!plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
-    assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
-    assert!(!plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
-    assert!(
-        !plan
-            .capability_analysis()
-            .admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline()
-    );
-    assert!(plan.capability_analysis().admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline());
-    assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none());
-
-    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
-        .expect("resident grouped aggregate subquery filter pipeline should produce modeled bounded facts");
-    assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some("enabled"));
-    assert_eq!(facts.get("bounded_join_execution_family"), None);
-    assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
-    assert_eq!(facts.get("blocked_reservations").map(String::as_str), Some(""));
-    assert_eq!(facts.get("missing_reservations").map(String::as_str), Some(""));
-    assert!(facts.get("bounded_join_reservation_requirements").is_some_and(|value| {
-        value.contains("final_sort:final_sort_contract:hard_budgeted_report_with_unresolved_preflight")
-    }));
-    assert_modeled_reservation_facts_are_consistent(
-        &facts,
-        "multi_join_with_resident_grouped_aggregate_subquery_filter",
-    );
-}
-
-#[test]
-fn bounded_multi_join_resident_grouped_aggregate_subquery_filter_admission_uses_capability_proof() {
+fn bounded_multi_join_resident_grouped_aggregate_subquery_filter_admission_uses_capability_evidence() {
     let plan = resident_grouped_aggregate_subquery_filter_plan(false);
     let analysis = plan.capability_analysis();
 
@@ -321,145 +187,6 @@ fn bounded_multi_join_resident_grouped_aggregate_subquery_filter_admission_uses_
         matches!(invariant.kind, SubgraphInvariantKind::ResidualUsesBothInputs { .. })
             && invariant.decision == CapabilityDecision::Satisfied
     }));
-}
-
-#[test]
-fn bounded_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline_is_executable() {
-    for (variant, plan) in [
-        (
-            ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::Admitted,
-            resident_grouped_aggregate_input_post_join_aggregate_topk_plan(false),
-        ),
-        (
-            ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::DirectPostJoinAggregateInput,
-            resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
-                ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::DirectPostJoinAggregateInput,
-            ),
-        ),
-        (
-            ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::FilterWrappedGroupedInputDirectPostJoinAggregateInput,
-            resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
-                ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::FilterWrappedGroupedInputDirectPostJoinAggregateInput,
-            ),
-        ),
-        (
-            ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::PreAggregatedPreservedInputFilterWrappedDirectPostJoinAggregateInput,
-            resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
-                ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::PreAggregatedPreservedInputFilterWrappedDirectPostJoinAggregateInput,
-            ),
-        ),
-    ] {
-        assert!(!plan.capability_analysis().admits_root_join(), "{variant:?}");
-        assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline(), "{variant:?}");
-        assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline(), "{variant:?}");
-        assert!(
-            !plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
-            "{variant:?}"
-        );
-        assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph(), "{variant:?}");
-        assert!(
-            !plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
-            "{variant:?}"
-        );
-        assert!(
-            plan.capability_analysis()
-                .admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(),
-            "{variant:?}"
-        );
-        assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none(), "{variant:?}");
-
-        let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
-            .unwrap_or_else(|| panic!("{variant:?} resident grouped aggregate TopK pipeline should be modeled"));
-        assert_eq!(facts.get("bounded_join_execution_status").map(String::as_str), Some("enabled"), "{variant:?}");
-        assert_eq!(facts.get("bounded_join_execution_family"), None, "{variant:?}");
-        assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""), "{variant:?}");
-        assert_eq!(facts.get("blocked_reservations").map(String::as_str), Some(""), "{variant:?}");
-        assert_eq!(facts.get("missing_reservations").map(String::as_str), Some(""), "{variant:?}");
-        assert!(
-            facts.get("bounded_join_reservation_statuses").is_some_and(|value| {
-                value.contains("source_read:modeled")
-                    && value.contains("operator_output:modeled")
-                    && value.contains("final_sort:modeled")
-            }),
-            "{variant:?}"
-        );
-        assert!(
-            facts.get("bounded_join_reservation_requirements").is_some_and(|value| {
-                value.contains("final_sort:final_sort_contract:hard_budgeted_report_with_unresolved_preflight")
-            }),
-            "{variant:?}"
-        );
-        assert_modeled_reservation_facts_are_consistent(
-            &facts,
-            "hash_join_with_resident_grouped_aggregate_input_post_join_aggregate_topk",
-        );
-    }
-}
-
-#[test]
-fn bounded_hash_join_resident_grouped_aggregate_topk_admission_uses_capability_proof() {
-    for (variant, plan) in [
-        (
-            ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::Admitted,
-            resident_grouped_aggregate_input_post_join_aggregate_topk_plan(false),
-        ),
-        (
-            ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::DirectPostJoinAggregateInput,
-            resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
-                ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::DirectPostJoinAggregateInput,
-            ),
-        ),
-        (
-            ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::FilterWrappedGroupedInputDirectPostJoinAggregateInput,
-            resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
-                ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::FilterWrappedGroupedInputDirectPostJoinAggregateInput,
-            ),
-        ),
-        (
-            ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::PreAggregatedPreservedInputFilterWrappedDirectPostJoinAggregateInput,
-            resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
-                ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::PreAggregatedPreservedInputFilterWrappedDirectPostJoinAggregateInput,
-            ),
-        ),
-    ] {
-        let analysis = plan.capability_analysis();
-
-        assert_eq!(
-            plan.capability_analysis()
-                .admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(),
-            analysis.admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(),
-            "{variant:?}"
-        );
-        assert_eq!(
-            analysis.hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission,
-            CapabilityDecision::Satisfied,
-            "{variant:?}"
-        );
-        assert!(
-            analysis.invariants.iter().any(|invariant| {
-                matches!(invariant.kind, SubgraphInvariantKind::PostRootStageOrder { .. })
-                    && invariant.decision == CapabilityDecision::Satisfied
-            }),
-            "{variant:?}"
-        );
-        assert!(
-            analysis.invariants.iter().any(|invariant| {
-                matches!(invariant.kind, SubgraphInvariantKind::FinalBarrierOrder)
-                    && invariant.decision == CapabilityDecision::Satisfied
-            }),
-            "{variant:?}"
-        );
-        assert!(
-            analysis.edges.iter().any(|edge| {
-                edge.contract_kinds.contains(&EdgeContractKind::SortInput)
-                    && edge.reservation_requirements.iter().any(|requirement| {
-                        requirement.kind == ReservationKind::FinalSort
-                            && requirement.quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight
-                    })
-            }),
-            "{variant:?}"
-        );
-    }
 }
 
 #[test]

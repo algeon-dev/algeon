@@ -45,7 +45,7 @@ const PCA_OPTIONS: &str = r#"{
 
 #[cfg(feature = "cugraph")]
 #[tokio::test]
-async fn cuvs_sql_plans_cugraph_relational_input_then_rejects_bounded_execution() {
+async fn cuvs_sql_rejects_host_wrapped_cugraph_input_before_admission() {
     let backend = cuvs_test_backend();
     let state = backend
         .install_on(SessionStateBuilder::new_with_default_features())
@@ -92,12 +92,16 @@ async fn cuvs_sql_plans_cugraph_relational_input_then_rejects_bounded_execution(
         "relational operators above cuVS must still form the native outer consumer:\n{rendered_plan}"
     );
 
-    assert_cuvs_bounded_rejection(plan, &ctx, "cuvs_brute_force_knn").await;
+    let error = collect(plan, ctx.task_ctx()).await.expect_err("host-wrapped GPU producer must be rejected");
+    let typed = error.find_nexus_error().expect("structured GPU producer boundary rejection");
+    assert_eq!(typed.code(), ErrorCode::InvalidExecutionPlan);
+    assert_eq!(typed.operation(), "datafusion_nexus.native_multi_child.prepare");
+    assert_eq!(typed.facts().get("reason"), Some("gpu_producer_below_host_wrapper"));
     close_cuvs_test_backend(backend, ctx);
 }
 
 #[tokio::test]
-async fn cuvs_sql_plans_uniform_list_float32_vectors_then_rejects_bounded_execution() {
+async fn cuvs_sql_executes_uniform_list_float32_vectors_with_bounded_memory() {
     let (backend, ctx) = cuvs_bounded_context();
     let item = Arc::new(Field::new("item", DataType::Float32, false));
     let dataset_schema = Arc::new(Schema::new(vec![
@@ -159,12 +163,12 @@ async fn cuvs_sql_plans_uniform_list_float32_vectors_then_rejects_bounded_execut
     assert_eq!(plan.schema().field(0).name(), "query_id");
     assert_eq!(plan.schema().field(1).name(), "neighbor_id");
     assert_eq!(plan.schema().field(2).name(), "rank");
-    assert_cuvs_bounded_rejection(plan, &ctx, "cuvs_brute_force_knn").await;
+    assert_cuvs_results(plan, &ctx).await;
     close_cuvs_test_backend(backend, ctx);
 }
 
 #[tokio::test]
-async fn cuvs_sql_plans_multi_partition_input_and_relational_operators_then_rejects_bounded_execution() {
+async fn cuvs_sql_executes_multi_partition_input_and_relational_operators_with_bounded_memory() {
     let (backend, ctx) = cuvs_bounded_context();
     let dataset_schema = wide_vector_schema("item_id");
     let first_partition = wide_vector_batch(Arc::clone(&dataset_schema), "item_id", &[1], &[0.0], &[0.0]);
@@ -223,12 +227,12 @@ async fn cuvs_sql_plans_multi_partition_input_and_relational_operators_then_reje
     find_cuvs_exec(plan.as_ref()).expect("relational composition must retain CuvsAlgoExec");
     assert_eq!(plan.schema().field(0).name(), "query_id");
     assert_eq!(plan.schema().field(1).name(), "label");
-    assert_cuvs_bounded_rejection(plan, &ctx, "cuvs_brute_force_knn").await;
+    assert_cuvs_results(plan, &ctx).await;
     close_cuvs_test_backend(backend, ctx);
 }
 
 #[tokio::test]
-async fn cuvs_sql_plans_parquet_relations_then_rejects_bounded_execution() {
+async fn cuvs_sql_executes_parquet_relations_with_bounded_memory() {
     let (backend, ctx) = cuvs_bounded_context();
     let temp_dir = tempfile::tempdir().expect("temporary Parquet directory");
     let dataset_path = temp_dir.path().join("dataset.parquet");
@@ -269,12 +273,12 @@ async fn cuvs_sql_plans_parquet_relations_then_rejects_bounded_execution() {
     find_cuvs_exec(plan.as_ref()).expect("Parquet relation must plan a CuvsAlgoExec");
     assert_eq!(plan.schema().field(0).name(), "query_id");
     assert_eq!(plan.schema().field(1).name(), "neighbor_id");
-    assert_cuvs_bounded_rejection(plan, &ctx, "cuvs_brute_force_knn").await;
+    assert_cuvs_results(plan, &ctx).await;
     close_cuvs_test_backend(backend, ctx);
 }
 
 #[tokio::test]
-async fn cuvs_sql_plans_fixed_size_list_float32_parquet_relations_then_rejects_bounded_execution() {
+async fn cuvs_sql_executes_fixed_size_list_float32_parquet_relations_with_bounded_memory() {
     let (backend, ctx) = cuvs_bounded_context();
     let temp_dir = tempfile::tempdir().expect("temporary Parquet directory");
     let item = Arc::new(Field::new("item", DataType::Float32, false));
@@ -353,12 +357,12 @@ async fn cuvs_sql_plans_fixed_size_list_float32_parquet_relations_then_rejects_b
     assert_eq!(plan.schema().field(0).name(), "query_id");
     assert_eq!(plan.schema().field(1).name(), "neighbor_id");
     assert_eq!(plan.schema().field(2).name(), "rank");
-    assert_cuvs_bounded_rejection(plan, &ctx, "cuvs_brute_force_knn").await;
+    assert_cuvs_results(plan, &ctx).await;
     close_cuvs_test_backend(backend, ctx);
 }
 
 #[tokio::test]
-async fn cuvs_kmeans_and_pca_plan_over_parquet_then_reject_bounded_execution() {
+async fn cuvs_kmeans_and_pca_execute_over_parquet_with_bounded_memory() {
     let (backend, ctx) = cuvs_bounded_context();
     let temp_dir = tempfile::tempdir().expect("temporary Parquet directory");
     let input_path = temp_dir.path().join("vector_input.parquet");
@@ -395,7 +399,7 @@ async fn cuvs_kmeans_and_pca_plan_over_parquet_then_reject_bounded_execution() {
     find_cuvs_exec(kmeans.as_ref()).expect("K-means Parquet input must plan a CuvsAlgoExec");
     assert_eq!(kmeans.schema().field(0).name(), "id");
     assert_eq!(kmeans.schema().field(1).name(), "cluster_id");
-    assert_cuvs_bounded_rejection(kmeans, &ctx, "cuvs_kmeans").await;
+    assert_cuvs_results(kmeans, &ctx).await;
 
     let pca = plan_sql(
         &ctx,
@@ -410,7 +414,7 @@ async fn cuvs_kmeans_and_pca_plan_over_parquet_then_reject_bounded_execution() {
     find_cuvs_exec(pca.as_ref()).expect("PCA Parquet input must plan a CuvsAlgoExec");
     assert_eq!(pca.schema().field(0).name(), "id");
     assert_eq!(pca.schema().field(1).name(), "pc_0");
-    assert_cuvs_bounded_rejection(pca, &ctx, "cuvs_pca").await;
+    assert_cuvs_results(pca, &ctx).await;
     close_cuvs_test_backend(backend, ctx);
 }
 
@@ -489,20 +493,9 @@ async fn plan_sql(ctx: &SessionContext, sql: &str) -> Arc<dyn ExecutionPlan> {
     ctx.sql(sql).await.expect("plan cuVS SQL").create_physical_plan().await.expect("physical cuVS plan")
 }
 
-async fn assert_cuvs_bounded_rejection(
-    plan: Arc<dyn ExecutionPlan>,
-    ctx: &SessionContext,
-    expected_operation: &'static str,
-) {
-    let error = collect(plan, ctx.task_ctx()).await.expect_err("bounded cuVS execution must fail closed");
-    let typed = error.find_nexus_error().expect("bounded cuVS rejection must preserve the structured Nexus error");
-    assert_eq!(typed.code(), ErrorCode::UnsupportedOperator);
-    assert_eq!(typed.operation(), "datafusion_nexus.cuvs_sql.bounded_admission");
-    assert_eq!(typed.facts().get("reason"), Some("blocked_lower_level_contract"));
-    assert_eq!(typed.facts().get("execution_mode"), Some("bounded"));
-    assert_eq!(typed.facts().get("required_contract"), Some("cuvs_vector_algorithm_peak_memory_preflight"));
-    assert_eq!(typed.facts().get("host_fallback"), Some("disabled"));
-    assert_eq!(typed.facts().get("cuvs_operation"), Some(expected_operation));
+async fn assert_cuvs_results(plan: Arc<dyn ExecutionPlan>, ctx: &SessionContext) {
+    let batches = collect(plan, ctx.task_ctx()).await.expect("bounded cuVS execution");
+    assert!(batches.iter().map(RecordBatch::num_rows).sum::<usize>() > 0, "cuVS execution must return rows");
 }
 
 #[cfg(feature = "cugraph")]

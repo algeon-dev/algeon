@@ -126,7 +126,7 @@ fn register_phase_c_top_k_edges(ctx: &SessionContext, table_name: &str, weight_t
     let weights = match &weight_type {
         DataType::Float32 => Arc::new(Float32Array::from(vec![1.0_f32; sources.len()])) as ArrayRef,
         DataType::Float64 => Arc::new(Float64Array::from(vec![1.0_f64; sources.len()])) as ArrayRef,
-        other => panic!("phase C PageRank fixture does not support {other:?}"),
+        other => panic!("PageRank fixture does not support {other:?}"),
     };
     let schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int64, false),
@@ -781,37 +781,9 @@ async fn cugraph_sql_gpu_filtered_local_parquet_executes_under_the_fixed_cap_and
     };
     assert_eq!(ledger.active_attempts, 0);
     assert_eq!(ledger.live_grants_bytes, 0);
-    assert_eq!(ledger.live_reserved_bytes, 0);
+    assert_eq!(ledger.resident_owner_bytes, 0);
     assert!(ledger.grants.is_empty());
     fs::remove_dir_all(dir).unwrap();
-}
-
-#[tokio::test]
-async fn cugraph_sql_gpu_betweenness_reservation_reports_source_facts_and_seed_mode() {
-    let (_backend, ctx) = default_backend_cugraph_sql_context();
-    register_directed_bfs_edges(&ctx, "raw_edges");
-
-    let df = ctx
-        .sql(
-            "SELECT vertex, value \
-             FROM cugraph_betweenness_centrality('raw_edges', 'src', 'dst', NULL, '{\"k\": 2}') \
-             ORDER BY vertex",
-        )
-        .await
-        .unwrap();
-    let plan = df.create_physical_plan().await.unwrap();
-    let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
-    assert!(!batches.is_empty());
-
-    let metrics = NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(plan.as_ref()));
-    let graph_reservations = metrics.graph_reservation_rows;
-    assert_eq!(graph_reservations.len(), 1);
-    let row = &graph_reservations[0];
-    assert_eq!(row.algorithm, "betweenness_centrality");
-    assert_eq!(row.outcome, "admitted");
-    assert_eq!(row.raw_input_edges, None);
-    assert_eq!(row.seed_count, Some(2));
-    assert_eq!(row.seed_mode, "runtime_k_selection");
 }
 
 #[tokio::test]

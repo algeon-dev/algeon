@@ -6,8 +6,7 @@ use super::{CompiledBoundedPipelineSupport, compiled_bounded_query_plan_support}
 use crate::{
     capability::{
         CapabilityAnalysis, CapabilityEnvelope, CapabilityEnvelopeAdmission, CapabilityRejectionCategory,
-        CapabilityRejectionOwner, CapabilityRejectionProjection, ContractQuality, ReservationRequirement,
-        ReservationRequirementScope,
+        CapabilityRejectionOwner, CapabilityRejectionProjection, CapabilityScope,
     },
     error::{QueryError, QueryErrorCode, Result},
     pipeline::{CompiledPipeline, compile_pipeline},
@@ -82,27 +81,23 @@ impl CapabilityFirstPipelineAdmission {
 pub(super) fn capability_first_bounded_pipeline_admission(
     plan: &QueryPlan,
 ) -> Result<Option<CapabilityFirstPipelineAdmission>> {
-    capability_first_bounded_pipeline_admission_impl(plan, false)
+    capability_first_bounded_pipeline_admission_impl(plan)
 }
 
 pub(super) fn capability_first_bounded_cugraph_pipeline_admission(
     plan: &QueryPlan,
 ) -> Result<Option<CapabilityFirstPipelineAdmission>> {
-    capability_first_bounded_pipeline_admission_impl(plan, true)
+    capability_first_bounded_pipeline_admission_impl(plan)
 }
 
 fn capability_first_bounded_pipeline_admission_impl(
     plan: &QueryPlan,
-    cugraph_execution_attested: bool,
 ) -> Result<Option<CapabilityFirstPipelineAdmission>> {
     if !plan.contains_join() && !plan.contains_vector_algorithm() {
         return Ok(None);
     }
 
-    let mut analysis = plan.capability_analysis();
-    if cugraph_execution_attested {
-        rewrite_graph_requirements_for_cugraph_execution(&mut analysis);
-    }
+    let analysis = plan.capability_analysis();
     let envelope = match analysis.capability_envelope_admission() {
         CapabilityEnvelopeAdmission::Admitted { envelope } => envelope,
         CapabilityEnvelopeAdmission::Rejected { projection } => {
@@ -141,44 +136,17 @@ fn capability_first_bounded_pipeline_admission_impl(
     }
 }
 
-fn rewrite_graph_requirements_for_cugraph_execution(analysis: &mut CapabilityAnalysis) {
-    let replacement = ReservationRequirement::modeled(
-        crate::execution_contracts::ReservationKind::GraphAlgorithm,
-        "cugraph_graph_execution",
-        "cugraph_graph_execution_contract",
-        ContractQuality::CapabilityProof,
-    );
-    for node in &mut analysis.nodes {
-        for requirement in &mut node.local_requirements {
-            if requirement.kind == crate::execution_contracts::ReservationKind::OperatorOutput
-                && requirement.memory_boundary == crate::plan::GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY
-                && requirement.required_contract == crate::plan::GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT
-            {
-                *requirement = replacement.clone();
-            }
-        }
-    }
-    analysis.requirements = analysis
-        .nodes
-        .iter()
-        .flat_map(|node| node.local_requirements.iter())
-        .chain(analysis.edges.iter().flat_map(|edge| edge.reservation_requirements.iter()))
-        .chain(analysis.invariants.iter().flat_map(|invariant| invariant.reservation_requirements.iter()))
-        .cloned()
-        .collect();
-}
-
 fn admission_projection(
     category: CapabilityRejectionCategory,
-    memory_boundary: &'static str,
+    boundary: &'static str,
     reason: &'static str,
     facts: impl IntoIterator<Item = (&'static str, String)>,
 ) -> CapabilityRejectionProjection {
     CapabilityRejectionProjection {
         owner: CapabilityRejectionOwner::Admission(reason),
         category,
-        contract_scope: ReservationRequirementScope::Subgraph,
-        memory_boundary,
+        contract_scope: CapabilityScope::Subgraph,
+        boundary,
         reason,
         facts: BTreeMap::from_iter(facts),
     }
@@ -265,18 +233,11 @@ mod tests {
         assert!(admission.pipeline().is_none());
 
         assert!(
-            crate::admission::bounded_join_modeled_facts(
-                &plan,
-                crate::execution_contracts::ExecutionBoundaryPolicy::default()
-            )
-            .is_none(),
+            crate::admission::bounded_join_modeled_facts(&plan).is_none(),
             "unsupported compiled envelopes must not emit modeled bounded-join facts"
         );
-        let unsupported_facts = crate::admission::bounded_join_unsupported_shape_facts(
-            &plan,
-            crate::execution_contracts::ExecutionBoundaryPolicy::default(),
-        )
-        .expect("unsupported compiled envelope should emit unsupported bounded-join facts");
+        let unsupported_facts = crate::admission::bounded_join_unsupported_shape_facts(&plan)
+            .expect("unsupported compiled envelope should emit unsupported bounded-join facts");
         assert_eq!(
             unsupported_facts.get("bounded_join_rejection_reason").map(String::as_str),
             Some("unsupported_compiled_pipeline_envelope")

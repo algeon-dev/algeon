@@ -5,15 +5,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{
     capability::{
         CapabilityAnalysis, CapabilityDecision, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole,
-        NodeCapability, ReservationRequirement, ResultSinkKind, SubgraphInvariantKind,
+        ResultSinkKind, SubgraphInvariantKind,
     },
     dynamic_filter::{DynamicFilterConsumer, DynamicFilterProducer, DynamicFilterReadiness},
     error::{QueryError, QueryErrorCode},
-    execution_contracts::ReservationKind,
     pipeline::model::{
         CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,
-        PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ReservationGate, ReservationGateId,
-        ReservationGateOwner, ResidentLifetime, ResidentResource, ResidentResourceId, SinkBoundary, SinkBoundaryKind,
+        PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentLifetime, ResidentResource,
+        ResidentResourceId, SinkBoundary, SinkBoundaryKind,
     },
     plan::{JoinSide, NodeId, PlanNode, QueryPlan, ResultSink},
     source::SourceNode,
@@ -36,29 +35,17 @@ pub fn compile_pipeline(plan: &QueryPlan, analysis: &CapabilityAnalysis) -> crat
     validate_analysis_covers_plan(plan, analysis, &node_order, &dependencies)?;
     let task_ids = assign_task_ids(plan, &node_order)?;
     let resource_ids = assign_resource_ids(&node_order);
-    let mut gate_builder = GateBuilder::default();
-
-    let mut tasks =
-        build_tasks(plan, analysis, &node_order, &dependencies, &task_ids, &resource_ids, &mut gate_builder)?;
-    let mut edges = build_plan_edges(plan, analysis, &dependencies, &task_ids, &resource_ids, &mut gate_builder)?;
+    let mut tasks = build_tasks(plan, &node_order, &dependencies, &task_ids, &resource_ids)?;
+    let mut edges = build_plan_edges(plan, analysis, &dependencies, &task_ids, &resource_ids)?;
     append_join_internal_edges(plan, &node_order, analysis, &task_ids, &mut edges)?;
     append_dynamic_filter_control_edges(plan, &task_ids, &mut edges)?;
 
-    let sink_compilation =
-        append_sink_task(plan, analysis, &task_ids, &resource_ids, &mut tasks, &mut edges, &mut gate_builder)?;
+    let sink_compilation = append_sink_task(plan, &task_ids, &resource_ids, &mut tasks, &mut edges)?;
     let resources = build_resources(plan, &node_order, &dependencies, &task_ids, &resource_ids, sink_compilation.task)?;
-    let barriers = build_barriers(
-        plan,
-        &node_order,
-        analysis,
-        &dependencies,
-        &task_ids,
-        sink_compilation.task,
-        &mut gate_builder,
-    )?;
-    let sink = build_sink_boundary(plan, analysis, &task_ids, sink_compilation, &mut gate_builder)?;
+    let barriers = build_barriers(plan, &node_order, analysis, &dependencies, &task_ids, sink_compilation.task)?;
+    let sink = build_sink_boundary(plan, &task_ids, sink_compilation)?;
 
-    let pipeline = CompiledPipeline::new(tasks, edges, barriers, resources, gate_builder.finish(), sink);
+    let pipeline = CompiledPipeline::new(tasks, edges, barriers, resources, sink);
     pipeline.validate()?;
     Ok(pipeline)
 }
@@ -114,36 +101,9 @@ enum NodeTasks {
     Join { build: PipelineTaskId, probe: PipelineTaskId, materialize: PipelineTaskId },
 }
 
-#[derive(Debug, Default)]
-struct GateBuilder {
-    gates: Vec<ReservationGate>,
-}
-
-impl GateBuilder {
-    fn attach_requirements<'a>(
-        &mut self,
-        owner: ReservationGateOwner,
-        requirements: impl IntoIterator<Item = &'a ReservationRequirement>,
-    ) -> Vec<ReservationGateId> {
-        requirements
-            .into_iter()
-            .map(|requirement| {
-                let id = ReservationGateId::new(self.gates.len());
-                self.gates.push(ReservationGate::from_requirement(id, owner, requirement.clone()));
-                id
-            })
-            .collect()
-    }
-
-    fn finish(self) -> Vec<ReservationGate> {
-        self.gates
-    }
-}
-
 #[derive(Debug, Clone, Copy)]
 struct SinkCompilation {
     task: Option<PipelineTaskId>,
-    edge: Option<PipelineEdgeId>,
 }
 
 impl NodeTasks {
@@ -326,19 +286,16 @@ fn assign_resource_ids(node_order: &[NodeId]) -> BTreeMap<NodeId, ResidentResour
 
 fn build_tasks(
     plan: &QueryPlan,
-    analysis: &CapabilityAnalysis,
     node_order: &[NodeId],
     dependencies: &[PlanDependency],
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     resource_ids: &BTreeMap<NodeId, ResidentResourceId>,
-    gate_builder: &mut GateBuilder,
 ) -> crate::error::Result<Vec<PipelineTask>> {
     let mut tasks = Vec::new();
     for node_id in node_order {
         let node = plan
             .node(*node_id)
             .ok_or_else(|| invalid("reachable query plan node is missing").with_fact("node_id", node_id))?;
-        let capability = node_capability_for(analysis, *node_id)?;
         let output = resource_for(resource_ids, *node_id)?;
         match &node.kind {
             PlanNode::Source(source) => {
@@ -348,89 +305,62 @@ fn build_tasks(
                     SourceNode::LiteralBatch(_) => PipelineTaskKind::LiteralBatchSource,
                 };
                 let task = single_task(task_ids, *node_id)?;
-                let gates = gate_builder
-                    .attach_requirements(ReservationGateOwner::Task(task), capability.local_requirements.iter());
-                tasks.push(
-                    PipelineTask::for_plan_node(task, kind, *node_id)
-                        .with_output_resources(vec![output])
-                        .with_gates(gates),
-                );
+                tasks.push(PipelineTask::for_plan_node(task, kind, *node_id).with_output_resources(vec![output]));
             },
             PlanNode::Filter(_) | PlanNode::Projection(_) => {
                 let task = single_task(task_ids, *node_id)?;
-                let gates = gate_builder
-                    .attach_requirements(ReservationGateOwner::Task(task), capability.local_requirements.iter());
                 tasks.push(
                     PipelineTask::for_plan_node(task, PipelineTaskKind::Unary, *node_id)
                         .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
-                        .with_output_resources(vec![output])
-                        .with_gates(gates),
+                        .with_output_resources(vec![output]),
                 );
             },
             PlanNode::Aggregate(_) => {
                 let task = single_task(task_ids, *node_id)?;
-                let gates = gate_builder
-                    .attach_requirements(ReservationGateOwner::Task(task), capability.local_requirements.iter());
                 tasks.push(
                     PipelineTask::for_plan_node(task, PipelineTaskKind::Aggregate, *node_id)
                         .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
-                        .with_output_resources(vec![output])
-                        .with_gates(gates),
+                        .with_output_resources(vec![output]),
                 );
             },
             PlanNode::Window(_) => {
                 let task = single_task(task_ids, *node_id)?;
-                let gates = gate_builder
-                    .attach_requirements(ReservationGateOwner::Task(task), capability.local_requirements.iter());
                 tasks.push(
                     PipelineTask::for_plan_node(task, PipelineTaskKind::Window, *node_id)
                         .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
-                        .with_output_resources(vec![output])
-                        .with_gates(gates),
+                        .with_output_resources(vec![output]),
                 );
             },
             PlanNode::Sort(_) => {
                 let task = single_task(task_ids, *node_id)?;
-                let gates = gate_builder
-                    .attach_requirements(ReservationGateOwner::Task(task), capability.local_requirements.iter());
                 tasks.push(
                     PipelineTask::for_plan_node(task, PipelineTaskKind::FinalSort, *node_id)
                         .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
-                        .with_output_resources(vec![output])
-                        .with_gates(gates),
+                        .with_output_resources(vec![output]),
                 );
             },
             PlanNode::Limit(_) => {
                 let task = single_task(task_ids, *node_id)?;
-                let gates = gate_builder
-                    .attach_requirements(ReservationGateOwner::Task(task), capability.local_requirements.iter());
                 tasks.push(
                     PipelineTask::for_plan_node(task, PipelineTaskKind::Limit, *node_id)
                         .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
-                        .with_output_resources(vec![output])
-                        .with_gates(gates),
+                        .with_output_resources(vec![output]),
                 );
             },
             PlanNode::Union(_) => {
                 let task = single_task(task_ids, *node_id)?;
-                let gates = gate_builder
-                    .attach_requirements(ReservationGateOwner::Task(task), capability.local_requirements.iter());
                 tasks.push(
                     PipelineTask::for_plan_node(task, PipelineTaskKind::Union, *node_id)
                         .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
-                        .with_output_resources(vec![output])
-                        .with_gates(gates),
+                        .with_output_resources(vec![output]),
                 );
             },
             PlanNode::GraphAlgorithm(_) => {
                 let task = single_task(task_ids, *node_id)?;
-                let gates = gate_builder
-                    .attach_requirements(ReservationGateOwner::Task(task), capability.local_requirements.iter());
                 tasks.push(
                     PipelineTask::for_plan_node(task, PipelineTaskKind::GraphAlgorithm, *node_id)
                         .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
-                        .with_output_resources(vec![output])
-                        .with_gates(gates),
+                        .with_output_resources(vec![output]),
                 );
             },
             PlanNode::VectorAlgorithm(_) => {
@@ -440,41 +370,20 @@ fn build_tasks(
             },
             PlanNode::EdgeNormalize(_) => {
                 let task = single_task(task_ids, *node_id)?;
-                let gates = gate_builder
-                    .attach_requirements(ReservationGateOwner::Task(task), capability.local_requirements.iter());
                 tasks.push(
                     PipelineTask::for_plan_node(task, PipelineTaskKind::EdgeNormalize, *node_id)
                         .with_input_resources(input_resources(*node_id, dependencies, resource_ids)?)
-                        .with_output_resources(vec![output])
-                        .with_gates(gates),
+                        .with_output_resources(vec![output]),
                 );
             },
             PlanNode::Join(_) => {
                 let NodeTasks::Join { build, probe, materialize } = tasks_for(task_ids, *node_id)? else {
                     return Err(invalid("join node was not assigned join pipeline tasks").with_fact("node_id", node_id));
                 };
-                let build_gates = gate_builder.attach_requirements(
-                    ReservationGateOwner::Task(build),
-                    capability
-                        .local_requirements
-                        .iter()
-                        .filter(|requirement| join_node_requirement_task(requirement, build, materialize) == build),
-                );
-                let materialize_gates = gate_builder.attach_requirements(
-                    ReservationGateOwner::Task(materialize),
-                    capability.local_requirements.iter().filter(|requirement| {
-                        join_node_requirement_task(requirement, build, materialize) == materialize
-                    }),
-                );
                 tasks.push(
-                    PipelineTask::for_plan_node(build, PipelineTaskKind::JoinBuild, *node_id)
-                        .with_input_resources(join_input_resources(
-                            *node_id,
-                            InputRoleSelector::Build,
-                            dependencies,
-                            resource_ids,
-                        )?)
-                        .with_gates(build_gates),
+                    PipelineTask::for_plan_node(build, PipelineTaskKind::JoinBuild, *node_id).with_input_resources(
+                        join_input_resources(*node_id, InputRoleSelector::Build, dependencies, resource_ids)?,
+                    ),
                 );
                 tasks.push(
                     PipelineTask::for_plan_node(probe, PipelineTaskKind::JoinProbe, *node_id).with_input_resources(
@@ -483,43 +392,12 @@ fn build_tasks(
                 );
                 tasks.push(
                     PipelineTask::for_plan_node(materialize, PipelineTaskKind::JoinMaterialize, *node_id)
-                        .with_output_resources(vec![output])
-                        .with_gates(materialize_gates),
+                        .with_output_resources(vec![output]),
                 );
             },
         }
     }
     Ok(tasks)
-}
-
-fn join_node_requirement_task(
-    requirement: &ReservationRequirement,
-    build: PipelineTaskId,
-    materialize: PipelineTaskId,
-) -> PipelineTaskId {
-    match requirement.kind {
-        ReservationKind::OperatorOutput if requirement.memory_boundary == "join_filtered_build_key_deduplicate" => {
-            build
-        },
-        ReservationKind::HashTable if requirement.memory_boundary == "join_keyed_equality_preflight_hash_table" => {
-            materialize
-        },
-        ReservationKind::HashTable => build,
-        ReservationKind::FilteredProbeState | ReservationKind::MixedSizeData => materialize,
-        ReservationKind::OperatorOutput
-        | ReservationKind::ChunkOperator
-        | ReservationKind::GraphAlgorithm
-        | ReservationKind::PartialState
-        | ReservationKind::FinalMerge
-        | ReservationKind::SourceRead
-        | ReservationKind::BuildSide
-        | ReservationKind::ProbeSide
-        | ReservationKind::GatherMap
-        | ReservationKind::JoinOutput
-        | ReservationKind::FinalSort
-        | ReservationKind::Materialization
-        | ReservationKind::CapabilityContract => materialize,
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -566,7 +444,6 @@ fn build_plan_edges(
     dependencies: &[PlanDependency],
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     resource_ids: &BTreeMap<NodeId, ResidentResourceId>,
-    gate_builder: &mut GateBuilder,
 ) -> crate::error::Result<Vec<PipelineEdge>> {
     let mut edges = Vec::new();
     for dependency in dependencies {
@@ -580,12 +457,9 @@ fn build_plan_edges(
         let consumer_task = tasks_for(task_ids, dependency.consumer)?.input_task(dependency.input_role);
         let edge_id = PipelineEdgeId::new(edges.len());
         let kind = edge_kind_for_dependency(contract, dependency.input_role);
-        let gates = gate_builder
-            .attach_requirements(ReservationGateOwner::Edge(edge_id), contract.reservation_requirements.iter());
         edges.push(
             PipelineEdge::new(edge_id, producer_task, consumer_task, kind)
-                .with_resources(vec![resource_for(resource_ids, dependency.producer)?])
-                .with_gates(gates),
+                .with_resources(vec![resource_for(resource_ids, dependency.producer)?]),
         );
     }
 
@@ -687,15 +561,13 @@ fn dynamic_filter_consumer_task(
 
 fn append_sink_task(
     plan: &QueryPlan,
-    analysis: &CapabilityAnalysis,
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     resource_ids: &BTreeMap<NodeId, ResidentResourceId>,
     tasks: &mut Vec<PipelineTask>,
     edges: &mut Vec<PipelineEdge>,
-    gate_builder: &mut GateBuilder,
 ) -> crate::error::Result<SinkCompilation> {
     let ResultSink::HostArrow { input, .. } = plan.sink() else {
-        return Ok(SinkCompilation { task: None, edge: None });
+        return Ok(SinkCompilation { task: None });
     };
     let sink_task = PipelineTaskId::new(tasks.len());
     let input_resource = resource_for(resource_ids, *input)?;
@@ -703,20 +575,11 @@ fn append_sink_task(
         PipelineTask::new(sink_task, PipelineTaskKind::SinkMaterialize).with_input_resources(vec![input_resource]),
     );
     let edge_id = PipelineEdgeId::new(edges.len());
-    let sink_contract = sink_edge_contract(plan, analysis)?;
-    let edge_gates = gate_builder.attach_requirements(
-        ReservationGateOwner::Edge(edge_id),
-        sink_contract
-            .reservation_requirements
-            .iter()
-            .filter(|requirement| requirement.kind != ReservationKind::Materialization),
-    );
     edges.push(
         PipelineEdge::new(edge_id, tasks_for(task_ids, *input)?.output_task(), sink_task, PipelineEdgeKind::SinkInput)
-            .with_resources(vec![input_resource])
-            .with_gates(edge_gates),
+            .with_resources(vec![input_resource]),
     );
-    Ok(SinkCompilation { task: Some(sink_task), edge: Some(edge_id) })
+    Ok(SinkCompilation { task: Some(sink_task) })
 }
 
 fn build_resources(
@@ -765,7 +628,6 @@ fn build_barriers(
     dependencies: &[PlanDependency],
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     sink_task: Option<PipelineTaskId>,
-    gate_builder: &mut GateBuilder,
 ) -> crate::error::Result<Vec<PipelineBarrier>> {
     let mut barriers = Vec::new();
     for node_id in node_order {
@@ -802,39 +664,24 @@ fn build_barriers(
                     .join_materialize()
                     .ok_or_else(|| invalid("join node is missing materialize task").with_fact("node_id", node_id))?;
                 let build_before_probe_barrier = PipelineBarrierId::new(barriers.len());
-                let build_before_probe_gates = gate_builder.attach_requirements(
-                    ReservationGateOwner::Barrier(build_before_probe_barrier),
-                    barrier_requirements_for_node(analysis, PipelineBarrierKind::JoinBuildBeforeProbe, *node_id),
-                );
                 barriers.push(
                     PipelineBarrier::new(build_before_probe_barrier, PipelineBarrierKind::JoinBuildBeforeProbe)
                         .with_upstream_tasks(vec![build])
-                        .with_downstream_tasks(vec![probe])
-                        .with_gates(build_before_probe_gates),
+                        .with_downstream_tasks(vec![probe]),
                 );
                 let materialization_barrier = PipelineBarrierId::new(barriers.len());
-                let materialization_gates = gate_builder.attach_requirements(
-                    ReservationGateOwner::Barrier(materialization_barrier),
-                    barrier_requirements_for_node(analysis, PipelineBarrierKind::JoinMaterialization, *node_id),
-                );
                 barriers.push(
                     PipelineBarrier::new(materialization_barrier, PipelineBarrierKind::JoinMaterialization)
                         .with_upstream_tasks(vec![probe])
-                        .with_downstream_tasks(vec![materialize])
-                        .with_gates(materialization_gates),
+                        .with_downstream_tasks(vec![materialize]),
                 );
             },
             PlanNode::Sort(_) => {
                 let barrier_id = PipelineBarrierId::new(barriers.len());
-                let gates = gate_builder.attach_requirements(
-                    ReservationGateOwner::Barrier(barrier_id),
-                    barrier_requirements_for_node(analysis, PipelineBarrierKind::SortBoundary, *node_id),
-                );
                 barriers.push(
                     PipelineBarrier::new(barrier_id, PipelineBarrierKind::SortBoundary)
                         .with_upstream_tasks(vec![single_task(task_ids, *node_id)?])
-                        .with_downstream_tasks(downstream_tasks(*node_id, dependencies, task_ids)?)
-                        .with_gates(gates),
+                        .with_downstream_tasks(downstream_tasks(*node_id, dependencies, task_ids)?),
                 );
             },
             PlanNode::Source(_)
@@ -852,51 +699,10 @@ fn build_barriers(
         None => tasks_for(task_ids, plan.sink().input())?.output_task(),
     };
     let sink_barrier = PipelineBarrierId::new(barriers.len());
-    let sink_gates = gate_builder.attach_requirements(
-        ReservationGateOwner::Barrier(sink_barrier),
-        barrier_requirements_for_node(analysis, PipelineBarrierKind::SinkBoundary, plan.sink().input()),
-    );
     barriers.push(
-        PipelineBarrier::new(sink_barrier, PipelineBarrierKind::SinkBoundary)
-            .with_upstream_tasks(vec![sink_input])
-            .with_gates(sink_gates),
+        PipelineBarrier::new(sink_barrier, PipelineBarrierKind::SinkBoundary).with_upstream_tasks(vec![sink_input]),
     );
     Ok(barriers)
-}
-
-fn barrier_requirements_for_node(
-    analysis: &CapabilityAnalysis,
-    barrier_kind: PipelineBarrierKind,
-    node_id: NodeId,
-) -> Vec<&ReservationRequirement> {
-    analysis
-        .invariants
-        .iter()
-        .filter(|invariant| invariant_matches_barrier_node(invariant, barrier_kind, node_id))
-        .flat_map(|invariant| invariant.reservation_requirements.iter())
-        .collect()
-}
-
-fn invariant_matches_barrier_node(
-    invariant: &crate::capability::SubgraphInvariant,
-    barrier_kind: PipelineBarrierKind,
-    node_id: NodeId,
-) -> bool {
-    match (&invariant.kind, barrier_kind) {
-        (SubgraphInvariantKind::BuildBeforeProbe { join_id }, PipelineBarrierKind::JoinBuildBeforeProbe) => {
-            *join_id == node_id
-        },
-        (SubgraphInvariantKind::FinalBarrierOrder, PipelineBarrierKind::SortBoundary) => {
-            invariant.nodes.contains(&node_id)
-        },
-        (SubgraphInvariantKind::StatisticalJoinFinalSortExactness, PipelineBarrierKind::SortBoundary) => {
-            invariant.nodes.contains(&node_id)
-        },
-        (SubgraphInvariantKind::PostRootStageOrder { root_join_id }, PipelineBarrierKind::JoinMaterialization) => {
-            *root_join_id == node_id
-        },
-        _ => false,
-    }
 }
 
 fn downstream_tasks(
@@ -916,10 +722,8 @@ fn downstream_tasks(
 
 fn build_sink_boundary(
     plan: &QueryPlan,
-    analysis: &CapabilityAnalysis,
     task_ids: &BTreeMap<NodeId, NodeTasks>,
     sink_compilation: SinkCompilation,
-    gate_builder: &mut GateBuilder,
 ) -> crate::error::Result<SinkBoundary> {
     let kind = match plan.sink() {
         ResultSink::HostArrow { .. } => SinkBoundaryKind::HostArrowMaterialization,
@@ -929,14 +733,7 @@ fn build_sink_boundary(
         Some(task) => task,
         None => tasks_for(task_ids, plan.sink().input())?.output_task(),
     };
-    let sink_contract = sink_edge_contract(plan, analysis)?;
-    let sink_gates = gate_builder.attach_requirements(
-        ReservationGateOwner::SinkBoundary,
-        sink_contract.reservation_requirements.iter().filter(|requirement| {
-            requirement.kind == ReservationKind::Materialization || sink_compilation.edge.is_none()
-        }),
-    );
-    Ok(SinkBoundary::new(kind, input).with_gates(sink_gates))
+    Ok(SinkBoundary::new(kind, input))
 }
 
 fn edge_contract_for_dependency<'a>(
@@ -947,26 +744,6 @@ fn edge_contract_for_dependency<'a>(
         edge.producer == dependency.producer
             && edge.consumer == EdgeConsumer::Node(dependency.consumer)
             && edge.input_role == dependency.input_role
-    })
-}
-
-fn sink_edge_contract<'a>(
-    plan: &QueryPlan,
-    analysis: &'a CapabilityAnalysis,
-) -> crate::error::Result<&'a EdgeContract> {
-    let consumer = EdgeConsumer::Sink(sink_consumer_kind(plan.sink()));
-    analysis.edges.iter().find(|edge| edge.producer == plan.sink().input() && edge.consumer == consumer).ok_or_else(
-        || {
-            invalid("capability analysis does not cover the query sink edge")
-                .with_fact("producer", plan.sink().input())
-                .with_fact("consumer", edge_consumer_label(consumer))
-        },
-    )
-}
-
-fn node_capability_for(analysis: &CapabilityAnalysis, node_id: NodeId) -> crate::error::Result<&NodeCapability> {
-    analysis.nodes.iter().find(|node| node.node_id == node_id).ok_or_else(|| {
-        invalid("capability analysis does not cover a sink-reachable query node").with_fact("node_id", node_id)
     })
 }
 
@@ -1071,7 +848,6 @@ fn invariant_kind_label(kind: &SubgraphInvariantKind) -> &'static str {
         SubgraphInvariantKind::ResidentUnaryChainPreservesResidency => "resident_unary_chain_preserves_residency",
         SubgraphInvariantKind::ResidualUsesBothInputs { .. } => "residual_uses_both_inputs",
         SubgraphInvariantKind::LimitBoundedProjection => "limit_bounded_projection",
-        SubgraphInvariantKind::BlockingRollupRankTopKFullScan => "blocking_rollup_rank_topk_full_scan",
         SubgraphInvariantKind::StatisticalJoinFinalSortExactness => "statistical_join_final_sort_exactness",
         SubgraphInvariantKind::ResidentLifetimeDominatesConsumers => "resident_lifetime_dominates_consumers",
     }

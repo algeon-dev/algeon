@@ -69,7 +69,7 @@ The following are therefore execution-time checks:
 | KMeans | Input must be non-empty and `n_clusters` must not exceed evaluated input rows. |
 | PCA | Input needs at least two rows and two dimensions; `n_components` must not exceed evaluated dimension. |
 
-Until cuVS provides a bounded peak-memory preflight, all cuVS calls reject
-locally with structured `unsupported_operator`; there is no CPU fallback or
-unadmitted GPU mode. See [Integrating Nexus](../integration/overview.mdx) for
-embedded and Flight SQL setup.
+cuVS calls execute inside the admitted query memory domain. Allocation beyond
+the configured cap fails at the allocator. See
+[Integrating Nexus](../integration/overview.mdx) for embedded and Flight SQL
+setup.

@@ -48,6 +48,8 @@ struct cudf_column_handle_state {
 
   [[nodiscard]] virtual std::size_t device_allocated_size() const = 0;
 
+  [[nodiscard]] virtual std::vector<void*> backing_allocation_pointers() const;
+
   [[nodiscard]] virtual std::optional<cudf_handle_provenance> destroy_provenance() const noexcept;
 
   virtual std::unique_ptr<cudf::column> release_native_column();

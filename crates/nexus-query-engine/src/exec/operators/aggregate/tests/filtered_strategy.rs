@@ -255,7 +255,6 @@ fn filtered_global_segmented_failure_records_error_budget_progress_and_partial_e
         state_rows_merged: 2,
         observed_temporary_peak_bytes: 4096,
         observed_retained_peak_bytes: 512,
-        unresolved_contracts: BTreeSet::from(["cudf_lower_level_contract_missing".to_string()]),
     };
     let error = QueryError::new(
         QueryErrorCode::CudfResourceExhausted,
@@ -314,10 +313,6 @@ fn filtered_global_segmented_failure_records_error_budget_progress_and_partial_e
     assert_eq!(recorded.facts.get("budget_peak_bytes").map(String::as_str), Some("8192"));
     assert_eq!(recorded.facts.get("filtered_global_observed_temporary_peak_bytes").map(String::as_str), Some("8192"));
     assert_eq!(recorded.facts.get("filtered_global_observed_retained_peak_bytes").map(String::as_str), Some("2048"));
-    assert_eq!(
-        recorded.facts.get("filtered_input_lower_level_unresolved_contracts").map(String::as_str),
-        Some("cudf_lower_level_contract_missing")
-    );
     assert_eq!(recorded.facts.get("source_adjacent_partial").map(String::as_str), Some("true"));
     assert_eq!(recorded.facts.get("source_chunk_row_group_count").map(String::as_str), Some("4"));
 }

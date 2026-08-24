@@ -85,12 +85,10 @@ cuGraph SQL functions dynamically resolve the backend's admission and native
 execution configuration from session state when executed. To add cuVS SQL, chain
 `try_with_cuvs_sql()` in the same manner.
 
-:::note[Current cuVS boundary]
-The `cuvs` feature supplies native bindings, but backend-managed bounded cuVS
-execution still returns structured `unsupported_operator` because cuVS does
-not yet provide a bounded peak-memory preflight. Nexus does not use a CPU
-fallback or an unadmitted GPU path. See
-[cuVS execution availability](../cuvs/overview.mdx#execution-availability).
+:::note[cuVS execution]
+The `cuvs` feature supplies native bindings and runs cuVS operations inside the
+backend-managed query memory domain. See
+[cuVS execution](../cuvs/overview.mdx#execution).
 :::
 
 ## Execute one attempt per query

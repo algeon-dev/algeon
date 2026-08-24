@@ -8,8 +8,10 @@ use arrow::{
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     expr::{AggregateFunction, Expr, LiteralValue, alias_wrapped_column, representation_cast_preserves_identity},
-    graph_memory::query_plan_node_hard_row_upper_bound_with_resident_rows,
-    plan::{AggregateNode, JoinNode, JoinSide, NodeId, PlanNode, QueryPlan, WindowFunction},
+    plan::{
+        AggregateNode, JoinNode, JoinSide, NodeId, PlanNode, QueryPlan, WindowFunction,
+        row_bounds::query_plan_node_hard_row_upper_bound_with_resident_rows,
+    },
     source::{SourceColumnRef, SourceNode},
 };
 

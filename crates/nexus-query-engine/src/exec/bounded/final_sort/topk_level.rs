@@ -1,4 +1,4 @@
-use super::{BoundedExecutionAttempt, CommittedPartial};
+use super::CommittedPartial;
 
 // Ownership action selected for one output slot of a top-k merge level.
 pub(super) enum TopKLevelItem {
@@ -7,7 +7,6 @@ pub(super) enum TopKLevelItem {
 }
 
 pub(super) fn commit_topk_merge_level(
-    execution: &mut BoundedExecutionAttempt<'_>,
     candidates: Vec<CommittedPartial>,
     level_output: Vec<TopKLevelItem>,
 ) -> Vec<CommittedPartial> {
@@ -24,28 +23,5 @@ pub(super) fn commit_topk_merge_level(
         }
     }
 
-    for partial in candidates.into_iter().flatten() {
-        execution.release(partial.reservation);
-    }
-
     next_candidates
-}
-
-pub(super) fn release_topk_level_items(execution: &mut BoundedExecutionAttempt<'_>, items: Vec<TopKLevelItem>) {
-    for item in items {
-        if let TopKLevelItem::Merged(partial) = item {
-            let partial = *partial;
-            execution.release(partial.reservation);
-        }
-    }
-}
-
-pub(super) fn release_committed_partials(execution: &mut BoundedExecutionAttempt<'_>, partials: Vec<CommittedPartial>) {
-    for partial in partials {
-        release_committed_partial(execution, partial);
-    }
-}
-
-pub(super) fn release_committed_partial(execution: &mut BoundedExecutionAttempt<'_>, partial: CommittedPartial) {
-    execution.release(partial.reservation);
 }

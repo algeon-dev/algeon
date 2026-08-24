@@ -1738,8 +1738,7 @@ fn runtime_column_from_scalar_executes_on_target_device() {
     );
 }
 
-/// Device-domain concurrency (P0-6 §10.5): one pipeline per device running
-/// concurrently must not interact — each device keeps its own memory domain
+/// Concurrent pipelines must not interact: each device keeps its own memory domain
 /// installed, work completes correctly on both, and neither pipeline blocks
 /// on host-side state owned by the other.
 #[test]

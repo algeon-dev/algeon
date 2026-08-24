@@ -194,6 +194,21 @@ impl DataFrameMemoryIdentity {
     }
 }
 
+impl DataFrame {
+    /// Return the deduplicated base allocations retained by this frame.
+    pub fn backing_allocation_pointers(&self) -> Result<Vec<usize>> {
+        let mut pointers = Vec::new();
+        for column in self.columns.values() {
+            pointers.extend(column.backing_allocation_pointers()?);
+        }
+        // Shared columns and nested views can expose the same base allocation
+        // more than once; ownership attestation counts each allocation once.
+        pointers.sort_unstable();
+        pointers.dedup();
+        Ok(pointers)
+    }
+}
+
 /// Mapping proving that one output column aliases one input column owner.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameColumnMemoryAlias {

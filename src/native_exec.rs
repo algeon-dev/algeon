@@ -12,7 +12,6 @@ pub use nexus_query_engine::{
     capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
     chunk::SourceChunkPlanningOptions,
     dynamic_filter::DynamicFilterExecutionOptions,
-    graph_memory::GraphMemoryCalibrationOverride,
     metrics::{QueryId, TraceId},
     mode::StatisticalAggregateExecutionMode,
     observability::{RuntimeObservationConfig, RuntimeObservationLimits},
@@ -40,7 +39,7 @@ pub(crate) use common::run_gpu_execution_task;
 #[cfg(all(test, feature = "cugraph"))]
 pub(crate) use self::admission::query_admission_ticket_from_task_context;
 #[cfg(feature = "cugraph")]
-pub(crate) use self::composed::composed_admission_capability_proof;
+pub(crate) use self::composed::composed_admission_capability_evidence;
 #[cfg(feature = "cugraph")]
 pub(crate) use self::metrics::GraphClaimCalibrationCapture;
 #[cfg(feature = "server-internal")]
@@ -58,7 +57,8 @@ pub(crate) use self::{
         GpuResidentProducer, execute_gpu_resident_producer_with_context, gpu_resident_producer,
         gpu_resident_producer_hard_output_row_upper_bound, gpu_resident_producer_input_name,
         gpu_resident_producer_unique_output_key, prepare_gpu_resident_producer_for_execution,
-        register_gpu_resident_producer_discovery, rewrite_gpu_resident_producer_for_subsumed_composed_consumer,
+        prepared_gpu_resident_producer_admission_tickets, register_gpu_resident_producer_discovery,
+        rewrite_gpu_resident_producer_for_subsumed_composed_consumer,
     },
 };
 pub use self::{

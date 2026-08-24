@@ -44,7 +44,7 @@ pub(super) use global_aggregate::{
 };
 pub(super) use projection::{
     execute_projection, execute_projection_with_budget, execute_projection_with_budget_and_prepared,
-    projection_regexp_replace_prepare, projection_regexp_replace_work_reservation_bytes,
+    projection_regexp_replace_prepare,
 };
 
 pub(super) fn execution_budget_token_for_boundary(

@@ -242,7 +242,7 @@ fn describe_dblp_dataset_with_contract(
     if require_canonical_v12 {
         if multi_graph_slice.is_some() {
             return Err(WorkloadError::InvalidDataset(
-                "P6 preflight requires the canonical DBLP V12 fixture, not a derived multi-graph slice".to_string(),
+                "the workload requires the canonical DBLP V12 fixture, not a derived multi-graph slice".to_string(),
             ));
         }
         validate_canonical_edge_vertex_footer_bounds(&layout, &manifest)?;
@@ -359,7 +359,7 @@ fn parse_multi_graph_slice_value(slice: &Value, label: &str) -> WorkloadResult<D
 fn validate_canonical_v12_manifest(manifest: &Value) -> WorkloadResult<()> {
     if !required_value(manifest, &["max_papers"], "manifest max_papers")?.is_null() {
         return Err(WorkloadError::InvalidDataset(
-            "P6 preflight requires the full canonical DBLP V12 fixture, not a max_papers sample".to_string(),
+            "the workload requires the full canonical DBLP V12 fixture, not a max_papers sample".to_string(),
         ));
     }
     for (label, actual, expected) in [
@@ -378,7 +378,7 @@ fn validate_canonical_v12_manifest(manifest: &Value) -> WorkloadResult<()> {
     ] {
         if actual != expected {
             return Err(WorkloadError::InvalidDataset(format!(
-                "P6 preflight requires canonical DBLP V12 {label}={expected}, found {actual}"
+                "the workload requires canonical DBLP V12 {label}={expected}, found {actual}"
             )));
         }
     }

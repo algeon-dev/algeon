@@ -19,37 +19,6 @@ typedef enum {
   CUDF_OUT_OF_BOUNDS_POLICY_DONT_CHECK = 1,
 } cudf_out_of_bounds_policy_t;
 
-/// Flat source-column metadata for the DONT_CHECK gather preflight.
-typedef struct cudf_gather_fixed_width_column_metadata_t {
-  cudf_type_id_t type_id;
-  int32_t nullable;
-  int32_t num_children;
-} cudf_gather_fixed_width_column_metadata_t;
-
-/// Allocation components for the flat fixed-width DONT_CHECK gather path.
-typedef struct cudf_gather_fixed_width_dont_check_preflight_result_t {
-  uint64_t gather_map_bytes;
-  uint64_t output_data_bytes;
-  uint64_t output_null_mask_bytes;
-  uint64_t target_mask_pointer_array_bytes;
-  uint64_t source_table_device_view_bytes;
-  uint64_t valid_count_array_bytes;
-  uint64_t native_temporary_workspace_bytes;
-  uint64_t active_phase_peak_bytes;
-} cudf_gather_fixed_width_dont_check_preflight_result_t;
-
-/// Query flat fixed-width or bounded-string DONT_CHECK gather allocations.
-///
-/// No stream, memory resource, column, or device allocation is required.
-/// `columns` may be NULL only when `num_columns == 0`; each `nullable` value
-/// must be 0 or 1, and each `num_children` must be non-negative. String data
-/// requires a hard `output_data_bytes_upper_bound`.
-cudf_status_t cudf_gather_fixed_width_dont_check_preflight(
-    int64_t output_rows, uint64_t output_data_bytes_upper_bound,
-    cudf_gather_fixed_width_column_metadata_t const *columns,
-    int32_t num_columns, int32_t device,
-    cudf_gather_fixed_width_dont_check_preflight_result_t *out);
-
 /// Gather rows from a table by index with explicit execution options.
 ///
 /// `gather_map` must be a non-nullable INT32 column of row indices.

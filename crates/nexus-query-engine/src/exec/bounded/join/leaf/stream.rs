@@ -3,11 +3,10 @@ use std::collections::VecDeque;
 use super::{
     BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream, QueryError, ResidentGpuFrame, Result,
     SourceChunk, SourceChunkBatch, abandon_join_leaf_reads, apply_join_leaf_source_stream_stages,
-    attach_join_source_read_resource_facts, chunk_retry_facts, fill_optional_join_leaf_reads,
-    grow_join_source_reservation_to_observed_frame, is_retryable_chunk_error,
+    attach_join_source_read_resource_facts, chunk_retry_facts, fill_optional_join_leaf_reads, is_retryable_chunk_error,
     join_leaf_source_chunk_batches_for_execution, observe_device_memory_bytes, read_join_leaf_source_batch_attempt,
     read_join_leaf_source_chunk_attempt, record_chunk_retry_error, record_dynamic_filter_reader_predicate_rows,
-    retain_decoded_source, source_chunk_batch_target_bytes, split_retryable_chunk, start_next_required_join_leaf_read,
+    source_chunk_batch_target_bytes, split_retryable_chunk, start_next_required_join_leaf_read,
 };
 
 pub(super) fn stream_join_leaf_source_chunks_serial<F>(
@@ -91,16 +90,9 @@ pub(super) fn stream_join_leaf_source_batch_with_consumer<F>(
 where
     F: FnMut(ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
 {
-    let grow_source_to_observed = retain_decoded_source(stream);
-    let (frame, reservation) = read_join_leaf_source_batch_attempt(
-        execution,
-        &stream.source,
-        stream.node_id,
-        batch,
-        &stream.reader_dynamic_filters,
-        grow_source_to_observed,
-    )?;
-    let input = ResidentGpuFrame { frame, reservation };
+    let (frame, reservation) =
+        read_join_leaf_source_batch_attempt(execution, &stream.source, batch, &stream.reader_dynamic_filters)?;
+    let input = ResidentGpuFrame::with_device_bytes(frame, reservation);
     let output = apply_join_leaf_source_stream_stages(execution, stream, input)?;
     consume(output, execution)
 }
@@ -116,7 +108,6 @@ where
     F: FnMut(ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
 {
     execution.context().check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_stream")?;
-    let grow_source_to_observed = retain_decoded_source(stream);
     let (frame, reservation) = match read_join_leaf_source_chunk_attempt(
         execution,
         &stream.source,
@@ -125,7 +116,6 @@ where
         &stream.reader_dynamic_filters,
         attempt,
         stream.max_attempts,
-        grow_source_to_observed,
     ) {
         Ok(output) => output,
         Err(error) if is_retryable_chunk_error(&error) => {
@@ -133,7 +123,7 @@ where
         },
         Err(error) => return Err(error),
     };
-    let input = ResidentGpuFrame { frame, reservation };
+    let input = ResidentGpuFrame::with_device_bytes(frame, reservation);
     let output = match apply_join_leaf_source_stream_stages(execution, stream, input) {
         Ok(output) => output,
         Err(error) if is_retryable_chunk_error(&error) => {
@@ -186,7 +176,6 @@ pub(super) fn stream_join_leaf_source_chunks_with_scheduler<F>(
 where
     F: FnMut(ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
 {
-    let grow_source_to_observed = retain_decoded_source(stream);
     let mut pending = VecDeque::new();
     let mut next_chunk_index = 0usize;
     execution.context().check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_stream_scheduler")?;
@@ -194,7 +183,6 @@ where
         execution,
         &stream.source,
         &stream.chunks,
-        stream.node_id,
         &mut pending,
         &mut next_chunk_index,
         stream.max_attempts,
@@ -210,7 +198,7 @@ where
         let scheduled =
             pending.pop_front().expect("join leaf source scheduler should have a read for the current chunk");
         let is_prefetch = scheduled.is_prefetch();
-        let mut output = match scheduled.finish(execution) {
+        let output = match scheduled.finish(execution) {
             Ok(output) => output,
             Err(error) if is_retryable_chunk_error(&error) => {
                 if is_prefetch {
@@ -233,25 +221,13 @@ where
         if is_prefetch {
             execution.metrics_mut().record_source_read_prefetch_completed();
         }
-        if grow_source_to_observed {
-            if let Err(error) = grow_join_source_reservation_to_observed_frame(
-                execution,
-                &output.frame,
-                &mut output.reservation,
-                stream.node_id,
-                chunk,
-                1,
-                stream.max_attempts,
-            ) {
-                execution.release(output.reservation);
+        let observed_bytes = match observe_device_memory_bytes(&output.frame, execution.metrics_mut()) {
+            Ok(bytes) => bytes,
+            Err(error) => {
                 abandon_join_leaf_reads(execution, pending);
                 return Err(error);
-            }
-        } else if let Err(error) = observe_device_memory_bytes(&output.frame, execution.metrics_mut()) {
-            execution.release(output.reservation);
-            abandon_join_leaf_reads(execution, pending);
-            return Err(error);
-        }
+            },
+        };
         record_dynamic_filter_reader_predicate_rows(
             &stream.reader_dynamic_filters,
             &output.chunk,
@@ -264,7 +240,7 @@ where
                 .or_else(|| chunk.known_read_row_group_count().map(|row_groups| row_groups as u64))
                 .unwrap_or_else(|| chunk.row_group_count() as u64),
         );
-        let input = ResidentGpuFrame { frame: output.frame, reservation: output.reservation };
+        let input = ResidentGpuFrame::with_device_bytes(output.frame, observed_bytes);
         let output = match apply_join_leaf_source_stream_stages(execution, stream, input) {
             Ok(output) => output,
             Err(error) if is_retryable_chunk_error(&error) => {
@@ -287,7 +263,6 @@ where
             execution,
             &stream.source,
             &stream.chunks,
-            stream.node_id,
             &mut pending,
             &mut next_chunk_index,
             stream.max_attempts,
@@ -301,7 +276,6 @@ where
                 execution,
                 &stream.source,
                 &stream.chunks,
-                stream.node_id,
                 &mut pending,
                 &mut next_chunk_index,
                 stream.max_attempts,

@@ -241,68 +241,6 @@ fn bounded_generic_local_parquet_pipeline_uses_required_only_source_scheduler() 
     assert_eq!(metrics.source_read_prefetches_completed, 0);
     assert_eq!(metrics.source_read_prefetches_skipped, 0);
     assert_eq!(metrics.source_read_prefetches_abandoned, 0);
-    let production_prefetches = metrics
-        .reservation_events
-        .iter()
-        .filter(|event| {
-            event.outcome.as_str() == "granted"
-                && matches!(event.memory_boundary.as_str(), "source_chunk_prefetch" | "join_source_read_prefetch")
-        })
-        .count();
-    assert_eq!(production_prefetches, 0);
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.outcome.as_str() == "granted"
-            && event.memory_boundary == "bounded_generic_source_read"
-            && event.action == MemoryReservationEventAction::Reserve
-    }));
-    assert!(
-        metrics.reservation_events.iter().all(|event| {
-            !(event.memory_boundary == "bounded_generic_source_read"
-                && event.action == MemoryReservationEventAction::Grow)
-        }),
-        "source-adjacent generic filtering/projection should not grow raw source-read reservations to observed bytes"
-    );
-    assert!(
-        metrics.reservation_events.iter().any(|event| {
-            event.memory_boundary == "bounded_generic_source_filter_output"
-                && event.action == MemoryReservationEventAction::Transfer
-        }),
-        "source-adjacent generic filtering should transfer ownership to the filtered output boundary"
-    );
-    let first_filter_transfer = metrics
-        .reservation_events
-        .iter()
-        .position(|event| {
-            event.memory_boundary == "bounded_generic_source_filter_output"
-                && event.action == MemoryReservationEventAction::Transfer
-        })
-        .expect("source-adjacent generic filtering should transfer each chunk before source concat");
-    let source_read_reserves_before_first_filter = metrics.reservation_events[..first_filter_transfer]
-        .iter()
-        .filter(|event| {
-            event.outcome.as_str() == "granted"
-                && event.memory_boundary == "bounded_generic_source_read"
-                && event.action == MemoryReservationEventAction::Reserve
-        })
-        .count();
-    assert_eq!(
-        source_read_reserves_before_first_filter, 1,
-        "generic source-adjacent streaming should filter/project the first chunk before reading later chunks"
-    );
-    assert!(
-        metrics.reservation_events.iter().any(|event| {
-            event.memory_boundary == "bounded_generic_source_projection_output"
-                && event.action == MemoryReservationEventAction::Transfer
-        }),
-        "source-adjacent generic projection should transfer ownership to the projected output boundary"
-    );
-    assert!(
-        metrics.reservation_events.iter().any(|event| {
-            event.memory_boundary == "bounded_generic_source_concat_output"
-                && event.action == MemoryReservationEventAction::Reserve
-        }),
-        "multi-chunk generic source concat output should be traced separately from raw source reads"
-    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

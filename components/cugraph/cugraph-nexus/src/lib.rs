@@ -3,10 +3,9 @@
 //! Workspace-internal safe libcugraph execution component for DataFusion Nexus.
 //!
 //! Nexus integrations enter through a runtime-bound [`ResourceHandle`], use
-//! the prepared transfer contracts in [`cudf_interop`], consult graph and
-//! algorithm preflight facts before admission, and retain explicit producer
-//! readiness and consumer completion ordering. Native failures are preserved
-//! as structured [`Error`] values.
+//! the prepared transfer contracts in [`cudf_interop`], and retain explicit
+//! producer readiness and consumer completion ordering. Native failures are
+//! preserved as structured [`Error`] values.
 //!
 //! The package name `cugraph-nexus` and Rust import name `cugraph` are
 //! workspace contracts. This crate is not published as a general-purpose

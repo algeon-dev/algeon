@@ -533,12 +533,9 @@ mod construction_tests {
 
     #[test]
     fn backend_device_capabilities_are_preserved_in_the_registry_install_profile() {
-        use crate::runtime::{DeviceCapabilities, DeviceCapability, ReservationKind};
+        use crate::runtime::{DeviceCapabilities, DeviceCapability};
 
-        let capabilities = DeviceCapabilities::only([DeviceCapability::new(
-            ReservationKind::OperatorOutput,
-            "test_operator_contract",
-        )]);
+        let capabilities = DeviceCapabilities::only([DeviceCapability::new("test_operator")]);
         let device = GpuBackendDeviceConfig::new(
             GpuBackendDeviceProfile::new(0).with_device_capabilities(capabilities.clone()).with_telemetry(false),
             GpuMemoryOwnership::WholeDeviceExclusive,

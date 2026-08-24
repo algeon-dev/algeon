@@ -138,13 +138,9 @@ pub(super) fn project_graph_claim_calibration_snapshot(
             .map(|row| GraphClaimCalibrationRow {
                 node_id: row.node_id.clone(),
                 algorithm: row.algorithm.as_str().to_string(),
-                model_requested_bytes: row.model_requested_bytes,
-                requested_bytes: row.requested_bytes,
-                budget_bytes: row.budget_bytes,
                 execution_state: row.execution_state.as_str().to_string(),
                 measured_peak_bytes: row.measured_peak_bytes,
                 measured_peak_provenance: row.measured_peak_provenance.as_str().to_string(),
-                graph_model_error_ratio: row.graph_model_error_ratio.map(|ratio| ratio.as_decimal_string()),
             })
             .collect(),
     }

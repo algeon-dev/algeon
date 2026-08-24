@@ -48,13 +48,13 @@ mod source;
 mod util;
 mod vector_algorithm;
 
+#[cfg(test)]
+pub(crate) use bounded::pipeline::YieldedFrameCounterTestHarness;
 #[doc(hidden)]
 pub use bounded::pipeline::{
     CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
     CompiledSchedulingCycle, CompiledTaskExecutor, CompiledTaskOutput, ReleasedCompiledResource,
 };
-#[cfg(test)]
-pub(crate) use bounded::pipeline::{ResidentFrameStreamProducerTestHarness, YieldedFrameCounterTestHarness};
 pub use bounded::{
     JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, PartialAggregateShape,
     STRING_OFFSET_BYTES_CONSERVATIVE, join_output_upper_bound_bytes, partial_aggregate_upper_bound_bytes,
@@ -63,172 +63,12 @@ use edge_normalize::execute_edge_normalize;
 #[cfg(all(any(test, feature = "test-hooks"), feature = "cugraph"))]
 #[doc(hidden)]
 pub use graph_algorithm::force_next_graph_statistics_optional_resource_exhausted_for_test;
-#[cfg(all(any(test, feature = "test-hooks"), feature = "cugraph"))]
-#[doc(hidden)]
-pub use graph_algorithm::{
-    force_next_graph_seed_chunk_retry_chunk_attempt_resource_exhausted_for_test,
-    force_next_graph_seed_chunk_retry_full_attempt_resource_exhausted_for_test,
-};
 use nvtx::attempt_execution_range;
 use output::QueryOutput;
 pub use source::{
     ResolvedRemoteParquetDatasourceProbe, probe_resolved_remote_parquet_datasource, read_gpu_resident_source,
     read_literal_batch_source, read_local_parquet_source,
 };
-#[cfg(test)]
-#[doc(hidden)]
-pub mod reservation_contract_testing {
-    use super::bounded::{BoundedExecutionAttempt, ReservationTracker, join::compiled::JoinMaterializationTxn};
-    use crate::{
-        error::Result,
-        metrics::QueryMetrics,
-        pipeline::PipelineTaskKind,
-        runtime::{MemoryReservationRequest, MemorySpaceId, ReservationKind},
-    };
-
-    #[derive(Debug)]
-    pub(crate) struct ReservationTrackerContractProbe {
-        pub(crate) metrics: QueryMetrics,
-        pub(crate) reserved_after_reserve: u64,
-        pub(crate) reserved_after_alias_or_transfer: u64,
-        pub(crate) reserved_after_intermediate_release: u64,
-        pub(crate) reserved_after_final_release: u64,
-    }
-
-    #[derive(Debug)]
-    pub(crate) struct JoinMaterializationTxnRollbackProbe {
-        pub(crate) metrics: QueryMetrics,
-        pub(crate) reserved_after_rollback: u64,
-    }
-
-    pub(crate) fn probe_alias_contract() -> Result<ReservationTrackerContractProbe> {
-        let mut metrics = QueryMetrics::default();
-        let mut tracker = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
-        let owned = tracker.try_reserve_owned_resident(
-            request(ReservationKind::SourceRead, "source_read", 60, tracker.budget()),
-            &mut metrics,
-        )?;
-        let reserved_after_reserve = tracker.reserved_bytes();
-        let alias = tracker.alias_reservation(
-            &owned,
-            request(ReservationKind::OperatorOutput, "schema_only_projection", 60, tracker.budget()),
-            &mut metrics,
-        );
-        let reserved_after_alias_or_transfer = tracker.reserved_bytes();
-        tracker.release(alias, &mut metrics);
-        let reserved_after_intermediate_release = tracker.reserved_bytes();
-        tracker.release(owned, &mut metrics);
-        let reserved_after_final_release = tracker.reserved_bytes();
-        Ok(ReservationTrackerContractProbe {
-            metrics,
-            reserved_after_reserve,
-            reserved_after_alias_or_transfer,
-            reserved_after_intermediate_release,
-            reserved_after_final_release,
-        })
-    }
-
-    pub(crate) fn probe_transfer_contract() -> Result<ReservationTrackerContractProbe> {
-        let mut metrics = QueryMetrics::default();
-        let mut tracker = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
-        let work = tracker.try_reserve_work(
-            request(ReservationKind::OperatorOutput, "join_input_projection", 60, tracker.budget()),
-            &mut metrics,
-        )?;
-        let reserved_after_reserve = tracker.reserved_bytes();
-        let transferred = tracker.transfer(
-            work,
-            request(ReservationKind::ProbeSide, "join_probe_side", 60, tracker.budget()),
-            &mut metrics,
-        );
-        let reserved_after_alias_or_transfer = tracker.reserved_bytes();
-        let reserved_after_intermediate_release = tracker.reserved_bytes();
-        tracker.release(transferred, &mut metrics);
-        let reserved_after_final_release = tracker.reserved_bytes();
-        Ok(ReservationTrackerContractProbe {
-            metrics,
-            reserved_after_reserve,
-            reserved_after_alias_or_transfer,
-            reserved_after_intermediate_release,
-            reserved_after_final_release,
-        })
-    }
-
-    pub(crate) fn probe_alias_outlives_source_release_contract() -> Result<ReservationTrackerContractProbe> {
-        let mut metrics = QueryMetrics::default();
-        let mut tracker = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
-        let owned = tracker.try_reserve_owned_resident(
-            request(ReservationKind::SourceRead, "join_source_read", 60, tracker.budget()),
-            &mut metrics,
-        )?;
-        let reserved_after_reserve = tracker.reserved_bytes();
-        let alias = tracker.alias_reservation(
-            &owned,
-            request(ReservationKind::ProbeSide, "join_probe_side", 25, tracker.budget()),
-            &mut metrics,
-        );
-        let reserved_after_alias_or_transfer = tracker.reserved_bytes();
-        tracker.release(owned, &mut metrics);
-        let reserved_after_intermediate_release = tracker.reserved_bytes();
-        tracker.release(alias, &mut metrics);
-        let reserved_after_final_release = tracker.reserved_bytes();
-        Ok(ReservationTrackerContractProbe {
-            metrics,
-            reserved_after_reserve,
-            reserved_after_alias_or_transfer,
-            reserved_after_intermediate_release,
-            reserved_after_final_release,
-        })
-    }
-
-    pub(crate) fn probe_join_materialization_txn_rollback_contract() -> Result<JoinMaterializationTxnRollbackProbe> {
-        let context = crate::runtime::ExecutionContext::builder().build()?;
-        let mut metrics = QueryMetrics::default();
-        let tracker = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
-        let mut execution = BoundedExecutionAttempt::for_test_tracker(&context, tracker, &mut metrics);
-        let task_id = "t4";
-        let operator_kind = PipelineTaskKind::JoinMaterialize.as_str();
-        execution.metrics_mut().record_compiled_pipeline_task_execution(task_id, operator_kind);
-        let _task_observation_scope = execution.reservations().enter_task_observation_scope(
-            crate::observability::task_attempt_id(task_id, 1),
-            operator_kind,
-            crate::observability::RuntimeSpanId::new(2),
-            None::<String>,
-        );
-
-        let gather_map = execution.try_reserve_work(request(
-            ReservationKind::GatherMap,
-            "join_one_shot_indices",
-            30,
-            execution.reservations().budget(),
-        ))?;
-        let output = execution.try_reserve_owned_resident(request(
-            ReservationKind::JoinOutput,
-            "join_output",
-            40,
-            execution.reservations().budget(),
-        ))?;
-        let mut txn = JoinMaterializationTxn::new();
-        txn.set_gather_map_reservation(gather_map);
-        txn.set_output_reservation(output);
-        txn.rollback(&mut execution);
-        let reserved_after_rollback = execution.reservations().reserved_bytes();
-        drop(execution);
-
-        Ok(JoinMaterializationTxnRollbackProbe { metrics, reserved_after_rollback })
-    }
-
-    fn request(
-        kind: ReservationKind,
-        memory_boundary: &'static str,
-        requested_bytes: u64,
-        budget_bytes: u64,
-    ) -> MemoryReservationRequest {
-        MemoryReservationRequest::new(kind, requested_bytes, budget_bytes)
-            .with_memory_boundary(memory_boundary)
-            .with_stage("reservation_contract_probe")
-    }
-}
 
 use self::{
     bounded::*,
@@ -263,8 +103,7 @@ use crate::{
     },
     prepared::*,
     runtime::{
-        BoundedJoinReservationContract, ExecutionBoundaryPolicy, ExecutionContext, MemoryControlPolicy,
-        MemoryReservationRequest, ReservationKind, RetryFacts,
+        ExecutionContext, MemoryControlPolicy, ReservationKind, RetryFacts,
         resident::{
             GpuDataFrame, GpuFilteredJoinBuildHandle, GpuHashJoinBuildHandle, GpuResidentInputMap, GpuResultHandle,
         },
@@ -288,15 +127,14 @@ pub fn preflight_query_plan(plan: &QueryPlan) -> Result<()> {
 /// Validates a native plan and applies the bounded execution shape contract.
 ///
 /// This boundary is used after frontend-owned plan resolution, before bounded
-/// admission can fail on a lower-level reservation envelope. Unbounded plans
-/// continue to use [`preflight_query_plan`] alone.
+/// execution selects a compiled pipeline. Unbounded plans continue to use
+/// [`preflight_query_plan`] alone.
 pub fn preflight_bounded_query_plan(
     plan: &QueryPlan,
-    boundary_policy: ExecutionBoundaryPolicy,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
 ) -> Result<()> {
     preflight_query_plan(plan)?;
-    bounded::preflight_bounded_join_plan(plan, boundary_policy, statistical_aggregate_execution_mode)
+    bounded::preflight_bounded_join_plan(plan, statistical_aggregate_execution_mode)
 }
 
 static NEXT_PLAN_EXECUTION_ID: AtomicU64 = AtomicU64::new(1);
@@ -559,7 +397,6 @@ fn execute_query_plan_with_gpu_inputs_and_runtime_observation_authority(
         Err(error) => RuntimeTerminalOutcome::from_query_error(error),
     };
     let snapshot = lifecycle.finish(terminal);
-    metrics.finalize_reservation_projection();
     QueryExecutionOutcome::new(result, metrics, snapshot)
 }
 
@@ -613,7 +450,6 @@ fn execute_query_plan_with_correlation(
 ) -> Result<ExecutionResult> {
     let mut metrics = query_metrics(context, query_id, trace_id);
     let output = execute_query_plan_output(context, plan, gpu_inputs, &mut metrics, None)?;
-    metrics.finalize_reservation_projection();
     Ok(ExecutionResult::new(output, metrics))
 }
 

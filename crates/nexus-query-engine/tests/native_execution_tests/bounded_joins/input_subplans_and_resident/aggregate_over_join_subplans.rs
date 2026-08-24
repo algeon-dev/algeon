@@ -39,17 +39,13 @@ fn bounded_native_query_executes_keyless_conditional_join_with_aggregate_over_jo
     assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
     assert!(plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
     assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
-    assert!(
-        nexus_query_engine::admission::bounded_join_unsupported_shape_facts(&plan, ExecutionBoundaryPolicy::default())
-            .is_none()
-    );
+    assert!(nexus_query_engine::admission::bounded_join_unsupported_shape_facts(&plan).is_none());
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
-    assert_eq!(metrics.reservation_denied_count, 0);
     assert_eq!(metrics.compiled_pipeline_attempts, 1);
     assert!(metrics.compiled_pipeline_tasks_executed > 0);
     assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
@@ -65,47 +61,6 @@ fn bounded_native_query_executes_keyless_conditional_join_with_aggregate_over_jo
     assert_eq!(join_metrics[2].key_count, 0);
     assert!(join_metrics[2].residual_predicate);
     assert_eq!(join_metrics[2].output_rows, 2);
-    assert_granted_reservation_trace(
-        metrics,
-        &[
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::BuildSide, "join_build_side"),
-            (ReservationKind::HashTable, "join_hash_table"),
-            (ReservationKind::ProbeSide, "join_probe_side"),
-            (ReservationKind::GatherMap, "join_gather_map"),
-            (ReservationKind::BuildSide, "join_build_side"),
-            (ReservationKind::HashTable, "join_hash_table"),
-            (ReservationKind::GatherMap, "join_gather_map_stream_slice"),
-            (ReservationKind::JoinOutput, "join_output_stream_chunk"),
-            (ReservationKind::PartialState, "compiled_aggregate_partial_state_work"),
-            (ReservationKind::PartialState, "compiled_aggregate_partial_state"),
-            (ReservationKind::FinalMerge, "compiled_aggregate_final_projection"),
-            (ReservationKind::OperatorOutput, "compiled_aggregate_output"),
-            (ReservationKind::OperatorOutput, "compiled_projection"),
-            (ReservationKind::OperatorOutput, "compiled_projection_output"),
-            (ReservationKind::BuildSide, "join_build_side"),
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::ProbeSide, "join_probe_side"),
-            (ReservationKind::GatherMap, "join_gather_map"),
-            (ReservationKind::GatherMap, "join_gather_map_stream_slice"),
-            (ReservationKind::JoinOutput, "join_output_stream_chunk"),
-            (ReservationKind::PartialState, "compiled_aggregate_partial_state_work"),
-            (ReservationKind::PartialState, "compiled_aggregate_partial_state"),
-            (ReservationKind::FinalMerge, "compiled_aggregate_final_projection"),
-            (ReservationKind::OperatorOutput, "compiled_aggregate_output"),
-            (ReservationKind::OperatorOutput, "compiled_projection"),
-            (ReservationKind::OperatorOutput, "compiled_projection_output"),
-            (ReservationKind::ProbeSide, "join_probe_side"),
-            (ReservationKind::GatherMap, "join_gather_map"),
-            (ReservationKind::JoinOutput, "join_output"),
-            (ReservationKind::OperatorOutput, "compiled_projection"),
-            (ReservationKind::OperatorOutput, "compiled_projection_output"),
-            (ReservationKind::FinalSort, "final_sort"),
-            (ReservationKind::FinalSort, "final_sort"),
-            (ReservationKind::Materialization, "host_materialization"),
-        ],
-    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

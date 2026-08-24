@@ -93,7 +93,7 @@ impl MetricsAudit {
             duration_bucket_suitability,
             delivery_loss: DeliveryLossEvidence {
                 mode: "not_applicable_pull_only",
-                detail: "the runner reads P4 pull snapshots directly and installs no exporter or delivery queue",
+                detail: "the runner reads pull snapshots directly and installs no exporter or delivery queue",
             },
         }
     }
@@ -202,7 +202,7 @@ fn cardinality_clause(
             return clause(
                 "fixed_cardinality",
                 ClauseStatus::Failed,
-                format!("snapshot {index} could not project every canonical P4 descriptor"),
+                format!("snapshot {index} could not project every canonical descriptor"),
             );
         };
         if projected_series != snapshot.expected_series_count {
@@ -236,7 +236,7 @@ fn report_equality_clause(snapshots: &[MetricSnapshotObservation], reported_atte
         return clause(
             "report_to_metric_equality",
             ClauseStatus::NotEvidenced,
-            "no final P4 snapshot was retained after attempt drain",
+            "no final snapshot was retained after attempt drain",
         );
     };
     let reported_attempts = reported_attempts as u64;
@@ -245,7 +245,7 @@ fn report_equality_clause(snapshots: &[MetricSnapshotObservation], reported_atte
             "report_to_metric_equality",
             ClauseStatus::Evidenced,
             format!(
-                "final P4 terminal counter {} equals {} retained report rows at metrics generation {}",
+                "final terminal counter {} equals {} retained report rows at metrics generation {}",
                 last.terminal_completed, reported_attempts, last.generation
             ),
         )
@@ -254,7 +254,7 @@ fn report_equality_clause(snapshots: &[MetricSnapshotObservation], reported_atte
             "report_to_metric_equality",
             ClauseStatus::Failed,
             format!(
-                "final P4 terminal counter {} differs from {} retained report rows",
+                "final terminal counter {} differs from {} retained report rows",
                 last.terminal_completed, reported_attempts
             ),
         )
@@ -266,7 +266,7 @@ fn bucket_clause(snapshots: &[MetricSnapshotObservation]) -> MetricAuditClause {
         return clause(
             "duration_bucket_suitability",
             ClauseStatus::NotEvidenced,
-            "no final P4 snapshot was retained for duration-histogram audit",
+            "no final snapshot was retained for duration-histogram audit",
         );
     };
     if last.total_duration_bucket_counts.len() < 2 {
@@ -298,7 +298,7 @@ fn bucket_clause(snapshots: &[MetricSnapshotObservation]) -> MetricAuditClause {
         return clause(
             "duration_bucket_suitability",
             ClauseStatus::NotEvidenced,
-            "no terminal total-duration samples reached the P4 histogram",
+            "no terminal total-duration samples reached the duration histogram",
         );
     }
     let finite = last.total_duration_bucket_counts[last.total_duration_bucket_counts.len() - 2];
@@ -307,14 +307,14 @@ fn bucket_clause(snapshots: &[MetricSnapshotObservation]) -> MetricAuditClause {
         return clause(
             "duration_bucket_suitability",
             ClauseStatus::NotEvidenced,
-            format!("all {} total-duration samples overflowed the largest finite P4 bucket", last.total_duration_count),
+            format!("all {} total-duration samples overflowed the largest finite bucket", last.total_duration_count),
         );
     }
     clause(
         "duration_bucket_suitability",
         ClauseStatus::Evidenced,
         format!(
-            "{} total-duration samples; {finite} fit a finite P4 bucket and {overflow} used +Inf",
+            "{} total-duration samples; {finite} fit a finite bucket and {overflow} used +Inf",
             last.total_duration_count
         ),
     )

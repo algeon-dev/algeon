@@ -28,9 +28,6 @@ use crate::{
     },
 };
 
-const GROUPBY_AGG_TEMPORARY_WORKSPACE_CONTRACT_GAP: &str =
-    "libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable";
-const PREPARED_GROUPBY_RETAINED_STATE_CONTRACT_GAP: &str = "libcudf_prepared_groupby_retained_state_memory_unavailable";
 const GROUPBY_VALUE_VIEW_INLINE_CAPACITY: usize = 8;
 const GROUPBY_REQUEST_META_INLINE_CAPACITY: usize = 8;
 const GROUPBY_RESULT_NAME_INLINE_CAPACITY: usize = 8;
@@ -232,7 +229,6 @@ impl PreparedDataFrameGroupBy {
             .with_retained_bytes(output_bytes)
             .with_output_bytes(output_bytes)
             .with_output_rows(output_rows)
-            .with_unresolved_contract(GROUPBY_AGG_TEMPORARY_WORKSPACE_CONTRACT_GAP)
             .with_context_facts([
                 ("prepared_groupby_strategy", "prepared_sort_groupby".to_string()),
                 ("prepared_groupby_num_groups", facts.num_groups.to_string()),
@@ -426,9 +422,7 @@ impl<'a> GroupBy<'a> {
     /// This is a reusable execution strategy object, not a transparent
     /// diagnostic probe: construction calls cuDF's `get_groups({})` path to
     /// initialize sort-backed grouping state and records exact grouped-key
-    /// output facts. The grouped-key output is released before this returns;
-    /// retained internal prepared-state bytes are not exposed by libcudf and
-    /// are recorded as an unresolved lower-level contract in the report.
+    /// output facts. The grouped-key output is released before this returns.
     pub fn prepare_sort_groupby_with_budget(
         &self,
         token: &ExecutionBudgetToken,
@@ -439,20 +433,13 @@ impl<'a> GroupBy<'a> {
             .prepare_sort_groupby_impl(&ctx, operation)
             .map_err(|error| annotate_groupby_budget_execution_error(error, token, operation))?;
         let facts = prepared.prepared_facts();
-        let report = token
-            .reservation_enforced_report()
-            .with_output_rows(facts.num_groups)
-            .with_unresolved_contract(PREPARED_GROUPBY_RETAINED_STATE_CONTRACT_GAP)
-            .with_context_facts([
-                ("prepared_groupby_strategy", "prepared_sort_groupby".to_string()),
-                ("prepared_groupby_num_groups", facts.num_groups.to_string()),
-                ("prepared_groupby_grouped_key_output_bytes", facts.grouped_key_output_bytes.to_string()),
-                ("prepared_groupby_max_group_size", facts.max_group_size.to_string()),
-                (
-                    "prepared_groupby_memory_facts_status",
-                    "grouped_key_output_only_retained_state_unavailable".to_string(),
-                ),
-            ]);
+        let report = token.reservation_enforced_report().with_output_rows(facts.num_groups).with_context_facts([
+            ("prepared_groupby_strategy", "prepared_sort_groupby".to_string()),
+            ("prepared_groupby_num_groups", facts.num_groups.to_string()),
+            ("prepared_groupby_grouped_key_output_bytes", facts.grouped_key_output_bytes.to_string()),
+            ("prepared_groupby_max_group_size", facts.max_group_size.to_string()),
+            ("prepared_groupby_memory_facts_status", "grouped_key_output_only_retained_state_unavailable".to_string()),
+        ]);
 
         Ok(BudgetedExecutionOutcome::new(prepared, report))
     }
@@ -462,9 +449,7 @@ impl<'a> GroupBy<'a> {
     /// This has the same aggregation semantics and validation as
     /// [`agg`](Self::agg), but routes execution allocations through the
     /// token's execution overrides. The returned report records the observed
-    /// output DataFrame device footprint after execution. libcudf groupby
-    /// temporary workspace preflight sizing is not exposed and is recorded as
-    /// an unresolved lower-level contract.
+    /// output DataFrame device footprint after execution.
     pub fn agg_with_budget(
         &self,
         specs: &[AggSpec],
@@ -486,8 +471,7 @@ impl<'a> GroupBy<'a> {
             .reservation_enforced_report()
             .with_retained_bytes(output_bytes)
             .with_output_bytes(output_bytes)
-            .with_output_rows(output_rows)
-            .with_unresolved_contract(GROUPBY_AGG_TEMPORARY_WORKSPACE_CONTRACT_GAP);
+            .with_output_rows(output_rows);
 
         Ok(BudgetedExecutionOutcome::new(output, report))
     }

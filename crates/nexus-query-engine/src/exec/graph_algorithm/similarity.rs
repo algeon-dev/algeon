@@ -83,6 +83,17 @@ pub(super) fn execute_similarity(
             .with_fact("first_column", &params.vertex_pairs.first_column)
             .with_fact("second_column", &params.vertex_pairs.second_column)
         })?;
+        if first.null_count() != 0 || second.null_count() != 0 {
+            return Err(QueryError::new(
+                QueryErrorCode::GraphInputInvalid,
+                "nexus_query_engine.graph_algorithm.similarity_pairs",
+                "similarity vertex-pair columns must be non-null",
+            )
+            .with_fact("algorithm", spec.algorithm.as_str())
+            .with_fact("input_role", "vertex_pairs")
+            .with_fact("first_null_count", first.null_count())
+            .with_fact("second_null_count", second.null_count()));
+        }
         let first_export = first.try_prepare_device_column_export().map_err(|error| {
             QueryError::new(
                 QueryErrorCode::CudfDependencyFailure,
@@ -109,6 +120,7 @@ pub(super) fn execute_similarity(
                         error,
                     )
                 })?;
+        // End the input conversion range before timing the algorithm itself.
         drop(_vertex_pairs_range);
 
         let frame = {
@@ -218,7 +230,6 @@ pub(super) fn execute_similarity(
                 "vertex_pair_rows={pair_rows},use_weight={},do_expensive_check=true",
                 cugraph_params.use_weight,
             ),
-            budget_observations: Vec::new(),
             cache_scope_peak_bytes: None,
         })
     };
@@ -226,7 +237,6 @@ pub(super) fn execute_similarity(
     {
         run_with_accounted_resident_cugraph_graph::<cugraph::Forward, _>(
             context,
-            inputs.graph_memory_limit_bytes,
             edges,
             graph_options,
             resident_key,

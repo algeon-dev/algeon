@@ -2050,8 +2050,7 @@ fn execution_budget_token_resize_shrinks_below_live_usage_and_blocks_future_allo
     assert_eq!(outcome.report().request().budget_bytes(), 1 << 20);
 }
 
-/// §10.1 invariant contract (replaces the per-op guard contract): with the
-/// device memory domain installed, concurrent execution mixing default
+/// With the device memory domain installed, concurrent execution mixing default
 /// (manager-backed) runtimes and owned-pool runtimes must never disturb the
 /// device's current resource. In the device-domain model nothing swaps it, so
 /// any observed change means a per-op swap was reintroduced.
@@ -2104,8 +2103,8 @@ fn concurrent_owned_pool_and_manager_runtimes_preserve_device_current_resource()
     assert_eq!(current_device_resource_raw_value(), device_mr);
 }
 
-/// §10.3 accounting correctness: two pipelines (two runtimes, each with its
-/// own stream reservation) run temporary-heavy work concurrently. Temporaries
+/// Two pipelines, each with its own runtime and stream reservation, run
+/// temporary-heavy work concurrently. Temporaries
 /// resolve through the device adaptor and are charged by stream, so each
 /// pipeline's reservation must see its own usage (including temporaries) and
 /// an over-limit failure must stay local to its pipeline.
@@ -2155,8 +2154,7 @@ fn concurrent_temp_heavy_pipelines_keep_reservation_accounting_isolated() {
     assert!(left_peak > 0);
 }
 
-/// §10.4 outputs routing: explicit memory resources still flow to output
-/// allocations after the global lock removal — an owned-pool runtime's
+/// Explicit memory resources flow to output allocations: an owned-pool runtime's
 /// outputs carry its pool, while the device current resource (temporaries'
 /// route) stays on the device adaptor.
 #[test]

@@ -34,7 +34,6 @@ struct FilteredGroupedSegmentRuntimeStats {
     state_rows_merged: u64,
     observed_temporary_peak_bytes: u64,
     observed_retained_peak_bytes: u64,
-    unresolved_contracts: BTreeSet<String>,
 }
 
 impl FilteredSegmentRuntimeStats for FilteredGroupedSegmentRuntimeStats {
@@ -44,10 +43,6 @@ impl FilteredSegmentRuntimeStats for FilteredGroupedSegmentRuntimeStats {
 
     fn observed_retained_peak_bytes_mut(&mut self) -> &mut u64 {
         &mut self.observed_retained_peak_bytes
-    }
-
-    fn unresolved_contracts_mut(&mut self) -> &mut BTreeSet<String> {
-        &mut self.unresolved_contracts
     }
 }
 
@@ -211,8 +206,7 @@ pub(super) fn record_filtered_grouped_segmented_failure(
     input_evidence: Option<PartialAggregateInputEvidence>,
     decision: FilteredGroupedAggregateStrategyDecision,
 ) {
-    let mut stats = FilteredGroupedSegmentRuntimeStats::default();
-    stats.unresolved_contracts.insert("filtered_grouped_segmented_failure_budget_report_unavailable".to_string());
+    let stats = FilteredGroupedSegmentRuntimeStats::default();
     record_segmented_filtered_grouped_strategy(
         metrics,
         context,
@@ -771,25 +765,14 @@ fn record_segmented_filtered_grouped_strategy(
 fn add_segmented_runtime_facts(
     facts: &mut BTreeMap<&'static str, String>,
     partial_rows: u64,
-    mut stats: FilteredGroupedSegmentRuntimeStats,
+    stats: FilteredGroupedSegmentRuntimeStats,
 ) {
-    if stats.segment_count > stats.chunk_count {
-        stats.unresolved_contracts.insert("cudf_dataframe_merge_temporary_workspace_preflight_unavailable".to_string());
-    }
     facts.insert("filtered_grouped_state_rows_merged", partial_rows.to_string());
     facts.insert("filtered_grouped_actual_chunk_count", stats.chunk_count.to_string());
     facts.insert("filtered_grouped_actual_segment_count", stats.segment_count.to_string());
     facts.insert("filtered_grouped_max_segment_rows", stats.max_segment_rows.to_string());
     facts.insert("filtered_grouped_observed_temporary_peak_bytes", stats.observed_temporary_peak_bytes.to_string());
     facts.insert("filtered_grouped_observed_retained_peak_bytes", stats.observed_retained_peak_bytes.to_string());
-    facts.insert(
-        "filtered_input_lower_level_unresolved_contracts",
-        if stats.unresolved_contracts.is_empty() {
-            "none".to_string()
-        } else {
-            stats.unresolved_contracts.into_iter().collect::<Vec<_>>().join("|")
-        },
-    );
 }
 
 #[derive(Debug, Clone, Copy)]

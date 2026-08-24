@@ -16,14 +16,6 @@ pub struct NativeTaskOperatorMetricRow {
     pub task_count: usize,
     /// Cumulative elapsed nanoseconds across tasks.
     pub elapsed_ns: usize,
-    /// Cumulative reservation bytes requested.
-    pub reservation_requested_bytes: usize,
-    /// Cumulative reservation bytes granted.
-    pub reservation_granted_bytes: usize,
-    /// Cumulative reservation bytes released.
-    pub reservation_released_bytes: usize,
-    /// Peak live reserved bytes for this operator kind.
-    pub reservation_live_peak_bytes: usize,
     /// Largest lower-level observed allocator peak for this operator kind.
     pub max_observed_peak_bytes: Option<usize>,
     /// Largest lower-level retained byte count for this operator kind.
@@ -34,14 +26,10 @@ impl NativeTaskOperatorMetricRow {
     /// Serializes this nested row as stable comma-separated key/value pairs.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
-            "operator_kind={},task_count={},elapsed_ns={},reservation_requested_bytes={},reservation_granted_bytes={},reservation_released_bytes={},reservation_live_peak_bytes={},max_observed_peak_bytes={},max_retained_bytes={}",
+            "operator_kind={},task_count={},elapsed_ns={},max_observed_peak_bytes={},max_retained_bytes={}",
             self.operator_kind,
             self.task_count,
             self.elapsed_ns,
-            self.reservation_requested_bytes,
-            self.reservation_granted_bytes,
-            self.reservation_released_bytes,
-            self.reservation_live_peak_bytes,
             optional_usize(self.max_observed_peak_bytes),
             optional_usize(self.max_retained_bytes)
         )
@@ -57,14 +45,6 @@ pub struct NativeTaskRuntimeMetricRow {
     pub operator_kind: String,
     /// Cumulative elapsed task time in nanoseconds.
     pub elapsed_ns: usize,
-    /// Cumulative reservation bytes requested by the task.
-    pub reservation_requested_bytes: usize,
-    /// Cumulative reservation bytes granted to the task.
-    pub reservation_granted_bytes: usize,
-    /// Cumulative reservation bytes released by the task.
-    pub reservation_released_bytes: usize,
-    /// Peak live reserved bytes for the task.
-    pub reservation_live_peak_bytes: usize,
     /// Largest lower-level observed allocator peak for the task.
     pub max_observed_peak_bytes: Option<usize>,
     /// Largest lower-level retained byte count for the task.
@@ -75,14 +55,10 @@ impl NativeTaskRuntimeMetricRow {
     /// Serializes this nested row as stable comma-separated key/value pairs.
     pub fn to_stable_kv_row(&self) -> String {
         format!(
-            "compiled_task_id={},operator_kind={},elapsed_ns={},reservation_requested_bytes={},reservation_granted_bytes={},reservation_released_bytes={},reservation_live_peak_bytes={},max_observed_peak_bytes={},max_retained_bytes={}",
+            "compiled_task_id={},operator_kind={},elapsed_ns={},max_observed_peak_bytes={},max_retained_bytes={}",
             self.compiled_task_id,
             self.operator_kind,
             self.elapsed_ns,
-            self.reservation_requested_bytes,
-            self.reservation_granted_bytes,
-            self.reservation_released_bytes,
-            self.reservation_live_peak_bytes,
             optional_usize(self.max_observed_peak_bytes),
             optional_usize(self.max_retained_bytes)
         )
@@ -116,10 +92,6 @@ fn labels_to_task_operator_row(labels: BTreeMap<&str, &str>) -> NativeTaskOperat
         operator_kind: string_label(&labels, "operator_kind"),
         task_count: usize_label(&labels, "task_count"),
         elapsed_ns: usize_label(&labels, "elapsed_ns"),
-        reservation_requested_bytes: usize_label(&labels, "reservation_requested_bytes"),
-        reservation_granted_bytes: usize_label(&labels, "reservation_granted_bytes"),
-        reservation_released_bytes: usize_label(&labels, "reservation_released_bytes"),
-        reservation_live_peak_bytes: usize_label(&labels, "reservation_live_peak_bytes"),
         max_observed_peak_bytes: optional_usize_label(&labels, "max_observed_peak_bytes"),
         max_retained_bytes: optional_usize_label(&labels, "max_retained_bytes"),
     }
@@ -130,10 +102,6 @@ fn labels_to_task_runtime_row(labels: BTreeMap<&str, &str>) -> NativeTaskRuntime
         compiled_task_id: string_label(&labels, "compiled_task_id"),
         operator_kind: string_label(&labels, "operator_kind"),
         elapsed_ns: usize_label(&labels, "elapsed_ns"),
-        reservation_requested_bytes: usize_label(&labels, "reservation_requested_bytes"),
-        reservation_granted_bytes: usize_label(&labels, "reservation_granted_bytes"),
-        reservation_released_bytes: usize_label(&labels, "reservation_released_bytes"),
-        reservation_live_peak_bytes: usize_label(&labels, "reservation_live_peak_bytes"),
         max_observed_peak_bytes: optional_usize_label(&labels, "max_observed_peak_bytes"),
         max_retained_bytes: optional_usize_label(&labels, "max_retained_bytes"),
     }

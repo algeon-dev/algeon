@@ -1,5 +1,5 @@
 #[test]
-fn proof_device_entries_reapply_request_local_placement_floor() {
+fn evidence_device_entries_are_retained_through_admission() {
     let service = test_service(1, 8);
     let schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
         "value",
@@ -11,29 +11,20 @@ fn proof_device_entries_reapply_request_local_placement_floor() {
         nexus_query_planning::source::GpuResidentSource::new("input", schema),
     ));
     let plan = builder.finish_with_host_sink(source);
-    let proof = nexus_query_planning::admission::QueryPlanCapabilityProof::for_query_plan(&plan)
-        .expect("fixture plan must issue a capability proof");
-    let request = QueryAdmissionRequest::new()
-        .with_query_plan_capability_proof(proof.clone())
-        .with_test_placement_requirement(nexus_query_planning::admission::AttemptCapabilityEvidence::from_parts(
-            0,
-            0,
-            Some(4096),
-            nexus_query_planning::admission::EstimateQuality::Measured,
-            Vec::new(),
-        ));
+    let evidence = nexus_query_planning::admission::AttemptCapabilityEvidence::for_query_plan(&plan);
+    let request = QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence.clone());
 
-    let handle = service.admit_query_with_request(request).expect("proof-backed fixture admission succeeds");
+    let handle = service.admit_query_with_request(request).expect("evidence-backed fixture admission succeeds");
     let requirement = handle
         .handle
         .lifetime
         .admitted_device_requirement_for_test(0)
         .expect("selected device keeps its immutable admission entry");
-    assert_eq!(requirement.required_floor_bytes_for(0).expect("fixture floor is finite"), 4096);
+    assert_eq!(requirement.required_capabilities(), evidence.required_capabilities());
 
     handle.finish();
     drop(handle);
-    service.close_and_wait_for_quiescence(Duration::from_secs(2)).expect("proof-backed fixture cleanup completes");
+    service.close_and_wait_for_quiescence(Duration::from_secs(2)).expect("evidence-backed fixture cleanup completes");
 }
 
 #[test]
@@ -281,20 +272,19 @@ fn unknown_isolation_fleet_closure_excludes_a_mid_closure_admission() {
 #[test]
 fn device_entries_keep_distinct_ordinal_capability_requirements() {
     let service = test_service(1, 8).service;
-    let first = requirement(128, Some(128));
-    let second = requirement(256, Some(512));
+    let first = requirement();
+    let second = distinct_capability_requirement();
     let (entries, compatible) = service
         .resolve_device_admission_entries_for_test(&[0, 1], |ordinal| {
-            Ok(DeviceAdmissionEntry {
-                requirement: if ordinal == 0 { first.clone() } else { second.clone() },
-            })
+            Ok(DeviceAdmissionEntry { requirement: if ordinal == 0 { first.clone() } else { second.clone() } })
         })
         .expect("both concrete candidates resolve");
 
     assert_eq!(compatible, vec![0, 1]);
-    assert_eq!(entries.get(&0).expect("ordinal zero entry").requirement.configured_floor_bytes, 128);
-    assert_eq!(entries.get(&1).expect("ordinal one entry").requirement.configured_floor_bytes, 256);
-    assert_ne!(entries.get(&0).expect("ordinal zero entry").requirement, entries.get(&1).expect("ordinal one entry").requirement);
+    assert_ne!(
+        entries.get(&0).expect("ordinal zero entry").requirement,
+        entries.get(&1).expect("ordinal one entry").requirement
+    );
 }
 
 #[test]
@@ -310,33 +300,31 @@ fn candidate_local_entry_resolution_prunes_only_the_rejected_ordinal() {
                 )
                 .with_fact("reason", "sort_owner_candidate_device_unavailable"))
             } else {
-                Ok(DeviceAdmissionEntry {
-                    requirement: requirement(256, Some(256)),
-                })
+                Ok(DeviceAdmissionEntry { requirement: requirement() })
             }
         })
         .expect("one healthy candidate remains");
 
     assert_eq!(compatible, vec![1]);
     assert!(!entries.contains_key(&0), "the rejected candidate must not enter placement");
-    assert_eq!(entries.get(&1).expect("ordinal one entry").requirement.configured_floor_bytes, 256);
+    assert!(entries.contains_key(&1), "the healthy candidate keeps its resolved entry");
 }
 
 #[test]
-fn all_device_entry_resolution_failures_return_owner_reason_before_queueing() {
+fn all_device_entry_resolution_failures_return_capability_reason_before_queueing() {
     let service = test_service(1, 8).service;
     let error = service
         .resolve_device_admission_entries_for_test(&[0, 1], |_ordinal| {
             Err(QueryError::new(
                 QueryErrorCode::UnsupportedPlanShape,
-                "nexus_query_engine.test.sort_preflight",
-                "sort owner preflight is unavailable",
+                "nexus_query_engine.test.sort_capability",
+                "sort capability is unavailable",
             )
-            .with_fact("reason", "sort_owner_native_preflight_unavailable"))
+            .with_fact("reason", "sort_capability_unavailable"))
         })
         .expect_err("all candidate-local failures reject before enqueue");
 
-    assert_eq!(error.fact_value("reason"), Some("sort_owner_native_preflight_unavailable"));
+    assert_eq!(error.fact_value("reason"), Some("sort_capability_unavailable"));
     assert_eq!(error.fact_value("candidate_count"), Some("2"));
     assert_eq!(service.inner.admission.lock().expect("admission state").queued.len(), 0);
 }

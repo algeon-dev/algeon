@@ -393,13 +393,8 @@ impl CompiledGpuTaskExecutor<'_> {
         let already_applied = self.source_post_decode_applied_routes.get(&resource).cloned().unwrap_or_default();
         let input_payload = state.resource_payload(resource)?;
         let input = input_payload.clone_frame();
-        let input_reserved_bytes = input_payload.reservation_bytes();
-        let Some((frame, applied_routes)) = self.apply_ready_dynamic_filters_to_shared_source_frame(
-            source_node_id,
-            input,
-            input_reserved_bytes,
-            &already_applied,
-        )?
+        let Some((frame, applied_routes)) =
+            self.apply_ready_dynamic_filters_to_shared_source_frame(source_node_id, input, &already_applied)?
         else {
             return Ok(false);
         };
@@ -413,7 +408,6 @@ impl CompiledGpuTaskExecutor<'_> {
         &mut self,
         source_node_id: NodeId,
         input: GpuDataFrame,
-        input_reserved_bytes: u64,
         already_applied: &BTreeSet<DynamicFilterId>,
     ) -> Result<Option<(ResidentGpuFrame, BTreeSet<DynamicFilterId>)>> {
         let routes = self
@@ -457,7 +451,6 @@ impl CompiledGpuTaskExecutor<'_> {
                     &mut self.execution,
                     source_node_id,
                     "compiled_dynamic_filter_source_post_decode",
-                    "compiled_dynamic_filter_source_post_decode_output",
                     frame,
                     true,
                     |context, input, token, metrics| {
@@ -474,9 +467,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     &mut self.execution,
                     source_node_id,
                     "compiled_dynamic_filter_source_post_decode",
-                    "compiled_dynamic_filter_source_post_decode_output",
                     input.take().expect("first source dynamic filter consumes the cloned shared input"),
-                    input_reserved_bytes,
                     true,
                     |context, input, token, metrics| {
                         crate::exec::operators::execute_filter_with_budget(
@@ -532,7 +523,6 @@ impl CompiledGpuTaskExecutor<'_> {
                 &mut self.execution,
                 join_node_id,
                 "compiled_dynamic_filter_join_probe",
-                "compiled_dynamic_filter_join_probe_output",
                 frame,
                 true,
                 |context, input, token, metrics| {
@@ -578,7 +568,6 @@ impl CompiledGpuTaskExecutor<'_> {
                 &mut self.execution,
                 filter_node_id,
                 "compiled_dynamic_filter_filter",
-                "compiled_dynamic_filter_filter_output",
                 frame,
                 true,
                 |context, input, token, metrics| {
@@ -606,7 +595,6 @@ impl CompiledGpuTaskExecutor<'_> {
         filter_node_id: NodeId,
         filter: &FilterNode,
         input: GpuDataFrame,
-        input_reserved_bytes: u64,
     ) -> Result<Option<ResidentGpuFrame>> {
         let routes = self.filter_dynamic_filter_routes(filter_node_id);
         if routes.is_empty() {
@@ -631,7 +619,6 @@ impl CompiledGpuTaskExecutor<'_> {
                     &mut self.execution,
                     filter_node_id,
                     "compiled_dynamic_filter_filter",
-                    "compiled_dynamic_filter_filter_output",
                     frame,
                     true,
                     |context, input, token, metrics| {
@@ -648,9 +635,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     &mut self.execution,
                     filter_node_id,
                     "compiled_dynamic_filter_filter",
-                    "compiled_dynamic_filter_filter_output",
                     input.take().expect("first dynamic filter consumes the cloned shared input"),
-                    input_reserved_bytes,
                     true,
                     |context, input, token, metrics| {
                         crate::exec::operators::execute_filter_with_budget(
@@ -707,7 +692,6 @@ impl CompiledGpuTaskExecutor<'_> {
         join_node_id: NodeId,
         join: &JoinNode,
         input: GpuDataFrame,
-        input_reserved_bytes: u64,
     ) -> Result<Option<ResidentGpuFrame>> {
         let routes = self.join_probe_dynamic_filter_routes(join_node_id);
         if routes.is_empty() {
@@ -741,7 +725,6 @@ impl CompiledGpuTaskExecutor<'_> {
                     &mut self.execution,
                     join_node_id,
                     "compiled_dynamic_filter_join_probe",
-                    "compiled_dynamic_filter_join_probe_output",
                     frame,
                     true,
                     |context, input, token, metrics| {
@@ -758,9 +741,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     &mut self.execution,
                     join_node_id,
                     "compiled_dynamic_filter_join_probe",
-                    "compiled_dynamic_filter_join_probe_output",
                     input.take().expect("first dynamic filter consumes the cloned shared input"),
-                    input_reserved_bytes,
                     true,
                     |context, input, token, metrics| {
                         crate::exec::operators::execute_filter_with_budget(

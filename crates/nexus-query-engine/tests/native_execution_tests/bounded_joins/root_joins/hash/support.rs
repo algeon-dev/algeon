@@ -45,10 +45,6 @@ fn bounded_native_query_executes_root_hash_join_with_ordered_reservations() {
     let metrics = result.metrics();
     assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.parquet_files, 2);
-    assert_eq!(metrics.reservation_denied_count, 0);
-    assert!(metrics.reservation_requested_bytes > 0);
-    assert!(metrics.reservation_granted_bytes > 0);
-    assert!(metrics.reservation_live_peak_bytes > 0);
     assert_eq!(metrics.hash_join_build_count, 1);
     assert!(metrics.hash_join_hash_table_bytes > 0);
     let join_metrics =
@@ -58,25 +54,6 @@ fn bounded_native_query_executes_root_hash_join_with_ordered_reservations() {
     assert_eq!(join_metrics.probe_side, "left");
     assert!(join_metrics.gather_map_bytes > 0);
     assert_eq!(join_metrics.output_rows, 3);
-    assert_granted_reservation_trace(
-        metrics,
-        &[
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::BuildSide, "join_build_side"),
-            (ReservationKind::HashTable, "join_hash_table"),
-            (ReservationKind::ProbeSide, "join_probe_side"),
-            (ReservationKind::GatherMap, "join_gather_map"),
-            (ReservationKind::ChunkOperator, "join_output_string_length_sizing"),
-            (ReservationKind::ChunkOperator, "join_output_string_length_sizing"),
-            (ReservationKind::JoinOutput, "join_output"),
-            (ReservationKind::Materialization, "host_materialization"),
-        ],
-    );
-    assert!(
-        metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_input_projection"),
-        "schema-only join input selection must alias or transfer the resident input instead of charging a projection"
-    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -88,17 +65,6 @@ fn bounded_native_query_executes_root_hash_join_with_ordered_reservations() {
     assert_eq!(string_array(batch, 2).iter().collect::<Vec<_>>(), vec![Some("two"), Some("two"), Some("three")]);
 
     fs::remove_dir_all(dir).unwrap();
-}
-
-fn assert_temporary_hash_preflight_reserved(metrics: &QueryMetrics) {
-    assert!(
-        metrics.reservation_events.iter().any(|event| {
-            event.outcome.as_str() == "granted"
-                && event.reservation_kind == ReservationKind::HashTable
-                && event.memory_boundary == "join_keyed_equality_preflight_hash_table"
-        }),
-        "exact equality-join output-size preflight should reserve a temporary hash table"
-    );
 }
 
 #[test]

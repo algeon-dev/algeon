@@ -133,8 +133,8 @@ macro_rules! for_each_backend_metric {
         $macro! {
             admission_active_attempts => "nexus.gpu.admission.active_attempts": BackendMetricUnit::One, BackendMetricKind::Gauge, DEVICE_LABELS, EMPTY_BUCKETS, BackendMetricUpdatePoint::LedgerTransition, 64;
             admission_live_grant_bytes => "nexus.gpu.admission.live_grant": BackendMetricUnit::Bytes, BackendMetricKind::Gauge, DEVICE_LABELS, EMPTY_BUCKETS, BackendMetricUpdatePoint::LedgerTransition, 64;
-            admission_live_reserved_bytes => "nexus.gpu.admission.live_reserved": BackendMetricUnit::Bytes, BackendMetricKind::Gauge, DEVICE_LABELS, EMPTY_BUCKETS, BackendMetricUpdatePoint::LedgerTransition, 64;
-            admission_max_live_reserved_bytes => "nexus.gpu.admission.max_live_reserved": BackendMetricUnit::Bytes, BackendMetricKind::Max, DEVICE_LABELS, EMPTY_BUCKETS, BackendMetricUpdatePoint::LedgerTransition, 64;
+            admission_resident_owner_bytes => "nexus.gpu.admission.resident_owner": BackendMetricUnit::Bytes, BackendMetricKind::Gauge, DEVICE_LABELS, EMPTY_BUCKETS, BackendMetricUpdatePoint::LedgerTransition, 64;
+            admission_max_resident_owner_bytes => "nexus.gpu.admission.max_resident_owner": BackendMetricUnit::Bytes, BackendMetricKind::Max, DEVICE_LABELS, EMPTY_BUCKETS, BackendMetricUpdatePoint::LedgerTransition, 64;
             attempts_completed => "nexus.gpu.attempts.completed": BackendMetricUnit::One, BackendMetricKind::Counter, ATTEMPT_LABELS, EMPTY_BUCKETS, BackendMetricUpdatePoint::ReportReady, 32;
             attempts_duration => "nexus.gpu.attempts.duration": BackendMetricUnit::Seconds, BackendMetricKind::Histogram, ATTEMPT_DURATION_LABELS, DURATION_BUCKETS_NS, BackendMetricUpdatePoint::ReportReady, 128;
             memory_allocation_failures => "nexus.gpu.memory.allocation_failures": BackendMetricUnit::One, BackendMetricKind::Counter, DEVICE_LABELS, EMPTY_BUCKETS, BackendMetricUpdatePoint::TelemetryRefresh, 64;
@@ -197,14 +197,14 @@ mod tests {
             64,
         ),
         (
-            "nexus.gpu.admission.live_reserved",
+            "nexus.gpu.admission.resident_owner",
             BackendMetricUnit::Bytes,
             BackendMetricKind::Gauge,
             BackendMetricUpdatePoint::LedgerTransition,
             64,
         ),
         (
-            "nexus.gpu.admission.max_live_reserved",
+            "nexus.gpu.admission.max_resident_owner",
             BackendMetricUnit::Bytes,
             BackendMetricKind::Max,
             BackendMetricUpdatePoint::LedgerTransition,

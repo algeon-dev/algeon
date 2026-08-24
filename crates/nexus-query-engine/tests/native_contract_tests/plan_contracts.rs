@@ -137,56 +137,6 @@ fn aggregate_strategy_capability_selects_partitioned_merge_for_final_merge_stage
 }
 
 #[test]
-fn aggregate_strategy_capability_analysis_records_grouped_aggregate_without_node_rejection() {
-    let input_schema = Arc::new(Schema::new(vec![
-        Field::new("returnflag", DataType::Utf8, true),
-        Field::new("quantity", DataType::Int64, false),
-    ]));
-    let aggregate_schema = Arc::new(Schema::new(vec![
-        Field::new("returnflag", DataType::Utf8, true),
-        Field::new("sum_qty", DataType::Int64, true),
-    ]));
-    let aggregate = AggregateSpec::new(
-        vec![Expr::column("returnflag")],
-        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("quantity"), "sum_qty")],
-    );
-
-    let mut builder = QueryPlanBuilder::new();
-    let source =
-        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("lineitem", Arc::clone(&input_schema))));
-    let aggregate_id = builder.add_aggregate(source, aggregate, aggregate_schema);
-    let plan = builder.finish_gpu_resident(aggregate_id);
-    let analysis = plan.capability_analysis();
-
-    let node = analysis.nodes.iter().find(|node| node.node_id == aggregate_id).expect("aggregate node capability");
-    assert_eq!(node.executable, CapabilityDecision::Satisfied);
-    assert_eq!(analysis.aggregate_strategies.len(), 1);
-    let strategy = &analysis.aggregate_strategies[0];
-    assert_eq!(strategy.node_id, aggregate_id);
-    assert_eq!(strategy.stage, AggregateExecutionStage::Partial);
-    assert_eq!(strategy.decision.selected_strategy, AggregateExecutionStrategy::EncodedKeyPartial);
-    assert_eq!(strategy.decision.facts.get("encoded_key_partial_rejected_reason").map(String::as_str), Some("none"));
-    assert_eq!(
-        strategy.decision.facts.get("encoded_key_partial_contract_status").map(String::as_str),
-        Some("available")
-    );
-    assert_eq!(
-        strategy.decision.facts.get("prepared_sort_groupby_rejected_reason").map(String::as_str),
-        Some("prepared_sort_groupby_requires_runtime_cardinality_evidence")
-    );
-
-    let report = CapabilityContractReport::from_capability_analysis(&analysis)
-        .expect("modeled aggregate capability should produce a admission contract report");
-    assert!(report.gate_rows().iter().any(|row| {
-        row.required_contract == "aggregate_contract" && row.contract_status == ContractStatus::Modeled
-    }));
-    assert!(
-        report.gate_rows().iter().all(|row| row.contract_status != ContractStatus::RejectedByCapability),
-        "optimized strategy candidate rejections are local strategy facts, not bounded capability failures"
-    );
-}
-
-#[test]
 fn aggregate_strategy_capability_rejects_encoded_key_for_non_string_keys_locally() {
     let input_schema =
         Schema::new(vec![Field::new("key", DataType::Int32, false), Field::new("value", DataType::Int64, false)]);
@@ -475,40 +425,6 @@ fn projection_plan_facts_schema_is_derived_from_typed_outputs() {
     assert_eq!(projection_node.outputs[0].field, output_field);
     assert_eq!(projection_node.output_schema().as_ref(), node.facts.output_schema.as_ref());
     assert_eq!(plan.output_schema().as_ref(), projection_node.output_schema().as_ref());
-}
-
-#[test]
-fn regexp_replace_projection_declares_bounded_output_contract() {
-    let input_schema = Arc::new(Schema::new(vec![Field::new("referer", DataType::Utf8, true)]));
-    let output_schema = Arc::new(Schema::new(vec![Field::new("domain", DataType::Utf8, true)]));
-
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("hits", Arc::clone(&input_schema))));
-    let projection = builder.add_projection(
-        source,
-        projection_outputs(
-            vec![
-                Expr::regexp_replace(
-                    Expr::column("referer"),
-                    "^https?://(?:www\\.)?([^/]+)/.*$",
-                    "\\1",
-                    DataType::Utf8,
-                )
-                .alias("domain"),
-            ],
-            output_schema,
-        ),
-    );
-    let plan = builder.finish_gpu_resident(projection);
-    let analysis = plan.capability_analysis();
-    let node = analysis.nodes.iter().find(|node| node.node_id == projection).expect("projection node capability");
-    assert_eq!(node.executable, CapabilityDecision::Satisfied);
-    assert_eq!(node.local_requirements.len(), 1);
-    let requirement = &node.local_requirements[0];
-    assert_eq!(requirement.kind, ReservationKind::OperatorOutput);
-    assert_eq!(requirement.memory_boundary, "regexp_replace_expression_output");
-    assert_eq!(requirement.required_contract, "regexp_replace_output_size_preflight");
-    assert_eq!(requirement.quality, ContractQuality::ExactPreflight);
 }
 
 #[test]

@@ -10,10 +10,7 @@ use super::{
     SourceNode,
     graph::{collect_reachable_node_ids, consumer_nodes_for_reachable},
     join_node_execution_capability,
-    model::{
-        CapabilityDecision, ContractStatus, EdgeConsumer, EdgeContract, NodeCapability, SubgraphInvariant,
-        SubgraphInvariantKind,
-    },
+    model::{CapabilityDecision, EdgeConsumer, EdgeContract, NodeCapability, SubgraphInvariant, SubgraphInvariantKind},
     shape::{
         ProjectionScalarSetopKind, ProjectionScalarSetopShape, RootFullSortJoinAggregateShape,
         RootFullSortJoinAggregateSubcontract, closed_multi_join_subgraph_structure_decision,

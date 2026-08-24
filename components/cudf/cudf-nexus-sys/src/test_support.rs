@@ -84,6 +84,12 @@ unsafe extern "C" {
     pub fn cudf_test_event_raw_record_call_count_for_stream_raw(stream_raw: usize, out: *mut i32) -> cudf_status_t;
     pub fn cudf_test_event_last_raw_record_stream_raw(out: *mut usize) -> cudf_status_t;
     pub fn cudf_test_event_last_raw_record_event_raw(out: *mut usize) -> cudf_status_t;
+    pub fn cudf_test_stream_synchronize_reset();
+    pub fn cudf_test_stream_block_synchronize();
+    pub fn cudf_test_stream_unblock_synchronize();
+    pub fn cudf_test_stream_fail_synchronize();
+    pub fn cudf_test_stream_allow_synchronize();
+    pub fn cudf_test_stream_synchronize_call_count(out: *mut i32) -> cudf_status_t;
     pub fn cudf_test_memory_resource_create_stats(out: *mut cudf_memory_resource_handle) -> cudf_status_t;
     pub fn cudf_test_memory_resource_create_fail_first_allocation(
         upstream: cudf_memory_resource_handle,

@@ -4,10 +4,6 @@ use nexus_query_engine::source::LocalParquetSource;
 
 use super::*;
 
-pub(crate) fn aggregate_over_join_subplan_topk_plan(with_source_metadata: bool) -> nexus_query_engine::plan::QueryPlan {
-    aggregate_over_join_subplan_topk_plan_inner(AggregateOverJoinSubplanTopKVariant::Admitted, with_source_metadata)
-}
-
 pub(crate) fn aggregate_over_join_subplan_topk_variant_plan(
     variant: AggregateOverJoinSubplanTopKVariant,
 ) -> nexus_query_engine::plan::QueryPlan {
@@ -17,6 +13,7 @@ pub(crate) fn aggregate_over_join_subplan_topk_variant_plan(
 /// Mutates the multi-join TopK shape where a grouped aggregate is itself built
 /// over a join subplan.
 #[derive(Debug, Clone, Copy)]
+#[expect(dead_code, reason = "shared topology fixtures are compiled by test binaries with different coverage")]
 pub(crate) enum AggregateOverJoinSubplanTopKVariant {
     Admitted,
     /// Drops the fetch from the final TopK so the final-sort contract is not
@@ -36,7 +33,7 @@ pub(crate) enum AggregateOverJoinSubplanTopKVariant {
     UnsupportedPostRootProjectionExpression,
 }
 
-fn aggregate_over_join_subplan_topk_plan_inner(
+pub(crate) fn aggregate_over_join_subplan_topk_plan_inner(
     variant: AggregateOverJoinSubplanTopKVariant,
     with_source_metadata: bool,
 ) -> nexus_query_engine::plan::QueryPlan {
@@ -108,22 +105,13 @@ fn aggregate_over_join_subplan_topk_plan_inner(
     }
 }
 
-pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_plan(
-    with_source_metadata: bool,
-) -> nexus_query_engine::plan::QueryPlan {
-    resident_grouped_aggregate_input_post_join_aggregate_topk_plan_inner(
-        ResidentGroupedAggregateInputPostJoinAggregateTopKVariant::Admitted,
-        with_source_metadata,
-    )
-}
-
 pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_variant_plan(
     variant: ResidentGroupedAggregateInputPostJoinAggregateTopKVariant,
 ) -> nexus_query_engine::plan::QueryPlan {
     resident_grouped_aggregate_input_post_join_aggregate_topk_plan_inner(variant, false)
 }
 
-fn resident_grouped_aggregate_input_post_join_aggregate_topk_plan_inner(
+pub(crate) fn resident_grouped_aggregate_input_post_join_aggregate_topk_plan_inner(
     variant: ResidentGroupedAggregateInputPostJoinAggregateTopKVariant,
     with_source_metadata: bool,
 ) -> nexus_query_engine::plan::QueryPlan {
@@ -224,6 +212,7 @@ fn resident_grouped_aggregate_input_post_join_aggregate_topk_plan_inner(
 }
 
 #[derive(Debug, Clone, Copy)]
+#[expect(dead_code, reason = "shared topology fixtures are compiled by test binaries with different coverage")]
 pub(crate) enum ResidentGroupedAggregateInputPostJoinAggregateTopKVariant {
     Admitted,
     DirectPostJoinAggregateInput,
@@ -263,10 +252,6 @@ fn resident_grouped_aggregate_subquery_filter_plan_inner(
     let sort =
         builder.add_sort(root, SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)]), key_value_schema());
     builder.finish_with_host_sink(sort)
-}
-
-pub(crate) fn root_topk_join_aggregate_plan() -> nexus_query_engine::plan::QueryPlan {
-    root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::Admitted)
 }
 
 pub(crate) fn root_topk_grouped_aggregate_input_left_join_plan() -> nexus_query_engine::plan::QueryPlan {
@@ -886,6 +871,7 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(
 /// modeled subcontract or introduces one targeted gap so admission reports the
 /// intended local reason.
 #[derive(Debug, Clone, Copy)]
+#[expect(dead_code, reason = "shared topology fixtures are compiled by test binaries with different coverage")]
 pub(crate) enum RootTopKJoinAggregateVariant {
     /// Canonical root TopK shape: reduced source -> grouped aggregate fragment ->
     /// keyed root join -> projection -> sort(fetch).

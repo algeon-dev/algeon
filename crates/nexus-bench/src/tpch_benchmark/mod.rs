@@ -17,9 +17,8 @@ use datafusion_nexus::{
     native_report::{
         CandidateOutcomeKind, FinalPlanDisposition, NativeAggregateStrategyMetricRow, NativeDataFusionExecutionMetrics,
         NativeDataFusionPlanningReport, NativeDataFusionPlanningRow, NativeDataFusionRuntimeOutcome,
-        NativeDynamicFilterRuntimeMetricRow, NativeGraphReservationMetricRow, NativeGraphRuntimeMetricRow,
-        NativeJoinStrategyMetricRow, NativeSourceDiagnosticSummary, NativeTaskOperatorMetricRow,
-        NativeTaskRuntimeMetricRow,
+        NativeDynamicFilterRuntimeMetricRow, NativeGraphRuntimeMetricRow, NativeJoinStrategyMetricRow,
+        NativeSourceDiagnosticSummary, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow,
     },
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     session::NexusSessionStateBuilderExt,
@@ -55,32 +54,12 @@ pub async fn run_main() -> DataFusionResult<()> {
     let text = report.to_tsv();
     print!("{text}");
     let large_keyed_gate_result = strategy_gate::validate_large_keyed_join_strategy_gate_from_env(&text);
-    let sf100_reservation_gate_result =
-        strategy_gate::validate_sf100_bounded_reservation_gate_for_config(&text, &config);
-    let sf100_full_reservation_health_gate_result =
-        strategy_gate::validate_sf100_full_reservation_health_gate_for_config(&text, &config);
     fs::remove_dir_all(work_dir).ok();
     match large_keyed_gate_result {
         Ok(Some(summary)) => eprintln!("{}", summary.progress_line()),
         Ok(None) => {},
         Err(error) => {
             eprintln!("[native_tpch_benchmark] stage=large_keyed_join_strategy_gate outcome=failed error={error}");
-            return Err(error);
-        },
-    }
-    match sf100_reservation_gate_result {
-        Ok(Some(summary)) => eprintln!("{}", summary.progress_line()),
-        Ok(None) => {},
-        Err(error) => {
-            eprintln!("[native_tpch_benchmark] stage=sf100_bounded_reservation_gate outcome=failed error={error}");
-            return Err(error);
-        },
-    }
-    match sf100_full_reservation_health_gate_result {
-        Ok(Some(summary)) => eprintln!("{}", summary.progress_line()),
-        Ok(None) => {},
-        Err(error) => {
-            eprintln!("[native_tpch_benchmark] stage=sf100_full_reservation_health_gate outcome=failed error={error}");
             return Err(error);
         },
     }

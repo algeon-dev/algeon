@@ -446,38 +446,6 @@ pub fn keyed_hash_join_strategy_input_facts_for_plan(
     }
 }
 
-#[doc(hidden)]
-pub fn hash_join_prebuild_reservation_unsupported_build_key_for_plan(
-    plan: &QueryPlan,
-    join: &JoinNode,
-) -> Option<BTreeMap<&'static str, String>> {
-    let build_input = match join.spec.build_side {
-        JoinSide::Left => join.inputs[0],
-        JoinSide::Right => join.inputs[1],
-    };
-    let input = plan.node(build_input)?;
-    let schema = input.output_schema();
-    join.spec.keys.iter().find_map(|key| {
-        let column = match join.spec.build_side {
-            JoinSide::Left => &key.left,
-            JoinSide::Right => &key.right,
-        };
-        let field = schema.field_with_name(column.name()).ok()?;
-        if hash_join_prebuild_reservation_supported_type(field.data_type()) {
-            return None;
-        }
-        Some(BTreeMap::from([
-            ("reason", "hash_join_pre_build_reservation_unsupported_build_key".to_string()),
-            ("build_side", join.spec.build_side.to_string()),
-            ("build_key", column.name().to_string()),
-            ("build_key_data_type", field.data_type().to_string()),
-            ("build_key_nullable", field.is_nullable().to_string()),
-            ("required_contract", "hash_join_pre_build_reservation_size_bytes".to_string()),
-            ("lower_level_owner", "cudf_hash_join_pre_build_reservation_size".to_string()),
-        ]))
-    })
-}
-
 #[cfg(test)]
 #[doc(hidden)]
 pub fn keyed_hash_join_strategy_decision(

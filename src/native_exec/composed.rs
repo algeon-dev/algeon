@@ -18,7 +18,7 @@ use datafusion::{
 };
 use futures::future::BoxFuture;
 use nexus_query_engine::{
-    admission::{ComposedGraphProducerCandidate, QueryPlanCapabilityProof},
+    admission::AttemptCapabilityEvidence,
     exec::{execute_query_plan_with_gpu_inputs_observed, output::QueryOutput},
     plan::QueryPlan,
     runtime::{
@@ -36,7 +36,7 @@ use super::{
         native_query_runtime_error, properties_with_equivalence, run_gpu_execution_task, write_native_plan_tree,
     },
     config::NexusNativeExecutionConfig,
-    execute_gpu_resident_producer_with_context, gpu_resident_producer_input_name,
+    execute_gpu_resident_producer_with_context, gpu_resident_producer, gpu_resident_producer_input_name,
     metrics::{
         GraphClaimCalibrationCapture, NativeExecutionMetricsCapture, NexusNativeMetrics, SealedAttemptMetricsTarget,
     },
@@ -75,7 +75,7 @@ pub struct NexusNativeComposedExec {
 impl NexusNativeComposedExec {
     #[cfg(feature = "cugraph")]
     pub(crate) fn hard_output_row_upper_bound(&self) -> Option<u64> {
-        nexus_query_engine::graph_memory::query_plan_hard_row_upper_bound(&self.plan)
+        nexus_query_engine::plan::row_bounds::query_plan_hard_row_upper_bound(&self.plan)
     }
 
     /// Create composed native execution from GPU-resident producer children.
@@ -270,72 +270,91 @@ fn adapter_error_from_graph_rejection(rejection: DataFusionError, operation: &'s
     }
 }
 
-struct CompletedComposedAdmissionProof {
+struct CompletedComposedAdmissionEvidence {
     execution_config: NexusNativeExecutionConfig,
 }
 
-fn prepared_producer_capability_proof(
+struct PreparedProducerCapabilityEvidence {
+    aggregate: AttemptCapabilityEvidence,
+    output_scope: nexus_query_engine::admission::AttemptExecutionScope,
+}
+
+fn prepared_producer_capability_evidence(
     input: &dyn ExecutionPlan,
     tickets: &[Arc<super::admission::QueryAdmissionTicket>],
-) -> nexus_query_engine::error::Result<Option<QueryPlanCapabilityProof>> {
-    if let Some(producer) = input.downcast_ref::<NexusNativeComposedGpuProducerExec>() {
-        return resolve_composed_admission_capability_proof(producer.native_plan(), &producer.gpu_inputs).map(Some);
-    }
-    Ok(match tickets {
-        [ticket] => ticket.attempt_capability_proof_for_rebind(),
-        [] => {
-            graph_execution_plan(input).and_then(|graph| graph.graph_execution_capability_proof().ok()).or_else(|| {
-                input
-                    .downcast_ref::<super::producer::NexusNativeGpuProducerExec>()
-                    .and_then(|producer| QueryPlanCapabilityProof::for_query_plan(producer.native_plan()))
-            })
-        },
-        _ => None,
-    })
+) -> nexus_query_engine::error::Result<PreparedProducerCapabilityEvidence> {
+    let producer = gpu_resident_producer(input).ok_or_else(|| {
+        nexus_query_engine::error::QueryError::new(
+            nexus_query_engine::error::QueryErrorCode::UnsupportedPlanShape,
+            "datafusion_nexus.native_composed.admission_evidence",
+            "a prepared composed input is not a GPU-resident producer",
+        )
+        .with_fact("reason", "composed_admission_producer_missing")
+    })?;
+    let output_evidence = producer.gpu_result_capability_evidence().map_err(|error| {
+        nexus_query_engine::error::QueryError::new(
+            nexus_query_engine::error::QueryErrorCode::UnsupportedPlanShape,
+            "datafusion_nexus.native_composed.admission_evidence",
+            "a prepared composed producer did not expose its output capability evidence",
+        )
+        .with_fact("reason", "composed_admission_producer_evidence_missing")
+        .with_source(error)
+    })?;
+    let output_scope = output_evidence.execution_scopes().last().cloned().ok_or_else(|| {
+        nexus_query_engine::error::QueryError::new(
+            nexus_query_engine::error::QueryErrorCode::UnsupportedPlanShape,
+            "datafusion_nexus.native_composed.admission_evidence",
+            "a prepared composed producer's evidence has no execution scope to bind an occurrence to",
+        )
+        .with_fact("reason", "composed_admission_producer_scope_missing")
+    })?;
+    let mut evidence =
+        tickets.iter().filter_map(|ticket| ticket.attempt_capability_evidence_for_rebind()).collect::<Vec<_>>();
+    evidence.push(output_evidence);
+    Ok(PreparedProducerCapabilityEvidence { aggregate: AttemptCapabilityEvidence::aggregate(evidence), output_scope })
 }
 
-fn composed_consumer_capability_proof(consumer_plan: &QueryPlan) -> Option<QueryPlanCapabilityProof> {
-    QueryPlanCapabilityProof::for_composed_consumer_plan(consumer_plan)
-}
-
-/// Issues the one engine-owned proof for a prepared composed GPU island.
+/// Issues the one engine-owned evidence for a prepared composed GPU island.
 ///
 /// The caller supplies the exact consumer plan that will run and the
 /// top-level producer occurrences in execution order. Nested producer
-/// fragments stay behind each top-level proof; they are not flattened into a
-/// second occurrence manifest.
+/// fragments stay behind each top-level evidence; they are not flattened
+/// into a second occurrence manifest.
 #[cfg(feature = "cugraph")]
-pub(crate) fn composed_admission_capability_proof(
+pub(crate) fn composed_admission_capability_evidence(
     consumer_plan: &QueryPlan,
     prepared_gpu_inputs: &[Arc<dyn ExecutionPlan>],
-) -> DataFusionResult<QueryPlanCapabilityProof> {
-    resolve_composed_admission_capability_proof(consumer_plan, prepared_gpu_inputs)
+) -> DataFusionResult<AttemptCapabilityEvidence> {
+    resolve_composed_admission_capability_evidence(consumer_plan, prepared_gpu_inputs)
         .map_err(|error| prepared_composed_admission_error(error, consumer_plan, None))
 }
 
-fn resolve_composed_admission_capability_proof(
+fn resolve_composed_admission_capability_evidence(
     consumer_plan: &QueryPlan,
     prepared_gpu_inputs: &[Arc<dyn ExecutionPlan>],
-) -> nexus_query_engine::error::Result<QueryPlanCapabilityProof> {
-    let mut candidates = Vec::with_capacity(prepared_gpu_inputs.len());
+) -> nexus_query_engine::error::Result<AttemptCapabilityEvidence> {
+    let mut consumer_evidence = AttemptCapabilityEvidence::for_query_plan(consumer_plan);
+    let mut evidence = Vec::with_capacity(prepared_gpu_inputs.len());
     for input in prepared_gpu_inputs {
+        let input_name = gpu_resident_producer_input_name(input.as_ref()).ok_or_else(|| {
+            nexus_query_engine::error::QueryError::new(
+                nexus_query_engine::error::QueryErrorCode::UnsupportedPlanShape,
+                "datafusion_nexus.native_composed.admission_evidence",
+                "a prepared composed producer is missing its stable runtime occurrence identity",
+            )
+            .with_fact("reason", "composed_admission_occurrence_missing")
+        })?;
         let tickets = prepared_gpu_resident_producer_admission_tickets(input.as_ref());
-        let capability_proof = prepared_producer_capability_proof(input.as_ref(), &tickets)?;
-        candidates.push(ComposedGraphProducerCandidate::new(
-            gpu_resident_producer_input_name(input.as_ref()),
-            graph_execution_plan(input.as_ref()).map(|graph| graph.graph_result_input_name().to_owned()),
-            capability_proof,
-        ));
+        let producer_evidence = prepared_producer_capability_evidence(input.as_ref(), &tickets)?;
+        consumer_evidence.push_producer_occurrence(nexus_query_engine::admission::AttemptProducerOccurrence::new(
+            input_name,
+            producer_evidence.output_scope.execution_scope_fingerprint(),
+            producer_evidence.output_scope.output_schema_fingerprint(),
+        ))?;
+        evidence.push(producer_evidence.aggregate);
     }
-    let consumer_proof = composed_consumer_capability_proof(consumer_plan).ok_or_else(|| {
-        nexus_query_engine::error::QueryError::new(
-            nexus_query_engine::error::QueryErrorCode::UnsupportedPlanShape,
-            "datafusion_nexus.native_composed.admission_proof",
-            "the native composed consumer did not issue an exact capability proof",
-        )
-        .with_fact("reason", "consumer_admission_proof_missing")
-    })?;
-    QueryPlanCapabilityProof::resolve_composed_graph_attempt(consumer_plan, consumer_proof, candidates)
+    evidence.push(consumer_evidence);
+    Ok(AttemptCapabilityEvidence::aggregate(evidence))
 }
 
 fn prepared_composed_admission_error(
@@ -358,22 +377,22 @@ fn prepared_composed_admission_error(
         }
     }
     DataFusionError::from(Error::from_native_with_blocking_diagnostics(
-        "datafusion_nexus.native_composed.admission_proof",
+        "datafusion_nexus.native_composed.admission_evidence",
         "failed to derive the complete engine-owned composed admission bound",
         error,
     ))
 }
 
-/// Replaces provisional producer tickets with the one proof for the complete
+/// Replaces provisional producer tickets with the one evidence for the complete
 /// composed GPU island. Child preparation is the only phase that can resolve
 /// footer-bound graph evidence, while the outer consumer is the only owner of
 /// its aggregate/filter capability requirements.
-fn complete_composed_admission_proof(
+fn complete_composed_admission_evidence(
     execution_config: NexusNativeExecutionConfig,
     consumer_plan: &QueryPlan,
     prepared_gpu_inputs: &[Arc<dyn ExecutionPlan>],
     task_context: &TaskContext,
-) -> DataFusionResult<CompletedComposedAdmissionProof> {
+) -> DataFusionResult<CompletedComposedAdmissionEvidence> {
     let mut producer_tickets = Vec::new();
     for input in prepared_gpu_inputs {
         for ticket in prepared_gpu_resident_producer_admission_tickets(input.as_ref()) {
@@ -383,7 +402,7 @@ fn complete_composed_admission_proof(
         }
     }
 
-    let complete_proof = resolve_composed_admission_capability_proof(consumer_plan, prepared_gpu_inputs)
+    let complete_evidence = resolve_composed_admission_capability_evidence(consumer_plan, prepared_gpu_inputs)
         .map_err(|error| prepared_composed_admission_error(error, consumer_plan, Some(&execution_config)))?;
     let canonical_ticket =
         query_admission_ticket_from_task_context(task_context).or_else(|| execution_config.query_admission_ticket());
@@ -394,12 +413,12 @@ fn complete_composed_admission_proof(
     let Some(source) = source else {
         // A direct composed caller without an admission authority remains
         // unchanged; the runtime context will reject it before producer work.
-        return Ok(CompletedComposedAdmissionProof { execution_config });
+        return Ok(CompletedComposedAdmissionEvidence { execution_config });
     };
     if producer_tickets.iter().any(|ticket| !source.same_backend(&ticket.source())) {
         return Err(Error::new(
             ErrorCode::InvalidExecutionPlan,
-            "datafusion_nexus.native_composed.admission_proof",
+            "datafusion_nexus.native_composed.admission_evidence",
             "prepared GPU producers belong to different admission backends",
         )
         .with_fact("reason", "composed_producer_admission_backend_mismatch")
@@ -416,32 +435,32 @@ fn complete_composed_admission_proof(
         if !source.same_backend(&active_ticket.source()) {
             return Err(Error::new(
                 ErrorCode::InvalidExecutionPlan,
-                "datafusion_nexus.native_composed.admission_proof",
+                "datafusion_nexus.native_composed.admission_evidence",
                 "the composed root and its active admission ticket belong to different backends",
             )
             .with_fact("reason", "composed_active_admission_backend_mismatch")
             .into());
         }
-        active_ticket.rebind_capability_proof_before_admission(complete_proof).map_err(|error| {
+        active_ticket.rebind_capability_evidence_before_admission(complete_evidence).map_err(|error| {
             DataFusionError::from(Error::from_native(
-                "datafusion_nexus.native_composed.admission_proof",
+                "datafusion_nexus.native_composed.admission_evidence",
                 "failed to rebind the active composed admission ticket before query-service admission",
                 error,
             ))
         })?;
-        return Ok(CompletedComposedAdmissionProof {
+        return Ok(CompletedComposedAdmissionEvidence {
             execution_config: execution_config.with_existing_query_admission_ticket(active_ticket),
         });
     }
 
     let Some(first_ticket) = producer_tickets.first() else {
-        return Ok(CompletedComposedAdmissionProof { execution_config });
+        return Ok(CompletedComposedAdmissionEvidence { execution_config });
     };
-    let ticket = first_ticket.rebind_with_source_and_capability_proof(source, complete_proof);
+    let ticket = first_ticket.rebind_with_source_and_capability_evidence(source, complete_evidence);
     if let Some(attempt) = task_context.session_config().options().extensions.get::<NexusAttemptExtension>() {
         attempt.bind_ticket(Arc::clone(&ticket));
     }
-    Ok(CompletedComposedAdmissionProof {
+    Ok(CompletedComposedAdmissionEvidence {
         execution_config: execution_config.with_existing_query_admission_ticket(ticket),
     })
 }
@@ -559,7 +578,6 @@ impl ExecutionPlan for NexusNativeComposedExec {
                 if execution_config.memory_control_policy().is_bounded() {
                     nexus_query_engine::exec::preflight_bounded_query_plan(
                         &plan,
-                        execution_config.boundary_policy(),
                         execution_config.statistical_aggregate_execution_mode(),
                     )
                     .map_err(|error| {
@@ -575,7 +593,7 @@ impl ExecutionPlan for NexusNativeComposedExec {
                     prepared_gpu_inputs
                         .push(prepare_gpu_resident_producer_for_execution(input, Arc::clone(&task_context)).await?);
                 }
-                let completed_admission = complete_composed_admission_proof(
+                let completed_admission = complete_composed_admission_evidence(
                     execution_config,
                     &plan,
                     &prepared_gpu_inputs,
@@ -867,6 +885,16 @@ impl NexusNativeComposedGpuProducerExec {
 impl GpuResidentProducer for NexusNativeComposedGpuProducerExec {
     fn gpu_result_input_name(&self) -> &str {
         &self.input_name
+    }
+
+    fn gpu_result_capability_evidence(&self) -> DataFusionResult<AttemptCapabilityEvidence> {
+        resolve_composed_admission_capability_evidence(&self.plan, &self.gpu_inputs).map_err(|error| {
+            DataFusionError::from(Error::from_native(
+                "datafusion_nexus.native_composed_gpu_producer.admission_evidence",
+                "failed to derive capability evidence for a composed GPU-resident output",
+                error,
+            ))
+        })
     }
 
     fn prepared_admission_tickets(&self) -> Vec<Arc<super::admission::QueryAdmissionTicket>> {

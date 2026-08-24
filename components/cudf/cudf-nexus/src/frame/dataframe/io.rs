@@ -43,8 +43,6 @@ use crate::{
     },
 };
 
-const PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP: &str =
-    "libcudf_parquet_decoded_output_preflight_unavailable";
 const PARQUET_SOURCE_MINIMUM_HARD_BUDGET_BYTES: usize = 64 * 1024;
 
 /// Lower-level byte preflight for a bounded local Parquet source chunk read.
@@ -1515,8 +1513,6 @@ fn read_parquet_source_chunk_with_budget_input(
             ("source_read_preflight_retained_output_bytes", preflight.retained_output_bytes().to_string()),
             ("source_read_preflight_required_budget_bytes", preflight.required_budget_bytes().to_string()),
         ]);
-    } else {
-        report = report.with_unresolved_contract(PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP);
     }
 
     Ok(BudgetedExecutionOutcome::new(output, report))
@@ -1640,8 +1636,7 @@ impl DataFrame {
             .reservation_enforced_report()
             .with_retained_bytes(output_bytes)
             .with_output_bytes(output_bytes)
-            .with_output_rows(output_rows)
-            .with_unresolved_contract(PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP);
+            .with_output_rows(output_rows);
         Ok(BudgetedExecutionOutcome::new(frame, report))
     }
 
@@ -1972,8 +1967,7 @@ impl DataFrame {
             .with_retained_bytes(output_bytes)
             .with_output_bytes(output_bytes)
             .with_output_rows(output_rows)
-            .with_context_facts(parquet_source_batch_budget_context(source, chunks, mode))
-            .with_unresolved_contract(PARQUET_SOURCE_DECODED_OUTPUT_PREFLIGHT_CONTRACT_GAP);
+            .with_context_facts(parquet_source_batch_budget_context(source, chunks, mode));
 
         Ok(BudgetedExecutionOutcome::new(output, report))
     }

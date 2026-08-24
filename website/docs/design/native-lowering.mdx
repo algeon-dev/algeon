@@ -32,7 +32,7 @@ DataFusion ExecutionPlan
   -> lower one supported candidate to QueryPlan
   -> optimize IR, apply cost selection, and check execution capability
   -> NexusNativeExec or NexusNativeComposedExec
-  -> capability proof and, when needed, a QueryAdmissionTicket
+  -> capability evidence and, when needed, a QueryAdmissionTicket
 ~~~
 
 Runtime admission and device-memory accounting begin later. See
@@ -103,18 +103,14 @@ The selected candidate is wrapped in one of two `ExecutionPlan` nodes:
   required and provided input names match exactly. This is GPU-to-GPU
   composition, not arbitrary relational fragment extraction.
 
-The planner also attaches admission evidence. Each selected fragment passes
-engine preflight and receives one `QueryPlanCapabilityProof`. When the
+The planner also attaches admission evidence. Each selected fragment records
+the device capabilities and exact plan scope needed for execution. When the
 session config is set up for planner-side admission (an admission source and
-no `QueryServiceHandle`), the proofs are combined into one
-`QueryAdmissionTicket` bound to the plan. The ticket records what the query
-needs; device and grant acquisition wait until execution. Two cases create
-no ticket: configs that already hold a `QueryServiceHandle`, because
-execution uses that handle's context, and plans with a cuGraph root. Graph
-roots get no planner-time ticket because their lakehouse footer metadata may
-still be resolving — a ticket minted now would freeze incomplete cardinality
-evidence. The root mints its own ticket once that metadata is bound to the
-exact plan.
+no `QueryServiceHandle`), the fragment evidence is combined into one
+`QueryAdmissionTicket` bound to the plan. Device and grant acquisition wait
+until execution. Configs that already hold a `QueryServiceHandle` use that
+handle's context. A cuGraph root binds its evidence after lakehouse footer
+metadata has resolved so the admitted scope matches the executable plan.
 
 ## Selection, fallback, and mixed execution
 

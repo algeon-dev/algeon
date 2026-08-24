@@ -39,16 +39,11 @@ impl CuvsGpuFunctionFamily {
 }
 
 /// Determine cuVS planning availability for the session being built.
-///
-/// The SQL relation planner is useful without the cuVS feature so it remains
-/// installable for planning contracts. The catalog must nevertheless advertise
-/// that execution cannot be planned. cuVS also intentionally has no bounded
-/// execution contract until lower-level peak-memory preflight exists.
 pub(crate) fn cuvs_gpu_function_availability(_config: Option<&SessionConfig>) -> GpuFunctionAvailability {
     if !cfg!(feature = "cuvs") {
         return GpuFunctionAvailability::Unavailable { reason: "required_feature_disabled".to_string() };
     }
-    GpuFunctionAvailability::Unavailable { reason: "bounded_execution_unavailable".to_string() }
+    GpuFunctionAvailability::Available
 }
 
 #[async_trait::async_trait]
@@ -312,7 +307,6 @@ fn examples(operation: CuvsOperation) -> Value {
 fn limitations(operation: CuvsOperation) -> Value {
     let common = [
         "Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.",
-        "Bounded cuVS execution is unavailable until the lower-level peak-memory preflight contract exists.",
         "Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.",
     ];
     Value::Array(
@@ -367,9 +361,6 @@ fn unavailable_validation(
         message: match reason {
             "required_feature_disabled" => {
                 "cuVS vector algorithm execution requires the cuvs Cargo feature".to_string()
-            },
-            "bounded_execution_unavailable" => {
-                "bounded cuVS execution requires a lower-level peak-memory preflight contract".to_string()
             },
             _ => "cuVS function is unavailable in this session/build".to_string(),
         },
@@ -457,10 +448,10 @@ mod tests {
     }
 
     #[test]
-    fn no_cuvs_feature_is_never_reported_as_available() {
+    fn availability_follows_the_cuvs_build_feature() {
         let availability = cuvs_gpu_function_availability(None);
         if cfg!(feature = "cuvs") {
-            assert_eq!(availability.unavailable_reason(), Some("bounded_execution_unavailable"));
+            assert!(availability.is_available());
         } else {
             assert_eq!(availability.unavailable_reason(), Some("required_feature_disabled"));
         }

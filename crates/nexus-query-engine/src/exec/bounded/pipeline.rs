@@ -1,13 +1,13 @@
 //! Bounded-pipeline execution boundary (the single capability-first path).
 
+#[cfg(test)]
+pub(crate) use super::compiled::YieldedFrameCounterTestHarness;
 use super::compiled::execute_compiled_pipeline;
 #[doc(hidden)]
 pub use super::compiled::{
     CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
     CompiledSchedulingCycle, CompiledTaskExecutor, CompiledTaskOutput, ReleasedCompiledResource,
 };
-#[cfg(test)]
-pub(crate) use super::compiled::{ResidentFrameStreamProducerTestHarness, YieldedFrameCounterTestHarness};
 use crate::{
     admission::{bounded_cugraph_pipeline_admission, bounded_pipeline_admission_with_statistical_aggregate_mode},
     error::Result,

@@ -26,6 +26,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
+use cudf::runtime::CudaStream;
 use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
 use serde::Serialize;
 
@@ -69,12 +70,8 @@ pub struct LedgerSnapshot {
     pub live_grants_bytes: u64,
     /// Bytes owned by frozen resident domains.
     pub frozen_resident_bytes: u64,
-    /// Aggregate query-owned bytes currently reserved inside live grants.
-    ///
-    /// This is deliberately distinct from `live_grants_bytes`: grants prove
-    /// admission capacity while live reservations describe the bytes currently
-    /// retained by query work or escaping results.
-    pub live_reserved_bytes: u64,
+    /// Aggregate bytes retained by live resident owners.
+    pub resident_owner_bytes: u64,
     /// Logical root stream slots still available to a new admitted attempt.
     ///
     /// These values are derived from the immutable profile and active grants
@@ -145,8 +142,8 @@ pub struct DeviceLedgerReport {
     pub active_attempts: usize,
     pub live_grants_bytes: u64,
     pub frozen_resident_bytes: u64,
-    /// Aggregate query-owned live reservations at this report's sequence.
-    pub live_reserved_bytes: u64,
+    /// Aggregate bytes retained by resident owners at this report's sequence.
+    pub resident_owner_bytes: u64,
     /// Logical root stream slots available at this report's sequence.
     pub root_streams_available: usize,
     /// Logical auxiliary stream slots available at this report's sequence.
@@ -180,7 +177,7 @@ pub struct DeviceLedgerGrantRow {
     pub grant_id: u64,
     pub admission_request_id: AdmissionRequestId,
     pub grant_bytes: u64,
-    pub live_reserved_bytes: u64,
+    pub resident_owner_bytes: u64,
     pub frozen_resident_bytes: Option<u64>,
 }
 
@@ -212,10 +209,8 @@ pub enum LedgerTransitionKind {
     CachePinned,
     /// The final in-use reference left a resident-cache entry.
     CacheUnpinned,
-    LiveReservationCharged,
-    LiveReservationReleased,
-    AttemptPhaseActivated,
-    AttemptPhaseReleased,
+    ResidentOwnerCharged,
+    ResidentOwnerReleased,
 }
 
 /// One immutable ledger mutation observed atomically with its state change.
@@ -325,7 +320,6 @@ impl fmt::Debug for DeviceLedgerInner {
 struct DeviceLedgerState {
     sequence: u64,
     next_grant_generation: u64,
-    next_phase_generation: u64,
     grants: BTreeMap<u64, ActiveGrant>,
     frozen_resident_bytes: u64,
     health: DeviceAdmissionHealth,
@@ -337,16 +331,9 @@ struct DeviceLedgerState {
 struct ActiveGrant {
     admission_request_id: AdmissionRequestId,
     grant_bytes: u64,
-    live_reserved_bytes: u64,
-    active_phase: Option<ActiveGrantPhase>,
+    resident_owner_bytes: u64,
     pending_frozen_resident_bytes: Option<u64>,
     frozen_resident_bytes: Option<u64>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct ActiveGrantPhase {
-    generation: u64,
-    required_bytes: u64,
 }
 
 impl DeviceLedgerState {
@@ -356,8 +343,8 @@ impl DeviceLedgerState {
         })
     }
 
-    fn live_reserved_bytes(&self) -> u64 {
-        self.grants.values().fold(0u64, |sum, grant| sum.saturating_add(grant.live_reserved_bytes))
+    fn resident_owner_bytes(&self) -> u64 {
+        self.grants.values().fold(0u64, |sum, grant| sum.saturating_add(grant.resident_owner_bytes))
     }
 }
 
@@ -371,7 +358,6 @@ impl DeviceLedger {
                 state: Mutex::new(DeviceLedgerState {
                     sequence: 0,
                     next_grant_generation: 1,
-                    next_phase_generation: 1,
                     grants: BTreeMap::new(),
                     frozen_resident_bytes: 0,
                     health: DeviceAdmissionHealth::Open,
@@ -567,7 +553,7 @@ impl DeviceLedger {
             active_attempts,
             live_grants_bytes: state.live_grants_bytes(),
             frozen_resident_bytes: state.frozen_resident_bytes,
-            live_reserved_bytes: state.live_reserved_bytes(),
+            resident_owner_bytes: state.resident_owner_bytes(),
             root_streams_available: profile.root_stream_count.saturating_sub(active_attempts),
             auxiliary_streams_available: profile.aux_source_work_capacity.saturating_sub(committed_auxiliary_slots),
             root_worker_slots_available: profile.root_lane_count.saturating_sub(active_attempts),
@@ -577,8 +563,7 @@ impl DeviceLedger {
             worker_depth: active_attempts.saturating_add(committed_auxiliary_slots),
             protected_slot: false,
             protected_reserve_bytes: 0,
-            // Resident-cache charges are ledger-owned and share this atomic
-            // snapshot sequence with grants and reservations.
+            // Resident-cache charges share the same atomic ledger snapshot.
             cache_evictable_resident_bytes: state.evictable_bytes,
             cache_pinned_in_use_bytes: state.pinned_bytes,
             health: state.health.clone(),
@@ -596,7 +581,7 @@ impl DeviceLedger {
                 grant_id: *grant_id,
                 admission_request_id: active.admission_request_id,
                 grant_bytes: active.grant_bytes,
-                live_reserved_bytes: active.live_reserved_bytes,
+                resident_owner_bytes: active.resident_owner_bytes,
                 frozen_resident_bytes: active.frozen_resident_bytes,
             })
             .collect();
@@ -609,7 +594,7 @@ impl DeviceLedger {
             active_attempts: snapshot.active_attempts,
             live_grants_bytes: snapshot.live_grants_bytes,
             frozen_resident_bytes: snapshot.frozen_resident_bytes,
-            live_reserved_bytes: snapshot.live_reserved_bytes,
+            resident_owner_bytes: snapshot.resident_owner_bytes,
             root_streams_available: snapshot.root_streams_available,
             auxiliary_streams_available: snapshot.auxiliary_streams_available,
             root_worker_slots_available: snapshot.root_worker_slots_available,
@@ -736,8 +721,7 @@ impl DeviceLedger {
             ActiveGrant {
                 admission_request_id: waiter_id,
                 grant_bytes,
-                live_reserved_bytes: 0,
-                active_phase: None,
+                resident_owner_bytes: 0,
                 pending_frozen_resident_bytes: None,
                 frozen_resident_bytes: None,
             },
@@ -749,7 +733,9 @@ impl DeviceLedger {
                 identity,
                 admission_request_id: waiter_id,
                 grant_bytes,
-                live_reserved_bytes: Default::default(),
+                resident_owner_bytes: Default::default(),
+                next_resident_owner_id: std::sync::atomic::AtomicU64::new(1),
+                resident_owner_allocations: Mutex::new(BTreeMap::new()),
                 frozen: Default::default(),
                 frozen_domain: Mutex::new(None),
             }),
@@ -929,25 +915,18 @@ pub struct MemoryGrant {
     resource_epoch: Option<Arc<QueryServiceResourceEpoch>>,
 }
 
-/// Shared live-reservation retention held by GPU-resident outputs that
-/// outlive their executor-side reservation tracker.
+/// Shared grant retention held by GPU-resident outputs.
 #[derive(Clone)]
 #[doc(hidden)]
-pub struct FrozenResidentLease {
-    inner: Arc<FrozenResidentLeaseInner>,
+pub struct ResidentOwnerLease {
+    inner: Arc<ResidentOwnerLeaseInner>,
 }
 
-#[derive(Debug)]
-#[doc(hidden)]
-pub struct MemoryGrantPhase {
-    grant: MemoryGrant,
-    generation: u64,
-    required_bytes: u64,
-}
-
-struct FrozenResidentLeaseInner {
+struct ResidentOwnerLeaseInner {
     grant: MemoryGrant,
     bytes: u64,
+    owner_id: u64,
+    completion_stream: Mutex<Option<CudaStream>>,
 }
 
 struct MemoryGrantInner {
@@ -955,7 +934,9 @@ struct MemoryGrantInner {
     identity: GrantIdentity,
     admission_request_id: AdmissionRequestId,
     grant_bytes: u64,
-    live_reserved_bytes: std::sync::atomic::AtomicU64,
+    resident_owner_bytes: std::sync::atomic::AtomicU64,
+    next_resident_owner_id: std::sync::atomic::AtomicU64,
+    resident_owner_allocations: Mutex<BTreeMap<u64, Arc<[usize]>>>,
     frozen: std::sync::atomic::AtomicBool,
     frozen_domain: Mutex<Option<Arc<cudf::QueryMemoryDomain>>>,
 }
@@ -1048,52 +1029,44 @@ impl MemoryGrant {
     /// charge and retains its native owner through final release.
     ///
     /// `resident_bytes` is the allocation registry's own measurement. The
-    /// grant's live reservation is reconciled to that same measurement so the
-    /// retained charge and the frozen charge are one accounting fact rather
-    /// than two independently derived totals.
+    /// resident-owner charge is reconciled to that same measurement so the
+    /// owner and frozen charges remain one accounting fact.
     pub(crate) fn freeze_resident_with_domain(
         &self,
         resident_bytes: u64,
         domain: Arc<cudf::QueryMemoryDomain>,
     ) -> Result<()> {
-        self.reconcile_live_reservation_to_measurement(resident_bytes)?;
+        self.reconcile_resident_owner_bytes(resident_bytes)?;
         self.prepare_frozen_resident_charge(resident_bytes, Some(domain))
     }
 
-    /// Rebases every live reservation this grant holds onto the measured
-    /// resident bytes.
-    ///
-    /// Executor-side trackers charge what each stage requested, which can
-    /// differ from what the allocator actually retained (concat outputs are
-    /// smaller than the sum of their chunks, for example). The measurement is
-    /// the truth source, so the difference is reconciled instead of being
-    /// treated as an ownership mismatch.
-    fn reconcile_live_reservation_to_measurement(&self, measured_bytes: u64) -> Result<()> {
+    /// Rebases resident ownership onto the allocator's measured bytes.
+    fn reconcile_resident_owner_bytes(&self, measured_bytes: u64) -> Result<()> {
         if measured_bytes > self.inner.grant_bytes {
             return Err(QueryError::new(
                 QueryErrorCode::InternalInvariantViolation,
-                "nexus_query_engine.runtime.gpu.memory_grant.reconcile_live_reservation",
+                "nexus_query_engine.runtime.gpu.memory_grant.reconcile_resident_owner_bytes",
                 "measured resident bytes exceed the immutable query cap",
             )
             .with_fact("measured_bytes", measured_bytes)
             .with_fact("query_cap_bytes", self.inner.grant_bytes));
         }
         let ledger = DeviceLedger { inner: Arc::clone(&self.inner.ledger) };
-        let mut state = ledger.lock_state("reconcile_live_reservation_to_measurement")?;
+        let mut state = ledger.lock_state("reconcile_resident_owner_bytes")?;
         let Some(active) = state.grants.get_mut(&self.inner.identity.generation) else {
             return Err(QueryError::new(
                 QueryErrorCode::InternalInvariantViolation,
-                "nexus_query_engine.runtime.gpu.memory_grant.reconcile_live_reservation",
+                "nexus_query_engine.runtime.gpu.memory_grant.reconcile_resident_owner_bytes",
                 "query grant is missing from its device ledger",
             )
             .with_fact("grant_id", self.grant_id()));
         };
-        if active.live_reserved_bytes == measured_bytes {
+        if active.resident_owner_bytes == measured_bytes {
             return Ok(());
         }
-        active.live_reserved_bytes = measured_bytes;
-        self.inner.live_reserved_bytes.store(measured_bytes, std::sync::atomic::Ordering::Release);
-        ledger.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::LiveReservationCharged);
+        active.resident_owner_bytes = measured_bytes;
+        self.inner.resident_owner_bytes.store(measured_bytes, std::sync::atomic::Ordering::Release);
+        ledger.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::ResidentOwnerCharged);
         Ok(())
     }
 
@@ -1102,11 +1075,11 @@ impl MemoryGrant {
         resident_bytes: u64,
         domain: Option<Arc<cudf::QueryMemoryDomain>>,
     ) -> Result<()> {
-        if resident_bytes == 0 || resident_bytes > self.inner.grant_bytes {
+        if resident_bytes > self.inner.grant_bytes {
             return Err(QueryError::new(
                 QueryErrorCode::InternalInvariantViolation,
                 "nexus_query_engine.runtime.gpu.memory_grant.freeze_resident",
-                "frozen resident charge must be positive and fit the query cap",
+                "frozen resident charge must fit the query cap",
             )
             .with_fact("resident_bytes", resident_bytes)
             .with_fact("query_cap_bytes", self.inner.grant_bytes));
@@ -1253,129 +1226,59 @@ impl MemoryGrant {
         self.inner.ledger.profile.device_ordinal
     }
 
-    /// Device-resident bytes currently protected by all reservation trackers
-    /// sharing this grant.
+    /// Device-resident bytes currently owned by live values under this grant.
     #[doc(hidden)]
-    pub fn live_reserved_bytes(&self) -> u64 {
-        self.inner.live_reserved_bytes.load(std::sync::atomic::Ordering::Acquire)
+    pub fn resident_owner_bytes(&self) -> u64 {
+        self.inner.resident_owner_bytes.load(std::sync::atomic::Ordering::Acquire)
     }
 
-    /// Remaining bytes this grant can admit across all active reservation
-    /// trackers sharing it.
-    #[doc(hidden)]
-    pub fn remaining_live_reservation_bytes(&self) -> Result<u64> {
-        self.check_resource_epoch("nexus_query_engine.runtime.gpu.memory_grant.remaining_live_reservation_bytes")?;
-        let ledger = DeviceLedger { inner: Arc::clone(&self.inner.ledger) };
-        let state = ledger.lock_state("remaining_live_reservation_bytes")?;
-        let Some(active) = state.grants.get(&self.inner.identity.generation) else {
-            return Ok(0);
-        };
-        let active_limit = active.active_phase.map_or(active.grant_bytes, |phase| phase.required_bytes);
-        Ok(active_limit.saturating_sub(active.live_reserved_bytes))
-    }
-
-    #[doc(hidden)]
-    pub fn activate_phase(&self, required_bytes: u64) -> Result<MemoryGrantPhase> {
-        self.check_resource_epoch("nexus_query_engine.runtime.gpu.memory_grant.activate_phase")?;
-        if required_bytes == 0 {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.runtime.gpu.memory_grant.activate_phase",
-                "an attempt phase requires a positive immutable byte bound",
-            )
-            .with_fact("reason", "zero_attempt_phase_bound"));
+    /// Records newly published device-resident bytes under this grant.
+    fn add_resident_owner_bytes(&self, bytes: u64) -> Result<()> {
+        self.check_resource_epoch("nexus_query_engine.runtime.gpu.memory_grant.add_resident_owner_bytes")?;
+        if bytes == 0 {
+            return Ok(());
         }
         let ledger = DeviceLedger { inner: Arc::clone(&self.inner.ledger) };
-        let mut state = ledger.lock_state("activate_phase")?;
-        let phase_generation = state.next_phase_generation;
-        let next_phase_generation = phase_generation.checked_add(1).ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::Internal,
-                "nexus_query_engine.runtime.gpu.memory_grant.activate_phase",
-                "attempt phase generation exhausted",
-            )
-            .with_fact("reason", "attempt_phase_generation_exhausted")
-        })?;
-        let active = state.grants.get_mut(&self.inner.identity.generation).ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::MemoryReservationFailed,
-                "nexus_query_engine.runtime.gpu.memory_grant.activate_phase",
-                "the immutable attempt grant is no longer active",
-            )
-            .with_fact("reason", "attempt_phase_grant_inactive")
-        })?;
+        let mut state = ledger.lock_state("add_resident_owner_bytes")?;
+        let Some(active) = state.grants.get_mut(&self.inner.identity.generation) else {
+            return Err(QueryError::new(
+                QueryErrorCode::InternalInvariantViolation,
+                "nexus_query_engine.runtime.gpu.memory_grant.add_resident_owner_bytes",
+                "resident owner was published after its grant left the device ledger",
+            ));
+        };
         if active.frozen_resident_bytes.is_some() {
             return Err(QueryError::new(
                 QueryErrorCode::InternalInvariantViolation,
-                "nexus_query_engine.runtime.gpu.memory_grant.activate_phase",
-                "a frozen resident domain cannot activate execution work",
-            )
-            .with_fact("reason", "frozen_resident_domain_is_not_executable"));
+                "nexus_query_engine.runtime.gpu.memory_grant.add_resident_owner_bytes",
+                "resident owner was published after the grant was frozen",
+            ));
         }
-        if active.active_phase.is_some() {
-            return Err(QueryError::new(
-                QueryErrorCode::MemoryReservationFailed,
-                "nexus_query_engine.runtime.gpu.memory_grant.activate_phase",
-                "the immutable attempt grant already has an active phase",
+        let next_resident_owner_bytes = active.resident_owner_bytes.checked_add(bytes).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::InternalInvariantViolation,
+                "nexus_query_engine.runtime.gpu.memory_grant.add_resident_owner_bytes",
+                "resident owner byte accounting overflowed",
             )
-            .with_fact("reason", "attempt_phase_already_active"));
-        }
-        if required_bytes > active.grant_bytes || active.live_reserved_bytes > required_bytes {
-            return Err(QueryError::new(
-                QueryErrorCode::MemoryReservationFailed,
-                "nexus_query_engine.runtime.gpu.memory_grant.activate_phase",
-                "the next attempt phase does not fit the immutable grant and retained input",
-            )
-            .with_fact("reason", "attempt_phase_exceeds_immutable_grant")
-            .with_fact("required_phase_bytes", required_bytes)
-            .with_fact("grant_bytes", active.grant_bytes)
-            .with_fact("retained_live_bytes", active.live_reserved_bytes));
-        }
-        active.active_phase = Some(ActiveGrantPhase { generation: phase_generation, required_bytes });
-        state.next_phase_generation = next_phase_generation;
-        ledger.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::AttemptPhaseActivated);
-        Ok(MemoryGrantPhase { grant: self.clone(), generation: phase_generation, required_bytes })
+        })?;
+        active.resident_owner_bytes = next_resident_owner_bytes;
+        self.inner.resident_owner_bytes.store(next_resident_owner_bytes, std::sync::atomic::Ordering::Release);
+        ledger.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::ResidentOwnerCharged);
+        Ok(())
     }
 
-    /// Attempts to charge new device-resident bytes to this grant.
-    #[doc(hidden)]
-    pub fn try_reserve_live_bytes(&self, bytes: u64) -> Result<bool> {
-        self.check_resource_epoch("nexus_query_engine.runtime.gpu.memory_grant.try_reserve_live_bytes")?;
-        if bytes == 0 {
-            return Ok(true);
-        }
-        let ledger = DeviceLedger { inner: Arc::clone(&self.inner.ledger) };
-        let mut state = ledger.lock_state("try_reserve_live_bytes")?;
-        let Some(active) = state.grants.get_mut(&self.inner.identity.generation) else {
-            return Ok(false);
-        };
-        if active.frozen_resident_bytes.is_some() {
-            return Ok(false);
-        }
-        let Some(next_live_reserved_bytes) = active.live_reserved_bytes.checked_add(bytes) else {
-            return Ok(false);
-        };
-        active.live_reserved_bytes = next_live_reserved_bytes;
-        self.inner.live_reserved_bytes.store(next_live_reserved_bytes, std::sync::atomic::Ordering::Release);
-        ledger.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::LiveReservationCharged);
-        Ok(true)
-    }
-
-    /// Releases live bytes previously admitted by
-    /// [`Self::try_reserve_live_bytes`].
-    #[doc(hidden)]
-    pub fn release_live_bytes(&self, bytes: u64) {
+    fn release_resident_owner_bytes(&self, bytes: u64) {
         if bytes == 0 {
             return;
         }
         let ledger = DeviceLedger { inner: Arc::clone(&self.inner.ledger) };
         if ledger.in_transition_observer() {
-            ledger.panic_on_transition_observer_reentrancy("release_live_bytes");
+            ledger.panic_on_transition_observer_reentrancy("release_resident_owner_bytes");
         }
         let mut state = match ledger.inner.state.lock() {
             Ok(state) => state,
             Err(_error) => {
-                eprintln!("[nexus-query-engine] warning: failed to release memory grant live reservation bytes");
+                eprintln!("[nexus-query-engine] warning: failed to release resident owner bytes");
                 return;
             },
         };
@@ -1387,69 +1290,101 @@ impl MemoryGrant {
         let Some(active) = state.grants.get_mut(&self.inner.identity.generation) else {
             return;
         };
-        let next_live_reserved_bytes = match active.live_reserved_bytes.checked_sub(bytes) {
+        let next_resident_owner_bytes = match active.resident_owner_bytes.checked_sub(bytes) {
             Some(next) => next,
-            // A frozen grant's live reservation was rebased onto the
-            // allocator's measurement, so a lease created from a larger
-            // executor-side charge can release more than the rebased total.
-            // The measurement stays authoritative and the total floors at
-            // zero; only a non-frozen grant can under-run its own accounting.
+            // Frozen ownership is rebased onto the allocator measurement.
+            // Aliased owners can therefore release a larger pre-freeze charge.
             None if active.frozen_resident_bytes.is_some() || active.pending_frozen_resident_bytes.is_some() => 0,
             None => {
-                eprintln!(
-                    "[nexus-query-engine] warning: exact memory grant live-reservation release exceeded its active charge"
-                );
+                eprintln!("[nexus-query-engine] warning: resident owner release exceeded its active charge");
                 return;
             },
         };
-        active.live_reserved_bytes = next_live_reserved_bytes;
-        self.inner.live_reserved_bytes.store(next_live_reserved_bytes, std::sync::atomic::Ordering::Release);
-        ledger.bump_sequence_and_notify_locked(state, LedgerTransitionKind::LiveReservationReleased);
+        active.resident_owner_bytes = next_resident_owner_bytes;
+        self.inner.resident_owner_bytes.store(next_resident_owner_bytes, std::sync::atomic::Ordering::Release);
+        ledger.bump_sequence_and_notify_locked(state, LedgerTransitionKind::ResidentOwnerReleased);
     }
 
-    /// Charges and retains newly escaping grant-scoped live bytes.
-    ///
-    /// Clones share one retention and the final drop releases it. Unlike an
-    /// ownership transfer, this is a new charge and therefore must fit the
-    /// immutable grant before the retention is created.
+    /// Records and retains a newly published resident owner.
     #[doc(hidden)]
-    pub fn retain_live_reservation(&self, bytes: u64) -> Result<Option<FrozenResidentLease>> {
+    pub fn retain_resident_owner(&self, bytes: u64) -> Result<Option<ResidentOwnerLease>> {
         if bytes == 0 {
             return Ok(None);
         }
-        if !self.try_reserve_live_bytes(bytes)? {
-            return Err(QueryError::new(
-                QueryErrorCode::MemoryReservationFailed,
-                "nexus_query_engine.runtime.gpu.memory_grant.retain_live_reservation",
-                "immutable memory grant cannot cover retained resident GPU bytes",
-            )
-            .with_fact("requested_bytes", bytes)
-            .with_fact("budget_bytes", self.budget_bytes())
-            .with_fact("live_reserved_bytes", self.live_reserved_bytes())
-            .with_fact("reason", "retained_reservation_exceeds_immutable_grant"));
-        }
-        Ok(Some(self.transfer_live_reservation(bytes).expect("positive retained reservation has a grant charge")))
+        self.add_resident_owner_bytes(bytes)?;
+        Ok(Some(self.new_resident_owner_lease(bytes)))
     }
 
-    /// Transfers an already charged reservation into a result lifetime
-    /// without briefly adding the bytes a second time.
-    ///
-    /// The caller must suppress the source reservation's eventual ledger
-    /// release, because the returned retention owns that exact existing
-    /// charge. This method intentionally does not mutate the ledger: the
-    /// source charge and the result ownership are one atomic accounting fact.
-    #[doc(hidden)]
-    pub fn transfer_live_reservation(&self, bytes: u64) -> Option<FrozenResidentLease> {
-        (bytes > 0).then(|| FrozenResidentLease {
-            inner: Arc::new(FrozenResidentLeaseInner {
+    fn new_resident_owner_lease(&self, bytes: u64) -> ResidentOwnerLease {
+        let owner_id = self.inner.next_resident_owner_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner
+            .resident_owner_allocations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(owner_id, Arc::from([]));
+        ResidentOwnerLease {
+            inner: Arc::new(ResidentOwnerLeaseInner {
                 grant: MemoryGrant { inner: Arc::clone(&self.inner), resource_epoch: None },
                 bytes,
+                owner_id,
+                completion_stream: Mutex::new(None),
             }),
-        })
+        }
+    }
+
+    pub(crate) fn published_resident_owner_count(&self) -> usize {
+        self.inner.resident_owner_allocations.lock().unwrap_or_else(std::sync::PoisonError::into_inner).len()
+    }
+
+    pub(crate) fn published_resident_allocation_pointers(&self) -> std::collections::BTreeSet<usize> {
+        self.inner
+            .resident_owner_allocations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .flat_map(|pointers| pointers.iter().copied())
+            .collect()
     }
 }
 
-impl FrozenResidentLease {
+impl ResidentOwnerLease {
+    pub(crate) fn set_completion_stream(&self, stream: CudaStream) -> Result<()> {
+        let mut completion_stream = self.inner.completion_stream.lock().map_err(|_error| {
+            QueryError::new(
+                QueryErrorCode::InternalInvariantViolation,
+                "nexus_query_engine.runtime.gpu.frozen_resident_lease.completion_stream",
+                "frozen resident completion stream mutex was poisoned",
+            )
+        })?;
+        if let Some(existing) = completion_stream.as_ref() {
+            if existing.identity() != stream.identity() {
+                return Err(QueryError::new(
+                    QueryErrorCode::InternalInvariantViolation,
+                    "nexus_query_engine.runtime.gpu.frozen_resident_lease.completion_stream",
+                    "a resident owner cannot be rebound to a different completion stream",
+                )
+                .with_fact("existing_stream", existing.identity())
+                .with_fact("replacement_stream", stream.identity()));
+            }
+            return Ok(());
+        }
+        *completion_stream = Some(stream);
+        Ok(())
+    }
+
+    pub(crate) fn set_backing_allocation_pointers(&self, mut pointers: Vec<usize>) {
+        pointers.retain(|pointer| *pointer != 0);
+        pointers.sort_unstable();
+        pointers.dedup();
+        self.inner
+            .grant
+            .inner
+            .resident_owner_allocations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(self.inner.owner_id, Arc::from(pointers));
+    }
+
     pub(crate) fn is_frozen_resident(&self) -> bool {
         self.inner.grant.is_frozen_resident()
     }
@@ -1471,71 +1406,41 @@ impl FrozenResidentLease {
         Arc::as_ptr(&self.inner) as usize
     }
 
-    /// Retains a derived reservation for output bytes produced under the
-    /// retained footprint.
-    ///
-    /// Immutable grants cannot grow to cover derived bytes, so the derived
-    /// retention must fit inside the grant's remaining live-reservation
-    /// capacity or the retention fails with a structured reservation error.
+    /// Retains a derived output owner under the same grant.
     #[doc(hidden)]
-    pub fn retain_derived_live_reservation(&self, bytes: u64) -> Result<Option<Self>> {
-        self.inner.grant.retain_live_reservation(bytes).map_err(|error| {
-            if error.code() != QueryErrorCode::MemoryReservationFailed {
-                return error;
+    pub fn retain_derived_owner(&self, bytes: u64) -> Result<Option<Self>> {
+        self.inner.grant.retain_resident_owner(bytes)
+    }
+}
+
+impl Drop for ResidentOwnerLeaseInner {
+    fn drop(&mut self) {
+        let cleanup_failure = match (self.grant.is_frozen_resident(), self.completion_stream.get_mut()) {
+            (false, _) => None,
+            (true, Ok(Some(stream))) => stream
+                .synchronize_for_teardown("nexus_query_engine.runtime.gpu.frozen_resident_lease.drop")
+                .err()
+                .map(|error| format!("frozen resident completion fence failed: {error}")),
+            (true, Ok(None)) => {
+                Some("frozen resident owner reached final release without a completion stream".to_string())
+            },
+            (true, Err(_error)) => Some("frozen resident completion stream mutex was poisoned".to_string()),
+        };
+        if let Some(reason) = cleanup_failure {
+            let ledger = DeviceLedger { inner: Arc::clone(&self.grant.inner.ledger) };
+            if let Err(error) = ledger.close_admission_if_open(reason) {
+                eprintln!(
+                    "[nexus-query-engine] warning: failed to close admission after resident completion failure: {error}"
+                );
             }
-            QueryError::new(
-                QueryErrorCode::MemoryReservationFailed,
-                "nexus_query_engine.runtime.gpu.memory_grant.retain_derived_live_reservation",
-                "immutable memory grant cannot cover derived resident GPU frame",
-            )
-            .with_fact("requested_bytes", bytes)
-            .with_fact("budget_bytes", self.inner.grant.budget_bytes())
-            .with_fact("live_reserved_bytes", self.inner.grant.live_reserved_bytes())
-            .with_fact("reason", "derived_reservation_exceeds_immutable_grant")
-        })
-    }
-}
-
-impl Drop for FrozenResidentLeaseInner {
-    fn drop(&mut self) {
-        self.grant.release_live_bytes(self.bytes);
-    }
-}
-
-impl MemoryGrantPhase {
-    #[doc(hidden)]
-    pub fn grant_identity(&self) -> GrantIdentity {
-        self.grant.identity()
-    }
-
-    #[doc(hidden)]
-    pub const fn required_bytes(&self) -> u64 {
-        self.required_bytes
-    }
-}
-
-impl Drop for MemoryGrantPhase {
-    fn drop(&mut self) {
-        let ledger = DeviceLedger { inner: Arc::clone(&self.grant.inner.ledger) };
-        if ledger.in_transition_observer() {
-            ledger.panic_on_transition_observer_reentrancy("release_phase");
         }
-        let Ok(mut state) = ledger.inner.state.lock() else {
-            eprintln!("[nexus-query-engine] warning: failed to release immutable attempt phase");
-            return;
-        };
-        let Some(active) = state.grants.get_mut(&self.grant.identity().generation) else {
-            return;
-        };
-        let Some(phase) = active.active_phase else {
-            return;
-        };
-        if phase.generation != self.generation || phase.required_bytes != self.required_bytes {
-            eprintln!("[nexus-query-engine] warning: immutable attempt phase identity mismatch during release");
-            return;
-        }
-        active.active_phase = None;
-        ledger.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::AttemptPhaseReleased);
+        self.grant
+            .inner
+            .resident_owner_allocations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.owner_id);
+        self.grant.release_resident_owner_bytes(self.bytes);
     }
 }
 
@@ -1545,7 +1450,7 @@ impl fmt::Debug for MemoryGrant {
             .field("identity", &self.inner.identity)
             .field("admission_request_id", &self.inner.admission_request_id)
             .field("grant_bytes", &self.inner.grant_bytes)
-            .field("live_reserved_bytes", &self.live_reserved_bytes())
+            .field("resident_owner_bytes", &self.resident_owner_bytes())
             .finish_non_exhaustive()
     }
 }

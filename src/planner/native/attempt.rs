@@ -201,11 +201,7 @@ fn replace_lowered_root_or_keep_plan(
     let datafusion_shape = candidate.shape.clone();
     let capability_contract = accepted_plan_contract_diagnostics(&native_plan, candidate, native_execution_config)?;
     if let Some(deferred) = capability_contract.deferred_candidates.first()
-        && !lowering.report.mark_selected_deferred(
-            &deferred.candidate,
-            deferred.planning_stage.clone(),
-            deferred.binding.clone(),
-        )
+        && !lowering.report.mark_selected_deferred(&deferred.candidate, deferred.planning_stage.clone())
     {
         return Err(native_candidate_error("deferred capability decision has no selected candidate"));
     }

@@ -134,7 +134,6 @@ pub(crate) async fn stage_native_children(
             .with_log_safe_fact("reason", "gpu_producer_below_host_wrapper")
             .into());
         }
-
         let schema = Arc::new(spec.plan.schema().project(&spec.projection).map_err(DataFusionError::from)?);
         let partition_count = spec.plan.properties().output_partitioning().partition_count();
         let mut batches = Vec::new();
@@ -211,6 +210,7 @@ impl StagedNativeChildren {
                 },
             }
         }
+        // Uploads own their device buffers, so the completed host staging quota can be released before native compute.
         drop(reservation);
         Ok(UploadedNativeChildren { inputs, bindings, host_to_device_uploads })
     }

@@ -3,15 +3,15 @@ use super::{
     GpuDataFrame, Instant, JoinMaterializationTxn, JoinNode, JoinSide, JoinType, KeyedHashJoinStrategyOptions, NodeId,
     PARTITIONED_MIXED_KEYED_RESIDUAL_STRATEGY, PartitionedJoinDriverPlan, PartitionedJoinInputStats,
     PartitionedJoinOutputSummary, PartitionedJoinPartitionOutput, PartitionedJoinSide, PartitionedJoinSides,
-    ReservationKind, ResidentFrameStreamPayload, ResidentFrameStreamSource, ResidentGpuFrame, Result, VecDeque,
-    bounded_join_request, concatenate_streamed_hash_join_outputs, dataframe_mixed_join_options, execution_overrides,
-    join_index_error, join_side_output_upper_bound_bytes, lower_join_residual_predicate,
+    ResidentFrameStreamPayload, ResidentFrameStreamSource, ResidentGpuFrame, Result, VecDeque,
+    concatenate_streamed_hash_join_outputs, dataframe_mixed_join_options, execution_overrides, join_index_error,
+    join_side_output_upper_bound_bytes, lower_join_residual_predicate,
     materialize_partitioned_join_partition_with_retry, observe_device_memory_bytes, partition_join_sides,
     partitioned_join_target_bytes_for_context, partitioned_mixed_join_partition_count,
-    projected_output_columns_for_retained_sizing, reconcile_join_output_upper_bound,
-    record_partitioned_join_operator_metrics, record_partitioned_join_selection, record_partitioned_join_sides,
-    release_partitioned_join_side, release_streamed_join_outputs_reverse, residual_input_columns,
-    run_partitioned_join_driver, validate_partitioned_mixed_keyed_residual_join,
+    projected_output_columns_for_retained_sizing, record_partitioned_join_operator_metrics,
+    record_partitioned_join_selection, record_partitioned_join_sides, release_partitioned_join_side,
+    release_streamed_join_outputs_reverse, residual_input_columns, run_partitioned_join_driver,
+    validate_partitioned_mixed_keyed_residual_join,
 };
 
 pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_mixed_keyed_residual_join_materialize(
@@ -87,8 +87,8 @@ fn execute_compiled_partitioned_mixed_keyed_residual_join_materialize_output(
     if preserve_stream {
         record_partitioned_join_selection(plan, original, execution.metrics_mut());
         let partitioned = partition_join_sides(execution, plan, left, right)?;
-        let left_partitioned_bytes = partitioned.left.reservation.bytes();
-        let right_partitioned_bytes = partitioned.right.reservation.bytes();
+        let left_partitioned_bytes = partitioned.left.device_bytes();
+        let right_partitioned_bytes = partitioned.right.device_bytes();
         record_partitioned_join_sides(plan, left_partitioned_bytes, right_partitioned_bytes, execution.metrics_mut());
         let PartitionedJoinSides { left: left_partitioned, right: right_partitioned } = partitioned;
         let stream = PartitionedMixedJoinStreamSource {
@@ -109,7 +109,6 @@ fn execute_compiled_partitioned_mixed_keyed_residual_join_materialize_output(
             0,
             0,
             node.spec.output_projection.len(),
-            Vec::new(),
             Box::new(stream),
         );
         return Ok(BoundedCompiledJoinMaterializeOutput::LazyStream(payload));
@@ -177,7 +176,7 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
     let size_data = match size_data {
         Ok(size_data) => size_data,
         Err(error) => {
-            txn.rollback(execution);
+            txn.rollback();
             return Err(error);
         },
     };
@@ -185,59 +184,23 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
     let mixed_size_data_bytes = match size_data.device_allocated_size_bytes(node) {
         Ok(bytes) => bytes,
         Err(error) => {
-            txn.rollback(execution);
+            txn.rollback();
             return Err(error);
         },
     };
-    let size_data_reservation = match execution.try_reserve(bounded_join_request(
-        ReservationKind::MixedSizeData,
-        "join_partition_mixed_size_data",
-        mixed_size_data_bytes,
-        execution.reservations().budget(),
-        node_id,
-    )) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            txn.rollback(execution);
-            return Err(error);
-        },
-    };
-    txn.set_mixed_size_data_reservation(size_data_reservation);
     execution.metrics_mut().record_mixed_join_size_data_bytes(mixed_size_data_bytes);
-    let gather_map_reservation_bytes = match size_data.gather_map_reservation_size_bytes(node) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            txn.rollback(execution);
-            return Err(error);
-        },
-    };
-    let gather_map_reservation = match execution.try_reserve(bounded_join_request(
-        ReservationKind::GatherMap,
-        "join_partition_mixed_indices",
-        gather_map_reservation_bytes,
-        execution.reservations().budget(),
-        node_id,
-    )) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            txn.rollback(execution);
-            return Err(error);
-        },
-    };
-    txn.set_gather_map_reservation(gather_map_reservation);
     let indices = match size_data.materialize_indices_in(&overrides, node) {
         Ok(indices) => indices,
         Err(error) => {
-            txn.rollback(execution);
+            txn.rollback();
             return Err(error);
         },
     };
-    txn.release_mixed_size_data_reservation(execution);
     txn.set_indices(indices);
     let index_bytes = match txn.indices().device_allocated_size_bytes(node) {
         Ok(bytes) => bytes,
         Err(error) => {
-            txn.rollback(execution);
+            txn.rollback();
             return Err(error);
         },
     };
@@ -246,25 +209,11 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
         match partitioned_mixed_join_output_upper_bound_bytes(execution, node_id, node, left, right, output_rows) {
             Ok(bytes) => bytes,
             Err(error) => {
-                txn.rollback(execution);
+                txn.rollback();
                 return Err(error);
             },
         };
     let output_reservation_bytes = forecast_output_reservation_bytes;
-    let output_reservation = match execution.try_reserve(bounded_join_request(
-        ReservationKind::JoinOutput,
-        "join_partition_output",
-        output_reservation_bytes,
-        execution.reservations().budget(),
-        node_id,
-    )) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            txn.rollback(execution);
-            return Err(error);
-        },
-    };
-    txn.set_output_reservation(output_reservation);
     let (left, right) = txn.sides();
     let output = match txn.indices().materialize_output(
         &left.frame,
@@ -276,7 +225,7 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
     ) {
         Ok(output) => output,
         Err(error) => {
-            txn.rollback(execution);
+            txn.rollback();
             return Err(error);
         },
     };
@@ -284,19 +233,12 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
     let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics_mut()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            txn.rollback(execution);
+            txn.rollback();
             return Err(error);
         },
     };
-    if let Err(error) =
-        reconcile_join_output_upper_bound(execution, node_id, txn.output_reservation_mut(), output_bytes)
-    {
-        txn.rollback(execution);
-        return Err(error);
-    }
-    txn.release_gather_map_reservation(execution);
     Ok(PartitionedJoinPartitionOutput {
-        frame: txn.commit_frame(execution, GpuDataFrame::new(output)),
+        frame: txn.commit_frame(GpuDataFrame::new(output), output_bytes),
         index_bytes,
         mixed_size_data_bytes,
         output_reservation_bytes,
@@ -413,13 +355,13 @@ impl ResidentFrameStreamSource for PartitionedMixedJoinStreamSource {
         }
     }
 
-    fn release(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
-        release_streamed_join_outputs_reverse(execution, self.pending_outputs.drain(..).collect());
+    fn release(&mut self, _execution: &mut BoundedExecutionAttempt<'_>) {
+        release_streamed_join_outputs_reverse(self.pending_outputs.drain(..).collect());
         if let Some(left) = self.left_partitioned.take() {
-            release_partitioned_join_side(execution, left);
+            release_partitioned_join_side(left);
         }
         if let Some(right) = self.right_partitioned.take() {
-            release_partitioned_join_side(execution, right);
+            release_partitioned_join_side(right);
         }
     }
 }

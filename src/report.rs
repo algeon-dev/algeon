@@ -16,7 +16,6 @@
 //! [`crate::gpu_coverage`] and [`crate::native_report`].
 
 pub use nexus_query_engine::{
-    admission::ComposedProducerBindingDiagnostics,
     metrics::{PlanNodeId, QueryId, TraceId},
     plan::NativePlanCostReason,
     triage::{TriageCode, TriageSummary, TriageVerdict},
@@ -28,6 +27,12 @@ use nexus_query_engine::{
 use serde_json::{Value, json};
 
 use crate::capability::CapabilityReason;
+
+/// Stable reason code for a candidate deferred pending resident producer
+/// output evidence. The engine no longer models missing-fact/owner-term
+/// detail for this decision; the fact that admission is deferred until the
+/// producer becomes resident is the entire contract.
+pub const DEFERRED_PRODUCER_BINDING_REASON_CODE: &str = "consumer_producer_binding_required";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UnsupportedColumnDetail {
@@ -92,76 +97,21 @@ impl GpuCandidate {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
-    use arrow::datatypes::{DataType, Field, Schema};
-    use nexus_query_engine::{
-        admission::QueryPlanCapabilityProof,
-        expr::ColumnRef,
-        plan::{JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, QueryPlanBuilder},
-        source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
-    };
-
     use super::*;
 
     #[test]
     fn planning_report_projects_deferred_producer_binding_facts() {
-        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-        let file = LocalParquetFile::new("/tmp/planning-report-deferred-not-read.parquet")
-            .with_file_size_bytes(8)
-            .with_row_group_bytes(vec![8])
-            .with_projected_row_group_bytes(vec![8], vec![8])
-            .with_row_group_rows(vec![1]);
-        let mut builder = QueryPlanBuilder::new();
-        let local = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
-            vec![file],
-            Arc::clone(&schema),
-            vec!["id".to_string()],
-        )));
-        let resident = builder.add_source(SourceNode::GpuResident(
-            GpuResidentSource::new("producer", Arc::clone(&schema)).with_row_count_upper_bound(1),
-        ));
-        let join = builder.add_join(
-            local,
-            resident,
-            JoinSpec::new(
-                JoinType::Inner,
-                vec![JoinKey::new(ColumnRef::unqualified("id"), ColumnRef::unqualified("id"))],
-            )
-            .with_output_projection(vec![JoinOutputColumn::new(
-                JoinSide::Left,
-                ColumnRef::unqualified("id"),
-                "id",
-            )]),
-            Arc::clone(&schema),
-        );
-        let plan = builder.finish_with_host_sink_schema(join, schema);
-        let binding = QueryPlanCapabilityProof::for_composed_consumer_plan(&plan)
-            .expect("the mixed consumer must issue a structural proof")
-            .composed_producer_binding_diagnostics(&plan)
-            .expect("the unbound resident occurrence must defer");
         let candidate = GpuCandidate::new("mixed_join", 1);
         let mut report = PlanningReport::new();
         report.push_selected(candidate.clone());
-        assert!(report.mark_selected_deferred(&candidate, "physical_optimizer".to_string(), binding));
+        assert!(report.mark_selected_deferred(&candidate, "physical_optimizer".to_string()));
 
         let json = report.to_json();
         assert_eq!(json["selected_count"], 1);
         assert_eq!(json["deferred_count"], 1);
         assert_eq!(json["outcomes"][0]["outcome"], "deferred");
         assert_eq!(json["outcomes"][0]["planning_stage"], "physical_optimizer");
-        assert_eq!(json["outcomes"][0]["missing_producer_occurrences"], json!(["producer"]));
-        assert_eq!(json["outcomes"][0]["missing_fact_kind"], "producer_output_evidence");
-        assert_eq!(json["outcomes"][0]["responsible_owner"], "gpu_resident_producer");
-        assert_eq!(json["outcomes"][0]["reason_code"], "consumer_producer_binding_required");
-        assert!(
-            json["outcomes"][0]["consumer_execution_scope_fingerprint"].as_str().is_some_and(|scope| !scope.is_empty())
-        );
-        assert!(json["outcomes"][0]["proven_owner_terms"].as_array().is_some_and(|terms| !terms.is_empty()));
-        assert_eq!(
-            json["outcomes"][0]["unresolved_owner_terms"],
-            json!(["owner=producer:producer,role=retained_output"]),
-        );
+        assert_eq!(json["outcomes"][0]["reason_code"], DEFERRED_PRODUCER_BINDING_REASON_CODE);
     }
 
     #[test]
@@ -178,7 +128,7 @@ mod tests {
 pub enum CandidateOutcomeKind {
     /// Candidate was selected for native execution.
     Selected,
-    /// Candidate was selected, but composed proof awaits resident producer evidence.
+    /// Candidate was selected, but its resident producer binding is not available yet.
     Deferred,
     /// Candidate cannot execute under the native capability contract.
     NotSupported,
@@ -209,13 +159,11 @@ impl std::fmt::Display for CandidateOutcomeKind {
 pub enum CandidateOutcome {
     /// Candidate was selected for native execution.
     Selected { candidate: GpuCandidate },
-    /// Candidate was selected, but its composed proof awaits resident producer evidence.
+    /// Candidate was selected, but its composed evidence awaits resident producer output.
     Deferred {
         candidate: GpuCandidate,
         /// Planning stage that emitted the deferred decision.
         planning_stage: String,
-        /// Missing producer facts and unresolved owner terms.
-        producer_binding: ComposedProducerBindingDiagnostics,
     },
     /// Candidate cannot execute under the native capability contract.
     NotSupported {
@@ -411,18 +359,13 @@ impl PlanningReport {
         self.unsupported_columns.push(None);
     }
 
-    pub(crate) fn mark_selected_deferred(
-        &mut self,
-        candidate: &GpuCandidate,
-        planning_stage: String,
-        producer_binding: ComposedProducerBindingDiagnostics,
-    ) -> bool {
+    pub(crate) fn mark_selected_deferred(&mut self, candidate: &GpuCandidate, planning_stage: String) -> bool {
         let Some(outcome) = self.outcomes.iter_mut().find(
             |outcome| matches!(outcome, CandidateOutcome::Selected { candidate: selected } if selected == candidate),
         ) else {
             return false;
         };
-        *outcome = CandidateOutcome::Deferred { candidate: candidate.clone(), planning_stage, producer_binding };
+        *outcome = CandidateOutcome::Deferred { candidate: candidate.clone(), planning_stage };
         true
     }
 
@@ -620,17 +563,11 @@ impl CandidateOutcome {
                 "cost_reason_code": null,
                 "cost_evidence": null,
             }),
-            Self::Deferred { candidate, planning_stage, producer_binding } => json!({
+            Self::Deferred { candidate, planning_stage } => json!({
                 "outcome": self.kind().as_str(),
                 "candidate": candidate.to_json(),
                 "planning_stage": planning_stage,
-                "consumer_execution_scope_fingerprint": producer_binding.consumer_execution_scope_fingerprint(),
-                "missing_producer_occurrences": producer_binding.missing_producer_occurrences(),
-                "missing_fact_kind": producer_binding.missing_fact_kind(),
-                "proven_owner_terms": producer_binding.proven_owner_terms(),
-                "unresolved_owner_terms": producer_binding.unresolved_owner_terms(),
-                "responsible_owner": producer_binding.responsible_owner(),
-                "reason_code": producer_binding.reason_code(),
+                "reason_code": DEFERRED_PRODUCER_BINDING_REASON_CODE,
                 "capability_reason_code": null,
                 "cost_reason_code": null,
                 "cost_evidence": null,

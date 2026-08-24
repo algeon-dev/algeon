@@ -3,8 +3,6 @@ use std::{
     time::Duration,
 };
 
-use nexus_query_planning::admission::{AttemptRequirement, EstimateQuality};
-
 use crate::runtime::{
     DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds,
     GpuBackendDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus,
@@ -227,27 +225,11 @@ fn query_service_memory_failure_callback_ignores_budget_failures() {
 
     const GRANT_BYTES: u64 = 64 * 1024;
 
-    // An explicit 64 KiB working set makes the immutable attempt grant the
+    // An explicit 64 KiB query cap makes the immutable attempt grant the
     // domain ceiling and the root member's hard limit; the 4 MiB allocation
     // must fail locally rather than becoming a device-health failure.
     let handle = service
-        .try_admit_query_with_request(crate::runtime::QueryAdmissionRequest::new().with_attempt_requirement(
-            AttemptRequirement {
-                configured_floor_bytes: GRANT_BYTES,
-                capability_floor_raise_bytes: 0,
-                required_phase_floor_bytes: 0,
-                source_stage_bytes: None,
-                soft_working_set_hint_bytes: Some(GRANT_BYTES),
-                estimate_quality: EstimateQuality::Modeled,
-                required_capabilities: Vec::new(),
-                owner_terms: Vec::new(),
-                bound_derivation: None,
-                requires_composed_producer_binding: false,
-                attested_cugraph_graph_execution_scopes: Vec::new(),
-                reservation_shapes: Vec::new(),
-                deferred_resident_phases: Vec::new(),
-            },
-        ))
+        .try_admit_query_with_request(crate::runtime::QueryAdmissionRequest::new().with_query_cap_bytes(GRANT_BYTES))
         .unwrap()
         .expect("query should admit");
     assert_eq!(handle.device_budget_bytes(), GRANT_BYTES, "the ledger publishes the forced immutable grant");

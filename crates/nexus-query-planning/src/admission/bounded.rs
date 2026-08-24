@@ -17,11 +17,9 @@ use super::{
 use crate::{
     capability::{
         CapabilityAnalysis, CapabilityEnvelope, CapabilityRejectionCategory, CapabilityRejectionOwner,
-        CapabilityRejectionProjection, ContractQuality, ContractStatus, ReservationRequirement,
-        ReservationRequirementScope, SubgraphInvariantKind,
+        CapabilityRejectionProjection, CapabilityScope,
     },
     error::{QueryError, QueryErrorCode, Result},
-    execution_contracts::ReservationKind,
     mode::StatisticalAggregateExecutionMode,
     pipeline::{CompiledPipeline, compile_pipeline},
     plan::{PlanNode, QueryPlan, ResultSink},
@@ -164,14 +162,11 @@ fn row_delete_application_rejection_projection(plan: &QueryPlan) -> Option<Capab
                     source.files.iter().map(|file| file.equality_delete_files.len()).sum::<usize>();
                 Some(CapabilityRejectionProjection {
                     owner: CapabilityRejectionOwner::Node(node.id),
-                    category: CapabilityRejectionCategory::MissingLowerLevelContract,
-                    contract_scope: ReservationRequirementScope::Node,
-                    memory_boundary: "row_delete_application",
-                    reason: "row_delete_application_unpriced",
+                    category: CapabilityRejectionCategory::UnsupportedNodeOperator,
+                    contract_scope: CapabilityScope::Node,
+                    boundary: "row_delete_application",
+                    reason: "row_delete_application_unsupported",
                     facts: BTreeMap::from([
-                        ("reservation_kind", ReservationKind::SourceRead.as_str().to_string()),
-                        ("required_contract", "row_delete_application_contract".to_string()),
-                        ("contract_status", ContractStatus::BlockedByLowerLevel.as_str().to_string()),
                         ("position_delete_files", position_delete_files.to_string()),
                         ("equality_delete_files", equality_delete_files.to_string()),
                     ]),
@@ -187,8 +182,7 @@ fn tolerant_statistical_join_final_full_sort_admission(
     plan: &QueryPlan,
     admission: BoundedPipelineAdmission,
 ) -> Result<BoundedPipelineAdmission> {
-    let mut analysis = admission.analysis;
-    rewrite_exact_statistical_join_final_sort_requirements_for_tolerant_mode(&mut analysis);
+    let analysis = admission.analysis;
     let pipeline = compile_pipeline(plan, &analysis)?;
     match compiled_bounded_query_plan_support(plan, &pipeline)? {
         CompiledBoundedPipelineSupport::Supported => Ok(BoundedPipelineAdmission {
@@ -205,44 +199,6 @@ fn tolerant_statistical_join_final_full_sort_admission(
         .with_fact("compiled_task_count", pipeline.tasks().len())
         .with_fact("compiled_edge_count", pipeline.edges().len())),
     }
-}
-
-fn rewrite_exact_statistical_join_final_sort_requirements_for_tolerant_mode(analysis: &mut CapabilityAnalysis) {
-    for invariant in &mut analysis.invariants {
-        if invariant.kind != SubgraphInvariantKind::StatisticalJoinFinalSortExactness {
-            continue;
-        }
-        invariant
-            .reservation_requirements
-            .retain(|requirement| requirement.required_contract == "final_full_sort_output_cardinality_bound");
-        invariant.reservation_requirements.push(ReservationRequirement::modeled(
-            ReservationKind::CapabilityContract,
-            CapabilityEnvelope::TolerantStatisticalJoinFinalFullSort.as_str(),
-            "gpu_native_tolerant_statistical_aggregate_contract",
-            ContractQuality::CapabilityProof,
-        ));
-    }
-
-    analysis.requirements = analysis
-        .nodes
-        .iter()
-        .flat_map(|node| node.local_requirements.iter())
-        .chain(analysis.edges.iter().flat_map(|edge| edge.reservation_requirements.iter()))
-        .chain(analysis.invariants.iter().flat_map(|invariant| invariant.reservation_requirements.iter()))
-        .cloned()
-        .collect();
-    debug_assert!(
-        analysis.requirements.iter().all(|requirement| {
-            !matches!(
-                (requirement.status, requirement.required_contract),
-                (
-                    ContractStatus::Modeled,
-                    "host_welford_input_materialization_preflight" | "host_welford_output_upload_reservation"
-                )
-            )
-        }),
-        "tolerant statistical contract must not carry exact host-Welford gates"
-    );
 }
 
 fn capability_admission_from_capability_first(
@@ -286,7 +242,6 @@ fn compiled_bounded_pipeline_required_error(
     )
     .with_fact("compiled_pipeline_required", "true")
     .with_fact("compiled_pipeline_rejection_reason", projection.reason)
-    .with_fact("legacy_bounded_join_path_bridge", "disabled")
     .with_fact("result_sink_kind", sink_kind);
 
     if let Some(pipeline) = pipeline {
@@ -295,7 +250,6 @@ fn compiled_bounded_pipeline_required_error(
             .with_fact("compiled_edge_count", pipeline.edges().len())
             .with_fact("compiled_barrier_count", pipeline.barriers().len())
             .with_fact("compiled_resource_count", pipeline.resources().len())
-            .with_fact("compiled_gate_count", pipeline.gates().len())
             .with_fact("compiled_sink_kind", pipeline.sink().kind().as_str());
     }
 

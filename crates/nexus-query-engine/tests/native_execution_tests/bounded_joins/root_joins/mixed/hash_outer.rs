@@ -48,7 +48,6 @@ fn bounded_native_query_executes_root_left_hash_join_with_unmatched_probe_rows()
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
-    assert_eq!(metrics.reservation_denied_count, 0);
     assert_eq!(metrics.hash_join_build_count, 1);
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
@@ -138,7 +137,6 @@ fn bounded_native_query_executes_root_full_hash_join_with_symmetric_unmatched_ro
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
-    assert_eq!(metrics.reservation_denied_count, 0);
     assert_eq!(metrics.hash_join_build_count, 1);
     let join_metrics =
         metrics.operators.iter().find_map(|operator| operator.join.as_ref()).expect("join metrics should be recorded");
@@ -146,11 +144,6 @@ fn bounded_native_query_executes_root_full_hash_join_with_symmetric_unmatched_ro
     assert_eq!(join_metrics.build_side, "right");
     assert_eq!(join_metrics.probe_side, "left");
     assert_eq!(join_metrics.output_rows, 5);
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.reservation_kind == ReservationKind::GatherMap
-            && event.memory_boundary == "join_full_size_preflight_workspace"
-            && event.action == MemoryReservationEventAction::Reserve
-    }));
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

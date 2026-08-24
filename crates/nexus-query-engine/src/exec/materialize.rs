@@ -7,9 +7,9 @@ use arrow::{
 };
 
 use super::{
-    Array, BoundedExecutionAttempt, CommittedPartial, ExecutionContext, GpuDataFrame, GpuResultHandle,
-    MemoryReservationRequest, NodeId, QueryError, QueryErrorCode, QueryMetrics, RecordBatch, ReservationKind, Result,
-    RetryFacts, RuntimeResourceFacts, record_batch_memory_size,
+    Array, BoundedExecutionAttempt, CommittedPartial, ExecutionContext, GpuDataFrame, GpuResultHandle, NodeId,
+    QueryError, QueryErrorCode, QueryMetrics, RecordBatch, Result, RetryFacts, RuntimeResourceFacts,
+    record_batch_memory_size,
 };
 
 pub(super) fn materialize_to_host(input: GpuResultHandle, metrics: &mut QueryMetrics) -> Result<RecordBatch> {
@@ -29,50 +29,28 @@ pub(super) fn materialize_bounded_to_host(
     executable_schema: &SchemaRef,
     output_schema: &SchemaRef,
 ) -> Result<RecordBatch> {
-    let input_reserved_bytes = input.reservation.bytes();
-    let result = materialize_bounded_frame_to_host(
+    let input_reserved_bytes = input.device_bytes();
+    materialize_bounded_frame_to_host(
         execution,
         input.frame,
         input_reserved_bytes,
         final_node_id,
         executable_schema,
         output_schema,
-    );
-    execution.release(input.reservation);
-    result
+    )
 }
 
 pub(in crate::exec) fn materialize_bounded_frame_to_host(
     execution: &mut BoundedExecutionAttempt<'_>,
     frame: GpuDataFrame,
-    input_reserved_bytes: u64,
+    _input_device_bytes: u64,
     final_node_id: NodeId,
     executable_schema: &SchemaRef,
     output_schema: &SchemaRef,
 ) -> Result<RecordBatch> {
-    let request = MemoryReservationRequest::new(
-        ReservationKind::Materialization,
-        input_reserved_bytes,
-        execution.reservations().budget(),
-    )
-    .with_memory_boundary("host_materialization")
-    .with_node_id(final_node_id)
-    .with_stage("materialization")
-    .with_attempt(1, 1)
-    .with_task_registration(
-        format!("legacy_bounded.materialization.node{final_node_id}.attempt1"),
-        1,
-        "materialization",
-    );
-    let materialization_reservation = match execution.try_reserve(request) {
-        Ok(reservation) => reservation,
-        Err(error) => return Err(host_materialization_failure_facts(execution.metrics_mut()).attach_to_error(error)),
-    };
-
     let handle = match GpuResultHandle::new(execution.context(), frame, Arc::clone(executable_schema)) {
         Ok(handle) => handle,
         Err(error) => {
-            execution.release(materialization_reservation);
             return Err(host_materialization_failure_facts(execution.metrics_mut()).attach_to_error(error));
         },
     };
@@ -88,7 +66,6 @@ pub(in crate::exec) fn materialize_bounded_frame_to_host(
         }
         .attach_to(error)
     });
-    execution.release(materialization_reservation);
     result.map_err(|error| host_materialization_failure_facts(execution.metrics_mut()).attach_to_error(error))
 }
 

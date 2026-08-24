@@ -4,12 +4,11 @@ use std::{
 };
 
 use super::{
-    ActiveReservation, BoundedExecutionAttempt, BoundedJoinSideFrame, ColumnQualifier, ColumnRef, CompiledJoinIndices,
-    Expr, GpuDataFrame, JoinMaterializationTxn, JoinNode, JoinOutputColumn, JoinSide, NodeId, OneShotJoinChunkMetrics,
-    QueryError, QueryErrorCode, ReservationKind, ResidentGpuFrame, Result, attach_budget_token_failure_facts,
-    bounded_join_request, datafusion_order_columns, execution_budget_token_for_boundary, execution_overrides,
-    lower_expr, observe_device_memory_bytes, probe_side, reconcile_join_output_upper_bound, residual_input_columns,
-    side_metric,
+    BoundedExecutionAttempt, BoundedJoinSideFrame, ColumnQualifier, ColumnRef, CompiledJoinIndices, Expr, GpuDataFrame,
+    JoinMaterializationTxn, JoinNode, JoinOutputColumn, JoinSide, NodeId, OneShotJoinChunkMetrics, QueryError,
+    QueryErrorCode, ResidentGpuFrame, Result, attach_budget_token_failure_facts, datafusion_order_columns,
+    execution_budget_token_for_boundary, execution_overrides, lower_expr, observe_device_memory_bytes, probe_side,
+    residual_input_columns, side_metric,
 };
 
 #[expect(
@@ -24,30 +23,28 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     right: BoundedJoinSideFrame,
     indices: CompiledJoinIndices,
     candidate_rows: u64,
-    gather_map_reservation: ActiveReservation,
+    expected_index_bytes: u64,
     timer: Instant,
-    index_bytes: u64,
 ) -> Result<(ResidentGpuFrame, OneShotJoinChunkMetrics)> {
     let mut txn = JoinMaterializationTxn::with_sides(left, right);
-    txn.set_gather_map_reservation(gather_map_reservation);
     txn.set_indices(indices);
     let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
     let residual_candidate = match one_shot_residual_candidate_projection(node) {
         Ok(candidate) => candidate,
         Err(error) => {
-            txn.rollback(execution);
+            txn.rollback();
             return Err(error);
         },
     };
     let gather_map_bytes = match txn.indices().device_allocated_size_bytes(node) {
         Ok(bytes) => bytes,
         Err(error) => {
-            txn.rollback(execution);
+            txn.rollback();
             return Err(error);
         },
     };
-    debug_assert_eq!(gather_map_bytes, index_bytes);
+    debug_assert_eq!(gather_map_bytes, expected_index_bytes);
     let (left, right) = txn.sides();
     let candidate_reservation_bytes = match txn.indices().output_upper_bound_size_bytes(
         execution,
@@ -59,20 +56,7 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     ) {
         Ok(bytes) => bytes,
         Err(error) => {
-            txn.rollback(execution);
-            return Err(error);
-        },
-    };
-    let mut candidate_reservation = match execution.try_reserve(bounded_join_request(
-        ReservationKind::JoinOutput,
-        "join_residual_candidate_output",
-        candidate_reservation_bytes,
-        execution.reservations().budget(),
-        node_id,
-    )) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            txn.rollback(execution);
+            txn.rollback();
             return Err(error);
         },
     };
@@ -87,8 +71,7 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     ) {
         Ok(candidate) => candidate,
         Err(error) => {
-            execution.release(candidate_reservation);
-            txn.rollback(execution);
+            txn.rollback();
             return Err(error);
         },
     };
@@ -98,56 +81,29 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
         match observe_device_memory_bytes(&GpuDataFrame::new(candidate.clone()), execution.metrics_mut()) {
             Ok(bytes) => bytes,
             Err(error) => {
-                execution.release(candidate_reservation);
-                txn.rollback(execution);
+                txn.rollback();
                 return Err(error);
             },
         };
-    if let Err(error) =
-        reconcile_join_output_upper_bound(execution, node_id, &mut candidate_reservation, candidate_output_bytes)
-    {
-        execution.release(candidate_reservation);
-        txn.rollback(execution);
-        return Err(error);
-    }
+    let _candidate_output_bytes = candidate_output_bytes;
     txn.drop_indices();
-    txn.release_gather_map_reservation(execution);
-
-    let filtered_reservation = match execution.try_reserve(bounded_join_request(
-        ReservationKind::JoinOutput,
-        "join_residual_filter_output",
-        candidate_reservation_bytes,
-        execution.reservations().budget(),
-        node_id,
-    )) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            execution.release(candidate_reservation);
-            txn.rollback(execution);
-            return Err(error);
-        },
-    };
     let token = match execution_budget_token_for_boundary(
         execution.context(),
-        execution.reservations().available_bytes_including(&filtered_reservation),
+        execution.device_budget_bytes(),
         "join_residual_filter_output",
         "nexus_query_engine.bounded.join.one_shot_residual_filter.budget_token",
         "failed to create bounded native one-shot residual filter budget token",
     ) {
         Ok(token) => token,
         Err(error) => {
-            execution.release(filtered_reservation);
-            execution.release(candidate_reservation);
-            txn.rollback(execution);
+            txn.rollback();
             return Err(error);
         },
     };
     let predicate = match lower_expr(&residual_candidate.predicate) {
         Ok(predicate) => predicate,
         Err(error) => {
-            execution.release(filtered_reservation);
-            execution.release(candidate_reservation);
-            txn.rollback(execution);
+            txn.rollback();
             return Err(error);
         },
     };
@@ -155,9 +111,7 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     let filtered = match candidate.with_execution(&filter_overrides).filter_expr(predicate) {
         Ok(filtered) => filtered,
         Err(error) => {
-            execution.release(filtered_reservation);
-            execution.release(candidate_reservation);
-            txn.rollback(execution);
+            txn.rollback();
             return Err(attach_budget_token_failure_facts(
                 QueryError::from_cudf(
                     "nexus_query_engine.bounded.join.one_shot_residual_filter",
@@ -171,15 +125,12 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
             ));
         },
     };
-    execution.release(candidate_reservation);
-    txn.set_output_reservation(filtered_reservation);
-
     let mut final_output_names = residual_candidate.final_output_names;
     final_output_names.extend(datafusion_order_columns(&filtered));
     let output = match filtered.select(final_output_names.iter().map(String::as_str)) {
         Ok(output) => output,
         Err(error) => {
-            txn.rollback(execution);
+            txn.rollback();
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.join.one_shot_residual_output_projection",
                 "failed to project compiled one-shot residual join output columns",
@@ -192,17 +143,10 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics_mut()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            txn.rollback(execution);
+            txn.rollback();
             return Err(error);
         },
     };
-    if let Err(error) =
-        reconcile_join_output_upper_bound(execution, node_id, txn.output_reservation_mut(), output_bytes)
-    {
-        txn.rollback(execution);
-        return Err(error);
-    }
-    let final_output_reservation_bytes = txn.output_reservation_mut().bytes();
     let build_side = node.spec.build_side;
     let probe_side = probe_side(build_side);
     let (left, right) = txn.sides();
@@ -213,11 +157,11 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
         probe_bytes: side_metric(probe_side, left.bytes, right.bytes),
         index_bytes: gather_map_bytes,
         materialization_bytes: candidate_reservation_bytes,
-        output_reservation_bytes: final_output_reservation_bytes,
+        output_reservation_bytes: output_bytes,
         output_rows,
         output_bytes,
     };
-    let output = txn.commit_frame(execution, GpuDataFrame::new(output));
+    let output = txn.commit_frame(GpuDataFrame::new(output), output_bytes);
     Ok((output, chunk_metrics))
 }
 

@@ -474,7 +474,7 @@ fn testing_hook_locks_column_name_count_mismatch_helper_contract() {
 }
 
 #[test]
-fn phase3_final_contract_exposes_invariant_violation_as_a_first_class_kind_and_code() {
+fn invariant_violation_is_exposed_as_a_first_class_kind_and_code() {
     // Under the truthful contract, `InvariantViolation` is both an
     // `ErrorCode` leaf (domestic soft-panic replacement) and a first-class
     // `ErrorKind`. Neither is a projection of the other — `kind_for_code`

@@ -69,8 +69,8 @@ To learn why we built DataFusion Nexus, read
   Flight SQL `EXPLAIN GPU` expose the same coverage evidence and remedies.
   Errors retain typed identities at the DataFusion boundary.
 - **Bounded per-device execution.** Every native attempt requires an immutable
-  GPU memory grant and capability proof. Shapes that cannot establish the
-  required bound are rejected before GPU work begins.
+  GPU memory grant and capability evidence for the exact executable plan.
+  The query allocation domain enforces the configured cap.
 
 ## Current limitations
 
@@ -89,9 +89,9 @@ To learn why we built DataFusion Nexus, read
   spilling of execution state to host memory or disk in the style of
   [cuCascade](https://github.com/NVIDIA/cuCascade). Work that cannot fit its
   grant fails with a structured error instead of degrading.
-- **Specialized GPU coverage is uneven.** cuGraph is executable. cuVS SQL calls
-  can be discovered, validated, and planned, but bounded execution is rejected
-  until the lower-level peak-memory preflight exists.
+- **Specialized GPU coverage is uneven.** cuGraph and the documented cuVS SQL
+  operations execute on the GPU; unsupported types, options, and algorithms
+  remain structured planning errors.
 - **Native file scans are Parquet-only.** Native scans support local and
   S3-compatible Parquet. Iceberg position deletes are supported when their scan
   is otherwise admissible; equality deletes, delete vectors, non-Parquet files,

@@ -64,7 +64,7 @@ async fn native_pipeline_analytical_olap_capability_first_planning_report_pins_c
         assert_eq!(row.outcome, Some(CandidateOutcomeKind::Selected), "{}", query.id);
         assert_eq!(row.reason_code, None, "{}", query.id);
         assert!(!row.rejected_before_execution, "{}", query.id);
-        assert!(!row.capability_contract_rows.is_empty(), "{} should emit admission gate rows", query.id);
+        assert!(row.capability_decision_rows.is_empty(), "{} should not emit accepted decision rows", query.id);
         assert!(!row.capability_compiled_graphs.is_empty(), "{} should emit compiled graph rows", query.id);
         if query.capability_first_admission == AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin {
             assert_eq!(
@@ -74,8 +74,8 @@ async fn native_pipeline_analytical_olap_capability_first_planning_report_pins_c
                 query.id
             );
             assert!(
-                !row.capability_contract_rows.is_empty() && !row.capability_compiled_graphs.is_empty(),
-                "{} expected superset win should emit admission gate rows and compiled graph diagnostics",
+                row.capability_decision_rows.is_empty() && !row.capability_compiled_graphs.is_empty(),
+                "{} expected superset win should emit compiled graph diagnostics",
                 query.id
             );
         }
@@ -89,7 +89,7 @@ fn assert_planning_row_has_family_free_rejection_diagnostics(
     query_id: &str,
     row: &datafusion_nexus::native_report::NativeDataFusionPlanningRow,
 ) {
-    for gate in &row.capability_contract_rows {
+    for gate in &row.capability_decision_rows {
         assert_no_legacy_rejection_terms(query_id, &gate.to_stable_kv_row());
     }
     for graph in &row.capability_compiled_graphs {

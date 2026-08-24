@@ -1,18 +1,10 @@
 #[test]
-fn large_keyed_inner_build_selects_partitioned_strategy_with_hash_preflight_gate() {
+fn large_keyed_inner_build_selects_partitioned_strategy() {
     let plan = large_keyed_join_strategy_plan(JoinType::Inner);
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.has_rejections());
-    let join = analysis
-        .nodes
-        .iter()
-        .find(|node| matches!(node.operator, NodeOperator::Join { .. }))
-        .expect("plan should contain a join capability row");
-    assert_hash_join_prebuild_exact_requirement(&join.local_requirements, "large partitioned keyed join");
-
-    let facts =
-        modeled_facts(&plan, ExecutionBoundaryPolicy::default()).expect("large one-shot join should still be admitted");
+    let facts = modeled_facts(&plan).expect("large partitioned join should still be admitted");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason").map(String::as_str), Some("n2:build_side_too_large"));
     assert_eq!(facts.get("estimated_build_rows").map(String::as_str), Some("n2:100000000"));
@@ -20,19 +12,7 @@ fn large_keyed_inner_build_selects_partitioned_strategy_with_hash_preflight_gate
     assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:1024"));
     assert_eq!(facts.get("probe_reuse_count").map(String::as_str), Some("n2:1"));
 
-    let pipeline =
-        nexus_query_engine::pipeline::compile_pipeline(&plan, &analysis).expect("partitioned join should compile");
-    assert_hash_join_prebuild_exact_gate(&pipeline, "compiled partitioned join pipeline");
-    assert!(
-        pipeline.gates().iter().any(|gate| {
-            gate.reservation_kind() == ReservationKind::GatherMap
-                && gate.memory_boundary() == "join_partition_indices"
-                && gate.required_contract() == "join_gather_map_reservation_size_bytes"
-                && gate.quality() == ContractQuality::ExactPreflight
-        }),
-        "compiled partitioned join pipeline should report exact preflight index bytes honestly"
-    );
-    assert_one_shot_output_preflight_contract(&pipeline, "large keyed inner join");
+    nexus_query_engine::pipeline::compile_pipeline(&plan, &analysis).expect("partitioned join should compile");
 }
 
 #[test]
@@ -48,29 +28,20 @@ fn plan_captured_keyed_hash_join_strategy_options_drive_admission_facts() {
     );
     let plan = optimized.plan;
 
-    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
-        .expect("custom strategy thresholds should keep the join admitted");
+    let facts = modeled_facts(&plan).expect("custom strategy thresholds should keep the join admitted");
 
     assert_eq!(plan.keyed_hash_join_strategy_options(), strategy_options);
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
 }
 
 #[test]
-fn large_keyed_left_and_full_builds_select_partitioned_strategy_with_hash_preflight_gate() {
+fn large_keyed_left_and_full_builds_select_partitioned_strategy() {
     for join_type in [JoinType::Left, JoinType::Full] {
         let plan = large_keyed_join_strategy_plan(join_type);
         let analysis = plan.capability_analysis();
 
         assert!(!analysis.has_rejections(), "{join_type} large partitioned join should be admitted");
-        let join = analysis
-            .nodes
-            .iter()
-            .find(|node| matches!(node.operator, NodeOperator::Join { .. }))
-            .expect("plan should contain a join capability row");
-        assert_hash_join_prebuild_exact_requirement(&join.local_requirements, "left/full large partitioned keyed join");
-
-        let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
-            .expect("large partitioned join should report modeled bounded facts");
+        let facts = modeled_facts(&plan).expect("large partitioned join should report modeled bounded facts");
         assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_hash_equi"));
         assert_eq!(
             facts.get("reusable_hash_join_rejected_reason").map(String::as_str),
@@ -80,10 +51,7 @@ fn large_keyed_left_and_full_builds_select_partitioned_strategy_with_hash_prefli
         assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:1024"));
         assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
 
-        let pipeline =
-            nexus_query_engine::pipeline::compile_pipeline(&plan, &analysis).expect("partitioned join should compile");
-        assert_hash_join_prebuild_exact_gate(&pipeline, &format!("large keyed {join_type} join"));
-        assert_one_shot_output_preflight_contract(&pipeline, &format!("large keyed {join_type} join"));
+        nexus_query_engine::pipeline::compile_pipeline(&plan, &analysis).expect("partitioned join should compile");
     }
 }
 
@@ -93,8 +61,7 @@ fn large_keyed_probe_with_small_build_selects_reusable_strategy() {
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.has_rejections(), "large probe reusable join with small build should be admitted");
-    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
-        .expect("large probe reusable join should report modeled bounded facts");
+    let facts = modeled_facts(&plan).expect("large probe reusable join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -108,18 +75,7 @@ fn small_single_use_keyed_inner_join_stays_reusable_strategy() {
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.has_rejections(), "small single-use inner join should be admitted");
-    let join = analysis
-        .nodes
-        .iter()
-        .find(|node| matches!(node.operator, NodeOperator::Join { .. }))
-        .expect("plan should contain a join capability row");
-    assert!(
-        join.local_requirements.iter().any(|requirement| requirement.kind == ReservationKind::HashTable),
-        "small single-use reusable joins should retain reusable hash-table gates"
-    );
-
-    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
-        .expect("small single-use inner join should report modeled bounded facts");
+    let facts = modeled_facts(&plan).expect("small single-use inner join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -129,12 +85,7 @@ fn small_single_use_keyed_inner_join_stays_reusable_strategy() {
     assert_eq!(facts.get("probe_reuse_count").map(String::as_str), Some("n2:1"));
     assert_eq!(facts.get("reusable_prebuild_supported").map(String::as_str), Some("n2:true"));
 
-    let pipeline =
-        nexus_query_engine::pipeline::compile_pipeline(&plan, &analysis).expect("small reusable join should compile");
-    assert!(
-        pipeline.gates().iter().any(|gate| gate.reservation_kind() == ReservationKind::HashTable),
-        "compiled small reusable join pipeline should carry a reusable hash-table gate"
-    );
+    nexus_query_engine::pipeline::compile_pipeline(&plan, &analysis).expect("small reusable join should compile");
 }
 
 #[test]
@@ -143,8 +94,7 @@ fn small_keyed_inner_join_with_build_artifact_keeps_reusable_strategy() {
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.has_rejections(), "small join with build artifact should be admitted");
-    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
-        .expect("small join with build artifact should report modeled bounded facts");
+    let facts = modeled_facts(&plan).expect("small join with build artifact should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -156,8 +106,7 @@ fn small_keyed_left_join_keeps_reusable_strategy() {
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.has_rejections(), "small left join should be admitted");
-    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
-        .expect("small left join should report modeled bounded facts");
+    let facts = modeled_facts(&plan).expect("small left join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -169,8 +118,7 @@ fn byte_small_but_row_non_small_keyed_inner_join_keeps_reusable_strategy() {
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.has_rejections(), "byte-small row-non-small inner join should be admitted");
-    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
-        .expect("byte-small row-non-small inner join should report modeled bounded facts");
+    let facts = modeled_facts(&plan).expect("byte-small row-non-small inner join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -185,8 +133,7 @@ fn row_small_but_byte_non_small_keyed_inner_join_keeps_reusable_strategy() {
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.has_rejections(), "row-small byte-non-small inner join should be admitted");
-    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
-        .expect("row-small byte-non-small inner join should report modeled bounded facts");
+    let facts = modeled_facts(&plan).expect("row-small byte-non-small inner join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -201,8 +148,7 @@ fn unknown_probe_with_small_left_build_selects_reusable_strategy() {
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.has_rejections(), "unknown probe reusable join with small build should be admitted");
-    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
-        .expect("small-build reusable join should report modeled bounded facts");
+    let facts = modeled_facts(&plan).expect("small-build reusable join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -216,8 +162,7 @@ fn small_flat_string_keyed_join_defers_null_payload_validation_to_exact_prebuild
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.has_rejections(), "flat string keys should use cuDF's exact runtime pre-build contract");
-    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
-        .expect("flat string-key hash join should report a modeled bounded contract");
+    let facts = modeled_facts(&plan).expect("flat string-key hash join should report a modeled bounded contract");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
 }
@@ -228,8 +173,7 @@ fn large_probe_with_small_flat_string_build_keeps_reusable_strategy() {
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.has_rejections(), "flat string keys should use cuDF's exact runtime pre-build contract");
-    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
-        .expect("small flat string build should report a modeled bounded contract");
+    let facts = modeled_facts(&plan).expect("small flat string build should report a modeled bounded contract");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:reusable_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:3221225472"));
@@ -241,8 +185,7 @@ fn large_keyed_probe_with_non_small_build_selects_partitioned_strategy() {
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.has_rejections(), "large probe partitioned join should be admitted");
-    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
-        .expect("large probe partitioned join should report modeled bounded facts");
+    let facts = modeled_facts(&plan).expect("large probe partitioned join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_hash_equi"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason").map(String::as_str), Some("n2:probe_side_too_large"));
     assert_eq!(facts.get("build_side_bytes").map(String::as_str), Some("n2:134217728"));
@@ -255,15 +198,7 @@ fn single_use_non_small_keyed_build_selects_partitioned_strategy() {
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.has_rejections(), "single-use non-small build should remain admitted");
-    let join = analysis
-        .nodes
-        .iter()
-        .find(|node| matches!(node.operator, NodeOperator::Join { .. }))
-        .expect("plan should contain a join capability row");
-    assert_hash_join_prebuild_exact_requirement(&join.local_requirements, "single-use non-small keyed join");
-
-    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
-        .expect("single-use non-small build should report modeled bounded facts");
+    let facts = modeled_facts(&plan).expect("single-use non-small build should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_hash_equi"));
     assert_eq!(
         facts.get("reusable_hash_join_rejected_reason").map(String::as_str),
@@ -273,34 +208,17 @@ fn single_use_non_small_keyed_build_selects_partitioned_strategy() {
     assert_eq!(facts.get("build_side_bytes").map(String::as_str), Some("n2:134217728"));
     assert_eq!(facts.get("probe_side_bytes").map(String::as_str), Some("n2:1048576"));
 
-    let pipeline = nexus_query_engine::pipeline::compile_pipeline(&plan, &analysis)
+    nexus_query_engine::pipeline::compile_pipeline(&plan, &analysis)
         .expect("single-use non-small partitioned join should compile");
-    assert_hash_join_prebuild_exact_gate(&pipeline, "single-use non-small partitioned join");
-    assert_one_shot_output_preflight_contract(&pipeline, "single-use non-small keyed join");
 }
 
 #[test]
-fn large_keyed_inner_residual_build_selects_partitioned_mixed_strategy_without_hash_gate() {
+fn large_keyed_inner_residual_build_selects_partitioned_mixed_strategy() {
     let plan = large_keyed_residual_join_strategy_plan();
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.has_rejections(), "large keyed inner residual partitioned join should be admitted");
-    let join = analysis
-        .nodes
-        .iter()
-        .find(|node| matches!(node.operator, NodeOperator::Join { .. }))
-        .expect("plan should contain a join capability row");
-    assert!(
-        join.local_requirements.iter().all(|requirement| requirement.kind != ReservationKind::HashTable),
-        "large partitioned keyed residual joins must not require reusable hash-table gates"
-    );
-    assert!(
-        join.local_requirements.iter().any(|requirement| requirement.kind == ReservationKind::MixedSizeData),
-        "large partitioned keyed residual joins must model per-partition mixed size-data"
-    );
-
-    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
-        .expect("large partitioned residual join should report modeled bounded facts");
+    let facts = modeled_facts(&plan).expect("large partitioned residual join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_mixed_keyed_residual"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason").map(String::as_str), Some("n2:build_side_too_large"));
     assert_eq!(facts.get("build_side_bytes").map(String::as_str), Some("n2:9663676416"));
@@ -308,25 +226,7 @@ fn large_keyed_inner_residual_build_selects_partitioned_mixed_strategy_without_h
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
     assert_eq!(facts.get("one_shot_equi_rejected_reason"), None);
 
-    let pipeline = nexus_query_engine::pipeline::compile_pipeline(&plan, &analysis)
-        .expect("partitioned residual join should compile");
-    assert!(
-        pipeline.gates().iter().all(|gate| gate.reservation_kind() != ReservationKind::HashTable),
-        "compiled partitioned residual join pipeline must not carry reusable hash-table gates"
-    );
-    assert!(
-        pipeline.gates().iter().any(|gate| gate.reservation_kind() == ReservationKind::MixedSizeData),
-        "compiled partitioned residual join pipeline should model mixed size-data gates"
-    );
-    assert!(
-        pipeline.gates().iter().any(|gate| {
-            gate.reservation_kind() == ReservationKind::GatherMap
-                && gate.memory_boundary() == "join_gather_map"
-                && gate.required_contract() == "join_gather_map_reservation_size_bytes"
-                && gate.quality() == ContractQuality::ExactPreflight
-        }),
-        "compiled partitioned residual join pipeline should model mixed join gather maps"
-    );
+    nexus_query_engine::pipeline::compile_pipeline(&plan, &analysis).expect("partitioned residual join should compile");
 }
 
 #[test]
@@ -335,8 +235,7 @@ fn keyed_inner_residual_or_selects_mixed_join_strategy() {
     let analysis = plan.capability_analysis();
 
     assert!(!analysis.has_rejections(), "keyed residual OR join should be admitted through mixed join");
-    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
-        .expect("keyed residual OR join should report modeled bounded facts");
+    let facts = modeled_facts(&plan).expect("keyed residual OR join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:partitioned_mixed_keyed_residual"));
     assert_eq!(facts.get("reusable_hash_join_rejected_reason").map(String::as_str), Some("n2:build_side_too_large"));
     assert_eq!(facts.get("partitioned_hash_join_rejected_reason"), None);
@@ -352,8 +251,7 @@ fn keyed_decimal_division_residual_selects_one_shot_post_filter_strategy() {
         !analysis.has_rejections(),
         "keyed decimal-division residual join should be admitted through post-join filtering"
     );
-    let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
-        .expect("keyed decimal-division residual join should report modeled bounded facts");
+    let facts = modeled_facts(&plan).expect("keyed decimal-division residual join should report modeled bounded facts");
     assert_eq!(facts.get("join_strategy").map(String::as_str), Some("n2:one_shot_equi"));
     assert_eq!(
         facts.get("reusable_hash_join_rejected_reason").map(String::as_str),
@@ -364,23 +262,6 @@ fn keyed_decimal_division_residual_selects_one_shot_post_filter_strategy() {
         Some("n2:residual_requires_post_join_filter")
     );
     assert_eq!(facts.get("one_shot_equi_rejected_reason"), None);
-}
-
-fn assert_one_shot_output_preflight_contract(pipeline: &nexus_query_engine::pipeline::CompiledPipeline, label: &str) {
-    let gate = pipeline
-        .gates()
-        .iter()
-        .find(|gate| {
-            gate.reservation_kind() == ReservationKind::JoinOutput
-                && gate.memory_boundary() == "join_output"
-                && gate.required_contract() == "keyed_equality_join_output_size_preflight"
-        })
-        .unwrap_or_else(|| panic!("{label}: compiled one-shot join should name the output-size preflight contract"));
-    assert_eq!(
-        gate.quality(),
-        ContractQuality::ExactPreflight,
-        "{label}: one-shot output-size preflight must be reported as an exact preflight"
-    );
 }
 
 pub(crate) fn large_keyed_join_strategy_plan(join_type: JoinType) -> nexus_query_engine::plan::QueryPlan {

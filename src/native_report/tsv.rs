@@ -8,14 +8,13 @@
 use std::fmt::Write;
 
 use datafusion::physical_plan::metrics::MetricsSet;
-use nexus_query_engine::contract_report::CapabilityContractGateRow;
+use nexus_query_engine::contract_report::CapabilityDecisionRow;
 
 use super::{
-    NativeAggregateStrategyMetricRow, NativeDynamicFilterRuntimeMetricRow, NativeGraphReservationMetricRow,
-    NativeGraphRuntimeMetricRow, NativeJoinDiagnosticSummary, NativeJoinStrategyMetricRow,
-    NativeLakehouseCacheFillEventMetricRow, NativeSourceDiagnosticSummary, NativeSourceReadRuntimeMetricRow,
-    NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow, WorkloadDatasetMetadata,
-    metrics::NativePlanTaskMappingMetricRow,
+    NativeAggregateStrategyMetricRow, NativeDynamicFilterRuntimeMetricRow, NativeGraphRuntimeMetricRow,
+    NativeJoinDiagnosticSummary, NativeJoinStrategyMetricRow, NativeLakehouseCacheFillEventMetricRow,
+    NativeSourceDiagnosticSummary, NativeSourceReadRuntimeMetricRow, NativeTaskOperatorMetricRow,
+    NativeTaskRuntimeMetricRow, WorkloadDatasetMetadata, metrics::NativePlanTaskMappingMetricRow,
 };
 use crate::planner::NativeCapabilityCompiledGraphDiagnostics;
 
@@ -115,17 +114,16 @@ pub(super) fn format_source_diagnostics(diagnostics: &[NativeSourceDiagnosticSum
     output
 }
 
-pub(super) fn format_capability_contract_rows(rows: &[CapabilityContractGateRow]) -> String {
+pub(super) fn format_capability_decision_rows(rows: &[CapabilityDecisionRow]) -> String {
     if rows.is_empty() {
         return "none".to_string();
     }
 
     let mut rows = rows.iter().collect::<Vec<_>>();
     rows.sort_by(|left, right| {
-        left.gate_id
+        left.decision_id
             .to_string()
-            .cmp(&right.gate_id.to_string())
-            .then_with(|| left.reservation_kind.as_str().cmp(right.reservation_kind.as_str()))
+            .cmp(&right.decision_id.to_string())
             .then_with(|| left.owner.to_string().cmp(&right.owner.to_string()))
     });
     let mut output = String::new();
@@ -145,15 +143,7 @@ pub(super) fn format_capability_compiled_graphs(graphs: &[NativeCapabilityCompil
 
     let mut graphs = graphs.iter().collect::<Vec<_>>();
     graphs.sort_by_key(|graph| {
-        (
-            graph.task_count,
-            graph.edge_count,
-            graph.barrier_count,
-            graph.resource_count,
-            graph.gate_count,
-            graph.sink_kind.clone(),
-            graph.sink_gate_count,
-        )
+        (graph.task_count, graph.edge_count, graph.barrier_count, graph.resource_count, graph.sink_kind.clone())
     });
     let mut output = String::new();
     for (index, graph) in graphs.iter().enumerate() {
@@ -162,14 +152,12 @@ pub(super) fn format_capability_compiled_graphs(graphs: &[NativeCapabilityCompil
         }
         let _ = write!(
             output,
-            "task_count={},edge_count={},barrier_count={},resource_count={},gate_count={},sink_kind={},sink_gate_count={}",
+            "task_count={},edge_count={},barrier_count={},resource_count={},sink_kind={}",
             graph.task_count,
             graph.edge_count,
             graph.barrier_count,
             graph.resource_count,
-            graph.gate_count,
             stable_nested_tsv_field(&graph.sink_kind),
-            graph.sink_gate_count,
         );
     }
     output
@@ -210,10 +198,6 @@ pub(super) fn format_aggregate_strategy_rows(rows: &[NativeAggregateStrategyMetr
 
 pub(super) fn format_graph_runtime_rows(rows: &[NativeGraphRuntimeMetricRow]) -> String {
     format_stable_nested_metric_rows(rows, NativeGraphRuntimeMetricRow::to_stable_kv_row)
-}
-
-pub(super) fn format_graph_reservation_rows(rows: &[NativeGraphReservationMetricRow]) -> String {
-    format_stable_nested_metric_rows(rows, NativeGraphReservationMetricRow::to_stable_kv_row)
 }
 
 pub(super) fn format_task_operator_rows(rows: &[NativeTaskOperatorMetricRow]) -> String {
@@ -305,8 +289,6 @@ mod tests {
             execution_stage: "single".to_string(),
             aggregate_filter_count: 4,
             filtered_input_materialization_strategy: "row_chunked_grouped_segmented_state".to_string(),
-            filtered_input_lower_level_unresolved_contracts:
-                "cudf_dataframe_merge_temporary_workspace_preflight_unavailable".to_string(),
             filtered_grouped_rows_per_chunk: 2048,
             filtered_grouped_inputs_per_segment: 2,
             filtered_grouped_segment_target_temporary_bytes: 4 * 1024 * 1024,
@@ -324,11 +306,6 @@ mod tests {
         assert!(formatted.contains("selected_strategy=filtered_grouped_segmented_state"));
         assert!(formatted.contains("filtered_grouped_actual_chunk_count=7"));
         assert!(formatted.contains("filtered_grouped_actual_segment_count=14"));
-        assert!(
-            formatted.contains(
-                "filtered_input_lower_level_unresolved_contracts=cudf_dataframe_merge_temporary_workspace_preflight_unavailable"
-            )
-        );
     }
 
     #[test]

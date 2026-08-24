@@ -16,7 +16,7 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
         }
         assert!(!row.rejected_before_execution, "{query_id} should be replaced by native execution");
         assert!(
-            row.capability_contract_rows.iter().map(|gate| gate.to_stable_kv_row()).all(|rendered| {
+            row.capability_decision_rows.iter().map(|gate| gate.to_stable_kv_row()).all(|rendered| {
                 admission_contract_row_is_family_path_free(&rendered)
                     && admission_contract_row_excludes_adaptive_terms(&rendered)
             }),
@@ -24,48 +24,13 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
         );
     }
 
-    let q21 = planning_replacement_row(report, "q21");
-    assert_eq!(q21.physical_root, expected_tpch_physical_root("q21"));
-    assert!(
-        q21.capability_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::FinalSort
-            && gate.contract_quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight
-            && gate.unresolved_preflight_gap == Some("libcudf_final_sort_order_preflight_unavailable")),
-        "q21 should report its TopK final-sort gate as hard-budgeted unresolved preflight"
-    );
-
     let q15 = planning_replacement_row(report, "q15");
     if q15.final_disposition == Some(FinalPlanDisposition::Native) {
         assert!(
-            q15.capability_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::FinalSort
-                && gate.contract_quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight
-                && gate.unresolved_preflight_gap == Some("libcudf_final_sort_order_preflight_unavailable")),
-            "q15 should report final-sort as hard-budgeted with an unresolved lower-level preflight gap"
-        );
-        assert!(
-            q15.capability_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::OperatorOutput
-                && gate.contract_quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight
-                && gate.unresolved_preflight_gap
-                    == Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable")),
-            "q15 resident/shared-subplan row should keep aggregate preflight gaps explicit"
-        );
-        assert!(
-            q15.capability_compiled_graphs.iter().any(|graph| graph.resource_count > 0 && graph.gate_count > 0),
-            "q15 resident/shared-subplan row should expose compiled graph resource and gate accounting"
+            q15.capability_compiled_graphs.iter().any(|graph| graph.resource_count > 0),
+            "q15 resident/shared-subplan row should expose compiled graph resources"
         );
     }
-
-    let q17 = planning_replacement_row(report, "q17");
-    assert!(
-        q17.capability_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::OperatorOutput
-            && gate.contract_quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight
-            && gate.unresolved_preflight_gap
-                == Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable")),
-        "q17 should keep aggregate preflight gaps as admission contract quality evidence"
-    );
-    assert!(
-        !q17.capability_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::FinalSort),
-        "q17 should not claim a final-sort gate"
-    );
 
     let rejected_query_ids = tpch_query_ids()
         .filter(|query_id| {
@@ -83,12 +48,11 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
     assert!(text.contains(&format!("{NATIVE_DATAFUSION_PLANNING_TSV_HEADER}\n")));
     assert!(
         text.contains(
-            "capability_contract_rows\tcapability_compiled_graphs\tnative_optimizer\tedge_normalize_inserted"
+            "capability_decision_rows\tcapability_compiled_graphs\tnative_optimizer\tedge_normalize_inserted"
         )
     );
-    assert!(text.contains("execution_mode=bounded"));
-    assert!(text.contains("contract_status=modeled"));
-    assert!(text.contains("contract_quality="));
+    assert!(!text.contains("contract_status="));
+    assert!(!text.contains("contract_quality="));
     assert!(!text.contains("bounded_join_reservation_facts"));
     assert!(!text.contains("bounded_join_execution_family="));
     assert!(!text.contains("memory_history"));

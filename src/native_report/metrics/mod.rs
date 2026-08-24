@@ -21,8 +21,8 @@ pub use dynamic_filter::{
     NativeDynamicFilterMeasuredReductionStatus, NativeDynamicFilterPostDecodeReductionStage,
     NativeDynamicFilterRuntimeMetricRow, NativeDynamicFilterWorkAvoidanceStatus,
 };
-pub use graph::{NativeGraphReservationMetricRow, NativeGraphRuntimeMetricRow};
-use graph::{graph_reservation_rows, graph_runtime_rows};
+pub use graph::NativeGraphRuntimeMetricRow;
+use graph::graph_runtime_rows;
 use labels::max_optional_usize;
 pub use lakehouse_cache::NativeLakehouseCacheFillEventMetricRow;
 use lakehouse_cache::lakehouse_cache_fill_event_snapshot_rows;
@@ -81,22 +81,10 @@ pub struct NativeDataFusionExecutionMetrics {
     pub resident_dataframe_peak_bytes: Option<usize>,
     /// cuDF allocator high-water bytes, when reported by lower layers.
     pub allocator_high_water_bytes: Option<usize>,
-    /// Cumulative reservation bytes requested over the query lifetime.
-    pub reservation_requested_bytes: usize,
-    /// Cumulative reservation bytes granted over the query lifetime.
-    pub reservation_granted_bytes: usize,
-    /// Peak live reserved bytes observed at any instant.
-    pub reservation_live_peak_bytes: usize,
-    /// Count of denied reservation requests.
-    pub reservation_denied_count: usize,
-    /// Largest task reservation request granted or applied.
-    pub max_task_reservation_bytes: usize,
     /// Largest lower-level task allocator peak, when reported.
     pub max_task_observed_peak_bytes: Option<usize>,
     /// Largest lower-level retained byte count, when reported.
     pub max_task_retained_bytes: Option<usize>,
-    /// Stable nested graph runtime metric rows.
-    pub graph_reservation_rows: Vec<NativeGraphReservationMetricRow>,
     /// Stable nested graph runtime metric rows.
     pub graph_runtime_rows: Vec<NativeGraphRuntimeMetricRow>,
     /// Stable nested task metrics aggregated by operator kind.
@@ -143,8 +131,6 @@ pub struct NativeDataFusionExecutionMetrics {
     pub retry_count: usize,
     /// Retries caused by lower-level resource exhaustion.
     pub retry_resource_exhausted_count: usize,
-    /// Retries caused by reservation failure.
-    pub retry_reservation_failure_count: usize,
     /// Dynamic-filter payloads successfully produced.
     pub dynamic_filter_produced_count: usize,
     /// Dynamic-filter routes whose producers completed without a usable payload.
@@ -248,14 +234,8 @@ impl NativeDataFusionExecutionMetrics {
             query_grant_bytes: optional_observed_metric_count(metrics, "query_grant_bytes"),
             resident_dataframe_peak_bytes: optional_observed_metric_count(metrics, "resident_dataframe_peak_bytes"),
             allocator_high_water_bytes: optional_observed_metric_count(metrics, "allocator_high_water_bytes"),
-            reservation_requested_bytes: metric_count(metrics, "reservation_requested_bytes"),
-            reservation_granted_bytes: metric_count(metrics, "reservation_granted_bytes"),
-            reservation_live_peak_bytes: metric_count(metrics, "reservation_live_peak_bytes"),
-            reservation_denied_count: metric_count(metrics, "reservation_denied_count"),
-            max_task_reservation_bytes: metric_count(metrics, "max_task_reservation_bytes"),
             max_task_observed_peak_bytes: optional_observed_metric_count(metrics, "max_task_observed_peak_bytes"),
             max_task_retained_bytes: optional_observed_metric_count(metrics, "max_task_retained_bytes"),
-            graph_reservation_rows: graph_reservation_rows(metrics),
             graph_runtime_rows: graph_runtime_rows(metrics),
             task_operator_rows: task_operator_rows(metrics),
             task_runtime_rows: task_runtime_rows(metrics),
@@ -279,7 +259,6 @@ impl NativeDataFusionExecutionMetrics {
             final_merge_max_fan_in: metric_count(metrics, "final_merge_max_fan_in"),
             retry_count: metric_count(metrics, "retry_count"),
             retry_resource_exhausted_count: metric_count(metrics, "retry_resource_exhausted_count"),
-            retry_reservation_failure_count: metric_count(metrics, "retry_reservation_failure_count"),
             dynamic_filter_produced_count: metric_count(metrics, "dynamic_filter_produced_count"),
             dynamic_filter_skipped_count: metric_count(metrics, "dynamic_filter_skipped_count"),
             dynamic_filter_applied_count: metric_count(metrics, "dynamic_filter_applied_count"),
@@ -360,14 +339,8 @@ impl NativeDataFusionExecutionMetrics {
             query_grant_bytes,
             resident_dataframe_peak_bytes,
             allocator_high_water_bytes,
-            reservation_requested_bytes,
-            reservation_granted_bytes,
-            reservation_live_peak_bytes,
-            reservation_denied_count,
-            max_task_reservation_bytes,
             max_task_observed_peak_bytes,
             max_task_retained_bytes,
-            graph_reservation_rows,
             graph_runtime_rows,
             task_operator_rows,
             task_runtime_rows,
@@ -391,7 +364,6 @@ impl NativeDataFusionExecutionMetrics {
             final_merge_max_fan_in,
             retry_count,
             retry_resource_exhausted_count,
-            retry_reservation_failure_count,
             dynamic_filter_produced_count,
             dynamic_filter_skipped_count,
             dynamic_filter_applied_count,
@@ -459,15 +431,9 @@ impl NativeDataFusionExecutionMetrics {
             max_optional_usize(self.resident_dataframe_peak_bytes, resident_dataframe_peak_bytes);
         self.allocator_high_water_bytes =
             max_optional_usize(self.allocator_high_water_bytes, allocator_high_water_bytes);
-        self.reservation_requested_bytes = self.reservation_requested_bytes.saturating_add(reservation_requested_bytes);
-        self.reservation_granted_bytes = self.reservation_granted_bytes.saturating_add(reservation_granted_bytes);
-        self.reservation_live_peak_bytes = self.reservation_live_peak_bytes.max(reservation_live_peak_bytes);
-        self.reservation_denied_count = self.reservation_denied_count.saturating_add(reservation_denied_count);
-        self.max_task_reservation_bytes = self.max_task_reservation_bytes.max(max_task_reservation_bytes);
         self.max_task_observed_peak_bytes =
             max_optional_usize(self.max_task_observed_peak_bytes, max_task_observed_peak_bytes);
         self.max_task_retained_bytes = max_optional_usize(self.max_task_retained_bytes, max_task_retained_bytes);
-        self.merge_graph_reservation_rows(graph_reservation_rows);
         self.merge_graph_runtime_rows(graph_runtime_rows);
         self.merge_task_operator_rows(task_operator_rows);
         self.merge_task_runtime_rows(task_runtime_rows);
@@ -500,8 +466,6 @@ impl NativeDataFusionExecutionMetrics {
         self.retry_count = self.retry_count.saturating_add(retry_count);
         self.retry_resource_exhausted_count =
             self.retry_resource_exhausted_count.saturating_add(retry_resource_exhausted_count);
-        self.retry_reservation_failure_count =
-            self.retry_reservation_failure_count.saturating_add(retry_reservation_failure_count);
         self.dynamic_filter_produced_count =
             self.dynamic_filter_produced_count.saturating_add(dynamic_filter_produced_count);
         self.dynamic_filter_skipped_count =
@@ -763,17 +727,6 @@ impl NativeDataFusionExecutionMetrics {
         });
     }
 
-    /// Appends graph reservation rows and restores stable sort order.
-    fn merge_graph_reservation_rows(&mut self, rows: Vec<NativeGraphReservationMetricRow>) {
-        self.graph_reservation_rows.extend(rows);
-        self.graph_reservation_rows.sort_by(|left, right| {
-            left.node_id
-                .cmp(&right.node_id)
-                .then_with(|| left.algorithm.cmp(&right.algorithm))
-                .then_with(|| left.to_stable_kv_row().cmp(&right.to_stable_kv_row()))
-        });
-    }
-
     /// Merges task operator rows by operator kind and keeps stable sort order.
     fn merge_task_operator_rows(&mut self, rows: Vec<NativeTaskOperatorMetricRow>) {
         for row in rows {
@@ -782,14 +735,6 @@ impl NativeDataFusionExecutionMetrics {
             {
                 existing.task_count = existing.task_count.saturating_add(row.task_count);
                 existing.elapsed_ns = existing.elapsed_ns.saturating_add(row.elapsed_ns);
-                existing.reservation_requested_bytes =
-                    existing.reservation_requested_bytes.saturating_add(row.reservation_requested_bytes);
-                existing.reservation_granted_bytes =
-                    existing.reservation_granted_bytes.saturating_add(row.reservation_granted_bytes);
-                existing.reservation_released_bytes =
-                    existing.reservation_released_bytes.saturating_add(row.reservation_released_bytes);
-                existing.reservation_live_peak_bytes =
-                    existing.reservation_live_peak_bytes.max(row.reservation_live_peak_bytes);
                 existing.max_observed_peak_bytes =
                     max_optional_usize(existing.max_observed_peak_bytes, row.max_observed_peak_bytes);
                 existing.max_retained_bytes = max_optional_usize(existing.max_retained_bytes, row.max_retained_bytes);
@@ -808,14 +753,6 @@ impl NativeDataFusionExecutionMetrics {
             {
                 existing.operator_kind = row.operator_kind;
                 existing.elapsed_ns = existing.elapsed_ns.saturating_add(row.elapsed_ns);
-                existing.reservation_requested_bytes =
-                    existing.reservation_requested_bytes.saturating_add(row.reservation_requested_bytes);
-                existing.reservation_granted_bytes =
-                    existing.reservation_granted_bytes.saturating_add(row.reservation_granted_bytes);
-                existing.reservation_released_bytes =
-                    existing.reservation_released_bytes.saturating_add(row.reservation_released_bytes);
-                existing.reservation_live_peak_bytes =
-                    existing.reservation_live_peak_bytes.max(row.reservation_live_peak_bytes);
                 existing.max_observed_peak_bytes =
                     max_optional_usize(existing.max_observed_peak_bytes, row.max_observed_peak_bytes);
                 existing.max_retained_bytes = max_optional_usize(existing.max_retained_bytes, row.max_retained_bytes);
@@ -841,10 +778,6 @@ mod tests {
     fn merge_from_preserves_scalar_peak_optional_and_identity_semantics() {
         let mut metrics = NativeDataFusionExecutionMetrics {
             gpu_resident_input_handoffs: usize::MAX - 2,
-            reservation_requested_bytes: 11,
-            reservation_live_peak_bytes: 13,
-            reservation_denied_count: 17,
-            max_task_reservation_bytes: 19,
             partial_aggregate_retained_bytes: 23,
             final_merge_levels: 29,
             final_merge_max_fan_in: 31,
@@ -862,10 +795,6 @@ mod tests {
 
         metrics.merge_from(NativeDataFusionExecutionMetrics {
             gpu_resident_input_handoffs: 5,
-            reservation_requested_bytes: 73,
-            reservation_live_peak_bytes: 79,
-            reservation_denied_count: 83,
-            max_task_reservation_bytes: 89,
             partial_aggregate_retained_bytes: 97,
             final_merge_levels: 101,
             final_merge_max_fan_in: 103,
@@ -882,10 +811,6 @@ mod tests {
         });
 
         assert_eq!(metrics.gpu_resident_input_handoffs, usize::MAX);
-        assert_eq!(metrics.reservation_requested_bytes, 84);
-        assert_eq!(metrics.reservation_live_peak_bytes, 79);
-        assert_eq!(metrics.reservation_denied_count, 100);
-        assert_eq!(metrics.max_task_reservation_bytes, 89);
         assert_eq!(metrics.partial_aggregate_retained_bytes, 97);
         assert_eq!(metrics.final_merge_levels, 130);
         assert_eq!(metrics.final_merge_max_fan_in, 103);
@@ -902,10 +827,6 @@ mod tests {
             metrics,
             NativeDataFusionExecutionMetrics {
                 gpu_resident_input_handoffs: usize::MAX,
-                reservation_requested_bytes: 84,
-                reservation_live_peak_bytes: 79,
-                reservation_denied_count: 100,
-                max_task_reservation_bytes: 89,
                 partial_aggregate_retained_bytes: 97,
                 final_merge_levels: 130,
                 final_merge_max_fan_in: 103,
@@ -955,10 +876,6 @@ mod tests {
             ..Default::default()
         };
         let mut metrics = NativeDataFusionExecutionMetrics {
-            graph_reservation_rows: vec![NativeGraphReservationMetricRow {
-                node_id: "z-reservation".to_string(),
-                ..Default::default()
-            }],
             graph_runtime_rows: vec![NativeGraphRuntimeMetricRow {
                 node_id: "z-runtime".to_string(),
                 ..Default::default()
@@ -1002,10 +919,6 @@ mod tests {
         };
 
         metrics.merge_from(NativeDataFusionExecutionMetrics {
-            graph_reservation_rows: vec![NativeGraphReservationMetricRow {
-                node_id: "a-reservation".to_string(),
-                ..Default::default()
-            }],
             graph_runtime_rows: vec![NativeGraphRuntimeMetricRow {
                 node_id: "a-runtime".to_string(),
                 ..Default::default()
@@ -1068,10 +981,6 @@ mod tests {
             ..NativeDataFusionExecutionMetrics::default()
         });
 
-        assert_eq!(
-            metrics.graph_reservation_rows.iter().map(|row| row.node_id.as_str()).collect::<Vec<_>>(),
-            ["a-reservation", "z-reservation"]
-        );
         assert_eq!(
             metrics.graph_runtime_rows.iter().map(|row| row.node_id.as_str()).collect::<Vec<_>>(),
             ["a-runtime", "z-runtime"]

@@ -59,11 +59,10 @@ defined here.
 - **Attempt** — one bounded native execution of one admitted query on one
   selected device. Its evidence is sealed into a `QueryAttemptReport`. See
   [Admission & Memory Governance](../design/admission.mdx).
-- **Capability proof (`QueryPlanCapabilityProof`)** — planning-owned, opaque
-  evidence that one exact `QueryPlan` is executable, carrying its required
-  device capabilities and allocation owners. The engine facade re-exports it;
-  callers cannot construct one. See
-  [From plan proof to admission](../design/admission.mdx#from-plan-proof-to-admission).
+- **Attempt capability evidence (`AttemptCapabilityEvidence`)** —
+  planning-owned evidence for the device capabilities and exact plan scopes
+  admitted for one attempt. It carries no memory estimate. See
+  [From capability validation to admission](../design/admission.mdx#from-capability-validation-to-admission).
 - **Admission ticket** — a planner-created, lazy admission request; device and
   grant acquisition wait until the first native stream is polled. See
   [Admission & Memory Governance](../design/admission.mdx).

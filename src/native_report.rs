@@ -47,7 +47,7 @@ use datafusion::{
     },
 };
 pub use nexus_query_engine::{
-    contract_report::CapabilityContractGateRow,
+    contract_report::CapabilityDecisionRow,
     metrics::{MetricAggregation, MetricDescriptor, MetricDirection, MetricUnit},
     mode::StatisticalAggregateExecutionMode,
     optimizer::NativeOptimizerDiagnostics,
@@ -91,9 +91,9 @@ use diagnostics::{physical_plan_shape, summarize_source_diagnostics, unsupported
 pub use metrics::{
     NativeAggregateStrategyMetricRow, NativeDataFusionExecutionMetrics, NativeDynamicFilterMeasuredReductionStatus,
     NativeDynamicFilterPostDecodeReductionStage, NativeDynamicFilterRuntimeMetricRow,
-    NativeDynamicFilterWorkAvoidanceStatus, NativeGraphReservationMetricRow, NativeGraphRuntimeMetricRow,
-    NativeJoinStrategyMetricRow, NativeLakehouseCacheFillEventMetricRow, NativePlanTaskMappingMetricRow,
-    NativeSourceReadRuntimeMetricRow, NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow,
+    NativeDynamicFilterWorkAvoidanceStatus, NativeGraphRuntimeMetricRow, NativeJoinStrategyMetricRow,
+    NativeLakehouseCacheFillEventMetricRow, NativePlanTaskMappingMetricRow, NativeSourceReadRuntimeMetricRow,
+    NativeTaskOperatorMetricRow, NativeTaskRuntimeMetricRow,
 };
 pub use reports::{
     NativeDataFusionExecutionReport, NativeDataFusionExecutionTsvTemplate, NativeDataFusionPlanningReport,
@@ -148,11 +148,6 @@ pub use crate::planner::FinalPlanDisposition;
 /// Format nested graph-runtime metric rows for TSV report cells.
 pub fn format_native_graph_runtime_metric_rows(rows: &[NativeGraphRuntimeMetricRow]) -> String {
     tsv::format_graph_runtime_rows(rows)
-}
-
-/// Format nested graph-reservation metric rows for TSV report cells.
-pub fn format_native_graph_reservation_metric_rows(rows: &[NativeGraphReservationMetricRow]) -> String {
-    tsv::format_graph_reservation_rows(rows)
 }
 
 /// Format nested task-operator metric rows for TSV report cells.
@@ -364,7 +359,7 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                     outcome: Some(outcome.kind()),
                     reason_code: candidate_reason_code(outcome),
                     unsupported_category: None,
-                    capability_contract_rows: capability_contract_rows_for_candidate(
+                    capability_decision_rows: capability_decision_rows_for_candidate(
                         &native_diagnostics.capability_contract,
                         candidate,
                         None,
@@ -398,7 +393,7 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 outcome: Some(outcome.kind()),
                 reason_code: candidate_reason_code(outcome),
                 unsupported_category: unsupported_category(planned_plan.as_ref(), candidate, *capability_reason),
-                capability_contract_rows: capability_contract_rows_for_candidate(
+                capability_decision_rows: capability_decision_rows_for_candidate(
                     &native_diagnostics.capability_contract,
                     candidate,
                     Some(*capability_reason),
@@ -427,7 +422,7 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 outcome: Some(outcome.kind()),
                 reason_code: candidate_reason_code(outcome),
                 unsupported_category: None,
-                capability_contract_rows: Vec::new(),
+                capability_decision_rows: Vec::new(),
                 capability_compiled_graphs: Vec::new(),
                 native_optimizer: native_diagnostics.native_optimizer.clone(),
                 edge_normalize_inserted,
@@ -475,7 +470,7 @@ fn datafusion_execution_rows_for_item(
                     planning_outcome: Some(outcome.kind()),
                     reason_code: candidate_reason_code(outcome),
                     unsupported_category: None,
-                    capability_contract_rows: capability_contract_rows_for_candidate(
+                    capability_decision_rows: capability_decision_rows_for_candidate(
                         &native_diagnostics.capability_contract,
                         candidate,
                         None,
@@ -509,7 +504,7 @@ fn datafusion_execution_rows_for_item(
                 planning_outcome: Some(outcome.kind()),
                 reason_code: candidate_reason_code(outcome),
                 unsupported_category: unsupported_category(planned_plan.as_ref(), candidate, *capability_reason),
-                capability_contract_rows: capability_contract_rows_for_candidate(
+                capability_decision_rows: capability_decision_rows_for_candidate(
                     &native_diagnostics.capability_contract,
                     candidate,
                     Some(*capability_reason),
@@ -542,7 +537,7 @@ fn datafusion_execution_rows_for_item(
                 planning_outcome: Some(outcome.kind()),
                 reason_code: candidate_reason_code(outcome),
                 unsupported_category: None,
-                capability_contract_rows: Vec::new(),
+                capability_decision_rows: Vec::new(),
                 capability_compiled_graphs: Vec::new(),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
@@ -593,7 +588,7 @@ fn datafusion_planning_row_for_planning_failure(
         outcome: None,
         reason_code: Some(failure.reason_code),
         unsupported_category: Some("planning".to_string()),
-        capability_contract_rows: Vec::new(),
+        capability_decision_rows: Vec::new(),
         capability_compiled_graphs: Vec::new(),
         native_optimizer: nexus_query_engine::optimizer::NativeOptimizerDiagnostics::default(),
         edge_normalize_inserted: false,
@@ -620,7 +615,7 @@ fn datafusion_execution_row_for_planning_failure(
         planning_outcome: None,
         reason_code: Some(failure.reason_code),
         unsupported_category: Some("planning".to_string()),
-        capability_contract_rows: Vec::new(),
+        capability_decision_rows: Vec::new(),
         capability_compiled_graphs: Vec::new(),
         source_diagnostics: Vec::new(),
         post_native_plan_root: "PlanningFailure".to_string(),
@@ -638,11 +633,11 @@ fn datafusion_execution_row_for_planning_failure(
     }
 }
 
-fn capability_contract_rows_for_candidate(
+fn capability_decision_rows_for_candidate(
     diagnostics: &crate::planner::NativeCapabilityContractDiagnostics,
     candidate: &GpuCandidate,
     reason: Option<CapabilityReason>,
-) -> Vec<CapabilityContractGateRow> {
+) -> Vec<CapabilityDecisionRow> {
     if !capability_contract_is_candidate_scoped(candidate, reason) {
         return Vec::new();
     }
@@ -659,7 +654,7 @@ fn capability_contract_rows_for_candidate(
         .deferred_candidates
         .iter()
         .filter(|entry| entry.candidate == *candidate)
-        .flat_map(|entry| entry.report.gate_rows().iter().cloned())
+        .flat_map(|entry| entry.report.decision_rows().iter().cloned())
         .collect::<Vec<_>>();
     if !deferred.is_empty() {
         return deferred;
@@ -669,14 +664,14 @@ fn capability_contract_rows_for_candidate(
         .accepted_candidates
         .iter()
         .filter(|entry| entry.candidate == *candidate)
-        .flat_map(|entry| entry.report.gate_rows().iter().cloned())
+        .flat_map(|entry| entry.report.decision_rows().iter().cloned())
         .collect()
 }
 
 fn candidate_reason_code(outcome: &CandidateOutcome) -> Option<String> {
     match outcome {
         CandidateOutcome::Selected { .. } => None,
-        CandidateOutcome::Deferred { producer_binding, .. } => Some(producer_binding.reason_code().to_string()),
+        CandidateOutcome::Deferred { .. } => Some(crate::report::DEFERRED_PRODUCER_BINDING_REASON_CODE.to_string()),
         CandidateOutcome::NotSupported { capability_reason, .. } => Some(capability_reason.code().to_string()),
         CandidateOutcome::NotSelectedByCost { cost_reason, .. } => Some(cost_reason.code().to_string()),
     }
@@ -704,58 +699,17 @@ fn capability_contract_is_candidate_scoped(candidate: &GpuCandidate, reason: Opt
 
 #[cfg(test)]
 mod tests {
-    use arrow::datatypes::{DataType, Field, Schema};
-    use nexus_query_engine::{
-        admission::QueryPlanCapabilityProof,
-        expr::ColumnRef,
-        plan::{JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, QueryPlanBuilder},
-        source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
-    };
+    use arrow::datatypes::Schema;
 
     use super::*;
     use crate::{planner::NativePlanningDiagnostics, report::PlanningReport};
 
     #[test]
     fn deferred_candidate_projects_deferred_kind_without_deriving_disposition() {
-        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-        let file = LocalParquetFile::new("/tmp/native-report-deferred-not-read.parquet")
-            .with_file_size_bytes(8)
-            .with_row_group_bytes(vec![8])
-            .with_projected_row_group_bytes(vec![8], vec![8])
-            .with_row_group_rows(vec![1]);
-        let mut builder = QueryPlanBuilder::new();
-        let local = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
-            vec![file],
-            Arc::clone(&schema),
-            vec!["id".to_string()],
-        )));
-        let resident = builder.add_source(SourceNode::GpuResident(
-            GpuResidentSource::new("producer", Arc::clone(&schema)).with_row_count_upper_bound(1),
-        ));
-        let join = builder.add_join(
-            local,
-            resident,
-            JoinSpec::new(
-                JoinType::Inner,
-                vec![JoinKey::new(ColumnRef::unqualified("id"), ColumnRef::unqualified("id"))],
-            )
-            .with_output_projection(vec![JoinOutputColumn::new(
-                JoinSide::Left,
-                ColumnRef::unqualified("id"),
-                "id",
-            )]),
-            Arc::clone(&schema),
-        );
-        let proof_plan = builder.finish_with_host_sink_schema(join, schema);
-        let producer_binding = QueryPlanCapabilityProof::for_composed_consumer_plan(&proof_plan)
-            .expect("the mixed consumer must issue a structural proof")
-            .composed_producer_binding_diagnostics(&proof_plan)
-            .expect("the unbound resident occurrence must defer");
-        let expected_reason = producer_binding.reason_code().to_string();
+        let expected_reason = crate::report::DEFERRED_PRODUCER_BINDING_REASON_CODE.to_string();
         let report = PlanningReport::from_outcomes([CandidateOutcome::Deferred {
             candidate: GpuCandidate::new("mixed_join", 1),
             planning_stage: "physical_optimizer".to_string(),
-            producer_binding,
         }]);
         let diagnostics = NativePlanningDiagnostics {
             input_plan_root: "EmptyExec".to_string(),

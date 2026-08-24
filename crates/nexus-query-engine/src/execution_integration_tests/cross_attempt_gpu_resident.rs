@@ -73,8 +73,8 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
     ]));
     let pagerank = pagerank_plan(std::sync::Arc::clone(&edge_schema));
     let bfs = bfs_plan(std::sync::Arc::clone(&edge_schema));
-    let producer_proof = crate::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&pagerank)
-        .expect("producer capability evidence");
+    let mut producer_evidence = crate::admission::AttemptCapabilityEvidence::for_query_plan(&pagerank);
+    producer_evidence.attest_cugraph_graph_execution_scope(&pagerank);
     let lifecycle = crate::runtime::BackendLifecycle::new();
     let counters = std::sync::Arc::new(crate::attempt::AttemptBackendCounters::default());
     let observed = crate::attempt::AttemptOwner::begin(
@@ -97,7 +97,7 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
         .admit_query_with_request(
             QueryAdmissionRequest::new()
                 .with_attempt_binding(producer_owner.admission_binding())
-                .with_query_plan_capability_proof(producer_proof),
+                .with_query_plan_capability_evidence(producer_evidence),
         )
         .expect("producer admission");
     producer_observation
@@ -129,9 +129,9 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
         .memory_grant()
         .expect("producer grant access")
         .expect("producer grant")
-        .retain_live_reservation(resident_bytes)
+        .retain_resident_owner(resident_bytes)
         .expect("resident edges fit the producer cap");
-    let resident = crate::runtime::resident::GpuResultHandle::new_with_live_reservation(
+    let resident = crate::runtime::resident::GpuResultHandle::new_with_resident_owner(
         producer_context.context(),
         gpu_edges,
         std::sync::Arc::clone(&edge_schema),
@@ -150,13 +150,9 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
     producer.finish();
     drop(producer);
 
-    let producer_report = producer_completion
-        .wait_timeout(std::time::Duration::from_secs(10))
-        .expect("producer frozen report");
-    assert_eq!(
-        producer_report.capacity_disposition,
-        crate::observability::AttemptCapacityDisposition::FrozenResident
-    );
+    let producer_report =
+        producer_completion.wait_timeout(std::time::Duration::from_secs(10)).expect("producer frozen report");
+    assert_eq!(producer_report.capacity_disposition, crate::observability::AttemptCapacityDisposition::FrozenResident);
     let freeze_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     let frozen = loop {
         let snapshot = service.device_ledger_reports().unwrap().remove(0);
@@ -171,11 +167,11 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
     assert!(frozen.frozen_resident_bytes > 0);
     assert!(frozen.frozen_resident_bytes < CAPACITY_BYTES);
 
-    let tiny_proof = crate::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&pagerank)
-        .expect("tiny-cap consumer capability evidence");
+    let mut tiny_evidence = crate::admission::AttemptCapabilityEvidence::for_query_plan(&pagerank);
+    tiny_evidence.attest_cugraph_graph_execution_scope(&pagerank);
     let tiny = service
         .admit_query_with_request(
-            QueryAdmissionRequest::new().with_query_cap_bytes(1).with_query_plan_capability_proof(tiny_proof),
+            QueryAdmissionRequest::new().with_query_cap_bytes(1).with_query_plan_capability_evidence(tiny_evidence),
         )
         .expect("tiny explicit cap is admissible");
     let tiny_context = tiny.acquire_context().expect("tiny context");
@@ -193,10 +189,10 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
     drop(tiny);
 
     for plan in [&pagerank, &bfs] {
-        let proof = crate::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(plan)
-            .expect("consumer capability evidence");
+        let mut evidence = crate::admission::AttemptCapabilityEvidence::for_query_plan(plan);
+        evidence.attest_cugraph_graph_execution_scope(plan);
         let consumer = service
-            .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof))
+            .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence))
             .expect("remaining capacity admits graph consumer");
         let consumer_context = consumer.acquire_context().expect("consumer context");
         let result = crate::exec::execute_query_plan_with_gpu_inputs(consumer_context.context(), plan, &inputs)
@@ -235,13 +231,13 @@ fn graph_gpu_input_from_another_admitted_attempt_borrows_the_resident_domain_wit
         arrow::datatypes::Field::new("dst", arrow::datatypes::DataType::Int32, false),
     ]));
     let plan = pagerank_plan(std::sync::Arc::clone(&edge_schema));
-    let proof = crate::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&plan)
-        .expect("PageRank plan must issue a graph execution proof");
+    let mut evidence = crate::admission::AttemptCapabilityEvidence::for_query_plan(&plan);
+    evidence.attest_cugraph_graph_execution_scope(&plan);
     let producer_attempt = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof.clone()))
+        .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence.clone()))
         .expect("producer attempt admission");
     let consumer_attempt = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof))
+        .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence))
         .expect("consumer attempt admission");
     let producer_context = producer_attempt.acquire_context().expect("producer context");
     let consumer_context = consumer_attempt.acquire_context().expect("consumer context");
@@ -380,8 +376,8 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
         arrow::datatypes::Field::new("dst", arrow::datatypes::DataType::Int32, false),
     ]));
     let plan = pagerank_plan(std::sync::Arc::clone(&edge_schema));
-    let proof = crate::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&plan)
-        .expect("PageRank plan must issue a graph execution proof");
+    let mut evidence = crate::admission::AttemptCapabilityEvidence::for_query_plan(&plan);
+    evidence.attest_cugraph_graph_execution_scope(&plan);
     let backend_lifecycle = crate::runtime::BackendLifecycle::new();
     let counters = std::sync::Arc::new(crate::attempt::AttemptBackendCounters::default());
     let observed_attempt = crate::attempt::AttemptOwner::begin(
@@ -404,7 +400,7 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
         .admit_query_with_request(
             QueryAdmissionRequest::new()
                 .with_attempt_binding(attempt_owner.admission_binding())
-                .with_query_plan_capability_proof(proof),
+                .with_query_plan_capability_evidence(evidence),
         )
         .expect("admission");
     attempt_handle
@@ -501,9 +497,8 @@ fn write_multi_row_group_string_parquet(path: &std::path::Path) -> std::sync::Ar
     let rows = 4_096usize;
     let src = (0..rows).map(|row| (row % 128) as i32).collect::<Vec<_>>();
     let dst = (0..rows).map(|row| ((row + 1) % 128) as i32).collect::<Vec<_>>();
-    let label = (0..rows)
-        .map(|row| (row % 7 != 0).then(|| format!("edge-label-{row:06}")))
-        .collect::<Vec<Option<String>>>();
+    let label =
+        (0..rows).map(|row| (row % 7 != 0).then(|| format!("edge-label-{row:06}"))).collect::<Vec<Option<String>>>();
     let weight = (0..rows).map(|row| (row % 5 != 0).then_some(row as i64)).collect::<Vec<Option<i64>>>();
     let batch = arrow::record_batch::RecordBatch::try_new(
         std::sync::Arc::clone(&schema),
@@ -518,9 +513,8 @@ fn write_multi_row_group_string_parquet(path: &std::path::Path) -> std::sync::Ar
     let properties =
         parquet::file::properties::WriterProperties::builder().set_max_row_group_row_count(Some(512)).build();
     let file = std::fs::File::create(path).expect("fixture parquet file");
-    let mut writer =
-        parquet::arrow::ArrowWriter::try_new(file, std::sync::Arc::clone(&schema), Some(properties))
-            .expect("fixture parquet writer");
+    let mut writer = parquet::arrow::ArrowWriter::try_new(file, std::sync::Arc::clone(&schema), Some(properties))
+        .expect("fixture parquet writer");
     writer.write(&batch).expect("fixture parquet rows");
     writer.close().expect("fixture parquet footer");
     schema
@@ -603,13 +597,12 @@ fn executor_produced_resident_parquet_output_freezes_without_quarantine() {
     attempt_observation.record_planning_finished().unwrap();
     attempt_observation.set_disposition(crate::observability::AttemptDisposition::Native).unwrap();
     attempt_observation.record_admission_requested().unwrap();
-    let proof = crate::admission::QueryPlanCapabilityProof::for_query_plan(&plan)
-        .expect("a GPU-resident Parquet scan exposes a capability requirement");
+    let evidence = crate::admission::AttemptCapabilityEvidence::for_query_plan(&plan);
     let producer = service
         .admit_query_with_request(
             QueryAdmissionRequest::new()
                 .with_attempt_binding(attempt_owner.admission_binding())
-                .with_query_plan_capability_proof(proof),
+                .with_query_plan_capability_evidence(evidence),
         )
         .expect("producer admission");
     attempt_observation
@@ -625,16 +618,7 @@ fn executor_produced_resident_parquet_output_freezes_without_quarantine() {
     let producer_context = producer.acquire_context().expect("producer context");
     let result = crate::exec::execute_query_plan(producer_context.context(), &plan)
         .expect("multi row-group resident scan executes");
-    let (output, metrics) = result.into_parts();
-    // The resident output is a concatenation of several chunk reads, so its
-    // executor-side charge is the sum of those chunk reservations.
-    assert!(
-        metrics
-            .reservation_events
-            .iter()
-            .any(|event| event.memory_boundary == "bounded_generic_source_concat_output"),
-        "the fixture must exercise the multi-chunk source concatenation path"
-    );
+    let (output, _) = result.into_parts();
     let resident = output.as_gpu_resident().expect("GPU-resident sink produces a resident output owner");
     let resident_rows = resident.to_host_record_batch().expect("resident output is readable").num_rows();
     assert_eq!(resident_rows, 4_096);

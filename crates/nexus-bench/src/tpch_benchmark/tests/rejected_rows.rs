@@ -6,23 +6,21 @@ fn benchmark_report_header_and_not_selected_rows_are_stable() {
         NativeTpchBenchmarkConfig { query_ids: vec!["q02".to_string()], ..NativeTpchBenchmarkConfig::default() };
     let metadata = benchmark_metadata();
     let mut planning = not_supported_planning_row("q02");
-    planning.capability_contract_rows = vec![nexus_query_engine::contract_report::CapabilityContractGateRow {
+    planning.capability_decision_rows = vec![nexus_query_engine::contract_report::CapabilityDecisionRow {
         execution_mode: nexus_query_engine::mode::CapabilityEnvelopeStatus::Rejected,
-        contract_scope: nexus_query_engine::capability::ReservationRequirementScope::Node,
-        gate_id: nexus_query_engine::contract_report::CapabilityContractGateId::Compiled(
-            nexus_query_engine::pipeline::ReservationGateId::new(0),
+        scope: nexus_query_engine::capability::CapabilityScope::Subgraph,
+        decision_id: nexus_query_engine::contract_report::CapabilityDecisionId {
+            scope: nexus_query_engine::capability::CapabilityScope::Subgraph,
+            index: 0,
+        },
+        owner: nexus_query_engine::contract_report::CapabilityDecisionOwner::Admission("bounded_pipeline"),
+        category: Some(
+            nexus_query_engine::capability::CapabilityRejectionCategory::UnsupportedCompiledPipelineEnvelope,
         ),
-        owner: nexus_query_engine::contract_report::CapabilityContractOwner::Compiled(
-            nexus_query_engine::pipeline::ReservationGateOwner::Task(
-                nexus_query_engine::pipeline::PipelineTaskId::new(0),
-            ),
-        ),
-        reservation_kind: nexus_query_engine::runtime::ReservationKind::MixedSizeData,
-        memory_boundary: "mixed_keyed_residual_or_conditional_full_retained_size_data",
-        required_contract: "mixed_keyed_residual_or_conditional_full_retained_size_data",
-        contract_status: nexus_query_engine::capability::ContractStatus::BlockedByLowerLevel,
-        contract_quality: nexus_query_engine::capability::ContractQuality::ObservedRetainedState,
-        unresolved_preflight_gap: None,
+        boundary: "bounded_pipeline",
+        reason: "unsupported_compiled_pipeline_envelope",
+        status: nexus_query_engine::contract_report::CapabilityDecisionStatus::Rejected,
+        facts: std::collections::BTreeMap::new(),
     }];
     let report = NativeTpchBenchmarkReport {
         metadata,
@@ -49,7 +47,7 @@ fn benchmark_report_header_and_not_selected_rows_are_stable() {
     assert!(!text.contains("tpch_benchmark_native_source_cache_"));
     assert!(text.contains("q02\tnot_supported\tbounded_rejected\tnative_bounded_join_unsupported\toperator_hashjoin"));
     assert!(text.contains("execution_mode=unsupported_bounded"));
-    assert!(text.contains("contract_status=blocked_by_lower_level"));
+    assert!(text.contains("status=rejected"));
     assert!(!text.contains("bounded_join_reservation_facts"));
     assert!(!text.contains("bounded_join_execution_family"));
     assert!(text.contains("\tfalse\tfalse\tfalse\tnot_started\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnone\tnot_run\t"));

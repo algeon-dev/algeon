@@ -122,10 +122,6 @@ fn test_groupby_agg_with_budget_applies_token_reports_output_and_matches_agg() {
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_budget_report_high_water(report, output_bytes);
     assert_eq!(
-        report.unresolved_contract(),
-        Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable")
-    );
-    assert_eq!(
         result.testing_execution_domain_mr_value(),
         token.memory_resource().testing_raw_handle_value(),
         "budgeted groupby output should retain the device manager resource",
@@ -169,7 +165,6 @@ fn test_prepare_sort_groupby_with_budget_reports_exact_group_facts_and_reuses_ha
     assert_eq!(report.output_rows(), Some(facts.num_groups));
     assert_eq!(report.output_bytes(), None);
     assert_eq!(report.retained_bytes(), None);
-    assert_eq!(report.unresolved_contract(), Some("libcudf_prepared_groupby_retained_state_memory_unavailable"));
     assert_eq!(
         report.context_facts().get("prepared_groupby_strategy").map(String::as_str),
         Some("prepared_sort_groupby")
@@ -204,10 +199,6 @@ fn test_prepare_sort_groupby_with_budget_reports_exact_group_facts_and_reuses_ha
     assert_eq!(agg_report.output_bytes(), Some(output_bytes));
     assert_eq!(agg_report.retained_bytes(), Some(output_bytes));
     assert_budget_report_high_water(agg_report, output_bytes);
-    assert_eq!(
-        agg_report.unresolved_contract(),
-        Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable")
-    );
     assert_eq!(
         agg_report.context_facts().get("prepared_groupby_strategy").map(String::as_str),
         Some("prepared_sort_groupby")
@@ -254,10 +245,6 @@ fn test_groupby_q17_avg_quantity_with_budget_reports_current_diagnostics() {
     let retained_bytes = report.retained_bytes().expect("groupby report should observe post-execution retained bytes");
     assert!(output_bytes > 0, "groupby output bytes are observed after execution, not preflighted");
     assert!(retained_bytes > 0, "groupby retained bytes are observed after execution, not preflighted");
-    assert_eq!(
-        report.unresolved_contract(),
-        Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable")
-    );
 }
 
 #[test]

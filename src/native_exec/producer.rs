@@ -43,6 +43,15 @@ use crate::error::{Error, ErrorCode};
 pub(crate) trait GpuResidentProducer: Send + Sync {
     fn gpu_result_input_name(&self) -> &str;
 
+    fn gpu_result_capability_evidence(
+        &self,
+    ) -> DataFusionResult<nexus_query_engine::admission::AttemptCapabilityEvidence> {
+        Err(DataFusionError::Plan(format!(
+            "GPU-resident producer {} does not expose capability evidence for its output",
+            self.gpu_result_input_name()
+        )))
+    }
+
     fn hard_output_row_upper_bound(&self) -> Option<u64> {
         None
     }
@@ -61,9 +70,9 @@ pub(crate) trait GpuResidentProducer: Send + Sync {
     }
 
     /// Returns every post-preparation admission ticket owned by this producer
-    /// subtree.  A composed root aggregates these immutable proofs with its
-    /// own consumer proof before it acquires one context for the whole GPU
-    /// island.  The default keeps ordinary relational producers ticket-free.
+    /// subtree. A composed root aggregates their capability evidence with its
+    /// consumer evidence before it acquires one context for the whole GPU
+    /// island. The default keeps ordinary relational producers ticket-free.
     fn prepared_admission_tickets(&self) -> Vec<Arc<QueryAdmissionTicket>> {
         Vec::new()
     }
@@ -300,8 +309,14 @@ impl GpuResidentProducer for NexusNativeGpuProducerExec {
         self.input_name()
     }
 
+    fn gpu_result_capability_evidence(
+        &self,
+    ) -> DataFusionResult<nexus_query_engine::admission::AttemptCapabilityEvidence> {
+        Ok(nexus_query_engine::admission::AttemptCapabilityEvidence::for_query_plan(&self.plan))
+    }
+
     fn hard_output_row_upper_bound(&self) -> Option<u64> {
-        nexus_query_engine::graph_memory::query_plan_hard_row_upper_bound(&self.plan)
+        nexus_query_engine::plan::row_bounds::query_plan_hard_row_upper_bound(&self.plan)
     }
 
     fn prepare_execution_plan<'a>(

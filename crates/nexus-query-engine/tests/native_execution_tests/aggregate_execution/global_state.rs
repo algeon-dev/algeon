@@ -52,12 +52,11 @@ fn bounded_native_query_executes_global_sum_min_max_count_and_final_merge() {
     assert_eq!(metrics.final_merge_attempts, 0);
     assert_eq!(metrics.boundary.host_to_device_uploads, 0);
     assert_eq!(metrics.boundary.device_to_host_materializations, 1);
-    assert_budgeted_success_event_with_contract(
+    assert_budgeted_success_event_with_boundary(
         metrics,
         "nexus_query_engine.global_aggregate.count_output",
         1,
         "chunk_operator",
-        Some("libcudf_scalar_to_series_temporary_workspace_preflight_unavailable"),
     );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -145,24 +144,6 @@ fn bounded_native_query_finalizes_single_chunk_global_sum_min_max_hidden_state()
     drop(host_admitted);
 
     let gpu_plan = build_plan(false);
-    let gpu_analysis = gpu_plan.capability_analysis();
-    let aggregate_gap = gpu_analysis
-        .requirements
-        .iter()
-        .find(|requirement| requirement.required_contract == "aggregate_contract")
-        .expect("global aggregate capability analysis must retain its owner gap");
-    assert_eq!(aggregate_gap.status, nexus_query_engine::capability::ContractStatus::Modeled);
-    assert_eq!(
-        aggregate_gap.quality,
-        nexus_query_engine::capability::ContractQuality::HardBudgetedReportWithUnresolvedPreflight
-    );
-    assert_eq!(
-        nexus_query_engine::capability::lower_level_unresolved_preflight_gap(
-            ReservationKind::OperatorOutput,
-            aggregate_gap.required_contract,
-        ),
-        Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable")
-    );
     let gpu_result = execute_query_plan(&context, &gpu_plan).unwrap();
     assert_eq!(gpu_result.metrics().source_chunks_planned, 1);
     assert_eq!(gpu_result.metrics().partial_aggregate_count, 1);

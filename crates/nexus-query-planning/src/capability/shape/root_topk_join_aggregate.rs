@@ -125,7 +125,6 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
     let mut left_output_bounded_join_ids = Vec::new();
     let mut window_full_outer_join_ids = Vec::new();
     let mut keyless_outer_cross_window_join_ids = Vec::new();
-    let mut sort_fetch_hash_join_input_subcontract = false;
     let sort_fetch_hash_join_aggregate_subcontract = direct_sort_fetch_aggregate_candidate;
     for join_id in &join_ids {
         let join = join_node_with_missing_reason(
@@ -176,11 +175,6 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
                 if allow_left_output_bounded_join && join.spec.join_type == JoinType::Left {
                     left_output_bounded_join_ids.push(*join_id);
                 }
-                if (direct_sort_fetch_join_input_candidate && *join_id == post_root_candidate_id)
-                    || (aggregate_topk_bounds_root_join_input && *join_id == root_join_id)
-                {
-                    sort_fetch_hash_join_input_subcontract = true;
-                }
             },
         }
         if allow_window_keyed_full_outer {
@@ -227,7 +221,7 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
         &keyless_or_cross_join_ids,
     )? && !aggregate_topk_bounds_root_join_input
     {
-        require_root_topk_source_reduction_proof(
+        require_root_topk_source_reduction_evidence(
             plan,
             &aggregate_input_reachable,
             aggregate_id,
@@ -246,16 +240,9 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
     Ok(RootTopKJoinAggregateShape {
         root_join_id,
         join_ids,
-        distinct_aggregate_ids,
-        keyless_or_cross_join_ids,
-        keyed_filtered_semi_join_ids,
-        null_filtered_left_join_ids: Vec::new(),
         window_ids,
         window_input_sort_ids,
-        window_full_outer_join_ids,
-        keyless_outer_cross_window_join_ids,
         shared_producer_ids,
-        sort_fetch_hash_join_input_subcontract,
         sort_fetch_hash_join_aggregate_subcontract,
         aggregate_id,
         aggregate_projection_id,
@@ -1217,7 +1204,7 @@ fn require_root_topk_keyless_grouped_aggregate_source_reduction(
 
     for aggregate_id in aggregate_ids {
         let aggregate_input_reachable = aggregate_input_reachable_nodes(plan, aggregate_id)?;
-        require_root_topk_source_reduction_proof(plan, &aggregate_input_reachable, aggregate_id, false)?;
+        require_root_topk_source_reduction_evidence(plan, &aggregate_input_reachable, aggregate_id, false)?;
     }
     Ok(())
 }
@@ -1235,7 +1222,7 @@ fn aggregate_input_reachable_nodes(
     collect_reachable_node_ids_from(plan, aggregate.input)
 }
 
-fn require_root_topk_source_reduction_proof(
+fn require_root_topk_source_reduction_evidence(
     plan: &QueryPlan,
     aggregate_input_reachable: &BTreeSet<NodeId>,
     aggregate_id: NodeId,
@@ -1322,7 +1309,7 @@ fn root_topk_source_reduction_rejection(
     aggregate_id: NodeId,
 ) -> CapabilityDecision {
     CapabilityDecision::rejected(
-        "root_topk_join_aggregate_requires_source_reduction_proof",
+        "root_topk_join_aggregate_requires_source_reduction_evidence",
         [
             ("aggregate_id", aggregate_id.to_string()),
             ("dynamic_filter_route_count", plan.dynamic_filter_routes().len().to_string()),

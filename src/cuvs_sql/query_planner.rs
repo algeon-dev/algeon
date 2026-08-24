@@ -70,10 +70,6 @@ impl ExtensionPlanner for CuvsExtensionPlanner {
         let Some(node) = node.as_any().downcast_ref::<CuvsLogicalNode>() else {
             return Ok(None);
         };
-        // Retain the installed backend's admission source and policy even
-        // though current cuVS operators fail closed until they gain a
-        // bounded peak-memory contract. This prevents a future supported
-        // cuVS path from silently escaping the selected ledger/domain.
         let native_execution_config = crate::session::installed_nexus_native_optimizer_config(session)
             .map(|config| config.native_execution_config().clone())
             .unwrap_or_else(NexusNativeExecutionConfig::bounded_default);

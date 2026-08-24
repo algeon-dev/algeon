@@ -485,7 +485,7 @@ impl DeviceRegistry {
     pub fn supports_capabilities(
         &self,
         device_ordinal: usize,
-        requirements: &[nexus_query_planning::capability::ReservationRequirement],
+        requirements: &[nexus_query_planning::admission::ExecutionCapability],
     ) -> bool {
         self.resource_profile(device_ordinal)
             .is_some_and(|profile| profile.device_capabilities.supports_all(requirements))

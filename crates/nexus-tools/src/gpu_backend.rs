@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use nexus_query_engine::{
     error::Result,
     runtime::{
@@ -11,7 +9,7 @@ use nexus_query_engine::{
 
 #[derive(Debug)]
 pub(crate) struct ToolGpuBackend {
-    core: GpuBackendCore,
+    _core: GpuBackendCore,
     session: GpuBackendSession,
 }
 
@@ -25,14 +23,10 @@ impl ToolGpuBackend {
         );
         let core = GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller, deployment)).build()?;
         let session = core.session_capability();
-        Ok(Self { core, session })
+        Ok(Self { _core: core, session })
     }
 
     pub(crate) fn session(&self) -> GpuBackendSession {
         self.session.clone()
-    }
-
-    pub(crate) fn close_and_wait(&self, timeout: Duration) -> Result<()> {
-        self.core.close_and_wait(timeout).map(|_| ())
     }
 }

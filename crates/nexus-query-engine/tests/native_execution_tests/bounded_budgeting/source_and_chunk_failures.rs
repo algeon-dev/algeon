@@ -3,7 +3,7 @@ use std::sync::Arc;
 use super::*;
 
 #[test]
-fn bounded_native_query_reports_reservation_failure_before_chunk_read() {
+fn bounded_native_query_enforces_the_query_memory_cap() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-reservation-failure");
     let path = dir.join("input.parquet");
     let input_schema = write_row_grouped_input_parquet(&path);
@@ -34,7 +34,7 @@ fn bounded_native_query_reports_reservation_failure_before_chunk_read() {
     });
 
     let error = match execute_query_plan(&context, &plan) {
-        Ok(_) => panic!("bounded execution should fail the source reservation"),
+        Ok(_) => panic!("bounded execution should enforce the query memory cap"),
         Err(error) => error,
     };
     assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded);
@@ -42,72 +42,6 @@ fn bounded_native_query_reports_reservation_failure_before_chunk_read() {
     assert_eq!(error.fact_value("budget_enforcement"), Some("query_domain_member"));
     assert_eq!(error.fact_value("failure_source"), Some("RESERVATION_LIMIT"));
     assert!(error.fact_value("requested_allocation_bytes").is_some());
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn bounded_native_query_uses_exact_source_read_admission_and_shrinks_to_observed() {
-    let dir = unique_temp_dir("nexus-query-engine-bounded-source-read-sizing-contract");
-    let path = dir.join("input.parquet");
-    let input_schema = write_row_grouped_input_parquet(&path);
-    let aggregated_schema = Arc::new(Schema::new(vec![
-        Field::new("key", DataType::Int32, false),
-        Field::new("sum_m00", DataType::Int64, true),
-    ]));
-    let source = LocalParquetSource::from_files(
-        vec![
-            LocalParquetFile::new(&path)
-                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
-                .with_row_group_bytes(vec![1, 1, 1])
-                .with_projected_row_group_bytes(vec![1, 1, 1], vec![1, 1, 1])
-                .with_pure_filter_row_group_bytes(vec![2_000_000, 2_000_000, 2_000_000], vec![2_000_000; 3])
-                .with_row_group_rows(vec![2, 2, 2]),
-        ],
-        Arc::clone(&input_schema),
-        vec!["key".to_string(), "m00".to_string(), "payload".to_string()],
-    )
-    .with_column_roles(vec!["key".to_string(), "m00".to_string()], vec!["payload".to_string()]);
-    let filter = Expr::binary(Expr::column("payload"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int64(0)));
-    let aggregate = AggregateSpec::new(
-        vec![Expr::column("key")],
-        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("m00"), "sum_m00")],
-    );
-
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::LocalParquet(source));
-    let filter = builder.add_filter(source, filter, Arc::clone(&input_schema));
-    let aggregate = builder.add_aggregate(filter, aggregate, aggregated_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
-    let max_source_chunk_bytes = 1024 * 1024;
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
-        device_budget_bytes: max_source_chunk_bytes * 4,
-        max_source_chunk_bytes,
-        max_row_groups_per_chunk: 1,
-        max_retry_attempts: 1,
-        min_retry_chunk_row_groups: 1,
-    });
-
-    let result = execute_query_plan(&context, &plan).unwrap();
-    let metrics = result.metrics();
-    assert_eq!(metrics.reservation_denied_count, 0);
-    let exact_source_read_bytes = u64::try_from(cudf::DataFrame::minimum_parquet_source_read_budget_bytes()).unwrap();
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.outcome.as_str() == "granted"
-            && event.action == MemoryReservationEventAction::Reserve
-            && event.reservation_kind == ReservationKind::SourceRead
-            && event.memory_boundary == "source_chunk_read"
-            && event.requested_bytes == exact_source_read_bytes
-            && event.source_read_contract_quality.as_deref() == Some("exact_lower_level_contract")
-            && event.source_read_planning_bytes == Some(exact_source_read_bytes)
-            && event.source_read_estimated_bytes == Some(2_000_001)
-    }));
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.action == MemoryReservationEventAction::Shrink
-            && event.reservation_kind == ReservationKind::SourceRead
-            && event.memory_boundary == "source_chunk_read"
-            && event.source_read_contract_quality.as_deref() == Some("observed_grow_shrink")
-    }));
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -144,231 +78,7 @@ fn bounded_native_query_uses_exact_source_owner_instead_of_spurious_chunk_retrie
     });
 
     let result = execute_query_plan(&context, &plan).unwrap();
-    assert_eq!(result.metrics().reservation_denied_count, 0);
     assert_eq!(result.metrics().retry_count, 0);
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn bounded_native_query_grants_the_exact_source_preflight_owner_before_decode() {
-    let dir = unique_temp_dir("nexus-query-engine-bounded-source-hard-budget-failure");
-    let path = dir.join("input.parquet");
-    let input_schema = write_single_i32_row_grouped_parquet(&path, 4);
-    let aggregated_schema = Arc::new(Schema::new(vec![
-        Field::new("id", DataType::Int32, false),
-        Field::new("sum_id", DataType::Int64, true),
-    ]));
-    let source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
-        Arc::clone(&input_schema),
-        vec!["id".to_string()],
-    );
-    let aggregate = AggregateSpec::new(
-        vec![Expr::column("id")],
-        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("id"), "sum_id")],
-    );
-
-    let mut builder = QueryPlanBuilder::new();
-    let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
-    let aggregate = builder.add_aggregate(source_id, aggregate, aggregated_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
-    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
-        device_budget_bytes: NATIVE_EXECUTION_TEST_QUERY_LIMIT_BYTES,
-        max_source_chunk_bytes: 1024 * 1024,
-        max_row_groups_per_chunk: 1,
-        max_retry_attempts: 1,
-        min_retry_chunk_row_groups: 1,
-    });
-
-    let result = execute_query_plan(&context, &plan).unwrap();
-    let exact_source_read_bytes = u64::try_from(cudf::DataFrame::minimum_parquet_source_read_budget_bytes()).unwrap();
-    assert_eq!(result.metrics().reservation_denied_count, 0);
-    assert!(result.metrics().reservation_events.iter().any(|event| {
-        event.action == MemoryReservationEventAction::Reserve
-            && event.reservation_kind == ReservationKind::SourceRead
-            && event.memory_boundary == "source_chunk_read"
-            && event.requested_bytes == exact_source_read_bytes
-            && event.source_read_contract_quality.as_deref() == Some("exact_lower_level_contract")
-    }));
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn bounded_native_query_reports_chunk_operator_query_cap_failure() {
-    let dir = unique_temp_dir("nexus-query-engine-bounded-chunk-operator-hard-budget-failure");
-    let path = dir.join("input.parquet");
-    let input_schema = write_final_merge_retry_input_parquet(&path, 512);
-    let repeated_sums = 256;
-    let mut fields = vec![Field::new("key", DataType::Int32, false)];
-    fields.extend((0..repeated_sums).map(|index| Field::new(format!("sum_m00_{index}"), DataType::Int64, true)));
-    let aggregated_schema = Arc::new(Schema::new(fields));
-
-    let source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
-        Arc::clone(&input_schema),
-        vec!["key".to_string(), "m00".to_string()],
-    );
-    let aggregate_filter = Expr::binary(Expr::column("m00"), BinaryOp::GtEq, Expr::literal(LiteralValue::Int64(0)));
-    let aggregate = AggregateSpec::new(
-        vec![Expr::column("key")],
-        (0..repeated_sums)
-            .map(|index| {
-                AggregateExpr::new(AggregateFunction::Sum, Expr::column("m00"), format!("sum_m00_{index}"))
-                    .with_filter(Some(aggregate_filter.clone()))
-            })
-            .collect(),
-    );
-
-    let mut builder = QueryPlanBuilder::new();
-    let source_id = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source_id, aggregate, aggregated_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
-
-    let baseline_context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
-        device_budget_bytes: 8 * 1024 * 1024 * 1024,
-        max_source_chunk_bytes: 1024 * 1024,
-        max_row_groups_per_chunk: 1,
-        max_retry_attempts: 1,
-        min_retry_chunk_row_groups: 1,
-    });
-    let baseline = execute_query_plan(&baseline_context, &plan).unwrap();
-    let mut source_budget = 0_u64;
-    let mut source_observed_bytes = None;
-    let mut operator_budget = None;
-    for event in &baseline.metrics().reservation_events {
-        if source_observed_bytes.is_none()
-            && event.reservation_kind == ReservationKind::SourceRead
-            && event.memory_boundary == "source_chunk_read"
-            && event.action == MemoryReservationEventAction::Shrink
-        {
-            source_observed_bytes = Some(event.current_reserved_bytes);
-        }
-        if event.outcome.as_str() != "granted" {
-            continue;
-        }
-        match (event.reservation_kind, event.memory_boundary.as_str()) {
-            (ReservationKind::SourceRead, "source_chunk_read") => {
-                source_budget = source_budget.saturating_add(event.requested_bytes);
-            },
-            (ReservationKind::ChunkOperator, "chunk_operator") => {
-                operator_budget = Some(event.requested_bytes);
-                break;
-            },
-            _ => {},
-        }
-    }
-    let operator_budget = operator_budget.expect("baseline should reserve chunk operator work");
-    let source_observed_bytes = source_observed_bytes.expect("baseline should shrink source read to observed bytes");
-    assert!(source_budget > 0);
-    assert!(operator_budget > 0);
-
-    let constrained_budget = source_budget;
-    let operator_token_budget = constrained_budget.saturating_sub(source_observed_bytes);
-    assert!(operator_budget <= operator_token_budget);
-    let constrained_context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
-        device_budget_bytes: constrained_budget,
-        max_source_chunk_bytes: 1024 * 1024,
-        max_row_groups_per_chunk: 1,
-        max_retry_attempts: 1,
-        min_retry_chunk_row_groups: 1,
-    });
-
-    let error = match execute_query_plan(&constrained_context, &plan) {
-        Ok(_) => panic!("hard cudf chunk operator budget should fail"),
-        Err(error) => error,
-    };
-    assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded);
-    assert_eq!(error.operation(), "nexus_query_engine.filtered_grouped_aggregate.partial_segment");
-    assert_eq!(error.fact_value("budget_boundary"), Some("chunk_operator"));
-    assert_eq!(error.fact_value("budget_bytes"), Some(constrained_budget.to_string().as_str()));
-    assert_eq!(error.fact_value("budget_enforcement"), Some("query_domain_member"));
-    assert_eq!(error.fact_value("failure_source"), Some("RESERVATION_LIMIT"));
-    assert!(error.fact_value("requested_allocation_bytes").is_some());
-
-    fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
-fn bounded_native_query_prefetches_projected_metadata_only_after_first_required_source_read_is_observed() {
-    let dir = unique_temp_dir("nexus-query-engine-bounded-initial-prefetch-calibration");
-    let path = dir.join("input.parquet");
-    let input_schema = write_row_grouped_input_parquet(&path);
-    let aggregated_schema = Arc::new(Schema::new(vec![
-        Field::new("key", DataType::Int32, false),
-        Field::new("sum_m00", DataType::Int64, true),
-    ]));
-    let source = LocalParquetSource::from_files(
-        vec![
-            LocalParquetFile::new(&path)
-                .with_file_size_bytes(fs::metadata(&path).unwrap().len())
-                .with_row_group_bytes(vec![1, 1, 1])
-                .with_projected_row_group_bytes(vec![1, 1, 1], vec![1, 1, 1])
-                .with_row_group_rows(vec![2, 2, 2]),
-        ],
-        Arc::clone(&input_schema),
-        vec!["key".to_string(), "m00".to_string()],
-    );
-    let aggregate = AggregateSpec::new(
-        vec![Expr::column("key")],
-        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("m00"), "sum_m00")],
-    );
-
-    let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::LocalParquet(source));
-    let aggregate = builder.add_aggregate(source, aggregate, Arc::clone(&aggregated_schema));
-    let plan = builder.finish_with_host_sink(aggregate);
-    let max_source_chunk_bytes = 1024 * 1024;
-    let context = backend_context_with_memory_and_scheduler_policy(
-        MemoryControlPolicy::Bounded {
-            device_budget_bytes: max_source_chunk_bytes + 1,
-            max_source_chunk_bytes,
-            max_row_groups_per_chunk: 1,
-            max_retry_attempts: 1,
-            min_retry_chunk_row_groups: 1,
-        },
-        SourceSchedulerPolicy::new(2),
-    );
-
-    let result = execute_query_plan(&context, &plan).unwrap();
-    let metrics = result.metrics();
-    assert_eq!(metrics.source_chunks_planned, 3);
-    assert_eq!(metrics.source_chunks_committed, 3);
-    assert_eq!(metrics.source_read_prefetches_started, 2);
-    let first_required_observation = metrics
-        .reservation_events
-        .iter()
-        .position(|event| {
-            matches!(event.action, MemoryReservationEventAction::Grow | MemoryReservationEventAction::Shrink)
-                && event.reservation_kind == ReservationKind::SourceRead
-                && event.memory_boundary == "source_chunk_read"
-        })
-        .expect("required source read should shrink to observed bytes before optional prefetch");
-    let first_prefetch = metrics
-        .reservation_events
-        .iter()
-        .position(|event| {
-            event.action == MemoryReservationEventAction::Reserve
-                && event.reservation_kind == ReservationKind::SourceRead
-                && event.memory_boundary == "source_chunk_prefetch"
-        })
-        .expect("projected source-read metadata should allow one bounded optional prefetch");
-    assert!(first_prefetch > first_required_observation);
-    assert_eq!(metrics.reservation_denied_count, 0);
-
-    let QueryOutput::HostArrow(batch) = result.output() else {
-        panic!("host sink should materialize one RecordBatch");
-    };
-    assert_eq!(batch.num_rows(), 3);
-    let mut rows = int32_array(batch, 0)
-        .values()
-        .iter()
-        .copied()
-        .zip(int64_array(batch, 1).values().iter().copied())
-        .collect::<Vec<_>>();
-    rows.sort_by_key(|(key, _sum)| *key);
-    assert_eq!(rows, vec![(1, 400), (2, 700), (3, 1000)]);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -414,8 +124,7 @@ fn bounded_native_query_grants_global_count_source_and_output_owners() {
         min_retry_chunk_row_groups: 1,
     });
 
-    let result = execute_query_plan(&context, &plan).unwrap();
-    assert_eq!(result.metrics().reservation_denied_count, 0);
+    execute_query_plan(&context, &plan).unwrap();
 }
 
 #[test]
@@ -486,10 +195,7 @@ fn bounded_native_query_does_not_retry_from_source_estimate() {
     assert_eq!(metrics.source_chunks_planned, 1);
     assert_eq!(metrics.source_chunks_retried, 0);
     assert_eq!(metrics.retry_count, 0);
-    assert_eq!(metrics.retry_reservation_failure_count, 0);
     assert_eq!(metrics.retry_resource_exhausted_count, 0);
-    assert_eq!(metrics.reservation_denied_count, 0);
-    assert_reservation_events_memory_space(metrics, MemorySpaceId::Device { device_ordinal: 0 });
     assert_eq!(metrics.source_chunks_attempted, 1);
     assert_eq!(metrics.source_chunks_committed, 1);
     assert_eq!(metrics.row_groups_committed, 3);
@@ -544,7 +250,6 @@ fn bounded_native_source_owner_preserves_row_group_order_without_spurious_retry(
     assert_eq!(metrics.source_chunks_planned, 1);
     assert_eq!(metrics.source_chunks_retried, 0);
     assert_eq!(metrics.retry_count, 0);
-    assert_eq!(metrics.retry_reservation_failure_count, 0);
     assert_eq!(metrics.source_chunks_attempted, 1);
     assert_eq!(metrics.source_chunks_committed, 1);
     assert_eq!(metrics.row_groups_committed, 3);

@@ -11,7 +11,6 @@ mod egress;
 mod errors;
 mod ingress;
 mod options;
-mod preflight;
 mod prepared;
 mod prepared_support;
 mod types;
@@ -36,11 +35,4 @@ pub use ingress::{
     vertex_pairs_from_prepared_table_export,
 };
 pub use options::{GraphConstructionPolicy, PreparedGraphOptions, TableGraphOptions, TableVertexPairOptions};
-pub use preflight::{
-    BfsSideInputPreflight, BfsSideInputPreflightInput, ForceAtlas2SideInputPreflight,
-    ForceAtlas2SideInputPreflightInput, GraphConstructionPreflight, GraphConstructionPreflightInput,
-    PersonalizedPageRankSideInputPreflight, PersonalizedPageRankSideInputPreflightInput,
-    bfs_side_input_workspace_preflight, force_atlas2_side_input_workspace_preflight,
-    graph_construction_workspace_preflight, personalized_pagerank_side_input_workspace_preflight,
-};
 pub use types::{cudf_type_to_cugraph, cugraph_type_to_cudf};

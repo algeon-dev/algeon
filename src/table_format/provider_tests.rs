@@ -37,8 +37,6 @@ use datafusion::{
     },
     prelude::{SessionConfig, SessionContext},
 };
-#[cfg(feature = "cuvs")]
-use datafusion_nexus::error::DataFusionErrorExt;
 use datafusion_nexus::{
     backend::{GpuDeviceMemoryLimit, NexusGpuDeviceProfile},
     capability::CapabilityReason,

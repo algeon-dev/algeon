@@ -26,7 +26,6 @@ fn native_summary_metrics_set_datafusion_v54_categories() {
         metrics.iter().find(|metric| metric.value().name() == name).and_then(|metric| metric.metric_category())
     };
 
-    assert_eq!(category_for("reservation_live_peak_bytes"), Some(MetricCategory::Bytes));
     assert_eq!(category_for("query_grant_bytes"), Some(MetricCategory::Bytes));
     assert_eq!(category_for("resident_dataframe_peak_bytes_observed"), Some(MetricCategory::Rows));
     assert_eq!(category_for("source_chunks_committed"), Some(MetricCategory::Rows));
@@ -88,7 +87,7 @@ fn every_ordered_descriptor_has_a_compile_time_recording_mapping() {
     assert_eq!(recording_names, NATIVE_NEXUS_DATAFUSION_METRIC_NAMES);
     assert_eq!(
         recording_names.len(),
-        112,
+        105,
         "the ordered public metric count must include the sealed-attempt and graph-claim calibration rows"
     );
 
@@ -233,10 +232,6 @@ fn aggregate_strategy_rows_bridge_filtered_global_materialization_labels() {
     facts.insert("filtered_input_materialization_estimated_bytes", "66000000000".to_string());
     facts.insert("filtered_input_materialization_budget_bytes", "85899345920".to_string());
     facts.insert("filtered_input_materialization_threshold_bytes", "42949672960".to_string());
-    facts.insert(
-        "filtered_input_lower_level_unresolved_contracts",
-        "libcudf_dataframe_expression_temporary_workspace_and_transient_relocation_preflight_unavailable".to_string(),
-    );
     facts.insert("filtered_global_rows_per_chunk", "1024".to_string());
     facts.insert("filtered_global_inputs_per_segment", "1".to_string());
     facts.insert("filtered_global_segment_target_temporary_bytes", "536870912".to_string());
@@ -259,10 +254,6 @@ fn aggregate_strategy_rows_bridge_filtered_global_materialization_labels() {
     assert_eq!(row.filtered_input_materialization_estimated_bytes, 66_000_000_000);
     assert_eq!(row.filtered_input_materialization_budget_bytes, 85_899_345_920);
     assert_eq!(row.filtered_input_materialization_threshold_bytes, 42_949_672_960);
-    assert_eq!(
-        row.filtered_input_lower_level_unresolved_contracts,
-        "libcudf_dataframe_expression_temporary_workspace_and_transient_relocation_preflight_unavailable"
-    );
     assert_eq!(row.filtered_global_rows_per_chunk, 1024);
     assert_eq!(row.filtered_global_inputs_per_segment, 1);
     assert_eq!(row.filtered_global_segment_target_temporary_bytes, 536_870_912);
@@ -292,7 +283,6 @@ fn aggregate_strategy_rows_bridge_filtered_grouped_materialization_labels() {
     facts.insert("filtered_input_materialization_estimated_bytes", "33000000".to_string());
     facts.insert("filtered_input_materialization_budget_bytes", "33554432".to_string());
     facts.insert("filtered_input_materialization_threshold_bytes", "16777216".to_string());
-    facts.insert("filtered_input_lower_level_unresolved_contracts", "groupby_agg_temporary_workspace".to_string());
     facts.insert("filtered_grouped_rows_per_chunk", "512".to_string());
     facts.insert("filtered_grouped_inputs_per_segment", "2".to_string());
     facts.insert("filtered_grouped_segment_target_temporary_bytes", "4194304".to_string());
@@ -313,7 +303,6 @@ fn aggregate_strategy_rows_bridge_filtered_grouped_materialization_labels() {
     assert_eq!(row.selected_strategy, "filtered_grouped_segmented_state");
     assert_eq!(row.aggregate_filter_count, 90);
     assert_eq!(row.filtered_input_materialization_strategy, "row_chunked_grouped_segmented_state");
-    assert_eq!(row.filtered_input_lower_level_unresolved_contracts, "groupby_agg_temporary_workspace");
     assert_eq!(row.filtered_grouped_rows_per_chunk, 512);
     assert_eq!(row.filtered_grouped_inputs_per_segment, 2);
     assert_eq!(row.filtered_grouped_segment_target_temporary_bytes, 4_194_304);

@@ -12,7 +12,7 @@ than the configured device capacity?
 
 The model deliberately separates three concerns:
 
-- capability proof decides whether the installed backend can execute a plan;
+- capability validation decides whether the installed backend can execute a plan;
 - a fixed query cap limits the attempt's allocation domain;
 - the device ledger admits only committed integer charges.
 
@@ -23,7 +23,8 @@ otherwise executable plan and do not size a grant.
 
 Relational and graph peaks depend on runtime data such as join fanout,
 group-by cardinality, string widths, and native library workspaces. Treating a
-predicted peak as proof either risks OOM or wastes the device through padding.
+predicted peak as an admission requirement either risks OOM or wastes the
+device through padding.
 
 Each device therefore has an immutable `default_query_limit_bytes`. An
 embedding caller may request an explicit cap for a query; otherwise admission
@@ -79,7 +80,7 @@ still share the device when their committed sum fits.
 
 An ordinary runtime or GPU object is not an escaping owner. A successful
 producer that returns a reusable GPU result must transfer it to a
-`FrozenResidentLease`:
+`ResidentOwnerLease`:
 
 1. stop new allocations in the producer domain;
 2. drain host work and every registered stream;

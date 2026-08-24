@@ -14,7 +14,7 @@ pub mod execution_contracts;
 pub mod expr;
 #[doc(hidden)]
 pub mod expression_lowering_policy;
-pub mod graph_memory;
+pub mod graph_observation;
 #[doc(hidden)]
 pub mod materialization_sizing;
 pub mod mode;

@@ -11,45 +11,6 @@ use super::{
     Schema, SchemaRef, stable_graph_result_schema,
 };
 
-/// Capability-envelope memory-boundary label for graph algorithm rejection facts.
-pub const GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY: &str = "graph_algorithm";
-/// Capability-envelope required-contract label for graph algorithm rejection facts.
-pub const GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT: &str = "unsupported_graph_algorithm_reservation_contract";
-
-/// Lower-level cuGraph/cudf contracts required before graph algorithms can
-/// be admitted by the capability envelope.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct GraphAlgorithmLowerLevelContract {
-    /// Stable short contract name.
-    pub name: &'static str,
-    /// Required lower-level cudf/libcugraph surface before capability admission.
-    pub required_surface: &'static str,
-}
-
-/// Lower-level graph contracts that currently block capability admission.
-pub const GRAPH_ALGORITHM_CAPABILITY_LOWER_LEVEL_CONTRACTS: &[GraphAlgorithmLowerLevelContract] = &[
-    GraphAlgorithmLowerLevelContract {
-        name: "graph_construction_memory",
-        required_surface: "preflight or hard upper-bound bytes for cuGraph graph construction from cudf table input",
-    },
-    GraphAlgorithmLowerLevelContract {
-        name: "renumbering_memory",
-        required_surface: "preflight or hard upper-bound bytes for optional cuGraph vertex renumbering",
-    },
-    GraphAlgorithmLowerLevelContract {
-        name: "algorithm_workspace_memory",
-        required_surface: "preflight or hard upper-bound bytes for algorithm-specific cuGraph workspace",
-    },
-    GraphAlgorithmLowerLevelContract {
-        name: "result_table_memory",
-        required_surface: "preflight or hard upper-bound rows and bytes for the cuGraph result table",
-    },
-    GraphAlgorithmLowerLevelContract {
-        name: "retained_resource_lifetime_boundaries",
-        required_surface: "deterministic ownership and release boundaries for graph and algorithm retained resources",
-    },
-];
-
 /// Native graph algorithm supported by the cuGraph operator boundary.
 ///
 /// Every variant must have a matching entry in [`GRAPH_OPERATION_REGISTRY`].

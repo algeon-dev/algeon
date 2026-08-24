@@ -10,6 +10,7 @@
 #include <cudf/utilities/error.hpp>
 #include <cudf/utilities/traits.hpp>
 
+#include <algorithm>
 #include <cstdint>
 #include <exception>
 #include <limits>
@@ -29,6 +30,18 @@ using cudf_interop::require_non_negative_i32;
 using cudf_interop::require_size_type_from_size_t;
 
 namespace {
+void collect_backing_allocation_pointers(cudf::column_view const& column,
+                                         std::vector<void*>& pointers)
+{
+  auto* data = const_cast<void*>(static_cast<void const*>(column.head<std::uint8_t>()));
+  if (data != nullptr) { pointers.push_back(data); }
+  auto* null_mask = const_cast<void*>(static_cast<void const*>(column.null_mask()));
+  if (null_mask != nullptr) { pointers.push_back(null_mask); }
+  for (cudf::size_type index = 0; index < column.num_children(); ++index) {
+    collect_backing_allocation_pointers(column.child(index), pointers);
+  }
+}
+
 bool column_parent_stores_direct_element_buffer(cudf::type_id id)
 {
   switch (id) {
@@ -772,6 +785,15 @@ class column_state_table_handle_state final : public cudf_table_handle_state {
   std::vector<std::unique_ptr<cudf_column_handle_state>> _columns;
 };
 }  // namespace
+
+std::vector<void*> cudf_column_handle_state::backing_allocation_pointers() const
+{
+  std::vector<void*> pointers;
+  collect_backing_allocation_pointers(view(), pointers);
+  std::sort(pointers.begin(), pointers.end());
+  pointers.erase(std::unique(pointers.begin(), pointers.end()), pointers.end());
+  return pointers;
+}
 
 std::unique_ptr<cudf::column> cudf_column_handle_state::release_native_column()
 {

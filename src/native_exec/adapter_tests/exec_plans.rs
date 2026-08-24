@@ -2,7 +2,7 @@
 //!
 //! These plans exercise `NexusNativeExec` / `NexusNativeComposedExec` /
 //! `NexusNativeGpuProducerExec` directly, without going through SQL or the
-//! optimizer rule. Only tests that moved in-crate with the P5 hidden-API
+//! optimizer rule. Only tests that need access to the hidden API
 //! repair use these builders.
 
 use std::sync::Arc;

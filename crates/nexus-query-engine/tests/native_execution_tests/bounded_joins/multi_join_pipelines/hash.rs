@@ -93,7 +93,6 @@ fn bounded_native_query_executes_pure_hash_multi_join_pipeline_with_ordered_rese
     let metrics = result.metrics();
     assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.parquet_files, 3);
-    assert_eq!(metrics.reservation_denied_count, 0);
     assert_eq!(metrics.compiled_pipeline_attempts, 1);
     assert!(metrics.compiled_pipeline_tasks_executed > 0);
     assert_eq!(metrics.compiled_pipeline_host_arrow_sinks, 1);
@@ -105,38 +104,6 @@ fn bounded_native_query_executes_pure_hash_multi_join_pipeline_with_ordered_rese
             && !join.residual_predicate
             && join.gather_map_bytes > 0
     }));
-    assert_granted_reservation_trace(
-        metrics,
-        &[
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::BuildSide, "join_build_side"),
-            (ReservationKind::HashTable, "join_hash_table"),
-            (ReservationKind::ProbeSide, "join_probe_side"),
-            (ReservationKind::GatherMap, "join_gather_map"),
-            (ReservationKind::ChunkOperator, "join_output_string_length_sizing"),
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::BuildSide, "join_build_side"),
-            (ReservationKind::HashTable, "join_hash_table"),
-            (ReservationKind::GatherMap, "join_gather_map_stream_slice"),
-            (ReservationKind::ChunkOperator, "join_output_string_length_sizing"),
-            (ReservationKind::JoinOutput, "join_output_stream_chunk"),
-            (ReservationKind::ProbeSide, "join_probe_side"),
-            (ReservationKind::GatherMap, "join_gather_map"),
-            (ReservationKind::ChunkOperator, "join_output_string_length_sizing"),
-            (ReservationKind::GatherMap, "join_gather_map_stream_slice"),
-            (ReservationKind::ChunkOperator, "join_output_string_length_sizing"),
-            (ReservationKind::JoinOutput, "join_output_stream_chunk"),
-            (ReservationKind::ChunkOperator, "compiled_aggregate_string_length_sizing"),
-            (ReservationKind::PartialState, "compiled_aggregate_partial_state_work"),
-            (ReservationKind::PartialState, "compiled_aggregate_partial_state"),
-            (ReservationKind::FinalMerge, "compiled_aggregate_final_projection"),
-            (ReservationKind::OperatorOutput, "compiled_aggregate_output"),
-            (ReservationKind::FinalSort, "final_sort"),
-            (ReservationKind::FinalSort, "final_sort"),
-            (ReservationKind::Materialization, "host_materialization"),
-        ],
-    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

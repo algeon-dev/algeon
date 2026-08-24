@@ -1,42 +1,37 @@
 //! Immutable per-device resource-controller profile.
 
 use nexus_query_planning::{
-    capability::{ContractStatus, ReservationRequirement},
+    admission::ExecutionCapability,
     error::{QueryError, QueryErrorCode, Result},
 };
-
-use crate::runtime::ReservationKind;
 
 const OPERATION: &str = "nexus_query_engine.gpu.resource_profile";
 
 /// Stable identity of one device-execution capability required by a native
 /// attempt.
 ///
-/// Capability requirements retain the reservation kind because the same
-/// lower-level contract label can be meaningful at more than one execution
-/// boundary.  The values are frozen into a device profile at installation;
-/// placement never probes or mutates them at submission time.
+/// Values are frozen into a device profile at installation; placement never
+/// probes or mutates them at submission time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct DeviceCapability {
-    reservation_kind: ReservationKind,
-    required_contract: &'static str,
+    capability: ExecutionCapability,
 }
 
 impl DeviceCapability {
     /// Creates one immutable device capability identity.
-    pub const fn new(reservation_kind: ReservationKind, required_contract: &'static str) -> Self {
-        Self { reservation_kind, required_contract }
+    pub const fn new(name: &'static str) -> Self {
+        Self { capability: ExecutionCapability::new(name) }
     }
 
-    fn from_requirement(requirement: &ReservationRequirement) -> Self {
-        Self::new(requirement.kind, requirement.required_contract)
+    const fn from_requirement(requirement: ExecutionCapability) -> Self {
+        Self { capability: requirement }
     }
 }
 
 /// Immutable capability metadata for one installed CUDA device.
 ///
-/// Existing supported hardware uses [`Self::all_modeled`]: every capability
-/// that the native planner has already modeled is available on that device.
+/// Existing supported hardware uses [`Self::all`]: every declared execution
+/// capability is available on that device.
 /// Installers may instead freeze an exact list for heterogeneous deployments.
 /// A non-modeled requirement is never accepted merely because it appears in
 /// an exact list; the planner must establish the contract first.
@@ -47,23 +42,23 @@ pub struct DeviceCapabilities {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DeviceCapabilitySupport {
-    AllModeled,
+    All,
     Exact(Vec<DeviceCapability>),
 }
 
 impl Default for DeviceCapabilities {
     fn default() -> Self {
-        Self::all_modeled()
+        Self::all()
     }
 }
 
 impl DeviceCapabilities {
-    /// Supports every capability that has a modeled native contract.
-    pub const fn all_modeled() -> Self {
-        Self { support: DeviceCapabilitySupport::AllModeled }
+    /// Supports every declared execution capability.
+    pub const fn all() -> Self {
+        Self { support: DeviceCapabilitySupport::All }
     }
 
-    /// Supports only the supplied modeled capability identities.
+    /// Supports only the supplied capability identities.
     ///
     /// This is the per-device construction input for heterogeneous
     /// deployments.  Duplicate entries are harmless and do not change
@@ -79,28 +74,25 @@ impl DeviceCapabilities {
     }
 
     #[doc(hidden)]
-    pub fn supports(&self, requirement: &ReservationRequirement) -> bool {
-        if requirement.status != ContractStatus::Modeled {
-            return false;
-        }
+    pub fn supports(&self, requirement: &ExecutionCapability) -> bool {
         match &self.support {
-            DeviceCapabilitySupport::AllModeled => true,
+            DeviceCapabilitySupport::All => true,
             DeviceCapabilitySupport::Exact(capabilities) => {
-                capabilities.contains(&DeviceCapability::from_requirement(requirement))
+                capabilities.contains(&DeviceCapability::from_requirement(*requirement))
             },
         }
     }
 
     #[doc(hidden)]
-    pub fn supports_all(&self, requirements: &[ReservationRequirement]) -> bool {
+    pub fn supports_all(&self, requirements: &[ExecutionCapability]) -> bool {
         requirements.iter().all(|requirement| self.supports(requirement))
     }
 
     /// Whether admission must receive an explicit planner-produced requirement.
     ///
-    /// An absent requirement is safe only when every modeled capability is
+    /// An absent requirement is safe only when every execution capability is
     /// accepted. Exact profiles must not interpret an empty implicit set as a
-    /// proof that the attempt can execute on the device.
+    /// evidence that the attempt can execute on the device.
     #[doc(hidden)]
     pub const fn requires_explicit_attempt_requirement(&self) -> bool {
         matches!(self.support, DeviceCapabilitySupport::Exact(_))
@@ -282,7 +274,7 @@ fn invalid(device_ordinal: usize, field: &'static str, message: &'static str) ->
 
 #[cfg(test)]
 mod tests {
-    use nexus_query_planning::capability::ContractQuality;
+    use nexus_query_planning::admission::ExecutionCapability;
 
     use super::*;
 
@@ -450,26 +442,13 @@ mod tests {
     }
 
     #[test]
-    fn frozen_capability_metadata_requires_modeled_contracts_and_exact_matches() {
-        let modeled = ReservationRequirement::modeled(
-            ReservationKind::OperatorOutput,
-            "test_operator",
-            "test_operator_contract",
-            ContractQuality::CapabilityProof,
-        );
-        let blocked = ReservationRequirement::blocked_by_lower_level(
-            ReservationKind::OperatorOutput,
-            "test_operator",
-            "test_operator_contract",
-            ContractQuality::CapabilityProof,
-        );
-        let restricted = DeviceCapabilities::only([DeviceCapability::new(
-            ReservationKind::OperatorOutput,
-            "test_operator_contract",
-        )]);
+    fn frozen_capability_metadata_requires_exact_matches() {
+        let required = ExecutionCapability::new("test_operator");
+        let other = ExecutionCapability::new("other_operator");
+        let restricted = DeviceCapabilities::only([DeviceCapability::new("test_operator")]);
 
-        assert!(restricted.supports(&modeled));
-        assert!(!restricted.supports(&blocked));
-        assert!(!DeviceCapabilities::only(std::iter::empty::<DeviceCapability>()).supports(&modeled));
+        assert!(restricted.supports(&required));
+        assert!(!restricted.supports(&other));
+        assert!(!DeviceCapabilities::only(std::iter::empty::<DeviceCapability>()).supports(&required));
     }
 }

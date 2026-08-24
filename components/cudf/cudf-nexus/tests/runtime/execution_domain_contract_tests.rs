@@ -326,8 +326,8 @@ fn unary_binary_and_reduction_families_use_primary_input_exec_contract() {
 
 #[test]
 fn binary_op_reverse_fences_cross_stream_input_after_enqueue() {
-    // P0-2 regression contract: after a consuming operation returns, every
-    // cross-stream input's retained stream must wait on the consumer's
+    // After a consuming operation returns, every cross-stream input's retained
+    // stream must wait on the consumer's
     // completion event. Otherwise dropping the input enqueues its
     // stream-ordered deallocation on its own stream and the pool can reuse
     // the block while the consuming kernel is still reading it.

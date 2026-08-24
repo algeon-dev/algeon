@@ -64,69 +64,9 @@ async fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime(
     assert_eq!(adapter_error.fact_value("native_code"), Some("unsupported_plan_shape"));
     assert_eq!(adapter_error.fact_value("native_operation"), Some("nexus_query_engine.bounded.plan"));
     assert_eq!(adapter_error.fact_value("reason"), Some("bounded_join_plan_shape_unsupported"));
-    assert_eq!(adapter_error.fact_value("bounded_join_enabled"), Some("true"));
-    assert_eq!(
-        adapter_error.fact_value("boundary_policy"),
-        Some(
-            "source_read=direct_device_local_parquet,build_materialization=query_scoped_gpu_hash_join,probe_execution=reusable_gpu_hash_join,result_materialization=explicit_sink"
-        )
-    );
-    assert_eq!(adapter_error.fact_value("source_read_boundary"), Some("direct_device_local_parquet"));
-    assert_eq!(adapter_error.fact_value("build_materialization_boundary"), Some("query_scoped_gpu_hash_join"));
-    assert_eq!(adapter_error.fact_value("probe_execution_boundary"), Some("reusable_gpu_hash_join"));
-    assert_eq!(adapter_error.fact_value("result_materialization_boundary"), Some("explicit_sink"));
-    assert_eq!(adapter_error.fact_value("blocked_reservations"), Some(""));
     assert_eq!(adapter_error.fact_value("bounded_join_rejection_scope"), Some("node"));
     assert_eq!(adapter_error.fact_value("bounded_join_rejection_category"), Some("unsupported_node_operator"));
     assert_eq!(adapter_error.fact_value("bounded_join_rejection_reason"), Some("unsupported_join_node_capability"));
-    let modeled = adapter_error.fact_value("modeled_reservations").expect("modeled reservations fact");
-    for expected in ["source_read", "build_side", "probe_side", "gather_map", "join_output", "materialization"] {
-        assert!(modeled.split(',').any(|kind| kind == expected), "missing modeled reservation {expected}");
-    }
-    assert_eq!(adapter_error.fact_value("bounded_join_lower_level_blockers"), Some(""));
-    assert_eq!(
-        adapter_error.fact_value("cudf_rs_dataframe_gather_output_reservation_contract"),
-        Some("dataframe_gather_output_reservation_size_bytes")
-    );
-    assert_eq!(
-        adapter_error.fact_value("cudf_rs_filtered_join_hash_table_observability"),
-        Some("filtered_join_device_allocated_size_bytes")
-    );
-    assert_eq!(
-        adapter_error.fact_value("cudf_rs_filtered_join_output_size_observability"),
-        Some("filtered_join_probe_state_output_size")
-    );
-    assert_eq!(
-        adapter_error.fact_value("cudf_rs_filtered_join_probe_state_contract"),
-        Some("filtered_join_retained_probe_state")
-    );
-    assert_eq!(
-        adapter_error.fact_value("cudf_rs_filtered_join_probe_state_observability"),
-        Some("filtered_join_probe_device_allocated_size_bytes")
-    );
-    assert_eq!(
-        adapter_error.fact_value("cudf_rs_filtered_join_probe_materialization_contract"),
-        Some("filtered_join_probe_state_materialize_indices")
-    );
-    assert_eq!(
-        adapter_error.fact_value("cudf_rs_conditional_join_output_size_observability"),
-        Some("conditional_join_exact_output_size")
-    );
-    assert_eq!(
-        adapter_error.fact_value("cudf_rs_conditional_join_output_size_hint"),
-        Some("conditional_join_indices_with_output_size")
-    );
-    assert_eq!(adapter_error.fact_value("bounded_join_execution_family_alias_compatibility"), None);
-    assert_eq!(
-        adapter_error.fact_value("cudf_rs_mixed_join_size_data_alias_compatibility"),
-        Some(
-            "mixed_inner_left_join_size_data_values_are_legacy_aliases_for_mixed_keyed_residual_inner_left_full_left_semi_left_anti_size_data"
-        )
-    );
-    assert_eq!(
-        adapter_error.fact_value("bounded_join_mixed_keyed_residual_capability_detail"),
-        Some("mixed_keyed_residual_root_join_types=inner,left,full,left_semi,left_anti")
-    );
     assert_eq!(adapter_error.fact_value("path"), None);
     assert_eq!(adapter_error.fact_value("file_index"), None);
     assert_eq!(adapter_error.fact_value("row_group_indexes"), None);
@@ -136,7 +76,7 @@ async fn native_exec_preserves_bounded_join_rejection_facts_from_native_runtime(
     fs::remove_dir_all(dir).unwrap();
 }
 #[tokio::test]
-async fn native_composed_exec_preserves_deferred_host_materialization_facts_on_runtime_rejection() {
+async fn native_composed_exec_preserves_capability_facts_on_runtime_rejection() {
     let dir = unique_temp_dir("datafusion-nexus-native-composed-bounded-join-rejection");
     let left = dir.join("left.parquet");
     let right = dir.join("right.parquet");
@@ -175,38 +115,22 @@ async fn native_composed_exec_preserves_deferred_host_materialization_facts_on_r
 
     assert_eq!(adapter_error.code(), ErrorCode::UnsupportedOperator);
     assert_eq!(adapter_error.fact_value("reason"), Some("bounded_join_plan_shape_unsupported"));
-    assert_eq!(adapter_error.fact_value("result_materialization_boundary"), Some("explicit_sink"));
-    assert!(
-        adapter_error
-            .fact_value("modeled_reservations")
-            .is_some_and(|value| value.split(',').any(|kind| kind == "materialization")),
-        "composed runtime rejection must retain the caller-visible host materialization reservation: {adapter_error}"
-    );
-    assert!(
-        adapter_error
-            .fact_value("bounded_join_reservation_statuses")
-            .is_some_and(|value| value.split(',').any(|status| status == "materialization:modeled")),
-        "composed runtime rejection must retain the modeled materialization status: {adapter_error}"
-    );
-    assert!(
-        adapter_error.fact_value("bounded_join_reservation_requirements").is_some_and(|value| value.contains(
-            "materialization:query_engine_explicit_sink_materialization_reservation:query_engine_owned_boundary"
-        )),
-        "composed runtime rejection must retain the explicit sink materialization requirement: {adapter_error}"
-    );
+    assert!(adapter_error.fact_value("bounded_join_rejection_scope").is_some());
+    assert!(adapter_error.fact_value("bounded_join_rejection_owner").is_some());
+    assert!(adapter_error.fact_value("bounded_join_rejection_reason").is_some());
+    assert_eq!(adapter_error.fact_value("modeled_reservations"), None);
+    assert_eq!(adapter_error.fact_value("bounded_join_reservation_requirements"), None);
 
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[tokio::test]
-async fn native_exec_reports_legacy_error_facts_for_unsupported_bounded_join_runtime_shape() {
+async fn native_exec_reports_capability_error_facts_for_unsupported_bounded_join_runtime_shape() {
     let dir = unique_temp_dir("datafusion-nexus-native-bounded-join-runtime-shape");
     let left = dir.join("left.parquet");
     let right = dir.join("right.parquet");
     write_join_left_parquet_file(&left);
     write_join_right_parquet_file(&right);
-    let expected_unsupported_shape = BoundedJoinReservationContract.supported_shape_requirement();
-
     let native_plan = bounded_left_build_left_semi_join_host_sink_plan_with_paths(&left, &right);
     let fixture = backend_fixture();
     let exec = Arc::new(NexusNativeExec::try_new(native_plan, bound_execution_config(&fixture)).unwrap())
@@ -214,27 +138,12 @@ async fn native_exec_reports_legacy_error_facts_for_unsupported_bounded_join_run
     let error = collect(exec, Arc::new(TaskContext::default())).await.unwrap_err();
     let runtime_error = adapter_error(&error);
 
-    assert_eq!(runtime_error.fact_value("bounded_join_enabled"), Some("true"));
-    assert_eq!(runtime_error.fact_value("bounded_join_execution_status"), Some("unsupported_plan_shape"));
-    assert_eq!(runtime_error.fact_value("bounded_join_unsupported_shape"), Some(expected_unsupported_shape.as_str()));
-    assert_eq!(runtime_error.fact_value("bounded_join_execution_families"), None);
     assert_eq!(runtime_error.fact_value("reason"), Some("bounded_join_plan_shape_unsupported"));
-    let modeled = runtime_error.fact_value("modeled_reservations").expect("modeled reservations fact");
-    for expected in ["source_read", "build_side", "probe_side", "gather_map", "join_output", "materialization"] {
-        assert!(modeled.split(',').any(|kind| kind == expected), "missing modeled reservation {expected}");
-    }
-    assert_eq!(runtime_error.fact_value("blocked_reservations"), Some(""));
-    assert_eq!(runtime_error.fact_value("bounded_join_execution_family_alias_compatibility"), None);
-    assert_eq!(
-        runtime_error.fact_value("cudf_rs_mixed_join_size_data_alias_compatibility"),
-        Some(
-            "mixed_inner_left_join_size_data_values_are_legacy_aliases_for_mixed_keyed_residual_inner_left_full_left_semi_left_anti_size_data"
-        )
-    );
-    assert_eq!(
-        runtime_error.fact_value("bounded_join_mixed_keyed_residual_capability_detail"),
-        Some("mixed_keyed_residual_root_join_types=inner,left,full,left_semi,left_anti")
-    );
+    assert!(runtime_error.fact_value("bounded_join_rejection_scope").is_some());
+    assert!(runtime_error.fact_value("bounded_join_rejection_boundary").is_some());
+    assert!(runtime_error.fact_value("bounded_join_rejection_category").is_some());
+    assert_eq!(runtime_error.fact_value("bounded_join_reservation_model"), None);
+    assert_eq!(runtime_error.fact_value("modeled_reservations"), None);
 
     fs::remove_dir_all(dir).unwrap();
 }

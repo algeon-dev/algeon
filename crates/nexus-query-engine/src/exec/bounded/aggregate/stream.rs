@@ -2,8 +2,8 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
     AggregateNode, BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream, BoundedPlan, CommittedPartial,
-    ExecutionContext, GpuDataFrame, MemoryControlPolicy, MemoryReservationRequest, NodeId, QueryError, ReservationKind,
-    ResidentFrameStreamPayload, ResidentGpuFrame, Result, SourceChunk, aggregate_spec_has_distinct,
+    ExecutionContext, GpuDataFrame, MemoryControlPolicy, NodeId, QueryError, ResidentFrameStreamPayload,
+    ResidentGpuFrame, Result, SourceChunk, aggregate_spec_has_distinct,
     aggregate_spec_has_floating_statistical_aggregate, aggregate_spec_has_median, aggregate_spec_requires_whole_input,
     attach_budget_token_failure_facts, execute_aggregate_with_budget, execute_bounded_generic_unary,
     execute_bounded_generic_unary_from_frame, execute_bounded_generic_union, execute_bounded_raw_source_chunk,
@@ -11,8 +11,8 @@ use super::{
     execute_compiled_bounded_aggregate_from_frame, execute_compiled_bounded_final_aggregate_merge,
     execute_partial_aggregate_with_budget, execution_budget_token_for_boundary, execution_overrides,
     materialize_bounded_join_leaf_local_parquet_source_stream, observe_device_memory_bytes,
-    partial_aggregate_upper_bound_violation_error, partial_aggregate_work_reservation_upper_bound_bytes,
-    release_partials_reverse, statistical_partial_aggregate_work_reservation_upper_bound_bytes,
+    partial_aggregate_work_reservation_upper_bound_bytes, release_partials_reverse,
+    statistical_partial_aggregate_work_reservation_upper_bound_bytes,
     stream_bounded_join_leaf_local_parquet_source_chunks, unsupported_bounded_shape,
 };
 use crate::exec::operators::{
@@ -98,7 +98,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
             let mut input = match input {
                 Ok(input) => input,
                 Err(error) => {
-                    release_partials_reverse(execution, partials);
+                    release_partials_reverse(partials);
                     return Err(error);
                 },
             };
@@ -113,8 +113,8 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
             ) {
                 Ok(chunk_partials) => partials.extend(chunk_partials),
                 Err(error) => {
-                    release_partials_reverse(execution, partials);
-                    inputs.release_remaining_frames(execution);
+                    release_partials_reverse(partials);
+                    inputs.release_remaining_frames();
                     return Err(error);
                 },
             }
@@ -139,7 +139,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
             partials,
         )
     })();
-    inputs.release_producer_reservations(execution);
+    inputs.release_producer(execution);
     result
 }
 
@@ -187,7 +187,7 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_source_s
         Ok(())
     });
     if let Err(error) = stream_result {
-        release_partials_reverse(execution, partials);
+        release_partials_reverse(partials);
         return Err(error);
     }
 
@@ -217,7 +217,7 @@ fn execute_compiled_bounded_statistical_aggregate_from_stream(
         let mut input = match input {
             Ok(input) => input,
             Err(error) => {
-                release_partials_reverse(execution, partials);
+                release_partials_reverse(partials);
                 return Err(error);
             },
         };
@@ -232,8 +232,8 @@ fn execute_compiled_bounded_statistical_aggregate_from_stream(
         ) {
             Ok(partial) => partials.push(partial),
             Err(error) => {
-                release_partials_reverse(execution, partials);
-                inputs.release_remaining_frames(execution);
+                release_partials_reverse(partials);
+                inputs.release_remaining_frames();
                 return Err(error);
             },
         }
@@ -281,7 +281,7 @@ fn execute_compiled_bounded_statistical_aggregate_from_source_stream(
         Ok(())
     });
     if let Err(error) = stream_result {
-        release_partials_reverse(execution, partials);
+        release_partials_reverse(partials);
         return Err(error);
     }
 
@@ -314,15 +314,11 @@ fn execute_compiled_bounded_statistical_final_merge_from_partials(
     partials: Vec<CommittedPartial>,
 ) -> Result<ResidentGpuFrame> {
     let merged = execute_bounded_generic_union(execution, node_id, partials)?;
-    let input_reserved_bytes = merged.reservation.bytes();
-    let input_reservation = merged.reservation;
-    let result = execute_bounded_generic_unary_from_frame(
+    execute_bounded_generic_unary_from_frame(
         execution,
         node_id,
         "compiled_statistical_aggregate_final_merge",
-        "compiled_statistical_aggregate_output",
         merged.frame,
-        input_reserved_bytes,
         true,
         |context, input, token, metrics| {
             execute_gpu_native_statistical_final_merge_with_budget(
@@ -336,9 +332,7 @@ fn execute_compiled_bounded_statistical_final_merge_from_partials(
                 metrics,
             )
         },
-    );
-    execution.release(input_reservation);
-    result
+    )
 }
 
 fn execute_compiled_bounded_statistical_partial_from_frame(
@@ -352,7 +346,6 @@ fn execute_compiled_bounded_statistical_partial_from_frame(
     let input_rows = input.frame.num_rows() as u64;
     let upper_bound_bytes = match statistical_partial_aggregate_work_reservation_upper_bound_bytes(
         execution,
-        node_id,
         aggregate,
         input_schema,
         output_schema,
@@ -360,38 +353,20 @@ fn execute_compiled_bounded_statistical_partial_from_frame(
     ) {
         Ok(bytes) => bytes,
         Err(error) => {
-            execution.release(input.reservation);
             return Err(error);
         },
     };
     let input_frame = input.frame;
-    let input_reservation = input.reservation;
-    let work_request = MemoryReservationRequest::new(
-        ReservationKind::PartialState,
-        upper_bound_bytes,
-        execution.reservations().budget(),
-    )
-    .with_memory_boundary("compiled_statistical_aggregate_partial_state_work")
-    .with_node_id(node_id)
-    .with_stage("compiled_statistical_aggregate_partial");
-    let mut work_reservation = match execution.try_reserve_work(work_request) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            execution.release(input_reservation);
-            return Err(error);
-        },
-    };
+    let _ = upper_bound_bytes;
     let token = match execution_budget_token_for_boundary(
         execution.context(),
-        execution.reservations().available_bytes_including(&work_reservation),
+        execution.device_budget_bytes(),
         "compiled_statistical_aggregate_partial_state_work",
         "nexus_query_engine.bounded.aggregate.statistical_partial.budget_token",
         "failed to create bounded native statistical partial aggregate budget token",
     ) {
         Ok(token) => token,
         Err(error) => {
-            execution.release(work_reservation);
-            execution.release(input_reservation);
             return Err(error);
         },
     };
@@ -407,33 +382,17 @@ fn execute_compiled_bounded_statistical_partial_from_frame(
     let frame = match output {
         Ok(frame) => frame,
         Err(error) => {
-            execution.release(work_reservation);
-            execution.release(input_reservation);
             return Err(error);
         },
     };
-    execution.release(input_reservation);
     let partial_bytes = match observe_device_memory_bytes(&frame, execution.metrics_mut()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            execution.release(work_reservation);
             return Err(error);
         },
     };
-    let partial_request =
-        MemoryReservationRequest::new(ReservationKind::PartialState, partial_bytes, execution.reservations().budget())
-            .with_memory_boundary("compiled_statistical_aggregate_partial_state")
-            .with_node_id(node_id)
-            .with_stage("compiled_statistical_aggregate_partial");
-    if partial_bytes > work_reservation.bytes() {
-        let error = partial_aggregate_upper_bound_violation_error(node_id, work_reservation.bytes(), partial_bytes);
-        execution.release(work_reservation);
-        return Err(error);
-    }
-    execution.shrink_to_observed_with_request(&mut work_reservation, partial_bytes, partial_request.clone());
-    let partial_reservation = execution.transfer(work_reservation, partial_request);
-    execution.metrics_mut().record_partial_aggregate(input_rows, frame.num_rows() as u64, partial_reservation.bytes());
-    Ok(CommittedPartial { frame, reservation: partial_reservation })
+    execution.metrics_mut().record_partial_aggregate(input_rows, frame.num_rows() as u64, partial_bytes);
+    Ok(ResidentGpuFrame::with_device_bytes(frame, partial_bytes))
 }
 
 fn execute_compiled_bounded_distinct_aggregate_from_stream(
@@ -445,9 +404,9 @@ fn execute_compiled_bounded_distinct_aggregate_from_stream(
     inputs: Vec<ResidentGpuFrame>,
 ) -> Result<ResidentGpuFrame> {
     let mut frames = inputs;
-    let input_reserved_bytes = frames.iter().map(|frame| frame.reservation.bytes()).sum::<u64>();
     if frames.len() == 1 {
         let input = frames.pop().expect("single frame checked");
+        let input_bytes = input.device_bytes();
         return execute_compiled_bounded_aggregate_from_frame(
             execution,
             node_id,
@@ -455,38 +414,22 @@ fn execute_compiled_bounded_distinct_aggregate_from_stream(
             input_schema,
             output_schema,
             input.frame,
-            input.reservation.bytes(),
+            input_bytes,
         );
     }
 
-    let request = MemoryReservationRequest::new(
-        ReservationKind::OperatorOutput,
-        input_reserved_bytes,
-        execution.reservations().budget(),
-    )
-    .with_memory_boundary("compiled_aggregate_distinct_stream_concat")
-    .with_node_id(node_id)
-    .with_stage("compiled_aggregate_distinct_stream_concat");
-    let mut concat_reservation = match execution.try_reserve_work(request) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            return Err(error);
-        },
-    };
     let first = frames.remove(0);
-    let first_reservation = first.reservation;
     let first_frame = first.frame.into_frame();
     let concatenated = {
         let token = match execution_budget_token_for_boundary(
             execution.context(),
-            execution.reservations().available_bytes_including(&concat_reservation),
+            execution.device_budget_bytes(),
             "compiled_aggregate_distinct_stream_concat",
             "nexus_query_engine.bounded.aggregate.distinct_stream_concat.budget_token",
             "failed to create bounded native distinct aggregate concat budget token",
         ) {
             Ok(token) => token,
             Err(error) => {
-                execution.release(concat_reservation);
                 return Err(error);
             },
         };
@@ -502,35 +445,14 @@ fn execute_compiled_bounded_distinct_aggregate_from_stream(
             )
         })
     };
-    for frame in frames {
-        execution.release(frame.reservation);
-    }
-    execution.release(first_reservation);
+    while frames.pop().is_some() {}
     let concatenated = concatenated.map(GpuDataFrame::new)?;
     let concatenated_bytes = observe_device_memory_bytes(&concatenated, execution.metrics_mut())?;
-    if concatenated_bytes > concat_reservation.bytes() {
-        let grow_request = MemoryReservationRequest::new(
-            ReservationKind::OperatorOutput,
-            concatenated_bytes.saturating_sub(concat_reservation.bytes()),
-            execution.reservations().budget(),
-        )
-        .with_memory_boundary("compiled_aggregate_distinct_stream_concat")
-        .with_node_id(node_id)
-        .with_stage("compiled_aggregate_distinct_stream_concat");
-        if let Err(error) = execution.try_grow(&mut concat_reservation, grow_request) {
-            execution.release(concat_reservation);
-            return Err(error);
-        }
-    } else {
-        execution.shrink_to_observed(&mut concat_reservation, concatenated_bytes);
-    }
-
     execute_bounded_generic_unary(
         execution,
         node_id,
         "compiled_aggregate_distinct",
-        "compiled_aggregate_distinct_output",
-        ResidentGpuFrame { frame: concatenated, reservation: concat_reservation },
+        ResidentGpuFrame::with_device_bytes(concatenated, concatenated_bytes),
         true,
         |context, input, token, metrics| {
             execute_aggregate_with_budget(
@@ -556,7 +478,6 @@ pub(in crate::exec::bounded::aggregate) fn execute_compiled_bounded_partial_aggr
 ) -> Result<CommittedPartial> {
     let upper_bound_bytes = match partial_aggregate_work_reservation_upper_bound_bytes(
         execution,
-        node_id,
         aggregate,
         input_schema,
         output_schema,
@@ -564,7 +485,6 @@ pub(in crate::exec::bounded::aggregate) fn execute_compiled_bounded_partial_aggr
     ) {
         Ok(bytes) => bytes,
         Err(error) => {
-            execution.release(input.reservation);
             return Err(error);
         },
     };
@@ -609,7 +529,6 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_retry_budget(
 ) -> Result<Vec<CommittedPartial>> {
     let upper_bound_bytes = match partial_aggregate_work_reservation_upper_bound_bytes(
         execution,
-        node_id,
         aggregate,
         input_schema,
         output_schema,
@@ -617,12 +536,11 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_retry_budget(
     ) {
         Ok(bytes) => bytes,
         Err(error) => {
-            execution.release(input.reservation);
             return Err(error);
         },
     };
     if should_split_compiled_aggregate_stream_frame(execution, &input, upper_bound_bytes, retry_budget) {
-        execution.metrics_mut().record_retry_reservation_failure();
+        execution.metrics_mut().record_retry_resource_exhausted();
         crate::exec::retry::backoff_before_retry(
             execution.context(),
             "nexus_query_engine.exec.bounded.compiled_aggregate_stream_frame_retry",
@@ -639,7 +557,6 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_retry_budget(
         ) {
             Ok(partials) => partials,
             Err(error) => {
-                execution.release(right.reservation);
                 return Err(error);
             },
         };
@@ -657,7 +574,7 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_retry_budget(
                 return Ok(partials);
             },
             Err(error) => {
-                release_partials_reverse(execution, partials);
+                release_partials_reverse(partials);
                 return Err(error);
             },
         }
@@ -684,32 +601,16 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_upper_bound(
     upper_bound_bytes: u64,
 ) -> Result<CommittedPartial> {
     let input_rows = input.frame.num_rows() as u64;
-    let work_request = MemoryReservationRequest::new(
-        ReservationKind::PartialState,
-        upper_bound_bytes,
-        execution.reservations().budget(),
-    )
-    .with_memory_boundary("compiled_aggregate_partial_state_work")
-    .with_node_id(node_id)
-    .with_stage("compiled_aggregate");
-    let mut work_reservation = match execution.try_reserve_work(work_request) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            execution.release(input.reservation);
-            return Err(error);
-        },
-    };
+    let _ = upper_bound_bytes;
     let token = match execution_budget_token_for_boundary(
         execution.context(),
-        execution.reservations().available_bytes_including(&work_reservation),
+        execution.device_budget_bytes(),
         "compiled_aggregate_partial_state_work",
         "nexus_query_engine.bounded.aggregate.compiled_stream_partial.budget_token",
         "failed to create bounded native compiled stream aggregate budget token",
     ) {
         Ok(token) => token,
         Err(error) => {
-            execution.release(work_reservation);
-            execution.release(input.reservation);
             return Err(error);
         },
     };
@@ -727,35 +628,17 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_upper_bound(
     let frame = match output {
         Ok(frame) => frame,
         Err(error) => {
-            execution.release(work_reservation);
-            execution.release(input.reservation);
             return Err(error);
         },
     };
     let partial_bytes = match observe_device_memory_bytes(&frame, execution.metrics_mut()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            execution.release(work_reservation);
-            execution.release(input.reservation);
             return Err(error);
         },
     };
-    let partial_request =
-        MemoryReservationRequest::new(ReservationKind::PartialState, partial_bytes, execution.reservations().budget())
-            .with_memory_boundary("compiled_aggregate_partial_state")
-            .with_node_id(node_id)
-            .with_stage("compiled_aggregate");
-    if partial_bytes > work_reservation.bytes() {
-        let error = partial_aggregate_upper_bound_violation_error(node_id, work_reservation.bytes(), partial_bytes);
-        execution.release(work_reservation);
-        execution.release(input.reservation);
-        return Err(error);
-    }
-    execution.shrink_to_observed_with_request(&mut work_reservation, partial_bytes, partial_request.clone());
-    let partial_reservation = execution.transfer(work_reservation, partial_request);
-    execution.release(input.reservation);
-    execution.metrics_mut().record_partial_aggregate(input_rows, frame.num_rows() as u64, partial_reservation.bytes());
-    Ok(CommittedPartial { frame, reservation: partial_reservation })
+    execution.metrics_mut().record_partial_aggregate(input_rows, frame.num_rows() as u64, partial_bytes);
+    Ok(ResidentGpuFrame::with_device_bytes(frame, partial_bytes))
 }
 
 fn should_split_compiled_aggregate_stream_frame(
@@ -764,7 +647,7 @@ fn should_split_compiled_aggregate_stream_frame(
     upper_bound_bytes: u64,
     retry_budget: usize,
 ) -> bool {
-    retry_budget > 0 && input.frame.num_rows() > 1 && upper_bound_bytes > execution.reservations().remaining_bytes()
+    retry_budget > 0 && input.frame.num_rows() > 1 && upper_bound_bytes > execution.device_budget_bytes()
 }
 
 fn compiled_aggregate_frame_retry_budget(context: &ExecutionContext) -> usize {
@@ -789,14 +672,12 @@ fn split_compiled_aggregate_stream_frame(
         .with_fact("node_id", node_id)
         .with_fact("input_rows", rows));
     }
-    let source_reservation = input.reservation;
     let source_frame = input.frame.into_frame();
     let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
     let left = match source_frame.with_execution(&overrides).slice(0, split_at) {
         Ok(left) => left,
         Err(error) => {
-            execution.release(source_reservation);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.aggregate.stream_frame_split",
                 "failed to split compiled aggregate stream frame",
@@ -812,7 +693,6 @@ fn split_compiled_aggregate_stream_frame(
     let right = match source_frame.with_execution(&overrides).slice(split_at, right_len) {
         Ok(right) => right,
         Err(error) => {
-            execution.release(source_reservation);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.aggregate.stream_frame_split",
                 "failed to split compiled aggregate stream frame",
@@ -824,35 +704,11 @@ fn split_compiled_aggregate_stream_frame(
             .with_fact("split_at", split_at));
         },
     };
-    execution.release(source_reservation);
     let left = GpuDataFrame::new(left);
     let right = GpuDataFrame::new(right);
     let left_bytes = observe_device_memory_bytes(&left, execution.metrics_mut())?;
     let right_bytes = observe_device_memory_bytes(&right, execution.metrics_mut())?;
-    let left_reservation = execution.try_reserve(
-        MemoryReservationRequest::new(ReservationKind::OperatorOutput, left_bytes, execution.reservations().budget())
-            .with_memory_boundary("compiled_aggregate_stream_frame_split")
-            .with_node_id(node_id)
-            .with_stage("compiled_aggregate_stream_frame_split")
-            .with_attempt(1, 1),
-    )?;
-    let right_reservation = match execution.try_reserve(
-        MemoryReservationRequest::new(ReservationKind::OperatorOutput, right_bytes, execution.reservations().budget())
-            .with_memory_boundary("compiled_aggregate_stream_frame_split")
-            .with_node_id(node_id)
-            .with_stage("compiled_aggregate_stream_frame_split")
-            .with_attempt(1, 1),
-    ) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            execution.release(left_reservation);
-            return Err(error);
-        },
-    };
-    Ok((
-        ResidentGpuFrame { frame: left, reservation: left_reservation },
-        ResidentGpuFrame { frame: right, reservation: right_reservation },
-    ))
+    Ok((ResidentGpuFrame::with_device_bytes(left, left_bytes), ResidentGpuFrame::with_device_bytes(right, right_bytes)))
 }
 
 /// Correct execution path for grouped aggregates that cannot merge chunk-local
@@ -876,7 +732,7 @@ pub(in crate::exec::bounded) fn execute_bounded_whole_input_aggregate_from_raw_c
                 raw_frames.push(raw.partial);
             },
             Err(error) => {
-                release_partials_reverse(execution, raw_frames);
+                release_partials_reverse(raw_frames);
                 return Err(error);
             },
         }
@@ -884,8 +740,7 @@ pub(in crate::exec::bounded) fn execute_bounded_whole_input_aggregate_from_raw_c
 
     if raw_frames.len() == 1 {
         let raw = raw_frames.pop().expect("single frame checked");
-        let input_reserved_bytes = raw.reservation.bytes();
-        let input_reservation = raw.reservation;
+        let input_reserved_bytes = raw.device_bytes();
         let result = execute_compiled_bounded_aggregate_from_frame(
             execution,
             bounded.aggregate_id,
@@ -895,43 +750,22 @@ pub(in crate::exec::bounded) fn execute_bounded_whole_input_aggregate_from_raw_c
             raw.frame,
             input_reserved_bytes,
         );
-        execution.release(input_reservation);
         return result;
     }
 
-    let total_reserved_bytes = raw_frames.iter().map(|f| f.reservation.bytes()).sum::<u64>();
-    let mut concat_reservation = match execution.try_reserve_work(
-        MemoryReservationRequest::new(
-            ReservationKind::OperatorOutput,
-            total_reserved_bytes,
-            execution.reservations().budget(),
-        )
-        .with_memory_boundary("distinct_aggregate_concat")
-        .with_node_id(bounded.aggregate_id)
-        .with_stage("distinct_aggregate_concat"),
-    ) {
-        Ok(r) => r,
-        Err(error) => {
-            release_partials_reverse(execution, raw_frames);
-            return Err(error);
-        },
-    };
     let first = raw_frames.remove(0);
-    let mut first_reservation = Some(first.reservation);
     let first_df = first.frame.into_frame();
     let concatenated = {
         let token = match execution_budget_token_for_boundary(
             execution.context(),
-            execution.reservations().available_bytes_including(&concat_reservation),
+            execution.device_budget_bytes(),
             "distinct_aggregate_concat",
             "nexus_query_engine.bounded.distinct_aggregate.concat.budget_token",
             "failed to create bounded native distinct aggregate concat budget token",
         ) {
             Ok(token) => token,
             Err(error) => {
-                execution.release(concat_reservation);
-                execution.release(first_reservation.take().expect("first reservation is present"));
-                release_partials_reverse(execution, raw_frames);
+                release_partials_reverse(raw_frames);
                 return Err(error);
             },
         };
@@ -947,37 +781,16 @@ pub(in crate::exec::bounded) fn execute_bounded_whole_input_aggregate_from_raw_c
             )
         })
     };
-    for frame in raw_frames {
-        execution.release(frame.reservation);
-    }
-    execution.release(first_reservation.take().expect("first reservation is present"));
+    release_partials_reverse(raw_frames);
     let concatenated = concatenated.map(GpuDataFrame::new)?;
     let concat_bytes = observe_device_memory_bytes(&concatenated, execution.metrics_mut())?;
-    if concat_bytes > concat_reservation.bytes() {
-        let delta = concat_bytes.saturating_sub(concat_reservation.bytes());
-        if let Err(error) = execution.try_grow(
-            &mut concat_reservation,
-            MemoryReservationRequest::new(ReservationKind::OperatorOutput, delta, execution.reservations().budget())
-                .with_memory_boundary("distinct_aggregate_concat")
-                .with_node_id(bounded.aggregate_id)
-                .with_stage("distinct_aggregate_concat"),
-        ) {
-            execution.release(concat_reservation);
-            return Err(error);
-        }
-    } else {
-        execution.shrink_to_observed(&mut concat_reservation, concat_bytes);
-    }
-
-    let result = execute_compiled_bounded_aggregate_from_frame(
+    execute_compiled_bounded_aggregate_from_frame(
         execution,
         bounded.aggregate_id,
         bounded.aggregate.0,
         bounded.aggregate_input_schema,
         bounded.aggregate.1,
         concatenated,
-        concat_reservation.bytes(),
-    );
-    execution.release(concat_reservation);
-    result
+        concat_bytes,
+    )
 }

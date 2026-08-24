@@ -61,9 +61,6 @@ async fn native_runtime_tpch_q3_tiny_bounded_join_matches_cpu() {
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
     assert!(cudf::testing::arrow::arrow_host_export_call_count_for_test() >= 1);
     assert_batches_equal(&cpu_batches, &native_batches);
-    let metrics = native_plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
-    assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
-
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -95,7 +92,6 @@ async fn native_runtime_tpch_q7_tiny_bounded_duplicate_nation_identity_matches_c
     let metrics = native_plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
     assert!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize() >= 1);
-    assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -145,9 +141,6 @@ async fn native_runtime_tpch_q19_tiny_bounded_join_residual_in_list_matches_cpu(
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
     assert!(cudf::testing::arrow::arrow_host_export_call_count_for_test() >= 1);
     assert_batches_equal(&cpu_batches, &native_batches);
-    let metrics = native_plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
-    assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
-
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -178,7 +171,6 @@ async fn native_runtime_tpch_q04_tiny_bounded_left_semi_full_sort_matches_cpu() 
     let metrics = native_plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
     assert!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize() >= 1);
-    assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
     assert_eq!(metrics.sum_by_name("compiled_pipeline_attempts").unwrap().as_usize(), 1);
     assert_eq!(metrics.sum_by_name("compiled_pipeline_host_arrow_sinks").unwrap().as_usize(), 1);
 
@@ -204,9 +196,6 @@ async fn native_runtime_tpch_q15_tiny_bounded_root_join_matches_cpu() {
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
     assert_eq!(cudf::testing::arrow::arrow_host_export_call_count_for_test(), 1);
     assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
-    let metrics = native_plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
-    assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
-
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -236,7 +225,6 @@ async fn native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cp
     let metrics = native_plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
     assert!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize() >= 1);
-    assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
     assert_eq!(metrics.sum_by_name("compiled_pipeline_attempts").unwrap().as_usize(), 1);
     assert!(metrics.sum_by_name("compiled_pipeline_tasks_executed").unwrap().as_usize() > 0);
     assert_eq!(metrics.sum_by_name("compiled_pipeline_host_arrow_sinks").unwrap().as_usize(), 1);
@@ -270,7 +258,6 @@ async fn native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter
     let metrics = native_plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
     assert!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize() >= 1);
-    assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
     assert_eq!(metrics.sum_by_name("compiled_pipeline_attempts").unwrap().as_usize(), 1);
     assert!(metrics.sum_by_name("compiled_pipeline_tasks_executed").unwrap().as_usize() > 0);
     assert_eq!(metrics.sum_by_name("compiled_pipeline_host_arrow_sinks").unwrap().as_usize(), 1);
@@ -297,9 +284,6 @@ async fn native_runtime_tpch_q16_tiny_bounded_distinct_anti_join_matches_cpu() {
     assert_eq!(cudf::testing::arrow::arrow_host_import_call_count_for_test(), 0);
     assert!(cudf::testing::arrow::arrow_host_export_call_count_for_test() >= 1);
     assert_batches_equal_allow_empty(&cpu_batches, &native_batches);
-    let metrics = native_plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
-    assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
-
     fs::remove_dir_all(dir).unwrap();
 }
 
@@ -324,7 +308,6 @@ async fn native_runtime_tpch_q11_tiny_bounded_aggregate_over_join_subplan_inputs
     let metrics = native_plan.metrics().expect("NexusNativeExec should expose DataFusion metrics");
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
     assert!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize() >= 1);
-    assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
 
     fs::remove_dir_all(dir).unwrap();
 }

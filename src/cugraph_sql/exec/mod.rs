@@ -40,7 +40,6 @@ use nexus_query_engine::{
     expr::{
         AggregateSpec, BinaryOp, CaseWhen, ColumnRef, Expr as NativeExpr, LimitSpec, LiteralValue, SortExpr, SortSpec,
     },
-    graph_memory::{GraphMemoryCalibrationOverride, GraphVertexEstimate, query_plan_graph_vertex_upper_bound},
     metrics::{GraphAlgorithmRuntimeMetrics, QueryMetrics},
     observability::RuntimeObservationConfig,
     plan::{
@@ -82,8 +81,8 @@ use crate::{
         execute_gpu_resident_producer_with_context, gpu_resident_producer as native_gpu_resident_producer,
         gpu_resident_producer_hard_output_row_upper_bound, gpu_resident_producer_input_name,
         graph::{
-            GraphAdmissionModelAsk, GraphBfsFollowerOutcome, GraphBfsFollowerRoute, GraphBfsLeader,
-            GraphBfsPublishedResult, GraphBfsSingleflightJoin, GraphBfsSingleflightKey, GraphExecutionPlan,
+            GraphBfsFollowerOutcome, GraphBfsFollowerRoute, GraphBfsLeader, GraphBfsPublishedResult,
+            GraphBfsSingleflightJoin, GraphBfsSingleflightKey, GraphExecutionPlan,
             register_graph_execution_plan_discovery,
         },
         prepare_gpu_resident_producer_for_execution, register_gpu_resident_producer_discovery, run_gpu_execution_task,
@@ -141,8 +140,7 @@ use logical_mapping::{
     add_logical_mapping_plan, decode_logical_graph_result, graph_uses_logical_mapping, is_logical_vertex_type,
 };
 use lowering::{
-    CUGRAPH_EDGE_INPUT_NAME, CugraphPlanDefinition, cugraph_execution_capability_proof,
-    cugraph_execution_capability_proof_with_resident_input_plans, cugraph_schema_query_plan,
+    CugraphPlanDefinition, cugraph_execution_capability_evidence, cugraph_schema_query_plan,
     execute_cugraph_query_to_gpu_with_options, native_algorithm, native_graph_spec_for_placement_hint,
     preflight_cugraph_query_plan,
 };

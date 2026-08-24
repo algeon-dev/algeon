@@ -2,18 +2,16 @@ use std::collections::VecDeque;
 
 use super::{
     BoundedExecutionAttempt, BoundedPlan, CommittedPartial, LocalParquetSource, MemoryControlPolicy, QueryError,
-    ReservationKind, Result, ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput, SourceChunk,
-    chunk_requested_bytes, chunk_reservation_request,
+    Result, ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput, SourceChunk,
     execution::{
         execute_bounded_chunk_operator_from_source, execute_bounded_chunk_with_retry,
-        release_committed_partials_reverse, retain_decoded_source, retry_after_chunk_error,
+        release_committed_partials_reverse, retry_after_chunk_error,
     },
-    is_prefetch_chunk_error, is_retryable_chunk_error, prefetch_requested_bytes,
+    is_prefetch_chunk_error, is_retryable_chunk_error, observe_device_memory_bytes, prefetch_budget_bytes,
     source_adjacent::{
         bounded_source_adjacent_chunk_batching_enabled, execute_bounded_source_adjacent_chunk_batches_serial,
-        grow_source_reservation_to_observed, shrink_source_reservation_to_observed_without_grow,
     },
-    source_read_reservation_contract,
+    source_read_budget_bytes,
 };
 
 pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
@@ -38,7 +36,7 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
             let chunk_partials = match execute_bounded_chunk_with_retry(execution, bounded, chunk) {
                 Ok(partials) => partials,
                 Err(error) => {
-                    release_committed_partials_reverse(execution, partials);
+                    release_committed_partials_reverse(partials);
                     return Err(error);
                 },
             };
@@ -68,13 +66,13 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
                 max_attempts,
                 min_retry_chunk_row_groups,
             ) {
-                release_committed_partials_reverse(execution, partials);
+                release_committed_partials_reverse(partials);
                 return Err(error);
             }
             return Ok(partials);
         },
         Err(error) => {
-            release_committed_partials_reverse(execution, partials);
+            release_committed_partials_reverse(partials);
             return Err(error);
         },
     };
@@ -86,14 +84,7 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
         }
         let scheduled =
             queue.pop_front().expect("source scheduler should always have a current read before processing a chunk");
-        let source = match finish_scheduled_source_read(
-            execution,
-            scheduled,
-            bounded.source,
-            1,
-            max_attempts,
-            retain_decoded_source(bounded),
-        ) {
+        let source = match finish_scheduled_source_read(execution, scheduled) {
             Ok(source) => source,
             Err(error) if is_prefetch_chunk_error(&error) && is_retryable_chunk_error(&error) => {
                 execution.metrics_mut().record_source_read_prefetch_abandoned();
@@ -101,7 +92,7 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
                 let chunk_partials = match execute_bounded_chunk_with_retry(execution, bounded, chunk) {
                     Ok(partials) => partials,
                     Err(error) => {
-                        release_committed_partials_reverse(execution, partials);
+                        release_committed_partials_reverse(partials);
                         return Err(error);
                     },
                 };
@@ -119,12 +110,12 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
                             max_attempts,
                             min_retry_chunk_row_groups,
                         ) {
-                            release_committed_partials_reverse(execution, partials);
+                            release_committed_partials_reverse(partials);
                             return Err(error);
                         }
                         return Ok(partials);
                     }
-                    release_committed_partials_reverse(execution, partials);
+                    release_committed_partials_reverse(partials);
                     return Err(error);
                 }
                 continue;
@@ -142,7 +133,7 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
                 ) {
                     Ok(partials) => partials,
                     Err(error) => {
-                        release_committed_partials_reverse(execution, partials);
+                        release_committed_partials_reverse(partials);
                         return Err(error);
                     },
                 };
@@ -160,19 +151,19 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
                             max_attempts,
                             min_retry_chunk_row_groups,
                         ) {
-                            release_committed_partials_reverse(execution, partials);
+                            release_committed_partials_reverse(partials);
                             return Err(error);
                         }
                         return Ok(partials);
                     }
-                    release_committed_partials_reverse(execution, partials);
+                    release_committed_partials_reverse(partials);
                     return Err(error);
                 }
                 continue;
             },
             Err(error) => {
                 queue.abandon_all(execution, index + 1);
-                release_committed_partials_reverse(execution, partials);
+                release_committed_partials_reverse(partials);
                 return Err(error);
             },
         };
@@ -202,7 +193,7 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
                 ) {
                     Ok(partials) => partials,
                     Err(error) => {
-                        release_committed_partials_reverse(execution, partials);
+                        release_committed_partials_reverse(partials);
                         return Err(error);
                     },
                 };
@@ -220,19 +211,19 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
                             max_attempts,
                             min_retry_chunk_row_groups,
                         ) {
-                            release_committed_partials_reverse(execution, partials);
+                            release_committed_partials_reverse(partials);
                             return Err(error);
                         }
                         return Ok(partials);
                     }
-                    release_committed_partials_reverse(execution, partials);
+                    release_committed_partials_reverse(partials);
                     return Err(error);
                 }
                 continue;
             },
             Err(error) => {
                 queue.abandon_all(execution, index + 1);
-                release_committed_partials_reverse(execution, partials);
+                release_committed_partials_reverse(partials);
                 return Err(error);
             },
         }
@@ -249,12 +240,12 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
                     max_attempts,
                     min_retry_chunk_row_groups,
                 ) {
-                    release_committed_partials_reverse(execution, partials);
+                    release_committed_partials_reverse(partials);
                     return Err(error);
                 }
                 return Ok(partials);
             }
-            release_committed_partials_reverse(execution, partials);
+            release_committed_partials_reverse(partials);
             return Err(error);
         }
     }
@@ -378,7 +369,7 @@ fn start_required_scheduled_source_read(
     attempt: usize,
     max_attempts: usize,
 ) -> Result<ScheduledLocalParquetRead> {
-    let requested_bytes = chunk_requested_bytes(execution.context().memory_control_policy(), chunk);
+    let requested_bytes = source_read_budget_bytes(execution.context().memory_control_policy(), chunk);
     start_scheduled_source_read(
         execution,
         source,
@@ -401,11 +392,7 @@ fn try_start_optional_scheduled_source_read(
     let Some(chunk) = chunk else {
         return Ok(None);
     };
-    let requested_bytes = prefetch_requested_bytes(execution.context().memory_control_policy(), chunk);
-    if !execution.reservations().can_reserve(requested_bytes) {
-        execution.metrics_mut().record_source_read_prefetch_skipped();
-        return Ok(None);
-    }
+    let requested_bytes = prefetch_budget_bytes(execution.context().memory_control_policy(), chunk);
     execution.metrics_mut().record_source_read_prefetch_started();
     start_scheduled_source_read(
         execution,
@@ -437,28 +424,11 @@ fn start_scheduled_source_read(
 ) -> Result<ScheduledLocalParquetRead> {
     execution.context().check_cancellation("nexus_query_engine.exec.bounded.source_scheduler_start")?;
     execution.metrics_mut().record_source_chunk_attempt();
-    let contract = source_read_reservation_contract(execution.context().memory_control_policy(), chunk);
-    let request = chunk_reservation_request(
-        ReservationKind::SourceRead,
-        budget_boundary,
-        requested_bytes,
-        execution.reservations().budget(),
-        chunk,
-        attempt,
-        max_attempts,
-    )
-    .with_source_read_contract(contract.quality.as_str(), contract.planning_bytes, contract.estimated_bytes);
-    let reservation = execution.try_reserve(request)?;
-    let source_token_budget = if hard_token_budget {
-        reservation.bytes()
-    } else {
-        execution.reservations().available_bytes_including(&reservation)
-    };
+    let source_token_budget = if hard_token_budget { requested_bytes } else { execution.device_budget_bytes() };
     ScheduledLocalParquetRead::spawn(
         execution.context().clone(),
         source.clone(),
         chunk.clone(),
-        reservation,
         source_token_budget,
         budget_boundary,
         prefetch,
@@ -470,41 +440,10 @@ fn start_scheduled_source_read(
 fn finish_scheduled_source_read(
     execution: &mut BoundedExecutionAttempt<'_>,
     scheduled: ScheduledLocalParquetRead,
-    _source: &LocalParquetSource,
-    attempt: usize,
-    max_attempts: usize,
-    grow_source_to_observed: bool,
 ) -> Result<ScheduledLocalParquetReadOutput> {
     let is_prefetch = scheduled.is_prefetch();
-    let memory_boundary = scheduled.budget_boundary();
     let mut output = scheduled.finish(execution)?;
-    if grow_source_to_observed {
-        output.observed_bytes = grow_source_reservation_to_observed(
-            execution,
-            &output.frame,
-            &mut output.reservation,
-            &output.chunk,
-            memory_boundary,
-            attempt,
-            max_attempts,
-        )?;
-    } else {
-        output.observed_bytes = match shrink_source_reservation_to_observed_without_grow(
-            execution,
-            &output.frame,
-            &mut output.reservation,
-            &output.chunk,
-            memory_boundary,
-            attempt,
-            max_attempts,
-        ) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                execution.release(output.reservation);
-                return Err(error);
-            },
-        };
-    }
+    output.observed_bytes = observe_device_memory_bytes(&output.frame, execution.metrics_mut())?;
     if is_prefetch {
         execution.metrics_mut().record_source_read_prefetch_completed();
     }

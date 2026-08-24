@@ -1,13 +1,11 @@
 use super::{
     DataFrame, EdgeColumnRole, ExecutionContext, GraphAlgorithmExecutionResult, QueryError, QueryErrorCode, Result,
-    attach_graph_budget_error_facts, attach_graph_budget_observation, graph_build_range, graph_execution_budget,
-    map_cugraph_error, validate_edge_column,
+    graph_build_range, map_cugraph_error, validate_edge_column,
 };
 
 #[cfg(feature = "cugraph")]
 pub(super) fn run_with_uncached_cugraph_graph<T, F>(
     context: &ExecutionContext,
-    graph_memory_limit_bytes: Option<u64>,
     edges: DataFrame,
     options: cugraph::cudf_interop::TableGraphOptions,
     operation: &'static str,
@@ -29,34 +27,23 @@ where
         )
         .with_source(error)
     })?;
-    let budget = graph_execution_budget(
-        context,
-        graph_memory_limit_bytes,
-        crate::graph_memory::GRAPH_MEMORY_BOUNDARY,
-        operation,
-    )?;
-    let handle =
-        cugraph::ResourceHandle::for_runtime(std::sync::Arc::clone(&budget.runtime)).map_err(map_cugraph_error(
-            "nexus_query_engine.graph_algorithm.resource_handle",
-            "failed to bind cuGraph resource handle to the nexus native runtime",
-        ))?;
+    let runtime = std::sync::Arc::new(context.runtime()?);
+    let handle = cugraph::ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).map_err(map_cugraph_error(
+        "nexus_query_engine.graph_algorithm.resource_handle",
+        "failed to bind cuGraph resource handle to the nexus native runtime",
+    ))?;
     let entered = handle.enter(operation).map_err(map_cugraph_error(
         "nexus_query_engine.graph_algorithm.enter",
         "failed to enter cuGraph execution context",
     ))?;
     let _graph_build_range = graph_build_range(operation);
-    let mut graph =
-        cugraph::cudf_interop::graph_from_prepared_table_export::<T>(&entered, &export, &options).map_err(|error| {
-            attach_graph_budget_error_facts(
-                map_cugraph_error(
-                    "nexus_query_engine.graph_algorithm.build_graph",
-                    "failed to build cuGraph graph from edge-list table",
-                )(error),
-                &budget.token,
-                operation,
-            )
-        })?;
-    attach_graph_budget_observation(f(budget.runtime.as_ref(), &entered, &mut graph), &budget.token, operation)
+    let mut graph = cugraph::cudf_interop::graph_from_prepared_table_export::<T>(&entered, &export, &options).map_err(
+        map_cugraph_error(
+            "nexus_query_engine.graph_algorithm.build_graph",
+            "failed to build cuGraph graph from edge-list table",
+        ),
+    )?;
+    f(runtime.as_ref(), &entered, &mut graph)
 }
 
 #[cfg(feature = "cugraph")]

@@ -83,6 +83,7 @@ std::atomic<int32_t> g_raw_record_call_count{0};
 std::atomic<std::uintptr_t> g_last_raw_record_stream_raw{0};
 std::atomic<std::uintptr_t> g_last_raw_record_event_raw{0};
 std::atomic<int32_t> g_event_synchronize_call_count{0};
+std::atomic<int32_t> g_stream_synchronize_call_count{0};
 std::atomic<std::uint64_t> g_allocation_attempt_count{0};
 std::mutex g_query_domain_allocation_failure_mutex;
 bool g_query_domain_allocation_failure_armed = false;
@@ -97,6 +98,10 @@ std::unordered_map<std::uintptr_t, int32_t> g_stream_wait_counts_by_stream_raw;
 std::unordered_map<std::uintptr_t, int32_t> g_stream_wait_counts_by_event_raw;
 std::unordered_map<std::uintptr_t, int32_t> g_raw_record_counts_by_stream_raw;
 std::unordered_map<std::uintptr_t, int32_t> g_event_synchronize_counts_by_event_handle_raw;
+std::mutex g_stream_synchronize_block_mutex;
+std::condition_variable g_stream_synchronize_block_cv;
+bool g_block_stream_synchronize = false;
+bool g_fail_stream_synchronize  = false;
 
 void reset_exec_observation()
 {
@@ -162,6 +167,23 @@ void record_synchronized_stream(std::uintptr_t stream_raw)
 {
   g_last_exec_sync_stream_value = stream_raw;
   g_last_exec_sync_sequence     = ++g_exec_observation_sequence;
+}
+
+void record_stream_synchronize()
+{
+  g_stream_synchronize_call_count.fetch_add(1, std::memory_order_relaxed);
+}
+
+bool stream_synchronize_should_fail()
+{
+  std::scoped_lock lock(g_stream_synchronize_block_mutex);
+  return g_fail_stream_synchronize;
+}
+
+void wait_for_stream_synchronize_release()
+{
+  std::unique_lock lock(g_stream_synchronize_block_mutex);
+  g_stream_synchronize_block_cv.wait(lock, [] { return !g_block_stream_synchronize; });
 }
 
 void record_memory_resource_destroy(void* mr_raw)
@@ -721,6 +743,51 @@ cudf_status_t cudf_test_event_synchronize_call_count_for_event_handle_raw(
   std::scoped_lock lock(g_event_observation_mutex);
   auto const it = g_event_synchronize_counts_by_event_handle_raw.find(event_handle_raw);
   *out          = it == g_event_synchronize_counts_by_event_handle_raw.end() ? 0 : it->second;
+  return CUDF_SUCCESS;
+}
+
+void cudf_test_stream_synchronize_reset()
+{
+  g_stream_synchronize_call_count.store(0, std::memory_order_relaxed);
+  {
+    std::scoped_lock lock(g_stream_synchronize_block_mutex);
+    g_block_stream_synchronize = false;
+    g_fail_stream_synchronize  = false;
+  }
+  g_stream_synchronize_block_cv.notify_all();
+}
+
+void cudf_test_stream_block_synchronize()
+{
+  std::scoped_lock lock(g_stream_synchronize_block_mutex);
+  g_block_stream_synchronize = true;
+}
+
+void cudf_test_stream_unblock_synchronize()
+{
+  {
+    std::scoped_lock lock(g_stream_synchronize_block_mutex);
+    g_block_stream_synchronize = false;
+  }
+  g_stream_synchronize_block_cv.notify_all();
+}
+
+void cudf_test_stream_fail_synchronize()
+{
+  std::scoped_lock lock(g_stream_synchronize_block_mutex);
+  g_fail_stream_synchronize = true;
+}
+
+void cudf_test_stream_allow_synchronize()
+{
+  std::scoped_lock lock(g_stream_synchronize_block_mutex);
+  g_fail_stream_synchronize = false;
+}
+
+cudf_status_t cudf_test_stream_synchronize_call_count(int32_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = g_stream_synchronize_call_count.load(std::memory_order_relaxed);
   return CUDF_SUCCESS;
 }
 

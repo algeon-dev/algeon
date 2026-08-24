@@ -55,12 +55,13 @@ compatibility belong in `crates/nexus-query-engine`.
 
 ## Native GPU engine core
 
-- Support requires owner-proved allocation bounds, lifetimes, and output facts; incomplete proof is structured unsupported.
-- Native allocation owners expose hard preflights; `nexus-query-planning` composes their proof contracts, runtime admits that proof, and `nexus-query-engine` executes it without inventing surrogate bounds.
+- Support requires a correct kernel, types, and semantics; an operator lacking one is structured unsupported. A missing memory estimate is never a reason to reject.
+- Admission issues a service-configured cap, not a predicted requirement: `nexus-query-planning` proves the plan is executable, `nexus-query-runtime` admits it against the device ledger, and the query domain's allocator enforces the cap while `nexus-query-engine` executes.
+- The query domain's allocator is the single arbiter of a query's allocation limit. Never add a second Rust-side reservation, per-operator subgrant, or estimate-derived veto.
 - Use one compiled schedule, per-device ledger, and immutable grant; deferred refinement stays inside that grant.
 - Admit by operator capability, never customer, SQL text, names, one-off algorithm allowlists, or plan-shape matching.
-- Keep one proof path and one truth source; consolidate and delete special constructors, flags, matchers, or ledgers.
-- Output and resident facts carry scope, occurrence, schema, row/payload bounds, and provenance; estimates are not proof.
+- Keep one truth source; consolidate and delete special constructors, flags, matchers, or ledgers.
+- Output and resident facts carry scope, occurrence, schema, and provenance; allocation failures are typed at their source and reported with their cleanup disposition.
 - `PlanningReport` distinguishes accepted, deferred, and rejected candidates with structured reasons.
 - Keep backend memory models in component owners and IR, facts, schedules, and admission backend neutral.
 - Before adding an operator, identify its allocation, facts, lifetime, diagnostics, and test owners; otherwise stop.

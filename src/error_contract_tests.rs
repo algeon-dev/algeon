@@ -647,39 +647,6 @@ fn native_cancelled_error_preserves_adapter_classification_and_facts() {
 }
 
 #[test]
-fn native_memory_reservation_error_preserves_adapter_classification_and_facts() {
-    let native_error = nexus_query_engine::runtime::MemoryReservationRequest::new(
-        nexus_query_engine::runtime::ReservationKind::FinalSort,
-        4096,
-        2048,
-    )
-    .with_memory_boundary("final_sort")
-    .with_node_id("n5")
-    .with_stage("final_sort")
-    .with_chunk_index(7)
-    .with_row_groups(vec![3, 5])
-    .with_attempt(1, 3)
-    .denied_error(1024);
-
-    let adapter_error =
-        Error::from_native("datafusion_nexus.native.execute", "nexus native query execution failed", native_error);
-
-    assert_eq!(adapter_error.code(), ErrorCode::MemoryReservationFailed);
-    assert_eq!(adapter_error.kind(), ErrorKind::ResourceExhausted);
-    assert_eq!(adapter_error.status(), ErrorStatus::Temporary);
-    assert_eq!(adapter_error.fact_value("native_code"), Some("memory_reservation_failed"));
-    assert_eq!(adapter_error.fact_value("reservation_kind"), Some("final_sort"));
-    assert_eq!(adapter_error.fact_value("memory_boundary"), Some("final_sort"));
-    assert_eq!(adapter_error.fact_value("node_id"), Some("n5"));
-    assert_eq!(adapter_error.fact_value("stage"), Some("final_sort"));
-    assert_eq!(adapter_error.fact_value("chunk_index"), Some("7"));
-    assert_eq!(adapter_error.fact_value("row_group_indexes"), Some("3,5"));
-    assert_eq!(adapter_error.fact_value("row_group_count"), Some("2"));
-    assert_eq!(adapter_error.fact_value("attempt"), Some("1"));
-    assert_eq!(adapter_error.fact_value("max_attempts"), Some("3"));
-}
-
-#[test]
 fn native_retry_error_preserves_resume_boundary_facts() {
     let native_error = nexus_query_engine::error::QueryError::new(
         nexus_query_engine::error::QueryErrorCode::MemoryReservationFailed,

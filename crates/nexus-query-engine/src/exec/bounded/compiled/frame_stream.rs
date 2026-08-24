@@ -1,17 +1,13 @@
 use std::{cell::Cell, collections::VecDeque, rc::Rc};
 
-#[cfg(test)]
-use crate::runtime::ExecutionContext;
 use crate::{
     dynamic_filter::{DynamicFilter, DynamicFilterRoute},
     error::{QueryError, QueryErrorCode, Result},
     exec::bounded::{
-        ActiveReservation, BoundedExecutionAttempt, ResidentGpuFrame, execute_bounded_generic_projection,
-        execute_bounded_generic_unary,
+        BoundedExecutionAttempt, ResidentGpuFrame, execute_bounded_generic_projection, execute_bounded_generic_unary,
     },
     metrics::QueryMetrics,
     plan::{FilterNode, NodeId, ProjectionNode},
-    runtime::{MemoryReservationRequest, ReservationKind},
 };
 
 pub(in crate::exec::bounded) struct ResidentFrameStreamPayload {
@@ -41,12 +37,12 @@ pub(in crate::exec::bounded) struct YieldedFrame {
 
 impl YieldedFrame {
     pub(in crate::exec::bounded) fn yield_from_producer(frame: ResidentGpuFrame, live_counter: Rc<Cell<u64>>) -> Self {
-        let contributed_bytes = frame.reservation.bytes();
+        let contributed_bytes = frame.device_bytes();
         Self { frame: Some(frame), release_guard: YieldedFrameReleaseGuard::new(live_counter, contributed_bytes, true) }
     }
 
     fn from_existing_payload_frame(frame: ResidentGpuFrame, live_counter: Rc<Cell<u64>>) -> Self {
-        let contributed_bytes = frame.reservation.bytes();
+        let contributed_bytes = frame.device_bytes();
         Self {
             frame: Some(frame),
             release_guard: YieldedFrameReleaseGuard::new(live_counter, contributed_bytes, false),
@@ -143,13 +139,12 @@ pub(in crate::exec::bounded) trait ResidentFrameStreamSource {
 }
 
 struct ResidentFrameStreamProducer {
-    producer_reservations: Vec<ActiveReservation>,
     inner: Option<Box<dyn ResidentFrameStreamSource>>,
 }
 
 impl ResidentFrameStreamProducer {
-    fn new(producer_reservations: Vec<ActiveReservation>, inner: Box<dyn ResidentFrameStreamSource>) -> Self {
-        Self { producer_reservations, inner: Some(inner) }
+    fn new(inner: Box<dyn ResidentFrameStreamSource>) -> Self {
+        Self { inner: Some(inner) }
     }
 
     fn next_frame(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Option<Result<ResidentGpuFrame>> {
@@ -160,31 +155,15 @@ impl ResidentFrameStreamProducer {
         if let Some(mut inner) = self.inner.take() {
             inner.release(execution);
         }
-        for reservation in self.producer_reservations.drain(..).rev() {
-            execution.release(reservation);
-        }
-    }
-}
-
-impl Drop for ResidentFrameStreamProducer {
-    fn drop(&mut self) {
-        if self.producer_reservations.is_empty() {
-            return;
-        }
-        debug_assert!(
-            false,
-            "ResidentFrameStreamProducer dropped without explicit release; producer_reservation_count={}",
-            self.producer_reservations.len()
-        );
     }
 }
 
 impl ResidentFrameStreamPayload {
     pub(in crate::exec::bounded) fn new(frames: Vec<ResidentGpuFrame>) -> Self {
         let aggregate_reservation_bytes =
-            frames.iter().fold(0u64, |total, frame| total.saturating_add(frame.reservation.bytes()));
+            frames.iter().fold(0u64, |total, frame| total.saturating_add(frame.device_bytes()));
         let max_per_frame_reservation_bytes =
-            frames.iter().fold(0u64, |max_bytes, frame| max_bytes.max(frame.reservation.bytes()));
+            frames.iter().fold(0u64, |max_bytes, frame| max_bytes.max(frame.device_bytes()));
         let aggregate_num_rows =
             frames.iter().fold(0u64, |total, frame| total.saturating_add(frame.frame.num_rows() as u64));
         let num_columns = frames.first().map_or(0, |frame| frame.frame.num_columns());
@@ -204,7 +183,6 @@ impl ResidentFrameStreamPayload {
         aggregate_reservation_bytes: u64,
         aggregate_num_rows: u64,
         num_columns: usize,
-        producer_reservations: Vec<ActiveReservation>,
         source: Box<dyn ResidentFrameStreamSource>,
     ) -> Self {
         Self {
@@ -214,7 +192,7 @@ impl ResidentFrameStreamPayload {
             aggregate_num_rows,
             num_columns,
             frames: VecDeque::new(),
-            producer: Some(ResidentFrameStreamProducer::new(producer_reservations, source)),
+            producer: Some(ResidentFrameStreamProducer::new(source)),
         }
     }
 
@@ -247,13 +225,7 @@ impl ResidentFrameStreamPayload {
         self.producer.is_none()
     }
 
-    pub(in crate::exec::bounded) fn alias_eager(
-        &self,
-        execution: &mut BoundedExecutionAttempt<'_>,
-        node_id: NodeId,
-        reservation_kind: ReservationKind,
-        memory_boundary: &'static str,
-    ) -> Result<Self> {
+    pub(in crate::exec::bounded) fn alias_eager(&self, node_id: NodeId, memory_boundary: &'static str) -> Result<Self> {
         if !self.is_eager() {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -266,20 +238,7 @@ impl ResidentFrameStreamPayload {
         let frames = self
             .frames
             .iter()
-            .map(|frame| ResidentGpuFrame {
-                frame: frame.frame.clone(),
-                reservation: execution.alias_reservation(
-                    &frame.reservation,
-                    MemoryReservationRequest::new(
-                        reservation_kind,
-                        frame.reservation.bytes(),
-                        execution.reservations().budget(),
-                    )
-                    .with_memory_boundary(memory_boundary)
-                    .with_node_id(node_id)
-                    .with_stage(memory_boundary),
-                ),
-            })
+            .map(|frame| ResidentGpuFrame { frame: frame.frame.clone(), device_bytes: frame.device_bytes() })
             .collect::<Vec<_>>();
         Ok(Self::new(frames))
     }
@@ -314,12 +273,7 @@ impl ResidentFrameStreamPayload {
         loop {
             match self.next_yielded_frame(execution) {
                 Some(Ok(mut yielded)) => accumulated.push(yielded.take_for_release()),
-                Some(Err(error)) => {
-                    while let Some(frame) = accumulated.pop() {
-                        execution.release(frame.reservation);
-                    }
-                    return Err(error);
-                },
+                Some(Err(error)) => return Err(error),
                 None => return Ok(accumulated),
             }
         }
@@ -330,58 +284,23 @@ impl ResidentFrameStreamPayload {
         execution: &mut BoundedExecutionAttempt<'_>,
     ) -> Result<Vec<ResidentGpuFrame>> {
         let result = self.collect_remaining_frames_owned(execution);
-        self.release_producer_reservations(execution);
+        self.release_producer(execution);
         result
     }
 
-    pub(in crate::exec::bounded) fn release_remaining_frames(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
-        while let Some(frame) = self.frames.pop_back() {
-            execution.release(frame.reservation);
-        }
+    pub(in crate::exec::bounded) fn release_remaining_frames(&mut self) {
+        self.frames.clear();
         self.live_reservation_bytes.set(0);
     }
 
-    pub(in crate::exec::bounded) fn release_producer_reservations(
-        &mut self,
-        execution: &mut BoundedExecutionAttempt<'_>,
-    ) {
+    pub(in crate::exec::bounded) fn release_producer(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
         let Some(producer) = self.producer.take() else { return };
         producer.release(execution);
     }
 
     pub(in crate::exec::bounded) fn release_all(mut self, execution: &mut BoundedExecutionAttempt<'_>) {
-        self.release_remaining_frames(execution);
-        self.release_producer_reservations(execution);
-    }
-}
-
-#[cfg(test)]
-struct EmptyResidentFrameStreamSource;
-
-#[cfg(test)]
-impl ResidentFrameStreamSource for EmptyResidentFrameStreamSource {
-    fn next_frame(&mut self, _execution: &mut BoundedExecutionAttempt<'_>) -> Option<Result<ResidentGpuFrame>> {
-        None
-    }
-}
-
-#[cfg(test)]
-struct ErrorResidentFrameStreamSource {
-    emitted: bool,
-}
-
-#[cfg(test)]
-impl ResidentFrameStreamSource for ErrorResidentFrameStreamSource {
-    fn next_frame(&mut self, _execution: &mut BoundedExecutionAttempt<'_>) -> Option<Result<ResidentGpuFrame>> {
-        if self.emitted {
-            return None;
-        }
-        self.emitted = true;
-        Some(Err(QueryError::new(
-            QueryErrorCode::Internal,
-            "nexus_query_engine.exec.bounded.compiled.resident_frame_stream_test",
-            "injected resident frame stream source failure",
-        )))
+        self.release_remaining_frames();
+        self.release_producer(execution);
     }
 }
 
@@ -431,7 +350,6 @@ impl UnaryMappedResidentFrameStreamSource {
                 execution,
                 self.node_id,
                 "compiled_filter",
-                "compiled_filter_output",
                 input,
                 true,
                 |context, input, token, metrics| {
@@ -444,14 +362,9 @@ impl UnaryMappedResidentFrameStreamSource {
                     )
                 },
             ),
-            UnaryMappedResidentFrameStreamOperator::Projection(projection) => execute_bounded_generic_projection(
-                execution,
-                self.node_id,
-                "compiled_projection",
-                "compiled_projection_output",
-                projection,
-                input,
-            ),
+            UnaryMappedResidentFrameStreamOperator::Projection(projection) => {
+                execute_bounded_generic_projection(execution, self.node_id, "compiled_projection", projection, input)
+            },
         }
     }
 
@@ -507,7 +420,6 @@ pub(super) fn map_filter_resident_frame_stream(
         aggregate_reservation_bytes,
         aggregate_num_rows,
         num_columns,
-        Vec::new(),
         Box::new(UnaryMappedResidentFrameStreamSource::from_filter(node_id, stream, filter)),
     )
 }
@@ -528,7 +440,6 @@ pub(super) fn map_dynamic_filter_resident_frame_stream(
         aggregate_reservation_bytes,
         aggregate_num_rows,
         num_columns,
-        Vec::new(),
         Box::new(UnaryMappedResidentFrameStreamSource::from_dynamic_filter(
             node_id,
             stream,
@@ -553,92 +464,6 @@ pub(super) fn map_projection_resident_frame_stream(
         aggregate_reservation_bytes,
         aggregate_num_rows,
         num_columns,
-        Vec::new(),
         Box::new(UnaryMappedResidentFrameStreamSource::from_projection(node_id, stream, projection)),
     )
-}
-
-#[cfg(test)]
-pub(crate) struct ResidentFrameStreamProducerTestHarness<'a> {
-    payload: Option<ResidentFrameStreamPayload>,
-    execution: BoundedExecutionAttempt<'a>,
-}
-
-#[cfg(test)]
-impl<'a> ResidentFrameStreamProducerTestHarness<'a> {
-    pub(crate) fn new(
-        context: &'a ExecutionContext,
-        metrics: &'a mut QueryMetrics,
-        producer_reservation_bytes: &[u64],
-    ) -> Result<Self> {
-        Self::with_source(context, metrics, producer_reservation_bytes, Box::new(EmptyResidentFrameStreamSource))
-    }
-
-    pub(crate) fn new_erroring(
-        context: &'a ExecutionContext,
-        metrics: &'a mut QueryMetrics,
-        producer_reservation_bytes: &[u64],
-    ) -> Result<Self> {
-        Self::with_source(
-            context,
-            metrics,
-            producer_reservation_bytes,
-            Box::new(ErrorResidentFrameStreamSource { emitted: false }),
-        )
-    }
-
-    fn with_source(
-        context: &'a ExecutionContext,
-        metrics: &'a mut QueryMetrics,
-        producer_reservation_bytes: &[u64],
-        source: Box<dyn ResidentFrameStreamSource>,
-    ) -> Result<Self> {
-        let budget = producer_reservation_bytes.iter().fold(1u64, |total, bytes| total.saturating_add(*bytes)).max(1);
-        let mut execution = BoundedExecutionAttempt::new(context, budget, metrics, None)?;
-        let mut producer_reservations = Vec::with_capacity(producer_reservation_bytes.len());
-        for (index, bytes) in producer_reservation_bytes.iter().enumerate() {
-            let request = MemoryReservationRequest::new(ReservationKind::OperatorOutput, *bytes, budget)
-                .with_memory_boundary("resident_frame_stream_producer_test")
-                .with_stage("resident_frame_stream_producer_test")
-                .with_chunk_index(index);
-            producer_reservations.push(execution.try_reserve_owned_resident(request)?);
-        }
-        let aggregate_reservation_bytes =
-            producer_reservation_bytes.iter().fold(0u64, |total, bytes| total.saturating_add(*bytes));
-        let max_per_frame_reservation_bytes = producer_reservation_bytes.iter().copied().max().unwrap_or(0);
-        let payload = ResidentFrameStreamPayload::from_producer(
-            max_per_frame_reservation_bytes,
-            aggregate_reservation_bytes,
-            0,
-            0,
-            producer_reservations,
-            source,
-        );
-        Ok(Self { payload: Some(payload), execution })
-    }
-
-    pub(crate) fn reserved_bytes(&self) -> u64 {
-        self.execution.reservations().reserved_bytes()
-    }
-
-    pub(crate) fn release_producer_reservations(&mut self) {
-        if let Some(payload) = self.payload.as_mut() {
-            payload.release_producer_reservations(&mut self.execution);
-        }
-    }
-
-    pub(crate) fn collect_remaining_frames_owned_then_release(&mut self) -> Result<usize> {
-        let result = self
-            .payload
-            .as_mut()
-            .expect("producer test payload already dropped")
-            .collect_remaining_frames_owned(&mut self.execution)
-            .map(|frames| frames.len());
-        self.release_producer_reservations();
-        result
-    }
-
-    pub(crate) fn drop_payload_without_release(&mut self) {
-        let _ = self.payload.take();
-    }
 }

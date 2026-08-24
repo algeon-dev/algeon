@@ -6,11 +6,11 @@ use parquet::file::reader::FileReader;
 use super::{
     ArrowDataType, BinaryOp, BoundedExecutionAttempt, CudfSortOptions, DataFrame, ExecutionBudgetRequest,
     ExecutionBudgetToken, ExecutionContext, Expr, Field, GpuDataFrame, GpuResidentInputMap, GpuResultHandle,
-    LiteralValue, LocalParquetFile, LocalParquetSource, MemoryReservationRequest, NodeId, ParquetReadOptions,
-    QueryError, QueryErrorCode, QueryMetrics, ReservationKind, Result, Schema, SourceChunk, SourceChunkBatch,
-    SourceChunkPlan, SourceChunkPlanningPolicy, SourceReadMode, SourceReadRuntimeMetrics, ZERO_COLUMN_COUNT_COLUMN,
-    append_source_order_columns, budgeted_value, col, comma_separated_usize, cudf_dtype_from_arrow_type,
-    execution_overrides, lit, plan_local_parquet_source_chunks_with_execution_context, record_batch_memory_size,
+    LiteralValue, LocalParquetFile, LocalParquetSource, NodeId, ParquetReadOptions, QueryError, QueryErrorCode,
+    QueryMetrics, Result, Schema, SourceChunk, SourceChunkPlan, SourceChunkPlanningPolicy, SourceReadMode,
+    SourceReadRuntimeMetrics, ZERO_COLUMN_COUNT_COLUMN, append_source_order_columns, budgeted_value, col,
+    comma_separated_usize, cudf_dtype_from_arrow_type, execution_overrides, lit,
+    plan_local_parquet_source_chunks_with_execution_context, record_batch_memory_size,
     timestamp_unit_to_cudf_resolution,
 };
 
@@ -59,75 +59,6 @@ use crate::{
 
 pub(in crate::exec) fn parquet_chunk_path_fact(chunk: &SourceChunk) -> String {
     crate::source::parquet_source_path_fact(&chunk.location, &chunk.path)
-}
-
-#[expect(clippy::too_many_arguments, reason = "execution inputs are distinct domain values that share no owner")]
-pub(in crate::exec) fn source_read_request(
-    kind: ReservationKind,
-    memory_boundary: &'static str,
-    requested_bytes: u64,
-    budget_bytes: u64,
-    node_id: NodeId,
-    chunk: &SourceChunk,
-    attempt: usize,
-    max_attempts: usize,
-) -> MemoryReservationRequest {
-    let mut request = MemoryReservationRequest::new(kind, requested_bytes, budget_bytes)
-        .with_memory_boundary(memory_boundary)
-        .with_node_id(node_id)
-        .with_stage(memory_boundary)
-        .with_chunk_index(chunk.chunk_index)
-        .with_file_index(chunk.file_index)
-        .with_path(parquet_chunk_path_fact(chunk))
-        .with_attempt(attempt, max_attempts);
-    if !chunk.reads_all_row_groups {
-        request = request.with_row_groups(chunk.row_group_indexes.clone());
-    }
-    request
-}
-
-#[expect(clippy::too_many_arguments, reason = "execution inputs are distinct domain values that share no owner")]
-pub(in crate::exec) fn source_read_batch_request(
-    kind: ReservationKind,
-    memory_boundary: &'static str,
-    requested_bytes: u64,
-    budget_bytes: u64,
-    node_id: NodeId,
-    batch: &SourceChunkBatch,
-    attempt: usize,
-    max_attempts: usize,
-) -> MemoryReservationRequest {
-    let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
-    if batch.is_singleton() {
-        return source_read_request(
-            kind,
-            memory_boundary,
-            requested_bytes,
-            budget_bytes,
-            node_id,
-            first_chunk,
-            attempt,
-            max_attempts,
-        );
-    }
-    let mut request = MemoryReservationRequest::new(kind, requested_bytes, budget_bytes)
-        .with_memory_boundary(memory_boundary)
-        .with_node_id(node_id)
-        .with_stage(memory_boundary)
-        .with_attempt(attempt, max_attempts);
-    let same_file =
-        batch.chunks.iter().all(|chunk| chunk.file_index == first_chunk.file_index && chunk.path == first_chunk.path);
-    if same_file {
-        request = request.with_file_index(first_chunk.file_index).with_path(parquet_chunk_path_fact(first_chunk));
-        if batch.chunks.iter().all(|chunk| !chunk.reads_all_row_groups) {
-            let mut row_groups =
-                batch.chunks.iter().flat_map(|chunk| chunk.row_group_indexes.iter().copied()).collect::<Vec<_>>();
-            row_groups.sort_unstable();
-            row_groups.dedup();
-            request = request.with_row_groups(row_groups);
-        }
-    }
-    request
 }
 
 /// Read a local Parquet source into a GPU dataframe.
@@ -977,44 +908,6 @@ mod tests {
     }
 
     #[test]
-    fn source_read_batch_request_preserves_shared_file_row_group_context() {
-        let source = test_source(
-            vec![
-                LocalParquetFile::new("/tmp/source-read-request.parquet")
-                    .with_row_groups(vec![0, 1])
-                    .with_row_group_rows(vec![10, 20]),
-            ],
-            vec!["c1".to_string()],
-        );
-        let node_id = NodeId::from_index_for_internal_use(7);
-        let plan = crate::chunk::plan_local_parquet_source_chunks(
-            node_id,
-            &source,
-            crate::chunk::SourceChunkPlanningPolicy::new(None, 1),
-        )
-        .expect("chunk planning should split the file by row group");
-        assert_eq!(plan.chunks.len(), 2);
-
-        let batch = SourceChunkBatch {
-            batch_index: 0,
-            chunks: plan.chunks,
-            estimated_source_read_bytes: Some(30),
-            source_batching_reason: "batched".to_string(),
-        };
-        let request =
-            source_read_batch_request(ReservationKind::SourceRead, "source_read", 30, 100, node_id, &batch, 2, 5);
-
-        assert_eq!(request.node_id.as_deref(), Some("n7"));
-        assert_eq!(request.stage.as_deref(), Some("source_read"));
-        assert_eq!(request.file_index, Some(0));
-        assert_eq!(request.chunk_index, None);
-        assert_eq!(request.path.as_deref(), Some("/tmp/source-read-request.parquet"));
-        assert_eq!(request.row_groups, Some(vec![0, 1]));
-        assert_eq!(request.attempt, Some(2));
-        assert_eq!(request.max_attempts, Some(5));
-    }
-
-    #[test]
     fn source_cache_schema_uses_execution_frame_order_for_permuted_edge_columns() {
         let catalog_schema = Arc::new(Schema::new(vec![
             Field::new("dst", ArrowDataType::Int64, false),
@@ -1061,7 +954,7 @@ mod tests {
         )
         .expect("chunk planning should split the file by row group");
         assert_eq!(plan.chunks.len(), 2);
-        let batch = SourceChunkBatch {
+        let batch = crate::chunk::SourceChunkBatch {
             batch_index: 0,
             chunks: vec![plan.chunks[0].clone()],
             estimated_source_read_bytes: Some(10),

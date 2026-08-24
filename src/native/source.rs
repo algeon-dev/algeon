@@ -141,7 +141,7 @@ pub(crate) fn graph_residency_descriptor_for_datafusion_local_parquet_scan(
 /// rowset accepted by the direct graph path.
 ///
 /// Callers can use this only to carry source-owned descriptive evidence into
-/// an engine capability proof; filters, limits, and unsupported scan semantics
+/// an engine capability decision; filters, limits, and unsupported scan semantics
 /// remain fail-closed in the shared bridge below.
 #[cfg(feature = "cugraph")]
 pub(crate) fn graph_local_parquet_source_for_datafusion_local_parquet_scan(

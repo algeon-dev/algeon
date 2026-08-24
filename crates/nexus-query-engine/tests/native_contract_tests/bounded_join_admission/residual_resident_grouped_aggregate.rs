@@ -3,64 +3,7 @@ use std::sync::Arc;
 use super::*;
 
 #[test]
-fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline_is_executable() {
-    for variant in [
-        ResidualResidentGroupedAggregateInputVariant::BlockedFamily,
-        ResidualResidentGroupedAggregateInputVariant::GlobalAggregateNotSum,
-        ResidualResidentGroupedAggregateInputVariant::GroupedAggregateNotAvg,
-        ResidualResidentGroupedAggregateInputVariant::ResidualWithoutScaledAverage,
-        ResidualResidentGroupedAggregateInputVariant::ResidualWrongMultiplier,
-        ResidualResidentGroupedAggregateInputVariant::PreprojectedResidualWrongMultiplier,
-    ] {
-        let plan = residual_resident_grouped_aggregate_input_plan(variant);
-
-        assert!(!plan.capability_analysis().admits_root_join(), "{variant:?}");
-        assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline(), "{variant:?}");
-        assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline(), "{variant:?}");
-        assert!(
-            !plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
-            "{variant:?}"
-        );
-        assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph(), "{variant:?}");
-        assert!(
-            plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
-            "{variant:?}"
-        );
-        assert!(unsupported_facts(&plan, ExecutionBoundaryPolicy::default()).is_none(), "{variant:?}");
-        let facts = modeled_facts(&plan, ExecutionBoundaryPolicy::default())
-            .expect("executable residual-resident grouped aggregate family should emit modeled facts");
-        assert_eq!(facts.get("bounded_join_execution_family"), None, "{variant:?}");
-        assert_eq!(facts.get("blocked_reservations").map(String::as_str), Some(""), "{variant:?}");
-        assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""), "{variant:?}");
-        let modeled = facts.get("modeled_reservations").expect("modeled reservations should be reported");
-        for expected in [
-            "source_read",
-            "operator_output",
-            "build_side",
-            "hash_table",
-            "probe_side",
-            "mixed_size_data",
-            "gather_map",
-            "join_output",
-            "materialization",
-        ] {
-            assert!(modeled.split(',').any(|kind| kind == expected), "{variant:?}: missing modeled {expected}");
-        }
-        assert!(
-            !facts
-                .get("bounded_join_reservation_requirements")
-                .is_some_and(|value| value.contains("final_sort_contract")),
-            "{variant:?}"
-        );
-        assert_modeled_reservation_facts_are_consistent(
-            &facts,
-            "mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline",
-        );
-    }
-}
-
-#[test]
-fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_capability_proof_stays_narrow() {
+fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_capability_evidence_stays_narrow() {
     for variant in [
         ResidualResidentGroupedAggregateInputVariant::RootJoinWithoutResidual,
         ResidualResidentGroupedAggregateInputVariant::BareGroupedAggregateInput,
@@ -84,81 +27,15 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_capability
             !plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
             "{variant:?}"
         );
-        let facts = unsupported_facts(&plan, ExecutionBoundaryPolicy::default())
+        let facts = unsupported_facts(&plan)
             .expect("unsupported resident grouped aggregate input variant should produce facts");
         assert_rejection_facts_are_family_free(&facts, "unsupported_residual_resident_grouped_aggregate_input");
         assert!(facts.contains_key("bounded_join_rejection_reason"), "{variant:?}");
-        assert_eq!(facts.get("bounded_join_lower_level_blockers").map(String::as_str), Some(""));
     }
 }
 
 #[test]
-fn bounded_capability_analysis_extracts_mixed_residual_resident_aggregate_edge_contracts() {
-    let plan =
-        residual_resident_grouped_aggregate_input_plan(ResidualResidentGroupedAggregateInputVariant::BlockedFamily);
-    let analysis = plan.capability_analysis();
-    let residual_join = analysis
-        .nodes
-        .iter()
-        .find(|node| {
-            matches!(
-                node.operator,
-                NodeOperator::Join {
-                    key_count: 1,
-                    residual: ResidualRequirement::Required,
-                    build_side: JoinSide::Right,
-                    ..
-                }
-            )
-        })
-        .expect("mixed residual family should contain the keyed residual root join");
-    assert!(residual_join.local_requirements.iter().any(|requirement| {
-        requirement.kind == ReservationKind::MixedSizeData
-            && requirement.scope == ReservationRequirementScope::Node
-            && requirement.quality == ContractQuality::ObservedRetainedState
-    }));
-    assert!(analysis.edges.iter().any(|edge| {
-        edge.contract_kinds
-            .contains(&EdgeContractKind::ResidentSourceInput { format: SourceFormatCapability::LocalParquet })
-            && edge.contract_kinds.contains(&EdgeContractKind::ResidentAggregateInput)
-            && edge.input_role == InputRole::AggregateInput
-            && edge.reservation_requirements.iter().any(|requirement| {
-                requirement.kind == ReservationKind::SourceRead
-                    && requirement.scope == ReservationRequirementScope::Edge
-                    && requirement.quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight
-            })
-    }));
-    assert!(analysis.edges.iter().any(|edge| {
-        edge.consumer == EdgeConsumer::Node(residual_join.node_id)
-            && matches!(edge.input_role, InputRole::JoinBuildInput { side: JoinSide::Right })
-            && edge.contract_kinds.contains(&EdgeContractKind::JoinBuildInput { side: JoinSide::Right })
-            && edge.contract_kinds.contains(&EdgeContractKind::ResidentFrameFlow)
-            && edge.reservation_requirements.iter().any(|requirement| requirement.kind == ReservationKind::BuildSide)
-    }));
-    assert!(analysis.edges.iter().any(|edge| {
-        edge.consumer == EdgeConsumer::Node(residual_join.node_id)
-            && matches!(edge.input_role, InputRole::JoinProbeInput { side: JoinSide::Left })
-            && edge.contract_kinds.contains(&EdgeContractKind::JoinProbeInput { side: JoinSide::Left })
-            && edge.reservation_requirements.iter().any(|requirement| {
-                requirement.kind == ReservationKind::ProbeSide
-                    && requirement.scope == ReservationRequirementScope::Edge
-                    && requirement.quality == ContractQuality::QueryEngineOwnedOrdering
-            })
-    }));
-    assert!(analysis.edges.iter().any(|edge| {
-        edge.producer == residual_join.node_id
-            && edge.contract_kinds.contains(&EdgeContractKind::JoinMaterialization)
-            && edge.reservation_requirements.iter().any(|requirement| requirement.kind == ReservationKind::GatherMap)
-            && edge.reservation_requirements.iter().any(|requirement| requirement.kind == ReservationKind::JoinOutput)
-    }));
-    assert!(
-        analysis.requirements.iter().all(|requirement| requirement.kind != ReservationKind::FinalSort),
-        "mixed residual resident aggregate family has no final-sort edge contract"
-    );
-}
-
-#[test]
-fn bounded_mixed_residual_resident_grouped_aggregate_admission_uses_capability_proof() {
+fn bounded_mixed_residual_resident_grouped_aggregate_admission_uses_capability_evidence() {
     let plan =
         residual_resident_grouped_aggregate_input_plan(ResidualResidentGroupedAggregateInputVariant::BlockedFamily);
     let analysis = plan.capability_analysis();
@@ -200,15 +77,16 @@ fn bounded_mixed_residual_resident_grouped_aggregate_preserves_node_failure_loca
 /// Mutates a residual join shape used to prove the mixed keyed
 /// residual join + resident grouped-aggregate input contract.
 #[derive(Debug, Clone, Copy)]
+#[expect(dead_code, reason = "shared topology fixtures are compiled by test binaries with different coverage")]
 pub(crate) enum ResidualResidentGroupedAggregateInputVariant {
     /// Baseline positive fixture whose surrounding shape is kept out of broader
-    /// bounded families, so only this narrow residual-resident proof admits it.
+    /// bounded families, so only this narrow residual-resident evidence admits it.
     BlockedFamily,
     RootJoinWithoutResidual,
     BareGroupedAggregateInput,
     ScalarAggregateInput,
     /// Starts the grouped input from a resident GPU frame; this must not be
-    /// confused with the local source-to-aggregate reduction proof.
+    /// confused with the local source-to-aggregate reduction evidence.
     GroupedAggregateGpuResidentInput,
     BareGlobalAggregateInput,
     FinalSort,

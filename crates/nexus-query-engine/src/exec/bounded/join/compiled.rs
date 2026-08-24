@@ -5,10 +5,9 @@ use std::{
 
 use super::{
     common::{
-        BoundedJoinSideFrame, bounded_join_request, join_side_output_upper_bound_bytes,
-        prepare_bounded_join_side_input_from_resident_frame, prepare_bounded_join_side_input_from_shared_frame,
-        projected_output_columns_for_retained_sizing, reconcile_join_output_upper_bound,
-        release_bounded_join_side_frame, reserve_full_join_size_preflight_workspace,
+        BoundedJoinSideFrame, join_side_output_upper_bound_bytes, prepare_bounded_join_side_input_from_resident_frame,
+        prepare_bounded_join_side_input_from_shared_frame, projected_output_columns_for_retained_sizing,
+        release_bounded_join_side_frame,
     },
     *,
 };
@@ -110,7 +109,6 @@ pub(in crate::exec::bounded) struct BoundedCompiledFilteredJoinBuildState {
     input_build_rows: u64,
     input_build_bytes: u64,
     filtered_join: GpuFilteredJoinBuildHandle,
-    hash_table_reservation: ActiveReservation,
     hash_table_bytes: u64,
     timer: Instant,
 }
@@ -119,7 +117,6 @@ pub(in crate::exec::bounded) struct BoundedCompiledFilteredJoinProbeState {
     build: BoundedCompiledFilteredJoinBuildState,
     probe: BoundedJoinSideFrame,
     probe_state: cudf::DataFrameFilteredJoinProbeState,
-    probe_state_reservation: ActiveReservation,
     probe_state_bytes: u64,
 }
 
@@ -162,8 +159,14 @@ pub(in crate::exec::bounded) struct StreamedPartitionedJoinSummary {
 
 struct PartitionedJoinSide {
     frame: DataFrame,
-    reservation: ActiveReservation,
+    device_bytes: u64,
     offsets: Vec<usize>,
+}
+
+impl PartitionedJoinSide {
+    fn device_bytes(&self) -> u64 {
+        self.device_bytes
+    }
 }
 
 pub(in crate::exec::bounded) struct PartitionedHashEquiJoinFrameStreamProbeState {
@@ -299,7 +302,6 @@ fn root_hash_join_frame_stream_probe_to_payload(
         aggregate_reservation_bytes,
         aggregate_num_rows,
         num_columns,
-        Vec::new(),
         Box::new(source),
     )
 }
@@ -344,15 +346,12 @@ impl ResidentFrameStreamSource for RootHashJoinProbeStreamSource {
     }
 
     fn release(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
-        while let Some(output) = self.pending_outputs.pop_front() {
-            let ResidentGpuFrame { reservation, .. } = output;
-            execution.release(reservation);
-        }
+        self.pending_outputs.clear();
         if let Some(input) = self.inputs.take() {
             input.release_all(execution);
         }
         if let Some(build) = self.build.take() {
-            release_bounded_root_hash_join_build_state(execution, build);
+            release_bounded_root_hash_join_build_state(build);
         }
     }
 }
@@ -364,15 +363,14 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_frame(
     strategy: CompiledJoinExecutionStrategy,
     strategy_options: KeyedHashJoinStrategyOptions,
     input: GpuDataFrame,
-    input_reservation: &ActiveReservation,
 ) -> Result<BoundedCompiledJoinBuildState> {
     match strategy {
         CompiledJoinExecutionStrategy::HashEqui => {
-            execute_bounded_root_hash_join_build_from_frame(execution, node_id, node, input, input_reservation)
+            execute_bounded_root_hash_join_build_from_frame(execution, node, input)
                 .map(BoundedCompiledJoinBuildState::Hash)
         },
         CompiledJoinExecutionStrategy::FilteredSemiAnti => {
-            execute_compiled_filtered_join_build_from_frame(execution, node_id, node, input, input_reservation)
+            execute_compiled_filtered_join_build_from_frame(execution, node_id, node, input)
                 .map(BoundedCompiledJoinBuildState::Filtered)
         },
         CompiledJoinExecutionStrategy::OneShotEqui
@@ -384,15 +382,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_frame(
         | CompiledJoinExecutionStrategy::MixedKeyedResidual => {
             let side = node.spec.build_side;
             let columns = compiled_join_input_columns(node, strategy, side)?;
-            let input = prepare_bounded_join_side_input_from_shared_frame(
-                execution,
-                input,
-                input_reservation,
-                &columns,
-                side,
-                node_id,
-                node.spec.build_side,
-            )?;
+            let input = prepare_bounded_join_side_input_from_shared_frame(execution, input, &columns, side)?;
             Ok(BoundedCompiledJoinBuildState::Prepared(BoundedCompiledPreparedJoinBuildState {
                 strategy,
                 strategy_options,
@@ -413,7 +403,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_residen
 ) -> Result<BoundedCompiledJoinBuildState> {
     match strategy {
         CompiledJoinExecutionStrategy::HashEqui => {
-            execute_bounded_root_hash_join_build_from_resident_frame(execution, node_id, node, input)
+            execute_bounded_root_hash_join_build_from_resident_frame(execution, node, input)
                 .map(BoundedCompiledJoinBuildState::Hash)
         },
         CompiledJoinExecutionStrategy::FilteredSemiAnti => {
@@ -429,14 +419,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_build_from_residen
         | CompiledJoinExecutionStrategy::MixedKeyedResidual => {
             let side = node.spec.build_side;
             let columns = compiled_join_input_columns(node, strategy, side)?;
-            let input = prepare_bounded_join_side_input_from_resident_frame(
-                execution,
-                input,
-                &columns,
-                side,
-                node_id,
-                node.spec.build_side,
-            )?;
+            let input = prepare_bounded_join_side_input_from_resident_frame(execution, input, &columns, side)?;
             Ok(BoundedCompiledJoinBuildState::Prepared(BoundedCompiledPreparedJoinBuildState {
                 strategy,
                 strategy_options,
@@ -453,29 +436,20 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame(
     node: &JoinNode,
     build: BoundedCompiledJoinBuildState,
     input: GpuDataFrame,
-    input_reservation: &ActiveReservation,
 ) -> Result<BoundedCompiledJoinProbeState> {
     match build {
         BoundedCompiledJoinBuildState::Hash(build) => {
-            execute_bounded_root_hash_join_probe_from_frame(execution, node_id, node, build, input, input_reservation)
+            execute_bounded_root_hash_join_probe_from_frame(execution, node_id, node, build, input)
                 .map(BoundedCompiledJoinProbeState::Hash)
         },
         BoundedCompiledJoinBuildState::Filtered(build) => {
-            execute_compiled_filtered_join_probe_from_frame(execution, node_id, node, build, input, input_reservation)
+            execute_compiled_filtered_join_probe_from_frame(execution, node, build, input)
                 .map(BoundedCompiledJoinProbeState::Filtered)
         },
         BoundedCompiledJoinBuildState::Prepared(build) => {
             let side = probe_side(build.side);
             let columns = compiled_join_input_columns(node, build.strategy, side)?;
-            let probe = prepare_bounded_join_side_input_from_shared_frame(
-                execution,
-                input,
-                input_reservation,
-                &columns,
-                side,
-                node_id,
-                node.spec.build_side,
-            )?;
+            let probe = prepare_bounded_join_side_input_from_shared_frame(execution, input, &columns, side)?;
             let (left, right) = orient_prepared_inputs(build.side, build.input, side, probe)?;
             Ok(BoundedCompiledJoinProbeState::Prepared(BoundedCompiledPreparedJoinProbeState {
                 strategy: build.strategy,
@@ -500,20 +474,13 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_residen
                 .map(BoundedCompiledJoinProbeState::Hash)
         },
         BoundedCompiledJoinBuildState::Filtered(build) => {
-            execute_compiled_filtered_join_probe_from_resident_frame(execution, node_id, node, build, input)
+            execute_compiled_filtered_join_probe_from_resident_frame(execution, node, build, input)
                 .map(BoundedCompiledJoinProbeState::Filtered)
         },
         BoundedCompiledJoinBuildState::Prepared(build) => {
             let side = probe_side(build.side);
             let columns = compiled_join_input_columns(node, build.strategy, side)?;
-            let probe = prepare_bounded_join_side_input_from_resident_frame(
-                execution,
-                input,
-                &columns,
-                side,
-                node_id,
-                node.spec.build_side,
-            )?;
+            let probe = prepare_bounded_join_side_input_from_resident_frame(execution, input, &columns, side)?;
             let (left, right) = orient_prepared_inputs(build.side, build.input, side, probe)?;
             Ok(BoundedCompiledJoinProbeState::Prepared(BoundedCompiledPreparedJoinProbeState {
                 strategy: build.strategy,
@@ -550,8 +517,8 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
             match stream_result {
                 Ok(()) => Ok(BoundedCompiledJoinProbeState::HashStreamed { build, outputs }),
                 Err(error) => {
-                    release_streamed_join_outputs_reverse(execution, outputs);
-                    release_bounded_root_hash_join_build_state(execution, build);
+                    release_streamed_join_outputs_reverse(outputs);
+                    release_bounded_root_hash_join_build_state(build);
                     Err(error)
                 },
             }
@@ -612,8 +579,8 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
                     Ok(input) => input,
                     Err(error) => {
                         inputs.release_all(execution);
-                        release_streamed_join_outputs_reverse(execution, outputs);
-                        release_compiled_filtered_join_build_state(execution, build);
+                        release_streamed_join_outputs_reverse(outputs);
+                        release_compiled_filtered_join_build_state(build);
                         return Err(error);
                     },
                 };
@@ -624,13 +591,13 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
                     Ok(output) => outputs.push(output),
                     Err(error) => {
                         inputs.release_all(execution);
-                        release_streamed_join_outputs_reverse(execution, outputs);
-                        release_compiled_filtered_join_build_state(execution, build);
+                        release_streamed_join_outputs_reverse(outputs);
+                        release_compiled_filtered_join_build_state(build);
                         return Err(error);
                     },
                 }
             }
-            inputs.release_producer_reservations(execution);
+            inputs.release_producer(execution);
             Ok(BoundedCompiledJoinProbeState::FilteredStreamed { build, outputs })
         },
         BoundedCompiledJoinBuildState::Prepared(build)
@@ -650,14 +617,14 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
             let inputs = match inputs.into_remaining_frames_owned(execution) {
                 Ok(inputs) => inputs,
                 Err(error) => {
-                    release_bounded_compiled_join_build_state(execution, other);
+                    release_bounded_compiled_join_build_state(other);
                     return Err(error);
                 },
             };
             let input = match concatenate_streamed_hash_join_outputs(execution, node_id, inputs) {
                 Ok(input) => input,
                 Err(error) => {
-                    release_bounded_compiled_join_build_state(execution, other);
+                    release_bounded_compiled_join_build_state(other);
                     return Err(error);
                 },
             };
@@ -677,7 +644,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize(
             execute_bounded_root_hash_join_materialize(execution, node_id, node, probe)
         },
         BoundedCompiledJoinProbeState::HashStreamed { build, outputs } => {
-            release_bounded_root_hash_join_build_state(execution, build);
+            release_bounded_root_hash_join_build_state(build);
             concatenate_streamed_hash_join_outputs(execution, node_id, outputs)
         },
         BoundedCompiledJoinProbeState::HashLazyStream(probe) => {
@@ -689,14 +656,14 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize(
             execute_compiled_filtered_join_materialize(execution, node_id, node, probe)
         },
         BoundedCompiledJoinProbeState::FilteredStreamed { build, outputs } => {
-            release_compiled_filtered_join_build_state(execution, build);
+            release_compiled_filtered_join_build_state(build);
             concatenate_streamed_hash_join_outputs(execution, node_id, outputs)
         },
         BoundedCompiledJoinProbeState::Prepared(probe) => {
             execute_compiled_prepared_join_materialize(execution, node_id, node, probe)
         },
         BoundedCompiledJoinProbeState::MixedStreamed { build, outputs } => {
-            release_bounded_join_side_frame(execution, build.input);
+            release_bounded_join_side_frame(build.input);
             concatenate_streamed_hash_join_outputs(execution, node_id, outputs)
         },
         BoundedCompiledJoinProbeState::OneShotStreamed { build, outputs, summary } => {
@@ -739,7 +706,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize_preser
 ) -> Result<BoundedCompiledJoinMaterializeOutput> {
     match probe {
         BoundedCompiledJoinProbeState::HashStreamed { build, outputs } => {
-            release_bounded_root_hash_join_build_state(execution, build);
+            release_bounded_root_hash_join_build_state(build);
             Ok(BoundedCompiledJoinMaterializeOutput::Stream(outputs))
         },
         BoundedCompiledJoinProbeState::Hash(probe) => Ok(BoundedCompiledJoinMaterializeOutput::LazyStream(
@@ -749,7 +716,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize_preser
             root_hash_join_frame_stream_probe_to_payload(node_id, node, probe),
         )),
         BoundedCompiledJoinProbeState::FilteredStreamed { build, outputs } => {
-            release_compiled_filtered_join_build_state(execution, build);
+            release_compiled_filtered_join_build_state(build);
             Ok(BoundedCompiledJoinMaterializeOutput::Stream(outputs))
         },
         BoundedCompiledJoinProbeState::OneShotStreamed { build, outputs, summary } => {
@@ -757,7 +724,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize_preser
             let probe_side = probe_side(build_side);
             let build_rows = input.rows;
             let build_bytes = input.bytes;
-            release_bounded_join_side_frame(execution, input);
+            release_bounded_join_side_frame(input);
             record_streamed_one_shot_join_metrics(
                 node_id,
                 node,
@@ -771,7 +738,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize_preser
             Ok(BoundedCompiledJoinMaterializeOutput::Stream(outputs))
         },
         BoundedCompiledJoinProbeState::MixedStreamed { build, outputs } => {
-            release_bounded_join_side_frame(execution, build.input);
+            release_bounded_join_side_frame(build.input);
             Ok(BoundedCompiledJoinMaterializeOutput::Stream(outputs))
         },
         BoundedCompiledJoinProbeState::OneShotLazyStream(probe) => {
@@ -832,20 +799,17 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize_preser
     }
 }
 
-pub(in crate::exec::bounded) fn release_bounded_compiled_join_build_state(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    build: BoundedCompiledJoinBuildState,
-) {
+pub(in crate::exec::bounded) fn release_bounded_compiled_join_build_state(build: BoundedCompiledJoinBuildState) {
     match build {
         BoundedCompiledJoinBuildState::Hash(build) => {
-            release_bounded_root_hash_join_build_state(execution, build);
+            release_bounded_root_hash_join_build_state(build);
         },
         BoundedCompiledJoinBuildState::Filtered(build) => {
-            release_compiled_filtered_join_build_state(execution, build);
+            release_compiled_filtered_join_build_state(build);
         },
         BoundedCompiledJoinBuildState::Prepared(build) => {
             let BoundedCompiledPreparedJoinBuildState { input, .. } = build;
-            release_bounded_join_side_frame(execution, input);
+            release_bounded_join_side_frame(input);
         },
     }
 }
@@ -856,46 +820,46 @@ pub(in crate::exec::bounded) fn release_bounded_compiled_join_probe_state(
 ) {
     match probe {
         BoundedCompiledJoinProbeState::Hash(probe) => {
-            release_bounded_root_hash_join_probe_state(execution, probe);
+            release_bounded_root_hash_join_probe_state(probe);
         },
         BoundedCompiledJoinProbeState::HashStreamed { build, outputs } => {
-            release_streamed_join_outputs_reverse(execution, outputs);
-            release_bounded_root_hash_join_build_state(execution, build);
+            release_streamed_join_outputs_reverse(outputs);
+            release_bounded_root_hash_join_build_state(build);
         },
         BoundedCompiledJoinProbeState::HashLazyStream(probe) => {
             probe.inputs.release_all(execution);
-            release_bounded_root_hash_join_build_state(execution, probe.build);
+            release_bounded_root_hash_join_build_state(probe.build);
         },
         BoundedCompiledJoinProbeState::Filtered(probe) => {
-            release_compiled_filtered_join_probe_state(execution, probe);
+            release_compiled_filtered_join_probe_state(probe);
         },
         BoundedCompiledJoinProbeState::FilteredStreamed { build, outputs } => {
-            release_streamed_join_outputs_reverse(execution, outputs);
-            release_compiled_filtered_join_build_state(execution, build);
+            release_streamed_join_outputs_reverse(outputs);
+            release_compiled_filtered_join_build_state(build);
         },
         BoundedCompiledJoinProbeState::Prepared(probe) => {
             let BoundedCompiledPreparedJoinProbeState { left, right, .. } = probe;
-            release_bounded_join_side_frame(execution, left);
-            release_bounded_join_side_frame(execution, right);
+            release_bounded_join_side_frame(left);
+            release_bounded_join_side_frame(right);
         },
         BoundedCompiledJoinProbeState::MixedStreamed { build, outputs } => {
-            release_streamed_join_outputs_reverse(execution, outputs);
-            release_bounded_join_side_frame(execution, build.input);
+            release_streamed_join_outputs_reverse(outputs);
+            release_bounded_join_side_frame(build.input);
         },
         BoundedCompiledJoinProbeState::OneShotStreamed { build, outputs, .. } => {
-            release_streamed_join_outputs_reverse(execution, outputs);
-            release_bounded_compiled_join_build_state(execution, BoundedCompiledJoinBuildState::Prepared(build));
+            release_streamed_join_outputs_reverse(outputs);
+            release_bounded_compiled_join_build_state(BoundedCompiledJoinBuildState::Prepared(build));
         },
         BoundedCompiledJoinProbeState::OneShotLazyStream(probe) => {
             probe.inputs.release_all(execution);
-            release_bounded_join_side_frame(execution, probe.build.input);
+            release_bounded_join_side_frame(probe.build.input);
         },
         BoundedCompiledJoinProbeState::PartitionedStreamed { outputs, .. } => {
-            release_streamed_join_outputs_reverse(execution, outputs);
+            release_streamed_join_outputs_reverse(outputs);
         },
         BoundedCompiledJoinProbeState::PartitionedLazyStream(probe) => {
             probe.inputs.release_all(execution);
-            release_partitioned_join_side(execution, probe.build_partitioned);
+            release_partitioned_join_side(probe.build_partitioned);
         },
     }
 }
@@ -917,29 +881,11 @@ fn concatenate_streamed_hash_join_outputs(
         .with_fact("node_id", node_id));
     }
 
-    let output_reservation_bytes =
-        outputs.iter().fold(0u64, |total, output| total.saturating_add(output.reservation.bytes()));
-    let mut output_reservation = match execution.try_reserve(bounded_join_request(
-        ReservationKind::JoinOutput,
-        "join_output_stream_concat",
-        output_reservation_bytes,
-        execution.reservations().budget(),
-        node_id,
-    )) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            release_streamed_join_outputs_reverse(execution, outputs);
-            return Err(error);
-        },
-    };
-
-    let mut input_reservations = Vec::with_capacity(outputs.len());
+    let chunk_count = outputs.len();
     let mut frames = Vec::with_capacity(outputs.len());
     for output in outputs {
         frames.push(output.frame.into_frame());
-        input_reservations.push(output.reservation);
     }
-    let chunk_count = input_reservations.len();
     let first_frame = frames.remove(0);
     let rest_frame_refs = frames.iter().collect::<Vec<_>>();
     let overrides_lease = execution_overrides(execution.context())?;
@@ -948,8 +894,6 @@ fn concatenate_streamed_hash_join_outputs(
     let output = match first_frame.with_execution(&overrides).concat_many(&rest_frame_refs) {
         Ok(output) => output,
         Err(error) => {
-            release_streamed_join_reservations_reverse(execution, input_reservations);
-            execution.release(output_reservation);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.join.streamed_hash_output_concat",
                 "failed to concatenate streamed bounded hash join output chunks",
@@ -965,51 +909,14 @@ fn concatenate_streamed_hash_join_outputs(
     let output_bytes = match observe_device_memory_bytes(&output_frame, execution.metrics_mut()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            release_streamed_join_reservations_reverse(execution, input_reservations);
-            execution.release(output_reservation);
             return Err(error);
         },
     };
-    if output_bytes > output_reservation.bytes() {
-        let delta = output_bytes.saturating_sub(output_reservation.bytes());
-        if let Err(error) = execution.try_grow(
-            &mut output_reservation,
-            bounded_join_request(
-                ReservationKind::JoinOutput,
-                "join_output_stream_concat",
-                delta,
-                execution.reservations().budget(),
-                node_id,
-            ),
-        ) {
-            release_streamed_join_reservations_reverse(execution, input_reservations);
-            execution.release(output_reservation);
-            return Err(error);
-        }
-    } else {
-        execution.shrink_to_observed(&mut output_reservation, output_bytes);
-    }
-    release_streamed_join_reservations_reverse(execution, input_reservations);
-    Ok(ResidentGpuFrame { frame: output_frame, reservation: output_reservation })
+    Ok(ResidentGpuFrame::with_device_bytes(output_frame, output_bytes))
 }
 
-fn release_streamed_join_outputs_reverse(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    mut outputs: Vec<ResidentGpuFrame>,
-) {
-    while let Some(output) = outputs.pop() {
-        let ResidentGpuFrame { reservation, .. } = output;
-        execution.release(reservation);
-    }
-}
-
-fn release_streamed_join_reservations_reverse(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    mut active: Vec<ActiveReservation>,
-) {
-    while let Some(reservation) = active.pop() {
-        execution.release(reservation);
-    }
+fn release_streamed_join_outputs_reverse(mut outputs: Vec<ResidentGpuFrame>) {
+    outputs.clear();
 }
 
 fn compiled_join_input_columns(
@@ -1095,14 +1002,8 @@ fn orient_prepared_inputs(
 }
 
 enum CompiledKeylessWork<'a> {
-    Full {
-        size_data: Box<cudf::DataFrameConditionalFullJoinSizeData<'a>>,
-        size_data_reservation: Box<ActiveReservation>,
-    },
-    Sized {
-        output_size: usize,
-        options: cudf::DataFramePredicateJoinOptions,
-    },
+    Full { size_data: Box<cudf::DataFrameConditionalFullJoinSizeData<'a>> },
+    Sized { output_size: usize, options: cudf::DataFramePredicateJoinOptions },
 }
 
 enum CompiledMixedSizeData<'a> {
@@ -1133,21 +1034,6 @@ impl CompiledMixedSizeData<'_> {
         })
     }
 
-    fn gather_map_reservation_size_bytes(&self, node: &JoinNode) -> Result<u64> {
-        let result = match self {
-            Self::Pair(size_data) => size_data.gather_map_reservation_size_bytes(),
-            Self::LeftOnly(size_data) => size_data.gather_map_reservation_size_bytes(),
-        };
-        result.map(|bytes| bytes as u64).map_err(|error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.bounded.join.mixed_gather_map_reservation",
-                "failed to size compiled bounded mixed join gather maps",
-                error,
-            )
-            .with_fact("join_type", node.spec.join_type)
-        })
-    }
-
     fn materialize_indices_in(
         self,
         overrides: &ExecutionOverrides<'_>,
@@ -1171,7 +1057,6 @@ impl CompiledMixedSizeData<'_> {
 
 struct CompiledEqualityJoinPreflightIndices {
     indices: CompiledJoinIndices,
-    gather_map_reservation: ActiveReservation,
     index_bytes: u64,
     output_rows: u64,
 }
@@ -1182,14 +1067,12 @@ struct CompiledEqualityJoinPreflightIndices {
 )]
 fn materialize_compiled_keyed_equality_join_indices_with_preflight(
     execution: &mut BoundedExecutionAttempt<'_>,
-    node_id: NodeId,
     node: &JoinNode,
     left: &BoundedJoinSideFrame,
     right: &BoundedJoinSideFrame,
     build_side: JoinSide,
     left_keys: &[String],
     right_keys: &[String],
-    reservation_label: &'static str,
     overrides: &ExecutionOverrides<'_>,
 ) -> Result<CompiledEqualityJoinPreflightIndices> {
     let (build, build_keys, probe, probe_keys) = match build_side {
@@ -1198,103 +1081,29 @@ fn materialize_compiled_keyed_equality_join_indices_with_preflight(
     };
     let hash_options =
         cudf::DataFrameHashJoinOptions::new().null_equality(lower_null_equality(node.spec.null_equality));
-    let (hash_join, hash_table_reservation, _hash_table_bytes) = super::hash::reserve_and_build_bounded_hash_join(
+    let (hash_join, _hash_table_bytes) = super::hash::build_bounded_hash_join(
         execution,
-        node_id,
         node,
         &build.frame,
         build_keys,
         hash_options,
         build_side,
         overrides,
-        "join_keyed_equality_preflight_hash_table",
         false,
     )?;
-    let left_join_output_rows = match compiled_hash_join_left_probe_size_for_full_size_preflight(
-        node,
-        hash_join.hash_join(),
-        &probe.frame,
-        probe_keys,
-        overrides,
-    ) {
-        Ok(rows) => rows as u64,
-        Err(error) => {
-            release_temporary_compiled_hash_join(execution, hash_join, hash_table_reservation);
-            return Err(error);
-        },
-    };
-    let full_size_preflight_workspace =
-        match reserve_full_join_size_preflight_workspace(execution, node_id, node, build.rows, left_join_output_rows) {
-            Ok(reservation) => reservation,
-            Err(error) => {
-                release_temporary_compiled_hash_join(execution, hash_join, hash_table_reservation);
-                return Err(error);
-            },
-        };
-    let output_size =
-        match compiled_hash_join_probe_size(node, hash_join.hash_join(), &probe.frame, probe_keys, overrides) {
-            Ok(output_size) => {
-                if let Some(reservation) = full_size_preflight_workspace {
-                    execution.release(reservation);
-                }
-                output_size
-            },
-            Err(error) => {
-                if let Some(reservation) = full_size_preflight_workspace {
-                    execution.release(reservation);
-                }
-                release_temporary_compiled_hash_join(execution, hash_join, hash_table_reservation);
-                return Err(error);
-            },
-        };
-    let gather_map_reservation_bytes =
-        match hash_join.hash_join().probe_gather_map_reservation_size_bytes(output_size).map(|bytes| bytes as u64) {
-            Ok(bytes) => bytes,
-            Err(error) => {
-                release_temporary_compiled_hash_join(execution, hash_join, hash_table_reservation);
-                return Err(QueryError::from_cudf(
-                    "nexus_query_engine.bounded.join.compiled_keyed_equality_gather_map_reservation",
-                    "failed to size compiled bounded equality join gather maps from exact output-size preflight",
-                    error,
-                )
-                .with_fact("join_type", node.spec.join_type)
-                .with_fact("build_side", build_side));
-            },
-        };
-    let gather_map_reservation = match execution.try_reserve(bounded_join_request(
-        ReservationKind::GatherMap,
-        reservation_label,
-        gather_map_reservation_bytes,
-        execution.reservations().budget(),
-        node_id,
-    )) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            release_temporary_compiled_hash_join(execution, hash_join, hash_table_reservation);
-            return Err(error);
-        },
-    };
-    let hash_indices = match compiled_hash_join_probe_with_output_size(
+    let output_size = compiled_hash_join_probe_size(node, hash_join.hash_join(), &probe.frame, probe_keys, overrides)?;
+    let hash_indices = compiled_hash_join_probe_with_output_size(
         node,
         hash_join.hash_join(),
         &probe.frame,
         probe_keys,
         output_size,
         overrides,
-    ) {
-        Ok(indices) => indices,
-        Err(error) => {
-            execution.release(gather_map_reservation);
-            release_temporary_compiled_hash_join(execution, hash_join, hash_table_reservation);
-            return Err(error);
-        },
-    };
-    release_temporary_compiled_hash_join(execution, hash_join, hash_table_reservation);
+    )?;
 
     let index_bytes = match hash_indices.device_allocated_size_bytes().map(|bytes| bytes as u64) {
         Ok(bytes) => bytes,
         Err(error) => {
-            execution.release(gather_map_reservation);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.join.compiled_keyed_equality_index_bytes",
                 "failed to observe compiled bounded equality join gather-map memory",
@@ -1304,21 +1113,6 @@ fn materialize_compiled_keyed_equality_join_indices_with_preflight(
             .with_fact("build_side", build_side));
         },
     };
-    if index_bytes > gather_map_reservation.bytes() {
-        execution.release(gather_map_reservation);
-        return Err(QueryError::new(
-            QueryErrorCode::MemoryReservationFailed,
-            "nexus_query_engine.bounded.join.compiled_keyed_equality_index_preflight",
-            "compiled bounded equality join gather maps exceeded the exact output-size preflight reservation",
-        )
-        .with_fact("node_id", node_id)
-        .with_fact("join_type", node.spec.join_type)
-        .with_fact("build_side", build_side)
-        .with_fact("reserved_bytes", gather_map_reservation_bytes)
-        .with_fact("observed_bytes", index_bytes)
-        .with_fact("output_rows", output_size));
-    }
-
     let indices = match build_side {
         JoinSide::Left => {
             CompiledJoinIndices::Pair { left: hash_indices.build().clone(), right: hash_indices.probe().clone() }
@@ -1327,33 +1121,7 @@ fn materialize_compiled_keyed_equality_join_indices_with_preflight(
             CompiledJoinIndices::Pair { left: hash_indices.probe().clone(), right: hash_indices.build().clone() }
         },
     };
-    Ok(CompiledEqualityJoinPreflightIndices {
-        indices,
-        gather_map_reservation,
-        index_bytes,
-        output_rows: output_size as u64,
-    })
-}
-
-fn compiled_hash_join_left_probe_size_for_full_size_preflight(
-    node: &JoinNode,
-    hash_join: &cudf::DataFrameHashJoin,
-    probe: &DataFrame,
-    probe_keys: &[String],
-    overrides: &ExecutionOverrides<'_>,
-) -> Result<usize> {
-    if node.spec.join_type != JoinType::Full {
-        return Ok(0);
-    }
-    hash_join.left_probe_size_in(probe, probe_keys, overrides).map_err(|error| join_index_error(error, node))
-}
-
-fn release_temporary_compiled_hash_join(
-    execution: &mut BoundedExecutionAttempt<'_>,
-    _hash_join: GpuHashJoinBuildHandle,
-    hash_table_reservation: ActiveReservation,
-) {
-    execution.release(hash_table_reservation);
+    Ok(CompiledEqualityJoinPreflightIndices { indices, index_bytes, output_rows: output_size as u64 })
 }
 
 fn compiled_hash_join_probe_size(
@@ -1517,7 +1285,7 @@ struct CompiledJoinMaterializationRequest {
     mixed_size_data_bytes: u64,
     filtered_probe_state_bytes: u64,
     expected_output_rows: u64,
-    gather_map_reservation: ActiveReservation,
+    gather_map_bytes: u64,
     timer: Instant,
     one_shot_index_bytes: Option<u64>,
 }
@@ -1540,19 +1308,18 @@ fn materialize_compiled_indices_output(
         mixed_size_data_bytes,
         filtered_probe_state_bytes,
         expected_output_rows,
-        gather_map_reservation,
+        gather_map_bytes,
         timer,
         one_shot_index_bytes,
     } = request;
     let mut txn = JoinMaterializationTxn::with_sides(left, right);
-    txn.set_gather_map_reservation(gather_map_reservation);
     let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
     txn.set_indices(indices);
-    let gather_map_bytes = match txn.indices().device_allocated_size_bytes(node) {
+    let observed_gather_map_bytes = match txn.indices().device_allocated_size_bytes(node) {
         Ok(bytes) => bytes,
         Err(error) => {
-            txn.rollback(execution);
+            txn.rollback();
             return Err(error);
         },
     };
@@ -1567,7 +1334,7 @@ fn materialize_compiled_indices_output(
     ) {
         Ok(bytes) => bytes,
         Err(error) => {
-            txn.rollback(execution);
+            txn.rollback();
             return Err(error);
         },
     };
@@ -1576,20 +1343,6 @@ fn materialize_compiled_indices_output(
         execution.metrics_mut().record_one_shot_join_index_bytes(index_bytes);
         execution.metrics_mut().record_one_shot_join_materialization_bytes(output_reservation_bytes);
     }
-    let output_reservation = match execution.try_reserve(bounded_join_request(
-        ReservationKind::JoinOutput,
-        "join_output",
-        output_reservation_bytes,
-        execution.reservations().budget(),
-        node_id,
-    )) {
-        Ok(reservation) => reservation,
-        Err(error) => {
-            txn.rollback(execution);
-            return Err(error);
-        },
-    };
-    txn.set_output_reservation(output_reservation);
     let (left, right) = txn.sides();
     let output = match txn.indices().materialize_output(
         &left.frame,
@@ -1601,7 +1354,7 @@ fn materialize_compiled_indices_output(
     ) {
         Ok(output) => output,
         Err(error) => {
-            txn.rollback(execution);
+            txn.rollback();
             return Err(error);
         },
     };
@@ -1611,19 +1364,14 @@ fn materialize_compiled_indices_output(
     let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics_mut()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            txn.rollback(execution);
+            txn.rollback();
             return Err(error);
         },
     };
     if one_shot_index_bytes.is_some() {
         execution.metrics_mut().record_one_shot_join_output_bytes(output_bytes);
     }
-    if let Err(error) =
-        reconcile_join_output_upper_bound(execution, node_id, txn.output_reservation_mut(), output_bytes)
-    {
-        txn.rollback(execution);
-        return Err(error);
-    }
+    debug_assert_eq!(observed_gather_map_bytes, gather_map_bytes);
     let (left, right) = txn.sides();
     execution.metrics_mut().record_operator_metrics(crate::metrics::OperatorMetrics::join(
         node_id,
@@ -1649,8 +1397,7 @@ fn materialize_compiled_indices_output(
             output_bytes,
         },
     ));
-    txn.release_gather_map_reservation(execution);
-    Ok(txn.commit_frame(execution, GpuDataFrame::new(output)))
+    Ok(txn.commit_frame(GpuDataFrame::new(output), output_bytes))
 }
 
 #[cfg(test)]

@@ -121,6 +121,16 @@ query_domain_resource::query_domain_resource(
   return out;
 }
 
+[[nodiscard]] std::size_t query_domain_resource::effective_device_memory() const
+{
+  auto const grant   = grant_bytes_.load(std::memory_order_relaxed);
+  auto const current = current_aligned_bytes_.load(std::memory_order_relaxed);
+  if (current > grant) {
+    throw cudf::logic_error{"query memory domain aligned charge exceeds its grant"};
+  }
+  return grant - current;
+}
+
 [[nodiscard]] cudf_memory_resource_usage_t query_domain_resource::member_usage(
   std::shared_ptr<query_domain_member_counters> const& member, bool attached) const
 {
@@ -770,6 +780,19 @@ cudf_memory_resource_usage_t reservation_aware_resource_adaptor::query_domain_me
   return state->domain->resource->member_usage(state->counters, state->attached);
 }
 
+[[nodiscard]] std::optional<std::size_t>
+reservation_aware_resource_adaptor::query_domain_effective_device_memory(
+  rmm::cuda_stream_view stream)
+{
+  std::shared_lock lock{query_domain_mutex_};
+  auto const it = query_domain_members_by_stream_.find(stream_key(stream));
+  if (it == query_domain_members_by_stream_.end()) { return std::nullopt; }
+  if (it->second == nullptr || !it->second->attached) {
+    throw cudf::logic_error{"CUDA stream has no active query memory domain member"};
+  }
+  return it->second->domain->resource->effective_device_memory();
+}
+
 bool reservation_aware_resource_adaptor::resize_query_domain(
   std::shared_ptr<query_domain_state> const& state, std::size_t grant_bytes, std::string& error)
 {
@@ -857,6 +880,7 @@ std::unique_ptr<memory_resource_handle_state> make_query_domain_member_resource_
   auto& owner             = *state->owner;
   owner.device            = manager->device;
   owner.upstream_lifetime = member->resource;
+  owner.query_domain      = member->domain;
   auto direct             = std::make_unique<shared_query_domain_member_resource>(member->resource);
   if (manager->failure_callback_v2 != nullptr) {
     owner.reservation_mr = std::move(direct);

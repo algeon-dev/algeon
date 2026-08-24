@@ -83,7 +83,6 @@ Choose exactly one dense-vector binding shape.
 ## Limitations & lifecycle
 
 - Validation resolves named tables or views and reads schemas only; it does not execute relation scans or GPU work.
-- Bounded cuVS execution is unavailable until the lower-level peak-memory preflight contract exists.
 - Execution relation arguments require parenthesized subqueries; dry-run validation accepts registered named relations only.
 - Fits and transforms the evaluated input in one statement; it does not return a reusable transform, components, or explained-variance metadata.
 - The evaluated input needs at least two rows and two dimensions, and n_components must not exceed the evaluated dimension.

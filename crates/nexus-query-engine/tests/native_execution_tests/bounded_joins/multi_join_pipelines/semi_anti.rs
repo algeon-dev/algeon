@@ -58,17 +58,13 @@ fn bounded_native_query_executes_mixed_left_semi_left_anti_multi_join_pipeline_w
     assert!(!plan.capability_analysis().admits_root_join());
     assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
     assert!(plan.capability_analysis().admits_closed_multi_join_subgraph());
-    assert!(
-        nexus_query_engine::admission::bounded_join_unsupported_shape_facts(&plan, ExecutionBoundaryPolicy::default())
-            .is_none()
-    );
+    assert!(nexus_query_engine::admission::bounded_join_unsupported_shape_facts(&plan).is_none());
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.memory_control_policy.as_str(), "bounded");
     assert_eq!(metrics.parquet_files, 3);
-    assert_eq!(metrics.reservation_denied_count, 0);
     assert_eq!(metrics.hash_join_build_count, 0);
     assert_eq!(metrics.hash_join_hash_table_bytes, 0);
     assert!(metrics.mixed_join_size_data_bytes > 0);
@@ -98,39 +94,6 @@ fn bounded_native_query_executes_mixed_left_semi_left_anti_multi_join_pipeline_w
         join_metrics[0].mixed_size_data_bytes + join_metrics[1].mixed_size_data_bytes,
         metrics.mixed_join_size_data_bytes
     );
-    assert_granted_reservation_trace(
-        metrics,
-        &[
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::BuildSide, "join_build_side"),
-            (ReservationKind::ProbeSide, "join_probe_side"),
-            (ReservationKind::MixedSizeData, "join_mixed_size_data"),
-            (ReservationKind::GatherMap, "join_gather_map"),
-            (ReservationKind::JoinOutput, "join_output"),
-            (ReservationKind::SourceRead, "join_source_read"),
-            (ReservationKind::BuildSide, "join_build_side"),
-            (ReservationKind::ProbeSide, "join_probe_side"),
-            (ReservationKind::MixedSizeData, "join_mixed_size_data"),
-            (ReservationKind::GatherMap, "join_gather_map"),
-            (ReservationKind::JoinOutput, "join_output"),
-            (ReservationKind::Materialization, "host_materialization"),
-        ],
-    );
-    let mixed_size_data = granted_reservation_requested_bytes_for_boundary(
-        metrics,
-        ReservationKind::MixedSizeData,
-        "join_mixed_size_data",
-    );
-    assert_eq!(mixed_size_data.len(), 2);
-    assert!(mixed_size_data.iter().all(|bytes| *bytes > 0));
-    let gather_maps =
-        granted_reservation_requested_bytes_for_boundary(metrics, ReservationKind::GatherMap, "join_gather_map");
-    assert_eq!(gather_maps, vec![cudf::DataFrameJoinIndices::reservation_size_bytes_for_len(1).unwrap() as u64; 2]);
-    let join_outputs =
-        granted_reservation_requested_bytes_for_boundary(metrics, ReservationKind::JoinOutput, "join_output");
-    assert_eq!(join_outputs.len(), 2);
-    assert!(join_outputs.iter().all(|bytes| *bytes > 0));
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

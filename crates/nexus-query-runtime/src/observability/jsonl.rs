@@ -160,9 +160,6 @@ pub fn write_runtime_observation_jsonl<W: Write>(
             RuntimeTopologyRecord::SinkDefinition(row) => {
                 RuntimeObservationRecord::SinkDefinition { sequence: retained.sequence, row: row.clone() }
             },
-            RuntimeTopologyRecord::ReservationGate(row) => {
-                RuntimeObservationRecord::ReservationGate { sequence: retained.sequence, row: row.clone() }
-            },
             RuntimeTopologyRecord::JobDefinition(row) => {
                 RuntimeObservationRecord::JobDefinition { sequence: retained.sequence, row: row.clone() }
             },

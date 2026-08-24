@@ -288,30 +288,6 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
     assert_eq!(metrics.source_read_prefetches_completed, 0);
     assert_eq!(metrics.source_read_prefetches_skipped, 0);
     assert_eq!(metrics.source_read_prefetches_abandoned, 0);
-    assert!(
-        metrics.reservation_events.iter().all(|event| {
-            !(event.memory_boundary == "source_chunk_read" && event.action == MemoryReservationEventAction::Grow)
-        }),
-        "source-adjacent aggregate filtering/projection should not grow raw source-read reservations to observed bytes"
-    );
-    assert!(
-        metrics.reservation_events.iter().any(|event| {
-            event.memory_boundary == "source_chunk_filter_output"
-                && event.action == MemoryReservationEventAction::Transfer
-        }),
-        "source-adjacent aggregate filtering should transfer ownership to the filtered output boundary"
-    );
-    assert!(
-        metrics.reservation_events.iter().any(|event| {
-            event.memory_boundary == "source_chunk_projection_output"
-                && event.action == MemoryReservationEventAction::Transfer
-        }),
-        "source-adjacent aggregate projection should transfer ownership to the projected output boundary"
-    );
-    assert!(
-        metrics.reservation_events.iter().all(|event| event.memory_boundary != "source_chunk_prefetch"),
-        "source-adjacent aggregate chunks should not prefetch while transformed source output is partitioned"
-    );
     assert_eq!(metrics.row_groups_planned, 3);
     assert_eq!(metrics.row_groups_committed, 3);
     assert_eq!(metrics.partial_aggregate_count, 3);
@@ -322,28 +298,6 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
     assert_eq!(metrics.final_merge_attempts, 1);
     assert_eq!(metrics.final_merge_levels, 1);
     assert!(metrics.final_merge_max_fan_in >= 1);
-    assert!(metrics.task_operator_metrics.contains_key("source_read"));
-    assert!(metrics.task_operator_metrics.contains_key("unary"));
-    assert!(metrics.task_operator_metrics.contains_key("aggregate"));
-    assert!(metrics.task_operator_metrics["source_read"].reservation_requested_bytes > 0);
-    assert!(metrics.task_operator_metrics["aggregate"].reservation_requested_bytes > 0);
-    assert!(metrics.max_task_reservation_bytes > 0);
-    for boundary in [
-        "source_adjacent_aggregate_hash_partition",
-        "source_adjacent_aggregate_partition",
-        "source_adjacent_aggregate_partition_concat",
-        "source_adjacent_aggregate_partition_concat_output",
-        "source_adjacent_partitioned_partial_aggregate",
-        "source_adjacent_partitioned_partial_aggregate_output",
-        "final_aggregate_hash_partition",
-        "final_aggregate_partition",
-        "partitioned_final_aggregate_merge_output",
-    ] {
-        assert!(
-            metrics.reservation_events.iter().any(|event| event.memory_boundary == boundary),
-            "missing source-adjacent partitioned aggregate reservation boundary {boundary}"
-        );
-    }
     let partial_strategy_rows = metrics
         .aggregate_strategy_decisions
         .iter()
@@ -396,14 +350,6 @@ fn bounded_native_query_executes_chunked_grouped_sum_and_final_merge() {
     assert_eq!(final_strategy.facts.get("selected_strategy").map(String::as_str), Some("partitioned_merge"));
     assert_eq!(final_strategy.facts.get("partial_aggregate_count").map(String::as_str), Some("3"));
     assert_eq!(final_strategy.facts.get("partitioned_merge_contract_status").map(String::as_str), Some("available"));
-    assert!(
-        metrics.reservation_live_peak_bytes < device_budget_bytes,
-        "source-adjacent aggregate work reservations should not saturate the configured device budget"
-    );
-    assert!(metrics.reservation_events.iter().filter(|event| event.outcome.as_str() == "denied").all(|event| {
-        event.stage.is_some()
-            && event.compiled_task_id.as_deref().is_some_and(|task_id| task_id.starts_with("legacy_bounded."))
-    }));
     assert_eq!(metrics.parquet_files, 1);
     assert_eq!(metrics.row_groups_selected, 3);
     assert_eq!(metrics.read_columns, 4);
@@ -574,13 +520,6 @@ fn bounded_native_query_routes_many_string_morsels_away_from_source_adjacent_par
     assert!(partial_strategy_rows.iter().all(|decision| {
         decision.facts.get("source_adjacent_partition_strategy").map(String::as_str) == Some("group_key")
     }));
-    assert!(
-        metrics
-            .reservation_events
-            .iter()
-            .any(|event| event.memory_boundary == "source_adjacent_aggregate_hash_partition"),
-        "many string row-group morsels should stream through group-key hash partition under live working-set admission"
-    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -635,13 +574,6 @@ fn bounded_native_query_streams_source_adjacent_grouped_chunks_when_partition_re
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 3);
     assert_eq!(metrics.partial_aggregate_count, 3);
-    assert!(
-        metrics
-            .reservation_events
-            .iter()
-            .all(|event| event.memory_boundary != "source_adjacent_aggregate_hash_partition"),
-        "partitioned source-adjacent aggregation must not retain raw partitions when estimates exceed the budget"
-    );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -719,18 +651,6 @@ fn bounded_native_query_executes_source_adjacent_grouped_sum_with_empty_partitio
     );
     assert_eq!(metrics.final_merge_attempts, 1);
     assert!(metrics.final_merge_max_fan_in >= 1);
-    assert!(
-        metrics
-            .reservation_events
-            .iter()
-            .any(|event| { event.memory_boundary == "source_adjacent_partitioned_partial_aggregate_output" })
-    );
-    assert!(
-        metrics
-            .reservation_events
-            .iter()
-            .any(|event| event.memory_boundary == "partitioned_final_aggregate_merge_output")
-    );
 
     let partial_strategy_rows = metrics
         .aggregate_strategy_decisions
@@ -980,7 +900,6 @@ fn bounded_native_query_reuses_source_adjacent_preflight_handle_for_low_cardinal
         budgeted_events(metrics, "nexus_query_engine.aggregate.prepare_partial.prepared_sort_groupby").is_empty(),
         "the preflight prepared handle must be reused by aggregate execution"
     );
-    assert_eq!(metrics.reservation_denied_count, 0);
     assert_eq!(metrics.source_chunks_retried, 0);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -1157,10 +1076,6 @@ fn bounded_native_query_prunes_partitioned_final_merge_outputs_with_topk() {
         topk_output_rows < topk_input_rows,
         "partition-local TopK should reduce high-cardinality final aggregate output before concat"
     );
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.memory_boundary == "partitioned_final_aggregate_topk_input"
-            && event.action == MemoryReservationEventAction::Reserve
-    }));
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -1634,16 +1549,7 @@ fn bounded_native_query_uses_configured_source_cap_when_budget_model_allows_it()
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 1);
     assert_eq!(metrics.source_chunks_retried, 0);
-    assert_eq!(metrics.reservation_denied_count, 0);
     assert_eq!(metrics.partial_aggregate_count, 1);
-    let exact_source_read_bytes = u64::try_from(cudf::DataFrame::minimum_parquet_source_read_budget_bytes()).unwrap();
-    assert!(metrics.reservation_events.iter().any(|event| {
-        event.memory_boundary == "source_chunk_read"
-            && event.action == MemoryReservationEventAction::Reserve
-            && event.source_read_contract_quality.as_deref() == Some("exact_lower_level_contract")
-            && event.requested_bytes == exact_source_read_bytes
-    }));
-
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
     };

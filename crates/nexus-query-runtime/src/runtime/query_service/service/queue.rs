@@ -76,7 +76,7 @@ impl QueryService {
     /// while selecting among this frozen set.
     pub(in crate::runtime::query_service) fn compatible_devices_for_capabilities(
         &self,
-        required_capabilities: &[nexus_query_planning::capability::ReservationRequirement],
+        required_capabilities: &[nexus_query_planning::admission::ExecutionCapability],
     ) -> Result<Vec<usize>> {
         let mut devices = match &self.inner.resources {
             Some(resources) => resources
@@ -100,7 +100,7 @@ impl QueryService {
     }
 
     /// Resolves the request's immutable requirement without allowing a missing
-    /// capability proof to pass through an exact device profile as an empty set.
+    /// capability requirement to pass through an exact device profile as an empty set.
     pub(in crate::runtime::query_service) fn resolve_attempt_requirement_for_submission(
         &self,
         attempt_requirement: Option<AttemptRequirement>,
@@ -141,7 +141,7 @@ impl QueryService {
     pub(in crate::runtime::query_service) fn device_supports_capabilities(
         &self,
         device_ordinal: usize,
-        required_capabilities: &[nexus_query_planning::capability::ReservationRequirement],
+        required_capabilities: &[nexus_query_planning::admission::ExecutionCapability],
     ) -> bool {
         match &self.inner.resources {
             Some(resources) => resources.devices.supports_capabilities(device_ordinal, required_capabilities),
@@ -218,7 +218,7 @@ impl QueryService {
 
     pub(in crate::runtime::query_service) fn no_capable_device_error(
         &self,
-        required_capabilities: &[nexus_query_planning::capability::ReservationRequirement],
+        required_capabilities: &[nexus_query_planning::admission::ExecutionCapability],
     ) -> QueryError {
         QueryError::new(
             QueryErrorCode::UnsupportedPlanShape,
@@ -226,7 +226,7 @@ impl QueryService {
             "no installed device supports every required native capability",
         )
         .with_fact("reason", "required_device_capability_unavailable")
-        .with_fact("required_capabilities", AttemptRequirement::capability_labels(required_capabilities))
+        .with_fact("required_capabilities", capability_labels(required_capabilities))
         .with_fact(
             "configured_device_count",
             self.inner.resources.as_ref().map_or(1, |resources| resources.devices.len()),
@@ -237,7 +237,7 @@ impl QueryService {
     pub(in crate::runtime::query_service) fn reject_impossible_requirements(
         &self,
         device_entries: &DeviceAdmissionEntries,
-        required_capabilities: &[nexus_query_planning::capability::ReservationRequirement],
+        required_capabilities: &[nexus_query_planning::admission::ExecutionCapability],
         requested_query_cap_bytes: Option<u64>,
     ) -> Result<()> {
         if device_entries.is_empty() && !required_capabilities.is_empty() {
@@ -661,6 +661,11 @@ pub(super) fn admission_mutex_poisoned_error() -> QueryError {
         "query service admission mutex was poisoned",
     )
     .with_fact("reason", "admission_mutex_poisoned")
+}
+
+/// Formats capability requirements for a structured diagnostic fact.
+fn capability_labels(capabilities: &[nexus_query_planning::admission::ExecutionCapability]) -> String {
+    capabilities.iter().map(|capability| capability.as_str()).collect::<Vec<_>>().join(",")
 }
 
 pub(in crate::runtime::query_service::service) fn query_service_shutdown_timeout(

@@ -39,7 +39,6 @@ cugraph-oracle = [
   "datafusion-nexus/cugraph",
   "datafusion-nexus/bench-support",
 ]
-cugraph-similarity-calibrate = ["dep:cudf", "dep:nexus-query-engine", "nexus-query-engine/cugraph"]
 iceberg-e2e = [
   "dep:datafusion",
   "dep:datafusion-nexus",

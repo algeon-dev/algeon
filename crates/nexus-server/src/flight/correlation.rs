@@ -641,7 +641,7 @@ mod correlation_tests {
         );
         assert!(
             payload.contains(
-                "[backend_device_admission]\ndevice_ordinal\tledger_sequence\tactive_attempts\tlive_grant_bytes\tlive_reserved_bytes\tmax_live_reserved_bytes\tcache_evictable_resident_bytes\tcache_pinned_in_use_bytes\thealth\n0\t0\t0\t0\t0\t0\t0\t0\tOpen\n"
+                "[backend_device_admission]\ndevice_ordinal\tledger_sequence\tactive_attempts\tlive_grant_bytes\tresident_owner_bytes\tmax_resident_owner_bytes\tcache_evictable_resident_bytes\tcache_pinned_in_use_bytes\thealth\n0\t0\t0\t0\t0\t0\t0\t0\tOpen\n"
             ),
             "{payload}"
         );

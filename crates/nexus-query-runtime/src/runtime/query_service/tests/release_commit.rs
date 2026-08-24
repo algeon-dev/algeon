@@ -18,6 +18,154 @@ fn wait_until(deadline: Instant, mut condition: impl FnMut() -> bool, what: &str
     }
 }
 
+fn assert_legal_resident_output(
+    case: &str,
+    build: impl FnOnce(
+        &std::sync::Arc<cudf::Runtime>,
+    ) -> (crate::runtime::resident::GpuDataFrame, arrow::datatypes::SchemaRef),
+) {
+    let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for resident output");
+    let device = service
+        .inner
+        .resources
+        .as_ref()
+        .expect("runtime-backed service")
+        .devices
+        .context_by_ordinal(0)
+        .expect("device context");
+    let backend_lifecycle = BackendLifecycle::new();
+    let attempt = AttemptOwner::begin(
+        BeginAttemptRequest {
+            observation: RuntimeObservationConfig::bounded(32, 32 * 1024),
+            ..BeginAttemptRequest::default()
+        },
+        backend_lifecycle.try_begin_observation().expect("attempt observation permit"),
+        std::sync::Arc::new(AttemptBackendCounters::default()),
+        None,
+    );
+    let attempt_owner = attempt.owner;
+    let completion = attempt.completion.completion();
+    let attempt_handle = attempt_owner.handle();
+    attempt_handle.record_planning_started().expect("planning starts");
+    attempt_handle.record_planning_finished().expect("planning finishes");
+    attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
+    attempt_handle.record_admission_requested().expect("admission requested");
+    let admitted = service
+        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .expect("admission");
+    let context = admitted.acquire_context().expect("attempt context");
+    let runtime = context.context().shared_runtime().expect("attempt runtime");
+    let (frame, schema) = build(&runtime);
+    let bytes = frame.device_allocated_size_bytes().expect("resident output bytes");
+    let owner = context.context().retain_resident_output_owner(bytes).expect("resident owner");
+    let result =
+        crate::runtime::resident::GpuResultHandle::new_with_resident_owner(context.context(), frame, schema, owner)
+            .expect("resident result");
+    drop(runtime);
+    drop(context);
+    attempt_handle
+        .record_admitted(AttemptAdmissionFact {
+            admission_sequence: admitted.admission_sequence(),
+            admission_wait_ns: admitted.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
+            device_ordinal: admitted.device_ordinal(),
+            grant_bytes: admitted.device_budget_bytes(),
+        })
+        .expect("attempt admission fact");
+    attempt_handle.record_physical_execution_started().expect("physical execution starts");
+    attempt_handle.record_gpu_execution_started().expect("GPU execution starts");
+    attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal outcome");
+
+    admitted.finish();
+    drop(admitted);
+    wait_until(Instant::now() + Duration::from_secs(10), || completion.is_ready(), case);
+    let report = completion.try_report().expect("published attempt report");
+    assert_eq!(report.cleanup_failure_count, 0, "{case}");
+    assert!(!matches!(
+        report.capacity_disposition,
+        crate::observability::AttemptCapacityDisposition::RetainedQuarantine
+    ));
+    assert!(matches!(
+        device.ledger().snapshot().expect("ledger snapshot").health,
+        crate::runtime::gpu::DeviceAdmissionHealth::Open
+    ));
+    drop(result);
+}
+
+#[test]
+fn shared_sliced_nested_and_empty_resident_outputs_pass_owner_attestation() {
+    assert_legal_resident_output("shared resident output", |runtime| {
+        let source_schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![
+            arrow::datatypes::Field::new("kept", arrow::datatypes::DataType::Int32, false),
+            arrow::datatypes::Field::new("discarded", arrow::datatypes::DataType::Int32, false),
+        ]));
+        let source_batch = arrow::record_batch::RecordBatch::try_new(
+            source_schema,
+            vec![
+                std::sync::Arc::new(arrow::array::Int32Array::from(vec![1, 2, 3])),
+                std::sync::Arc::new(arrow::array::Int32Array::from(vec![4, 5, 6])),
+            ],
+        )
+        .unwrap();
+        let source = cudf::DataFrame::from_record_batch(runtime.as_ref(), &source_batch).unwrap();
+        let selected = source.select(["kept"]).unwrap();
+        let schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
+            "kept",
+            arrow::datatypes::DataType::Int32,
+            false,
+        )]));
+        (crate::runtime::resident::GpuDataFrame::new(selected), schema)
+    });
+
+    assert_legal_resident_output("sliced resident output", |runtime| {
+        let schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
+            "value",
+            arrow::datatypes::DataType::Int32,
+            false,
+        )]));
+        let batch = arrow::record_batch::RecordBatch::try_new(
+            std::sync::Arc::clone(&schema),
+            vec![std::sync::Arc::new(arrow::array::Int32Array::from(vec![1, 2, 3, 4]))],
+        )
+        .unwrap();
+        let source = cudf::DataFrame::from_record_batch(runtime.as_ref(), &batch).unwrap();
+        let sliced = source.slice(1, 2).unwrap();
+        (crate::runtime::resident::GpuDataFrame::new(sliced), schema)
+    });
+
+    assert_legal_resident_output("nested resident output", |runtime| {
+        use arrow::{
+            array::{ArrayRef, Int32Array, ListArray},
+            buffer::{OffsetBuffer, ScalarBuffer},
+        };
+        let item = std::sync::Arc::new(arrow::datatypes::Field::new("item", arrow::datatypes::DataType::Int32, false));
+        let list = ListArray::new(
+            std::sync::Arc::clone(&item),
+            OffsetBuffer::new(ScalarBuffer::from(vec![0, 2, 3])),
+            std::sync::Arc::new(Int32Array::from(vec![1, 2, 3])),
+            None,
+        );
+        let schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
+            "items",
+            arrow::datatypes::DataType::List(item),
+            false,
+        )]));
+        let batch = arrow::record_batch::RecordBatch::try_new(
+            std::sync::Arc::clone(&schema),
+            vec![std::sync::Arc::new(list) as ArrayRef],
+        )
+        .unwrap();
+        let frame = cudf::DataFrame::from_record_batch(runtime.as_ref(), &batch).unwrap();
+        (crate::runtime::resident::GpuDataFrame::new(frame), schema)
+    });
+
+    assert_legal_resident_output("empty resident output", |runtime| {
+        (
+            crate::runtime::resident::GpuDataFrame::new(runtime.empty_dataframe()),
+            std::sync::Arc::new(arrow::datatypes::Schema::empty()),
+        )
+    });
+}
+
 /// Cleanup-complete without report-ready cannot admit a replacement, and the
 /// published report precedes any visible capacity reuse.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -462,10 +610,6 @@ fn resident_owner_attestation_mismatch_is_a_cleanup_failure() {
         .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
         .expect("admission");
     let grant = admitted.lifetime.memory_grant().expect("memory grant");
-    let published_owner = grant
-        .retain_live_reservation(1)
-        .expect("owner charge succeeds")
-        .expect("positive owner charge has a lease");
     // Leak a real allocation into the attempt domain and forget it. The
     // registry keeps owning it, so freeze must see a live allocation that no
     // published output owner accounts for.
@@ -480,8 +624,14 @@ fn resident_owner_attestation_mismatch_is_a_cleanup_failure() {
         vec![std::sync::Arc::new(arrow::array::Int32Array::from(vec![7; 4096]))],
     )
     .expect("leaked host batch");
-    let leaked_frame =
-        cudf::DataFrame::from_record_batch(leaked_runtime.as_ref(), &leaked_batch).expect("leaked device upload");
+    let leaked_frame = crate::runtime::resident::GpuDataFrame::new(
+        cudf::DataFrame::from_record_batch(leaked_runtime.as_ref(), &leaked_batch).expect("leaked device upload"),
+    );
+    let leaked_bytes = leaked_frame.device_allocated_size_bytes().expect("leaked allocation bytes");
+    let published_owner = grant
+        .retain_resident_owner(leaked_bytes)
+        .expect("equal-byte owner charge succeeds")
+        .expect("positive owner bytes");
     std::mem::forget(leaked_frame);
     drop(leaked_runtime);
     drop(leaked_context);
@@ -507,10 +657,7 @@ fn resident_owner_attestation_mismatch_is_a_cleanup_failure() {
         report.first_cleanup_failure.as_ref().map(crate::observability::CleanupFailureSummary::phase),
         Some(crate::observability::CleanupFailurePhase::FinalValidation)
     );
-    assert_eq!(
-        report.capacity_disposition,
-        crate::observability::AttemptCapacityDisposition::RetainedQuarantine
-    );
+    assert_eq!(report.capacity_disposition, crate::observability::AttemptCapacityDisposition::RetainedQuarantine);
     assert!(matches!(
         device.ledger().snapshot().expect("ledger snapshot").health,
         crate::runtime::gpu::DeviceAdmissionHealth::Closed { .. }
@@ -1160,8 +1307,7 @@ fn disposition_mapping_matches_isolation_rules() {
 /// non-blocking lane acquisition with an internal `lane_exhausted` error.
 #[test]
 fn frozen_resident_publish_never_precedes_the_producer_lane_release() {
-    let service =
-        try_guaranteed_runtime_test_service().expect("runtime-backed service for frozen publish ordering");
+    let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for frozen publish ordering");
     let backend_lifecycle = BackendLifecycle::new();
     let counters = std::sync::Arc::new(AttemptBackendCounters::default());
     let attempt = AttemptOwner::begin(
@@ -1201,12 +1347,13 @@ fn frozen_resident_publish_never_precedes_the_producer_lane_release() {
     let grant = producer.lifetime.memory_grant().expect("producer memory grant");
     let producer_context = producer.acquire_context().expect("producer context");
     let producer_runtime = producer_context.context().shared_runtime().expect("producer runtime");
+    let resident_schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
+        "value",
+        arrow::datatypes::DataType::Int32,
+        false,
+    )]));
     let resident_batch = arrow::record_batch::RecordBatch::try_new(
-        std::sync::Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
-            "value",
-            arrow::datatypes::DataType::Int32,
-            false,
-        )])),
+        std::sync::Arc::clone(&resident_schema),
         vec![std::sync::Arc::new(arrow::array::Int32Array::from(vec![11; 1024]))],
     )
     .expect("resident host batch");
@@ -1214,10 +1361,15 @@ fn frozen_resident_publish_never_precedes_the_producer_lane_release() {
         cudf::DataFrame::from_record_batch(producer_runtime.as_ref(), &resident_batch).expect("resident upload"),
     );
     let resident_bytes = resident_frame.device_allocated_size_bytes().expect("resident output bytes");
-    let resident_owner = grant
-        .retain_live_reservation(resident_bytes)
-        .expect("resident owner charge fits the producer cap")
-        .expect("positive resident charge has a lease");
+    let resident_owner =
+        grant.retain_resident_owner(resident_bytes).expect("resident owner is recorded").expect("positive owner bytes");
+    let resident_result = crate::runtime::resident::GpuResultHandle::new_with_resident_owner(
+        producer_context.context(),
+        resident_frame,
+        resident_schema,
+        Some(resident_owner),
+    )
+    .expect("resident result binds its allocation owner");
     drop(producer_runtime);
     drop(producer_context);
     attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal outcome");
@@ -1268,7 +1420,6 @@ fn frozen_resident_publish_never_precedes_the_producer_lane_release() {
 
     let report = completion.try_report().expect("published producer report");
     assert_eq!(report.capacity_disposition, crate::observability::AttemptCapacityDisposition::FrozenResident);
-    drop(resident_owner);
-    drop(resident_frame);
+    drop(resident_result);
     drop(grant);
 }

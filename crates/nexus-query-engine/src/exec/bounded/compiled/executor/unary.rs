@@ -50,7 +50,6 @@ impl CompiledGpuTaskExecutor<'_> {
                                 &mut self.execution,
                                 node_id,
                                 "compiled_filter",
-                                "compiled_filter_output",
                                 frame,
                                 true,
                                 |context, input, token, metrics| {
@@ -103,13 +102,11 @@ impl CompiledGpuTaskExecutor<'_> {
                             node_id,
                             filter,
                             input_payload.clone_frame(),
-                            input_payload.reservation_bytes(),
                         )? {
                             execute_bounded_generic_unary(
                                 &mut self.execution,
                                 node_id,
                                 "compiled_filter",
-                                "compiled_filter_output",
                                 frame,
                                 true,
                                 |context, input, token, metrics| {
@@ -128,9 +125,7 @@ impl CompiledGpuTaskExecutor<'_> {
                                 &mut self.execution,
                                 node_id,
                                 "compiled_filter",
-                                "compiled_filter_output",
                                 input_payload.clone_frame(),
-                                input_payload.reservation_bytes(),
                                 true,
                                 |context, input, token, metrics| {
                                     crate::exec::operators::execute_filter_with_budget(
@@ -160,7 +155,6 @@ impl CompiledGpuTaskExecutor<'_> {
                             &mut self.execution,
                             node_id,
                             "compiled_projection",
-                            "compiled_projection_output",
                             projection,
                             *frame,
                         )
@@ -202,10 +196,8 @@ impl CompiledGpuTaskExecutor<'_> {
                             &mut self.execution,
                             node_id,
                             "compiled_projection",
-                            "compiled_projection_output",
                             projection,
                             input_payload.clone_frame(),
-                            input_payload.reservation_bytes(),
                         )
                         .map(CompiledGpuResource::new)
                     }

@@ -101,7 +101,6 @@ pub struct ExecutionBudgetReport {
     retained_bytes: Option<usize>,
     output_bytes: Option<usize>,
     output_rows: Option<usize>,
-    unresolved_contract: Option<Cow<'static, str>>,
     context_facts: BTreeMap<String, String>,
 }
 
@@ -120,7 +119,6 @@ impl ExecutionBudgetReport {
             retained_bytes: None,
             output_bytes: None,
             output_rows: None,
-            unresolved_contract: None,
             context_facts: BTreeMap::new(),
         }
     }
@@ -144,11 +142,6 @@ impl ExecutionBudgetReport {
 
     pub(crate) fn with_output_rows(mut self, output_rows: usize) -> Self {
         self.output_rows = Some(output_rows);
-        self
-    }
-
-    pub(crate) fn with_unresolved_contract(mut self, unresolved_contract: &'static str) -> Self {
-        self.unresolved_contract = Some(Cow::Borrowed(unresolved_contract));
         self
     }
 
@@ -196,10 +189,6 @@ impl ExecutionBudgetReport {
 
     pub fn output_rows(&self) -> Option<usize> {
         self.output_rows
-    }
-
-    pub fn unresolved_contract(&self) -> Option<&str> {
-        self.unresolved_contract.as_deref()
     }
 
     pub fn context_facts(&self) -> &BTreeMap<String, String> {

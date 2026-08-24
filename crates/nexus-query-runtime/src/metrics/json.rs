@@ -5,15 +5,15 @@ use nexus_query_planning::{
         BuildMaterializationBoundary, ExecutionBoundaryPolicy, ProbeExecutionBoundary, ResultMaterializationBoundary,
         SourceReadBoundary,
     },
-    graph_memory::{GraphClaimCalibrationRow, GraphReservationReport},
+    graph_observation::GraphMeasuredPeakRow,
 };
 use serde_json::{Map, Value, json};
 
 use super::{
     AggregateStrategyDecisionMetrics, BudgetedExecutionEvent, CompiledTaskId, DynamicFilterRuntimeMetrics,
-    GraphAlgorithmRuntimeMetrics, JoinOperatorMetrics, JoinStrategyDecisionMetrics, MemoryReservationEvent,
-    OperatorMetrics, PlanNodeId, PlanTaskMapping, QueryId, QueryMetrics, SourceReadParquetEvidenceMetrics,
-    SourceReadRuntimeMetrics, TaskOperatorMetrics, TaskRuntimeMetrics, TraceId,
+    GraphAlgorithmRuntimeMetrics, JoinOperatorMetrics, JoinStrategyDecisionMetrics, OperatorMetrics, PlanNodeId,
+    PlanTaskMapping, QueryId, QueryMetrics, SourceReadParquetEvidenceMetrics, SourceReadRuntimeMetrics,
+    TaskOperatorMetrics, TaskRuntimeMetrics, TraceId,
 };
 
 impl QueryMetrics {
@@ -32,14 +32,12 @@ impl QueryMetrics {
             "descriptors": Self::descriptors().iter().map(|descriptor| descriptor.to_json()).collect::<Vec<_>>(),
             "metrics": self.described_metrics_json(),
             "rows": {
-                "memory_reservations": self.reservation_events.iter().map(MemoryReservationEvent::to_json).collect::<Vec<_>>(),
                 "budgeted_executions": self.budgeted_execution_events.iter().map(BudgetedExecutionEvent::to_json).collect::<Vec<_>>(),
                 "operators": self.operators.iter().map(OperatorMetrics::to_json).collect::<Vec<_>>(),
-                "graph_reservations": self.graph_reservation_rows.iter().map(GraphReservationReport::to_json).collect::<Vec<_>>(),
                 "graph_claim_calibration": self
                     .graph_claim_calibration_rows
                     .iter()
-                    .map(GraphClaimCalibrationRow::to_json)
+                    .map(GraphMeasuredPeakRow::to_json)
                     .collect::<Vec<_>>(),
                 "graph_runtime": self.graph_algorithm_runtime_rows.iter().map(GraphAlgorithmRuntimeMetrics::to_json).collect::<Vec<_>>(),
                 "task_operators": self.task_operator_metrics.values().map(TaskOperatorMetrics::to_json).collect::<Vec<_>>(),
@@ -102,16 +100,10 @@ impl QueryMetrics {
                 self.execution_boundary_policy.result_materialization(),
                 ResultMaterializationBoundary::ExplicitSink,
             )),
-            "reservation_requested_bytes" => json!(self.reservation_requested_bytes),
-            "reservation_granted_bytes" => json!(self.reservation_granted_bytes),
-            "reservation_live_peak_bytes" => json!(self.reservation_live_peak_bytes),
-            "reservation_denied_count" => json!(self.reservation_denied_count),
-            "max_task_reservation_bytes" => json!(self.max_task_reservation_bytes),
             "max_task_observed_peak_bytes" => optional_u64_json(self.max_task_observed_peak_bytes),
             "max_task_observed_peak_bytes_observed" => json!(self.max_task_observed_peak_bytes.is_some()),
             "max_task_retained_bytes" => optional_u64_json(self.max_task_retained_bytes),
             "max_task_retained_bytes_observed" => json!(self.max_task_retained_bytes.is_some()),
-            "native_graph_reservation_rows" => json!(self.graph_reservation_rows.len()),
             "native_graph_claim_calibration_rows" => json!(self.graph_claim_calibration_rows.len()),
             "native_graph_runtime_rows" => json!(self.graph_algorithm_runtime_rows.len()),
             "native_task_operator_rows" => json!(self.task_operator_metrics.len()),
@@ -150,7 +142,6 @@ impl QueryMetrics {
             "read_columns" => json!(self.read_columns),
             "retry_count" => json!(self.retry_count),
             "retry_resource_exhausted_count" => json!(self.retry_resource_exhausted_count),
-            "retry_reservation_failure_count" => json!(self.retry_reservation_failure_count),
             "dynamic_filter_produced_count" => json!(self.dynamic_filter_produced_count),
             "dynamic_filter_skipped_count" => json!(self.dynamic_filter_skipped_count),
             "dynamic_filter_applied_count" => json!(self.dynamic_filter_applied_count),
@@ -213,38 +204,6 @@ impl QueryMetrics {
     }
 }
 
-impl MemoryReservationEvent {
-    /// Serializes this reservation timeline event as named JSON.
-    pub fn to_json(&self) -> Value {
-        json!({
-            "query_id": optional_query_id(self.query_id.as_ref()),
-            "reservation_kind": self.reservation_kind.as_str(),
-            "memory_space": self.memory_space.to_string(),
-            "memory_boundary": self.memory_boundary,
-            "action": self.action.as_str(),
-            "requested_bytes": self.requested_bytes,
-            "granted_bytes": self.granted_bytes,
-            "charged_delta_bytes": i128_json(self.charged_delta_bytes),
-            "current_reserved_bytes": self.current_reserved_bytes,
-            "budget_bytes": self.budget_bytes,
-            "outcome": self.outcome.as_str(),
-            "node_id": optional_plan_node_id(self.node_id.as_ref()),
-            "stage": self.stage,
-            "chunk_index": self.chunk_index,
-            "file_index": self.file_index,
-            "path": self.path,
-            "row_groups": self.row_groups,
-            "attempt": self.attempt,
-            "max_attempts": self.max_attempts,
-            "compiled_task_id": optional_compiled_task_id(self.compiled_task_id.as_ref()),
-            "resident_resource_id": self.resident_resource_id,
-            "source_read_contract_quality": self.source_read_contract_quality,
-            "source_read_planning_bytes": self.source_read_planning_bytes,
-            "source_read_estimated_bytes": self.source_read_estimated_bytes,
-        })
-    }
-}
-
 impl BudgetedExecutionEvent {
     /// Serializes this lower-level budget report as named JSON.
     pub fn to_json(&self) -> Value {
@@ -259,7 +218,6 @@ impl BudgetedExecutionEvent {
             "retained_bytes": self.retained_bytes,
             "output_bytes": self.output_bytes,
             "output_rows": self.output_rows,
-            "unresolved_contract": self.unresolved_contract,
             "context_facts": self.context_facts,
         })
     }
@@ -348,10 +306,6 @@ impl TaskOperatorMetrics {
             "operator_kind": self.operator_kind,
             "task_count": self.task_count,
             "elapsed_ns": duration_ns(self.elapsed_time),
-            "reservation_requested_bytes": self.reservation_requested_bytes,
-            "reservation_granted_bytes": self.reservation_granted_bytes,
-            "reservation_released_bytes": self.reservation_released_bytes,
-            "reservation_live_peak_bytes": self.reservation_live_peak_bytes,
             "max_observed_peak_bytes": self.max_observed_peak_bytes,
             "max_retained_bytes": self.max_retained_bytes,
         })
@@ -366,10 +320,6 @@ impl TaskRuntimeMetrics {
             "compiled_task_id": self.compiled_task_id,
             "operator_kind": self.operator_kind,
             "elapsed_ns": duration_ns(self.elapsed_time),
-            "reservation_requested_bytes": self.reservation_requested_bytes,
-            "reservation_granted_bytes": self.reservation_granted_bytes,
-            "reservation_released_bytes": self.reservation_released_bytes,
-            "reservation_live_peak_bytes": self.reservation_live_peak_bytes,
             "max_observed_peak_bytes": self.max_observed_peak_bytes,
             "max_retained_bytes": self.max_retained_bytes,
         })
@@ -535,10 +485,6 @@ fn optional_u64_json(value: Option<u64>) -> Value {
 
 fn duration_ns(value: std::time::Duration) -> u64 {
     value.as_nanos().min(u128::from(u64::MAX)) as u64
-}
-
-fn i128_json(value: i128) -> Value {
-    i64::try_from(value).map_or_else(|_| json!(value.to_string()), |value| json!(value))
 }
 
 fn facts_json(facts: &BTreeMap<String, String>) -> Value {

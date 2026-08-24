@@ -43,14 +43,12 @@ pub(super) fn execute_pagerank(
         Ok(GraphAlgorithmExecutionResult {
             frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
             algorithm_metadata,
-            budget_observations: Vec::new(),
             cache_scope_peak_bytes: None,
         })
     };
     {
         run_with_accounted_resident_cugraph_graph::<cugraph::Transposed, _>(
             context,
-            inputs.graph_memory_limit_bytes,
             edges,
             options,
             resident_key,
@@ -92,7 +90,6 @@ pub(super) fn execute_personalized_pagerank(
 
     run_with_cugraph_graph::<cugraph::Transposed, _>(
         context,
-        inputs.graph_memory_limit_bytes,
         edges,
         options,
         "datafusion_nexus_cugraph_personalized_pagerank",
@@ -171,7 +168,6 @@ pub(super) fn execute_eigenvector_centrality(
 
     run_with_cugraph_graph::<cugraph::Transposed, _>(
         context,
-        inputs.graph_memory_limit_bytes,
         edges,
         options,
         "datafusion_nexus_cugraph_eigenvector_centrality",
@@ -189,7 +185,6 @@ pub(super) fn execute_eigenvector_centrality(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
-                budget_observations: Vec::new(),
                 cache_scope_peak_bytes: None,
             })
         },
@@ -218,7 +213,6 @@ pub(super) fn execute_hits(
 
     run_with_cugraph_graph::<cugraph::Transposed, _>(
         context,
-        inputs.graph_memory_limit_bytes,
         edges,
         options,
         "datafusion_nexus_cugraph_hits",
@@ -249,7 +243,6 @@ pub(super) fn execute_hits(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
-                budget_observations: Vec::new(),
                 cache_scope_peak_bytes: None,
             })
         },
@@ -288,7 +281,6 @@ pub(super) fn execute_betweenness_centrality(
 
     run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
-        inputs.graph_memory_limit_bytes,
         edges,
         options,
         "datafusion_nexus_cugraph_betweenness_centrality",
@@ -323,7 +315,6 @@ pub(super) fn execute_betweenness_centrality(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
-                budget_observations: Vec::new(),
                 cache_scope_peak_bytes: None,
             })
         },
@@ -362,7 +353,6 @@ pub(super) fn execute_edge_betweenness_centrality(
 
     run_with_cugraph_graph::<cugraph::Forward, _>(
         context,
-        inputs.graph_memory_limit_bytes,
         edges,
         options,
         "datafusion_nexus_cugraph_edge_betweenness_centrality",
@@ -397,7 +387,6 @@ pub(super) fn execute_edge_betweenness_centrality(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
-                budget_observations: Vec::new(),
                 cache_scope_peak_bytes: None,
             })
         },
@@ -553,7 +542,6 @@ pub(super) fn execute_katz_centrality(
 
     run_with_cugraph_graph::<cugraph::Transposed, _>(
         context,
-        inputs.graph_memory_limit_bytes,
         edges,
         options,
         "datafusion_nexus_cugraph_katz_centrality",
@@ -571,7 +559,6 @@ pub(super) fn execute_katz_centrality(
             Ok(GraphAlgorithmExecutionResult {
                 frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
                 algorithm_metadata,
-                budget_observations: Vec::new(),
                 cache_scope_peak_bytes: None,
             })
         },
@@ -613,7 +600,6 @@ where
     Ok(GraphAlgorithmExecutionResult {
         frame: normalize_graph_result_schema(frame, &spec.output_schema)?,
         algorithm_metadata,
-        budget_observations: Vec::new(),
         cache_scope_peak_bytes: None,
     })
 }

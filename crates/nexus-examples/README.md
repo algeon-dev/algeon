@@ -228,11 +228,8 @@ server config key, and `NEXUS_ICEBERG_REST_WAREHOUSE` is not read by the REST
 catalog path. If startup reports `AWS_REGION is required for Glue Iceberg`, the
 server did not see `NEXUS_ICEBERG_CATALOG_KIND=rest`.
 
-> **cuVS note.** The example is intentionally unsuitable for current `cuvs_*`
-> execution: until cuVS has a bounded peak-memory preflight, its calls reject
-> locally with structured `unsupported_operator`. Building with
-> `--features cuvs` registers the `cuvs_*` table functions so discovery and
-> planning surfaces can list them.
+> **cuVS note.** Building with `--features cuvs` registers and executes the
+> `cuvs_*` table functions inside the backend-managed query memory domain.
 
 ### Pipelines
 

@@ -315,27 +315,6 @@ pub struct cudf_arrow_device_array_handle_state {
 pub struct cudf_ast_expression_handle_state {
     _unused: [u8; 0],
 }
-#[doc = " Flat source-column metadata for the DONT_CHECK gather preflight."]
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct cudf_gather_fixed_width_column_metadata_t {
-    pub type_id: cudf_type_id_t,
-    pub nullable: i32,
-    pub num_children: i32,
-}
-#[doc = " Allocation components for the flat fixed-width DONT_CHECK gather path."]
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct cudf_gather_fixed_width_dont_check_preflight_result_t {
-    pub gather_map_bytes: u64,
-    pub output_data_bytes: u64,
-    pub output_null_mask_bytes: u64,
-    pub target_mask_pointer_array_bytes: u64,
-    pub source_table_device_view_bytes: u64,
-    pub valid_count_array_bytes: u64,
-    pub native_temporary_workspace_bytes: u64,
-    pub active_phase_peak_bytes: u64,
-}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct cudf_device_buffer_handle_state {
@@ -367,15 +346,6 @@ pub struct cudf_reduce_aggregation_handle_state {
 #[derive(Debug, Copy, Clone)]
 pub struct cudf_scan_aggregation_handle_state {
     _unused: [u8; 0],
-}
-#[doc = " Allocation-free workspace bytes for a fixed-width, single-column distinct count."]
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct cudf_distinct_count_workspace_preflight_result_t {
-    pub preprocessing_retained_bytes: u64,
-    pub static_set_storage_bytes: u64,
-    pub insertion_count_bytes: u64,
-    pub active_workspace_peak_bytes: u64,
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -588,25 +558,6 @@ pub struct cudf_query_memory_domain_allocation_t {
     pub aligned_bytes: usize,
     pub alignment: usize,
     pub reserved: [u64; 2usize],
-}
-#[doc = " Allocation components for the unstable one-key radix sorted-order path.\n\n All fields are requested bytes. `key_input_bytes` is zero for integral and\n chrono keys and the transformed float-pair input for floating keys.\n `active_phase_peak_bytes` is the checked sum of the five components, which\n are co-resident during execution."]
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct cudf_sorted_order_radix_preflight_result_t {
-    pub key_input_bytes: u64,
-    pub key_output_bytes: u64,
-    pub sequence_bytes: u64,
-    pub temporary_workspace_bytes: u64,
-    pub retained_order_bytes: u64,
-    pub active_phase_peak_bytes: u64,
-}
-#[repr(C)]
-#[derive(Debug, Copy, Clone)]
-pub struct cudf_sorted_order_lexicographic_preflight_result_t {
-    pub comparator_state_bytes: u64,
-    pub temporary_workspace_bytes: u64,
-    pub retained_order_bytes: u64,
-    pub active_phase_peak_bytes: u64,
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -995,6 +946,12 @@ unsafe extern "C" {
         handle: cudf_memory_resource_handle,
         out: *mut cudf_memory_resource_usage_t,
     ) -> cudf_status_t;
+    #[doc = " Return the hard allocation cap remaining after aligned live charges.\n\n Budget-tracking and query-domain member resources ignore `cuda_stream`. A\n device-manager resource resolves the active member bound to `cuda_stream`.\n Query-domain resources report their parent domain's remaining cap.\n Returns `CUDF_ERROR_UNSUPPORTED` when the resource has no hard cap."]
+    pub fn cudf_memory_resource_effective_device_memory(
+        handle: cudf_memory_resource_handle,
+        cuda_stream: *mut core::ffi::c_void,
+        out: *mut usize,
+    ) -> cudf_status_t;
     pub fn cudf_memory_resource_pool_usage(
         handle: cudf_memory_resource_handle,
         out: *mut cudf_memory_pool_usage_t,
@@ -1195,6 +1152,13 @@ unsafe extern "C" {
     ) -> cudf_status_t;
     #[doc = " Return the total device allocation footprint of this owning column.\n\n This forwards to libcudf `column::alloc_size()` and includes padding."]
     pub fn cudf_column_device_allocated_size(handle: cudf_column_handle, out: *mut usize) -> cudf_status_t;
+    #[doc = " Copy the base device pointers retained by this owning column.\n\n Pass `out == NULL` and `capacity == 0` to query the required count. Shared\n or nested buffers are returned once per owning column."]
+    pub fn cudf_column_backing_allocation_pointers(
+        handle: cudf_column_handle,
+        out: *mut *mut core::ffi::c_void,
+        capacity: usize,
+        count: *mut usize,
+    ) -> cudf_status_t;
     #[doc = " Destroy an owning column handle.\n\n Ownership is consumed on call, including on failure. CUDF_SUCCESS means\n cleanup completed; any error means the allocation was quarantined and the\n handle must not be reused or destroyed again."]
     pub fn cudf_column_destroy(handle: cudf_column_handle) -> cudf_status_t;
     #[doc = " Get an immutable view of a column. The view is heap-allocated and must\n be freed with cudf_column_view_destroy. The view borrows from `handle`\n and must not outlive it."]
@@ -1562,15 +1526,6 @@ unsafe extern "C" {
         options: *const cudf_exec_options_t,
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
-    #[doc = " Query flat fixed-width or bounded-string DONT_CHECK gather allocations.\n\n No stream, memory resource, column, or device allocation is required.\n `columns` may be NULL only when `num_columns == 0`; each `nullable` value\n must be 0 or 1, and each `num_children` must be non-negative. String data\n requires a hard `output_data_bytes_upper_bound`."]
-    pub fn cudf_gather_fixed_width_dont_check_preflight(
-        output_rows: i64,
-        output_data_bytes_upper_bound: u64,
-        columns: *const cudf_gather_fixed_width_column_metadata_t,
-        num_columns: i32,
-        device: i32,
-        out: *mut cudf_gather_fixed_width_dont_check_preflight_result_t,
-    ) -> cudf_status_t;
     #[doc = " Gather rows from a table by index with explicit execution options.\n\n `gather_map` must be a non-nullable INT32 column of row indices.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive the returned table."]
     pub fn cudf_gather_ex(
         input: cudf_table_view_handle,
@@ -1831,14 +1786,6 @@ unsafe extern "C" {
     ) -> cudf_status_t;
     #[doc = " Probe whether the cuFile driver can be opened by this process.\n\n This is a deployment capability probe. It does not register any file or\n buffer, and it closes the driver before returning on success."]
     pub fn cudf_gds_driver_available() -> cudf_status_t;
-    #[doc = " Compute the native workspace bound for a global distinct count without allocating device memory.\n Only one non-null, non-nested, fixed-width key column is supported."]
-    pub fn cudf_distinct_count_workspace_preflight(
-        num_rows: i64,
-        key_type: cudf_type_id_t,
-        null_count: i64,
-        key_count: i32,
-        out: *mut cudf_distinct_count_workspace_preflight_result_t,
-    ) -> cudf_status_t;
     #[doc = " Create a simple reduce aggregation."]
     pub fn cudf_reduce_aggregation_create(
         kind: cudf_reduce_aggregation_kind_t,
@@ -2746,14 +2693,6 @@ unsafe extern "C" {
         out: *mut usize,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
-    #[doc = " Return checked hash-table and retained key-view storage bytes from build\n metadata only. This owner preflight does not construct a table or allocate\n device memory. `rows` must fit `cudf::size_type`, `load_factor` must be in\n `(0, 1]`, and `flat_device_view_count` is the number of flat key views."]
-    pub fn cudf_hash_join_metadata_only_owner_preflight_ex(
-        rows: usize,
-        load_factor: f64,
-        flat_device_view_count: usize,
-        hash_table_storage_bytes: *mut usize,
-        retained_key_view_storage_bytes: *mut usize,
-    ) -> cudf_status_t;
     #[doc = " Destroy a reusable hash-join handle under its build-time device and memory\n resource. Ownership is consumed on call; failure quarantines it."]
     pub fn cudf_hash_join_destroy(handle: cudf_hash_join_handle) -> cudf_status_t;
     #[doc = " Return device bytes retained by a reusable hash-join build artifact.\n\n This excludes the build table viewed by the handle and any per-probe\n output/index allocations."]
@@ -3056,28 +2995,6 @@ unsafe extern "C" {
         needles: cudf_column_view_handle,
         out: *mut cudf_column_handle,
         options: *const cudf_exec_options_t,
-    ) -> cudf_status_t;
-    #[doc = " Metadata-only preflight for the unstable one-key radix sorted-order path.\n\n `key_type` uses the `cudf_type_id_t` discriminants. The selected candidate\n device is activated only for the CUB temporary-storage query and restored\n before return. No stream, memory resource, column, or device allocation is\n required."]
-    pub fn cudf_sorted_order_radix_preflight(
-        num_rows: i64,
-        key_type: cudf_type_id_t,
-        null_count: i64,
-        key_count: i32,
-        stable: i32,
-        key_order: cudf_order_t,
-        device: i32,
-        out: *mut cudf_sorted_order_radix_preflight_result_t,
-    ) -> cudf_status_t;
-    pub fn cudf_sorted_order_lexicographic_preflight(
-        num_rows: i64,
-        key_types: *const cudf_type_id_t,
-        null_counts: *const i64,
-        key_orders: *const cudf_order_t,
-        null_precedence: *const cudf_null_order_t,
-        key_count: i32,
-        stable: i32,
-        device: i32,
-        out: *mut cudf_sorted_order_lexicographic_preflight_result_t,
     ) -> cudf_status_t;
     #[doc = " Sort with explicit execution context.\n\n `column_order` and `null_precedence` are arrays of size `num_keys`\n (i.e., the number of columns in `input`). Pass NULL for defaults\n (all ASCENDING, nulls AFTER).\n `options` must be non-NULL and carry an explicit device, stream, and memory\n resource. `options->mr` must outlive the returned table."]
     pub fn cudf_sort_ex(

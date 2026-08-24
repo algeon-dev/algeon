@@ -3,9 +3,8 @@ use std::time::Instant;
 use super::{
     BoundedExecutionAttempt, BoundedJoinSideFrame, CompiledJoinIndices, CompiledJoinMaterializationRequest,
     CompiledKeylessWork, DataFrame, ExecutionOverrides, JoinNode, JoinSide, KeylessConditionalJoinKind, NodeId,
-    QueryError, ReservationKind, ResidentGpuFrame, Result, bounded_join_request, dataframe_predicate_join_options,
-    execution_overrides, join_index_error, lower_join_residual_predicate, materialize_compiled_indices_output,
-    residual_input_columns,
+    QueryError, ResidentGpuFrame, Result, dataframe_predicate_join_options, execution_overrides, join_index_error,
+    lower_join_residual_predicate, materialize_compiled_indices_output, residual_input_columns,
 };
 
 pub(super) fn execute_compiled_keyless_join_materialize(
@@ -22,9 +21,7 @@ pub(super) fn execute_compiled_keyless_join_materialize(
     let predicate = lower_join_residual_predicate(execution.context(), node, &residual_columns)?;
     let options = dataframe_predicate_join_options(&residual_columns);
     let timer = Instant::now();
-    let (size_data_bytes, expected_output_rows, gather_map_reservation_bytes, work) = if join_type
-        == KeylessConditionalJoinKind::Full
-    {
+    let (size_data_bytes, expected_output_rows, work) = if join_type == KeylessConditionalJoinKind::Full {
         let size_data = left
             .frame
             .with_execution(&overrides)
@@ -39,32 +36,8 @@ pub(super) fn execute_compiled_keyless_join_materialize(
             )
             .with_fact("join_type", node.spec.join_type)
         })?;
-        let size_data_reservation = execution.try_reserve(bounded_join_request(
-            ReservationKind::MixedSizeData,
-            "join_mixed_size_data",
-            size_data_bytes,
-            execution.reservations().budget(),
-            node_id,
-        ))?;
         execution.metrics_mut().record_mixed_join_size_data_bytes(size_data_bytes);
-        let gather_map_reservation_bytes =
-            size_data.gather_map_reservation_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
-                QueryError::from_cudf(
-                    "nexus_query_engine.bounded.join.conditional_full_gather_map_reservation",
-                    "failed to size compiled conditional full join gather maps",
-                    error,
-                )
-                .with_fact("join_type", node.spec.join_type)
-            })?;
-        (
-            size_data_bytes,
-            expected_output_rows,
-            gather_map_reservation_bytes,
-            CompiledKeylessWork::Full {
-                size_data: Box::new(size_data),
-                size_data_reservation: Box::new(size_data_reservation),
-            },
-        )
+        (size_data_bytes, expected_output_rows, CompiledKeylessWork::Full { size_data: Box::new(size_data) })
     } else {
         let output_size = keyless_conditional_join_output_size(
             join_type,
@@ -75,21 +48,11 @@ pub(super) fn execute_compiled_keyless_join_materialize(
             &overrides,
             node,
         )?;
-        let gather_map_reservation_bytes =
-            keyless_conditional_join_gather_map_reservation_size_bytes(join_type, node, output_size)?;
-        (0, output_size as u64, gather_map_reservation_bytes, CompiledKeylessWork::Sized { output_size, options })
+        (0, output_size as u64, CompiledKeylessWork::Sized { output_size, options })
     };
-    let gather_map_reservation = execution.try_reserve(bounded_join_request(
-        ReservationKind::GatherMap,
-        "join_gather_map",
-        gather_map_reservation_bytes,
-        execution.reservations().budget(),
-        node_id,
-    ))?;
     let indices = match work {
-        CompiledKeylessWork::Full { size_data, size_data_reservation } => {
+        CompiledKeylessWork::Full { size_data } => {
             let indices = (*size_data).materialize_indices_in(&overrides);
-            execution.release(*size_data_reservation);
             let indices = indices.map_err(|error| join_index_error(error, node))?;
             CompiledJoinIndices::Pair { left: indices.left().clone(), right: indices.right().clone() }
         },
@@ -104,6 +67,7 @@ pub(super) fn execute_compiled_keyless_join_materialize(
             node,
         )?,
     };
+    let gather_map_bytes = indices.device_allocated_size_bytes(node)?;
     materialize_compiled_indices_output(
         execution,
         node,
@@ -120,7 +84,7 @@ pub(super) fn execute_compiled_keyless_join_materialize(
             mixed_size_data_bytes: size_data_bytes,
             filtered_probe_state_bytes: 0,
             expected_output_rows,
-            gather_map_reservation,
+            gather_map_bytes,
             timer,
             one_shot_index_bytes: None,
         },
@@ -154,29 +118,6 @@ pub(super) fn keyless_conditional_join_output_size(
     result.map_err(|error| join_index_error(error, node))
 }
 
-pub(super) fn keyless_conditional_join_gather_map_reservation_size_bytes(
-    join_type: KeylessConditionalJoinKind,
-    node: &JoinNode,
-    output_size: usize,
-) -> Result<u64> {
-    let result = match join_type {
-        KeylessConditionalJoinKind::Inner | KeylessConditionalJoinKind::Left => {
-            cudf::DataFrameJoinPairIndices::reservation_size_bytes_for_len(output_size)
-        },
-        KeylessConditionalJoinKind::Full => unreachable!("conditional full joins use retained size data"),
-        KeylessConditionalJoinKind::LeftSemi | KeylessConditionalJoinKind::LeftAnti => {
-            cudf::DataFrameJoinIndices::reservation_size_bytes_for_len(output_size)
-        },
-    };
-    result.map(|bytes| bytes as u64).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.bounded.join.gather_map_reservation",
-            "failed to size compiled conditional join gather maps",
-            error,
-        )
-        .with_fact("join_type", node.spec.join_type)
-    })
-}
 #[expect(
     clippy::too_many_arguments,
     reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"

@@ -4,7 +4,7 @@ use arrow::{
     array::{ArrayRef, Int64Array},
     datatypes::{DataType, Field, Schema},
 };
-use datafusion_nexus::native_report::{NativeGraphReservationMetricRow, NativeGraphRuntimeMetricRow};
+use datafusion_nexus::native_report::NativeGraphRuntimeMetricRow;
 
 use super::*;
 
@@ -190,47 +190,12 @@ fn query_row_absorbs_graph_calibration_fields() {
     };
     let mut row = QueryRow::new(&config, &request, 0, 0);
     row.absorb_metrics(&NativeDataFusionExecutionMetrics {
-        graph_reservation_rows: vec![NativeGraphReservationMetricRow {
+        graph_runtime_rows: vec![NativeGraphRuntimeMetricRow {
             node_id: "g0".into(),
             algorithm: "triangle_count_all".into(),
-            class: "workspace_heavy_data_dependent".into(),
-            outcome: "admitted".into(),
-            raw_input_edges: Some(45),
-            input_edges: 90,
-            vertex_upper_bound: 180,
-            vertex_estimate: 12,
-            vertex_estimate_source: "runtime_exact_distinct".into(),
-            vertex_width_bytes: 8,
-            weight_width_bytes: Some(8),
-            pair_rows: None,
-            pair_vertex_width_bytes: None,
-            pair_cardinality_source: "none".into(),
-            pair_cardinality_admission_mode: "none".into(),
-            has_edge_id: false,
+            construction_policy: "raw_libcugraph".into(),
             directed: false,
             renumber: true,
-            construction_policy: "raw_libcugraph".into(),
-            edge_normalize_inserted: true,
-            calibration_source: "raw_input_edges".into(),
-            seed_count: None,
-            seed_mode: "none".into(),
-            data_dependent: true,
-            model_requested_bytes: 2048,
-            requested_bytes: 4096,
-            budget_bytes: Some(8192),
-            graph_model_error_ratio: Some("2.000".into()),
-            measured_peak_bytes: Some(1024),
-            graph_statistics_exact_vertices: Some(12),
-            graph_statistics_degree_max: Some(8),
-            graph_statistics_degree_p99: Some(8),
-            graph_statistics_sum_min_degree_oriented: Some(123),
-            graph_statistics_oriented_edge_count: Some(45),
-            graph_statistics_peak_chunk_min_degree_sum: Some(45),
-            graph_statistics_sum_out_degree: Some(90),
-            reason: "none".into(),
-        }],
-        graph_runtime_rows: vec![NativeGraphRuntimeMetricRow {
-            algorithm: "triangle_count_all".into(),
             elapsed_ns: 1_000_000,
             graph_peak_bytes: Some(1024),
             algorithm_metadata: "iterations=1".into(),
@@ -242,22 +207,9 @@ fn query_row_absorbs_graph_calibration_fields() {
     let tsv = row.to_tsv();
     let fields = tsv.split('\t').collect::<Vec<_>>();
     let field = |name: &str| fields[QUERY_COLUMNS.iter().position(|column| *column == name).unwrap()];
-    assert_eq!(field("graph_raw_input_edges"), "45");
-    assert_eq!(field("graph_vertex_width_bytes"), "8");
-    assert_eq!(field("graph_weight_width_bytes"), "8");
     assert_eq!(field("graph_directed"), "false");
-    assert_eq!(field("graph_edge_normalize_inserted"), "true");
-    assert_eq!(field("graph_calibration_source"), "raw_input_edges");
-    assert_eq!(field("graph_seed_mode"), "none");
-    assert_eq!(field("graph_model_requested_bytes"), "2048");
-    assert_eq!(field("graph_model_error_ratio"), "2.000");
-    assert_eq!(field("graph_statistics_exact_vertices"), "12");
-    assert_eq!(field("graph_statistics_degree_max"), "8");
-    assert_eq!(field("graph_statistics_degree_p99"), "8");
-    assert_eq!(field("graph_statistics_sum_min_degree_oriented"), "123");
-    assert_eq!(field("graph_statistics_oriented_edge_count"), "45");
-    assert_eq!(field("graph_statistics_peak_chunk_min_degree_sum"), "45");
-    assert_eq!(field("graph_statistics_sum_out_degree"), "90");
+    assert_eq!(field("graph_renumber"), "true");
+    assert_eq!(field("graph_construction_policy"), "raw_libcugraph");
     assert_eq!(field("graph_peak_bytes"), "1024");
 }
 

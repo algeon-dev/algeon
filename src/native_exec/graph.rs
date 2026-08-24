@@ -35,7 +35,7 @@ use datafusion::{
     common::{DataFusionError, Result as DataFusionResult},
     physical_plan::ExecutionPlan,
 };
-use nexus_query_engine::{admission::QueryPlanCapabilityProof, graph_memory::GraphMemoryAdmissionEvidence};
+use nexus_query_engine::admission::AttemptCapabilityEvidence;
 #[cfg(feature = "cugraph")]
 use nexus_query_engine::{
     observability::AttemptId,
@@ -58,61 +58,15 @@ const DEFAULT_MAX_BATCH_WIDTH: usize = 32;
 #[cfg(feature = "cugraph")]
 const MAX_BFS_SINGLEFLIGHT_EVENT_SNAPSHOTS: usize = 256;
 
-/// Opaque construction-inclusive and execution-only graph-model output.
-///
-/// The installed profile and ledger still own immutable-grant eligibility and
-/// capacity. The cold estimate may only refine the target inside that range,
-/// through the engine-issued proof that attests the exact graph execution.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct GraphAdmissionModelAsk {
-    cold_model_requested_bytes: u64,
-    warm_model_requested_bytes: u64,
-    cold_model_evidence: GraphMemoryAdmissionEvidence,
-}
-
-impl GraphAdmissionModelAsk {
-    /// Forwards engine-issued graph-model evidence into the adapter-private
-    /// planning/diagnostic path.
-    #[cfg(feature = "cugraph")]
-    pub(crate) fn from_graph_memory_admission_evidence(evidence: GraphMemoryAdmissionEvidence) -> Self {
-        Self {
-            cold_model_requested_bytes: evidence.cold_model_requested_bytes(),
-            warm_model_requested_bytes: evidence.warm_model_requested_bytes(),
-            cold_model_evidence: evidence,
-        }
-    }
-
-    /// Construction-inclusive graph-model estimate retained for planner diagnostics only.
-    #[cfg(all(test, feature = "cugraph"))]
-    pub(crate) fn cold_model_requested_bytes(&self) -> u64 {
-        self.cold_model_requested_bytes
-    }
-
-    /// Execution-only graph-model estimate retained for planner diagnostics only.
-    #[cfg(all(test, feature = "cugraph"))]
-    pub(crate) fn warm_model_requested_bytes(&self) -> u64 {
-        self.warm_model_requested_bytes
-    }
-
-    pub(crate) fn cold_model_evidence(&self) -> &GraphMemoryAdmissionEvidence {
-        &self.cold_model_evidence
-    }
-}
-
 /// Frontend-neutral graph-model diagnostics exposed by a graph execution node.
 ///
-/// Capability proof issuance remains in the adapter planner after it has
+/// Capability evidence issuance remains in the adapter planner after it has
 /// recognized this crate-private execution type; graph frontends do not get a
-/// caller-controlled proof SPI.
+/// caller-controlled evidence SPI.
 pub(crate) trait GraphExecutionPlan: Send + Sync {
     /// Issues capability evidence for the exact native graph fragment this
     /// execution node submits after staging its GPU-resident inputs.
-    fn graph_execution_capability_proof(&self) -> DataFusionResult<QueryPlanCapabilityProof>;
-
-    /// Returns the exact GPU-resident input name through which this graph
-    /// execution root hands its already-live result to a composed native
-    /// host-output passthrough.
-    fn graph_result_input_name(&self) -> &str;
+    fn graph_execution_capability_evidence(&self) -> DataFusionResult<AttemptCapabilityEvidence>;
 
     /// Returns the one fixed-cardinality post-seal metric target for this
     /// graph execution root. The adapter discovers it through this neutral

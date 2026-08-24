@@ -96,7 +96,6 @@ pub(super) fn execute_final_sort_node_with_retry(
     match result {
         Ok(output) => {
             final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
-            final_sort.execution.release(input.reservation);
             stage_guard.finish(Some(output.frame.num_rows() as u64), None);
             Ok(output)
         },
@@ -126,7 +125,6 @@ pub(super) fn execute_final_sort_node_with_retry(
                 }
             } else {
                 final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
-                final_sort.execution.release(input.reservation);
                 let error = final_sort_retry_facts("retry_attempts_exhausted", final_sort.execution.metrics_mut())
                     .attach_to_error(error);
                 stage_guard.fail(&error);
@@ -135,7 +133,6 @@ pub(super) fn execute_final_sort_node_with_retry(
         },
         Err(error) => {
             final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
-            final_sort.execution.release(input.reservation);
             stage_guard.fail(&error);
             Err(error)
         },
@@ -169,7 +166,7 @@ pub(in crate::exec::bounded) fn execute_final_sort_node_from_frame_with_retry(
     match result {
         Ok(output) => {
             final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
-            Ok(ResidentGpuFrame { frame: output.frame, reservation: output.reservation })
+            Ok(ResidentGpuFrame { frame: output.frame, device_bytes: output.device_bytes })
         },
         Err(error) if is_retryable_final_sort_error(&error) => {
             record_final_sort_retry_error(&error, final_sort.execution.metrics_mut());
@@ -198,7 +195,7 @@ pub(in crate::exec::bounded) fn execute_final_sort_node_from_stream_with_retry(
     let timer = Instant::now();
     let mut final_sort = FinalSortExecutor { execution, node_id, sort, max_attempts };
     let result = final_sort.hierarchical_topk_stream(limit, &mut input_stream, 1);
-    input_stream.release_producer_reservations(final_sort.execution);
+    input_stream.release_producer(final_sort.execution);
     final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
     result
 }
@@ -232,20 +229,7 @@ fn final_sort_runtime_facts(
 
 impl FinalSortExecutor<'_, '_> {
     fn final_sort_budget_token(&self, boundary: &'static str, attempt: usize) -> Result<cudf::ExecutionBudgetToken> {
-        self.final_sort_budget_token_for_bytes(boundary, attempt, self.execution.reservations().remaining_bytes())
-    }
-
-    fn final_sort_budget_token_including(
-        &self,
-        boundary: &'static str,
-        attempt: usize,
-        reservation: &ActiveReservation,
-    ) -> Result<cudf::ExecutionBudgetToken> {
-        self.final_sort_budget_token_for_bytes(
-            boundary,
-            attempt,
-            self.execution.reservations().available_bytes_including(reservation),
-        )
+        self.final_sort_budget_token_for_bytes(boundary, attempt, self.execution.device_budget_bytes())
     }
 
     fn final_sort_budget_token_for_bytes(
@@ -261,14 +245,14 @@ impl FinalSortExecutor<'_, '_> {
             .map_err(|error| self.attach_final_sort_resource_facts(error, attempt))
     }
 
-    fn reserve_estimated_final_sort_output(&mut self, output_bytes: u64, attempt: usize) -> Result<ActiveReservation> {
+    fn reserve_estimated_final_sort_output(&mut self, output_bytes: u64, attempt: usize) -> Result<u64> {
         reserve_final_sort_output_bytes(self.execution, self.node_id, output_bytes, attempt, self.max_attempts)
     }
 
     fn finalize_final_sort_output_reservation(
         &mut self,
         frame: GpuDataFrame,
-        reservation: ActiveReservation,
+        reservation: u64,
         attempt: usize,
     ) -> Result<CommittedPartial> {
         finalize_final_sort_output_reservation(
@@ -305,7 +289,7 @@ impl FinalSortExecutor<'_, '_> {
             return Ok(false);
         }
 
-        let input_bytes = input.reservation.bytes();
+        let input_bytes = input.device_bytes();
         let limited_output_bytes = estimate_rows_bytes(estimated_bytes_per_row(input_bytes, input_rows), keep_rows);
         let selective_topk_threshold = input_bytes.div_ceil(2).max(1);
         if limited_output_bytes <= selective_topk_threshold {

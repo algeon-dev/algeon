@@ -88,9 +88,10 @@ impl FixturePreflight {
     ) -> ToolResult<Vec<FixturePreflightArtifact>> {
         match policy {
             FixtureSelectionPolicy::BothKindsExactly if workloads.len() != 2 => {
-                return Err(
-                    FixturePreflightError::selection("P6.4 requires exactly one tpch and one dblp fixture").into()
-                );
+                return Err(FixturePreflightError::selection(
+                    "validation requires exactly one tpch and one dblp fixture",
+                )
+                .into());
             },
             FixtureSelectionPolicy::AtLeastOneKind if workloads.is_empty() => {
                 return Err(FixturePreflightError::selection("a measured run requires at least one fixture").into());
@@ -112,7 +113,7 @@ impl FixturePreflight {
                 && workload.scale != "v12"
             {
                 return Err(FixturePreflightError::selection(
-                    "P6.4 requires the canonical DBLP V12 fixture, not a multi-graph slice",
+                    "validation requires the canonical DBLP V12 fixture, not a multi-graph slice",
                 )
                 .into());
             }
@@ -124,7 +125,7 @@ impl FixturePreflight {
         if policy == FixtureSelectionPolicy::BothKindsExactly
             && kinds != BTreeSet::from([FixtureKind::Tpch, FixtureKind::Dblp])
         {
-            return Err(FixturePreflightError::selection("P6.4 requires both tpch and dblp fixture kinds").into());
+            return Err(FixturePreflightError::selection("validation requires both tpch and dblp fixture kinds").into());
         }
         Ok(preflighted)
     }

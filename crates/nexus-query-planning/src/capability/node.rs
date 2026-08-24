@@ -1,30 +1,24 @@
 //! Per-node capability analysis.
 //!
 //! Produces a [`NodeCapability`] for each [`QueryNode`]: operator kind,
-//! executable decision, produced properties (ordering, partitioning, etc.),
-//! local requirements on inputs, and any local reservation requirements.
-use std::collections::{BTreeMap, BTreeSet};
+//! executable decision, and produced properties such as ordering and residency.
+use std::collections::BTreeMap;
 
 use super::{
     AggregateExpr, AggregateFunction, AggregateSpec, Expr, GroupingSetsSpec, JoinExecutionCapability, JoinNode,
-    JoinSide, KeyedHashJoinStrategy, KeyedHashJoinStrategyDecision, KeylessConditionalJoinKind, LimitNode, NodeId,
-    PlanNode, QueryNode, QueryPlan, ReservationKind, SourceNode, WindowFunction,
-    aggregate::{AggregateStateContract, aggregate_state_contract},
+    JoinSide, KeyedHashJoinStrategyDecision, LimitNode, NodeId, PlanNode, QueryNode, QueryPlan, SourceNode,
     expr::{
         expression_rejection_decision, validate_aggregate_expr_capability, validate_column_expr_capability,
         validate_general_expr_capability, validate_join_residual_expr_capability,
         validate_named_column_expr_capability, validate_post_join_residual_expr_capability, validation_result_decision,
     },
-    hash_join_prebuild_reservation_unsupported_build_key_for_plan, join_node_execution_capability,
-    join_residual_requires_post_join_filter, keyed_filtered_semi_anti_join_capable,
+    join_node_execution_capability, join_residual_requires_post_join_filter,
     keyed_hash_join_strategy_decision_for_plan,
     model::{
-        AggregateGrouping, CapabilityDecision, ContractQuality, NodeCapability, NodeOperator, OrderingRequirement,
-        ProducedProperty, ReservationRequirement, ResidualRequirement, SourceFormatCapability,
+        AggregateGrouping, CapabilityDecision, NodeCapability, NodeOperator, OrderingRequirement, ProducedProperty,
+        ResidualRequirement, SourceFormatCapability,
     },
-    one_shot_equi_join_supported,
-    shape::projection_scalar_setop_shape_decision,
-    validate_local_parquet_source,
+    one_shot_equi_join_supported, validate_local_parquet_source,
 };
 use crate::plan::UnionNode;
 
@@ -34,8 +28,7 @@ pub(super) fn analyze_node(plan: &QueryPlan, node: &QueryNode) -> NodeCapability
     let operator = node_operator(kind);
     let executable = node_executable_decision(plan, node);
     let produced_properties = produced_properties(node);
-    let local_requirements = node_local_requirements(plan, node);
-    NodeCapability { node_id, operator, executable, produced_properties, local_requirements }
+    NodeCapability { node_id, operator, executable, produced_properties }
 }
 
 pub(super) fn node_operator(kind: &PlanNode) -> NodeOperator {
@@ -94,29 +87,11 @@ pub(super) fn source_format_capability(source: &SourceNode) -> SourceFormatCapab
 fn node_executable_decision(plan: &QueryPlan, node: &QueryNode) -> CapabilityDecision {
     match &node.kind {
         PlanNode::Source(source) => source_node_executable_decision(source),
-        PlanNode::Filter(filter) => {
-            // Exact replace-with-backrefs output preflight owns projection
-            // column-input REGEXP_REPLACE only. Filter predicates have no
-            // parallel size API yet, so admission rejects them instead
-            // of launching unpreflighted string expansion under bounded tokens.
-            if filter.predicate.contains_regexp_replace() {
-                CapabilityDecision::rejected(
-                    "unsupported_filter_expression_capability",
-                    [
-                        ("node_id", node.id.to_string()),
-                        ("reason", "regexp_replace_filter_preflight_unavailable".to_string()),
-                        ("required_contract", cudf::REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT.to_string()),
-                        ("expression", filter.predicate.to_string()),
-                    ],
-                )
-            } else {
-                expression_node_decision(
-                    node.id,
-                    "unsupported_filter_expression_capability",
-                    std::iter::once(&filter.predicate),
-                )
-            }
-        },
+        PlanNode::Filter(filter) => expression_node_decision(
+            node.id,
+            "unsupported_filter_expression_capability",
+            std::iter::once(&filter.predicate),
+        ),
         PlanNode::Projection(projection) => {
             let mut decision = expression_node_decision(
                 node.id,
@@ -574,21 +549,6 @@ fn join_node_executable_decision(plan: &QueryPlan, node_id: NodeId, join: &JoinN
                 facts.insert("node_id", node_id.to_string());
                 return CapabilityDecision::Rejected { reason, facts };
             },
-            KeyedHashJoinStrategyDecision::Selected {
-                strategy:
-                    KeyedHashJoinStrategy::ReusableHashEqui
-                    | KeyedHashJoinStrategy::OneShotEqui
-                    | KeyedHashJoinStrategy::PartitionedHashEqui,
-                ..
-            } => {
-                if let Some(mut facts) = hash_join_prebuild_reservation_unsupported_build_key_for_plan(plan, join) {
-                    facts.insert("node_id", node_id.to_string());
-                    return CapabilityDecision::Rejected {
-                        reason: "unsupported_hash_join_pre_build_reservation_capability",
-                        facts,
-                    };
-                }
-            },
             KeyedHashJoinStrategyDecision::Selected { .. } => {},
         }
     }
@@ -1013,249 +973,4 @@ pub(super) fn produced_properties(node: &QueryNode) -> Vec<ProducedProperty> {
         _ => {},
     }
     properties
-}
-
-fn node_local_requirements(plan: &QueryPlan, node: &QueryNode) -> Vec<ReservationRequirement> {
-    match &node.kind {
-        PlanNode::Projection(projection)
-            if plan.sink().input() == node.id
-                && matches!(plan.node(projection.input).map(|input| &input.kind), Some(PlanNode::Limit(limit)) if limit.spec.fetch.is_some()) =>
-        {
-            let mut requirements = vec![ReservationRequirement::modeled(
-                ReservationKind::OperatorOutput,
-                "final_projection_output",
-                "query_engine_limit_bounded_projection_output_boundary",
-                ContractQuality::QueryEngineOwnedBoundary,
-            )];
-            if projection_contains_regexp_replace(projection) {
-                requirements.extend(regexp_replace_requirements());
-            }
-            requirements
-        },
-        PlanNode::Projection(projection) if projection_is_scalar_setop_final_projection(plan, node.id) => {
-            let mut requirements = vec![ReservationRequirement::modeled(
-                ReservationKind::OperatorOutput,
-                "final_projection_output",
-                "query_engine_projection_scalar_setop_final_projection_output_boundary",
-                ContractQuality::QueryEngineOwnedBoundary,
-            )];
-            if projection_contains_regexp_replace(projection) {
-                requirements.extend(regexp_replace_requirements());
-            }
-            requirements
-        },
-        // Filter predicates that embed REGEXP_REPLACE are rare and cannot yet use the
-        // column-input size preflight consumed by projection execution. Do not claim Exact.
-        PlanNode::Projection(projection) if projection_contains_regexp_replace(projection) => {
-            regexp_replace_requirements()
-        },
-        PlanNode::Filter(filter) if input_is_rank_window(plan, filter.input) => {
-            vec![ReservationRequirement::modeled(
-                ReservationKind::OperatorOutput,
-                "rank_filter_output",
-                "query_engine_rank_filter_output_boundary",
-                ContractQuality::QueryEngineOwnedBoundary,
-            )]
-        },
-        PlanNode::Aggregate(aggregate) => {
-            let mut requirements = vec![ReservationRequirement::modeled(
-                ReservationKind::OperatorOutput,
-                "operator_output",
-                "aggregate_contract",
-                ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
-            )];
-            if matches!(
-                aggregate_state_contract(&aggregate.spec),
-                Ok(AggregateStateContract::DedupGroupOnly | AggregateStateContract::ExactDistinctCount)
-            ) {
-                requirements.push(ReservationRequirement::modeled(
-                    ReservationKind::PartialState,
-                    "distinct_dedup_aggregate_state",
-                    "distinct_dedup_aggregate_state_materialization_contract",
-                    ContractQuality::QueryEngineOwnedBoundary,
-                ));
-            }
-            requirements
-        },
-        PlanNode::Window(_) => vec![ReservationRequirement::modeled(
-            ReservationKind::OperatorOutput,
-            "operator_output",
-            "window_contract",
-            ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
-        )],
-        PlanNode::Limit(limit)
-            if limit.spec.fetch.is_some()
-                && plan.sink().input() == node.id
-                && final_topk_sort_before_limit(plan, limit.input).is_some() =>
-        {
-            vec![ReservationRequirement::modeled(
-                ReservationKind::OperatorOutput,
-                "final_topk_output",
-                "query_engine_final_topk_output_boundary",
-                ContractQuality::QueryEngineOwnedBoundary,
-            )]
-        },
-        PlanNode::Limit(limit) if limit.spec.fetch.is_some() && plan.sink().input() == node.id => {
-            vec![ReservationRequirement::modeled(
-                ReservationKind::OperatorOutput,
-                "global_limit_output",
-                "query_engine_global_limit_output_boundary",
-                ContractQuality::QueryEngineOwnedBoundary,
-            )]
-        },
-        PlanNode::Join(join)
-            if matches!(
-                keyed_hash_join_strategy_decision_for_plan(plan, node.id, join),
-                Some(KeyedHashJoinStrategyDecision::Selected { strategy: KeyedHashJoinStrategy::ReusableHashEqui, .. })
-            ) =>
-        {
-            vec![ReservationRequirement::modeled(
-                ReservationKind::HashTable,
-                "join_hash_table",
-                "hash_join_pre_build_reservation_size_bytes",
-                ContractQuality::ExactPreflight,
-            )]
-        },
-        PlanNode::Join(join)
-            if matches!(
-                keyed_hash_join_strategy_decision_for_plan(plan, node.id, join),
-                Some(KeyedHashJoinStrategyDecision::Selected {
-                    strategy: KeyedHashJoinStrategy::OneShotEqui | KeyedHashJoinStrategy::PartitionedHashEqui,
-                    ..
-                })
-            ) =>
-        {
-            vec![ReservationRequirement::modeled(
-                ReservationKind::HashTable,
-                "join_keyed_equality_preflight_hash_table",
-                "hash_join_pre_build_reservation_size_bytes",
-                ContractQuality::ExactPreflight,
-            )]
-        },
-        PlanNode::Join(join)
-            if matches!(
-                keyed_hash_join_strategy_decision_for_plan(plan, node.id, join),
-                Some(KeyedHashJoinStrategyDecision::Selected {
-                    strategy: KeyedHashJoinStrategy::PartitionedMixedKeyedResidual,
-                    ..
-                })
-            ) =>
-        {
-            vec![ReservationRequirement::modeled(
-                ReservationKind::MixedSizeData,
-                "join_mixed_size_data",
-                "mixed_keyed_residual_or_conditional_full_retained_size_data",
-                ContractQuality::ObservedRetainedState,
-            )]
-        },
-        PlanNode::Join(join) if keyed_filtered_semi_anti_join_capable(join) => vec![
-            ReservationRequirement::modeled(
-                ReservationKind::OperatorOutput,
-                "join_filtered_build_key_deduplicate",
-                "join_filtered_build_key_deduplicate_output_contract",
-                ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
-            ),
-            ReservationRequirement::modeled(
-                ReservationKind::HashTable,
-                "join_hash_table",
-                "hash_join_pre_build_reservation_size_bytes",
-                ContractQuality::ExactPreflight,
-            ),
-            ReservationRequirement::modeled(
-                ReservationKind::FilteredProbeState,
-                "join_filtered_probe_state",
-                "filtered_join_retained_probe_state",
-                ContractQuality::ObservedRetainedState,
-            ),
-        ],
-        PlanNode::Join(join)
-            if matches!(KeylessConditionalJoinKind::try_from_join(join), Some(KeylessConditionalJoinKind::Full)) =>
-        {
-            vec![ReservationRequirement::modeled(
-                ReservationKind::MixedSizeData,
-                "join_mixed_size_data",
-                "mixed_keyed_residual_or_conditional_full_retained_size_data",
-                ContractQuality::ObservedRetainedState,
-            )]
-        },
-        PlanNode::Join(join) if join.spec.residual_predicate.is_some() => vec![ReservationRequirement::modeled(
-            ReservationKind::MixedSizeData,
-            "join_mixed_size_data",
-            "mixed_keyed_residual_or_conditional_full_retained_size_data",
-            ContractQuality::ObservedRetainedState,
-        )],
-        PlanNode::Union(_) => vec![ReservationRequirement::modeled(
-            ReservationKind::OperatorOutput,
-            "union_concat_output",
-            "union_concat_output_size_preflight",
-            ContractQuality::ExactPreflight,
-        )],
-        PlanNode::EdgeNormalize(_) => vec![ReservationRequirement::modeled(
-            ReservationKind::OperatorOutput,
-            "edge_normalize_output",
-            "edge_normalize_output_size_preflight",
-            ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
-        )],
-        PlanNode::GraphAlgorithm(_) => vec![ReservationRequirement::modeled(
-            ReservationKind::OperatorOutput,
-            crate::plan::GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY,
-            crate::plan::GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT,
-            ContractQuality::CapabilityProof,
-        )],
-        PlanNode::VectorAlgorithm(_) => vec![ReservationRequirement::modeled(
-            ReservationKind::OperatorOutput,
-            crate::plan::VECTOR_ALGORITHM_BOUNDED_MEMORY_BOUNDARY,
-            crate::plan::VECTOR_ALGORITHM_BOUNDED_REQUIRED_CONTRACT,
-            ContractQuality::CapabilityProof,
-        )],
-        _ => Vec::new(),
-    }
-}
-
-fn projection_is_scalar_setop_final_projection(plan: &QueryPlan, node_id: NodeId) -> bool {
-    projection_scalar_setop_shape_decision(plan).is_ok_and(|shape| shape.final_projection_id == node_id)
-}
-
-fn final_topk_sort_before_limit(plan: &QueryPlan, limit_input: NodeId) -> Option<NodeId> {
-    let mut current = limit_input;
-    let mut visited = BTreeSet::new();
-    loop {
-        if !visited.insert(current) {
-            return None;
-        }
-        match plan.node(current).map(|node| &node.kind)? {
-            PlanNode::Sort(_) => return Some(current),
-            PlanNode::Projection(projection) => current = projection.input,
-            PlanNode::Source(_)
-            | PlanNode::Filter(_)
-            | PlanNode::Aggregate(_)
-            | PlanNode::Join(_)
-            | PlanNode::Window(_)
-            | PlanNode::Limit(_)
-            | PlanNode::Union(_)
-            | PlanNode::EdgeNormalize(_)
-            | PlanNode::GraphAlgorithm(_)
-            | PlanNode::VectorAlgorithm(_) => return None,
-        }
-    }
-}
-
-fn input_is_rank_window(plan: &QueryPlan, input: NodeId) -> bool {
-    let Some(PlanNode::Window(window)) = plan.node(input).map(|node| &node.kind) else {
-        return false;
-    };
-    window.spec.functions.iter().any(|function| matches!(function, WindowFunction::Rank { .. }))
-}
-
-fn regexp_replace_requirements() -> Vec<ReservationRequirement> {
-    vec![ReservationRequirement::modeled(
-        ReservationKind::OperatorOutput,
-        "regexp_replace_expression_output",
-        cudf::REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT,
-        ContractQuality::ExactPreflight,
-    )]
-}
-
-fn projection_contains_regexp_replace(projection: &crate::plan::ProjectionNode) -> bool {
-    projection.outputs.iter().any(|output| output.expr.contains_regexp_replace())
 }
