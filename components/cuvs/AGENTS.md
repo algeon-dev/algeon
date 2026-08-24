@@ -9,58 +9,21 @@
 - Keep changes scoped. Preserve unrelated worktree edits and avoid
   opportunistic cleanup, generated-file churn, or native rebuilds outside the
   task.
-- Preserve public behavior and contract tests unless the task changes them.
-- Grow the system in layers: start from the smallest version that works end to
-  end, and add each capability on top of a product that already works; never
-  trade a working product for unfinished complexity.
-
-## Subtractive development
-
-- Prefer extending existing code over adding parallel paths and the smallest
-  change that fully solves the current requirement; net line count should
-  trend down or stay flat. About to add a second way to do something? Stop and
-  propose removing or consolidating the first.
-- Before writing new code for a non-trivial task, list the related existing
-  files and functions; for each, state whether it should be extended, replaced,
-  or left alone. Report before implementing.
-- Never add speculative abstractions, configuration, or "just in case"
-  fallbacks; every defensive branch must name a concrete scenario that actually
-  happens in this codebase, and delete any that cannot. Remove obsolete or
-  backward-compatibility paths not required by a contract in this file instead
-  of stacking new code on top.
-- Before committing, re-read your own diff for anything now duplicated,
-  superseded, unused, or overly defensive. Propose deletions as a separate
-  cleanup commit, or fold them in when the scope is small and safe.
-
-## Comments
-
-- Default to no comments. Never explain what the code does; if code needs a
-  comment to be understandable, rename things instead.
-- Comment only non-obvious rationale, invariants, safety constraints, external
-  quirks, or business rules the code cannot express.
-- Public API documentation describes observable contracts, not incidental
-  implementation details.
-- An explicit `drop()` in production code needs a one-line comment on why the
-  value cannot wait until end of scope (lock window, re-entrancy, `RefCell`
-  re-borrow); otherwise delete the `drop()`. Test code is exempt.
 
 ## Project boundaries
 
 `components/cuvs` is the runtime-bound Rust integration for the scoped cuVS
-surface used by DataFusion Nexus. SQL planning and query execution belong in
-the root `datafusion-nexus` adapter.
+surface used by DataFusion Nexus. SQL planning, runtime admission, and query
+execution follow the root `datafusion-nexus` ownership map.
 
 - Safe algorithm, tensor, ownership, and completion APIs belong in
   `cuvs-nexus/`; raw generated C bindings and native discovery belong in
   `cuvs-nexus-sys/`.
 - `cudf-nexus` and `rapids-interop` are root-workspace component dependencies.
   The pinned official cuVS source is `components/cuvs/cuvs`.
-- The root workspace owns default membership. The two cuVS library crates are
-  non-default members.
 - The canonical install defaults are `target/native/cuvs-install` and the
   shared `target/native/cudf-install`; override them only with explicit
   selectors such as `CUVS_ROOT` and `CUVS_INSTALL_DIR`.
-- Linux only. MSRV is Rust 1.94; formatting requires nightly.
 
 ## Architecture contracts
 
@@ -99,27 +62,11 @@ scripts/dev/bindings.sh cuvs --check
 ```
 
 Run focused checks first, then broaden validation with the change's blast
-radius. Native-free maintenance validation must not be reported as the full
-native or GPU test surface.
-
-## Writing tests
-
-- Prefer extending existing coverage at the behavior boundary before creating
-  new tests.
-- Add tests for realistic observable regressions, non-trivial invariants or
-  boundaries, and concrete bugs. Code changing or coverage increasing is not
-  sufficient justification by itself.
-- Do not test what the type system guarantees or mirror literals, mappings,
-  obvious control flow, implementation details, or removed features unless
-  absence is itself a contract.
-- For concurrency, prefer deterministic coordination or controlled scheduling
-  over sleeps when practical.
-- A new test must fail when the code under test is reverted; if it does not,
-  delete it.
+radius. Native-free maintenance checks do not establish full native or GPU
+validation.
 
 ## Testing and repository policy
 
-- Serialize every GPU test with `flock /tmp/cudf-gpu.lock`.
 - `scripts/ci/check_native_sources.sh`, `scripts/ci/check_component_packages.sh`,
   and `scripts/dev/bindings.sh` are the root owners for source, package, and
   checked-binding maintenance. Do not add a component-local umbrella command.

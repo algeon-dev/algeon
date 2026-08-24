@@ -13,27 +13,18 @@
 ## Subtractive development
 
 - Prefer extending existing code over adding parallel paths and the smallest
-  change that fully solves the current requirement; net line count should
-  trend down or stay flat. About to add a second way to do something? Stop and
-  propose removing or consolidating the first.
-- Before writing new code for a non-trivial task, list the related existing
-  files and functions; for each, state whether it should be extended, replaced,
-  or left alone. Report before implementing.
+  change that fully solves the current requirement. About to add a second way
+  to do something? Stop and propose removing or consolidating the first.
 - Never add speculative abstractions, configuration, or "just in case"
-  fallbacks; every defensive branch must name a concrete scenario that actually
-  happens in this codebase, and delete any that cannot. Remove obsolete or
-  backward-compatibility paths not required by a contract in this file instead
-  of stacking new code on top.
-- Before committing, re-read your own diff for anything now duplicated,
-  superseded, unused, or overly defensive. Propose deletions as a separate
-  cleanup commit, or fold them in when the scope is small and safe.
+  fallbacks; every defensive branch should protect a supported input, failure
+  mode, or invariant. Remove obsolete or backward-compatibility paths not
+  required by a contract in this file instead of stacking new code on top.
 
 ## Comments
 
-- Default to no comments. Never explain what the code does; if code needs a
-  comment to be understandable, rename things instead.
-- Comment only non-obvious rationale, invariants, safety constraints, external
-  quirks, or business rules the code cannot express.
+- Omit comments that only narrate code. Comment non-obvious rationale,
+  invariants, safety constraints, external quirks, or business rules the code
+  cannot express.
 - Public API documentation describes observable contracts, not incidental
   implementation details.
 - An explicit `drop()` in production code needs a one-line comment on why the
@@ -77,8 +68,8 @@ compatibility belong in `crates/nexus-query-engine`.
 
 ## Build and test
 
-Use `--all-features` in every Cargo command except this one repository-owned
-cargo-hack feature-isolation command:
+Use `--all-features` in every Cargo build, check, lint, and test command except
+this one repository-owned cargo-hack feature-isolation command:
 
 ```bash
 cargo hack check --workspace --each-feature --exclude-features default --locked --keep-going
@@ -86,10 +77,7 @@ cargo hack check --workspace --each-feature --exclude-features default --locked 
 
 That exact compile-only command is the sole exception; it proves package-local
 no-feature and non-default feature compilation. Do not generalize the
-exception to tests, Clippy, or ad-hoc feature combinations. Cargo keys build
-artifacts by feature unification, so mixing feature sets rebuilds the ~400-unit
-dependency graph each way. `-p <crate>` and `--workspace` share artifacts, so
-the targeted `-p` loops below cost nothing extra against the workspace gate.
+exception to tests, Clippy, or ad-hoc feature combinations.
 
 ```bash
 # Build and lint, any package
