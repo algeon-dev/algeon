@@ -24,6 +24,7 @@ pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_attested_gra
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_attested_graph_result_passthrough_plan(&nexus_query_engine::plan::QueryPlan, &str) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_composed_consumer_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
+pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan_with_resident_inputs<'a>(&nexus_query_engine::plan::QueryPlan, impl core::iter::traits::collect::IntoIterator<Item = (&'a str, &'a nexus_query_engine::plan::QueryPlan)>) -> nexus_query_engine::error::Result<core::option::Option<Self>>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_input_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_query_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_query_plan_preflighted(&nexus_query_engine::plan::QueryPlan) -> nexus_query_engine::error::Result<Self>
@@ -1379,6 +1380,7 @@ pub struct nexus_query_engine::expr::SortSpec
 pub nexus_query_engine::expr::SortSpec::expressions: alloc::vec::Vec<nexus_query_engine::expr::SortExpr>
 impl nexus_query_engine::expr::SortSpec
 pub fn nexus_query_engine::expr::SortSpec::new(alloc::vec::Vec<nexus_query_engine::expr::SortExpr>) -> Self
+pub fn nexus_query_engine::expr::representation_cast_preserves_identity(&arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType) -> bool
 pub mod nexus_query_engine::graph_memory
 pub enum nexus_query_engine::graph_memory::GraphCalibrationSource
 pub nexus_query_engine::graph_memory::GraphCalibrationSource::None
@@ -4227,9 +4229,21 @@ pub mod nexus_query_engine::parquet_stats
 pub enum nexus_query_engine::parquet_stats::ColumnByteKind
 pub nexus_query_engine::parquet_stats::ColumnByteKind::Compressed
 pub nexus_query_engine::parquet_stats::ColumnByteKind::Uncompressed
+pub enum nexus_query_engine::parquet_stats::ParquetVariableWidthEncodingProof
+pub nexus_query_engine::parquet_stats::ParquetVariableWidthEncodingProof::Dictionary
+pub nexus_query_engine::parquet_stats::ParquetVariableWidthEncodingProof::Empty
+pub nexus_query_engine::parquet_stats::ParquetVariableWidthEncodingProof::Plain
+pub nexus_query_engine::parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary
 pub struct nexus_query_engine::parquet_stats::I64StatisticsRange
 pub nexus_query_engine::parquet_stats::I64StatisticsRange::max: i64
 pub nexus_query_engine::parquet_stats::I64StatisticsRange::min: i64
+pub struct nexus_query_engine::parquet_stats::ParquetVariableWidthPayloadEvidence
+pub nexus_query_engine::parquet_stats::ParquetVariableWidthPayloadEvidence::encoding_proof: nexus_query_engine::parquet_stats::ParquetVariableWidthEncodingProof
+pub nexus_query_engine::parquet_stats::ParquetVariableWidthPayloadEvidence::payload_upper_bound_bytes: u64
+pub nexus_query_engine::parquet_stats::ParquetVariableWidthPayloadEvidence::physical_column_index: usize
+pub nexus_query_engine::parquet_stats::ParquetVariableWidthPayloadEvidence::selected_row_groups: alloc::vec::Vec<usize>
+impl nexus_query_engine::parquet_stats::ParquetVariableWidthPayloadEvidence
+pub fn nexus_query_engine::parquet_stats::ParquetVariableWidthPayloadEvidence::new(usize, alloc::vec::Vec<usize>, u64, nexus_query_engine::parquet_stats::ParquetVariableWidthEncodingProof) -> Self
 pub fn nexus_query_engine::parquet_stats::leaf_column_statistics<'a>(&'a parquet::file::metadata::RowGroupMetaData, &parquet::schema::types::SchemaDescriptor, usize) -> core::option::Option<&'a parquet::file::statistics::Statistics>
 pub fn nexus_query_engine::parquet_stats::row_group_column_bytes(&parquet::file::metadata::RowGroupMetaData, &alloc::collections::btree::set::BTreeSet<usize>, nexus_query_engine::parquet_stats::ColumnByteKind) -> core::option::Option<u64>
 pub fn nexus_query_engine::parquet_stats::row_group_i64_range(&parquet::file::metadata::RowGroupMetaData, usize) -> core::option::Option<nexus_query_engine::parquet_stats::I64StatisticsRange>
@@ -4238,6 +4252,8 @@ pub fn nexus_query_engine::parquet_stats::row_group_null_counts_by_root_column(&
 pub fn nexus_query_engine::parquet_stats::row_group_null_counts_for_root_column(&parquet::file::metadata::ParquetMetaData, usize) -> core::option::Option<alloc::vec::Vec<core::option::Option<u64>>>
 pub fn nexus_query_engine::parquet_stats::single_leaf_primitive_root_column_index(&parquet::schema::types::SchemaDescriptor, usize) -> core::option::Option<usize>
 pub fn nexus_query_engine::parquet_stats::statistics_i64_range(&parquet::file::statistics::Statistics) -> core::option::Option<nexus_query_engine::parquet_stats::I64StatisticsRange>
+pub fn nexus_query_engine::parquet_stats::variable_width_payload_evidence_by_root_column(&parquet::file::metadata::ParquetMetaData, &alloc::collections::btree::set::BTreeSet<usize>, core::option::Option<&[usize]>) -> alloc::collections::btree::map::BTreeMap<usize, nexus_query_engine::parquet_stats::ParquetVariableWidthPayloadEvidence>
+pub fn nexus_query_engine::parquet_stats::variable_width_payload_evidence_for_root_column(&parquet::file::metadata::ParquetMetaData, usize, core::option::Option<&[usize]>) -> core::option::Option<nexus_query_engine::parquet_stats::ParquetVariableWidthPayloadEvidence>
 pub mod nexus_query_engine::pipeline
 pub enum nexus_query_engine::pipeline::PipelineBarrierKind
 pub nexus_query_engine::pipeline::PipelineBarrierKind::AggregateBoundary
@@ -5121,6 +5137,7 @@ pub nexus_query_engine::plan::JoinSpec::output_projection: alloc::vec::Vec<nexus
 pub nexus_query_engine::plan::JoinSpec::residual_predicate: core::option::Option<nexus_query_engine::expr::Expr>
 impl nexus_query_engine::plan::JoinSpec
 pub fn nexus_query_engine::plan::JoinSpec::new(nexus_query_engine::plan::JoinType, alloc::vec::Vec<nexus_query_engine::plan::JoinKey>) -> Self
+pub fn nexus_query_engine::plan::JoinSpec::with_at_most_one_match_per_bounded_row(self, nexus_query_engine::plan::JoinSide) -> Self
 pub fn nexus_query_engine::plan::JoinSpec::with_build_artifact_id(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn nexus_query_engine::plan::JoinSpec::with_build_side(self, nexus_query_engine::plan::JoinSide) -> Self
 pub fn nexus_query_engine::plan::JoinSpec::with_datafusion_order_preserved_side(self, nexus_query_engine::plan::JoinSide) -> Self
@@ -6610,10 +6627,12 @@ pub nexus_query_engine::source::GpuResidentSource::graph_vertex_upper_bound: cor
 pub nexus_query_engine::source::GpuResidentSource::input_name: alloc::string::String
 pub nexus_query_engine::source::GpuResidentSource::row_count_upper_bound: core::option::Option<u64>
 pub nexus_query_engine::source::GpuResidentSource::schema: arrow_schema::schema::SchemaRef
+pub nexus_query_engine::source::GpuResidentSource::unique_key_columns: core::option::Option<alloc::collections::btree::set::BTreeSet<alloc::string::String>>
 impl nexus_query_engine::source::GpuResidentSource
 pub fn nexus_query_engine::source::GpuResidentSource::new(impl core::convert::Into<alloc::string::String>, arrow_schema::schema::SchemaRef) -> Self
 pub fn nexus_query_engine::source::GpuResidentSource::with_graph_vertex_upper_bound(self, u64) -> Self
 pub fn nexus_query_engine::source::GpuResidentSource::with_row_count_upper_bound(self, u64) -> Self
+pub fn nexus_query_engine::source::GpuResidentSource::with_unique_key_columns(self, alloc::collections::btree::set::BTreeSet<alloc::string::String>) -> Self
 pub struct nexus_query_engine::source::GraphSimpleDirectedEdgeTopology
 pub nexus_query_engine::source::GraphSimpleDirectedEdgeTopology::destination_column_index: usize
 pub nexus_query_engine::source::GraphSimpleDirectedEdgeTopology::source_column_index: usize
@@ -6648,6 +6667,7 @@ pub nexus_query_engine::source::LocalParquetFile::row_group_null_counts: alloc::
 pub nexus_query_engine::source::LocalParquetFile::row_group_rows: core::option::Option<alloc::vec::Vec<u64>>
 pub nexus_query_engine::source::LocalParquetFile::row_groups: core::option::Option<alloc::vec::Vec<usize>>
 pub nexus_query_engine::source::LocalParquetFile::stable_id: alloc::string::String
+pub nexus_query_engine::source::LocalParquetFile::variable_width_payload_evidence: alloc::collections::btree::map::BTreeMap<usize, nexus_query_engine::parquet_stats::ParquetVariableWidthPayloadEvidence>
 impl nexus_query_engine::source::LocalParquetFile
 pub fn nexus_query_engine::source::LocalParquetFile::from_resolved_parquet_source(nexus_query_engine::source::ResolvedParquetSource) -> core::result::Result<Self, alloc::string::String>
 pub fn nexus_query_engine::source::LocalParquetFile::has_equality_delete_files(&self) -> bool
@@ -6657,6 +6677,7 @@ pub fn nexus_query_engine::source::LocalParquetFile::new(impl core::convert::Int
 pub fn nexus_query_engine::source::LocalParquetFile::object_store_uri(impl core::convert::Into<alloc::string::String>) -> core::result::Result<Self, alloc::string::String>
 pub fn nexus_query_engine::source::LocalParquetFile::selected_row_group_count(&self) -> usize
 pub fn nexus_query_engine::source::LocalParquetFile::selected_row_groups_have_no_nulls(&self, usize) -> bool
+pub fn nexus_query_engine::source::LocalParquetFile::variable_width_payload_evidence(&self) -> &alloc::collections::btree::map::BTreeMap<usize, nexus_query_engine::parquet_stats::ParquetVariableWidthPayloadEvidence>
 pub fn nexus_query_engine::source::LocalParquetFile::with_equality_delete_files(self, alloc::vec::Vec<nexus_query_engine::source::ParquetEqualityDeleteFile>) -> Self
 pub fn nexus_query_engine::source::LocalParquetFile::with_field_id_read_bindings(self, alloc::vec::Vec<nexus_query_engine::source::ParquetFieldIdReadBinding>) -> Self
 pub fn nexus_query_engine::source::LocalParquetFile::with_file_size_bytes(self, u64) -> Self
@@ -6673,6 +6694,7 @@ pub fn nexus_query_engine::source::LocalParquetFile::with_row_group_null_counts(
 pub fn nexus_query_engine::source::LocalParquetFile::with_row_group_rows(self, alloc::vec::Vec<u64>) -> Self
 pub fn nexus_query_engine::source::LocalParquetFile::with_row_groups(self, alloc::vec::Vec<usize>) -> Self
 pub fn nexus_query_engine::source::LocalParquetFile::with_stable_id(self, impl core::convert::Into<alloc::string::String>) -> Self
+pub fn nexus_query_engine::source::LocalParquetFile::with_variable_width_payload_evidence(self, alloc::collections::btree::map::BTreeMap<usize, nexus_query_engine::parquet_stats::ParquetVariableWidthPayloadEvidence>) -> Self
 impl core::fmt::Debug for nexus_query_engine::source::LocalParquetFile
 pub fn nexus_query_engine::source::LocalParquetFile::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct nexus_query_engine::source::LocalParquetSource

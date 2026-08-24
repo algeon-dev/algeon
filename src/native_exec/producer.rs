@@ -4,7 +4,10 @@
 //! wrapper type is exposed for diagnostics and plan inspection, but executing
 //! them through the ordinary DataFusion streaming path is invalid.
 
-use std::sync::{Arc, Mutex, OnceLock};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex, OnceLock},
+};
 
 use datafusion::{
     common::{DataFusionError, Result as DataFusionResult, tree_node::TreeNodeRecursion},
@@ -39,6 +42,12 @@ use crate::error::{Error, ErrorCode};
 /// Crate-internal device-resident producer contract used by composed native execution.
 pub(crate) trait GpuResidentProducer: Send + Sync {
     fn gpu_result_input_name(&self) -> &str;
+
+    /// Returns one output key whose values are unique, when the producer's
+    /// algorithm contract guarantees at most one row per key.
+    fn unique_output_key_columns(&self) -> Option<&'static [&'static str]> {
+        None
+    }
 
     fn rewrite_subsumed_composed_consumer(
         &self,
@@ -339,6 +348,12 @@ pub(crate) fn gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn Gpu
 
 pub(crate) fn gpu_resident_producer_input_name(plan: &dyn ExecutionPlan) -> Option<String> {
     gpu_resident_producer(plan).map(|producer| producer.gpu_result_input_name().to_string())
+}
+
+pub(crate) fn gpu_resident_producer_unique_output_key(plan: &dyn ExecutionPlan) -> Option<BTreeSet<String>> {
+    gpu_resident_producer(plan).and_then(|producer| {
+        producer.unique_output_key_columns().map(|columns| columns.iter().map(|column| (*column).to_owned()).collect())
+    })
 }
 
 pub(crate) fn rewrite_gpu_resident_producer_for_subsumed_composed_consumer(

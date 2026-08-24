@@ -70,7 +70,7 @@ use super::{
     observability::CapturedError,
 };
 use crate::{
-    adapter_error::{DataFusionErrorExt, Error, ErrorCode, ErrorSourceDiagnostics},
+    adapter_error::{DataFusionErrorExt, Error, ErrorCode, ErrorLogDiagnostics},
     adapter_session::{NexusSessionStateBuilderExt, install_nexus_native_rule_with_session_config},
     cugraph_sql::CugraphSqlConfig,
     gpu_coverage::{ExplainGpuOutputMode, parse_explain_gpu, validate_query},

@@ -25,19 +25,19 @@ pub(super) fn edge_execution_config(
     default_execution_config.clone()
 }
 
-pub(super) async fn exact_composed_edge_source_gpu_plan(
+pub(super) async fn exact_native_edge_source_gpu_plan(
     edge_source: &dyn ExecutionPlan,
     task_context: &TaskContext,
 ) -> Result<Option<nexus_query_engine::plan::QueryPlan>> {
-    let Some(composed) = as_nexus_native_composed_exec(edge_source) else {
+    let (execution_config, native_plan) = if let Some(native) = as_nexus_native_exec(edge_source) {
+        (native.execution_config(), native.native_plan())
+    } else if let Some(composed) = as_nexus_native_composed_exec(edge_source) {
+        (composed.execution_config(), composed.native_plan())
+    } else {
         return Ok(None);
     };
-    let plan = crate::native_exec::lakehouse::resolve_query_plan(
-        composed.execution_config(),
-        composed.native_plan().clone(),
-        task_context,
-    )
-    .await;
+    let plan =
+        crate::native_exec::lakehouse::resolve_query_plan(execution_config, native_plan.clone(), task_context).await;
     Ok(Some(plan.clone_with_gpu_resident_sink()))
 }
 
@@ -115,7 +115,7 @@ pub(super) fn cugraph_execution_config_with_graph_aware_ticket(
         input_row_bounds.edge_row_upper_bound()
     };
     let edge_vertex_upper_bound = edge_source_graph_vertex_estimate(edge_source).map(|estimate| estimate.count);
-    let (graph_execution_plan, graph_execution_proof) = cugraph_execution_capability_proof_with_edge_row_upper_bound(
+    let (graph_execution_plan, graph_execution_proof) = cugraph_execution_capability_proof_with_resident_edge_plan(
         spec,
         edge_source.schema(),
         predicate_sources.iter().map(|source| source.schema()).collect(),
@@ -124,6 +124,7 @@ pub(super) fn cugraph_execution_config_with_graph_aware_ticket(
         edge_normalize_inserted,
         edge_row_upper_bound,
         edge_vertex_upper_bound,
+        exact_edge_source_gpu_plan,
     )?;
     let graph_model_ask = if execution_config.query_admission_source().is_none() {
         None
@@ -137,24 +138,29 @@ pub(super) fn cugraph_execution_config_with_graph_aware_ticket(
     // authorization for a different native plan.
     let mut fragment_proofs = vec![graph_execution_proof];
     if let Some(composed_plan) = exact_edge_source_gpu_plan {
-        let composed = as_nexus_native_composed_exec(edge_source).ok_or_else(|| {
-            Error::new(
-                ErrorCode::InvalidExecutionPlan,
-                "datafusion_nexus.cugraph_sql.graph_ticket_ask",
-                "the staged composed edge plan does not match its execution source",
-            )
-            .with_fact("reason", "composed_edge_source_plan_missing")
-        })?;
-        let composed_proof =
-            composed_admission_capability_proof(composed_plan, composed.gpu_inputs()).map_err(|error| {
-                Error::new(
-                    ErrorCode::InvalidExecutionPlan,
-                    "datafusion_nexus.cugraph_sql.graph_ticket_ask",
-                    "failed to derive the complete composed edge-source admission proof",
-                )
-                .with_source(error)
-            })?;
-        fragment_proofs.push(composed_proof);
+        if let Some(composed) = as_nexus_native_composed_exec(edge_source) {
+            let composed_proof =
+                composed_admission_capability_proof(composed_plan, composed.gpu_inputs()).map_err(|error| {
+                    Error::new(
+                        ErrorCode::InvalidExecutionPlan,
+                        "datafusion_nexus.cugraph_sql.graph_ticket_ask",
+                        "failed to derive the complete composed edge-source admission proof",
+                    )
+                    .with_source(error)
+                })?;
+            fragment_proofs.push(composed_proof);
+        } else {
+            let edge_proof =
+                QueryPlanCapabilityProof::for_cugraph_graph_input_plan(composed_plan).ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::InvalidExecutionPlan,
+                        "datafusion_nexus.cugraph_sql.graph_ticket_ask",
+                        "failed to derive the exact native edge-source admission proof",
+                    )
+                    .with_fact("reason", "native_edge_source_plan_evidence_missing")
+                })?;
+            fragment_proofs.push(edge_proof);
+        }
     } else {
         collect_native_fragment_capability_proofs(edge_source, &mut fragment_proofs, true, false)?;
     }

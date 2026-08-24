@@ -41,9 +41,10 @@ export CUDAHOSTCXX=/usr/bin/g++-14
 export CUDF_INSTALL_DIR="$NEXUS_ROOT/cudf-nexus/cudf-install"
 export INSTALL_PREFIX="$CUDF_INSTALL_DIR"
 export CUVS_INSTALL_DIR="$NEXUS_ROOT/cuvs-nexus/cuvs-install"
+export CUGRAPH_CMAKE_BUILD_DIR="${CUGRAPH_CMAKE_BUILD_DIR:-$NEXUS_ROOT/cugraph-nexus/cugraph/cpp/build}"
 
 # --- Runtime library resolution ----------------------------------------------
-export LD_LIBRARY_PATH="$CUDF_INSTALL_DIR/lib:$CUVS_INSTALL_DIR/lib:$CUDA_HOME/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export LD_LIBRARY_PATH="$CUGRAPH_CMAKE_BUILD_DIR:$CUDF_INSTALL_DIR/lib:$CUVS_INSTALL_DIR/lib:$CUDA_HOME/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 ```
 
 ## What each variable is for
@@ -59,7 +60,8 @@ export LD_LIBRARY_PATH="$CUDF_INSTALL_DIR/lib:$CUVS_INSTALL_DIR/lib:$CUDA_HOME/l
 | `INSTALL_PREFIX` | `cudf/build.sh` | Where `./build.sh libcudf` installs the libcudf tree. The RAPIDS build script defaults to `$CONDA_PREFIX`, which is unset outside conda — this must point at `cudf-nexus/cudf-install`. |
 | `CUDF_INSTALL_DIR` | cuDF, cuVS, and cuGraph builds | The canonical cuDF install, including the one shared `librmm.so` used by the rest of the stack. |
 | `CUVS_INSTALL_DIR` | cuVS and cuGraph builds | Where the cuVS build installs `libcuvs.so`; cuGraph uses this library rather than building its own copy. |
-| `LD_LIBRARY_PATH` (+`$CUDF_INSTALL_DIR/lib`, `$CUVS_INSTALL_DIR/lib`, `$CUDA_HOME/lib64`) | test binaries, benchmarks, servers | Runtime resolution of the native cuDF/RMM, cuVS, and cuGraph libraries. |
+| `CUGRAPH_CMAKE_BUILD_DIR` | cuGraph build and downstream runtime | Where the cuGraph build outputs `libcugraph_c.so` and related runtime libraries. |
+| `LD_LIBRARY_PATH` (+`$CUGRAPH_CMAKE_BUILD_DIR`, `$CUDF_INSTALL_DIR/lib`, `$CUVS_INSTALL_DIR/lib`, `$CUDA_HOME/lib64`) | test binaries, benchmarks, servers | Runtime resolution of the native cuDF/RMM, cuVS, and cuGraph libraries. |
 
 :::warning[Keep the cuDF prefix views consistent]
 `CUDF_INSTALL_DIR`, `INSTALL_PREFIX`, and the cuDF entry in `LD_LIBRARY_PATH`

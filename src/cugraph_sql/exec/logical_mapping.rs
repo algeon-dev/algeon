@@ -219,7 +219,8 @@ fn encode_relation_columns(
             )],
         )
         .with_output_projection(output_projection)
-        .with_build_side(JoinSide::Right);
+        .with_build_side(JoinSide::Right)
+        .with_at_most_one_match_per_bounded_row(JoinSide::Left);
         relation = builder.add_join(relation, codebook, spec, Arc::clone(&output_schema));
         schema = output_schema;
     }
@@ -270,7 +271,8 @@ fn decode_relation_column(
         )],
     )
     .with_output_projection(output_projection)
-    .with_build_side(JoinSide::Right);
+    .with_build_side(JoinSide::Right)
+    .with_at_most_one_match_per_bounded_row(JoinSide::Left);
     Ok((builder.add_join(relation, codebook, spec, Arc::clone(&output_schema)), output_schema))
 }
 

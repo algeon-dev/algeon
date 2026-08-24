@@ -262,7 +262,7 @@ impl CugraphAlgoExec {
         check_host_staging_cancellation(&cancellation)?;
         let input_row_bounds = staged_inputs.row_bounds()?;
         let exact_edge_source_gpu_plan =
-            exact_composed_edge_source_gpu_plan(prepared.edge_source.as_ref(), task_context.as_ref()).await?;
+            exact_native_edge_source_gpu_plan(prepared.edge_source.as_ref(), task_context.as_ref()).await?;
         let (prepared, admission_graph_plan) = prepared.issue_graph_aware_ticket_after_staging(
             input_row_bounds,
             task_context.as_ref(),
@@ -855,6 +855,11 @@ impl CugraphAlgoExec {
 impl GpuResidentProducer for CugraphAlgoExec {
     fn gpu_result_input_name(&self) -> &str {
         &self.gpu_result_input_name
+    }
+
+    fn unique_output_key_columns(&self) -> Option<&'static [&'static str]> {
+        matches!(self.spec.algorithm, CugraphAlgorithm::PageRank | CugraphAlgorithm::PersonalizedPageRank)
+            .then_some(&["vertex"])
     }
 
     fn rewrite_subsumed_composed_consumer(

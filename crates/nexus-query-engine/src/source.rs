@@ -5,7 +5,7 @@
 //! reader predicate support are represented explicitly so native execution does
 //! not depend on DataFusion scan internals.
 
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::{
     array::new_empty_array,
@@ -150,12 +150,21 @@ pub struct GpuResidentSource {
     /// Unlike row cardinality, this metadata is only meaningful to graph
     /// planning and remains absent for generic resident inputs.
     pub graph_vertex_upper_bound: Option<u64>,
+    /// One source-owned key whose values are unique in this exact resident
+    /// result, expressed in native schema names.
+    pub unique_key_columns: Option<BTreeSet<String>>,
 }
 
 impl GpuResidentSource {
     /// Creates a GPU-resident source with the provided runtime name and schema.
     pub fn new(input_name: impl Into<String>, schema: SchemaRef) -> Self {
-        Self { input_name: input_name.into(), schema, row_count_upper_bound: None, graph_vertex_upper_bound: None }
+        Self {
+            input_name: input_name.into(),
+            schema,
+            row_count_upper_bound: None,
+            graph_vertex_upper_bound: None,
+            unique_key_columns: None,
+        }
     }
 
     /// Attaches a frontend-proved hard upper bound on this input's row count.
@@ -167,6 +176,13 @@ impl GpuResidentSource {
     /// Attaches a source-owned graph vertex upper bound for this exact edge rowset.
     pub fn with_graph_vertex_upper_bound(mut self, graph_vertex_upper_bound: u64) -> Self {
         self.graph_vertex_upper_bound = Some(graph_vertex_upper_bound);
+        self
+    }
+
+    /// Attaches a key proven unique by the producer that owns this resident
+    /// result.
+    pub fn with_unique_key_columns(mut self, unique_key_columns: BTreeSet<String>) -> Self {
+        self.unique_key_columns = Some(unique_key_columns);
         self
     }
 }

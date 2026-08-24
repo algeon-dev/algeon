@@ -1204,6 +1204,8 @@ impl AttemptReservationPolicy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct AttemptReservationShape {
     execution_scope_fingerprint: String,
+    output_column_evidence: crate::admission::string_payload::PlanColumnEvidence,
+    output_column_evidence_input_scopes: Vec<(String, String)>,
     has_local_parquet_source: bool,
     source_stage_bytes: Option<u64>,
     complete_zero_column_global_aggregate: Option<ZeroColumnGlobalAggregateShape>,
@@ -1227,6 +1229,8 @@ impl AttemptReservationShape {
     pub(crate) fn for_query_plan(plan: &QueryPlan) -> Self {
         Self {
             execution_scope_fingerprint: canonical_execution_scope_fingerprint(plan),
+            output_column_evidence: crate::admission::string_payload::PlanColumnEvidence::default(),
+            output_column_evidence_input_scopes: Vec::new(),
             has_local_parquet_source: plan_has_reachable_local_parquet_source(plan),
             source_stage_bytes: estimated_reachable_local_parquet_source_bytes(plan),
             complete_zero_column_global_aggregate: zero_column_global_aggregate_shape(plan),
@@ -1249,6 +1253,25 @@ impl AttemptReservationShape {
 
     pub(crate) fn execution_scope_fingerprint(&self) -> &str {
         &self.execution_scope_fingerprint
+    }
+
+    pub(super) fn output_column_evidence(&self) -> &crate::admission::string_payload::PlanColumnEvidence {
+        &self.output_column_evidence
+    }
+
+    pub(super) fn set_output_column_evidence(
+        &mut self,
+        evidence: crate::admission::string_payload::PlanColumnEvidence,
+    ) {
+        self.output_column_evidence = evidence;
+    }
+
+    pub(super) fn set_output_column_evidence_input_scopes(&mut self, scopes: Vec<(String, String)>) {
+        self.output_column_evidence_input_scopes = scopes;
+    }
+
+    pub(super) fn output_column_evidence_input_scopes(&self) -> &[(String, String)] {
+        &self.output_column_evidence_input_scopes
     }
 
     pub(crate) fn attach_ordered_schedule(&mut self, schedule: AttemptReservationSchedule) -> Result<()> {
@@ -2719,6 +2742,8 @@ mod tests {
     fn schedule_scope(scope: &str) -> AttemptReservationShape {
         AttemptReservationShape {
             execution_scope_fingerprint: scope.to_owned(),
+            output_column_evidence: crate::admission::string_payload::PlanColumnEvidence::default(),
+            output_column_evidence_input_scopes: Vec::new(),
             has_local_parquet_source: false,
             source_stage_bytes: None,
             complete_zero_column_global_aggregate: None,

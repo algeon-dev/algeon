@@ -102,7 +102,7 @@ pub(super) fn lower_filter_predicate_expr(expr: &Expr) -> Result<cudf::Expr> {
     }
 }
 
-pub(super) fn lower_projection_output_expr(output: &ProjectionOutput) -> Result<cudf::Expr> {
+pub(crate) fn lower_projection_output_expr(output: &ProjectionOutput) -> Result<cudf::Expr> {
     lower_expr_with_expected_type(&output.expr, Some(output.field.data_type()))
 }
 

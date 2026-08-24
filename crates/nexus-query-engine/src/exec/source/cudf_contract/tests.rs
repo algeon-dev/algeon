@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 
 use super::*;
 use crate::expr::{BinaryOp, Expr, LiteralValue};
@@ -271,6 +271,33 @@ fn remote_direct_cudf_contract_preserves_projection_row_groups_and_reader_mode()
     assert_eq!(cudf_chunk.known_row_group_bytes(), Some(768 + 1280));
     assert_eq!(cudf_chunk.known_projected_compressed_bytes(), Some(192 + 320));
     assert_eq!(cudf_chunk.known_pure_filter_compressed_bytes(), Some(48 + 80));
+}
+
+#[test]
+fn local_parquet_descriptor_propagates_variable_width_payload_evidence() {
+    let context = ExecutionContext::builder().build().expect("execution context builds");
+    let mut source = remote_direct_test_source();
+    source.files[0] = source.files[0].clone().with_variable_width_payload_evidence(BTreeMap::from([(
+        1,
+        crate::parquet_stats::ParquetVariableWidthPayloadEvidence::new(
+            1,
+            vec![1, 3],
+            2048,
+            crate::parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary,
+        ),
+    )]));
+
+    let (cudf_source, _) = cudf_local_parquet_source_file_selection(&context, &source, &source.files[0], 0, 7)
+        .expect("source contract lowers through nexus conversion path");
+    let evidence = cudf_source.files()[0]
+        .variable_width_payload_evidence()
+        .get(&1)
+        .expect("variable-width payload evidence propagates to cudf");
+
+    assert_eq!(evidence.physical_column_index, 1);
+    assert_eq!(evidence.selected_row_groups, [1, 3]);
+    assert_eq!(evidence.payload_upper_bound_bytes, 2048);
+    assert_eq!(evidence.encoding_proof, cudf::io::source::ParquetVariableWidthEncodingProof::PlainAndDictionary);
 }
 
 #[test]

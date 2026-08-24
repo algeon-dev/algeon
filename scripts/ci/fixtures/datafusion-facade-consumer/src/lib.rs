@@ -1,7 +1,9 @@
 use std::{sync::Arc, time::Duration};
 
 use datafusion_nexus::{
-    attempt::{AttemptOptions, NexusAttempt, QueryAttemptReport, SealedRuntimeObservationSnapshot},
+    attempt::{
+        AttemptOptions, NexusAttempt, QueryAttemptReport, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
+    },
     backend::{GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile},
     error::{Error, ErrorCode, ErrorStatus, Result},
     observability::{BackendMetricsSnapshot, backend_metric_descriptors},
@@ -24,6 +26,10 @@ pub fn attempt_contract(backend: &NexusGpuBackend, options: AttemptOptions) -> R
         |_report: Option<Arc<QueryAttemptReport>>, _snapshot: SealedRuntimeObservationSnapshot| {},
     );
     Ok(attempt)
+}
+
+pub fn terminal_outcome_contract(outcome: RuntimeTerminalOutcome) -> &'static str {
+    outcome.stable_label()
 }
 
 pub fn error_contract(error: &Error) -> (ErrorCode, &'static str, ErrorStatus) {

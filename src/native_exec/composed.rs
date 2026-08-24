@@ -1611,13 +1611,14 @@ mod tests {
     }
 
     #[test]
-    fn complete_composed_admission_proof_bounds_filter_and_projection_but_rejects_limit_before_grant() {
+    fn complete_composed_admission_proof_bounds_filter_projection_and_limit_before_grant() {
         register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
         register_graph_execution_plan_discovery(fake_graph_execution_plan);
 
         for (label, build) in [
             ("filter", filter_consumer_plan as fn(Arc<Schema>) -> QueryPlan),
             ("projection", zero_copy_projection_consumer_plan as fn(Arc<Schema>) -> QueryPlan),
+            ("limit", limit_consumer_plan as fn(Arc<Schema>) -> QueryPlan),
         ] {
             let backend = InstalledTestGpuBackend::new();
             let source = admission_source(&backend);
@@ -1657,39 +1658,6 @@ mod tests {
             drop(completed_ticket);
             drop(prepared_inputs);
         }
-
-        let backend = InstalledTestGpuBackend::new();
-        let source = admission_source(&backend);
-        let (schema, producer_proof) = typed_graph_producer_proof();
-        let consumer_plan = limit_consumer_plan(Arc::clone(&schema));
-        let execute_count = Arc::new(AtomicUsize::new(0));
-        let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof.clone()));
-        let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
-            input_name: "fake_input".to_string(),
-            ticket: producer_ticket,
-            capability_proof: producer_proof,
-            graph_execution: true,
-            execute_count: Arc::clone(&execute_count),
-            inner: EmptyExec::new(schema),
-        })];
-        let config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
-        let error = match complete_composed_admission_proof(
-            config,
-            &consumer_plan,
-            &prepared_inputs,
-            &TaskContext::default(),
-        ) {
-            Ok(_) => panic!("an unmodeled limit must reject before admission or producer work"),
-            Err(error) => error,
-        };
-        let native = error.find_nexus_error().expect("limit rejection remains structured");
-        assert_eq!(native.fact_value("reason"), Some("graph_attempt_complete_phase_unmodeled"));
-        assert_eq!(native.fact_value("schedule_reason"), Some("consumer_topology_unmodeled"));
-        assert_eq!(execute_count.load(Ordering::SeqCst), 0, "a rejected limit must not execute producers");
-        let snapshot = backend.backend().admission_snapshot().expect("test backend exposes admission state");
-        assert_eq!(snapshot.active_queries, 0, "a rejected limit must not mutate the grant ledger");
-        assert_eq!(snapshot.queued_queries, 0, "a rejected limit must not become a generic admission waiter");
-        drop(prepared_inputs);
     }
 
     #[test]

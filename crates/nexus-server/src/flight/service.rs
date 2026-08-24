@@ -310,8 +310,8 @@ impl DatafusionNexusFlightSqlService {
         failure: &'static str,
         error: &DataFusionError,
     ) {
-        let diagnostics = ErrorSourceDiagnostics::from_error(error);
         if let Some(adapter_error) = error.find_nexus_error() {
+            let diagnostics = ErrorLogDiagnostics::from_error(adapter_error);
             tracing::warn!(
                 catalog = %catalog_name,
                 schema = %schema_name,
@@ -322,18 +322,21 @@ impl DatafusionNexusFlightSqlService {
                 error_status = adapter_error.status().as_str(),
                 error_operation = adapter_error.operation(),
                 error_message = adapter_error.message(),
-                error_source_chain = diagnostics.chain(),
-                error_root_cause = diagnostics.root_cause_when_distinct(),
+                error_cause = diagnostics.cause().filter(|cause| *cause != adapter_error.message()),
+                error_source_path = diagnostics.source_path(),
+                error_diagnostics_truncated = diagnostics.truncated().then_some(true),
                 "failed to inspect table metadata for Flight SQL GetTables"
             );
         } else {
+            let diagnostics = ErrorLogDiagnostics::from_error(error);
             tracing::warn!(
                 catalog = %catalog_name,
                 schema = %schema_name,
                 table = %table_name,
                 failure,
-                error_source_chain = diagnostics.chain(),
-                error_root_cause = diagnostics.root_cause_when_distinct(),
+                error_cause = diagnostics.cause(),
+                error_source_path = diagnostics.source_path(),
+                error_diagnostics_truncated = diagnostics.truncated().then_some(true),
                 "failed to inspect table metadata for Flight SQL GetTables"
             );
         }

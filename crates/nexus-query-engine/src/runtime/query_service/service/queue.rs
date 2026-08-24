@@ -244,21 +244,66 @@ impl QueryService {
         }
         let mut maximum = None;
         let mut can_ever_fit = false;
+        let mut minimum_required_floor = None;
         for (ordinal, entry) in device_entries {
             let ledger = self.ledger_for_ordinal(*ordinal)?;
             let managed = ledger.managed_capacity_bytes();
             maximum = Some(maximum.unwrap_or(0u64).max(managed));
             let required_floor = ledger.required_floor_bytes_for(&entry.requirement)?;
+            if minimum_required_floor.is_none_or(|(minimum, _)| required_floor < minimum) {
+                minimum_required_floor = Some((required_floor, *ordinal));
+            }
             can_ever_fit |= ledger.can_ever_fit_required_floor_bytes(required_floor)?;
         }
         if device_entries.is_empty() || !can_ever_fit {
-            return Err(QueryError::new(
+            let mut error = QueryError::new(
                 QueryErrorCode::ServiceOverloaded,
                 "nexus_query_engine.query_service.admission",
                 "no compatible device can satisfy the attempt required floor",
             )
             .with_fact("reason", "impossible_requirement")
-            .with_fact("max_compatible_managed_capacity_bytes", maximum.unwrap_or(0)));
+            .with_fact("max_compatible_managed_capacity_bytes", maximum.unwrap_or(0));
+            if let Some((required_floor, ordinal)) = minimum_required_floor {
+                let requirement =
+                    &device_entries.get(&ordinal).expect("minimum required floor must have a device entry").requirement;
+                error = error
+                    .with_fact("minimum_compatible_required_floor_bytes", required_floor)
+                    .with_fact("minimum_compatible_required_floor_device_ordinal", ordinal)
+                    .with_fact("minimum_compatible_configured_floor_bytes", requirement.configured_floor_bytes)
+                    .with_fact("minimum_compatible_required_phase_floor_bytes", requirement.required_phase_floor_bytes)
+                    .with_fact(
+                        "minimum_compatible_capability_floor_raise_bytes",
+                        requirement.capability_floor_raise_bytes,
+                    )
+                    .with_fact("minimum_compatible_owner_term_count", requirement.owner_terms.len());
+                let owner_term_bytes = requirement.owner_terms.iter().map(|term| term.bytes()).sum::<u64>();
+                error = error.with_fact("minimum_compatible_owner_term_bytes", owner_term_bytes);
+                if let Some(term) = requirement.owner_terms.iter().max_by_key(|term| term.bytes()) {
+                    error = error
+                        .with_fact("minimum_compatible_dominant_owner_bytes", term.bytes())
+                        .with_fact("minimum_compatible_dominant_owner", term.owner_label())
+                        .with_fact("minimum_compatible_dominant_owner_role", term.id().role_label())
+                        .with_fact("minimum_compatible_dominant_owner_occurrence", term.id().occurrence_label());
+                }
+                let mut top_owner_terms = requirement.owner_terms.iter().collect::<Vec<_>>();
+                top_owner_terms.sort_by_key(|term| std::cmp::Reverse(term.bytes()));
+                let top_owner_terms = top_owner_terms
+                    .into_iter()
+                    .take(8)
+                    .map(|term| {
+                        format!(
+                            "{}:{}:{}={}",
+                            term.owner_label(),
+                            term.id().role_label(),
+                            term.id().occurrence_label(),
+                            term.bytes()
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",");
+                error = error.with_fact("minimum_compatible_top_owner_terms", top_owner_terms);
+            }
+            return Err(error);
         }
         Ok(())
     }

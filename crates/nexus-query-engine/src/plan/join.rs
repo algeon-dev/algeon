@@ -70,6 +70,19 @@ pub struct JoinSpec {
     /// Must be `Some` when `join_type == LeftMark` and `None` otherwise.
     /// The mark column appears as the last field in the output schema.
     pub mark_column_name: Option<String>,
+    /// A proven lookup relationship that bounds output rows by one input.
+    ///
+    /// The contract is only set by a lowering path that established at most one
+    /// match per bounded row for the join keys. Generic joins leave this absent
+    /// and retain the conservative Cartesian upper bound.
+    pub(crate) cardinality_contract: Option<JoinCardinalityContract>,
+}
+
+/// Cardinality contract for a join whose lookup side has at most one match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum JoinCardinalityContract {
+    /// Every row on `bounded_side` produces at most one output row.
+    AtMostOneMatchPerBoundedRow { bounded_side: JoinSide },
 }
 
 impl JoinSpec {
@@ -91,6 +104,7 @@ impl JoinSpec {
             datafusion_order_preserved_side: JoinSide::Right,
             build_artifact_id: None,
             mark_column_name: None,
+            cardinality_contract: None,
         }
     }
 
@@ -137,6 +151,20 @@ impl JoinSpec {
     pub fn with_mark_column_name(mut self, name: impl Into<String>) -> Self {
         self.mark_column_name = Some(name.into());
         self
+    }
+
+    /// Marks this join as having at most one match per row on `bounded_side`.
+    pub fn with_at_most_one_match_per_bounded_row(mut self, bounded_side: JoinSide) -> Self {
+        self.cardinality_contract = Some(JoinCardinalityContract::AtMostOneMatchPerBoundedRow { bounded_side });
+        self
+    }
+
+    pub(crate) fn has_at_most_one_match_per_bounded_row(&self, bounded_side: JoinSide) -> bool {
+        matches!(
+            self.cardinality_contract,
+            Some(JoinCardinalityContract::AtMostOneMatchPerBoundedRow { bounded_side: contract_side })
+                if contract_side == bounded_side
+        )
     }
 }
 

@@ -296,6 +296,30 @@ pub(super) fn cugraph_execution_capability_proof_with_edge_row_upper_bound(
     edge_row_upper_bound: Option<u64>,
     edge_vertex_upper_bound: Option<u64>,
 ) -> Result<(nexus_query_engine::plan::QueryPlan, nexus_query_engine::admission::QueryPlanCapabilityProof)> {
+    cugraph_execution_capability_proof_with_resident_edge_plan(
+        spec,
+        edge_schema,
+        predicate_schemas,
+        predicate_row_upper_bounds,
+        result_options,
+        edge_normalize_inserted,
+        edge_row_upper_bound,
+        edge_vertex_upper_bound,
+        None,
+    )
+}
+
+pub(super) fn cugraph_execution_capability_proof_with_resident_edge_plan(
+    spec: &CugraphAlgorithmSpec,
+    edge_schema: SchemaRef,
+    predicate_schemas: Vec<SchemaRef>,
+    predicate_row_upper_bounds: &[Option<u64>],
+    result_options: &CugraphResultPlanOptions,
+    edge_normalize_inserted: bool,
+    edge_row_upper_bound: Option<u64>,
+    edge_vertex_upper_bound: Option<u64>,
+    resident_edge_plan: Option<&nexus_query_engine::plan::QueryPlan>,
+) -> Result<(nexus_query_engine::plan::QueryPlan, nexus_query_engine::admission::QueryPlanCapabilityProof)> {
     let plan = cugraph_execution_plan(
         spec,
         edge_schema,
@@ -306,8 +330,22 @@ pub(super) fn cugraph_execution_capability_proof_with_edge_row_upper_bound(
         edge_row_upper_bound,
         edge_vertex_upper_bound,
     )?;
-    let graph_proof = nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&plan)
-        .ok_or_else(|| {
+    let graph_proof = match resident_edge_plan {
+        Some(edge_plan) =>
+            nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan_with_resident_inputs(
+                &plan,
+                [(CUGRAPH_EDGE_INPUT_NAME, edge_plan)],
+            )
+            .map_err(|error| {
+                DataFusionError::from(Error::from_native(
+                    "datafusion_nexus.cugraph_sql.plan_capability_proof",
+                    "native cuGraph resident edge evidence did not match the execution plan",
+                    error,
+                ))
+            })?,
+        None => nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&plan),
+    }
+    .ok_or_else(|| {
             DataFusionError::from(Error::new(
                 ErrorCode::InvalidExecutionPlan,
                 "datafusion_nexus.cugraph_sql.plan_capability_proof",

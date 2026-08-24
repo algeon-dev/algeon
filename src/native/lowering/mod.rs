@@ -12,7 +12,7 @@ mod unary;
 mod union;
 mod window;
 
-use std::sync::Arc;
+use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
 use bindings::{FieldBinding, LoweredNativeInput, RequiredFields, executable_schema_and_bindings, rename_field};
@@ -263,10 +263,27 @@ fn lower_gpu_resident_source_input(
     let full_schema = source.source_exec.schema();
     let full_required = RequiredFields::all();
     let (source_schema, source_bindings) = executable_schema_and_bindings(&full_schema, &full_required)?;
-    let source_node = builder.add_source(NativeSourceNode::GpuResident(NativeGpuResidentSource::new(
-        source.input_name.as_str(),
-        Arc::clone(&source_schema),
-    )));
+    let unique_key_columns = source
+        .unique_output_key
+        .as_ref()
+        .map(|columns| {
+            columns
+                .iter()
+                .map(|column| {
+                    source_bindings
+                        .iter()
+                        .find(|binding| binding.frontend_name == *column)
+                        .map(|binding| binding.native_name.clone())
+                        .ok_or(CapabilityReason::UnsupportedExpression)
+                })
+                .collect::<Result<BTreeSet<_>, _>>()
+        })
+        .transpose()?;
+    let mut resident_source = NativeGpuResidentSource::new(source.input_name.as_str(), Arc::clone(&source_schema));
+    if let Some(unique_key_columns) = unique_key_columns {
+        resident_source = resident_source.with_unique_key_columns(unique_key_columns);
+    }
+    let source_node = builder.add_source(NativeSourceNode::GpuResident(resident_source));
     if required_output_fields.is_all() {
         return Ok(LoweredNativeInput::with_bindings(source_node, source_schema, source_bindings));
     }

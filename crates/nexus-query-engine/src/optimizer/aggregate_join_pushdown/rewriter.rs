@@ -468,6 +468,7 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             datafusion_order_preserved_side: join.spec.datafusion_order_preserved_side,
             build_artifact_id: None,
             mark_column_name: None,
+            cardinality_contract: None,
         };
         JoinNode { inputs, spec }
     }

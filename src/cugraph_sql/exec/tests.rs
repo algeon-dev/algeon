@@ -26,7 +26,10 @@ use futures::future::BoxFuture;
 use nexus_query_engine::{
     admission::QueryPlanCapabilityProof,
     expr::{Expr, SortExpr, SortSpec},
-    graph_memory::{GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, graph_memory_bounded_admission_evidence_for_plan},
+    graph_memory::{
+        GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, graph_memory_bounded_admission_evidence_for_plan,
+        graph_memory_estimates_for_plan,
+    },
     observability::RuntimeObservationConfig,
     plan::{PlanNode, ProjectionOutput, QueryPlan, WindowFunction},
     runtime::ExecutionCancellation,
@@ -45,14 +48,14 @@ use crate::{
     attempt::{AttemptOptions, NexusAttemptExtension},
     backend::InstalledTestGpuBackend,
     cugraph_sql::{
-        CugraphBfsOutputOptions, CugraphBfsParams, CugraphGraphOptions, CugraphGraphPredicateTable,
-        CugraphPageRankParams, CugraphSqlConfig, CugraphTableReference, CugraphTriangleCountAllParams,
-        result_schema_for_params,
+        CugraphAlgorithmParams, CugraphBfsOutputOptions, CugraphBfsParams, CugraphGraphOptions,
+        CugraphGraphPredicateTable, CugraphPageRankParams, CugraphSqlConfig, CugraphTableReference,
+        CugraphTriangleCountAllParams, result_schema_for_params,
     },
     error::{DataFusionErrorExt, ErrorCode},
     native_exec::{
         GraphClaimCalibrationCapture, SealedAttemptMetricsTarget, admission::QueryAdmissionTicket,
-        query_admission_ticket_from_task_context,
+        producer::gpu_resident_producer_unique_output_key, query_admission_ticket_from_task_context,
     },
     native_report::NativeDataFusionExecutionMetrics,
     session::NexusSessionStateBuilderExt,
@@ -401,6 +404,27 @@ fn graph_ticket_proof_for_native_source(
         .expect("graph and native edge proofs must aggregate")
 }
 
+fn graph_ticket_proof_with_resident_edge_plan(
+    exec: &CugraphAlgoExec,
+    edge_plan: &QueryPlan,
+) -> nexus_query_engine::admission::QueryPlanCapabilityProof {
+    let edge_vertex_upper_bound =
+        edge_source_graph_vertex_estimate(exec.edge_source.as_ref()).map(|estimate| estimate.count);
+    cugraph_execution_capability_proof_with_resident_edge_plan(
+        &exec.spec,
+        exec.edge_source.schema(),
+        exec.predicate_sources.iter().map(|source| source.schema()).collect(),
+        exec.input_row_bounds.predicate_row_upper_bounds(),
+        &exec.result_options,
+        exec.edge_normalize_inserted(),
+        exec.input_row_bounds.edge_row_upper_bound(),
+        edge_vertex_upper_bound,
+        Some(edge_plan),
+    )
+    .expect("prepared graph fixture must issue a resident-input-bound proof")
+    .1
+}
+
 fn sorted_native_edge_source(row_group_rows: Vec<u64>, config: &NexusNativeExecutionConfig) -> Arc<dyn ExecutionPlan> {
     native_edge_source_with_root(row_group_rows, config, |builder, source| {
         builder.add_sort(source, SortSpec::new(vec![SortExpr::new(Expr::column("src"), false, false)]), edge_schema())
@@ -580,6 +604,35 @@ fn logical_bfs_edge_id_capability_is_rejected_during_exec_construction() {
 }
 
 #[test]
+fn graph_producer_unique_key_contract_is_limited_to_vertex_row_results() {
+    let edge_source = memory_edge_source(3);
+    let pagerank = CugraphAlgoExec::try_new(
+        pagerank_spec(),
+        Arc::clone(&edge_source),
+        Vec::new(),
+        None,
+        None,
+        NexusNativeExecutionConfig::bounded_default(),
+    )
+    .expect("PageRank producer should build");
+    assert_eq!(
+        gpu_resident_producer_unique_output_key(&pagerank),
+        Some(std::collections::BTreeSet::from(["vertex".to_string()])),
+    );
+
+    let non_unique_algorithm = CugraphAlgoExec::try_new(
+        triangle_spec(),
+        edge_source,
+        Vec::new(),
+        None,
+        None,
+        NexusNativeExecutionConfig::bounded_default(),
+    )
+    .expect("triangle-count producer should build");
+    assert_eq!(gpu_resident_producer_unique_output_key(&non_unique_algorithm), None);
+}
+
+#[test]
 fn logical_bfs_include_edge_ids_capability_is_rejected_during_exec_construction() {
     let mut spec = bfs_utf8_spec();
     let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("test spec is BFS") };
@@ -694,6 +747,46 @@ fn string_pagerank_plan_assigns_i64_ids_and_applies_top_k_before_decode() {
 
     assert_eq!(decode.inputs, [limit.id, codebook.id]);
     assert_eq!(plan.output_schema().field(0), &Field::new("vertex", DataType::Utf8, false));
+}
+
+#[test]
+fn string_pagerank_large_bound_prices_one_graph_after_both_endpoint_lookups() {
+    let edge_rows = 48_322_510;
+    let plan = cugraph_schema_query_plan(
+        &pagerank_utf8_spec(),
+        string_edge_schema(),
+        Vec::new(),
+        &[],
+        &CugraphResultPlanOptions::default(),
+        false,
+        Some(edge_rows),
+        None,
+    )
+    .expect("large string PageRank plan should build without materializing rows");
+
+    let endpoint_joins = plan
+        .nodes()
+        .iter()
+        .filter(|node| {
+            matches!(
+                &node.kind,
+                PlanNode::Join(_join)
+                    if node.output_schema().field_with_name("src").is_ok()
+                        && node.output_schema().field_with_name("dst").is_ok()
+            )
+        })
+        .count();
+    assert_eq!(endpoint_joins, 2, "logical mapping must retain both endpoint encoding joins");
+
+    let estimates = graph_memory_estimates_for_plan(&plan, GraphMemoryCalibrationOverride::none(), None)
+        .expect("large string PageRank plan must remain priceable");
+    assert_eq!(estimates.len(), 1);
+    assert_eq!(estimates[0].estimate.input_edges, edge_rows);
+
+    let evidence =
+        graph_memory_bounded_admission_evidence_for_plan(&plan, GraphMemoryCalibrationOverride::none(), None)
+            .expect("large string PageRank plan must produce one admission token");
+    assert!(evidence.cold_model_requested_bytes() > 0);
 }
 
 #[test]
@@ -2055,16 +2148,18 @@ async fn installed_backend_datafusion_parquet_graph_ticket_keeps_post_hydration_
         Some(GraphVertexEstimate::graph_metadata(3))
     );
     let source_plan = lowered_native_edge_plan(prepared.edge_source.as_ref())
-        .expect("metadata hydration must lower the DataFusion edge scan to its native source fragment");
-    let source_proof = nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_input_plan(
-        &source_plan.clone_with_gpu_resident_sink(),
+        .expect("metadata hydration must lower the DataFusion edge scan to its native source fragment")
+        .clone_with_gpu_resident_sink();
+    let source_proof =
+        nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_input_plan(&source_plan)
+            .expect("the resolved native edge source must retain its source-read capability proof");
+    let expected_proof = nexus_query_engine::admission::QueryPlanCapabilityProof::combine(
+        graph_ticket_proof_with_resident_edge_plan(&prepared, &source_plan),
+        [source_proof],
     )
-    .expect("the resolved native edge source must retain its source-read capability proof");
-    let expected_proof =
-        nexus_query_engine::admission::QueryPlanCapabilityProof::combine(graph_ticket_proof(&prepared), [source_proof])
-            .expect("the graph root and resolved native edge source must retain one combined proof")
-            .with_graph_memory_admission_evidence(model_ask.cold_model_evidence())
-            .expect("exact graph evidence must match the graph proof scope");
+    .expect("the graph root and resolved native edge source must retain one combined proof")
+    .with_graph_memory_admission_evidence(model_ask.cold_model_evidence())
+    .expect("exact graph evidence must match the graph proof scope");
     assert_eq!(
         proof, &expected_proof,
         "the post-hydration ticket must retain the exact graph and resolved source proofs with phase-aware model evidence"
