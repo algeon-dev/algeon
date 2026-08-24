@@ -18,10 +18,7 @@
 # Redistributable builds do not trust ambient Cargo flags or this developer
 # config alone. docker/stage-docker-payload.sh uses .config/policies/cpu-packaging.toml and an
 # isolated Cargo invocation with the policy's exact target and codegen flags.
-#
-# Tuned packaging uses the separate `tuned-local-v3` policy profile, artifact
-# directory, provenance identity, image tag, and v3 deployment requirement.
-#
+
 # Workspace builds also require the mold linker. Install `mold` (Ubuntu:
 # `sudo apt-get install -y mold`) and keep `clang` available so Cargo can pass
 # `-fuse-ld=mold`. Redistributable packaging intentionally ignores this file:

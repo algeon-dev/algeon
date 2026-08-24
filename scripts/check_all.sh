@@ -11,15 +11,10 @@ readonly REQUIRED_CARGO_HACK_VERSION=0.6.45
 readonly GPU_EXCLUSIVE_CAP=1
 readonly GPU_NEXTEST_PROFILE=default
 readonly GPU_NEXTEST_GROUP=gpu
+readonly GPU_LOCK=/tmp/cudf-gpu.lock
 
-# This script deliberately does not touch CARGO_INCREMENTAL. Disabling it was
-# measured to make the cpu-tests phase 2.7x slower (139.7s vs 51.9s over two
-# alternating rounds, each preceded by one engine source edit, tests themselves
-# ~16s of that), because the gate re-runs against a warm target directory far
-# more often than a cold one. Do not reintroduce it without a same-protocol
-# measurement, and never as a process-wide export: that would also reach
-# scripts/build/, whose packaging policy self-tests assert that redistributable
-# builds inherit no ambient Cargo flags.
+# Do not touch CARGO_INCREMENTAL. Long-term contract is to leave Cargo incremental
+# policy to caller environment without process-wide export.
 
 usage() {
   cat <<'USAGE'
@@ -32,35 +27,15 @@ Modes:
   --fast                         Edit loop: policies, fmt, structure, CPU tests
   --lane LANE                    Partial lane: all, cpu, gpu, gpu-shared,
                                  gpu-exclusive, or policy
-
-Feature selection (CLI selectors replace FEATURES):
-  --all-features                 Enable all workspace features (default)
-  --features LIST               Enable a comma-separated feature list
-  --no-default-features         Disable default features; may accompany --features
-
-  Every compiling phase runs one `--workspace` invocation under the selected
-  features, so a run builds a single Cargo feature unification instead of one
-  per package selection.
-
-Execution:
-  --runner RUNNER               nextest only; same-process Cargo runners fail closed
-  --strict                      Compatibility spelling; rustdoc is always strict
   -h, --help                    Show this help and exit
 
 Environment compatibility:
-  FEATURES, TEST_RUNNER, GPU_LOCK, and STRICT remain recognized. Every present
-  value is validated. Valid CLI values override their environment counterpart.
-  TEST_RUNNER=nextest is the only supported runner value; the retired
-  cargo/cargo-diagnostic values fail closed because they share process-global
-  test state. Shared-GPU concurrency is always the number of CPU cores
-  available to this environment, as reported by nproc.
-  Any CLI feature selector replaces FEATURES rather than merging with it.
   CHECK_ALL_PHASE_LOG_DIR optionally selects the persistent phase-log directory;
   otherwise a unique directory is created below target/check-all/.
 
 Examples:
   bash scripts/check_all.sh
-  bash scripts/check_all.sh --fast --features iceberg
+  bash scripts/check_all.sh --fast
   bash scripts/check_all.sh --lane gpu-shared
 USAGE
 }
@@ -80,31 +55,10 @@ require_value() {
   fi
 }
 
-valid_feature_list() {
-  [[ "$1" =~ ^[A-Za-z0-9_.+/-]+(,[A-Za-z0-9_.+/-]+)*$ ]]
-}
-
-parse_boolean() {
-  local name=$1
-  local value=$2
-  case "${value}" in
-    0 | false | FALSE | no | NO | off | OFF) BOOLEAN_RESULT=0 ;;
-    1 | true | TRUE | yes | YES | on | ON) BOOLEAN_RESULT=1 ;;
-    *) usage_error "${name} must be a boolean (0/1, false/true, no/yes, off/on), got '${value}'." ;;
-  esac
-}
-
 seen_help=0
 seen_fast=0
 seen_lane=0
-seen_features=0
-seen_all_features=0
-seen_no_default_features=0
-seen_runner=0
-seen_strict=0
 cli_lane=""
-cli_features=""
-cli_runner=""
 
 original_arg_count=$#
 while [[ $# -gt 0 ]]; do
@@ -133,49 +87,6 @@ while [[ $# -gt 0 ]]; do
       [[ -n "${cli_lane}" ]] || usage_error "--lane requires a value."
       shift
       ;;
-    --features)
-      [[ "${seen_features}" -eq 0 ]] || usage_error "duplicate option: --features"
-      require_value --features "$#" "${2-}"
-      seen_features=1
-      cli_features=$2
-      shift 2
-      ;;
-    --features=*)
-      [[ "${seen_features}" -eq 0 ]] || usage_error "duplicate option: --features"
-      seen_features=1
-      cli_features=${1#*=}
-      [[ -n "${cli_features}" ]] || usage_error "--features requires a value."
-      shift
-      ;;
-    --all-features)
-      [[ "${seen_all_features}" -eq 0 ]] || usage_error "duplicate option: --all-features"
-      seen_all_features=1
-      shift
-      ;;
-    --no-default-features)
-      [[ "${seen_no_default_features}" -eq 0 ]] || usage_error "duplicate option: --no-default-features"
-      seen_no_default_features=1
-      shift
-      ;;
-    --runner)
-      [[ "${seen_runner}" -eq 0 ]] || usage_error "duplicate option: --runner"
-      require_value --runner "$#" "${2-}"
-      seen_runner=1
-      cli_runner=$2
-      shift 2
-      ;;
-    --runner=*)
-      [[ "${seen_runner}" -eq 0 ]] || usage_error "duplicate option: --runner"
-      seen_runner=1
-      cli_runner=${1#*=}
-      [[ -n "${cli_runner}" ]] || usage_error "--runner requires a value."
-      shift
-      ;;
-    --strict)
-      [[ "${seen_strict}" -eq 0 ]] || usage_error "duplicate option: --strict"
-      seen_strict=1
-      shift
-      ;;
     --*) usage_error "unknown option: $1" ;;
     *) usage_error "unexpected positional argument: $1" ;;
   esac
@@ -187,71 +98,12 @@ if [[ "${seen_help}" -eq 1 ]]; then
   exit 0
 fi
 
-[[ ! ( "${seen_fast}" -eq 1 && "${seen_lane}" -eq 1 ) ]] \
-  || usage_error "--fast conflicts with --lane."
-[[ ! ( "${seen_all_features}" -eq 1 && ( "${seen_features}" -eq 1 || "${seen_no_default_features}" -eq 1 ) ) ]] \
-  || usage_error "--all-features conflicts with --features and --no-default-features."
-
-if [[ "${seen_features}" -eq 1 ]] && ! valid_feature_list "${cli_features}"; then
-  usage_error "--features must be a non-empty comma-separated feature list, got '${cli_features}'."
-fi
-
-# Validate every compatibility environment value before applying CLI
-# precedence. An invalid ambient value is never silently hidden by a CLI flag.
-env_features=""
-if [[ -v FEATURES ]]; then
-  env_features=${FEATURES}
-  if [[ -n "${env_features}" ]] && ! valid_feature_list "${env_features}"; then
-    usage_error "FEATURES must be empty or a comma-separated feature list, got '${env_features}'."
-  fi
-fi
-
-runner=nextest
-runner_source=default
-unsupported_runner=""
-if [[ -v TEST_RUNNER ]]; then
-  case "${TEST_RUNNER}" in
-    nextest) ;;
-    cargo | cargo-diagnostic) unsupported_runner=${TEST_RUNNER} ;;
-    *) usage_error "TEST_RUNNER must be nextest; cargo and cargo-diagnostic are retired, got '${TEST_RUNNER}'." ;;
-  esac
-  runner_source=env
-fi
-if [[ "${seen_runner}" -eq 1 ]]; then
-  case "${cli_runner}" in
-    nextest) unsupported_runner="" ;;
-    cargo | cargo-diagnostic) unsupported_runner=${cli_runner} ;;
-    *) usage_error "--runner must be nextest; cargo and cargo-diagnostic are retired, got '${cli_runner}'." ;;
-  esac
-  runner_source=cli
-fi
-if [[ -n "${unsupported_runner}" ]]; then
-  usage_error "same-process Cargo runner '${unsupported_runner}' is unsupported: allocator lifecycle and policy-specific native tests require cargo-nextest per-test-process isolation. Use '--runner nextest' or omit --runner."
-fi
-
-if [[ -v GPU_LOCK ]]; then
-  [[ -n "${GPU_LOCK}" && "${GPU_LOCK}" != *$'\n'* && "${GPU_LOCK}" != -* ]] \
-    || usage_error "GPU_LOCK must be a non-empty single-line path that does not begin with '-'."
-else
-  GPU_LOCK=/tmp/cudf-gpu.lock
-fi
+[[ ! ( "${seen_fast}" -eq 1 && "${seen_lane}" -eq 1 ) ]]   || usage_error "--fast conflicts with --lane."
 
 PHASE_LOG_DIR_OVERRIDE=""
 if [[ -v CHECK_ALL_PHASE_LOG_DIR ]]; then
-  [[ -n "${CHECK_ALL_PHASE_LOG_DIR}" && "${CHECK_ALL_PHASE_LOG_DIR}" != *$'\n'* && "${CHECK_ALL_PHASE_LOG_DIR}" != *'|'* ]] \
-    || usage_error "CHECK_ALL_PHASE_LOG_DIR must be a non-empty single-line path without '|'."
+  [[ -n "${CHECK_ALL_PHASE_LOG_DIR}" && "${CHECK_ALL_PHASE_LOG_DIR}" != *$'\n'* && "${CHECK_ALL_PHASE_LOG_DIR}" != *'|'* ]]     || usage_error "CHECK_ALL_PHASE_LOG_DIR must be a non-empty single-line path without '|'."
   PHASE_LOG_DIR_OVERRIDE=${CHECK_ALL_PHASE_LOG_DIR}
-fi
-
-strict_source=default
-if [[ -v STRICT ]]; then
-  parse_boolean STRICT "${STRICT}"
-  [[ "${BOOLEAN_RESULT}" -eq 1 ]] \
-    || usage_error "STRICT is a compatibility flag for strict rustdoc only and must be true when present."
-  strict_source=env
-fi
-if [[ "${seen_strict}" -eq 1 ]]; then
-  strict_source=cli
 fi
 
 mode=full
@@ -270,40 +122,8 @@ esac
 
 gpu_threads=$(nproc 2>/dev/null)
 nproc_status=$?
-[[ "${nproc_status}" -eq 0 ]] \
-  || usage_error "nproc failed with status ${nproc_status}; cannot determine available CPU cores."
-[[ "${gpu_threads}" =~ ^[1-9][0-9]*$ ]] \
-  || usage_error "nproc must report one positive integer, got '${gpu_threads}'."
-
-feature_source=default
-if [[ "${seen_all_features}" -eq 1 ]]; then
-  FEATURE_ARGS=(--all-features)
-  feature_label=all
-  feature_source=cli
-elif [[ "${seen_features}" -eq 1 || "${seen_no_default_features}" -eq 1 ]]; then
-  FEATURE_ARGS=()
-  if [[ "${seen_no_default_features}" -eq 1 ]]; then
-    FEATURE_ARGS+=(--no-default-features)
-  fi
-  if [[ "${seen_features}" -eq 1 ]]; then
-    FEATURE_ARGS+=(--features "${cli_features}")
-    if [[ "${seen_no_default_features}" -eq 1 ]]; then
-      feature_label="no-default+features:${cli_features}"
-    else
-      feature_label="features:${cli_features}"
-    fi
-  else
-    feature_label=no-default-features
-  fi
-  feature_source=cli
-elif [[ -n "${env_features}" ]]; then
-  FEATURE_ARGS=(--features "${env_features}")
-  feature_label="features:${env_features}"
-  feature_source=env
-else
-  FEATURE_ARGS=(--all-features)
-  feature_label=all
-fi
+[[ "${nproc_status}" -eq 0 ]]   || usage_error "nproc failed with status ${nproc_status}; cannot determine available CPU cores."
+[[ "${gpu_threads}" =~ ^[1-9][0-9]*$ ]]   || usage_error "nproc must report one positive integer, got '${gpu_threads}'."
 
 # Formatting requires the installed nightly toolchain.
 RUSTFMT_TOOLCHAIN="nightly"
@@ -350,20 +170,56 @@ if [[ -n "${PHASE_LOG_DIR_OVERRIDE}" ]]; then
   mkdir -p "${PHASE_LOG_DIR}" || usage_error "cannot create phase log directory '${PHASE_LOG_DIR}'."
 else
   mkdir -p target/check-all || usage_error "cannot create target/check-all for phase logs."
-  PHASE_LOG_DIR=$(mktemp -d target/check-all/run.XXXXXX) \
-    || usage_error "cannot create a phase log directory under target/check-all."
+  PHASE_LOG_DIR=$(mktemp -d target/check-all/run.XXXXXX)     || usage_error "cannot create a phase log directory under target/check-all."
 fi
 
-root_gate_identity() {
-  local revision
-  local state
-  revision=$(git -C "${ROOT}" rev-parse HEAD 2>/dev/null) || revision=unavailable
-  if [[ -z "$(git -C "${ROOT}" status --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>/dev/null)" ]]; then
-    state=clean
-  else
-    state=dirty
+untracked_files_hash() {
+  local target_dir=$1
+  local path
+  local -a untracked=()
+  while IFS= read -r -d '' path; do
+    [[ -n "${path}" ]] && untracked+=("${path}")
+  done < <(git -C "${target_dir}" ls-files --others --exclude-standard -z 2>/dev/null)
+  if (( ${#untracked[@]} == 0 )); then
+    return 0
   fi
-  printf '%s:%s' "${revision}" "${state}"
+  (
+    cd "${target_dir}" || exit 0
+    sha256sum --zero -- "${untracked[@]}" 2>/dev/null
+  ) | LC_ALL=C sort -z | sha256sum | awk '{print $1}'
+}
+
+root_source_fingerprint() {
+  local revision diff_hash untracked_hash
+  revision=$(git -C "${ROOT}" rev-parse HEAD 2>/dev/null) || revision=unavailable
+  diff_hash=$(git -C "${ROOT}" diff --no-ext-diff --no-renames --binary HEAD 2>/dev/null | sha256sum | awk '{print $1}')
+  untracked_hash=$(untracked_files_hash "${ROOT}")
+  if [[ "${diff_hash}" == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" && -z "${untracked_hash}" ]]; then
+    printf '%s:clean' "${revision}"
+  else
+    local dirty_hash
+    dirty_hash=$(printf '%s\0%s' "${diff_hash}" "${untracked_hash}" | sha256sum | awk '{print $1}')
+    printf '%s:dirty-%s' "${revision}" "${dirty_hash}"
+  fi
+}
+
+submodule_source_fingerprint() {
+  local submodule_root=$1
+  if [[ ! -d "${submodule_root}" ]]; then
+    printf 'unavailable'
+    return
+  fi
+  local head diff_hash untracked_hash
+  head=$(git -C "${submodule_root}" rev-parse HEAD 2>/dev/null) || head=unavailable
+  diff_hash=$(git -C "${submodule_root}" diff --no-ext-diff --no-renames --binary HEAD 2>/dev/null | sha256sum | awk '{print $1}')
+  untracked_hash=$(untracked_files_hash "${submodule_root}")
+  if [[ "${diff_hash}" == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" && -z "${untracked_hash}" ]]; then
+    printf '%s:clean' "${head}"
+  else
+    local sub_dirty_hash
+    sub_dirty_hash=$(printf '%s\0%s' "${diff_hash}" "${untracked_hash}" | sha256sum | awk '{print $1}')
+    printf '%s:dirty-%s' "${head}" "${sub_dirty_hash}"
+  fi
 }
 
 gitlink_gate_identity() {
@@ -380,7 +236,11 @@ gitlink_gate_identity() {
       -* | +* | U*) status=${first:0:1}; first=${first:1} ;;
       *) status='=' ;;
     esac
-    printf '%s%s%s@%s' "${separator}" "${status}" "${first}" "${path}"
+    local sub_fp="unavailable"
+    if [[ -d "${ROOT}/${path}" ]]; then
+      sub_fp=$(submodule_source_fingerprint "${ROOT}/${path}")
+    fi
+    printf '%s%s%s@%s[%s]' "${separator}" "${status}" "${first}" "${path}" "${sub_fp}"
     separator=,
   done <<<"${status_output}"
   [[ -n "${separator}" ]] || return 1
@@ -389,12 +249,10 @@ gitlink_gate_identity() {
 gate_source_identity() {
   local gitlinks
   gitlinks=$(gitlink_gate_identity) || return 1
-  printf 'root=%s gitlinks=%s' \
-    "$(root_gate_identity)" \
-    "${gitlinks}"
+  printf 'root=%s gitlinks=%s'     "$(root_source_fingerprint)"     "${gitlinks}"
 }
 
-echo "CHECK CONFIG: mode=${mode} lane=${lane} runner=${runner}(${runner_source}) features=${feature_label}(${feature_source}) gpu_profile=${GPU_NEXTEST_PROFILE} gpu_threads=${gpu_threads}(nproc) strict=always(${strict_source})"
+echo "CHECK CONFIG: mode=${mode} lane=${lane} runner=nextest(default) features=all(default) gpu_profile=${GPU_NEXTEST_PROFILE} gpu_threads=${gpu_threads}(nproc) strict=always(default)"
 echo "PHASE LOG DIRECTORY: ${PHASE_LOG_DIR}"
 gate_source_start=$(gate_source_identity) || usage_error "cannot resolve recursive gitlink source identity."
 echo "CHECK SOURCE START: ${gate_source_start}"
@@ -408,7 +266,24 @@ lane_safe=1
 gpu_scheduling_summary=""
 doctest_summary="not-run"
 rustdoc_summary="not-run"
-policy_selftest_count=14
+
+readonly POLICY_SCRIPTS=(
+  scripts/ci/tests/check_cpu_packaging_tests.sh
+  scripts/ci/check_iceberg_leaf_dependency.sh
+  scripts/build/check_build_support.sh
+  scripts/ci/tests/check_dependency_direction_tests.sh
+  scripts/ci/tests/check_doctest_report_tests.sh
+  scripts/ci/tests/check_phase_test_counts_tests.sh
+  scripts/ci/tests/check_phase_failed_tests_tests.sh
+  scripts/ci/tests/check_gpu_test_lane_tests.sh
+  scripts/ci/tests/check_native_sources_tests.sh
+  scripts/ci/tests/check_doctest_rustdoc_tests.sh
+  scripts/ci/tests/check_gpu_scheduling_tests.sh
+  scripts/ci/tests/check_clean_target_artifacts_tests.sh
+  scripts/ci/tests/check_pass_as_skip_policy_tests.sh
+  scripts/ci/tests/check_public_api_surface_tests.sh
+)
+policy_selftest_count=${#POLICY_SCRIPTS[@]}
 
 PHASE_ORDER=(
   policy-selftests
@@ -431,50 +306,19 @@ PHASE_ORDER=(
   clippy
 )
 declare -A PHASE_COMMAND PHASE_DURATION PHASE_STATUS PHASE_COUNTS PHASE_KIND
-declare -A PHASE_GPU_CAP PHASE_LOCK PHASE_FEATURES PHASE_LOG PHASE_EXIT
-declare -A PHASE_HASH PHASE_CACHE PHASE_LAST_PASS_HASH PHASE_SCOPE_HASH
-PHASE_SUBMODULE_SOURCE_HASH=
+declare -A PHASE_GPU_CAP PHASE_LOCK PHASE_LOG PHASE_EXIT
 
-define_phase() {
-  local id=$1
-  local command=$2
-  PHASE_COMMAND["${id}"]=${command}
+for id in "${PHASE_ORDER[@]}"; do
+  PHASE_COMMAND["${id}"]=-
   PHASE_DURATION["${id}"]=-
   PHASE_STATUS["${id}"]=SKIPPED
   PHASE_COUNTS["${id}"]=-
   PHASE_KIND["${id}"]=-
   PHASE_GPU_CAP["${id}"]=-
   PHASE_LOCK["${id}"]=-
-  PHASE_FEATURES["${id}"]=${feature_label}
   PHASE_LOG["${id}"]=-
   PHASE_EXIT["${id}"]=-
-  PHASE_HASH["${id}"]=-
-  PHASE_CACHE["${id}"]='n/a'
-}
-
-define_phase policy-selftests "${policy_selftest_count} isolated policy/orchestration scripts"
-define_phase native-sources "bash scripts/ci/check_native_sources.sh"
-define_phase checked-bindings "scripts/dev/bindings.sh cudf --check + cuvs --check"
-define_phase component-packages "bash scripts/ci/check_component_packages.sh"
-define_phase cuvs-native-free "CUVS_NEXUS_SYS_SKIP_NATIVE=1 cargo check --locked -p cuvs-nexus-sys --all-targets --all-features"
-define_phase msrv-check "cargo hack check --workspace --all-features --locked --rust-version --workspace-behavior=cargo"
-define_phase feature-isolation-check "cargo hack check --workspace --each-feature --exclude-features default --locked --keep-going"
-define_phase rustfmt "cargo +${RUSTFMT_TOOLCHAIN} fmt --all --check"
-define_phase lane-structure "test_lane_policy.py check-catalog + generated override check"
-define_phase live-inventory "bash scripts/ci/check_gpu_test_lane.sh ${FEATURE_ARGS[*]}"
-define_phase gpu-preflight "cargo nextest show-config --color never -P ${GPU_NEXTEST_PROFILE} test-groups --workspace ${FEATURE_ARGS[*]}"
-define_phase cpu-tests "cargo nextest run --workspace ${FEATURE_ARGS[*]} -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast --final-status-level fail"
-define_phase gpu-shared-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} --workspace ${FEATURE_ARGS[*]} -E group(${GPU_NEXTEST_GROUP}) --no-fail-fast --test-threads ${gpu_threads} --final-status-level fail"
-define_phase gpu-exclusive-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} --workspace ${FEATURE_ARGS[*]} -E group(gpu-exclusive) --no-fail-fast --test-threads ${GPU_EXCLUSIVE_CAP} --final-status-level fail"
-define_phase doctests "flock ${GPU_LOCK} cargo test --workspace ${FEATURE_ARGS[*]} --doc --no-fail-fast"
-define_phase rustdoc "RUSTDOCFLAGS='${DOC_RUSTDOCFLAGS}' cargo doc --workspace ${FEATURE_ARGS[*]} --no-deps --keep-going"
-# Snapshots each tracked crate's public API (rustdoc JSON via cargo-public-api)
-# against .config/policies/public-api/*.txt. Pure function of source +
-# toolchain + features, same as rustdoc/clippy/cpu-tests, so it is cacheable
-# under the same workspace scope and never GPU-locked. Placed right after
-# rustdoc so it reuses that phase's warm dependency doc metadata.
-define_phase public-api-surface "bash scripts/ci/check_public_api_surface.sh check ${FEATURE_ARGS[*]}"
-define_phase clippy "cargo clippy --workspace --all-targets ${FEATURE_ARGS[*]} -- -D warnings"
+done
 
 phase_now_ms() {
   local value
@@ -510,6 +354,9 @@ run_phase() {
   local gpu_cap=$3
   local lock_path=$4
   shift 4
+  if [[ -z "${PHASE_COMMAND[${id}]:-}" || "${PHASE_COMMAND[${id}]}" == "-" ]]; then
+    PHASE_COMMAND["${id}"]="$*"
+  fi
   local phase_log="${PHASE_LOG_DIR}/${id}.log"
   local start end command_status tee_status
   local -a pipeline_status
@@ -547,8 +394,7 @@ run_phase() {
     literal:*) PHASE_COUNTS["${id}"]=${count_kind#literal:} ;;
     nextest | cargo)
       local count_output count_status=0
-      count_output=$(python3 scripts/ci/phase_test_counts.py --kind "${count_kind}" --input "${phase_log}" 2>&1) \
-        || count_status=$?
+      count_output=$(python3 scripts/ci/phase_test_counts.py --kind "${count_kind}" --input "${phase_log}" 2>&1)         || count_status=$?
       if [[ "${count_status}" -eq 0 ]]; then
         PHASE_COUNTS["${id}"]=${count_output}
         printf 'PHASE TEST COUNTS: %s\n' "${count_output}" | tee -a "${phase_log}"
@@ -560,21 +406,16 @@ run_phase() {
     doctest)
       local report="${phase_log}.json" doctest_count_fields=""
       local parser_status=0 parser_tee_status=0 render_status=0
-      python3 scripts/ci/doctest_report.py summarize \
-        --input "${phase_log}" \
-        --command-status "${command_status}" \
-        --json-out "${report}" 2>&1 | tee -a "${phase_log}"
+      python3 scripts/ci/doctest_report.py summarize         --input "${phase_log}"         --command-status "${command_status}"         --json-out "${report}" 2>&1 | tee -a "${phase_log}"
       pipeline_status=("${PIPESTATUS[@]}")
       parser_status=${pipeline_status[0]}
       parser_tee_status=${pipeline_status[1]}
-      doctest_summary=$(python3 scripts/ci/doctest_report.py render --summary "${report}" 2>/dev/null) \
-        || render_status=$?
+      doctest_summary=$(python3 scripts/ci/doctest_report.py render --summary "${report}" 2>/dev/null)         || render_status=$?
       if [[ "${parser_status}" -eq 0 && "${parser_tee_status}" -eq 0 && "${render_status}" -eq 0 ]]; then
         doctest_count_fields=${doctest_summary#* }
         doctest_count_fields=${doctest_count_fields#* }
         PHASE_COUNTS["${id}"]=${doctest_count_fields}
-        printf '==> Doctest accounting preflight for final aggregation: %s\n' "${doctest_summary}" \
-          | tee -a "${phase_log}"
+        printf '==> Doctest accounting preflight for final aggregation: %s\n' "${doctest_summary}"           | tee -a "${phase_log}"
       else
         if [[ "${render_status}" -ne 0 ]]; then
           doctest_summary="command_status=${command_status} parse_status=unavailable harnesses=unknown executed=unknown passed=unknown failed=unknown ignored=unknown measured=unknown filtered=unknown"
@@ -585,8 +426,7 @@ run_phase() {
           doctest_count_fields=${doctest_count_fields#* }
           PHASE_COUNTS["${id}"]=${doctest_count_fields}
         fi
-        printf '==> Doctest accounting preflight for final aggregation: %s\n' "${doctest_summary}" \
-          | tee -a "${phase_log}"
+        printf '==> Doctest accounting preflight for final aggregation: %s\n' "${doctest_summary}"           | tee -a "${phase_log}"
       fi
       ;;
     *)
@@ -599,363 +439,10 @@ run_phase() {
   [[ "${PHASE_STATUS[${id}]}" == PASS ]]
 }
 
-# Each cacheable phase is a pure function of this checkout, the resolved
-# feature selection, the Rust toolchains, and Cargo/Rust environment inputs.
-# The two deliberately narrower scopes avoid invalidating rustfmt and the
-# policy self-tests for unrelated workspace edits.
-phase_source_scope() {
-  case "$1" in
-    policy-selftests) printf '%s\n' policy ;;
-    rustfmt) printf '%s\n' rustfmt ;;
-    *) printf '%s\n' workspace ;;
-  esac
-}
-
-# The index records every tracked file's content ID without reopening the whole
-# workspace.  Pair it with raw hashes for the (usually small) set of unstaged
-# and untracked files so the result still names the exact source tree Cargo
-# sees, rather than an index-only approximation.
-phase_scope_index_entries() {
-  local scope=$1
-  case "${scope}" in
-    policy) git ls-files --stage -z -- scripts .config/policies ;;
-    rustfmt)
-      git ls-files --stage -z -- \
-        ':(glob)**/*.rs' rustfmt.toml .rustfmt.toml
-      ;;
-    *) git ls-files --stage -z ;;
-  esac
-}
-
-phase_scope_unstaged_paths() {
-  local scope=$1
-  case "${scope}" in
-    policy) git diff --no-ext-diff --no-renames --name-only -z -- scripts .config/policies ;;
-    rustfmt)
-      git diff --no-ext-diff --no-renames --name-only -z -- \
-        ':(glob)**/*.rs' rustfmt.toml .rustfmt.toml
-      ;;
-    *) git diff --no-ext-diff --no-renames --name-only -z ;;
-  esac
-}
-
-phase_scope_untracked_paths() {
-  local scope=$1
-  case "${scope}" in
-    policy) git ls-files --others --exclude-standard -z -- scripts .config/policies ;;
-    rustfmt)
-      git ls-files --others --exclude-standard -z -- \
-        ':(glob)**/*.rs' rustfmt.toml .rustfmt.toml
-      ;;
-    *) git ls-files --others --exclude-standard -z ;;
-  esac
-}
-
-phase_hash_worktree_paths() {
-  local path
-  local -a existing_paths=()
-  while IFS= read -r -d '' path; do
-    printf 'path\0%s\0' "${path}"
-    if [[ -f "${path}" || -L "${path}" ]]; then
-      existing_paths+=("${path}")
-    else
-      # A deletion remains a cache input even though its indexed content ID is
-      # still present in the first part of the fingerprint.
-      printf 'missing\0%s\0' "${path}"
-    fi
-  done
-  if (( ${#existing_paths[@]} > 0 )); then
-    # Zero-delimited sha256sum output keeps every path bound to its content
-    # while avoiding one process per changed file in a dirty workspace.
-    sha256sum --zero -- "${existing_paths[@]}"
-  fi
-}
-
-phase_hash_submodule_untracked() {
-  local submodule_root=$1
-  local relative_path
-  local -a existing_paths=()
-  while IFS= read -r -d '' relative_path; do
-    printf 'path\0%s\0' "${relative_path}"
-    if [[ -f "${submodule_root}/${relative_path}" || -L "${submodule_root}/${relative_path}" ]]; then
-      existing_paths+=("${relative_path}")
-    else
-      printf 'missing\0%s\0' "${relative_path}"
-    fi
-  done < <(git -C "${submodule_root}" ls-files --others --exclude-standard -z)
-  if (( ${#existing_paths[@]} > 0 )); then
-    (
-      cd "${submodule_root}" || exit 1
-      sha256sum --zero -- "${existing_paths[@]}"
-    )
-  fi
-}
-
-phase_submodule_source_state() {
-  local status_line gitlink_path submodule_root worktree_status head
-  local status_output
-  status_output=$(git -C "${ROOT}" submodule status --recursive 2>/dev/null) || return 1
-  if [[ -z "${status_output}" ]]; then
-    printf 'submodules\0none\0'
-    return 0
-  fi
-  while IFS= read -r status_line; do
-    [[ -n "${status_line}" ]] || continue
-    read -r _ gitlink_path _ <<<"${status_line}"
-    printf 'gitlink\0%s\0' "${status_line}"
-    submodule_root="${ROOT}/${gitlink_path}"
-    if [[ ! -d "${submodule_root}" ]]; then
-      printf 'worktree\0unavailable\0'
-      continue
-    fi
-    if ! worktree_status=$(git -C "${submodule_root}" status --porcelain=v1 \
-      --untracked-files=all --ignore-submodules=none 2>/dev/null); then
-      printf 'worktree\0unavailable\0'
-      continue
-    fi
-    printf 'worktree-status\0%s\0' "${worktree_status}"
-    head=$(git -C "${submodule_root}" rev-parse HEAD 2>/dev/null) || head=unavailable
-    printf 'head\0%s\0' "${head}"
-    if [[ -n "${worktree_status}" ]]; then
-      printf 'unstaged-diff\0'
-      git -C "${submodule_root}" diff --no-ext-diff --no-renames --binary 2>/dev/null |
-        sha256sum
-      printf 'staged-diff\0'
-      git -C "${submodule_root}" diff --cached --no-ext-diff --no-renames --binary 2>/dev/null |
-        sha256sum
-      printf 'untracked\0'
-      phase_hash_submodule_untracked "${submodule_root}"
-    fi
-  done <<<"${status_output}"
-}
-
-phase_submodule_source_hash() {
-  if [[ -n "${PHASE_SUBMODULE_SOURCE_HASH-}" ]]; then
-    return 0
-  fi
-  PHASE_SUBMODULE_SOURCE_HASH=$(phase_submodule_source_state | sha256sum | awk '{print $1}') || return 1
-}
-
-phase_cache_environment() {
-  local entry name
-  while IFS= read -r -d '' entry; do
-    name=${entry%%=*}
-    case "${name}" in
-      CARGO_* | RUST* | RUSTC | RUSTC_WRAPPER | PATH | LD_LIBRARY_PATH)
-        printf '%s\0' "${entry}"
-        ;;
-    esac
-  done < <(env -0 | LC_ALL=C sort -z)
-}
-
-phase_toolchain_hash() {
-  local toolchain_identity
-  if [[ -n "${PHASE_TOOLCHAIN_HASH-}" ]]; then
-    return 0
-  fi
-  toolchain_identity=$( {
-    rustc -vV
-    rustup run "${RUSTFMT_TOOLCHAIN}" rustc -vV
-  } ) || return 1
-  PHASE_TOOLCHAIN_HASH=$(printf '%s\0' "${toolchain_identity}" | sha256sum | awk '{print $1}')
-}
-
-phase_environment_hash() {
-  if [[ -n "${PHASE_ENVIRONMENT_HASH-}" ]]; then
-    return 0
-  fi
-  PHASE_ENVIRONMENT_HASH=$(phase_cache_environment | sha256sum | awk '{print $1}') || return 1
-}
-
-phase_scope_hash() {
-  local scope=$1 hash
-  if [[ -v "PHASE_SCOPE_HASH[${scope}]" ]]; then
-    return 0
-  fi
-  hash=$( {
-    printf 'index\0'
-    phase_scope_index_entries "${scope}"
-    printf 'unstaged\0'
-    phase_scope_unstaged_paths "${scope}" |
-      phase_hash_worktree_paths
-    printf 'untracked\0'
-    phase_scope_untracked_paths "${scope}" |
-      phase_hash_worktree_paths
-  } | sha256sum | awk '{print $1}') || return 1
-  PHASE_SCOPE_HASH["${scope}"]=${hash}
-}
-
-phase_source_hash() {
-  local id=$1 scope scope_hash toolchain_hash environment_hash submodule_hash
-  scope=$(phase_source_scope "${id}") || return 1
-  phase_scope_hash "${scope}" || return 1
-  phase_toolchain_hash || return 1
-  phase_environment_hash || return 1
-  if [[ "${scope}" != policy ]]; then
-    phase_submodule_source_hash || return 1
-    submodule_hash=${PHASE_SUBMODULE_SOURCE_HASH}
-  else
-    submodule_hash=not-applicable
-  fi
-  scope_hash=${PHASE_SCOPE_HASH[${scope}]}
-  toolchain_hash=${PHASE_TOOLCHAIN_HASH}
-  environment_hash=${PHASE_ENVIRONMENT_HASH}
-
-  {
-    printf '%s\0' 'check-all-phase-cache-v2'
-    printf 'phase=%s\0' "${id}"
-    printf '%s\0' 'features'
-    printf '%s\0' "${FEATURE_ARGS[@]}"
-    printf 'scope=%s\0scope-hash=%s\0' "${scope}" "${scope_hash}"
-    printf 'submodule-source-hash=%s\0' "${submodule_hash}"
-    printf 'toolchain-hash=%s\0environment-hash=%s\0' "${toolchain_hash}" "${environment_hash}"
-  } | sha256sum | awk '{print $1}'
-}
-
-phase_cache_load() {
-  local payload status=0 id hash
-  [[ -e "${PHASE_CACHE_FILE}" ]] || return 0
-  payload=$(python3 - "${PHASE_CACHE_FILE}" <<'PY'
-import json
-import re
-import sys
-
-try:
-    with open(sys.argv[1], encoding="utf-8") as input_file:
-        cache = json.load(input_file)
-    phases = cache["phases"]
-    if cache["version"] != 1 or not isinstance(phases, dict):
-        raise ValueError("unsupported cache schema")
-    for phase, record in phases.items():
-        if not isinstance(phase, str) or not isinstance(record, dict):
-            raise ValueError("invalid phase cache record")
-        if record.get("status") != "PASS" or not re.fullmatch(r"[0-9a-f]{64}", record.get("hash", "")):
-            raise ValueError(f"invalid PASS record for {phase}")
-        print(f"{phase}\t{record['hash']}")
-except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
-    print(f"{type(error).__name__}: {error}", file=sys.stderr)
-    sys.exit(1)
-PY
-  ) || status=$?
-  if [[ "${status}" -ne 0 ]]; then
-    echo "WARN: ignoring unreadable phase cache '${PHASE_CACHE_FILE}': ${payload}" >&2
-    return 0
-  fi
-  while IFS=$'\t' read -r id hash; do
-    [[ -n "${id}" && "${hash}" =~ ^[0-9a-f]{64}$ ]] || continue
-    PHASE_LAST_PASS_HASH["${id}"]=${hash}
-  done <<<"${payload}"
-}
-
-phase_cache_store() {
-  local temporary id separator=''
-  temporary=$(mktemp "${PHASE_CACHE_FILE}.tmp.XXXXXX") || {
-    echo "WARN: could not create temporary phase-cache file beside '${PHASE_CACHE_FILE}'." >&2
-    return 0
-  }
-  {
-    printf '{\n  "version": 1,\n  "phases": {'
-    for id in "${PHASE_ORDER[@]}"; do
-      [[ -v "PHASE_LAST_PASS_HASH[${id}]" ]] || continue
-      printf '%s\n    "%s": {"status": "PASS", "hash": "%s"}' \
-        "${separator}" "${id}" "${PHASE_LAST_PASS_HASH[${id}]}"
-      separator=,
-    done
-    printf '\n  }\n}\n'
-  } >"${temporary}" || {
-    rm -f -- "${temporary}"
-    echo "WARN: could not write phase cache '${PHASE_CACHE_FILE}'." >&2
-    return 0
-  }
-  mv -f -- "${temporary}" "${PHASE_CACHE_FILE}" || {
-    rm -f -- "${temporary}"
-    echo "WARN: could not publish phase cache '${PHASE_CACHE_FILE}'." >&2
-  }
-}
-
-phase_uses_gpu_lock() {
-  [[ "$1" == "${GPU_LOCK}" ]]
-}
-
-cache_phase_hit() {
-  local id=$1 gpu_cap=$2 lock_path=$3
-  local phase_log="${PHASE_LOG_DIR}/${id}.log"
-  : >"${phase_log}" || {
-    echo "ERROR: cannot create phase log '${phase_log}'." >&2
-    PHASE_STATUS["${id}"]='FAIL(log)'
-    PHASE_LOG["${id}"]=${phase_log}
-    status=1
-    return 1
-  }
-  PHASE_DURATION["${id}"]='0.000s'
-  PHASE_STATUS["${id}"]=CACHED
-  PHASE_COUNTS["${id}"]=cached
-  PHASE_KIND["${id}"]=-
-  PHASE_GPU_CAP["${id}"]=${gpu_cap}
-  PHASE_LOCK["${id}"]=${lock_path}
-  PHASE_LOG["${id}"]=${phase_log}
-  PHASE_EXIT["${id}"]=0
-  printf '==> [%s] CACHED: source-state hash matched %s\n' \
-    "${id}" "${PHASE_HASH[${id}]}" | tee "${phase_log}"
-}
-
-run_or_cache_phase() {
-  local id=$1 count_kind=$2 gpu_cap=$3 lock_path=$4 hash=''
-  shift 4
-
-  # Device-locked phases establish same-run GPU evidence. The lock argument is
-  # the source of truth: no separately maintained list can accidentally cache
-  # a newly added GPU phase.
-  if phase_uses_gpu_lock "${lock_path}"; then
-    PHASE_CACHE["${id}"]='n/a'
-    run_phase "${id}" "${count_kind}" "${gpu_cap}" "${lock_path}" "$@"
-    return
-  fi
-
-  if hash=$(phase_source_hash "${id}"); then
-    PHASE_HASH["${id}"]=${hash}
-  else
-    PHASE_HASH["${id}"]=unavailable
-    echo "WARN: ${id} source-state hash is unavailable; executing the phase." >&2
-  fi
-
-  if [[ -n "${hash}" && "${PHASE_LAST_PASS_HASH[${id}]-}" == "${hash}" ]]; then
-    PHASE_CACHE["${id}"]=HIT
-    cache_phase_hit "${id}" "${gpu_cap}" "${lock_path}"
-    return
-  fi
-
-  PHASE_CACHE["${id}"]=MISS
-  if run_phase "${id}" "${count_kind}" "${gpu_cap}" "${lock_path}" "$@"; then
-    if [[ -n "${hash}" ]]; then
-      PHASE_LAST_PASS_HASH["${id}"]=${hash}
-      phase_cache_store
-    fi
-    return 0
-  fi
-  return 1
-}
-
 run_isolated_policy_commands() {
   local policy_status=0
-  local -a scripts=(
-    scripts/build/check_cpu_packaging_policy.sh \
-    scripts/ci/check_iceberg_leaf_dependency.sh \
-    scripts/build/check_build_support.sh \
-    scripts/ci/tests/check_dependency_direction_tests.sh \
-    scripts/ci/tests/check_doctest_report_tests.sh \
-    scripts/ci/tests/check_phase_test_counts_tests.sh \
-    scripts/ci/tests/check_phase_failed_tests_tests.sh \
-    scripts/ci/tests/check_gpu_test_lane_tests.sh \
-    scripts/ci/tests/check_native_sources_tests.sh \
-    scripts/ci/tests/check_doctest_rustdoc_tests.sh \
-    scripts/ci/tests/check_gpu_scheduling_tests.sh \
-    scripts/ci/tests/check_clean_target_artifacts_tests.sh \
-    scripts/ci/tests/check_pass_as_skip_policy_tests.sh \
-    scripts/ci/tests/check_public_api_surface_tests.sh
-  )
   local script
-  for script in "${scripts[@]}"; do
+  for script in "${POLICY_SCRIPTS[@]}"; do
     echo
     echo "--> ${script}"
     bash "${script}" || policy_status=1
@@ -966,7 +453,7 @@ run_isolated_policy_commands() {
 run_lane_structure_commands() {
   local structure_status=0
   python3 scripts/ci/test_lane_policy.py check-catalog || structure_status=1
-  python3 scripts/ci/test_lane_policy.py generate-nextest --check || structure_status=1
+  python3 scripts/ci/test_lane_policy.py check-nextest || structure_status=1
   return "${structure_status}"
 }
 
@@ -990,121 +477,44 @@ case "${mode}:${lane}" in
   lane:gpu-exclusive) needs_exclusive_gpu=1 ;;
 esac
 
-run_gpu_config_preflight() {
-  local gpu_show_config gpu_show_config_status=0
-  gpu_show_config=$(cargo nextest show-config --color never -P "${GPU_NEXTEST_PROFILE}" test-groups --workspace "${FEATURE_ARGS[@]}" 2>&1) \
-    || gpu_show_config_status=$?
-  if [[ "${gpu_show_config_status}" -ne 0 ]]; then
-    printf '%s\n' "${gpu_show_config}" >&2
-    echo "ERROR: nextest show-config failed with status ${gpu_show_config_status}; GPU scheduling cannot be verified." >&2
-    return 2
-  fi
-
-  local shared_summary="shared=not-selected"
-  local exclusive_summary="exclusive=not-selected"
-  if [[ "${needs_shared_gpu}" -eq 1 ]]; then
-    local configured_gpu_cap
-    configured_gpu_cap=$(printf '%s\n' "${gpu_show_config}" \
-      | sed -nE "s/^group: ${GPU_NEXTEST_GROUP} \(max threads = ([^)]+)\)$/\1/p")
-    if [[ "${configured_gpu_cap}" != num-cpus ]]; then
-      echo "ERROR: nextest show-config reports cap '${configured_gpu_cap}' for group '${GPU_NEXTEST_GROUP}', expected dynamic cap 'num-cpus'." >&2
-      return 2
-    fi
-    shared_summary="shared: profile=${GPU_NEXTEST_PROFILE} group=${GPU_NEXTEST_GROUP} configured_cap=${configured_gpu_cap} explicit_test_threads=${gpu_threads} effective_gpu_cap=${gpu_threads}"
-  fi
-  if [[ "${needs_exclusive_gpu}" -eq 1 ]]; then
-    local configured_gpu_exclusive_cap
-    configured_gpu_exclusive_cap=$(printf '%s\n' "${gpu_show_config}" \
-      | sed -nE 's/^group: gpu-exclusive \(max threads = ([0-9]+)\)$/\1/p')
-    if ! [[ "${configured_gpu_exclusive_cap}" =~ ^[1-9][0-9]*$ ]]; then
-      echo "ERROR: nextest show-config did not report one numeric cap for group 'gpu-exclusive'." >&2
-      return 2
-    fi
-    if [[ "${configured_gpu_exclusive_cap}" -ne "${GPU_EXCLUSIVE_CAP}" ]]; then
-      echo "ERROR: nextest show-config reports cap ${configured_gpu_exclusive_cap} for group 'gpu-exclusive', expected required cap ${GPU_EXCLUSIVE_CAP}." >&2
-      return 2
-    fi
-    exclusive_summary="exclusive: group=gpu-exclusive configured_cap=${configured_gpu_exclusive_cap} explicit_test_threads=${GPU_EXCLUSIVE_CAP}"
-  fi
-  echo "==> GPU scheduling preflight: ${shared_summary}; ${exclusive_summary}; lock=${GPU_LOCK}"
-  return 0
-}
-
-cpu_test_command() {
-  cargo nextest run --workspace "${FEATURE_ARGS[@]}" \
-    -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast --final-status-level fail
-}
-
-gpu_shared_test_command() {
-  flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" \
-    --workspace "${FEATURE_ARGS[@]}" \
-    -E "group(${GPU_NEXTEST_GROUP})" --no-fail-fast \
-    --test-threads "${gpu_threads}" --final-status-level fail
-}
-
-gpu_exclusive_test_command() {
-  flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" \
-    --workspace "${FEATURE_ARGS[@]}" \
-    -E 'group(gpu-exclusive)' --no-fail-fast \
-    --test-threads "${GPU_EXCLUSIVE_CAP}" --final-status-level fail
-}
-
-doctest_command() {
-  flock "${GPU_LOCK}" cargo test \
-    --workspace "${FEATURE_ARGS[@]}" --doc --no-fail-fast
-}
-
-rustdoc_command() {
-  RUSTDOCFLAGS="${DOC_RUSTDOCFLAGS}" cargo doc --workspace "${FEATURE_ARGS[@]}" --no-deps --keep-going
-}
-
-public_api_surface_command() {
-  bash scripts/ci/check_public_api_surface.sh check "${FEATURE_ARGS[@]}"
-}
-
 checked_bindings_command() {
   bash scripts/dev/bindings.sh cudf --check
   bash scripts/dev/bindings.sh cuvs --check
 }
 
-msrv_check_command() {
-  cargo hack check --workspace --all-features --locked \
-    --rust-version --workspace-behavior=cargo
+rustdoc_command() {
+  RUSTDOCFLAGS="${DOC_RUSTDOCFLAGS}" cargo doc --workspace --all-features --no-deps --keep-going
 }
-
-feature_isolation_check_command() {
-  cargo hack check --workspace --each-feature \
-    --exclude-features default --locked --keep-going
-}
-
-PHASE_CACHE_FILE="$(dirname -- "${PHASE_LOG_DIR}")/last-pass.json"
-phase_cache_load
 
 if [[ "${mode}" == full || "${lane}" == policy || "${mode}" == fast ]]; then
-  run_or_cache_phase policy-selftests "literal:checks=${policy_selftest_count}" - - run_isolated_policy_commands || true
-  run_or_cache_phase native-sources none - - bash scripts/ci/check_native_sources.sh || true
-  run_or_cache_phase rustfmt none - - cargo "+${RUSTFMT_TOOLCHAIN}" fmt --all --check || true
-  if ! run_or_cache_phase lane-structure literal:checks=2 - - run_lane_structure_commands; then
+  PHASE_COMMAND[policy-selftests]="${policy_selftest_count} isolated policy/orchestration scripts"
+  run_phase policy-selftests "literal:checks=${policy_selftest_count}" - - run_isolated_policy_commands || true
+  run_phase native-sources none - - bash scripts/ci/check_native_sources.sh || true
+  run_phase rustfmt none - - cargo "+${RUSTFMT_TOOLCHAIN}" fmt --all --check || true
+  PHASE_COMMAND[lane-structure]="test_lane_policy.py check-catalog + check-nextest"
+  if ! run_phase lane-structure literal:checks=2 - - run_lane_structure_commands; then
     lane_safe=0
   fi
 else
-  if ! run_or_cache_phase lane-structure literal:checks=2 - - run_lane_structure_commands; then
+  PHASE_COMMAND[lane-structure]="test_lane_policy.py check-catalog + check-nextest"
+  if ! run_phase lane-structure literal:checks=2 - - run_lane_structure_commands; then
     lane_safe=0
   fi
 fi
 
 if [[ "${mode}" == full ]]; then
-  run_or_cache_phase checked-bindings none - - checked_bindings_command || true
-  run_or_cache_phase component-packages "literal:packages=3" - - bash scripts/ci/check_component_packages.sh || true
-  run_or_cache_phase cuvs-native-free none - - env CUVS_NEXUS_SYS_SKIP_NATIVE=1 \
-    cargo check --locked -p cuvs-nexus-sys --all-targets --all-features || true
-  run_phase msrv-check none - - msrv_check_command || true
-  run_phase feature-isolation-check none - - feature_isolation_check_command || true
+  PHASE_COMMAND[checked-bindings]="scripts/dev/bindings.sh cudf --check + cuvs --check"
+  run_phase checked-bindings none - - checked_bindings_command || true
+  run_phase component-packages "literal:packages=3" - - bash scripts/ci/check_component_packages.sh || true
+  PHASE_COMMAND[cuvs-native-free]="CUVS_NEXUS_SYS_SKIP_NATIVE=1 cargo check --locked -p cuvs-nexus-sys --all-targets --all-features"
+  run_phase cuvs-native-free none - - env CUVS_NEXUS_SYS_SKIP_NATIVE=1     cargo check --locked -p cuvs-nexus-sys --all-targets --all-features || true
+  run_phase msrv-check none - - cargo hack check --workspace --all-features --locked     --rust-version --workspace-behavior=cargo || true
+  run_phase feature-isolation-check none - - cargo hack check --workspace --each-feature     --exclude-features default --locked --keep-going || true
 fi
 
 if [[ "${lane}" != policy ]]; then
   if [[ "${mode}" != fast ]]; then
-    if ! run_or_cache_phase live-inventory none - - bash scripts/ci/check_gpu_test_lane.sh "${FEATURE_ARGS[@]}"; then
+    if ! run_phase live-inventory none - - bash scripts/ci/check_gpu_test_lane.sh --all-features; then
       lane_safe=0
       echo "ABORT: live lane inventory failed; selected nextest lanes will not run." >&2
     fi
@@ -1118,47 +528,42 @@ if [[ "${lane}" != policy ]]; then
     else
       preflight_cap=${GPU_EXCLUSIVE_CAP}
     fi
-    if ! run_or_cache_phase gpu-preflight none "${preflight_cap}" - run_gpu_config_preflight; then
+    if ! run_phase gpu-preflight none "${preflight_cap}" - cargo nextest show-config --color never -P "${GPU_NEXTEST_PROFILE}" test-groups --workspace --all-features; then
       echo "ERROR: GPU scheduling preflight is invalid; refusing to run GPU lanes." >&2
       fatal_status=2
       lane_safe=0
     else
       shared_summary="shared=not-selected"
       exclusive_summary="exclusive=not-selected"
-      [[ "${needs_shared_gpu}" -eq 0 ]] \
-        || shared_summary="shared: profile=${GPU_NEXTEST_PROFILE} group=${GPU_NEXTEST_GROUP} configured_cap=num-cpus explicit_test_threads=${gpu_threads} effective_gpu_cap=${gpu_threads}"
-      [[ "${needs_exclusive_gpu}" -eq 0 ]] \
-        || exclusive_summary="exclusive: group=gpu-exclusive configured_cap=${GPU_EXCLUSIVE_CAP} explicit_test_threads=${GPU_EXCLUSIVE_CAP}"
+      [[ "${needs_shared_gpu}" -eq 0 ]]         || shared_summary="shared: profile=${GPU_NEXTEST_PROFILE} group=${GPU_NEXTEST_GROUP} configured_cap=num-cpus explicit_test_threads=${gpu_threads} effective_gpu_cap=${gpu_threads}"
+      [[ "${needs_exclusive_gpu}" -eq 0 ]]         || exclusive_summary="exclusive: group=gpu-exclusive configured_cap=${GPU_EXCLUSIVE_CAP} explicit_test_threads=${GPU_EXCLUSIVE_CAP}"
       gpu_scheduling_summary="${shared_summary}; ${exclusive_summary}; lock=${GPU_LOCK}"
+      echo "==> GPU scheduling preflight: ${gpu_scheduling_summary}"
     fi
   fi
   if [[ "${lane_safe}" -eq 1 ]]; then
-    # cpu-tests is one workspace-wide invocation: it covers what used to be
-    # three separately-unified configs (default members, nexus-bench,
-    # nexus-iceberg), plus nexus-tools and nexus-examples, whose tests this
-    # script previously only type-checked and never ran.
-    [[ "${needs_cpu}" -eq 0 ]] \
-      || run_or_cache_phase cpu-tests nextest - - cpu_test_command || true
-    [[ "${needs_shared_gpu}" -eq 0 ]] \
-      || run_or_cache_phase gpu-shared-tests nextest "${gpu_threads}" "${GPU_LOCK}" gpu_shared_test_command || true
-    [[ "${needs_exclusive_gpu}" -eq 0 ]] \
-      || run_or_cache_phase gpu-exclusive-tests nextest "${GPU_EXCLUSIVE_CAP}" "${GPU_LOCK}" gpu_exclusive_test_command || true
+    PHASE_COMMAND[cpu-tests]="cargo nextest run --workspace --all-features -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast --final-status-level fail"
+    [[ "${needs_cpu}" -eq 0 ]]       || run_phase cpu-tests nextest - - cargo nextest run --workspace --all-features         -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast --final-status-level fail || true
+    PHASE_COMMAND[gpu-shared-tests]="flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} --workspace --all-features -E group(${GPU_NEXTEST_GROUP}) --no-fail-fast --test-threads ${gpu_threads} --final-status-level fail"
+    [[ "${needs_shared_gpu}" -eq 0 ]]       || run_phase gpu-shared-tests nextest "${gpu_threads}" "${GPU_LOCK}"         flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}"         --workspace --all-features -E "group(${GPU_NEXTEST_GROUP})" --no-fail-fast         --test-threads "${gpu_threads}" --final-status-level fail || true
+    PHASE_COMMAND[gpu-exclusive-tests]="flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} --workspace --all-features -E group(gpu-exclusive) --no-fail-fast --test-threads ${GPU_EXCLUSIVE_CAP} --final-status-level fail"
+    [[ "${needs_exclusive_gpu}" -eq 0 ]]       || run_phase gpu-exclusive-tests nextest "${GPU_EXCLUSIVE_CAP}" "${GPU_LOCK}"         flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}"         --workspace --all-features -E 'group(gpu-exclusive)' --no-fail-fast         --test-threads "${GPU_EXCLUSIVE_CAP}" --final-status-level fail || true
   else
-    [[ "${needs_cpu}" -eq 0 || "${PHASE_STATUS[cpu-tests]}" != SKIPPED ]] \
-      || PHASE_STATUS[cpu-tests]='SKIPPED(blocked)'
-    [[ "${needs_shared_gpu}" -eq 0 || "${PHASE_STATUS[gpu-shared-tests]}" != SKIPPED ]] \
-      || PHASE_STATUS[gpu-shared-tests]='SKIPPED(blocked)'
-    [[ "${needs_exclusive_gpu}" -eq 0 || "${PHASE_STATUS[gpu-exclusive-tests]}" != SKIPPED ]] \
-      || PHASE_STATUS[gpu-exclusive-tests]='SKIPPED(blocked)'
+    [[ "${needs_cpu}" -eq 0 || "${PHASE_STATUS[cpu-tests]}" != SKIPPED ]]       || PHASE_STATUS[cpu-tests]='SKIPPED(blocked)'
+    [[ "${needs_shared_gpu}" -eq 0 || "${PHASE_STATUS[gpu-shared-tests]}" != SKIPPED ]]       || PHASE_STATUS[gpu-shared-tests]='SKIPPED(blocked)'
+    [[ "${needs_exclusive_gpu}" -eq 0 || "${PHASE_STATUS[gpu-exclusive-tests]}" != SKIPPED ]]       || PHASE_STATUS[gpu-exclusive-tests]='SKIPPED(blocked)'
   fi
 fi
 
 if [[ "${mode}" == full ]]; then
-  run_or_cache_phase doctests doctest - "${GPU_LOCK}" doctest_command || true
-  run_or_cache_phase rustdoc none - - rustdoc_command || true
+  PHASE_COMMAND[doctests]="flock ${GPU_LOCK} cargo test --workspace --all-features --doc --no-fail-fast"
+  run_phase doctests doctest - "${GPU_LOCK}"     flock "${GPU_LOCK}" cargo test --workspace --all-features --doc --no-fail-fast || true
+  PHASE_COMMAND[rustdoc]="RUSTDOCFLAGS='${DOC_RUSTDOCFLAGS}' cargo doc --workspace --all-features --no-deps --keep-going"
+  run_phase rustdoc none - - rustdoc_command || true
   rustdoc_summary="command_status=${PHASE_EXIT[rustdoc]} warnings=denied"
-  run_or_cache_phase public-api-surface literal:crates=8 - - public_api_surface_command || true
-  run_or_cache_phase clippy none - - cargo clippy --workspace --all-targets "${FEATURE_ARGS[@]}" -- -D warnings || true
+  run_phase public-api-surface literal:crates=8 - -     bash scripts/ci/check_public_api_surface.sh check --all-features || true
+  PHASE_COMMAND[clippy]="cargo clippy --workspace --all-targets --all-features -- -D warnings"
+  run_phase clippy none - -     cargo clippy --workspace --all-targets --all-features -- -D warnings || true
 fi
 
 sanitize_phase_cell() {
@@ -1170,29 +575,23 @@ sanitize_phase_cell() {
 }
 
 print_phase_table() {
-  local id status pass_count=0 fail_count=0 cached_count=0 skipped_count=0
+  local id status pass_count=0 fail_count=0 skipped_count=0
   for id in "${PHASE_ORDER[@]}"; do
     status=${PHASE_STATUS[${id}]}
     if [[ "${status}" == PASS ]]; then
       pass_count=$((pass_count + 1))
     elif [[ "${status}" == FAIL* ]]; then
       fail_count=$((fail_count + 1))
-    elif [[ "${status}" == CACHED ]]; then
-      cached_count=$((cached_count + 1))
     else
       skipped_count=$((skipped_count + 1))
     fi
   done
   echo
-  echo "PHASE SUMMARY (${#PHASE_ORDER[@]} phases: ${pass_count} PASS, ${fail_count} FAIL, ${cached_count} CACHED, ${skipped_count} SKIPPED)"
+  echo "PHASE SUMMARY (${#PHASE_ORDER[@]} phases: ${pass_count} PASS, ${fail_count} FAIL, ${skipped_count} SKIPPED)"
   echo "Phase | Status | Duration | Counts"
   echo "--- | --- | --- | ---"
   for id in "${PHASE_ORDER[@]}"; do
-    printf '%s | %s | %s | %s\n' \
-      "$(sanitize_phase_cell "${id}")" \
-      "$(sanitize_phase_cell "${PHASE_STATUS[${id}]}")" \
-      "$(sanitize_phase_cell "${PHASE_DURATION[${id}]}")" \
-      "$(sanitize_phase_cell "${PHASE_COUNTS[${id}]}")"
+    printf '%s | %s | %s | %s\n'       "$(sanitize_phase_cell "${id}")"       "$(sanitize_phase_cell "${PHASE_STATUS[${id}]}")"       "$(sanitize_phase_cell "${PHASE_DURATION[${id}]}")"       "$(sanitize_phase_cell "${PHASE_COUNTS[${id}]}")"
   done
   print_phase_failures
 }

@@ -137,9 +137,8 @@ partial and must not be reported as full validation.
 - After a full gate begins, a late repair may re-run only phases whose
   source-state hash changed, plus every GPU-locked phase unconditionally;
   rerunning only the changed subset never establishes full validation.
-- `.config/policies/test-lanes.toml` is the only lane-admission source. After
-  changing it, run
-  `python3 scripts/ci/test_lane_policy.py generate-nextest --write`.
+- `.config/policies/test-lanes.toml` is the only lane-admission exception source. Validate it with
+  `python3 scripts/ci/test_lane_policy.py check-catalog`.
 - Do not add external-service E2E tests to Cargo test targets; invoke them
   explicitly through `cargo run -p nexus-tools --all-features`.
 - Use `bash scripts/dev/clean_target_artifacts.sh` only to report removable build

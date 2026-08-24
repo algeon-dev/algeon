@@ -349,4 +349,73 @@ fi
 assert_contains "${facade_output}" "nexus_query_engine::plan::core::QueryPlan is live but disposition is HIDE"
 echo "PASS: a HIDE engine type cannot reappear in the public surface"
 
+
+# Native component top-level namespace policy fault-injection tests
+native_policy_dir="${tmp_dir}/native_policy"
+mkdir -p "${native_policy_dir}"
+native_snapshot_dir="${native_policy_dir}/snapshots"
+mkdir -p "${native_snapshot_dir}"
+
+cat >"${native_snapshot_dir}/cudf-nexus.txt" <<'EOF'
+pub mod cudf
+pub mod cudf::core
+pub mod cudf::device
+pub mod cudf::frame
+pub mod cudf::hash
+pub mod cudf::interop
+pub mod cudf::io
+pub mod cudf::ops
+pub mod cudf::runtime
+EOF
+
+cat >"${native_snapshot_dir}/cugraph-nexus.txt" <<'EOF'
+pub mod cugraph
+pub mod cugraph::array
+pub mod cugraph::centrality
+pub mod cugraph::community
+pub mod cugraph::cudf_interop
+pub mod cugraph::error
+pub mod cugraph::graph
+pub mod cugraph::handle
+pub mod cugraph::labeling
+pub mod cugraph::layout
+pub mod cugraph::params
+pub mod cugraph::random
+pub mod cugraph::sampling
+pub mod cugraph::similarity
+pub mod cugraph::structure
+pub mod cugraph::traversal
+pub mod cugraph::tree
+pub mod cugraph::types
+EOF
+
+native_policy_file="${native_policy_dir}/native-component-surfaces.toml"
+cp .config/policies/native-component-surfaces.toml "${native_policy_file}"
+
+if ! python3 scripts/ci/check_native_component_architecture.py "${native_snapshot_dir}" "${native_policy_file}" >"${tmp_dir}/native_baseline.output" 2>&1; then
+  echo "FAIL: native component architecture clean baseline failed" >&2
+  cat "${tmp_dir}/native_baseline.output" >&2
+  exit 1
+fi
+echo "PASS: native component architecture clean baseline passed"
+
+cat >>"${native_snapshot_dir}/cudf-nexus.txt" <<'EOF'
+pub mod cudf::unapproved_new_ns
+EOF
+if python3 scripts/ci/check_native_component_architecture.py "${native_snapshot_dir}" "${native_policy_file}" >"${tmp_dir}/native_unapproved.output" 2>&1; then
+  echo "FAIL: unapproved top-level namespace passed policy" >&2
+  exit 1
+fi
+assert_contains "${tmp_dir}/native_unapproved.output" "unapproved top-level namespaces for cudf-nexus: unapproved_new_ns"
+echo "PASS: unapproved top-level namespace fails closed"
+
+sed -i '/pub mod cudf::unapproved_new_ns/d' "${native_snapshot_dir}/cudf-nexus.txt"
+sed -i '/pub mod cudf::runtime/d' "${native_snapshot_dir}/cudf-nexus.txt"
+if python3 scripts/ci/check_native_component_architecture.py "${native_snapshot_dir}" "${native_policy_file}" >"${tmp_dir}/native_stale.output" 2>&1; then
+  echo "FAIL: stale approved namespace passed policy" >&2
+  exit 1
+fi
+assert_contains "${tmp_dir}/native_stale.output" "stale approved top-level namespaces for cudf-nexus: runtime"
+echo "PASS: stale approved top-level namespace fails closed"
+
 echo "OK: public API surface snapshot check fault-injection tests passed."

@@ -39,7 +39,7 @@ package-level validation.
 cargo nextest run -p nexus-query-engine --all-features --test native_contract_tests
 cargo nextest run -p nexus-query-engine --all-features --test public_api_boundary
 flock /tmp/cudf-gpu.lock cargo nextest run -p nexus-query-engine --all-features --lib
-flock /tmp/cudf-gpu.lock cargo nextest run -p nexus-query-engine --all-features --test query_service_allocator_lifecycle
+flock /tmp/cudf-gpu.lock cargo nextest run -p nexus-query-engine --all-features --test gpu_allocator_exclusive_tests_gpu_exclusive
 bash scripts/check_all.sh
 ```
 

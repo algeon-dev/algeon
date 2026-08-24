@@ -35,11 +35,11 @@ static_assertions.workspace = true
 cc.workspace = true
 
 [[test]]
-name = "cudf_allocator_routing"
-path = "tests/cudf_allocator_routing.rs"
+name = "cudf_allocator_routing_gpu"
+path = "tests/cudf_allocator_routing_gpu.rs"
 required-features = ["test-hooks"]
 
 [[test]]
-name = "cudf_prepared"
-path = "tests/cudf_prepared.rs"
+name = "cudf_prepared_gpu"
+path = "tests/cudf_prepared_gpu.rs"
 required-features = ["test-hooks"]

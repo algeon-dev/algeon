@@ -33,19 +33,19 @@ FEATURES=iceberg,nvml bash docker/stage-docker-payload.sh    # lean: cuDF only, 
 FEATURES=cuvs bash docker/stage-docker-payload.sh             # cuVS without cuGraph
 SKIP_CARGO_BUILD=1 bash docker/stage-docker-payload.sh       # reuse only hash-verified canonical artifact
 
-# 2. Build the image. This reads and verifies the staged provenance, then
+# 2. Build the image. This verifies the payload manifest and all file hashes, then
 #    supplies the required Docker build inputs automatically.
 bash docker/build-image.sh
 ```
 
-The canonical build does not reuse ambient Cargo/C/C++ codegen configuration.
-`.config/policies/cpu-packaging.toml` supplies the target triple and exact Rust codegen
-flags. `scripts/build/cpu_packaging_policy.py` rejects any ambient codegen override,
+The canonical build performs a controlled clean build that does not reuse ambient
+Cargo/C/C++ codegen configuration. `.config/policies/cpu-packaging.toml` supplies
+the target triple and exact Rust codegen flags. `scripts/build/cpu_packaging_policy.py`
 launches Cargo from an isolated working directory and clean `CARGO_HOME`, and
-passes only an allowlisted environment. The staged payload includes
-`cpu-provenance.json` with exact rustc/Cargo versions, target, flags, features,
-profile, policy hash, and binary hash. `SKIP_CARGO_BUILD=1` succeeds only when
-that provenance still matches the selected policy and artifact bytes.
+passes only an allowlisted environment, emitting a canonical build record. The staged
+payload includes `payload-manifest.json` with relative paths, file hashes, and the
+artifact-affecting policy fingerprint. `SKIP_CARGO_BUILD=1` succeeds only when
+the build record and canonical artifact still match the selected policy.
 
 Prerequisites: the forked libs must already be built —
 `target/native/cudf-install/lib/libcudf.so`,

@@ -13,7 +13,7 @@ mkdir -p "${tmp_dir}/bin" "${tmp_dir}/phase-logs"
 cat >"${tmp_dir}/bin/bash" <<'SH'
 #!/usr/bin/bash
 case "${1:-}" in
-  scripts/build/check_cpu_packaging_policy.sh | scripts/build/check_build_support.sh | scripts/ci/check_native_sources.sh | scripts/ci/check_component_packages.sh | scripts/dev/bindings.sh | scripts/ci/tests/check_doctest_report_tests.sh | scripts/ci/tests/check_phase_test_counts_tests.sh | scripts/ci/tests/check_gpu_test_lane_tests.sh | scripts/ci/tests/check_native_sources_tests.sh | scripts/ci/check_gpu_test_lane.sh | scripts/ci/tests/check_doctest_rustdoc_tests.sh | scripts/ci/tests/check_gpu_scheduling_tests.sh | scripts/ci/tests/check_clean_target_artifacts_tests.sh | scripts/ci/tests/check_pass_as_skip_policy_tests.sh | scripts/ci/tests/check_public_api_surface_tests.sh | scripts/ci/check_public_api_surface.sh)
+  scripts/ci/tests/check_cpu_packaging_tests.sh | scripts/build/check_build_support.sh | scripts/ci/check_native_sources.sh | scripts/ci/check_component_packages.sh | scripts/dev/bindings.sh | scripts/ci/tests/check_doctest_report_tests.sh | scripts/ci/tests/check_phase_test_counts_tests.sh | scripts/ci/tests/check_gpu_test_lane_tests.sh | scripts/ci/tests/check_native_sources_tests.sh | scripts/ci/check_gpu_test_lane.sh | scripts/ci/tests/check_doctest_rustdoc_tests.sh | scripts/ci/tests/check_gpu_scheduling_tests.sh | scripts/ci/tests/check_clean_target_artifacts_tests.sh | scripts/ci/tests/check_pass_as_skip_policy_tests.sh | scripts/ci/tests/check_public_api_surface_tests.sh | scripts/ci/check_public_api_surface.sh)
     exit 0
     ;;
 esac
@@ -147,7 +147,6 @@ run_check() {
   local status=0
   : >"${log}"
   : >"${tmp_dir}/${name}.date"
-  rm -f -- "${tmp_dir}/last-pass.json"
   env -u FEATURES -u TEST_RUNNER -u GPU_LOCK -u STRICT -u RUSTDOCFLAGS \
     PATH="${tmp_dir}/bin:${PATH}" COMMAND_LOG="${log}" \
     CHECK_ALL_PHASE_LOG_DIR="${tmp_dir}/phase-logs" FAKE_DATE_COUNTER="${tmp_dir}/${name}.date" \
@@ -196,7 +195,7 @@ assert_phase_contains() {
   fi
 }
 
-run_check multi env STRICT=1 RUSTDOCFLAGS='-A warnings -Cdebuginfo=0' /usr/bin/bash scripts/check_all.sh
+run_check multi env RUSTDOCFLAGS='-A warnings -Cdebuginfo=0' /usr/bin/bash scripts/check_all.sh
 assert_status multi 0
 assert_contains "${tmp_dir}/multi.output" "RAW_DOCTEST_STDOUT"
 assert_contains "${tmp_dir}/multi.output" "RAW_DOCTEST_STDERR"
@@ -251,14 +250,5 @@ assert_contains "${tmp_dir}/rustdoc_failure.output" "Rustdoc final: command_stat
 assert_phase_contains "${tmp_dir}/rustdoc_failure.output" rustdoc "FAIL(42) | 0.100s | -"
 echo "PASS: rustdoc failure status preserved"
 
-run_check invalid_strict env STRICT=0 /usr/bin/bash scripts/check_all.sh
-assert_status invalid_strict 2
-assert_contains "${tmp_dir}/invalid_strict.output" "STRICT is a compatibility flag for strict rustdoc only"
-if [[ -s "${tmp_dir}/invalid_strict.log" ]]; then
-  echo "FAIL: invalid STRICT reached Cargo/flock commands" >&2
-  sed 's/^/  /' "${tmp_dir}/invalid_strict.log" >&2
-  exit 1
-fi
-echo "PASS: invalid STRICT compatibility flag fails before work"
 
 echo "OK: doctest lock/accounting and strict-rustdoc orchestration tests passed without GPU execution."

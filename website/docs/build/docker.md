@@ -98,17 +98,14 @@ bash docker/build-image.sh
 
 Skipping compilation does not trust an arbitrary `target/release` binary. It
 requires an artifact created by the canonical packaging helper whose binary
-hash, policy hash, features, target, and codegen flags still agree.
+hash, policy fingerprint, features, target, and codegen flags still agree.
 
-Docker packaging always builds a clean `x86-64-v4` server artifact. The helper
-rejects ambient Rust/C/C++ codegen and Cargo target/profile overrides, then
+Docker packaging performs a controlled clean build of the `x86-64-v4` server artifact. The helper
 invokes Cargo from an isolated working directory and clean `CARGO_HOME` with
-the fixed target triple and `target-cpu=x86-64-v4`. The resulting
-`docker/dist/cpu-provenance.json` records the exact rustc/Cargo versions,
-target, effective codegen flags, features, policy hash, and binary hash. Docker
-hard-fails if its baseline, target, or hashes disagree with that provenance.
-`CPU_BINARY_SHA256` is the checksum of the staged server binary;
-`docker/build-image.sh` supplies it automatically.
+the fixed target triple and `target-cpu=x86-64-v4`, recording a canonical build record.
+The resulting `docker/dist/payload-manifest.json` records the staged files, checksums,
+and artifact-affecting policy fingerprint. Docker hard-fails if its baseline, target, or hashes
+disagree with that manifest. `docker/build-image.sh` verifies the manifest and supplies build arguments automatically.
 
 :::warning[Build machine versus target host CPU]
 This image targets x86-64-v4. Both the build machine and every target host must

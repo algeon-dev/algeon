@@ -1,659 +1,124 @@
-# Repository-owned lane admission policy. One entry per live pre-merge-admitted
-# nextest binary (default-member surface + explicit all-feature bench surface).
-# IDs are nextest's complete `binary-id`; lane and GPU resource class are
-# reviewed runtime properties.
+# Repository-owned test-lane exception policy.
+# Integration test targets declare their execution resource lane directly via target suffixes:
+#   - `*_cpu`            : CPU execution lane
+#   - `*_gpu`            : Shared GPU execution lane
+#   - `*_gpu_exclusive`  : Exclusive GPU execution lane (isolated whole-device)
+#
+# Only targets that cannot use the suffix convention (library unit test binaries,
+# binary targets) and canonical stable development test targets are listed here.
 
-[[binary]]
+[[exception]]
+id = "cudf-nexus"
+lane = "gpu"
+resource_class = "shared"
+reason = "Library unit tests initialize cuDF runtime on bounded fixtures"
+
+[[exception]]
+id = "cudf-nexus-sys"
+lane = "cpu"
+
+[[exception]]
+id = "cudf-nexus-sys::build_link_contract"
+lane = "cpu"
+
+[[exception]]
+id = "cudf-nexus-sys::fingerprint_matrix_contract"
+lane = "cpu"
+
+[[exception]]
+id = "cugraph-nexus"
+lane = "gpu"
+resource_class = "shared"
+reason = "Library unit tests exercise graph algorithms and cuDF bridge"
+
+[[exception]]
+id = "cugraph-nexus-sys"
+lane = "cpu"
+
+[[exception]]
+id = "cuvs-nexus"
+lane = "gpu"
+resource_class = "shared"
+reason = "Library unit tests initialize cuVS ANN/clustering"
+
+[[exception]]
+id = "cuvs-nexus-sys"
+lane = "cpu"
+
+[[exception]]
+id = "datafusion-facade-consumer"
+lane = "cpu"
+
+[[exception]]
 id = "datafusion-nexus"
 lane = "gpu"
 resource_class = "shared"
-reason = "Adapter library tests include coverage SQL and native execution context cases that create cuDF runtimes on bounded fixtures."
+reason = "Adapter library unit tests include coverage SQL and native execution context"
 
-[[binary]]
-id = "datafusion-facade-consumer"
-lane = "cpu"
-reason = "The compile-contract fixture exercises facade-only type reachability and does not initialize DataFusion or CUDA."
-
-[[binary]]
-id = "nexus-bench"
-lane = "cpu"
-reason = "Benchmark library unit tests validate workload/report construction; benchmark GPU execution is an explicit cargo-run path."
-
-[[binary]]
-id = "nexus-bench::iceberg_bin_tests"
-lane = "cpu"
-reason = "Tests validate Iceberg CLI item shapes and environment handling without contacting services or CUDA."
-
-[[binary]]
-id = "nexus-bench::clickbench_workload_tests"
-lane = "cpu"
-reason = "Workload tests validate ClickBench native profile/env resolution without executing the native GPU workload."
-
-[[binary]]
-id = "nexus-workloads::clickbench_contracts"
-lane = "cpu"
-reason = "ClickBench catalog, deterministic fixture discovery, and Parquet metadata contracts do not create a native runtime."
-
-[[binary]]
-id = "nexus-workloads::graph_dataset_contracts"
-lane = "cpu"
-reason = "Read-only DBLP fixture discovery validates generator metadata and Parquet footers without creating a native runtime."
-
-[[binary]]
-id = "nexus-iceberg"
-lane = "cpu"
-reason = "DataFusion-free Iceberg catalog, resolved-source, and scan-candidate contracts do not initialize DataFusion or CUDA."
-
-[[binary]]
-id = "nexus-tools::bin/nexus_tools"
-lane = "cpu"
-reason = "The tools binary's built-in unit tests cover CLI parsing, profile/fixture validation, artifact writing, and evidence aggregation; every external-service and GPU E2E runner in this binary stays behind `not(test)` and is invoked explicitly through `cargo run` per AGENTS.md, never through this test harness."
-
-[[binary]]
-id = "nexus-examples::otlp_metrics_exporter"
-lane = "cpu"
-reason = "Reference OTLP histogram/export-request construction tests validate protobuf shape against fixed inputs without a collector, network, or CUDA runtime."
-
-[[binary]]
-id = "nexus-server::bin/datafusion_nexus_server"
-lane = "cpu"
-reason = "Server binary unit tests exercise error/log formatting and configuration without starting CUDA or the service."
-
-[[binary]]
-id = "nexus-server"
-lane = "gpu"
-resource_class = "shared"
-reason = "Server library unit tests exercise installed backend, Flight service, and coordinator paths on bounded GPU fixtures."
-
-[[binary]]
-id = "datafusion-nexus::root_gpu_tests"
-lane = "gpu"
-resource_class = "shared"
-reason = "Merged root GPU SQL, session, metrics, and lifecycle tests execute bounded CUDA fixtures."
-
-[[binary]]
-id = "datafusion-nexus::cugraph_tests"
-lane = "gpu"
-resource_class = "shared"
-reason = "cuGraph SQL parity and algorithm tests construct and execute GPU graphs on small fixtures."
-
-[[binary]]
-id = "datafusion-nexus::p6_device_identity_tests"
-lane = "gpu"
-resource_class = "exclusive"
-reason = "P6 device identity coverage constructs one public backend across four CUDA devices and verifies the NVML startup records."
-
-[[binary]]
+[[exception]]
 id = "datafusion-nexus::cpu_contract_tests"
 lane = "cpu"
-reason = "Merged CPU contract harness covering structured errors, policy reports, public facade reachability, and table-format scan planning without creating a native runtime."
 
-[[binary]]
-id = "datafusion-nexus::rapids_build_support_tests"
-lane = "cpu"
-reason = "The std-only RAPIDS build-support harness validates metadata and link-directive policy without loading CUDA or creating a native runtime."
-
-[[binary]]
-id = "datafusion-nexus::iceberg_tests"
-lane = "gpu"
-resource_class = "shared"
-reason = "Iceberg native execution tests reach cuDF on bounded test fixtures."
-
-[[binary]]
+[[exception]]
 id = "datafusion-nexus::native_exec_tests"
 lane = "gpu"
 resource_class = "shared"
-reason = "Native execution integration tests create cuDF runtimes; their explicit budgets and fixtures permit reviewed shared execution."
+reason = "Canonical native execution contract tests"
 
-[[binary]]
+[[exception]]
 id = "datafusion-nexus::native_planning_tests"
 lane = "cpu"
-reason = "Merged CPU native planning harness covering lowering shape/admission contracts and fallback-pressure synthetic metrics/plans without submitting native GPU work."
 
-[[binary]]
-id = "datafusion-nexus::native_runtime_pruning_tests"
+[[exception]]
+id = "datafusion-nexus::root_gpu_tests"
 lane = "gpu"
 resource_class = "shared"
-reason = "Runtime pruning parity tests execute bounded native scans on small local fixtures."
+reason = "Canonical root GPU execution tests"
 
-[[binary]]
-id = "datafusion-nexus::native_tpcds_parity_tests"
-lane = "gpu"
-resource_class = "shared"
-reason = "Remaining TPC-DS harness coverage executes GPU-capable parity infrastructure and remains serialized with shared CUDA users."
-
-[[binary]]
-id = "nexus-server::server_config_tests"
+[[exception]]
+id = "nexus-bench"
 lane = "cpu"
-reason = "Flight SQL server configuration, precedence, validation, descriptors, and redaction tests do not create CUDA runtimes."
 
-[[binary]]
-id = "nexus-server::server_iceberg_tests"
+[[exception]]
+id = "nexus-iceberg"
 lane = "cpu"
-reason = "Server Iceberg tests validate catalog/config behavior with mocks and no native GPU execution."
 
-[[binary]]
-id = "nexus-server::server_tests"
-lane = "gpu"
-resource_class = "shared"
-reason = "Flight SQL server integration tests initialize the native GPU backend and execute bounded queries."
-
-[[binary]]
-id = "nexus-server::server_cugraph_tests"
-lane = "gpu"
-resource_class = "shared"
-reason = "Flight SQL cuGraph integration tests initialize the native GPU backend and execute bounded graph queries."
-
-[[binary]]
-id = "nexus-server::server_cuvs_tests"
-lane = "gpu"
-resource_class = "shared"
-reason = "Flight SQL cuVS integration tests initialize the native GPU backend and execute bounded vector queries."
-
-[[binary]]
+[[exception]]
 id = "nexus-query-engine"
 lane = "cpu"
-reason = "Native engine library tests cover pure logic and runtime contracts without submitting native GPU work."
 
-[[binary]]
+[[exception]]
 id = "nexus-query-engine::native_contract_tests"
 lane = "cpu"
-reason = "Native contract coverage is pure capability, report, schema, and admission validation; compiled CUDA execution lives in native_pipeline_execution_tests."
 
-[[binary]]
+[[exception]]
 id = "nexus-query-engine::public_api_boundary"
 lane = "cpu"
-reason = "Proves the two supported GPU-resource construction paths still compile and compose; forbidden-item coverage moved to scripts/ci/check_public_api_surface.sh. Neither remaining case constructs a CUDA runtime."
 
-[[binary]]
-id = "nexus-query-engine::runtime_execution_integration_tests"
-lane = "gpu"
-resource_class = "shared"
-reason = "Runtime-to-execution integration tests create CUDA runtimes and execute or relocate GPU-resident inputs."
-
-[[binary]]
+[[exception]]
 id = "nexus-query-planning"
 lane = "cpu"
-reason = "Planning library tests cover DataFusion-free IR, capability, admission, and proof composition without runtime GPU resources."
 
-[[binary]]
+[[exception]]
 id = "nexus-query-runtime"
 lane = "gpu"
 resource_class = "shared"
-reason = "Runtime library tests include GPU backend, allocator, resident-cache, and multi-device lifecycle coverage."
+reason = "Runtime unit tests initialize GPU memory and query service"
 
-[[binary]]
-id = "nexus-query-engine::gpu_backend_shared_tests"
+[[exception]]
+id = "nexus-server"
 lane = "gpu"
 resource_class = "shared"
-reason = "Merged heterogeneous active-limit and fault-injection coverage constructs bounded multi-device GPU backends."
+reason = "Server unit tests initialize GPU flight SQL service"
 
-[[binary]]
-id = "nexus-query-engine::gpu_allocator_exclusive_tests"
-lane = "gpu"
-resource_class = "exclusive"
-reason = "Merged allocator event correlation and query-service allocator lifecycle tests require process-global device isolation."
-
-[[binary]]
-id = "nexus-query-engine::native_execution_tests"
-lane = "gpu"
-resource_class = "shared"
-reason = "Registered native execution tests create CUDA runtimes and validate bounded GPU execution."
-
-[[binary]]
-id = "nexus-query-engine::native_pipeline_execution_tests"
-lane = "gpu"
-resource_class = "shared"
-reason = "Compiled pipeline execution creates CUDA runtimes and validates native GPU task scheduling on bounded fixtures."
-
-[[binary]]
-id = "cudf-nexus"
-binary_name = "cudf"
-lane = "gpu"
-resource_class = "shared"
-reason = "cuDF library unit tests create CUDA runtimes, streams, device buffers, and explicit execution domains."
-
-[[binary]]
-id = "cudf-nexus::allocation_isolation"
-lane = "gpu"
-resource_class = "exclusive"
-reason = "Allocation-isolation tests replace cuDF's process-global current device resource while measuring allocations."
-
-[[binary]]
-id = "cudf-nexus::allocator_event_contracts"
-lane = "gpu"
-resource_class = "exclusive"
-reason = "Allocator event tests install and inspect per-device memory-manager callbacks and process-global allocator state."
-
-[[binary]]
-id = "cudf-nexus::cache_allocation_domain_contracts"
-lane = "gpu"
-resource_class = "shared"
-reason = "Cache-domain tests allocate through explicit per-domain pools and per-stream route leases without swapping the current allocator."
-
-[[binary]]
-id = "cudf-nexus::device_memory_manager_async_base_contract"
-lane = "gpu"
-resource_class = "exclusive"
-reason = "Memory-manager base tests install CUDA async and pool configurations in the process-global per-device manager."
-
-[[binary]]
-id = "cudf-nexus::device_memory_manager_callback_panic_race_contract"
-lane = "gpu"
-resource_class = "exclusive"
-reason = "Callback-race tests install and exercise process-global device memory-manager failure callbacks."
-
-[[binary]]
-id = "cudf-nexus::device_memory_manager_current_resource_integrity_contract"
-lane = "gpu"
-resource_class = "exclusive"
-reason = "Current-resource integrity tests install a device memory manager and deliberately replace its process-global resource."
-
-[[binary]]
-id = "cudf-nexus::device_memory_manager_incomplete_installation_contract"
-lane = "gpu"
-resource_class = "exclusive"
-reason = "Incomplete-installation tests mutate process-global device memory-manager installation state and current-resource ownership."
-
-[[binary]]
-id = "cudf-nexus::device_memory_manager_installation_identity_contract"
-lane = "gpu"
-resource_class = "exclusive"
-reason = "Installation-identity tests install and reuse process-global per-device memory managers and failure-callback state."
-
-[[binary]]
-id = "cudf-nexus::execution_contracts"
-lane = "gpu"
-resource_class = "shared"
-reason = "Execution contract suites create CUDA runtimes and device-backed frames while source-only checks remain in the same binary."
-
-[[binary]]
-id = "cudf-nexus::failure_callback_lifetime_contract"
-lane = "gpu"
-resource_class = "exclusive"
-reason = "Failure-callback lifetime tests install callback resources as the process-global current device allocator."
-
-[[binary]]
-id = "cudf-nexus::interop_contracts"
-lane = "gpu"
-resource_class = "shared"
-reason = "Interop contract suites create CUDA streams, events, and device-backed transfers on explicit runtimes."
-
-[[binary]]
-id = "cudf-nexus::io_contracts"
-lane = "gpu"
-resource_class = "exclusive"
-reason = "cuDF I/O tests create CUDA frames and install per-device memory managers for concurrent Parquet coverage."
-
-[[binary]]
-id = "cudf-nexus::kvikio_shutdown_contract"
-lane = "gpu"
-resource_class = "exclusive"
-reason = "KvikIO lifecycle tests mutate process-global compatibility mode and active-I/O shutdown state."
-
-[[binary]]
-id = "cudf-nexus::multi_gpu_contracts"
-lane = "gpu"
-resource_class = "exclusive"
-reason = "Multi-device contracts change current CUDA devices and install per-device managers while validating cross-device state."
-
-[[binary]]
-id = "cudf-nexus::public_api_smoke"
+[[exception]]
+id = "nexus-server::bin/datafusion_nexus_server"
 lane = "cpu"
-reason = "Public API smoke tests only take function/type references and do not construct CUDA or RMM state."
 
-[[binary]]
-id = "cudf-nexus::query_memory_domain_pool_base_contract"
-lane = "gpu"
-resource_class = "exclusive"
-reason = "Query-domain pool tests install process-global per-device memory-manager pool configurations and callbacks."
-
-[[binary]]
-id = "cudf-nexus::query_memory_domain_static_partition_contract"
-lane = "gpu"
-resource_class = "exclusive"
-reason = "Static-partition tests create CUDA streams and query domains through process-global device memory managers."
-
-[[binary]]
-id = "cudf-nexus::query_memory_manager_contracts"
-lane = "gpu"
-resource_class = "exclusive"
-reason = "Query memory-manager contracts mutate and measure process-global device pools, reservations, routes, and callbacks."
-
-[[binary]]
-id = "cudf-nexus::query_memory_manager_failure_callback_contracts"
-lane = "gpu"
-resource_class = "exclusive"
-reason = "Failure-callback manager contracts install and inspect process-global per-device callback state."
-
-[[binary]]
-id = "cudf-nexus::semantic_contracts"
-lane = "gpu"
-resource_class = "shared"
-reason = "Semantic contract suites exercise device-buffer and column behavior through CUDA-backed runtimes."
-
-[[binary]]
-id = "cudf-nexus-sys"
-binary_name = "cudf_sys"
+[[exception]]
+id = "nexus-tools::bin/nexus_tools"
 lane = "cpu"
-reason = "The cuDF sys library target exposes raw bindings only; its unit surface performs no CUDA or RMM work."
 
-[[binary]]
-id = "cudf-nexus-sys::bindings_contract"
-lane = "cpu"
-reason = "Bindings contracts inspect generated Rust and C headers, ABI layouts, and source reachability without native execution."
-
-[[binary]]
-id = "cudf-nexus-sys::build_link_contract"
-lane = "cpu"
-reason = "Build-link contracts exercise metadata, CMake, ELF, and toolchain helpers without creating CUDA state."
-
-[[binary]]
-id = "cudf-nexus-sys::column_contract"
-lane = "cpu"
-reason = "Column contracts inspect native source for explicit execution and non-swapping resource rules without invoking CUDA."
-
-[[binary]]
-id = "cudf-nexus-sys::current_resource_invariant_contract"
-lane = "cpu"
-reason = "Current-resource invariant tests are source audits of the native memory split and allocator-routing contract."
-
-[[binary]]
-id = "cudf-nexus-sys::execution_context_contract"
-lane = "cpu"
-reason = "Execution-context contracts inspect native headers and sources for strict explicit-resource requirements."
-
-[[binary]]
-id = "cudf-nexus-sys::ffi_regressions"
-lane = "gpu"
-resource_class = "exclusive"
-reason = "FFI regression tests create CUDA streams/resources and replace cuDF's process-global current device resource."
-
-[[binary]]
-id = "cudf-nexus-sys::fingerprint_matrix_contract"
-lane = "cpu"
-reason = "Fingerprint contracts validate build-support source and configuration matrices without loading CUDA."
-
-[[binary]]
-id = "cudf-nexus-sys::handle_destroy_provenance_contract"
-lane = "cpu"
-reason = "Destroy-provenance contracts inspect native ownership and teardown source only; no FFI object is allocated."
-
-[[binary]]
-id = "cudf-nexus-sys::hash_join_destroy_provenance"
-lane = "gpu"
-resource_class = "exclusive"
-reason = "Hash-join provenance tests allocate CUDA columns/resources and swap the process-global current memory resource."
-
-[[binary]]
-id = "cudf-nexus-sys::hash_join_metadata_preflight"
-lane = "cpu"
-reason = "Hash-join preflight tests call the allocation-free metadata sizing ABI with host scalar inputs only."
-
-[[binary]]
-id = "cudf-nexus-sys::memory_manager_old_options_abi_contract"
-lane = "gpu"
-resource_class = "exclusive"
-reason = "Legacy-options ABI tests create and inspect native per-device CUDA memory managers and async allocator state."
-
-[[binary]]
-id = "cudf-nexus-sys::memory_manager_static_partition_contract"
-lane = "gpu"
-resource_class = "exclusive"
-reason = "Static-partition ABI tests create CUDA streams, device resources, reservations, and query domains through a manager."
-
-[[binary]]
-id = "cudf-nexus-sys::memory_resource_hooks"
-lane = "gpu"
-resource_class = "exclusive"
-reason = "Memory-resource hook tests create CUDA resources and install them as the process-global current allocator."
-
-[[binary]]
-id = "cudf-nexus-sys::metadata_size_hooks"
-lane = "gpu"
-resource_class = "shared"
-reason = "Metadata-size hooks allocate and inspect CUDA columns/tables through explicit streams and resources without swapping the current allocator."
-
-[[binary]]
-id = "cudf-nexus-sys::native_abi_contract"
-lane = "cpu"
-reason = "Native ABI contracts inspect headers, symbols, and loader dependencies with host tools and no CUDA execution."
-
-[[binary]]
-id = "cudf-nexus-sys::prepared_import_contract"
-lane = "cpu"
-reason = "Prepared-import contracts inspect native source for explicit-resource ownership and do not invoke the FFI."
-
-[[binary]]
-id = "cudf-nexus-sys::profiler_api_contract"
-lane = "cpu"
-reason = "Profiler API contracts only type-check raw function pointers and do not start a CUDA profiler."
-
-[[binary]]
-id = "cudf-nexus-sys::source_contract_support"
-lane = "cpu"
-reason = "Source-contract support tests exercise host-only source normalization helpers."
-
-[[binary]]
-id = "cudf-nexus-sys::thread_contract_tests"
-lane = "gpu"
-resource_class = "shared"
-reason = "Thread contracts create explicit CUDA streams and memory resources to validate thread-safe raw-handle access."
-
-[[binary]]
+[[exception]]
 id = "rapids-interop"
 lane = "cpu"
-reason = "The interop library target contains ownership/type contracts and no native CUDA or RMM execution."
-
-[[binary]]
-id = "rapids-interop::interop_error_tests"
-lane = "cpu"
-reason = "Interop error tests construct host-only error/source values without CUDA handles or native calls."
-
-[[binary]]
-id = "rapids-interop::owned_transfer_tests"
-lane = "cpu"
-reason = "Owned-transfer tests use modeled host pointers and transfer metadata without allocating through CUDA or RMM."
-
-[[binary]]
-id = "rapids-interop::public_surface_tests"
-lane = "cpu"
-reason = "Public-surface tests validate re-exports and type reachability without constructing native resources."
-
-[[binary]]
-id = "rapids-interop::type_id_tests"
-lane = "cpu"
-reason = "Type-ID tests validate host-side logical type widths only."
-
-[[binary]]
-id = "rapids-interop::validation_tests"
-lane = "cpu"
-reason = "Interop validation tests exercise host-side layout, binding, and readiness models with fake handles."
-
-[[binary]]
-id = "cugraph-nexus"
-binary_name = "cugraph"
-lane = "gpu"
-resource_class = "shared"
-reason = "cuGraph library unit tests construct runtime-bound handles, device arrays, and native graph results."
-
-[[binary]]
-id = "cugraph-nexus::cudf_allocator_routing"
-lane = "gpu"
-resource_class = "shared"
-reason = "Allocator-routing tests execute runtime-bound cuGraph/cuDF imports against explicit streams and resources without swapping the current allocator."
-
-[[binary]]
-id = "cugraph-nexus::cudf_bridge"
-lane = "gpu"
-resource_class = "shared"
-reason = "cuDF bridge tests build device arrays, graph handles, and bounded native graph operations."
-
-[[binary]]
-id = "cugraph-nexus::cudf_egress"
-lane = "gpu"
-resource_class = "shared"
-reason = "cuDF egress tests execute graph algorithms and export device-backed results on explicit runtime handles."
-
-[[binary]]
-id = "cugraph-nexus::cudf_ownership"
-lane = "gpu"
-resource_class = "shared"
-reason = "Ownership tests transfer runtime-backed device data and execute graph traversal on the imported buffers."
-
-[[binary]]
-id = "cugraph-nexus::cudf_prepared"
-lane = "gpu"
-resource_class = "shared"
-reason = "Prepared cuDF tests create device arrays and execute graph operations through explicit runtime contexts."
-
-[[binary]]
-id = "cugraph-nexus::dtype_contracts"
-lane = "gpu"
-resource_class = "shared"
-reason = "Dtype contracts allocate device arrays and build weighted graphs before invoking native algorithm boundaries."
-
-[[binary]]
-id = "cugraph-nexus::execution_session_contract"
-lane = "cpu"
-reason = "Execution-session contracts only type-check entry points and inspect source for explicit-resource routing; no runtime is created."
-
-[[binary]]
-id = "cugraph-nexus::gpu_algorithms"
-lane = "gpu"
-resource_class = "shared"
-reason = "Algorithm tests create CUDA-backed arrays and execute bounded cuGraph algorithms."
-
-[[binary]]
-id = "cugraph-nexus::graph_builder_validation"
-lane = "gpu"
-resource_class = "shared"
-reason = "Graph-builder validation tests allocate device inputs and exercise native graph construction and validation."
-
-[[binary]]
-id = "cugraph-nexus::null_guards_and_distances"
-lane = "gpu"
-resource_class = "shared"
-reason = "Traversal guard tests allocate device graphs and run bounded BFS/distance operations."
-
-[[binary]]
-id = "cugraph-nexus::params_invariants"
-lane = "cpu"
-reason = "Parameter invariant tests construct host-side parameter wrappers and do not create CUDA state."
-
-[[binary]]
-id = "cugraph-nexus::result_decoding"
-lane = "gpu"
-resource_class = "shared"
-reason = "Result-decoding tests execute a device-backed graph traversal and decode native results."
-
-[[binary]]
-id = "cugraph-nexus::type_state"
-lane = "cpu"
-reason = "Type-state tests only compile and inspect graph marker types without constructing device resources."
-
-[[binary]]
-id = "cugraph-nexus::type_threading_contract"
-lane = "cpu"
-reason = "Threading contracts only assert Send/Sync properties of graph and result types."
-
-[[binary]]
-id = "cugraph-nexus::typed_vec"
-lane = "gpu"
-resource_class = "shared"
-reason = "Typed-vector tests create a CUDA runtime and device arrays for native round-trip coverage."
-
-[[binary]]
-id = "cugraph-nexus-sys"
-binary_name = "cugraph_sys"
-lane = "cpu"
-reason = "The cuGraph sys library and its generated bindings expose ABI types without running CUDA work."
-
-[[binary]]
-id = "cugraph-nexus-sys::abi_sanity"
-lane = "cpu"
-reason = "cuGraph ABI sanity tests inspect generated layouts and symbols without native execution."
-
-[[binary]]
-id = "cugraph-nexus-sys::api_coverage"
-lane = "cpu"
-reason = "API coverage tests inspect wrapper declarations and function reachability without creating CUDA objects."
-
-[[binary]]
-id = "cugraph-nexus-sys::build_path_resolution"
-lane = "cpu"
-reason = "Build-path tests validate host-side path and environment resolution only."
-
-[[binary]]
-id = "cugraph-nexus-sys::edgelist_sort_preflight_header_contract"
-lane = "cpu"
-reason = "Edgelist preflight tests inspect native headers and source contracts without invoking the graph API."
-
-[[binary]]
-id = "cugraph-nexus-sys::error_mapping_contract"
-lane = "cpu"
-reason = "Error-mapping tests validate host-side wrapper strings and enums without CUDA execution."
-
-[[binary]]
-id = "cugraph-nexus-sys::layout_header_contract"
-lane = "cpu"
-reason = "Layout-header tests inspect C ABI declarations and generated bindings only."
-
-[[binary]]
-id = "cugraph-nexus-sys::symbol_presence"
-lane = "cpu"
-reason = "Symbol-presence tests inspect native exports and link metadata with host tools."
-
-[[binary]]
-id = "cugraph-nexus-sys::wrapper_header_coverage"
-lane = "cpu"
-reason = "Wrapper-header coverage tests inspect native declarations without creating CUDA or RMM state."
-
-[[binary]]
-id = "cuvs-nexus"
-binary_name = "cuvs"
-lane = "gpu"
-resource_class = "shared"
-reason = "cuVS safe-library unit tests create cuDF runtimes, cuVS resources, and device buffers."
-
-[[binary]]
-id = "cuvs-nexus::gpu"
-lane = "gpu"
-resource_class = "shared"
-reason = "cuVS GPU integration tests create CUDA runtimes/resources and execute brute-force, KMeans, and PCA paths."
-
-[[binary]]
-id = "cuvs-nexus::surface_contract"
-lane = "cpu"
-reason = "cuVS surface contracts assert source/type boundaries without creating a runtime or device allocation."
-
-[[binary]]
-id = "cuvs-nexus-sys"
-binary_name = "cuvs_sys"
-lane = "cpu"
-reason = "The cuVS sys library exposes generated ABI bindings without issuing CUDA or RMM work."
-
-[[binary]]
-id = "cuvs-nexus-sys::abi_contract"
-lane = "cpu"
-reason = "cuVS ABI tests compare layouts and query the native version symbol only; they allocate no CUDA/RMM resources."
-
-[[binary]]
-id = "cuvs-nexus-sys::cmake_root_contract"
-lane = "cpu"
-reason = "cuVS CMake-root tests inspect source/build discovery and do not execute the native GPU API."
-
-[[binary]]
-id = "cugraph-nexus::build_script_contract"
-lane = "cpu"
-reason = "cuGraph build-script contracts inspect source, package metadata, and path resolution without creating CUDA state."
-
-[[binary]]
-id = "cugraph-nexus-sys::build_script_contract"
-lane = "cpu"
-reason = "cuGraph sys build-script contracts inspect native discovery and link metadata without invoking the FFI."
-
-[[binary]]
-id = "rapids-interop::thread_contract_tests"
-lane = "cpu"
-reason = "Interop thread contracts use modeled ownership handles and host-side synchronization rules without allocating through CUDA or RMM."

@@ -1,61 +1,19 @@
 #!/usr/bin/env bash
-# Fail-closed preflight for the declarative test-lane catalog. Admission,
-# reasons, and GPU resource classes live only in .config/policies/test-lanes.toml;
-# scripts/ci/test_lane_policy.py validates that catalog against nextest JSON and
-# byte-checks the generated scheduling overrides in .config/nextest.toml.
-#
-# Live inventory is one workspace-wide enumeration under the requested core
-# feature args. It must span exactly the packages the test phases execute, or
-# catalog entries for packages outside the enumeration are reported stale; it
-# was previously a union of three separately-unified lists (default members,
-# an all-feature bench list, an all-feature Iceberg leaf list), which both
-# missed nexus-tools/nexus-examples and paid for three dependency-graph builds.
-# Cargo, not the catalog, selects packages; the catalog only classifies what
-# pre-merge admits.
+# Fail-closed preflight for the declarative test-lane policy. Admission,
+# exceptions, and GPU resource classes live in .config/policies/test-lanes.toml;
+# test targets declare their lane via _cpu, _gpu, _gpu_exclusive suffixes;
+# scripts/ci/test_lane_policy.py validates that policy against nextest JSON.
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 
 REQUIRED_NEXTEST_VERSION=0.9.140
 
-if [[ $# -gt 0 ]]; then
-  FEATURE_ARGS=("$@")
-  FEATURE_MODE=narrow
-  seen_all=0
-  seen_features=0
-  seen_no_default=0
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --all-features)
-        [[ "${seen_all}" -eq 0 ]] || { echo "ERROR: duplicate --all-features." >&2; exit 2; }
-        seen_all=1
-        FEATURE_MODE=all
-        shift
-        ;;
-      --features)
-        [[ "${seen_features}" -eq 0 && $# -ge 2 && "${2:-}" =~ ^[A-Za-z0-9_.+/-]+(,[A-Za-z0-9_.+/-]+)*$ ]] \
-          || { echo "ERROR: invalid or duplicate --features." >&2; exit 2; }
-        seen_features=1
-        shift 2
-        ;;
-      --no-default-features)
-        [[ "${seen_no_default}" -eq 0 ]] || { echo "ERROR: duplicate --no-default-features." >&2; exit 2; }
-        seen_no_default=1
-        shift
-        ;;
-      *) echo "ERROR: unsupported feature argument for lane inventory: $1" >&2; exit 2 ;;
-    esac
-  done
-  [[ ! ( "${seen_all}" -eq 1 && ( "${seen_features}" -eq 1 || "${seen_no_default}" -eq 1 ) ) ]] \
-    || { echo "ERROR: --all-features conflicts with narrower feature arguments." >&2; exit 2; }
-elif [[ -n "${FEATURES:-}" ]]; then
-  [[ "${FEATURES}" =~ ^[A-Za-z0-9_.+/-]+(,[A-Za-z0-9_.+/-]+)*$ ]] \
-    || { echo "ERROR: FEATURES must be a comma-separated feature list." >&2; exit 2; }
-  FEATURE_ARGS=(--features "${FEATURES}")
-  FEATURE_MODE=narrow
-else
-  FEATURE_ARGS=(--all-features)
-  FEATURE_MODE=all
-fi
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --all-features) shift ;;
+    *) echo "ERROR: unsupported argument for lane inventory: $1" >&2; exit 2 ;;
+  esac
+done
 
 nextest_version_output=$(cargo nextest --version 2>&1)
 nextest_version_status=$?
@@ -75,13 +33,10 @@ inventory_tmp=$(mktemp -d "${TMPDIR:-/tmp}/datafusion-nexus-test-inventory.XXXXX
   echo "ERROR: could not create temporary directory for nextest inventory." >&2
   exit 2
 }
-trap 'rm -rf "${inventory_tmp}"' EXIT
+trap "rm -rf "${inventory_tmp}"" EXIT
 workspace_inventory_json="${inventory_tmp}/workspace.json"
 inventory_stderr="${inventory_tmp}/inventory.stderr"
 
-# A nonzero producer status always wins over partial stdout. Stream stderr so
-# Cargo build progress remains visible, while teeing it to a file preserves
-# native compiler/linker diagnostics for failure investigation.
 list_inventory() {
   local output_json=$1
   shift
@@ -96,10 +51,9 @@ list_inventory() {
 }
 
 : >"${inventory_stderr}"
-list_inventory "${workspace_inventory_json}" --workspace "${FEATURE_ARGS[@]}" || exit $?
+list_inventory "${workspace_inventory_json}" --workspace --all-features || exit $?
 
 validation_status=0
 python3 scripts/ci/test_lane_policy.py validate-inventory \
-  --inventory "${workspace_inventory_json}" \
-  --feature-mode "${FEATURE_MODE}" || validation_status=$?
+  --inventory "${workspace_inventory_json}" || validation_status=$?
 exit "${validation_status}"

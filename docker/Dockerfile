@@ -36,7 +36,7 @@ ARG CPU_BASELINE
 ARG CPU_ARCH
 ARG CPU_TARGET
 ARG CPU_BINARY_SHA256
-ARG CPU_PROVENANCE_SHA256
+ARG CPU_MANIFEST_SHA256
 
 # ===========================================================================
 # Stage 1 — harvest the CUDA toolkit subset this binary actually links
@@ -48,7 +48,7 @@ ARG CPU_BASELINE
 ARG CPU_ARCH
 ARG CPU_TARGET
 ARG CPU_BINARY_SHA256
-ARG CPU_PROVENANCE_SHA256
+ARG CPU_MANIFEST_SHA256
 
 RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -59,17 +59,16 @@ RUN apt-get update && \
 # RUNPATH (/app/lib, set by stage-docker-payload.sh) resolves the forked libs during ldd.
 COPY dist/bin/datafusion_nexus_server /app/datafusion_nexus_server
 COPY dist/lib/                        /app/lib/
-COPY dist/cpu-provenance.json         /app/cpu-provenance.json
-COPY dist/cpu-provenance.labels       /app/cpu-provenance.labels
+COPY dist/payload-manifest.json       /app/payload-manifest.json
 
 # Refuse an image whose payload, declared policy identity, or hashes do not
 # match the clean packaging output staged by docker/stage-docker-payload.sh.
 RUN printf '%s  %s\n' "${CPU_BINARY_SHA256}" /app/datafusion_nexus_server | sha256sum -c - && \
-    printf '%s  %s\n' "${CPU_PROVENANCE_SHA256}" /app/cpu-provenance.json | sha256sum -c - && \
-    grep -Fx "cpu_baseline=${CPU_BASELINE}" /app/cpu-provenance.labels && \
-    grep -Fx "cpu_arch=${CPU_ARCH}" /app/cpu-provenance.labels && \
-    grep -Fx "cpu_target=${CPU_TARGET}" /app/cpu-provenance.labels && \
-    grep -Fx "binary_sha256=${CPU_BINARY_SHA256}" /app/cpu-provenance.labels
+    printf '%s  %s\n' "${CPU_MANIFEST_SHA256}" /app/payload-manifest.json | sha256sum -c - && \
+    grep -Fq "\"baseline\": \"${CPU_BASELINE}\"" /app/payload-manifest.json && \
+    grep -Fq "\"image_arch\": \"${CPU_ARCH}\"" /app/payload-manifest.json && \
+    grep -Fq "\"target_triple\": \"${CPU_TARGET}\"" /app/payload-manifest.json && \
+    grep -Fq "\"binary_sha256\": \"${CPU_BINARY_SHA256}\"" /app/payload-manifest.json
 
 # Resolve every staged ELF's dependency closure and copy only the libraries
 # that live under the CUDA toolkit prefix. The forked libs are already present
@@ -130,7 +129,7 @@ ARG CPU_BASELINE
 ARG CPU_ARCH
 ARG CPU_TARGET
 ARG CPU_BINARY_SHA256
-ARG CPU_PROVENANCE_SHA256
+ARG CPU_MANIFEST_SHA256
 
 # Runtime system libs the forked RAPIDS libs need that are NOT in the CUDA
 # -base image: libgomp1 (OpenMP, cuVS/cuGraph), libbrotli1 (Arrow/Parquet in
@@ -146,7 +145,7 @@ LABEL org.datafusion-nexus.cpu-baseline="${CPU_BASELINE}" \
       org.datafusion-nexus.cpu-arch="${CPU_ARCH}" \
       org.datafusion-nexus.cpu-target="${CPU_TARGET}" \
       org.datafusion-nexus.binary-sha256="${CPU_BINARY_SHA256}" \
-      org.datafusion-nexus.provenance-sha256="${CPU_PROVENANCE_SHA256}"
+      org.datafusion-nexus.manifest-sha256="${CPU_MANIFEST_SHA256}"
 
 ARG USERNAME=appuser
 ARG USER_UID=1001
@@ -160,7 +159,7 @@ WORKDIR /app
 COPY --from=cuda-harvest --chown=${USERNAME}:${USERNAME} /app/lib/      /app/lib/
 COPY --from=cuda-harvest --chown=${USERNAME}:${USERNAME} /cuda-collect/ /app/lib/
 COPY --from=cuda-harvest --chown=${USERNAME}:${USERNAME} /app/datafusion_nexus_server /app/datafusion_nexus_server
-COPY --from=cuda-harvest --chown=${USERNAME}:${USERNAME} /app/cpu-provenance.json /app/cpu-provenance.json
+COPY --from=cuda-harvest --chown=${USERNAME}:${USERNAME} /app/payload-manifest.json /app/payload-manifest.json
 
 # Re-check after assembling the final image: the base-stage loader closure must
 # still resolve the staged canonical RMM/cuVS identities with no missing edge.

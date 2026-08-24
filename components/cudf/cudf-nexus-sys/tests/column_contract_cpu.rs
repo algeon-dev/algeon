@@ -1,3 +1,4 @@
+#[path = "source_contract_support_cpu.rs"]
 mod source_contract_support;
 
 const COLUMN_CPP: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/native/src/column.cpp"));
