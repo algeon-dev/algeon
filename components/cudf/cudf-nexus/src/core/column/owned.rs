@@ -889,10 +889,6 @@ impl Column {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Zero-copy device buffer adoption
-// ---------------------------------------------------------------------------
-
 fn require_runtime_matches_buffer_device(
     runtime: &Runtime,
     buffer_domain: &Arc<ExecutionDomain>,
@@ -1137,10 +1133,6 @@ impl Column {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Binary operations on Column
-// ---------------------------------------------------------------------------
 
 impl Column {
     /// Generic binary operation with inferred output type.

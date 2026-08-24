@@ -19,7 +19,6 @@ fn main() {
     build_support::cmake::discard_stale_cmake_build_dir(&cc, &cxx, test_hooks);
     build_support::cmake::check_libcudf_staleness(&manifest_dir);
 
-    // Configure the native shim and opt-in linting.
     let mut config = cmake::Config::new(&native_dir);
     configure_common(&mut config, &manifest_dir);
     config.define("CUDF_RUST_ENABLE_TEST_HOOKS", test_hooks);

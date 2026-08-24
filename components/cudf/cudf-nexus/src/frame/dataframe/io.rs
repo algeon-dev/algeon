@@ -2248,10 +2248,6 @@ impl DataFrame {
         write_domain.synchronize_for_host_visibility("dataframe::write_parquet_with_options")
     }
 
-    // -----------------------------------------------------------------------
-    // JSON I/O
-    // -----------------------------------------------------------------------
-
     /// Read a JSON Lines (NDJSON) file into a `DataFrame`, using key names
     /// from the JSON objects as column names.
     ///

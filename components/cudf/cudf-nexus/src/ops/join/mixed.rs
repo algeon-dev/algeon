@@ -696,10 +696,6 @@ pub(crate) fn mixed_left_anti_join_begin_size_data_in<'a>(
     )
 }
 
-// ---------------------------------------------------------------------------
-// Low-level join functions
-// ---------------------------------------------------------------------------
-
 fn mixed_size_data_gather_map_reservation_size_bytes(
     handle: &MixedJoinSizeDataHandle,
     operation: &'static str,

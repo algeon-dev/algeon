@@ -1050,7 +1050,6 @@ cudf_status_t cudf_column_create_strings_ex(char const** strings,
     }
     int32_t total_chars = host_offsets[num_strings];
 
-    // Build a single concatenated chars buffer on host
     std::vector<char> host_chars(total_chars);
     for (int32_t i = 0; i < num_strings; ++i) {
       if (lengths[i] > 0) {

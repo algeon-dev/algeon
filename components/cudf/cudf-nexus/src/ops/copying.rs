@@ -578,10 +578,6 @@ unsafe fn scatter_unchecked_with_context(
     scatter_impl(source, scatter_map, target, execution.output_domain(), execution.exec_options(), operation)
 }
 
-// ---------------------------------------------------------------------------
-// copy_if_else (column-column)
-// ---------------------------------------------------------------------------
-
 pub(crate) fn copy_if_else_impl(
     lhs: &ColumnView<'_>,
     rhs: &ColumnView<'_>,
@@ -676,10 +672,6 @@ pub fn copy_if_else_in(
         "copying::copy_if_else_in",
     )
 }
-
-// ---------------------------------------------------------------------------
-// shift
-// ---------------------------------------------------------------------------
 
 /// Shift the rows of a column by `offset` positions and fill indeterminate
 /// outputs with `fill_value`.

@@ -82,7 +82,6 @@ cudf_status_t cudf_io_read_json_with_metadata_ex(char const* filepath,
       return CUDF_SUCCESS;
     }
 
-    // Extract column names from metadata.
     auto const& schema = result.metadata.schema_info;
     auto const n       = static_cast<int32_t>(schema.size());
     if (n > 0) {
@@ -99,7 +98,6 @@ cudf_status_t cudf_io_read_json_with_metadata_ex(char const* filepath,
         auto const size  = name.size() + 1;
         names[i]         = new (std::nothrow) char[size];
         if (!names[i]) {
-          // Clean up on allocation failure.
           for (int32_t j = 0; j < i; ++j)
             delete[] names[j];
           delete[] names;

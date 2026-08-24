@@ -24,10 +24,6 @@ use crate::{
     ops::binary::{self, BinaryOperator},
 };
 
-// ===========================================================================
-// Series op Series — returns Result<Series>
-// ===========================================================================
-
 /// Generates `std::ops::{Add, Sub, Mul, Div}` for all owned/ref combos of
 /// `Series op Series`, returning `Result<Series>`.
 macro_rules! impl_series_series_op {
@@ -72,10 +68,6 @@ impl_series_series_op!(Mul, mul, mul);
 impl_series_series_op!(Div, div, div);
 impl_series_series_op!(Rem, rem, rem);
 
-// ===========================================================================
-// Series op scalar — returns Result<Series>
-// ===========================================================================
-
 /// Generates `std::ops::{Add, Sub, Mul, Div}` for `Series op $scalar_ty`
 /// and `&Series op $scalar_ty`, returning `Result<Series>`.
 macro_rules! impl_series_scalar_op {
@@ -105,10 +97,6 @@ impl_series_scalar_op!(Sub, sub, sub_scalar, u8, u16, u32, u64, i8, i16, i32, i6
 impl_series_scalar_op!(Mul, mul, mul_scalar, u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
 impl_series_scalar_op!(Div, div, div_scalar, u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
 impl_series_scalar_op!(Rem, rem, rem_scalar, u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
-
-// ===========================================================================
-// scalar op Series — returns Result<Series>
-// ===========================================================================
 
 /// Generates `std::ops::{Add, Sub, Mul, Div}` for `$scalar_ty op Series`
 /// and `$scalar_ty op &Series`, returning `Result<Series>`.
@@ -143,10 +131,6 @@ impl_scalar_series_op!(Mul, mul, BinaryOperator::Mul, u8, u16, u32, u64, i8, i16
 impl_scalar_series_op!(Div, div, BinaryOperator::Div, u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
 impl_scalar_series_op!(Rem, rem, BinaryOperator::Mod, u8, u16, u32, u64, i8, i16, i32, i64, f32, f64);
 
-// ===========================================================================
-// Private helper: scalar-left binary operation
-// ===========================================================================
-
 /// Execute `scalar op series` using the scalar-vs-column binary primitive.
 ///
 /// 1. Constructs a `Scalar` from the host value.
@@ -172,10 +156,6 @@ fn scalar_left_op<T: crate::core::types::CudfType>(series: &Series, lhs: T, op: 
     Series::from_column(result_col)
 }
 
-// ===========================================================================
-// Neg — unary arithmetic negation
-// ===========================================================================
-
 impl std::ops::Neg for Series {
     type Output = Result<Series>;
 
@@ -191,10 +171,6 @@ impl std::ops::Neg for &Series {
         Series::neg(self)
     }
 }
-
-// ===========================================================================
-// Not — logical NOT (Bool8)
-// ===========================================================================
 
 impl std::ops::Not for Series {
     type Output = Result<Series>;

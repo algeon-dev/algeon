@@ -1,9 +1,5 @@
 use super::*;
 
-// ===========================================================================
-// Expr enum
-// ===========================================================================
-
 /// A declarative expression over DataFrame columns.
 ///
 /// Expressions form a tree that is evaluated eagerly against a DataFrame via
@@ -947,10 +943,6 @@ fn literal_haystack(values: &[Expr], ctx: &ExprEvalContext<'_>) -> Result<Column
     concatenate::concatenate_columns(&view_refs)
 }
 
-// ===========================================================================
-// DSL entry points
-// ===========================================================================
-
 /// Create an expression referencing a named column.
 pub fn col(name: impl Into<String>) -> Expr {
     Expr::Column(name.into())
@@ -963,10 +955,6 @@ pub fn col(name: impl Into<String>) -> Expr {
 pub fn concat(inputs: Vec<Expr>) -> Expr {
     Expr::StringConcat(inputs)
 }
-
-// ===========================================================================
-// IntoExpr trait
-// ===========================================================================
 
 /// Trait for values that can be converted into an [`Expr`] operand.
 pub trait IntoExpr {
@@ -988,10 +976,6 @@ impl<T: IntoLit> IntoExpr for T {
         IntoLit::into_expr(self)
     }
 }
-
-// ===========================================================================
-// Operator overloads: Add, Sub, Mul, Div, Not
-// ===========================================================================
 
 impl<R: IntoExpr> std::ops::Add<R> for Expr {
     type Output = Expr;

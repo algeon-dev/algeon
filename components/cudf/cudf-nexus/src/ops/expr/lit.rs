@@ -150,10 +150,6 @@ pub fn lit_duration_raw(raw: i64, resolution: TimestampResolution) -> Expr {
     }))
 }
 
-// ===========================================================================
-// IntoLit trait
-// ===========================================================================
-
 /// Trait for types that can be converted to a literal [`Expr`].
 pub trait IntoLit {
     /// Convert this value into a literal `Expr`.

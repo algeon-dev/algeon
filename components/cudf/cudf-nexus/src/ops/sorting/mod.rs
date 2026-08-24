@@ -688,10 +688,6 @@ pub fn is_sorted(
     Ok(out != 0)
 }
 
-// ---------------------------------------------------------------------------
-// SortOptions — cuDF-style high-level sort configuration
-// ---------------------------------------------------------------------------
-
 /// High-level sort configuration for [`DataFrame::sort_values`](crate::DataFrame::sort_values).
 ///
 /// Provides a cuDF-Python-like interface over the low-level `Order`/`NullOrder`

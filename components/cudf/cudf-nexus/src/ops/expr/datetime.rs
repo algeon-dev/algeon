@@ -1,10 +1,6 @@
 use super::*;
 use crate::ops::datetime::DatetimeRoundingFrequency;
 
-// ===========================================================================
-// Datetime expression methods
-// ===========================================================================
-
 /// Datetime expression methods on timestamp columns.
 ///
 /// Construct via [`Expr::dt`]. Methods on this type produce row-aligned

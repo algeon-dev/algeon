@@ -48,7 +48,6 @@ impl DataFrame {
         let pairs: Vec<(String, String)> =
             renames.into_iter().map(|(old, new)| (old.as_ref().to_string(), new.as_ref().to_string())).collect();
 
-        // Build a map from old name → new name.
         let mut rename_map: FastHashMap<&str, &str> = fast_hash_map_with_capacity(pairs.len());
         for (old, new) in &pairs {
             if !self.columns.contains_key(old.as_str()) {

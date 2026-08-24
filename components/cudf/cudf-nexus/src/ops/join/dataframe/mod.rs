@@ -194,10 +194,6 @@ fn coalesce_columns(left: &Column, right: &Column, operation: &'static str) -> R
     )
 }
 
-// ---------------------------------------------------------------------------
-// High-level merge helpers
-// ---------------------------------------------------------------------------
-
 /// Resolve the key names from `MergeOptions`, returning `(left_on, right_on, shared)`.
 ///
 /// `shared` is `true` when `on()` was used (both sides share the same key names),
@@ -424,7 +420,6 @@ fn merge_join_result_with_suffixes(
     }
 
     if !shared_keys {
-        // Emit right key columns for asymmetric join.
         for i in 0..key_count {
             out_cols.push(Arc::clone(&right_cols[i]));
             out_names.push(right_names[i].clone());

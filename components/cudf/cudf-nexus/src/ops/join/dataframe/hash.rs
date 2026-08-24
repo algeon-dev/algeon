@@ -336,7 +336,6 @@ impl DataFrame {
 
         let join_type = options.join_type();
 
-        // Execute the split join with null_equality from options.
         let split = self.join_split_on_impl_with_null_eq_and_context(
             right,
             JoinSplitKeys { left_on: &left_on_refs, right_on: &right_on_refs },
