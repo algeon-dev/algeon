@@ -80,15 +80,12 @@ impl CompiledGpuTaskExecutor<'_> {
     ) -> Result<Vec<ResidentGpuFrame>> {
         let mut inputs = Vec::new();
         for resource in task.input_resources() {
-            let result = if state.can_consume_task_input_resource(task, *resource) {
+            if state.can_consume_task_input_resource(task, *resource) {
                 let payload = state.consume_task_input_resource(task, *resource)?.into_payload();
-                self.union_payload_to_inputs(task, node_id, *resource, payload, true, &mut inputs)
+                self.union_payload_to_inputs(task, node_id, *resource, payload, true, &mut inputs)?;
             } else {
                 let payload = state.resource_payload(*resource)?;
-                self.union_payload_ref_to_inputs(task, node_id, *resource, payload, &mut inputs)
-            };
-            if let Err(error) = result {
-                return Err(error);
+                self.union_payload_ref_to_inputs(task, node_id, *resource, payload, &mut inputs)?;
             }
         }
         Ok(inputs)

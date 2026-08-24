@@ -648,39 +648,14 @@ pub fn tpcds_glue_table_name(table_name: &str, _scale_factor: &str) -> String {
 pub(crate) async fn native_session_context(
     source_storage_profile: Option<nexus_query_engine::runtime::SourceStorageProfile>,
     native_execution_profile: NativeExecutionProfile,
-) -> SmokeResult<(SessionContext, Arc<NexusNativePhysicalOptimizerRule>, GpuBackendOwner)> {
+) -> SmokeResult<(SessionContext, Arc<NexusNativePhysicalOptimizerRule>, NexusGpuBackend)> {
     let mut execution_config = native_session_execution_config_from_env(native_execution_profile)?;
     if let Some(profile) = resolve_default_chain_source_storage_profile(source_storage_profile).await? {
         execution_config = execution_config.with_source_storage_profile(profile);
     }
-    let MemoryControlPolicy::Bounded { device_budget_bytes, min_retry_chunk_row_groups, .. } =
-        execution_config.memory_control_policy()
-    else {
+    let MemoryControlPolicy::Bounded { device_budget_bytes, .. } = execution_config.memory_control_policy() else {
         unreachable!("iceberg smoke native execution config is always bounded")
     };
-    let service_config = QueryExecutionConfig {
-        lakehouse_cache_fill: execution_config.lakehouse_cache_fill_config().clone(),
-        source_storage_profiles: execution_config.source_storage_profiles().to_vec(),
-        boundary_policy: execution_config.boundary_policy(),
-        source_scheduler_policy: execution_config.source_scheduler_policy(),
-        source_chunk_planning_mode: execution_config.source_chunk_planning_mode(),
-        statistical_aggregate_execution_mode: execution_config.statistical_aggregate_execution_mode(),
-        dynamic_filter_execution_options: execution_config.dynamic_filter_execution_options(),
-        keyed_hash_join_strategy_options: execution_config.keyed_hash_join_strategy_options(),
-        aggregate_strategy_execution_options: execution_config.aggregate_strategy_execution_options(),
-        source_chunk_planning_options: execution_config.source_chunk_planning_options(),
-        max_source_chunk_bytes: execution_config.max_source_chunk_bytes(),
-        max_row_groups_per_chunk: execution_config.max_row_groups_per_chunk(),
-        max_retry_attempts: execution_config.max_retry_attempts(),
-        min_retry_chunk_row_groups,
-    };
-    let backend = GpuBackendOwner::build(
-        service_config,
-        nexus_query_engine::runtime::QueueBounds::default(),
-        vec![GpuBackendOwner::device_config(0, device_budget_bytes, 1, 1)],
-    )?;
-    let query_handle = Arc::new(backend.session().admit_query()?);
-    execution_config = execution_config.with_query_service_handle(query_handle);
     let native_optimizer_options = native_optimizer_options_for_profile(native_execution_profile, &execution_config);
     let optimizer_config = crate::report_workload::RelationalExecutionSelection::strict_native()
         .configure_native_optimizer(
@@ -689,7 +664,14 @@ pub(crate) async fn native_session_context(
                 .with_native_optimizer_options(native_optimizer_options),
         )
         .expect("native Iceberg session installs the native rule");
-    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
+    let device_profile = NexusGpuDeviceProfile::new(0)
+        .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: device_budget_bytes })
+        .with_max_active_attempts(1)
+        .with_installation_bounds(NexusGpuDeviceInstallationBounds::new(2, 1, 1));
+    let device_config = NexusGpuDeviceConfig::new(device_profile, GpuMemoryOwnership::WholeDeviceExclusive);
+    let backend =
+        NexusGpuBackend::builder().with_optimizer_config(optimizer_config).devices([device_config]).build()?;
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(backend.optimizer_config().clone()));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(native_session_config_for_profile(native_execution_profile))
         .with_nexus_native_rule(Arc::clone(&native_rule))

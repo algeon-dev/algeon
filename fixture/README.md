@@ -24,6 +24,8 @@ fixture/
     dblp.v12.json                    # local source JSON
     dblp_ingest.py                   # Citation Network generator
     prepare.sh                       # cuGraph corpus preparation entrypoint
+    rmat_generate.py                 # deterministic synthetic R-MAT generator
+    synthetic/                       # local R-MAT Parquet fixtures
   iceberg-local/                     # local REST, RustFS, and Moto stack
 ```
 
@@ -101,6 +103,29 @@ run `fixture/graph/prepare.sh --oracle`. It uses
 `NEXUS_CUGRAPH_PYTHON` when set, otherwise the repository virtual environment
 or `python3`.
 
+`graph/rmat_generate.py` generates a deterministic synthetic R-MAT
+(recursive matrix) edge-list fixture as Parquet, sized by `--scale` (vertex
+count `2**scale`) and `--edge-factor` (edge count `edge_factor * 2**scale`):
+
+```bash
+fixture/fixture.sh graph rmat \
+  --scale 22 --edge-factor 16 --skew skewed --seed 20260910 \
+  --out-root fixture/graph/synthetic --force
+```
+
+`--skew skewed` uses the Graph500 R-MAT quadrant probabilities
+(a=0.57, b=0.19, c=0.19, d=0.05); `--skew uniform` uses a flat 0.25/0.25/0.25/0.25
+split (Erdos-Renyi-like, low degree skew) to isolate the effect of degree skew
+in comparisons. Output goes to `<out-root>/rmat_s<scale>_e<edge_factor>_<skew>/`,
+containing `edges.parquet` (`src` int64, `dst` int64, `weight` float64,
+self-loops and duplicate edges retained) and a `_generation.json` manifest
+recording the command line, sizes, a sha256 of the Parquet file, and degree
+statistics. Generation is deterministic for identical arguments (including
+`--chunk-edges`, which sets the RNG draw/row-group chunking): rerunning with
+the same flags reproduces a byte-identical `edges.parquet`. `--force`
+overwrites an existing output directory; without it, generation refuses to
+replace one.
+
 ## Local data placement
 
 Point each workload-local data directory at fast storage with a symlink, or
@@ -112,6 +137,7 @@ ln -s "$NEXUS_FIXTURE_ROOT/tpch"       fixture/tpc-h/data
 ln -s "$NEXUS_FIXTURE_ROOT/tpcds"      fixture/tpc-ds/data
 ln -s "$NEXUS_FIXTURE_ROOT/clickbench" fixture/clickbench/data
 ln -s "$NEXUS_FIXTURE_ROOT/demo"       fixture/graph/demo
+ln -s "$NEXUS_FIXTURE_ROOT/synthetic"  fixture/graph/synthetic
 ```
 
 For an explicit external fixture, set `NEXUS_PARQUET_DIR` to its Parquet root.

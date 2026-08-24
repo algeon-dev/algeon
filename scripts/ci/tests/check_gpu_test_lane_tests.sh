@@ -36,7 +36,11 @@ chmod +x "${tmp_dir}/bin/cargo"
 
 # Capture real live inventory as base fixture
 cargo nextest list --workspace --all-features --list-type binaries-only --message-format json >"${tmp_dir}/complete.json"
-catalog_success="all 120 live test binaries classified"
+# Derive the expected count from the same inventory the script is fed: a
+# literal here breaks on every added test target while proving nothing the
+# comparison against this fixture does not already prove.
+catalog_binaries=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["rust-binaries"]))' "${tmp_dir}/complete.json")
+catalog_success="all ${catalog_binaries} live test binaries classified"
 
 run_shell_case() {
   local name=$1

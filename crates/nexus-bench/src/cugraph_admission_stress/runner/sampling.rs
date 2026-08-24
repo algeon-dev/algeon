@@ -169,7 +169,10 @@ pub(super) fn spawn_sampler(
             .iter()
             .filter_map(|ordinal| {
                 let device = cudf::DeviceId::new(*ordinal).ok()?;
-                cudf::DeviceMemoryManager::install_for_device(device).ok().map(|manager| (*ordinal, manager))
+                // Alias the manager the backend installed. Installing one here
+                // is rejected whenever the backend's options differ, which
+                // would leave every pool counter silently reported as zero.
+                cudf::DeviceMemoryManager::for_device(device).ok().map(|manager| (*ordinal, manager))
             })
             .collect::<BTreeMap<_, _>>();
         while !stop_flag.load(Ordering::SeqCst) {

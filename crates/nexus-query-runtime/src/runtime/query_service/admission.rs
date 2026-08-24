@@ -1011,6 +1011,10 @@ impl QueryAdmissionWaiter {
             };
             let Some(placed_query) = placed_query else {
                 if Instant::now() >= self.deadline {
+                    // Read the timed-out waiter's cap before abandoning it: the
+                    // removal shifts every later entry, so `position` no longer
+                    // names this request afterwards.
+                    let requested_query_cap_bytes = state.queued[position].requested_query_cap_bytes;
                     let removed = self.service.abandon_queued_request_locked(&mut state, self.admission_request_id);
                     self.queued = false;
                     if removed.is_some() {
@@ -1024,7 +1028,8 @@ impl QueryAdmissionWaiter {
                         );
                     }
                     let error = self.service.memory_grant_wait_timeout_error(
-                        state.queued[position].requested_query_cap_bytes,
+                        device_ordinal,
+                        requested_query_cap_bytes,
                         state.queued.len(),
                     );
                     drop(state);

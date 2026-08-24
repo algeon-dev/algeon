@@ -130,6 +130,115 @@ pub enum ErrorCode {
 }
 
 impl ErrorCode {
+    /// Every adapter error code supported by this crate release.
+    ///
+    /// This list keeps adapter projections and status policy mechanically
+    /// auditable when a new code is introduced.
+    pub const ALL: &'static [Self] = &[
+        Self::Cancelled,
+        Self::SqlParse,
+        Self::InvalidRequest,
+        Self::DataFusionPlanning,
+        Self::PlanningTimeout,
+        Self::ObjectNotFound,
+        Self::SourceAccessDenied,
+        Self::SourceUnauthenticated,
+        Self::SourceObjectNotFound,
+        Self::SourceTemporaryFailure,
+        Self::SourceDependencyFailure,
+        Self::FieldNotFound,
+        Self::GraphInputInvalid,
+        Self::RequiredGpuOperationUnsupported,
+        Self::FinalPlanRequirementUnsatisfied,
+        Self::UnsupportedOperator,
+        Self::UnsupportedExpression,
+        Self::UnsupportedType,
+        Self::InvalidExecutionPlan,
+        Self::InvalidChildCount,
+        Self::CudfInvalidInput,
+        Self::CudfUnsupported,
+        Self::CudfResourceExhausted,
+        Self::SizeOverflow,
+        Self::HostMaterializationLimitExceeded,
+        Self::HostStagingLimitExceeded,
+        Self::CudfTemporaryFailure,
+        Self::CudfPersistentFailure,
+        Self::CudfDependencyFailure,
+        Self::AlgorithmDidNotConverge,
+        Self::CudfInvariantViolation,
+        Self::MemoryReservationFailed,
+        Self::ServiceOverloaded,
+        Self::QueryBudgetUnavailable,
+        Self::QueryMemoryLimitExceeded,
+        Self::DeviceOutOfMemory,
+        Self::DeviceAllocationFailed,
+        Self::DeviceFault,
+        Self::CleanupFailed,
+        Self::InternalInvariantViolation,
+        Self::FlightFrameTooLarge,
+        Self::ServerTransportFailure,
+        Self::Internal,
+    ];
+
+    /// Declaration-order position of this variant among [`Self::ALL`].
+    ///
+    /// `#[non_exhaustive]` on this enum only restricts construction and
+    /// matching from other crates; inside this crate an exhaustive `match`
+    /// still fails to compile when a variant is added without updating this
+    /// function, which is what keeps [`Self::ALL`] honest.
+    ///
+    /// Only the `tests` module below calls this; the compile-time exhaustiveness
+    /// check is the point even in a non-test build, so dead-code analysis is
+    /// suppressed outside `cfg(test)` rather than dropping the guard.
+    #[cfg_attr(not(test), expect(dead_code, reason = "the exhaustive match is the guard; only tests call it"))]
+    const fn index(self) -> usize {
+        match self {
+            Self::Cancelled => 0,
+            Self::SqlParse => 1,
+            Self::InvalidRequest => 2,
+            Self::DataFusionPlanning => 3,
+            Self::PlanningTimeout => 4,
+            Self::ObjectNotFound => 5,
+            Self::SourceAccessDenied => 6,
+            Self::SourceUnauthenticated => 7,
+            Self::SourceObjectNotFound => 8,
+            Self::SourceTemporaryFailure => 9,
+            Self::SourceDependencyFailure => 10,
+            Self::FieldNotFound => 11,
+            Self::GraphInputInvalid => 12,
+            Self::RequiredGpuOperationUnsupported => 13,
+            Self::FinalPlanRequirementUnsatisfied => 14,
+            Self::UnsupportedOperator => 15,
+            Self::UnsupportedExpression => 16,
+            Self::UnsupportedType => 17,
+            Self::InvalidExecutionPlan => 18,
+            Self::InvalidChildCount => 19,
+            Self::CudfInvalidInput => 20,
+            Self::CudfUnsupported => 21,
+            Self::CudfResourceExhausted => 22,
+            Self::SizeOverflow => 23,
+            Self::HostMaterializationLimitExceeded => 24,
+            Self::HostStagingLimitExceeded => 25,
+            Self::CudfTemporaryFailure => 26,
+            Self::CudfPersistentFailure => 27,
+            Self::CudfDependencyFailure => 28,
+            Self::AlgorithmDidNotConverge => 29,
+            Self::CudfInvariantViolation => 30,
+            Self::MemoryReservationFailed => 31,
+            Self::ServiceOverloaded => 32,
+            Self::QueryBudgetUnavailable => 33,
+            Self::QueryMemoryLimitExceeded => 34,
+            Self::DeviceOutOfMemory => 35,
+            Self::DeviceAllocationFailed => 36,
+            Self::DeviceFault => 37,
+            Self::CleanupFailed => 38,
+            Self::InternalInvariantViolation => 39,
+            Self::FlightFrameTooLarge => 40,
+            Self::ServerTransportFailure => 41,
+            Self::Internal => 42,
+        }
+    }
+
     /// Stable snake-case code label used in reports and error text.
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -427,5 +536,22 @@ pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
         | ErrorCode::ServerTransportFailure
         | ErrorCode::Internal => ErrorStatus::Permanent,
         ErrorCode::DeviceFault | ErrorCode::CleanupFailed => ErrorStatus::Persistent,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashSet;
+
+    use super::ErrorCode;
+
+    #[test]
+    fn all_lists_every_variant_exactly_once_in_declaration_order() {
+        for (position, code) in ErrorCode::ALL.iter().enumerate() {
+            assert_eq!(code.index(), position, "ErrorCode::ALL entry {code:?} is out of declaration order");
+        }
+
+        let distinct_indices: HashSet<usize> = ErrorCode::ALL.iter().map(|code| code.index()).collect();
+        assert_eq!(distinct_indices.len(), ErrorCode::ALL.len(), "ErrorCode::ALL contains a duplicate variant");
     }
 }

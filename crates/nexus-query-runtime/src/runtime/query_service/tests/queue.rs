@@ -395,10 +395,14 @@ fn query_admission_waiter_timeout_reports_the_selected_device_requirement() {
     waiter.deadline = Instant::now();
     let error = waiter.try_admit().expect_err("saturated ordinal one reports a memory-grant timeout");
 
+    // This service is backed by the real installed devices, so the grant size
+    // is whatever ordinal one's profile issued; assert the selected-device
+    // scope and the live grant itself rather than a hardware-dependent literal.
+    let active_grant = format!("1:{}", active.device_budget_bytes());
     assert_eq!(error.fact_value("reason"), Some("memory_grant_wait_timeout"));
     assert_eq!(error.fact_value("requested_query_cap_bytes"), Some("0"));
     assert_eq!(error.fact_value("device_frozen_resident_bytes"), Some("1:0"));
-    assert_eq!(error.fact_value("device_live_grants_bytes"), Some("1:222"));
+    assert_eq!(error.fact_value("device_live_grants_bytes"), Some(active_grant.as_str()));
     assert_eq!(error.fact_value("device_admissible_query_cap_bytes"), Some("1:0"));
 
     active.finish();

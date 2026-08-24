@@ -6,6 +6,8 @@ use std::{
     time::Instant,
 };
 
+use datafusion::common::{DataFusionError, Result as DataFusionResult};
+
 use super::*;
 
 pub async fn run_from_env() -> SmokeResult<IcebergNativeSmokeReport> {
@@ -67,7 +69,7 @@ pub(crate) async fn run_report_with_optional_stream(
     ));
 
     let provider = Arc::new(provider_with_native_planner(&resolved, planner, &catalog_type).await?);
-    let (ctx, native_rule, _backend) =
+    let (ctx, native_rule, backend) =
         native_session_context(config.fixture.source_storage_profile(), NativeExecutionProfile::Smoke).await?;
     ctx.register_table(config.table_alias.as_str(), provider)?;
     let mut row = run_query_with_registered_native_tables(
@@ -77,6 +79,7 @@ pub(crate) async fn run_report_with_optional_stream(
         config.fixture.table_ident_display(),
         config.sql,
         &ctx,
+        &backend,
         native_rule.as_ref(),
         Arc::clone(&staging_records),
         false,
@@ -124,7 +127,7 @@ pub(crate) async fn run_tpch_subset_report_with_execution_mode(
     let catalog_type = config.fixture.catalog_type().to_string();
     let staging_records = Arc::new(Mutex::new(Vec::new()));
     let staging_tempdir = Arc::new(tempfile::Builder::new().prefix("nexus-iceberg-tpch-stage-").tempdir()?);
-    let (ctx, native_rule, _backend) =
+    let (ctx, native_rule, backend) =
         native_session_context(config.fixture.source_storage_profile(), NativeExecutionProfile::TpchBenchmark).await?;
     // Footer-pruning object-store registration is best-effort: a failure must
     // leave queries running unpruned, never abort the run.
@@ -182,6 +185,7 @@ pub(crate) async fn run_tpch_subset_report_with_execution_mode(
             table_ident.clone(),
             sql.clone(),
             &ctx,
+            &backend,
             native_rule.as_ref(),
             Arc::clone(&staging_records),
             execution_mode.runs_cpu_baseline(),
@@ -233,7 +237,7 @@ pub(crate) async fn run_tpcds_subset_report(
     let catalog_type = config.fixture.catalog_type().to_string();
     let staging_records = Arc::new(Mutex::new(Vec::new()));
     let staging_tempdir = Arc::new(tempfile::Builder::new().prefix("nexus-iceberg-tpcds-stage-").tempdir()?);
-    let (ctx, native_rule, _backend) =
+    let (ctx, native_rule, backend) =
         native_session_context(config.fixture.source_storage_profile(), NativeExecutionProfile::TpcdsBenchmark).await?;
     // Footer-pruning object-store registration is best-effort: a failure must
     // leave queries running unpruned, never abort the run.
@@ -291,6 +295,7 @@ pub(crate) async fn run_tpcds_subset_report(
             table_ident.clone(),
             sql.clone(),
             &ctx,
+            &backend,
             native_rule.as_ref(),
             Arc::clone(&staging_records),
             config.execution_mode.runs_cpu_baseline(),
@@ -352,7 +357,7 @@ pub(crate) async fn run_custom_subset_report(
         CustomWorkload::Tpch => NativeExecutionProfile::TpchBenchmark,
         CustomWorkload::Tpcds => NativeExecutionProfile::TpcdsBenchmark,
     };
-    let (ctx, native_rule, _backend) =
+    let (ctx, native_rule, backend) =
         native_session_context(config.fixture.source_storage_profile(), native_execution_profile).await?;
 
     match workload {
@@ -412,6 +417,7 @@ pub(crate) async fn run_custom_subset_report(
             table_ident.clone(),
             sql.clone(),
             &ctx,
+            &backend,
             native_rule.as_ref(),
             Arc::clone(&staging_records),
             config.execution_mode.runs_cpu_baseline(),
@@ -541,6 +547,23 @@ pub(crate) fn query_error_report_row(
     row
 }
 
+/// Executes an already-planned physical plan as one native execution attempt.
+///
+/// The plan is reused as-is from the caller's own `SessionContext` planning
+/// pass; it already carries the `NativeAdmissionExec` node produced by the
+/// session's installed native rule, so the attempt binds its admission
+/// ticket onto that existing plan rather than replanning it.
+async fn execute_native_plan_as_attempt(
+    backend: &NexusGpuBackend,
+    plan: Arc<dyn ExecutionPlan>,
+    ctx: &SessionContext,
+) -> DataFusionResult<Vec<RecordBatch>> {
+    let attempt =
+        backend.begin_attempt(datafusion_nexus::attempt::AttemptOptions::default()).map_err(DataFusionError::from)?;
+    let stream = attempt.execute_physical_plan(plan, ctx)?;
+    stream.try_collect().await
+}
+
 #[expect(clippy::too_many_arguments, reason = "benchmark harness parameters are independent measurement axes")]
 pub(crate) async fn run_query_with_registered_native_tables(
     query_id: String,
@@ -549,6 +572,7 @@ pub(crate) async fn run_query_with_registered_native_tables(
     table_ident: String,
     sql: String,
     ctx: &SessionContext,
+    backend: &NexusGpuBackend,
     native_rule: &NexusNativePhysicalOptimizerRule,
     staging_records: Arc<Mutex<Vec<StagingRecord>>>,
     run_cpu_parity: bool,
@@ -562,7 +586,6 @@ pub(crate) async fn run_query_with_registered_native_tables(
         query_id, run_cpu_parity, credential_source,
     );
     let df = ctx.sql(&sql).await?;
-    let task_ctx = df.task_ctx();
     let physical_plan = df.create_physical_plan().await?;
     if iceberg_footer_pruning_enabled() {
         let scan_records = staging_records_snapshot(&staging_records);
@@ -637,7 +660,7 @@ pub(crate) async fn run_query_with_registered_native_tables(
             row.diagnostics.direct_device_read_disposition.code(),
         );
         let started = Instant::now();
-        match collect(Arc::clone(&physical_plan), task_ctx.into()).await {
+        match execute_native_plan_as_attempt(backend, Arc::clone(&physical_plan), ctx).await {
             Ok(batches) => {
                 row.native_runtime_elapsed_ms = Some(started.elapsed().as_millis());
                 row.native_runtime_outcome = NativeDataFusionRuntimeOutcome::Succeeded;

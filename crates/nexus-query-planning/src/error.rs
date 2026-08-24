@@ -1082,9 +1082,13 @@ impl StdError for QueryError {
 // `NotFound` is treated as invalid input, `ExecutionContext` is treated as an
 // invariant violation, and unknown kinds fall back to dependency failure.
 fn code_for_cudf_error(error: &cudf::Error) -> QueryErrorCode {
-    if error.budget_exhaustion().is_some() {
-        return QueryErrorCode::QueryMemoryLimitExceeded;
-    }
+    // The typed FFI failure source is the canonical channel and must be
+    // consulted before the budget annotation. A budgeted scope annotates every
+    // error that passes through it -- its own status reads
+    // `exceeded_or_lower_layer_rejected` -- so the annotation's presence cannot
+    // tell a cap rejection apart from a physically exhausted device. Trusting
+    // it first reports device exhaustion as a permanent cap violation, which
+    // tells the caller to raise a limit that was never reached.
     if let Some(detail) = error.ffi_detail() {
         match detail.failure_source {
             cudf::CudfErrorFailureSource::ReservationLimit => {
@@ -1094,6 +1098,9 @@ fn code_for_cudf_error(error: &cudf::Error) -> QueryErrorCode {
             cudf::CudfErrorFailureSource::Unknown => {},
             _ => {},
         }
+    }
+    if error.budget_exhaustion().is_some() {
+        return QueryErrorCode::QueryMemoryLimitExceeded;
     }
     match cudf::classify_cudf_error(error) {
         cudf::CudfErrorClassification::SizeOverflow => QueryErrorCode::SizeOverflow,

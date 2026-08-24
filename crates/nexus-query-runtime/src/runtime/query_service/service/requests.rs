@@ -583,7 +583,11 @@ impl QueryService {
                                 None,
                             );
                         }
-                        let error = self.memory_grant_wait_timeout_error(requested_query_cap_bytes, state.queued.len());
+                        let error = self.memory_grant_wait_timeout_error(
+                            device_ordinal,
+                            requested_query_cap_bytes,
+                            state.queued.len(),
+                        );
                         drop(state);
                         finish_removed_request_error(removed, &error);
                         return Err(error);
@@ -612,7 +616,11 @@ impl QueryService {
                                 None,
                             );
                         }
-                        let error = self.memory_grant_wait_timeout_error(requested_query_cap_bytes, state.queued.len());
+                        let error = self.memory_grant_wait_timeout_error(
+                            device_ordinal,
+                            requested_query_cap_bytes,
+                            state.queued.len(),
+                        );
                         drop(state);
                         finish_removed_request_error(removed, &error);
                         return Err(error);

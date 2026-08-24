@@ -13,6 +13,7 @@ Usage:
   fixture/fixture.sh tpcds generate [--scale N...] [--out-root PATH] [--variant raw|optimized|both] [--force]
   fixture/fixture.sh clickbench fetch [--layout single|partitioned|both] [--out PATH]
   fixture/fixture.sh graph dblp-ingest --source-json PATH [--out-root PATH] [DBLP ingest options]
+  fixture/fixture.sh graph rmat --scale N --edge-factor K --skew skewed|uniform --seed S --out-root PATH [--force]
   fixture/fixture.sh iceberg rest load --workload tpch|tpcds|citation_network [--scale sf1] [--load-mode create|add-files]
   fixture/fixture.sh iceberg glue-moto load --workload tpch|tpcds [--scale sf1]
 
@@ -275,6 +276,9 @@ case "${domain}:${command}" in
     ;;
   graph:dblp-ingest)
     exec python3 "${SCRIPT_DIR}/graph/dblp_ingest.py" "$@"
+    ;;
+  graph:rmat)
+    exec python3 "${SCRIPT_DIR}/graph/rmat_generate.py" "$@"
     ;;
   iceberg:rest)
     subcommand="${1:-}"

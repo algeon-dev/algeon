@@ -1,26 +1,11 @@
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::Arc;
 
 use super::{
-    AdmittedQueryContext, Error, ExecutionContext, IoLifecycle, NexusNativeExecutionConfig,
-    NexusNativeExecutionContext, QueryAdmissionFacts, QueryId, TaskContext, TicketAdmissionContext, TraceId,
+    Error, ExecutionContext, IoLifecycle, NexusNativeExecutionConfig, NexusNativeExecutionContext, QueryAdmissionFacts,
+    QueryId, TaskContext, TicketAdmissionContext, TraceId,
 };
 
 impl NexusNativeExecutionContext {
-    pub(super) fn admitted(
-        admission_context: AdmittedQueryContext,
-        admission_facts: QueryAdmissionFacts,
-        record_admission_facts: bool,
-    ) -> Self {
-        let context = admission_context.context().clone();
-        Self {
-            context,
-            admission_facts: Some(admission_facts),
-            record_admission_facts,
-            _admission_context: Some(admission_context),
-            ticket_context: None,
-        }
-    }
-
     pub(super) fn ticket_bound(ticket_context: TicketAdmissionContext) -> Self {
         let context = ticket_context.context().context().clone();
         let admission_facts = ticket_context.admission_facts();
@@ -63,32 +48,6 @@ impl NexusNativeExecutionContext {
 }
 
 impl NexusNativeExecutionConfig {
-    #[cfg(test)]
-    pub(crate) fn execution_context(&self) -> crate::error::Result<NexusNativeExecutionContext> {
-        self.validate_query_policies()?;
-        if let Some(handle) = &self.query_service_handle {
-            let admission_facts = QueryAdmissionFacts::from_query_handle(handle.as_ref());
-            let admission_facts_recorded = self.query_admission_facts_recorded.clone();
-            return handle
-                .acquire_context_with_cancellation(self.cancellation.clone())
-                .map(|admission_context| {
-                    let record_admission_facts = admission_facts_recorded
-                        .as_ref()
-                        .is_some_and(|recorded| !recorded.swap(true, Ordering::AcqRel));
-                    NexusNativeExecutionContext::admitted(admission_context, admission_facts, record_admission_facts)
-                })
-                .and_then(|context| self.stamp_acquired_service_context(context))
-                .map_err(|error| {
-                    Error::from_native(
-                        "datafusion_nexus.native_exec.context",
-                        "failed to acquire query service nexus native execution context",
-                        self.stamp_native_error_correlation(error),
-                    )
-                });
-        }
-        Err(self.gpu_backend_required_error())
-    }
-
     pub(crate) async fn execution_context_async(
         &self,
         task_context: Arc<TaskContext>,
@@ -107,27 +66,6 @@ impl NexusNativeExecutionConfig {
                         "datafusion_nexus.native_exec.context",
                         "failed to acquire backend query-service nexus native execution context",
                         self.stamp_native_error_correlation(error).with_fact("stage", "ticket_admission"),
-                    )
-                });
-        }
-        if let Some(handle) = &self.query_service_handle {
-            let admission_facts = QueryAdmissionFacts::from_query_handle(handle.as_ref());
-            let admission_facts_recorded = self.query_admission_facts_recorded.clone();
-            return Arc::clone(handle)
-                .acquire_context_with_cancellation_async(self.cancellation.clone())
-                .await
-                .map(|admission_context| {
-                    let record_admission_facts = admission_facts_recorded
-                        .as_ref()
-                        .is_some_and(|recorded| !recorded.swap(true, Ordering::AcqRel));
-                    NexusNativeExecutionContext::admitted(admission_context, admission_facts, record_admission_facts)
-                })
-                .and_then(|context| self.stamp_acquired_service_context(context))
-                .map_err(|error| {
-                    Error::from_native(
-                        "datafusion_nexus.native_exec.context",
-                        "failed to acquire query service nexus native execution context",
-                        self.stamp_native_error_correlation(error),
                     )
                 });
         }

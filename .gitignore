@@ -49,9 +49,11 @@ __pycache__/
 /fixture/tpc-ds/data
 /fixture/clickbench/data
 /fixture/graph/demo
+/fixture/graph/synthetic
 /fixture/graph/dblp.v12.json
 /fixture/graph/cugraph/bfs_predicate_numeric/
 /fixture/graph/cugraph/bfs_predicate_utf8/
+/crates/nexus-bench/calibration/*.tsv
 
 # agent config
 .codex
