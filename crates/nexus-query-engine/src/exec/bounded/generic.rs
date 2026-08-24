@@ -528,8 +528,7 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
     {
         filtered_input = filtered_input.with_graph_residency(graph_residency);
     }
-    // Bounded admission must prove the candidate-pair cardinality from the
-    // plan before it evaluates the side-input relation.
+    // Resolve pair cardinality before reading side inputs so the admission bound is enforceable.
     let strict_pair_cardinality = match crate::graph_memory::strict_similarity_pair_cardinality_for_plan(plan, graph) {
         Ok(evidence) => evidence,
         Err(error) => {

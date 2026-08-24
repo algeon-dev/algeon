@@ -1228,13 +1228,7 @@ impl QueryHandleRelease {
             return;
         }
         drop(root_context);
-        // An admitted attempt whose context was never acquired still owns the
-        // envelope's root stream. Destroy the member and domain, then use the
-        // root stream cleanup
-        // completion as the same post-accounting fence used by the
-        // root-context path. Publishing external activity from the GPU job
-        // itself would let a reentrant backend close wait on that
-        // still-active job.
+        // Fence accounting on root-stream cleanup; publishing from the GPU job can deadlock reentrant backend close.
         let commit = self.prepare_report_commit();
         if let Some(stream_lease) = self.envelope.as_mut().and_then(|envelope| envelope.release_unconsumed_physical()) {
             let external_completion = self.take_external_completion();

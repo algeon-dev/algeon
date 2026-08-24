@@ -2108,9 +2108,6 @@ mod tests {
         let composed = NexusNativeComposedExec::try_new(consumer_plan.clone(), producers, config)
             .expect("the real composed constructor must retain both prepared producer occurrences");
 
-        // Exercise the same preparation boundary used by composed execution.
-        // The fake producer has no metadata work, but discovery, ordering, and
-        // ticket extraction all run through the production preparation path.
         let task_context = Arc::new(TaskContext::default());
         let prepared = composed
             .prepare_lakehouse_metadata(Arc::clone(&task_context))

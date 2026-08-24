@@ -202,7 +202,6 @@ mod tests {
             ),
             BoundaryCancellationState::NotRequested
         );
-        // Cleanup proceeds even after the caller deadline has expired.
         assert_eq!(
             cancellation_state_at(
                 AttemptCancellationBoundary::Cleanup,

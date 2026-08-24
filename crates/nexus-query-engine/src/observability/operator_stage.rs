@@ -618,7 +618,6 @@ mod tests {
         for kind in kinds {
             assert!(text.contains(kind.as_str()), "JSONL must retain stage kind {}", kind.as_str());
         }
-        // Parse every timeline_event line back through serde.
         for line in text.lines() {
             let value: serde_json::Value = serde_json::from_str(line).expect("json line");
             if value.get("record_type").and_then(|v| v.as_str()) == Some("timeline_event") {

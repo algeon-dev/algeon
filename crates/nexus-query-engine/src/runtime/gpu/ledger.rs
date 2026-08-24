@@ -940,8 +940,6 @@ impl DeviceLedger {
         }
     }
 
-    // ---- Cache-internal evictable accounting. ----
-
     /// Attempts to charge bytes retained by an evictable cache.
     pub(crate) fn try_reserve_evictable_bytes(&self, bytes: u64) -> Result<bool> {
         if bytes == 0 {

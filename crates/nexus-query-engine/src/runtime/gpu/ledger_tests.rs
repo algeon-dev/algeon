@@ -458,8 +458,7 @@ fn protection_withholds_one_slot_and_floor_reserve() {
     drop(competing);
     let protection = ledger.protection().expect("protection persists");
     assert_eq!(protection.liveness_bytes, 100);
-    // The protected waiter is admitted by consuming the protection; its grant
-    // replaces the reserve rather than being subtracted twice.
+    // The protected grant replaces its reserve instead of consuming both.
     let protected = ledger.try_admit(waiter, &requirement(100, Some(800))).unwrap().expect("protected admits");
     assert_eq!(protected.budget_bytes(), 800);
     assert!(ledger.protection().is_none());

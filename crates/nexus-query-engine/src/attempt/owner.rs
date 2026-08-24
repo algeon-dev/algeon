@@ -1417,7 +1417,6 @@ mod tests {
             test_begin(RuntimeObservationConfig::native_execution(), Some(Arc::clone(&queue)));
         drop(begin2.completion);
         begin2.owner.commit_terminal(RuntimeTerminalOutcome::Dropped).unwrap();
-        // Queue is empty after the drain, so this push succeeds.
         assert_eq!(counters2.snapshot().completion_queue_pushed, 1);
         let (begin3, _clock3, counters3) =
             test_begin(RuntimeObservationConfig::native_execution(), Some(Arc::clone(&queue)));

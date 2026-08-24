@@ -292,9 +292,7 @@ async fn build_session(
     }
     let builder = SessionStateBuilder::new().with_config(session_config).with_default_features();
     let builder = backend.install_on_with_cugraph_sql(builder, CugraphSqlConfig::default())?;
-    // Diagnostic mode: swap in a retained copy of the optimizer rule (same
-    // config, so the rule-name dedup key replaces the backend's instance) so
-    // per-query PlanningReports can be read back.
+    // Retain the rule only when its PlanningReports must outlive optimizer execution.
     let builder = if std::env::var(ENV_PRINT_PLANNING).is_ok() {
         let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(backend.optimizer_config().clone()));
         PLANNING_RULES.lock().unwrap().push(Arc::clone(&rule));
