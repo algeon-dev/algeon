@@ -116,10 +116,8 @@ pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::with_native_execution_
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::with_optimizer_config(self, datafusion_nexus::planner::NexusNativeOptimizerConfig) -> Self
 #[non_exhaustive] pub struct datafusion_nexus::backend::NexusGpuQueuePolicy
 impl datafusion_nexus::backend::NexusGpuQueuePolicy
-pub fn datafusion_nexus::backend::NexusGpuQueuePolicy::max_overtakes_per_waiter(&self) -> u32
 pub fn datafusion_nexus::backend::NexusGpuQueuePolicy::max_queue_wait(&self) -> core::time::Duration
 pub fn datafusion_nexus::backend::NexusGpuQueuePolicy::max_queued_attempts(&self) -> usize
-pub fn datafusion_nexus::backend::NexusGpuQueuePolicy::with_max_overtakes_per_waiter(self, u32) -> Self
 pub fn datafusion_nexus::backend::NexusGpuQueuePolicy::with_max_queue_wait(self, core::time::Duration) -> Self
 pub fn datafusion_nexus::backend::NexusGpuQueuePolicy::with_max_queued_attempts(self, usize) -> Self
 impl core::default::Default for datafusion_nexus::backend::NexusGpuQueuePolicy
@@ -631,6 +629,7 @@ pub mod datafusion_nexus::error
 #[non_exhaustive] pub enum datafusion_nexus::error::ErrorCode
 pub datafusion_nexus::error::ErrorCode::AlgorithmDidNotConverge
 pub datafusion_nexus::error::ErrorCode::Cancelled
+pub datafusion_nexus::error::ErrorCode::CleanupFailed
 pub datafusion_nexus::error::ErrorCode::CudfDependencyFailure
 pub datafusion_nexus::error::ErrorCode::CudfInvalidInput
 pub datafusion_nexus::error::ErrorCode::CudfInvariantViolation
@@ -639,6 +638,9 @@ pub datafusion_nexus::error::ErrorCode::CudfResourceExhausted
 pub datafusion_nexus::error::ErrorCode::CudfTemporaryFailure
 pub datafusion_nexus::error::ErrorCode::CudfUnsupported
 pub datafusion_nexus::error::ErrorCode::DataFusionPlanning
+pub datafusion_nexus::error::ErrorCode::DeviceAllocationFailed
+pub datafusion_nexus::error::ErrorCode::DeviceFault
+pub datafusion_nexus::error::ErrorCode::DeviceOutOfMemory
 pub datafusion_nexus::error::ErrorCode::FieldNotFound
 pub datafusion_nexus::error::ErrorCode::FinalPlanRequirementUnsatisfied
 pub datafusion_nexus::error::ErrorCode::FlightFrameTooLarge
@@ -646,12 +648,15 @@ pub datafusion_nexus::error::ErrorCode::GraphInputInvalid
 pub datafusion_nexus::error::ErrorCode::HostMaterializationLimitExceeded
 pub datafusion_nexus::error::ErrorCode::HostStagingLimitExceeded
 pub datafusion_nexus::error::ErrorCode::Internal
+pub datafusion_nexus::error::ErrorCode::InternalInvariantViolation
 pub datafusion_nexus::error::ErrorCode::InvalidChildCount
 pub datafusion_nexus::error::ErrorCode::InvalidExecutionPlan
 pub datafusion_nexus::error::ErrorCode::InvalidRequest
 pub datafusion_nexus::error::ErrorCode::MemoryReservationFailed
 pub datafusion_nexus::error::ErrorCode::ObjectNotFound
 pub datafusion_nexus::error::ErrorCode::PlanningTimeout
+pub datafusion_nexus::error::ErrorCode::QueryBudgetUnavailable
+pub datafusion_nexus::error::ErrorCode::QueryMemoryLimitExceeded
 pub datafusion_nexus::error::ErrorCode::RequiredGpuOperationUnsupported
 pub datafusion_nexus::error::ErrorCode::ServerTransportFailure
 pub datafusion_nexus::error::ErrorCode::ServiceOverloaded

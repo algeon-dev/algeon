@@ -578,6 +578,17 @@ pub struct cudf_query_memory_domain_identity_t {
     pub generation: u64,
     pub reserved: [u64; 4usize],
 }
+#[doc = " One surviving allocation owned by a query memory domain.\n\n `device_pointer` is the base pointer the allocator registered, not an\n interior column pointer. Owner attestation compares published output\n buffers against these base allocations."]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct cudf_query_memory_domain_allocation_t {
+    pub struct_size: usize,
+    pub device_pointer: *mut core::ffi::c_void,
+    pub bytes: usize,
+    pub aligned_bytes: usize,
+    pub alignment: usize,
+    pub reserved: [u64; 2usize],
+}
 #[doc = " Allocation components for the unstable one-key radix sorted-order path.\n\n All fields are requested bytes. `key_input_bytes` is zero for integral and\n chrono keys and the transformed float-pair input for floating keys.\n `active_phase_peak_bytes` is the checked sum of the five components, which\n are co-resident during execution."]
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
@@ -2983,6 +2994,14 @@ unsafe extern "C" {
     pub fn cudf_query_memory_domain_resize_grant(
         domain: cudf_query_memory_domain_handle,
         grant_bytes: usize,
+    ) -> cudf_status_t;
+    pub fn cudf_query_memory_domain_freeze(domain: cudf_query_memory_domain_handle) -> cudf_status_t;
+    #[doc = " Copies this domain's live allocation registry into `out`.\n\n Writes at most `capacity` records and always reports the full live count\n in `out_count`, so a caller can detect truncation. Passing a null `out`\n with zero `capacity` queries the count alone."]
+    pub fn cudf_query_memory_domain_live_allocations(
+        domain: cudf_query_memory_domain_handle,
+        out: *mut cudf_query_memory_domain_allocation_t,
+        capacity: usize,
+        out_count: *mut usize,
     ) -> cudf_status_t;
     pub fn cudf_query_memory_domain_destroy(domain: cudf_query_memory_domain_handle) -> cudf_status_t;
     #[doc = " Replace null values in a column with a scalar using an explicit execution\n context.\n `options` must be non-NULL, name an explicit valid device, provide a\n non-NULL stream, and provide a non-NULL memory resource. `options->mr` must\n outlive the returned column."]

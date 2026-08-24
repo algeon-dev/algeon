@@ -7,7 +7,7 @@ use std::{
 };
 
 use nexus_query_planning::{
-    admission::{AttemptRequirement, AttemptReservationEnvelope, AttemptReservationPolicy},
+    admission::AttemptRequirement,
     error::{QueryError, QueryErrorCode, Result},
 };
 use tokio::time;
@@ -57,7 +57,6 @@ impl QueryService {
         request: &QueryAdmissionRequest,
         base_requirement: &AttemptRequirement,
         candidate_ordinals: &[usize],
-        policy: AttemptReservationPolicy,
     ) -> Result<(DeviceAdmissionEntries, Vec<usize>)> {
         #[cfg(test)]
         {
@@ -75,15 +74,10 @@ impl QueryService {
         self.resolve_device_admission_entries_with(candidate_ordinals, |ordinal| match proof {
             Some(proof) => (|| {
                 let resolved_proof = proof.requirement_for_device(ordinal)?;
-                let envelope = resolved_proof.resolve_reservation_envelope(policy)?;
-                let requirement = request.apply_test_placement_overlay(
-                    resolved_proof.as_requirement().clone().with_reservation_envelope(&envelope),
-                );
-                Ok(DeviceAdmissionEntry { requirement, admitted_reservation_envelope: Some(envelope) })
+                let requirement = request.apply_test_placement_overlay(resolved_proof.as_requirement().clone());
+                Ok(DeviceAdmissionEntry { requirement })
             })(),
-            None => {
-                Ok(DeviceAdmissionEntry { requirement: base_requirement.clone(), admitted_reservation_envelope: None })
-            },
+            None => Ok(DeviceAdmissionEntry { requirement: base_requirement.clone() }),
         })
     }
 
@@ -138,7 +132,6 @@ pub(in crate::runtime::query_service) struct PlacedAdmissionCommit {
     pub(in crate::runtime::query_service) placed_query: PlacedQuery,
     pub(in crate::runtime::query_service) admitted_device_requirements: BTreeMap<usize, AttemptRequirement>,
     pub(in crate::runtime::query_service) submitted_plan_capability_evidence: Option<AttemptRequirement>,
-    pub(in crate::runtime::query_service) admitted_reservation_envelope: Option<AttemptReservationEnvelope>,
     pub(in crate::runtime::query_service) admitted_compatible_devices: Vec<usize>,
     pub(in crate::runtime::query_service) observation: RuntimeObservationHandle,
     pub(in crate::runtime::query_service) attempt_id: crate::observability::AttemptId,
@@ -147,7 +140,6 @@ pub(in crate::runtime::query_service) struct PlacedAdmissionCommit {
     pub(in crate::runtime::query_service) admission_wait: Duration,
     pub(in crate::runtime::query_service) deadline: Instant,
     pub(in crate::runtime::query_service) execution_cancellation: ExecutionCancellation,
-    pub(in crate::runtime::query_service) admitted_submission_seq: Option<u64>,
     pub(in crate::runtime::query_service) admission_wait_fact: Option<crate::observability::AttemptAdmissionWaitFact>,
     pub(in crate::runtime::query_service) lifecycle_ticket: super::super::admission::AdmissionTicket,
 }
@@ -339,6 +331,7 @@ impl QueryService {
         completion_dispatcher: Option<ObservationCompletionDispatcher>,
     ) -> Result<QueryHandle> {
         let queue_deadline = request.queue_deadline;
+        let requested_query_cap_bytes = request.requested_query_cap_bytes();
         let execution_cancellation = request.execution_cancellation.clone();
         let attempt_requirement = request.resolved_attempt_requirement();
         let submitted_plan_capability_evidence = request.submitted_plan_capability_evidence();
@@ -424,28 +417,26 @@ impl QueryService {
         };
         let submission_seq = pending.submission_seq();
 
-        let (device_entries, compatible_devices) = match self.resolve_device_admission_entries(
-            &request,
-            &requirement,
-            &candidate_ordinals,
-            self.inner.config.attempt_reservation_policy(),
-        ) {
-            Ok(entries) => entries,
-            Err(error) => {
-                record_admission_lifecycle(
-                    observation_owner.as_ref(),
-                    admission_request_id,
-                    admission_rejection(&error),
-                    0,
-                    None,
-                    None,
-                );
-                pending.release();
-                completion.finish_error(&error);
-                return Err(error);
-            },
-        };
-        if let Err(error) = self.reject_impossible_requirements(&device_entries, &required_capabilities) {
+        let (device_entries, compatible_devices) =
+            match self.resolve_device_admission_entries(&request, &requirement, &candidate_ordinals) {
+                Ok(entries) => entries,
+                Err(error) => {
+                    record_admission_lifecycle(
+                        observation_owner.as_ref(),
+                        admission_request_id,
+                        admission_rejection(&error),
+                        0,
+                        None,
+                        None,
+                    );
+                    pending.release();
+                    completion.finish_error(&error);
+                    return Err(error);
+                },
+            };
+        if let Err(error) =
+            self.reject_impossible_requirements(&device_entries, &required_capabilities, requested_query_cap_bytes)
+        {
             record_admission_lifecycle(
                 observation_owner.as_ref(),
                 admission_request_id,
@@ -467,8 +458,7 @@ impl QueryService {
             device_entries,
             submission_seq,
             compatible_devices,
-            overtakes_remaining: self.inner.queue_bounds.max_overtakes_per_waiter,
-            protected_device: None,
+            requested_query_cap_bytes,
             deadline,
             execution_cancellation: execution_cancellation.clone(),
             terminal: QueuedAdmissionTerminal::default(),
@@ -545,6 +535,7 @@ impl QueryService {
                     admission_request_id,
                     state.queued[position].attempt_id,
                     &selected_requirement,
+                    state.queued[position].requested_query_cap_bytes,
                     &mut slot_notifications,
                 ) {
                     Ok(placed_query) => placed_query,
@@ -584,6 +575,7 @@ impl QueryService {
                     }
                     let now = Instant::now();
                     if now >= deadline {
+                        let requested_query_cap_bytes = state.queued[position].requested_query_cap_bytes;
                         let removed = self.abandon_queued_request_locked(&mut state, admission_request_id);
                         if removed.is_some() {
                             record_admission_lifecycle(
@@ -595,7 +587,7 @@ impl QueryService {
                                 None,
                             );
                         }
-                        let error = self.memory_grant_wait_timeout_error(&selected_requirement, state.queued.len());
+                        let error = self.memory_grant_wait_timeout_error(requested_query_cap_bytes, state.queued.len());
                         drop(state);
                         finish_removed_request_error(removed, &error);
                         return Err(error);
@@ -612,6 +604,7 @@ impl QueryService {
                     };
                     state = next_state;
                     if timeout.timed_out() && Instant::now() >= deadline {
+                        let requested_query_cap_bytes = state.queued[position].requested_query_cap_bytes;
                         let removed = self.abandon_queued_request_locked(&mut state, admission_request_id);
                         if removed.is_some() {
                             record_admission_lifecycle(
@@ -623,7 +616,7 @@ impl QueryService {
                                 None,
                             );
                         }
-                        let error = self.memory_grant_wait_timeout_error(&selected_requirement, state.queued.len());
+                        let error = self.memory_grant_wait_timeout_error(requested_query_cap_bytes, state.queued.len());
                         drop(state);
                         finish_removed_request_error(removed, &error);
                         return Err(error);
@@ -631,9 +624,7 @@ impl QueryService {
                     continue;
                 };
                 let admitted = state.remove_queued_at(position).expect("admissible request exists");
-                let admitted_submission_seq = admitted.submission_seq;
-                let admission_wait_fact =
-                    admitted.admission_wait_fact(self.inner.queue_bounds.max_overtakes_per_waiter);
+                let admission_wait_fact = admitted.admission_wait_fact();
                 if let Some(error) = self.admission_terminal_rejection(&state) {
                     record_admission_lifecycle(
                         &admitted.observation,
@@ -659,9 +650,6 @@ impl QueryService {
                         .map(|(&ordinal, entry)| (ordinal, entry.requirement.clone()))
                         .collect(),
                     submitted_plan_capability_evidence: admitted.submitted_plan_capability_evidence.clone(),
-                    admitted_reservation_envelope: admitted
-                        .admitted_reservation_envelope_for_device(device_ordinal)?
-                        .clone(),
                     admitted_compatible_devices: admitted.compatible_devices.clone(),
                     observation: admitted.observation,
                     attempt_id: admitted.attempt_id,
@@ -670,7 +658,6 @@ impl QueryService {
                     admission_wait: requested_at.elapsed(),
                     deadline,
                     execution_cancellation: admitted.execution_cancellation,
-                    admitted_submission_seq: Some(admitted_submission_seq),
                     admission_wait_fact: Some(admission_wait_fact),
                     lifecycle_ticket,
                 });
@@ -817,6 +804,7 @@ impl QueryService {
         completion_dispatcher: Option<ObservationCompletionDispatcher>,
     ) -> Result<QueryAdmissionWaiter> {
         let queue_deadline = request.queue_deadline;
+        let requested_query_cap_bytes = request.requested_query_cap_bytes();
         let execution_cancellation = request.execution_cancellation.clone();
         let attempt_requirement = request.resolved_attempt_requirement();
         let submitted_plan_capability_evidence = request.submitted_plan_capability_evidence();
@@ -901,28 +889,26 @@ impl QueryService {
         };
         let submission_seq = pending.submission_seq();
 
-        let (device_entries, compatible_devices) = match self.resolve_device_admission_entries(
-            &request,
-            &requirement,
-            &candidate_ordinals,
-            self.inner.config.attempt_reservation_policy(),
-        ) {
-            Ok(entries) => entries,
-            Err(error) => {
-                record_admission_lifecycle(
-                    observation_owner.as_ref(),
-                    admission_request_id,
-                    admission_rejection(&error),
-                    0,
-                    None,
-                    None,
-                );
-                pending.release();
-                completion.finish_error(&error);
-                return Err(error);
-            },
-        };
-        if let Err(error) = self.reject_impossible_requirements(&device_entries, &required_capabilities) {
+        let (device_entries, compatible_devices) =
+            match self.resolve_device_admission_entries(&request, &requirement, &candidate_ordinals) {
+                Ok(entries) => entries,
+                Err(error) => {
+                    record_admission_lifecycle(
+                        observation_owner.as_ref(),
+                        admission_request_id,
+                        admission_rejection(&error),
+                        0,
+                        None,
+                        None,
+                    );
+                    pending.release();
+                    completion.finish_error(&error);
+                    return Err(error);
+                },
+            };
+        if let Err(error) =
+            self.reject_impossible_requirements(&device_entries, &required_capabilities, requested_query_cap_bytes)
+        {
             record_admission_lifecycle(
                 observation_owner.as_ref(),
                 admission_request_id,
@@ -945,8 +931,7 @@ impl QueryService {
             device_entries: device_entries.clone(),
             submission_seq,
             compatible_devices,
-            overtakes_remaining: self.inner.queue_bounds.max_overtakes_per_waiter,
-            protected_device: None,
+            requested_query_cap_bytes,
             deadline,
             execution_cancellation: execution_cancellation.clone(),
             terminal: QueuedAdmissionTerminal::default(),
@@ -961,7 +946,6 @@ impl QueryService {
             observation: observation_owner.handle,
             requested_at,
             deadline,
-            device_entries,
             execution_cancellation,
             terminal,
             queued: true,
@@ -984,7 +968,6 @@ impl QueryService {
             placed_query,
             admitted_device_requirements,
             submitted_plan_capability_evidence,
-            admitted_reservation_envelope,
             admitted_compatible_devices,
             observation,
             attempt_id,
@@ -993,7 +976,6 @@ impl QueryService {
             admission_wait,
             deadline,
             execution_cancellation,
-            admitted_submission_seq,
             admission_wait_fact,
             lifecycle_ticket,
         } = commit;
@@ -1093,31 +1075,9 @@ impl QueryService {
                 return Err(primary);
             },
         };
-        let admitted_attempt_proof = match AdmittedAttemptProof::from_post_grant(
-            admitted_reservation_envelope,
-            submitted_plan_capability_evidence,
-            envelope.memory_grant(),
-        ) {
-            Ok(proof) => proof.map(Arc::new),
-            Err(error) => {
-                envelope.preaccount_rollback_cleanup(&mut state);
-                record_admission_lifecycle(
-                    &observation,
-                    admission_request_id,
-                    admission_rejection(&error),
-                    state.queued.len(),
-                    None,
-                    None,
-                );
-                self.inner.notify_admission_available();
-                drop(state);
-                super::transaction::pause_after_rollback_accounting(probe.as_deref());
-                drop(envelope);
-                self.inner.notify_admission_available();
-                completion.finish_error(&error);
-                return Err(error);
-            },
-        };
+        let admitted_attempt_proof =
+            AdmittedAttemptProof::from_post_grant(submitted_plan_capability_evidence, envelope.memory_grant())
+                .map(Arc::new);
         envelope.register_allocator_domain_attempt(attempt_id);
         if let Err(error) =
             execution_cancellation.check("nexus_query_engine.query_service.admission_transaction.publish")
@@ -1183,37 +1143,6 @@ impl QueryService {
             drop(envelope);
             self.inner.notify_admission_available();
             completion.finish_timeout(&error);
-            return Err(error);
-        }
-        if let Some(admitted_submission_seq) = admitted_submission_seq
-            && let Err(error) =
-                self.record_overtake_locked(&mut state, admitted_submission_seq, envelope.device_ordinal(), deadline)
-        {
-            envelope.preaccount_rollback_cleanup(&mut state);
-            record_admission_lifecycle(
-                &observation,
-                admission_request_id,
-                if error.fact_value("reason") == Some("queue_wait_elapsed") {
-                    AdmissionLifecycleState::TimedOut
-                } else {
-                    admission_rejection(&error)
-                },
-                state.queued.len(),
-                None,
-                None,
-            );
-            self.inner.notify_admission_available();
-            drop(state);
-            // A failed overtake commit is still a failed admission publish;
-            // release the complete provisional envelope outside the mutex.
-            super::transaction::pause_after_rollback_accounting(probe.as_deref());
-            drop(envelope);
-            self.inner.notify_admission_available();
-            if error.fact_value("reason") == Some("queue_wait_elapsed") {
-                completion.finish_timeout(&error);
-            } else {
-                completion.finish_error(&error);
-            }
             return Err(error);
         }
         if let Err(error) = envelope.activate_lifecycle_ticket() {
@@ -1324,6 +1253,7 @@ impl QueryService {
         completion_dispatcher: Option<ObservationCompletionDispatcher>,
     ) -> Result<Option<QueryHandle>> {
         let queue_deadline = request.queue_deadline;
+        let requested_query_cap_bytes = request.requested_query_cap_bytes();
         let execution_cancellation = request.execution_cancellation.clone();
         let attempt_requirement = request.resolved_attempt_requirement();
         let submitted_plan_capability_evidence = request.submitted_plan_capability_evidence();
@@ -1443,27 +1373,25 @@ impl QueryService {
         // Device-specific owner preflight must not extend the admission-lock window.
         drop(state);
 
-        let (device_entries, compatible_devices) = match self.resolve_device_admission_entries(
-            &request,
-            &requirement,
-            &candidate_ordinals,
-            self.inner.config.attempt_reservation_policy(),
-        ) {
-            Ok(entries) => entries,
-            Err(error) => {
-                record_admission_lifecycle(
-                    observation_owner.as_ref(),
-                    admission_request_id,
-                    admission_rejection(&error),
-                    0,
-                    None,
-                    None,
-                );
-                completion.finish_error(&error);
-                return Err(error);
-            },
-        };
-        if let Err(error) = self.reject_impossible_requirements(&device_entries, &required_capabilities) {
+        let (device_entries, compatible_devices) =
+            match self.resolve_device_admission_entries(&request, &requirement, &candidate_ordinals) {
+                Ok(entries) => entries,
+                Err(error) => {
+                    record_admission_lifecycle(
+                        observation_owner.as_ref(),
+                        admission_request_id,
+                        admission_rejection(&error),
+                        0,
+                        None,
+                        None,
+                    );
+                    completion.finish_error(&error);
+                    return Err(error);
+                },
+            };
+        if let Err(error) =
+            self.reject_impossible_requirements(&device_entries, &required_capabilities, requested_query_cap_bytes)
+        {
             record_admission_lifecycle(
                 observation_owner.as_ref(),
                 admission_request_id,
@@ -1529,6 +1457,7 @@ impl QueryService {
             attempt_id,
             &device_entries,
             &compatible_devices,
+            requested_query_cap_bytes,
             &mut slot_notifications,
         ) {
             Ok(placed_query) => placed_query,
@@ -1565,10 +1494,6 @@ impl QueryService {
             completion.finish_error(&error);
             return Err(error);
         }
-        let selected_entry = device_entries.get(&placed_query.device_ordinal).ok_or_else(|| {
-            super::super::admission::missing_device_admission_entry_error(placed_query.device_ordinal)
-        })?;
-        let admitted_reservation_envelope = selected_entry.admitted_reservation_envelope.clone();
         let lifecycle_ticket = state.lifecycle.begin_provisional(Arc::downgrade(&self.inner));
         self.inner.notify_admission_available();
         // Admission commit may wait for resource handoff, so release the controller lock first.
@@ -1583,7 +1508,6 @@ impl QueryService {
                 .map(|(&ordinal, entry)| (ordinal, entry.requirement.clone()))
                 .collect(),
             submitted_plan_capability_evidence,
-            admitted_reservation_envelope,
             admitted_compatible_devices: compatible_devices,
             observation: observation_owner.handle,
             attempt_id,
@@ -1592,7 +1516,6 @@ impl QueryService {
             admission_wait: Duration::ZERO,
             deadline,
             execution_cancellation,
-            admitted_submission_seq: None,
             admission_wait_fact: None,
             lifecycle_ticket,
         })
@@ -1611,11 +1534,6 @@ impl QueryService {
             Ok(mut state) => {
                 state.closed = true;
                 let closed_requests = std::mem::take(&mut state.queued).into_iter().collect::<Vec<_>>();
-                for request in &closed_requests {
-                    if let Err(error) = self.end_request_protection(request) {
-                        eprintln!("[nexus-query-engine] warning: failed to end queue protection on close: {error}");
-                    }
-                }
 
                 (Ok(()), closed_requests)
             },
@@ -1623,11 +1541,6 @@ impl QueryService {
                 let mut state = error.into_inner();
                 state.closed = true;
                 let closed_requests = std::mem::take(&mut state.queued).into_iter().collect::<Vec<_>>();
-                for request in &closed_requests {
-                    if let Err(error) = self.end_request_protection(request) {
-                        eprintln!("[nexus-query-engine] warning: failed to end queue protection on close: {error}");
-                    }
-                }
 
                 (
                     Err(QueryError::new(
@@ -1784,11 +1697,6 @@ impl QueryService {
             };
         state.closed = true;
         let closed_requests = std::mem::take(&mut state.queued).into_iter().collect::<Vec<_>>();
-        for request in &closed_requests {
-            if let Err(error) = self.end_request_protection(request) {
-                eprintln!("[nexus-query-engine] warning: failed to end queue protection on close: {error}");
-            }
-        }
         if !closed_requests.is_empty() {
             drop(state);
             finish_closed_queued_requests(closed_requests);

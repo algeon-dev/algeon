@@ -9,7 +9,7 @@ use super::{
     ActiveReservation, ActiveReservationEventContext, ActiveReservationSemantics, CompiledTaskId, ExecutionContext,
     MemoryGrant, MemoryReservationEvent, MemoryReservationEventAction, MemoryReservationEventOutcome,
     MemoryReservationRequest, MemorySpaceId, QueryError, QueryErrorCode, QueryId, QueryMetrics,
-    ReservationDiagnosticContext, ReservationDiagnosticScope, ReservationKind, ReservationObservation, Result,
+    ReservationDiagnosticContext, ReservationDiagnosticScope, ReservationObservation, Result,
     RuntimeExecutionObservationScope, RuntimeReservationAction, RuntimeReservationDisposition, RuntimeReservationId,
     RuntimeSpanId, TaskAttemptId,
 };
@@ -44,15 +44,6 @@ impl ReservationBudget {
         match self {
             Self::Static(_) => None,
             Self::GrantBackedStatic { grant, .. } => Some(grant.clone()),
-        }
-    }
-
-    fn remaining_live_reservation_bytes(&self, tracker_remaining_bytes: u64) -> Result<u64> {
-        match self {
-            Self::Static(_) => Ok(tracker_remaining_bytes),
-            Self::GrantBackedStatic { grant, .. } => {
-                Ok(tracker_remaining_bytes.min(grant.remaining_live_reservation_bytes()?))
-            },
         }
     }
 
@@ -121,11 +112,11 @@ impl ReservationTracker {
     }
 
     pub(in crate::exec) fn remaining_bytes(&self) -> u64 {
-        self.budget().saturating_sub(self.raw_reserved_bytes())
+        self.budget()
     }
 
-    pub(in crate::exec) fn can_reserve(&self, requested_bytes: u64) -> bool {
-        self.reservable_remaining_bytes().is_ok_and(|remaining| requested_bytes <= remaining)
+    pub(in crate::exec) fn can_reserve(&self, _requested_bytes: u64) -> bool {
+        true
     }
 
     pub(in crate::exec) fn augment_gpu_inputs(&self, gpu_inputs: &GpuResidentInputMap) -> Result<GpuResidentInputMap> {
@@ -246,27 +237,9 @@ impl ReservationTracker {
         reservation.retarget_observation(context.task_attempt_id.clone(), context.span_id);
     }
 
-    fn record_denied_observation(
-        &self,
-        request: &MemoryReservationRequest,
-        denied_action: RuntimeReservationAction,
-        granted_bytes: u64,
-    ) {
-        let Some(observation) = self.new_reservation_observation() else {
-            return;
-        };
-        observation.record_denied(
-            &ActiveReservationEventContext::from_request(request),
-            denied_action,
-            request.requested_bytes,
-            granted_bytes,
-            self.raw_reserved_bytes(),
-        );
-    }
-
     pub(in crate::exec) fn available_bytes_including(&self, reservation: &ActiveReservation) -> u64 {
         self.assert_reservation_belongs_to_tracker(reservation, "available_bytes_including");
-        reservation.charged_bytes().saturating_add(self.reservable_remaining_bytes().unwrap_or(0))
+        self.budget()
     }
 
     pub(in crate::exec) fn try_reserve(
@@ -300,27 +273,13 @@ impl ReservationTracker {
         metrics: &mut QueryMetrics,
     ) -> Result<ActiveReservation> {
         let request = self.stamp_request(request, metrics);
-        let remaining = self.reservable_remaining_bytes()?;
-        if request.requested_bytes > remaining {
-            metrics.record_reservation_denied_timeline_event(
-                &request,
-                MemoryReservationEventAction::Reserve,
-                remaining,
-                self.raw_reserved_bytes(),
-            );
-            self.record_denied_observation(&request, RuntimeReservationAction::Reserve, remaining);
-            return Err(request.denied_error(remaining));
-        }
         if !self.reserve_live_bytes(request.requested_bytes)? {
-            let remaining = self.reservable_remaining_bytes()?;
-            metrics.record_reservation_denied_timeline_event(
-                &request,
-                MemoryReservationEventAction::Reserve,
-                remaining,
-                self.raw_reserved_bytes(),
-            );
-            self.record_denied_observation(&request, RuntimeReservationAction::Reserve, remaining);
-            return Err(request.denied_error(remaining));
+            return Err(QueryError::new(
+                QueryErrorCode::InternalInvariantViolation,
+                "nexus_query_engine.bounded.reservation_tracker.reserve",
+                "query allocation owner is no longer active",
+            )
+            .with_fact("requested_bytes", request.requested_bytes));
         }
         metrics.record_reservation_granted_timeline_event(
             &request,
@@ -547,27 +506,13 @@ impl ReservationTracker {
     ) -> Result<()> {
         self.validate_reservation_belongs_to_tracker(reservation, "try_grow")?;
         let request = self.stamp_request(request, metrics);
-        let remaining = self.reservable_remaining_bytes()?;
-        if request.requested_bytes > remaining {
-            metrics.record_reservation_denied_timeline_event(
-                &request,
-                MemoryReservationEventAction::Grow,
-                remaining,
-                self.raw_reserved_bytes(),
-            );
-            self.record_denied_observation(&request, RuntimeReservationAction::Grow, remaining);
-            return Err(request.denied_error(remaining));
-        }
         if !self.reserve_live_bytes(request.requested_bytes)? {
-            let remaining = self.reservable_remaining_bytes()?;
-            metrics.record_reservation_denied_timeline_event(
-                &request,
-                MemoryReservationEventAction::Grow,
-                remaining,
-                self.raw_reserved_bytes(),
-            );
-            self.record_denied_observation(&request, RuntimeReservationAction::Grow, remaining);
-            return Err(request.denied_error(remaining));
+            return Err(QueryError::new(
+                QueryErrorCode::InternalInvariantViolation,
+                "nexus_query_engine.bounded.reservation_tracker.grow",
+                "query allocation owner is no longer active",
+            )
+            .with_fact("requested_bytes", request.requested_bytes));
         }
         self.retarget_reservation_observation(reservation);
         let charged_delta = reservation.grow(request.requested_bytes);
@@ -694,7 +639,7 @@ impl ReservationTracker {
     }
 
     pub(in crate::exec) fn reservable_remaining_bytes(&self) -> Result<u64> {
-        self.budget.remaining_live_reservation_bytes(self.remaining_bytes())
+        Ok(self.budget())
     }
 
     fn reserve_live_bytes(&self, bytes: u64) -> Result<bool> {
@@ -706,16 +651,16 @@ impl ReservationTracker {
     }
 
     pub(in crate::exec) fn try_acquire_retained_debit(&self, bytes: u64) -> Result<RetainedReservationGuard> {
-        let active_remaining = self.budget().saturating_sub(self.reserved_bytes.get());
-        let retained_remaining =
-            active_remaining.saturating_sub(self.retained_debit_bytes.load(std::sync::atomic::Ordering::Acquire));
-        RetainedReservationGuard::try_acquire(Arc::clone(&self.retained_debit_bytes), active_remaining, bytes)
-            .ok_or_else(|| {
-                MemoryReservationRequest::new(ReservationKind::CapabilityContract, bytes, self.budget())
-                    .with_memory_boundary("retained_output")
-                    .with_stage("retained_output_tracker")
-                    .denied_error(retained_remaining)
-            })
+        RetainedReservationGuard::try_acquire(Arc::clone(&self.retained_debit_bytes), u64::MAX, bytes).ok_or_else(
+            || {
+                QueryError::new(
+                    QueryErrorCode::InternalInvariantViolation,
+                    "nexus_query_engine.bounded.reservation_tracker.retained_debit",
+                    "retained resident accounting overflowed",
+                )
+                .with_fact("requested_bytes", bytes)
+            },
+        )
     }
 
     fn reservation_belongs_to_tracker(&self, reservation: &ActiveReservation) -> bool {

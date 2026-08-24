@@ -486,10 +486,10 @@ fn overload_evidence_requires_a_bounded_full_queue_and_sealed_public_rows() {
     protected.admitted_ns = Some(1_000);
     protected.admission_wait = Some(AdmissionWaitEvidence {
         submission_sequence: 21,
-        overtake_limit: 2,
-        overtakes_consumed: 2,
+        overtake_limit: 0,
+        overtakes_consumed: 0,
         overtakes_remaining: 0,
-        protection_device_ordinal: Some(0),
+        protection_device_ordinal: None,
     });
 
     let mut unrelated = attempt(1, 1, Some(2), Some(11), 200, 500, 300, SchedulePhase::Measurement);
@@ -506,31 +506,32 @@ fn overload_evidence_requires_a_bounded_full_queue_and_sealed_public_rows() {
     observations[2].admission_sequence = Some(1);
     observations[3].admission_sequence = Some(2);
 
-    let evidence = OverloadFairnessEvidence::from_observations(&observations, &devices, 4, 2, 2, 2, 0, 0, 0);
+    let evidence = OverloadFairnessEvidence::from_observations(&observations, &devices, 4, 2, 2, 0, 0, 0);
     assert!(evidence.is_evidenced());
     assert_eq!(evidence.status, ClauseStatus::Evidenced);
-    assert_eq!(evidence.protection_device_ordinal, Some(0));
-    assert_eq!(evidence.unrelated_device_progress_count, 1);
-    assert_eq!(evidence.unrelated_device_completion_count, 1);
+    assert_eq!(evidence.configured_overtake_limit, 0);
+    assert_eq!(evidence.protection_device_ordinal, None);
+    assert_eq!(evidence.unrelated_device_progress_count, 0);
+    assert_eq!(evidence.unrelated_device_completion_count, 0);
 
     let aggregate = MeasuredAggregate::reduce(&observations, &devices, &BTreeMap::new(), 0, 1_000)
         .with_overload_fairness(evidence.clone());
     let artifact_projection = serde_json::to_value(&aggregate).unwrap();
     assert_eq!(artifact_projection["scenarios"]["overload_fairness"]["status"], "evidenced");
-    assert_eq!(artifact_projection["attempts"][0]["admission_wait"]["protection_device_ordinal"], 0);
+    assert!(artifact_projection["attempts"][0]["admission_wait"]["protection_device_ordinal"].is_null());
     assert_eq!(artifact_projection["attempts"][0]["admission_requested_ns"], 100);
     assert_eq!(artifact_projection["attempts"][0]["admitted_ns"], 1_000);
 
-    let queue_not_full = OverloadFairnessEvidence::from_observations(&observations, &devices, 4, 2, 2, 1, 0, 0, 0);
+    let queue_not_full = OverloadFairnessEvidence::from_observations(&observations, &devices, 4, 2, 1, 0, 0, 0);
     assert!(!queue_not_full.is_evidenced());
     assert_eq!(queue_not_full.status, ClauseStatus::Failed);
 
-    let queue_exceeded = OverloadFairnessEvidence::from_observations(&observations, &devices, 4, 2, 2, 3, 0, 0, 0);
+    let queue_exceeded = OverloadFairnessEvidence::from_observations(&observations, &devices, 4, 2, 3, 0, 0, 0);
     assert!(!queue_exceeded.is_evidenced());
     assert_eq!(queue_exceeded.status, ClauseStatus::Failed);
 
     observations[0].admission_wait.as_mut().unwrap().overtakes_remaining = 1;
-    let malformed = OverloadFairnessEvidence::from_observations(&observations, &devices, 4, 2, 2, 2, 0, 0, 0);
+    let malformed = OverloadFairnessEvidence::from_observations(&observations, &devices, 4, 2, 2, 0, 0, 0);
     assert!(!malformed.is_evidenced());
     assert_eq!(malformed.status, ClauseStatus::Failed);
     assert!(!malformed.wait_facts_exact);

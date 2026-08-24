@@ -90,8 +90,7 @@ struct StressConfig {
     bulk_iterations: usize,
     interactive_iterations: usize,
     device_capacity_bytes: u64,
-    attempt_floor_bytes: u64,
-    soft_working_set_hint_bytes: u64,
+    default_query_limit_bytes: u64,
     max_active_attempts_per_device: usize,
     max_queued_attempts: usize,
     max_queue_wait: Duration,
@@ -582,8 +581,7 @@ async fn collect_plan_once(plan: Arc<dyn ExecutionPlan>) -> DataFusionResult<Vec
 
 fn run_overload_probe(config: &StressConfig) -> DataFusionResult<StressRow> {
     let probe_config = config.service_config();
-    let probe_queue_bounds =
-        QueueBounds { max_waiters: 1, max_wait: Duration::from_millis(50), max_overtakes_per_waiter: 4 };
+    let probe_queue_bounds = QueueBounds { max_waiters: 1, max_wait: Duration::from_millis(50) };
     let backend = GpuBackendOwner::build(
         probe_config,
         probe_queue_bounds,

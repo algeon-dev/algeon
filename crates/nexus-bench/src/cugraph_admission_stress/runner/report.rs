@@ -387,7 +387,7 @@ pub(super) fn write_outputs(
             "stagger_ms": config.stagger_ms,
             "max_active_attempts_per_device": config.max_active_attempts_per_device,
             "device_ordinals": config.device_ordinals,
-            "attempt_floor_bytes": config.attempt_floor_bytes,
+            "default_query_limit_bytes": config.default_query_limit_bytes,
             "max_queue_wait_ms": config.max_queue_wait_ms,
             "budget_fraction": config.budget_fraction,
             "device_budget_bytes": config.device_budget_bytes,

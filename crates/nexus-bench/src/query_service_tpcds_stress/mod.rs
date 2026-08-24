@@ -188,11 +188,7 @@ impl StressConfig {
     }
 
     fn queue_bounds(&self) -> QueueBounds {
-        QueueBounds {
-            max_waiters: self.max_queued_attempts,
-            max_wait: self.max_queue_wait,
-            max_overtakes_per_waiter: 4,
-        }
+        QueueBounds { max_waiters: self.max_queued_attempts, max_wait: self.max_queue_wait }
     }
 }
 
@@ -644,8 +640,7 @@ async fn collect_plan_once(plan: Arc<dyn ExecutionPlan>) -> DataFusionResult<Vec
 
 fn run_overload_probe(config: &StressConfig) -> DataFusionResult<StressRow> {
     let probe_config = config.service_config();
-    let probe_queue_bounds =
-        QueueBounds { max_waiters: 1, max_wait: Duration::from_millis(50), max_overtakes_per_waiter: 4 };
+    let probe_queue_bounds = QueueBounds { max_waiters: 1, max_wait: Duration::from_millis(50) };
     let backend = GpuBackendOwner::build(
         probe_config,
         probe_queue_bounds,

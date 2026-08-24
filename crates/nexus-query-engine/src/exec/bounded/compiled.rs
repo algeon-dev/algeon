@@ -20,9 +20,7 @@ pub(in crate::exec::bounded) use frame_stream::{ResidentFrameStreamPayload, Resi
 #[cfg(test)]
 pub(crate) use frame_stream::{ResidentFrameStreamProducerTestHarness, YieldedFrameCounterTestHarness};
 pub use resource::CompiledGpuResource;
-pub use scheduler::{
-    CompiledPipelineScheduler, CompiledSchedulingCycle, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput,
-};
+pub use scheduler::{CompiledPipelineScheduler, CompiledSchedulingCycle, CompiledTaskExecutor, CompiledTaskOutput};
 pub use state::{CompiledPipelineState, ReleasedCompiledResource};
 
 use crate::{

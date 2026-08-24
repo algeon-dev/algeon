@@ -8,8 +8,7 @@ const INTERACTIVE_QUERIES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_INTERACTIVE_QUER
 const BULK_ITERATIONS_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_BULK_ITERATIONS";
 const INTERACTIVE_ITERATIONS_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_INTERACTIVE_ITERATIONS";
 const DEVICE_CAPACITY_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_DEVICE_CAPACITY_BYTES";
-pub(super) const ATTEMPT_FLOOR_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_ATTEMPT_FLOOR_BYTES";
-const SOFT_WORKING_SET_HINT_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_SOFT_WORKING_SET_HINT_BYTES";
+pub(super) const DEFAULT_QUERY_LIMIT_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_DEFAULT_QUERY_LIMIT_BYTES";
 const MAX_ACTIVE_ATTEMPTS_PER_DEVICE_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_MAX_ACTIVE_ATTEMPTS_PER_DEVICE";
 const DEVICE_ORDINALS_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_DEVICE_ORDINALS";
 pub(super) const MAX_QUEUED_ATTEMPTS_ENV: &str = "NEXUS_QUERY_SERVICE_TPCH_MAX_QUEUED_ATTEMPTS";
@@ -34,11 +33,9 @@ impl StressConfig {
             None => default_tpch_parquet_root(TpchDefaultScale::Sf1).into(),
         };
         let max_active_attempts_per_device = env_usize(MAX_ACTIVE_ATTEMPTS_PER_DEVICE_ENV, 1)?;
-        let attempt_floor_bytes = optional_env_u64(ATTEMPT_FLOOR_BYTES_ENV)?;
-        let soft_working_set_hint_bytes = optional_env_u64(SOFT_WORKING_SET_HINT_BYTES_ENV)?;
+        let default_query_limit_bytes = optional_env_u64(DEFAULT_QUERY_LIMIT_BYTES_ENV)?;
         let device_capacity_bytes = env_u64(DEVICE_CAPACITY_BYTES_ENV, default_device_capacity_bytes())?;
         let default_min_grant_bytes = grant_fraction_bytes(device_capacity_bytes, 1, 8);
-        let default_want_grant_bytes = grant_fraction_bytes(device_capacity_bytes, 1, 2);
         let profile = StressProfileConfig::from_env()?;
         let config = Self {
             dataset_root,
@@ -47,8 +44,7 @@ impl StressConfig {
             bulk_iterations: env_usize(BULK_ITERATIONS_ENV, 1)?,
             interactive_iterations: env_usize(INTERACTIVE_ITERATIONS_ENV, 4)?,
             device_capacity_bytes,
-            attempt_floor_bytes: attempt_floor_bytes.unwrap_or(default_min_grant_bytes),
-            soft_working_set_hint_bytes: soft_working_set_hint_bytes.unwrap_or(default_want_grant_bytes),
+            default_query_limit_bytes: default_query_limit_bytes.unwrap_or(default_min_grant_bytes),
             max_active_attempts_per_device,
             max_queued_attempts: env_usize(MAX_QUEUED_ATTEMPTS_ENV, 64)?,
             max_queue_wait: Duration::from_millis(env_u64(MAX_QUEUE_WAIT_MS_ENV, 30_000)?),
@@ -69,20 +65,10 @@ impl StressConfig {
         validate_nonzero(BULK_ITERATIONS_ENV, self.bulk_iterations)?;
         validate_nonzero(INTERACTIVE_ITERATIONS_ENV, self.interactive_iterations)?;
         validate_nonzero(DEVICE_CAPACITY_BYTES_ENV, self.device_capacity_bytes)?;
-        validate_nonzero(ATTEMPT_FLOOR_BYTES_ENV, self.attempt_floor_bytes)?;
-        validate_nonzero(SOFT_WORKING_SET_HINT_BYTES_ENV, self.soft_working_set_hint_bytes)?;
-        if self.soft_working_set_hint_bytes < self.attempt_floor_bytes {
+        validate_nonzero(DEFAULT_QUERY_LIMIT_BYTES_ENV, self.default_query_limit_bytes)?;
+        if self.default_query_limit_bytes > self.device_capacity_bytes {
             return Err(plan_error(format!(
-                "{SOFT_WORKING_SET_HINT_BYTES_ENV} must be at least {ATTEMPT_FLOOR_BYTES_ENV}"
-            )));
-        }
-        if self.attempt_floor_bytes > self.device_capacity_bytes {
-            return Err(plan_error(format!("{ATTEMPT_FLOOR_BYTES_ENV} must not exceed {DEVICE_CAPACITY_BYTES_ENV}")));
-        }
-        let floor_total = self.attempt_floor_bytes.saturating_mul(self.max_active_attempts_per_device as u64);
-        if floor_total > self.device_capacity_bytes {
-            return Err(plan_error(format!(
-                "{ATTEMPT_FLOOR_BYTES_ENV} times {MAX_ACTIVE_ATTEMPTS_PER_DEVICE_ENV} must not exceed {DEVICE_CAPACITY_BYTES_ENV}"
+                "{DEFAULT_QUERY_LIMIT_BYTES_ENV} must not exceed {DEVICE_CAPACITY_BYTES_ENV}"
             )));
         }
         validate_nonzero(MAX_ACTIVE_ATTEMPTS_PER_DEVICE_ENV, self.max_active_attempts_per_device)?;
@@ -139,11 +125,7 @@ impl StressConfig {
     }
 
     pub(super) fn queue_bounds(&self) -> QueueBounds {
-        QueueBounds {
-            max_waiters: self.max_queued_attempts,
-            max_wait: self.max_queue_wait,
-            max_overtakes_per_waiter: 4,
-        }
+        QueueBounds { max_waiters: self.max_queued_attempts, max_wait: self.max_queue_wait }
     }
 }
 

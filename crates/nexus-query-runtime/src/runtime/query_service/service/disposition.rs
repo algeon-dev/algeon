@@ -34,6 +34,9 @@ pub enum CapacityCommitDisposition {
     /// Cleanup restored every invariant; slot and grant return for reuse
     /// after the report is published.
     HealthyReuse,
+    /// The active query cap was atomically replaced by a measured frozen
+    /// resident charge. New admissions may use the remaining capacity.
+    FrozenResident { resident_bytes: u64 },
     /// Device-local persistent fault: the device ledger closes before the
     /// report is published. The attempt's bytes return but the closed ledger
     /// admits nothing new.

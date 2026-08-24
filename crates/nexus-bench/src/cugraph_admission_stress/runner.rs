@@ -74,7 +74,7 @@ struct HarnessConfig {
     iterations: usize,
     stagger_ms: u64,
     max_active_attempts_per_device: usize,
-    attempt_floor_bytes: Option<u64>,
+    default_query_limit_bytes: Option<u64>,
     max_queue_wait_ms: u64,
     budget_fraction: Option<f64>,
     device_budget_bytes: Option<u64>,
@@ -259,8 +259,8 @@ fn build_backend(config: &HarnessConfig) -> Result<NexusGpuBackend, Box<dyn Erro
         let mut profile = NexusGpuDeviceProfile::new(ordinal)
             .with_memory_limit(memory_limit)
             .with_max_active_attempts(config.max_active_attempts_per_device);
-        if let Some(attempt_floor_bytes) = config.attempt_floor_bytes {
-            profile = profile.with_attempt_floor_bytes(attempt_floor_bytes);
+        if let Some(default_query_limit_bytes) = config.default_query_limit_bytes {
+            profile = profile.with_default_query_limit_bytes(default_query_limit_bytes);
         }
         NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive)
     });

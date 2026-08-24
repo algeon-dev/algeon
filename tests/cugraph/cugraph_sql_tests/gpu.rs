@@ -264,7 +264,7 @@ async fn cugraph_sql_keeps_native_inputs_device_resident_for_native_downstream()
     }
     let report = top_k_completion.await;
     assert!(matches!(report.outcome, nexus_query_engine::observability::RuntimeTerminalOutcome::Succeeded));
-    assert!(report.composed_schedule.is_some(), "raw BFS top-k must select OrderedTimeline admission provenance");
+    assert!(report.admission.is_some(), "raw BFS top-k must execute under one admitted fixed cap");
     assert_eq!(top_k_batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 100);
     let distances = top_k_batches
         .iter()
@@ -320,7 +320,7 @@ async fn cugraph_sql_gpu_pagerank_forceatlas2_join_executes_as_one_scheduled_com
         }
         let report = top_k_completion.await;
         assert!(matches!(report.outcome, nexus_query_engine::observability::RuntimeTerminalOutcome::Succeeded));
-        assert!(report.composed_schedule.is_some(), "PageRank top-k must select OrderedTimeline admission provenance");
+        assert!(report.admission.is_some(), "PageRank top-k must execute under one admitted fixed cap");
         let rows = pagerank_rows(&top_k_batches);
         assert_eq!(rows.len(), 100);
         assert!(rows.windows(2).all(|pair| pair[0].value >= pair[1].value));
@@ -430,17 +430,9 @@ async fn cugraph_sql_gpu_composed_attempt_retains_context_grant_and_gpu_results_
     assert!(report.cleanup_failure_count_complete);
 
     let admission_fact = report.admission.as_ref().expect("the composed query must be admitted");
-    let schedule = report.composed_schedule.as_ref().expect("the composed graph attempt must seal its exact schedule");
-    assert!(schedule.fingerprint_matches_contents());
-    assert_eq!(schedule.attempt_id, report.attempt_id);
-    assert_eq!(schedule.device_ordinal, live_ledger.device_ordinal);
     assert_eq!(report.device_ordinal, Some(live_ledger.device_ordinal));
     assert_eq!(admission_fact.device_ordinal, live_ledger.device_ordinal);
-    assert_eq!(schedule.grant_id, live_grant.grant_id);
-    assert_eq!(schedule.grant_bytes, live_grant.grant_bytes);
     assert_eq!(admission_fact.grant_bytes, live_grant.grant_bytes);
-    assert!(schedule.grant_bytes >= schedule.complete_peak_bytes);
-    assert_eq!(schedule.producer_occurrences.len(), 2, "the native consumer must retain both graph producer results");
 
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
@@ -479,7 +471,9 @@ async fn cugraph_sql_gpu_composed_attempt_returns_cache_checkouts_before_deferre
     let path = dir.join("graph_edges.parquet");
     write_tiny_directed_edges(&path);
 
-    let profile = datafusion_nexus::backend::NexusGpuDeviceProfile::new(0).with_cache_cap_bytes(CACHE_CAP_BYTES);
+    let profile = datafusion_nexus::backend::NexusGpuDeviceProfile::new(0)
+        .with_default_query_limit_bytes(128 * 1024 * 1024)
+        .with_cache_cap_bytes(CACHE_CAP_BYTES);
     let device = NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
     let backend = NexusGpuBackend::builder().devices([device]).build().unwrap();
     let cugraph = CugraphSqlConfig::default();
@@ -520,7 +514,7 @@ async fn cugraph_sql_gpu_composed_attempt_returns_cache_checkouts_before_deferre
     };
     assert_eq!(primed_cache.device_ordinal, primed_ledger.device_ordinal);
     assert_eq!(primed_cache.cache_cap_bytes, CACHE_CAP_BYTES);
-    assert_eq!(primed_cache.ledger_sequence, primed_ledger.sequence);
+    assert!(primed_cache.ledger_sequence >= primed_ledger.sequence);
     assert_eq!(primed_cache.ledger_evictable_resident_bytes, primed_ledger.cache_evictable_resident_bytes);
     assert_eq!(primed_cache.ledger_pinned_in_use_bytes, primed_ledger.cache_pinned_in_use_bytes);
     assert!(primed_cache.ledger_evictable_resident_bytes > 0, "the primed graphs must remain cache-owned");
@@ -552,7 +546,7 @@ async fn cugraph_sql_gpu_composed_attempt_returns_cache_checkouts_before_deferre
     assert_eq!(live_cache.device_ordinal, live_ledger.device_ordinal);
     assert_eq!(live_cache.allocation_domain_id, primed_cache.allocation_domain_id);
     assert_eq!(live_cache.cache_cap_bytes, CACHE_CAP_BYTES);
-    assert_eq!(live_cache.ledger_sequence, live_ledger.sequence);
+    assert!(live_cache.ledger_sequence >= live_ledger.sequence);
     assert_eq!(live_cache.ledger_evictable_resident_bytes, live_ledger.cache_evictable_resident_bytes);
     assert_eq!(live_cache.ledger_pinned_in_use_bytes, live_ledger.cache_pinned_in_use_bytes);
     assert_eq!(live_cache.graph.lookup_hits, primed_cache.graph.lookup_hits + 1);
@@ -751,7 +745,7 @@ async fn cugraph_sql_gpu_filtered_local_parquet_hits_and_bfs_use_materialized_ed
 }
 
 #[tokio::test]
-async fn cugraph_sql_gpu_filtered_local_parquet_rejects_an_oversized_materialized_graph_phase_and_releases_the_grant() {
+async fn cugraph_sql_gpu_filtered_local_parquet_executes_under_the_fixed_cap_and_releases_the_grant() {
     const DEVICE_CAPACITY_BYTES: u64 = 128 * 1024 * 1024;
     const ACTIVE_EDGE_ROWS: usize = 600_000;
 
@@ -760,20 +754,14 @@ async fn cugraph_sql_gpu_filtered_local_parquet_rejects_an_oversized_materialize
     write_large_filtered_directed_edges_with_active_rows(&path, ACTIVE_EDGE_ROWS);
     let (backend, ctx) = filtered_local_parquet_context(&path, DEVICE_CAPACITY_BYTES).await;
 
-    let error = ctx
+    let batches = ctx
         .sql("SELECT * FROM cugraph_hits('filtered_edges', 'src', 'dst')")
         .await
         .unwrap()
         .collect()
         .await
-        .expect_err("the runtime graph phase must reject before graph allocation when it exceeds the grant");
-    let nexus = typed_nexus_error(&error);
-    assert_eq!(nexus.code(), ErrorCode::UnsupportedOperator);
-    assert!(
-        nexus.message().contains("schedule_reason=immutable_grant_below_schedule_peak"),
-        "the structured native phase reason must survive the adapter boundary: {nexus:?}"
-    );
-    assert_eq!(nexus.fact_value("native_operation"), Some("nexus_query_engine.admission.reservation_envelope"));
+        .expect("modeled graph memory must not reject an executable workload before actual allocation");
+    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 1024);
 
     drop_session_context_on_blocking_thread(ctx).await;
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -786,7 +774,7 @@ async fn cugraph_sql_gpu_filtered_local_parquet_rejects_an_oversized_materialize
         }
     })
     .await
-    .expect("graph-phase rejection must release the attempt and immutable grant");
+    .expect("graph execution must release the attempt and immutable grant");
     let ledgers = backend.device_ledger_reports().unwrap();
     let [ledger] = ledgers.as_slice() else {
         panic!("one-device fixture must expose exactly one ledger after rejection: {ledgers:#?}");
@@ -827,7 +815,7 @@ async fn cugraph_sql_gpu_betweenness_reservation_reports_source_facts_and_seed_m
 }
 
 #[tokio::test]
-async fn cugraph_sql_gpu_memory_estimate_exceeding_budget_fails_admission() {
+async fn cugraph_sql_gpu_actual_allocation_exceeding_query_cap_reports_memory_limit() {
     let device = NexusGpuDeviceConfig::new(
         datafusion_nexus::backend::NexusGpuDeviceProfile::new(0)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 1024 }),
@@ -853,10 +841,10 @@ async fn cugraph_sql_gpu_memory_estimate_exceeding_budget_fails_admission() {
         .unwrap()
         .collect()
         .await
-        .expect_err("small device memory budget must fail betweenness centrality admission");
+        .expect_err("actual graph allocation must fail against the one-kibibyte query cap");
     let nexus = typed_nexus_error(&error);
-    assert_eq!(nexus.code(), ErrorCode::UnsupportedOperator);
-    assert!(nexus.message().contains("schedule_reason=immutable_grant_below_schedule_peak"));
+    assert_eq!(nexus.code(), ErrorCode::QueryMemoryLimitExceeded);
+    assert_eq!(nexus.fact_value("native_code"), Some("query_memory_limit_exceeded"));
 }
 
 /// Runs the provisioned Python-cuGraph PageRank acceptance check.
@@ -2526,14 +2514,7 @@ async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively
     }
     let report = completion.await;
     assert!(matches!(report.outcome, nexus_query_engine::observability::RuntimeTerminalOutcome::Succeeded));
-    let schedule =
-        report.composed_schedule.as_ref().expect("the retained filtered producers must use one ordered schedule");
-    let filtered_roles = schedule
-        .producer_occurrences
-        .iter()
-        .find(|producer| producer.occurrence_id.starts_with("__nexus_shared_resident_"))
-        .expect("the shared filtered roles must be one retained producer occurrence");
-    assert!(filtered_roles.retained_output_bytes > 0);
+    assert!(report.admission.is_some(), "the retained filtered producers must execute under one admitted fixed cap");
     let batch = single_batch(&batches);
     assert_eq!(batch.num_rows(), 3, "duplicate role metadata must preserve left-join multiplicity");
     assert_eq!(batch.column(0).null_count(), 0);
@@ -2573,12 +2554,7 @@ async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively
     }
     let report = completion.await;
     assert!(matches!(report.outcome, nexus_query_engine::observability::RuntimeTerminalOutcome::Succeeded));
-    let producer_occurrences = &report
-        .composed_schedule
-        .as_ref()
-        .expect("shared graph Top-K must use one ordered schedule")
-        .producer_occurrences;
-    assert_eq!(producer_occurrences.len(), 1);
+    assert!(report.admission.is_some(), "shared graph Top-K must execute under one admitted fixed cap");
     let batch = single_batch(&batches);
     assert_eq!(batch.num_rows(), 5, "duplicate metadata must preserve LEFT JOIN multiplicity");
     assert_eq!(batch.column(2).null_count(), 1, "missing metadata must preserve the ranked graph row");

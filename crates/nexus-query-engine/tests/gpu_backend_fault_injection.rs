@@ -7,7 +7,7 @@ use nexus_query_engine::runtime::{
 };
 
 const DEVICE_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
-const DEVICE_FLOOR_BYTES: u64 = 64 * 1024 * 1024;
+const DEVICE_QUERY_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 
 fn nongds_deployment() -> DeploymentIoCapability {
     DeploymentIoCapability::from_probe_inputs(
@@ -21,7 +21,7 @@ fn device(ordinal: usize) -> GpuBackendDeviceConfig {
     GpuBackendDeviceConfig::new(
         GpuBackendDeviceProfile::new(ordinal)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: DEVICE_LIMIT_BYTES })
-            .with_attempt_floor_bytes(DEVICE_FLOOR_BYTES)
+            .with_default_query_limit_bytes(DEVICE_QUERY_LIMIT_BYTES)
             .with_max_active_attempts(1)
             .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(2, 1, 1)),
         GpuMemoryOwnership::WholeDeviceExclusive,
@@ -40,7 +40,7 @@ fn public_fault_injector_quarantines_one_device_and_preserves_healthy_fallback()
 
     let controller = GpuBackendControllerDraft::new(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(2), max_overtakes_per_waiter: 1 },
+        QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(2) },
     );
     let core =
         GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device(0), device(1)], controller, nongds_deployment()))

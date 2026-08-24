@@ -109,33 +109,51 @@ fn bounded_native_query_executes_keyless_conditional_join_with_resident_input_su
         &threshold_schema,
         left_subplan_schema,
         threshold_aggregate_schema,
-        output_schema,
+        Arc::clone(&output_schema),
         true,
     );
     assert!(gpu_plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
     let gpu_result = execute_query_plan(&context, &gpu_plan).expect("GPU sink compiled keyless subplan should execute");
     let handle = gpu_result.output().as_gpu_resident().expect("GPU sink should keep output resident").clone();
-    let mut materialization_metrics = QueryMetrics::default();
-    let gpu_batch = materialize_gpu_result_to_host(handle, &mut materialization_metrics)
-        .expect("resident compiled output should materialize for assertions");
+    let mut resident_inputs = GpuResidentInputMap::new();
+    resident_inputs.insert("compiled_output".to_owned(), handle);
+    let mut decode_builder = QueryPlanBuilder::new();
+    let decode_source = decode_builder
+        .add_source(SourceNode::GpuResident(GpuResidentSource::new("compiled_output", Arc::clone(&output_schema))));
+    let decode_projection = decode_builder.add_projection(
+        decode_source,
+        projection_outputs(
+            vec![
+                Expr::binary(Expr::column("order_id"), BinaryOp::Add, Expr::literal(LiteralValue::Int32(0))),
+                Expr::binary(Expr::column("qty"), BinaryOp::Add, Expr::literal(LiteralValue::Int32(0))),
+                Expr::binary(Expr::column("threshold"), BinaryOp::Add, Expr::literal(LiteralValue::Int32(0))),
+            ],
+            Arc::clone(&output_schema),
+        ),
+    );
+    let decode_plan = decode_builder.finish_with_host_sink(decode_projection);
+    let decode_result = execute_query_plan_with_gpu_inputs(&backend_context(), &decode_plan, &resident_inputs)
+        .expect("a separately admitted consumer should decode the frozen resident output");
+    assert_eq!(decode_result.metrics().boundary.device_to_device_copies, 0);
+    let QueryOutput::HostArrow(gpu_batch) = decode_result.output() else {
+        panic!("resident consumer should materialize one RecordBatch");
+    };
     assert_eq!(gpu_batch.num_rows(), 3);
     assert_eq!(gpu_batch.num_columns(), 3);
-    assert_eq!(int32_array(&gpu_batch, 0).values().as_ref(), &[2, 2, 3]);
-    assert_eq!(int32_array(&gpu_batch, 1).values().as_ref(), &[20, 25, 30]);
-    assert_eq!(int32_array(&gpu_batch, 2).values().as_ref(), &[15, 15, 15]);
+    assert_eq!(int32_array(gpu_batch, 0).values().as_ref(), &[2, 2, 3]);
+    assert_eq!(int32_array(gpu_batch, 1).values().as_ref(), &[20, 25, 30]);
+    assert_eq!(int32_array(gpu_batch, 2).values().as_ref(), &[15, 15, 15]);
     assert_eq!(gpu_result.metrics().compiled_pipeline_attempts, 1);
     assert_eq!(gpu_result.metrics().compiled_pipeline_host_arrow_sinks, 0);
     drop(gpu_result);
     let constrained_context = backend_context_with_grant(1);
     let error = match execute_query_plan(&constrained_context, &plan) {
-        Ok(_) => panic!("constrained keyless input-subplan pipeline should fail reservation"),
+        Ok(_) => panic!("constrained keyless input-subplan pipeline should exceed its query cap"),
         Err(error) => error,
     };
+    assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded, "{error:?}");
     assert_eq!(error.fact_value("bounded_join_execution_family"), None);
-    assert_eq!(error.fact_value("memory_boundary"), Some("join_source_read"));
-    assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
-    assert!(error.fact_value("compiled_task_id").is_some());
-    assert!(error.fact_value("plan_node_id").is_some());
+    assert_eq!(error.fact_value("budget_enforcement"), Some("query_domain_member"));
 
     fs::remove_dir_all(dir).unwrap();
 }

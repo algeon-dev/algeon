@@ -31,7 +31,7 @@ use nexus_query_planning::{
 use crate::runtime::{
     DevicePlacement, ExecutionCancellation, ExecutionContext,
     cache::local_parquet::GpuLocalParquetSourceCachePin,
-    gpu::ledger::{MemoryGrant, MemoryGrantLiveReservation},
+    gpu::ledger::{FrozenResidentLease, MemoryGrant},
 };
 
 /// Local lookup table for GPU-resident inputs consumed by a query.
@@ -248,8 +248,9 @@ impl Drop for RetainedReservationGuardInner {
 pub struct GpuDataFrame {
     frame: DataFrame,
     placement: ExecutionPlacement,
-    live_reservation: Option<MemoryGrantLiveReservation>,
-    retained_normalization_source: Option<MemoryGrantLiveReservation>,
+    live_reservation: Option<FrozenResidentLease>,
+    retained_source_reservations: Vec<FrozenResidentLease>,
+    retained_normalization_source: Option<FrozenResidentLease>,
     source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
     graph_residency: Option<Arc<GraphResidencyDescriptor>>,
     producer_execution_scope: Option<Arc<str>>,
@@ -257,7 +258,8 @@ pub struct GpuDataFrame {
 
 struct GpuDataFrameParts {
     frame: DataFrame,
-    live_reservation: Option<MemoryGrantLiveReservation>,
+    live_reservation: Option<FrozenResidentLease>,
+    retained_source_reservations: Vec<FrozenResidentLease>,
     source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
     graph_residency: Option<Arc<GraphResidencyDescriptor>>,
     producer_execution_scope: Option<Arc<str>>,
@@ -281,11 +283,19 @@ impl GpuDataFrame {
             output_identity.columns.iter().filter(|column| source_identities.contains(&column.identity)).count();
         let aliases_source = aliased_output_columns > 0;
         let all_output_columns_alias_source = aliases_source && aliased_output_columns == output_identity.columns.len();
+        let mut retained_source_reservations = Vec::new();
         let live_reservation = match &source.live_reservation {
             Some(source_live_reservation) if all_output_columns_alias_source => {
                 // Pure aliases, including column subsets, keep the source
                 // reservation alive instead of remeasuring a partial owner set.
                 Some(source_live_reservation.clone())
+            },
+            Some(source_live_reservation) if source_live_reservation.is_frozen_resident() => {
+                if aliases_source {
+                    retained_source_reservations.push(source_live_reservation.clone());
+                    retained_source_reservations.extend(source.retained_source_reservations.iter().cloned());
+                }
+                None
             },
             Some(source_live_reservation) => {
                 // Mixed alias/fresh outputs need one retention handle to cover the
@@ -297,16 +307,18 @@ impl GpuDataFrame {
             },
             None => None,
         };
-        Ok(Self::new_with_residency(frame, live_reservation, source.source_cache_pin.clone()))
+        let mut output = Self::new_with_residency(frame, live_reservation, source.source_cache_pin.clone());
+        output.retained_source_reservations = retained_source_reservations;
+        Ok(output)
     }
 
-    fn new_with_live_reservation(frame: DataFrame, live_reservation: Option<MemoryGrantLiveReservation>) -> Self {
+    fn new_with_live_reservation(frame: DataFrame, live_reservation: Option<FrozenResidentLease>) -> Self {
         Self::new_with_residency(frame, live_reservation, None)
     }
 
     fn new_with_residency(
         frame: DataFrame,
-        live_reservation: Option<MemoryGrantLiveReservation>,
+        live_reservation: Option<FrozenResidentLease>,
         source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
     ) -> Self {
         let placement = frame.placement();
@@ -314,6 +326,7 @@ impl GpuDataFrame {
             frame,
             placement,
             live_reservation,
+            retained_source_reservations: Vec::new(),
             retained_normalization_source: None,
             source_cache_pin,
             graph_residency: None,
@@ -332,7 +345,7 @@ impl GpuDataFrame {
         frame
     }
 
-    fn into_frame_and_live_reservation(self) -> (DataFrame, Option<MemoryGrantLiveReservation>) {
+    fn into_frame_and_live_reservation(self) -> (DataFrame, Option<FrozenResidentLease>) {
         let GpuDataFrameParts { frame, live_reservation, .. } = self.into_frame_and_residency();
         (frame, live_reservation)
     }
@@ -342,6 +355,7 @@ impl GpuDataFrame {
         GpuDataFrameParts {
             frame: self.frame,
             live_reservation: self.live_reservation,
+            retained_source_reservations: self.retained_source_reservations,
             source_cache_pin: self.source_cache_pin,
             graph_residency: self.graph_residency,
             producer_execution_scope: self.producer_execution_scope,
@@ -416,7 +430,7 @@ impl GpuDataFrame {
     }
 
     #[doc(hidden)]
-    pub fn take_live_reservation(&mut self) -> Option<MemoryGrantLiveReservation> {
+    pub fn take_live_reservation(&mut self) -> Option<FrozenResidentLease> {
         self.live_reservation.take()
     }
 
@@ -426,7 +440,7 @@ impl GpuDataFrame {
     }
 
     #[doc(hidden)]
-    pub fn with_transferred_live_reservation(mut self, reservation: Option<MemoryGrantLiveReservation>) -> Self {
+    pub fn with_transferred_live_reservation(mut self, reservation: Option<FrozenResidentLease>) -> Self {
         debug_assert!(reservation.is_none() || self.live_reservation.is_none());
         if reservation.is_some() {
             self.live_reservation = reservation;
@@ -435,7 +449,7 @@ impl GpuDataFrame {
     }
 
     #[doc(hidden)]
-    pub fn with_retained_normalization_source(mut self, reservation: Option<MemoryGrantLiveReservation>) -> Self {
+    pub fn with_retained_normalization_source(mut self, reservation: Option<FrozenResidentLease>) -> Self {
         self.retained_normalization_source = reservation;
         self
     }
@@ -451,22 +465,23 @@ impl GpuDataFrame {
 
     #[cfg(feature = "cugraph")]
     #[doc(hidden)]
-    pub fn take_retained_normalization_source(&mut self) -> Option<MemoryGrantLiveReservation> {
+    pub fn take_retained_normalization_source(&mut self) -> Option<FrozenResidentLease> {
         self.retained_normalization_source.take()
     }
 }
 
 /// GPU-resident query result bound to an Arrow schema and runtime.
 ///
-/// Cloning shares the underlying cuDF batch/runtime handle. A handle is only
-/// reusable with the same runtime and device placement that created it; host
+/// Cloning shares the underlying cuDF batch, runtime, and frozen resident
+/// leases. Same-device consumers may borrow the result as resident input; host
 /// materialization is explicit through [`to_host_record_batch`](Self::to_host_record_batch).
 #[derive(Clone)]
 pub struct GpuResultHandle {
     batch: GpuRecordBatch,
     runtime: Arc<cudf::Runtime>,
     device_placement: DevicePlacement,
-    live_reservation: Option<MemoryGrantLiveReservation>,
+    live_reservation: Option<FrozenResidentLease>,
+    retained_source_reservations: Vec<FrozenResidentLease>,
     retained_reservation_guards: Vec<RetainedReservationGuard>,
     source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
     graph_residency: Option<Arc<GraphResidencyDescriptor>>,
@@ -494,7 +509,8 @@ pub struct GpuHostBatchCursor {
     cancellation: ExecutionCancellation,
     _runtime: Arc<cudf::Runtime>,
     _device_placement: DevicePlacement,
-    _live_reservation: Option<MemoryGrantLiveReservation>,
+    _live_reservation: Option<FrozenResidentLease>,
+    _retained_source_reservations: Vec<FrozenResidentLease>,
     _source_cache_pin: Option<GpuLocalParquetSourceCachePin>,
     _graph_residency: Option<Arc<GraphResidencyDescriptor>>,
 }
@@ -602,7 +618,7 @@ impl GpuResultHandle {
         context: &ExecutionContext,
         frame: GpuDataFrame,
         schema: SchemaRef,
-        live_reservation: Option<MemoryGrantLiveReservation>,
+        live_reservation: Option<FrozenResidentLease>,
     ) -> Result<Self> {
         if frame.placement().device != context.runtime()?.device() {
             return Err(QueryError::new(
@@ -617,6 +633,7 @@ impl GpuResultHandle {
         let GpuDataFrameParts {
             frame,
             live_reservation: frame_live_reservation,
+            retained_source_reservations,
             source_cache_pin,
             graph_residency,
             producer_execution_scope,
@@ -634,6 +651,7 @@ impl GpuResultHandle {
             runtime: context.shared_runtime()?,
             device_placement: context.device_placement(),
             live_reservation,
+            retained_source_reservations,
             retained_reservation_guards: Vec::new(),
             source_cache_pin,
             graph_residency,
@@ -677,12 +695,14 @@ impl GpuResultHandle {
             runtime: _,
             device_placement: _,
             live_reservation,
+            retained_source_reservations,
             retained_reservation_guards: _,
             source_cache_pin,
             graph_residency,
             producer_execution_scope,
         } = self;
         let mut frame = GpuDataFrame::new_with_residency(batch.into_frame(), live_reservation, source_cache_pin);
+        frame.retained_source_reservations = retained_source_reservations;
         frame.graph_residency = graph_residency;
         frame.producer_execution_scope = producer_execution_scope;
         frame
@@ -843,6 +863,7 @@ impl GpuResultHandle {
             runtime,
             device_placement,
             live_reservation,
+            retained_source_reservations,
             retained_reservation_guards: _,
             source_cache_pin,
             graph_residency,
@@ -862,6 +883,7 @@ impl GpuResultHandle {
             _runtime: runtime,
             _device_placement: device_placement,
             _live_reservation: live_reservation,
+            _retained_source_reservations: retained_source_reservations,
             _source_cache_pin: source_cache_pin,
             _graph_residency: graph_residency,
         })
@@ -979,6 +1001,7 @@ impl GpuLocalParquetCachedResult {
             runtime: query_runtime,
             device_placement: context.device_placement(),
             live_reservation: None,
+            retained_source_reservations: Vec::new(),
             retained_reservation_guards: Vec::new(),
             source_cache_pin: Some(pin),
             graph_residency: None,
@@ -992,8 +1015,14 @@ fn strip_hidden_datafusion_order_columns(frame: GpuDataFrame, schema: &SchemaRef
         return Ok(frame);
     }
 
-    let GpuDataFrameParts { frame: raw, live_reservation, source_cache_pin, graph_residency, producer_execution_scope } =
-        frame.into_frame_and_residency();
+    let GpuDataFrameParts {
+        frame: raw,
+        live_reservation,
+        retained_source_reservations,
+        source_cache_pin,
+        graph_residency,
+        producer_execution_scope,
+    } = frame.into_frame_and_residency();
     let frame_names = raw.column_names();
     let expected_names = schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>();
     let visible_prefix_matches =
@@ -1009,12 +1038,14 @@ fn strip_hidden_datafusion_order_columns(frame: GpuDataFrame, schema: &SchemaRef
             )
         })?;
         let mut frame = GpuDataFrame::new_with_residency(selected, live_reservation, source_cache_pin);
+        frame.retained_source_reservations = retained_source_reservations;
         frame.graph_residency = graph_residency;
         frame.producer_execution_scope = producer_execution_scope;
         return Ok(frame);
     }
 
     let mut frame = GpuDataFrame::new_with_residency(raw, live_reservation, source_cache_pin);
+    frame.retained_source_reservations = retained_source_reservations;
     frame.graph_residency = graph_residency;
     frame.producer_execution_scope = producer_execution_scope;
     Ok(frame)

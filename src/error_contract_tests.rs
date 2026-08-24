@@ -42,6 +42,13 @@ const ADAPTER_STATUS_CASES: &[(ErrorCode, ErrorStatus)] = &[
     (ErrorCode::CudfInvariantViolation, ErrorStatus::Permanent),
     (ErrorCode::MemoryReservationFailed, ErrorStatus::Temporary),
     (ErrorCode::ServiceOverloaded, ErrorStatus::Temporary),
+    (ErrorCode::QueryBudgetUnavailable, ErrorStatus::Temporary),
+    (ErrorCode::QueryMemoryLimitExceeded, ErrorStatus::Permanent),
+    (ErrorCode::DeviceOutOfMemory, ErrorStatus::Temporary),
+    (ErrorCode::DeviceAllocationFailed, ErrorStatus::Temporary),
+    (ErrorCode::DeviceFault, ErrorStatus::Persistent),
+    (ErrorCode::CleanupFailed, ErrorStatus::Persistent),
+    (ErrorCode::InternalInvariantViolation, ErrorStatus::Permanent),
     (ErrorCode::FlightFrameTooLarge, ErrorStatus::Permanent),
     (ErrorCode::ServerTransportFailure, ErrorStatus::Permanent),
     (ErrorCode::Internal, ErrorStatus::Permanent),
@@ -76,12 +83,19 @@ const NATIVE_ADAPTER_STATUS_CASES: &[(QueryErrorCode, ErrorCode, QueryErrorStatu
     (QueryErrorCode::CudfInvariantViolation, ErrorCode::CudfInvariantViolation, QueryErrorStatus::Permanent),
     (QueryErrorCode::MemoryReservationFailed, ErrorCode::MemoryReservationFailed, QueryErrorStatus::Temporary),
     (QueryErrorCode::ServiceOverloaded, ErrorCode::ServiceOverloaded, QueryErrorStatus::Temporary),
+    (QueryErrorCode::QueryBudgetUnavailable, ErrorCode::QueryBudgetUnavailable, QueryErrorStatus::Temporary),
+    (QueryErrorCode::QueryMemoryLimitExceeded, ErrorCode::QueryMemoryLimitExceeded, QueryErrorStatus::Permanent),
+    (QueryErrorCode::DeviceOutOfMemory, ErrorCode::DeviceOutOfMemory, QueryErrorStatus::Temporary),
+    (QueryErrorCode::DeviceAllocationFailed, ErrorCode::DeviceAllocationFailed, QueryErrorStatus::Temporary),
+    (QueryErrorCode::DeviceFault, ErrorCode::DeviceFault, QueryErrorStatus::Persistent),
+    (QueryErrorCode::CleanupFailed, ErrorCode::CleanupFailed, QueryErrorStatus::Persistent),
+    (QueryErrorCode::InternalInvariantViolation, ErrorCode::InternalInvariantViolation, QueryErrorStatus::Permanent),
     (QueryErrorCode::Internal, ErrorCode::Internal, QueryErrorStatus::Permanent),
 ];
 
 #[test]
 fn every_adapter_code_has_the_expected_retry_status() {
-    assert_eq!(ADAPTER_STATUS_CASES.len(), 36, "update the complete adapter status policy table");
+    assert_eq!(ADAPTER_STATUS_CASES.len(), 43, "update the complete adapter status policy table");
 
     for &(code, expected_status) in ADAPTER_STATUS_CASES {
         let error = Error::new(code, "datafusion_nexus.test.retry_policy", "retry policy test");
@@ -191,6 +205,34 @@ fn error_code_projections_are_stable_policy_contracts() {
     assert_eq!(ErrorCode::ServiceOverloaded.as_str(), "service_overloaded");
     assert_eq!(ErrorCode::ServiceOverloaded.kind(), ErrorKind::ResourceExhausted);
     assert_eq!(ErrorCode::ServiceOverloaded.status(), ErrorStatus::Temporary);
+
+    assert_eq!(ErrorCode::QueryBudgetUnavailable.as_str(), "query_budget_unavailable");
+    assert_eq!(ErrorCode::QueryBudgetUnavailable.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(ErrorCode::QueryBudgetUnavailable.status(), ErrorStatus::Temporary);
+
+    assert_eq!(ErrorCode::QueryMemoryLimitExceeded.as_str(), "query_memory_limit_exceeded");
+    assert_eq!(ErrorCode::QueryMemoryLimitExceeded.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(ErrorCode::QueryMemoryLimitExceeded.status(), ErrorStatus::Permanent);
+
+    assert_eq!(ErrorCode::DeviceOutOfMemory.as_str(), "device_out_of_memory");
+    assert_eq!(ErrorCode::DeviceOutOfMemory.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(ErrorCode::DeviceOutOfMemory.status(), ErrorStatus::Temporary);
+
+    assert_eq!(ErrorCode::DeviceAllocationFailed.as_str(), "device_allocation_failed");
+    assert_eq!(ErrorCode::DeviceAllocationFailed.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(ErrorCode::DeviceAllocationFailed.status(), ErrorStatus::Temporary);
+
+    assert_eq!(ErrorCode::DeviceFault.as_str(), "device_fault");
+    assert_eq!(ErrorCode::DeviceFault.kind(), ErrorKind::DependencyFailure);
+    assert_eq!(ErrorCode::DeviceFault.status(), ErrorStatus::Persistent);
+
+    assert_eq!(ErrorCode::CleanupFailed.as_str(), "cleanup_failed");
+    assert_eq!(ErrorCode::CleanupFailed.kind(), ErrorKind::DependencyFailure);
+    assert_eq!(ErrorCode::CleanupFailed.status(), ErrorStatus::Persistent);
+
+    assert_eq!(ErrorCode::InternalInvariantViolation.as_str(), "internal_invariant_violation");
+    assert_eq!(ErrorCode::InternalInvariantViolation.kind(), ErrorKind::InvariantViolation);
+    assert_eq!(ErrorCode::InternalInvariantViolation.status(), ErrorStatus::Permanent);
 
     assert_eq!(ErrorCode::FlightFrameTooLarge.as_str(), "flight_frame_too_large");
     assert_eq!(ErrorCode::FlightFrameTooLarge.kind(), ErrorKind::ResourceExhausted);

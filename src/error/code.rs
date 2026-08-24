@@ -98,6 +98,24 @@ pub enum ErrorCode {
     MemoryReservationFailed,
     /// The native query service rejected work because admission capacity was exhausted.
     ServiceOverloaded,
+    /// The requested query cap cannot fit on any eligible device after
+    /// subtracting resident ownership.
+    QueryBudgetUnavailable,
+    /// The query domain rejected an actual or exact-required allocation over
+    /// the query's fixed memory cap.
+    QueryMemoryLimitExceeded,
+    /// A device allocation failed with confirmed physical-memory provenance.
+    DeviceOutOfMemory,
+    /// A device allocation failed without confirmed physical-memory provenance.
+    DeviceAllocationFailed,
+    /// A persistent device or CUDA runtime fault made the affected device
+    /// unavailable.
+    DeviceFault,
+    /// Cleanup or synchronization could not establish safe release of the
+    /// attempt's device resources.
+    CleanupFailed,
+    /// An owner, provenance, ledger, or stream-routing invariant was violated.
+    InternalInvariantViolation,
     /// One logical Arrow row cannot be represented within the configured
     /// Flight/gRPC message limit.
     ///
@@ -148,6 +166,13 @@ impl ErrorCode {
             Self::CudfInvariantViolation => "cudf_invariant_violation",
             Self::MemoryReservationFailed => "memory_reservation_failed",
             Self::ServiceOverloaded => "service_overloaded",
+            Self::QueryBudgetUnavailable => "query_budget_unavailable",
+            Self::QueryMemoryLimitExceeded => "query_memory_limit_exceeded",
+            Self::DeviceOutOfMemory => "device_out_of_memory",
+            Self::DeviceAllocationFailed => "device_allocation_failed",
+            Self::DeviceFault => "device_fault",
+            Self::CleanupFailed => "cleanup_failed",
+            Self::InternalInvariantViolation => "internal_invariant_violation",
             Self::FlightFrameTooLarge => "flight_frame_too_large",
             Self::ServerTransportFailure => "server_transport_failure",
             Self::Internal => "internal",
@@ -295,6 +320,10 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
         | ErrorCode::HostStagingLimitExceeded
         | ErrorCode::MemoryReservationFailed
         | ErrorCode::ServiceOverloaded
+        | ErrorCode::QueryBudgetUnavailable
+        | ErrorCode::QueryMemoryLimitExceeded
+        | ErrorCode::DeviceOutOfMemory
+        | ErrorCode::DeviceAllocationFailed
         | ErrorCode::FlightFrameTooLarge => ErrorKind::ResourceExhausted,
         ErrorCode::CudfTemporaryFailure
         | ErrorCode::CudfPersistentFailure
@@ -302,8 +331,10 @@ pub const fn kind_for_code(code: ErrorCode) -> ErrorKind {
         | ErrorCode::AlgorithmDidNotConverge
         | ErrorCode::SourceDependencyFailure
         | ErrorCode::SourceTemporaryFailure
+        | ErrorCode::DeviceFault
+        | ErrorCode::CleanupFailed
         | ErrorCode::ServerTransportFailure => ErrorKind::DependencyFailure,
-        ErrorCode::CudfInvariantViolation => ErrorKind::InvariantViolation,
+        ErrorCode::CudfInvariantViolation | ErrorCode::InternalInvariantViolation => ErrorKind::InvariantViolation,
         ErrorCode::Internal => ErrorKind::Internal,
     }
 }
@@ -341,6 +372,13 @@ pub(crate) fn code_for_native_error(code: QueryErrorCode) -> ErrorCode {
         QueryErrorCode::CudfInvariantViolation => ErrorCode::CudfInvariantViolation,
         QueryErrorCode::MemoryReservationFailed => ErrorCode::MemoryReservationFailed,
         QueryErrorCode::ServiceOverloaded => ErrorCode::ServiceOverloaded,
+        QueryErrorCode::QueryBudgetUnavailable => ErrorCode::QueryBudgetUnavailable,
+        QueryErrorCode::QueryMemoryLimitExceeded => ErrorCode::QueryMemoryLimitExceeded,
+        QueryErrorCode::DeviceOutOfMemory => ErrorCode::DeviceOutOfMemory,
+        QueryErrorCode::DeviceAllocationFailed => ErrorCode::DeviceAllocationFailed,
+        QueryErrorCode::DeviceFault => ErrorCode::DeviceFault,
+        QueryErrorCode::CleanupFailed => ErrorCode::CleanupFailed,
+        QueryErrorCode::InternalInvariantViolation => ErrorCode::InternalInvariantViolation,
         QueryErrorCode::Internal => ErrorCode::Internal,
     }
 }
@@ -352,7 +390,10 @@ pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
         | ErrorCode::CudfTemporaryFailure
         | ErrorCode::SourceTemporaryFailure
         | ErrorCode::MemoryReservationFailed
-        | ErrorCode::ServiceOverloaded => ErrorStatus::Temporary,
+        | ErrorCode::ServiceOverloaded
+        | ErrorCode::QueryBudgetUnavailable
+        | ErrorCode::DeviceOutOfMemory
+        | ErrorCode::DeviceAllocationFailed => ErrorStatus::Temporary,
         ErrorCode::CudfPersistentFailure => ErrorStatus::Persistent,
         ErrorCode::SqlParse
         | ErrorCode::InvalidRequest
@@ -381,7 +422,10 @@ pub const fn status_for_code(code: ErrorCode) -> ErrorStatus {
         | ErrorCode::AlgorithmDidNotConverge
         | ErrorCode::SourceDependencyFailure
         | ErrorCode::CudfInvariantViolation
+        | ErrorCode::QueryMemoryLimitExceeded
+        | ErrorCode::InternalInvariantViolation
         | ErrorCode::ServerTransportFailure
         | ErrorCode::Internal => ErrorStatus::Permanent,
+        ErrorCode::DeviceFault | ErrorCode::CleanupFailed => ErrorStatus::Persistent,
     }
 }

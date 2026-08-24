@@ -1196,17 +1196,17 @@ fn node_local_requirements(plan: &QueryPlan, node: &QueryNode) -> Vec<Reservatio
             "edge_normalize_output_size_preflight",
             ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
         )],
-        PlanNode::GraphAlgorithm(_) => vec![ReservationRequirement::blocked_by_lower_level(
+        PlanNode::GraphAlgorithm(_) => vec![ReservationRequirement::modeled(
             ReservationKind::OperatorOutput,
             crate::plan::GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY,
             crate::plan::GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT,
-            ContractQuality::ExactPreflight,
+            ContractQuality::CapabilityProof,
         )],
-        PlanNode::VectorAlgorithm(_) => vec![ReservationRequirement::blocked_by_lower_level(
+        PlanNode::VectorAlgorithm(_) => vec![ReservationRequirement::modeled(
             ReservationKind::OperatorOutput,
             crate::plan::VECTOR_ALGORITHM_BOUNDED_MEMORY_BOUNDARY,
             crate::plan::VECTOR_ALGORITHM_BOUNDED_REQUIRED_CONTRACT,
-            ContractQuality::ExactPreflight,
+            ContractQuality::CapabilityProof,
         )],
         _ => Vec::new(),
     }

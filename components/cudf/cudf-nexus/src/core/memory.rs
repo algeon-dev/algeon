@@ -2339,6 +2339,101 @@ impl QueryMemoryDomain {
             [("device", self.device().ordinal().to_string()), ("grant_bytes", grant_bytes.to_string())],
         )
     }
+
+    /// Permanently closes this domain to new allocations and returns its
+    /// measured live usage. Deallocation remains valid for resident owners.
+    pub fn freeze(&self) -> Result<QueryMemoryDomainUsage> {
+        let _guard = DeviceGuard::new(self.device())?;
+        error::check_status_in(
+            unsafe { cudf_sys::cudf_query_memory_domain_freeze(self.handle.raw()) },
+            "memory::query_memory_domain::freeze",
+        )?;
+        self.usage()
+    }
+
+    /// Snapshots every allocation this domain's registry still owns.
+    ///
+    /// The records are the allocator's own base pointers, so a caller can
+    /// decide whether each surviving allocation belongs to a published output
+    /// owner. Counter totals cannot make that distinction.
+    pub fn live_allocations(&self) -> Result<Vec<QueryMemoryDomainAllocation>> {
+        let _guard = DeviceGuard::new(self.device())?;
+        // The registry can change between the count and the copy only while
+        // the domain still accepts work; a frozen domain's live set is
+        // stable, so one retry after a growth is enough for callers that
+        // enumerate before freezing.
+        let mut capacity = self.live_allocation_count()?;
+        loop {
+            let mut records = vec![
+                cudf_sys::cudf_query_memory_domain_allocation_t {
+                    struct_size: std::mem::size_of::<cudf_sys::cudf_query_memory_domain_allocation_t>(),
+                    device_pointer: std::ptr::null_mut(),
+                    bytes: 0,
+                    aligned_bytes: 0,
+                    alignment: 0,
+                    reserved: [0; 2],
+                };
+                capacity
+            ];
+            let mut count = 0usize;
+            error::check_status_in(
+                unsafe {
+                    cudf_sys::cudf_query_memory_domain_live_allocations(
+                        self.handle.raw(),
+                        records.as_mut_ptr(),
+                        capacity,
+                        &mut count,
+                    )
+                },
+                "memory::query_memory_domain::live_allocations",
+            )?;
+            if count <= capacity {
+                records.truncate(count);
+                return Ok(records.into_iter().map(QueryMemoryDomainAllocation::from).collect());
+            }
+            capacity = count;
+        }
+    }
+
+    fn live_allocation_count(&self) -> Result<usize> {
+        let mut count = 0usize;
+        error::check_status_in(
+            unsafe {
+                cudf_sys::cudf_query_memory_domain_live_allocations(
+                    self.handle.raw(),
+                    std::ptr::null_mut(),
+                    0,
+                    &mut count,
+                )
+            },
+            "memory::query_memory_domain::live_allocation_count",
+        )?;
+        Ok(count)
+    }
+}
+
+/// One allocation a query memory domain's registry still owns.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryMemoryDomainAllocation {
+    /// Base device pointer the allocator registered.
+    pub device_pointer: usize,
+    /// Requested bytes for this allocation.
+    pub bytes: u64,
+    /// Charged bytes after alignment.
+    pub aligned_bytes: u64,
+    /// Alignment requested for this allocation.
+    pub alignment: u64,
+}
+
+impl From<cudf_sys::cudf_query_memory_domain_allocation_t> for QueryMemoryDomainAllocation {
+    fn from(value: cudf_sys::cudf_query_memory_domain_allocation_t) -> Self {
+        Self {
+            device_pointer: value.device_pointer as usize,
+            bytes: value.bytes as u64,
+            aligned_bytes: value.aligned_bytes as u64,
+            alignment: value.alignment as u64,
+        }
+    }
 }
 
 impl StreamReservationLease {

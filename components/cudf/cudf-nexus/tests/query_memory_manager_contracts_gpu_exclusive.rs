@@ -608,6 +608,53 @@ fn execution_budget_token_can_attach_as_query_domain_member() {
 }
 
 #[test]
+fn frozen_query_domain_retains_live_output_and_rejects_new_allocations() {
+    let _pool_state = shared_device_pool_guard();
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = runtime.device_memory_manager().unwrap();
+    let domain = manager
+        .query_memory_domain(
+            next_budget_lifetime_test_id(),
+            QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024),
+        )
+        .unwrap();
+    let producer = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+        &runtime,
+        ExecutionBudgetRequest::new(8 * 1024 * 1024).with_boundary("frozen_domain_producer"),
+        &domain,
+    )
+    .unwrap();
+    let output = runtime.series_from_value_with_budget(17i32, 4096, &producer).unwrap();
+    drop(producer);
+
+    let frozen = domain.freeze().unwrap();
+    assert!(frozen.current_bytes > 0);
+    assert!(frozen.current_aligned_bytes > 0);
+    assert_eq!(domain.freeze().unwrap().current_aligned_bytes, frozen.current_aligned_bytes);
+
+    let consumer = cudf::ExecutionBudgetToken::from_runtime_in_query_domain(
+        &runtime,
+        ExecutionBudgetRequest::new(8 * 1024 * 1024).with_boundary("frozen_domain_rejected_allocation"),
+        &domain,
+    )
+    .unwrap();
+    let error = runtime.series_from_value_with_budget(29i32, 1, &consumer).unwrap_err();
+    // Allocating into a frozen domain is a routing/lifetime invariant
+    // violation, not caller input: the producer was supposed to stop
+    // allocating before its output was published.
+    assert_eq!(error.code(), ErrorCode::ForeignInvariantViolation);
+    assert_eq!(error.kind(), ErrorKind::InvariantViolation);
+    assert!(error.message().contains("frozen"), "unexpected error: {error}");
+
+    drop(consumer);
+    drop(output);
+    let released = domain.usage().unwrap();
+    assert_eq!(released.current_allocations, 0);
+    assert_eq!(released.current_bytes, 0);
+    assert_eq!(released.current_aligned_bytes, 0);
+}
+
+#[test]
 fn execution_budget_token_retains_source_runtime_until_token_drop() {
     let _pool_state = shared_device_pool_guard();
     let (runtime, drops) = runtime_with_budget_drop_probe();

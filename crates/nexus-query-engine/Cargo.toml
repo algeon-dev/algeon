@@ -18,7 +18,7 @@ nvml = ["nexus-query-runtime/nvml"]
 # Forwards the controlled device-quarantine qualification capability the root adapter exposes.
 qualification = ["nexus-query-runtime/qualification"]
 # Enables the crate-private seams consumed by the registered GPU execution harness.
-test-hooks = ["nexus-query-planning/test-hooks", "nexus-query-runtime/test-hooks"]
+test-hooks = ["nexus-query-planning/test-hooks", "nexus-query-runtime/test-hooks", "cugraph?/test-hooks"]
 
 [lints]
 workspace = true

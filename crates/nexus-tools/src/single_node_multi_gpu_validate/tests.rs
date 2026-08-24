@@ -244,7 +244,7 @@ fn overload_fairness_profile_is_a_finite_bounded_cohort() {
     assert_eq!(profile.scheduling.warmup_seconds, 0);
     assert_eq!(profile.scheduling.measurement_seconds, 120);
     assert_eq!(profile.scheduling.concurrency, 8);
-    assert!(profile.backend.device_profiles.iter().all(|device| device.attempt_floor_bytes == 1_073_741_824));
+    assert!(profile.backend.device_profiles.iter().all(|device| device.default_query_limit_bytes == 1_073_741_824));
 
     let mut no_overload = profile.clone();
     no_overload.scheduling.concurrency = 4;
@@ -2032,11 +2032,11 @@ fn generated_s2_rate_profiles_pin_even_knees_and_a_cap_safe_phase_window() {
 fn s2_aggregate_profiles_reserve_the_observed_q01_working_set() {
     // The 1 GiB aggregate domain failed with this attempt-exact allocation:
     // 1,068,599,820 bytes live plus a 15,237,120-byte request.  Keep the
-    // immutable profile floor above the actual reservation-limit witness,
+    // immutable profile query limit above the actual reservation-limit witness,
     // instead of attempting to hide it with runner retries.
     const Q01_OBSERVED_LIVE_BYTES: u64 = 1_068_599_820;
     const Q01_OBSERVED_REQUEST_BYTES: u64 = 15_237_120;
-    const Q01_ATTEMPT_FLOOR_BYTES: u64 = 1_342_177_280;
+    const Q01_DEFAULT_QUERY_LIMIT_BYTES: u64 = 1_342_177_280;
     let sweep =
         RunProfile::parse_bytes(include_str!("../../fixtures/stress/stress-s2-sweep-aggregate-sf10.json").as_bytes())
             .unwrap();
@@ -2046,12 +2046,12 @@ fn s2_aggregate_profiles_reserve_the_observed_q01_working_set() {
 
     assert_eq!(sweep.backend.device_profiles, rate.backend.device_profiles);
     assert_eq!(sweep.backend.native_execution, rate.backend.native_execution);
-    assert_eq!(sweep.backend.native_execution.device_budget_bytes, Q01_ATTEMPT_FLOOR_BYTES);
+    assert_eq!(sweep.backend.native_execution.device_budget_bytes, Q01_DEFAULT_QUERY_LIMIT_BYTES);
     for device in &sweep.backend.device_profiles {
-        assert_eq!(device.attempt_floor_bytes, Q01_ATTEMPT_FLOOR_BYTES);
-        assert!(device.attempt_floor_bytes >= Q01_OBSERVED_LIVE_BYTES + Q01_OBSERVED_REQUEST_BYTES);
+        assert_eq!(device.default_query_limit_bytes, Q01_DEFAULT_QUERY_LIMIT_BYTES);
+        assert!(device.default_query_limit_bytes >= Q01_OBSERVED_LIVE_BYTES + Q01_OBSERVED_REQUEST_BYTES);
         let managed_capacity = device.memory_limit_bytes - device.backend_reserve_bytes - device.cache_cap_bytes;
-        assert!(device.attempt_floor_bytes * u64::try_from(device.max_active_attempts).unwrap() <= managed_capacity);
+        assert!(device.default_query_limit_bytes <= managed_capacity);
     }
 }
 
@@ -2191,7 +2191,7 @@ fn s3_profiles_pin_the_telemetry_ab_and_heterogeneous_envelope_contracts() {
         assert_eq!(on.memory_limit_bytes, off.memory_limit_bytes);
         assert_eq!(on.backend_reserve_bytes, off.backend_reserve_bytes);
         assert_eq!(on.cache_cap_bytes, off.cache_cap_bytes);
-        assert_eq!(on.attempt_floor_bytes, off.attempt_floor_bytes);
+        assert_eq!(on.default_query_limit_bytes, off.default_query_limit_bytes);
         assert_eq!(on.source_work_per_attempt, off.source_work_per_attempt);
         assert_eq!(on.max_active_attempts, off.max_active_attempts);
         assert_eq!(on.installation, off.installation);
@@ -2362,7 +2362,7 @@ fn cache_calibration_derives_a_disabled_companion_without_changing_any_other_pro
         assert_eq!(before.ownership, after.ownership);
         assert_eq!(before.memory_limit_bytes, after.memory_limit_bytes);
         assert_eq!(before.backend_reserve_bytes, after.backend_reserve_bytes);
-        assert_eq!(before.attempt_floor_bytes, after.attempt_floor_bytes);
+        assert_eq!(before.default_query_limit_bytes, after.default_query_limit_bytes);
         assert_eq!(before.source_work_per_attempt, after.source_work_per_attempt);
         assert_eq!(before.max_active_attempts, after.max_active_attempts);
         assert_eq!(before.installation, after.installation);
@@ -2439,7 +2439,7 @@ fn measured_run_artifact_records_scenarios_throughput_placement_and_declared_gap
             shared_session_count: profile.session.shared_session_count,
             queue_max_queued_attempts: profile.backend.queue.max_queued_attempts,
             queue_max_queue_wait_ms: profile.backend.queue.max_queue_wait_ms,
-            queue_max_overtakes_per_waiter: profile.backend.queue.max_overtakes_per_waiter,
+            queue_max_overtakes_per_waiter: 0,
             device_startup_records: serde_json::to_value(&devices).unwrap(),
             close: test_close_evidence(),
         },
@@ -2555,7 +2555,7 @@ fn a_failed_scenario_clause_marks_the_artifact_non_qualifying() {
             shared_session_count: 1,
             queue_max_queued_attempts: 64,
             queue_max_queue_wait_ms: 30_000,
-            queue_max_overtakes_per_waiter: 4,
+            queue_max_overtakes_per_waiter: 0,
             device_startup_records: Value::Null,
             close: test_close_evidence(),
         },
@@ -2747,7 +2747,7 @@ fn composed_qualification_measurement(
         1_000_000_000,
     );
     if let Some(status) = overload {
-        let mut evidence = OverloadFairnessEvidence::from_observations(&[], &[], 0, 0, 0, 0, 0, 0, 0);
+        let mut evidence = OverloadFairnessEvidence::from_observations(&[], &[], 0, 0, 0, 0, 0, 0);
         evidence.status = status;
         aggregate.scenarios.overload_fairness = Some(evidence);
     }
@@ -2787,7 +2787,7 @@ fn composed_qualification_measurement(
             shared_session_count: 1,
             queue_max_queued_attempts: 64,
             queue_max_queue_wait_ms: 30_000,
-            queue_max_overtakes_per_waiter: 4,
+            queue_max_overtakes_per_waiter: 0,
             device_startup_records: serde_json::to_value(&devices).unwrap(),
             close: test_close_evidence(),
         },
@@ -2932,7 +2932,7 @@ fn measured_device_profile(ordinal: usize, memory_limit_bytes: u64, max_active_a
         memory_limit_bytes,
         backend_reserve_bytes: 64 * 1024 * 1024,
         cache_cap_bytes: 0,
-        attempt_floor_bytes: 128 * 1024 * 1024,
+        default_query_limit_bytes: 128 * 1024 * 1024,
         source_work_per_attempt: 2,
         max_active_attempts,
         install_telemetry: true,

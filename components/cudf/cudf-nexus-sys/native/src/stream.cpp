@@ -33,7 +33,7 @@ struct stream_handle_state {
 };
 
 struct attempt_stream_route {
-  std::vector<cudaStream_t> auxiliary_streams;
+  std::vector<cudaStream_t> fork_streams;
   std::unordered_set<cudaStream_t> canonical_streams;
   std::unordered_set<cudaStream_t> aliases;
   std::size_t execution_scopes = 0;
@@ -57,12 +57,12 @@ std::vector<rmm::cuda_stream_view> attempt_stream_provider_fork(rmm::cuda_stream
     route = it->second;
   }
 
-  CUDF_EXPECTS(count == 0 || !route->auxiliary_streams.empty(),
+  CUDF_EXPECTS(count == 0 || !route->fork_streams.empty(),
                "stream routing invariant: admitted attempt has no auxiliary streams");
   std::vector<rmm::cuda_stream_view> result;
   result.reserve(count);
   for (std::size_t index = 0; index < count; ++index) {
-    result.emplace_back(route->auxiliary_streams[index % route->auxiliary_streams.size()]);
+    result.emplace_back(route->fork_streams[index % route->fork_streams.size()]);
   }
   return result;
 }
@@ -73,12 +73,12 @@ void install_attempt_stream_provider()
 }
 
 void register_attempt_stream_route(void* parent_stream,
-                                   void* const* auxiliary_streams,
+                                   void* const* fork_streams,
                                    std::size_t auxiliary_count)
 {
   if (parent_stream == nullptr) { throw std::invalid_argument{"parent stream is null"}; }
   if (auxiliary_count == 0) { throw std::invalid_argument{"auxiliary stream set is empty"}; }
-  if (auxiliary_streams == nullptr) {
+  if (fork_streams == nullptr) {
     throw std::invalid_argument{"auxiliary stream array is null"};
   }
 
@@ -86,22 +86,22 @@ void register_attempt_stream_route(void* parent_stream,
   std::vector<cudaStream_t> keys;
   keys.reserve(auxiliary_count + 1);
   keys.push_back(parent);
-  std::vector<cudaStream_t> auxiliary;
-  auxiliary.reserve(auxiliary_count);
+  std::vector<cudaStream_t> fork_streams_owned;
+  fork_streams_owned.reserve(auxiliary_count);
   std::unordered_set<cudaStream_t> unique_keys;
   unique_keys.reserve(auxiliary_count + 1);
   unique_keys.insert(parent);
   for (std::size_t index = 0; index < auxiliary_count; ++index) {
-    auto const stream = reinterpret_cast<cudaStream_t>(auxiliary_streams[index]);
+    auto const stream = reinterpret_cast<cudaStream_t>(fork_streams[index]);
     if (stream == nullptr || !unique_keys.insert(stream).second) {
       throw std::invalid_argument{"attempt stream route contains a null or duplicate stream"};
     }
     keys.push_back(stream);
-    auxiliary.push_back(stream);
+    fork_streams_owned.push_back(stream);
   }
 
   auto route = std::make_shared<attempt_stream_route>();
-  route->auxiliary_streams = std::move(auxiliary);
+  route->fork_streams = std::move(fork_streams_owned);
   route->canonical_streams.insert(keys.begin(), keys.end());
 
   std::lock_guard<std::mutex> const lock(attempt_stream_routes_mutex);
@@ -139,7 +139,7 @@ void enter_execution_stream_route(rmm::cuda_stream_view parent)
   }
 
   auto route                     = std::make_shared<attempt_stream_route>();
-  route->auxiliary_streams       = {parent.value()};
+  route->fork_streams            = {parent.value()};
   route->canonical_streams       = {parent.value()};
   route->execution_scopes        = 1;
   route->persistent_registration = false;
@@ -371,13 +371,13 @@ cudf_status_t cudf_stream_provider_install(void)
 
 /// Register one attempt's parent stream and bounded auxiliary stream set.
 cudf_status_t cudf_stream_provider_register_attempt(void* parent_stream,
-                                                    void* const* auxiliary_streams,
+                                                    void* const* fork_streams,
                                                     size_t auxiliary_count)
 {
   CUDF_RUST_TRY
   {
     install_attempt_stream_provider();
-    register_attempt_stream_route(parent_stream, auxiliary_streams, auxiliary_count);
+    register_attempt_stream_route(parent_stream, fork_streams, auxiliary_count);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

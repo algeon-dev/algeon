@@ -283,6 +283,20 @@ fn sealed_retry_advice_is_exhaustive_and_evidence_gated() {
         AttemptRetryAdvice::change_configuration()
     );
 
+    let query_cap_exceeded = failure(AttemptFailureCode::QueryMemoryLimitExceeded, Vec::new());
+    assert_eq!(
+        advice_for(
+            &RuntimeTerminalOutcome::failed(&query_cap_exceeded),
+            Some(&query_cap_exceeded),
+            no_commit.0,
+            no_commit.1,
+            no_commit.2,
+            no_commit.3,
+            no_commit.4,
+        ),
+        AttemptRetryAdvice::change_configuration()
+    );
+
     let queue =
         failure(AttemptFailureCode::ServiceOverloaded, vec![reason(AttemptFailureFactValue::AdmissionQueueFull)]);
     assert_eq!(

@@ -316,8 +316,6 @@ impl QueryService {
             #[cfg(test)]
             unknown_isolation_closure_pause: Mutex::new(None),
             #[cfg(test)]
-            protection_retarget_failure_after_release: AtomicBool::new(false),
-            #[cfg(test)]
             direct_placement_resolution_failure: AtomicBool::new(false),
             #[cfg(test)]
             direct_provisional_cleanup_pause: Mutex::new(None),
@@ -406,7 +404,7 @@ fn device_registry_config(
                 capacity_policy,
                 backend_reserve_bytes: profile.backend_reserve_bytes(),
                 cache_cap_bytes: profile.cache_cap_bytes(),
-                attempt_floor_bytes: profile.attempt_floor_bytes(),
+                default_query_limit_bytes: profile.default_query_limit_bytes(),
                 source_work_per_attempt: profile.source_work_per_attempt(),
                 // Logical worker job-slot capacity follows the frozen
                 // A_d * (1 + S_d) stream formula; physical worker threads
@@ -479,7 +477,7 @@ mod construction_tests {
     }
 
     #[test]
-    fn pinned_small_device_rejects_oversized_floor_before_installation_phase() {
+    fn pinned_small_device_rejects_oversized_query_limit_before_installation_phase() {
         let inventory = FrozenPlanInventory(vec![
             DeviceFacts {
                 device: 0,
@@ -502,14 +500,14 @@ mod construction_tests {
                 utilization_pct: None,
             },
         ]);
-        let whole_device_profile = |limit_bytes, floor| DeviceRegistryInstallProfile {
+        let whole_device_profile = |limit_bytes, default_query_limit_bytes| DeviceRegistryInstallProfile {
             stream_pool_size: 2,
             device_capabilities: crate::runtime::DeviceCapabilities::default(),
             max_active_attempts: 1,
             capacity_policy: DeviceRegistryCapacityPolicy::Explicit { limit_bytes },
             backend_reserve_bytes: 0,
             cache_cap_bytes: 0,
-            attempt_floor_bytes: floor,
+            default_query_limit_bytes,
             source_work_per_attempt: 1,
             worker_job_capacity: 2,
             lane_count: 1,
@@ -522,7 +520,7 @@ mod construction_tests {
         let probe = FrozenPlanProbe::default();
         let error = DeviceRegistry::resolve_install_plans(&inventory, &registry_config, Some(&probe)).unwrap_err();
 
-        assert_eq!(error.fact_value("reason"), Some("attempt_floor_exceeds_managed_capacity"));
+        assert_eq!(error.fact_value("reason"), Some("default_query_limit_exceeds_managed_capacity"));
         assert!(
             probe
                 .0

@@ -407,7 +407,7 @@ fn relation_initialized_kmeans_accepts_row_index_only_for_initial_centroids() {
 }
 
 #[test]
-fn vector_capability_has_typed_edges_and_lower_level_bounded_block() {
+fn vector_capability_has_typed_edges_without_a_lower_level_memory_veto() {
     let plan = knn_plan(false);
     let analysis = plan.capability_analysis();
     let capability = analysis.nodes.iter().find(|node| node.node_id == plan.root_id()).unwrap();
@@ -417,8 +417,8 @@ fn vector_capability_has_typed_edges_and_lower_level_bounded_block() {
     let requirement = &capability.local_requirements[0];
     assert_eq!(requirement.memory_boundary, VECTOR_ALGORITHM_BOUNDED_MEMORY_BOUNDARY);
     assert_eq!(requirement.required_contract, VECTOR_ALGORITHM_BOUNDED_REQUIRED_CONTRACT);
-    assert_eq!(requirement.status, ContractStatus::BlockedByLowerLevel);
-    assert_eq!(requirement.quality, ContractQuality::ExactPreflight);
+    assert_eq!(requirement.status, ContractStatus::Modeled);
+    assert_eq!(requirement.quality, ContractQuality::CapabilityProof);
 
     let vector_edges =
         analysis.edges.iter().filter(|edge| edge.consumer == EdgeConsumer::Node(plan.root_id())).collect::<Vec<_>>();
@@ -429,11 +429,12 @@ fn vector_capability_has_typed_edges_and_lower_level_bounded_block() {
     }
 
     let report = CapabilityContractReport::from_capability_analysis(&analysis).unwrap();
-    assert_eq!(report.execution_mode(), CapabilityEnvelopeStatus::Rejected);
+    assert_eq!(report.execution_mode(), CapabilityEnvelopeStatus::Admitted);
     assert!(report.gate_rows().iter().any(|row| {
         row.memory_boundary == VECTOR_ALGORITHM_BOUNDED_MEMORY_BOUNDARY
             && row.required_contract == VECTOR_ALGORITHM_BOUNDED_REQUIRED_CONTRACT
-            && row.contract_status == ContractStatus::BlockedByLowerLevel
+            && row.contract_status == ContractStatus::Modeled
+            && row.contract_quality == ContractQuality::CapabilityProof
     }));
 }
 
@@ -457,15 +458,15 @@ fn invalid_vector_contract_is_rejected_by_capability_before_execution() {
 }
 
 #[test]
-fn bounded_vector_rejections_have_capability_projection() {
+fn bounded_vector_structural_rejections_do_not_report_a_memory_preflight_blocker() {
     for plan in [knn_plan(false), knn_plan(true)] {
         assert!(plan.contains_vector_algorithm());
         assert!(bounded_pipeline_admission(&plan).expect("bounded admission should classify vector plan").is_none());
         let projection = bounded_pipeline_rejection_projection(&plan)
             .expect("bounded rejection projection should be constructible")
             .expect("vector plan should have a bounded rejection");
-        assert_eq!(projection.reason, "blocked_lower_level_contract");
-        assert_eq!(
+        assert_eq!(projection.reason, "root_join_admission_requires_sink_root_join");
+        assert_ne!(
             projection.facts.get("required_contract").map(String::as_str),
             Some(VECTOR_ALGORITHM_BOUNDED_REQUIRED_CONTRACT)
         );

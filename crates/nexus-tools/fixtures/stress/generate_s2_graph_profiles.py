@@ -153,7 +153,7 @@ def standard_rate_profile(profile_class: str, knee_qps: int, phase_seconds: int)
             aggregate_floor = 1_342_177_280
             profile["backend"]["native_execution"]["device_budget_bytes"] = aggregate_floor
             for device in profile["backend"]["device_profiles"]:
-                device["attempt_floor_bytes"] = aggregate_floor
+                device["default_query_limit_bytes"] = aggregate_floor
     profile["scheduling"]["steps"] = rate_steps(knee_qps, phase_seconds)
     return f"stress-s2-rate-{profile_class}-sf10.json", profile
 

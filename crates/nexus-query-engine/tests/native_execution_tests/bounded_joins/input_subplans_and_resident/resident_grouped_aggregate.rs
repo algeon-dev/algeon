@@ -165,12 +165,13 @@ fn bounded_native_query_denies_mixed_keyed_residual_grouped_aggregate_source_bef
         Err(error) => error,
     };
 
-    assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
+    assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded);
     assert_eq!(error.fact_value("bounded_join_execution_family"), None);
     assert_eq!(error.fact_value("memory_boundary"), Some("join_source_read"));
-    assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
+    assert_eq!(error.fact_value("budget_enforcement"), Some("query_domain_member"));
+    assert_eq!(error.fact_value("failure_source"), Some("RESERVATION_LIMIT"));
     assert_eq!(error.fact_value("stage"), Some("join_source_read"));
-    assert_eq!(error.fact_value("source_read_contract_quality"), Some("exact_lower_level_contract"));
+    assert!(error.fact_value("requested_allocation_bytes").is_some());
     assert_eq!(error.fact_value("attempt"), Some("1"));
     assert_eq!(error.fact_value("max_attempts"), Some("1"));
     assert!(error.fact_value("compiled_task_id").is_some());
@@ -216,8 +217,8 @@ fn bounded_native_query_enforces_mixed_keyed_residual_grouped_aggregate_hard_bud
     };
     assert_eq!(error.fact_value("bounded_join_execution_family"), None);
     match error.code() {
-        QueryErrorCode::CudfResourceExhausted => {
-            assert_eq!(error.fact_value("budget_boundary"), Some("compiled_aggregate"));
+        QueryErrorCode::QueryMemoryLimitExceeded => {
+            assert_eq!(error.fact_value("budget_boundary"), Some("compiled_aggregate_partial_state_work"));
             let budget_bytes = error
                 .fact_value("budget_bytes")
                 .and_then(|value| value.parse::<u64>().ok())
@@ -226,16 +227,6 @@ fn bounded_native_query_enforces_mixed_keyed_residual_grouped_aggregate_hard_bud
             assert_eq!(error.fact_value("budget_enforcement"), Some("query_domain_member"));
             assert_eq!(error.fact_value("memory_boundary"), None);
             assert_eq!(error.fact_value("stage"), None);
-            assert_eq!(error.fact_value("attempt"), None);
-            assert_eq!(error.fact_value("max_attempts"), None);
-        },
-        QueryErrorCode::MemoryReservationFailed => {
-            assert_eq!(error.fact_value("budget_boundary"), None);
-            assert_eq!(error.fact_value("budget_bytes"), Some(constrained_budget.to_string().as_str()));
-            assert_eq!(error.fact_value("budget_enforcement"), None);
-            assert_eq!(error.fact_value("reservation_kind"), Some("partial_state"));
-            assert_eq!(error.fact_value("memory_boundary"), Some("compiled_aggregate_partial_state_work"));
-            assert_eq!(error.fact_value("stage"), Some("compiled_aggregate"));
             assert_eq!(error.fact_value("attempt"), None);
             assert_eq!(error.fact_value("max_attempts"), None);
         },

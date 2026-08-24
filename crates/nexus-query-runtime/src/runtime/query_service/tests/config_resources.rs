@@ -150,7 +150,7 @@ fn query_service_resources_use_shared_lakehouse_cache_fill_limits() {
 fn admission_only_query_service_honors_per_device_active_attempt_limit() {
     let service = AdmissionTestController::new(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 4, max_wait: Duration::from_secs(30), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 4, max_wait: Duration::from_secs(30) },
     )
     .unwrap();
 

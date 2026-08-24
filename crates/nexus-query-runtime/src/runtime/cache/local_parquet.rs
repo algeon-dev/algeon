@@ -767,7 +767,12 @@ impl GpuLocalParquetSourceCache {
         }
         let value = match copy() {
             Ok(value) => value,
-            Err(error) if error.code() == QueryErrorCode::CudfResourceExhausted => {
+            Err(error)
+                if matches!(
+                    error.code(),
+                    QueryErrorCode::CudfResourceExhausted | QueryErrorCode::DeviceAllocationFailed
+                ) =>
+            {
                 self.clear_promotion(&key)?;
                 return Ok(GpuLocalParquetSourceCachePromotionResult::allocation_failed(
                     evicted_device_bytes,
@@ -1038,7 +1043,7 @@ mod tests {
             configured_limit_bytes: managed_capacity_bytes,
             headroom_bytes: 0,
             backend_reserve_bytes: 0,
-            attempt_floor_bytes: 1,
+            default_query_limit_bytes: 1,
             max_active_attempts: 1,
             source_work_per_attempt: 1,
             stream_pool_size: 2,
@@ -1206,7 +1211,7 @@ mod tests {
 
         let outcome = cache.promote(key, context.as_ref(), &source).expect("allocation failure is a cache outcome");
         assert_eq!(outcome.outcome, GpuLocalParquetSourceCachePromotion::AllocationFailed);
-        assert_eq!(outcome.allocation_failure_code, Some(QueryErrorCode::CudfResourceExhausted));
+        assert_eq!(outcome.allocation_failure_code, Some(QueryErrorCode::DeviceAllocationFailed));
         assert_eq!(cache.len().unwrap(), 0);
         assert_eq!(ledger.snapshot().unwrap().cache_evictable_resident_bytes, 0);
         assert_eq!(source.to_host_record_batch().unwrap().num_rows(), 4096, "attempt retains its source owner");

@@ -37,19 +37,11 @@ fn bounded_native_query_reports_reservation_failure_before_chunk_read() {
         Ok(_) => panic!("bounded execution should fail the source reservation"),
         Err(error) => error,
     };
-    assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
-    assert_eq!(error.fact_value("memory_boundary"), Some("source_chunk_read"));
-    assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
-    let exact_source_read_bytes =
-        u64::try_from(cudf::DataFrame::minimum_parquet_source_read_budget_bytes()).unwrap().to_string();
-    assert_eq!(error.fact_value("budget_bytes"), Some(exact_source_read_bytes.as_str()));
-    assert_eq!(error.fact_value("chunk_index"), Some("1"));
-    assert_eq!(error.fact_value("file_index"), Some("0"));
-    assert_eq!(error.fact_value("row_group_indexes"), Some("1"));
-    assert_eq!(error.fact_value("row_group_count"), Some("1"));
-    assert_eq!(error.fact_value("stage"), Some("source_chunk_read"));
-    assert_eq!(error.fact_value("attempt"), Some("1"));
-    assert_eq!(error.fact_value("max_attempts"), Some("1"));
+    assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded);
+    assert_eq!(error.fact_value("budget_bytes"), Some("1"));
+    assert_eq!(error.fact_value("budget_enforcement"), Some("query_domain_member"));
+    assert_eq!(error.fact_value("failure_source"), Some("RESERVATION_LIMIT"));
+    assert!(error.fact_value("requested_allocation_bytes").is_some());
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -144,7 +136,7 @@ fn bounded_native_query_uses_exact_source_owner_instead_of_spurious_chunk_retrie
     let aggregate = builder.add_aggregate(source_id, aggregate, aggregated_schema);
     let plan = builder.finish_with_host_sink(aggregate);
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
-        device_budget_bytes: 1,
+        device_budget_bytes: NATIVE_EXECUTION_TEST_QUERY_LIMIT_BYTES,
         max_source_chunk_bytes: 1024 * 1024,
         max_row_groups_per_chunk: 3,
         max_retry_attempts: 2,
@@ -181,14 +173,8 @@ fn bounded_native_query_grants_the_exact_source_preflight_owner_before_decode() 
     let source_id = builder.add_source(SourceNode::LocalParquet(source.clone()));
     let aggregate = builder.add_aggregate(source_id, aggregate, aggregated_schema);
     let plan = builder.finish_with_host_sink(aggregate);
-    let chunk_plan = plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(None, 1))
-        .expect("test source should produce a planned row-group chunk");
-    let admitted_budget = chunk_plan.chunks[0]
-        .known_row_group_bytes
-        .expect("test parquet metadata should expose row-group bytes")
-        .saturating_add(1);
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
-        device_budget_bytes: admitted_budget,
+        device_budget_bytes: NATIVE_EXECUTION_TEST_QUERY_LIMIT_BYTES,
         max_source_chunk_bytes: 1024 * 1024,
         max_row_groups_per_chunk: 1,
         max_retry_attempts: 1,
@@ -210,7 +196,7 @@ fn bounded_native_query_grants_the_exact_source_preflight_owner_before_decode() 
 }
 
 #[test]
-fn bounded_native_query_reports_chunk_operator_hard_budget_failure_after_reservation_admission() {
+fn bounded_native_query_reports_chunk_operator_query_cap_failure() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-chunk-operator-hard-budget-failure");
     let path = dir.join("input.parquet");
     let input_schema = write_final_merge_retry_input_parquet(&path, 512);
@@ -293,19 +279,13 @@ fn bounded_native_query_reports_chunk_operator_hard_budget_failure_after_reserva
         Ok(_) => panic!("hard cudf chunk operator budget should fail"),
         Err(error) => error,
     };
-    let operator_budget = operator_token_budget.to_string();
-    assert_eq!(error.code(), QueryErrorCode::CudfResourceExhausted);
+    assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded);
+    assert_eq!(error.operation(), "nexus_query_engine.filtered_grouped_aggregate.partial_segment");
     assert_eq!(error.fact_value("budget_boundary"), Some("chunk_operator"));
-    assert_eq!(error.fact_value("budget_bytes"), Some(operator_budget.as_str()));
+    assert_eq!(error.fact_value("budget_bytes"), Some(constrained_budget.to_string().as_str()));
     assert_eq!(error.fact_value("budget_enforcement"), Some("query_domain_member"));
-    assert_eq!(error.fact_value("memory_boundary"), Some("chunk_operator"));
-    assert_eq!(error.fact_value("stage"), Some("chunk_operator"));
-    assert_eq!(error.fact_value("chunk_index"), Some("0"));
-    assert_eq!(error.fact_value("file_index"), Some("0"));
-    assert_eq!(error.fact_value("row_group_indexes"), Some("0"));
-    assert_eq!(error.fact_value("row_group_count"), Some("1"));
-    assert_eq!(error.fact_value("attempt"), Some("1"));
-    assert_eq!(error.fact_value("max_attempts"), Some("1"));
+    assert_eq!(error.fact_value("failure_source"), Some("RESERVATION_LIMIT"));
+    assert!(error.fact_value("requested_allocation_bytes").is_some());
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -427,7 +407,7 @@ fn bounded_native_query_grants_global_count_source_and_output_owners() {
     let aggregate = builder.add_aggregate(source, aggregate, output_schema);
     let plan = builder.finish_with_host_sink(aggregate);
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
-        device_budget_bytes: 1024,
+        device_budget_bytes: NATIVE_EXECUTION_TEST_QUERY_LIMIT_BYTES,
         max_source_chunk_bytes: 1,
         max_row_groups_per_chunk: 1,
         max_retry_attempts: 1,
@@ -439,7 +419,7 @@ fn bounded_native_query_grants_global_count_source_and_output_owners() {
 }
 
 #[test]
-fn bounded_native_query_retries_chunk_after_source_reservation_failure() {
+fn bounded_native_query_does_not_retry_from_source_estimate() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-chunk-retry");
     let path = dir.join("input.parquet");
     let input_schema = write_row_grouped_input_parquet(&path);
@@ -486,9 +466,6 @@ fn bounded_native_query_retries_chunk_after_source_reservation_failure() {
         plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(None, 3)).unwrap();
     assert_eq!(one_chunk_plan.chunk_count(), 1);
     let initial_chunk_bytes = one_chunk_plan.chunks[0].known_row_group_bytes.unwrap();
-    let initial_source_read_bytes = one_chunk_plan.chunks[0]
-        .exact_source_read_preflight_bytes
-        .expect("fixed-width source metadata should expose the exact source-read preflight owner");
     let filter = builder.add_filter(source_id, filter, Arc::clone(&input_schema));
     let projection = builder.add_projection(filter, projection_outputs(projection, projected_schema));
     let aggregate = builder.add_aggregate(projection, aggregate, Arc::clone(&aggregated_schema));
@@ -497,7 +474,7 @@ fn bounded_native_query_retries_chunk_after_source_reservation_failure() {
     let plan = builder.finish_with_host_sink(limit);
 
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
-        device_budget_bytes: initial_source_read_bytes.saturating_sub(1),
+        device_budget_bytes: NATIVE_EXECUTION_TEST_QUERY_LIMIT_BYTES,
         max_source_chunk_bytes: initial_chunk_bytes,
         max_row_groups_per_chunk: 3,
         max_retry_attempts: 3,
@@ -507,17 +484,17 @@ fn bounded_native_query_retries_chunk_after_source_reservation_failure() {
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
     assert_eq!(metrics.source_chunks_planned, 1);
-    assert_eq!(metrics.source_chunks_retried, 1);
-    assert_eq!(metrics.retry_count, 1);
-    assert_eq!(metrics.retry_reservation_failure_count, 1);
+    assert_eq!(metrics.source_chunks_retried, 0);
+    assert_eq!(metrics.retry_count, 0);
+    assert_eq!(metrics.retry_reservation_failure_count, 0);
     assert_eq!(metrics.retry_resource_exhausted_count, 0);
-    assert_eq!(metrics.reservation_denied_count, 1);
+    assert_eq!(metrics.reservation_denied_count, 0);
     assert_reservation_events_memory_space(metrics, MemorySpaceId::Device { device_ordinal: 0 });
-    assert_eq!(metrics.source_chunks_attempted, 3);
-    assert_eq!(metrics.source_chunks_committed, 2);
+    assert_eq!(metrics.source_chunks_attempted, 1);
+    assert_eq!(metrics.source_chunks_committed, 1);
     assert_eq!(metrics.row_groups_committed, 3);
-    assert_eq!(metrics.partial_aggregate_count, 2);
-    assert_eq!(metrics.final_merge_attempts, 1);
+    assert_eq!(metrics.partial_aggregate_count, 1);
+    assert_eq!(metrics.final_merge_attempts, 0);
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");
@@ -552,11 +529,10 @@ fn bounded_native_source_owner_preserves_row_group_order_without_spurious_retry(
         plan_local_parquet_source_chunks(source_id, &source, SourceChunkPlanningPolicy::new(None, 3)).unwrap();
     assert_eq!(one_chunk_plan.chunk_count(), 1);
     let initial_chunk_bytes = one_chunk_plan.chunks[0].known_row_group_bytes.unwrap();
-    let initial_source_read_bytes = one_chunk_plan.chunks[0].estimated_source_read_bytes.unwrap_or(initial_chunk_bytes);
     let plan = builder.finish_with_host_sink(source_id);
 
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
-        device_budget_bytes: initial_source_read_bytes.saturating_sub(1),
+        device_budget_bytes: NATIVE_EXECUTION_TEST_QUERY_LIMIT_BYTES,
         max_source_chunk_bytes: initial_chunk_bytes,
         max_row_groups_per_chunk: 3,
         max_retry_attempts: 3,

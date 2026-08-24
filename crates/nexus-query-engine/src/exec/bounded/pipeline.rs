@@ -4,7 +4,7 @@ use super::compiled::execute_compiled_pipeline;
 #[doc(hidden)]
 pub use super::compiled::{
     CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
-    CompiledSchedulingCycle, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput, ReleasedCompiledResource,
+    CompiledSchedulingCycle, CompiledTaskExecutor, CompiledTaskOutput, ReleasedCompiledResource,
 };
 #[cfg(test)]
 pub(crate) use super::compiled::{ResidentFrameStreamProducerTestHarness, YieldedFrameCounterTestHarness};

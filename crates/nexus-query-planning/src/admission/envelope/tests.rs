@@ -9,14 +9,18 @@ use arrow::{
 use super::*;
 use crate::{
     admission::QueryPlanCapabilityProof,
+    capability::{CapabilityDecision, ContractQuality, ContractStatus},
     chunk::SourceChunkPlanningOptions,
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, Expr, SortExpr, SortSpec},
     graph_memory::{
         GraphMemoryAdmissionEvidence, GraphMemoryCalibrationOverride, graph_memory_bounded_admission_evidence_for_plan,
     },
+    mode::CapabilityEnvelopeStatus,
     plan::{
         GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
-        GraphEdgeColumnBindings, QueryPlanBuilder,
+        GraphEdgeColumnBindings, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmParams, VectorAlgorithmSpec,
+        VectorBruteForceKnnParams, VectorDistanceMetric, VectorRelationBinding, VectorRowIdBinding,
+        vector_brute_force_knn_output_schema,
     },
     source::{
         GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource, SourceNode,
@@ -112,6 +116,80 @@ fn graph_bfs_plan_with_gpu_resident_source(schema: Arc<Schema>) -> QueryPlan {
 fn graph_memory_evidence(plan: &QueryPlan) -> GraphMemoryAdmissionEvidence {
     graph_memory_bounded_admission_evidence_for_plan(plan, GraphMemoryCalibrationOverride::none(), None)
         .expect("graph plan must produce bounded memory evidence")
+}
+
+#[test]
+fn graph_algorithm_memory_gap_is_modeled_without_memory_preflight() {
+    let plan = graph_bfs_plan_with_gpu_resident_source(graph_edge_schema());
+    let analysis = plan.capability_analysis();
+    let graph = analysis.nodes.iter().find(|node| node.node_id == plan.root_id()).expect("graph node is analyzed");
+    assert!(matches!(graph.executable, CapabilityDecision::Satisfied));
+    let requirement = graph.local_requirements.first().expect("graph node has one output requirement");
+    assert_eq!(requirement.status, ContractStatus::Modeled);
+    assert_eq!(requirement.quality, ContractQuality::CapabilityProof);
+
+    let report = crate::contract_report::CapabilityContractReport::from_capability_analysis(&analysis)
+        .expect("missing graph memory preflight must remain reportable, not unsupported");
+    assert_eq!(report.execution_mode(), CapabilityEnvelopeStatus::Admitted);
+    assert!(report.gate_rows().iter().any(|row| {
+        row.required_contract == crate::plan::GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT
+            && row.contract_status == ContractStatus::Modeled
+            && row.contract_quality == ContractQuality::CapabilityProof
+            && row.unresolved_preflight_gap.is_none()
+    }));
+}
+
+fn vector_knn_plan_with_gpu_resident_sources() -> QueryPlan {
+    let dataset_schema = Arc::new(Schema::new(vec![
+        Field::new("id", DataType::Int64, false),
+        Field::new("x", DataType::Float32, false),
+        Field::new("y", DataType::Float32, false),
+    ]));
+    let query_schema = Arc::new(Schema::new(vec![
+        Field::new("query_id", DataType::Int64, false),
+        Field::new("x", DataType::Float32, false),
+        Field::new("y", DataType::Float32, false),
+    ]));
+    let mut builder = QueryPlanBuilder::new();
+    let dataset = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("prepared-vectors", dataset_schema).with_row_count_upper_bound(10),
+    ));
+    let queries = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("prepared-queries", query_schema).with_row_count_upper_bound(10),
+    ));
+    let params = VectorBruteForceKnnParams::new(
+        VectorRelationBinding::new(dataset, VectorRowIdBinding::column("id"), ["x", "y"]),
+        VectorRelationBinding::new(queries, VectorRowIdBinding::column("query_id"), ["x", "y"]),
+        3,
+        VectorDistanceMetric::L2Expanded,
+    );
+    let vector = builder.add_vector_algorithm(VectorAlgorithmSpec::new(
+        VectorAlgorithm::BruteForceKnn,
+        VectorAlgorithmParams::BruteForceKnn(params),
+        vector_brute_force_knn_output_schema(DataType::Int64, DataType::Int64),
+    ));
+    builder.finish_with_host_sink(vector)
+}
+
+#[test]
+fn vector_algorithm_memory_gap_is_modeled_without_memory_preflight() {
+    let plan = vector_knn_plan_with_gpu_resident_sources();
+    let analysis = plan.capability_analysis();
+    let vector = analysis.nodes.iter().find(|node| node.node_id == plan.root_id()).expect("vector node is analyzed");
+    assert!(matches!(vector.executable, CapabilityDecision::Satisfied));
+    let requirement = vector.local_requirements.first().expect("vector node has one output requirement");
+    assert_eq!(requirement.status, ContractStatus::Modeled);
+    assert_eq!(requirement.quality, ContractQuality::CapabilityProof);
+
+    let report = crate::contract_report::CapabilityContractReport::from_capability_analysis(&analysis)
+        .expect("missing vector memory preflight must remain reportable, not unsupported");
+    assert_eq!(report.execution_mode(), CapabilityEnvelopeStatus::Admitted);
+    assert!(report.gate_rows().iter().any(|row| {
+        row.required_contract == crate::plan::VECTOR_ALGORITHM_BOUNDED_REQUIRED_CONTRACT
+            && row.contract_status == ContractStatus::Modeled
+            && row.contract_quality == ContractQuality::CapabilityProof
+            && row.unresolved_preflight_gap.is_none()
+    }));
 }
 
 fn source_stage_plan(schema: Arc<Schema>) -> QueryPlan {

@@ -13,7 +13,7 @@ const ENV_WORKLOAD: &str = "NEXUS_CUGRAPH_ADMISSION_WORKLOAD";
 const ENV_ITERATIONS: &str = "NEXUS_CUGRAPH_ADMISSION_ITERATIONS";
 const ENV_STAGGER_MS: &str = "NEXUS_CUGRAPH_ADMISSION_STAGGER_MS";
 const ENV_MAX_ACTIVE_ATTEMPTS_PER_DEVICE: &str = "NEXUS_CUGRAPH_ADMISSION_MAX_ACTIVE_ATTEMPTS_PER_DEVICE";
-const ENV_ATTEMPT_FLOOR_BYTES: &str = "NEXUS_CUGRAPH_ADMISSION_ATTEMPT_FLOOR_BYTES";
+const ENV_DEFAULT_QUERY_LIMIT_BYTES: &str = "NEXUS_CUGRAPH_ADMISSION_DEFAULT_QUERY_LIMIT_BYTES";
 const ENV_MAX_QUEUE_WAIT_MS: &str = "NEXUS_CUGRAPH_ADMISSION_MAX_QUEUE_WAIT_MS";
 const ENV_BUDGET_FRACTION: &str = "NEXUS_CUGRAPH_ADMISSION_BUDGET_FRACTION";
 const ENV_DEVICE_BUDGET_BYTES: &str = "NEXUS_CUGRAPH_ADMISSION_DEVICE_BUDGET_BYTES";
@@ -46,7 +46,7 @@ impl HarnessConfig {
             iterations: env_parse(ENV_ITERATIONS, 1)?,
             stagger_ms: env_parse(ENV_STAGGER_MS, 0)?,
             max_active_attempts_per_device: env_parse(ENV_MAX_ACTIVE_ATTEMPTS_PER_DEVICE, 2)?,
-            attempt_floor_bytes: parse_optional_u64(ENV_ATTEMPT_FLOOR_BYTES)?,
+            default_query_limit_bytes: parse_optional_u64(ENV_DEFAULT_QUERY_LIMIT_BYTES)?,
             max_queue_wait_ms: env_parse(ENV_MAX_QUEUE_WAIT_MS, 60_000)?,
             budget_fraction: parse_optional_f64(ENV_BUDGET_FRACTION)?,
             device_budget_bytes: parse_optional_u64(ENV_DEVICE_BUDGET_BYTES)?,

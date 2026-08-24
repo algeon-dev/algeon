@@ -5,7 +5,7 @@ use std::{
 };
 
 use nexus_query_planning::{
-    admission::{AttemptRequirement, AttemptReservationEnvelope},
+    admission::AttemptRequirement,
     error::{QueryError, QueryErrorCode, Result},
 };
 
@@ -38,7 +38,6 @@ pub struct QueryAdmissionWaiter {
     pub(super) observation: RuntimeObservationHandle,
     pub(super) requested_at: Instant,
     pub(super) deadline: Instant,
-    pub(super) device_entries: DeviceAdmissionEntries,
     pub(super) execution_cancellation: ExecutionCancellation,
     pub(super) terminal: QueuedAdmissionTerminal,
     pub(super) queued: bool,
@@ -403,7 +402,7 @@ pub(super) struct AdmissionRequest {
     /// coverage validation remains unavailable, rather than asserting an
     /// empty proof.
     pub(super) submitted_plan_capability_evidence: Option<AttemptRequirement>,
-    /// Policy-resolved, device-specific entries retained from submission
+    /// Device-specific entries retained from submission
     /// through the execution context that consumes the selected grant.
     pub(super) device_entries: DeviceAdmissionEntries,
     /// Monotonic FIFO identity retained independently from admission order.
@@ -411,10 +410,9 @@ pub(super) struct AdmissionRequest {
     /// Device ordinals established at submission; capability filtering belongs
     /// here, and each configured device is considered independently.
     pub(super) compatible_devices: Vec<usize>,
-    /// Finite number of compatible-device bypasses before slot protection.
-    pub(super) overtakes_remaining: u32,
-    /// Ordinal currently holding this waiter's liveness protection.
-    pub(super) protected_device: Option<usize>,
+    /// Exact request cap, or `None` until the selected ledger resolves its
+    /// configured default inside the admission transaction.
+    pub(super) requested_query_cap_bytes: Option<u64>,
     pub(super) deadline: Instant,
     /// The attempt-wide token also used by transactional envelope acquisition.
     pub(super) execution_cancellation: ExecutionCancellation,
@@ -423,12 +421,12 @@ pub(super) struct AdmissionRequest {
     pub(super) terminal: QueuedAdmissionTerminal,
 }
 
-/// One immutable requirement/envelope pair resolved for one installed device.
-/// Placement must never derive a second pair after submission.
+/// One immutable capability/executability requirement resolved for one
+/// installed device. Placement must never derive a second requirement after
+/// submission.
 #[derive(Debug, Clone)]
 pub(super) struct DeviceAdmissionEntry {
     pub(super) requirement: AttemptRequirement,
-    pub(super) admitted_reservation_envelope: Option<AttemptReservationEnvelope>,
 }
 
 pub(super) type DeviceAdmissionEntries = BTreeMap<usize, DeviceAdmissionEntry>;
@@ -442,24 +440,14 @@ impl AdmissionRequest {
         Ok(&self.entry_for_device(device_ordinal)?.requirement)
     }
 
-    pub(super) fn admitted_reservation_envelope_for_device(
-        &self,
-        device_ordinal: usize,
-    ) -> Result<&Option<AttemptReservationEnvelope>> {
-        Ok(&self.entry_for_device(device_ordinal)?.admitted_reservation_envelope)
-    }
-
-    /// Captures the controller's immutable finite-overtake state at the
-    /// moment this queued request is selected for placement. The request is
-    /// removed immediately afterwards, so later snapshots cannot recover
-    /// this fact truthfully.
-    pub(super) fn admission_wait_fact(&self, overtake_limit: u32) -> crate::observability::AttemptAdmissionWaitFact {
+    /// Captures FIFO queue identity when the waiter is selected.
+    pub(super) fn admission_wait_fact(&self) -> crate::observability::AttemptAdmissionWaitFact {
         crate::observability::AttemptAdmissionWaitFact {
             submission_sequence: self.submission_seq,
-            overtake_limit,
-            overtakes_consumed: overtake_limit.saturating_sub(self.overtakes_remaining),
-            overtakes_remaining: self.overtakes_remaining,
-            protection_device_ordinal: self.protected_device,
+            overtake_limit: 0,
+            overtakes_consumed: 0,
+            overtakes_remaining: 0,
+            protection_device_ordinal: None,
         }
     }
 }
@@ -994,32 +982,12 @@ impl QueryAdmissionWaiter {
             },
         };
         if let Some((position, device_ordinal)) = selected {
-            let selected_entry = match self.device_entries.get(&device_ordinal) {
-                Some(entry) => entry,
-                None => {
-                    let error = missing_device_admission_entry_error(device_ordinal);
-                    let removed = self.service.abandon_queued_request_locked(&mut state, self.admission_request_id);
-                    self.queued = false;
-                    if removed.is_some() {
-                        record_admission_lifecycle(
-                            &self.observation,
-                            self.admission_request_id,
-                            admission_rejection(&error),
-                            state.queued.len(),
-                            None,
-                            None,
-                        );
-                    }
-                    drop(state);
-                    finish_removed_request_error(removed, &error);
-                    return Err(error);
-                },
-            };
             let placed_query = match self.service.try_place_on_device(
                 device_ordinal,
                 self.admission_request_id,
                 state.queued[position].attempt_id,
                 state.queued[position].requirement_for_device(device_ordinal)?,
+                state.queued[position].requested_query_cap_bytes,
                 &mut slot_notifications,
             ) {
                 Ok(placed_query) => placed_query,
@@ -1055,8 +1023,10 @@ impl QueryAdmissionWaiter {
                             None,
                         );
                     }
-                    let error =
-                        self.service.memory_grant_wait_timeout_error(&selected_entry.requirement, state.queued.len());
+                    let error = self.service.memory_grant_wait_timeout_error(
+                        state.queued[position].requested_query_cap_bytes,
+                        state.queued.len(),
+                    );
                     drop(state);
                     finish_removed_request_error(removed, &error);
                     return Err(error);
@@ -1064,9 +1034,7 @@ impl QueryAdmissionWaiter {
                 return Ok(None);
             };
             let admitted = state.remove_queued_at(position).expect("admissible request exists");
-            let admitted_submission_seq = admitted.submission_seq;
-            let admission_wait_fact =
-                admitted.admission_wait_fact(self.service.inner.queue_bounds.max_overtakes_per_waiter);
+            let admission_wait_fact = admitted.admission_wait_fact();
             if let Some(error) = self.service.admission_terminal_rejection(&state) {
                 record_admission_lifecycle(
                     &admitted.observation,
@@ -1097,9 +1065,6 @@ impl QueryAdmissionWaiter {
                         .map(|(&ordinal, entry)| (ordinal, entry.requirement.clone()))
                         .collect(),
                     submitted_plan_capability_evidence: admitted.submitted_plan_capability_evidence.clone(),
-                    admitted_reservation_envelope: admitted
-                        .admitted_reservation_envelope_for_device(device_ordinal)?
-                        .clone(),
                     admitted_compatible_devices: admitted.compatible_devices.clone(),
                     observation: admitted.observation,
                     attempt_id: admitted.attempt_id,
@@ -1108,7 +1073,6 @@ impl QueryAdmissionWaiter {
                     admission_wait: self.requested_at.elapsed(),
                     deadline: self.deadline,
                     execution_cancellation: admitted.execution_cancellation,
-                    admitted_submission_seq: Some(admitted_submission_seq),
                     admission_wait_fact: Some(admission_wait_fact),
                     lifecycle_ticket,
                 })

@@ -132,14 +132,18 @@ Device capacity belongs to profiles; shared queue behavior belongs to
 
 ```rust
 use datafusion_nexus::backend::{
-    GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceProfile,
-    NexusGpuQueuePolicy,
+    GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig,
+    NexusGpuDeviceProfile, NexusGpuQueuePolicy,
 };
 
 let device = NexusGpuDeviceConfig::new(
     NexusGpuDeviceProfile::new(0)
+        .with_memory_limit(GpuDeviceMemoryLimit::Explicit {
+            limit_bytes: 8 * 1024 * 1024 * 1024,
+        })
+        .with_backend_reserve_bytes(512 * 1024 * 1024)
+        .with_default_query_limit_bytes(512 * 1024 * 1024)
         .with_max_active_attempts(10)
-        .with_attempt_floor_bytes(Some(512 * 1024 * 1024)),
     GpuMemoryOwnership::WholeDeviceExclusive,
 );
 let backend = NexusGpuBackend::builder()
@@ -148,7 +152,6 @@ let backend = NexusGpuBackend::builder()
         NexusGpuQueuePolicy::default()
             .with_max_queued_attempts(64)
             .with_max_queue_wait(std::time::Duration::from_secs(30))
-            .with_max_overtakes_per_waiter(4),
     )
     .build()?;
 ```
@@ -156,7 +159,8 @@ let backend = NexusGpuBackend::builder()
 Planning does not acquire a GPU grant. Admission begins when the first native
 stream is polled, and all native nodes in that attempt share the selected
 device and immutable grant. A full queue or expired wait returns structured
-`service_overloaded` backpressure.
+`service_overloaded` backpressure. Eligible waiters are served in FIFO order;
+there is no overtaking policy.
 
 Native execution policy is owned solely by the backend builder. Configure native execution with
 `with_native_execution_config(...)` on `NexusGpuBackend::builder()` before `build()`.

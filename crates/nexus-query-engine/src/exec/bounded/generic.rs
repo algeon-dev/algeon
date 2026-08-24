@@ -48,7 +48,8 @@ pub(in crate::exec::bounded) fn execute_bounded_generic_query_plan(
 
     match plan.sink() {
         ResultSink::GpuResident { .. } => {
-            let live_reservation = committed.reservation.transfer_grant_live_reservation();
+            let output_bytes = committed.frame.device_allocated_size_bytes()?;
+            let live_reservation = committed.reservation.retain_escaping_resident_output(output_bytes)?;
             let frame = committed
                 .frame
                 .with_producer_execution_scope(crate::admission::canonical_execution_scope_fingerprint(plan));
@@ -575,44 +576,19 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
         .with_stage("graph_memory_admission");
         execution.metrics_mut().record_graph_claim_calibration(report.clone(), node_id);
         execution.metrics_mut().record_graph_reservation(report.clone());
-        if report.outcome == crate::graph_memory::GraphReservationOutcome::Denied {
-            execution
-                .metrics_mut()
-                .record_graph_claim_calibration_graph_memory_admission_denied(node_id, graph.spec.algorithm);
-            let reserved_bytes = execution.reservations().reserved_bytes();
-            execution.metrics_mut().record_reservation_denied_timeline_event(
-                &request,
-                crate::metrics::MemoryReservationEventAction::Reserve,
-                graph_reservable_remaining_bytes,
-                reserved_bytes,
-            );
-            release_reservations_reverse(execution, live_reservations);
-            return Err(report
-                .denied_error(&request, graph_reservable_remaining_bytes)
-                .with_fact_if_absent("node_id", node_id));
-        }
 
-        // Similarity's graph-memory model is calibrated against the native
-        // cuGraph allocation domain, which still needs the full model price
-        // while constructing `VertexPairs` and coefficients. Its pair-column
-        // overlap may already be live in the query grant, so the tracker
-        // reserves only `report.requested_bytes` but the cuGraph allocator
-        // retains the uncredited execution ceiling. These are deliberately
-        // separate contracts: charging the full price double-counts the
-        // source frame, while shrinking the native allocation limit would
-        // under-provision the calibrated cuGraph call.
-        let graph_execution_limit_bytes =
-            report.model_requested_bytes.max(crate::graph_memory::GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES);
-
+        // The graph-memory model is calibration evidence only. The query cap
+        // is the sole native allocation limit, so a model peak above the cap
+        // records an over-estimate instead of vetoing an execution whose real
+        // working set may fit.
         match execution.try_reserve_work(request) {
             Ok(reservation) => {
                 graph_reservation = Some(reservation);
-                Some(graph_execution_limit_bytes)
+                Some(graph_reservable_remaining_bytes)
             },
             Err(error) => {
                 release_reservations_reverse(execution, live_reservations);
-                return Err(error
-                    .with_fact_if_absent("reason", crate::graph_memory::GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON));
+                return Err(error);
             },
         }
     } else if !empty_input_prevalidated {
@@ -783,7 +759,20 @@ fn graph_memory_vertex_estimate_with_reservation(
     execution.release(reservation);
     match estimate {
         Ok(estimate) => Ok(Some(estimate)),
-        Err(error) if error.code() == QueryErrorCode::CudfResourceExhausted => Ok(None),
+        // The vertex-estimate probe is optional calibration evidence: an
+        // allocation failure inside it degrades the estimate instead of
+        // failing a query the allocator has not rejected.
+        Err(error)
+            if matches!(
+                error.code(),
+                QueryErrorCode::QueryMemoryLimitExceeded
+                    | QueryErrorCode::DeviceOutOfMemory
+                    | QueryErrorCode::DeviceAllocationFailed
+                    | QueryErrorCode::CudfResourceExhausted
+            ) =>
+        {
+            Ok(None)
+        },
         Err(error) => Err(error),
     }
 }

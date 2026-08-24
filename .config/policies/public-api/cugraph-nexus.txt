@@ -584,6 +584,7 @@ pub fn cugraph::error::Error::set_persistent(self) -> Self
 pub fn cugraph::error::Error::set_source<E>(self, E) -> Self where E: core::error::Error + core::marker::Send + core::marker::Sync + 'static
 pub fn cugraph::error::Error::set_temporary(self) -> Self
 pub fn cugraph::error::Error::status(&self) -> cugraph::error::ErrorStatus
+pub fn cugraph::error::Error::with_allocation_failure_source(self, cugraph::error::AllocationFailureSource) -> Self
 pub fn cugraph::error::Error::with_context(self, &'static str, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn cugraph::error::Error::with_message(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn cugraph::error::Error::with_operation(self, &'static str) -> Self
@@ -1658,6 +1659,7 @@ pub fn cugraph::error::Error::set_persistent(self) -> Self
 pub fn cugraph::error::Error::set_source<E>(self, E) -> Self where E: core::error::Error + core::marker::Send + core::marker::Sync + 'static
 pub fn cugraph::error::Error::set_temporary(self) -> Self
 pub fn cugraph::error::Error::status(&self) -> cugraph::error::ErrorStatus
+pub fn cugraph::error::Error::with_allocation_failure_source(self, cugraph::error::AllocationFailureSource) -> Self
 pub fn cugraph::error::Error::with_context(self, &'static str, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn cugraph::error::Error::with_message(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn cugraph::error::Error::with_operation(self, &'static str) -> Self

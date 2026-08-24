@@ -24,7 +24,7 @@ fn wait_until(deadline: Instant, mut condition: impl FnMut() -> bool, what: &str
 async fn cleanup_complete_without_report_ready_cannot_admit_replacement() {
     let service = QueryService::new_for_admission_tests(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(10), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(10) },
         test_ledger(64 * 1024 * 1024, 1, Default::default()),
     )
     .expect("admission-only service for release commit ordering");
@@ -133,7 +133,7 @@ async fn cleanup_complete_without_report_ready_cannot_admit_replacement() {
 fn unterminalized_admitted_release_commits_fallback_before_report() {
     let service = QueryService::new_for_admission_tests(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(10), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(10) },
         test_ledger(64 * 1024 * 1024, 1, Default::default()),
     )
     .expect("admission-only service for fallback release ordering");
@@ -432,6 +432,93 @@ fn residual_terminal_domain_usage_quarantines_before_report_and_capacity_release
     );
 }
 
+/// Owner attestation must reject a residual the allocation registry still
+/// owns but no published output owner holds. The residual here is a real
+/// device allocation leaked into the attempt domain, not a counter mismatch.
+#[test]
+fn resident_owner_attestation_mismatch_is_a_cleanup_failure() {
+    let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for resident attestation");
+    let resources = service.inner.resources.as_ref().expect("runtime-backed service");
+    let device = resources.devices.context_by_ordinal(0).expect("device context");
+    let backend_lifecycle = BackendLifecycle::new();
+    let counters = std::sync::Arc::new(AttemptBackendCounters::default());
+    let attempt = AttemptOwner::begin(
+        BeginAttemptRequest {
+            observation: RuntimeObservationConfig::bounded(32, 32 * 1024),
+            ..BeginAttemptRequest::default()
+        },
+        backend_lifecycle.try_begin_observation().expect("attempt observation permit"),
+        counters,
+        None,
+    );
+    let attempt_owner = attempt.owner;
+    let completion = attempt.completion.completion();
+    let attempt_handle = attempt_owner.handle();
+    attempt_handle.record_planning_started().expect("planning starts");
+    attempt_handle.record_planning_finished().expect("planning finishes");
+    attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
+    attempt_handle.record_admission_requested().expect("admission requested");
+    let admitted = service
+        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .expect("admission");
+    let grant = admitted.lifetime.memory_grant().expect("memory grant");
+    let published_owner = grant
+        .retain_live_reservation(1)
+        .expect("owner charge succeeds")
+        .expect("positive owner charge has a lease");
+    // Leak a real allocation into the attempt domain and forget it. The
+    // registry keeps owning it, so freeze must see a live allocation that no
+    // published output owner accounts for.
+    let leaked_context = admitted.acquire_context().expect("attempt context for leaked allocation");
+    let leaked_runtime = leaked_context.context().shared_runtime().expect("attempt runtime");
+    let leaked_batch = arrow::record_batch::RecordBatch::try_new(
+        std::sync::Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
+            "leaked",
+            arrow::datatypes::DataType::Int32,
+            false,
+        )])),
+        vec![std::sync::Arc::new(arrow::array::Int32Array::from(vec![7; 4096]))],
+    )
+    .expect("leaked host batch");
+    let leaked_frame =
+        cudf::DataFrame::from_record_batch(leaked_runtime.as_ref(), &leaked_batch).expect("leaked device upload");
+    std::mem::forget(leaked_frame);
+    drop(leaked_runtime);
+    drop(leaked_context);
+    attempt_handle
+        .record_admitted(AttemptAdmissionFact {
+            admission_sequence: admitted.admission_sequence(),
+            admission_wait_ns: admitted.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
+            device_ordinal: admitted.device_ordinal(),
+            grant_bytes: admitted.device_budget_bytes(),
+        })
+        .expect("attempt admission fact");
+    attempt_handle.record_physical_execution_started().expect("physical execution starts");
+    attempt_handle.record_gpu_execution_started().expect("GPU execution starts");
+    attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal outcome");
+
+    admitted.finish();
+    drop(admitted);
+    wait_until(Instant::now() + Duration::from_secs(10), || completion.is_ready(), "resident mismatch report");
+    let report = completion.try_report().expect("published attempt report");
+    assert_eq!(report.cleanup_failure_count, 1);
+    assert!(report.cleanup_failure_count_complete);
+    assert_eq!(
+        report.first_cleanup_failure.as_ref().map(crate::observability::CleanupFailureSummary::phase),
+        Some(crate::observability::CleanupFailurePhase::FinalValidation)
+    );
+    assert_eq!(
+        report.capacity_disposition,
+        crate::observability::AttemptCapacityDisposition::RetainedQuarantine
+    );
+    assert!(matches!(
+        device.ledger().snapshot().expect("ledger snapshot").health,
+        crate::runtime::gpu::DeviceAdmissionHealth::Closed { .. }
+    ));
+    drop(published_owner);
+    drop(grant);
+}
+
 /// The finalizer is a one-time transfer from its owner into the admitted
 /// envelope. A second admission binding can carry observation identity but
 /// cannot manufacture competing cleanup/capacity facts.
@@ -439,7 +526,7 @@ fn residual_terminal_domain_usage_quarantines_before_report_and_capacity_release
 fn admitted_finalizer_transfers_once_and_publishes_no_pending_capacity() {
     let service = QueryService::new_for_admission_tests(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(10), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(10) },
         test_ledger(64 * 1024 * 1024, 1, Default::default()),
     )
     .expect("admission-only service");
@@ -545,7 +632,7 @@ fn device_local_cleanup_fault_seals_retry_on_a_frozen_eligible_alternate() {
     const ATTEMPT_FLOOR_BYTES: u64 = CAPACITY_BYTES / 8;
     let service = runtime_test_service_with_profiles(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(5), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(5) },
         vec![
             runtime_test_device_profile_with_limits(0, CAPACITY_BYTES, ATTEMPT_FLOOR_BYTES, 1, 3, 1, 1),
             runtime_test_device_profile_with_limits(1, CAPACITY_BYTES, ATTEMPT_FLOOR_BYTES, 1, 3, 1, 1),
@@ -751,45 +838,6 @@ fn duplicate_root_cleanup_handoff_marks_backend_unhealthy_before_capacity_releas
     assert_eq!(error.fact_value("reason"), Some("backend_unhealthy"));
 }
 
-/// A finite-overtake protection is queue state only. If its sole candidate
-/// closes, the waiter must preserve the persistent device-health disposition
-/// rather than degrading it into a retryable queue-overload error.
-#[test]
-fn protected_waiter_reports_device_quarantine_not_transient_overload() {
-    const MIB: u64 = 1024 * 1024;
-
-    let service = runtime_test_service_with_profiles(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(5), max_overtakes_per_waiter: 1 },
-        vec![runtime_test_device_profile_with_limits(0, 100 * MIB, 10 * MIB, 2, 6, 2, 2)],
-    )
-    .expect("runtime-backed service for protected-waiter quarantine");
-
-    let active = service.admit_query().expect("initial admission");
-    let mut protected = service
-        .enqueue_admission_with_request(
-            QueryAdmissionRequest::new().with_attempt_requirement(requirement(60 * MIB, Some(60 * MIB))),
-        )
-        .expect("large waiter queues behind the initial grant");
-    assert!(protected.try_admit().expect("large waiter remains queued").is_none());
-
-    let mut bypass = service.enqueue_admission().expect("small bypass queues");
-    let bypass = bypass.try_admit().expect("small bypass placement").expect("small bypass admits");
-    assert_eq!(service.admission_snapshot().unwrap().protected_devices, vec![0]);
-
-    service
-        .close_device_admission_for_test(0, "test-protected-waiter-quarantine")
-        .expect("close the only compatible device");
-    let error = protected.try_admit().expect_err("protected waiter terminates after its device closes");
-    assert_eq!(error.code(), QueryErrorCode::CudfPersistentFailure);
-    assert_eq!(error.fact_value("reason"), Some("no_healthy_compatible_device"));
-    assert_eq!(service.admission_snapshot().unwrap().queued_queries, 0);
-
-    drop(bypass);
-    drop(active);
-    service.close_and_wait_for_quiescence(Duration::from_secs(5)).expect("closed service drains cleanup");
-}
-
 /// An OOM-class outcome alone never quarantines: the device stays open and
 /// healthy capacity is reusable after report-ready.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -880,7 +928,7 @@ fn oom_release_projects_truthful_resource_evidence() {
         "attempt allocation exceeded its immutable grant limit",
         allocation_error,
     );
-    assert_eq!(terminal_error.code(), QueryErrorCode::CudfResourceExhausted);
+    assert_eq!(terminal_error.code(), QueryErrorCode::QueryMemoryLimitExceeded);
     attempt_owner.commit_query_error(&terminal_error).expect("terminal OOM outcome");
     handle.finish();
     drop(handle);
@@ -1103,4 +1151,124 @@ fn disposition_mapping_matches_isolation_rules() {
     handle.finish();
     drop(handle);
     service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("service drains");
+}
+
+/// A frozen resident producer must never publish reusable ledger capacity
+/// while it still holds its attempt lane. With `max_active = 1`, a consumer
+/// that passes the ledger has to find a free lane; publishing `B - R` before
+/// the lane is released let the consumer through the ledger and then fail its
+/// non-blocking lane acquisition with an internal `lane_exhausted` error.
+#[test]
+fn frozen_resident_publish_never_precedes_the_producer_lane_release() {
+    let service =
+        try_guaranteed_runtime_test_service().expect("runtime-backed service for frozen publish ordering");
+    let backend_lifecycle = BackendLifecycle::new();
+    let counters = std::sync::Arc::new(AttemptBackendCounters::default());
+    let attempt = AttemptOwner::begin(
+        BeginAttemptRequest {
+            observation: RuntimeObservationConfig::bounded(32, 32 * 1024),
+            ..BeginAttemptRequest::default()
+        },
+        backend_lifecycle.try_begin_observation().expect("attempt observation permit"),
+        counters,
+        None,
+    );
+    let attempt_owner = attempt.owner;
+    let completion = attempt.completion.completion();
+    let attempt_handle = attempt_owner.handle();
+    attempt_handle.record_planning_started().expect("planning starts");
+    attempt_handle.record_planning_finished().expect("planning finishes");
+    attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
+    attempt_handle.record_admission_requested().expect("admission requested");
+    let producer = service
+        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .expect("producer admission");
+    attempt_handle
+        .record_admitted(AttemptAdmissionFact {
+            admission_sequence: producer.admission_sequence(),
+            admission_wait_ns: producer.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
+            device_ordinal: producer.device_ordinal(),
+            grant_bytes: producer.device_budget_bytes(),
+        })
+        .expect("attempt admission fact");
+    attempt_handle.record_physical_execution_started().expect("physical execution starts");
+    attempt_handle.record_gpu_execution_started().expect("GPU execution starts");
+
+    // Retain a real resident owner so this attempt's terminal commit takes
+    // the frozen-resident path rather than an ordinary capacity release. The
+    // allocation must exist in the attempt domain: owner attestation reads
+    // the allocation registry, not a synthetic charge.
+    let grant = producer.lifetime.memory_grant().expect("producer memory grant");
+    let producer_context = producer.acquire_context().expect("producer context");
+    let producer_runtime = producer_context.context().shared_runtime().expect("producer runtime");
+    let resident_batch = arrow::record_batch::RecordBatch::try_new(
+        std::sync::Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
+            "value",
+            arrow::datatypes::DataType::Int32,
+            false,
+        )])),
+        vec![std::sync::Arc::new(arrow::array::Int32Array::from(vec![11; 1024]))],
+    )
+    .expect("resident host batch");
+    let resident_frame = crate::runtime::resident::GpuDataFrame::new(
+        cudf::DataFrame::from_record_batch(producer_runtime.as_ref(), &resident_batch).expect("resident upload"),
+    );
+    let resident_bytes = resident_frame.device_allocated_size_bytes().expect("resident output bytes");
+    let resident_owner = grant
+        .retain_live_reservation(resident_bytes)
+        .expect("resident owner charge fits the producer cap")
+        .expect("positive resident charge has a lease");
+    drop(producer_runtime);
+    drop(producer_context);
+    attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal outcome");
+
+    // Stop the producer at the exact point where the report is sealed but the
+    // attempt lane, grant, and permit are still held. Any ledger capacity a
+    // consumer can observe here is capacity without a lane.
+    let gate = producer.lifetime.arm_envelope_release_gate();
+    let release = std::thread::spawn(move || {
+        producer.finish();
+        drop(producer);
+    });
+    wait_until(
+        Instant::now() + Duration::from_secs(10),
+        || gate.entered(),
+        "frozen release reaches the barrier while the attempt still owns its lane",
+    );
+
+    let sealed_admission = service.try_admit_query();
+    gate.open();
+    release.join().expect("producer release thread completes");
+
+    match sealed_admission {
+        Ok(None) => {},
+        Ok(Some(handle)) => {
+            panic!(
+                "a consumer admitted while the producer still held lane {:?}",
+                handle.lifetime.admitted_device_requirement_for_test(0).is_some()
+            )
+        },
+        Err(error) => panic!(
+            "the frozen publish exposed reusable capacity before the lane was released: {:?}: {error}",
+            error.code()
+        ),
+    }
+
+    // Once the lane is released and B to R is published, the same consumer
+    // request succeeds on the capacity the frozen output left behind.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let admitted = loop {
+        if let Some(handle) = service.try_admit_query().expect("post-release admission is not an internal error") {
+            break handle;
+        }
+        assert!(Instant::now() < deadline, "the released frozen capacity admits a consumer");
+        std::thread::yield_now();
+    };
+    drop(admitted);
+
+    let report = completion.try_report().expect("published producer report");
+    assert_eq!(report.capacity_disposition, crate::observability::AttemptCapacityDisposition::FrozenResident);
+    drop(resident_owner);
+    drop(resident_frame);
+    drop(grant);
 }

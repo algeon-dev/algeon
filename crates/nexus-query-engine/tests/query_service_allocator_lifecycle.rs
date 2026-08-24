@@ -218,7 +218,7 @@ fn canonical_allocator_reuse_preserves_authoritative_installation_identity_acros
 async fn canonical_default_allocator_admits_a_hard_query_domain() {
     let core = GpuBackendCore::builder(backend_draft_with_limits_and_queue_bounds(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(10), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(10) },
         1,
     ))
     .build()
@@ -238,10 +238,12 @@ async fn canonical_default_allocator_admits_a_hard_query_domain() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn same_device_attempts_have_distinct_grant_domain_stream_lane_and_job_identities() {
+    const QUERY_CAP_BYTES: u64 = 64 * 1024 * 1024;
+
     let device = DeviceId::current().unwrap();
     let core = GpuBackendCore::builder(backend_draft_with_limits_and_queue_bounds(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(10), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(10) },
         2,
     ))
     .build()
@@ -258,8 +260,12 @@ async fn same_device_attempts_have_distinct_grant_domain_stream_lane_and_job_ide
     assert_eq!(startup.resource_profile.root_stream_count, 2);
     assert_eq!(startup.worker_count, 2);
 
-    let first = Arc::new(session.admit_query().unwrap());
-    let second = Arc::new(session.admit_query().unwrap());
+    let first = Arc::new(
+        session.admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(QUERY_CAP_BYTES)).unwrap(),
+    );
+    let second = Arc::new(
+        session.admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(QUERY_CAP_BYTES)).unwrap(),
+    );
     assert_eq!(first.device_ordinal(), device.ordinal());
     assert_eq!(second.device_ordinal(), device.ordinal());
     assert_ne!(first.admission_request_id(), second.admission_request_id());
@@ -304,7 +310,10 @@ async fn same_device_attempts_have_distinct_grant_domain_stream_lane_and_job_ide
     // are held simultaneously: admission acquires one exclusive lane before it
     // can create the root stream/domain envelope, and no lane has been released.
     assert!(
-        session.try_admit_query_with_request(QueryAdmissionRequest::new()).unwrap().is_none(),
+        session
+            .try_admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(QUERY_CAP_BYTES))
+            .unwrap()
+            .is_none(),
         "two live attempts must exhaust exactly the two configured attempt lanes",
     );
 
@@ -370,7 +379,7 @@ async fn backend_clone_sessions_share_identity_ledger_worker_pools_and_startup_r
     let device = DeviceId::current().unwrap();
     let core = GpuBackendCore::builder(backend_draft_with_limits_and_queue_bounds(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(10), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(10) },
         1,
     ))
     .build()

@@ -23,7 +23,7 @@ use crate::core::error::{self, Error, ErrorCode, Result};
 #[must_use = "dropping the registration removes the attempt stream route"]
 pub struct AttemptStreamProviderRegistration {
     parent: CudaStream,
-    auxiliary: Vec<CudaStream>,
+    fork_streams: Vec<CudaStream>,
     parent_raw: usize,
 }
 
@@ -45,7 +45,7 @@ impl std::fmt::Debug for AttemptStreamProviderRegistration {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("AttemptStreamProviderRegistration")
             .field("parent", &self.parent)
-            .field("auxiliary_count", &self.auxiliary.len())
+            .field("auxiliary_count", &self.fork_streams.len())
             .finish()
     }
 }
@@ -56,9 +56,9 @@ impl AttemptStreamProviderRegistration {
     /// Every auxiliary stream must be a live stream on the same CUDA device as
     /// the parent. The caller must also attach each stream to the attempt's
     /// memory-domain member before native work can allocate through it.
-    pub fn register(parent: &CudaStream, auxiliary: &[CudaStream]) -> Result<Self> {
+    pub fn register(parent: &CudaStream, fork_streams: &[CudaStream]) -> Result<Self> {
         let operation = "runtime::AttemptStreamProviderRegistration::register";
-        if auxiliary.is_empty() {
+        if fork_streams.is_empty() {
             return Err(Error::new_with(
                 ErrorCode::ForeignInvalidArgument,
                 operation,
@@ -66,7 +66,7 @@ impl AttemptStreamProviderRegistration {
             ));
         }
         if let Some((index, stream)) =
-            auxiliary.iter().enumerate().find(|(_, stream)| stream.device() != parent.device())
+            fork_streams.iter().enumerate().find(|(_, stream)| stream.device() != parent.device())
         {
             return Err(Error::new_with(
                 ErrorCode::RuntimeBindingMismatch,
@@ -79,19 +79,23 @@ impl AttemptStreamProviderRegistration {
         }
 
         let retained_parent = parent.clone();
-        let retained_auxiliary = auxiliary.to_vec();
+        let retained_fork_streams = fork_streams.to_vec();
         let _entry = DeviceEntryGuard::enter(parent.device(), operation)?;
         let parent_raw = parent.interop_raw_handle()?;
-        let auxiliary_raw = auxiliary.iter().map(CudaStream::interop_raw_handle).collect::<Result<Vec<_>>>()?;
+        let fork_streams_raw = fork_streams.iter().map(CudaStream::interop_raw_handle).collect::<Result<Vec<_>>>()?;
         error::check_status_in(
             // SAFETY: all pointers refer to live CUDA streams retained by the
             // returned registration and by the caller's attempt owners.
             unsafe {
-                cudf_sys::cudf_stream_provider_register_attempt(parent_raw, auxiliary_raw.as_ptr(), auxiliary_raw.len())
+                cudf_sys::cudf_stream_provider_register_attempt(
+                    parent_raw,
+                    fork_streams_raw.as_ptr(),
+                    fork_streams_raw.len(),
+                )
             },
             operation,
         )?;
-        Ok(Self { parent: retained_parent, auxiliary: retained_auxiliary, parent_raw: parent_raw as usize })
+        Ok(Self { parent: retained_parent, fork_streams: retained_fork_streams, parent_raw: parent_raw as usize })
     }
 
     /// Return the parent stream retained by this route.
@@ -101,7 +105,7 @@ impl AttemptStreamProviderRegistration {
 
     /// Return the number of attempt-owned auxiliary streams in the route.
     pub fn auxiliary_count(&self) -> usize {
-        self.auxiliary.len()
+        self.fork_streams.len()
     }
 
     /// Attach one additional live attempt-member stream as a valid fork parent.
@@ -135,7 +139,7 @@ impl Drop for AttemptStreamProviderRegistration {
         let operation = "runtime::AttemptStreamProviderRegistration::drop";
         // This native operation only removes a process-local stream map entry;
         // it must still run when the owner device is unhealthy or unavailable.
-        // The registration owns the parent and auxiliary stream clones, so the
+        // The registration owns the parent and fork stream clones, so the
         // map is removed before any raw stream can die.
         let status =
             unsafe { cudf_sys::cudf_stream_provider_unregister_attempt(self.parent_raw as *mut std::ffi::c_void) };

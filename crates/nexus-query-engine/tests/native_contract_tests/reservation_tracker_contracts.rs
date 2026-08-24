@@ -1,9 +1,9 @@
 use nexus_query_engine::{
     exec::reservation_contract_testing::{
-        probe_alias_contract, probe_alias_outlives_source_release_contract, probe_denial_capacity_after_alias,
+        probe_alias_contract, probe_alias_outlives_source_release_contract,
         probe_join_materialization_txn_rollback_contract, probe_transfer_contract,
     },
-    metrics::{MemoryReservationEventAction, MemoryReservationEventOutcome},
+    metrics::MemoryReservationEventAction,
 };
 
 #[test]
@@ -91,30 +91,6 @@ fn reservation_tracker_alias_keeps_charge_live_after_source_release() {
     assert_eq!(probe.metrics.reservation_requested_bytes, 60);
     assert_eq!(probe.metrics.reservation_granted_bytes, 60);
     assert_eq!(probe.metrics.reservation_live_peak_bytes, 60);
-}
-
-#[test]
-fn reservation_tracker_denial_capacity_ignores_alias_tokens() {
-    let probe = probe_denial_capacity_after_alias().expect("denial capacity probe should run");
-
-    assert_eq!(probe.reserved_after_denial, 70);
-    assert_eq!(probe.error.fact_value("granted_bytes"), Some("30"));
-    assert_eq!(probe.error.fact_value("requested_bytes"), Some("40"));
-    assert_eq!(probe.error.fact_value("memory_boundary"), Some("join_probe_side"));
-    assert_eq!(probe.metrics.reservation_denied_count, 1);
-    assert_eq!(probe.metrics.reservation_requested_bytes, 110);
-    assert_eq!(probe.metrics.reservation_granted_bytes, 70);
-    assert_eq!(probe.metrics.reservation_live_peak_bytes, 70);
-
-    let denied = probe
-        .metrics
-        .reservation_events
-        .iter()
-        .find(|event| event.outcome == MemoryReservationEventOutcome::Denied)
-        .expect("probe should record a denial event");
-    assert_eq!(denied.current_reserved_bytes, 70);
-    assert_eq!(denied.granted_bytes, 30);
-    assert_eq!(denied.charged_delta_bytes, 0);
 }
 
 #[test]

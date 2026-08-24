@@ -18,9 +18,9 @@ use super::{
     DeploymentIoCapability, DeviceLedgerReport, GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership,
 };
 use super::{
-    DeviceLedger, DeviceRegistry, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext,
-    GpuExecutionJobKind, GpuExecutionPool, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryGrant,
-    MemoryResourcePolicy, SourceChunkPlanningMode, SourceSchedulerPolicy,
+    DeviceRegistry, ExecutionBoundaryPolicy, ExecutionCancellation, ExecutionContext, GpuExecutionJobKind,
+    GpuExecutionPool, LakehouseCacheFillConfig, MemoryControlPolicy, MemoryGrant, MemoryResourcePolicy,
+    SourceChunkPlanningMode, SourceSchedulerPolicy,
     cache_events::LakehouseCacheFillEventSink,
     context::{ExecutionContextParts, QueryServiceEpochUser, validate_service_stream_pool_device},
 };

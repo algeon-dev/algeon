@@ -17,7 +17,6 @@ pub(in crate::exec::bounded) struct BoundedPartitionTargetPolicy {
     reusable_hash_join_stream_max_target_bytes: u64,
     reusable_hash_join_stream_budget_divisor: u64,
     reusable_hash_join_stream_live_divisor: u64,
-    join_materialize_stream_quantum_bytes: u64,
 }
 
 impl BoundedPartitionTargetPolicy {
@@ -31,7 +30,6 @@ impl BoundedPartitionTargetPolicy {
     pub(in crate::exec::bounded) const DEFAULT_REUSABLE_HASH_JOIN_STREAM_MAX_TARGET_BYTES: u64 = 512 * 1024 * 1024;
     pub(in crate::exec::bounded) const DEFAULT_REUSABLE_HASH_JOIN_STREAM_BUDGET_DIVISOR: u64 = 8;
     pub(in crate::exec::bounded) const DEFAULT_REUSABLE_HASH_JOIN_STREAM_LIVE_DIVISOR: u64 = 16;
-    pub(in crate::exec::bounded) const DEFAULT_JOIN_MATERIALIZE_STREAM_QUANTUM_BYTES: u64 = 8 * 1024;
 
     pub(in crate::exec::bounded) fn aggregate_partition_target_bytes(self, device_budget_bytes: u64) -> u64 {
         (device_budget_bytes / self.aggregate_partition_budget_divisor)
@@ -60,10 +58,6 @@ impl BoundedPartitionTargetPolicy {
         let live_target = remaining_bytes.saturating_div(self.reusable_hash_join_stream_live_divisor);
         if live_target == 0 { policy_target } else { policy_target.min(live_target) }
     }
-
-    pub(in crate::exec::bounded) fn join_materialize_stream_quantum_bytes(self) -> u64 {
-        self.join_materialize_stream_quantum_bytes
-    }
 }
 
 impl Default for BoundedPartitionTargetPolicy {
@@ -79,7 +73,6 @@ impl Default for BoundedPartitionTargetPolicy {
             reusable_hash_join_stream_max_target_bytes: Self::DEFAULT_REUSABLE_HASH_JOIN_STREAM_MAX_TARGET_BYTES,
             reusable_hash_join_stream_budget_divisor: Self::DEFAULT_REUSABLE_HASH_JOIN_STREAM_BUDGET_DIVISOR,
             reusable_hash_join_stream_live_divisor: Self::DEFAULT_REUSABLE_HASH_JOIN_STREAM_LIVE_DIVISOR,
-            join_materialize_stream_quantum_bytes: Self::DEFAULT_JOIN_MATERIALIZE_STREAM_QUANTUM_BYTES,
         }
     }
 }
@@ -165,14 +158,6 @@ mod tests {
         assert_eq!(
             policy.reusable_hash_join_stream_target_output_bytes(MemoryControlPolicy::Unbounded, u64::MAX),
             BoundedPartitionTargetPolicy::DEFAULT_REUSABLE_HASH_JOIN_STREAM_MAX_TARGET_BYTES
-        );
-    }
-
-    #[test]
-    fn join_materialize_stream_quantum_preserves_admission_floor() {
-        assert_eq!(
-            BoundedPartitionTargetPolicy::default().join_materialize_stream_quantum_bytes(),
-            BoundedPartitionTargetPolicy::DEFAULT_JOIN_MATERIALIZE_STREAM_QUANTUM_BYTES
         );
     }
 }

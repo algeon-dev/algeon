@@ -303,8 +303,15 @@ pub fn set_producer_occurrences(
     }
 
     #[doc(hidden)]
-pub fn producer_occurrences(&self) -> &[AttemptReservationProducerOccurrence] {
+    pub fn producer_occurrences(&self) -> &[AttemptReservationProducerOccurrence] {
         &self.producer_occurrences
+    }
+
+    pub(crate) fn producer_occurrence_scope_count(&self, execution_scope_fingerprint: &str) -> usize {
+        self.producer_occurrences
+            .iter()
+            .filter(|occurrence| occurrence.execution_scope_fingerprint == execution_scope_fingerprint)
+            .count()
     }
 
     #[doc(hidden)]

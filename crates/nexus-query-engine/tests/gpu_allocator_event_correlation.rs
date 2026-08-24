@@ -20,7 +20,7 @@ use nexus_query_engine::{
 };
 
 const STATIC_PARTITION_BYTES: u64 = 1024 * 1024 * 1024;
-const ATTEMPT_FLOOR_BYTES: u64 = 384 * 1024 * 1024;
+const QUERY_LIMIT_BYTES: u64 = 384 * 1024 * 1024;
 const SECOND_REQUEST_DELTA_BYTES: usize = 2 * 1024 * 1024;
 const HEALTHY_REUSE_REQUEST_BYTES: usize = 1024 * 1024;
 
@@ -42,12 +42,12 @@ fn non_gds_deployment() -> DeploymentIoCapability {
 fn test_backend(device: DeviceId) -> GpuBackendCore {
     let controller = GpuBackendControllerDraft::new(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(10), max_overtakes_per_waiter: 1 },
+        QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(10) },
     );
     let device = GpuBackendDeviceConfig::new(
         GpuBackendDeviceProfile::new(device.ordinal())
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: STATIC_PARTITION_BYTES })
-            .with_attempt_floor_bytes(ATTEMPT_FLOOR_BYTES)
+            .with_default_query_limit_bytes(QUERY_LIMIT_BYTES)
             .with_source_work_per_attempt(1)
             .with_max_active_attempts(2)
             .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(4, 2, 2)),
@@ -99,7 +99,7 @@ fn commit_allocation_failure(owner: &AttemptOwner, error: cudf::Error) {
         "real framebuffer pressure rejected the query-domain allocation",
         error,
     );
-    assert_eq!(error.code(), QueryErrorCode::CudfResourceExhausted);
+    assert_eq!(error.code(), QueryErrorCode::DeviceOutOfMemory);
     owner.commit_query_error(&error).expect("physical allocator failure terminalizes the attempt");
 }
 
@@ -178,11 +178,8 @@ async fn overlapping_query_domains_keep_real_physical_allocator_events_exact_and
         second.context.context().attempt_allocation_domain_id(),
         "overlapping attempts must own distinct native allocation domains",
     );
-    assert_ne!(
-        first.handle.device_budget_bytes(),
-        second.handle.device_budget_bytes(),
-        "overlapping domains retain independently computed immutable grants",
-    );
+    assert_eq!(first.handle.device_budget_bytes(), QUERY_LIMIT_BYTES);
+    assert_eq!(second.handle.device_budget_bytes(), QUERY_LIMIT_BYTES);
     let first_domain_cap_bytes = domain_cap_bytes(&first.context);
     let second_domain_cap_bytes = domain_cap_bytes(&second.context);
     assert_eq!(first_domain_cap_bytes, first.handle.device_budget_bytes());

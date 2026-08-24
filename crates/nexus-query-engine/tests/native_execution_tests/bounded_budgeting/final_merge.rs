@@ -103,7 +103,7 @@ fn bounded_context_executes_wide_global_final_merge_without_partitioned_path() {
     let plan = builder.finish_with_host_sink(aggregate);
 
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
-        device_budget_bytes: 300_000,
+        device_budget_bytes: NATIVE_EXECUTION_TEST_QUERY_LIMIT_BYTES,
         max_source_chunk_bytes: 1024 * 1024,
         max_row_groups_per_chunk: 1,
         max_retry_attempts: 3,
@@ -134,7 +134,7 @@ fn bounded_context_executes_wide_global_final_merge_without_partitioned_path() {
 }
 
 #[test]
-fn bounded_context_reports_retry_facts_when_final_merge_retry_exhausts() {
+fn bounded_context_reports_query_cap_failure_during_final_merge() {
     let dir = unique_temp_dir("nexus-query-engine-raw-bounded-final-merge-retry-exhausted");
     let paths = (0..8).map(|index| dir.join(format!("input{index}.parquet"))).collect::<Vec<_>>();
     let retained_payload_bytes = 64 * 1024;
@@ -229,27 +229,17 @@ fn bounded_context_reports_retry_facts_when_final_merge_retry_exhausts() {
         min_retry_chunk_row_groups: 1,
     });
     let error = match execute_query_plan(&context, &plan) {
-        Ok(_) => panic!("bounded execution should fail after exhausting final merge retry fan-in"),
+        Ok(_) => panic!("bounded execution should fail at the final merge hard cap"),
         Err(error) => error,
     };
 
-    assert!(matches!(error.code(), QueryErrorCode::MemoryReservationFailed | QueryErrorCode::CudfResourceExhausted));
-    assert_eq!(error.fact_value("memory_boundary"), Some("final_aggregate_merge"));
-    assert_eq!(error.fact_value("stage"), Some("final_merge"));
-    assert_eq!(error.fact_value("attempt"), Some("1"));
-    assert_eq!(error.fact_value("max_attempts"), Some("1"));
-    assert_eq!(error.fact_value("retry_action"), Some("retry_attempts_exhausted"));
-    assert_eq!(error.fact_value("resume_boundary"), Some("final_merge"));
-    assert_eq!(error.fact_value("committed_chunks"), Some("24"));
-    assert_eq!(error.fact_value("committed_partials"), Some("24"));
-    assert_eq!(error.fact_value("merge_level"), Some("1"));
-    assert_eq!(error.fact_value("merge_fan_in"), Some("24"));
-    if error.code() == QueryErrorCode::MemoryReservationFailed {
-        assert_eq!(error.fact_value("reservation_kind"), Some("final_merge"));
-    } else {
-        assert_eq!(error.fact_value("budget_boundary"), Some("final_aggregate_merge"));
-        assert_eq!(error.fact_value("budget_enforcement"), Some("query_domain_member"));
-    }
+    assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded);
+    assert_eq!(error.operation(), "nexus_query_engine.final_merge.concat_partials");
+    assert_eq!(error.fact_value("budget_boundary"), Some("final_aggregate_merge"));
+    assert_eq!(error.fact_value("budget_enforcement"), Some("query_domain_member"));
+    assert_eq!(error.fact_value("failure_source"), Some("RESERVATION_LIMIT"));
+    assert!(error.fact_value("requested_allocation_bytes").is_some());
+    assert_eq!(error.fact_value("partial_aggregate_count"), Some("24"));
 
     fs::remove_dir_all(dir).unwrap();
 }

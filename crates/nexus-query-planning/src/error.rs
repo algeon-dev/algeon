@@ -92,6 +92,24 @@ pub enum QueryErrorCode {
     /// The service admission layer rejected the query because shared bounded
     /// capacity is saturated.
     ServiceOverloaded,
+    /// The requested query cap cannot fit on any eligible device after
+    /// subtracting resident ownership.
+    QueryBudgetUnavailable,
+    /// The query domain rejected an actual or exact-required allocation over
+    /// the query's fixed memory cap.
+    QueryMemoryLimitExceeded,
+    /// A device allocation failed with confirmed physical-memory provenance.
+    DeviceOutOfMemory,
+    /// A device allocation failed without confirmed physical-memory provenance.
+    DeviceAllocationFailed,
+    /// A persistent device or CUDA runtime fault made the affected device
+    /// unavailable.
+    DeviceFault,
+    /// Cleanup or synchronization could not establish safe release of the
+    /// attempt's device resources.
+    CleanupFailed,
+    /// An owner, provenance, ledger, or stream-routing invariant was violated.
+    InternalInvariantViolation,
     /// An internal native-engine bug or unreachable condition.
     Internal,
 }
@@ -126,6 +144,13 @@ impl QueryErrorCode {
         Self::CudfInvariantViolation,
         Self::MemoryReservationFailed,
         Self::ServiceOverloaded,
+        Self::QueryBudgetUnavailable,
+        Self::QueryMemoryLimitExceeded,
+        Self::DeviceOutOfMemory,
+        Self::DeviceAllocationFailed,
+        Self::DeviceFault,
+        Self::CleanupFailed,
+        Self::InternalInvariantViolation,
         Self::Internal,
     ];
 
@@ -156,6 +181,13 @@ impl QueryErrorCode {
             Self::CudfInvariantViolation => "cudf_invariant_violation",
             Self::MemoryReservationFailed => "memory_reservation_failed",
             Self::ServiceOverloaded => "service_overloaded",
+            Self::QueryBudgetUnavailable => "query_budget_unavailable",
+            Self::QueryMemoryLimitExceeded => "query_memory_limit_exceeded",
+            Self::DeviceOutOfMemory => "device_out_of_memory",
+            Self::DeviceAllocationFailed => "device_allocation_failed",
+            Self::DeviceFault => "device_fault",
+            Self::CleanupFailed => "cleanup_failed",
+            Self::InternalInvariantViolation => "internal_invariant_violation",
             Self::Internal => "internal",
         }
     }
@@ -279,7 +311,11 @@ pub const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
         | QueryErrorCode::SizeOverflow
         | QueryErrorCode::HostMaterializationLimitExceeded
         | QueryErrorCode::MemoryReservationFailed
-        | QueryErrorCode::ServiceOverloaded => QueryErrorKind::ResourceExhausted,
+        | QueryErrorCode::ServiceOverloaded
+        | QueryErrorCode::QueryBudgetUnavailable
+        | QueryErrorCode::QueryMemoryLimitExceeded
+        | QueryErrorCode::DeviceOutOfMemory
+        | QueryErrorCode::DeviceAllocationFailed => QueryErrorKind::ResourceExhausted,
         QueryErrorCode::CudfTemporaryFailure
         | QueryErrorCode::CudfPersistentFailure
         | QueryErrorCode::CudfDependencyFailure
@@ -287,8 +323,12 @@ pub const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
         | QueryErrorCode::SourceAccessDenied
         | QueryErrorCode::SourceUnauthenticated
         | QueryErrorCode::SourceObjectNotFound
-        | QueryErrorCode::SourceTemporaryFailure => QueryErrorKind::DependencyFailure,
-        QueryErrorCode::CudfInvariantViolation => QueryErrorKind::InvariantViolation,
+        | QueryErrorCode::SourceTemporaryFailure
+        | QueryErrorCode::DeviceFault
+        | QueryErrorCode::CleanupFailed => QueryErrorKind::DependencyFailure,
+        QueryErrorCode::CudfInvariantViolation | QueryErrorCode::InternalInvariantViolation => {
+            QueryErrorKind::InvariantViolation
+        },
         QueryErrorCode::Internal => QueryErrorKind::Internal,
     }
 }
@@ -307,7 +347,10 @@ pub const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
         | QueryErrorCode::CudfTemporaryFailure
         | QueryErrorCode::SourceTemporaryFailure
         | QueryErrorCode::MemoryReservationFailed
-        | QueryErrorCode::ServiceOverloaded => QueryErrorStatus::Temporary,
+        | QueryErrorCode::ServiceOverloaded
+        | QueryErrorCode::QueryBudgetUnavailable
+        | QueryErrorCode::DeviceOutOfMemory
+        | QueryErrorCode::DeviceAllocationFailed => QueryErrorStatus::Temporary,
         QueryErrorCode::CudfPersistentFailure => QueryErrorStatus::Persistent,
         QueryErrorCode::UnsupportedPlanShape
         | QueryErrorCode::UnsupportedOperator
@@ -326,7 +369,10 @@ pub const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
         | QueryErrorCode::SourceUnauthenticated
         | QueryErrorCode::SourceObjectNotFound
         | QueryErrorCode::CudfInvariantViolation
-        | QueryErrorCode::Internal => QueryErrorStatus::Permanent,
+        | QueryErrorCode::QueryMemoryLimitExceeded
+        | QueryErrorCode::InternalInvariantViolation => QueryErrorStatus::Permanent,
+        QueryErrorCode::DeviceFault | QueryErrorCode::CleanupFailed => QueryErrorStatus::Persistent,
+        QueryErrorCode::Internal => QueryErrorStatus::Permanent,
     }
 }
 
@@ -345,7 +391,10 @@ pub const fn triage_code_for_query_error(code: QueryErrorCode) -> crate::triage:
         QueryErrorCode::CudfUnsupported => crate::triage::TriageCode::UnsupportedPlanShape,
         QueryErrorCode::CudfResourceExhausted
         | QueryErrorCode::SizeOverflow
-        | QueryErrorCode::HostMaterializationLimitExceeded => crate::triage::TriageCode::ResourceExhausted,
+        | QueryErrorCode::HostMaterializationLimitExceeded
+        | QueryErrorCode::QueryMemoryLimitExceeded
+        | QueryErrorCode::DeviceOutOfMemory
+        | QueryErrorCode::DeviceAllocationFailed => crate::triage::TriageCode::ResourceExhausted,
         QueryErrorCode::CudfTemporaryFailure
         | QueryErrorCode::CudfPersistentFailure
         | QueryErrorCode::CudfDependencyFailure
@@ -358,6 +407,9 @@ pub const fn triage_code_for_query_error(code: QueryErrorCode) -> crate::triage:
         | QueryErrorCode::SourceObjectNotFound
         | QueryErrorCode::SourceTemporaryFailure => crate::triage::TriageCode::SourceFailure,
         QueryErrorCode::MemoryReservationFailed => crate::triage::TriageCode::MemoryReservationDenied,
+        QueryErrorCode::QueryBudgetUnavailable => crate::triage::TriageCode::MemoryReservationDenied,
+        QueryErrorCode::DeviceFault | QueryErrorCode::CleanupFailed => crate::triage::TriageCode::DependencyFailure,
+        QueryErrorCode::InternalInvariantViolation => crate::triage::TriageCode::InvariantViolation,
     }
 }
 
@@ -389,6 +441,13 @@ pub enum AttemptFailureCode {
     CudfInvariantViolation,
     MemoryReservationFailed,
     ServiceOverloaded,
+    QueryBudgetUnavailable,
+    QueryMemoryLimitExceeded,
+    DeviceOutOfMemory,
+    DeviceAllocationFailed,
+    DeviceFault,
+    CleanupFailed,
+    InternalInvariantViolation,
     Internal,
     BackendClosing,
     DatafusionError,
@@ -429,6 +488,13 @@ impl AttemptFailureCode {
             Self::CudfInvariantViolation => "cudf_invariant_violation",
             Self::MemoryReservationFailed => "memory_reservation_failed",
             Self::ServiceOverloaded => "service_overloaded",
+            Self::QueryBudgetUnavailable => "query_budget_unavailable",
+            Self::QueryMemoryLimitExceeded => "query_memory_limit_exceeded",
+            Self::DeviceOutOfMemory => "device_out_of_memory",
+            Self::DeviceAllocationFailed => "device_allocation_failed",
+            Self::DeviceFault => "device_fault",
+            Self::CleanupFailed => "cleanup_failed",
+            Self::InternalInvariantViolation => "internal_invariant_violation",
             Self::Internal => "internal",
             Self::BackendClosing => "backend_closing",
             Self::DatafusionError => "datafusion_error",
@@ -467,6 +533,13 @@ pub const fn attempt_failure_code_for_query_error(code: QueryErrorCode) -> Attem
         QueryErrorCode::CudfInvariantViolation => AttemptFailureCode::CudfInvariantViolation,
         QueryErrorCode::MemoryReservationFailed => AttemptFailureCode::MemoryReservationFailed,
         QueryErrorCode::ServiceOverloaded => AttemptFailureCode::ServiceOverloaded,
+        QueryErrorCode::QueryBudgetUnavailable => AttemptFailureCode::QueryBudgetUnavailable,
+        QueryErrorCode::QueryMemoryLimitExceeded => AttemptFailureCode::QueryMemoryLimitExceeded,
+        QueryErrorCode::DeviceOutOfMemory => AttemptFailureCode::DeviceOutOfMemory,
+        QueryErrorCode::DeviceAllocationFailed => AttemptFailureCode::DeviceAllocationFailed,
+        QueryErrorCode::DeviceFault => AttemptFailureCode::DeviceFault,
+        QueryErrorCode::CleanupFailed => AttemptFailureCode::CleanupFailed,
+        QueryErrorCode::InternalInvariantViolation => AttemptFailureCode::InternalInvariantViolation,
         QueryErrorCode::Internal => AttemptFailureCode::Internal,
     }
 }
@@ -691,11 +764,12 @@ impl QueryError {
     /// facts.
     pub fn from_cudf(operation: &'static str, message: impl Into<String>, source: cudf::Error) -> Self {
         let code = code_for_cudf_error(&source);
-        let error = Self::new(code, operation, message)
+        let mut error = Self::new(code, operation, message)
             .with_fact("cudf_code", source.code())
             .with_fact("cudf_kind", source.kind())
             .with_fact("cudf_status", source.status())
             .with_fact("cudf_operation", source.operation());
+        error = with_cudf_ffi_detail_facts(error, &source);
         match cudf_message_fact(&source) {
             Some(cudf_message) => error.with_fact("cudf_message", cudf_message),
             None => error,
@@ -756,11 +830,12 @@ impl QueryError {
     #[doc(hidden)]
     pub fn from_cudf_without_source(operation: &'static str, message: impl Into<String>, source: &cudf::Error) -> Self {
         let code = code_for_cudf_error(source);
-        let error = Self::new(code, operation, message)
+        let mut error = Self::new(code, operation, message)
             .with_fact("cudf_code", source.code())
             .with_fact("cudf_kind", source.kind())
             .with_fact("cudf_status", source.status())
             .with_fact("cudf_operation", source.operation());
+        error = with_cudf_ffi_detail_facts(error, source);
         match cudf_message_fact(source) {
             Some(cudf_message) => error.with_fact("cudf_message", cudf_message),
             None => error,
@@ -920,6 +995,27 @@ fn cudf_budget_details(source: &cudf::Error) -> Vec<(&'static str, String)> {
         .collect()
 }
 
+fn with_cudf_ffi_detail_facts(mut error: QueryError, source: &cudf::Error) -> QueryError {
+    let Some(detail) = source.ffi_detail() else {
+        return error;
+    };
+    error = error
+        .with_fact("failure_source", detail.failure_source)
+        .with_fact("requested_allocation_bytes", detail.requested_bytes)
+        .with_fact("allocation_alignment", detail.alignment)
+        .with_fact("cuda_status", detail.cuda_error);
+    if detail.domain_id != 0 {
+        error = error.with_fact("allocation_domain_id", detail.domain_id);
+    }
+    if detail.member_id != 0 {
+        error = error.with_fact("allocation_member_id", detail.member_id);
+    }
+    if detail.generation != 0 {
+        error = error.with_fact("allocation_domain_generation", detail.generation);
+    }
+    error
+}
+
 impl fmt::Display for QueryError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -986,18 +1082,31 @@ impl StdError for QueryError {
 // `NotFound` is treated as invalid input, `ExecutionContext` is treated as an
 // invariant violation, and unknown kinds fall back to dependency failure.
 fn code_for_cudf_error(error: &cudf::Error) -> QueryErrorCode {
+    if error.budget_exhaustion().is_some() {
+        return QueryErrorCode::QueryMemoryLimitExceeded;
+    }
+    if let Some(detail) = error.ffi_detail() {
+        match detail.failure_source {
+            cudf::CudfErrorFailureSource::ReservationLimit => {
+                return QueryErrorCode::QueryMemoryLimitExceeded;
+            },
+            cudf::CudfErrorFailureSource::Physical => return QueryErrorCode::DeviceOutOfMemory,
+            cudf::CudfErrorFailureSource::Unknown => {},
+            _ => {},
+        }
+    }
     match cudf::classify_cudf_error(error) {
         cudf::CudfErrorClassification::SizeOverflow => QueryErrorCode::SizeOverflow,
         cudf::CudfErrorClassification::HostMaterializationLimitExceeded => {
             QueryErrorCode::HostMaterializationLimitExceeded
         },
-        cudf::CudfErrorClassification::ResourceExhausted => QueryErrorCode::CudfResourceExhausted,
+        cudf::CudfErrorClassification::ResourceExhausted => QueryErrorCode::DeviceAllocationFailed,
         cudf::CudfErrorClassification::TemporaryFailure => QueryErrorCode::CudfTemporaryFailure,
-        cudf::CudfErrorClassification::PersistentFailure => QueryErrorCode::CudfPersistentFailure,
+        cudf::CudfErrorClassification::PersistentFailure => QueryErrorCode::DeviceFault,
         cudf::CudfErrorClassification::InvalidInput => QueryErrorCode::CudfInvalidInput,
         cudf::CudfErrorClassification::Unsupported => QueryErrorCode::CudfUnsupported,
         cudf::CudfErrorClassification::DependencyFailure => QueryErrorCode::CudfDependencyFailure,
-        cudf::CudfErrorClassification::InvariantViolation => QueryErrorCode::CudfInvariantViolation,
+        cudf::CudfErrorClassification::InvariantViolation => QueryErrorCode::InternalInvariantViolation,
     }
 }
 
@@ -1006,11 +1115,11 @@ fn code_for_cuvs_error(error: &cuvs::Error) -> QueryErrorCode {
     match error.kind() {
         cuvs::ErrorKind::InvalidInput => QueryErrorCode::CudfInvalidInput,
         cuvs::ErrorKind::Unsupported => QueryErrorCode::CudfUnsupported,
-        cuvs::ErrorKind::OutOfMemory => QueryErrorCode::CudfResourceExhausted,
-        cuvs::ErrorKind::InvalidState => QueryErrorCode::CudfInvariantViolation,
+        cuvs::ErrorKind::OutOfMemory => QueryErrorCode::DeviceAllocationFailed,
+        cuvs::ErrorKind::InvalidState => QueryErrorCode::InternalInvariantViolation,
         cuvs::ErrorKind::Unexpected => match error.status() {
             cuvs::ErrorStatus::Temporary => QueryErrorCode::CudfTemporaryFailure,
-            cuvs::ErrorStatus::Persistent => QueryErrorCode::CudfPersistentFailure,
+            cuvs::ErrorStatus::Persistent => QueryErrorCode::DeviceFault,
             cuvs::ErrorStatus::Permanent => QueryErrorCode::CudfDependencyFailure,
         },
         _ => QueryErrorCode::CudfDependencyFailure,
@@ -1111,8 +1220,8 @@ mod tests {
         let cases = [
             (cuvs::Error::new(cuvs::ErrorKind::InvalidInput, "cuvs.invalid"), QueryErrorCode::CudfInvalidInput),
             (cuvs::Error::new(cuvs::ErrorKind::Unsupported, "cuvs.unsupported"), QueryErrorCode::CudfUnsupported),
-            (cuvs::Error::new(cuvs::ErrorKind::OutOfMemory, "cuvs.oom"), QueryErrorCode::CudfResourceExhausted),
-            (cuvs::Error::new(cuvs::ErrorKind::InvalidState, "cuvs.state"), QueryErrorCode::CudfInvariantViolation),
+            (cuvs::Error::new(cuvs::ErrorKind::OutOfMemory, "cuvs.oom"), QueryErrorCode::DeviceAllocationFailed),
+            (cuvs::Error::new(cuvs::ErrorKind::InvalidState, "cuvs.state"), QueryErrorCode::InternalInvariantViolation),
             (
                 cuvs::Error::new(cuvs::ErrorKind::Unexpected, "cuvs.temporary")
                     .with_context("native_status", "CUVS_ERROR")
@@ -1121,7 +1230,7 @@ mod tests {
             ),
             (
                 cuvs::Error::new(cuvs::ErrorKind::Unexpected, "cuvs.persistent").set_persistent(),
-                QueryErrorCode::CudfPersistentFailure,
+                QueryErrorCode::DeviceFault,
             ),
         ];
         for (source, expected) in cases {

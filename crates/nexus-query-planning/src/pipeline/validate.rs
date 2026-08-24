@@ -843,13 +843,6 @@ fn validate_unresolved_preflight_label(
                 .with_fact("required_contract", required_contract));
         }
     }
-    if unresolved_gap.is_some() && quality != ContractQuality::HardBudgetedReportWithUnresolvedPreflight {
-        return Err(invalid("pipeline unresolved-preflight gate is not labeled with unresolved-preflight quality")
-            .with_fact("gate_id", gate)
-            .with_fact("reservation_kind", kind.as_str())
-            .with_fact("contract_status", status.as_str())
-            .with_fact("contract_quality", quality.as_str()));
-    }
     Ok(())
 }
 

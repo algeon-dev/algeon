@@ -2,9 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::join_strategy::CompiledJoinExecutionStrategy;
 use crate::{
-    capability::{
-        CapabilityDecision, ContractQuality, ContractStatus, KeylessConditionalJoinKind, SubgraphInvariantKind,
-    },
+    capability::{CapabilityDecision, ContractStatus, KeylessConditionalJoinKind, SubgraphInvariantKind},
     error::Result,
     execution_contracts::ReservationKind,
     pipeline::{
@@ -199,11 +197,7 @@ fn join_strategy_specific_reservations_are_modeled(
         },
         CompiledJoinExecutionStrategy::FilteredSemiAnti => {
             task_runtime_attachment_has_modeled_reservation_gate(pipeline, group.build, ReservationKind::HashTable)
-                && task_has_hard_budgeted_modeled_reservation_gate(
-                    pipeline,
-                    group.build,
-                    ReservationKind::OperatorOutput,
-                )
+                && task_has_modeled_reservation_gate(pipeline, group.build, ReservationKind::OperatorOutput)
                 && task_runtime_attachment_has_modeled_reservation_gate(
                     pipeline,
                     group.materialize,
@@ -341,32 +335,14 @@ fn sink_boundary_shape_is_in_d3_6_envelope(pipeline: &CompiledPipeline) -> bool 
 
 fn task_reservation_gates_are_in_d2_envelope(pipeline: &CompiledPipeline) -> bool {
     pipeline.tasks().iter().all(|task| match task.kind() {
-        PipelineTaskKind::Aggregate => {
-            task_has_hard_budgeted_modeled_reservation_gate(pipeline, task, ReservationKind::OperatorOutput)
-        },
-        PipelineTaskKind::Window => {
-            task_has_hard_budgeted_modeled_reservation_gate(pipeline, task, ReservationKind::OperatorOutput)
+        PipelineTaskKind::Aggregate | PipelineTaskKind::Window => {
+            task_has_modeled_reservation_gate(pipeline, task, ReservationKind::OperatorOutput)
         },
         PipelineTaskKind::Union => task_has_modeled_reservation_gate(pipeline, task, ReservationKind::OperatorOutput),
         PipelineTaskKind::FinalSort => {
-            task_has_runtime_visible_hard_budgeted_gate(pipeline, task, ReservationKind::FinalSort)
+            task_runtime_attachment_has_modeled_reservation_gate(pipeline, task, ReservationKind::FinalSort)
         },
         _ => true,
-    })
-}
-
-fn task_has_hard_budgeted_modeled_reservation_gate(
-    pipeline: &CompiledPipeline,
-    task: &PipelineTask,
-    reservation_kind: ReservationKind,
-) -> bool {
-    task.gates().iter().any(|gate_id| {
-        pipeline.gates().iter().any(|gate| {
-            gate.id() == *gate_id
-                && gate.reservation_kind() == reservation_kind
-                && gate.status() == ContractStatus::Modeled
-                && gate.quality() == ContractQuality::HardBudgetedReportWithUnresolvedPreflight
-        })
     })
 }
 
@@ -381,17 +357,6 @@ fn task_has_modeled_reservation_gate(
                 && gate.reservation_kind() == reservation_kind
                 && gate.status() == ContractStatus::Modeled
         })
-    })
-}
-
-fn task_has_runtime_visible_hard_budgeted_gate(
-    pipeline: &CompiledPipeline,
-    task: &PipelineTask,
-    reservation_kind: ReservationKind,
-) -> bool {
-    runtime_visible_gate_for_task(pipeline, task, reservation_kind).is_some_and(|gate| {
-        gate.status() == ContractStatus::Modeled
-            && gate.quality() == ContractQuality::HardBudgetedReportWithUnresolvedPreflight
     })
 }
 

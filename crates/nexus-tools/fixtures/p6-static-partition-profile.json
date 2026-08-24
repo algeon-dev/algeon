@@ -10,7 +10,7 @@
         "memory_limit_bytes": 4294967296,
         "backend_reserve_bytes": 536870912,
         "cache_cap_bytes": 0,
-        "attempt_floor_bytes": 268435456,
+        "default_query_limit_bytes": 268435456,
         "source_work_per_attempt": 2,
         "max_active_attempts": 1,
         "installation": { "stream_pool_size": 12, "worker_count": 4, "lane_count": 4 }
@@ -21,7 +21,7 @@
         "memory_limit_bytes": 4294967296,
         "backend_reserve_bytes": 536870912,
         "cache_cap_bytes": 0,
-        "attempt_floor_bytes": 268435456,
+        "default_query_limit_bytes": 268435456,
         "source_work_per_attempt": 2,
         "max_active_attempts": 1,
         "installation": { "stream_pool_size": 10, "worker_count": 2, "lane_count": 2 }
@@ -32,7 +32,7 @@
         "memory_limit_bytes": 4294967296,
         "backend_reserve_bytes": 536870912,
         "cache_cap_bytes": 0,
-        "attempt_floor_bytes": 268435456,
+        "default_query_limit_bytes": 268435456,
         "source_work_per_attempt": 2,
         "max_active_attempts": 1,
         "installation": { "stream_pool_size": 6, "worker_count": 2, "lane_count": 2 }
@@ -43,7 +43,7 @@
         "memory_limit_bytes": 17179869184,
         "backend_reserve_bytes": 536870912,
         "cache_cap_bytes": 0,
-        "attempt_floor_bytes": 268435456,
+        "default_query_limit_bytes": 268435456,
         "source_work_per_attempt": 2,
         "max_active_attempts": 1,
         "installation": { "stream_pool_size": 10, "worker_count": 2, "lane_count": 2 }
@@ -51,8 +51,7 @@
     ],
     "queue": {
       "max_queued_attempts": 64,
-      "max_queue_wait_ms": 30000,
-      "max_overtakes_per_waiter": 4
+      "max_queue_wait_ms": 30000
     },
     "native_execution": {
       "device_budget_bytes": 4294967296,

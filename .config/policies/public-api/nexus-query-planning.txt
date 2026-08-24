@@ -808,6 +808,7 @@ pub const fn nexus_query_planning::error::CugraphAllocationSource::as_str(self) 
 pub enum nexus_query_planning::error::QueryErrorCode
 pub nexus_query_planning::error::QueryErrorCode::AlgorithmDidNotConverge
 pub nexus_query_planning::error::QueryErrorCode::Cancelled
+pub nexus_query_planning::error::QueryErrorCode::CleanupFailed
 pub nexus_query_planning::error::QueryErrorCode::CudfDependencyFailure
 pub nexus_query_planning::error::QueryErrorCode::CudfInvalidInput
 pub nexus_query_planning::error::QueryErrorCode::CudfInvariantViolation
@@ -815,12 +816,18 @@ pub nexus_query_planning::error::QueryErrorCode::CudfPersistentFailure
 pub nexus_query_planning::error::QueryErrorCode::CudfResourceExhausted
 pub nexus_query_planning::error::QueryErrorCode::CudfTemporaryFailure
 pub nexus_query_planning::error::QueryErrorCode::CudfUnsupported
+pub nexus_query_planning::error::QueryErrorCode::DeviceAllocationFailed
+pub nexus_query_planning::error::QueryErrorCode::DeviceFault
+pub nexus_query_planning::error::QueryErrorCode::DeviceOutOfMemory
 pub nexus_query_planning::error::QueryErrorCode::GraphInputInvalid
 pub nexus_query_planning::error::QueryErrorCode::HostMaterializationLimitExceeded
 pub nexus_query_planning::error::QueryErrorCode::Internal
+pub nexus_query_planning::error::QueryErrorCode::InternalInvariantViolation
 pub nexus_query_planning::error::QueryErrorCode::InvalidAttemptCorrelation
 pub nexus_query_planning::error::QueryErrorCode::InvalidPlan
 pub nexus_query_planning::error::QueryErrorCode::MemoryReservationFailed
+pub nexus_query_planning::error::QueryErrorCode::QueryBudgetUnavailable
+pub nexus_query_planning::error::QueryErrorCode::QueryMemoryLimitExceeded
 pub nexus_query_planning::error::QueryErrorCode::ServiceOverloaded
 pub nexus_query_planning::error::QueryErrorCode::SizeOverflow
 pub nexus_query_planning::error::QueryErrorCode::SourceAccessDenied

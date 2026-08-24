@@ -29,7 +29,7 @@ fn shim_route_contract_rejects_unowned_and_empty_attempt_stream_sets() {
     assert!(STREAM_SHIM_HEADER.contains("cudf_stream_provider_unregister_attempt"));
     assert!(STREAM_SHIM_SOURCE.contains("fork parent is not attached to an admitted attempt"));
     assert!(STREAM_SHIM_SOURCE.contains("auxiliary stream set is empty"));
-    assert!(STREAM_SHIM_SOURCE.contains("index % route->auxiliary_streams.size()"));
+    assert!(STREAM_SHIM_SOURCE.contains("index % route->fork_streams.size()"));
     assert!(STREAM_SHIM_SOURCE.contains("attempt_stream_routes.erase(it)"));
 }
 
@@ -45,7 +45,7 @@ fn audited_backend_helpers_do_not_use_bare_global_stream_pool() {
 #[test]
 fn native_route_registry_accepts_aliases_and_drains_by_parent() {
     let parent = 0x1000usize as *mut std::ffi::c_void;
-    let auxiliary = [0x2000usize as *mut std::ffi::c_void, 0x3000usize as *mut std::ffi::c_void];
+    let fork_streams = [0x2000usize as *mut std::ffi::c_void, 0x3000usize as *mut std::ffi::c_void];
     let alias = 0x4000usize as *mut std::ffi::c_void;
 
     // These registry operations only touch the native route map; no CUDA
@@ -53,7 +53,7 @@ fn native_route_registry_accepts_aliases_and_drains_by_parent() {
     unsafe {
         assert_eq!(cudf_sys::cudf_stream_provider_install(), cudf_sys::CUDF_SUCCESS);
         assert_eq!(
-            cudf_sys::cudf_stream_provider_register_attempt(parent, auxiliary.as_ptr(), auxiliary.len()),
+            cudf_sys::cudf_stream_provider_register_attempt(parent, fork_streams.as_ptr(), fork_streams.len()),
             cudf_sys::CUDF_SUCCESS
         );
         assert_eq!(cudf_sys::cudf_stream_provider_attach_attempt_stream(parent, alias), cudf_sys::CUDF_SUCCESS);

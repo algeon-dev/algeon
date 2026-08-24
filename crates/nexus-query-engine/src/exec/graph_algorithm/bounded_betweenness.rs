@@ -378,7 +378,7 @@ pub(super) fn execute_bounded_betweenness_seed_chunk_retry(
         #[cfg(any(test, feature = "test-hooks"))]
         if FORCE_NEXT_GRAPH_SEED_CHUNK_RETRY_CHUNK_ATTEMPT_RESOURCE_EXHAUSTED.swap(false, Ordering::SeqCst) {
             let mut error = QueryError::new(
-                QueryErrorCode::CudfResourceExhausted,
+                QueryErrorCode::QueryMemoryLimitExceeded,
                 "nexus_query_engine.graph_algorithm.bounded_seed_chunk_retry_test",
                 "forced graph bounded seed-chunk retry chunk resource exhaustion",
             )

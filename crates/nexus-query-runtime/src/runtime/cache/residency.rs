@@ -471,7 +471,7 @@ mod tests {
             configured_limit_bytes: 10_000,
             headroom_bytes: 0,
             backend_reserve_bytes: 0,
-            attempt_floor_bytes: 100,
+            default_query_limit_bytes: 100,
             max_active_attempts: 1,
             source_work_per_attempt: 1,
             stream_pool_size: 2,
@@ -546,15 +546,7 @@ mod tests {
         assert_eq!(snapshot.cache_evictable_resident_bytes, 200, "unsafe destruction must retain the sole charge");
         assert_eq!(snapshot.cache_pinned_in_use_bytes, 0);
         assert!(matches!(snapshot.health, crate::runtime::gpu::DeviceAdmissionHealth::Closed { .. }));
-        assert!(
-            ledger
-                .try_admit(
-                    crate::observability::AdmissionRequestId::new(1),
-                    &nexus_query_planning::admission::AttemptRequirement::empty(),
-                )
-                .unwrap()
-                .is_none()
-        );
+        assert!(ledger.try_admit(crate::observability::AdmissionRequestId::new(1), Some(1),).unwrap().is_none());
     }
 
     #[test]

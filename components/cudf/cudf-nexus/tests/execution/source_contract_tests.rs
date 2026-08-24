@@ -195,6 +195,7 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
     ("cudf_memory_manager_trim_to", "runtime device memory-manager async-pool trim hook"),
     ("cudf_query_memory_domain_attach_stream", "runtime query-memory-domain member lifecycle"),
     ("cudf_query_memory_domain_destroy", "runtime query-memory-domain lifecycle"),
+    ("cudf_query_memory_domain_freeze", "runtime query-memory-domain lifecycle transition"),
     ("cudf_query_memory_domain_identity", "metadata-only query-memory-domain identity"),
     ("cudf_query_memory_domain_pool_usage", "metadata-only query-memory-domain pool accounting"),
     ("cudf_query_memory_domain_resize_grant", "runtime query-memory-domain accounting update"),

@@ -17,12 +17,12 @@ fn try_guaranteed_runtime_test_service_with_concurrency(max_active_attempts: usi
     const CAPACITY_BYTES: u64 = 64 * 1024 * 1024;
 
     let max_active_attempts = max_active_attempts.max(1);
-    let attempt_floor_bytes =
+    let default_query_limit_bytes =
         (CAPACITY_BYTES / u64::try_from(max_active_attempts.saturating_mul(8)).unwrap_or(u64::MAX)).max(1);
     let profile = GpuBackendDeviceConfig::new(
         GpuBackendDeviceProfile::new(0)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: CAPACITY_BYTES })
-            .with_attempt_floor_bytes(attempt_floor_bytes)
+            .with_default_query_limit_bytes(default_query_limit_bytes)
             .with_source_work_per_attempt(2)
             .with_max_active_attempts(max_active_attempts)
             .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(
@@ -39,7 +39,7 @@ fn try_guaranteed_runtime_test_service_with_concurrency(max_active_attempts: usi
     );
     QueryService::new_with_device_profiles_and_deployment_for_test(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500) },
         vec![profile],
         deployment,
     )

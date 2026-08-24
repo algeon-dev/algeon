@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     sync::{
         Arc, Barrier, Weak,
         atomic::{AtomicUsize, Ordering},
@@ -28,7 +27,6 @@ include!("tests/grant_requests.rs");
 include!("tests/config_resources.rs");
 include!("tests/contexts.rs");
 include!("tests/queue.rs");
-include!("tests/overtake.rs");
 include!("tests/transaction.rs");
 include!("tests/release_commit.rs");
 include!("tests/placement.rs");

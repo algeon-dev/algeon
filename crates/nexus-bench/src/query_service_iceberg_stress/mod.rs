@@ -81,7 +81,7 @@ const DEFAULT_REGION: &str = "us-east-1";
 const QUERY_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_SQL";
 const CLIENT_IDS_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_CLIENT_IDS";
 const ITERATIONS_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_ITERATIONS";
-const ATTEMPT_FLOOR_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_ATTEMPT_FLOOR_BYTES";
+const DEFAULT_QUERY_LIMIT_BYTES_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_DEFAULT_QUERY_LIMIT_BYTES";
 const MAX_ACTIVE_ATTEMPTS_PER_DEVICE_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_MAX_ACTIVE_ATTEMPTS_PER_DEVICE";
 const MAX_QUEUED_ATTEMPTS_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_MAX_QUEUED_ATTEMPTS";
 const MAX_QUEUE_WAIT_MS_ENV: &str = "NEXUS_QUERY_SERVICE_ICEBERG_MAX_QUEUE_WAIT_MS";
@@ -110,7 +110,7 @@ struct StressConfig {
     sql: String,
     client_ids: Vec<String>,
     iterations: usize,
-    attempt_floor_bytes: u64,
+    default_query_limit_bytes: u64,
     max_active_attempts_per_device: usize,
     max_queued_attempts: usize,
     max_queue_wait: Duration,
@@ -196,7 +196,7 @@ impl StressConfig {
             sql,
             client_ids: client_ids_from_env(CLIENT_IDS_ENV, &["bulk", "interactive_a", "interactive_b"])?,
             iterations: env_usize(ITERATIONS_ENV, 2)?,
-            attempt_floor_bytes: env_u64(ATTEMPT_FLOOR_BYTES_ENV, default_attempt_floor_bytes())?,
+            default_query_limit_bytes: env_u64(DEFAULT_QUERY_LIMIT_BYTES_ENV, default_query_limit_bytes())?,
             max_active_attempts_per_device: env_usize(MAX_ACTIVE_ATTEMPTS_PER_DEVICE_ENV, 1)?,
             max_queued_attempts: env_usize(MAX_QUEUED_ATTEMPTS_ENV, 64)?,
             max_queue_wait: Duration::from_millis(env_u64(MAX_QUEUE_WAIT_MS_ENV, 30_000)?),
@@ -213,7 +213,7 @@ impl StressConfig {
             return Err(plan_error(format!("{CLIENT_IDS_ENV} must include at least two client IDs")));
         }
         validate_nonzero(ITERATIONS_ENV, self.iterations)?;
-        validate_nonzero(ATTEMPT_FLOOR_BYTES_ENV, self.attempt_floor_bytes)?;
+        validate_nonzero(DEFAULT_QUERY_LIMIT_BYTES_ENV, self.default_query_limit_bytes)?;
         validate_nonzero(MAX_ACTIVE_ATTEMPTS_PER_DEVICE_ENV, self.max_active_attempts_per_device)?;
         validate_nonzero(MAX_QUEUED_ATTEMPTS_ENV, self.max_queued_attempts)?;
         validate_synchronized_admission_queue(
@@ -246,11 +246,7 @@ impl StressConfig {
     }
 
     fn queue_bounds(&self) -> QueueBounds {
-        QueueBounds {
-            max_waiters: self.max_queued_attempts,
-            max_wait: self.max_queue_wait,
-            max_overtakes_per_waiter: 4,
-        }
+        QueueBounds { max_waiters: self.max_queued_attempts, max_wait: self.max_queue_wait }
     }
 }
 
@@ -326,7 +322,7 @@ impl StressReport {
             "# expected_count={}\n",
             self.expected_count.map(|count| count.to_string()).unwrap_or_else(|| "unknown".to_string())
         ));
-        output.push_str(&format!("# attempt_floor_bytes={}\n", self.config.attempt_floor_bytes));
+        output.push_str(&format!("# default_query_limit_bytes={}\n", self.config.default_query_limit_bytes));
         output.push_str(&format!("# max_active_attempts_per_device={}\n", self.config.max_active_attempts_per_device));
         output.push_str(&format!("# max_queued_attempts={}\n", self.config.max_queued_attempts));
         output.push_str(&format!("# max_queue_wait_ms={}\n", self.config.max_queue_wait.as_millis()));
@@ -432,7 +428,7 @@ async fn run_stress(config: &StressConfig, expected_count: Option<u64>) -> DataF
         config.queue_bounds(),
         vec![GpuBackendOwner::device_config(
             0,
-            config.attempt_floor_bytes.max(1),
+            config.default_query_limit_bytes.max(1),
             config.max_active_attempts_per_device,
             1,
         )],
@@ -596,12 +592,11 @@ async fn collect_native_with_handle(
 
 fn run_overload_probe(config: &StressConfig) -> DataFusionResult<StressRow> {
     let probe_config = config.service_config();
-    let probe_queue_bounds =
-        QueueBounds { max_waiters: 1, max_wait: Duration::from_millis(50), max_overtakes_per_waiter: 4 };
+    let probe_queue_bounds = QueueBounds { max_waiters: 1, max_wait: Duration::from_millis(50) };
     let backend = GpuBackendOwner::build(
         probe_config,
         probe_queue_bounds,
-        vec![GpuBackendOwner::device_config(0, config.attempt_floor_bytes.max(1), 1, 1)],
+        vec![GpuBackendOwner::device_config(0, config.default_query_limit_bytes.max(1), 1, 1)],
     )
     .map_err(native_error)?;
     let service = backend.session();
@@ -898,8 +893,8 @@ where T: PartialEq + From<u8> {
     Ok(())
 }
 
-fn default_attempt_floor_bytes() -> u64 {
-    // Keep the standalone profile bounded without deriving a shared floor
+fn default_query_limit_bytes() -> u64 {
+    // Keep the standalone profile bounded without deriving a shared limit
     // from GPU 0. Server backends resolve their defaults per device.
     NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES
 }
@@ -946,7 +941,7 @@ mod tests {
             sql: "select count(*) from iceberg_t".to_string(),
             client_ids: vec!["a".to_string(), "b".to_string()],
             iterations: 2,
-            attempt_floor_bytes: 1,
+            default_query_limit_bytes: 1,
             max_active_attempts_per_device: 1,
             max_queued_attempts: 3,
             max_queue_wait: Duration::from_secs(1),

@@ -132,8 +132,8 @@ impl GpuBackendDeviceInstallationBounds {
 /// Pure per-device construction profile validated before owner acquisition.
 ///
 /// This is the sole owner of device-local resource policy and defaults:
-/// capacity, reserve, floor, active-attempt count, source work, installation
-/// bounds, capabilities, and telemetry. It takes no memory ownership; the
+/// capacity, reserve, query limit, active-attempt count, source work,
+/// installation bounds, capabilities, and telemetry. It takes no memory ownership; the
 /// deployment owner binds one profile with an explicit [`GpuMemoryOwnership`]
 /// through [`GpuBackendDeviceConfig::new`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -143,7 +143,7 @@ pub struct GpuBackendDeviceProfile {
     memory_limit: GpuDeviceMemoryLimit,
     backend_reserve_bytes: u64,
     cache_cap_bytes: u64,
-    attempt_floor_bytes: Option<u64>,
+    default_query_limit_bytes: Option<u64>,
     source_work_per_attempt: usize,
     max_active_attempts: usize,
     installation_bounds: Option<GpuBackendDeviceInstallationBounds>,
@@ -151,9 +151,9 @@ pub struct GpuBackendDeviceProfile {
 }
 
 impl GpuBackendDeviceProfile {
-    /// Absence asks the engine to derive the immutable floor from the
-    /// installed device's managed capacity and active-attempt limit.
-    pub const DEFAULT_ATTEMPT_FLOOR_BYTES: Option<u64> = None;
+    /// Absence asks the engine to use the installed device's managed capacity
+    /// as the default query limit.
+    pub const DEFAULT_QUERY_LIMIT_BYTES: Option<u64> = None;
     /// One auxiliary source-work slot is reserved for each active attempt by
     /// default.
     pub const DEFAULT_SOURCE_WORK_PER_ATTEMPT: usize = 1;
@@ -170,7 +170,7 @@ impl GpuBackendDeviceProfile {
             memory_limit: GpuDeviceMemoryLimit::default(),
             backend_reserve_bytes: 0,
             cache_cap_bytes: 0,
-            attempt_floor_bytes: Self::DEFAULT_ATTEMPT_FLOOR_BYTES,
+            default_query_limit_bytes: Self::DEFAULT_QUERY_LIMIT_BYTES,
             source_work_per_attempt: Self::DEFAULT_SOURCE_WORK_PER_ATTEMPT,
             max_active_attempts: Self::DEFAULT_MAX_ACTIVE_ATTEMPTS,
             installation_bounds: None,
@@ -208,12 +208,10 @@ impl GpuBackendDeviceProfile {
         self.cache_cap_bytes
     }
 
-    /// Sets the immutable minimum managed-memory floor for each active attempt.
-    /// When unset, it resolves per device to
-    /// `managed_capacity_bytes / max(8, max_active_attempts)` so the frozen
-    /// floor-times-active-limit invariant always holds by default.
-    pub fn with_attempt_floor_bytes(mut self, attempt_floor_bytes: u64) -> Self {
-        self.attempt_floor_bytes = Some(attempt_floor_bytes);
+    /// Sets the immutable default memory limit for each query on this device.
+    /// When unset, it resolves to the device's managed capacity.
+    pub fn with_default_query_limit_bytes(mut self, default_query_limit_bytes: u64) -> Self {
+        self.default_query_limit_bytes = Some(default_query_limit_bytes);
         self
     }
 
@@ -258,8 +256,8 @@ impl GpuBackendDeviceProfile {
         self.backend_reserve_bytes
     }
 
-    pub fn attempt_floor_bytes(&self) -> Option<u64> {
-        self.attempt_floor_bytes
+    pub fn default_query_limit_bytes(&self) -> Option<u64> {
+        self.default_query_limit_bytes
     }
 
     pub fn source_work_per_attempt(&self) -> usize {
@@ -332,8 +330,8 @@ impl GpuBackendDeviceConfig {
         self.profile.cache_cap_bytes
     }
 
-    pub fn attempt_floor_bytes(&self) -> Option<u64> {
-        self.profile.attempt_floor_bytes
+    pub fn default_query_limit_bytes(&self) -> Option<u64> {
+        self.profile.default_query_limit_bytes
     }
 
     pub fn source_work_per_attempt(&self) -> usize {
@@ -515,10 +513,10 @@ fn validate_device_config(device: &GpuBackendDeviceConfig) -> Result<()> {
                 .with_fact("reason", "zero"));
         }
     }
-    if device.profile.attempt_floor_bytes == Some(0) {
+    if device.profile.default_query_limit_bytes == Some(0) {
         return Err(invalid_device_config(
             device.profile.device_ordinal,
-            "attempt_floor_bytes",
+            "default_query_limit_bytes",
             "must be greater than zero",
         )
         .with_fact("reason", "zero"));
@@ -1908,10 +1906,10 @@ mod tests {
     }
 
     #[test]
-    fn pure_config_rejects_explicit_zero_attempt_floor_before_construction() {
+    fn pure_config_rejects_explicit_zero_default_query_limit_before_construction() {
         let config = GpuBackendCoreDraft::new(
             vec![GpuBackendDeviceConfig::new(
-                GpuBackendDeviceProfile::new(0).with_attempt_floor_bytes(0),
+                GpuBackendDeviceProfile::new(0).with_default_query_limit_bytes(0),
                 GpuMemoryOwnership::WholeDeviceExclusive,
             )],
             controller(QueryExecutionConfig::default()),
@@ -1920,7 +1918,7 @@ mod tests {
 
         let error = config.validate().unwrap_err();
 
-        assert_eq!(error.fact_value("field"), Some("attempt_floor_bytes"));
+        assert_eq!(error.fact_value("field"), Some("default_query_limit_bytes"));
         assert_eq!(error.fact_value("reason"), Some("zero"));
     }
 
@@ -2118,6 +2116,7 @@ mod tests {
         let backend = GpuBackendCore::builder(GpuBackendCoreDraft::new(
             vec![GpuBackendDeviceConfig::new(
                 GpuBackendDeviceProfile::new(0)
+                    .with_default_query_limit_bytes(256 * 1024 * 1024)
                     .with_max_active_attempts(2)
                     .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(6, 2, 2)),
                 GpuMemoryOwnership::WholeDeviceExclusive,

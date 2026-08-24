@@ -377,7 +377,7 @@ fn execute_graph_algorithm_attempt(
             .swap(false, Ordering::SeqCst)
     {
         let mut error = QueryError::new(
-            QueryErrorCode::CudfResourceExhausted,
+            QueryErrorCode::QueryMemoryLimitExceeded,
             "nexus_query_engine.graph_algorithm.bounded_seed_chunk_retry_test",
             "forced graph bounded seed-chunk retry resource exhaustion",
         )
@@ -402,7 +402,7 @@ fn should_run_bounded_seed_chunk_retry(
     let Some((inputs, _)) = retry_inputs else {
         return false;
     };
-    error.code() == QueryErrorCode::CudfResourceExhausted
+    matches!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded | QueryErrorCode::DeviceAllocationFailed)
         && inputs.graph_memory_limit_bytes.is_some()
         && graph_retry_memory_observation_from_error(error).is_some()
 }

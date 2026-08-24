@@ -2,7 +2,6 @@ use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use nexus_query_engine::{
-    error::QueryErrorCode,
     plan::{
         QueryPlan, QueryPlanBuilder, VectorAlgorithm, VectorAlgorithmParams, VectorAlgorithmSpec,
         VectorBruteForceKnnParams, VectorDistanceMetric, VectorKMeansParams, VectorPcaParams, VectorRelationBinding,
@@ -26,7 +25,7 @@ fn exact_knn_executes_gpu_resident_with_deterministic_ids_and_observed_stages() 
     let dataset_schema = vector_schema("id", VectorFixtureShape::Columns);
     let query_schema = vector_schema("query_id", VectorFixtureShape::Columns);
     let plan = knn_plan(dataset_schema, query_schema, VectorFixtureShape::Columns, 2);
-    assert_vector_capability_unavailable(&plan);
+    assert_vector_capability_admitted(&plan);
 }
 
 #[test]
@@ -34,7 +33,7 @@ fn exact_knn_accepts_proof_bearing_fixed_size_list_vectors() {
     let dataset_schema = vector_schema("id", VectorFixtureShape::FixedSizeList);
     let query_schema = vector_schema("query_id", VectorFixtureShape::FixedSizeList);
     let plan = knn_plan(dataset_schema, query_schema, VectorFixtureShape::FixedSizeList, 2);
-    assert_vector_capability_unavailable(&plan);
+    assert_vector_capability_admitted(&plan);
 }
 
 #[test]
@@ -42,7 +41,7 @@ fn exact_knn_accepts_proof_bearing_uniform_list_vectors() {
     let dataset_schema = vector_schema("id", VectorFixtureShape::UniformList);
     let query_schema = vector_schema("query_id", VectorFixtureShape::UniformList);
     let plan = knn_plan(dataset_schema, query_schema, VectorFixtureShape::UniformList, 2);
-    assert_vector_capability_unavailable(&plan);
+    assert_vector_capability_admitted(&plan);
 }
 
 #[test]
@@ -50,7 +49,7 @@ fn exact_knn_breaks_equal_distance_ties_by_physical_ordinal() {
     let dataset_schema = vector_schema("id", VectorFixtureShape::Columns);
     let query_schema = vector_schema("query_id", VectorFixtureShape::Columns);
     let plan = knn_plan(dataset_schema, query_schema, VectorFixtureShape::Columns, 2);
-    assert_vector_capability_unavailable(&plan);
+    assert_vector_capability_admitted(&plan);
 }
 
 #[test]
@@ -58,16 +57,16 @@ fn exact_knn_preserves_an_empty_query_relation_without_native_search() {
     let dataset_schema = vector_schema("id", VectorFixtureShape::Columns);
     let query_schema = vector_schema("query_id", VectorFixtureShape::Columns);
     let plan = knn_plan(dataset_schema, query_schema, VectorFixtureShape::Columns, 1);
-    assert_vector_capability_unavailable(&plan);
+    assert_vector_capability_admitted(&plan);
 }
 
 #[test]
-fn exact_knn_rejects_non_finite_features_and_k_above_dataset_rows() {
+fn exact_knn_parameter_shapes_admit_before_runtime_value_validation() {
     let dataset_schema = vector_schema("id", VectorFixtureShape::Columns);
     let query_schema = vector_schema("query_id", VectorFixtureShape::Columns);
     for k in [1, 2] {
         let plan = knn_plan(Arc::clone(&dataset_schema), Arc::clone(&query_schema), VectorFixtureShape::Columns, k);
-        assert_vector_capability_unavailable(&plan);
+        assert_vector_capability_admitted(&plan);
     }
 }
 
@@ -92,7 +91,7 @@ fn kmeans_executes_fixed_size_list_input_and_centroid_relations_with_permutation
         VectorAlgorithmParams::KMeans(params),
         vector_kmeans_output_schema(DataType::Int64),
     ));
-    assert_vector_capability_unavailable(&builder.finish_gpu_resident(root));
+    assert_vector_capability_admitted(&builder.finish_gpu_resident(root));
 }
 
 #[test]
@@ -109,27 +108,12 @@ fn pca_executes_uniform_list_input_with_sign_aware_component_oracle() {
         VectorAlgorithmParams::Pca(params),
         vector_pca_output_schema(DataType::Int64, 1),
     ));
-    assert_vector_capability_unavailable(&builder.finish_gpu_resident(root));
+    assert_vector_capability_admitted(&builder.finish_gpu_resident(root));
 }
 
-fn assert_vector_capability_unavailable(plan: &QueryPlan) {
+fn assert_vector_capability_admitted(plan: &QueryPlan) {
     let context = backend_context();
-    let error = match context.admit_plan(plan) {
-        Ok(admitted) => {
-            admitted.finish();
-            panic!("vector plan without a bounded cuVS owner contract must fail before GPU execution")
-        },
-        Err(error) => error,
-    };
-    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
-    assert_eq!(error.operation(), "nexus_query_engine.query_service.admission");
-    assert_eq!(error.fact_value("reason"), Some("required_device_capability_unavailable"));
-    assert_eq!(
-        error.fact_value("required_capabilities"),
-        Some("operator_output:cuvs_vector_algorithm_peak_memory_preflight")
-    );
-    assert_eq!(error.fact_value("configured_device_count"), Some("1"));
-    assert_eq!(error.fact_value("compatible_device_count"), Some("0"));
+    context.admit_plan(plan).expect("modeled vector capability must admit under the fixed query cap").finish();
 }
 
 fn knn_plan(dataset_schema: SchemaRef, query_schema: SchemaRef, shape: VectorFixtureShape, k: usize) -> QueryPlan {

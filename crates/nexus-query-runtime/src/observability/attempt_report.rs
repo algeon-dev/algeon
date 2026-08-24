@@ -88,6 +88,7 @@ pub enum AttemptCleanupDisposition {
 pub enum AttemptCapacityDisposition {
     NotAdmitted,
     Released,
+    FrozenResident,
     RetainedQuarantine,
 }
 
@@ -188,6 +189,9 @@ pub enum AttemptFailureFactValue {
     MemoryGrantWaitTimeout,
     ProtectedWaiterNoRunnableDevice,
     RequiredFloorExceedsDeviceCapacity,
+    /// The requested query cap does not fit any eligible device once resident
+    /// ownership is deducted. Retrying the same request cannot succeed.
+    QueryCapExceedsResidentCapacity,
     BackendUnhealthy,
     CugraphRmmOutOfMemory,
     CugraphRmmBadAlloc,
@@ -453,6 +457,9 @@ impl AttemptFailureSummary {
             },
             Some("required_floor_exceeds_device_capacity") | Some("impossible_requirement") => {
                 Some(AttemptFailureFactValue::RequiredFloorExceedsDeviceCapacity)
+            },
+            Some("query_cap_exceeds_resident_capacity") => {
+                Some(AttemptFailureFactValue::QueryCapExceedsResidentCapacity)
             },
             Some("backend_unhealthy") => Some(AttemptFailureFactValue::BackendUnhealthy),
             _ => None,
@@ -1046,6 +1053,7 @@ impl AttemptTerminalCommit {
         matches!(
             (self.capacity_disposition, self.health_transition),
             (AttemptCapacityDisposition::Released, AttemptHealthTransition::HealthyReuse)
+                | (AttemptCapacityDisposition::FrozenResident, AttemptHealthTransition::HealthyReuse)
                 | (AttemptCapacityDisposition::RetainedQuarantine, AttemptHealthTransition::DeviceQuarantined)
                 | (AttemptCapacityDisposition::RetainedQuarantine, AttemptHealthTransition::BackendUnhealthy)
         )
@@ -1249,7 +1257,12 @@ impl AttemptRetryAdvice {
                 if is_configuration_failure(failure) {
                     return Self::change_configuration();
                 }
-                if has_reason(failure, AttemptFailureFactValue::RequiredFloorExceedsDeviceCapacity) {
+                if has_reason(failure, AttemptFailureFactValue::RequiredFloorExceedsDeviceCapacity)
+                    || has_reason(failure, AttemptFailureFactValue::QueryCapExceedsResidentCapacity)
+                {
+                    // An impossible cap is not queue pressure: backing off
+                    // cannot change the outcome, so the caller must change the
+                    // cap, the device, or release resident owners.
                     return Self::change_configuration();
                 }
                 if is_queue_overload(failure) {
@@ -1290,6 +1303,7 @@ fn is_configuration_failure(failure: &AttemptFailureSummary) -> bool {
             | AttemptFailureCode::UnsupportedExpression
             | AttemptFailureCode::UnsupportedType
             | AttemptFailureCode::CudfUnsupported
+            | AttemptFailureCode::QueryMemoryLimitExceeded
     )
 }
 
@@ -1523,6 +1537,7 @@ impl SealedAttemptProjection {
             capacity_disposition: match self.capacity_disposition {
                 AttemptCapacityDisposition::NotAdmitted => "not_admitted",
                 AttemptCapacityDisposition::Released => "released",
+                AttemptCapacityDisposition::FrozenResident => "frozen_resident",
                 AttemptCapacityDisposition::RetainedQuarantine => "retained_quarantine",
             },
             health_transition: match self.health_transition {

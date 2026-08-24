@@ -64,6 +64,7 @@ impl QueryService {
         admission_request_id: AdmissionRequestId,
         attempt_id: crate::observability::AttemptId,
         requirement: &AttemptRequirement,
+        requested_query_cap_bytes: Option<u64>,
         slot_notifications: &mut PendingDeviceSlotNotifications,
     ) -> Result<Option<PlacedQuery>> {
         let _fleet_admission = self.inner.fleet_admission.lock().map_err(|_error| {
@@ -87,16 +88,16 @@ impl QueryService {
                 )
                 .with_fact("reason", "synthetic_ledger_missing"));
             };
-            return ledger.try_admit_for_attempt(admission_request_id, attempt_id, requirement).map(|grant| {
-                grant.map(|memory_grant| PlacedQuery { device_ordinal: ledger.device_ordinal(), memory_grant })
-            });
+            return ledger.try_admit_for_attempt(admission_request_id, attempt_id, requested_query_cap_bytes).map(
+                |grant| grant.map(|memory_grant| PlacedQuery { device_ordinal: ledger.device_ordinal(), memory_grant }),
+            );
         };
         let context = resources.devices.context_by_ordinal(device_ordinal)?;
         if context.synchronize_native_admission_health()? {
             slot_notifications.record_device_health_transition(device_ordinal);
             return Ok(None);
         }
-        match context.try_admit_attempt(admission_request_id, attempt_id, requirement) {
+        match context.try_admit_attempt(admission_request_id, attempt_id, requested_query_cap_bytes) {
             Ok(Some(memory_grant)) => Ok(Some(PlacedQuery { device_ordinal, memory_grant })),
             Ok(None) => {
                 if !matches!(context.ledger().health()?, crate::runtime::gpu::DeviceAdmissionHealth::Open) {
@@ -113,7 +114,7 @@ impl QueryService {
         resources: &QueryServiceResources,
         device_entries: &DeviceAdmissionEntries,
         ordinals: impl IntoIterator<Item = usize>,
-        protected_ordinal: Option<usize>,
+        requested_query_cap_bytes: Option<u64>,
     ) -> Result<Vec<crate::runtime::gpu::placement::PlacementCandidateSnapshot>> {
         let mut placements = Vec::new();
         for ordinal in ordinals {
@@ -122,13 +123,14 @@ impl QueryService {
                 .ok_or_else(|| super::super::admission::missing_device_admission_entry_error(ordinal))?;
             let requirement = &entry.requirement;
             let placement_request = PlacementRequest::new(0)
+                .with_requested_query_cap_bytes(requested_query_cap_bytes)
                 .with_attempt_requirement(requirement.clone())
                 .with_required_capabilities(required_capabilities_for_placement(requirement));
             placements.extend(ordered_placement_candidate_snapshots(
                 &resources.devices,
                 &placement_request,
                 [ordinal],
-                protected_ordinal.filter(|protected| *protected == ordinal),
+                None,
             )?);
         }
         placements.sort_by(|left, right| {
@@ -151,6 +153,7 @@ impl QueryService {
         attempt_id: crate::observability::AttemptId,
         device_entries: &DeviceAdmissionEntries,
         compatible_devices: &[usize],
+        requested_query_cap_bytes: Option<u64>,
         slot_notifications: &mut PendingDeviceSlotNotifications,
     ) -> Result<Option<PlacedQuery>> {
         let _fleet_admission = self.inner.fleet_admission.lock().map_err(|_error| {
@@ -195,9 +198,9 @@ impl QueryService {
                 )
                 .with_fact("reason", "synthetic_ledger_missing"));
             };
-            return ledger.try_admit_for_attempt(admission_request_id, attempt_id, &requirement).map(|grant| {
-                grant.map(|memory_grant| PlacedQuery { device_ordinal: ledger.device_ordinal(), memory_grant })
-            });
+            return ledger.try_admit_for_attempt(admission_request_id, attempt_id, requested_query_cap_bytes).map(
+                |grant| grant.map(|memory_grant| PlacedQuery { device_ordinal: ledger.device_ordinal(), memory_grant }),
+            );
         };
 
         if compatible_devices.is_empty() {
@@ -215,10 +218,14 @@ impl QueryService {
             return Err(error);
         }
 
-        let mut any_device_can_fit_floor = false;
-        let mut max_candidate_required_floor_bytes = 0u64;
-        let placements =
-            self.placement_candidates_for_entries(resources, device_entries, compatible_devices.iter().copied(), None)?;
+        let mut any_device_can_fit_query_cap = false;
+        let mut max_candidate_query_cap_bytes = 0u64;
+        let placements = self.placement_candidates_for_entries(
+            resources,
+            device_entries,
+            compatible_devices.iter().copied(),
+            requested_query_cap_bytes,
+        )?;
         #[cfg(test)]
         if let Some(pause) = take_direct_placement_snapshot_pause(self) {
             pause.wait();
@@ -230,9 +237,9 @@ impl QueryService {
                 slot_notifications.record_device_health_transition(candidate.ordinal);
                 continue;
             }
-            max_candidate_required_floor_bytes = max_candidate_required_floor_bytes.max(candidate.required_floor_bytes);
-            if placement.can_ever_fit_required_floor {
-                any_device_can_fit_floor = true;
+            max_candidate_query_cap_bytes = max_candidate_query_cap_bytes.max(candidate.query_cap_bytes);
+            if placement.can_ever_fit_query_cap {
+                any_device_can_fit_query_cap = true;
             }
             // Ranking and permanent-capacity classification come from the
             // same ledger snapshot as queue selection. The later ledger
@@ -242,11 +249,10 @@ impl QueryService {
             if !placement.can_admit_now {
                 continue;
             }
-            let requirement = &device_entries
+            device_entries
                 .get(&candidate.ordinal)
-                .ok_or_else(|| super::super::admission::missing_device_admission_entry_error(candidate.ordinal))?
-                .requirement;
-            match context.try_admit_attempt(admission_request_id, attempt_id, requirement) {
+                .ok_or_else(|| super::super::admission::missing_device_admission_entry_error(candidate.ordinal))?;
+            match context.try_admit_attempt(admission_request_id, attempt_id, requested_query_cap_bytes) {
                 Ok(Some(memory_grant)) => {
                     return Ok(Some(PlacedQuery { device_ordinal: candidate.ordinal, memory_grant }));
                 },
@@ -265,16 +271,16 @@ impl QueryService {
         if let Some(error) = self.all_compatible_devices_closed_error(compatible_devices)? {
             return Err(error);
         }
-        if any_device_can_fit_floor {
+        if any_device_can_fit_query_cap {
             return Ok(None);
         }
         Err(QueryError::new(
-            QueryErrorCode::ServiceOverloaded,
+            QueryErrorCode::QueryBudgetUnavailable,
             "nexus_query_engine.query_service.placement",
-            "no configured CUDA device has enough capacity for the attempt required floor",
+            "no eligible CUDA device has enough configured capacity for the requested query cap",
         )
-        .with_fact("max_candidate_required_floor_bytes", max_candidate_required_floor_bytes)
-        .with_fact("reason", "required_floor_exceeds_device_capacity"))
+        .with_fact("requested_query_cap_bytes", max_candidate_query_cap_bytes)
+        .with_fact("reason", "query_cap_exceeds_resident_capacity"))
     }
 }
 

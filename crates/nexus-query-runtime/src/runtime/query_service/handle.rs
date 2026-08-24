@@ -114,6 +114,8 @@ pub(super) struct QueryHandleLifetime {
     #[cfg(test)]
     release_commit_gate: Mutex<Option<Arc<ReleaseCommitGate>>>,
     #[cfg(test)]
+    envelope_release_gate: Mutex<Option<Arc<EnvelopeReleaseGate>>>,
+    #[cfg(test)]
     root_context_binding_gate: Mutex<Option<Arc<RootContextBindingGate>>>,
     terminal_domain_usage: Mutex<Option<cudf::QueryMemoryDomainUsage>>,
 }
@@ -189,6 +191,8 @@ impl QueryHandleLifetime {
                 #[cfg(test)]
                 release_commit_gate: Mutex::new(None),
                 #[cfg(test)]
+                envelope_release_gate: Mutex::new(None),
+                #[cfg(test)]
                 root_context_binding_gate: Mutex::new(None),
                 terminal_domain_usage: Mutex::new(None),
             }
@@ -253,6 +257,18 @@ impl QueryHandleLifetime {
             gate: std::sync::Barrier::new(2),
         });
         *self.release_commit_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&gate));
+        gate
+    }
+
+    /// Arms a barrier that holds the attempt at the point where it still owns
+    /// its admission envelope, after the report seal. The barrier fires once.
+    #[cfg(test)]
+    pub(super) fn arm_envelope_release_gate(&self) -> Arc<EnvelopeReleaseGate> {
+        let gate = Arc::new(EnvelopeReleaseGate {
+            entered: std::sync::atomic::AtomicUsize::new(0),
+            gate: std::sync::Barrier::new(2),
+        });
+        *self.envelope_release_gate.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::clone(&gate));
         gate
     }
 
@@ -473,6 +489,8 @@ impl QueryHandleLifetime {
         let cache_scope_allocator_correlation = self.take_cache_scope_allocator_correlation();
         #[cfg(test)]
         let release_commit_gate = take_owned_for_cleanup(&self.release_commit_gate, "release commit gate");
+        #[cfg(test)]
+        let envelope_release_gate = take_owned_for_cleanup(&self.envelope_release_gate, "envelope release gate");
         let terminal_domain_usage = take_owned_for_cleanup(&self.terminal_domain_usage, "terminal domain usage");
         let service = take_owned_for_cleanup(&self.service, "query service")
             .expect("query handle lifetime retains its service until the one release path");
@@ -489,8 +507,11 @@ impl QueryHandleLifetime {
             root_context,
             attempt_stream_provider_route,
             envelope,
+            pending_frozen_resident_publish: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             release_commit_gate,
+            #[cfg(test)]
+            envelope_release_gate,
             terminal_domain_usage,
             outcome_terminal_domain_usage: None,
             terminal_outcome: RuntimeTerminalOutcome::Dropped,
@@ -587,6 +608,30 @@ pub struct ReleaseCommitGate {
     gate: std::sync::Barrier,
 }
 
+/// Barrier held while the attempt still owns its admission envelope, so a
+/// test can observe exactly what a concurrent admission sees before the lane,
+/// grant, and permit are released.
+#[cfg(test)]
+#[derive(Debug)]
+#[doc(hidden)]
+pub struct EnvelopeReleaseGate {
+    entered: std::sync::atomic::AtomicUsize,
+    gate: std::sync::Barrier,
+}
+
+#[cfg(test)]
+impl EnvelopeReleaseGate {
+    #[doc(hidden)]
+    pub fn entered(&self) -> bool {
+        self.entered.load(Ordering::Acquire) > 0
+    }
+
+    #[doc(hidden)]
+    pub fn open(&self) {
+        self.gate.wait();
+    }
+}
+
 #[cfg(test)]
 #[derive(Debug)]
 #[doc(hidden)]
@@ -655,8 +700,15 @@ struct QueryHandleRelease {
     root_context: Option<ExecutionContext>,
     attempt_stream_provider_route: Option<Arc<AttemptStreamProviderRoute>>,
     envelope: Option<super::service::transaction::AdmissionEnvelope>,
+    /// Set by the report commit when the sealed report published a frozen
+    /// resident disposition. The B-to-R ledger transition is applied only
+    /// after the envelope releases this attempt's lane and root stream, so a
+    /// consumer that passes the ledger always finds a free lane.
+    pending_frozen_resident_publish: Arc<AtomicBool>,
     #[cfg(test)]
     release_commit_gate: Option<Arc<ReleaseCommitGate>>,
+    #[cfg(test)]
+    envelope_release_gate: Option<Arc<EnvelopeReleaseGate>>,
     terminal_domain_usage: Option<cudf::QueryMemoryDomainUsage>,
     /// Sampled after the terminal outcome is resolved but before GPU cleanup
     /// begins. The timestamp is obtained only from an admitted attempt clock.
@@ -680,9 +732,15 @@ struct QueryHandleReportCommit {
     allocator_domain_attempt: Option<AllocatorDomainAttempt>,
     cache_scope_allocator_correlation: AttemptCacheScopeAllocatorCorrelation,
     outcome_terminal_domain_usage: Option<AttemptTimedDomainUsage>,
+    pending_frozen_resident_publish: Arc<AtomicBool>,
     #[cfg(test)]
     release_commit_gate: Option<Arc<ReleaseCommitGate>>,
     terminal_domain_usage: Option<cudf::QueryMemoryDomainUsage>,
+}
+
+enum FrozenResidentCommit {
+    Frozen(cudf::QueryMemoryDomainUsage),
+    Failed { error: nexus_query_planning::error::QueryError, usage: Option<cudf::QueryMemoryDomainUsage> },
 }
 
 impl QueryHandleReportCommit {
@@ -703,8 +761,42 @@ impl QueryHandleReportCommit {
         // exact. Resident cache scopes are independent allocation domains and
         // only fill that exact-evidence gap; they never become a device-wide
         // snapshot or a second event store.
-        let decision =
-            decide_capacity_commit(self.device_ordinal, self.domain.as_ref(), evidence, self.terminal_domain_usage);
+        let frozen_resident_commit = if terminal_outcome == RuntimeTerminalOutcome::Succeeded
+            && evidence == CleanupEvidence::Completed
+            && self.memory_grant.as_ref().is_some_and(|grant| grant.live_reserved_bytes() > 0)
+        {
+            Some(self.freeze_published_resident_domain())
+        } else {
+            None
+        };
+        let resident_cleanup_failure = match &frozen_resident_commit {
+            Some(FrozenResidentCommit::Failed { error, .. }) => {
+                Some(crate::observability::CleanupFailureSummary::from_native_error(
+                    crate::observability::CleanupFailurePhase::FinalValidation,
+                    error,
+                ))
+            },
+            Some(FrozenResidentCommit::Frozen(_)) | None => None,
+        };
+        let decision = match frozen_resident_commit {
+            Some(FrozenResidentCommit::Frozen(usage)) => super::service::disposition::CapacityCommitDecision {
+                disposition: CapacityCommitDisposition::FrozenResident { resident_bytes: usage.current_aligned_bytes },
+                usage: Some(usage),
+                native_fault_evidence: None,
+            },
+            Some(FrozenResidentCommit::Failed { error, usage }) => {
+                let mut decision = decide_capacity_commit(self.device_ordinal, self.domain.as_ref(), evidence, usage);
+                if matches!(decision.disposition, CapacityCommitDisposition::HealthyReuse) {
+                    decision.disposition = CapacityCommitDisposition::DeviceQuarantine {
+                        reason: format!("resident owner attestation failed on device {}: {error}", self.device_ordinal),
+                    };
+                }
+                decision
+            },
+            None => {
+                decide_capacity_commit(self.device_ordinal, self.domain.as_ref(), evidence, self.terminal_domain_usage)
+            },
+        };
         let super::service::disposition::CapacityCommitDecision { disposition, usage, native_fault_evidence } =
             decision;
         if let Some(usage) = usage.as_ref() {
@@ -715,7 +807,7 @@ impl QueryHandleReportCommit {
             let _ = usage.peak_bytes;
         }
         let cleanup_failure = match evidence {
-            CleanupEvidence::Completed => None,
+            CleanupEvidence::Completed => resident_cleanup_failure,
             CleanupEvidence::StreamSynchronizationFailed => {
                 Some(crate::observability::CleanupFailureSummary::stream_synchronization_failed())
             },
@@ -768,6 +860,11 @@ impl QueryHandleReportCommit {
         // health transition above. Typed fault and retry evidence shares this
         // commit and must not resample terminal facts.
         let terminal_commit = match (&disposition, evidence) {
+            (CapacityCommitDisposition::FrozenResident { .. }, _) => crate::observability::AttemptTerminalCommit::new(
+                crate::observability::AttemptCapacityDisposition::FrozenResident,
+                final_domain_usage,
+                crate::observability::AttemptHealthTransition::HealthyReuse,
+            ),
             (CapacityCommitDisposition::HealthyReuse, CleanupEvidence::Completed) => {
                 crate::observability::AttemptTerminalCommit::new(
                     crate::observability::AttemptCapacityDisposition::Released,
@@ -793,7 +890,9 @@ impl QueryHandleReportCommit {
                     CapacityCommitDisposition::BackendUnhealthy { .. } => {
                         crate::observability::AttemptHealthTransition::BackendUnhealthy
                     },
-                    CapacityCommitDisposition::HealthyReuse => unreachable!(),
+                    CapacityCommitDisposition::HealthyReuse | CapacityCommitDisposition::FrozenResident { .. } => {
+                        unreachable!()
+                    },
                 },
             ),
             (
@@ -809,7 +908,9 @@ impl QueryHandleReportCommit {
                     CapacityCommitDisposition::BackendUnhealthy { .. } => {
                         crate::observability::AttemptHealthTransition::BackendUnhealthy
                     },
-                    CapacityCommitDisposition::HealthyReuse => unreachable!(),
+                    CapacityCommitDisposition::HealthyReuse | CapacityCommitDisposition::FrozenResident { .. } => {
+                        unreachable!()
+                    },
                 },
             ),
         };
@@ -859,7 +960,85 @@ impl QueryHandleReportCommit {
             gate.entered.fetch_add(1, Ordering::AcqRel);
             gate.gate.wait();
         }
+        // The B-to-R transition is recorded here and applied by the release
+        // path after the attempt lane and root stream are gone. Publishing
+        // inline would expose reusable ledger capacity while this attempt
+        // still holds its lane, so a consumer could pass the ledger and then
+        // fail to acquire a lane.
+        if matches!(disposition, CapacityCommitDisposition::FrozenResident { .. }) {
+            self.pending_frozen_resident_publish.store(true, Ordering::Release);
+        }
         external_completion.map(|completion| completion.seal_after_gpu_cleanup(terminal_outcome))
+    }
+
+    fn freeze_published_resident_domain(&self) -> FrozenResidentCommit {
+        let domain = self.domain.as_ref().expect("resident freeze requires an admitted allocation domain");
+        let grant = self.memory_grant.as_ref().expect("resident freeze requires an admitted memory grant");
+        let usage = match domain.freeze() {
+            Ok(usage) => usage,
+            Err(error) => return FrozenResidentCommit::Failed { error, usage: None },
+        };
+        // Owner attestation reads the allocation registry, not two
+        // independently derived byte totals. A frozen domain that still owns
+        // allocations must agree with its own registry; a residual the
+        // registry does not account for is an unowned allocation and
+        // therefore a cleanup failure rather than a resident result.
+        let live = match domain.live_allocations() {
+            Ok(live) => live,
+            Err(error) => return FrozenResidentCommit::Failed { error, usage: Some(usage) },
+        };
+        let registry_aligned_bytes =
+            live.iter().try_fold(0u64, |total, allocation| total.checked_add(allocation.aligned_bytes));
+        // The published output owner's retained charge bounds what it can
+        // legitimately own. A registry that still holds more requested bytes
+        // than the owner ever retained contains an allocation nothing
+        // published owns, which is a leak rather than a resident result.
+        //
+        // Known limitation: the owner's charge is a byte total, not its
+        // buffer set, so an equal-sized leak that displaces a released owner
+        // allocation is not detectable here. Distinguishing those needs
+        // pointer-level owner attestation, which requires the published
+        // owner's buffer set at freeze time.
+        let owner_charged_bytes = grant.live_reserved_bytes();
+        let attestation_failure = if usage.current_bytes == 0 || usage.current_aligned_bytes == 0 {
+            Some("a resident output owner must retain at least one live allocation")
+        } else if live.is_empty() {
+            Some("the frozen allocation registry holds no allocation for the published output owner")
+        } else if registry_aligned_bytes != Some(usage.current_aligned_bytes) {
+            Some("frozen domain usage does not match its own allocation registry")
+        } else if usage.current_bytes > owner_charged_bytes {
+            Some("frozen domain retains allocations no published output owner accounts for")
+        } else if usage.current_aligned_bytes > grant.budget_bytes() {
+            Some("frozen resident bytes exceed the immutable query cap")
+        } else {
+            None
+        };
+        if let Some(message) = attestation_failure {
+            let error = nexus_query_planning::error::QueryError::new(
+                nexus_query_planning::error::QueryErrorCode::CleanupFailed,
+                "nexus_query_engine.runtime.query_service.freeze_resident",
+                message,
+            )
+            .with_fact("domain_id", usage.domain_id)
+            .with_fact("current_bytes", usage.current_bytes)
+            .with_fact("current_aligned_bytes", usage.current_aligned_bytes)
+            .with_fact("registry_allocations", live.len() as u64)
+            .with_fact("registry_aligned_bytes", registry_aligned_bytes.unwrap_or(u64::MAX))
+            .with_fact("owner_charged_bytes", owner_charged_bytes)
+            .with_fact("query_cap_bytes", grant.budget_bytes());
+            return FrozenResidentCommit::Failed { error, usage: Some(usage) };
+        }
+        if let Err(error) = grant.freeze_resident_with_domain(usage.current_aligned_bytes, Arc::clone(domain.as_cudf()))
+        {
+            return FrozenResidentCommit::Failed { error, usage: Some(usage) };
+        }
+        // The publish runs after this report is sealed, where a failure can no
+        // longer be recorded as a cleanup disposition. Prove it can succeed
+        // while the disposition is still open.
+        match grant.validate_frozen_resident_publish() {
+            Ok(()) => FrozenResidentCommit::Frozen(usage),
+            Err(error) => FrozenResidentCommit::Failed { error, usage: Some(usage) },
+        }
     }
 
     /// Commits the selected health disposition before the resource evidence is
@@ -868,7 +1047,7 @@ impl QueryHandleReportCommit {
         use super::service::disposition::CapacityCommitDisposition;
 
         match disposition {
-            CapacityCommitDisposition::HealthyReuse => true,
+            CapacityCommitDisposition::HealthyReuse | CapacityCommitDisposition::FrozenResident { .. } => true,
             CapacityCommitDisposition::DeviceQuarantine { reason } => {
                 // The device closes BEFORE the resource snapshot and report
                 // publication. Its ledger sequence therefore records the
@@ -936,6 +1115,9 @@ impl QueryHandleReportCommit {
         let Some(service) = self.service.as_ref() else {
             return AttemptAlternateDeviceEligibility::Unavailable;
         };
+        let Some(query_cap_bytes) = self.memory_grant.as_ref().map(MemoryGrant::budget_bytes) else {
+            return AttemptAlternateDeviceEligibility::Unavailable;
+        };
         for ordinal in self.compatible_devices.iter().copied().filter(|ordinal| *ordinal != self.device_ordinal) {
             match &service.resources {
                 Some(resources) => {
@@ -950,14 +1132,11 @@ impl QueryHandleReportCommit {
                         return AttemptAlternateDeviceEligibility::Unavailable;
                     }
                     let ledger = device.ledger();
-                    let Ok(required_floor) =
-                        required_floor_bytes_for_candidate(&self.admitted_device_requirements, ordinal, ledger)
-                    else {
+                    if !self.admitted_device_requirements.contains_key(&ordinal) {
                         return AttemptAlternateDeviceEligibility::Unavailable;
-                    };
-                    let Ok(can_ever_fit) = ledger.can_ever_fit_required_floor_bytes(required_floor) else {
-                        return AttemptAlternateDeviceEligibility::Unavailable;
-                    };
+                    }
+                    let can_ever_fit =
+                        ledger.snapshot().is_ok_and(|snapshot| snapshot.can_ever_fit_query_cap(Some(query_cap_bytes)));
                     if can_ever_fit && matches!(ledger.health(), Ok(crate::runtime::gpu::DeviceAdmissionHealth::Open)) {
                         return AttemptAlternateDeviceEligibility::Eligible;
                     }
@@ -969,14 +1148,11 @@ impl QueryHandleReportCommit {
                     if ledger.device_ordinal() != ordinal {
                         return AttemptAlternateDeviceEligibility::NoEligibleAlternate;
                     }
-                    let Ok(required_floor) =
-                        required_floor_bytes_for_candidate(&self.admitted_device_requirements, ordinal, ledger)
-                    else {
+                    if !self.admitted_device_requirements.contains_key(&ordinal) {
                         return AttemptAlternateDeviceEligibility::Unavailable;
-                    };
-                    let Ok(can_ever_fit) = ledger.can_ever_fit_required_floor_bytes(required_floor) else {
-                        return AttemptAlternateDeviceEligibility::Unavailable;
-                    };
+                    }
+                    let can_ever_fit =
+                        ledger.snapshot().is_ok_and(|snapshot| snapshot.can_ever_fit_query_cap(Some(query_cap_bytes)));
                     if can_ever_fit && matches!(ledger.health(), Ok(crate::runtime::gpu::DeviceAdmissionHealth::Open)) {
                         return AttemptAlternateDeviceEligibility::Eligible;
                     }
@@ -1125,16 +1301,6 @@ impl QueryHandleReportCommit {
             None
         }
     }
-}
-
-pub(super) fn required_floor_bytes_for_candidate(
-    requirements: &BTreeMap<usize, AttemptRequirement>,
-    ordinal: usize,
-    ledger: &DeviceLedger,
-) -> Result<u64> {
-    let requirement =
-        requirements.get(&ordinal).ok_or_else(|| super::admission::missing_device_admission_entry_error(ordinal))?;
-    ledger.required_floor_bytes_for(requirement)
 }
 
 /// Owns a release until either CUDA cleanup starts or a submission/cancellation
@@ -1319,8 +1485,11 @@ impl QueryHandleRelease {
             root_context: None,
             attempt_stream_provider_route: None,
             envelope: None,
+            pending_frozen_resident_publish: Arc::new(AtomicBool::new(false)),
             #[cfg(test)]
             release_commit_gate: None,
+            #[cfg(test)]
+            envelope_release_gate: None,
             terminal_domain_usage: None,
             outcome_terminal_domain_usage: None,
             terminal_outcome: RuntimeTerminalOutcome::Dropped,
@@ -1356,6 +1525,7 @@ impl QueryHandleRelease {
             allocator_domain_attempt,
             cache_scope_allocator_correlation: std::mem::take(&mut self.cache_scope_allocator_correlation),
             outcome_terminal_domain_usage: self.outcome_terminal_domain_usage.take(),
+            pending_frozen_resident_publish: Arc::clone(&self.pending_frozen_resident_publish),
             #[cfg(test)]
             release_commit_gate: self.release_commit_gate.take(),
             terminal_domain_usage: self.terminal_domain_usage.take(),
@@ -1374,12 +1544,43 @@ impl QueryHandleRelease {
         // physical roots. The route owns the auxiliary stream members, and
         // its native registration must outlive every forked stream submission.
         drop_recovering(self.attempt_stream_provider_route.take(), "attempt stream provider route");
+        // A frozen resident grant outlives this attempt through its output
+        // lease, so its ledger transition needs a handle that survives the
+        // envelope.
+        let frozen_resident_grant = self
+            .pending_frozen_resident_publish
+            .load(Ordering::Acquire)
+            .then(|| self.envelope.as_ref().map(|envelope| envelope.memory_grant().clone()))
+            .flatten();
+        // Deterministic-barrier hook: tests observe what a concurrent
+        // admission sees while this attempt still owns its lane.
+        #[cfg(test)]
+        if let Some(gate) = self.envelope_release_gate.take() {
+            gate.entered.fetch_add(1, Ordering::AcqRel);
+            gate.gate.wait();
+        }
         // The envelope drops physical remnants, the attempt lane, immutable
         // grant, backend-generation permit, and lifecycle ticket in that
         // order. The final MemoryGrant drop invokes the ledger release hook
         // that reacquires the admission mutex, so it must never happen while
         // that mutex is held.
         drop_recovering(self.envelope.take(), "admission envelope");
+        // Seal, then release the lane and root stream, then publish B to R.
+        // Only now can the freed `B - R` become visible to admission, and by
+        // then this attempt's lane is already free.
+        if let Some(grant) = frozen_resident_grant {
+            self.pending_frozen_resident_publish.store(false, Ordering::Release);
+            if let Err(error) = grant.publish_frozen_resident() {
+                if let Some(service) = self.service.as_ref() {
+                    service.close_unknown_isolation_admission(format!(
+                        "failed to publish prepared frozen resident accounting: {error}"
+                    ));
+                }
+                eprintln!(
+                    "[nexus-query-engine] warning: failed to publish frozen resident accounting after report: {error}"
+                );
+            }
+        }
         // Publish query quiescence only after this handle no longer retains
         // the service epoch. `close_and_wait_for_quiescence` uses the active
         // query count as its completion fence, so waking it earlier could let
@@ -1568,7 +1769,7 @@ impl QueryHandle {
         let root_setup_claim = (setup_claim == ContextSetupClaim::Root)
             .then(|| RootContextSetupClaimGuard::new(Arc::clone(&self.lifetime)));
         let stream_acquire_deadline = self.context_stream_acquire_deadline(&cancellation);
-        // Claim the attempt-owned share before submitting an auxiliary job.
+        // Claim the attempt-owned auxiliary share before submitting an execution-class job.
         // Otherwise excess work from one attempt can fill every global
         // auxiliary executor permit while it waits for its own local limit.
         let attempt_auxiliary_permit = match setup_claim {
@@ -1589,8 +1790,8 @@ impl QueryHandle {
         };
         let pool = self.gpu_execution_pool()?;
         let job_class = match setup_claim {
-            ContextSetupClaim::Root => super::super::gpu_execution_pool::GpuExecutionJobClass::Root,
-            ContextSetupClaim::Auxiliary => super::super::gpu_execution_pool::GpuExecutionJobClass::Auxiliary,
+            ContextSetupClaim::Root => super::super::gpu_execution_pool::GpuExecutionJobClass::Lifecycle,
+            ContextSetupClaim::Auxiliary => super::super::gpu_execution_pool::GpuExecutionJobClass::Execution,
             ContextSetupClaim::WaitForRoot => {
                 unreachable!("context setup reservation resolves waits before scheduling")
             },

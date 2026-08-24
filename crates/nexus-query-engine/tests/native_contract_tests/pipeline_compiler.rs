@@ -917,7 +917,7 @@ fn compiled_pipeline_validate_rejects_barrier_without_upstream_dominance() {
 }
 
 #[test]
-fn compiled_pipeline_validate_rejects_unresolved_preflight_gate_mislabeled_as_exact() {
+fn compiled_pipeline_validate_does_not_make_unresolved_preflight_an_execution_gate() {
     let pipeline = invariant_validation_fixture_with(|parts| {
         parts.gates[0] = ReservationGate::new(
             ReservationGateId::new(0),
@@ -931,15 +931,7 @@ fn compiled_pipeline_validate_rejects_unresolved_preflight_gate_mislabeled_as_ex
         );
     });
 
-    let error = pipeline.validate().expect_err("hard-budgeted source read gate should keep unresolved quality");
-
-    assert_pipeline_validation_error(
-        &error,
-        "pipeline unresolved-preflight gate is not labeled with unresolved-preflight quality",
-    );
-    assert_eq!(error.fact_value("gate_id"), Some("g0"));
-    assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
-    assert_eq!(error.fact_value("contract_quality"), Some("exact_preflight"));
+    pipeline.validate().expect("memory preflight quality must not veto an otherwise executable pipeline");
 }
 
 #[test]

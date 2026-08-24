@@ -41,6 +41,25 @@ std::optional<query_domain_allocation_record> query_domain_allocation_registry::
   return record;
 }
 
+std::vector<std::pair<void*, query_domain_allocation_record>>
+query_domain_allocation_registry::live_for_domain(
+  std::shared_ptr<query_domain_state> const& domain)
+{
+  std::vector<std::pair<void*, query_domain_allocation_record>> live;
+  if (domain == nullptr) { return live; }
+  {
+    std::scoped_lock lock{mutex_};
+    live.reserve(allocations_.size());
+    for (auto const& [ptr, record] : allocations_) {
+      if (record.domain == domain) { live.emplace_back(ptr, record); }
+    }
+  }
+  std::sort(live.begin(), live.end(), [](auto const& lhs, auto const& rhs) {
+    return lhs.first < rhs.first;
+  });
+  return live;
+}
+
 void query_domain_allocation_registry::record_invariant_violation(
   invariant_violation violation) noexcept
 {
@@ -154,6 +173,20 @@ bool query_domain_resource::resize_grant(std::size_t grant_bytes, std::string& e
   return true;
 }
 
+bool query_domain_resource::freeze(std::string& error)
+{
+  bool expected = true;
+  if (!allocation_open_.compare_exchange_strong(expected, false, std::memory_order_acq_rel)) {
+    return true;
+  }
+  if (in_flight_operations_.load(std::memory_order_acquire) != 0) {
+    allocation_open_.store(true, std::memory_order_release);
+    error = "query memory domain has in-flight allocation operations";
+    return false;
+  }
+  return true;
+}
+
 bool query_domain_resource::pool_usage(cudf_memory_pool_usage_t& out) const noexcept
 {
   return read_cuda_pool_usage_noexcept(view_.pool_handle(), out);
@@ -234,6 +267,13 @@ void* query_domain_resource::allocate_impl(
   bool require_attached)
 {
   if (bytes == 0) { return view_.allocate(stream, bytes, alignment); }
+  if (!allocation_open_.load(std::memory_order_acquire)) {
+    // A frozen domain rejecting new work is a routing/lifetime invariant
+    // violation, not caller input: the attempt was supposed to stop
+    // allocating before its output was published.
+    throw cudf::logic_error{
+      "allocator invariant violation: query memory domain is frozen to new allocations"};
+  }
   auto const aligned_bytes          = cudf::rust::reservation::allocation_charge(bytes, alignment);
   std::size_t member_reserved_total = 0;
   if (member != nullptr && require_attached && !member->attached.load(std::memory_order_acquire)) {
@@ -684,6 +724,28 @@ void reservation_aware_resource_adaptor::destroy_query_domain(
   cleanup_query_domain_if_idle(state);
 }
 
+bool reservation_aware_resource_adaptor::freeze_query_domain(
+  std::shared_ptr<query_domain_state> const& state, std::string& error)
+{
+  std::unique_lock lock{query_domain_mutex_};
+  if (!state->active) {
+    error = "query memory domain is not active";
+    return false;
+  }
+  if (state->active_members != 0) {
+    error = "query memory domain still has active stream members";
+    return false;
+  }
+  return state->resource->freeze(error);
+}
+
+std::vector<std::pair<void*, query_domain_allocation_record>>
+reservation_aware_resource_adaptor::live_query_domain_allocations(
+  std::shared_ptr<query_domain_state> const& state)
+{
+  return query_domain_allocations_->live_for_domain(state);
+}
+
 cudf_memory_resource_usage_t reservation_aware_resource_adaptor::query_domain_usage(
   std::shared_ptr<query_domain_state> const& state)
 {
@@ -987,6 +1049,54 @@ cudf_status_t cudf_query_memory_domain_resize_grant(cudf_query_memory_domain_han
     if (!adaptor->resize_query_domain(state.domain, grant_bytes, resize_error)) {
       set_error(resize_error);
       return CUDF_ERROR_INVALID_ARGUMENT;
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_query_memory_domain_freeze(cudf_query_memory_domain_handle domain)
+{
+  CUDF_RUST_NULL_CHECK(domain, "query memory domain is null");
+  CUDF_RUST_TRY
+  {
+    auto& state   = *reinterpret_cast<query_domain_handle_state*>(domain);
+    auto* adaptor = state.manager->owner->reservation_adaptor;
+    std::string freeze_error;
+    if (!adaptor->freeze_query_domain(state.domain, freeze_error)) {
+      set_error(freeze_error);
+      return CUDF_ERROR_INVALID_OPERATION;
+    }
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_query_memory_domain_live_allocations(
+  cudf_query_memory_domain_handle domain,
+  cudf_query_memory_domain_allocation_t* out,
+  size_t capacity,
+  size_t* out_count)
+{
+  CUDF_RUST_NULL_CHECK(domain, "query memory domain is null");
+  CUDF_RUST_NULL_CHECK(out_count, "query memory domain live allocation count is null");
+  CUDF_RUST_TRY
+  {
+    auto& state   = *reinterpret_cast<query_domain_handle_state*>(domain);
+    auto* adaptor = state.manager->owner->reservation_adaptor;
+    auto const live = adaptor->live_query_domain_allocations(state.domain);
+    *out_count      = live.size();
+    if (out == nullptr) { return CUDF_SUCCESS; }
+    auto const copied = std::min(capacity, live.size());
+    for (std::size_t index = 0; index < copied; ++index) {
+      auto const& [ptr, record] = live[index];
+      out[index]                = cudf_query_memory_domain_allocation_t{
+                       sizeof(cudf_query_memory_domain_allocation_t),
+                       ptr,
+                       record.bytes,
+                       record.aligned_bytes,
+                       record.alignment,
+                       {0, 0}};
     }
     return CUDF_SUCCESS;
   }

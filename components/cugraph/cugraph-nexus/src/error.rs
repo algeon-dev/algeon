@@ -395,6 +395,20 @@ impl Error {
         self.allocation_facts().failure_source
     }
 
+    /// Attributes this error to an allocation failure source.
+    ///
+    /// Native code attributes allocation failures from the C error object.
+    /// This constructor lets consumers exercise the attribution contract
+    /// without a device.
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[must_use]
+    pub fn with_allocation_failure_source(mut self, failure_source: AllocationFailureSource) -> Self {
+        let mut facts = self.allocation_facts();
+        facts.failure_source = failure_source;
+        self.allocation = Some(Box::new(facts));
+        self
+    }
+
     /// Stable domain identity supplied by the native allocation owner.
     pub fn allocation_domain_id(&self) -> u64 {
         self.allocation_facts().domain_id

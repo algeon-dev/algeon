@@ -37,7 +37,6 @@ pub(in crate::exec::bounded) use compiled::{
     execute_bounded_compiled_join_probe_from_resident_frame, execute_bounded_compiled_join_probe_from_stream,
     release_bounded_compiled_join_build_state, release_bounded_compiled_join_probe_state,
 };
-pub(in crate::exec::bounded) use hash::reusable_hash_join_stream_target_output_bytes;
 use hash::{
     BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState, execute_bounded_root_hash_join_build_from_frame,
     execute_bounded_root_hash_join_build_from_resident_frame, execute_bounded_root_hash_join_materialize,

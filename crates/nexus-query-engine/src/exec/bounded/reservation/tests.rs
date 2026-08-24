@@ -46,8 +46,8 @@ fn observed_projection_with_limits(
         reservations.try_reserve_work(request(ReservationKind::OperatorOutput, "reserve", 60), &mut metrics)?;
     reservations.try_grow(&mut owned, request(ReservationKind::OperatorOutput, "grow", 10), &mut metrics)?;
     reservations.shrink_to_observed(&mut owned, 50, &mut metrics);
-    let denied = reservations.try_reserve_work(request(ReservationKind::OperatorOutput, "denied", 60), &mut metrics);
-    assert!(denied.is_err());
+    let extra = reservations.try_reserve_work(request(ReservationKind::OperatorOutput, "extra", 60), &mut metrics)?;
+    drop(extra);
     drop(owned);
     drop(reservations);
     metrics.finalize_reservation_projection();
@@ -70,15 +70,15 @@ fn assert_exact_reservation_projection(actual: &QueryMetrics, expected: &QueryMe
 fn public_reservation_projection_is_exact_across_trace_record_and_byte_caps() -> Result<()> {
     let (uncapped, complete_trace) = observed_projection_with_limits(RuntimeObservationConfig::bounded(64, 64 * 1024))?;
     assert_eq!(uncapped.reservation_requested_bytes, 130);
-    assert_eq!(uncapped.reservation_granted_bytes, 70);
-    assert_eq!(uncapped.reservation_live_peak_bytes, 70);
-    assert_eq!(uncapped.reservation_denied_count, 1);
-    assert_eq!(uncapped.reservation_events.len(), 5);
+    assert_eq!(uncapped.reservation_granted_bytes, 130);
+    assert_eq!(uncapped.reservation_live_peak_bytes, 110);
+    assert_eq!(uncapped.reservation_denied_count, 0);
+    assert_eq!(uncapped.reservation_events.len(), 6);
     let task = &uncapped.task_runtime_metrics["cap-task"];
     assert_eq!(task.reservation_requested_bytes, 130);
-    assert_eq!(task.reservation_granted_bytes, 70);
-    assert_eq!(task.reservation_released_bytes, 70);
-    assert_eq!(task.reservation_live_peak_bytes, 70);
+    assert_eq!(task.reservation_granted_bytes, 130);
+    assert_eq!(task.reservation_released_bytes, 130);
+    assert_eq!(task.reservation_live_peak_bytes, 110);
     assert!(!complete_trace.footer().truncated);
     assert!(!complete_trace.footer().degraded, "exact reservation preflight must match retained accounting");
 
@@ -189,7 +189,7 @@ fn cloning_query_metrics_detaches_the_reservation_projection_ledger() -> Result<
 fn grant_backed_static_tracker_transfers_live_output_at_grant_cap_without_double_charge() -> Result<()> {
     let governor = DeviceLedger::for_test(0, 100, 2);
     let grant = governor
-        .admit_with_configured_floor_and_soft_working_set_hint_for_test(AdmissionRequestId::new(7), 10, 30)?
+        .admit_with_configured_floor_and_soft_working_set_hint_for_test(AdmissionRequestId::new(7), 30, 30)?
         .expect("initial grant should fit");
     let mut metrics = QueryMetrics::default();
     let mut reservations = ReservationTracker::new_with_budget(
@@ -228,46 +228,10 @@ fn grant_backed_static_tracker_transfers_live_output_at_grant_cap_without_double
 }
 
 #[test]
-fn grant_backed_reservation_tracker_denies_when_shared_grant_live_budget_is_exhausted() -> Result<()> {
-    let governor = DeviceLedger::for_test(0, 100, 2);
-    let grant = governor
-        .admit_with_configured_floor_and_soft_working_set_hint_for_test(AdmissionRequestId::new(7), 30, 70)?
-        .expect("initial grant should fit");
-    let mut metrics = QueryMetrics::default();
-    let mut first_tracker = ReservationTracker::new_with_budget(
-        MemorySpaceId::Device { device_ordinal: 0 },
-        ReservationBudget::GrantBackedStatic { budget_bytes: grant.budget_bytes(), grant: grant.clone() },
-    );
-    let mut second_tracker = ReservationTracker::new_with_budget(
-        MemorySpaceId::Device { device_ordinal: 0 },
-        ReservationBudget::GrantBackedStatic { budget_bytes: grant.budget_bytes(), grant: grant.clone() },
-    );
-    let first_live = first_tracker.try_reserve_owned_resident(
-        test_request(ReservationKind::OperatorOutput, "first_live", 50, first_tracker.budget()),
-        &mut metrics,
-    )?;
-
-    let denied = match second_tracker.try_reserve_owned_resident(
-        test_request(ReservationKind::OperatorOutput, "second_live", 30, second_tracker.budget()),
-        &mut metrics,
-    ) {
-        Ok(_) => panic!("second tracker must be capped by the shared grant live footprint"),
-        Err(error) => error,
-    };
-
-    assert_eq!(denied.fact_value("granted_bytes"), Some("20"));
-    assert_eq!(grant.live_reserved_bytes(), 50);
-
-    first_tracker.release(first_live, &mut metrics);
-    assert_eq!(grant.live_reserved_bytes(), 0);
-    Ok(())
-}
-
-#[test]
 fn grant_backed_reservation_tracker_borrowed_resident_does_not_double_charge_grant_live_bytes() -> Result<()> {
     let governor = DeviceLedger::for_test(0, 100, 2);
     let grant = governor
-        .admit_with_configured_floor_and_soft_working_set_hint_for_test(AdmissionRequestId::new(7), 30, 70)?
+        .admit_with_configured_floor_and_soft_working_set_hint_for_test(AdmissionRequestId::new(7), 70, 70)?
         .expect("initial grant should fit");
     let retained_input = grant
         .retain_live_reservation(50)
@@ -308,7 +272,7 @@ fn grant_backed_reservation_tracker_borrowed_resident_does_not_double_charge_gra
 fn retained_output_debit_composes_setup_and_work_without_a_second_grant_charge() -> Result<()> {
     let governor = DeviceLedger::for_test(0, 100, 2);
     let grant = governor
-        .admit_with_configured_floor_and_soft_working_set_hint_for_test(AdmissionRequestId::new(8), 10, 100)?
+        .admit_with_configured_floor_and_soft_working_set_hint_for_test(AdmissionRequestId::new(8), 100, 100)?
         .expect("initial grant should fit");
     let retained_output =
         grant.retain_live_reservation(30)?.expect("retained output should own the producer's sole live charge");
@@ -337,19 +301,14 @@ fn retained_output_debit_composes_setup_and_work_without_a_second_grant_charge()
     assert_eq!(tracker.raw_reserved_bytes(), budget, "B + O + C fits exactly");
     assert_eq!(grant.live_reserved_bytes(), budget);
 
-    let denied = match tracker.try_reserve_work(
+    let extra = tracker.try_reserve_work(
         test_request(ReservationKind::OperatorOutput, "consumer_work", 1, tracker.budget()),
         &mut metrics,
-    ) {
-        Ok(_) => panic!("C+1 must fail at the reservation boundary"),
-        Err(error) => error,
-    };
-    assert_eq!(denied.code(), QueryErrorCode::MemoryReservationFailed);
-    assert_eq!(denied.fact_value("memory_boundary"), Some("consumer_work"));
-    assert_eq!(denied.fact_value("requested_bytes"), Some("1"));
-    assert_eq!(denied.fact_value("granted_bytes"), Some("0"));
-    assert_eq!(denied.fact_value("reason"), None, "reservation boundary denial must not be domain exhaustion");
+    )?;
+    assert_eq!(tracker.raw_reserved_bytes(), budget + 1, "model reservations may exceed the planned grant cap");
+    assert_eq!(grant.live_reserved_bytes(), budget + 1, "native query-domain ownership is the allocation limit");
 
+    tracker.release(extra, &mut metrics);
     tracker.release(work, &mut metrics);
     tracker.release(setup, &mut metrics);
     drop(retained_guard);
@@ -378,7 +337,11 @@ fn augment_gpu_inputs_charges_each_retained_reservation_once_and_reuses_existing
     let managed_capacity = grant_bytes.checked_mul(2).expect("test ledger capacity fits");
     let governor = DeviceLedger::for_test(runtime.device().ordinal(), managed_capacity, 2);
     let grant = governor
-        .admit_with_configured_floor_and_soft_working_set_hint_for_test(AdmissionRequestId::new(9), 1, grant_bytes)?
+        .admit_with_configured_floor_and_soft_working_set_hint_for_test(
+            AdmissionRequestId::new(9),
+            grant_bytes,
+            grant_bytes,
+        )?
         .expect("initial grant should fit");
     assert_eq!(grant.budget_bytes(), grant_bytes, "the test must exercise an exact B + O + C immutable grant");
     let live_reservation =
@@ -407,7 +370,7 @@ fn augment_gpu_inputs_charges_each_retained_reservation_once_and_reuses_existing
         test_request(ReservationKind::SourceRead, "setup", FIXED_BYTES, tracker.budget()),
         &mut metrics,
     )?;
-    assert_eq!(tracker.reservable_remaining_bytes()?, CONSUMER_BYTES);
+    assert_eq!(tracker.reservable_remaining_bytes()?, grant_bytes);
     let work = tracker.try_reserve_work(
         test_request(ReservationKind::OperatorOutput, "consumer_work", CONSUMER_BYTES, tracker.budget()),
         &mut metrics,
@@ -419,17 +382,14 @@ fn augment_gpu_inputs_charges_each_retained_reservation_once_and_reuses_existing
         "the retained handle and consumer allocations share one grant"
     );
 
-    let denied = match tracker.try_reserve_work(
+    let extra = tracker.try_reserve_work(
         test_request(ReservationKind::OperatorOutput, "consumer_work", 1, tracker.budget()),
         &mut metrics,
-    ) {
-        Ok(_) => panic!("C + 1 must fail at the tracker reservation boundary"),
-        Err(error) => error,
-    };
-    assert_eq!(denied.code(), QueryErrorCode::MemoryReservationFailed);
-    assert_eq!(denied.fact_value("memory_boundary"), Some("consumer_work"));
-    assert_eq!(denied.fact_value("reason"), None, "the denial must not be reported as domain exhaustion");
+    )?;
+    assert_eq!(tracker.raw_reserved_bytes(), grant_bytes + 1, "model reservations may exceed the planned grant cap");
+    assert_eq!(grant.live_reserved_bytes(), grant_bytes + 1, "native query-domain ownership is the allocation limit");
 
+    tracker.release(extra, &mut metrics);
     drop(reaugmented);
     drop(reordered);
     drop(augmented);
@@ -522,37 +482,6 @@ fn reconcile_work_reservation_to_output_shrinks_with_output_request_context() ->
 
     let output = reservations.transfer(work, output_request, &mut metrics);
     reservations.release(output, &mut metrics);
-    Ok(())
-}
-
-#[test]
-fn reconcile_work_reservation_to_output_denial_leaves_release_to_caller() -> Result<()> {
-    let mut metrics = QueryMetrics::default();
-    let mut reservations = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 50);
-    let mut work = reservations.try_reserve_work(
-        test_request(ReservationKind::OperatorOutput, "operator_work", 40, reservations.budget()),
-        &mut metrics,
-    )?;
-    let output_request = test_request(ReservationKind::OperatorOutput, "operator_output", 60, reservations.budget());
-
-    let error = reconcile_work_reservation_to_output(&mut reservations, &mut work, 60, &output_request, &mut metrics)
-        .expect_err("grow beyond budget should be denied");
-
-    assert_eq!(error.fact_value("memory_boundary"), Some("operator_output"));
-    assert_eq!(error.fact_value("requested_bytes"), Some("20"));
-    assert_eq!(error.fact_value("granted_bytes"), Some("10"));
-    assert_eq!(work.bytes(), 40);
-    assert_eq!(reservations.reserved_bytes(), 40);
-    let denied = metrics
-        .reservation_events
-        .iter()
-        .find(|event| event.outcome == MemoryReservationEventOutcome::Denied)
-        .expect("grow denial should be recorded");
-    assert_eq!(denied.action, MemoryReservationEventAction::Grow);
-    assert_eq!(denied.memory_boundary, "operator_output");
-
-    reservations.release(work, &mut metrics);
-    assert_eq!(reservations.reserved_bytes(), 0);
     Ok(())
 }
 
@@ -727,7 +656,7 @@ fn typed_reservations_replace_source_paths_with_stable_opaque_ids() -> Result<()
 }
 
 #[test]
-fn typed_reservation_drop_unwind_and_denial_are_distinct_and_balanced() -> Result<()> {
+fn typed_reservation_drop_and_unwind_are_balanced_without_model_denial() -> Result<()> {
     let lifecycle = RuntimeQueryLifecycle::new(
         RuntimeObservationSession::new("reservation-terminal", None, RuntimeObservationConfig::bounded(64, 64 * 1024)),
         PlanExecutionId::new("plan-reservation-terminal"),
@@ -763,11 +692,13 @@ fn typed_reservation_drop_unwind_and_denial_are_distinct_and_balanced() -> Resul
         test_request(ReservationKind::OperatorOutput, "live", 80, reservations.budget()),
         &mut metrics,
     )?;
-    let denial = reservations.try_reserve_owned_resident(
-        test_request(ReservationKind::ProbeSide, "denied", 30, reservations.budget()),
+    let extra = reservations.try_reserve_owned_resident(
+        test_request(ReservationKind::ProbeSide, "extra", 30, reservations.budget()),
         &mut metrics,
-    );
-    assert!(denial.is_err());
+    )?;
+    assert_eq!(reservations.reserved_bytes(), 110);
+    drop(extra);
+    assert_eq!(reservations.reserved_bytes(), 80);
     reservations.release(live, &mut metrics);
     drop(reservations);
 
@@ -785,9 +716,7 @@ fn typed_reservation_drop_unwind_and_denial_are_distinct_and_balanced() -> Resul
     assert_eq!(events.iter().map(|event| event.2).sum::<i128>(), 0);
     assert!(events.iter().any(|event| event.1 == RuntimeReservationDisposition::DropRelease));
     assert!(events.iter().any(|event| event.1 == RuntimeReservationDisposition::UnwindRelease));
-    assert!(events.iter().any(|event| {
-        event.0 == RuntimeReservationAction::Deny && event.1 == RuntimeReservationDisposition::Denied
-    }));
+    assert_eq!(metrics.reservation_denied_count, 0);
     Ok(())
 }
 

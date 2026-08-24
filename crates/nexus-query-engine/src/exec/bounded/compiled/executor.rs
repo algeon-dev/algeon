@@ -9,7 +9,7 @@ use super::{
     CompiledGpuResource,
     helpers::{invalid, task_diagnostic_resident_resource},
     resource::CompiledGpuResourcePayload,
-    scheduler::{CompiledSchedulingCycle, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput},
+    scheduler::{CompiledSchedulingCycle, CompiledTaskExecutor, CompiledTaskOutput},
     state::CompiledPipelineState,
 };
 use crate::{
@@ -141,7 +141,8 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             },
         };
         let ResidentGpuFrame { frame, mut reservation } = *frame;
-        let live_reservation = reservation.transfer_grant_live_reservation();
+        let output_bytes = frame.device_allocated_size_bytes()?;
+        let live_reservation = reservation.retain_escaping_resident_output(output_bytes)?;
         let frame =
             frame.with_producer_execution_scope(crate::admission::canonical_execution_scope_fingerprint(self.plan));
         let handle = match GpuResultHandle::new_with_live_reservation(
@@ -161,15 +162,6 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         };
         self.execution.release(reservation);
         Ok(handle)
-    }
-}
-
-pub(super) fn string_floor_max_bytes(data_type: &arrow::datatypes::DataType) -> Option<u64> {
-    match data_type {
-        arrow::datatypes::DataType::Utf8
-        | arrow::datatypes::DataType::LargeUtf8
-        | arrow::datatypes::DataType::Utf8View => Some(0),
-        _ => None,
     }
 }
 
@@ -279,13 +271,5 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
 
     fn remaining_reserved_bytes(&self) -> Option<u64> {
         Some(self.remaining_bytes())
-    }
-
-    fn can_admit_task(
-        &self,
-        task: &PipelineTask,
-        state: &CompiledPipelineState<Self::Resource>,
-    ) -> Result<CompiledTaskAdmission> {
-        self.can_admit_with_current_reservations(task, state)
     }
 }

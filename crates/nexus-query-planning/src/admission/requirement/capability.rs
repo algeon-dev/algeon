@@ -527,12 +527,12 @@ impl QueryPlanCapabilityProof {
     /// Derives a plan-scoped proof for the exact internal plan issued by the
     /// cuGraph frontend.
     ///
-    /// The generic graph node analysis deliberately keeps its lower-level
-    /// bounded-execution blocker: the engine alone cannot establish that an
-    /// embedding graph runtime owns all graph construction and workspace
-    /// lifetimes.  cuGraph establishes that contract at its own boundary, so
-    /// its engine-issued proof replaces only that blocker with the canonical
-    /// cuGraph execution capability. The replacement is bound to a private,
+    /// The generic graph node analysis carries a capability-only graph
+    /// requirement: the engine alone cannot establish that an embedding graph
+    /// runtime owns all graph construction and workspace lifetimes. cuGraph
+    /// establishes that contract at its own boundary, so its engine-issued
+    /// proof replaces only that requirement with the canonical cuGraph
+    /// execution capability. The replacement is bound to a private,
     /// collision-free structural scope for this exact plan; combining proofs
     /// preserves every scope, and execution rechecks it against the plan
     /// about to run. The adapter-only host/deferred-GPU sink boundary is
@@ -2919,18 +2919,46 @@ impl AttemptCapabilityEvidence {
             })
             .cloned()
             .collect::<Vec<_>>();
-        if missing_capabilities.is_empty() {
+        if !missing_capabilities.is_empty() {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.admission.requirement",
+                "admitted capability proof does not cover the native plan about to execute",
+            )
+            .with_fact("reason", "admitted_capability_evidence_mismatch")
+            .with_fact("required_capabilities", Self::capability_labels(&required_capabilities))
+            .with_fact("admitted_capabilities", Self::capability_labels(&self.required_capabilities))
+            .with_fact("missing_capabilities", Self::capability_labels(&missing_capabilities)));
+        }
+        let execution_scope = canonical_execution_scope_fingerprint(plan);
+        let shape_matches = self
+            .reservation_shapes
+            .iter()
+            .filter(|shape| shape.matches_execution_scope_fingerprint(&execution_scope))
+            .count();
+        let occurrence_matches = self
+            .reservation_shapes
+            .iter()
+            .map(|shape| shape.producer_occurrence_scope_count(&execution_scope))
+            .sum::<usize>();
+        if shape_matches > 0 || occurrence_matches > 0 {
             return Ok(());
         }
         Err(QueryError::new(
             QueryErrorCode::UnsupportedPlanShape,
             "nexus_query_engine.admission.requirement",
-            "admitted capability proof does not cover the native plan about to execute",
+            "admitted capability proof does not cover the native execution scope",
         )
-        .with_fact("reason", "admitted_capability_evidence_mismatch")
-        .with_fact("required_capabilities", Self::capability_labels(&required_capabilities))
-        .with_fact("admitted_capabilities", Self::capability_labels(&self.required_capabilities))
-        .with_fact("missing_capabilities", Self::capability_labels(&missing_capabilities)))
+        .with_fact("reason", "admitted_capability_scope_mismatch")
+        .with_fact("plan_scope", execution_scope)
+        .with_fact("matching_shape_count", shape_matches)
+        .with_fact("matching_occurrence_count", occurrence_matches))
+    }
+
+    #[doc(hidden)]
+    pub fn producer_occurrence_scope_count_for_plan(&self, plan: &QueryPlan) -> usize {
+        let execution_scope = canonical_execution_scope_fingerprint(plan);
+        self.reservation_shapes.iter().map(|shape| shape.producer_occurrence_scope_count(&execution_scope)).sum()
     }
 
     /// Aggregates all native fragments in one invocation.

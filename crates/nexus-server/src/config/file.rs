@@ -32,7 +32,6 @@ pub(super) struct ServerAdmissionFileConfig {
     pub(super) device_profiles: Vec<ServerAdmissionDeviceProfileFileConfig>,
     pub(super) max_queued_attempts: Option<usize>,
     pub(super) max_queue_wait_ms: Option<u64>,
-    pub(super) max_overtakes_per_waiter: Option<u64>,
 }
 
 /// One explicit ordinal-keyed device envelope in `[admission]`.
@@ -47,7 +46,7 @@ pub(super) struct ServerAdmissionDeviceProfileFileConfig {
     pub(super) memory_limit_bytes: Option<u64>,
     pub(super) backend_reserve_bytes: Option<u64>,
     pub(super) cache_cap_bytes: Option<u64>,
-    pub(super) attempt_floor_bytes: Option<u64>,
+    pub(super) default_query_limit_bytes: Option<u64>,
     pub(super) source_work_per_attempt: Option<usize>,
     pub(super) max_active_attempts: Option<usize>,
     pub(super) stream_pool_size: Option<usize>,

@@ -2149,11 +2149,11 @@ pub fn checked_consumer_add(left: u64, right: u64, reason: &'static str) -> Resu
 
 #[doc(hidden)]
 pub fn generic_graph_execution_blocker() -> ReservationRequirement {
-    ReservationRequirement::blocked_by_lower_level(
+    ReservationRequirement::modeled(
         ReservationKind::OperatorOutput,
         crate::plan::GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY,
         crate::plan::GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT,
-        crate::capability::ContractQuality::ExactPreflight,
+        crate::capability::ContractQuality::CapabilityProof,
     )
 }
 

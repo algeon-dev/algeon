@@ -10,7 +10,7 @@ use crate::{
         RuntimeEventContext, RuntimeExecutionObservationScope, RuntimeObservationPayload, RuntimeReservationAction,
         RuntimeReservationDisposition, RuntimeReservationId, RuntimeSpanId, TaskAttemptId,
     },
-    runtime::{ExecutionContext, MemoryGrant, MemorySpaceId, gpu::ledger::MemoryGrantLiveReservation},
+    runtime::{ExecutionContext, MemoryGrant, MemorySpaceId, gpu::ledger::FrozenResidentLease},
 };
 
 mod active;

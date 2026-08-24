@@ -2,25 +2,21 @@
 //!
 //! One [`DeviceLedger`] owns admission accounting for exactly one CUDA device:
 //! an immutable [`DeviceResourceProfile`] plus a mutable, versioned state of
-//! active attempt grants, one optional slot protection, device admission
-//! health, and cache-internal evictable accounting (kept for the disabled
-//! cache substrate; never part of the admission equation while cache caps are
-//! zero).
+//! active or cleaning attempt grants, frozen resident charges, device
+//! admission health, and cache-internal accounting. Cache accounting remains
+//! diagnostic state and is not part of query admission.
 //!
 //! The admission equation is normative:
 //!
 //! ```text
 //! active_attempts + 1 <= max_active_attempts
-//! unprotected_empty = max_active - active_after - protected_slots  (checked)
-//! protected_reserve = max(configured_floor, protected_liveness_bytes)
-//! max_new_grant = managed_capacity - live_grants - protected_reserve
-//!               - configured_floor * unprotected_empty
-//! required_floor <= grant <= max_new_grant
+//! resident_bytes + live_grants + query_cap <= managed_capacity
 //! ```
 //!
-//! All arithmetic is checked or saturating at validation boundaries and exact
-//! inside the ledger transaction. Estimates may steer the grant within
-//! `[required_floor, max_new_grant]` but never the fit proof.
+//! The query cap is explicit or is resolved inside the admission transaction
+//! as `min(default_query_limit, managed_capacity - resident_bytes)`. It is
+//! never inferred from a planner estimate and never clamped to transient free
+//! capacity.
 
 use std::{
     cell::Cell,
@@ -30,10 +26,7 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use nexus_query_planning::{
-    admission::AttemptRequirement,
-    error::{QueryError, QueryErrorCode, Result},
-};
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
 use serde::Serialize;
 
 use super::DeviceResourceProfile;
@@ -64,35 +57,18 @@ impl DeviceAdmissionHealth {
     }
 }
 
-/// One protected future slot for an overtake-limited waiter.
-///
-/// Protected bytes are neither a grant nor preemption: they withhold one
-/// future slot plus subsequently freed managed bytes up to the waiter's
-/// remaining floor deficit. At most one protection exists per device.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[doc(hidden)]
-pub struct SlotProtection {
-    #[doc(hidden)]
-    pub waiter_id: AdmissionRequestId,
-    /// Freed managed bytes banked for this waiter since protection began;
-    /// grows only up to the waiter's required floor.
-    #[doc(hidden)]
-    pub liveness_bytes: u64,
-    /// The protected waiter's required floor (its remaining deficit target).
-    #[doc(hidden)]
-    pub required_floor_bytes: u64,
-}
-
 /// Atomic read of one device ledger at one observation sequence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LedgerSnapshot {
     pub device_ordinal: usize,
     pub sequence: u64,
     pub managed_capacity_bytes: u64,
-    pub configured_floor_bytes: u64,
+    pub default_query_limit_bytes: u64,
     pub max_active_attempts: usize,
     pub active_attempts: usize,
     pub live_grants_bytes: u64,
+    /// Bytes owned by frozen resident domains.
+    pub frozen_resident_bytes: u64,
     /// Aggregate query-owned bytes currently reserved inside live grants.
     ///
     /// This is deliberately distinct from `live_grants_bytes`: grants prove
@@ -132,22 +108,29 @@ impl LedgerSnapshot {
         self.root_worker_slots_available.saturating_add(self.auxiliary_worker_slots_available)
     }
 
-    /// Bytes grantable to a new candidate with `required_floor_bytes`, using
-    /// the normative equation. `None` when the candidate is not eligible.
-    pub fn max_new_grant_bytes(&self, required_floor_bytes: u64, is_protected_waiter: bool) -> Option<u64> {
-        let active_after = self.active_attempts.checked_add(1)?;
-        let protected_slots = usize::from(self.protected_slot && !is_protected_waiter);
-        let unprotected_empty = self.max_active_attempts.checked_sub(active_after)?.checked_sub(protected_slots)?;
-        let protected_reserve = if protected_slots == 1 { self.protected_reserve_bytes } else { 0 };
-        let empty_floor_reserve = self.configured_floor_bytes.checked_mul(u64::try_from(unprotected_empty).ok()?)?;
-        let max_new_grant = self
-            .managed_capacity_bytes
-            .checked_sub(self.live_grants_bytes)?
-            .checked_sub(self.cache_evictable_resident_bytes)?
-            .checked_sub(self.cache_pinned_in_use_bytes)?
-            .checked_sub(protected_reserve)?
-            .checked_sub(empty_floor_reserve)?;
-        (required_floor_bytes <= max_new_grant).then_some(max_new_grant)
+    /// Resolves and checks one query cap against this atomic snapshot.
+    pub fn admissible_query_cap_bytes(&self, requested_cap_bytes: Option<u64>) -> Option<u64> {
+        self.active_attempts.checked_add(1).filter(|active| *active <= self.max_active_attempts)?;
+        let resident_capacity = self.managed_capacity_bytes.checked_sub(self.frozen_resident_bytes)?;
+        let query_cap = requested_cap_bytes.unwrap_or_else(|| self.default_query_limit_bytes.min(resident_capacity));
+        if query_cap == 0 {
+            return None;
+        }
+        self.frozen_resident_bytes
+            .checked_add(self.live_grants_bytes)?
+            .checked_add(query_cap)
+            .filter(|total| *total <= self.managed_capacity_bytes)
+            .map(|_| query_cap)
+    }
+
+    /// Whether this snapshot's resident ownership leaves enough configured
+    /// capacity for the requested cap, ignoring active attempts.
+    pub fn can_ever_fit_query_cap(&self, requested_cap_bytes: Option<u64>) -> bool {
+        let Some(resident_capacity) = self.managed_capacity_bytes.checked_sub(self.frozen_resident_bytes) else {
+            return false;
+        };
+        let cap = requested_cap_bytes.unwrap_or_else(|| self.default_query_limit_bytes.min(resident_capacity));
+        cap > 0 && cap <= resident_capacity
     }
 }
 
@@ -157,10 +140,11 @@ pub struct DeviceLedgerReport {
     pub device_ordinal: usize,
     pub sequence: u64,
     pub managed_capacity_bytes: u64,
-    pub configured_floor_bytes: u64,
+    pub default_query_limit_bytes: u64,
     pub max_active_attempts: usize,
     pub active_attempts: usize,
     pub live_grants_bytes: u64,
+    pub frozen_resident_bytes: u64,
     /// Aggregate query-owned live reservations at this report's sequence.
     pub live_reserved_bytes: u64,
     /// Logical root stream slots available at this report's sequence.
@@ -173,7 +157,7 @@ pub struct DeviceLedgerReport {
     pub auxiliary_worker_slots_available: usize,
     /// Worker slots committed by active attempts at this report's sequence.
     pub worker_depth: usize,
-    /// Managed bytes not currently covered by live grants.
+    /// Managed bytes not currently covered by live grants or resident domains.
     pub available_bytes: u64,
     /// Immediately grantable bytes: managed minus live grants minus
     /// cache-internal evictable charges.
@@ -197,6 +181,7 @@ pub struct DeviceLedgerGrantRow {
     pub admission_request_id: AdmissionRequestId,
     pub grant_bytes: u64,
     pub live_reserved_bytes: u64,
+    pub frozen_resident_bytes: Option<u64>,
 }
 
 /// Immutable identity assigned when a device ledger commits one attempt grant.
@@ -217,8 +202,7 @@ pub struct GrantIdentity {
 pub enum LedgerTransitionKind {
     AdmissionClosed,
     GrantAdmitted,
-    ProtectionInstalled,
-    ProtectionRemoved,
+    GrantFrozenResident,
     GrantReleased,
     /// An evictable resident-cache charge was added.
     EvictableCharged,
@@ -343,7 +327,7 @@ struct DeviceLedgerState {
     next_grant_generation: u64,
     next_phase_generation: u64,
     grants: BTreeMap<u64, ActiveGrant>,
-    protection: Option<SlotProtection>,
+    frozen_resident_bytes: u64,
     health: DeviceAdmissionHealth,
     evictable_bytes: u64,
     pinned_bytes: u64,
@@ -355,6 +339,8 @@ struct ActiveGrant {
     grant_bytes: u64,
     live_reserved_bytes: u64,
     active_phase: Option<ActiveGrantPhase>,
+    pending_frozen_resident_bytes: Option<u64>,
+    frozen_resident_bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -365,7 +351,9 @@ struct ActiveGrantPhase {
 
 impl DeviceLedgerState {
     fn live_grants_bytes(&self) -> u64 {
-        self.grants.values().fold(0u64, |sum, grant| sum.saturating_add(grant.grant_bytes))
+        self.grants.values().fold(0u64, |sum, grant| {
+            sum.saturating_add(if grant.frozen_resident_bytes.is_some() { 0 } else { grant.grant_bytes })
+        })
     }
 
     fn live_reserved_bytes(&self) -> u64 {
@@ -385,7 +373,7 @@ impl DeviceLedger {
                     next_grant_generation: 1,
                     next_phase_generation: 1,
                     grants: BTreeMap::new(),
-                    protection: None,
+                    frozen_resident_bytes: 0,
                     health: DeviceAdmissionHealth::Open,
                     evictable_bytes: 0,
                     pinned_bytes: 0,
@@ -409,8 +397,9 @@ impl DeviceLedger {
             configured_limit_bytes: managed_capacity_bytes,
             headroom_bytes: 0,
             backend_reserve_bytes: 0,
-            attempt_floor_bytes: (managed_capacity_bytes / u64::try_from(max_active_attempts).unwrap_or(1).max(8))
-                .max(1),
+            default_query_limit_bytes: (managed_capacity_bytes
+                / u64::try_from(max_active_attempts).unwrap_or(1).max(8))
+            .max(1),
             max_active_attempts,
             source_work_per_attempt: source_work,
             stream_pool_size: slots,
@@ -421,35 +410,16 @@ impl DeviceLedger {
         Self::new(profile)
     }
 
-    /// Test convenience: admit one attempt with explicit configured-floor and
-    /// soft-working-set inputs.
+    /// Test convenience: admit one attempt with an explicit query cap.
     #[cfg(any(test, feature = "test-hooks"))]
     #[doc(hidden)]
     pub fn admit_with_configured_floor_and_soft_working_set_hint_for_test(
         &self,
         waiter_id: AdmissionRequestId,
-        configured_floor_bytes: u64,
-        soft_working_set_hint_bytes: u64,
+        query_cap_bytes: u64,
+        _unused_soft_working_set_hint_bytes: u64,
     ) -> Result<Option<MemoryGrant>> {
-        self.try_admit_for_attempt(
-            waiter_id,
-            AttemptId::mint(),
-            &AttemptRequirement {
-                configured_floor_bytes,
-                capability_floor_raise_bytes: 0,
-                required_phase_floor_bytes: 0,
-                source_stage_bytes: None,
-                soft_working_set_hint_bytes: Some(soft_working_set_hint_bytes),
-                estimate_quality: nexus_query_planning::admission::EstimateQuality::Modeled,
-                required_capabilities: Vec::new(),
-                owner_terms: Vec::new(),
-                bound_derivation: None,
-                requires_composed_producer_binding: false,
-                attested_cugraph_graph_execution_scopes: Vec::new(),
-                reservation_shapes: Vec::new(),
-                deferred_resident_phases: Vec::new(),
-            },
-        )
+        self.try_admit_for_attempt(waiter_id, AttemptId::mint(), Some(query_cap_bytes))
     }
 
     /// Immutable per-device resource profile behind this ledger.
@@ -465,73 +435,6 @@ impl DeviceLedger {
     /// Managed capacity in bytes (immutable).
     pub fn managed_capacity_bytes(&self) -> u64 {
         self.inner.profile.managed_capacity_bytes
-    }
-
-    /// Resolves an attempt requirement against this immutable device profile.
-    #[doc(hidden)]
-    pub fn required_floor_bytes_for(&self, requirement: &AttemptRequirement) -> Result<u64> {
-        let configured_floor_bytes = self.inner.profile.attempt_floor_bytes.max(requirement.configured_floor_bytes);
-        let required_phase_floor_bytes = configured_floor_bytes.max(requirement.required_phase_floor_bytes);
-        required_phase_floor_bytes.checked_add(requirement.capability_floor_raise_bytes).ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                OPERATION,
-                "attempt requirement floor overflows this device profile",
-            )
-            .with_fact("reason", "attempt_requirement_floor_overflow")
-            .with_fact("device_ordinal", self.inner.profile.device_ordinal)
-            .with_fact("configured_floor_bytes", configured_floor_bytes)
-            .with_fact("required_phase_floor_bytes", requirement.required_phase_floor_bytes)
-            .with_fact("capability_floor_raise_bytes", requirement.capability_floor_raise_bytes)
-        })
-    }
-
-    /// Whether this device could ever reserve a protected slot for the
-    /// resolved floor, ignoring currently live grants. The protected waiter
-    /// itself occupies one slot, so only the other slots retain their
-    /// baseline profile floors.
-    #[doc(hidden)]
-    pub fn can_ever_fit_required_floor_bytes(&self, required_floor_bytes: u64) -> Result<bool> {
-        if required_floor_bytes == 0 {
-            return Ok(false);
-        }
-        let empty_other_slots = self.inner.profile.max_active_attempts.checked_sub(1).ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                OPERATION,
-                "device profile has no attempt slot for a protected request",
-            )
-            .with_fact("reason", "zero_max_active_attempts")
-            .with_fact("device_ordinal", self.inner.profile.device_ordinal)
-        })?;
-        let empty_floor_reserve = self
-            .inner
-            .profile
-            .attempt_floor_bytes
-            .checked_mul(u64::try_from(empty_other_slots).map_err(|_| {
-                QueryError::new(
-                    QueryErrorCode::InvalidPlan,
-                    OPERATION,
-                    "device profile empty-slot reservation overflows u64",
-                )
-                .with_fact("reason", "empty_slot_reservation_overflow")
-                .with_fact("device_ordinal", self.inner.profile.device_ordinal)
-            })?)
-            .ok_or_else(|| {
-                QueryError::new(
-                    QueryErrorCode::InvalidPlan,
-                    OPERATION,
-                    "device profile empty-slot reservation overflows u64",
-                )
-                .with_fact("reason", "empty_slot_reservation_overflow")
-                .with_fact("device_ordinal", self.inner.profile.device_ordinal)
-            })?;
-        Ok(self
-            .inner
-            .profile
-            .managed_capacity_bytes
-            .checked_sub(empty_floor_reserve)
-            .is_some_and(|maximum| required_floor_bytes <= maximum))
     }
 
     fn in_transition_observer(&self) -> bool {
@@ -649,8 +552,7 @@ impl DeviceLedger {
 
     fn snapshot_locked(&self, state: &DeviceLedgerState) -> LedgerSnapshot {
         let profile = &self.inner.profile;
-        let configured_floor = profile.attempt_floor_bytes;
-        let active_attempts = state.grants.len();
+        let active_attempts = state.grants.values().filter(|grant| grant.frozen_resident_bytes.is_none()).count();
         // Admission reserves the complete root plus bounded auxiliary envelope
         // for every active attempt. Derive availability from that immutable
         // envelope under the ledger lock instead of reading mutable executor or
@@ -660,10 +562,11 @@ impl DeviceLedger {
             device_ordinal: profile.device_ordinal,
             sequence: state.sequence,
             managed_capacity_bytes: profile.managed_capacity_bytes,
-            configured_floor_bytes: configured_floor,
+            default_query_limit_bytes: profile.default_query_limit_bytes,
             max_active_attempts: profile.max_active_attempts,
             active_attempts,
             live_grants_bytes: state.live_grants_bytes(),
+            frozen_resident_bytes: state.frozen_resident_bytes,
             live_reserved_bytes: state.live_reserved_bytes(),
             root_streams_available: profile.root_stream_count.saturating_sub(active_attempts),
             auxiliary_streams_available: profile.aux_source_work_capacity.saturating_sub(committed_auxiliary_slots),
@@ -672,10 +575,8 @@ impl DeviceLedger {
                 .aux_source_work_capacity
                 .saturating_sub(committed_auxiliary_slots),
             worker_depth: active_attempts.saturating_add(committed_auxiliary_slots),
-            protected_slot: state.protection.is_some(),
-            protected_reserve_bytes: state
-                .protection
-                .map_or(0, |protection| protection.liveness_bytes.max(configured_floor)),
+            protected_slot: false,
+            protected_reserve_bytes: 0,
             // Resident-cache charges are ledger-owned and share this atomic
             // snapshot sequence with grants and reservations.
             cache_evictable_resident_bytes: state.evictable_bytes,
@@ -696,28 +597,32 @@ impl DeviceLedger {
                 admission_request_id: active.admission_request_id,
                 grant_bytes: active.grant_bytes,
                 live_reserved_bytes: active.live_reserved_bytes,
+                frozen_resident_bytes: active.frozen_resident_bytes,
             })
             .collect();
         Ok(DeviceLedgerReport {
             device_ordinal: snapshot.device_ordinal,
             sequence: snapshot.sequence,
             managed_capacity_bytes: snapshot.managed_capacity_bytes,
-            configured_floor_bytes: snapshot.configured_floor_bytes,
+            default_query_limit_bytes: snapshot.default_query_limit_bytes,
             max_active_attempts: snapshot.max_active_attempts,
             active_attempts: snapshot.active_attempts,
             live_grants_bytes: snapshot.live_grants_bytes,
+            frozen_resident_bytes: snapshot.frozen_resident_bytes,
             live_reserved_bytes: snapshot.live_reserved_bytes,
             root_streams_available: snapshot.root_streams_available,
             auxiliary_streams_available: snapshot.auxiliary_streams_available,
             root_worker_slots_available: snapshot.root_worker_slots_available,
             auxiliary_worker_slots_available: snapshot.auxiliary_worker_slots_available,
             worker_depth: snapshot.worker_depth,
-            available_bytes: snapshot.managed_capacity_bytes.saturating_sub(snapshot.live_grants_bytes),
+            available_bytes: snapshot
+                .managed_capacity_bytes
+                .saturating_sub(snapshot.live_grants_bytes)
+                .saturating_sub(snapshot.frozen_resident_bytes),
             free_bytes: snapshot
                 .managed_capacity_bytes
                 .saturating_sub(snapshot.live_grants_bytes)
-                .saturating_sub(state.evictable_bytes)
-                .saturating_sub(state.pinned_bytes),
+                .saturating_sub(snapshot.frozen_resident_bytes),
             evictable_bytes: state.evictable_bytes,
             protected_slot: snapshot.protected_slot,
             protected_reserve_bytes: snapshot.protected_reserve_bytes,
@@ -763,68 +668,41 @@ impl DeviceLedger {
         Ok(true)
     }
 
-    /// Returns whether the candidate with `required_floor_bytes` could be
-    /// admitted right now (same equation as [`Self::try_admit_for_attempt`]).
+    /// Returns the cap that could be admitted right now.
     #[cfg(test)]
     #[doc(hidden)]
-    pub fn candidate_max_new_grant_bytes(
-        &self,
-        required_floor_bytes: u64,
-        waiter_id: AdmissionRequestId,
-    ) -> Result<Option<u64>> {
+    pub fn candidate_query_cap_bytes(&self, requested_cap_bytes: Option<u64>) -> Result<Option<u64>> {
         let state = self.lock_state("candidate_max_new_grant_bytes")?;
         let snapshot = self.snapshot_locked(&state);
-        let is_protected = state.protection.is_some_and(|protection| protection.waiter_id == waiter_id);
-        Ok(snapshot.max_new_grant_bytes(required_floor_bytes, is_protected))
+        Ok(snapshot.admissible_query_cap_bytes(requested_cap_bytes))
     }
 
     /// Attempts one immutable grant admission for `waiter_id`.
     ///
-    /// The grant equals the soft working-set hint clamped into
-    /// `[required_floor, max_new_grant]`. Admitting the protected waiter
-    /// consumes its protection atomically: the immutable grant replaces the
-    /// protected reserve and is never subtracted twice. Cache-internal
-    /// evictable bytes reduce the immediately grantable headroom whenever a
-    /// resident cache is configured.
+    /// The grant is exactly the explicit cap, or the default cap resolved
+    /// against resident ownership in this transaction. It is never clamped to
+    /// transient capacity and planner estimates do not participate.
     #[doc(hidden)]
     pub fn try_admit_for_attempt(
         &self,
         waiter_id: AdmissionRequestId,
         attempt_id: AttemptId,
-        requirement: &AttemptRequirement,
+        requested_cap_bytes: Option<u64>,
     ) -> Result<Option<MemoryGrant>> {
-        let required_floor = self.required_floor_bytes_for(requirement)?;
-        if required_floor == 0 {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                OPERATION,
-                "attempt required floor must be greater than zero",
-            )
-            .with_fact("reason", "zero_required_floor")
-            .with_fact("admission_request_id", waiter_id));
+        if requested_cap_bytes == Some(0) {
+            return Err(QueryError::new(QueryErrorCode::InvalidPlan, OPERATION, "query cap must be greater than zero")
+                .with_fact("reason", "zero_query_cap")
+                .with_fact("admission_request_id", waiter_id));
         }
         let mut state = self.lock_state("try_admit")?;
         if !matches!(state.health, DeviceAdmissionHealth::Open) {
             return Ok(None);
         }
-        let is_protected = state.protection.is_some_and(|protection| protection.waiter_id == waiter_id);
         let snapshot = self.snapshot_locked(&state);
-        let Some(max_new_grant) = snapshot.max_new_grant_bytes(required_floor, is_protected) else {
+        let Some(query_cap_bytes) = snapshot.admissible_query_cap_bytes(requested_cap_bytes) else {
             return Ok(None);
         };
-        if max_new_grant < required_floor {
-            return Ok(None);
-        }
-        self.commit_grant_locked(
-            &mut state,
-            waiter_id,
-            attempt_id,
-            requirement,
-            required_floor,
-            max_new_grant,
-            is_protected,
-        )
-        .map(Some)
+        self.commit_grant_locked(&mut state, waiter_id, attempt_id, query_cap_bytes).map(Some)
     }
 
     #[cfg(test)]
@@ -832,34 +710,18 @@ impl DeviceLedger {
     pub fn try_admit(
         &self,
         waiter_id: AdmissionRequestId,
-        requirement: &AttemptRequirement,
+        requested_cap_bytes: Option<u64>,
     ) -> Result<Option<MemoryGrant>> {
-        self.try_admit_for_attempt(waiter_id, AttemptId::mint(), requirement)
+        self.try_admit_for_attempt(waiter_id, AttemptId::mint(), requested_cap_bytes)
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "service construction inputs are distinct admission and ownership values"
-    )]
     fn commit_grant_locked(
         &self,
         state: &mut DeviceLedgerState,
         waiter_id: AdmissionRequestId,
         attempt_id: AttemptId,
-        requirement: &AttemptRequirement,
-        required_floor: u64,
-        grant_ceiling: u64,
-        is_protected: bool,
+        grant_bytes: u64,
     ) -> Result<MemoryGrant> {
-        let charged_cache_bytes = state.evictable_bytes.saturating_add(state.pinned_bytes);
-        let uncharged_cache_cap_bytes = self.inner.profile.cache_cap_bytes.saturating_sub(charged_cache_bytes);
-        // An unmodeled attempt cannot consume the unused cache share and then
-        // expect its own source promotion to allocate outside the same ledger.
-        let unmodeled_target_bytes = grant_ceiling.saturating_sub(uncharged_cache_cap_bytes).max(required_floor);
-        let grant_bytes = requirement
-            .soft_working_set_hint_bytes
-            .unwrap_or(unmodeled_target_bytes)
-            .clamp(required_floor, grant_ceiling);
         let generation = state.next_grant_generation;
         let next_grant_generation = generation.checked_add(1).ok_or_else(|| {
             QueryError::new(QueryErrorCode::Internal, OPERATION, "device ledger grant generation exhausted")
@@ -868,13 +730,17 @@ impl DeviceLedger {
                 .with_fact("attempt_id", attempt_id)
         })?;
         let identity = GrantIdentity { attempt_id, generation };
-        if is_protected {
-            state.protection = None;
-        }
         state.next_grant_generation = next_grant_generation;
         state.grants.insert(
             generation,
-            ActiveGrant { admission_request_id: waiter_id, grant_bytes, live_reserved_bytes: 0, active_phase: None },
+            ActiveGrant {
+                admission_request_id: waiter_id,
+                grant_bytes,
+                live_reserved_bytes: 0,
+                active_phase: None,
+                pending_frozen_resident_bytes: None,
+                frozen_resident_bytes: None,
+            },
         );
         self.bump_sequence_and_notify_locked(state, LedgerTransitionKind::GrantAdmitted);
         Ok(MemoryGrant {
@@ -884,86 +750,14 @@ impl DeviceLedger {
                 admission_request_id: waiter_id,
                 grant_bytes,
                 live_reserved_bytes: Default::default(),
+                frozen: Default::default(),
+                frozen_domain: Mutex::new(None),
             }),
             resource_epoch: None,
         })
     }
 
-    /// Installs or refreshes the single slot protection for `waiter_id`.
-    ///
-    /// Returns `Ok(false)` without changing state when another waiter already
-    /// holds this device's protection. Refreshing an existing protection for
-    /// the same waiter is also a no-op: its original floor and accumulated
-    /// liveness remain authoritative, and no sequence transition is emitted.
-    #[doc(hidden)]
-    pub fn protect_slot(&self, waiter_id: AdmissionRequestId, required_floor_bytes: u64) -> Result<bool> {
-        if required_floor_bytes == 0 {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                OPERATION,
-                "slot protection requires a positive attempt floor",
-            )
-            .with_fact("reason", "zero_protection_floor")
-            .with_fact("device_ordinal", self.inner.profile.device_ordinal)
-            .with_fact("admission_request_id", waiter_id));
-        }
-        if !self.can_ever_fit_required_floor_bytes(required_floor_bytes)? {
-            return Err(QueryError::new(
-                QueryErrorCode::ServiceOverloaded,
-                OPERATION,
-                "slot protection target can never satisfy the attempt floor",
-            )
-            .with_fact("reason", "impossible_protection_target")
-            .with_fact("device_ordinal", self.inner.profile.device_ordinal)
-            .with_fact("required_floor_bytes", required_floor_bytes)
-            .with_fact("admission_request_id", waiter_id));
-        }
-        let mut state = self.lock_state("protect_slot")?;
-        if !matches!(state.health, DeviceAdmissionHealth::Open) {
-            return Err(QueryError::new(
-                QueryErrorCode::ServiceOverloaded,
-                OPERATION,
-                "slot protection target is closed for admission",
-            )
-            .with_fact("reason", "closed_protection_target")
-            .with_fact("device_ordinal", self.inner.profile.device_ordinal)
-            .with_fact("admission_request_id", waiter_id));
-        }
-        if state.protection.is_some_and(|protection| protection.waiter_id != waiter_id) {
-            return Ok(false);
-        }
-        if state.protection.is_none() {
-            state.protection = Some(SlotProtection { waiter_id, liveness_bytes: 0, required_floor_bytes });
-            self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::ProtectionInstalled);
-        }
-        Ok(true)
-    }
-
-    /// Ends this waiter's protection (admission, cancellation, deadline,
-    /// impossibility, or retarget). Returns whether a protection was removed.
-    #[doc(hidden)]
-    pub fn end_protection(&self, waiter_id: AdmissionRequestId) -> Result<bool> {
-        let mut state = self.lock_state("end_protection")?;
-        if state.protection.is_some_and(|protection| protection.waiter_id == waiter_id) {
-            state.protection = None;
-            self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::ProtectionRemoved);
-            return Ok(true);
-        }
-        Ok(false)
-    }
-
-    /// Current protection state for tests.
-    #[cfg(test)]
-    #[doc(hidden)]
-    pub fn protection(&self) -> Option<SlotProtection> {
-        if self.in_transition_observer() {
-            self.panic_on_transition_observer_reentrancy("protection");
-        }
-        self.inner.state.lock().ok()?.protection
-    }
-
-    /// Releases one grant, moving freed managed bytes into the waiter's
-    /// protection liveness before any later admission observes them.
+    /// Releases one grant after its active or resident ownership ends.
     fn release_grant(&self, grant_id: u64) {
         if self.in_transition_observer() {
             self.panic_on_transition_observer_reentrancy("release_grant");
@@ -975,10 +769,8 @@ impl DeviceLedger {
         let Some(active) = state.grants.remove(&grant_id) else {
             return;
         };
-        if let Some(protection) = state.protection.as_mut() {
-            let deficit = protection.required_floor_bytes.saturating_sub(protection.liveness_bytes);
-            let moved = active.grant_bytes.min(deficit);
-            protection.liveness_bytes = protection.liveness_bytes.saturating_add(moved);
+        if let Some(resident_bytes) = active.frozen_resident_bytes {
+            state.frozen_resident_bytes = state.frozen_resident_bytes.saturating_sub(resident_bytes);
         }
         let transition = self.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::GrantReleased);
         drop(state);
@@ -1120,7 +912,11 @@ impl DeviceLedger {
 
     fn free_bytes_locked(&self, state: &DeviceLedgerState) -> u64 {
         self.inner.profile.managed_capacity_bytes.saturating_sub(
-            state.live_grants_bytes().saturating_add(state.evictable_bytes).saturating_add(state.pinned_bytes),
+            state
+                .live_grants_bytes()
+                .saturating_add(state.frozen_resident_bytes)
+                .saturating_add(state.evictable_bytes)
+                .saturating_add(state.pinned_bytes),
         )
     }
 }
@@ -1137,8 +933,8 @@ pub struct MemoryGrant {
 /// outlive their executor-side reservation tracker.
 #[derive(Clone)]
 #[doc(hidden)]
-pub struct MemoryGrantLiveReservation {
-    inner: Arc<MemoryGrantLiveReservationInner>,
+pub struct FrozenResidentLease {
+    inner: Arc<FrozenResidentLeaseInner>,
 }
 
 #[derive(Debug)]
@@ -1149,7 +945,7 @@ pub struct MemoryGrantPhase {
     required_bytes: u64,
 }
 
-struct MemoryGrantLiveReservationInner {
+struct FrozenResidentLeaseInner {
     grant: MemoryGrant,
     bytes: u64,
 }
@@ -1160,11 +956,42 @@ struct MemoryGrantInner {
     admission_request_id: AdmissionRequestId,
     grant_bytes: u64,
     live_reserved_bytes: std::sync::atomic::AtomicU64,
+    frozen: std::sync::atomic::AtomicBool,
+    frozen_domain: Mutex<Option<Arc<cudf::QueryMemoryDomain>>>,
 }
 
 impl Drop for MemoryGrantInner {
     fn drop(&mut self) {
-        DeviceLedger { inner: Arc::clone(&self.ledger) }.release_grant(self.identity.generation);
+        let ledger = DeviceLedger { inner: Arc::clone(&self.ledger) };
+        let frozen_cleanup_failure = match self.frozen_domain.get_mut() {
+            Ok(Some(domain)) => match domain.usage() {
+                Ok(usage)
+                    if usage.active_members == 0
+                        && usage.current_allocations == 0
+                        && usage.current_bytes == 0
+                        && usage.current_aligned_bytes == 0 =>
+                {
+                    None
+                },
+                Ok(usage) => Some(format!(
+                    "frozen resident domain did not reach zero at final release (domain_id={}, active_members={}, current_allocations={}, current_bytes={}, current_aligned_bytes={})",
+                    usage.domain_id,
+                    usage.active_members,
+                    usage.current_allocations,
+                    usage.current_bytes,
+                    usage.current_aligned_bytes
+                )),
+                Err(error) => Some(format!("frozen resident domain final usage sample failed: {error}")),
+            },
+            Ok(None) => None,
+            Err(_error) => Some("frozen resident domain owner mutex was poisoned".to_string()),
+        };
+        if let Some(reason) = frozen_cleanup_failure
+            && let Err(error) = ledger.close_admission_if_open(reason)
+        {
+            eprintln!("[nexus-query-engine] warning: failed to close admission after frozen resident cleanup: {error}");
+        }
+        ledger.release_grant(self.identity.generation);
     }
 }
 
@@ -1203,6 +1030,222 @@ impl MemoryGrant {
     /// revocation.
     pub fn budget_bytes(&self) -> u64 {
         self.inner.grant_bytes
+    }
+
+    #[cfg(any(test, feature = "test-hooks"))]
+    #[doc(hidden)]
+    pub fn freeze_resident(&self, resident_bytes: u64) -> Result<()> {
+        self.prepare_frozen_resident_charge(resident_bytes, None)?;
+        self.publish_frozen_resident()
+    }
+
+    #[cfg(test)]
+    pub(super) fn prepare_frozen_resident_for_test(&self, resident_bytes: u64) -> Result<()> {
+        self.prepare_frozen_resident_charge(resident_bytes, None)
+    }
+
+    /// Atomically replaces this active grant with a measured frozen-resident
+    /// charge and retains its native owner through final release.
+    ///
+    /// `resident_bytes` is the allocation registry's own measurement. The
+    /// grant's live reservation is reconciled to that same measurement so the
+    /// retained charge and the frozen charge are one accounting fact rather
+    /// than two independently derived totals.
+    pub(crate) fn freeze_resident_with_domain(
+        &self,
+        resident_bytes: u64,
+        domain: Arc<cudf::QueryMemoryDomain>,
+    ) -> Result<()> {
+        self.reconcile_live_reservation_to_measurement(resident_bytes)?;
+        self.prepare_frozen_resident_charge(resident_bytes, Some(domain))
+    }
+
+    /// Rebases every live reservation this grant holds onto the measured
+    /// resident bytes.
+    ///
+    /// Executor-side trackers charge what each stage requested, which can
+    /// differ from what the allocator actually retained (concat outputs are
+    /// smaller than the sum of their chunks, for example). The measurement is
+    /// the truth source, so the difference is reconciled instead of being
+    /// treated as an ownership mismatch.
+    fn reconcile_live_reservation_to_measurement(&self, measured_bytes: u64) -> Result<()> {
+        if measured_bytes > self.inner.grant_bytes {
+            return Err(QueryError::new(
+                QueryErrorCode::InternalInvariantViolation,
+                "nexus_query_engine.runtime.gpu.memory_grant.reconcile_live_reservation",
+                "measured resident bytes exceed the immutable query cap",
+            )
+            .with_fact("measured_bytes", measured_bytes)
+            .with_fact("query_cap_bytes", self.inner.grant_bytes));
+        }
+        let ledger = DeviceLedger { inner: Arc::clone(&self.inner.ledger) };
+        let mut state = ledger.lock_state("reconcile_live_reservation_to_measurement")?;
+        let Some(active) = state.grants.get_mut(&self.inner.identity.generation) else {
+            return Err(QueryError::new(
+                QueryErrorCode::InternalInvariantViolation,
+                "nexus_query_engine.runtime.gpu.memory_grant.reconcile_live_reservation",
+                "query grant is missing from its device ledger",
+            )
+            .with_fact("grant_id", self.grant_id()));
+        };
+        if active.live_reserved_bytes == measured_bytes {
+            return Ok(());
+        }
+        active.live_reserved_bytes = measured_bytes;
+        self.inner.live_reserved_bytes.store(measured_bytes, std::sync::atomic::Ordering::Release);
+        ledger.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::LiveReservationCharged);
+        Ok(())
+    }
+
+    fn prepare_frozen_resident_charge(
+        &self,
+        resident_bytes: u64,
+        domain: Option<Arc<cudf::QueryMemoryDomain>>,
+    ) -> Result<()> {
+        if resident_bytes == 0 || resident_bytes > self.inner.grant_bytes {
+            return Err(QueryError::new(
+                QueryErrorCode::InternalInvariantViolation,
+                "nexus_query_engine.runtime.gpu.memory_grant.freeze_resident",
+                "frozen resident charge must be positive and fit the query cap",
+            )
+            .with_fact("resident_bytes", resident_bytes)
+            .with_fact("query_cap_bytes", self.inner.grant_bytes));
+        }
+        let ledger = DeviceLedger { inner: Arc::clone(&self.inner.ledger) };
+        let mut state = ledger.lock_state("freeze_resident")?;
+        let active = state.grants.get(&self.inner.identity.generation).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::InternalInvariantViolation,
+                "nexus_query_engine.runtime.gpu.memory_grant.freeze_resident",
+                "query grant is missing from its device ledger",
+            )
+            .with_fact("grant_id", self.grant_id())
+        })?;
+        let existing = active.frozen_resident_bytes.or(active.pending_frozen_resident_bytes);
+        if let Some(existing_bytes) = existing {
+            let frozen_domain = self.inner.frozen_domain.lock().map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::InternalInvariantViolation,
+                    "nexus_query_engine.runtime.gpu.memory_grant.freeze_resident",
+                    "frozen resident domain owner mutex was poisoned",
+                )
+            })?;
+            let same_domain = match (frozen_domain.as_ref(), domain.as_ref()) {
+                (Some(existing), Some(domain)) => Arc::ptr_eq(existing, domain),
+                (None, None) => true,
+                _ => false,
+            };
+            return (existing_bytes == resident_bytes && same_domain).then_some(()).ok_or_else(|| {
+                QueryError::new(
+                    QueryErrorCode::InternalInvariantViolation,
+                    "nexus_query_engine.runtime.gpu.memory_grant.freeze_resident",
+                    "query grant was frozen with a different resident charge",
+                )
+                .with_fact("grant_id", self.grant_id())
+                .with_fact("existing_resident_bytes", existing_bytes)
+                .with_fact("resident_bytes", resident_bytes)
+            });
+        }
+        state
+            .grants
+            .get_mut(&self.inner.identity.generation)
+            .expect("grant existence was checked under the same ledger lock")
+            .pending_frozen_resident_bytes = Some(resident_bytes);
+        if let Some(domain) = domain {
+            *self.inner.frozen_domain.lock().map_err(|_error| {
+                QueryError::new(
+                    QueryErrorCode::InternalInvariantViolation,
+                    "nexus_query_engine.runtime.gpu.memory_grant.freeze_resident",
+                    "frozen resident domain owner mutex was poisoned",
+                )
+            })? = Some(domain);
+        }
+        self.inner.frozen.store(true, std::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
+    /// Publishes a prepared B-to-R transition after the attempt report is
+    /// visible. Until this commit the ledger continues to account the full
+    /// active grant, so no released capacity can race report publication.
+    /// Proves the prepared B-to-R transition can still be published.
+    ///
+    /// The publish itself runs after the report is sealed, where a failure can
+    /// no longer be recorded as a cleanup disposition. Checking the same
+    /// preconditions before the seal keeps that failure on the reportable side
+    /// of the boundary.
+    pub(crate) fn validate_frozen_resident_publish(&self) -> Result<()> {
+        let ledger = DeviceLedger { inner: Arc::clone(&self.inner.ledger) };
+        let state = ledger.lock_state("validate_frozen_resident_publish")?;
+        let active = state.grants.get(&self.inner.identity.generation).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::InternalInvariantViolation,
+                "nexus_query_engine.runtime.gpu.memory_grant.validate_frozen_resident_publish",
+                "prepared frozen resident grant is missing from its device ledger",
+            )
+            .with_fact("grant_id", self.grant_id())
+        })?;
+        if active.frozen_resident_bytes.is_some() {
+            return Ok(());
+        }
+        let resident_bytes = active.pending_frozen_resident_bytes.ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::InternalInvariantViolation,
+                "nexus_query_engine.runtime.gpu.memory_grant.validate_frozen_resident_publish",
+                "frozen resident transition was not prepared",
+            )
+            .with_fact("grant_id", self.grant_id())
+        })?;
+        state.frozen_resident_bytes.checked_add(resident_bytes).map(|_| ()).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::InternalInvariantViolation,
+                "nexus_query_engine.runtime.gpu.memory_grant.validate_frozen_resident_publish",
+                "frozen resident accounting would overflow",
+            )
+            .with_fact("grant_id", self.grant_id())
+            .with_fact("resident_bytes", resident_bytes)
+        })
+    }
+
+    pub(crate) fn publish_frozen_resident(&self) -> Result<()> {
+        let ledger = DeviceLedger { inner: Arc::clone(&self.inner.ledger) };
+        let mut state = ledger.lock_state("publish_frozen_resident")?;
+        let active = state.grants.get_mut(&self.inner.identity.generation).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::InternalInvariantViolation,
+                "nexus_query_engine.runtime.gpu.memory_grant.publish_frozen_resident",
+                "prepared frozen resident grant is missing from its device ledger",
+            )
+            .with_fact("grant_id", self.grant_id())
+        })?;
+        if active.frozen_resident_bytes.is_some() {
+            return Ok(());
+        }
+        let resident_bytes = active.pending_frozen_resident_bytes.take().ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::InternalInvariantViolation,
+                "nexus_query_engine.runtime.gpu.memory_grant.publish_frozen_resident",
+                "frozen resident transition was not prepared",
+            )
+            .with_fact("grant_id", self.grant_id())
+        })?;
+        state.frozen_resident_bytes = state.frozen_resident_bytes.checked_add(resident_bytes).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::InternalInvariantViolation,
+                "nexus_query_engine.runtime.gpu.memory_grant.publish_frozen_resident",
+                "frozen resident accounting overflowed",
+            )
+        })?;
+        state
+            .grants
+            .get_mut(&self.inner.identity.generation)
+            .expect("grant existence was checked under the same ledger lock")
+            .frozen_resident_bytes = Some(resident_bytes);
+        ledger.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::GrantFrozenResident);
+        Ok(())
+    }
+
+    pub fn is_frozen_resident(&self) -> bool {
+        self.inner.frozen.load(std::sync::atomic::Ordering::Acquire)
     }
 
     /// Device ordinal that owns this grant.
@@ -1261,6 +1304,14 @@ impl MemoryGrant {
             )
             .with_fact("reason", "attempt_phase_grant_inactive")
         })?;
+        if active.frozen_resident_bytes.is_some() {
+            return Err(QueryError::new(
+                QueryErrorCode::InternalInvariantViolation,
+                "nexus_query_engine.runtime.gpu.memory_grant.activate_phase",
+                "a frozen resident domain cannot activate execution work",
+            )
+            .with_fact("reason", "frozen_resident_domain_is_not_executable"));
+        }
         if active.active_phase.is_some() {
             return Err(QueryError::new(
                 QueryErrorCode::MemoryReservationFailed,
@@ -1298,13 +1349,12 @@ impl MemoryGrant {
         let Some(active) = state.grants.get_mut(&self.inner.identity.generation) else {
             return Ok(false);
         };
+        if active.frozen_resident_bytes.is_some() {
+            return Ok(false);
+        }
         let Some(next_live_reserved_bytes) = active.live_reserved_bytes.checked_add(bytes) else {
             return Ok(false);
         };
-        let active_limit = active.active_phase.map_or(active.grant_bytes, |phase| phase.required_bytes);
-        if next_live_reserved_bytes > active_limit {
-            return Ok(false);
-        }
         active.live_reserved_bytes = next_live_reserved_bytes;
         self.inner.live_reserved_bytes.store(next_live_reserved_bytes, std::sync::atomic::Ordering::Release);
         ledger.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::LiveReservationCharged);
@@ -1337,11 +1387,20 @@ impl MemoryGrant {
         let Some(active) = state.grants.get_mut(&self.inner.identity.generation) else {
             return;
         };
-        let Some(next_live_reserved_bytes) = active.live_reserved_bytes.checked_sub(bytes) else {
-            eprintln!(
-                "[nexus-query-engine] warning: exact memory grant live-reservation release exceeded its active charge"
-            );
-            return;
+        let next_live_reserved_bytes = match active.live_reserved_bytes.checked_sub(bytes) {
+            Some(next) => next,
+            // A frozen grant's live reservation was rebased onto the
+            // allocator's measurement, so a lease created from a larger
+            // executor-side charge can release more than the rebased total.
+            // The measurement stays authoritative and the total floors at
+            // zero; only a non-frozen grant can under-run its own accounting.
+            None if active.frozen_resident_bytes.is_some() || active.pending_frozen_resident_bytes.is_some() => 0,
+            None => {
+                eprintln!(
+                    "[nexus-query-engine] warning: exact memory grant live-reservation release exceeded its active charge"
+                );
+                return;
+            },
         };
         active.live_reserved_bytes = next_live_reserved_bytes;
         self.inner.live_reserved_bytes.store(next_live_reserved_bytes, std::sync::atomic::Ordering::Release);
@@ -1354,7 +1413,7 @@ impl MemoryGrant {
     /// ownership transfer, this is a new charge and therefore must fit the
     /// immutable grant before the retention is created.
     #[doc(hidden)]
-    pub fn retain_live_reservation(&self, bytes: u64) -> Result<Option<MemoryGrantLiveReservation>> {
+    pub fn retain_live_reservation(&self, bytes: u64) -> Result<Option<FrozenResidentLease>> {
         if bytes == 0 {
             return Ok(None);
         }
@@ -1380,14 +1439,21 @@ impl MemoryGrant {
     /// charge. This method intentionally does not mutate the ledger: the
     /// source charge and the result ownership are one atomic accounting fact.
     #[doc(hidden)]
-    pub fn transfer_live_reservation(&self, bytes: u64) -> Option<MemoryGrantLiveReservation> {
-        (bytes > 0).then(|| MemoryGrantLiveReservation {
-            inner: Arc::new(MemoryGrantLiveReservationInner { grant: self.clone(), bytes }),
+    pub fn transfer_live_reservation(&self, bytes: u64) -> Option<FrozenResidentLease> {
+        (bytes > 0).then(|| FrozenResidentLease {
+            inner: Arc::new(FrozenResidentLeaseInner {
+                grant: MemoryGrant { inner: Arc::clone(&self.inner), resource_epoch: None },
+                bytes,
+            }),
         })
     }
 }
 
-impl MemoryGrantLiveReservation {
+impl FrozenResidentLease {
+    pub(crate) fn is_frozen_resident(&self) -> bool {
+        self.inner.grant.is_frozen_resident()
+    }
+
     /// Bytes retained by this handle in the owning memory grant.
     #[doc(hidden)]
     pub fn bytes(&self) -> u64 {
@@ -1430,7 +1496,7 @@ impl MemoryGrantLiveReservation {
     }
 }
 
-impl Drop for MemoryGrantLiveReservationInner {
+impl Drop for FrozenResidentLeaseInner {
     fn drop(&mut self) {
         self.grant.release_live_bytes(self.bytes);
     }
