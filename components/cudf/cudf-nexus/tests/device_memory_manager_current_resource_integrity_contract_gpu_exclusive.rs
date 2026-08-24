@@ -1,9 +1,9 @@
 use std::{ptr, sync::Arc};
 
 use cudf::{
-    DeviceId, DeviceMemoryFailureAction, DeviceMemoryManager, DeviceMemoryManagerInstallationCause,
-    DeviceMemoryManagerInstallationIdentity, DeviceMemoryManagerInstallationRetry,
-    DeviceMemoryManagerInstallationStatus, DeviceMemoryManagerOptions, testing::RawHandleTestingExt,
+    DeviceId, DeviceMemoryManager, DeviceMemoryManagerInstallationCause, DeviceMemoryManagerInstallationIdentity,
+    DeviceMemoryManagerInstallationRetry, DeviceMemoryManagerInstallationStatus, DeviceMemoryManagerOptions,
+    testing::RawHandleTestingExt,
 };
 
 #[test]
@@ -13,7 +13,7 @@ fn direct_rmm_replacement_is_detected_and_integrity_loss_is_sticky() {
     let (manager, installed) = DeviceMemoryManager::install_for_device_with_owned_failure_callback_details_and_options(
         device,
         identity,
-        Arc::new(|_| DeviceMemoryFailureAction::Decline),
+        Arc::new(|_| {}),
         DeviceMemoryManagerOptions::default(),
     )
     .unwrap();
@@ -51,7 +51,7 @@ fn direct_rmm_replacement_is_detected_and_integrity_loss_is_sticky() {
     DeviceMemoryManager::install_for_device_with_owned_failure_callback_details_and_options(
         device,
         identity,
-        Arc::new(|_| DeviceMemoryFailureAction::Decline),
+        Arc::new(|_| {}),
         DeviceMemoryManagerOptions::default(),
     )
     .unwrap_err();

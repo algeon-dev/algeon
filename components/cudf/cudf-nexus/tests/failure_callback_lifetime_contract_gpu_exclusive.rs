@@ -41,8 +41,8 @@ fn failure_callback_state_survives_destroy_rejection_while_resource_is_current()
     let device = DeviceId::current().unwrap();
     let upstream = DeviceMemoryResource::cuda_on(device).unwrap();
     let limiting = upstream.limiting(1).unwrap();
-    let callback: Arc<dyn Fn(usize) -> bool + Send + Sync + 'static> = Arc::new(|_| false);
-    let weak_callback: Weak<dyn Fn(usize) -> bool + Send + Sync + 'static> = Arc::downgrade(&callback);
+    let callback: Arc<dyn Fn(usize) + Send + Sync + 'static> = Arc::new(|_| {});
+    let weak_callback: Weak<dyn Fn(usize) + Send + Sync + 'static> = Arc::downgrade(&callback);
     let callback_mr = limiting.with_failure_callback(callback).unwrap();
     {
         let borrowed = callback_mr.as_borrowed_sys();
@@ -60,8 +60,8 @@ fn failure_callback_state_survives_destroy_rejection_while_resource_is_current()
 fn derived_resource_retains_failure_callback_state_after_parent_handle_drop() {
     let device = DeviceId::current().unwrap();
     let upstream = DeviceMemoryResource::cuda_on(device).unwrap();
-    let callback: Arc<dyn Fn(usize) -> bool + Send + Sync + 'static> = Arc::new(|_| false);
-    let weak_callback: Weak<dyn Fn(usize) -> bool + Send + Sync + 'static> = Arc::downgrade(&callback);
+    let callback: Arc<dyn Fn(usize) + Send + Sync + 'static> = Arc::new(|_| {});
+    let weak_callback: Weak<dyn Fn(usize) + Send + Sync + 'static> = Arc::downgrade(&callback);
     let callback_mr = upstream.with_failure_callback(callback).unwrap();
     let derived = callback_mr.limiting(1).unwrap();
 

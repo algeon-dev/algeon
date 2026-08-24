@@ -129,28 +129,6 @@ pub struct DeviceMemoryPoolUsage {
     pub used_high_bytes: u64,
 }
 
-/// Action returned by a reclaim-capable device-memory failure callback.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub enum DeviceMemoryFailureAction {
-    /// Preserve the original allocation failure.
-    Decline,
-    /// Retry the failed allocation without reclaiming through cudf.
-    Retry,
-    /// Trim idle async-pool pages and retry if trimming succeeds.
-    TrimAndRetry,
-}
-
-impl DeviceMemoryFailureAction {
-    fn to_sys(self) -> cudf_sys::cudf_memory_failure_action_t {
-        match self {
-            Self::Decline => cudf_sys::CUDF_MEMORY_FAILURE_ACTION_DECLINE,
-            Self::Retry => cudf_sys::CUDF_MEMORY_FAILURE_ACTION_RETRY,
-            Self::TrimAndRetry => cudf_sys::CUDF_MEMORY_FAILURE_ACTION_TRIM_AND_RETRY,
-        }
-    }
-}
-
 /// Source category for a device-memory allocation failure.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceMemoryFailureSource {
@@ -220,7 +198,7 @@ impl DeviceMemoryFailureAllocationDomain {
 #[cfg(test)]
 mod tests;
 
-/// Allocation-failure payload passed to reclaim-capable failure callbacks.
+/// Allocation-failure payload passed to observation callbacks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceMemoryFailureInfo {
     pub device: DeviceId,
@@ -233,8 +211,6 @@ pub struct DeviceMemoryFailureInfo {
 }
 
 impl DeviceMemoryFailureInfo {
-    const TRIM_RETRY_IDLE_TO_REQUEST_RATIO: u64 = 10;
-
     fn from_sys(value: cudf_sys::cudf_memory_failure_info_t) -> Self {
         let pool_usage =
             (value.flags & cudf_sys::CUDF_MEMORY_FAILURE_INFO_HAS_POOL_USAGE != 0).then_some(DeviceMemoryPoolUsage {
@@ -262,25 +238,6 @@ impl DeviceMemoryFailureInfo {
             trim_retry_count: value.trim_retry_count,
             pool_usage,
         }
-    }
-
-    /// Returns whether trimming idle async-pool pages is likely to help the
-    /// failed allocation, using cudf's default trim-retry policy.
-    pub fn should_trim_and_retry(&self) -> bool {
-        if self.source != DeviceMemoryFailureSource::Physical {
-            return false;
-        }
-        let Some(pool_usage) = self.pool_usage else {
-            return false;
-        };
-        if self.requested_bytes == 0 || self.trim_retry_count > 0 {
-            return false;
-        }
-        if pool_usage.reserved_current_bytes <= pool_usage.used_current_bytes {
-            return false;
-        }
-        let idle_bytes = pool_usage.reserved_current_bytes - pool_usage.used_current_bytes;
-        idle_bytes / self.requested_bytes >= Self::TRIM_RETRY_IDLE_TO_REQUEST_RATIO
     }
 }
 
@@ -317,7 +274,7 @@ pub struct AllocatorEventDomainIdentity {
     pub generation: u64,
 }
 
-/// Action observed after an allocator-failure callback returns.
+/// Terminal action recorded by the allocator failure boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AllocatorEventAction {
     Decline,
@@ -954,29 +911,18 @@ pub struct ReservationArenaUsage {
 pub struct QueryMemoryDomainOptions {
     pub grant_bytes: usize,
     pub ceiling_bytes: usize,
-    pub release_threshold_bytes: Option<usize>,
 }
 
 impl QueryMemoryDomainOptions {
     /// Create a domain whose initial grant and immutable logical ceiling are equal.
     pub fn new(grant_bytes: usize) -> Self {
-        Self { grant_bytes, ceiling_bytes: grant_bytes, release_threshold_bytes: None }
+        Self { grant_bytes, ceiling_bytes: grant_bytes }
     }
 
     /// Set the immutable logical ceiling for grant resizing.
     pub fn with_ceiling_bytes(mut self, ceiling_bytes: usize) -> Self {
         self.ceiling_bytes = ceiling_bytes;
         self
-    }
-
-    /// Set the CUDA pool release threshold.
-    pub fn with_release_threshold_bytes(mut self, release_threshold_bytes: usize) -> Self {
-        self.release_threshold_bytes = Some(release_threshold_bytes);
-        self
-    }
-
-    fn release_threshold_for_sys(self) -> u64 {
-        self.release_threshold_bytes.unwrap_or(self.ceiling_bytes) as u64
     }
 }
 
@@ -999,8 +945,6 @@ pub struct QueryMemoryDomainUsage {
     pub active: bool,
     pub active_members: u64,
     pub ceiling_bytes: u64,
-    pub effective_driver_ceiling_bytes: u64,
-    pub driver_ceiling_verified: bool,
     pub allocation_limit_bytes: u64,
     pub current_bytes: u64,
     pub peak_bytes: u64,
@@ -1043,8 +987,6 @@ impl From<cudf_sys::cudf_memory_resource_usage_t> for QueryMemoryDomainUsage {
             active: value.reserved[1] != 0,
             active_members: value.reserved[2],
             ceiling_bytes: value.reserved[3],
-            effective_driver_ceiling_bytes: value.reserved[4],
-            driver_ceiling_verified: value.reserved[5] != 0,
             allocation_limit_bytes: value.allocation_limit_bytes,
             current_bytes: value.current_bytes,
             peak_bytes: value.peak_bytes,
@@ -1189,7 +1131,7 @@ impl RetirementStreams {
 unsafe impl Send for DeviceMemoryResourceHandle {}
 unsafe impl Sync for DeviceMemoryResourceHandle {}
 
-type FailureCallback = dyn Fn(DeviceMemoryFailureInfo) -> DeviceMemoryFailureAction + Send + Sync + 'static;
+type FailureCallback = dyn Fn(DeviceMemoryFailureInfo) + Send + Sync + 'static;
 
 struct CallbackInstallationFailure {
     error: error::Error,
@@ -1268,7 +1210,7 @@ unsafe extern "C" fn failure_callback_trampoline(
     }
     let info = DeviceMemoryFailureInfo::from_sys(unsafe { *info });
     match catch_unwind(AssertUnwindSafe(|| (state.callback)(info))) {
-        Ok(action) => action.to_sys() as i32,
+        Ok(()) => cudf_sys::CUDF_MEMORY_FAILURE_ACTION_DECLINE as i32,
         Err(_) => {
             // This path runs under allocator failure handling. Publish the
             // fail-closed state with one atomic store only; formatting or
@@ -1279,17 +1221,8 @@ unsafe extern "C" fn failure_callback_trampoline(
     }
 }
 
-fn wrap_simple_failure_callback(callback: Arc<dyn Fn(usize) -> bool + Send + Sync + 'static>) -> Arc<FailureCallback> {
-    Arc::new(move |info| {
-        if info.should_trim_and_retry() {
-            return DeviceMemoryFailureAction::TrimAndRetry;
-        }
-        if callback(info.requested_bytes as usize) {
-            DeviceMemoryFailureAction::Retry
-        } else {
-            DeviceMemoryFailureAction::Decline
-        }
-    })
+fn wrap_simple_failure_callback(callback: Arc<dyn Fn(usize) + Send + Sync + 'static>) -> Arc<FailureCallback> {
+    Arc::new(move |info| callback(info.requested_bytes as usize))
 }
 
 fn device_manager_failure_callbacks() -> &'static Mutex<HashMap<i32, Arc<FailureCallbackState>>> {
@@ -1378,7 +1311,7 @@ pub struct ReservationArena {
     manager: DeviceMemoryManager,
 }
 
-/// Opt-in query memory domain backed by a private CUDA async pool.
+/// Query memory domain sharing its device manager's CUDA async pool.
 #[derive(Clone, Debug)]
 pub struct QueryMemoryDomain {
     handle: Arc<QueryMemoryDomainHandle>,
@@ -1465,7 +1398,7 @@ impl DeviceMemoryManager {
     /// resource, then wraps that allocator in RMM's failure-callback adaptor.
     /// The callback observes reservation-limit failures and upstream
     /// out-of-memory failures, with [`DeviceMemoryFailureInfo::source`]
-    /// distinguishing which retry actions can help. It runs inside the
+    /// identifying the failing allocator boundary. It runs inside the
     /// allocating thread and must be re-entrancy-safe: do not allocate through
     /// the same resource, block on application locks, or unwind.
     ///
@@ -1476,7 +1409,7 @@ impl DeviceMemoryManager {
     /// cannot be swapped safely after first use.
     pub fn install_for_device_with_failure_callback(
         device: DeviceId,
-        callback: Arc<dyn Fn(usize) -> bool + Send + Sync + 'static>,
+        callback: Arc<dyn Fn(usize) + Send + Sync + 'static>,
     ) -> Result<Self> {
         Self::for_device_with_failure_callback_details_and_options(
             device,
@@ -1489,10 +1422,10 @@ impl DeviceMemoryManager {
     }
 
     /// Explicitly install the memory domain for `device` with a
-    /// reclaim-capable process-lifetime allocation-failure callback.
+    /// observation-only process-lifetime allocation-failure callback.
     pub fn install_for_device_with_failure_callback_details(
         device: DeviceId,
-        callback: Arc<dyn Fn(DeviceMemoryFailureInfo) -> DeviceMemoryFailureAction + Send + Sync + 'static>,
+        callback: Arc<dyn Fn(DeviceMemoryFailureInfo) + Send + Sync + 'static>,
     ) -> Result<Self> {
         Self::for_device_with_failure_callback_details_and_options(
             device,
@@ -1508,7 +1441,7 @@ impl DeviceMemoryManager {
     /// options and a process-lifetime allocation-failure callback.
     pub fn install_for_device_with_failure_callback_and_options(
         device: DeviceId,
-        callback: Arc<dyn Fn(usize) -> bool + Send + Sync + 'static>,
+        callback: Arc<dyn Fn(usize) + Send + Sync + 'static>,
         options: DeviceMemoryManagerOptions,
     ) -> Result<Self> {
         Self::for_device_with_failure_callback_details_and_options(
@@ -1522,11 +1455,11 @@ impl DeviceMemoryManager {
     }
 
     /// Explicitly install the memory domain for `device` with physical-base
-    /// options and a reclaim-capable process-lifetime allocation-failure
+    /// options and an observation-only process-lifetime allocation-failure
     /// callback.
     pub fn install_for_device_with_failure_callback_details_and_options(
         device: DeviceId,
-        callback: Arc<dyn Fn(DeviceMemoryFailureInfo) -> DeviceMemoryFailureAction + Send + Sync + 'static>,
+        callback: Arc<dyn Fn(DeviceMemoryFailureInfo) + Send + Sync + 'static>,
         options: DeviceMemoryManagerOptions,
     ) -> Result<Self> {
         Self::for_device_with_failure_callback_details_and_options(device, callback, options, None)
@@ -1543,7 +1476,7 @@ impl DeviceMemoryManager {
     pub fn install_for_device_with_owned_failure_callback_details_and_options(
         device: DeviceId,
         identity: DeviceMemoryManagerInstallationIdentity,
-        callback: Arc<dyn Fn(DeviceMemoryFailureInfo) -> DeviceMemoryFailureAction + Send + Sync + 'static>,
+        callback: Arc<dyn Fn(DeviceMemoryFailureInfo) + Send + Sync + 'static>,
         options: DeviceMemoryManagerOptions,
     ) -> Result<(Self, DeviceMemoryManagerInstallationOutcome)> {
         Self::try_install_for_device_with_owned_failure_callback_details_and_options(
@@ -1557,7 +1490,7 @@ impl DeviceMemoryManager {
     pub fn try_install_for_device_with_owned_failure_callback_details_and_options(
         device: DeviceId,
         identity: DeviceMemoryManagerInstallationIdentity,
-        callback: Arc<dyn Fn(DeviceMemoryFailureInfo) -> DeviceMemoryFailureAction + Send + Sync + 'static>,
+        callback: Arc<dyn Fn(DeviceMemoryFailureInfo) + Send + Sync + 'static>,
         options: DeviceMemoryManagerOptions,
     ) -> std::result::Result<(Self, DeviceMemoryManagerInstallationOutcome), DeviceMemoryManagerInstallationError> {
         let (manager, installed, callback_state, state) =
@@ -1685,7 +1618,7 @@ impl DeviceMemoryManager {
 
     fn for_device_with_failure_callback_details_and_options(
         device: DeviceId,
-        callback: Arc<dyn Fn(DeviceMemoryFailureInfo) -> DeviceMemoryFailureAction + Send + Sync + 'static>,
+        callback: Arc<dyn Fn(DeviceMemoryFailureInfo) + Send + Sync + 'static>,
         options: DeviceMemoryManagerOptions,
         installation_identity: Option<DeviceMemoryManagerInstallationIdentity>,
     ) -> std::result::Result<
@@ -1875,8 +1808,8 @@ impl DeviceMemoryManager {
     /// The returned lease must outlive that native owner. Allocations made
     /// before the lease drops retain their target resource until deallocation.
     ///
-    /// Passing this manager's own resource is a no-op lease: it is already the
-    /// current-resource allocation path and routing it would recurse.
+    /// Passing this manager's own resource explicitly authorizes that stream
+    /// to use the manager's physical backend for the lease lifetime.
     pub fn route_current_resource(
         &self,
         stream: &CudaStream,
@@ -2076,10 +2009,10 @@ impl DeviceMemoryManager {
         Ok(ReservationArena { handle: Arc::new(arena), manager: self.clone() })
     }
 
-    /// Create an opt-in query memory domain backed by a private CUDA async pool.
+    /// Create a query memory domain backed by this manager's shared CUDA async pool.
     ///
     /// When this manager owns a static allocation partition, live allocations
-    /// through the private pool consume that same partition limit.
+    /// through the shared pool consume that same partition limit.
     pub fn query_memory_domain(&self, domain_id: u64, options: QueryMemoryDomainOptions) -> Result<QueryMemoryDomain> {
         let _guard = DeviceGuard::new(self.device())?;
         let mut domain = ptr::null_mut();
@@ -2090,7 +2023,6 @@ impl DeviceMemoryManager {
                     domain_id,
                     options.grant_bytes,
                     options.ceiling_bytes,
-                    options.release_threshold_for_sys(),
                     &mut domain,
                 )
             },
@@ -2387,7 +2319,7 @@ impl QueryMemoryDomain {
         Ok(usage.into())
     }
 
-    /// Read physical CUDA async-pool counters for this query memory domain.
+    /// Read physical CUDA async-pool counters shared by this device manager.
     pub fn pool_usage(&self) -> Result<DeviceMemoryPoolUsage> {
         let _guard = DeviceGuard::new(self.device())?;
         let mut usage = cudf_sys::cudf_memory_pool_usage_t::default();
@@ -2406,21 +2338,6 @@ impl QueryMemoryDomain {
             "memory::query_memory_domain::resize_grant",
             [("device", self.device().ordinal().to_string()), ("grant_bytes", grant_bytes.to_string())],
         )
-    }
-
-    /// Explicitly trim idle bytes from this domain's CUDA async pool.
-    pub fn trim_to(&self, keep_bytes: u64) -> Result<()> {
-        let _guard = DeviceGuard::new(self.device())?;
-        error::check_status_in_with_details(
-            unsafe { cudf_sys::cudf_query_memory_domain_trim(self.handle.raw(), keep_bytes) },
-            "memory::query_memory_domain::trim_to",
-            [("device", self.device().ordinal().to_string()), ("keep_bytes", keep_bytes.to_string())],
-        )
-    }
-
-    /// Whether this build can enforce private-pool ceilings in the CUDA driver.
-    pub fn driver_ceiling_supported() -> bool {
-        unsafe { cudf_sys::cudf_query_memory_domain_driver_ceiling_supported() != 0 }
     }
 }
 
@@ -2707,28 +2624,25 @@ impl DeviceMemoryResource {
 
     /// Create a failure-callback memory resource around this resource.
     ///
-    /// The returned resource first applies cudf's default trim-retry policy
-    /// when the failure payload shows enough idle async-pool memory. If that
-    /// policy does not request a retry, it calls `callback(bytes)`. Returning
-    /// `true` retries the failed allocation; returning `false` preserves the
-    /// original allocation failure.
+    /// The callback observes each failed allocation before the resource
+    /// preserves the original allocation failure.
     ///
     /// The callback runs inside RMM's allocation path on the allocating thread,
     /// so it must be re-entrancy-safe and must not allocate through the same
-    /// memory resource. Panics are caught at the FFI boundary and treated as
-    /// `false`, so Rust unwinding never crosses into C++.
-    pub fn with_failure_callback(&self, callback: Arc<dyn Fn(usize) -> bool + Send + Sync + 'static>) -> Result<Self> {
+    /// memory resource. Panics are caught at the FFI boundary, so Rust
+    /// unwinding never crosses into C++ or changes the allocation failure.
+    pub fn with_failure_callback(&self, callback: Arc<dyn Fn(usize) + Send + Sync + 'static>) -> Result<Self> {
         self.with_failure_callback_details(wrap_simple_failure_callback(callback))
     }
 
-    /// Create a reclaim-capable failure-callback memory resource around this
+    /// Create an observation-only failure-callback memory resource around this
     /// resource.
     ///
     /// The callback receives device, request, retry-attempt, and async-pool
-    /// usage facts and returns a [`DeviceMemoryFailureAction`].
+    /// usage facts without changing allocation control flow.
     pub fn with_failure_callback_details(
         &self,
-        callback: Arc<dyn Fn(DeviceMemoryFailureInfo) -> DeviceMemoryFailureAction + Send + Sync + 'static>,
+        callback: Arc<dyn Fn(DeviceMemoryFailureInfo) + Send + Sync + 'static>,
     ) -> Result<Self> {
         let _guard = DeviceGuard::new(self.device())?;
         let callback_state = Arc::new(FailureCallbackState::new(callback));

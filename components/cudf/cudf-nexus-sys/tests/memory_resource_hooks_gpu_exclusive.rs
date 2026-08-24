@@ -126,12 +126,13 @@ unsafe extern "C" fn stateless_decline_callback(_bytes: usize, _callback_arg: *m
     0
 }
 
-unsafe extern "C" fn retry_once_then_decline_callback(bytes: usize, callback_arg: *mut c_void) -> i32 {
+unsafe extern "C" fn record_failure_callback(bytes: usize, callback_arg: *mut c_void) -> i32 {
     if bytes == 0 || callback_arg.is_null() {
         return 0;
     }
     let calls = unsafe { &*(callback_arg as *const AtomicUsize) };
-    i32::from(calls.fetch_add(1, Ordering::SeqCst) == 0)
+    calls.fetch_add(1, Ordering::SeqCst);
+    1
 }
 
 #[test]
@@ -190,14 +191,7 @@ fn native_query_domain_rejects_cross_device_stream() {
 
     let mut domain = ptr::null_mut();
     let status = unsafe {
-        cudf_sys::cudf_memory_manager_create_query_memory_domain(
-            manager,
-            70_002,
-            1024 * 1024,
-            1024 * 1024,
-            1024 * 1024,
-            &mut domain,
-        )
+        cudf_sys::cudf_memory_manager_create_query_memory_domain(manager, 70_002, 1024 * 1024, 1024 * 1024, &mut domain)
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!domain.is_null());
@@ -363,13 +357,13 @@ fn failure_callback_memory_resource_allows_null_callback_arg() {
 }
 
 #[test]
-fn failure_callback_memory_resource_retries_until_callback_declines() {
+fn failure_callback_memory_resource_observes_once_until_limit_failure() {
     let upstream = RawMemoryResource::from_raw(create_cuda_memory_resource());
     let limiting = create_limiting_memory_resource(upstream.raw(), 1);
     let calls = AtomicUsize::new(0);
     let callback_mr = create_failure_callback_memory_resource(
         limiting.raw(),
-        Some(retry_once_then_decline_callback),
+        Some(record_failure_callback),
         &calls as *const AtomicUsize as *mut c_void,
     );
     let borrowed = callback_mr.borrowed();
@@ -378,17 +372,17 @@ fn failure_callback_memory_resource_retries_until_callback_declines() {
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
     assert!(out.is_null());
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 #[test]
-fn failure_callback_memory_resource_retries_budget_tracking_limit_failures() {
+fn failure_callback_memory_resource_observes_once_on_budget_tracking_limit_failure() {
     let upstream = RawMemoryResource::from_raw(create_cuda_memory_resource());
     let budget_tracking = create_budget_tracking_memory_resource(upstream.raw(), 1);
     let calls = AtomicUsize::new(0);
     let callback_mr = create_failure_callback_memory_resource(
         budget_tracking.raw(),
-        Some(retry_once_then_decline_callback),
+        Some(record_failure_callback),
         &calls as *const AtomicUsize as *mut c_void,
     );
     let borrowed = callback_mr.borrowed();
@@ -397,5 +391,5 @@ fn failure_callback_memory_resource_retries_budget_tracking_limit_failures() {
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
     assert!(out.is_null());
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }

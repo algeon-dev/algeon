@@ -210,8 +210,9 @@ pub(super) fn empty_graph_execution_result(
     policy: crate::plan::EmptyGraphInputPolicy,
     reason: &'static str,
 ) -> Result<GraphAlgorithmExecutionResult> {
+    let runtime = context.runtime()?;
     Ok(GraphAlgorithmExecutionResult {
-        frame: empty_graph_result_frame(context, &spec.output_schema)?,
+        frame: empty_graph_result_frame(&runtime, &spec.output_schema)?,
         algorithm_metadata: format!(
             "empty_result_reason={reason},empty_edge_input_policy={},empty_side_input_policy={}",
             policy.edge_input.as_str(),
@@ -223,11 +224,11 @@ pub(super) fn empty_graph_execution_result(
 }
 
 pub(super) fn empty_graph_result_frame(
-    context: &ExecutionContext,
+    runtime: &cudf::Runtime,
     schema: &arrow::datatypes::SchemaRef,
 ) -> Result<DataFrame> {
     if schema.fields().is_empty() {
-        return Ok(context.runtime()?.empty_dataframe());
+        return Ok(runtime.empty_dataframe());
     }
     let columns = schema
         .fields()
@@ -242,7 +243,7 @@ pub(super) fn empty_graph_result_frame(
                 .with_fact("column", field.name().as_str())
                 .with_fact("data_type", format!("{:?}", field.data_type()))
             })?;
-            let series = context.runtime()?.empty_series(dtype).map_err(|error| {
+            let series = runtime.empty_series(dtype).map_err(|error| {
                 QueryError::from_cudf(
                     "nexus_query_engine.graph_algorithm.empty_input",
                     "failed to build empty graph result column",

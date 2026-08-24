@@ -333,10 +333,7 @@ pub(crate) fn scan_impl(
         )
     };
 
-    // SAFETY: agg_handle is a valid handle that must be destroyed.
-    unsafe { cudf_sys::cudf_scan_aggregation_destroy(agg_handle) };
-
-    error::check_status_in_with_details(
+    let status_result = error::check_status_in_with_details(
         status,
         operation,
         [
@@ -345,7 +342,10 @@ pub(crate) fn scan_impl(
             ("null_policy", format!("{:?}", null_policy)),
             ("execution_authority", "retained_domain".to_string()),
         ],
-    )?;
+    );
+    // SAFETY: agg_handle is a valid handle that must be destroyed.
+    unsafe { cudf_sys::cudf_scan_aggregation_destroy(agg_handle) };
+    status_result?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }

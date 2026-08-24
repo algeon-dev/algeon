@@ -105,6 +105,7 @@ std::shared_ptr<current_resource_route_state>
 reservation_aware_resource_adaptor::attach_current_resource_route(
   rmm::cuda_stream_view stream,
   std::shared_ptr<memory_resource_owner> target_owner,
+  bool routes_to_manager_upstream,
   std::string& error)
 {
   if (target_owner == nullptr || target_owner->mr == nullptr) {
@@ -118,8 +119,13 @@ reservation_aware_resource_adaptor::attach_current_resource_route(
   if (existing != current_resource_routes_by_stream_.end()) {
     auto const& state = existing->second;
     if (state != nullptr && state->attached) {
-      error = "stream already has a current-resource allocation route";
-      return {};
+      if (state->target_owner.get() != target_owner.get() ||
+          state->routes_to_manager_upstream != routes_to_manager_upstream) {
+        error = "stream already has a different current-resource allocation route";
+        return {};
+      }
+      state->attachment_count += 1;
+      return state;
     }
     current_resource_routes_by_stream_.erase(existing);
   }
@@ -127,6 +133,7 @@ reservation_aware_resource_adaptor::attach_current_resource_route(
   auto state                              = std::make_shared<current_resource_route_state>();
   state->stream_key                       = key;
   state->target_owner                     = std::move(target_owner);
+  state->routes_to_manager_upstream       = routes_to_manager_upstream;
   current_resource_routes_by_stream_[key] = state;
   return state;
 }
@@ -136,6 +143,11 @@ void reservation_aware_resource_adaptor::detach_current_resource_route(
 {
   if (state == nullptr) { return; }
   std::scoped_lock lock{current_resource_route_mutex_};
+  if (state->attachment_count > 1) {
+    state->attachment_count -= 1;
+    return;
+  }
+  state->attachment_count = 0;
   state->attached     = false;
   auto const existing = current_resource_routes_by_stream_.find(state->stream_key);
   if (existing != current_resource_routes_by_stream_.end() &&
@@ -253,7 +265,7 @@ void reservation_aware_resource_adaptor::reserve_allocation(State& state,
       aligned_bytes > state.allocation_limit - state.current_aligned_bytes) {
     record_failed_allocation(state, bytes);
     throw attributed_out_of_memory{
-      limit_message, CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT, identity};
+      limit_message, CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT, identity, nullptr, bytes};
   }
   state.current_aligned_bytes += aligned_bytes;
 }
@@ -319,22 +331,24 @@ reservation_aware_resource_adaptor::current_resource_route_for_stream(rmm::cuda_
   return state;
 }
 
-std::shared_ptr<current_resource_route_state>
+std::shared_ptr<current_resource_allocation_record>
 reservation_aware_resource_adaptor::current_resource_route_for_deallocation(void* ptr)
 {
   if (ptr == nullptr) { return {}; }
   std::scoped_lock lock{current_resource_route_mutex_};
   auto const it = current_resource_routes_by_pointer_.find(ptr);
   if (it == current_resource_routes_by_pointer_.end()) { return {}; }
-  auto state = std::move(it->second);
+  auto record = std::move(it->second);
   current_resource_routes_by_pointer_.erase(it);
-  return state;
+  return record;
 }
 
 void* reservation_aware_resource_adaptor::do_allocate(std::size_t bytes,
                                                       rmm::cuda_stream_view stream,
                                                       std::size_t alignment)
 {
+  query_domain_allocations_->throw_if_invariant_violated();
+  cudf::rust::test_support::record_allocation_attempt(bytes);
   auto query_route = query_domain_member_for_stream(stream, bytes);
   if (query_route.has_value()) {
     auto domain = query_route->member->domain;
@@ -342,23 +356,6 @@ void* reservation_aware_resource_adaptor::do_allocate(std::size_t bytes,
       cudf::rust::test_support::pause_query_domain_route_if_armed(domain->id);
       auto* result = query_route->member->resource->allocate_routed(stream, bytes, alignment);
       if (bytes != 0) {
-        try {
-          std::unique_lock lock{query_domain_mutex_};
-          // Committed routed allocations retain their originating member by
-          // pointer, independently of whichever member is attached to the
-          // stream when the allocation is eventually freed. Direct member
-          // allocations bypass this map and retain their resource directly.
-          auto const insertion =
-            query_domain_members_by_pointer_.emplace(result, query_route->member);
-          if (!insertion.second) {
-            throw std::runtime_error{"duplicate query memory domain routed pointer"};
-          }
-          query_domain_routed_pointer_count_.fetch_add(1, std::memory_order_relaxed);
-        } catch (...) {
-          query_route->member->resource->rollback_routed_allocation(
-            result, stream, bytes, alignment);
-          throw;
-        }
         query_route->member->resource->commit_routed_allocation();
         cleanup_retired_query_domain_member(query_route->member);
       }
@@ -370,26 +367,6 @@ void* reservation_aware_resource_adaptor::do_allocate(std::size_t bytes,
       cleanup_query_domain_if_idle(domain);
       throw;
     }
-  }
-
-  auto current_resource_route = current_resource_route_for_stream(stream);
-  if (current_resource_route != nullptr) {
-    auto* target = current_resource_route->target_owner->mr.get();
-    void* result = target->allocate(stream, bytes, alignment);
-    if (bytes != 0) {
-      try {
-        std::scoped_lock lock{current_resource_route_mutex_};
-        auto const insertion =
-          current_resource_routes_by_pointer_.emplace(result, current_resource_route);
-        if (!insertion.second) {
-          throw std::runtime_error{"duplicate current-resource routed pointer"};
-        }
-      } catch (...) {
-        target->deallocate(stream, result, bytes, alignment);
-        throw;
-      }
-    }
-    return result;
   }
 
   auto const aligned_bytes = cudf::rust::reservation::allocation_charge(bytes, alignment);
@@ -431,6 +408,36 @@ void* reservation_aware_resource_adaptor::do_allocate(std::size_t bytes,
         throw;
       }
     }
+  }
+  auto current_resource_route = current_resource_route_for_stream(stream);
+  if (reservation == nullptr && current_resource_route != nullptr) {
+    auto* target = current_resource_route->target_owner->mr.get();
+    void* result = current_resource_route->routes_to_manager_upstream
+                     ? upstream_.allocate(stream, bytes, alignment)
+                     : target->allocate(stream, bytes, alignment);
+    if (bytes != 0) {
+      try {
+        std::scoped_lock lock{current_resource_route_mutex_};
+        auto record = std::make_shared<current_resource_allocation_record>(
+          current_resource_allocation_record{current_resource_route, bytes, alignment, stream});
+        auto const insertion = current_resource_routes_by_pointer_.emplace(result, std::move(record));
+        if (!insertion.second) {
+          throw std::runtime_error{"duplicate current-resource routed pointer"};
+        }
+      } catch (...) {
+        if (current_resource_route->routes_to_manager_upstream) {
+          upstream_.deallocate(stream, result, bytes, alignment);
+        } else {
+          target->deallocate(stream, result, bytes, alignment);
+        }
+        throw;
+      }
+    }
+    return result;
+  }
+  if (bytes != 0 && reservation == nullptr) {
+    throw cudf::logic_error{
+      "device allocation stream has no query domain, reservation, or explicit backend owner"};
   }
 
   void* ptr = nullptr;
@@ -476,28 +483,33 @@ void reservation_aware_resource_adaptor::do_deallocate(void* ptr,
                                                        rmm::cuda_stream_view stream,
                                                        std::size_t alignment) noexcept
 {
-  auto member_route = query_domain_member_for_deallocation(ptr);
-  if (member_route.has_value()) {
-    auto domain = member_route->member->domain;
-    member_route->member->resource->deallocate_routed(ptr, stream, bytes, alignment);
-    member_route->operation.finish();
-    cleanup_retired_query_domain_member(member_route->member);
-    cleanup_query_domain_if_idle(domain);
-    return;
-  }
-
-  auto query_route = query_domain_for_pointer(ptr);
-  if (query_route.has_value()) {
-    auto domain = query_route->domain;
-    domain->resource->deallocate_from_adaptor(ptr, {}, stream, bytes, alignment);
-    query_route->operation.finish();
-    cleanup_query_domain_if_idle(domain);
-    return;
-  }
-
   auto current_resource_route = current_resource_route_for_deallocation(ptr);
   if (current_resource_route != nullptr) {
-    current_resource_route->target_owner->mr->deallocate(stream, ptr, bytes, alignment);
+    if (current_resource_route->route->routes_to_manager_upstream) {
+      upstream_.deallocate(current_resource_route->allocation_stream,
+                           ptr,
+                           current_resource_route->bytes,
+                           current_resource_route->alignment);
+    } else {
+      current_resource_route->route->target_owner->mr->deallocate(
+        current_resource_route->allocation_stream,
+        ptr,
+        current_resource_route->bytes,
+        current_resource_route->alignment);
+    }
+    return;
+  }
+
+  auto query_record = query_domain_allocations_->take(ptr);
+  if (query_record.has_value()) {
+    auto operation = query_record->domain->resource->begin_operation();
+    query_record->domain->resource->deallocate_from_adaptor(
+      ptr, query_record->member, stream, query_record->bytes, query_record->alignment);
+    if (query_record->routed) {
+      query_record->member->routed_current_allocations.fetch_sub(1, std::memory_order_acq_rel);
+    }
+    operation.finish();
+    cleanup_query_domain_if_idle(query_record->domain);
     return;
   }
 
@@ -511,6 +523,13 @@ void reservation_aware_resource_adaptor::do_deallocate(void* ptr,
       allocations_.erase(it);
       found = true;
     }
+  }
+
+  if (!found && bytes != 0) {
+    query_domain_allocations_->record_invariant_violation(
+      query_domain_allocation_registry::invariant_violation::unknown_device_pointer);
+    set_error("unknown or already-freed device allocation pointer");
+    return;
   }
 
   upstream_.deallocate(stream, ptr, bytes, alignment);
@@ -533,6 +552,18 @@ void reservation_aware_resource_adaptor::do_deallocate(void* ptr,
 }  // namespace cudf::rust::memory
 
 using namespace cudf::rust::memory;
+
+void cudf_current_resource_route_destroy_preserving_error(
+  cudf_current_resource_route_handle route) noexcept
+{
+  if (route == nullptr) { return; }
+  try {
+    auto* state = reinterpret_cast<current_resource_route_handle_state*>(route);
+    state->manager->owner->reservation_adaptor->detach_current_resource_route(state->route);
+    delete state;
+  } catch (...) {
+  }
+}
 
 extern "C" {
 cudf_status_t cudf_memory_manager_route_current_resource(cudf_memory_manager_handle manager,
@@ -580,14 +611,15 @@ cudf_status_t cudf_memory_manager_route_current_resource(cudf_memory_manager_han
       return CUDF_ERROR_INVALID_OPERATION;
     }
 
-    // Routing the manager resource back through its own permanent adaptor
-    // would recurse. It is already the current-resource allocation path.
-    if (resource_state.owner->mr.get() == manager_state->owner->mr.get()) { return CUDF_SUCCESS; }
-
     auto* adaptor = manager_state->owner->reservation_adaptor;
     std::string attach_error;
+    bool const routes_to_manager_upstream =
+      resource_state.owner->mr.get() == manager_state->owner->mr.get();
     auto route = adaptor->attach_current_resource_route(
-      cudf_stream_view_from_handle(stream), resource_state.owner, attach_error);
+      cudf_stream_view_from_handle(stream),
+      resource_state.owner,
+      routes_to_manager_upstream,
+      attach_error);
     if (route == nullptr) {
       set_error(attach_error);
       return CUDF_ERROR_INVALID_OPERATION;
@@ -605,14 +637,9 @@ cudf_status_t cudf_memory_manager_route_current_resource(cudf_memory_manager_han
 cudf_status_t cudf_current_resource_route_destroy(cudf_current_resource_route_handle route)
 {
   CUDF_RUST_NULL_CHECK(route, "current-resource route is null");
-  CUDF_RUST_TRY
-  {
-    auto* state = reinterpret_cast<current_resource_route_handle_state*>(route);
-    state->manager->owner->reservation_adaptor->detach_current_resource_route(state->route);
-    delete state;
-    return CUDF_SUCCESS;
-  }
-  CUDF_RUST_CATCH
+  cudf_clear_error();
+  cudf_current_resource_route_destroy_preserving_error(route);
+  return CUDF_SUCCESS;
 }
 
 cudf_status_t cudf_memory_manager_attach_reservation(cudf_memory_manager_handle manager,

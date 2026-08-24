@@ -1155,8 +1155,6 @@ pub nexus_query_runtime::observability::AttemptFinalDomainUsage::current_aligned
 pub nexus_query_runtime::observability::AttemptFinalDomainUsage::current_allocations: u64
 pub nexus_query_runtime::observability::AttemptFinalDomainUsage::current_bytes: u64
 pub nexus_query_runtime::observability::AttemptFinalDomainUsage::domain_id: u64
-pub nexus_query_runtime::observability::AttemptFinalDomainUsage::driver_ceiling_verified: bool
-pub nexus_query_runtime::observability::AttemptFinalDomainUsage::effective_driver_ceiling_bytes: u64
 pub nexus_query_runtime::observability::AttemptFinalDomainUsage::failed_allocation_count: u64
 pub nexus_query_runtime::observability::AttemptFinalDomainUsage::largest_failed_allocation_bytes: u64
 pub nexus_query_runtime::observability::AttemptFinalDomainUsage::peak_aligned_bytes: u64

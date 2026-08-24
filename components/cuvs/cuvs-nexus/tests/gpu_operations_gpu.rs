@@ -85,11 +85,17 @@ impl ActiveLeaseBackend for TrackingLeaseBackend {
     }
 }
 
-fn resources() -> (Arc<Runtime>, CuvsResources) {
+const TEST_RESERVATION_LIMIT_BYTES: usize = 1 << 30;
+static NEXT_RESERVATION_ID: AtomicUsize = AtomicUsize::new(0xC0_0000);
+
+fn resources() -> (Arc<Runtime>, CuvsResources, cudf::StreamReservationLease) {
     assert!(cudf::DeviceId::count().expect("query CUDA device count") > 0);
     let runtime = Arc::new(Runtime::new().expect("runtime"));
+    let reservation_id = NEXT_RESERVATION_ID.fetch_add(1, Ordering::Relaxed) as u64;
+    let _reservation =
+        runtime.stream_reservation(reservation_id, TEST_RESERVATION_LIMIT_BYTES).expect("test stream reservation");
     let resources = CuvsResources::for_runtime(Arc::clone(&runtime)).expect("cuVS resources");
-    (runtime, resources)
+    (runtime, resources, _reservation)
 }
 
 fn i64_to_host(runtime: &Runtime, buffer: DeviceBuffer<i64>) -> Vec<i64> {
@@ -121,7 +127,7 @@ fn f32_to_host(runtime: &Runtime, buffer: DeviceBuffer<f32>) -> Vec<f32> {
 
 #[test]
 fn resources_bind_the_runtime_stream_and_current_manager() {
-    let (runtime, resources) = resources();
+    let (runtime, resources, _reservation) = resources();
     assert_eq!(resources.binding_id(), runtime.binding_id());
 }
 
@@ -144,7 +150,7 @@ fn resources_reject_custom_runtime_memory_resources() {
 
 #[test]
 fn prepared_tensor_completion_and_incomplete_drop_are_safe() {
-    let (runtime, resources) = resources();
+    let (runtime, resources, _reservation) = resources();
     let column = runtime.column_from_slice(&[1.0_f32, 2.0, 3.0, 4.0]).expect("column");
     let export = column.try_prepare_device_column_export().expect("prepared export");
 
@@ -162,7 +168,7 @@ fn prepared_tensor_completion_and_incomplete_drop_are_safe() {
 
 #[test]
 fn prepared_completion_retains_owner_until_drop_and_synchronizes_before_release() {
-    let (runtime, resources) = resources();
+    let (runtime, resources, _reservation) = resources();
     let series =
         cudf::Series::from_column(runtime.column_from_slice(&[1.0_f32, 2.0]).expect("column")).expect("series");
     let marker = Arc::new(());
@@ -190,7 +196,7 @@ fn prepared_completion_retains_owner_until_drop_and_synchronizes_before_release(
 
 #[test]
 fn prepared_completion_without_retained_owner_synchronizes_before_return() {
-    let (runtime, resources) = resources();
+    let (runtime, resources, _reservation) = resources();
     let column = runtime.column_from_slice(&[1.0_f32, 2.0]).expect("column");
     let synchronizations = Arc::new(AtomicUsize::new(0));
     let export = column.try_prepare_device_column_export().expect("prepared export").with_lease_backend(
@@ -207,7 +213,7 @@ fn prepared_completion_without_retained_owner_synchronizes_before_return() {
 
 #[test]
 fn finite_fixed_size_list_witness_activates_validated_tensor() {
-    let (runtime, resources) = resources();
+    let (runtime, resources, _reservation) = resources();
     let item = Arc::new(Field::new("item", ArrowDataType::Float32, false));
     let values = Arc::new(Float32Array::from(vec![0.0_f32, 0.0, 1.0, 1.0, 2.0, 2.0]));
     let lists = FixedSizeListArray::new(Arc::clone(&item), 2, values, None);
@@ -230,7 +236,7 @@ fn finite_fixed_size_list_witness_activates_validated_tensor() {
 
 #[test]
 fn fixed_size_list_witness_rejects_non_finite_child_values() {
-    let (runtime, _resources) = resources();
+    let (runtime, _resources, _reservation) = resources();
     let item = Arc::new(Field::new("item", ArrowDataType::Float32, false));
     let values = Arc::new(Float32Array::from(vec![0.0_f32, 1.0, f32::NAN, 3.0]));
     let lists = FixedSizeListArray::new(Arc::clone(&item), 2, values, None);
@@ -248,7 +254,7 @@ fn fixed_size_list_witness_rejects_non_finite_child_values() {
 
 #[test]
 fn algorithms_reject_same_device_tensors_from_a_different_stream_binding() {
-    let (producer_runtime, producer_resources) = resources();
+    let (producer_runtime, producer_resources, _producer_reservation) = resources();
     let values = DeviceBuffer::from_slice(&producer_resources, &[0.0_f32, 0.0, 1.0, 1.0]).expect("values");
     let tensor = values.as_validated_matrix(&producer_resources, 2, 2).expect("tensor");
 
@@ -272,7 +278,7 @@ fn algorithms_reject_same_device_tensors_from_a_different_stream_binding() {
 
 #[test]
 fn validated_packed_tensor_rejects_a_different_memory_resource_binding() {
-    let (runtime, resources) = resources();
+    let (runtime, resources, _reservation) = resources();
     let custom_resource = DeviceMemoryResource::cuda_on(runtime.device()).expect("custom CUDA resource");
     let foreign_runtime = Runtime::builder()
         .with_device(runtime.device())
@@ -295,7 +301,7 @@ fn validated_packed_tensor_rejects_a_different_memory_resource_binding() {
 
 #[test]
 fn prepared_table_ingress_uses_one_root_lease_and_runtime_packing() {
-    let (runtime, resources) = resources();
+    let (runtime, resources, _reservation) = resources();
     let table = cudf::core::Table::from_columns(vec![
         runtime.column_from_slice(&[1.0_f32, 2.0, 3.0]).expect("first"),
         runtime.column_from_slice(&[4.0_f32, 5.0, 6.0]).expect("second"),
@@ -316,7 +322,7 @@ fn prepared_table_ingress_uses_one_root_lease_and_runtime_packing() {
 
 #[test]
 fn validated_list_pack_entrypoints_preserve_public_shape_layout_and_binding() {
-    let (runtime, resources) = resources();
+    let (runtime, resources, _reservation) = resources();
     let item = Arc::new(Field::new("item", ArrowDataType::Float32, false));
     let fixed =
         FixedSizeListArray::new(Arc::clone(&item), 2, Arc::new(Float32Array::from(vec![1.0_f32, 2.0, 3.0, 4.0])), None);
@@ -365,7 +371,7 @@ fn validated_list_pack_entrypoints_preserve_public_shape_layout_and_binding() {
 
 #[test]
 fn prepared_tensor_rejects_exports_without_incomplete_drop_fallback() {
-    let (runtime, resources) = resources();
+    let (runtime, resources, _reservation) = resources();
     let column = runtime.column_from_slice(&[1.0_f32, 2.0, 3.0, 4.0]).expect("column");
     let export = column
         .try_prepare_device_column_export()
@@ -381,7 +387,7 @@ fn prepared_tensor_rejects_exports_without_incomplete_drop_fallback() {
 
 #[test]
 fn brute_force_search_writes_caller_owned_device_buffers() {
-    let (runtime, resources) = resources();
+    let (runtime, resources, _reservation) = resources();
     let points =
         [0.0_f32, 0.0, 1.0, 0.0, 3.0, 0.0, 6.0, 0.0, 10.0, 0.0, 15.0, 0.0, 21.0, 0.0, 28.0, 0.0, 36.0, 0.0, 45.0, 0.0];
     let data = DeviceBuffer::from_slice(&resources, &points).expect("dataset");
@@ -404,7 +410,7 @@ fn brute_force_search_writes_caller_owned_device_buffers() {
 
 #[test]
 fn kmeans_model_retains_fitted_params_and_device_centroids() {
-    let (runtime, resources) = resources();
+    let (runtime, resources, _reservation) = resources();
     let values =
         [0.0_f32, 0.0, 0.0, 1.0, 1.0, 0.0, 10.0, 10.0, 10.0, 11.0, 11.0, 10.0, -10.0, 10.0, -10.0, 11.0, -9.0, 10.0];
     let data = DeviceBuffer::from_slice(&resources, &values).expect("data");
@@ -432,7 +438,7 @@ fn kmeans_model_retains_fitted_params_and_device_centroids() {
 
 #[test]
 fn kmeans_supports_l2_sqrt_expanded_metric() {
-    let (_runtime, resources) = resources();
+    let (_runtime, resources, _reservation) = resources();
     let data = DeviceBuffer::from_slice(&resources, &[0.0_f32, 0.0, 1.0, 1.0, 10.0, 10.0, 11.0, 11.0]).expect("data");
     let matrix = data.as_validated_matrix(&resources, 4, 2).expect("matrix");
     let initial = DeviceBuffer::from_slice(&resources, &[0.0_f32, 0.0, 10.0, 10.0]).expect("initial centroids");
@@ -447,7 +453,7 @@ fn kmeans_supports_l2_sqrt_expanded_metric() {
 
 #[test]
 fn pca_packs_prepared_table_and_returns_device_dataframe() {
-    let (runtime, resources) = resources();
+    let (runtime, resources, _reservation) = resources();
     let rows = 6;
     let columns = 3;
     let table = cudf::core::Table::from_columns(vec![
@@ -499,7 +505,7 @@ fn pca_packs_prepared_table_and_returns_device_dataframe() {
 
 #[test]
 fn float32_device_buffers_reject_non_finite_native_inputs() {
-    let (_runtime, resources) = resources();
+    let (_runtime, resources, _reservation) = resources();
     for value in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
         let error = DeviceBuffer::from_slice(&resources, &[0.0_f32, value])
             .expect_err("non-finite Float32 input must be rejected before device allocation");

@@ -4,8 +4,8 @@ use std::{
 };
 
 use cugraph_sys::{
-    bool_t, cugraph_data_mask_t, cugraph_data_type_id_t, cugraph_error_code_t, cugraph_error_t,
-    cugraph_graph_properties_t, cugraph_graph_t, cugraph_resource_handle_t, cugraph_rng_state_t,
+    bool_t, cugraph_data_mask_t, cugraph_data_type_id_t, cugraph_error_code_t, cugraph_error_failure_source_t,
+    cugraph_error_t, cugraph_graph_properties_t, cugraph_graph_t, cugraph_resource_handle_t, cugraph_rng_state_t,
     cugraph_type_erased_device_array_t, cugraph_type_erased_device_array_view_t, cugraph_type_erased_host_array_t,
     cugraph_type_erased_host_array_view_t,
 };
@@ -21,6 +21,9 @@ macro_rules! assert_opaque_i32_layout {
 fn enum_newtypes_match_c_uint_layout() {
     assert_eq!(size_of::<cugraph_error_code_t>(), size_of::<c_uint>());
     assert_eq!(align_of::<cugraph_error_code_t>(), align_of::<c_uint>());
+
+    assert_eq!(size_of::<cugraph_error_failure_source_t>(), size_of::<c_uint>());
+    assert_eq!(align_of::<cugraph_error_failure_source_t>(), align_of::<c_uint>());
 
     assert_eq!(size_of::<bool_t>(), size_of::<c_uint>());
     assert_eq!(align_of::<bool_t>(), align_of::<c_uint>());

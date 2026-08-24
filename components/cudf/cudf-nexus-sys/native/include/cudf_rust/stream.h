@@ -3,6 +3,7 @@
 
 #include "error.h"
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -42,6 +43,33 @@ cudf_status_t cudf_stream_is_ready(cudf_stream_handle handle, int32_t* out);
 /// This does not transfer ownership. `*out` is valid only while `handle`
 /// remains alive.
 cudf_status_t cudf_stream_raw(cudf_stream_handle handle, void** out);
+
+/// Install Nexus's attempt-owned fork-stream provider.
+///
+/// Installation is process-local and idempotent. Before installation,
+/// libcudf retains its upstream global-pool behavior. After installation,
+/// every parent passed to `fork_streams` must have an active attempt route.
+cudf_status_t cudf_stream_provider_install(void);
+
+/// Register the parent and bounded auxiliary stream set for one attempt.
+///
+/// The caller retains ownership of every raw stream. The registration remains
+/// active until `cudf_stream_provider_unregister_attempt` returns, and the
+/// caller must keep the streams alive through that point and through any
+/// worker/stream drain that follows it.
+cudf_status_t cudf_stream_provider_register_attempt(void* parent_stream,
+                                                    void* const* auxiliary_streams,
+                                                    size_t auxiliary_count);
+
+/// Remove one attempt route after its streams have drained.
+cudf_status_t cudf_stream_provider_unregister_attempt(void* parent_stream);
+
+/// Attach another live attempt-member stream as a fork parent alias.
+cudf_status_t cudf_stream_provider_attach_attempt_stream(void* parent_stream,
+                                                         void* alias_stream);
+
+/// Remove a previously attached attempt-member stream alias after it drains.
+cudf_status_t cudf_stream_provider_detach_attempt_stream(void* alias_stream);
 
 #ifdef __cplusplus
 }

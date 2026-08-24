@@ -18,6 +18,30 @@ pub struct AttemptAllocationDomain {
     member_limit_bytes: u64,
 }
 
+/// Native fork-stream ownership held for the full admitted-attempt lifetime.
+///
+/// Field order is load-bearing: unregister the native route before detaching
+/// its domain members or releasing the CUDA stream owners.
+#[derive(Debug)]
+#[doc(hidden)]
+pub struct AttemptStreamProviderRoute {
+    registration: cudf::AttemptStreamProviderRegistration,
+    _member_leases: Vec<cudf::StreamReservationLease>,
+    _auxiliary_streams: Vec<cudf::runtime::CudaStream>,
+}
+
+impl AttemptStreamProviderRoute {
+    pub(super) fn attach(&self, stream: &cudf::runtime::CudaStream) -> Result<cudf::AttemptStreamProviderAlias> {
+        self.registration.attach(stream).map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.runtime.attempt_stream_provider.attach",
+                "failed to attach an attempt member stream to the fork-stream provider",
+                error,
+            )
+        })
+    }
+}
+
 impl AttemptAllocationDomain {
     /// Creates the domain with `grant == ceiling == immutable ledger grant`.
     ///
@@ -103,6 +127,46 @@ impl AttemptAllocationDomain {
             )
             .with_fact("domain_id", self.domain_id())
             .with_fact("member_id", member_id)
+        })
+    }
+
+    /// Create and register the bounded native auxiliary stream set used by
+    /// libcudf's `fork_streams` provider.
+    pub(super) fn create_stream_provider_route(
+        &self,
+        parent: &cudf::runtime::CudaStream,
+        auxiliary_capacity: usize,
+    ) -> Result<AttemptStreamProviderRoute> {
+        let operation = "nexus_query_engine.runtime.attempt_stream_provider.create";
+        if parent.device().ordinal() != self.device_ordinal() {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                operation,
+                "attempt stream-provider parent must live on the attempt device",
+            )
+            .with_fact("domain_device_ordinal", self.device_ordinal())
+            .with_fact("stream_device_ordinal", parent.device().ordinal()));
+        }
+        let capacity = auxiliary_capacity.max(1);
+        let _entry = cudf::runtime::DeviceEntryGuard::enter(parent.device(), operation).map_err(|error| {
+            QueryError::from_cudf(operation, "failed to enter the attempt stream-provider device", error)
+        })?;
+        let mut auxiliary_streams = Vec::with_capacity(capacity);
+        for _ in 0..capacity {
+            auxiliary_streams.push(cudf::runtime::CudaStream::new().map_err(|error| {
+                QueryError::from_cudf(operation, "failed to create an attempt auxiliary stream", error)
+            })?);
+        }
+        let mut member_leases = Vec::with_capacity(auxiliary_streams.len());
+        for stream in &auxiliary_streams {
+            member_leases.push(self.create_member(stream)?);
+        }
+        let registration = cudf::AttemptStreamProviderRegistration::register(parent, &auxiliary_streams)
+            .map_err(|error| QueryError::from_cudf(operation, "failed to register attempt fork streams", error))?;
+        Ok(AttemptStreamProviderRoute {
+            registration,
+            _member_leases: member_leases,
+            _auxiliary_streams: auxiliary_streams,
         })
     }
 

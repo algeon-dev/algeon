@@ -120,40 +120,6 @@ void trim_async_pool_to(cuda_async_resource_box* async_pool, std::uint64_t keep_
   CUDF_CUDA_TRY(cudaMemPoolTrimTo(async_pool->resource().pool_handle(), keep_bytes));
 }
 
-bool async_pool_has_trim_retry_headroom(cudf_memory_pool_usage_t const& usage,
-                                        std::size_t request_bytes);
-bool trim_cuda_pool_to_zero_noexcept(cudaMemPool_t pool) noexcept;
-
-bool trim_cuda_pool_before_retry(cudaMemPool_t pool, std::size_t request_bytes) noexcept
-{
-  if (pool == nullptr || request_bytes == 0) { return false; }
-  cudf_memory_pool_usage_t usage{};
-  if (!read_cuda_pool_usage_noexcept(pool, usage)) { return false; }
-  if (!async_pool_has_trim_retry_headroom(usage, request_bytes)) { return false; }
-  return trim_cuda_pool_to_zero_noexcept(pool);
-}
-
-bool trim_cuda_pool_to_zero_noexcept(cudaMemPool_t pool) noexcept
-{
-  if (pool == nullptr) { return false; }
-  if (cudaMemPoolTrimTo(pool, 0) != cudaSuccess) {
-    cudaGetLastError();
-    return false;
-  }
-  return true;
-}
-
-bool async_pool_has_trim_retry_headroom(cudf_memory_pool_usage_t const& usage,
-                                        std::size_t request_bytes)
-{
-  if (request_bytes == 0 || usage.reserved_current_bytes <= usage.used_current_bytes) {
-    return false;
-  }
-  auto const idle_bytes = usage.reserved_current_bytes - usage.used_current_bytes;
-  return idle_bytes / static_cast<std::uint64_t>(request_bytes) >=
-         k_trim_retry_idle_to_request_ratio;
-}
-
 void fill_failure_info(cudf_memory_failure_info_t& out,
                        int32_t device_ordinal,
                        std::size_t request_bytes,
@@ -368,81 +334,30 @@ class bounded_failure_callback_resource_adaptor final : public rmm::mr::device_m
  private:
   void* do_allocate(std::size_t bytes, rmm::cuda_stream_view stream, std::size_t alignment) override
   {
-    std::uint32_t callback_retries = 0;
-    bool trim_retry_attempted      = false;
-    std::uint32_t trim_retry_count = 0;
-    while (true) {
-      try {
-        return upstream_.allocate(stream, bytes, alignment);
-      } catch (rmm::out_of_memory const& error) {
-        auto const* attributed_error = dynamic_cast<attributed_out_of_memory const*>(&error);
-        auto const failure_source    = attributed_error == nullptr
-                                         ? CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL
-                                         : attributed_error->source();
-        auto const failure_identity = attributed_error == nullptr ? memory_failure_domain_identity{}
-                                                                  : attributed_error->identity();
-        auto const failure_pool = attributed_error != nullptr && attributed_error->pool() != nullptr
-                                    ? attributed_error->pool()
-                                    : pool_;
-        if (callback_v2_ != nullptr) {
-          if (callback_retries >= k_max_failure_callback_retries) { throw; }
-          cudf_memory_failure_info_t info{};
-          fill_failure_info(info,
-                            device_ordinal_,
-                            bytes,
-                            failure_pool,
-                            failure_source,
-                            failure_identity,
-                            callback_retries,
-                            trim_retry_count);
-          auto const action = callback_v2_(&info, callback_arg_);
-          if (allocator_events_ != nullptr) {
-            allocator_events_->record(
-              info, failure_identity, static_cast<cudf_memory_failure_action_t>(action));
-          }
-          if (action == CUDF_MEMORY_FAILURE_ACTION_CALLBACK_PANICKED) {
-            if (callback_panicked_ != nullptr) {
-              callback_panicked_->store(true, std::memory_order_release);
-            }
-            throw;
-          }
-          if (action == CUDF_MEMORY_FAILURE_ACTION_RETRY) {
-            ++callback_retries;
-            continue;
-          }
-          if (failure_source == CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL &&
-              action == CUDF_MEMORY_FAILURE_ACTION_TRIM_AND_RETRY &&
-              trim_cuda_pool_to_zero_noexcept(failure_pool)) {
-            ++callback_retries;
-            ++trim_retry_count;
-            continue;
-          }
-          throw;
-        }
-        if (failure_source == CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL && !trim_retry_attempted &&
-            trim_cuda_pool_before_retry(failure_pool, bytes)) {
-          trim_retry_attempted = true;
-          continue;
-        }
-        if (callback_ == nullptr || callback_retries >= k_max_failure_callback_retries) { throw; }
-        auto const action = callback_(bytes, callback_arg_) != 0
-                              ? CUDF_MEMORY_FAILURE_ACTION_RETRY
-                              : CUDF_MEMORY_FAILURE_ACTION_DECLINE;
-        cudf_memory_failure_info_t info{};
-        fill_failure_info(info,
-                          device_ordinal_,
-                          bytes,
-                          failure_pool,
-                          failure_source,
-                          failure_identity,
-                          callback_retries,
-                          trim_retry_count);
-        if (allocator_events_ != nullptr) {
-          allocator_events_->record(info, failure_identity, action);
-        }
-        if (action == CUDF_MEMORY_FAILURE_ACTION_DECLINE) { throw; }
-        ++callback_retries;
+    try {
+      return upstream_.allocate(stream, bytes, alignment);
+    } catch (rmm::out_of_memory const& error) {
+      auto const* attributed_error = dynamic_cast<attributed_out_of_memory const*>(&error);
+      auto const failure_source    = attributed_error == nullptr
+                                       ? CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL
+                                       : attributed_error->source();
+      auto const failure_identity = attributed_error == nullptr ? memory_failure_domain_identity{}
+                                                                : attributed_error->identity();
+      auto const failure_pool = attributed_error != nullptr && attributed_error->pool() != nullptr
+                                  ? attributed_error->pool()
+                                  : pool_;
+      cudf_memory_failure_info_t info{};
+      fill_failure_info(
+        info, device_ordinal_, bytes, failure_pool, failure_source, failure_identity, 0, 0);
+      if (callback_v2_ != nullptr) {
+        static_cast<void>(callback_v2_(&info, callback_arg_));
+      } else if (callback_ != nullptr) {
+        static_cast<void>(callback_(bytes, callback_arg_));
       }
+      if (allocator_events_ != nullptr) {
+        allocator_events_->record(info, failure_identity, CUDF_MEMORY_FAILURE_ACTION_DECLINE);
+      }
+      throw;
     }
   }
 

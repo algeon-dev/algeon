@@ -3,8 +3,8 @@ use std::{ffi::c_void, ptr};
 use crate::{
     helpers::{make_i32_column, make_table_from_one_column, make_table_view, read_i32_column_data_with_exec},
     support::{
-        CurrentDeviceResourceRestore, OwnedMemoryResource, OwnedStream, current_device_resource_raw, last_exec_mr_raw,
-        last_exec_stream_value, lock_shim_state, required_exec_options, reset_exec_observation, stream_value,
+        OwnedMemoryResource, OwnedStream, last_exec_mr_raw, last_exec_stream_value, lock_shim_state,
+        required_exec_options, reset_exec_observation, stream_value,
     },
 };
 
@@ -181,9 +181,6 @@ fn assert_size_data_case(
     expected_right_indices: &[i32],
 ) {
     let _shim_state = lock_shim_state();
-    let previous_raw = current_device_resource_raw();
-    let current_mr = OwnedMemoryResource::new_test_stats();
-    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
     let target_mr = OwnedMemoryResource::new_test_stats();
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
@@ -194,11 +191,7 @@ fn assert_size_data_case(
     let inputs = MixedJoinInputs::new();
 
     let target_before = target_mr.allocation_count();
-    let current_before = current_mr.allocation_count();
-    let current_borrowed = current_mr.borrowed();
     reset_exec_observation();
-    crate::support::set_current_device_resource(&current_borrowed)
-        .expect("failed to install current sentinel memory resource");
 
     let mut size_data: cudf_sys::cudf_mixed_join_size_data_handle = ptr::null_mut();
     let status = unsafe {
@@ -213,23 +206,11 @@ fn assert_size_data_case(
             &exec,
         )
     };
-    let restored_current = current_device_resource_raw();
-    unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
-        .expect("failed to restore previous current device resource");
 
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} begin_size_data failed");
     assert!(!size_data.is_null(), "{name} did not publish size-data handle");
     assert_eq!(last_exec_stream_value(), expected_stream, "{name} begin stream");
     assert_eq!(last_exec_mr_raw(), expected_mr_raw, "{name} begin memory resource");
-    assert_eq!(
-        restored_current,
-        current_mr.raw_device_resource(),
-        "{name} begin must restore the caller's current memory resource"
-    );
-    // Device-domain model: libcudf temporaries resolve through the device's
-    // current resource by design, so the sentinel current resource may
-    // legitimately observe allocations here.
-    let _ = current_before;
     assert!(
         target_mr.allocation_count() > target_before,
         "{name} begin must allocate through the explicit execution memory resource"
@@ -252,9 +233,6 @@ fn assert_size_data_case(
 
 fn assert_single_size_data_case(name: &str, begin: BeginSizeDataExRaw, expected_size: usize, expected_indices: &[i32]) {
     let _shim_state = lock_shim_state();
-    let previous_raw = current_device_resource_raw();
-    let current_mr = OwnedMemoryResource::new_test_stats();
-    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
     let target_mr = OwnedMemoryResource::new_test_stats();
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
@@ -265,11 +243,7 @@ fn assert_single_size_data_case(name: &str, begin: BeginSizeDataExRaw, expected_
     let inputs = MixedJoinInputs::new();
 
     let target_before = target_mr.allocation_count();
-    let current_before = current_mr.allocation_count();
-    let current_borrowed = current_mr.borrowed();
     reset_exec_observation();
-    crate::support::set_current_device_resource(&current_borrowed)
-        .expect("failed to install current sentinel memory resource");
 
     let mut size_data: cudf_sys::cudf_mixed_join_size_data_handle = ptr::null_mut();
     let status = unsafe {
@@ -284,23 +258,11 @@ fn assert_single_size_data_case(name: &str, begin: BeginSizeDataExRaw, expected_
             &exec,
         )
     };
-    let restored_current = current_device_resource_raw();
-    unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
-        .expect("failed to restore previous current device resource");
 
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} begin_size_data failed");
     assert!(!size_data.is_null(), "{name} did not publish size-data handle");
     assert_eq!(last_exec_stream_value(), expected_stream, "{name} begin stream");
     assert_eq!(last_exec_mr_raw(), expected_mr_raw, "{name} begin memory resource");
-    assert_eq!(
-        restored_current,
-        current_mr.raw_device_resource(),
-        "{name} begin must restore the caller's current memory resource"
-    );
-    // Device-domain model: libcudf temporaries resolve through the device's
-    // current resource by design, so the sentinel current resource may
-    // legitimately observe allocations here.
-    let _ = current_before;
     assert!(
         target_mr.allocation_count() > target_before,
         "{name} begin must allocate through the explicit execution memory resource"

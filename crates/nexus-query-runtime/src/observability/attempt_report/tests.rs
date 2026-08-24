@@ -207,8 +207,6 @@ fn resource_evidence_preserves_explicit_unavailable_provenance_through_serde() {
             active: true,
             active_members: 1,
             ceiling_bytes: 4096,
-            effective_driver_ceiling_bytes: 4096,
-            driver_ceiling_verified: true,
             allocation_limit_bytes: 4096,
             current_bytes: 32,
             peak_bytes: 32,

@@ -4047,6 +4047,7 @@ dependencies = [
  "blake3",
  "bytes",
  "cudf-nexus",
+ "cudf-nexus-sys",
  "cugraph-nexus",
  "fnv",
  "futures",

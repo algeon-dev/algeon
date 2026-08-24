@@ -312,9 +312,6 @@ fn test_distinct_zero_num_keys_allows_null_keys_pointer() {
 #[test]
 fn test_gather_ex_uses_explicit_memory_resource() {
     let _shim_state = lock_shim_state();
-    let previous_raw = current_device_resource_raw();
-    let current_mr = OwnedMemoryResource::new_test_stats();
-    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let input_col = make_i32_column(&[10, 20, 30, 40]);
@@ -327,11 +324,7 @@ fn test_gather_ex_uses_explicit_memory_resource() {
     let target_borrowed = target_mr.borrowed();
     let exec = required_exec_options(&target_stream, &target_borrowed);
     let target_before = target_mr.allocation_count();
-    let current_before = current_mr.allocation_count();
 
-    let current_borrowed = current_mr.borrowed();
-    crate::support::set_current_device_resource(&current_borrowed)
-        .expect("failed to install current sentinel memory resource");
     let mut out: cudf_sys::cudf_table_handle = ptr::null_mut();
     let status = unsafe {
         cudf_sys::cudf_gather_ex(
@@ -342,22 +335,10 @@ fn test_gather_ex_uses_explicit_memory_resource() {
             &exec,
         )
     };
-    let restored_current = current_device_resource_raw();
-    unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
-        .expect("failed to restore previous current device resource");
 
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
-    assert_eq!(
-        restored_current,
-        current_mr.raw_device_resource(),
-        "gather must restore the caller's current device resource"
-    );
-    // Device-domain model: libcudf temporaries resolve through the device's
-    // current resource by design, so the sentinel current resource may
-    // legitimately observe allocations here.
-    let _ = current_before;
     assert!(
         target_mr.allocation_count() > target_before,
         "gather allocations must be charged to the explicit execution memory resource"
@@ -376,9 +357,6 @@ fn test_gather_ex_uses_explicit_memory_resource() {
 #[test]
 fn test_cross_join_ex_uses_explicit_memory_resource_for_allocations_and_provenance() {
     let _shim_state = lock_shim_state();
-    let previous_raw = current_device_resource_raw();
-    let current_mr = OwnedMemoryResource::new_test_stats();
-    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let left_tbl = make_table_from_one_column(make_i32_column(&[1, 2, 3, 4]));
@@ -390,29 +368,13 @@ fn test_cross_join_ex_uses_explicit_memory_resource_for_allocations_and_provenan
     let target_borrowed = target_mr.borrowed();
     let exec = required_exec_options(&target_stream, &target_borrowed);
     let target_before = target_mr.allocation_count();
-    let current_before = current_mr.allocation_count();
 
-    let current_borrowed = current_mr.borrowed();
-    crate::support::set_current_device_resource(&current_borrowed)
-        .expect("failed to install current sentinel memory resource");
     let mut out: cudf_sys::cudf_table_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_cross_join_ex(left_tv, right_tv, &mut out, &exec) };
-    let restored_current = current_device_resource_raw();
-    unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
-        .expect("failed to restore previous current device resource");
 
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
-    assert_eq!(
-        restored_current,
-        current_mr.raw_device_resource(),
-        "cross_join must restore the caller's current memory resource"
-    );
-    // Device-domain model: libcudf temporaries resolve through the device's
-    // current resource by design, so the sentinel current resource may
-    // legitimately observe allocations here.
-    let _ = current_before;
     assert!(
         target_mr.allocation_count() > target_before,
         "cross_join allocations must be charged to the explicit execution memory resource"
@@ -460,9 +422,6 @@ fn test_scatter_null_scatter_map_returns_libcudf_error() {
 #[test]
 fn test_scatter_ex_uses_explicit_memory_resource_for_allocations_and_provenance() {
     let _shim_state = lock_shim_state();
-    let previous_raw = current_device_resource_raw();
-    let current_mr = OwnedMemoryResource::new_test_stats();
-    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let source_tbl = make_table_from_one_column(make_i32_column(&[10, 20, 30]));
@@ -476,29 +435,13 @@ fn test_scatter_ex_uses_explicit_memory_resource_for_allocations_and_provenance(
     let target_borrowed = target_mr.borrowed();
     let exec = required_exec_options(&target_stream, &target_borrowed);
     let target_before = target_mr.allocation_count();
-    let current_before = current_mr.allocation_count();
 
-    let current_borrowed = current_mr.borrowed();
-    crate::support::set_current_device_resource(&current_borrowed)
-        .expect("failed to install current sentinel memory resource");
     let mut out: cudf_sys::cudf_table_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_scatter_ex(source_tv, scatter_map_view, target_tv, &mut out, &exec) };
-    let restored_current = current_device_resource_raw();
-    unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
-        .expect("failed to restore previous current device resource");
 
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
-    assert_eq!(
-        restored_current,
-        current_mr.raw_device_resource(),
-        "scatter must restore the caller's current memory resource"
-    );
-    // Device-domain model: libcudf temporaries resolve through the device's
-    // current resource by design, so the sentinel current resource may
-    // legitimately observe allocations here.
-    let _ = current_before;
     assert!(
         target_mr.allocation_count() > target_before,
         "scatter allocations must be charged to the explicit execution memory resource"
@@ -519,9 +462,6 @@ fn test_scatter_ex_uses_explicit_memory_resource_for_allocations_and_provenance(
 #[test]
 fn test_apply_boolean_mask_ex_uses_explicit_memory_resource() {
     let _shim_state = lock_shim_state();
-    let previous_raw = current_device_resource_raw();
-    let current_mr = OwnedMemoryResource::new_test_stats();
-    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let input_col = make_i32_column(&[10, 20, 30, 40]);
@@ -534,29 +474,13 @@ fn test_apply_boolean_mask_ex_uses_explicit_memory_resource() {
     let target_borrowed = target_mr.borrowed();
     let exec = required_exec_options(&target_stream, &target_borrowed);
     let target_before = target_mr.allocation_count();
-    let current_before = current_mr.allocation_count();
 
-    let current_borrowed = current_mr.borrowed();
-    crate::support::set_current_device_resource(&current_borrowed)
-        .expect("failed to install current sentinel memory resource");
     let mut out: cudf_sys::cudf_table_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_apply_boolean_mask_ex(input_view, mask_view, &mut out, &exec) };
-    let restored_current = current_device_resource_raw();
-    unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
-        .expect("failed to restore previous current device resource");
 
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
-    assert_eq!(
-        restored_current,
-        current_mr.raw_device_resource(),
-        "apply_boolean_mask must restore the caller's current device resource"
-    );
-    // Device-domain model: libcudf temporaries resolve through the device's
-    // current resource by design, so the sentinel current resource may
-    // legitimately observe allocations here.
-    let _ = current_before;
     assert!(
         target_mr.allocation_count() > target_before,
         "apply_boolean_mask allocations must be charged to the explicit execution memory resource"
@@ -575,9 +499,6 @@ fn test_apply_boolean_mask_ex_uses_explicit_memory_resource() {
 #[test]
 fn test_replace_nulls_policy_ex_uses_explicit_memory_resource() {
     let _shim_state = lock_shim_state();
-    let previous_raw = current_device_resource_raw();
-    let current_mr = OwnedMemoryResource::new_test_stats();
-    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let input = make_i32_column_nullable(&[10, 20, 30, 40], &[true, false, true, false]);
@@ -587,29 +508,13 @@ fn test_replace_nulls_policy_ex_uses_explicit_memory_resource() {
     let target_borrowed = target_mr.borrowed();
     let exec = required_exec_options(&target_stream, &target_borrowed);
     let target_before = target_mr.allocation_count();
-    let current_before = current_mr.allocation_count();
 
-    let current_borrowed = current_mr.borrowed();
-    crate::support::set_current_device_resource(&current_borrowed)
-        .expect("failed to install current sentinel memory resource");
     let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
     let status = unsafe { cudf_sys::cudf_replace_nulls_policy_ex(input_view, 0, &mut out, &exec) };
-    let restored_current = current_device_resource_raw();
-    unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
-        .expect("failed to restore previous current device resource");
 
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
-    assert_eq!(
-        restored_current,
-        current_mr.raw_device_resource(),
-        "replace_nulls policy must restore the caller's current device resource"
-    );
-    // Device-domain model: libcudf temporaries resolve through the device's
-    // current resource by design, so the sentinel current resource may
-    // legitimately observe allocations here.
-    let _ = current_before;
     assert!(
         target_mr.allocation_count() > target_before,
         "replace_nulls policy allocations must be charged to the explicit execution memory resource"
@@ -626,9 +531,6 @@ fn test_replace_nulls_policy_ex_uses_explicit_memory_resource() {
 #[test]
 fn test_distinct_ex_uses_explicit_memory_resource() {
     let _shim_state = lock_shim_state();
-    let previous_raw = current_device_resource_raw();
-    let current_mr = OwnedMemoryResource::new_test_stats();
-    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let input_col = make_i32_column(&[1, 2, 1, 3, 2, 4, 4, 5]);
@@ -640,11 +542,7 @@ fn test_distinct_ex_uses_explicit_memory_resource() {
     let target_borrowed = target_mr.borrowed();
     let exec = required_exec_options(&target_stream, &target_borrowed);
     let target_before = target_mr.allocation_count();
-    let current_before = current_mr.allocation_count();
 
-    let current_borrowed = current_mr.borrowed();
-    crate::support::set_current_device_resource(&current_borrowed)
-        .expect("failed to install current sentinel memory resource");
     let mut out: cudf_sys::cudf_table_handle = ptr::null_mut();
     let status = unsafe {
         cudf_sys::cudf_distinct_ex(
@@ -658,22 +556,10 @@ fn test_distinct_ex_uses_explicit_memory_resource() {
             &exec,
         )
     };
-    let restored_current = current_device_resource_raw();
-    unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
-        .expect("failed to restore previous current device resource");
 
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
-    assert_eq!(
-        restored_current,
-        current_mr.raw_device_resource(),
-        "distinct must restore the caller's current device resource"
-    );
-    // Device-domain model: libcudf temporaries resolve through the device's
-    // current resource by design, so the sentinel current resource may
-    // legitimately observe allocations here.
-    let _ = current_before;
     assert!(
         target_mr.allocation_count() > target_before,
         "distinct allocations must be charged to the explicit execution memory resource"

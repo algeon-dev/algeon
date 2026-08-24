@@ -23,7 +23,7 @@ use crate::{
         AttemptUnattributedAllocatorEvent,
     },
     runtime::{
-        GpuExecutorLease,
+        AttemptStreamProviderRoute, GpuExecutorLease,
         allocator_correlation::{
             AllocatorDomainAttempt, AllocatorEventEvidenceRead, AttemptCacheScopeAllocatorCorrelation,
             discard_admitted_domain, retire_admitted_domain,
@@ -108,6 +108,7 @@ pub(super) struct QueryHandleLifetime {
     root_context: Mutex<Option<ExecutionContext>>,
     root_context_setup: RootContextSetupCoordinator,
     attempt_auxiliary_slots: Arc<AttemptAuxiliarySlots>,
+    attempt_stream_provider_route: Mutex<Option<Arc<AttemptStreamProviderRoute>>>,
     envelope: Mutex<Option<super::service::transaction::AdmissionEnvelope>>,
     admitted_attempt_proof: Option<Arc<crate::runtime::AdmittedAttemptProof>>,
     #[cfg(test)]
@@ -182,6 +183,7 @@ impl QueryHandleLifetime {
                 root_context: Mutex::new(None),
                 root_context_setup: RootContextSetupCoordinator::new(),
                 attempt_auxiliary_slots,
+                attempt_stream_provider_route: Mutex::new(None),
                 envelope: Mutex::new(Some(envelope)),
                 admitted_attempt_proof,
                 #[cfg(test)]
@@ -463,6 +465,8 @@ impl QueryHandleLifetime {
             return;
         }
         let root_context = take_owned_for_cleanup(&self.root_context, "root context");
+        let attempt_stream_provider_route =
+            take_owned_for_cleanup(&self.attempt_stream_provider_route, "attempt stream provider route");
         let envelope = take_owned_for_cleanup(&self.envelope, "admission envelope");
         let completion = take_owned_for_cleanup(&self.completion, "query completion");
         let service_epoch_user = take_owned_for_cleanup(&self.service_epoch_user, "service epoch user");
@@ -483,6 +487,7 @@ impl QueryHandleLifetime {
             admitted_device_requirements: self.admitted_device_requirements.clone(),
             compatible_devices: self.compatible_devices.clone(),
             root_context,
+            attempt_stream_provider_route,
             envelope,
             #[cfg(test)]
             release_commit_gate,
@@ -648,6 +653,7 @@ struct QueryHandleRelease {
     admitted_device_requirements: BTreeMap<usize, AttemptRequirement>,
     compatible_devices: Vec<usize>,
     root_context: Option<ExecutionContext>,
+    attempt_stream_provider_route: Option<Arc<AttemptStreamProviderRoute>>,
     envelope: Option<super::service::transaction::AdmissionEnvelope>,
     #[cfg(test)]
     release_commit_gate: Option<Arc<ReleaseCommitGate>>,
@@ -1218,6 +1224,7 @@ impl QueryHandleRelease {
         let root_context = self.root_context.take();
         if root_context.as_ref().is_some_and(ExecutionContext::has_root_stream_lease) {
             let root_context = root_context.expect("root context with a stream lease is present");
+            let stream_provider_route = self.attempt_stream_provider_route.take();
             let external_completion = self.take_external_completion();
             let commit = self.prepare_report_commit();
             let terminal_outcome = self.terminal_outcome.clone();
@@ -1229,6 +1236,11 @@ impl QueryHandleRelease {
             let activity_tail_slot = Arc::clone(&activity_tail);
             let installed = root_context.install_root_stream_cleanup_completion(
                 move |outcome| {
+                    // The root cleanup fence also covers every provider stream
+                    // joined back into it. Detach those members before the
+                    // terminal usage sample decides whether capacity is safe
+                    // to reuse.
+                    drop_recovering(stream_provider_route, "attempt stream provider route");
                     *activity_tail_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = commit.run(
                         external_completion,
                         terminal_outcome,
@@ -1305,6 +1317,7 @@ impl QueryHandleRelease {
             admitted_device_requirements: BTreeMap::new(),
             compatible_devices: Vec::new(),
             root_context: None,
+            attempt_stream_provider_route: None,
             envelope: None,
             #[cfg(test)]
             release_commit_gate: None,
@@ -1357,6 +1370,10 @@ impl QueryHandleRelease {
         if self.internal_cleanup_finished {
             return;
         }
+        // Unregister the native fork provider before dropping the envelope's
+        // physical roots. The route owns the auxiliary stream members, and
+        // its native registration must outlive every forked stream submission.
+        drop_recovering(self.attempt_stream_provider_route.take(), "attempt stream provider route");
         // The envelope drops physical remnants, the attempt lane, immutable
         // grant, backend-generation permit, and lifecycle ticket in that
         // order. The final MemoryGrant drop invokes the ledger release hook
@@ -1748,6 +1765,10 @@ impl QueryHandle {
             self.lifetime.wait_at_root_context_binding_gate();
             (stream_lease_guard, memory_grant, runtime, attempt_allocation_domain, binding.member_lease)
         };
+        let attempt_stream_provider_route = Arc::new(
+            attempt_allocation_domain
+                .create_stream_provider_route(runtime.stream(), self.lifetime.attempt_auxiliary_slots.capacity())?,
+        );
         // The root execution stream binds the attempt's root domain member
         // once for the whole attempt lifetime.
         let observation_owner = self.lifetime.observation_owner();
@@ -1778,6 +1799,8 @@ impl QueryHandle {
             attempt_auxiliary_slots: Some(Arc::clone(&self.lifetime.attempt_auxiliary_slots)),
             admitted_attempt_proof: self.lifetime.admitted_attempt_proof.clone(),
             attempt_member_lease: Some(attempt_member_lease),
+            attempt_stream_provider_route: Some(Arc::clone(&attempt_stream_provider_route)),
+            attempt_stream_provider_alias: None,
             boundary_policy: service.config.boundary_policy,
             source_scheduler_policy: service.config.source_scheduler_policy,
             source_chunk_planning_mode: service.config.source_chunk_planning_mode,
@@ -1801,6 +1824,13 @@ impl QueryHandle {
             auxiliary_stream_permit_guard: None,
             query_service_admitted: true,
         });
+        {
+            let mut route = self.lifetime.attempt_stream_provider_route.lock().map_err(|_error| {
+                QueryError::new(QueryErrorCode::Internal, operation, "attempt stream-provider route mutex was poisoned")
+            })?;
+            debug_assert!(route.is_none(), "an admitted attempt can install only one stream-provider route");
+            *route = Some(Arc::clone(&attempt_stream_provider_route));
+        }
         *root_context = Some(context.clone());
         drop(root_context);
         self.lifetime.complete_root_context_setup();

@@ -2,6 +2,7 @@
 #define CUDF_RUST_EXECUTION_CONTEXT_INTERNAL_HPP
 
 #include "cudf_rust/execution_context.h"
+#include "cudf_rust/memory_manager.h"
 #include "memory_resource_compat.hpp"
 
 #include <rmm/cuda_stream_view.hpp>
@@ -69,6 +70,13 @@ rmm::mr::device_memory_resource* cudf_tracked_current_device_resource_if_install
 
 void cudf_set_current_device_resource_raw(rmm::mr::device_memory_resource* target);
 
+void cudf_stream_provider_enter_execution(rmm::cuda_stream_view parent);
+
+void cudf_stream_provider_exit_execution(rmm::cuda_stream_view parent) noexcept;
+
+void cudf_current_resource_route_destroy_preserving_error(
+  cudf_current_resource_route_handle route) noexcept;
+
 struct cudf_exec_context {
   rmm::cuda_stream_view stream;
   std::shared_ptr<void> stream_lifetime;
@@ -76,6 +84,8 @@ struct cudf_exec_context {
   rmm::mr::device_memory_resource* mr_raw;
   std::shared_ptr<void> mr_lifetime;
   int32_t device;
+  cudf_current_resource_route_handle current_resource_route = nullptr;
+  bool stream_provider_execution_scope = false;
   cudf_device_guard guard;
 
   cudf_exec_context(rmm::cuda_stream_view stream,
@@ -88,8 +98,10 @@ struct cudf_exec_context {
 
   cudf_exec_context(cudf_exec_context const&)                = delete;
   cudf_exec_context& operator=(cudf_exec_context const&)     = delete;
-  cudf_exec_context(cudf_exec_context&& other) noexcept      = default;
+  cudf_exec_context(cudf_exec_context&& other) noexcept;
   cudf_exec_context& operator=(cudf_exec_context&&) noexcept = delete;
+
+  ~cudf_exec_context();
 };
 
 cudf_exec_context cudf_make_exec_context();

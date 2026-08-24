@@ -5,6 +5,7 @@
 #include "shim_common.h"
 
 #include <cudf/utilities/memory_resource.hpp>
+#include <cudf/utilities/default_stream.hpp>
 
 #include <rmm/error.hpp>
 #include <rmm/mr/cuda_memory_resource.hpp>
@@ -614,12 +615,20 @@ cudf_status_t memory_manager_for_device_impl(
                                                                   std::memory_order_acq_rel) &&
         it->second->options.allocation_limit_bytes > 0) {
       auto const request = static_cast<std::size_t>(it->second->options.allocation_limit_bytes) + 1;
+      std::string route_error;
+      auto route = it->second->owner->reservation_adaptor->attach_current_resource_route(
+        cudf::get_default_stream(), it->second->owner, true, route_error);
+      if (route == nullptr) { throw std::runtime_error{route_error}; }
       try {
         auto stream      = cuda::stream_ref{cudaStream_t{nullptr}};
         auto* allocation = it->second->owner->mr->allocate(stream, request);
         it->second->owner->mr->deallocate(stream, allocation, request);
       } catch (rmm::out_of_memory const&) {
+      } catch (...) {
+        it->second->owner->reservation_adaptor->detach_current_resource_route(route);
+        throw;
       }
+      it->second->owner->reservation_adaptor->detach_current_resource_route(route);
     }
 #endif
     if (installation != nullptr) {

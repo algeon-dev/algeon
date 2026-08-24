@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use cudf::{
-    DeviceId, DeviceMemoryFailureAction, DeviceMemoryManager, DeviceMemoryManagerBase,
-    DeviceMemoryManagerInstallationCause, DeviceMemoryManagerInstallationIdentity, DeviceMemoryManagerOptions,
-    ErrorCode, ErrorKind, QueryMemoryDomainOptions, Runtime,
+    DeviceId, DeviceMemoryManager, DeviceMemoryManagerBase, DeviceMemoryManagerInstallationCause,
+    DeviceMemoryManagerInstallationIdentity, DeviceMemoryManagerOptions, ErrorCode, ErrorKind,
+    QueryMemoryDomainOptions, Runtime,
 };
 
 #[test]
@@ -46,7 +46,7 @@ fn query_memory_domain_rejects_pool_backed_manager() {
     let owned_conflict = DeviceMemoryManager::try_install_for_device_with_owned_failure_callback_details_and_options(
         device,
         DeviceMemoryManagerInstallationIdentity::new(*b"nexus-test-owner", 1, [0x42; 16]),
-        Arc::new(|_| DeviceMemoryFailureAction::Decline),
+        Arc::new(|_| {}),
         DeviceMemoryManagerOptions::default(),
     )
     .unwrap_err();

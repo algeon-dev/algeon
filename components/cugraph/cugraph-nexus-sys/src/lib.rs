@@ -40,6 +40,13 @@ mod tests {
     }
 
     #[test]
+    fn test_error_failure_source_values() {
+        assert_eq!(cugraph_error_failure_source_t::CUGRAPH_ERROR_FAILURE_SOURCE_PHYSICAL.0, 0);
+        assert_eq!(cugraph_error_failure_source_t::CUGRAPH_ERROR_FAILURE_SOURCE_RESERVATION_LIMIT.0, 1);
+        assert_eq!(cugraph_error_failure_source_t::CUGRAPH_ERROR_FAILURE_SOURCE_UNKNOWN.0, 2);
+    }
+
+    #[test]
     fn test_bool_values() {
         assert_eq!(bool_t::FALSE.0, 0);
         assert_eq!(bool_t::TRUE.0, 1);

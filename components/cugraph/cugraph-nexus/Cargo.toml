@@ -43,3 +43,8 @@ required-features = ["test-hooks"]
 name = "cudf_prepared_gpu"
 path = "tests/cudf_prepared_gpu.rs"
 required-features = ["test-hooks"]
+
+[[test]]
+name = "allocation_failure_sweep_gpu"
+path = "tests/allocation_failure_sweep_gpu.rs"
+required-features = ["test-hooks"]

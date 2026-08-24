@@ -4,8 +4,8 @@ use std::sync::{
 };
 
 use cudf::{
-    DeviceId, DeviceMemoryFailureAction, DeviceMemoryFailureAllocationDomain, DeviceMemoryFailureSource,
-    DeviceMemoryManager, DeviceMemoryManagerOptions, ErrorKind, QueryMemoryDomainOptions, Runtime,
+    DeviceId, DeviceMemoryFailureAllocationDomain, DeviceMemoryFailureSource, DeviceMemoryManager,
+    DeviceMemoryManagerOptions, ErrorKind, QueryMemoryDomainOptions, Runtime,
 };
 
 const STATIC_PARTITION_BYTES: usize = 64 * 1024 * 1024;
@@ -25,7 +25,7 @@ fn failure_source_code(source: DeviceMemoryFailureSource) -> u32 {
 }
 
 #[test]
-fn static_partition_allows_private_query_memory_domain() {
+fn static_partition_allows_query_memory_domain_on_shared_pool() {
     let _guard = static_partition_test_lock().lock().unwrap();
     let device = DeviceId::current().unwrap();
     let options = DeviceMemoryManagerOptions {
@@ -78,15 +78,13 @@ fn static_partition_domain_oom_reports_query_identity_without_trim_or_retry() {
                 seen_domain_id.store(domain_id, Ordering::SeqCst);
                 seen_member_id.store(member_id, Ordering::SeqCst);
             }
-            saw_trim_or_retry.store(info.should_trim_and_retry() || info.trim_retry_count != 0, Ordering::SeqCst);
-            // This must be ignored for a reservation/static-partition failure;
-            // retrying or trimming a physical pool cannot make the cap grow.
-            DeviceMemoryFailureAction::TrimAndRetry
+            saw_trim_or_retry.store(info.trim_retry_count != 0, Ordering::SeqCst);
         })
     };
     let callback_resource = manager.resource().with_failure_callback_details(callback).unwrap();
     let filling_runtime =
         Runtime::builder().with_device(device).with_memory_resource(manager.resource().clone()).build().unwrap();
+    let _backend_owner = manager.reserve_stream(filling_runtime.stream(), 92_900, STATIC_PARTITION_BYTES).unwrap();
     let held_manager_allocation = filling_runtime.device_buffer(STATIC_PARTITION_BYTES).unwrap();
 
     let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_resource).build().unwrap();

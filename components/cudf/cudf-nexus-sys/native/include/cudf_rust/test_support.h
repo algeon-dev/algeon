@@ -106,10 +106,25 @@ cudf_status_t cudf_test_memory_resource_allocation_count(cudf_memory_resource_ha
 cudf_status_t cudf_test_memory_resource_active_allocation_count(cudf_memory_resource_handle handle,
                                                                 int64_t* out);
 cudf_status_t cudf_test_memory_resource_raw(cudf_memory_resource_handle handle, void** out);
+cudf_status_t cudf_test_memory_resource_allocate(cudf_memory_resource_handle handle,
+                                                  cudf_stream_handle stream,
+                                                  size_t bytes,
+                                                  size_t alignment,
+                                                  void** out);
+cudf_status_t cudf_test_memory_resource_deallocate(cudf_memory_resource_handle handle,
+                                                    cudf_stream_handle stream,
+                                                    void* ptr,
+                                                    size_t bytes,
+                                                    size_t alignment);
+cudf_status_t cudf_test_memory_resource_allocation_attempt_count(uint64_t* out);
+void cudf_test_memory_resource_reset_allocation_attempts(void);
+void cudf_test_query_domain_fail_allocation_after(uint64_t domain_id,
+                                                  uint64_t successful_allocations);
+void cudf_test_query_domain_reset_allocation_failure(void);
 cudf_status_t cudf_test_memory_resource_set_current(cudf_memory_resource_handle handle);
 cudf_status_t cudf_test_memory_resource_set_current_untracked(cudf_memory_resource_handle handle);
 cudf_status_t cudf_test_memory_resource_set_current_raw(void* raw_mr);
-cudf_status_t cudf_test_memory_manager_query_domain_pool_count_for_id(
+cudf_status_t cudf_test_memory_manager_query_domain_count_for_id(
   cudf_memory_manager_handle manager, uint64_t domain_id, size_t* out);
 int32_t cudf_test_query_domain_route_pause_arm(uint64_t domain_id);
 int32_t cudf_test_query_domain_route_pause_reached(void);

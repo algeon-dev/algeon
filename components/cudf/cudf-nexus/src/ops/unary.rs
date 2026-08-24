@@ -234,9 +234,7 @@ pub(crate) fn cast_impl(
     // SAFETY: input handle is valid (NonNull). dtype_handle was returned by
     // a successful to_raw_handle_for call.
     let status = unsafe { cudf_sys::cudf_cast_ex(input.raw_handle(), dtype_handle, &mut out, exec_options) };
-    // SAFETY: dtype_handle is a valid handle that must be destroyed.
-    unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
-    error::check_status_in_with_details(
+    let status_result = error::check_status_in_with_details(
         status,
         operation,
         [
@@ -246,7 +244,10 @@ pub(crate) fn cast_impl(
             ("output_type_scale", output_type.scale().to_string()),
             ("execution_authority", "retained_domain".to_string()),
         ],
-    )?;
+    );
+    // SAFETY: dtype_handle is a valid handle that must be destroyed.
+    unsafe { cudf_sys::cudf_data_type_destroy(dtype_handle) };
+    status_result?;
     // SAFETY: out was returned by a successful FFI call, transferring ownership.
     unsafe { Column::from_raw_with_domain(out, Arc::clone(output_domain)) }
 }
@@ -318,19 +319,20 @@ pub fn is_supported_cast(from: &DataType, to: &DataType) -> Result<bool> {
     // SAFETY: from_handle and to_handle were returned by successful
     // to_raw_handle_for calls.
     let status = unsafe { cudf_sys::cudf_is_supported_cast(from_handle, to_handle, &mut out) };
-    // SAFETY: Both handles are valid and must be destroyed.
-    unsafe {
-        cudf_sys::cudf_data_type_destroy(from_handle);
-        cudf_sys::cudf_data_type_destroy(to_handle);
-    }
-    error::check_status_in_with_details(
+    let status_result = error::check_status_in_with_details(
         status,
         "unary::is_supported_cast",
         [
             ("from_type_id", format!("{:?}", from.id()).to_lowercase()),
             ("to_type_id", format!("{:?}", to.id()).to_lowercase()),
         ],
-    )?;
+    );
+    // SAFETY: Both handles are valid and must be destroyed.
+    unsafe {
+        cudf_sys::cudf_data_type_destroy(from_handle);
+        cudf_sys::cudf_data_type_destroy(to_handle);
+    }
+    status_result?;
     Ok(out != 0)
 }
 

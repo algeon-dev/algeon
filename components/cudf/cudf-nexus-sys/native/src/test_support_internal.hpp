@@ -40,6 +40,8 @@ bool event_synchronize_should_fail();
 void wait_for_event_synchronize_release();
 void record_stream_wait(std::uintptr_t stream_raw, std::uintptr_t event_raw);
 void record_raw_event_record(std::uintptr_t stream_raw, std::uintptr_t event_raw);
+void record_allocation_attempt(std::size_t bytes) noexcept;
+bool take_query_domain_allocation_failure(std::uint64_t domain_id);
 
 void pause_query_domain_route_if_armed(std::uint64_t domain_id);
 
@@ -78,6 +80,8 @@ inline bool event_synchronize_should_fail() { return false; }
 inline void wait_for_event_synchronize_release() {}
 inline void record_stream_wait(std::uintptr_t, std::uintptr_t) {}
 inline void record_raw_event_record(std::uintptr_t, std::uintptr_t) {}
+inline void record_allocation_attempt(std::size_t) noexcept {}
+inline bool take_query_domain_allocation_failure(std::uint64_t) { return false; }
 
 inline void pause_query_domain_route_if_armed(std::uint64_t) {}
 

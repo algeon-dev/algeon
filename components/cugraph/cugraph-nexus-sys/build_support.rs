@@ -13,6 +13,8 @@ use std::{
 
 const ETXTBSY_RETRY_ATTEMPTS: usize = 6;
 const ETXTBSY_RETRY_DELAY: Duration = Duration::from_millis(25);
+const CUDF_RUST_PUBLIC_HEADERS: [&str; 2] =
+    ["include/cudf_rust/error_boundary.hpp", "include/cudf_rust/memory_resource.h"];
 
 struct WorkspaceNativeBuildLayout {
     src_dir: PathBuf,
@@ -372,10 +374,33 @@ fn workspace_native_build_layout(
             rapids_logger_config.display()
         ));
     }
+    validate_cudf_public_headers(&cudf_install_dir)?;
 
     let cuvs = resolve_canonical_cuvs_contract(manifest_dir, cuvs_install_dir_env)?;
 
     Ok(WorkspaceNativeBuildLayout { src_dir, build_dir, cudf_install_dir, cuvs })
+}
+
+pub(crate) fn validate_cudf_public_headers(cudf_install_dir: &Path) -> Result<(), String> {
+    for relative_path in CUDF_RUST_PUBLIC_HEADERS {
+        let header = cudf_install_dir.join(relative_path);
+        let metadata = fs::symlink_metadata(&header).map_err(|error| {
+            format!(
+                "The canonical cudf install prefix is missing the public header '{}': {error}. Install the cuDF \
+                 shim's cudf_rust headers into the prefix; a target-local manual symlink is not a supported \
+                 substitute.",
+                header.display()
+            )
+        })?;
+        if !metadata.file_type().is_file() {
+            return Err(format!(
+                "The canonical cudf install header '{}' is not a regular installed file. Install the cuDF shim \
+                 public header into the prefix; target-local manual symlinks are not supported.",
+                header.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn auto_native_build_enabled(env_val: Option<&std::ffi::OsStr>) -> Result<bool, String> {
@@ -520,6 +545,7 @@ fn workspace_build_reconfigure_reason(
     for (cache_key, expected_dir) in [
         ("rmm_DIR", layout.cudf_install_dir.join("lib/cmake/rmm")),
         ("rapids_logger_DIR", layout.cudf_install_dir.join("lib/cmake/rapids_logger")),
+        ("CUGRAPH_CUDF_RUST_INCLUDE_DIR", layout.cudf_install_dir.join("include")),
         ("cuvs_DIR", layout.cuvs.cmake_config_dir.clone()),
     ] {
         let Some(cached) = cmake_cache_value(&cache, cache_key) else {

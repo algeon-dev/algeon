@@ -61,4 +61,4 @@ pub use owner::{Runtime, RuntimeBuilder, StreamDependencyOutcome};
 pub use placement::ExecutionPlacement;
 pub use profiler::{cuda_profiler_start, cuda_profiler_stop};
 pub use query_execution_context::QueryExecutionContext;
-pub use stream::CudaStream;
+pub use stream::{AttemptStreamProviderAlias, AttemptStreamProviderRegistration, CudaStream};

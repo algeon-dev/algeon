@@ -108,7 +108,7 @@ pub(super) fn execute_bfs(
                             Ok(result) => result,
                             Err(error) => {
                                 return graph_bfs_error_for_missing_path_endpoint(
-                                    context,
+                                    runtime,
                                     spec,
                                     params,
                                     &endpoint_edges,
@@ -124,7 +124,7 @@ pub(super) fn execute_bfs(
                             Ok(result) => result,
                             Err(error) => {
                                 return graph_bfs_error_for_missing_path_endpoint(
-                                    context,
+                                    runtime,
                                     spec,
                                     params,
                                     &endpoint_edges,
@@ -140,7 +140,7 @@ pub(super) fn execute_bfs(
                     let target_metadata = bfs_target_metadata(target_info.as_ref());
                     let frame = if params.path_output.is_some() {
                         extract_bfs_path_frame(
-                            context,
+                            runtime,
                             spec,
                             params,
                             entered,
@@ -156,7 +156,7 @@ pub(super) fn execute_bfs(
                             "nexus_query_engine.graph_algorithm.bfs_result",
                             "failed to convert cuGraph BFS result to cudf DataFrame",
                         ))?;
-                        append_bfs_target_metadata_columns(context, params, frame, target_info)?
+                        append_bfs_target_metadata_columns(runtime, params, frame, target_info)?
                     };
                     (frame, target_metadata)
                 },
@@ -213,7 +213,7 @@ pub(super) fn execute_bfs(
                             Ok(result) => result,
                             Err(error) => {
                                 return graph_bfs_error_for_missing_path_endpoint(
-                                    context,
+                                    runtime,
                                     spec,
                                     params,
                                     &endpoint_edges,
@@ -229,7 +229,7 @@ pub(super) fn execute_bfs(
                             Ok(result) => result,
                             Err(error) => {
                                 return graph_bfs_error_for_missing_path_endpoint(
-                                    context,
+                                    runtime,
                                     spec,
                                     params,
                                     &endpoint_edges,
@@ -245,7 +245,7 @@ pub(super) fn execute_bfs(
                     let target_metadata = bfs_target_metadata(target_info.as_ref());
                     let frame = if params.path_output.is_some() {
                         extract_bfs_path_frame(
-                            context,
+                            runtime,
                             spec,
                             params,
                             entered,
@@ -261,7 +261,7 @@ pub(super) fn execute_bfs(
                             "nexus_query_engine.graph_algorithm.bfs_result",
                             "failed to convert cuGraph BFS result to cudf DataFrame",
                         ))?;
-                        append_bfs_target_metadata_columns(context, params, frame, target_info)?
+                        append_bfs_target_metadata_columns(runtime, params, frame, target_info)?
                     };
                     (frame, target_metadata)
                 },
@@ -303,7 +303,7 @@ pub(super) fn execute_bfs(
     reason = "BFS path extraction passes the native call state explicitly at the FFI boundary"
 )]
 fn extract_bfs_path_frame<V>(
-    context: &ExecutionContext,
+    runtime: &cudf::Runtime,
     spec: &crate::plan::GraphAlgorithmSpec,
     params: &crate::plan::GraphBfsParams,
     entered: &cugraph::EnteredContext<'_>,
@@ -349,15 +349,14 @@ where
         )
     })?;
     if !target_info.target_found {
-        return empty_graph_result_frame(context, &spec.output_schema);
+        return empty_graph_result_frame(runtime, &spec.output_schema);
     }
 
     let extracted = result.extract_paths(entered, graph, sources, destinations).map_err(map_cugraph_error(
         "nexus_query_engine.graph_algorithm.bfs_path",
         "failed to extract bounded BFS path on device",
     ))?;
-    let runtime = context.runtime()?;
-    let vertex = extracted.paths().and_then(|paths| paths.to_series(&runtime)).map_err(map_cugraph_error(
+    let vertex = extracted.paths().and_then(|paths| paths.to_series(runtime)).map_err(map_cugraph_error(
         "nexus_query_engine.graph_algorithm.bfs_path",
         "failed to convert extracted BFS path to a cudf series",
     ))?;
@@ -378,6 +377,8 @@ where
             "BFS path output target series is missing",
         )
     })?;
+    let overrides =
+        cudf::ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
     let repeat = runtime.sequence(0_i32, 0_i32, rows).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.graph_algorithm.bfs_path",
@@ -385,20 +386,25 @@ where
             error,
         )
     })?;
-    let source = vertex.slice(0, 1).and_then(|source| source.gather(&repeat)).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.graph_algorithm.bfs_path",
-            "failed to materialize BFS path source column",
-            error,
-        )
-    })?;
-    let target = destination_series.slice(0, 1).and_then(|target| target.gather(&repeat)).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.graph_algorithm.bfs_path",
-            "failed to materialize BFS path target column",
-            error,
-        )
-    })?;
+    let source = vertex.slice_in(0, 1, &overrides).and_then(|source| source.gather_in(&repeat, &overrides)).map_err(
+        |error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.graph_algorithm.bfs_path",
+                "failed to materialize BFS path source column",
+                error,
+            )
+        },
+    )?;
+    let target = destination_series
+        .slice_in(0, 1, &overrides)
+        .and_then(|target| target.gather_in(&repeat, &overrides))
+        .map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.graph_algorithm.bfs_path",
+                "failed to materialize BFS path target column",
+                error,
+            )
+        })?;
     let path_index = runtime.sequence(0_i64, 1_i64, rows).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.graph_algorithm.bfs_path",
@@ -731,7 +737,7 @@ struct BfsEndpointMembership {
 }
 
 fn empty_bfs_result_for_missing_path_endpoint(
-    context: &ExecutionContext,
+    runtime: &cudf::Runtime,
     spec: &crate::plan::GraphAlgorithmSpec,
     params: &crate::plan::GraphBfsParams,
     edges: &DataFrame,
@@ -742,7 +748,7 @@ fn empty_bfs_result_for_missing_path_endpoint(
         return Ok(None);
     }
 
-    let source_vertices = concrete_bfs_source_vertices(context, params, predicate_columns, vertex_type)?;
+    let source_vertices = concrete_bfs_source_vertices(runtime, params, predicate_columns, vertex_type)?;
     let target_vertices = predicate_columns.target_vertices.as_ref().ok_or_else(|| {
         QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -766,7 +772,7 @@ fn empty_bfs_result_for_missing_path_endpoint(
             target_rows: target_vertices.len(),
             valid_target_rows: 0,
         };
-        return empty_bfs_result(context, spec, params, predicate_columns, "source_vertices_empty", membership)
+        return empty_bfs_result(runtime, spec, params, predicate_columns, "source_vertices_empty", membership)
             .map(Some);
     }
 
@@ -777,12 +783,12 @@ fn empty_bfs_result_for_missing_path_endpoint(
             target_rows: target_vertices.len(),
             valid_target_rows: 0,
         };
-        return empty_bfs_result(context, spec, params, predicate_columns, "edge_source_empty", membership).map(Some);
+        return empty_bfs_result(runtime, spec, params, predicate_columns, "edge_source_empty", membership).map(Some);
     }
 
-    let domain = graph_vertex_domain_frame(edges, spec)?;
-    let source_membership = valid_vertex_rows(&source_vertices, &domain, "source_vertices")?;
-    let target_membership = valid_vertex_rows(target_vertices, &domain, "target_vertices")?;
+    let domain = graph_vertex_domain_frame(runtime, edges, spec)?;
+    let source_membership = valid_vertex_rows(runtime, &source_vertices, &domain, "source_vertices")?;
+    let target_membership = valid_vertex_rows(runtime, target_vertices, &domain, "target_vertices")?;
     let membership = BfsEndpointMembership {
         source_rows: source_vertices.len(),
         valid_source_rows: source_membership,
@@ -791,7 +797,7 @@ fn empty_bfs_result_for_missing_path_endpoint(
     };
 
     if source_membership == 0 {
-        return empty_bfs_result(context, spec, params, predicate_columns, "source_vertices_absent", membership)
+        return empty_bfs_result(runtime, spec, params, predicate_columns, "source_vertices_absent", membership)
             .map(Some);
     }
     if source_membership < source_vertices.len() {
@@ -809,7 +815,7 @@ fn empty_bfs_result_for_missing_path_endpoint(
         .with_fact("endpoint_policy", params.endpoint_policy.as_str()));
     }
     if target_membership == 0 {
-        return empty_bfs_result(context, spec, params, predicate_columns, "target_vertices_absent", membership)
+        return empty_bfs_result(runtime, spec, params, predicate_columns, "target_vertices_absent", membership)
             .map(Some);
     }
 
@@ -842,15 +848,16 @@ fn empty_bfs_result_for_trivial_path_endpoint(
         )
         .with_fact("target_rows", target_vertices.len()));
     }
-    validate_bfs_non_endpoint_predicate_membership(edges, spec, predicate_columns)?;
+    let runtime = context.runtime()?;
+    validate_bfs_non_endpoint_predicate_membership(&runtime, edges, spec, predicate_columns)?;
 
     let source_rows = predicate_columns.source_vertices.as_ref().map_or(1, cudf::Series::len);
     if source_rows == 0 {
         let valid_target_rows = if edges.num_rows() == 0 {
             0
         } else {
-            let domain = graph_vertex_domain_frame(edges, spec)?;
-            valid_vertex_rows(target_vertices, &domain, "target_vertices")?
+            let domain = graph_vertex_domain_frame(&runtime, edges, spec)?;
+            valid_vertex_rows(&runtime, target_vertices, &domain, "target_vertices")?
         };
         let membership = BfsEndpointMembership {
             source_rows: 0,
@@ -858,7 +865,7 @@ fn empty_bfs_result_for_trivial_path_endpoint(
             target_rows: target_vertices.len(),
             valid_target_rows,
         };
-        return empty_bfs_result(context, spec, params, predicate_columns, "source_vertices_empty", membership)
+        return empty_bfs_result(&runtime, spec, params, predicate_columns, "source_vertices_empty", membership)
             .map(Some);
     }
 
@@ -869,7 +876,7 @@ fn empty_bfs_result_for_trivial_path_endpoint(
             target_rows: target_vertices.len(),
             valid_target_rows: 0,
         };
-        return empty_bfs_result(context, spec, params, predicate_columns, "edge_source_empty", membership).map(Some);
+        return empty_bfs_result(&runtime, spec, params, predicate_columns, "edge_source_empty", membership).map(Some);
     }
 
     Ok(None)
@@ -889,7 +896,8 @@ pub(super) fn resolve_empty_bfs_edge_input(
     {
         return Ok(result);
     }
-    validate_bfs_non_endpoint_predicate_membership(&edges, spec, &predicate_columns)?;
+    let runtime = context.runtime()?;
+    validate_bfs_non_endpoint_predicate_membership(&runtime, &edges, spec, &predicate_columns)?;
     Err(QueryError::new(
         QueryErrorCode::GraphInputInvalid,
         "nexus_query_engine.graph_algorithm.empty_input",
@@ -952,7 +960,7 @@ fn project_bfs_inputs(
 
 #[expect(clippy::too_many_arguments, reason = "graph algorithm admission inputs are distinct proof values")]
 fn graph_bfs_error_for_missing_path_endpoint(
-    context: &ExecutionContext,
+    runtime: &cudf::Runtime,
     spec: &crate::plan::GraphAlgorithmSpec,
     params: &crate::plan::GraphBfsParams,
     edges: &DataFrame,
@@ -962,9 +970,9 @@ fn graph_bfs_error_for_missing_path_endpoint(
     message: &'static str,
 ) -> Result<GraphAlgorithmExecutionResult> {
     if error.kind() == cugraph::ErrorKind::InvalidInput {
-        validate_bfs_non_endpoint_predicate_membership(edges, spec, predicate_columns)?;
+        validate_bfs_non_endpoint_predicate_membership(runtime, edges, spec, predicate_columns)?;
         if let Some(result) =
-            empty_bfs_result_for_missing_path_endpoint(context, spec, params, edges, vertex_type, predicate_columns)?
+            empty_bfs_result_for_missing_path_endpoint(runtime, spec, params, edges, vertex_type, predicate_columns)?
         {
             return Ok(result);
         }
@@ -973,6 +981,7 @@ fn graph_bfs_error_for_missing_path_endpoint(
 }
 
 fn validate_bfs_non_endpoint_predicate_membership(
+    runtime: &cudf::Runtime,
     edges: &DataFrame,
     spec: &crate::plan::GraphAlgorithmSpec,
     predicate_columns: &BfsPredicateColumns,
@@ -1009,12 +1018,12 @@ fn validate_bfs_non_endpoint_predicate_membership(
         return Ok(());
     }
     if predicate_columns.include_vertices.is_some() || predicate_columns.exclude_vertices.is_some() {
-        let domain = graph_vertex_domain_frame(edges, spec)?;
+        let domain = graph_vertex_domain_frame(runtime, edges, spec)?;
         if let Some(vertices) = &predicate_columns.include_vertices {
-            validate_predicate_membership(vertices, &domain, "include_vertices")?;
+            validate_predicate_membership(runtime, vertices, &domain, "include_vertices")?;
         }
         if let Some(vertices) = &predicate_columns.exclude_vertices {
-            validate_predicate_membership(vertices, &domain, "exclude_vertices")?;
+            validate_predicate_membership(runtime, vertices, &domain, "exclude_vertices")?;
         }
     }
     if let Some(edge_ids) = &predicate_columns.include_edge_ids {
@@ -1027,13 +1036,18 @@ fn validate_bfs_non_endpoint_predicate_membership(
             .with_fact("predicate_role", "include_edge_ids")
         })?;
         let edge_id_domain = graph_edge_id_domain_frame(edges, edge_id_col)?;
-        validate_predicate_membership(edge_ids, &edge_id_domain, "include_edge_ids")?;
+        validate_predicate_membership(runtime, edge_ids, &edge_id_domain, "include_edge_ids")?;
     }
     Ok(())
 }
 
-fn validate_predicate_membership(vertices: &cudf::Series, domain: &DataFrame, role: &'static str) -> Result<()> {
-    let valid_rows = valid_vertex_rows(vertices, domain, role)?;
+fn validate_predicate_membership(
+    runtime: &cudf::Runtime,
+    vertices: &cudf::Series,
+    domain: &DataFrame,
+    role: &'static str,
+) -> Result<()> {
+    let valid_rows = valid_vertex_rows(runtime, vertices, domain, role)?;
     if valid_rows == vertices.len() {
         return Ok(());
     }
@@ -1053,7 +1067,7 @@ fn predicate_membership_error(role: &'static str, predicate_rows: usize, valid_r
 }
 
 fn concrete_bfs_source_vertices(
-    context: &ExecutionContext,
+    runtime: &cudf::Runtime,
     params: &crate::plan::GraphBfsParams,
     predicate_columns: &BfsPredicateColumns,
     vertex_type: cudf::TypeId,
@@ -1072,9 +1086,9 @@ fn concrete_bfs_source_vertices(
                 .with_fact("source_vertex", params.source_vertex)
                 .with_fact("vertex_dtype", "Int32")
             })?;
-            scalar_series(context, source, "source_vertices")
+            scalar_series(runtime, source, "source_vertices")
         },
-        cudf::TypeId::Int64 => scalar_series(context, params.source_vertex, "source_vertices"),
+        cudf::TypeId::Int64 => scalar_series(runtime, params.source_vertex, "source_vertices"),
         _ => Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
             "nexus_query_engine.graph_algorithm.bfs_source",
@@ -1084,9 +1098,8 @@ fn concrete_bfs_source_vertices(
     }
 }
 
-fn scalar_series<T>(context: &ExecutionContext, value: T, role: &'static str) -> Result<cudf::Series>
+fn scalar_series<T>(runtime: &cudf::Runtime, value: T, role: &'static str) -> Result<cudf::Series>
 where T: cudf::CudfType {
-    let runtime = context.runtime()?;
     runtime.scalar(value).and_then(|scalar| runtime.series_from_scalar(&scalar, 1)).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
@@ -1097,10 +1110,16 @@ where T: cudf::CudfType {
     })
 }
 
-fn graph_vertex_domain_frame(edges: &DataFrame, spec: &crate::plan::GraphAlgorithmSpec) -> Result<DataFrame> {
+fn graph_vertex_domain_frame(
+    runtime: &cudf::Runtime,
+    edges: &DataFrame,
+    spec: &crate::plan::GraphAlgorithmSpec,
+) -> Result<DataFrame> {
     let source = graph_edge_series_for_column(edges, &spec.edge_columns.source, "graph_source_domain")?;
     let destination = graph_edge_series_for_column(edges, &spec.edge_columns.destination, "graph_destination_domain")?;
-    let domain = cudf::Series::concat(&[&source, &destination]).map_err(|error| {
+    let overrides =
+        cudf::ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
+    let domain = cudf::Series::concat_in(&[&source, &destination], &overrides).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
             "failed to build BFS graph vertex domain",
@@ -1140,7 +1159,12 @@ fn graph_edge_id_domain_frame(edges: &DataFrame, edge_id_column: &str) -> Result
     })
 }
 
-fn valid_vertex_rows(vertices: &cudf::Series, domain: &DataFrame, role: &'static str) -> Result<usize> {
+fn valid_vertex_rows(
+    runtime: &cudf::Runtime,
+    vertices: &cudf::Series,
+    domain: &DataFrame,
+    role: &'static str,
+) -> Result<usize> {
     let vertices = DataFrame::from_series([("__vertex", vertices.clone())]).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
@@ -1153,7 +1177,9 @@ fn valid_vertex_rows(vertices: &cudf::Series, domain: &DataFrame, role: &'static
         .left_on(["__vertex"])
         .right_on(["__vertex"])
         .null_equality(cudf::NullEquality::Unequal);
-    vertices.left_semi_join(domain, options).map(|frame| frame.num_rows()).map_err(|error| {
+    let overrides =
+        cudf::ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
+    vertices.with_execution(&overrides).left_semi_join(domain, options).map(|frame| frame.num_rows()).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
             "failed to test BFS endpoint graph membership",
@@ -1164,14 +1190,14 @@ fn valid_vertex_rows(vertices: &cudf::Series, domain: &DataFrame, role: &'static
 }
 
 fn empty_bfs_result(
-    context: &ExecutionContext,
+    runtime: &cudf::Runtime,
     spec: &crate::plan::GraphAlgorithmSpec,
     params: &crate::plan::GraphBfsParams,
     predicate_columns: &BfsPredicateColumns,
     reason: &'static str,
     membership: BfsEndpointMembership,
 ) -> Result<GraphAlgorithmExecutionResult> {
-    let frame = empty_graph_result_frame(context, &spec.output_schema)?;
+    let frame = empty_graph_result_frame(runtime, &spec.output_schema)?;
     Ok(GraphAlgorithmExecutionResult {
         frame,
         algorithm_metadata: format!(
@@ -1376,7 +1402,7 @@ fn bfs_target_metadata(target_info: Option<&cugraph::traversal::BfsTargetInfo>) 
 }
 
 fn append_bfs_target_metadata_columns(
-    context: &ExecutionContext,
+    runtime: &cudf::Runtime,
     params: &crate::plan::GraphBfsParams,
     frame: DataFrame,
     target_info: Option<cugraph::traversal::BfsTargetInfo>,
@@ -1384,7 +1410,7 @@ fn append_bfs_target_metadata_columns(
     if !params.return_target_info {
         return Ok(frame);
     }
-    let frame = frame.copy_into_runtime(&context.runtime()?).map_err(|error| {
+    let frame = frame.copy_into_runtime(runtime).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.graph_algorithm.bfs_target_metadata",
             "failed to place BFS result in metadata runtime",
@@ -1399,7 +1425,6 @@ fn append_bfs_target_metadata_columns(
         )
     })?;
     let row_count = frame.num_rows();
-    let runtime = context.runtime()?;
     let target_found = runtime
         .scalar(info.target_found)
         .and_then(|scalar| runtime.series_from_scalar(&scalar, row_count))

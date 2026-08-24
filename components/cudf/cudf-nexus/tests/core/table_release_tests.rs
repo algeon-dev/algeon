@@ -1,6 +1,6 @@
 //! Tests for Table::into_columns.
 
-use cudf::{Runtime, TypeId, core::Table, testing::prelude::*};
+use cudf::{ErrorCode, Runtime, TypeId, core::Table, testing::prelude::*};
 
 use crate::common::{column_from_slice, column_from_slice_nullable, column_from_strs};
 
@@ -133,4 +133,18 @@ fn test_into_columns_with_empty_rows() {
     let v1 = columns[1].testing_view().unwrap();
     assert_eq!(v1.len().unwrap(), 0);
     assert_eq!(v1.data_type().unwrap().id(), TypeId::Float64);
+}
+
+#[test]
+fn into_columns_copies_typed_failure_before_cleanup_clears_native_error_state() {
+    let c1 = column_from_slice(&[10i32, 20]).unwrap();
+    let table = Table::from_columns(vec![c1]).unwrap();
+
+    unsafe { cudf_sys::test_support::cudf_test_fail_next_table_release_columns_handle_array_alloc() };
+    let error = table.into_columns().unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::OutOfMemory);
+    let detail = error.ffi_detail().expect("table release failure must preserve the native record before cleanup");
+    assert_eq!(detail.status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
+    assert!(detail.message.contains("failed to allocate column handle array"));
 }

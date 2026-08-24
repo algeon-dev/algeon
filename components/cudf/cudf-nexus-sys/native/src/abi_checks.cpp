@@ -59,6 +59,24 @@ static_assert(CUDF_ERROR_INVALID_ARGUMENT == 10);
 static_assert(CUDF_ERROR_UNSUPPORTED == 11);
 static_assert(CUDF_ERROR_SIZE_OVERFLOW == 12);
 
+static_assert(sizeof(cudf_error_failure_source_t) == sizeof(int32_t), "cudf_error_failure_source_t must be 32-bit");
+static_assert(CUDF_ERROR_FAILURE_SOURCE_PHYSICAL == 0);
+static_assert(CUDF_ERROR_FAILURE_SOURCE_RESERVATION_LIMIT == 1);
+static_assert(CUDF_ERROR_FAILURE_SOURCE_UNKNOWN == 2);
+static_assert(std::is_standard_layout_v<cudf_error_detail_t>, "cudf_error_detail_t must be standard layout");
+static_assert(std::is_trivially_copyable_v<cudf_error_detail_t>, "cudf_error_detail_t must be trivially copyable");
+static_assert(offsetof(cudf_error_detail_t, status) == 0, "cudf_error_detail_t::status must be first");
+static_assert(offsetof(cudf_error_detail_t, failure_source) == sizeof(cudf_status_t), "cudf_error_detail_t::failure_source ordering changed");
+static_assert(offsetof(cudf_error_detail_t, domain_id) == offsetof(cudf_error_detail_t, failure_source) + sizeof(cudf_error_failure_source_t), "cudf_error_detail_t::domain_id ordering changed");
+static_assert(offsetof(cudf_error_detail_t, member_id) == offsetof(cudf_error_detail_t, domain_id) + sizeof(std::uint64_t), "cudf_error_detail_t::member_id ordering changed");
+static_assert(offsetof(cudf_error_detail_t, generation) == offsetof(cudf_error_detail_t, member_id) + sizeof(std::uint64_t), "cudf_error_detail_t::generation ordering changed");
+static_assert(offsetof(cudf_error_detail_t, requested_bytes) == offsetof(cudf_error_detail_t, generation) + sizeof(std::uint64_t), "cudf_error_detail_t::requested_bytes ordering changed");
+static_assert(offsetof(cudf_error_detail_t, alignment) == offsetof(cudf_error_detail_t, requested_bytes) + sizeof(std::uint64_t), "cudf_error_detail_t::alignment ordering changed");
+static_assert(offsetof(cudf_error_detail_t, cuda_error) == offsetof(cudf_error_detail_t, alignment) + sizeof(std::uint64_t), "cudf_error_detail_t::cuda_error ordering changed");
+static_assert(offsetof(cudf_error_detail_t, message) == offsetof(cudf_error_detail_t, cuda_error) + sizeof(std::int32_t), "cudf_error_detail_t::message ordering changed");
+static_assert(sizeof(static_cast<cudf_error_detail_t*>(nullptr)->message) == CUDF_ERROR_MESSAGE_CAPACITY, "cudf_error_detail_t::message capacity changed");
+static_assert(std::is_same_v<decltype(&cudf_last_error_detail), cudf_error_detail_t const* (*)(void)>, "cudf_last_error_detail ABI signature changed");
+
 // Type IDs
 static_assert(sizeof(cudf_type_id_t) == sizeof(int32_t), "cudf_type_id_t must be 32-bit");
 static_assert(CUDF_TYPE_EMPTY == static_cast<int>(cudf::type_id::EMPTY));

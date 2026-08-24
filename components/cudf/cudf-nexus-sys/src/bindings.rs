@@ -5,23 +5,27 @@
 
 #[doc = " Error codes returned by C shim functions.\n This enum is part of the Rust FFI ABI and must remain 32-bit compatible\n with Rust `#[repr(i32)]`. Keep `native/src/abi_checks.cpp` in sync."]
 pub type cudf_status_t = core::ffi::c_uint;
+#[doc = " Fixed capacity of the message copied into a per-call error detail.\n\n The payload is deliberately self-contained: Rust copies it before making\n another shim call, so no callback or worker-thread state is authoritative."]
+pub type _bindgen_ty_1 = core::ffi::c_uint;
+#[doc = " Provenance of an allocation failure captured by the shim boundary."]
+pub type cudf_error_failure_source_t = core::ffi::c_uint;
 #[doc = " Opaque handle to an owning CUDA stream."]
 pub type cudf_stream_handle = *mut cudf_stream_handle_state;
 #[doc = " Opaque handle to an owning RMM device memory resource."]
 pub type cudf_memory_resource_handle = *mut cudf_memory_resource_handle_state;
-#[doc = " Callback invoked after an upstream RMM allocation failure. Return nonzero\n to retry; callbacks must not allocate through the same resource."]
+#[doc = " Observation callback invoked after an upstream RMM allocation failure.\n The return value is reserved and does not change allocation control flow;\n callbacks must not allocate through the same resource."]
 pub type cudf_memory_failure_callback_t =
     ::core::option::Option<unsafe extern "C" fn(bytes: usize, callback_arg: *mut core::ffi::c_void) -> i32>;
-pub type _bindgen_ty_1 = core::ffi::c_uint;
 pub type _bindgen_ty_2 = core::ffi::c_uint;
 pub type _bindgen_ty_3 = core::ffi::c_uint;
 pub type _bindgen_ty_4 = core::ffi::c_uint;
+pub type _bindgen_ty_5 = core::ffi::c_uint;
 pub type cudf_memory_failure_action_t = core::ffi::c_uint;
 #[doc = " Reserved for the Rust unwind guard. Native callback adaptors must treat\n this as a permanent callback-health failure, never as a user action."]
-pub type _bindgen_ty_5 = core::ffi::c_int;
+pub type _bindgen_ty_6 = core::ffi::c_int;
 pub type cudf_memory_failure_source_t = core::ffi::c_uint;
 pub type cudf_memory_failure_domain_t = core::ffi::c_uint;
-#[doc = " Return a `cudf_memory_failure_action_t` value for a failed allocation."]
+#[doc = " Observe a failed allocation. The return value is reserved and ignored."]
 pub type cudf_memory_failure_callback_v2_t = ::core::option::Option<
     unsafe extern "C" fn(info: *const cudf_memory_failure_info_t, callback_arg: *mut core::ffi::c_void) -> i32,
 >;
@@ -110,22 +114,22 @@ pub type cudf_conditional_full_join_size_data_handle = *mut cudf_conditional_ful
 #[doc = " Opaque handle to retained libcudf mixed-join output-size data."]
 pub type cudf_mixed_join_size_data_handle = *mut cudf_mixed_join_size_data_handle_state;
 #[doc = " Number of fixed slots retained by every device-memory-manager allocator\n event ring. The producer path never allocates or waits for a reader."]
-pub type _bindgen_ty_6 = core::ffi::c_uint;
 pub type _bindgen_ty_7 = core::ffi::c_uint;
 pub type _bindgen_ty_8 = core::ffi::c_uint;
+pub type _bindgen_ty_9 = core::ffi::c_uint;
 #[doc = " Result of reading one exact sequence from a device-manager event ring."]
 pub type cudf_allocator_event_read_status_t = core::ffi::c_uint;
 #[doc = " Opaque handle to the process-local memory manager for one CUDA device."]
 pub type cudf_memory_manager_handle = *mut cudf_memory_manager_handle_state;
 #[doc = " Opaque lease that routes current-RMM allocations for one CUDA stream to an\n explicit memory resource without replacing the device's current resource."]
 pub type cudf_current_resource_route_handle = *mut cudf_current_resource_route_handle_state;
-pub type _bindgen_ty_9 = core::ffi::c_uint;
+pub type _bindgen_ty_10 = core::ffi::c_uint;
 pub type cudf_memory_manager_base_kind_t = core::ffi::c_uint;
 pub type cudf_memory_manager_installation_status_t = core::ffi::c_uint;
 pub type cudf_memory_manager_installation_retry_t = core::ffi::c_uint;
 #[doc = " Closed reason carried by every authoritative install/inspect record."]
 pub type cudf_memory_manager_installation_cause_t = core::ffi::c_uint;
-pub type _bindgen_ty_10 = core::ffi::c_uint;
+pub type _bindgen_ty_11 = core::ffi::c_uint;
 #[doc = " Opaque handle to one stream-bound memory reservation."]
 pub type cudf_reservation_handle = *mut cudf_reservation_handle_state;
 #[doc = " Opaque handle to one query-scoped reservation arena."]
@@ -146,6 +150,20 @@ pub type cudf_stream_compaction_nan_equality_t = core::ffi::c_uint;
 pub type cudf_strip_side_t = core::ffi::c_uint;
 #[doc = " Opaque prepared replace-with-backrefs handle.\n\n Owns compiled regex device program, replacement/backref device state, and\n the completed size-pass offsets. The input column view is borrowed and must\n outlive the handle through execute. Every device allocation uses the\n explicit execution memory resource from prepare options."]
 pub type cudf_prepared_replace_with_backrefs_handle = *mut cudf_prepared_replace_with_backrefs_handle_state;
+#[doc = " Fixed, copyable payload for the last failed shim call on this thread.\n\n Zero-valued identity and allocation fields mean that the throwing owner did\n not provide that fact. `cuda_error == -1` means that no CUDA status was\n available at the exception boundary."]
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct cudf_error_detail_t {
+    pub status: cudf_status_t,
+    pub failure_source: cudf_error_failure_source_t,
+    pub domain_id: u64,
+    pub member_id: u64,
+    pub generation: u64,
+    pub requested_bytes: u64,
+    pub alignment: u64,
+    pub cuda_error: i32,
+    pub message: [core::ffi::c_char; 512usize],
+}
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct cudf_stream_handle_state {
@@ -185,7 +203,7 @@ pub struct cudf_memory_pool_usage_t {
     pub used_high_bytes: u64,
     pub reserved: [u64; 4usize],
 }
-#[doc = " Allocation-failure payload passed to reclaim-capable callbacks."]
+#[doc = " Allocation-failure payload passed to observation callbacks."]
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct cudf_memory_failure_info_t {
@@ -598,15 +616,19 @@ pub const CUDF_ERROR_FATAL_CUDA: cudf_status_t = 9;
 pub const CUDF_ERROR_INVALID_ARGUMENT: cudf_status_t = 10;
 pub const CUDF_ERROR_UNSUPPORTED: cudf_status_t = 11;
 pub const CUDF_ERROR_SIZE_OVERFLOW: cudf_status_t = 12;
-pub const CUDF_MEMORY_RESOURCE_USAGE_RESERVED_SLOTS: _bindgen_ty_1 = 8;
-pub const CUDF_MEMORY_POOL_USAGE_RESERVED_SLOTS: _bindgen_ty_2 = 4;
-pub const CUDF_MEMORY_FAILURE_INFO_RESERVED_SLOTS: _bindgen_ty_3 = 4;
-pub const CUDF_MEMORY_FAILURE_INFO_HAS_POOL_USAGE: _bindgen_ty_4 = 1;
-pub const CUDF_MEMORY_FAILURE_INFO_HAS_ALLOCATION_DOMAIN: _bindgen_ty_4 = 2;
+pub const CUDF_ERROR_MESSAGE_CAPACITY: _bindgen_ty_1 = 512;
+pub const CUDF_ERROR_FAILURE_SOURCE_PHYSICAL: cudf_error_failure_source_t = 0;
+pub const CUDF_ERROR_FAILURE_SOURCE_RESERVATION_LIMIT: cudf_error_failure_source_t = 1;
+pub const CUDF_ERROR_FAILURE_SOURCE_UNKNOWN: cudf_error_failure_source_t = 2;
+pub const CUDF_MEMORY_RESOURCE_USAGE_RESERVED_SLOTS: _bindgen_ty_2 = 8;
+pub const CUDF_MEMORY_POOL_USAGE_RESERVED_SLOTS: _bindgen_ty_3 = 4;
+pub const CUDF_MEMORY_FAILURE_INFO_RESERVED_SLOTS: _bindgen_ty_4 = 4;
+pub const CUDF_MEMORY_FAILURE_INFO_HAS_POOL_USAGE: _bindgen_ty_5 = 1;
+pub const CUDF_MEMORY_FAILURE_INFO_HAS_ALLOCATION_DOMAIN: _bindgen_ty_5 = 2;
 pub const CUDF_MEMORY_FAILURE_ACTION_DECLINE: cudf_memory_failure_action_t = 0;
 pub const CUDF_MEMORY_FAILURE_ACTION_RETRY: cudf_memory_failure_action_t = 1;
 pub const CUDF_MEMORY_FAILURE_ACTION_TRIM_AND_RETRY: cudf_memory_failure_action_t = 2;
-pub const CUDF_MEMORY_FAILURE_ACTION_CALLBACK_PANICKED: _bindgen_ty_5 = -2147483648;
+pub const CUDF_MEMORY_FAILURE_ACTION_CALLBACK_PANICKED: _bindgen_ty_6 = -2147483648;
 pub const CUDF_MEMORY_FAILURE_SOURCE_PHYSICAL: cudf_memory_failure_source_t = 0;
 pub const CUDF_MEMORY_FAILURE_SOURCE_RESERVATION_LIMIT: cudf_memory_failure_source_t = 1;
 pub const CUDF_MEMORY_FAILURE_DOMAIN_NONE: cudf_memory_failure_domain_t = 0;
@@ -824,16 +846,16 @@ pub const CUDF_JOIN_KIND_LEFT_JOIN: cudf_join_kind_t = 1;
 pub const CUDF_JOIN_KIND_FULL_JOIN: cudf_join_kind_t = 2;
 pub const CUDF_JOIN_KIND_LEFT_SEMI_JOIN: cudf_join_kind_t = 3;
 pub const CUDF_JOIN_KIND_LEFT_ANTI_JOIN: cudf_join_kind_t = 4;
-pub const CUDF_ALLOCATOR_EVENT_RING_CAPACITY: _bindgen_ty_6 = 256;
-pub const CUDF_ALLOCATOR_EVENT_RESERVED_SLOTS: _bindgen_ty_7 = 4;
+pub const CUDF_ALLOCATOR_EVENT_RING_CAPACITY: _bindgen_ty_7 = 256;
+pub const CUDF_ALLOCATOR_EVENT_RESERVED_SLOTS: _bindgen_ty_8 = 4;
 #[doc = " A monotonic timestamp was captured while handling the allocation failure."]
-pub const CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_TIMESTAMP: _bindgen_ty_8 = 1;
+pub const CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_TIMESTAMP: _bindgen_ty_9 = 1;
 #[doc = " The event carries a complete domain identity, including its generation."]
-pub const CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_DOMAIN_IDENTITY: _bindgen_ty_8 = 2;
+pub const CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_DOMAIN_IDENTITY: _bindgen_ty_9 = 2;
 #[doc = " The event carries one bounded CUDA-pool usage sample."]
-pub const CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_POOL_USAGE: _bindgen_ty_8 = 4;
-#[doc = " The event carries the allocator callback action."]
-pub const CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_ACTION: _bindgen_ty_8 = 8;
+pub const CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_POOL_USAGE: _bindgen_ty_9 = 4;
+#[doc = " The event carries the allocator's terminal action."]
+pub const CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_ACTION: _bindgen_ty_9 = 8;
 #[doc = " The requested sequence was copied into the supplied event record."]
 pub const CUDF_ALLOCATOR_EVENT_READ_AVAILABLE: cudf_allocator_event_read_status_t = 0;
 #[doc = " The sequence has no stable record at the instant of this read."]
@@ -842,7 +864,7 @@ pub const CUDF_ALLOCATOR_EVENT_READ_PENDING: cudf_allocator_event_read_status_t 
 pub const CUDF_ALLOCATOR_EVENT_READ_OVERWRITTEN: cudf_allocator_event_read_status_t = 2;
 #[doc = " The requested sequence has not been reserved by a producer yet."]
 pub const CUDF_ALLOCATOR_EVENT_READ_NOT_YET_RECORDED: cudf_allocator_event_read_status_t = 3;
-pub const CUDF_MEMORY_MANAGER_OPTIONS_RESERVED_SLOTS: _bindgen_ty_9 = 3;
+pub const CUDF_MEMORY_MANAGER_OPTIONS_RESERVED_SLOTS: _bindgen_ty_10 = 3;
 pub const CUDF_MEMORY_MANAGER_BASE_CUDA_ASYNC: cudf_memory_manager_base_kind_t = 0;
 pub const CUDF_MEMORY_MANAGER_BASE_POOL: cudf_memory_manager_base_kind_t = 1;
 pub const CUDF_MEMORY_MANAGER_INSTALLATION_UNINSTALLED: cudf_memory_manager_installation_status_t = 0;
@@ -867,13 +889,13 @@ pub const CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_OPTIONS_MISMATCH: cudf_memory_m
 pub const CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_IDENTITY_MISMATCH: cudf_memory_manager_installation_cause_t = 7;
 pub const CUDF_MEMORY_MANAGER_INSTALLATION_CAUSE_CALLBACK_BINDING_MISMATCH: cudf_memory_manager_installation_cause_t =
     8;
-pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_EXISTS: _bindgen_ty_10 = 1;
-pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_FAILURE_CALLBACK_INSTALLED: _bindgen_ty_10 = 2;
-pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CURRENT_RESOURCE_INSTALLED: _bindgen_ty_10 = 4;
-pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CALLBACK_PANICKED: _bindgen_ty_10 = 8;
-pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_HAS_IDENTITY: _bindgen_ty_10 = 16;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_EXISTS: _bindgen_ty_11 = 1;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_FAILURE_CALLBACK_INSTALLED: _bindgen_ty_11 = 2;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CURRENT_RESOURCE_INSTALLED: _bindgen_ty_11 = 4;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CALLBACK_PANICKED: _bindgen_ty_11 = 8;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_HAS_IDENTITY: _bindgen_ty_11 = 16;
 #[doc = " The manager was created by this install call, even if its current-resource\n switch remained incomplete."]
-pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CREATED_BY_CALL: _bindgen_ty_10 = 32;
+pub const CUDF_MEMORY_MANAGER_INSTALLATION_FLAG_CREATED_BY_CALL: _bindgen_ty_11 = 32;
 pub const CUDF_ORDER_ASCENDING: cudf_order_t = 0;
 pub const CUDF_ORDER_DESCENDING: cudf_order_t = 1;
 pub const CUDF_NULL_ORDER_AFTER: cudf_null_order_t = 0;
@@ -890,6 +912,8 @@ pub const CUDF_STRIP_LEFT: cudf_strip_side_t = 0;
 pub const CUDF_STRIP_RIGHT: cudf_strip_side_t = 1;
 pub const CUDF_STRIP_BOTH: cudf_strip_side_t = 2;
 unsafe extern "C" {
+    #[doc = " Retrieve the fixed per-call error payload from the last failed call.\n Returns NULL if no error is pending. The pointer is valid until the next C\n shim call on the same thread; Rust must copy it immediately."]
+    pub fn cudf_last_error_detail() -> *const cudf_error_detail_t;
     #[doc = " Retrieve the thread-local error message from the last failed call.\n Returns NULL if no error is pending. The returned pointer is valid until the\n next C shim call on the same thread."]
     pub fn cudf_last_error_message() -> *const core::ffi::c_char;
     #[doc = " Clear the thread-local error state."]
@@ -906,6 +930,23 @@ unsafe extern "C" {
     pub fn cudf_stream_is_ready(handle: cudf_stream_handle, out: *mut i32) -> cudf_status_t;
     #[doc = " Borrow the underlying raw CUDA stream pointer from an owning stream handle.\n\n This does not transfer ownership. `*out` is valid only while `handle`\n remains alive."]
     pub fn cudf_stream_raw(handle: cudf_stream_handle, out: *mut *mut core::ffi::c_void) -> cudf_status_t;
+    #[doc = " Install Nexus's attempt-owned fork-stream provider.\n\n Installation is process-local and idempotent. Before installation,\n libcudf retains its upstream global-pool behavior. After installation,\n every parent passed to `fork_streams` must have an active attempt route."]
+    pub fn cudf_stream_provider_install() -> cudf_status_t;
+    #[doc = " Register the parent and bounded auxiliary stream set for one attempt.\n\n The caller retains ownership of every raw stream. The registration remains\n active until `cudf_stream_provider_unregister_attempt` returns, and the\n caller must keep the streams alive through that point and through any\n worker/stream drain that follows it."]
+    pub fn cudf_stream_provider_register_attempt(
+        parent_stream: *mut core::ffi::c_void,
+        auxiliary_streams: *const *mut core::ffi::c_void,
+        auxiliary_count: usize,
+    ) -> cudf_status_t;
+    #[doc = " Remove one attempt route after its streams have drained."]
+    pub fn cudf_stream_provider_unregister_attempt(parent_stream: *mut core::ffi::c_void) -> cudf_status_t;
+    #[doc = " Attach another live attempt-member stream as a fork parent alias."]
+    pub fn cudf_stream_provider_attach_attempt_stream(
+        parent_stream: *mut core::ffi::c_void,
+        alias_stream: *mut core::ffi::c_void,
+    ) -> cudf_status_t;
+    #[doc = " Remove a previously attached attempt-member stream alias after it drains."]
+    pub fn cudf_stream_provider_detach_attempt_stream(alias_stream: *mut core::ffi::c_void) -> cudf_status_t;
     pub fn cudf_memory_resource_create_cuda(out: *mut cudf_memory_resource_handle) -> cudf_status_t;
     pub fn cudf_memory_resource_create_pool(
         initial_pool_size: usize,
@@ -2917,7 +2958,6 @@ unsafe extern "C" {
         domain_id: u64,
         grant_bytes: usize,
         ceiling_bytes: usize,
-        release_threshold_bytes: u64,
         out: *mut cudf_query_memory_domain_handle,
     ) -> cudf_status_t;
     pub fn cudf_query_memory_domain_attach_stream(
@@ -2928,7 +2968,6 @@ unsafe extern "C" {
         out: *mut cudf_reservation_handle,
         out_resource: *mut cudf_memory_resource_handle,
     ) -> cudf_status_t;
-    pub fn cudf_query_memory_domain_driver_ceiling_supported() -> i32;
     pub fn cudf_query_memory_domain_usage(
         domain: cudf_query_memory_domain_handle,
         out: *mut cudf_memory_resource_usage_t,
@@ -2945,7 +2984,6 @@ unsafe extern "C" {
         domain: cudf_query_memory_domain_handle,
         grant_bytes: usize,
     ) -> cudf_status_t;
-    pub fn cudf_query_memory_domain_trim(domain: cudf_query_memory_domain_handle, keep_bytes: u64) -> cudf_status_t;
     pub fn cudf_query_memory_domain_destroy(domain: cudf_query_memory_domain_handle) -> cudf_status_t;
     #[doc = " Replace null values in a column with a scalar using an explicit execution\n context.\n `options` must be non-NULL, name an explicit valid device, provide a\n non-NULL stream, and provide a non-NULL memory resource. `options->mr` must\n outlive the returned column."]
     pub fn cudf_replace_nulls_scalar_ex(

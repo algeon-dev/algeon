@@ -17,7 +17,7 @@
 
 using namespace cudf::rust::memory;
 
-extern "C" cudf_status_t cudf_rust_test_support_memory_manager_query_domain_pool_count_for_id(
+extern "C" cudf_status_t cudf_rust_test_support_memory_manager_query_domain_count_for_id(
   cudf_memory_manager_handle manager, uint64_t domain_id, size_t* out);
 extern "C" cudf_status_t cudf_rust_test_support_memory_resource_create_stats(
   cudf_memory_resource_handle* out);
@@ -32,6 +32,18 @@ extern "C" cudf_status_t cudf_rust_test_support_memory_resource_set_current(
 extern "C" cudf_status_t cudf_rust_test_support_memory_resource_set_current_untracked(
   cudf_memory_resource_handle handle);
 extern "C" cudf_status_t cudf_rust_test_support_memory_resource_set_current_raw(void* raw_mr);
+extern "C" cudf_status_t cudf_rust_test_support_memory_resource_allocate(
+  cudf_memory_resource_handle handle,
+  cudf_stream_handle stream,
+  size_t bytes,
+  size_t alignment,
+  void** out);
+extern "C" cudf_status_t cudf_rust_test_support_memory_resource_deallocate(
+  cudf_memory_resource_handle handle,
+  cudf_stream_handle stream,
+  void* ptr,
+  size_t bytes,
+  size_t alignment);
 
 #ifdef CUDF_RUST_ENABLE_TEST_HOOKS
 namespace {
@@ -138,7 +150,7 @@ void cudf_rust_test_support_query_domain_route_pause_release()
   state.armed.store(false, std::memory_order_release);
 }
 
-cudf_status_t cudf_rust_test_support_memory_manager_query_domain_pool_count_for_id(
+cudf_status_t cudf_rust_test_support_memory_manager_query_domain_count_for_id(
   cudf_memory_manager_handle manager, uint64_t domain_id, size_t* out)
 {
   CUDF_RUST_NULL_CHECK(out, "out is null");
@@ -152,7 +164,7 @@ cudf_status_t cudf_rust_test_support_memory_manager_query_domain_pool_count_for_
       return CUDF_ERROR_INVALID_OPERATION;
     }
     auto* adaptor = manager_state->owner->reservation_adaptor;
-    *out          = adaptor->query_domain_pool_count_for_id(domain_id);
+    *out          = adaptor->query_domain_count_for_id(domain_id);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH
@@ -280,14 +292,47 @@ cudf_status_t cudf_rust_test_support_memory_resource_set_current_raw(void* raw_m
   CUDF_RUST_CATCH
 }
 
+cudf_status_t cudf_rust_test_support_memory_resource_allocate(cudf_memory_resource_handle handle,
+                                                               cudf_stream_handle stream,
+                                                               size_t bytes,
+                                                               size_t alignment,
+                                                               void** out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = nullptr;
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  CUDF_RUST_NULL_CHECK(stream, "stream is null");
+  CUDF_RUST_TRY
+  {
+    auto& owner = memory_resource_owner_from_handle(handle);
+    *out = owner.mr->allocate(cudf_stream_view_from_handle(stream), bytes, alignment);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_rust_test_support_memory_resource_deallocate(cudf_memory_resource_handle handle,
+                                                                 cudf_stream_handle stream,
+                                                                 void* ptr,
+                                                                 size_t bytes,
+                                                                 size_t alignment)
+{
+  CUDF_RUST_NULL_CHECK(handle, "handle is null");
+  CUDF_RUST_NULL_CHECK(stream, "stream is null");
+  cudf_clear_error();
+  auto& owner = memory_resource_owner_from_handle(handle);
+  owner.mr->deallocate(cudf_stream_view_from_handle(stream), ptr, bytes, alignment);
+  return cudf_last_error_detail() == nullptr ? CUDF_SUCCESS : CUDF_ERROR_INVALID_OPERATION;
+}
+
 }  // extern "C"
 #endif
 
 extern "C" {
-cudf_status_t cudf_test_memory_manager_query_domain_pool_count_for_id(
+cudf_status_t cudf_test_memory_manager_query_domain_count_for_id(
   cudf_memory_manager_handle manager, uint64_t domain_id, size_t* out)
 {
-  return cudf_rust_test_support_memory_manager_query_domain_pool_count_for_id(
+  return cudf_rust_test_support_memory_manager_query_domain_count_for_id(
     manager, domain_id, out);
 }
 
@@ -317,6 +362,25 @@ cudf_status_t cudf_test_memory_resource_active_allocation_count(cudf_memory_reso
 cudf_status_t cudf_test_memory_resource_raw(cudf_memory_resource_handle handle, void** out)
 {
   return cudf_memory_resource_raw(handle, out);
+}
+
+cudf_status_t cudf_test_memory_resource_allocate(cudf_memory_resource_handle handle,
+                                                  cudf_stream_handle stream,
+                                                  size_t bytes,
+                                                  size_t alignment,
+                                                  void** out)
+{
+  return cudf_rust_test_support_memory_resource_allocate(handle, stream, bytes, alignment, out);
+}
+
+cudf_status_t cudf_test_memory_resource_deallocate(cudf_memory_resource_handle handle,
+                                                    cudf_stream_handle stream,
+                                                    void* ptr,
+                                                    size_t bytes,
+                                                    size_t alignment)
+{
+  return cudf_rust_test_support_memory_resource_deallocate(
+    handle, stream, ptr, bytes, alignment);
 }
 
 cudf_status_t cudf_test_memory_resource_set_current(cudf_memory_resource_handle handle)

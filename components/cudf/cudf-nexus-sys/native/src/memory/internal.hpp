@@ -5,6 +5,7 @@
 #include "cudf_rust/memory_resource.h"
 #include "cudf_rust/query_memory_domain.h"
 #include "cudf_rust/reservation.h"
+#include "cudf_rust/error_boundary.hpp"
 #include "memory_resource_compat.hpp"
 #include "reservation_accounting.hpp"
 
@@ -12,6 +13,8 @@
 #include <rmm/error.hpp>
 #include <rmm/mr/cuda_async_memory_resource.hpp>
 #include <rmm/mr/cuda_async_view_memory_resource.hpp>
+
+#include <cudf/utilities/error.hpp>
 
 #include <cuda.h>
 #include <cuda/memory_resource>
@@ -39,23 +42,11 @@ RMM_NAMESPACE_END
 
 namespace cudf::rust::memory {
 
-constexpr std::uint32_t k_max_failure_callback_retries = 8;
 constexpr std::uint64_t k_default_async_release_threshold =
   std::numeric_limits<std::uint64_t>::max();
-constexpr std::uint64_t k_trim_retry_idle_to_request_ratio = 10;
 
 using cuda_async_resource_box =
   rmm::mr::device_memory_resource_box<rmm::mr::cuda_async_memory_resource>;
-
-struct memory_failure_domain_identity {
-  cudf_memory_failure_domain_t kind = CUDF_MEMORY_FAILURE_DOMAIN_NONE;
-  std::uint64_t primary_id          = 0;
-  std::uint64_t secondary_id        = 0;
-  /// Monotonically minted by the native query-domain owner. It is never a
-  /// pointer identity and is required before the engine may correlate an
-  /// event to an attempt.
-  std::uint64_t generation = 0;
-};
 
 /// Per-device, multi-producer fixed allocator-event ring.
 ///
@@ -110,26 +101,6 @@ class allocator_event_ring final {
   std::array<slot, k_capacity> slots_{};
 };
 
-class attributed_out_of_memory final : public rmm::out_of_memory {
- public:
-  attributed_out_of_memory(char const* message,
-                           cudf_memory_failure_source_t source,
-                           memory_failure_domain_identity identity,
-                           cudaMemPool_t pool = nullptr)
-    : rmm::out_of_memory{message}, source_{source}, identity_{identity}, pool_{pool}
-  {
-  }
-
-  [[nodiscard]] cudf_memory_failure_source_t source() const noexcept { return source_; }
-  [[nodiscard]] memory_failure_domain_identity identity() const noexcept { return identity_; }
-  [[nodiscard]] cudaMemPool_t pool() const noexcept { return pool_; }
-
- private:
-  cudf_memory_failure_source_t source_;
-  memory_failure_domain_identity identity_;
-  cudaMemPool_t pool_;
-};
-
 cudf_memory_manager_options_t default_memory_manager_options();
 std::unique_ptr<cuda_async_resource_box> make_cuda_async_resource_box(
   std::uint64_t initial_pool_size, std::uint64_t release_threshold);
@@ -146,10 +117,6 @@ bool read_async_pool_usage_noexcept(cuda_async_resource_box* async_pool,
                                     cudf_memory_pool_usage_t& out) noexcept;
 void read_async_pool_usage(cuda_async_resource_box* async_pool, cudf_memory_pool_usage_t& out);
 void trim_async_pool_to(cuda_async_resource_box* async_pool, std::uint64_t keep_bytes);
-bool trim_cuda_pool_before_retry(cudaMemPool_t pool, std::size_t request_bytes) noexcept;
-bool trim_cuda_pool_to_zero_noexcept(cudaMemPool_t pool) noexcept;
-bool async_pool_has_trim_retry_headroom(cudf_memory_pool_usage_t const& usage,
-                                        std::size_t request_bytes);
 void fill_failure_info(cudf_memory_failure_info_t& out,
                        int32_t device_ordinal,
                        std::size_t request_bytes,
@@ -223,6 +190,41 @@ struct query_domain_member_counters {
   std::atomic<std::size_t> direct_total_allocations{0};
 };
 
+class query_domain_resource;
+struct query_domain_state;
+
+struct query_domain_allocation_record {
+  std::shared_ptr<query_domain_state> domain;
+  std::shared_ptr<query_domain_member_counters> member;
+  std::size_t bytes         = 0;
+  std::size_t aligned_bytes = 0;
+  std::size_t alignment     = 0;
+  void* allocation_stream   = nullptr;
+  bool routed               = false;
+};
+
+class query_domain_allocation_registry final {
+ public:
+  enum class invariant_violation : std::uint8_t {
+    none,
+    unknown_query_pointer,
+    unknown_device_pointer,
+  };
+
+  void insert(void* ptr, query_domain_allocation_record record);
+
+  [[nodiscard]] std::optional<query_domain_allocation_record> take(void* ptr) noexcept;
+
+  void record_invariant_violation(invariant_violation violation) noexcept;
+
+  void throw_if_invariant_violated() const;
+
+ private:
+  std::mutex mutex_;
+  std::unordered_map<void*, query_domain_allocation_record> allocations_;
+  std::atomic<invariant_violation> invariant_violation_{invariant_violation::none};
+};
+
 class query_domain_resource final : public rmm::mr::device_memory_resource {
  public:
   class operation_guard {
@@ -282,10 +284,6 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
   [[nodiscard]] operation_guard begin_operation() noexcept;
 
   bool resize_grant(std::size_t grant_bytes, std::string& error);
-
-  void trim_to(std::uint64_t keep_bytes);
-
-  bool trim_to_noexcept(std::uint64_t keep_bytes) noexcept;
 
   bool pool_usage(cudf_memory_pool_usage_t& out) const noexcept;
 
@@ -368,11 +366,8 @@ struct query_domain_state {
   cudaMemPool_t pool{};
   std::size_t ceiling_bytes = 0;
   bool active               = true;
-  std::atomic<bool> trim_pending{false};
   std::size_t active_members = 0;
   std::shared_ptr<query_domain_resource> resource;
-
-  ~query_domain_state();
 };
 
 struct query_domain_member_state {
@@ -390,6 +385,7 @@ class query_domain_member_resource final : public rmm::mr::device_memory_resourc
 
   query_domain_member_resource(std::shared_ptr<query_domain_state> domain,
                                std::shared_ptr<query_domain_member_counters> counters,
+                               std::shared_ptr<query_domain_allocation_registry> allocations,
                                cleanup_callback cleanup);
 
   void* allocate_routed(rmm::cuda_stream_view stream, std::size_t bytes, std::size_t alignment);
@@ -399,16 +395,6 @@ class query_domain_member_resource final : public rmm::mr::device_memory_resourc
   void commit_routed_allocation() noexcept;
 
   void cancel_routed_allocation() noexcept;
-
-  void rollback_routed_allocation(void* ptr,
-                                  rmm::cuda_stream_view stream,
-                                  std::size_t bytes,
-                                  std::size_t alignment) noexcept;
-
-  void deallocate_routed(void* ptr,
-                         rmm::cuda_stream_view stream,
-                         std::size_t bytes,
-                         std::size_t alignment) noexcept;
 
   [[nodiscard]] std::size_t routed_pending_allocations() const noexcept;
 
@@ -431,6 +417,7 @@ class query_domain_member_resource final : public rmm::mr::device_memory_resourc
 
   std::shared_ptr<query_domain_state> domain_;
   std::shared_ptr<query_domain_member_counters> counters_;
+  std::shared_ptr<query_domain_allocation_registry> allocations_;
   cleanup_callback cleanup_;
 };
 
@@ -508,8 +495,8 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
     std::uint64_t domain_id,
     std::size_t grant_bytes,
     std::size_t ceiling_bytes,
-    std::uint64_t release_threshold,
     int32_t device,
+    cudaMemPool_t pool,
     std::shared_ptr<manager_allocation_limit_state> manager_allocation_limit,
     std::string& error);
 
@@ -523,6 +510,7 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   std::shared_ptr<struct current_resource_route_state> attach_current_resource_route(
     rmm::cuda_stream_view stream,
     std::shared_ptr<struct memory_resource_owner> target_owner,
+    bool routes_to_manager_upstream,
     std::string& error);
 
   void detach_current_resource_route(
@@ -542,7 +530,7 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
 
   cudf_memory_resource_usage_t query_domain_usage(std::shared_ptr<query_domain_state> const& state);
 
-  [[nodiscard]] std::size_t query_domain_pool_count_for_id(std::uint64_t domain_id);
+  [[nodiscard]] std::size_t query_domain_count_for_id(std::uint64_t domain_id);
 
   cudf_memory_resource_usage_t query_domain_member_usage(
     std::shared_ptr<query_domain_member_state> const& state);
@@ -563,17 +551,9 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
                                   std::size_t limit_bytes,
                                   std::string& error);
 
-  void trim_query_domain(std::shared_ptr<query_domain_state> const& state,
-                         std::uint64_t keep_bytes);
-
  private:
   struct query_domain_member_route {
     std::shared_ptr<query_domain_member_state> member;
-    query_domain_resource::operation_guard operation;
-  };
-
-  struct query_domain_pointer_route {
-    std::shared_ptr<query_domain_state> domain;
     query_domain_resource::operation_guard operation;
   };
 
@@ -589,14 +569,10 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   std::optional<query_domain_member_route> query_domain_member_for_stream(
     rmm::cuda_stream_view stream, std::size_t bytes);
 
-  std::optional<query_domain_member_route> query_domain_member_for_deallocation(void* ptr);
-
-  std::optional<query_domain_pointer_route> query_domain_for_pointer(void* ptr);
-
   std::shared_ptr<struct current_resource_route_state> current_resource_route_for_stream(
     rmm::cuda_stream_view stream);
 
-  std::shared_ptr<struct current_resource_route_state> current_resource_route_for_deallocation(
+  std::shared_ptr<struct current_resource_allocation_record> current_resource_route_for_deallocation(
     void* ptr);
 
   void cleanup_query_domain_if_idle(std::shared_ptr<query_domain_state> const& domain);
@@ -645,16 +621,15 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   std::shared_mutex query_domain_mutex_;
   std::unordered_map<void*, std::shared_ptr<query_domain_member_state>>
     query_domain_members_by_stream_;
-  std::unordered_map<void*, std::shared_ptr<query_domain_member_state>>
-    query_domain_members_by_pointer_;
-  std::unordered_map<cudaMemPool_t, std::shared_ptr<query_domain_state>> query_domains_by_pool_;
+  std::unordered_map<std::uint64_t, std::shared_ptr<query_domain_state>>
+    query_domains_by_generation_;
+  std::shared_ptr<query_domain_allocation_registry> query_domain_allocations_ =
+    std::make_shared<query_domain_allocation_registry>();
   std::atomic<std::size_t> query_domain_member_count_{0};
-  std::atomic<std::size_t> query_domain_routed_pointer_count_{0};
-  std::atomic<std::size_t> query_domain_pool_count_{0};
   std::mutex current_resource_route_mutex_;
   std::unordered_map<void*, std::shared_ptr<struct current_resource_route_state>>
     current_resource_routes_by_stream_;
-  std::unordered_map<void*, std::shared_ptr<struct current_resource_route_state>>
+  std::unordered_map<void*, std::shared_ptr<struct current_resource_allocation_record>>
     current_resource_routes_by_pointer_;
   std::unordered_map<void*, std::weak_ptr<reservation_state>> reservations_by_stream_;
   std::unordered_map<void*, allocation_record> allocations_;
@@ -690,7 +665,16 @@ struct current_resource_route_state {
   // Keep the explicit target resource, including its full native upstream
   // chain, alive until every routed allocation has been deallocated.
   std::shared_ptr<memory_resource_owner> target_owner;
-  bool attached = true;
+  bool routes_to_manager_upstream = false;
+  std::size_t attachment_count    = 1;
+  bool attached                   = true;
+};
+
+struct current_resource_allocation_record {
+  std::shared_ptr<current_resource_route_state> route;
+  std::size_t bytes     = 0;
+  std::size_t alignment = 0;
+  rmm::cuda_stream_view allocation_stream;
 };
 
 struct device_memory_manager_state {

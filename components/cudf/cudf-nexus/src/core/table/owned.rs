@@ -279,6 +279,7 @@ impl Table {
         let status = unsafe { cudf_sys::cudf_table_release_columns(raw_handle, &mut out_columns, &mut out_count) };
 
         if status != cudf_sys::CUDF_SUCCESS {
+            let primary_error = error::check_status_in(status, "table::into_columns").unwrap_err();
             // On failure, the C shim did NOT consume the table.
             // We must destroy it ourselves to avoid a leak.
             crate::core::native_teardown::drop_device_owned_handle(
@@ -287,8 +288,7 @@ impl Table {
                 "table::into_columns::cleanup_table",
                 |owned| unsafe { cudf_sys::cudf_table_destroy(owned) },
             );
-            error::check_status_in(status, "table::into_columns")?;
-            unreachable!();
+            return Err(primary_error);
         }
 
         if out_count == 0 {
