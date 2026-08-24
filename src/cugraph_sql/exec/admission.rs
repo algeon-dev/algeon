@@ -126,46 +126,97 @@ pub(super) fn cugraph_execution_config_with_graph_aware_ticket(
         edge_vertex_upper_bound,
         exact_edge_source_gpu_plan,
     )?;
-    let graph_model_ask = if execution_config.query_admission_source().is_none() {
+    let mut graph_model_ask = if execution_config.query_admission_source().is_none() {
         None
     } else {
         cugraph_graph_model_ask_bytes(&graph_execution_plan, edge_source, &execution_config)?
     };
+    let materialized_side_input_plans = predicate_sources
+        .iter()
+        .enumerate()
+        .map(|(index, source)| {
+            lowered_native_edge_plan(source.as_ref())
+                .map(|plan| (super::lowering::cugraph_side_input_name(index), plan.clone_with_gpu_resident_sink()))
+        })
+        .collect::<Option<Vec<_>>>();
     // A cuGraph attempt executes its graph operation and may also execute
     // lowered native edge/predicate fragments under the same ticket. Keep one
     // aggregate proof for that whole invocation so the engine can verify each
     // fragment at execution time without treating the graph proof as blanket
     // authorization for a different native plan.
-    let mut fragment_proofs = vec![graph_execution_proof];
-    if let Some(composed_plan) = exact_edge_source_gpu_plan {
-        if let Some(composed) = as_nexus_native_composed_exec(edge_source) {
-            let composed_proof =
-                composed_admission_capability_proof(composed_plan, composed.gpu_inputs()).map_err(|error| {
-                    Error::new(
-                        ErrorCode::InvalidExecutionPlan,
+    let scheduled_graph_proof = match (exact_edge_source_gpu_plan, graph_model_ask.as_ref()) {
+        (Some(edge_plan), Some(model_ask))
+            if as_nexus_native_composed_exec(edge_source).is_none() && materialized_side_input_plans.is_some() =>
+        {
+            let graph_with_evidence = graph_execution_proof
+                .clone()
+                .with_graph_memory_admission_evidence(model_ask.cold_model_evidence())
+                .map_err(|error| {
+                    Error::from_native(
                         "datafusion_nexus.cugraph_sql.graph_ticket_ask",
-                        "failed to derive the complete composed edge-source admission proof",
+                        "failed to attach cuGraph memory evidence before composing its native edge input",
+                        error,
                     )
-                    .with_source(error)
                 })?;
-            fragment_proofs.push(composed_proof);
-        } else {
-            let edge_proof =
-                QueryPlanCapabilityProof::for_cugraph_graph_input_plan(composed_plan).ok_or_else(|| {
-                    Error::new(
-                        ErrorCode::InvalidExecutionPlan,
-                        "datafusion_nexus.cugraph_sql.graph_ticket_ask",
-                        "failed to derive the exact native edge-source admission proof",
-                    )
-                    .with_fact("reason", "native_edge_source_plan_evidence_missing")
-                })?;
-            fragment_proofs.push(edge_proof);
-        }
-    } else {
-        collect_native_fragment_capability_proofs(edge_source, &mut fragment_proofs, true, false)?;
+            QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt(
+                &graph_execution_plan,
+                graph_with_evidence,
+                CUGRAPH_EDGE_INPUT_NAME,
+                edge_plan,
+                materialized_side_input_plans
+                    .as_ref()
+                    .expect("match guard requires materialized side-input plans")
+                    .iter()
+                    .map(|(name, plan)| (name.clone(), plan)),
+            )
+            .map_err(|error| {
+                Error::from_native(
+                    "datafusion_nexus.cugraph_sql.graph_ticket_ask",
+                    "failed to derive the ordered cuGraph edge-mapping admission schedule",
+                    error,
+                )
+            })?
+        },
+        _ => None,
+    };
+    let materialized_edge_input_scheduled = scheduled_graph_proof.is_some();
+    let mut fragment_proofs = vec![scheduled_graph_proof.unwrap_or(graph_execution_proof)];
+    if materialized_edge_input_scheduled {
+        graph_model_ask = None;
     }
-    for predicate_source in predicate_sources {
-        collect_native_fragment_capability_proofs(predicate_source.as_ref(), &mut fragment_proofs, false, true)?;
+    if !materialized_edge_input_scheduled {
+        if let Some(composed_plan) = exact_edge_source_gpu_plan {
+            if let Some(composed) = as_nexus_native_composed_exec(edge_source) {
+                let composed_proof = composed_admission_capability_proof(composed_plan, composed.gpu_inputs())
+                    .map_err(|error| {
+                        Error::new(
+                            ErrorCode::InvalidExecutionPlan,
+                            "datafusion_nexus.cugraph_sql.graph_ticket_ask",
+                            "failed to derive the complete composed edge-source admission proof",
+                        )
+                        .with_source(error)
+                    })?;
+                fragment_proofs.push(composed_proof);
+            } else {
+                let edge_proof =
+                    QueryPlanCapabilityProof::for_cugraph_graph_input_plan(composed_plan).ok_or_else(|| {
+                        Error::new(
+                            ErrorCode::InvalidExecutionPlan,
+                            "datafusion_nexus.cugraph_sql.graph_ticket_ask",
+                            "failed to derive the exact native edge-source admission proof",
+                        )
+                        .with_fact("reason", "native_edge_source_plan_evidence_missing")
+                    })?;
+                fragment_proofs.push(edge_proof);
+            }
+        } else {
+            collect_native_fragment_capability_proofs(edge_source, &mut fragment_proofs, true, false)?;
+        }
+    }
+    if !materialized_edge_input_scheduled {
+        for predicate_source in predicate_sources {
+            collect_native_fragment_capability_proofs(predicate_source.as_ref(), &mut fragment_proofs, false, true)?;
+        }
     }
     let execution_config = execution_config
         .with_graph_aware_plan_query_admission_ticket(graph_model_ask, fragment_proofs)

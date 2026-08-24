@@ -248,10 +248,32 @@ impl AttemptReservationSchedule {
         self.producer_phases.len()
     }
 
+    #[cfg(feature = "test-hooks")]
+    pub(crate) fn phase_group_counts_for_test(&self) -> (usize, usize) {
+        (self.producer_phases.len(), self.consumer_peak_term_groups.len())
+    }
+
     fn concurrent_side_input_scope_fingerprints(&self) -> impl Iterator<Item = &str> {
         self.producer_phases
             .iter()
             .flat_map(|phase| phase.concurrent_side_input_term_ids.iter().map(OwnerTermId::execution_scope_fingerprint))
+    }
+
+    fn referenced_scope_fingerprints(&self) -> HashSet<&str> {
+        self.attempt_wide_fixed_term_ids
+            .iter()
+            .chain(self.producer_phases.iter().flat_map(|phase| {
+                phase
+                    .isolated_peak_term_groups
+                    .iter()
+                    .flatten()
+                    .chain(&phase.alternative_term_ids)
+                    .chain(&phase.concurrent_side_input_term_ids)
+            }))
+            .chain(self.consumer_peak_term_groups.iter().flatten())
+            .chain(&self.consumer_dominated_term_ids)
+            .map(OwnerTermId::execution_scope_fingerprint)
+            .collect()
     }
 
     #[cfg(test)]
@@ -318,6 +340,9 @@ impl AttemptReservationSchedule {
         let mut expected_scope_counts = manifest.manifest_scope_counts();
         for scope in self.concurrent_side_input_scope_fingerprints() {
             *expected_scope_counts.entry(scope).or_default() += 1;
+        }
+        for scope in self.referenced_scope_fingerprints() {
+            expected_scope_counts.entry(scope).or_insert(1);
         }
         if expected_scope_counts
             .iter()
@@ -912,6 +937,7 @@ impl AttemptReservationSchedule {
                     .flat_map(|phase| phase.concurrent_side_input_term_ids.iter())
                     .map(OwnerTermId::execution_scope_fingerprint),
             );
+            scheduled_scopes.extend(self.referenced_scope_fingerprints());
             if let Some(missing) = owner_terms.iter().find(|term| {
                 scheduled_scopes.contains(term.execution_scope_fingerprint()) && !references.contains_key(term.id())
             }) {
@@ -1616,6 +1642,9 @@ impl AttemptReservationEnvelope {
                 for scope in schedule.concurrent_side_input_scope_fingerprints() {
                     *counts.entry(scope).or_default() += 1;
                 }
+                for scope in schedule.referenced_scope_fingerprints() {
+                    counts.entry(scope).or_insert(1);
+                }
                 Ok(counts)
             })
             .transpose()?;
@@ -1796,7 +1825,17 @@ impl AttemptReservationEnvelope {
         let manifest = admitted_manifest_shape(&self.scopes, self.ordered_schedule.as_ref())?;
         manifest.validate_manifest_core()?;
         if let Some(schedule) = &self.ordered_schedule {
-            schedule.validate_runtime(manifest, consumer_plan, occurrence_ids)?;
+            let is_manifest_consumer = manifest.matches(consumer_plan);
+            let passthrough_matches = self
+                .scopes
+                .iter()
+                .filter(|scope| scope.is_attested_graph_result_passthrough_scope() && scope.matches(consumer_plan))
+                .count();
+            if is_manifest_consumer {
+                schedule.validate_runtime(manifest, consumer_plan, occurrence_ids)?;
+            } else if passthrough_matches != 1 {
+                return Err(graph_schedule_error("runtime_consumer_scope_mismatch", None, Some("runtime")));
+            }
         } else {
             if manifest.execution_scope_fingerprint() != canonical_execution_scope_fingerprint(consumer_plan) {
                 return Err(graph_schedule_error("runtime_consumer_scope_mismatch", None, Some("runtime")));

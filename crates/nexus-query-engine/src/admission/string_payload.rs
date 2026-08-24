@@ -161,8 +161,10 @@ impl PlanColumnEvidenceAnalysis {
             PlanNode::Join(join) => join_evidence(join, &self.node(join.inputs[0]), &self.node(join.inputs[1])),
             PlanNode::GraphAlgorithm(graph) => {
                 let mut output = PlanColumnEvidence::default();
-                if matches!(graph.spec.algorithm, GraphAlgorithm::PageRank | GraphAlgorithm::PersonalizedPageRank)
-                    && node.output_schema().field_with_name("vertex").is_ok()
+                if matches!(
+                    graph.spec.algorithm,
+                    GraphAlgorithm::PageRank | GraphAlgorithm::PersonalizedPageRank | GraphAlgorithm::Bfs
+                ) && node.output_schema().field_with_name("vertex").is_ok()
                 {
                     output.unique_keys.push(BTreeSet::from(["vertex".to_owned()]));
                 }
@@ -283,17 +285,17 @@ fn join_evidence(join: &JoinNode, left: &PlanColumnEvidence, right: &PlanColumnE
     let Some(bounded_side) = bounded_side else {
         return output;
     };
-    let bounded_is_unique = side_is_unique_on_join_keys(join, bounded_side, left, right);
     for projected in &join.spec.output_projection {
         let input = match projected.side {
             JoinSide::Left => left,
             JoinSide::Right => right,
         };
-        let preserves_payload = projected.side == bounded_side || bounded_is_unique;
-        if preserves_payload && let Some(bound) = input.string_payload_bound(projected.column.name()) {
+        if let Some(bound) = input.string_payload_bound(projected.column.name()) {
             output.string_payload_bounds.insert(projected.output_name.clone(), bound.clone());
         }
     }
+
+    let bounded_is_unique = side_is_unique_on_join_keys(join, bounded_side, left, right);
 
     let left_mapping = join
         .spec

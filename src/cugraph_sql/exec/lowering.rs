@@ -104,9 +104,9 @@ pub(super) struct CugraphQueryPlan {
     inputs: GpuResidentInputMap,
 }
 
-const CUGRAPH_EDGE_INPUT_NAME: &str = "__datafusion_nexus_cugraph_edges";
+pub(super) const CUGRAPH_EDGE_INPUT_NAME: &str = "__datafusion_nexus_cugraph_edges";
 
-fn cugraph_side_input_name(index: usize) -> String {
+pub(super) fn cugraph_side_input_name(index: usize) -> String {
     format!("__datafusion_nexus_cugraph_side_input_{index}")
 }
 
