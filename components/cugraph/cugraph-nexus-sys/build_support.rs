@@ -1,7 +1,7 @@
 #![cfg_attr(test, allow(dead_code))]
 
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     env,
     ffi::OsString,
     fs, io,
@@ -13,14 +13,22 @@ use std::{
 
 const ETXTBSY_RETRY_ATTEMPTS: usize = 6;
 const ETXTBSY_RETRY_DELAY: Duration = Duration::from_millis(25);
+const CUDA_ARCHITECTURE_CONTRACT: &str = "share/nexus-native/cuda-architectures.env";
 const CUDF_RUST_PUBLIC_HEADERS: [&str; 2] =
     ["include/cudf_rust/error_boundary.hpp", "include/cudf_rust/memory_resource.h"];
 
 struct WorkspaceNativeBuildLayout {
+    repo_root: PathBuf,
     src_dir: PathBuf,
     build_dir: PathBuf,
     cudf_install_dir: PathBuf,
     cuvs: CanonicalCuvsContract,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CudaArchitectureContract {
+    requested: String,
+    real: BTreeSet<String>,
 }
 
 fn repository_root(manifest_dir: &Path) -> Result<PathBuf, String> {
@@ -77,9 +85,13 @@ pub(crate) fn prepare_workspace_cmake_export_dir(
     let layout =
         workspace_native_build_layout(manifest_dir, cpp_build_dir_env, cudf_install_dir_env, cuvs_install_dir_env)?;
     let cuda_architectures = resolved_cuda_architectures(cuda_architectures_env.as_deref());
+    let requested = cuda_architectures.to_string_lossy().into_owned();
+    // Reject inconsistent dependencies before the expensive cuGraph build; cuGraph
+    // itself is only validated once it exists.
+    validate_cuda_architecture_contracts(&layout.cuda_architecture_components()[..2], &requested)?;
     let auto_build_enabled = auto_native_build_enabled(auto_build_env.as_deref())?;
     if layout.build_dir.join("cugraph-config.cmake").is_file() {
-        if let Some(reason) = workspace_build_reconfigure_reason(&layout, &cuda_architectures)? {
+        if let Some(reason) = workspace_build_reconfigure_reason(&layout, &requested)? {
             if !auto_build_enabled {
                 return Err(format!(
                     "The workspace-local cuGraph CMake build at '{}' must be reconfigured ({reason}), but automatic \
@@ -92,6 +104,7 @@ pub(crate) fn prepare_workspace_cmake_export_dir(
             build_workspace_cugraph_cpp(&layout, &cuda_architectures, &reason)?;
         }
         validate_workspace_runtime_packages(&layout)?;
+        validate_cuda_architecture_contracts(&layout.cuda_architecture_components(), &requested)?;
         return validate_cmake_export_dir(&layout.build_dir, "workspace-local cuGraph CMake build directory");
     }
 
@@ -107,6 +120,7 @@ pub(crate) fn prepare_workspace_cmake_export_dir(
 
     build_workspace_cugraph_cpp(&layout, &cuda_architectures, "CMake export is missing")?;
     validate_workspace_runtime_packages(&layout)?;
+    validate_cuda_architecture_contracts(&layout.cuda_architecture_components(), &requested)?;
     validate_cmake_export_dir(&layout.build_dir, "workspace-local cuGraph CMake build directory")
 }
 
@@ -338,6 +352,109 @@ pub(crate) fn tracked_cmake_export_files(cmake_build_dir: &Path) -> Vec<PathBuf>
     ]
 }
 
+/// One CUDA architecture participant: the component's display name, the prefix
+/// holding its `share/nexus-native/cuda-architectures.env`, the command that
+/// rebuilds it, and whether that contract is required.
+///
+/// `required` is false for an externally selected prefix (a `CUGRAPH_CMAKE_BUILD_DIR`
+/// or `CUVS_INSTALL_DIR` pointing outside `target/native/`), which nexus scripts did
+/// not build and therefore cannot be expected to carry a contract. This mirrors the
+/// default-prefix-only policy of `validate_default_cuvs_source_revision`.
+pub(crate) struct CudaArchitectureComponent<'a> {
+    pub(crate) name: &'a str,
+    pub(crate) root: &'a Path,
+    pub(crate) rebuild_command: &'a str,
+    pub(crate) required: bool,
+}
+
+/// Validate that every component carrying a CUDA architecture contract requested
+/// `requested` and embeds the same real cubin set, and return the contract paths
+/// that were read.
+///
+/// Components are compared against the first one that has a contract, so the error
+/// names the dependency the mismatch is measured from.
+pub(crate) fn validate_cuda_architecture_contracts(
+    components: &[CudaArchitectureComponent<'_>],
+    requested: &str,
+) -> Result<Vec<PathBuf>, String> {
+    let mut tracked = Vec::new();
+    let mut reference: Option<(&str, CudaArchitectureContract)> = None;
+    for component in components {
+        let path = component.root.join(CUDA_ARCHITECTURE_CONTRACT);
+        if !component.required && !path.is_file() {
+            continue;
+        }
+        let contract = read_cuda_architecture_contract(&path, component.name, component.rebuild_command)?;
+        if contract.requested != requested {
+            return Err(format!(
+                "{} was built for CMAKE_CUDA_ARCHITECTURES='{}', but this build requested '{requested}'. Run with \
+                 CMAKE_CUDA_ARCHITECTURES='{requested}': {}",
+                component.name, contract.requested, component.rebuild_command
+            ));
+        }
+        match &reference {
+            Some((reference_name, reference_contract)) if reference_contract.real != contract.real => {
+                return Err(format!(
+                    "{reference_name} contains full-kernel real CUDA cubins '{}', but {} contains '{}'. Rebuild the \
+                     native stack in dependency order with one CMAKE_CUDA_ARCHITECTURES value: {}",
+                    display_architectures(&reference_contract.real),
+                    component.name,
+                    display_architectures(&contract.real),
+                    component.rebuild_command
+                ));
+            },
+            Some(_) => {},
+            None => reference = Some((component.name, contract)),
+        }
+        tracked.push(path);
+    }
+    Ok(tracked)
+}
+
+/// True when `root` is the canonical `target/native/<name>` prefix that nexus
+/// scripts and the cargo auto-build own. Compares resolved paths so an equivalent
+/// spelling of the default still counts as canonical.
+fn is_canonical_native_prefix(root: &Path, repo_root: &Path, name: &str) -> bool {
+    let canonical = repo_root.join("target/native").join(name);
+    root == canonical || paths_equivalent(root, &canonical)
+}
+
+/// The cuDF -> cuVS -> cuGraph participants in dependency order, marking each as
+/// required only when it sits at its canonical `target/native/` prefix.
+pub(crate) fn cuda_architecture_components<'a>(
+    repo_root: &Path,
+    cudf_install_dir: &'a Path,
+    cuvs_install_dir: &'a Path,
+    cugraph_build_dir: &'a Path,
+) -> [CudaArchitectureComponent<'a>; 3] {
+    [
+        CudaArchitectureComponent {
+            name: "cuDF",
+            root: cudf_install_dir,
+            rebuild_command: "bash scripts/build/build_libcudf.sh",
+            required: is_canonical_native_prefix(cudf_install_dir, repo_root, "cudf-install"),
+        },
+        CudaArchitectureComponent {
+            name: "cuVS",
+            root: cuvs_install_dir,
+            rebuild_command: "bash scripts/build/build_libcuvs.sh",
+            required: is_canonical_native_prefix(cuvs_install_dir, repo_root, "cuvs-install"),
+        },
+        CudaArchitectureComponent {
+            name: "cuGraph",
+            root: cugraph_build_dir,
+            rebuild_command: "bash scripts/build/build_libcugraph.sh",
+            required: is_canonical_native_prefix(cugraph_build_dir, repo_root, "cugraph-build"),
+        },
+    ]
+}
+
+impl WorkspaceNativeBuildLayout {
+    fn cuda_architecture_components(&self) -> [CudaArchitectureComponent<'_>; 3] {
+        cuda_architecture_components(&self.repo_root, &self.cudf_install_dir, &self.cuvs.install_dir, &self.build_dir)
+    }
+}
+
 fn workspace_native_build_layout(
     manifest_dir: &Path,
     cpp_build_dir_env: Option<OsString>,
@@ -378,7 +495,7 @@ fn workspace_native_build_layout(
 
     let cuvs = resolve_canonical_cuvs_contract(manifest_dir, cuvs_install_dir_env)?;
 
-    Ok(WorkspaceNativeBuildLayout { src_dir, build_dir, cudf_install_dir, cuvs })
+    Ok(WorkspaceNativeBuildLayout { repo_root, src_dir, build_dir, cudf_install_dir, cuvs })
 }
 
 pub(crate) fn validate_cudf_public_headers(cudf_install_dir: &Path) -> Result<(), String> {
@@ -494,7 +611,8 @@ fn build_workspace_cugraph_cpp(
     let mut build_command = Command::new("cmake");
     build_command.arg("--build").arg(&layout.build_dir);
     run_command_capture("build native cuGraph with CMake", &mut build_command)?;
-    reject_stale_private_runtime_artifacts(&layout.build_dir)
+    reject_stale_private_runtime_artifacts(&layout.build_dir)?;
+    write_cugraph_cuda_architecture_contract(layout, &cuda_architectures.to_string_lossy())
 }
 
 fn validate_workspace_runtime_packages(layout: &WorkspaceNativeBuildLayout) -> Result<(), String> {
@@ -509,13 +627,137 @@ fn validate_workspace_runtime_packages(layout: &WorkspaceNativeBuildLayout) -> R
     reject_stale_private_runtime_artifacts(&layout.build_dir)
 }
 
-fn resolved_cuda_architectures(env_val: Option<&std::ffi::OsStr>) -> OsString {
-    env_val.filter(|value| !value.is_empty()).map(OsString::from).unwrap_or_else(|| OsString::from("NATIVE"))
+pub(crate) fn resolved_cuda_architectures(env_val: Option<&std::ffi::OsStr>) -> OsString {
+    match env_val.filter(|value| !value.is_empty()) {
+        Some(value) if value.to_string_lossy().eq_ignore_ascii_case("native") => OsString::from("NATIVE"),
+        Some(value) => OsString::from(value),
+        None => OsString::from("NATIVE"),
+    }
+}
+
+fn read_cuda_architecture_contract(
+    path: &Path,
+    component: &str,
+    rebuild_command: &str,
+) -> Result<CudaArchitectureContract, String> {
+    let contents = fs::read_to_string(path).map_err(|error| {
+        format!(
+            "{component} is missing its CUDA architecture contract '{}': {error}. Rebuild it with the canonical \
+             native build script: {rebuild_command}",
+            path.display()
+        )
+    })?;
+    let unique_value = |key: &str| -> Result<String, String> {
+        let values = contents.lines().filter_map(|line| line.strip_prefix(&format!("{key}="))).collect::<Vec<_>>();
+        match values.as_slice() {
+            [value] if !value.is_empty() => Ok((*value).to_string()),
+            _ => Err(format!("CUDA architecture contract '{}' has no unique {key} value.", path.display())),
+        }
+    };
+    let requested = unique_value("requested")?;
+    let real = parse_real_cuda_architectures(&unique_value("real")?)
+        .map_err(|error| format!("CUDA architecture contract '{}' {error}", path.display()))?;
+    Ok(CudaArchitectureContract { requested, real })
+}
+
+fn display_architectures(architectures: &BTreeSet<String>) -> String {
+    architectures.iter().cloned().collect::<Vec<_>>().join(";")
+}
+
+/// True for the shared real cubin architecture token grammar: digits plus an
+/// optional single lowercase suffix letter (`120a` architecture-specific, `100f`
+/// family-specific). `scripts/build/cuda_architecture_contract.sh` matches the
+/// same grammar via `NEXUS_CUDA_REAL_ARCHITECTURE_PATTERN`, so both writers agree
+/// on which cuobjdump tokens are architectures.
+fn is_real_cuda_architecture(token: &str) -> bool {
+    let digits = token.trim_end_matches(|character: char| character.is_ascii_lowercase());
+    let suffix = &token[digits.len()..];
+    !digits.is_empty() && digits.chars().all(|character| character.is_ascii_digit()) && suffix.len() <= 1
+}
+
+fn parse_real_cuda_architectures(value: &str) -> Result<BTreeSet<String>, String> {
+    let mut architectures = BTreeSet::new();
+    for token in value.split(';') {
+        if !is_real_cuda_architecture(token) {
+            return Err(format!("contains '{token}', which is not a real CUDA architecture such as '89' or '120a'."));
+        }
+        architectures.insert(token.to_string());
+    }
+    Ok(architectures)
+}
+
+/// Extract the real cubin architectures from `cuobjdump --list-elf` output.
+///
+/// Primary build targets appear throughout the library; embedded dependency stubs
+/// form much smaller groups, so groups under half the largest are discarded.
+pub(crate) fn parse_listed_cubin_architectures(listing: &str) -> BTreeSet<String> {
+    let mut counts = BTreeMap::<&str, usize>::new();
+    for line in listing.lines() {
+        let Some((_, suffix)) = line.rsplit_once(".sm_") else {
+            continue;
+        };
+        if let Some((architecture, _)) = suffix.split_once(".cubin")
+            && is_real_cuda_architecture(architecture)
+        {
+            *counts.entry(architecture).or_default() += 1;
+        }
+    }
+    let Some(max_count) = counts.values().copied().max() else {
+        return BTreeSet::new();
+    };
+    counts
+        .into_iter()
+        .filter(|&(_, count)| count * 2 >= max_count)
+        .map(|(architecture, _)| architecture.to_string())
+        .collect()
+}
+
+fn inspect_real_cuda_architectures(library: &Path) -> Result<BTreeSet<String>, String> {
+    let toolkit_root = env::var_os("CUDAToolkit_ROOT")
+        .or_else(|| env::var_os("CUDA_HOME"))
+        .or_else(|| env::var_os("CUDA_PATH"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/usr/local/cuda"));
+    let toolkit_cuobjdump = toolkit_root.join("bin/cuobjdump");
+    let cuobjdump = if toolkit_cuobjdump.is_file() { toolkit_cuobjdump } else { PathBuf::from("cuobjdump") };
+    let output = Command::new(&cuobjdump).arg("--list-elf").arg(library).output().map_err(|error| {
+        format!(
+            "Failed to inspect CUDA architectures in '{}' with '{}': {error}",
+            library.display(),
+            cuobjdump.display()
+        )
+    })?;
+    if !output.status.success() {
+        return Err(format!(
+            "cuobjdump failed while inspecting '{}': {}",
+            library.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let architectures = parse_listed_cubin_architectures(&String::from_utf8_lossy(&output.stdout));
+    if architectures.is_empty() {
+        return Err(format!("'{}' does not contain a detectable real CUDA cubin architecture.", library.display()));
+    }
+    Ok(architectures)
+}
+
+fn write_cugraph_cuda_architecture_contract(
+    layout: &WorkspaceNativeBuildLayout,
+    requested: &str,
+) -> Result<(), String> {
+    let library = layout.build_dir.join("libcugraph.so");
+    let real = inspect_real_cuda_architectures(&library)?;
+    let path = layout.build_dir.join(CUDA_ARCHITECTURE_CONTRACT);
+    fs::create_dir_all(path.parent().expect("contract path has a parent")).map_err(|error| {
+        format!("Failed to create CUDA architecture contract directory for '{}': {error}", path.display())
+    })?;
+    fs::write(&path, format!("requested={requested}\nreal={}\n", display_architectures(&real)))
+        .map_err(|error| format!("Failed to write CUDA architecture contract '{}': {error}", path.display()))
 }
 
 fn workspace_build_reconfigure_reason(
     layout: &WorkspaceNativeBuildLayout,
-    expected_cuda_architectures: &std::ffi::OsStr,
+    requested: &str,
 ) -> Result<Option<String>, String> {
     let cache_path = layout.build_dir.join("CMakeCache.txt");
     let cache = match fs::read_to_string(&cache_path) {
@@ -528,18 +770,20 @@ fn workspace_build_reconfigure_reason(
         },
     };
 
-    let expected_cuda_architectures = expected_cuda_architectures.to_string_lossy();
     match cmake_cache_value(&cache, "CMAKE_CUDA_ARCHITECTURES") {
-        Some(cached) if cached == expected_cuda_architectures => {},
+        Some(cached) if cached == requested => {},
         Some(cached) => {
-            return Ok(Some(format!(
-                "CMAKE_CUDA_ARCHITECTURES changed from '{}' to '{}'",
-                cached, expected_cuda_architectures
-            )));
+            return Ok(Some(format!("CMAKE_CUDA_ARCHITECTURES changed from '{cached}' to '{requested}'")));
         },
         None => {
             return Ok(Some(format!("CMAKE_CUDA_ARCHITECTURES is missing from {}", cache_path.display())));
         },
+    }
+
+    // A cuGraph contract that disagrees with its dependencies is a rebuild trigger
+    // here, not a hard failure: the rebuild is what restores agreement.
+    if let Err(reason) = validate_cuda_architecture_contracts(&layout.cuda_architecture_components(), requested) {
+        return Ok(Some(reason));
     }
 
     for (cache_key, expected_dir) in [

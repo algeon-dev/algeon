@@ -9,6 +9,7 @@ use std::{
 };
 
 const TEST_CUVS_REVISION: &str = "2bd7cd71d31e39eb9ee00c2a250085a1afb84977";
+const TEST_CUDA_ARCHITECTURE_CONTRACT: &str = "requested=NATIVE\nreal=120a\n";
 
 struct TestDir {
     path: PathBuf,
@@ -48,6 +49,10 @@ fn create_cuvs_install(prefix: &Path) -> PathBuf {
     fs::create_dir_all(&config_dir).expect("create cuVS CMake package dir");
     fs::write(config_dir.join("cuvs-config.cmake"), []).expect("write cuVS CMake package config");
     fs::write(prefix.join("lib/libcuvs.so"), []).expect("write libcuvs.so");
+    let architecture_contract = prefix.join("share/nexus-native/cuda-architectures.env");
+    fs::create_dir_all(architecture_contract.parent().expect("architecture contract parent"))
+        .expect("create architecture contract directory");
+    fs::write(architecture_contract, TEST_CUDA_ARCHITECTURE_CONTRACT).expect("write cuVS architecture contract");
     prefix.to_path_buf()
 }
 
@@ -58,6 +63,10 @@ fn create_cudf_public_headers(prefix: &Path) {
         .expect("write error boundary header");
     fs::write(include_dir.join("memory_resource.h"), "// test memory resource header\n")
         .expect("write memory resource header");
+    let architecture_contract = prefix.join("share/nexus-native/cuda-architectures.env");
+    fs::create_dir_all(architecture_contract.parent().expect("architecture contract parent"))
+        .expect("create architecture contract directory");
+    fs::write(architecture_contract, TEST_CUDA_ARCHITECTURE_CONTRACT).expect("write cuDF architecture contract");
 }
 
 fn workspace_manifest_dir(root: &Path) -> PathBuf {
@@ -91,6 +100,95 @@ fn create_default_cuvs_install(workspace_root: &Path) -> PathBuf {
 
 fn join_paths(paths: &[PathBuf]) -> std::ffi::OsString {
     env::join_paths(paths).expect("join test path list")
+}
+
+fn write_architecture_contract(prefix: &Path, contents: &str) {
+    let marker = prefix.join("share/nexus-native/cuda-architectures.env");
+    fs::create_dir_all(marker.parent().expect("marker parent")).expect("create marker directory");
+    fs::write(marker, contents).expect("write architecture marker");
+}
+
+fn canonical_components<'a>(
+    repo_root: &Path,
+    cudf: &'a Path,
+    cuvs: &'a Path,
+    cugraph: &'a Path,
+) -> [build_support::CudaArchitectureComponent<'a>; 3] {
+    build_support::cuda_architecture_components(repo_root, cudf, cuvs, cugraph)
+}
+
+#[test]
+fn cuda_architecture_contracts_require_matching_requested_and_real_targets() {
+    let root = TestDir::new();
+    let cudf = root.path().join("target/native/cudf-install");
+    let cuvs = root.path().join("target/native/cuvs-install");
+    let cugraph = root.path().join("target/native/cugraph-build");
+    for prefix in [&cudf, &cuvs, &cugraph] {
+        write_architecture_contract(prefix, TEST_CUDA_ARCHITECTURE_CONTRACT);
+    }
+
+    let components = canonical_components(root.path(), &cudf, &cuvs, &cugraph);
+    let tracked = build_support::validate_cuda_architecture_contracts(&components, "NATIVE")
+        .expect("validate matching architecture contracts");
+    assert_eq!(tracked.len(), 3);
+
+    write_architecture_contract(&cuvs, "requested=NATIVE\nreal=89\n");
+    let err = build_support::validate_cuda_architecture_contracts(&components, "NATIVE").unwrap_err();
+    assert!(err.contains("cuDF contains full-kernel real CUDA cubins '120a'"), "unexpected error: {err}");
+    assert!(err.contains("cuVS contains '89'"), "unexpected error: {err}");
+
+    write_architecture_contract(&cuvs, "requested=90\nreal=120a\n");
+    let err = build_support::validate_cuda_architecture_contracts(&components, "NATIVE").unwrap_err();
+    assert!(err.contains("cuVS was built for CMAKE_CUDA_ARCHITECTURES='90'"), "unexpected error: {err}");
+    assert!(err.contains("bash scripts/build/build_libcuvs.sh"), "unexpected error: {err}");
+}
+
+#[test]
+fn cuda_architecture_contracts_are_required_only_for_canonical_workspace_prefixes() {
+    let root = TestDir::new();
+    let cudf = root.path().join("target/native/cudf-install");
+    let default_cuvs = root.path().join("target/native/cuvs-install");
+    let default_cugraph = root.path().join("target/native/cugraph-build");
+    let external_cuvs = root.path().join("opt/conda/cuvs");
+    let external_cugraph = root.path().join("opt/prebuilt/cugraph-build");
+    write_architecture_contract(&cudf, TEST_CUDA_ARCHITECTURE_CONTRACT);
+    for prefix in [&external_cuvs, &external_cugraph] {
+        fs::create_dir_all(prefix).expect("create external prefix");
+    }
+
+    // An explicitly selected external prefix was not produced by the nexus build
+    // scripts, so it carries no contract and must not be rejected for that.
+    let external = canonical_components(root.path(), &cudf, &external_cuvs, &external_cugraph);
+    let tracked = build_support::validate_cuda_architecture_contracts(&external, "NATIVE")
+        .expect("accept external prefixes without a CUDA architecture contract");
+    assert_eq!(tracked, vec![cudf.join("share/nexus-native/cuda-architectures.env")]);
+
+    // The canonical workspace prefixes are owned by those scripts and must have one.
+    let canonical = canonical_components(root.path(), &cudf, &default_cuvs, &default_cugraph);
+    let err = build_support::validate_cuda_architecture_contracts(&canonical, "NATIVE").unwrap_err();
+    assert!(err.contains("cuVS is missing its CUDA architecture contract"), "unexpected error: {err}");
+    assert!(err.contains("bash scripts/build/build_libcuvs.sh"), "unexpected error: {err}");
+}
+
+#[test]
+fn listed_cubin_architectures_keep_family_and_architecture_specific_suffixes() {
+    let listing = concat!(
+        "ELF file    1: libcudf.1.sm_100f.cubin\n",
+        "ELF file    2: libcudf.2.sm_100f.cubin\n",
+        "ELF file    3: libcudf.3.sm_100f.cubin\n",
+        "ELF file    4: libcudf.4.sm_120a.cubin\n",
+        "ELF file    5: libcudf.5.sm_120a.cubin\n",
+        "ELF file    6: libcudf.6.sm_120a.cubin\n",
+        "ELF file    7: libcudf.7.sm_89.cubin\n",
+    );
+
+    let architectures = build_support::parse_listed_cubin_architectures(listing);
+
+    assert_eq!(
+        architectures.into_iter().collect::<Vec<_>>(),
+        vec!["100f".to_string(), "120a".to_string()],
+        "family-suffixed targets must survive parsing and small stub groups must not"
+    );
 }
 
 #[test]
@@ -292,6 +390,10 @@ fn prepare_workspace_cmake_export_dir_reuses_existing_canonical_build() {
     fs::create_dir_all(&logger_dir).expect("create rapids_logger cmake dir");
     fs::write(cpp_dir.join("CMakeLists.txt"), []).expect("write cmake lists");
     fs::write(build_dir.join("cugraph-config.cmake"), []).expect("write cugraph config");
+    let architecture_contract = build_dir.join("share/nexus-native/cuda-architectures.env");
+    fs::create_dir_all(architecture_contract.parent().expect("architecture contract parent"))
+        .expect("create architecture contract directory");
+    fs::write(architecture_contract, TEST_CUDA_ARCHITECTURE_CONTRACT).expect("write cuGraph architecture contract");
     fs::write(
         build_dir.join("CMakeCache.txt"),
         format!(
@@ -372,6 +474,10 @@ fn prepare_workspace_cmake_export_dir_rejects_stale_cuda_arch_when_auto_build_is
     .expect("write cache");
     fs::write(rmm_dir.join("rmm-config.cmake"), []).expect("write rmm config");
     fs::write(logger_dir.join("rapids_logger-config.cmake"), []).expect("write logger config");
+    for prefix in [&cudf_install, &cuvs_install] {
+        fs::write(prefix.join("share/nexus-native/cuda-architectures.env"), "requested=90\nreal=90\n")
+            .expect("write requested architecture contract");
+    }
 
     let err = build_support::prepare_workspace_cmake_export_dir(
         &manifest_dir,

@@ -23,11 +23,13 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+source "${repo_root}/scripts/build/cuda_architecture_contract.sh"
 upstream_build="${repo_root}/components/cugraph/cugraph/build.sh"
 build_dir="${CUGRAPH_CMAKE_BUILD_DIR:-${repo_root}/target/native/cugraph-build}"
 cudf_install_dir="${CUDF_INSTALL_DIR:-${repo_root}/target/native/cudf-install}"
 default_cuvs_install_dir="${repo_root}/target/native/cuvs-install"
 cuvs_install_dir="${CUVS_INSTALL_DIR:-${default_cuvs_install_dir}}"
+cuda_architectures="$(nexus_cuda_architectures)"
 
 if [[ ! -x "${upstream_build}" ]]; then
     echo "error: upstream cuGraph build script '${upstream_build}' not found." >&2
@@ -89,6 +91,16 @@ case "${cuvs_library_path}" in
         ;;
 esac
 
+nexus_cuda_require_contract \
+    "cuDF" "${cudf_install_dir}" "${cuda_architectures}" \
+    "bash scripts/build/build_libcudf.sh"
+nexus_cuda_require_contract \
+    "cuVS" "${cuvs_install_dir}" "${cuda_architectures}" \
+    "bash scripts/build/build_libcuvs.sh"
+nexus_cuda_require_matching_contracts \
+    "cuDF" "${cudf_install_dir}" "cuVS" "${cuvs_install_dir}" \
+    "bash scripts/build/build_libcudf.sh && bash scripts/build/build_libcuvs.sh"
+
 # Make the cudf prefix export rmm's full CMake dependency closure (idempotent).
 CUDF_INSTALL_DIR="${cudf_install_dir}" "${repo_root}/scripts/build/bootstrap_cudf_install.sh"
 
@@ -101,7 +113,7 @@ fi
 # Force cuGraph to resolve RMM and rapids_logger from the cudf prefix, and cuVS
 # from the canonical cuVS prefix. These
 # args are appended after cugraph/build.sh's own -D flags, so a later
-# -DCMAKE_CUDA_ARCHITECTURES (if the caller set one) overrides its NATIVE
+# -DCMAKE_CUDA_ARCHITECTURES overrides the upstream script's NATIVE
 # default. -U rmm_DIR / rapids_logger_DIR force re-resolution to *_ROOT when
 # re-configuring a tree that previously pulled a private CPM copy.
 extra_cmake_args=(
@@ -123,9 +135,7 @@ extra_cmake_args=(
     "-DCMAKE_PREFIX_PATH=${cudf_install_dir};${cuvs_install_dir}"
     "-Dcuvs_ROOT=${cuvs_install_dir}"
 )
-if [[ -n "${CMAKE_CUDA_ARCHITECTURES:-}" ]]; then
-    extra_cmake_args+=("-DCMAKE_CUDA_ARCHITECTURES=${CMAKE_CUDA_ARCHITECTURES}")
-fi
+extra_cmake_args+=("-DCMAKE_CUDA_ARCHITECTURES=${cuda_architectures}")
 
 # Drive the upstream script: build only libcugraph, no install (-n), no C++ tests.
 # PREFIX is required by cugraph/build.sh but unused with -n; point it at the build
@@ -259,7 +269,13 @@ printf '%s\n' \
     "CUVS_LIBRARY_PATH=${cuvs_library_path}" \
     "CUVS_RUNTIME_LIB_DIR=${cuvs_runtime_lib_dir}" >"${metadata_path}"
 
+architecture_contract="$(nexus_cuda_write_contract "${build_dir}" "${cugraph_library}" "${cuda_architectures}")"
+nexus_cuda_require_matching_contracts \
+    "cuDF" "${cudf_install_dir}" "cuGraph" "${build_dir}" \
+    "bash scripts/build/build_libcudf.sh && bash scripts/build/build_libcuvs.sh && bash scripts/build/build_libcugraph.sh"
+
 echo "libcugraph native build OK: rmm/rapids_logger=${cudf_install_dir}, cuVS=${cuvs_install_dir}"
 echo "resolved libcuvs: ${cuvs_library_path}"
 echo "native contract metadata: ${metadata_path}"
+echo "CUDA architectures: requested=${cuda_architectures}, real=$(nexus_cuda_read_contract_value "${architecture_contract}" real)"
 echo "libraries: $(cd "${build_dir}" && ls libcugraph*.so 2>/dev/null | tr '\n' ' ')"

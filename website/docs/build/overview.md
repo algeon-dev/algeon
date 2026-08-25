@@ -67,6 +67,12 @@ datafusion-nexus depends on that facade and uses the enabled cuDF, cuVS, and cuG
 
 The full-feature build order follows those dependencies:
 
+Set `CMAKE_CUDA_ARCHITECTURES` once before this sequence. Each native layer
+records the requested target and the full-kernel real cubin set in its primary
+shared library under `target/native/`; downstream builds reject a different
+architecture contract early. An explicitly selected external prefix is exempt,
+since nexus scripts did not build it and it carries no such record.
+
 1. **libcudf and shared RMM** — `bash scripts/build/build_libcudf.sh` drives
    `components/cudf/cudf`, installs into `target/native/cudf-install`, and
    prepares the one shared dependency prefix.

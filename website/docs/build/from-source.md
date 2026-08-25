@@ -65,6 +65,10 @@ export CC=/usr/bin/gcc-14
 export CXX=/usr/bin/g++-14
 export CUDAHOSTCXX=/usr/bin/g++-14
 
+# One CUDA target contract for cuDF, cuVS, and cuGraph. NATIVE is host-local.
+export CMAKE_CUDA_ARCHITECTURES=NATIVE
+unset CUDF_CMAKE_CUDA_ARCHITECTURES
+
 # Checkout-local native build and install identity.
 export CUDF_CPP_BUILD_DIR="$NEXUS_ROOT/target/native/cudf-build"
 export CUDF_INSTALL_DIR="$NEXUS_ROOT/target/native/cudf-install"
@@ -88,6 +92,7 @@ The selectors have one shared identity:
 | Variable | Owner and purpose |
 | --- | --- |
 | `NEXUS_ROOT` | Root of the one recursive checkout. |
+| `CMAKE_CUDA_ARCHITECTURES` | One CUDA target list shared by cuDF, cuVS, and cuGraph. Defaults to `NATIVE`. |
 | `CUDF_CPP_BUILD_DIR` | cuDF CMake cache, normally `target/native/cudf-build`. |
 | `CUDF_INSTALL_DIR` / `INSTALL_PREFIX` | cuDF install containing the stack's one shared `librmm.so`. |
 | `CUVS_INSTALL_DIR` / `CUVS_ROOT` | One cuVS prefix used by its build, Rust bindings, and cuGraph. |
@@ -103,13 +108,28 @@ cuDF/RMM → cuVS → cuGraph → DataFusion Nexus
 Before a long build, confirm that no selector escapes the checkout:
 
 ```bash
-env | sort | grep -E '^(NEXUS_ROOT|INSTALL_PREFIX|LD_LIBRARY_PATH|CUDF_[^=]*|CUVS_[^=]*|CUGRAPH_[^=]*)='
+env | sort | grep -E '^(NEXUS_ROOT|INSTALL_PREFIX|LD_LIBRARY_PATH|CMAKE_CUDA_ARCHITECTURES|CUDF_[^=]*|CUVS_[^=]*|CUGRAPH_[^=]*)='
 ```
 
 Every native path in the output must resolve under
 `$NEXUS_ROOT/target/native/`. If one does not, rerun the block above from the
 current repository root. `scripts/check_all.sh` intentionally inherits the
 configured native identity; it does not guess that an exported path is stale.
+
+Choose the architecture contract before starting the first native build. Keep
+`NATIVE` for artifacts that will run only on this build host. For artifacts
+that move between known GPU models, list their targets explicitly, for example:
+
+```bash
+export CMAKE_CUDA_ARCHITECTURES="89-real;120a-real"
+```
+
+The `a` in `120a` selects the architecture-specific compute capability 12.0
+target and the `f` in a value such as `100f` selects the family-specific one;
+`-real` asks CMake for real device code. `CMAKE_CUDA_ARCHITECTURES` is recorded
+verbatim as the contract's `requested` value, so the CMake caches keep `NATIVE`
+when that is what you set. The `real` value is read back from the built library
+and does name the concrete targets, such as `120a`.
 
 ## 3. Build the native stack
 
@@ -133,13 +153,10 @@ ls "$CUDF_INSTALL_DIR"/lib/libcudf.so "$CUDF_INSTALL_DIR"/lib/librmm.so
 ls -d "$CUDF_INSTALL_DIR"/lib/cmake/{cudf,rmm,rapids_logger,nvtx3,fmt,spdlog}
 ```
 
-The default build targets the GPU installed in the build host. To produce
-artifacts for other GPU models, provide every required architecture explicitly:
-
-```bash
-CUDF_CMAKE_CUDA_ARCHITECTURES="80-real;90-real;120-real" \
-  bash scripts/build/build_libcudf.sh
-```
+The helper maps the shared `CMAKE_CUDA_ARCHITECTURES` value to cuDF's upstream
+build interface and records both the requested value and the full-kernel real
+cubin set found in `libcudf.so`; small embedded dependency stub sets are not
+treated as cuDF targets.
 
 ### Build cuVS
 
@@ -149,7 +166,9 @@ bash scripts/build/build_libcuvs.sh
 
 The helper builds the pinned source at `components/cuvs/cuvs`, uses RMM from
 `CUDF_INSTALL_DIR`, and installs both the C++ and C libraries into the one
-`CUVS_INSTALL_DIR` selected above.
+`CUVS_INSTALL_DIR` selected above. It rejects a cuDF prefix built with another
+requested selector before configuring cuVS, then compares both libraries'
+full-kernel real cubin sets after installation.
 
 ```bash
 ls "$CUVS_INSTALL_DIR"/lib/libcuvs.so \
@@ -166,19 +185,19 @@ bash scripts/build/build_libcugraph.sh
 The helper builds `components/cugraph/cugraph` into
 `target/native/cugraph-build`. It binds cuGraph to the selected cuDF/RMM and
 cuVS prefixes and fails if CMake or the dynamic loader resolves a private or
-different copy.
+different copy. It also checks the cuDF and cuVS architecture contracts before
+the expensive build, then records the real cubins found in `libcugraph.so` and
+compares them against cuDF's.
 
 ```bash
 ls "$CUGRAPH_CMAKE_BUILD_DIR"/libcugraph.so \
    "$CUGRAPH_CMAKE_BUILD_DIR"/libcugraph_c.so
 ```
 
-To target other GPU models, pass the corresponding CMake architecture list:
-
-```bash
-CMAKE_CUDA_ARCHITECTURES="80-real;90-real;120-real" \
-  bash scripts/build/build_libcugraph.sh
-```
+Do not change `CMAKE_CUDA_ARCHITECTURES` between these three commands. If a
+prefix was built with another target, the next script stops with the exact
+component and dependency-order rebuild command instead of leaving a
+link-compatible but kernel-incompatible stack.
 
 On Blackwell (`sm_120`), the pinned cuGraph fork carries the required
 single-GPU strongly-connected-components compatibility path. Building a

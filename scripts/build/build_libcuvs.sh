@@ -2,10 +2,12 @@
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+source "${repo_root}/scripts/build/cuda_architecture_contract.sh"
 source_dir="${repo_root}/components/cuvs/cuvs"
 build_dir="${CUVS_CPP_BUILD_DIR:-${repo_root}/target/native/cuvs-build}"
 install_dir="${CUVS_INSTALL_DIR:-${repo_root}/target/native/cuvs-install}"
 cudf_install_dir="${CUDF_INSTALL_DIR:-${repo_root}/target/native/cudf-install}"
+cuda_architectures="$(nexus_cuda_architectures)"
 (cd "${repo_root}" && scripts/ci/check_native_sources.sh cuvs)
 
 [[ -f "${source_dir}/VERSION" ]] || {
@@ -50,13 +52,16 @@ done
     echo "Run scripts/build/bootstrap_cudf_install.sh for that prefix, then retry." >&2
     exit 1
 }
+nexus_cuda_require_contract \
+    "cuDF" "${cudf_install_dir}" "${cuda_architectures}" \
+    "bash scripts/build/build_libcudf.sh"
 
 # cuVS's header-only CUTLASS setup reads the static-named cache entry
 # even for shared-only builds, so bind that entry to the selected shared file.
 cmake -S "${source_dir}/cpp" -B "${build_dir}" -G Ninja \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_INSTALL_PREFIX="${install_dir}" \
-    -DCMAKE_CUDA_ARCHITECTURES="${CMAKE_CUDA_ARCHITECTURES:-NATIVE}" \
+    -DCMAKE_CUDA_ARCHITECTURES="${cuda_architectures}" \
     -DCMAKE_PREFIX_PATH="${cudf_install_dir}" \
     -Drmm_ROOT="${cudf_install_dir}" \
     -Drapids_logger_ROOT="${cudf_install_dir}" \
@@ -170,7 +175,13 @@ for library in "${lib_dir}/libcuvs.so" "${lib_dir}/libcuvs_c.so"; do
     fi
 done
 
+architecture_contract="$(nexus_cuda_write_contract "${install_dir}" "${canonical_cuvs}" "${cuda_architectures}")"
+nexus_cuda_require_matching_contracts \
+    "cuDF" "${cudf_install_dir}" "cuVS" "${install_dir}" \
+    "bash scripts/build/build_libcudf.sh && bash scripts/build/build_libcuvs.sh"
+
 echo "canonical cuVS prefix ready: ${install_dir}"
 echo "source revision: ${source_revision}"
 echo "native version: ${native_version}"
+echo "CUDA architectures: requested=${cuda_architectures}, real=$(nexus_cuda_read_contract_value "${architecture_contract}" real)"
 echo "Cargo: CUVS_ROOT=${install_dir} cargo check --workspace --all-targets --all-features"

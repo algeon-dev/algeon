@@ -12,6 +12,68 @@ struct ManualBuildFixture {
     workspace: PathBuf,
 }
 
+struct CudfBootstrapFixture {
+    root: PathBuf,
+    script: PathBuf,
+    install: PathBuf,
+}
+
+impl CudfBootstrapFixture {
+    fn new() -> Self {
+        let unique = SystemTime::now().duration_since(UNIX_EPOCH).expect("system time").as_nanos();
+        let root = env::temp_dir().join(format!("cudf-bootstrap-contract-{}-{unique}", std::process::id()));
+        let workspace = root.join("workspace");
+        let script = workspace.join("scripts/build/bootstrap_cudf_install.sh");
+        let source_include = workspace.join("components/cudf/cudf-nexus-sys/native/include/cudf_rust");
+        let install = workspace.join("target/native/cudf-install");
+
+        fs::create_dir_all(script.parent().expect("script parent")).expect("create fixture scripts directory");
+        fs::create_dir_all(&source_include).expect("create fixture source include directory");
+        fs::copy(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../scripts/build/bootstrap_cudf_install.sh"),
+            &script,
+        )
+        .expect("copy cuDF bootstrap script");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("make cuDF bootstrap script executable");
+
+        for (header, contents) in [
+            ("error_boundary.hpp", "// error boundary\n"),
+            ("memory_resource.h", "// memory resource\n"),
+            ("stream.h", "// stream\n"),
+            ("test_support.h", "// test support\n"),
+        ] {
+            fs::write(source_include.join(header), contents).expect("write fixture shim header");
+        }
+        for entry in [
+            "rmm/rmm-config.cmake",
+            "nvtx3/nvtx3-config.cmake",
+            "rapids_logger/rapids_logger-config.cmake",
+            "fmt/fmt-config.cmake",
+            "spdlog/spdlogConfig.cmake",
+        ] {
+            let config = install.join("lib/cmake").join(entry);
+            fs::create_dir_all(config.parent().expect("config parent")).expect("create fixture package directory");
+            fs::write(config, []).expect("write fixture package config");
+        }
+
+        Self { root, script, install }
+    }
+
+    fn run(&self) -> Output {
+        Command::new(&self.script)
+            .env("CUDF_INSTALL_DIR", &self.install)
+            .env("CUDF_CPP_BUILD_DIR", self.root.join("unused-cudf-build"))
+            .output()
+            .expect("run cuDF bootstrap contract fixture")
+    }
+}
+
+impl Drop for CudfBootstrapFixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
 impl ManualBuildFixture {
     fn new(marker: Option<&str>) -> Self {
         let unique = SystemTime::now().duration_since(UNIX_EPOCH).expect("system time").as_nanos();
@@ -25,6 +87,11 @@ impl ManualBuildFixture {
         fs::create_dir_all(&default_install).expect("create fixture default cuVS prefix");
         fs::copy(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../scripts/build/build_libcugraph.sh"), &script)
             .expect("copy manual build script");
+        fs::copy(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../scripts/build/cuda_architecture_contract.sh"),
+            workspace.join("scripts/build/cuda_architecture_contract.sh"),
+        )
+        .expect("copy CUDA architecture contract helper");
 
         let upstream = repo.join("build.sh");
         fs::write(&upstream, "#!/usr/bin/env bash\nexit 0\n").expect("write fixture upstream build script");
@@ -63,6 +130,149 @@ impl Drop for ManualBuildFixture {
 fn assert_stderr_contains(output: &Output, expected: &str) {
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(stderr.contains(expected), "expected stderr to contain '{expected}', got:\n{stderr}");
+}
+
+#[test]
+fn native_build_scripts_share_one_cuda_architecture_contract() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let helper = manifest_dir.join("../../../scripts/build/cuda_architecture_contract.sh");
+    let cudf_script = fs::read_to_string(manifest_dir.join("../../../scripts/build/build_libcudf.sh"))
+        .expect("read cuDF build script");
+    let cuvs_script = fs::read_to_string(manifest_dir.join("../../../scripts/build/build_libcuvs.sh"))
+        .expect("read cuVS build script");
+    let cugraph_script = read_manual_build_script();
+
+    for (component, script) in [("cuDF", cudf_script), ("cuVS", cuvs_script), ("cuGraph", cugraph_script)] {
+        assert!(script.contains("cuda_architecture_contract.sh"), "{component} must load the shared contract helper");
+        assert!(script.contains("nexus_cuda_architectures"), "{component} must use the canonical selector");
+        assert!(script.contains("nexus_cuda_write_contract"), "{component} must record its real cubin set");
+    }
+
+    let output = Command::new("bash")
+        .args([
+            "-c",
+            "source \"$1\"; CUDF_CMAKE_CUDA_ARCHITECTURES=89 nexus_cuda_architectures",
+            "architecture-contract-test",
+        ])
+        .arg(&helper)
+        .output()
+        .expect("run architecture selector contract");
+    assert!(!output.status.success());
+    assert_stderr_contains(&output, "Set CMAKE_CUDA_ARCHITECTURES once");
+
+    let output = Command::new("bash")
+        .args([
+            "-c",
+            "source \"$1\"; CMAKE_CUDA_ARCHITECTURES=native nexus_cuda_architectures",
+            "architecture-contract-test",
+        ])
+        .arg(&helper)
+        .output()
+        .expect("normalize native architecture selector");
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "NATIVE\n");
+}
+
+#[test]
+fn cuda_architecture_contract_rejects_mismatched_real_cubins() {
+    let unique = SystemTime::now().duration_since(UNIX_EPOCH).expect("system time").as_nanos();
+    let root = env::temp_dir().join(format!("cuda-architecture-contract-{}-{unique}", std::process::id()));
+    let cudf = root.join("cudf");
+    let cuvs = root.join("cuvs");
+    for (prefix, real) in [(&cudf, "120a"), (&cuvs, "89")] {
+        let marker = prefix.join("share/nexus-native/cuda-architectures.env");
+        fs::create_dir_all(marker.parent().expect("marker parent")).expect("create marker directory");
+        fs::write(marker, format!("requested=NATIVE\nreal={real}\n")).expect("write architecture marker");
+    }
+    let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../scripts/build/cuda_architecture_contract.sh");
+    let output = Command::new("bash")
+        .args([
+            "-c",
+            "source \"$1\"; nexus_cuda_require_matching_contracts cuDF \"$2\" cuVS \"$3\" \"rebuild stack\"",
+            "architecture-contract-test",
+        ])
+        .arg(helper)
+        .arg(&cudf)
+        .arg(&cuvs)
+        .output()
+        .expect("run architecture mismatch contract");
+    let _ = fs::remove_dir_all(&root);
+
+    assert!(!output.status.success());
+    assert_stderr_contains(&output, "cuDF contains full-kernel real CUDA cubins '120a'");
+    assert_stderr_contains(&output, "cuVS contains '89'");
+    assert_stderr_contains(&output, "rebuild stack");
+}
+
+#[test]
+fn cuda_architecture_contract_keeps_suffixed_targets_and_ignores_stub_sets() {
+    let unique = SystemTime::now().duration_since(UNIX_EPOCH).expect("system time").as_nanos();
+    let root = env::temp_dir().join(format!("cuda-architecture-cubins-{}-{unique}", std::process::id()));
+    let toolkit = root.join("cuda");
+    let cuobjdump = toolkit.join("bin/cuobjdump");
+    let library = root.join("libcudf.so");
+    fs::create_dir_all(cuobjdump.parent().expect("cuobjdump parent")).expect("create fake CUDA toolkit");
+    fs::write(
+        &cuobjdump,
+        concat!(
+            "#!/usr/bin/env bash\n",
+            "printf '%s\\n' \\\n",
+            "  'ELF file 1: libcudf.1.sm_89.cubin' \\\n",
+            "  'ELF file 2: libcudf.2.sm_100f.cubin' \\\n",
+            "  'ELF file 3: libcudf.3.sm_100f.cubin' \\\n",
+            "  'ELF file 4: libcudf.4.sm_100f.cubin' \\\n",
+            "  'ELF file 5: libcudf.5.sm_100f.cubin' \\\n",
+            "  'ELF file 6: libcudf.6.sm_120a.cubin' \\\n",
+            "  'ELF file 7: libcudf.7.sm_120a.cubin' \\\n",
+            "  'ELF file 8: libcudf.8.sm_120a.cubin' \\\n",
+            "  'ELF file 9: libcudf.9.sm_120a.cubin'\n",
+        ),
+    )
+    .expect("write fake cuobjdump");
+    fs::set_permissions(&cuobjdump, fs::Permissions::from_mode(0o755)).expect("make fake cuobjdump executable");
+    fs::write(&library, []).expect("write fake library");
+    let helper = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../../scripts/build/cuda_architecture_contract.sh");
+    let output = Command::new("bash")
+        .args(["-c", "source \"$1\"; nexus_cuda_real_architectures \"$2\"", "architecture-contract-test"])
+        .arg(helper)
+        .arg(&library)
+        .env("CUDAToolkit_ROOT", &toolkit)
+        .output()
+        .expect("inspect fixture cubins");
+    let _ = fs::remove_dir_all(&root);
+
+    assert!(output.status.success(), "fixture inspection failed: {}", String::from_utf8_lossy(&output.stderr));
+    // The `f` family suffix must survive the shell parser exactly as it does in
+    // build_support.rs; dropping it silently desynchronizes the two writers.
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "100f;120a\n");
+}
+
+#[test]
+fn cudf_bootstrap_installs_regular_cugraph_dependency_headers() {
+    let fixture = CudfBootstrapFixture::new();
+    let installed_include = fixture.install.join("include/cudf_rust");
+    fs::create_dir_all(&installed_include).expect("create installed include directory");
+    symlink(
+        fixture.root.join("workspace/components/cudf/cudf-nexus-sys/native/include/cudf_rust/error_boundary.hpp"),
+        installed_include.join("error_boundary.hpp"),
+    )
+    .expect("create stale header symlink");
+    fs::write(installed_include.join("test_support.h"), "// stale test support\n")
+        .expect("write stale test-support header");
+
+    let output = fixture.run();
+    assert!(
+        output.status.success(),
+        "cuDF bootstrap failed:\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    for header in ["error_boundary.hpp", "memory_resource.h", "stream.h"] {
+        let metadata = fs::symlink_metadata(installed_include.join(header)).expect("installed header metadata");
+        assert!(metadata.file_type().is_file(), "{header} must be installed as a regular file");
+    }
+    assert!(!installed_include.join("test_support.h").exists(), "test-only header must not be installed");
 }
 
 fn read_build_rs() -> String {
