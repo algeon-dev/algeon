@@ -1,5 +1,11 @@
 # cudf-nexus
 
+> [!IMPORTANT]
+> Development has moved to
+> [`DataFusion-Nexus/datafusion-nexus`](https://github.com/DataFusion-Nexus/datafusion-nexus/tree/main/components/cudf).
+> This repository is retained as a read-only historical archive. Clone the
+> monorepo recursively for the current source, build tooling, and tests.
+
 `cudf-nexus` is a Rust GPU DataFrame workspace built around [`libcudf`](https://github.com/DataFusion-Nexus/cudf).
 Its main direction is to make cuDF usable as part of backend services and query execution systems for 
 [DataFusion-Nexus](https://github.com/DataFusion-Nexus/DataFusion-Nexus). It focuses on safe Rust APIs for GPU data
@@ -20,4 +26,3 @@ behavior explicit enough for service-side integration.
 - `cudf-nexus-sys/` - low-level FFI bindings and the native C shim around `libcudf` (import `cudf_sys`).
 - `rapids-interop/` - shared RAPIDS Rust interop contract types and traits.
 - `cudf/` - the pinned upstream **[forked cuDF](https://github.com/DataFusion-Nexus/cudf)** source submodule used to build `libcudf`.
-
