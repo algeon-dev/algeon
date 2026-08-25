@@ -48,7 +48,8 @@ pub use backend_core::GpuBackendFaultInjector;
 pub use backend_core::{
     GpuBackendCloseSnapshot, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreBuilder, GpuBackendCoreDraft,
     GpuBackendCoreIdentity, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile,
-    GpuBackendDeviceStartupRecord, GpuBackendSession, GpuDeviceMemoryLimit, GpuMemoryFraction, GpuMemoryOwnership,
+    GpuBackendDeviceStartupRecord, GpuBackendSession, GpuDeviceCapacityProbe, GpuDeviceMemoryLimit, GpuMemoryFraction,
+    GpuMemoryOwnership, probe_device_capacity,
 };
 #[doc(hidden)]
 pub use backend_core::{GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe};

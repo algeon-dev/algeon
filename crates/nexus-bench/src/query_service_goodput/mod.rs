@@ -12,7 +12,9 @@
 //!   rejection, other) so a configuration cannot look better by failing fast,
 //! - queue/execution/cleanup and end-to-end latency percentiles,
 //! - the attempt's own aligned allocator peak from its sealed report, kept
-//!   separate from device-scope pool telemetry and host memory.
+//!   separate from device-scope pool telemetry and host memory,
+//! - the backend's exact begun/published report counters, so a run whose
+//!   evidence is incomplete says so in its own summary row.
 //!
 //! Correctness is not assumed: every completed query is compared against an
 //! output fingerprint frozen by a single-flight calibration run, and the SLO
@@ -107,18 +109,23 @@ fn build_backend(config: &GoodputConfig) -> Result<NexusGpuBackend, Box<dyn Erro
         3,
         1,
     );
-    let devices = config.device_ordinals.iter().copied().map(|ordinal| {
-        let profile = NexusGpuDeviceProfile::new(ordinal)
-            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: config.device_capacity_bytes })
-            .with_default_query_limit_bytes(config.query_cap_bytes)
-            .with_max_active_attempts(config.max_active_attempts)
-            .with_installation_bounds(NexusGpuDeviceInstallationBounds::new(
-                config.stream_pool_size(),
-                config.max_active_attempts,
-                config.lane_count(),
-            ));
-        NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive)
-    });
+    // The goodput sweep deliberately overprovisions the stream pool beyond the
+    // derived `A_d * (1 + S_d)` formula; keep the explicit bounds template and
+    // share it across every homogeneous device.
+    let template = NexusGpuDeviceProfile::new(0)
+        .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: config.device_capacity_bytes })
+        .with_default_query_limit_bytes(config.query_cap_bytes)
+        .with_max_active_attempts(config.max_active_attempts)
+        .with_installation_bounds(NexusGpuDeviceInstallationBounds::new(
+            config.stream_pool_size(),
+            config.max_active_attempts,
+            config.lane_count(),
+        ));
+    let devices = NexusGpuDeviceConfig::homogeneous(
+        config.device_ordinals.iter().copied(),
+        &template,
+        GpuMemoryOwnership::WholeDeviceExclusive,
+    );
     let queue_policy = NexusGpuQueuePolicy::default()
         .with_max_queued_attempts(config.max_queued_attempts)
         .with_max_queue_wait(config.max_queue_wait);
@@ -344,6 +351,9 @@ async fn measure(
                 .join("+")
         })
         .unwrap_or_else(|_| "unavailable".to_string());
+    // Every attempt has waited for its report by now, so this delta counts
+    // reports that never published rather than reports still in flight.
+    let attempt_counters = backend.attempt_counters_snapshot();
     let report = RunReport {
         config,
         identity,
@@ -355,6 +365,7 @@ async fn measure(
         samples: &samples,
         sensitivity: &sensitivity,
         device_health: &device_health,
+        attempt_counters,
     };
     report.write_all()?;
     println!("{}", report::SUMMARY_COLUMNS.join("\t"));

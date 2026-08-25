@@ -1377,6 +1377,13 @@ impl DeviceMemoryManager {
     /// let rt = Runtime::builder().build().unwrap();
     /// let _lease = rt.stream_reservation(1, 1 << 30).unwrap();
     /// ```
+    ///
+    /// This is the installation entry point, not a handle lookup. Code that
+    /// only needs to observe an already-installed manager (for example pool
+    /// telemetry sampling) must use [`Self::for_device`]: calling an
+    /// `install_*` variant there fails whenever the installed options differ,
+    /// and swallowing that failure (for example with `.ok()`) silently
+    /// reports every pool counter as zero instead of surfacing the misuse.
     pub fn install_for_device(device: DeviceId) -> Result<Self> {
         Self::for_device_with_options(device, DeviceMemoryManagerOptions::default())
     }
@@ -1564,6 +1571,11 @@ impl DeviceMemoryManager {
     /// On first creation the manager installs its reservation-aware adaptor as
     /// the current RMM resource for `device`. Later calls return aliases to
     /// the same manager and resource.
+    ///
+    /// This is the read/alias entry point for already-installed devices.
+    /// Telemetry samplers and other observers must use this rather than any
+    /// `install_*` variant, which rejects an existing manager whose effective
+    /// options differ.
     pub fn for_device(device: DeviceId) -> Result<Self> {
         let _guard = DeviceGuard::new(device)?;
         let mut manager = ptr::null_mut();

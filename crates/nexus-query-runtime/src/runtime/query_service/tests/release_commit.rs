@@ -1112,11 +1112,11 @@ fn oom_release_projects_truthful_resource_evidence() {
     }
     assert_eq!(
         evidence.outcome_terminal_usage.provenance,
-        crate::observability::AttemptEvidenceProvenance::SampledAfterFailure
+        crate::observability::AttemptEvidenceProvenance::SampledAtTerminalBoundary
     );
     assert_eq!(
         evidence.post_cleanup_usage.provenance,
-        crate::observability::AttemptEvidenceProvenance::SampledAfterFailure
+        crate::observability::AttemptEvidenceProvenance::SampledAtTerminalBoundary
     );
     assert_eq!(
         evidence.allocator_event.provenance,

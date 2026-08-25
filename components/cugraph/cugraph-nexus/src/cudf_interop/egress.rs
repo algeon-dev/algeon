@@ -1,4 +1,6 @@
-use cudf::{Runtime, core::Column};
+use std::collections::HashMap;
+
+use cudf::{AggSpec, GroupByAgg, Runtime, core::Column};
 
 use super::{bridge::RawDeviceArrayViewExt, errors::map_cudf_error_with};
 use crate::{
@@ -328,10 +330,11 @@ pub(crate) fn weakly_connected_components_result_to_dataframe(
     runtime: &Runtime,
 ) -> Result<cudf::DataFrame> {
     let operation = "weakly_connected_components_result_to_dataframe";
-    dataframe_from_named_series(
+    let frame = dataframe_from_named_series(
         [("vertex", result.vertex_ids()?.to_series(runtime)?), ("label", result.labels()?.to_series(runtime)?)],
         operation,
-    )
+    )?;
+    canonicalize_component_labels(frame, runtime, operation)
 }
 
 pub(crate) fn strongly_connected_components_result_to_dataframe(
@@ -339,10 +342,126 @@ pub(crate) fn strongly_connected_components_result_to_dataframe(
     runtime: &Runtime,
 ) -> Result<cudf::DataFrame> {
     let operation = "strongly_connected_components_result_to_dataframe";
-    dataframe_from_named_series(
+    let frame = dataframe_from_named_series(
         [("vertex", result.vertex_ids()?.to_series(runtime)?), ("label", result.labels()?.to_series(runtime)?)],
         operation,
-    )
+    )?;
+    canonicalize_component_labels(frame, runtime, operation)
+}
+
+/// Rewrite a `("vertex", "label")` component frame so each label is the minimum
+/// vertex id of its component.
+///
+/// cuGraph assigns component labels in hook-race order, so raw labels vary run
+/// to run, and WCC additionally reports labels in the internal renumbered id
+/// space rather than the caller-visible vertex space. Mapping every label to
+/// `MIN(vertex)` over its component fixes both at once: the mapping is a pure
+/// function of the partition (which cuGraph computes correctly), so the output
+/// is run-stable and expressed in vertex ids. Row order is preserved.
+///
+/// The mapping itself comes from a GPU groupby-min, which is order-independent
+/// and therefore deterministic. It is broadcast back with a host lookup because
+/// this crate has no join handle; the mapping has one row per component while
+/// the broadcast touches one label column each way.
+fn canonicalize_component_labels(
+    frame: cudf::DataFrame,
+    runtime: &Runtime,
+    operation: &'static str,
+) -> Result<cudf::DataFrame> {
+    if frame.num_rows() == 0 {
+        return Ok(frame);
+    }
+    let vertex = frame.series("vertex").map_err(|error| {
+        map_cudf_error_with(error, operation, "failed to read component vertex column", std::iter::empty())
+    })?;
+    let mapping = frame
+        .groupby(["label"])
+        .agg(&[AggSpec::new("vertex", GroupByAgg::Min).with_alias("canonical")])
+        .map_err(|error| {
+            map_cudf_error_with(error, operation, "failed to compute component minimum vertex ids", std::iter::empty())
+        })?;
+    let mapping_key = mapping.series("label").map_err(|error| {
+        map_cudf_error_with(error, operation, "failed to read component label mapping", std::iter::empty())
+    })?;
+    let mapping_value = mapping.series("canonical").map_err(|error| {
+        map_cudf_error_with(error, operation, "failed to read component minimum vertex mapping", std::iter::empty())
+    })?;
+    let mut canonical_of: HashMap<i64, i64> = HashMap::with_capacity(mapping.num_rows());
+    for (label, canonical) in int_series_to_i64(&mapping_key, "label", operation)?.into_iter().zip(int_series_to_i64(
+        &mapping_value,
+        "canonical",
+        operation,
+    )?) {
+        if let (Some(label), Some(canonical)) = (label, canonical) {
+            canonical_of.insert(label, canonical);
+        }
+    }
+    let label = frame.series("label").map_err(|error| {
+        map_cudf_error_with(error, operation, "failed to read component label column", std::iter::empty())
+    })?;
+    let remapped: Vec<Option<i64>> = int_series_to_i64(&label, "label", operation)?
+        .into_iter()
+        .map(|label| label.map(|label| canonical_of.get(&label).copied().unwrap_or(label)))
+        .collect();
+    // Canonical values are vertex ids, so they take the vertex column's width.
+    // A missing mapping is impossible (the groupby covers every non-null key);
+    // falling back to the raw label keeps the row rather than failing the query.
+    let canonical = match vertex
+        .dtype()
+        .map_err(|error| {
+            map_cudf_error_with(error, operation, "failed to inspect component vertex dtype", std::iter::empty())
+        })?
+        .id()
+    {
+        cudf::TypeId::Int32 => {
+            let narrowed: Vec<Option<i32>> = remapped
+                .into_iter()
+                .map(|value| {
+                    value
+                        .map(i32::try_from)
+                        .transpose()
+                        .map_err(|_| format!("canonical component label {value:?} exceeds Int32 vertex range"))
+                })
+                .collect::<std::result::Result<Vec<Option<i32>>, String>>()
+                .map_err(|message| {
+                    crate::error::Error::new(crate::error::ErrorKind::InvalidState, operation).with_message(message)
+                })?;
+            runtime.series_opt(&narrowed).map_err(|error| {
+                map_cudf_error_with(error, operation, "failed to build canonical label column", std::iter::empty())
+            })?
+        },
+        cudf::TypeId::Int64 => runtime.series_opt(&remapped).map_err(|error| {
+            map_cudf_error_with(error, operation, "failed to build canonical label column", std::iter::empty())
+        })?,
+        other => {
+            return Err(crate::error::Error::new(crate::error::ErrorKind::UnsupportedType, operation)
+                .with_message(format!("unexpected component vertex dtype: {other:?}")));
+        },
+    };
+    dataframe_from_named_series([("vertex", vertex), ("label", canonical)], operation)
+}
+
+/// Copy an integer `Series` to host as `Vec<Option<i64>>`, widening `i32`.
+fn int_series_to_i64(series: &cudf::Series, role: &'static str, operation: &'static str) -> Result<Vec<Option<i64>>> {
+    let values = match series
+        .dtype()
+        .map_err(|error| {
+            map_cudf_error_with(error, operation, "failed to inspect component integer dtype", std::iter::empty())
+        })?
+        .id()
+    {
+        cudf::TypeId::Int32 => {
+            series.to_optional_vec::<i32>().map(|values| values.into_iter().map(|value| value.map(i64::from)).collect())
+        },
+        cudf::TypeId::Int64 => series.to_optional_vec::<i64>(),
+        other => {
+            return Err(crate::error::Error::new(crate::error::ErrorKind::UnsupportedType, operation)
+                .with_message(format!("unexpected component {role} dtype: {other:?}")));
+        },
+    };
+    values.map_err(|error| {
+        map_cudf_error_with(error, operation, "failed to copy component integers to host", std::iter::empty())
+    })
 }
 
 pub(crate) fn core_number_result_to_dataframe(result: &CoreNumberResult, runtime: &Runtime) -> Result<cudf::DataFrame> {

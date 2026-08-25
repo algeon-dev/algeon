@@ -1169,10 +1169,10 @@ impl QueryHandleReportCommit {
         evidence.domain_id = AttemptEvidenceField::attempt_exact(domain.domain_id());
         evidence.domain_cap_bytes = AttemptEvidenceField::attempt_exact(domain.cap_bytes());
         if let Some(usage) = self.outcome_terminal_domain_usage {
-            evidence.outcome_terminal_usage = AttemptEvidenceField::sampled_after_failure(usage);
+            evidence.outcome_terminal_usage = AttemptEvidenceField::sampled_at_terminal_boundary(usage);
         }
         if let Some(usage) = post_cleanup_usage {
-            evidence.post_cleanup_usage = AttemptEvidenceField::sampled_after_failure(usage);
+            evidence.post_cleanup_usage = AttemptEvidenceField::sampled_at_terminal_boundary(usage);
         }
 
         // Unknown isolation deliberately retains no device-local ledger,

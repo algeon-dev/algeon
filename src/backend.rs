@@ -17,7 +17,9 @@ use nexus_query_engine::runtime::{
     GpuBackendSession, KvikioCompatModeStatus, MemoryControlPolicy, NvidiaFsProbeStatus, QueryExecutionConfig,
     QueueBounds,
 };
-pub use nexus_query_engine::runtime::{DeviceCapabilities, GpuDeviceMemoryLimit, GpuMemoryOwnership};
+pub use nexus_query_engine::runtime::{
+    DeviceCapabilities, GpuDeviceCapacityProbe, GpuDeviceMemoryLimit, GpuMemoryOwnership,
+};
 /// Canonical device profile bound to an explicit process-scoped GPU memory
 /// ownership promise.
 ///
@@ -161,6 +163,31 @@ impl NexusGpuBackend {
     /// session installed from this backend.
     pub fn device_startup_records(&self) -> &[GpuBackendDeviceStartupRecord] {
         self.core.device_startup_records()
+    }
+
+    /// Probes declarable capacity for one CUDA device without building a backend.
+    ///
+    /// This never claims the process owner lease and never installs a memory
+    /// manager, so callers can pick an explicit limit before `build()`
+    /// instead of binary-searching it through repeated build failures.
+    /// Declare at most the probe's `max_declarable_limit_bytes` and the
+    /// build will not refuse on capacity grounds. The probe reports both the
+    /// CUDA-visible total (the comparison basis for ownership and limits)
+    /// and the NVML physical total when available, so a near-whole-device
+    /// declaration is no longer a guess.
+    pub fn probe_device_capacity(
+        device_ordinal: usize,
+        memory_ownership: GpuMemoryOwnership,
+        backend_reserve_bytes: u64,
+    ) -> Result<GpuDeviceCapacityProbe> {
+        nexus_query_engine::runtime::probe_device_capacity(device_ordinal, memory_ownership, backend_reserve_bytes)
+            .map_err(|error| {
+                Error::from_native_with_blocking_diagnostics(
+                    "datafusion_nexus.backend.probe_device_capacity",
+                    "failed to probe declarable GPU device capacity",
+                    error,
+                )
+            })
     }
 
     /// Non-blockingly signals backend shutdown.
@@ -374,11 +401,7 @@ impl NexusGpuBackend {
             None => validated.core_draft,
         };
         let core = GpuBackendCore::builder(draft).build().map_err(|error| {
-            Error::from_native(
-                "datafusion_nexus.backend.gpu_core",
-                "failed to initialize ownership-enforcing GPU backend core",
-                error,
-            )
+            backend_core_build_error("failed to initialize ownership-enforcing GPU backend core", error)
         })?;
         let session = core.session_capability();
         let max_device_total_memory_bytes = session.max_device_total_memory_bytes().map_err(|error| {
@@ -405,6 +428,17 @@ impl NexusGpuBackend {
             queue_policy: validated.queue_policy,
         })
     }
+}
+
+/// Wraps a native backend-core construction failure for the `build()` boundary.
+///
+/// Construction refuses with its structured cause (`reason` plus the byte
+/// counts the caller needs to pick a declarable capacity) attached as native
+/// facts. This wrapper folds that cause into the adapter message so consumers
+/// that only print the outermost error still see the actionable numbers
+/// instead of a bare "initialization failed".
+fn backend_core_build_error(message: &'static str, source: nexus_query_engine::error::QueryError) -> Error {
+    Error::from_native_with_blocking_diagnostics("datafusion_nexus.backend.gpu_core", message, source)
 }
 
 fn install_backend_optimizer_config(
@@ -443,11 +477,7 @@ fn validated_backend_construction(
     let controller = GpuBackendControllerDraft::new(service_config, queue_bounds);
     let core_draft = GpuBackendCoreDraft::new(devices.clone(), controller, nongds_deployment());
     core_draft.validate().map_err(|error| {
-        Error::from_native(
-            "datafusion_nexus.backend.gpu_core",
-            "invalid ownership-enforcing GPU backend core configuration",
-            error,
-        )
+        backend_core_build_error("invalid ownership-enforcing GPU backend core configuration", error)
     })?;
     Ok(ValidatedBackendConstruction { optimizer_config, devices, queue_policy, core_draft })
 }
@@ -607,6 +637,19 @@ impl NexusGpuBackendBuilder {
             self.queue_policy,
             self.attempt_completion_queue_capacity,
         )
+    }
+
+    /// Dry-runs builder validation without acquiring GPU resources.
+    ///
+    /// Runs the same pre-discovery normalization and validation `build()`
+    /// performs before claiming the process owner lease or touching CUDA:
+    /// device declarations, installation bounds, memory-manager options, and
+    /// queue policy. Capacity-vs-facts checks still require discovery at
+    /// `build()` time; combine with [`NexusGpuBackend::probe_device_capacity`]
+    /// to cover those before building.
+    pub fn validate(self) -> Result<()> {
+        validated_backend_construction(self.optimizer_config, self.devices, self.queue_policy)?;
+        Ok(())
     }
 }
 

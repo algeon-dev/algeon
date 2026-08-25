@@ -135,10 +135,12 @@ const GRAPH_ITEMS: &[(&str, u64)] = &[
 /// the scores were computed or not.
 ///
 /// Which aggregate is usable depends on the algorithm's reproducibility.
-/// Integer outputs are summed directly. Betweenness accumulates its scores with
-/// atomics, so the sum of the scores moves between runs on the same graph; the
-/// count of vertices that received a nonzero score does not, and it still falls
-/// to zero if the algorithm computed nothing.
+/// Component labels are canonicalized to the minimum vertex id of each
+/// component and betweenness scores accumulate in fixed source order, so both
+/// are run-stable and summed directly like the other integer and score
+/// outputs. A wrong result still cannot pass the fingerprint: a plain row
+/// count is the vertex count for every vertex-keyed algorithm and would be
+/// identical whether the scores were computed or not.
 fn graph_sql(name: &str, seed: i64) -> Option<String> {
     let sql = match name {
         "pagerank" => format!(
@@ -153,12 +155,10 @@ fn graph_sql(name: &str, seed: i64) -> Option<String> {
             "SELECT COUNT(*) AS n, SUM(distance) AS total FROM cugraph_sssp('{GRAPH_EDGE_TABLE}', {seed}, 'src', \
              'dst', 'weight')"
         ),
-        // Component labels are identifiers, not values: cuGraph assigns them by
-        // hooking order and they differ between runs on the same graph. The
-        // partition they induce is what is reproducible, so the fingerprint
-        // counts components rather than summing labels.
+        // Labels are canonical minimum-vertex ids, so their sum is a stable
+        // fingerprint of both the partition and its canonical assignment.
         "wcc" => format!(
-            "SELECT COUNT(*) AS n, COUNT(DISTINCT label) AS components FROM \
+            "SELECT COUNT(*) AS n, SUM(label) AS total FROM \
              cugraph_weakly_connected_components('{GRAPH_EDGE_TABLE}', 'src', 'dst')"
         ),
         "triangles" => format!(
@@ -166,11 +166,11 @@ fn graph_sql(name: &str, seed: i64) -> Option<String> {
              cugraph_triangle_count_all('{GRAPH_EDGE_TABLE}', 'src', 'dst', NULL, '{{\"directed\": false}}')"
         ),
         "betweenness_k64" => format!(
-            "SELECT COUNT(*) AS n, SUM(CASE WHEN value > 0 THEN 1 ELSE 0 END) AS scored FROM \
+            "SELECT COUNT(*) AS n, SUM(value) AS total FROM \
              cugraph_betweenness_centrality('{GRAPH_EDGE_TABLE}', 'src', 'dst', NULL, '{{\"k\": 64}}')"
         ),
         "betweenness_k256" => format!(
-            "SELECT COUNT(*) AS n, SUM(CASE WHEN value > 0 THEN 1 ELSE 0 END) AS scored FROM \
+            "SELECT COUNT(*) AS n, SUM(value) AS total FROM \
              cugraph_betweenness_centrality('{GRAPH_EDGE_TABLE}', 'src', 'dst', NULL, '{{\"k\": 256}}')"
         ),
         _ => return None,

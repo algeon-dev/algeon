@@ -1,5 +1,7 @@
 use std::{error::Error, fmt::Write as _, fs, path::Path};
 
+use datafusion_nexus::attempt::AttemptBackendCountersSnapshot;
+
 use super::{
     calibration::CalibrationIdentity,
     config::GoodputConfig,
@@ -138,6 +140,9 @@ pub(super) const SUMMARY_COLUMNS: &[&str] = &[
     "device_active_queries_peak",
     "host_rss_peak_bytes",
     "device_health",
+    "attempts_begun",
+    "reports_ready",
+    "reports_unpublished",
 ];
 
 const SENSITIVITY_COLUMNS: &[&str] = &["run_id", "group", "slo_multiplier", "slo_met", "goodput_qps"];
@@ -183,6 +188,11 @@ pub(super) struct RunReport<'a> {
     /// Per-device admission health after the run. A group that ends with a
     /// device closed did not measure the configuration it claims to measure.
     pub(super) device_health: &'a str,
+    /// Exact backend attempt counters read after every attempt's report wait
+    /// returned. `attempts_begun - reports_ready` is then the number of
+    /// attempts whose report never published, so an incomplete observation
+    /// is a run fact rather than a line in stderr.
+    pub(super) attempt_counters: AttemptBackendCountersSnapshot,
 }
 
 impl RunReport<'_> {
@@ -363,6 +373,9 @@ impl RunReport<'_> {
             aggregates.active_queries_peak.to_string(),
             aggregates.host_rss_peak_bytes.to_string(),
             self.device_health.to_string(),
+            self.attempt_counters.attempts_begun.to_string(),
+            self.attempt_counters.reports_ready.to_string(),
+            self.attempt_counters.attempts_begun.saturating_sub(self.attempt_counters.reports_ready).to_string(),
         ];
         debug_assert_eq!(fields.len(), SUMMARY_COLUMNS.len());
         fields

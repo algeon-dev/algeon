@@ -173,13 +173,13 @@ fn result_field_description(algorithm: CugraphAlgorithm, field_name: &str) -> &'
         (CugraphAlgorithm::OutDegreesAll, "out_degree") => "Number of outgoing edges for the vertex.",
         (CugraphAlgorithm::WeaklyConnectedComponents, "vertex") => "Vertex assigned to a weakly connected component.",
         (CugraphAlgorithm::WeaklyConnectedComponents, "label") => {
-            "Weakly connected component identifier for the vertex."
+            "Weakly connected component identifier for the vertex: the minimum vertex id in the component, stable across runs."
         },
         (CugraphAlgorithm::StronglyConnectedComponents, "vertex") => {
             "Vertex assigned to a strongly connected component."
         },
         (CugraphAlgorithm::StronglyConnectedComponents, "label") => {
-            "Strongly connected component identifier for the vertex."
+            "Strongly connected component identifier for the vertex: the minimum vertex id in the component, stable across runs."
         },
         (CugraphAlgorithm::TriangleCountAll, "vertex") => "Vertex whose triangle participation is reported.",
         (CugraphAlgorithm::TriangleCountAll, "triangle_count") => "Number of triangles incident to the vertex.",

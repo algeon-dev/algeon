@@ -67,7 +67,8 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
     let mut partition_inputs: Option<Vec<Vec<SourceAdjacentPartitionInput>>> = None;
     let mut aggregate_outputs = Vec::new();
 
-    let source_batches = source_adjacent_raw_source_batches(execution.context(), bounded, chunks);
+    let source_batches =
+        source_adjacent_raw_source_batches(execution.context().memory_control_policy(), bounded, chunks);
     let mut committed_source_batches = Vec::with_capacity(source_batches.len());
     for batch in source_batches {
         let raw_inputs = match execute_source_adjacent_raw_source_batch(execution, bounded, batch) {
@@ -243,7 +244,7 @@ fn release_raw_source_inputs_reverse(mut inputs: Vec<(Vec<SourceChunk>, RawSourc
 }
 
 fn source_adjacent_raw_source_batches(
-    context: &ExecutionContext,
+    memory_policy: MemoryControlPolicy,
     bounded: &BoundedPlan<'_>,
     chunks: &[SourceChunk],
 ) -> Vec<SourceChunkBatch> {
@@ -258,8 +259,14 @@ fn source_adjacent_raw_source_batches(
     {
         return singleton_source_chunk_batches(chunks);
     }
+    // Grouped aggregates hash-partition each raw batch by group key, so one
+    // low-cardinality key concentrates a whole batch into a single partition
+    // that is retained while every partition slices. Cap grouped raws at the
+    // grouped target instead of the general cap so the worst-case partition
+    // stays sliceable inside the attempt grant.
+    let grouped = is_source_adjacent_grouped_aggregate(bounded);
     let max_batch_source_read_bytes = BoundedSourceBatchingPolicy::default()
-        .source_adjacent_raw_source_batch_target_bytes(context.memory_control_policy(), false, false);
+        .source_adjacent_raw_source_batch_target_bytes(memory_policy, false, grouped);
     plan_source_chunk_batches(chunks, max_batch_source_read_bytes)
 }
 
@@ -1008,5 +1015,139 @@ mod tests {
         assert!(!source_adjacent_partition_aggregate_should_split(2, 101, 0, 100));
         assert!(!source_adjacent_partition_aggregate_should_split(2, 100, 1, 100));
         assert!(source_adjacent_partition_aggregate_should_split(2, 101, 1, 100));
+    }
+
+    #[test]
+    fn grouped_aggregate_raw_batches_respect_grouped_target() {
+        use std::sync::Arc;
+
+        use arrow::datatypes::{DataType, Field, Schema};
+
+        use crate::{
+            execution_contracts::SourceChunkPlanningMode,
+            expr::{AggregateSpec, Expr, LiteralValue},
+            plan::{AggregateNode, FilterNode, NodeId},
+            source::{LocalParquetFile, LocalParquetSource, ParquetSourceLocation, ResolvedParquetSource},
+        };
+
+        const CHUNK_BYTES: u64 = 300 * 1024 * 1024;
+        const GROUPED_TARGET_BYTES: u64 =
+            BoundedSourceBatchingPolicy::DEFAULT_SOURCE_ADJACENT_GROUPED_AGGREGATE_TARGET_CHUNK_BYTES;
+
+        fn batchable_chunk(index: usize, bytes: u64) -> SourceChunk {
+            SourceChunk {
+                source_node_id: NodeId::from_index_for_internal_use(1),
+                chunk_index: index,
+                file_index: 0,
+                location: ParquetSourceLocation::LocalPath(std::path::PathBuf::from("part-0.parquet")),
+                path: std::path::PathBuf::from("part-0.parquet"),
+                resolved_source: ResolvedParquetSource::local_kvikio("part-0.parquet"),
+                stable_id: "file-0".to_string(),
+                row_group_indexes: vec![index],
+                reads_all_row_groups: false,
+                known_file_bytes: Some(bytes),
+                known_row_group_bytes: Some(bytes),
+                known_projected_compressed_bytes: Some(bytes),
+                known_projected_uncompressed_bytes: Some(bytes),
+                known_pure_filter_compressed_bytes: Some(0),
+                known_pure_filter_uncompressed_bytes: Some(0),
+                estimated_chunk_bytes: Some(bytes),
+                estimated_source_read_bytes: Some(bytes),
+                exact_source_read_preflight_bytes: Some(bytes),
+                source_file_row_groups: None,
+                source_file_row_group_bytes: None,
+                source_file_projected_compressed_bytes: None,
+                source_file_projected_uncompressed_bytes: None,
+                source_file_pure_filter_compressed_bytes: None,
+                source_file_pure_filter_uncompressed_bytes: None,
+                source_file_row_group_rows: None,
+                reader_decimal_types: Vec::new(),
+                reader_decimal_types_footer_verified: false,
+                read_columns: vec!["k".to_string()],
+                partition_values: Vec::new(),
+                zero_column_count: false,
+                known_row_count: Some(1),
+                scan_limit_rows: None,
+                size_estimate_based: false,
+                source_batching_reason: None,
+                source_chunk_planning_mode: SourceChunkPlanningMode::Conservative,
+                source_chunk_planning_reason: "test_policy".to_string(),
+            }
+        }
+
+        fn plan_with_group_exprs<'a>(
+            source: &'a LocalParquetSource,
+            filter: &'a FilterNode,
+            aggregate: &'a AggregateNode,
+            schema: &'a arrow::datatypes::SchemaRef,
+        ) -> BoundedPlan<'a> {
+            BoundedPlan {
+                source_id: NodeId::from_index_for_internal_use(1),
+                source,
+                pre_filter_projections: Vec::new(),
+                filter: Some(filter),
+                post_filter_projections: Vec::new(),
+                aggregate_id: NodeId::from_index_for_internal_use(3),
+                aggregate_input_schema: schema,
+                aggregate: (aggregate, schema),
+                post_aggregate_stages: Vec::new(),
+                sort: None,
+                post_sort_projections: Vec::new(),
+                limit: None,
+            }
+        }
+
+        let schema: arrow::datatypes::SchemaRef = Arc::new(Schema::new(vec![Field::new("k", DataType::Utf8, true)]));
+        let source = LocalParquetSource::from_files(
+            vec![LocalParquetFile::new("/tmp/grouped.parquet")],
+            Arc::clone(&schema),
+            vec!["k".to_string()],
+        );
+        let filter = FilterNode {
+            input: NodeId::from_index_for_internal_use(1),
+            predicate: Expr::Literal(LiteralValue::Boolean(true)),
+        };
+        let grouped = AggregateNode {
+            input: NodeId::from_index_for_internal_use(2),
+            spec: AggregateSpec::new(vec![Expr::Literal(LiteralValue::Utf8("k".to_string()))], Vec::new()),
+        };
+        let ungrouped = AggregateNode {
+            input: NodeId::from_index_for_internal_use(2),
+            spec: AggregateSpec::new(Vec::new(), Vec::new()),
+        };
+        let policy = MemoryControlPolicy::Bounded {
+            device_budget_bytes: 94 * 1024 * 1024 * 1024,
+            max_source_chunk_bytes: 32 * 1024 * 1024 * 1024,
+            max_row_groups_per_chunk: 1024,
+            max_retry_attempts: 4,
+            min_retry_chunk_row_groups: 1,
+        };
+        let chunks: Vec<SourceChunk> = (0..8).map(|index| batchable_chunk(index, CHUNK_BYTES)).collect();
+
+        // Grouped aggregates hash-partition each raw batch by group key, so a
+        // low-cardinality key concentrates a whole batch into one partition.
+        // Batches must stay at the grouped target even when the configured
+        // chunk cap is much larger.
+        let grouped_batches = source_adjacent_raw_source_batches(
+            policy,
+            &plan_with_group_exprs(&source, &filter, &grouped, &schema),
+            &chunks,
+        );
+        assert_eq!(grouped_batches.len(), chunks.len());
+        for batch in &grouped_batches {
+            assert!(batch.is_singleton());
+            assert!(
+                batch.estimated_source_read_bytes.is_some_and(|bytes| bytes <= GROUPED_TARGET_BYTES),
+                "grouped raw batch exceeds grouped target: {batch:?}"
+            );
+        }
+
+        // The general cap still applies away from grouped aggregates.
+        let ungrouped_batches = source_adjacent_raw_source_batches(
+            policy,
+            &plan_with_group_exprs(&source, &filter, &ungrouped, &schema),
+            &chunks,
+        );
+        assert_eq!(ungrouped_batches.len(), 2);
     }
 }

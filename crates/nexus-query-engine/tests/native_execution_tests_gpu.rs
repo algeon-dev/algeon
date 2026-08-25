@@ -65,7 +65,8 @@ use nexus_query_engine::{
     plan::GraphConstructionOptions, plan::GraphConstructionPolicy, plan::GraphEdgeColumnBindings,
     plan::GraphEdgePredicateInput, plan::GraphPageRankParams, plan::GraphPageRankPersonalizationInput,
     plan::GraphPersonalizedPageRankParams, plan::GraphPredicateInput, plan::GraphResidencyPlanAnalysis,
-    plan::GraphSimilarityParams, plan::GraphVertexPairInput, plan::graph_residency_descriptor_for_edge_plan,
+    plan::GraphSccParams, plan::GraphSimilarityParams, plan::GraphVertexPairInput, plan::GraphWccParams,
+    plan::graph_residency_descriptor_for_edge_plan,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 

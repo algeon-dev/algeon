@@ -774,9 +774,10 @@ pub enum AttemptEvidenceProvenance {
     AttemptExact,
     /// The value is a bounded snapshot of the selected CUDA device only.
     DeviceSnapshot,
-    /// The value was sampled after the attempt reached its terminal boundary;
-    /// it is not reconstructed as the instant of the original failure.
-    SampledAfterFailure,
+    /// The value was sampled after the attempt reached its terminal boundary,
+    /// whatever its outcome; it is not reconstructed as the instant of an
+    /// earlier failure. Outcome lives in the report's terminal fields.
+    SampledAtTerminalBoundary,
     /// No truthful value was available at the terminal release commit.
     Unavailable,
 }
@@ -801,8 +802,8 @@ impl<T> AttemptEvidenceField<T> {
         Self { provenance: AttemptEvidenceProvenance::DeviceSnapshot, value: Some(value) }
     }
 
-    pub const fn sampled_after_failure(value: T) -> Self {
-        Self { provenance: AttemptEvidenceProvenance::SampledAfterFailure, value: Some(value) }
+    pub const fn sampled_at_terminal_boundary(value: T) -> Self {
+        Self { provenance: AttemptEvidenceProvenance::SampledAtTerminalBoundary, value: Some(value) }
     }
 
     pub const fn unavailable() -> Self {
