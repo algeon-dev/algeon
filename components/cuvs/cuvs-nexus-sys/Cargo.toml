@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 links = "cuvs_c"
 description = "Generated low-level FFI bindings to the NVIDIA cuVS C API"
-license-file = "../LICENSE"
+license-file = "../../../LICENSE"
 repository.workspace = true
 homepage.workspace = true
 readme = "../README.md"
@@ -17,6 +17,9 @@ workspace = true
 
 [lib]
 name = "cuvs_sys"
+
+[package.metadata.bindgen-cli]
+version = "0.72.1"
 
 [build-dependencies]
 anyhow.workspace = true

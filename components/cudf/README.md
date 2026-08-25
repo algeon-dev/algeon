@@ -31,6 +31,20 @@ two locations only with matching `CUDF_CPP_BUILD_DIR` and `CUDF_INSTALL_DIR`
 selectors. The root `Cargo.lock`, `.gitmodules`, and `scripts/check_all.sh`
 remain canonical for every component.
 
+## Focused validation
+
+```bash
+cargo clippy -p cudf-nexus -p cudf-nexus-sys -p rapids-interop \
+  --all-targets --all-features -- -D warnings
+cargo +nightly fmt --all --check
+flock /tmp/cudf-gpu.lock cargo nextest run \
+  -p cudf-nexus -p cudf-nexus-sys -p rapids-interop \
+  --all-features --no-fail-fast
+```
+
+Use `scripts/dev/bindings.sh cudf [--check]` for the two checked-in binding
+surfaces; consumer builds never run bindgen.
+
 ## Migration provenance
 
 - Wrapper repository and archive: <https://github.com/DataFusion-Nexus/cudf-nexus>

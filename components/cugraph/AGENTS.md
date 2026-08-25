@@ -90,16 +90,11 @@ CUVS_INSTALL_DIR="$PWD/target/native/cuvs-install" \
 CUGRAPH_CMAKE_BUILD_DIR="$PWD/target/native/cugraph-build" \
 scripts/build/build_libcugraph.sh
 
-cargo check --workspace --all-features --all-targets
-cargo clippy --workspace --all-features --all-targets -- -D warnings
-cargo +nightly fmt --all
-
-# Focused contract loops
-cargo test -p cugraph-nexus-sys --all-features --test build_path_resolution
-flock /tmp/cudf-gpu.lock cargo test -p cugraph-nexus --all-features --test gpu_algorithms
-
-# Full workspace surface, with the canonical loader environment from README.md
-flock /tmp/cudf-gpu.lock cargo test --workspace --all-features --no-fail-fast
+cargo clippy -p cugraph-nexus -p cugraph-nexus-sys \
+  --all-targets --all-features -- -D warnings
+cargo +nightly fmt --all --check
+flock /tmp/cudf-gpu.lock cargo nextest run \
+  -p cugraph-nexus -p cugraph-nexus-sys --all-features --no-fail-fast
 ```
 
 Run focused checks first, then broaden validation with the change's blast

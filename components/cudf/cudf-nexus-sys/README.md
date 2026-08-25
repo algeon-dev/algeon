@@ -61,8 +61,8 @@ From the repository root, regenerate after a C-header ABI change and verify
 that checked-in output is current with these exact commands:
 
 ```bash
-./components/cudf/cudf-nexus-sys/bindings/generate.sh
-./components/cudf/cudf-nexus-sys/bindings/generate.sh --check
+scripts/dev/bindings.sh cudf
+scripts/dev/bindings.sh cudf --check
 ```
 
 Do not edit generated binding files by hand.
@@ -78,7 +78,7 @@ CUDF_INSTALL_DIR="$PWD/target/native/cudf-install" \
   cargo check -p cudf-nexus-sys --all-features
 CUDF_INSTALL_DIR="$PWD/target/native/cudf-install" \
   cargo doc -p cudf-nexus-sys --all-features --no-deps
-./components/cudf/cudf-nexus-sys/bindings/generate.sh --check
+scripts/dev/bindings.sh cudf --check
 
 flock /tmp/cudf-gpu.lock \
   env CUDF_INSTALL_DIR="$PWD/target/native/cudf-install" \

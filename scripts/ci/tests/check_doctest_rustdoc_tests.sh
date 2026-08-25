@@ -13,7 +13,7 @@ mkdir -p "${tmp_dir}/bin" "${tmp_dir}/phase-logs"
 cat >"${tmp_dir}/bin/bash" <<'SH'
 #!/usr/bin/bash
 case "${1:-}" in
-  scripts/build/check_cpu_packaging_policy.sh | scripts/build/check_build_support.sh | scripts/ci/tests/check_doctest_report_tests.sh | scripts/ci/tests/check_phase_test_counts_tests.sh | scripts/ci/tests/check_gpu_test_lane_tests.sh | scripts/ci/check_gpu_test_lane.sh | scripts/ci/tests/check_doctest_rustdoc_tests.sh | scripts/ci/tests/check_gpu_scheduling_tests.sh | scripts/ci/tests/check_clean_target_artifacts_tests.sh | scripts/ci/tests/check_pass_as_skip_policy_tests.sh | scripts/ci/tests/check_public_api_surface_tests.sh | scripts/ci/check_public_api_surface.sh)
+  scripts/build/check_cpu_packaging_policy.sh | scripts/build/check_build_support.sh | scripts/ci/check_native_sources.sh | scripts/ci/check_component_packages.sh | scripts/dev/bindings.sh | scripts/ci/tests/check_doctest_report_tests.sh | scripts/ci/tests/check_phase_test_counts_tests.sh | scripts/ci/tests/check_gpu_test_lane_tests.sh | scripts/ci/tests/check_native_sources_tests.sh | scripts/ci/check_gpu_test_lane.sh | scripts/ci/tests/check_doctest_rustdoc_tests.sh | scripts/ci/tests/check_gpu_scheduling_tests.sh | scripts/ci/tests/check_clean_target_artifacts_tests.sh | scripts/ci/tests/check_pass_as_skip_policy_tests.sh | scripts/ci/tests/check_public_api_surface_tests.sh | scripts/ci/check_public_api_surface.sh)
     exit 0
     ;;
 esac
@@ -197,15 +197,15 @@ assert_contains "${tmp_dir}/multi.output" "DOCTEST HARNESS: name=first_crate"
 assert_contains "${tmp_dir}/multi.output" "Doctest accounting preflight for final aggregation: command_status=0 parse_status=ok harnesses=2 executed=3 passed=3 failed=0 ignored=1 measured=0 filtered=6"
 assert_contains "${tmp_dir}/multi.output" "Doctest accounting final: command_status=0 parse_status=ok harnesses=2 executed=3 passed=3 failed=0 ignored=1 measured=0 filtered=6"
 assert_contains "${tmp_dir}/multi.log" "flock </tmp/cudf-gpu.lock> <cargo> <test> <--workspace> <--all-features> <--doc> <--no-fail-fast>"
-assert_contains "${tmp_dir}/multi.log" "flock </tmp/cudf-gpu.lock> <cargo> <test> <-p> <cuvs-nexus> <-p> <cuvs-nexus-sys> <--all-features> <--no-fail-fast>"
+assert_contains "${tmp_dir}/multi.log" "flock </tmp/cudf-gpu.lock> <cargo> <nextest> <run> <-P> <default> <--workspace> <--all-features> <-E> <group(gpu)>"
 assert_contains "${tmp_dir}/multi.log" "cargo rustdocflags=-A warnings -Cdebuginfo=0 -D warnings <doc> <--workspace> <--all-features> <--no-deps> <--keep-going>"
 assert_phase_contains "${tmp_dir}/multi.output" doctests "0.100s | PASS | harnesses=2 executed=3 passed=3 failed=0 ignored=1 measured=0 filtered=6 | - | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/doctests.log | n/a"
 assert_phase_contains "${tmp_dir}/multi.output" doctests "doctests | flock /tmp/cudf-gpu.lock cargo test --workspace --all-features --doc --no-fail-fast | 0.100s"
 assert_phase_contains "${tmp_dir}/multi.output" rustdoc "0.100s | PASS | - | - | - | all | ${tmp_dir}/phase-logs/rustdoc.log | MISS"
 assert_phase_contains "${tmp_dir}/multi.output" rustdoc "rustdoc | RUSTDOCFLAGS='-A warnings -Cdebuginfo=0 -D warnings' cargo doc --workspace --all-features --no-deps --keep-going | 0.100s"
 assert_contains "${tmp_dir}/phase-logs/doctests.log" "RAW_DOCTEST_STDERR"
-if [[ $(grep -c '^flock ' "${tmp_dir}/multi.log") -ne 4 ]]; then
-  echo "FAIL: expected shared, cuVS, exclusive, and doctest flock invocations" >&2
+if [[ $(grep -c '^flock ' "${tmp_dir}/multi.log") -ne 3 ]]; then
+  echo "FAIL: expected shared, exclusive, and doctest flock invocations" >&2
   sed 's/^/  /' "${tmp_dir}/multi.log" >&2
   exit 1
 fi

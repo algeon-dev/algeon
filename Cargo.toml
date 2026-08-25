@@ -32,7 +32,6 @@ members = [
   "components/cugraph/cugraph-nexus-sys",
   "components/cuvs/cuvs-nexus",
   "components/cuvs/cuvs-nexus-sys",
-  "components/cuvs/tools/xtask",
 ]
 default-members = [
   ".",
@@ -178,44 +177,34 @@ tempfile = { workspace = true }
 
 [[test]]
 name = "iceberg_tests"
-path = "tests/iceberg_tests.rs"
 required-features = ["iceberg"]
 
 [[test]]
 name = "cugraph_tests"
-path = "tests/cugraph_tests.rs"
 required-features = ["cugraph"]
 
 [[test]]
 name = "root_gpu_tests"
-path = "tests/root_gpu_tests.rs"
 
 [[test]]
 name = "p6_device_identity_tests"
-path = "tests/p6_device_identity_tests.rs"
 required-features = ["nvml"]
 
 [[test]]
 name = "cpu_contract_tests"
-path = "tests/cpu_contract_tests.rs"
 
 [[test]]
 name = "native_exec_tests"
-path = "tests/native_exec_tests.rs"
 
 [[test]]
 name = "native_planning_tests"
-path = "tests/native_planning_tests.rs"
 
 [[test]]
 name = "native_runtime_pruning_tests"
-path = "tests/native_runtime_pruning_tests.rs"
 
 [[test]]
 name = "native_tpcds_parity_tests"
-path = "tests/native_tpcds_parity_tests.rs"
 required-features = ["bench-support"]
 
 [[test]]
 name = "rapids_build_support_tests"
-path = "tests/rapids_build_support_tests.rs"
