@@ -1,3 +1,0 @@
-[submodule "cudf"]
-	path = cudf
-	url = https://github.com/DataFusion-Nexus/cudf.git

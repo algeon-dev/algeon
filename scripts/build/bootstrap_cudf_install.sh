@@ -16,12 +16,12 @@
 # building libcudf and before building cugraph-sys.
 #
 # Env:
-#   CUDF_INSTALL_DIR    cudf install prefix (default: ../cudf-nexus/cudf-install)
-#   CUDF_CPP_BUILD_DIR  cudf C++ build dir   (default: <prefix>/../cudf/cpp/build)
+#   CUDF_INSTALL_DIR    cudf install prefix (default: target/native/cudf-install)
+#   CUDF_CPP_BUILD_DIR  cudf C++ build dir   (default: target/native/cudf-build)
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-cudf_install_dir="${CUDF_INSTALL_DIR:-$(cd "${repo_root}/.." && pwd)/cudf-nexus/cudf-install}"
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+cudf_install_dir="${CUDF_INSTALL_DIR:-${repo_root}/target/native/cudf-install}"
 
 if [[ ! -d "${cudf_install_dir}" ]]; then
     echo "error: cudf install prefix '${cudf_install_dir}' does not exist." >&2
@@ -30,9 +30,9 @@ if [[ ! -d "${cudf_install_dir}" ]]; then
 fi
 cudf_install_dir="$(cd "${cudf_install_dir}" && pwd -P)"
 
-# The cudf build tree (with its CPM _deps) sits next to the install prefix by
-# convention: <prefix>/../cudf/cpp/build. Allow an explicit override.
-cudf_build_dir="${CUDF_CPP_BUILD_DIR:-$(cd "${cudf_install_dir}/.." && pwd)/cudf/cpp/build}"
+# The cuDF source build tree owns its CPM _deps under the imported native
+# source. Allow an explicit override for a preconfigured build tree.
+cudf_build_dir="${CUDF_CPP_BUILD_DIR:-${repo_root}/target/native/cudf-build}"
 
 deps_dir="${cudf_build_dir}/_deps"
 
@@ -44,7 +44,7 @@ package_present() {
 require_deps_dir() {
     if [[ ! -d "${deps_dir}" ]]; then
         echo "error: cudf build tree '${deps_dir}' not found, but the cudf install prefix is" >&2
-        echo "missing required CMake packages. Rebuild libcudf (keeping cudf/cpp/build intact)" >&2
+        echo "missing required CMake packages. Rebuild libcudf (keeping ${cudf_build_dir} intact)" >&2
         echo "or set CUDF_CPP_BUILD_DIR to the cudf C++ build directory, then re-run." >&2
         exit 1
     fi

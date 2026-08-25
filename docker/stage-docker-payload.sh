@@ -5,7 +5,7 @@
 # WHY THIS SCRIPT EXISTS
 # ----------------------
 # datafusion-nexus links against FORKED RAPIDS C++ libraries (cuDF, cuGraph,
-# RMM, cuVS) that are built locally from sibling checkouts. They are NOT the
+# RMM, cuVS) that are built from the pinned monorepo sources. They are NOT the
 # stock libraries shipped in the official `rapidsai/*` or `nvidia/cuda` images,
 # so the image cannot pull them from a base layer — we must bundle the exact
 # `.so` files this binary was linked against. This script collects them.
@@ -23,10 +23,8 @@
 # the base image.
 #
 # Prerequisites:
-#   - Sibling path deps resolved and BUILT:
-#       ../cudf-nexus/cudf-install/lib   (forked libcudf + friends)
-#       ../cuvs-nexus/cuvs-install/lib (canonical libcuvs + libcuvs_c)
-#       ../cugraph-nexus/cugraph/cpp/build (forked libcugraph, if cugraph)
+#   - Monorepo native artifacts built under target/native, or selected through
+#     the explicit native environment variables below.
 #   - `cargo build --release` succeeds for the chosen FEATURES
 #   - patchelf (recommended; rewrites RUNPATHs so the container is hermetic)
 #
@@ -69,10 +67,9 @@ esac
 
 python3 "$POLICY_HELPER" --policy "$POLICY_FILE" check-env --profile "$CPU_PACKAGE_PROFILE"
 
-# Sibling forked-lib locations (override via env if your layout differs).
-CUDF_INSTALL_DIR="${CUDF_INSTALL_DIR:-$REPO_ROOT/../cudf-nexus/cudf-install}"
-CUVS_INSTALL_DIR="${CUVS_INSTALL_DIR:-$REPO_ROOT/../cuvs-nexus/cuvs-install}"
-CUGRAPH_CMAKE_BUILD_DIR="${CUGRAPH_CMAKE_BUILD_DIR:-$REPO_ROOT/../cugraph-nexus/cugraph/cpp/build}"
+CUDF_INSTALL_DIR="${CUDF_INSTALL_DIR:-$REPO_ROOT/target/native/cudf-install}"
+CUVS_INSTALL_DIR="${CUVS_INSTALL_DIR:-$REPO_ROOT/target/native/cuvs-install}"
+CUGRAPH_CMAKE_BUILD_DIR="${CUGRAPH_CMAKE_BUILD_DIR:-$REPO_ROOT/target/native/cugraph-build}"
 
 # /app/lib is where the Dockerfile places the runtime libraries.
 RUNTIME_LIB_DIR="/app/lib"

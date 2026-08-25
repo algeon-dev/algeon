@@ -19,6 +19,7 @@ DEFAULT_NEXTEST = ROOT / ".config" / "nextest.toml"
 GENERATED_BEGIN = "# BEGIN GENERATED TEST-LANE OVERRIDES — scripts/ci/test_lane_policy.py"
 GENERATED_END = "# END GENERATED TEST-LANE OVERRIDES — scripts/ci/test_lane_policy.py"
 FULL_ID = re.compile(r"^[a-z0-9_-]+(?:::(?:bin/)?[A-Za-z0-9_-]+)?$")
+TARGET_KINDS = frozenset({"lib", "test", "bin"})
 
 
 class LanePolicyError(RuntimeError):
@@ -29,12 +30,20 @@ class InventoryError(RuntimeError):
     """The nextest inventory command succeeded but its output is unusable."""
 
 
+def target_kind_for_id(binary_id: str) -> str:
+    if "::" not in binary_id:
+        return "lib"
+    target = binary_id.split("::", 1)[1]
+    return "bin" if target.startswith("bin/") else "test"
+
+
 @dataclass(frozen=True)
 class LaneEntry:
     binary_id: str
     lane: str
     reason: str
     resource_class: str | None
+    binary_name_override: str | None = None
 
     @property
     def package(self) -> str:
@@ -42,16 +51,35 @@ class LaneEntry:
 
     @property
     def binary_name(self) -> str:
+        if self.binary_name_override is not None:
+            return self.binary_name_override
         if "::" not in self.binary_id:
             return self.package.replace("-", "_")
         target = self.binary_id.split("::", 1)[1]
         return target.removeprefix("bin/")
+
+    @property
+    def target_kind(self) -> str:
+        return target_kind_for_id(self.binary_id)
+
+    @property
+    def target_key(self) -> tuple[str, str, str]:
+        return (self.package, self.binary_name, self.target_kind)
 
 
 @dataclass(frozen=True)
 class InventoryBinary:
     binary_id: str
     binary_name: str
+    target_kind: str
+
+    @property
+    def package(self) -> str:
+        return self.binary_id.split("::", 1)[0]
+
+    @property
+    def target_key(self) -> tuple[str, str, str]:
+        return (self.package, self.binary_name, self.target_kind)
 
 
 def _load_toml(path: Path, description: str) -> dict[str, Any]:
@@ -75,12 +103,12 @@ def load_catalog(path: Path) -> list[LaneEntry]:
 
     entries: list[LaneEntry] = []
     seen_ids: set[str] = set()
-    seen_names: dict[str, str] = {}
+    seen_targets: dict[tuple[str, str, str], str] = {}
     for index, raw in enumerate(raw_entries):
         location = f"binary[{index}]"
         if not isinstance(raw, dict):
             raise LanePolicyError(f"{location} must be a table")
-        allowed = {"id", "lane", "reason", "resource_class"}
+        allowed = {"id", "lane", "reason", "resource_class", "binary_name"}
         unknown = set(raw) - allowed
         if unknown:
             raise LanePolicyError(f"{location} has unknown keys: {', '.join(sorted(unknown))}")
@@ -92,6 +120,7 @@ def load_catalog(path: Path) -> list[LaneEntry]:
         lane = raw["lane"]
         reason = raw["reason"].strip()
         resource_class = raw.get("resource_class")
+        binary_name_override = raw.get("binary_name")
         if not FULL_ID.fullmatch(binary_id):
             raise LanePolicyError(f"{location}.id is not a complete nextest binary id: {binary_id!r}")
         if binary_id in seen_ids:
@@ -102,15 +131,22 @@ def load_catalog(path: Path) -> list[LaneEntry]:
             raise LanePolicyError(f"CPU entry {binary_id} must not declare resource_class")
         if lane == "gpu" and resource_class not in {"shared", "exclusive"}:
             raise LanePolicyError(f"GPU entry {binary_id} requires resource_class=shared or exclusive")
+        if binary_name_override is not None and (
+            not isinstance(binary_name_override, str)
+            or not binary_name_override.strip()
+            or any(char in binary_name_override for char in "\t\r\n")
+        ):
+            raise LanePolicyError(f"{location}.binary_name must be a non-empty single-line string")
 
-        entry = LaneEntry(binary_id, lane, reason, resource_class)
-        previous = seen_names.get(entry.binary_name)
+        entry = LaneEntry(binary_id, lane, reason, resource_class, binary_name_override)
+        previous = seen_targets.get(entry.target_key)
         if previous is not None:
             raise LanePolicyError(
-                f"catalog binary-name collision {entry.binary_name!r}: {previous} and {binary_id}"
+                "catalog target collision "
+                f"{entry.package!r}/{entry.binary_name!r} kind={entry.target_kind}: {previous} and {binary_id}"
             )
         seen_ids.add(binary_id)
-        seen_names[entry.binary_name] = binary_id
+        seen_targets[entry.target_key] = binary_id
         entries.append(entry)
 
     if not any(entry.resource_class == "exclusive" for entry in entries):
@@ -142,7 +178,7 @@ def load_inventory(path: Path) -> list[InventoryBinary]:
         raise InventoryError("nextest JSON inventory contained no test binaries")
 
     records: list[InventoryBinary] = []
-    seen_names: dict[str, str] = {}
+    seen_targets: dict[tuple[str, str, str], str] = {}
     for inventory_key, raw in binaries.items():
         if not isinstance(raw, dict):
             raise InventoryError(f"malformed nextest JSON inventory: rust-binaries[{inventory_key!r}] must be an object")
@@ -156,20 +192,31 @@ def load_inventory(path: Path) -> list[InventoryBinary]:
             )
         if not isinstance(binary_name, str) or not binary_name or any(char in binary_name for char in "\t\r\n"):
             raise InventoryError(f"malformed nextest JSON inventory: invalid binary-name for {binary_id!r}")
-        previous = seen_names.get(binary_name)
+        target_kind = raw.get("kind")
+        if not isinstance(target_kind, str) or target_kind not in TARGET_KINDS:
+            raise InventoryError(f"malformed nextest JSON inventory: invalid target kind for {binary_id!r}")
+        expected_kind = target_kind_for_id(binary_id)
+        if target_kind != expected_kind:
+            raise InventoryError(
+                f"malformed nextest JSON inventory: target kind mismatch for {binary_id!r}: "
+                f"expected {expected_kind!r}, got {target_kind!r}"
+            )
+        record = InventoryBinary(binary_id, binary_name, target_kind)
+        previous = seen_targets.get(record.target_key)
         if previous is not None:
             raise LanePolicyError(
-                f"test-binary name collision {binary_name!r}: {previous} and {binary_id}"
+                "test-binary target collision "
+                f"{record.package!r}/{binary_name!r} kind={target_kind}: {previous} and {binary_id}"
             )
-        seen_names[binary_name] = binary_id
-        records.append(InventoryBinary(binary_id, binary_name))
+        seen_targets[record.target_key] = binary_id
+        records.append(record)
     return sorted(records, key=lambda record: record.binary_id)
 
 
 def merge_inventories(inventories: list[list[InventoryBinary]]) -> list[InventoryBinary]:
     """Union one or more nextest inventories.
 
-    Matching binary-id + binary-name pairs from distinct inventories coalesce so
+    Matching binary-id + binary-name + target-kind triples from distinct inventories coalesce so
     the harness can validate default-member and explicit bench surfaces both
     before and after bench leaves default-members. Conflicting names fail closed.
     """
@@ -177,24 +224,28 @@ def merge_inventories(inventories: list[list[InventoryBinary]]) -> list[Inventor
         raise InventoryError("at least one nextest JSON inventory is required")
 
     by_id: dict[str, InventoryBinary] = {}
-    seen_names: dict[str, str] = {}
+    seen_targets: dict[tuple[str, str, str], str] = {}
     for records in inventories:
         for record in records:
             existing = by_id.get(record.binary_id)
             if existing is not None:
-                if existing.binary_name != record.binary_name:
+                if (existing.binary_name, existing.target_kind) != (record.binary_name, record.target_kind):
                     raise LanePolicyError(
-                        "conflicting binary-name for "
-                        f"{record.binary_id}: {existing.binary_name!r} vs {record.binary_name!r}"
+                        "conflicting binary metadata for "
+                        f"{record.binary_id}: "
+                        f"{existing.binary_name!r}/{existing.target_kind} vs "
+                        f"{record.binary_name!r}/{record.target_kind}"
                     )
                 continue
-            previous = seen_names.get(record.binary_name)
+            previous = seen_targets.get(record.target_key)
             if previous is not None:
                 raise LanePolicyError(
-                    f"test-binary name collision {record.binary_name!r}: {previous} and {record.binary_id}"
+                    "test-binary target collision "
+                    f"{record.package!r}/{record.binary_name!r} kind={record.target_kind}: "
+                    f"{previous} and {record.binary_id}"
                 )
             by_id[record.binary_id] = record
-            seen_names[record.binary_name] = record.binary_id
+            seen_targets[record.target_key] = record.binary_id
 
     if not by_id:
         raise InventoryError("nextest JSON inventory contained no test binaries")
@@ -204,7 +255,7 @@ def merge_inventories(inventories: list[list[InventoryBinary]]) -> list[Inventor
 def filter_expression(entry: LaneEntry) -> str:
     if "::" not in entry.binary_id:
         return f"(package({entry.package}) & kind(lib))"
-    return f"(package({entry.package}) & binary({entry.binary_name}))"
+    return f"(package({entry.package}) & kind({entry.target_kind}) & binary({entry.binary_name}))"
 
 
 def filter_block(entries: list[LaneEntry]) -> str:
@@ -298,6 +349,12 @@ def validate_inventory(catalog: list[LaneEntry], inventory: list[InventoryBinary
         if expected_name != actual_name:
             problems.append(
                 f"binary-name mismatch for {binary_id}: catalog derives {expected_name!r}, inventory reports {actual_name!r}"
+            )
+        expected_kind = catalog_by_id[binary_id].target_kind
+        actual_kind = inventory_by_id[binary_id].target_kind
+        if expected_kind != actual_kind:
+            problems.append(
+                f"target-kind mismatch for {binary_id}: catalog derives {expected_kind!r}, inventory reports {actual_kind!r}"
             )
     if problems:
         raise LanePolicyError("\n".join(problems))

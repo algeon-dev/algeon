@@ -42,6 +42,23 @@ pub(crate) const NATIVE_BUILD_ENV_VARS: &[&str] = &[
     "CARGO_FEATURE_TEST_HOOKS",
 ];
 
+fn default_cudf_native_dir(manifest_dir: &Path, name: &str) -> Result<PathBuf, String> {
+    manifest_dir
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .map(|repo_root| repo_root.join("target/native").join(name))
+        .ok_or_else(|| format!("Could not determine the repository root from '{}'.", manifest_dir.display()))
+}
+
+pub(crate) fn default_cudf_install_dir(manifest_dir: &Path) -> Result<PathBuf, String> {
+    default_cudf_native_dir(manifest_dir, "cudf-install")
+}
+
+pub(crate) fn default_cudf_build_dir(manifest_dir: &Path) -> Result<PathBuf, String> {
+    default_cudf_native_dir(manifest_dir, "cudf-build")
+}
+
 /// Recursively emit `cargo:rerun-if-changed` for every file below `dir`.
 pub(crate) fn rerun_if_changed_recursive(dir: &Path) {
     for entry in fs::read_dir(dir).unwrap_or_else(|error| panic!("failed to read {}: {error}", dir.display())) {

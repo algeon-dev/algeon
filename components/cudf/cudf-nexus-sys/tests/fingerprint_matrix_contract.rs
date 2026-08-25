@@ -1,7 +1,7 @@
 //! Static fingerprint-matrix contracts for cudf-sys native rebuilds.
 //!
 //! Live Cargo fingerprint reasons are validated by
-//! `scripts/check_fingerprint_matrix.sh` when a configured RAPIDS install is
+//! `scripts/build/check_fingerprint_matrix.sh` when a configured RAPIDS install is
 //! available. This suite locks the rebuild matrix that script enforces so the
 //! contract cannot drift back to ambient PATH invalidation.
 
@@ -70,7 +70,7 @@ fn selected_runtime_libraries_remain_identity_tracked() {
 }
 
 #[test]
-fn fingerprint_matrix_install_prefix_ignores_unrelated_sibling_cache() {
+fn fingerprint_matrix_install_prefix_tracks_only_explicit_build_cache() {
     let manifest_dir = Path::new("/tmp/cudf-sys-manifest");
     let install = Path::new("/opt/cudf-install");
     let other_build = PathBuf::from("/tmp/other-cpp-build");
@@ -79,27 +79,28 @@ fn fingerprint_matrix_install_prefix_ignores_unrelated_sibling_cache() {
         build_support::cmake::active_cudf_cmake_cache(manifest_dir, Some(install), None).is_none(),
         "CUDF_INSTALL_DIR discovery must leave an unrelated source-tree CMakeCache untracked"
     );
-    assert!(
-        build_support::cmake::active_cudf_cmake_cache(manifest_dir, Some(install), Some(&other_build)).is_none(),
-        "install-prefix mode must ignore every inactive build-dir cache"
+    assert_eq!(
+        build_support::cmake::active_cudf_cmake_cache(manifest_dir, Some(install), Some(&other_build)),
+        Some(other_build.join("CMakeCache.txt")),
+        "explicit build metadata must remain part of install-prefix discovery"
     );
 }
 
 #[test]
 fn fingerprint_matrix_build_tree_tracks_active_cache_only() {
     let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let default_build = manifest_dir.join("../cudf/cpp/build");
+    let default_build = build_support::default_cudf_build_dir(manifest_dir).unwrap();
     let other_build = manifest_dir.join("non-default-build");
 
     assert!(
         build_support::cmake::active_cudf_cmake_cache(manifest_dir, None, None)
-            == Some(build_support::cmake::default_sibling_cudf_cmake_cache(manifest_dir)),
-        "no discovery override still admits the default sibling cache"
+            == Some(build_support::cmake::default_cudf_cmake_cache(manifest_dir)),
+        "no discovery override must track the canonical monorepo build cache"
     );
     assert!(
         build_support::cmake::active_cudf_cmake_cache(manifest_dir, None, Some(default_build.as_path()))
             == Some(default_build.join("CMakeCache.txt")),
-        "explicit default sibling build must stay tracked"
+        "explicit canonical build must stay tracked"
     );
     assert!(
         build_support::cmake::active_cudf_cmake_cache(manifest_dir, None, Some(other_build.as_path()))

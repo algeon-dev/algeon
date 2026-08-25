@@ -13,9 +13,9 @@ fn patch_config(package: &str, workspace_root: &Path) -> Vec<String> {
         return Vec::new();
     }
     [
-        ("cudf-nexus", workspace_root.join("../cudf-nexus/cudf-nexus")),
-        ("rapids-interop", workspace_root.join("../cudf-nexus/rapids-interop")),
-        ("cuvs-nexus-sys", workspace_root.join("cuvs-nexus-sys")),
+        ("cudf-nexus", workspace_root.join("components/cudf/cudf-nexus")),
+        ("rapids-interop", workspace_root.join("components/cudf/rapids-interop")),
+        ("cuvs-nexus-sys", workspace_root.join("components/cuvs/cuvs-nexus-sys")),
     ]
     .into_iter()
     .map(|(name, path)| format!("patch.crates-io.{name}.path='{}'", path.display()))
@@ -24,7 +24,7 @@ fn patch_config(package: &str, workspace_root: &Path) -> Vec<String> {
 
 fn cargo_package(workspace_root: &Path, package: &str) -> Command {
     let mut invocation = command::cargo_at(workspace_root);
-    invocation.args(["package", "--locked", "--allow-dirty", "-p", package]);
+    invocation.args(["package", "--locked", "--allow-dirty", "-p", package, "--all-features"]);
     invocation.env("CUVS_NEXUS_SYS_SKIP_NATIVE", "1");
     for config in patch_config(package, workspace_root) {
         invocation.arg("--config").arg(config);

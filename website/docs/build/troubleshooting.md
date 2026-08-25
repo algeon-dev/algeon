@@ -14,13 +14,13 @@ text does not point at the cause — all four were observed on real hardware.
 
 ## cuGraph configure aborts: private RMM detected
 
-`scripts/build_libcugraph.sh` refuses to finish when the configure resolved an
+`scripts/build/build_libcugraph.sh` refuses to finish when the configure resolved an
 RMM or rapids_logger other than the one exported by `CUDF_INSTALL_DIR`, or when
-CPM-built copies linger under `cugraph/cpp/build/_deps`. This protects the
+CPM-built copies linger under `target/native/cugraph-build/_deps`. This protects the
 one-RMM-per-process invariant ([Environment](./environment.md#dependency-relationship)).
 
 Usual cause: the build dir predates the external-RMM configure. Remove
-`cugraph/cpp/build` and re-run the script. Do not delete the check or point
+`target/native/cugraph-build` and re-run the script. Do not delete the check or point
 the build at a private RMM — a process that loads two `librmm.so` copies
 corrupts memory-resource state at runtime.
 
@@ -35,26 +35,26 @@ cuGraph does a real `find_package(rmm)`, whose closure pulls in
 `rapids_logger`, which in turn `find_dependency()`s `fmt` and `spdlog`. Those
 packages are **not** part of the libcudf install; `bootstrap_cudf_install.sh`
 adds `rapids_logger`, `nvtx3`, `fmt`, and `spdlog` to the prefix together (it
-installs them from the cudf C++ build tree's `_deps/`). This error means the
+installs them from the canonical `target/native/cudf-build/_deps/`). This error means the
 prefix has `rapids_logger` but is missing its `fmt`/`spdlog` closure — i.e. the
 bootstrap did not run or could not complete.
 
-`build_libcugraph.sh` runs the bootstrap automatically, so the usual fix is
-simply to run it (or the bootstrap alone) with the cudf `cpp/build` tree
+`scripts/build/build_libcugraph.sh` runs the bootstrap automatically, so the usual fix is
+simply to run it (or the bootstrap alone) with the canonical cuDF build cache
 intact:
 
 ```bash
-cd "$NEXUS_ROOT/cugraph-nexus" && bash scripts/build_libcugraph.sh
+cd "$NEXUS_ROOT" && bash scripts/build/build_libcugraph.sh
 # or just the prefix-completion step:
-CUDF_INSTALL_DIR="$CUDF_INSTALL_DIR" bash scripts/bootstrap_cudf_install.sh
+CUDF_INSTALL_DIR="$CUDF_INSTALL_DIR" bash scripts/build/bootstrap_cudf_install.sh
 ```
 
-Only if the cudf build tree (`cudf/cpp/build/_deps`) was deleted — leaving the
+Only if the canonical cuDF build cache (`target/native/cudf-build/_deps`) was deleted — leaving the
 bootstrap nothing to install from — rebuild libcudf first (keeping
-`cpp/build`), then re-run the bootstrap:
+`target/native/cudf-build`), then re-run the bootstrap:
 
 ```bash
-cd "$NEXUS_ROOT/cudf-nexus/cudf" && ./build.sh libcudf
+cd "$NEXUS_ROOT" && bash scripts/build/build_libcudf.sh
 ```
 
 ## GPU op aborts: `cudaErrorNoKernelImageForDevice`
@@ -64,12 +64,12 @@ libcudf or libcugraph build did not include full kernels for the GPU it is
 running on — `CMAKE_CUDA_ARCHITECTURES=NATIVE` bakes kernels **only** for
 the GPU present at build time. Rebuild **both** native libraries listing every
 deployment architecture (`CUDF_CMAKE_CUDA_ARCHITECTURES` for libcudf,
-`CMAKE_CUDA_ARCHITECTURES` for `build_libcugraph.sh`), and verify coverage of
+`CMAKE_CUDA_ARCHITECTURES` for `scripts/build/build_libcugraph.sh`), and verify coverage of
 each `.so`:
 
 ```bash
 for so in "$CUDF_INSTALL_DIR"/lib/libcudf.so \
-          "$NEXUS_ROOT"/cugraph-nexus/cugraph/cpp/build/libcugraph.so; do
+          "$NEXUS_ROOT"/target/native/cugraph-build/libcugraph.so; do
   echo "== $so =="
   cuobjdump --list-elf "$so" | grep -oE 'sm_[0-9]+' | sort | uniq -c
 done

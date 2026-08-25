@@ -8,8 +8,8 @@ description: Build the DataFusion Nexus Flight SQL server image from locally bui
 
 The Docker image packages the standalone Flight SQL server plus the exact
 forked RAPIDS libraries it was linked against. It is a **packaging step after a
-source build**, not a replacement for building `cudf-nexus`, `cugraph-nexus`, and
-`cuvs-nexus`, `cugraph-nexus`, and `datafusion-nexus` from source.
+source build**, not a replacement for building the component crates under
+`components/` and the root workspace from source.
 
 The image build has two phases:
 
@@ -30,22 +30,21 @@ The image build has two phases:
 ## Prerequisites
 
 Complete [Building from Source](./from-source.md) first for the features you
-want to package. The default full image expects these sibling artifacts:
+want to package. The default full image expects these root-owned artifacts:
 
 ```text
-<NEXUS_ROOT>/
-├── cudf-nexus/cudf-install/lib/libcudf.so
-├── cudf-nexus/cudf-install/lib/librmm.so
-├── cuvs-nexus/cuvs-install/lib/libcuvs.so
-├── cugraph-nexus/cugraph/cpp/build/libcugraph.so
-└── datafusion-nexus/
+datafusion-nexus/
+├── target/native/cudf-install/lib/libcudf.so
+├── target/native/cudf-install/lib/librmm.so
+├── target/native/cuvs-install/lib/libcuvs.so
+└── target/native/cugraph-build/libcugraph.so
 ```
 
 The Cargo build also produces `libcudf_rust.so` and
 `libcudf_rust_rmm_interop.so`; `docker/stage-docker-payload.sh` stages both automatically.
 
 The lean `FEATURES=iceberg,nvml` image omits cuVS and cuGraph, so it
-needs neither sibling artifact. Production examples keep `nvml` enabled so live
+needs neither optional native artifact. Production examples keep `nvml` enabled so live
 device telemetry is available without affecting admission decisions.
 
 You also need Docker with NVIDIA Container Toolkit installed on the runtime
@@ -60,14 +59,14 @@ docker run --rm --gpus all nvidia/cuda:13.2.1-base-ubuntu24.04 nvidia-smi
 The default image uses CUDA 13.2 runtime layers. The host driver must support
 CUDA 13, and the forked native libraries must include kernels for the GPU
 architecture you deploy on. The full `cugraph` image is currently only portable
-to architectures included when `cugraph-nexus` was built.
+to architectures included when the `components/cugraph` native library was built.
 
 ## Build the image
 
 From the `datafusion-nexus` checkout:
 
 ```bash
-cd "$NEXUS_ROOT/datafusion-nexus"
+cd "$NEXUS_ROOT"
 
 # Full image: Flight SQL server + Iceberg + cuVS/cuGraph SQL + NVML diagnostics.
 bash docker/stage-docker-payload.sh
@@ -180,7 +179,7 @@ NEXUS_SERVER_CUGRAPH_ENABLED=false flock /tmp/cudf-gpu.lock bash docker/run.sh
 With the container running on `127.0.0.1:50051`, use the repo client:
 
 ```bash
-cargo run -p nexus-tools -- \
+cargo run -p nexus-tools --all-features -- \
   flight-sql-query http://127.0.0.1:50051 "SELECT 1 AS one"
 ```
 
@@ -194,7 +193,7 @@ one
 For a full image launched with `NEXUS_SERVER_CUGRAPH_ENABLED=true`:
 
 ```bash
-cargo run -p nexus-tools -- \
+cargo run -p nexus-tools --all-features -- \
   flight-sql-query http://127.0.0.1:50051 \
   "SELECT COUNT(*) AS algorithms FROM gpu_list_functions() WHERE provider = 'cugraph'"
 ```

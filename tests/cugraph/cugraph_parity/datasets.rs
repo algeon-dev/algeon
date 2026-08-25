@@ -38,7 +38,7 @@ impl std::fmt::Display for LoadAndVerifyError {
         match self {
             Self::Manifest(source) => write!(
                 f,
-                "{source}. Run `fixture/graph/prepare.sh` to copy cuGraph datasets from ../cugraph-nexus/cugraph"
+                "{source}. Run `fixture/graph/prepare.sh` to copy cuGraph datasets from components/cugraph/cugraph"
             ),
             Self::DatasetMissing { id, path, source } => {
                 write!(f, "cuGraph dataset '{id}' missing at {}: {source}", path.display())

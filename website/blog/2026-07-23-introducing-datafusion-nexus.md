@@ -6,6 +6,16 @@ tags: [announcement]
 authors: morris
 ---
 
+:::note[Current repository layout]
+
+This article describes the project at publication time. The maintained Rust
+integration layers now live under `components/cudf`, `components/cugraph`, and
+`components/cuvs` in the monorepo; the current one-clone build and supported
+surface are documented in [Build & Test](/build) and [the overview](/).
+Historical references in this post are not current API or capability promises.
+
+:::
+
 DataFusion Nexus is a GPU query engine built on
 [Apache DataFusion](https://datafusion.apache.org/). It evaluates whole
 relational physical-plan candidates and selects supported candidates for GPU

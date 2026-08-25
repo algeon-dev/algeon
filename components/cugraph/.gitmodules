@@ -1,3 +1,0 @@
-[submodule "cugraph"]
-	path = cugraph
-	url = https://github.com/DataFusion-Nexus/cugraph

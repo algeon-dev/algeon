@@ -36,8 +36,8 @@ runtime failure is an error.
 | `nexus-server` | `ServerError` / `tonic::Status` | Server lifecycle, client-safe messages, gRPC codes, metadata, and retained diagnostics. |
 
 Fix a missing classification at its owner. If a cuDF or cuGraph error lacks the
-typed information Nexus needs, extend the sibling crate instead of parsing its
-message in the adapter.
+typed information Nexus needs, extend the owning component crate instead of
+parsing its message in the adapter.
 
 ## One identity, several projections
 

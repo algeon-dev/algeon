@@ -5,12 +5,15 @@ edition.workspace = true
 rust-version.workspace = true
 links = "cuvs_c"
 description = "Generated low-level FFI bindings to the NVIDIA cuVS C API"
-license-file.workspace = true
+license-file = "../LICENSE"
 repository.workspace = true
 homepage.workspace = true
-readme.workspace = true
+readme = "../README.md"
 categories = ["api-bindings", "external-ffi-bindings"]
 keywords = ["cuvs", "cuda", "ffi", "gpu", "rapids"]
+
+[lints]
+workspace = true
 
 [lib]
 name = "cuvs_sys"

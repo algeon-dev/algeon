@@ -1,4 +1,4 @@
-//! Root, sibling-repository, cuVS, and toolchain provenance capture.
+//! Root, component, cuVS, and toolchain provenance capture.
 
 use std::{
     env, fs,
@@ -27,15 +27,22 @@ pub(super) struct Provenance {
 impl Provenance {
     pub(super) fn collect() -> ToolResult<Self> {
         let workspace_root = workspace_root()?;
-        let sibling_root = workspace_root.parent().ok_or("workspace root has no parent for sibling provenance")?;
-        let cudf_root = sibling_root.join("cudf-nexus");
-        let cugraph_root = sibling_root.join("cugraph-nexus");
         Ok(Self {
             process: ProcessIdentity::collect()?,
             repositories: RepositoryProvenanceSet {
                 root: RepositoryProvenance::collect("datafusion-nexus", &workspace_root)?,
-                cudf_nexus: RepositoryProvenance::collect("cudf-nexus", &cudf_root)?,
-                cugraph_nexus: RepositoryProvenance::collect("cugraph-nexus", &cugraph_root)?,
+                cudf_nexus: RepositoryProvenance::collect(
+                    "cudf-native-source",
+                    &workspace_root.join("components/cudf/cudf"),
+                )?,
+                cugraph_nexus: RepositoryProvenance::collect(
+                    "cugraph-native-source",
+                    &workspace_root.join("components/cugraph/cugraph"),
+                )?,
+                cuvs_nexus: RepositoryProvenance::collect(
+                    "cuvs-native-source",
+                    &workspace_root.join("components/cuvs/cuvs"),
+                )?,
             },
             native_libraries: NativeLibraryIdentities::collect()?,
             cuvs_build_inputs: CuvsBuildInputs::collect()?,
@@ -57,6 +64,7 @@ pub(super) struct RepositoryProvenanceSet {
     pub(super) root: RepositoryProvenance,
     pub(super) cudf_nexus: RepositoryProvenance,
     pub(super) cugraph_nexus: RepositoryProvenance,
+    pub(super) cuvs_nexus: RepositoryProvenance,
 }
 
 #[derive(Debug, Serialize)]
@@ -313,7 +321,7 @@ impl RapidsVersions {
     pub(super) fn collect() -> ToolResult<Self> {
         Ok(Self {
             cudf: CmakePackageVersion::collect("CUDF_INSTALL_DIR", "cudf", "CUDF_VERSION")?,
-            cugraph: SourcePackageVersion::collect("cugraph-nexus", "cugraph/VERSION")?,
+            cugraph: SourcePackageVersion::collect("components/cugraph/cugraph/VERSION")?,
             cuvs: CmakePackageVersion::collect("CUVS_INSTALL_DIR", "cuvs", "CUVS_VERSION")?,
         })
     }
@@ -326,11 +334,9 @@ pub(super) struct SourcePackageVersion {
 }
 
 impl SourcePackageVersion {
-    pub(super) fn collect(sibling: &str, version_file: &str) -> ToolResult<Self> {
+    pub(super) fn collect(version_file: &str) -> ToolResult<Self> {
         let workspace_root = workspace_root()?;
-        let sibling_root =
-            workspace_root.parent().ok_or("workspace root has no parent for RAPIDS provenance")?.join(sibling);
-        let version_path = sibling_root.join(version_file);
+        let version_path = workspace_root.join(version_file);
         let source = FileIdentity::collect(&version_path, "cuGraph VERSION")?;
         let version = fs::read_to_string(&version_path).map_err(|_| "cannot read cuGraph VERSION")?.trim().to_string();
         if version.is_empty() {

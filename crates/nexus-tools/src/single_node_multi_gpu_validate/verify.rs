@@ -201,7 +201,13 @@ pub(super) fn verify_bundle(
         cells.push(VerifiedCell { name: cell.name.clone(), repeats: matching.len(), mixed_interval });
     }
     if let Some(identity) = &common_identity {
-        for (repository, revision) in &gate_source_end {
+        for (repository, gate_key) in [
+            ("root", "root"),
+            ("cudf_nexus", "gitlink:components/cudf/cudf"),
+            ("cugraph_nexus", "gitlink:components/cugraph/cugraph"),
+            ("cuvs_nexus", "gitlink:components/cuvs/cuvs"),
+        ] {
+            let revision = gate_source_end.get(gate_key).expect("validated gate identity is complete");
             let pointer = format!("/repositories/{repository}/revision");
             if identity.pointer(&pointer).and_then(Value::as_str) != Some(revision) {
                 failures.push(format!("full-gate {repository} revision differs from qualification artifacts"));
@@ -255,19 +261,42 @@ fn gate_source_identity(bytes: &[u8], prefix: &str) -> ToolResult<BTreeMap<Strin
         return Err(format!("full-gate log requires exactly one {prefix}identity").into());
     }
     let mut identity = BTreeMap::new();
-    for field in rows[0].split_whitespace() {
-        let (name, value) = field.split_once('=').ok_or("invalid full-gate source identity")?;
-        let (revision, state) = value.rsplit_once(':').ok_or("invalid full-gate source identity")?;
-        if !matches!(name, "root" | "cudf_nexus" | "cugraph_nexus")
-            || revision.is_empty()
+    let mut fields = rows[0].split_whitespace();
+    let root = fields.next().ok_or("full-gate source identity has no root")?;
+    let gitlinks = fields.next().ok_or("full-gate source identity has no gitlinks")?;
+    if fields.next().is_some() {
+        return Err("full-gate source identity has unexpected fields".into());
+    }
+    let (name, value) = root.split_once('=').ok_or("invalid full-gate root identity")?;
+    let (revision, state) = value.rsplit_once(':').ok_or("invalid full-gate root identity")?;
+    if name != "root"
+        || revision.len() != 40
+        || !revision.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || state != "clean"
+    {
+        return Err("invalid or dirty full-gate root identity".into());
+    }
+    identity.insert(name.to_string(), revision.to_string());
+
+    let (name, value) = gitlinks.split_once('=').ok_or("invalid full-gate gitlink identity")?;
+    if name != "gitlinks" {
+        return Err("invalid full-gate gitlink identity".into());
+    }
+    let expected_paths = ["components/cudf/cudf", "components/cugraph/cugraph", "components/cuvs/cuvs"];
+    for entry in value.split(',') {
+        let (revision, path) = entry
+            .strip_prefix('=')
+            .and_then(|entry| entry.split_once('@'))
+            .ok_or("invalid or dirty full-gate gitlink identity")?;
+        if revision.len() != 40
             || !revision.bytes().all(|byte| byte.is_ascii_hexdigit())
-            || state != "clean"
-            || identity.insert(name.to_string(), revision.to_string()).is_some()
+            || !expected_paths.contains(&path)
+            || identity.insert(format!("gitlink:{path}"), revision.to_string()).is_some()
         {
-            return Err("invalid or dirty full-gate source identity".into());
+            return Err("invalid or dirty full-gate gitlink identity".into());
         }
     }
-    if identity.len() != 3 {
+    if identity.len() != expected_paths.len() + 1 {
         return Err("full-gate source identity is incomplete".into());
     }
     Ok(identity)
@@ -313,7 +342,7 @@ fn verify_artifact(cell: &CellManifest, artifact: &Value, failures: &mut Vec<Str
     {
         failures.push(format!("{} exceeds or omits its physical sample-gap bound", path.display()));
     }
-    for repository in ["root", "cudf_nexus", "cugraph_nexus"] {
+    for repository in ["root", "cudf_nexus", "cugraph_nexus", "cuvs_nexus"] {
         let pointer = format!("/provenance/repositories/{repository}/dirty_manifest/entries");
         if artifact.pointer(&pointer).and_then(Value::as_array).is_none_or(|entries| !entries.is_empty()) {
             failures.push(format!("{} has dirty {repository} source", path.display()));
@@ -323,6 +352,7 @@ fn verify_artifact(cell: &CellManifest, artifact: &Value, failures: &mut Vec<Str
         "/provenance/repositories/root/revision",
         "/provenance/repositories/cudf_nexus/revision",
         "/provenance/repositories/cugraph_nexus/revision",
+        "/provenance/repositories/cuvs_nexus/revision",
         "/provenance/native_libraries/libcudf_resolved/sha256",
         "/provenance/native_libraries/libcugraph_resolved/sha256",
         "/provenance/runner/executable/sha256",
@@ -559,6 +589,14 @@ mod tests {
         assert_eq!(report["consumed_files"].as_array().unwrap().len(), 2);
 
         let other_revision = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        fs::write(&gate, gate_log_with_cuvs_revision(revision, other_revision)).unwrap();
+        assert!(
+            verify_bundle(&manifest, &bundle, &gate, &root.join("mismatched-cuvs-report"))
+                .unwrap_err()
+                .to_string()
+                .contains("cuvs_nexus revision differs")
+        );
+
         fs::write(&gate, gate_log(other_revision)).unwrap();
         assert!(
             verify_bundle(&manifest, &bundle, &gate, &root.join("mismatched-report"))
@@ -680,9 +718,13 @@ mod tests {
     }
 
     fn gate_log(revision: &str) -> String {
+        gate_log_with_cuvs_revision(revision, revision)
+    }
+
+    fn gate_log_with_cuvs_revision(revision: &str, cuvs_revision: &str) -> String {
         format!(
-            "CHECK SOURCE START: root={revision}:clean cudf_nexus={revision}:clean cugraph_nexus={revision}:clean\n\
-             CHECK SOURCE END: root={revision}:clean cudf_nexus={revision}:clean cugraph_nexus={revision}:clean\n\
+            "CHECK SOURCE START: root={revision}:clean gitlinks=={revision}@components/cudf/cudf,={revision}@components/cugraph/cugraph,={cuvs_revision}@components/cuvs/cuvs\n\
+             CHECK SOURCE END: root={revision}:clean gitlinks=={revision}@components/cudf/cudf,={revision}@components/cugraph/cugraph,={cuvs_revision}@components/cuvs/cuvs\n\
              OK: canonical full pre-merge surface passed.\n"
         )
     }

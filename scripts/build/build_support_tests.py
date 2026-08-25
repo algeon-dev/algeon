@@ -318,12 +318,12 @@ def assert_manifest_contract() -> None:
     workspace_dependencies = root["workspace"]["dependencies"]
     assert workspace_dependencies["cuvs"] == {
         "package": "cuvs-nexus",
-        "path": "../cuvs-nexus/cuvs-nexus",
+        "path": "components/cuvs/cuvs-nexus",
         "version": "=0.1.0",
     }
     assert workspace_dependencies["cuvs-sys"] == {
         "package": "cuvs-nexus-sys",
-        "path": "../cuvs-nexus/cuvs-nexus-sys",
+        "path": "components/cuvs/cuvs-nexus-sys",
         "version": "=0.1.0",
     }
     assert root["features"]["cuvs"] == ["dep:cuvs", "dep:cuvs-sys", "nexus-query-engine/cuvs"]

@@ -1,5 +1,9 @@
 # Fixtures
 
+Run fixture commands from the monorepo root. Native consumers resolve the
+root-owned component sources and `target/native/*` prefixes; fixture data never
+requires a separate Rust checkout.
+
 Fixtures are organized by workload. Generated and host-provisioned data is
 gitignored; the small cuGraph parity corpus in `graph/cugraph/` is versioned.
 

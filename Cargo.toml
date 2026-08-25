@@ -25,6 +25,14 @@ members = [
   "crates/nexus-tools",
   "crates/nexus-examples",
   "scripts/ci/fixtures/datafusion-facade-consumer",
+  "components/cudf/cudf-nexus",
+  "components/cudf/cudf-nexus-sys",
+  "components/cudf/rapids-interop",
+  "components/cugraph/cugraph-nexus",
+  "components/cugraph/cugraph-nexus-sys",
+  "components/cuvs/cuvs-nexus",
+  "components/cuvs/cuvs-nexus-sys",
+  "components/cuvs/tools/xtask",
 ]
 default-members = [
   ".",
@@ -35,7 +43,11 @@ resolver = "3"
 
 [workspace.package]
 version = "0.1.0"
+edition = "2024"
 rust-version = "1.94"
+license = "Apache-2.0"
+repository = "https://github.com/DataFusion-Nexus/datafusion-nexus"
+homepage = "https://datafusion.nexus"
 
 # Preserve file/line diagnostics while reducing dev/test artifact size and link time.
 [profile.dev]
@@ -58,12 +70,14 @@ nexus-workloads = { path = "crates/nexus-workloads" }
 nexus-query-engine = { path = "crates/nexus-query-engine", version = "=0.1.0", default-features = false }
 nexus-server = { path = "crates/nexus-server", default-features = false }
 nexus-iceberg = { path = "crates/nexus-iceberg", version = "=0.1.0", default-features = false }
-cudf = { package = "cudf-nexus", path = "../cudf-nexus/cudf-nexus", version = "=0.1.0" }
-cudf-sys = { package = "cudf-nexus-sys", path = "../cudf-nexus/cudf-nexus-sys", version = "=0.1.0" }
-cugraph = { package = "cugraph-nexus", path = "../cugraph-nexus/cugraph-nexus", version = "=0.1.0" }
-cugraph-sys = { package = "cugraph-nexus-sys", path = "../cugraph-nexus/cugraph-nexus-sys", version = "=0.1.0" }
-cuvs = { package = "cuvs-nexus", path = "../cuvs-nexus/cuvs-nexus", version = "=0.1.0" }
-cuvs-sys = { package = "cuvs-nexus-sys", path = "../cuvs-nexus/cuvs-nexus-sys", version = "=0.1.0" }
+cudf = { package = "cudf-nexus", path = "components/cudf/cudf-nexus", version = "=0.1.0" }
+cudf-sys = { package = "cudf-nexus-sys", path = "components/cudf/cudf-nexus-sys", version = "=0.1.0" }
+cugraph = { package = "cugraph-nexus", path = "components/cugraph/cugraph-nexus", version = "=0.1.0" }
+cugraph-sys = { package = "cugraph-nexus-sys", path = "components/cugraph/cugraph-nexus-sys", version = "=0.1.0" }
+cuvs = { package = "cuvs-nexus", path = "components/cuvs/cuvs-nexus", version = "=0.1.0" }
+cuvs-sys = { package = "cuvs-nexus-sys", path = "components/cuvs/cuvs-nexus-sys", version = "=0.1.0" }
+rapids-interop = { path = "components/cudf/rapids-interop", version = "=0.1.0" }
+ahash = "0.8"
 anyhow = "1"
 arrow = { version = "59.2", default-features = false, features = ["ipc"] }
 arrow-flight = { version = "59.2", features = ["flight-sql-experimental"] }
@@ -73,7 +87,13 @@ aws-config = "1.10"
 aws-credential-types = "1.3"
 axum = "0.8"
 blake3 = "1.8"
+bindgen = "0.72"
+bitflags = "2"
 bytes = "1"
+cc = "1.2"
+cmake = "0.1"
+cmake-package = "0.2.0"
+csv = "1.4"
 datafusion = "55.0"
 futures = "0.3"
 getrandom = "0.4"
@@ -82,6 +102,7 @@ iceberg-catalog-glue = { git = "https://github.com/apache/iceberg-rust.git", rev
 iceberg-catalog-rest = { git = "https://github.com/apache/iceberg-rust.git", rev = "39100a90ff51ee5f388f70bfa809936dbcfe2be2" }
 iceberg-datafusion = { git = "https://github.com/apache/iceberg-rust.git", rev = "39100a90ff51ee5f388f70bfa809936dbcfe2be2" }
 iceberg-storage-opendal = { git = "https://github.com/apache/iceberg-rust.git", rev = "39100a90ff51ee5f388f70bfa809936dbcfe2be2" }
+indexmap = "2"
 object_store = { version = "0.13", default-features = false, features = ["aws"] }
 opendal = "0.58"
 opentelemetry = { version = "0.32.0", default-features = false, features = ["metrics"] }
@@ -91,12 +112,16 @@ prost = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
 sha2 = "0.11"
+smallvec = "1.15"
+static_assertions = "1"
+strum = { version = "0.28", features = ["derive"] }
 tempfile = "3.27"
 tokio = "1.52"
 tokio-util = "0.7"
 tonic = "0.14"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+typed-builder = "0.23"
 
 [features]
 default = []

@@ -11,6 +11,7 @@ use cmake_package::{Error as CmakeError, Version, VersionError, find_package};
 pub(crate) const NATIVE_CUVS_VERSION: &str = "26.8.1";
 const CUVS_COMPONENT: &str = "c_api";
 const CUVS_C_API_TARGET: &str = "cuvs::c_api";
+const CUVS_SUBMODULE_PATH: &str = "components/cuvs/cuvs";
 const PYTHON_PRINT_LIBCUVS_PACKAGE_DIR: &str = r#"
 from importlib.util import find_spec
 from pathlib import Path
@@ -41,7 +42,7 @@ fn package_error(error: CmakeError, required: &Version) -> anyhow::Error {
     match error {
         CmakeError::CMakeNotFound | CmakeError::UnsupportedCMakeVersion => unavailable_error(),
         CmakeError::PackageNotFound => anyhow::anyhow!(
-            "Could not find the cuVS {NATIVE_CUVS_VERSION} CMake c_api package. Build the pinned source with `scripts/build_libcuvs.sh`, set CUVS_ROOT to cuvs-install, or set CMAKE_PREFIX_PATH to a compatible installed package. cuGraph `_deps/cuvs-src` is not a supported fallback"
+            "Could not find the cuVS {NATIVE_CUVS_VERSION} CMake c_api package. Build the pinned source with `scripts/build/build_libcuvs.sh`, set CUVS_ROOT to target/native/cuvs-install, or set CMAKE_PREFIX_PATH to a compatible installed package. cuGraph `_deps/cuvs-src` is not a supported fallback"
         ),
         CmakeError::Version(VersionError::VersionIncompatible(candidates)) => {
             let considered = candidates
@@ -71,7 +72,7 @@ pub(crate) fn reject_private_dependency_path(path: &Path) -> Result<()> {
     let private = path.components().any(|component| matches!(component, Component::Normal(name) if name == "_deps"));
     anyhow::ensure!(
         !private,
-        "cuVS resolved through a private `_deps` tree at '{}'. Build/install the pinned cuvs-nexus source and set CUVS_ROOT to that canonical prefix; cuGraph `_deps/cuvs-src` must never supply this crate",
+        "cuVS resolved through a private `_deps` tree at '{}'. Build/install the pinned cuVS source and set CUVS_ROOT to that canonical prefix; cuGraph `_deps/cuvs-src` must never supply this crate",
         path.display()
     );
     Ok(())
@@ -126,7 +127,9 @@ fn is_git_sha(value: &str) -> bool {
 }
 
 fn cuvs_gitlink(workspace_root: &Path) -> Option<String> {
-    for (args, sha_field) in [(["ls-files", "--stage", "--", "cuvs"], 1), (["ls-tree", "HEAD", "--", "cuvs"], 2)] {
+    for (args, sha_field) in
+        [(["ls-files", "--stage", "--", CUVS_SUBMODULE_PATH], 1), (["ls-tree", "HEAD", "--", CUVS_SUBMODULE_PATH], 2)]
+    {
         let Ok(output) = Command::new("git").arg("-C").arg(workspace_root).args(args).output() else {
             return None;
         };
@@ -142,14 +145,34 @@ fn cuvs_gitlink(workspace_root: &Path) -> Option<String> {
     None
 }
 
+fn repository_root_from_manifest(manifest_dir: &Path) -> Option<PathBuf> {
+    manifest_dir.parent()?.parent()?.parent().map(Path::to_path_buf)
+}
+
 /// The `cuvs` submodule gitlink recorded in the superproject is the source
 /// pin. Build scripts must not hard-code a SHA, so the pin is resolved from
 /// git at build time and falls back to the marker's recorded identity only
 /// when the superproject is unavailable (e.g. a non-git source copy).
 fn recorded_cuvs_gitlink() -> Option<String> {
     let manifest_dir = env::var_os("CARGO_MANIFEST_DIR")?;
-    let workspace_root = Path::new(&manifest_dir).parent()?;
-    cuvs_gitlink(workspace_root)
+    let workspace_root = repository_root_from_manifest(Path::new(&manifest_dir))?;
+    cuvs_gitlink(&workspace_root)
+}
+
+pub(crate) fn recorded_cuvs_gitlink_input() -> Option<PathBuf> {
+    let manifest_dir = env::var_os("CARGO_MANIFEST_DIR")?;
+    let workspace_root = repository_root_from_manifest(Path::new(&manifest_dir))?;
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(&workspace_root)
+        .args(["rev-parse", "--path-format=absolute", "--git-path", "index"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = PathBuf::from(String::from_utf8_lossy(&output.stdout).trim());
+    path.is_file().then_some(path)
 }
 
 fn source_revision(prefix: Option<&Path>, lib_dir: &Path) -> Result<String> {
@@ -170,7 +193,7 @@ fn source_revision(prefix: Option<&Path>, lib_dir: &Path) -> Result<String> {
         if let Some(expected) = recorded_cuvs_gitlink() {
             anyhow::ensure!(
                 revision == expected,
-                "canonical cuVS prefix reports source revision {revision}, but the superproject records cuvs gitlink {expected}. Rebuild the canonical prefix with `scripts/build_libcuvs.sh` from the recorded submodule: {}",
+                "canonical cuVS prefix reports source revision {revision}, but the superproject records cuVS gitlink {expected}. Rebuild the canonical prefix with `scripts/build/build_libcuvs.sh` from the recorded submodule: {}",
                 marker.display()
             );
         }
@@ -179,7 +202,7 @@ fn source_revision(prefix: Option<&Path>, lib_dir: &Path) -> Result<String> {
 
     if let Some(prefix) = prefix.filter(|_| std::env::var_os("CUVS_ROOT").is_some()) {
         anyhow::bail!(
-            "CUVS_ROOT points to '{}', but share/cuvs-nexus/source-revision is missing. Build the canonical prefix with `scripts/build_libcuvs.sh`; do not substitute an untracked native build",
+            "CUVS_ROOT points to '{}', but share/cuvs-nexus/source-revision is missing. Build the canonical prefix with `scripts/build/build_libcuvs.sh`; do not substitute an untracked native build",
             prefix.display()
         );
     }
@@ -209,7 +232,7 @@ fn canonical_runtime_dir(prefix: Option<&Path>, lib_dir: &Path) -> Result<Option
 
     if let Some(prefix) = prefix.filter(|_| std::env::var_os("CUVS_ROOT").is_some()) {
         anyhow::bail!(
-            "CUVS_ROOT points to '{}', but share/cuvs-nexus/rmm-runtime-lib is missing. Rebuild the canonical prefix with `scripts/build_libcuvs.sh` so its RMM runtime identity is explicit",
+            "CUVS_ROOT points to '{}', but share/cuvs-nexus/rmm-runtime-lib is missing. Rebuild the canonical prefix with `scripts/build/build_libcuvs.sh` so its RMM runtime identity is explicit",
             prefix.display()
         );
     }

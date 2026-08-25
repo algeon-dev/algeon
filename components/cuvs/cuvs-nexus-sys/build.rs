@@ -100,7 +100,7 @@ fn dlpack_include_dir(include_dirs: &[PathBuf]) -> Result<PathBuf, String> {
         }
     }
     Err(
-        "the cuVS CMake target does not expose dlpack/dlpack.h; use a complete canonical prefix built by scripts/build_libcuvs.sh or set DLPACK_INCLUDE_DIR"
+        "the cuVS CMake target does not expose dlpack/dlpack.h; use a complete canonical prefix built by scripts/build/build_libcuvs.sh or set DLPACK_INCLUDE_DIR"
             .to_owned(),
     )
 }
@@ -135,8 +135,8 @@ fn select_workspace_cuvs_root() -> Option<PathBuf> {
         return None;
     }
     let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR")?);
-    let workspace_root = manifest_dir.parent()?;
-    let candidate = workspace_root.join("cuvs-install");
+    let workspace_root = manifest_dir.parent()?.parent()?.parent()?;
+    let candidate = workspace_root.join("target/native/cuvs-install");
     let config_paths =
         [candidate.join("lib/cmake/cuvs/cuvs-config.cmake"), candidate.join("lib64/cmake/cuvs/cuvs-config.cmake")];
     if !config_paths.iter().any(|path| path.is_file()) {
@@ -199,6 +199,9 @@ fn main() {
     let workspace_cuvs_root = select_workspace_cuvs_root();
     if let Some(prefix) = &workspace_cuvs_root {
         track_cuvs_prefix(prefix);
+    }
+    if let Some(git_index) = cmake::recorded_cuvs_gitlink_input() {
+        println!("cargo::rerun-if-changed={}", git_index.display());
     }
     let metadata = cmake::locate_cuvs().unwrap_or_else(|error| panic!("{error:#}"));
     println!("cargo::rerun-if-changed={}", metadata.libcuvs_c.display());

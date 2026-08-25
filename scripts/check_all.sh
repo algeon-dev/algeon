@@ -339,12 +339,11 @@ else
     || usage_error "cannot create a phase log directory under target/check-all."
 fi
 
-repository_gate_identity() {
-  local path=$1
+root_gate_identity() {
   local revision
   local state
-  revision=$(git -C "${path}" rev-parse HEAD 2>/dev/null) || revision=unavailable
-  if [[ -z "$(git -C "${path}" status --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>/dev/null)" ]]; then
+  revision=$(git -C "${ROOT}" rev-parse HEAD 2>/dev/null) || revision=unavailable
+  if [[ -z "$(git -C "${ROOT}" status --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>/dev/null)" ]]; then
     state=clean
   else
     state=dirty
@@ -352,16 +351,38 @@ repository_gate_identity() {
   printf '%s:%s' "${revision}" "${state}"
 }
 
+gitlink_gate_identity() {
+  local first
+  local path
+  local separator=""
+  local status
+  local status_output
+
+  status_output=$(git -C "${ROOT}" submodule status --recursive 2>/dev/null) || return 1
+  while read -r first path _; do
+    [[ -n "${first}" && -n "${path}" ]] || continue
+    case "${first}" in
+      -* | +* | U*) status=${first:0:1}; first=${first:1} ;;
+      *) status='=' ;;
+    esac
+    printf '%s%s%s@%s' "${separator}" "${status}" "${first}" "${path}"
+    separator=,
+  done <<<"${status_output}"
+  [[ -n "${separator}" ]] || return 1
+}
+
 gate_source_identity() {
-  printf 'root=%s cudf_nexus=%s cugraph_nexus=%s' \
-    "$(repository_gate_identity "${ROOT}")" \
-    "$(repository_gate_identity "${ROOT}/../cudf-nexus")" \
-    "$(repository_gate_identity "${ROOT}/../cugraph-nexus")"
+  local gitlinks
+  gitlinks=$(gitlink_gate_identity) || return 1
+  printf 'root=%s gitlinks=%s' \
+    "$(root_gate_identity)" \
+    "${gitlinks}"
 }
 
 echo "CHECK CONFIG: mode=${mode} lane=${lane} runner=${runner}(${runner_source}) features=${feature_label}(${feature_source}) gpu_profile=${GPU_NEXTEST_PROFILE} gpu_threads=${gpu_threads}(nproc) strict=always(${strict_source})"
 echo "PHASE LOG DIRECTORY: ${PHASE_LOG_DIR}"
-echo "CHECK SOURCE START: $(gate_source_identity)"
+gate_source_start=$(gate_source_identity) || usage_error "cannot resolve recursive gitlink source identity."
+echo "CHECK SOURCE START: ${gate_source_start}"
 if [[ "${mode}" != full ]]; then
   echo "PARTIAL SURFACE: mode=${mode} lane=${lane}; this does not satisfy full pre-merge validation."
 fi
@@ -382,6 +403,7 @@ PHASE_ORDER=(
   gpu-preflight
   cpu-tests
   gpu-shared-tests
+  cuvs-cargo-tests
   gpu-exclusive-tests
   doctests
   rustdoc
@@ -391,6 +413,7 @@ PHASE_ORDER=(
 declare -A PHASE_COMMAND PHASE_DURATION PHASE_STATUS PHASE_COUNTS
 declare -A PHASE_GPU_CAP PHASE_LOCK PHASE_FEATURES PHASE_LOG PHASE_EXIT
 declare -A PHASE_HASH PHASE_CACHE PHASE_LAST_PASS_HASH PHASE_SCOPE_HASH
+PHASE_SUBMODULE_SOURCE_HASH=
 
 define_phase() {
   local id=$1
@@ -411,16 +434,15 @@ define_phase() {
 define_phase policy-selftests "${policy_selftest_count} isolated policy/orchestration scripts"
 define_phase rustfmt "cargo +${RUSTFMT_TOOLCHAIN} fmt --all --check"
 define_phase lane-structure "test_lane_policy.py check-catalog + generated override check"
-# Every compiling phase below selects `--workspace` under the same
-# ${FEATURE_ARGS}, so one run builds one Cargo feature unification. The lane
-# inventory must enumerate that identical surface or the catalog reports stale
-# entries for packages it cannot see; see AGENTS.md for why per-package
-# selections are expensive.
+# Nextest phases share one workspace feature unification. The cuVS safe/sys
+# crates retain their Cargo-runner contract in one separately locked phase and
+# are excluded from nextest to avoid executing them twice.
 define_phase live-inventory "bash scripts/ci/check_gpu_test_lane.sh ${FEATURE_ARGS[*]}"
 define_phase gpu-preflight "cargo nextest show-config --color never -P ${GPU_NEXTEST_PROFILE} test-groups --workspace ${FEATURE_ARGS[*]}"
-define_phase cpu-tests "cargo nextest run --workspace ${FEATURE_ARGS[*]} -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast --final-status-level fail"
-define_phase gpu-shared-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} --workspace ${FEATURE_ARGS[*]} -E group(${GPU_NEXTEST_GROUP}) --no-fail-fast --test-threads ${gpu_threads} --final-status-level fail"
-define_phase gpu-exclusive-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} --workspace ${FEATURE_ARGS[*]} -E group(gpu-exclusive) --no-fail-fast --test-threads ${GPU_EXCLUSIVE_CAP} --final-status-level fail"
+define_phase cpu-tests "cargo nextest run --workspace --exclude cuvs-nexus --exclude cuvs-nexus-sys ${FEATURE_ARGS[*]} -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast --final-status-level fail"
+define_phase gpu-shared-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} --workspace --exclude cuvs-nexus --exclude cuvs-nexus-sys ${FEATURE_ARGS[*]} -E group(${GPU_NEXTEST_GROUP}) --no-fail-fast --test-threads ${gpu_threads} --final-status-level fail"
+define_phase cuvs-cargo-tests "flock ${GPU_LOCK} cargo test -p cuvs-nexus -p cuvs-nexus-sys --all-features --no-fail-fast"
+define_phase gpu-exclusive-tests "flock ${GPU_LOCK} cargo nextest run -P ${GPU_NEXTEST_PROFILE} --workspace --exclude cuvs-nexus --exclude cuvs-nexus-sys ${FEATURE_ARGS[*]} -E group(gpu-exclusive) --no-fail-fast --test-threads ${GPU_EXCLUSIVE_CAP} --final-status-level fail"
 define_phase doctests "flock ${GPU_LOCK} cargo test --workspace ${FEATURE_ARGS[*]} --doc --no-fail-fast"
 define_phase rustdoc "RUSTDOCFLAGS='${DOC_RUSTDOCFLAGS}' cargo doc --workspace ${FEATURE_ARGS[*]} --no-deps --keep-going"
 # Snapshots each tracked crate's public API (rustdoc JSON via cargo-public-api)
@@ -625,6 +647,71 @@ phase_hash_worktree_paths() {
   fi
 }
 
+phase_hash_submodule_untracked() {
+  local submodule_root=$1
+  local relative_path
+  local -a existing_paths=()
+  while IFS= read -r -d '' relative_path; do
+    printf 'path\0%s\0' "${relative_path}"
+    if [[ -f "${submodule_root}/${relative_path}" || -L "${submodule_root}/${relative_path}" ]]; then
+      existing_paths+=("${relative_path}")
+    else
+      printf 'missing\0%s\0' "${relative_path}"
+    fi
+  done < <(git -C "${submodule_root}" ls-files --others --exclude-standard -z)
+  if (( ${#existing_paths[@]} > 0 )); then
+    (
+      cd "${submodule_root}" || exit 1
+      sha256sum --zero -- "${existing_paths[@]}"
+    )
+  fi
+}
+
+phase_submodule_source_state() {
+  local status_line gitlink_path submodule_root worktree_status head
+  local status_output
+  status_output=$(git -C "${ROOT}" submodule status --recursive 2>/dev/null) || return 1
+  if [[ -z "${status_output}" ]]; then
+    printf 'submodules\0none\0'
+    return 0
+  fi
+  while IFS= read -r status_line; do
+    [[ -n "${status_line}" ]] || continue
+    read -r _ gitlink_path _ <<<"${status_line}"
+    printf 'gitlink\0%s\0' "${status_line}"
+    submodule_root="${ROOT}/${gitlink_path}"
+    if [[ ! -d "${submodule_root}" ]]; then
+      printf 'worktree\0unavailable\0'
+      continue
+    fi
+    if ! worktree_status=$(git -C "${submodule_root}" status --porcelain=v1 \
+      --untracked-files=all --ignore-submodules=none 2>/dev/null); then
+      printf 'worktree\0unavailable\0'
+      continue
+    fi
+    printf 'worktree-status\0%s\0' "${worktree_status}"
+    head=$(git -C "${submodule_root}" rev-parse HEAD 2>/dev/null) || head=unavailable
+    printf 'head\0%s\0' "${head}"
+    if [[ -n "${worktree_status}" ]]; then
+      printf 'unstaged-diff\0'
+      git -C "${submodule_root}" diff --no-ext-diff --no-renames --binary 2>/dev/null |
+        sha256sum
+      printf 'staged-diff\0'
+      git -C "${submodule_root}" diff --cached --no-ext-diff --no-renames --binary 2>/dev/null |
+        sha256sum
+      printf 'untracked\0'
+      phase_hash_submodule_untracked "${submodule_root}"
+    fi
+  done <<<"${status_output}"
+}
+
+phase_submodule_source_hash() {
+  if [[ -n "${PHASE_SUBMODULE_SOURCE_HASH-}" ]]; then
+    return 0
+  fi
+  PHASE_SUBMODULE_SOURCE_HASH=$(phase_submodule_source_state | sha256sum | awk '{print $1}') || return 1
+}
+
 phase_cache_environment() {
   local entry name
   while IFS= read -r -d '' entry; do
@@ -675,11 +762,17 @@ phase_scope_hash() {
 }
 
 phase_source_hash() {
-  local id=$1 scope scope_hash toolchain_hash environment_hash
+  local id=$1 scope scope_hash toolchain_hash environment_hash submodule_hash
   scope=$(phase_source_scope "${id}") || return 1
   phase_scope_hash "${scope}" || return 1
   phase_toolchain_hash || return 1
   phase_environment_hash || return 1
+  if [[ "${scope}" != policy ]]; then
+    phase_submodule_source_hash || return 1
+    submodule_hash=${PHASE_SUBMODULE_SOURCE_HASH}
+  else
+    submodule_hash=not-applicable
+  fi
   scope_hash=${PHASE_SCOPE_HASH[${scope}]}
   toolchain_hash=${PHASE_TOOLCHAIN_HASH}
   environment_hash=${PHASE_ENVIRONMENT_HASH}
@@ -690,6 +783,7 @@ phase_source_hash() {
     printf '%s\0' 'features'
     printf '%s\0' "${FEATURE_ARGS[@]}"
     printf 'scope=%s\0scope-hash=%s\0' "${scope}" "${scope_hash}"
+    printf 'submodule-source-hash=%s\0' "${submodule_hash}"
     printf 'toolchain-hash=%s\0environment-hash=%s\0' "${toolchain_hash}" "${environment_hash}"
   } | sha256sum | awk '{print $1}'
 }
@@ -851,18 +945,24 @@ run_lane_structure_commands() {
 needs_cpu=0
 needs_shared_gpu=0
 needs_exclusive_gpu=0
+needs_cuvs=0
 case "${mode}:${lane}" in
   full:all | lane:all)
     needs_cpu=1
     needs_shared_gpu=1
     needs_exclusive_gpu=1
+    needs_cuvs=1
     ;;
   fast:cpu | lane:cpu) needs_cpu=1 ;;
   lane:gpu)
     needs_shared_gpu=1
     needs_exclusive_gpu=1
+    needs_cuvs=1
     ;;
-  lane:gpu-shared) needs_shared_gpu=1 ;;
+  lane:gpu-shared)
+    needs_shared_gpu=1
+    needs_cuvs=1
+    ;;
   lane:gpu-exclusive) needs_exclusive_gpu=1 ;;
 esac
 
@@ -907,19 +1007,25 @@ run_gpu_config_preflight() {
 }
 
 cpu_test_command() {
-  cargo nextest run --workspace "${FEATURE_ARGS[@]}" \
+  cargo nextest run --workspace --exclude cuvs-nexus --exclude cuvs-nexus-sys "${FEATURE_ARGS[@]}" \
     -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast --final-status-level fail
 }
 
 gpu_shared_test_command() {
   flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" \
-    --workspace "${FEATURE_ARGS[@]}" -E "group(${GPU_NEXTEST_GROUP})" --no-fail-fast \
+    --workspace --exclude cuvs-nexus --exclude cuvs-nexus-sys "${FEATURE_ARGS[@]}" \
+    -E "group(${GPU_NEXTEST_GROUP})" --no-fail-fast \
     --test-threads "${gpu_threads}" --final-status-level fail
+}
+
+cuvs_cargo_test_command() {
+  flock "${GPU_LOCK}" cargo test -p cuvs-nexus -p cuvs-nexus-sys --all-features --no-fail-fast
 }
 
 gpu_exclusive_test_command() {
   flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" \
-    --workspace "${FEATURE_ARGS[@]}" -E 'group(gpu-exclusive)' --no-fail-fast \
+    --workspace --exclude cuvs-nexus --exclude cuvs-nexus-sys "${FEATURE_ARGS[@]}" \
+    -E 'group(gpu-exclusive)' --no-fail-fast \
     --test-threads "${GPU_EXCLUSIVE_CAP}" --final-status-level fail
 }
 
@@ -990,6 +1096,8 @@ if [[ "${lane}" != policy ]]; then
       || run_or_cache_phase cpu-tests nextest - - cpu_test_command || true
     [[ "${needs_shared_gpu}" -eq 0 ]] \
       || run_or_cache_phase gpu-shared-tests nextest "${gpu_threads}" "${GPU_LOCK}" gpu_shared_test_command || true
+    [[ "${needs_cuvs}" -eq 0 ]] \
+      || run_or_cache_phase cuvs-cargo-tests cargo "${gpu_threads}" "${GPU_LOCK}" cuvs_cargo_test_command || true
     [[ "${needs_exclusive_gpu}" -eq 0 ]] \
       || run_or_cache_phase gpu-exclusive-tests nextest "${GPU_EXCLUSIVE_CAP}" "${GPU_LOCK}" gpu_exclusive_test_command || true
   else
@@ -997,6 +1105,8 @@ if [[ "${lane}" != policy ]]; then
       || PHASE_STATUS[cpu-tests]='SKIPPED(blocked)'
     [[ "${needs_shared_gpu}" -eq 0 || "${PHASE_STATUS[gpu-shared-tests]}" != SKIPPED ]] \
       || PHASE_STATUS[gpu-shared-tests]='SKIPPED(blocked)'
+    [[ "${needs_cuvs}" -eq 0 || "${PHASE_STATUS[cuvs-cargo-tests]}" != SKIPPED ]] \
+      || PHASE_STATUS[cuvs-cargo-tests]='SKIPPED(blocked)'
     [[ "${needs_exclusive_gpu}" -eq 0 || "${PHASE_STATUS[gpu-exclusive-tests]}" != SKIPPED ]] \
       || PHASE_STATUS[gpu-exclusive-tests]='SKIPPED(blocked)'
   fi
@@ -1041,7 +1151,15 @@ print_phase_table() {
 
 print_phase_table
 echo
-echo "CHECK SOURCE END: $(gate_source_identity)"
+gate_source_end=$(gate_source_identity) || gate_source_end=unavailable
+echo "CHECK SOURCE END: ${gate_source_end}"
+if [[ "${gate_source_end}" == unavailable ]]; then
+  echo "ERROR: recursive gitlink source identity became unavailable during the gate." >&2
+  status=1
+elif [[ "${gate_source_end}" != "${gate_source_start}" ]]; then
+  echo "ERROR: source identity changed during the gate." >&2
+  status=1
+fi
 [[ -z "${gpu_scheduling_summary}" ]] || echo "GPU scheduling final: ${gpu_scheduling_summary}"
 [[ "${mode}" != full ]] || echo "Doctest accounting final: ${doctest_summary}"
 [[ "${mode}" != full ]] || echo "Rustdoc final: ${rustdoc_summary}"

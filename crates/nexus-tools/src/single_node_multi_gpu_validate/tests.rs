@@ -741,8 +741,9 @@ fn sample_provenance() -> Provenance {
         process: ProcessIdentity { boot_id: "fixture-boot".to_string(), pid: 7, process_start_ticks: 11 },
         repositories: RepositoryProvenanceSet {
             root: repository("datafusion-nexus"),
-            cudf_nexus: repository("cudf-nexus"),
-            cugraph_nexus: repository("cugraph-nexus"),
+            cudf_nexus: repository("cudf-native-source"),
+            cugraph_nexus: repository("cugraph-native-source"),
+            cuvs_nexus: repository("cuvs-native-source"),
         },
         native_libraries: NativeLibraryIdentities {
             libcudf_resolved: Some(identity()),
@@ -2610,6 +2611,7 @@ fn composed_qualification_evidence_is_fail_closed_and_overload_is_profile_declar
         ("missing_root_source_hash", Some("root"), true, true, true, None, false, &["missing_source_hash"][..]),
         ("missing_cudf_source_hash", Some("cudf"), true, true, true, None, false, &["missing_source_hash"][..]),
         ("missing_cugraph_source_hash", Some("cugraph"), true, true, true, None, false, &["missing_source_hash"][..]),
+        ("missing_cuvs_source_hash", Some("cuvs"), true, true, true, None, false, &["missing_source_hash"][..]),
         ("missing_binary_hash", None, false, true, true, None, false, &["missing_binary_hash"][..]),
         (
             "missing_physical_memory_sample",
@@ -2673,6 +2675,7 @@ fn composed_qualification_evidence_is_fail_closed_and_overload_is_profile_declar
             Some("root") => provenance.repositories.root.dirty_manifest.sha256.clear(),
             Some("cudf") => provenance.repositories.cudf_nexus.dirty_manifest.sha256.clear(),
             Some("cugraph") => provenance.repositories.cugraph_nexus.dirty_manifest.sha256.clear(),
+            Some("cuvs") => provenance.repositories.cuvs_nexus.dirty_manifest.sha256.clear(),
             None => {},
             Some(other) => panic!("unexpected source selector {other}"),
         }

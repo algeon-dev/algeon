@@ -21,6 +21,12 @@ struct WorkspaceNativeBuildLayout {
     cuvs: CanonicalCuvsContract,
 }
 
+fn repository_root(manifest_dir: &Path) -> Result<PathBuf, String> {
+    manifest_dir.parent().and_then(Path::parent).and_then(Path::parent).map(Path::to_path_buf).ok_or_else(|| {
+        format!("Could not determine the repository root from CARGO_MANIFEST_DIR='{}'.", manifest_dir.display())
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct NativeBuildContract {
     pub(crate) native_include_dirs: Vec<PathBuf>,
@@ -131,7 +137,7 @@ pub(crate) fn resolve_native_build_contract(
     if explicit_contract_count != 0 {
         return Err("The native contract must come from exactly one source. Set all of CUGRAPH_NATIVE_INCLUDE_DIRS, \
              CUGRAPH_NATIVE_LINK_DIRS, and CUGRAPH_RUNTIME_LIB_DIRS together, or set none of them and use \
-             a formal CMake export root via CUGRAPH_CMAKE_BUILD_DIR or the workspace-local cugraph/cpp/build export."
+             a formal CMake export root via CUGRAPH_CMAKE_BUILD_DIR or the workspace-local target/native/cugraph-build export."
             .to_string());
     }
 
@@ -175,7 +181,7 @@ pub(crate) fn resolve_cmake_export_dir(manifest_dir: &Path, env_val: Option<OsSt
         return validate_cmake_export_dir(Path::new(&raw_path), "CUGRAPH_CMAKE_BUILD_DIR");
     }
 
-    let candidate = manifest_dir.join("../cugraph/cpp/build");
+    let candidate = repository_root(manifest_dir)?.join("target/native/cugraph-build");
     if candidate.join("cugraph-config.cmake").is_file() {
         return Ok(candidate.canonicalize().unwrap_or(candidate));
     }
@@ -193,11 +199,8 @@ pub(crate) fn resolve_canonical_cuvs_contract(
     manifest_dir: &Path,
     cuvs_install_dir_env: Option<OsString>,
 ) -> Result<CanonicalCuvsContract, String> {
-    let repo_root = manifest_dir.parent().ok_or_else(|| {
-        format!("Could not determine the repository root from CARGO_MANIFEST_DIR='{}'.", manifest_dir.display())
-    })?;
-    let workspace_parent = repo_root.parent().unwrap_or(repo_root);
-    let default_install_dir = workspace_parent.join("cuvs-nexus/cuvs-install");
+    let repo_root = repository_root(manifest_dir)?;
+    let default_install_dir = repo_root.join("target/native/cuvs-install");
     let requested_install_dir = cuvs_install_dir_env.map(PathBuf::from).unwrap_or_else(|| default_install_dir.clone());
     let install_dir = requested_install_dir.canonicalize().map_err(|error| {
         format!(
@@ -256,7 +259,7 @@ pub(crate) fn resolve_canonical_cuvs_contract(
 
     let source_revision_inputs =
         if default_install_dir.canonicalize().is_ok_and(|default_install_dir| default_install_dir == install_dir) {
-            validate_sibling_cuvs_source_revision(workspace_parent, &install_dir)?
+            validate_default_cuvs_source_revision(&repo_root, &install_dir)?
         } else {
             Vec::new()
         };
@@ -271,17 +274,18 @@ pub(crate) fn resolve_canonical_cuvs_contract(
     })
 }
 
-fn validate_sibling_cuvs_source_revision(workspace_parent: &Path, install_dir: &Path) -> Result<Vec<PathBuf>, String> {
-    let sibling_repo = workspace_parent.join("cuvs-nexus");
+fn validate_default_cuvs_source_revision(repo_root: &Path, install_dir: &Path) -> Result<Vec<PathBuf>, String> {
+    const CUVS_SUBMODULE_PATH: &str = "components/cuvs/cuvs";
     let stage = command_stdout(
-        "resolve the sibling cuVS source revision",
-        Command::new("git").arg("-C").arg(&sibling_repo).args(["ls-files", "--stage", "--", "cuvs"]),
+        "resolve the root cuVS source revision",
+        Command::new("git").arg("-C").arg(repo_root).args(["ls-files", "--stage", "--", CUVS_SUBMODULE_PATH]),
     )?;
     let fields = stage.split_ascii_whitespace().collect::<Vec<_>>();
-    let ["160000", expected_revision, "0", "cuvs"] = fields.as_slice() else {
+    let ["160000", expected_revision, "0", CUVS_SUBMODULE_PATH] = fields.as_slice() else {
         return Err(format!(
-            "The default sibling cuVS prefix requires exactly one stage-0 cuvs gitlink in '{}', but git reported '{}'.",
-            sibling_repo.display(),
+            "The default cuVS prefix requires exactly one stage-0 gitlink at '{}' in '{}', but git reported '{}'.",
+            CUVS_SUBMODULE_PATH,
+            repo_root.display(),
             stage.trim()
         ));
     };
@@ -289,14 +293,14 @@ fn validate_sibling_cuvs_source_revision(workspace_parent: &Path, install_dir: &
     let marker_path = install_dir.join("share/cuvs-nexus/source-revision");
     let installed_revision = fs::read_to_string(&marker_path).map_err(|error| {
         format!(
-            "The default sibling cuVS prefix '{}' is missing its pinned source marker '{}': {error}. Rebuild it with cuvs-nexus/scripts/build_libcuvs.sh.",
+            "The default cuVS prefix '{}' is missing its pinned source marker '{}': {error}. Rebuild it with scripts/build/build_libcuvs.sh.",
             install_dir.display(),
             marker_path.display()
         )
     })?;
     if installed_revision.trim() != *expected_revision {
         return Err(format!(
-            "The default sibling cuVS prefix '{}' was built from revision '{}', but the sibling cuVS gitlink pins '{}'. Rebuild the prefix with cuvs-nexus/scripts/build_libcuvs.sh.",
+            "The default cuVS prefix '{}' was built from revision '{}', but the root cuVS gitlink pins '{}'. Rebuild the prefix with scripts/build/build_libcuvs.sh.",
             install_dir.display(),
             installed_revision.trim(),
             expected_revision
@@ -304,8 +308,8 @@ fn validate_sibling_cuvs_source_revision(workspace_parent: &Path, install_dir: &
     }
 
     let git_index = command_stdout(
-        "resolve the sibling cuVS Git index",
-        Command::new("git").arg("-C").arg(&sibling_repo).args([
+        "resolve the root Git index",
+        Command::new("git").arg("-C").arg(repo_root).args([
             "rev-parse",
             "--path-format=absolute",
             "--git-path",
@@ -337,11 +341,8 @@ fn workspace_native_build_layout(
     cudf_install_dir_env: Option<OsString>,
     cuvs_install_dir_env: Option<OsString>,
 ) -> Result<WorkspaceNativeBuildLayout, String> {
-    let repo_root = manifest_dir.parent().ok_or_else(|| {
-        format!("Could not determine the repository root from CARGO_MANIFEST_DIR='{}'.", manifest_dir.display())
-    })?;
-    let workspace_parent = repo_root.parent().unwrap_or(repo_root);
-    let src_dir = repo_root.join("cugraph/cpp");
+    let repo_root = repository_root(manifest_dir)?;
+    let src_dir = repo_root.join("components/cugraph/cugraph/cpp");
     if !src_dir.join("CMakeLists.txt").is_file() {
         return Err(format!(
             "The cuGraph C++ source tree was not found at '{}'. Initialize/update the cugraph submodule, or set \
@@ -350,9 +351,10 @@ fn workspace_native_build_layout(
         ));
     }
 
-    let build_dir = cpp_build_dir_env.map(PathBuf::from).unwrap_or_else(|| src_dir.join("build"));
+    let build_dir =
+        cpp_build_dir_env.map(PathBuf::from).unwrap_or_else(|| repo_root.join("target/native/cugraph-build"));
     let cudf_install_dir =
-        cudf_install_dir_env.map(PathBuf::from).unwrap_or_else(|| workspace_parent.join("cudf-nexus/cudf-install"));
+        cudf_install_dir_env.map(PathBuf::from).unwrap_or_else(|| repo_root.join("target/native/cudf-install"));
     let rmm_config = cudf_install_dir.join("lib/cmake/rmm/rmm-config.cmake");
     if !rmm_config.is_file() {
         return Err(format!(
@@ -453,7 +455,12 @@ fn build_workspace_cugraph_cpp(
         ])
         .arg(format!("-Drmm_ROOT={}", Path::new(rmm_root).display()))
         .arg(format!("-Drapids_logger_ROOT={}", Path::new(rapids_logger_root).display()))
-        .arg(format!("-Dcuvs_ROOT={}", Path::new(cuvs_root).display()));
+        .arg(format!("-Dcuvs_ROOT={}", Path::new(cuvs_root).display()))
+        .arg(format!(
+            "-DCMAKE_PREFIX_PATH={};{}",
+            layout.cudf_install_dir.display(),
+            layout.cuvs.install_dir.display()
+        ));
 
     run_command_capture("configure native cuGraph with CMake", &mut configure_command)?;
     validate_workspace_runtime_packages(layout)?;

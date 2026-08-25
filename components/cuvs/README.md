@@ -1,14 +1,10 @@
-# cuvs-nexus
+# cuVS component
 
-> [!IMPORTANT]
-> Development has moved to
-> [`DataFusion-Nexus/datafusion-nexus`](https://github.com/DataFusion-Nexus/datafusion-nexus/tree/main/components/cuvs).
-> This repository is retained as a read-only historical archive. Clone the
-> monorepo recursively for the current source, build tooling, and tests.
-
-`cuvs-nexus` is a Rust GPU vector search and clustering workspace built around [`libcuvs`](https://github.com/rapidsai/cuvs).
+`components/cuvs` is the DataFusion Nexus Rust vector integration component
+built around [`libcuvs`](https://github.com/rapidsai/cuvs). It is part of the
+root Cargo workspace, not a second repository or workspace.
 Its main direction is to make cuVS usable as part of backend services and query execution systems for
-[DataFusion-Nexus](https://github.com/DataFusion-Nexus/DataFusion-Nexus). It focuses on safe Rust APIs for GPU vector
+[DataFusion Nexus](https://github.com/DataFusion-Nexus/datafusion-nexus/tree/main/components/cuvs). It focuses on safe Rust APIs for GPU vector
 search and clustering while keeping ownership, memory movement, execution context, synchronization, and interop
 behavior explicit enough for service-side integration.
 
@@ -22,8 +18,20 @@ behavior explicit enough for service-side integration.
 
 ## Workspace
 
-- `cuvs-nexus/` - the safe public Rust API crate, published as `cuvs-nexus` (import `cuvs`).
-- `cuvs-nexus-sys/` - generated low-level bindings and native build discovery for `libcuvs` (import `cuvs_sys`).
-- `cuvs/` - the pinned official [cuVS](https://github.com/rapidsai/cuvs) source submodule used to build the native libraries.
-- `scripts/` - operational entry points for source bootstrap and the canonical native build.
-- `tools/xtask/` - unpublished binding and verification maintenance tooling.
+- `components/cuvs/cuvs-nexus/` - the safe public Rust API crate, published as `cuvs-nexus` (import `cuvs`).
+- `components/cuvs/cuvs-nexus-sys/` - generated low-level bindings and native build discovery for `libcuvs` (import `cuvs_sys`).
+- `components/cuvs/cuvs/` - the pinned official [cuVS](https://github.com/rapidsai/cuvs) source submodule used to build the native libraries.
+- `scripts/build/bootstrap_cuvs.sh` and `scripts/build/build_libcuvs.sh` - root-owned native build entry points.
+- `components/cuvs/tools/xtask/` - unpublished binding and verification maintenance tooling.
+
+Native defaults are repo-relative: `target/native/cudf-install` supplies the
+shared cuDF/RMM prefix and `target/native/cuvs-install` is the canonical cuVS
+install. The root `.gitmodules`, `Cargo.lock`, and `scripts/check_all.sh` are
+the only source, lockfile, and full-gate authorities.
+
+## Migration provenance
+
+- Wrapper repository and archive: <https://github.com/DataFusion-Nexus/cuvs-nexus>
+- Frozen imported tip: `f719914c2f6fd75168edb2059d1e54a9787e3340`
+- Import merge: `abec59e4a9b9d45b452dd3557dcc85f7c7119159`
+- Final path: `components/cuvs`

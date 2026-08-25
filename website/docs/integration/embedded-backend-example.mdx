@@ -115,7 +115,7 @@ NEXUS_SERVER_WORKSPACE_BACKING_CATALOG=lake \
 NEXUS_SERVER_WORKSPACE_BACKING_SCHEMA=citation_network \
 NEXUS_SERVER_WORKSPACE_BACKING_ALIASES=papers,paper_fos,citation_edges,citation_edges_by_dst \
 flock /tmp/cudf-gpu.lock \
-cargo run -p nexus-examples --bin embedded_backend
+cargo run -p nexus-examples --all-features --bin embedded_backend
 ```
 
 Use the exact Iceberg keys shown above. `NEXUS_ICEBERG_CATALOG=rest` is not a
@@ -202,7 +202,7 @@ The example is built on the same public APIs available to application code:
   from the server configuration contract.
 - `FlightSqlServer::builder().backend(backend.clone())` runs the built-in
   Flight SQL server on that backend.
-- `server.session_context()` returns the shared base session for sibling
+- `server.session_context()` returns the shared base session for other
   frontends.
 - `build_session_context_with_backend(&config, &backend)` is the
   lower-level session builder for REST-only or custom frontend embedders.

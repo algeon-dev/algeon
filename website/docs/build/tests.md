@@ -142,7 +142,7 @@ final phase table.
 
 The binary-lane catalog is the admission control for CPU and GPU tests. Keep it
 complete and run the live inventory check when changing test binaries: without
-the former cudf-nexus runtime-policy backstop, an incorrectly classified CPU test
+a component-local runtime-policy backstop, an incorrectly classified CPU test
 is not rejected at CUDA-runtime creation.
 
 ## Doctests and rustdoc
@@ -182,8 +182,8 @@ distinct locked invocations.
 The outer `flock /tmp/cudf-gpu.lock` serializes each GPU lane against *other*
 GPU consumers — benchmarks, a running Flight SQL server, E2E scripts, or
 another checkout's test run. The inner cap, separate resource-class runs, and
-outer lock solve different problems. The same lock convention applies to
-`cudf-nexus` and `cugraph-nexus` test runs.
+outer lock solve different problems. The same lock convention applies to the
+GPU test binaries in the `components/*` crates.
 
 GPU-lane membership is **binary-level and explicit**. `.config/policies/test-lanes.toml`
 is the single admission source: every live pre-merge-admitted nextest binary
@@ -238,13 +238,11 @@ cargo nextest run -p datafusion-nexus --all-features \
   --test native_planning_tests
 
 # CPU adapter contracts (errors, policy reports, public facade, table-format).
-cargo nextest run -p datafusion-nexus \
-  --all-features \
+cargo nextest run -p datafusion-nexus --all-features \
   --test cpu_contract_tests
 
 # Pure native-engine contract harness.
-cargo nextest run -p nexus-query-engine \
-  --all-features \
+cargo nextest run -p nexus-query-engine --all-features \
   --test native_contract_tests
 
 # Repository policy/fmt/CPU partial loop.
@@ -276,10 +274,10 @@ CARGO_LOG=cargo::core::compiler::fingerprint=info \
 ```
 
 Fingerprint logs can contain full local environment values such as `PATH`.
-Redact them before attaching to an issue. Sibling `cudf-nexus` documents the live
-matrix as `bash scripts/check_fingerprint_matrix.sh` (under the `cudf-nexus`
-checkout) and the static contract as
-`cargo test -p cudf-nexus-sys --test fingerprint_matrix_contract`.
+Redact them before attaching to an issue. The root component-support helper
+documents the live matrix as `bash scripts/build/check_fingerprint_matrix.sh`
+and the static contract as
+`cargo test -p cudf-nexus-sys --all-features --test fingerprint_matrix_contract`.
 
 ### Target artifact maintenance
 
@@ -298,10 +296,10 @@ the active all-feature surface, not from a multi-day dirty `target/` tree.
 `sccache` (or equivalent) can help clean CI and branch switches; it does not
 remove the cost of linking many large test binaries.
 
-Do not use broad `cargo test` for `datafusion-nexus`: libtest runs cases in a
+Do not use broad `cargo test --all-features` for `datafusion-nexus`: libtest runs cases in a
 binary as threads, and serial threads still cannot restore the engine's
 process-global allocator or policy fixtures. The retired Cargo diagnostic
-runner fails closed for that reason. `cargo nextest run` is the deterministic
+runner fails closed for that reason. `cargo nextest run --all-features` is the deterministic
 unit/integration surface, but a bare invocation does **not** acquire the
 cross-consumer GPU lock; use `check_all.sh` for repository validation. It
 intentionally contains **no external-service E2E** — nothing in the Cargo test

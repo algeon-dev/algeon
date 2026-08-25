@@ -1,8 +1,12 @@
 # Contributing
 
-Contributions are very welcome. This repository is still early, so the most
+Contributions are very welcome. This component is still early, so the most
 valuable contributions are changes that make the service-facing ownership,
 execution, memory, and interop contracts clearer and more reliable.
+
+Work from the monorepo root. The root workspace owns this component, the
+shared cuDF/RMM identity, the single `Cargo.lock`, and the canonical validation
+gate.
 
 ## Start With an Issue
 
@@ -26,8 +30,8 @@ In the PR description, include:
 
 ## Testing
 
-This repository does not currently have GitHub Actions runners with GPU
-coverage. Contributors are responsible for testing their changes in an
+The root repository gate owns CI and GPU-lane admission for this component.
+Contributors are still responsible for testing native changes in an
 appropriate local or external GPU environment.
 
 Please make the test environment explicit in every PR. Include the relevant
@@ -36,3 +40,16 @@ version, OS, and any environment variables that affect the build or runtime.
 
 If a change cannot be fully tested, state that clearly in the PR and explain
 what was tested, what was not tested, and why.
+
+Initialize the pinned official cuVS source and use the root native helpers:
+
+```shell
+git submodule update --init --recursive components/cuvs/cuvs
+bash scripts/build/bootstrap_cuvs.sh
+bash scripts/build/build_libcuvs.sh
+```
+
+The default install is `target/native/cuvs-install`; set `CUVS_INSTALL_DIR`
+explicitly for a compatible external prefix. Run focused checks from the root,
+then use the bare `bash scripts/check_all.sh` gate for full validation. Do not
+wrap that gate in `/tmp/cudf-gpu.lock`.

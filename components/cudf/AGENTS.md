@@ -43,14 +43,18 @@
 
 ## Project boundaries
 
-`cudf-nexus` provides service-facing Rust DataFrame and runtime integration over
-libcudf. Query planning belongs in `datafusion-nexus`.
+`components/cudf` provides service-facing Rust DataFrame and runtime integration
+over libcudf. Query planning belongs in the root `datafusion-nexus` adapter.
 
 - Safe APIs belong in `cudf-nexus/`; the C++ shim and raw FFI belong in
   `cudf-nexus-sys/`; cross-library ownership and synchronization vocabulary
   belongs in `rapids-interop/`.
-- `cudf/` is the pinned DataFusion-Nexus cuDF fork used for native builds.
-- Preserve the three workspace crates and their dependency direction.
+- `components/cudf/cudf/` is the pinned DataFusion-Nexus cuDF fork used for
+  native builds.
+- The three component crates are members of the root workspace; preserve their
+  dependency direction and package/import identities.
+- Default native output is `target/native/cudf-install`; use the explicit
+  `CUDF_INSTALL_DIR` or `CUDF_CPP_BUILD_DIR` selectors when needed.
 - Linux only. MSRV is Rust 1.94; formatting requires nightly.
 
 ## Architecture contracts
@@ -75,8 +79,8 @@ cargo clippy --workspace --all-features --all-targets -- -D warnings
 cargo +nightly fmt --all
 
 # Focused contract loops
-cargo test -p rapids-interop
-flock /tmp/cudf-gpu.lock cargo test -p cudf-nexus --test semantic_contracts
+cargo test -p rapids-interop --all-features
+flock /tmp/cudf-gpu.lock cargo test -p cudf-nexus --all-features --test semantic_contracts
 
 # Full workspace surface
 flock /tmp/cudf-gpu.lock cargo test --workspace --all-features --no-fail-fast
@@ -107,6 +111,9 @@ radius. Report exact commands and selected native prefix or GPU environment.
   an installed libcudf prefix, while `CUDF_CPP_BUILD_DIR` names a preconfigured
   build tree. When both are set, the install prefix takes precedence; preserve
   build fingerprints.
+- Native source and component checks run from the monorepo root. The root
+  `scripts/check_all.sh` is the only full gate; component crates do not carry a
+  second workspace gate or lockfile.
 - Keep the cuDF submodule pin and C++ shim ABI synchronized. Test both Rust
   contracts and native failure/cleanup paths when changing FFI.
 

@@ -3,7 +3,7 @@
 
 Produces deterministic JSON output for a single (dataset, algorithm,
 params) triple by running RAPIDS Python cuGraph on a local CSV fixture
-prepared from the sibling cuGraph checkout. The Rust parity harness reads
+prepared from the pinned cuGraph source. The Rust parity harness reads
 these JSON files from ``fixture/graph/cugraph/oracle/`` and compares the
 native cuGraph execution path against them.
 
