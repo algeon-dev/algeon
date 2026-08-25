@@ -98,7 +98,7 @@ impl QueryMetrics {
         self.filtered_join_build_count = self.filtered_join_build_count.saturating_add(1);
     }
 
-    /// Records one one-shot join execution.
+    /// Records a one-shot join execution.
     pub fn record_one_shot_join(&mut self) {
         self.one_shot_join_count = self.one_shot_join_count.saturating_add(1);
     }

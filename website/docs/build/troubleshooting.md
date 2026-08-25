@@ -1,5 +1,5 @@
 ---
-sidebar_position: 7
+sidebar_position: 6
 description: The native-library failure modes whose fix is not documented anywhere else — cryptic configure aborts and runtime kernel errors.
 ---
 
@@ -7,17 +7,18 @@ description: The native-library failure modes whose fix is not documented anywhe
 
 Toolchain and setup problems are documented where the tool is: missing
 mold/clang, CMake and host-compiler versions in
-[Prerequisites](./prerequisites.md); stale-install and shell-leakage issues in
-[Environment](./environment.md); test-runner, fingerprint, and `target/`-size
-issues in [Tests](./tests.md). This page keeps only the failures whose error
-text does not point at the cause — all four were observed on real hardware.
+[Prerequisites](./prerequisites.md); checkout-local native selectors in
+[Building from Source](./from-source.md#2-configure-the-build-shell); and
+test-runner, fingerprint, and `target/`-size issues in [Tests](./tests.md).
+This page keeps the failures whose error text does not point at the cause.
 
 ## cuGraph configure aborts: private RMM detected
 
 `scripts/build/build_libcugraph.sh` refuses to finish when the configure resolved an
 RMM or rapids_logger other than the one exported by `CUDF_INSTALL_DIR`, or when
 CPM-built copies linger under `target/native/cugraph-build/_deps`. This protects the
-one-RMM-per-process invariant ([Environment](./environment.md#dependency-relationship)).
+one-RMM-per-process invariant
+([native dependency relationship](./from-source.md#2-configure-the-build-shell)).
 
 Usual cause: the build dir predates the external-RMM configure. Remove
 `target/native/cugraph-build` and re-run the script. Do not delete the check or point
@@ -85,7 +86,7 @@ cugraph_strongly_connected_components failed:
   copy_if failed on 2nd step: cudaErrorInvalidDeviceFunction
 ```
 
-Known upstream defect of clean source-built cuGraph v26.06 on Blackwell
+Known upstream cuGraph defect on Blackwell
 (`sm_120`, e.g. RTX 50-series / RTX PRO 6000)
 ([rapidsai/cugraph#5543](https://github.com/rapidsai/cugraph/issues/5543)) —
 CCCL 3.4.0's CUB select tuning has no policy for compute capability 12.0.

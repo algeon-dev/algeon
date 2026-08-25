@@ -13,6 +13,13 @@
 //! - [`native_report`] defines the TSV/report contracts emitted by benchmark
 //!   and diagnostic binaries. Column order is part of the public surface.
 //!
+//! Beyond the core boundary, the public modules cover the GPU backend and
+//! admission ([`backend`], [`attempt`], [`session_config`]), lowering,
+//! coverage, and SQL surfaces ([`native`], [`gpu_coverage`],
+//! [`gpu_coverage_sql`], [`cugraph_sql`], [`cuvs_sql`], [`gpu_functions`],
+//! [`table_format`]), and shared diagnostics ([`capability`], [`report`],
+//! [`error`], [`observability`], [`source_cardinality`]).
+//!
 //! DataFusion-specific planning belongs here. DataFusion-free native IR,
 //! runtime policy, capability admission, and cudf execution live in
 //! [`nexus_query_engine`].

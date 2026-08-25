@@ -3,7 +3,7 @@ use super::*;
 /// Keeps a Flight-owned cancellation path ahead of the attempt stream's drop
 /// implementation. `take_until` and client disconnects may discard this
 /// wrapper at any poll boundary; its `Drop` cancels the attempt before Rust
-/// drops the inner [`AttemptStream`], so terminalization observes
+/// drops the inner [`crate::attempt::AttemptStream`], so terminalization observes
 /// `Cancelled` rather than an unrelated client-drop outcome.
 struct FlightExecutionBody {
     inner: Option<SendableRecordBatchStream>,

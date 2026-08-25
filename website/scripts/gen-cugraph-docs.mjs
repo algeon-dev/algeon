@@ -25,7 +25,7 @@ const WEBSITE = join(HERE, '..');
 const SPEC_DIR = join(WEBSITE, 'gpu-function-specs', 'cugraph');
 const DOCS_DIR = join(WEBSITE, 'docs', 'cugraph');
 const ALGORITHMS_DIR = join(DOCS_DIR, 'algorithms');
-const OFFICIAL_DOCS_ROOT = 'https://docs.nvidia.com/cugraph/26.08/';
+const OFFICIAL_DOCS_ROOT = 'https://docs.rapids.ai/api/cugraph/stable/';
 
 const FAMILIES = {
   centrality: { label: 'Centrality', position: 2 },

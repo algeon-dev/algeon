@@ -1,200 +1,222 @@
 ---
-sidebar_position: 4
-description: Clone one recursive repository and build the stack bottom-up — libcudf/RMM, cuVS, cuGraph, then the root workspace.
+sidebar_position: 3
+description: Clone one recursive repository, configure one checkout-local environment, and build cuDF/RMM, cuVS, cuGraph, and the Rust workspace.
 ---
 
 # Building from Source
 
-All commands assume the [prerequisites](./prerequisites.md) are installed and
-`env.sh` from [Environment](./environment.md) is sourced. Steps must run in
-this order — each layer consumes the previous one's artifacts.
+This is the complete source-build path. It starts with one recursive
+`datafusion-nexus` checkout and keeps every source, native build tree, install
+prefix, Rust crate, and validation command inside that checkout.
 
-## 1. Clone the repository
+Complete the [prerequisites](./prerequisites.md) first, then run the steps below
+in order: cuDF/RMM → cuVS → cuGraph → the Rust workspace.
 
-Clone one repository recursively. The root `.gitmodules` pins the forked cuDF,
-forked cuGraph, and official cuVS native sources; Apache DataFusion and the rest
-of the Rust dependency graph are fetched by Cargo.
+## 1. Clone and initialize the repository
+
+Clone the root repository recursively into any working directory:
 
 ```bash
-git clone --recurse-submodules \
-  https://github.com/DataFusion-Nexus/datafusion-nexus.git
-export NEXUS_ROOT="$PWD/datafusion-nexus"
-cd "$NEXUS_ROOT"
+git clone --recurse-submodules https://github.com/DataFusion-Nexus/datafusion-nexus.git
+cd datafusion-nexus
 ```
 
-The recursive checkout places native sources at `components/cudf/cudf`,
-`components/cugraph/cugraph`, and `components/cuvs/cuvs`. Do not move those
-directories or add separate Rust checkouts: the root workspace resolves all
-component crates through `components/*`.
-
-## 2. Build libcudf
-
-This is the long step — a full CUDA compilation of libcudf. Wall-clock scales
-with core count; `PARALLEL_LEVEL` defaults to `nproc`, and peak memory scales
-with that parallelism, so cap it (`PARALLEL_LEVEL=<n> bash
-scripts/build/build_libcudf.sh`) on a memory-constrained box.
+For an existing non-recursive clone, initialize it in place:
 
 ```bash
-cd "$NEXUS_ROOT"
+git submodule sync --recursive
+git submodule update --init --recursive
+```
+
+The root commit pins the exact native-source revisions as Git submodule
+gitlinks:
+
+```text
+components/cudf/cudf/       # DataFusion-Nexus cuDF fork
+components/cugraph/cugraph/ # DataFusion-Nexus cuGraph fork
+components/cuvs/cuvs/       # Temp official RAPIDS cuVS (WIP)
+```
+
+Verify that all three are initialized and match the root commit:
+
+```bash
+git submodule status --recursive
+```
+
+## 2. Configure the build shell
+
+Run this block from the checkout root in every new shell used to build, test,
+run, or package the project:
+
+```bash
+export NEXUS_ROOT="$(pwd -P)"
+test -f "$NEXUS_ROOT/Cargo.toml"
+test -f "$NEXUS_ROOT/.gitmodules"
+
+# CUDA toolkit. nvcc must be on PATH for CMake language detection.
+export CUDA_HOME=/usr/local/cuda
+export CUDA_PATH="$CUDA_HOME"
+export CUDAToolkit_ROOT="$CUDA_HOME"
+export CUDACXX="$CUDA_HOME/bin/nvcc"
+export PATH="$CUDA_HOME/bin:$PATH"
+
+# Native host compiler required by the pinned sources.
+export CC=/usr/bin/gcc-14
+export CXX=/usr/bin/g++-14
+export CUDAHOSTCXX=/usr/bin/g++-14
+
+# Checkout-local native build and install identity.
+export CUDF_CPP_BUILD_DIR="$NEXUS_ROOT/target/native/cudf-build"
+export CUDF_INSTALL_DIR="$NEXUS_ROOT/target/native/cudf-install"
+export INSTALL_PREFIX="$CUDF_INSTALL_DIR"
+export CUVS_INSTALL_DIR="$NEXUS_ROOT/target/native/cuvs-install"
+export CUVS_ROOT="$CUVS_INSTALL_DIR"
+export CUGRAPH_CMAKE_BUILD_DIR="$NEXUS_ROOT/target/native/cugraph-build"
+
+# Use only this checkout's RAPIDS libraries at runtime.
+export LD_LIBRARY_PATH="$CUGRAPH_CMAKE_BUILD_DIR:$CUDF_INSTALL_DIR/lib:$CUVS_INSTALL_DIR/lib:$CUDA_HOME/lib64"
+```
+
+These assignments deliberately replace inherited native selectors. Preserving
+an older `CUDF_INSTALL_DIR`, `CUVS_INSTALL_DIR`, `CUVS_ROOT`, or
+`CUGRAPH_CMAKE_BUILD_DIR` can silently mix libraries from another checkout.
+Edit this block explicitly if your CUDA toolkit or gcc 14 installation is in a
+different location.
+
+The selectors have one shared identity:
+
+| Variable | Owner and purpose |
+| --- | --- |
+| `NEXUS_ROOT` | Root of the one recursive checkout. |
+| `CUDF_CPP_BUILD_DIR` | cuDF CMake cache, normally `target/native/cudf-build`. |
+| `CUDF_INSTALL_DIR` / `INSTALL_PREFIX` | cuDF install containing the stack's one shared `librmm.so`. |
+| `CUVS_INSTALL_DIR` / `CUVS_ROOT` | One cuVS prefix used by its build, Rust bindings, and cuGraph. |
+| `CUGRAPH_CMAKE_BUILD_DIR` | cuGraph CMake build and runtime-library directory. |
+| `LD_LIBRARY_PATH` | Runtime resolution in dependency order: cuGraph, cuDF/RMM, cuVS, CUDA. |
+
+The native dependency relationship is:
+
+```text
+cuDF/RMM → cuVS → cuGraph → DataFusion Nexus
+```
+
+Before a long build, confirm that no selector escapes the checkout:
+
+```bash
+env | sort | grep -E '^(NEXUS_ROOT|CUDF_|CUVS_|CUGRAPH_|LD_LIBRARY_PATH)='
+```
+
+Every native path in the output must resolve under
+`$NEXUS_ROOT/target/native/`. If one does not, rerun the block above from the
+current repository root. `scripts/check_all.sh` intentionally inherits the
+configured native identity; it does not guess that an exported path is stale.
+
+## 3. Build the native stack
+
+### Build cuDF and the shared RMM prefix
+
+This is the longest step. `PARALLEL_LEVEL` defaults to `nproc`; cap it on a
+memory-constrained host.
+
+```bash
 bash scripts/build/build_libcudf.sh
 ```
 
-The root helper drives the pinned source at `components/cudf/cudf/`, keeps its
-CMake cache in `$NEXUS_ROOT/target/native/cudf-build/`, and sends the install to
-`$NEXUS_ROOT/target/native/cudf-install/`. `CUDF_CPP_BUILD_DIR` and
-`CUDF_INSTALL_DIR` are the matching selectors; the helper rejects a stale cache
-whose `CMAKE_INSTALL_PREFIX` points elsewhere. The fork builds RMM as a
-**shared** library by default (`CUDF_RMM_BUILD_SHARED=ON`) — downstream layers
-depend on that.
-
-By default the build targets your GPU's own architecture
-(`CMAKE_CUDA_ARCHITECTURES=NATIVE`); the configure step prints the detected
-arch (e.g. `Building for the architecture of the GPU in the system...`). If the
-binaries must also run on a *different* GPU model, list every target
-architecture explicitly, e.g.
-`CUDF_CMAKE_CUDA_ARCHITECTURES="80-real;90-real;120-real" bash scripts/build/build_libcudf.sh`.
-
-Verify the install tree. The helper installs **cudf and rmm** and then prepares
-the shared prefix —
-`libcudf.so`, the shared `librmm.so`, and their CMake packages. The
-`rapids_logger`/`nvtx3` packages that cuGraph's `find_package(rmm)` needs are
-added by the helper's idempotent bootstrap and are also refreshed by
-[step 4](#4-prepare-the-shared-cudf-prefix). `cudf-nexus-sys` links the `.so`
-files directly without a CMake configure, so cudf + rmm is all it needs:
+The helper drives `components/cudf/cudf`, keeps its CMake cache under
+`target/native/cudf-build`, installs cuDF and shared RMM under
+`target/native/cudf-install`, and bootstraps the exported RMM dependency
+closure needed downstream. It rejects a cache configured for another install
+prefix.
 
 ```bash
 ls "$CUDF_INSTALL_DIR"/lib/libcudf.so "$CUDF_INSTALL_DIR"/lib/librmm.so
-ls -d "$CUDF_INSTALL_DIR"/lib/cmake/{cudf,rmm}
-
-# Full kernel coverage for your GPU architecture
-cuobjdump --list-elf "$CUDF_INSTALL_DIR/lib/libcudf.so" \
-  | grep -oE 'sm_[0-9]+' | sort | uniq -c
+ls -d "$CUDF_INSTALL_DIR"/lib/cmake/{cudf,rmm,rapids_logger,nvtx3,fmt,spdlog}
 ```
 
-## 3. Build and test cudf-nexus
-
-`cudf-nexus-sys` compiles a C++ shim with CMake and links it against the installed
-libcudf; the pure-Rust crates build on top. These Cargo builds need the mold
-linker on the host (install mold and clang in
-[Prerequisites](./prerequisites.md#rust-linker-mold)).
+The default build targets the GPU installed in the build host. To produce
+artifacts for other GPU models, provide every required architecture explicitly:
 
 ```bash
-cd "$NEXUS_ROOT"
-cargo build -p cudf-nexus-sys --all-features  # smoke-test shim + libcudf link
-cargo build --all-features
-flock /tmp/cudf-gpu.lock cargo test -p cudf-nexus --all-features --no-fail-fast
+CUDF_CMAKE_CUDA_ARCHITECTURES="80-real;90-real;120-real" \
+  bash scripts/build/build_libcudf.sh
 ```
 
-`cudf-nexus-sys` produces `libcudf_rust.so` and its private
-`libcudf_rust_rmm_interop.so` under Cargo's `OUT_DIR/lib`; keep both together
-for runtime and Docker packaging.
-
-Tests execute on the GPU, so they take the global GPU lock (see
-[Tests](./tests.md#gpu-serialization)).
-
-## 4. Prepare the shared cuDF prefix
+### Build cuVS
 
 ```bash
-cd "$NEXUS_ROOT"
-bash scripts/build/bootstrap_cudf_install.sh
-```
-
-This prepares the cuDF install so cuVS and cuGraph can use its one shared
-`librmm.so`; it does not build another RMM.
-
-## 5. Build libcuvs
-
-```bash
-cd "$NEXUS_ROOT"
 bash scripts/build/build_libcuvs.sh
 ```
 
-cuVS uses the shared `librmm.so` produced by libcudf and installs its native
-library into `$NEXUS_ROOT/target/native/cuvs-install/`. It must be built before
-libcugraph.
-
-## 6. Build and test cuvs-nexus
+The helper builds the pinned source at `components/cuvs/cuvs`, uses RMM from
+`CUDF_INSTALL_DIR`, and installs both the C++ and C libraries into the one
+`CUVS_INSTALL_DIR` selected above.
 
 ```bash
-cd "$NEXUS_ROOT"
-cargo build -p cuvs-nexus --all-features
-flock /tmp/cudf-gpu.lock cargo test -p cuvs-nexus --all-features --no-fail-fast
+ls "$CUVS_INSTALL_DIR"/lib/libcuvs.so \
+   "$CUVS_INSTALL_DIR"/lib/libcuvs_c.so \
+   "$CUVS_INSTALL_DIR"/lib/cmake/cuvs/cuvs-config.cmake
 ```
 
-## 7. Build libcugraph
+### Build cuGraph
 
 ```bash
-cd "$NEXUS_ROOT"
 bash scripts/build/build_libcugraph.sh
 ```
 
-Like libcudf, this defaults to your GPU's architecture (`NATIVE`). To build for
-other GPU models, pass the same architecture list through
-`CMAKE_CUDA_ARCHITECTURES` (the variable the script forwards to CMake):
+The helper builds `components/cugraph/cugraph` into
+`target/native/cugraph-build`. It binds cuGraph to the selected cuDF/RMM and
+cuVS prefixes and fails if CMake or the dynamic loader resolves a private or
+different copy.
+
+```bash
+ls "$CUGRAPH_CMAKE_BUILD_DIR"/libcugraph.so \
+   "$CUGRAPH_CMAKE_BUILD_DIR"/libcugraph_c.so
+```
+
+To target other GPU models, pass the corresponding CMake architecture list:
 
 ```bash
 CMAKE_CUDA_ARCHITECTURES="80-real;90-real;120-real" \
   bash scripts/build/build_libcugraph.sh
 ```
 
-The script first makes the cudf install prefix export RMM's full CMake closure
-(`scripts/build/bootstrap_cudf_install.sh`, run automatically), then configures
-`components/cugraph/cugraph/cpp` into `target/native/cugraph-build` (override
-with `CUGRAPH_CMAKE_BUILD_DIR`),
-forcing `rmm` and `rapids_logger` to resolve from `CUDF_INSTALL_DIR`. It fails
-loudly if the configure resolved a private RMM or if a CPM-built copy is left
-in the build tree — if it aborts, fix the cause (usually a stale build dir from
-a pre-external-RMM configure: remove `target/native/cugraph-build` and re-run); do not
-bypass the check.
+On Blackwell (`sm_120`), the pinned cuGraph fork carries the required
+single-GPU strongly-connected-components compatibility path. Building a
+different upstream checkout bypasses that contract.
 
-On success it prints:
+## 4. Build the Rust workspace
 
-```text
-libcugraph native build OK: rmm and rapids_logger resolved from <CUDF_INSTALL_DIR>
-```
-
-After this step the cudf prefix is self-contained — the bootstrap has added the
-`rapids_logger`, `nvtx3`, `fmt`, and `spdlog` CMake packages:
+After all three native layers exist, build the unified workspace with one
+feature selection:
 
 ```bash
-ls -d "$CUDF_INSTALL_DIR"/lib/cmake/{cudf,rmm,rapids_logger,nvtx3,fmt,spdlog}
+cargo build --workspace --all-features
 ```
 
-## 8. Build and test cugraph-nexus
+Cargo resolves every first-party Rust crate from this checkout's root
+workspace and lockfile.
+
+For a smaller edit loop, select a package while retaining the same feature
+contract:
 
 ```bash
-cd "$NEXUS_ROOT"
-cargo build -p cugraph-nexus --all-features
-flock /tmp/cudf-gpu.lock cargo test -p cugraph-nexus --all-features --no-fail-fast
+cargo build -p datafusion-nexus --all-features
+cargo build -p nexus-query-engine --all-features
+cargo build -p cudf-nexus --all-features
 ```
 
-### Blackwell (sm_120) and strongly connected components
+## 5. Validate the checkout
 
-On Blackwell (`sm_120`, e.g. RTX 50-series / RTX PRO 6000) GPUs, a clean
-source-built libcugraph v26.06 has a known upstream defect in
-`cugraph_strongly_connected_components`
-([rapidsai/cugraph#5543](https://github.com/rapidsai/cugraph/issues/5543)):
-CCCL 3.4.0's CUB select tuning has no policy for compute capability 12.0. The
-pinned fork routes SCC through a host-side fallback on single-GPU `sm_120`, so
-the test suite passes on Blackwell — this is why the submodule pin matters and
-the fork, not upstream cuGraph, must be built.
-
-## 9. Build and test datafusion-nexus
-
-`datafusion-nexus` selects mold via its `.cargo/config.toml`; mold and clang
-must already be installed (see
-[Prerequisites](./prerequisites.md#rust-linker-mold)).
+Run the canonical pre-merge surface bare:
 
 ```bash
-cd "$NEXUS_ROOT"
-cargo build -p nexus-server --all-features
 bash scripts/check_all.sh
 ```
 
-The `nexus-server` package owns the Flight SQL server and forwards the adapter's
-GPU features. A bare `check_all.sh` is the canonical full pre-merge check; it
-assigns CPU and GPU lanes and acquires the cross-consumer GPU lock. See
-[Tests](./tests.md) for partial edit loops and the lane model.
+Do not wrap it in `flock`; the script acquires `/tmp/cudf-gpu.lock` internally
+for every GPU phase. It covers policy checks, nightly formatting, CPU and GPU
+nextest lanes, doctests, rustdoc, public API snapshots, and clippy. See
+[Tests](./tests.md) for focused package and test-harness commands.
 
 To package the standalone Flight SQL server after this source build, continue
 with [Building with Docker](./docker.md).

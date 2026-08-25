@@ -808,7 +808,7 @@ pub enum CapabilityRejectionCategory {
     MissingSubgraphInvariant,
     /// The final sink boundary is outside the compiled bounded runtime envelope.
     UnsupportedSinkBoundary,
-    /// The compiled pipeline graph is outside the capability-envelope envelope.
+    /// The compiled pipeline graph is outside the capability-envelope.
     UnsupportedCompiledPipelineEnvelope,
 }
 
@@ -921,10 +921,10 @@ impl CapabilityEnvelope {
     }
 }
 
-/// Capability authority result for capability-envelope envelope selection.
+/// Capability authority result for capability-envelope selection.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityEnvelopeAdmission {
-    /// The analysis selected a capability-envelope envelope.
+    /// The analysis selected a capability-envelope.
     Admitted {
         /// Selected envelope.
         envelope: CapabilityEnvelope,
@@ -997,8 +997,8 @@ impl CapabilityAnalysis {
             || self.invariants.iter().any(|invariant| matches!(invariant.decision, CapabilityDecision::Rejected { .. }))
     }
 
-    /// Selects the one capability-envelope envelope admitted by this analysis, or a
-    /// structured projection explaining why no capability envelope is admissible.
+    /// Selects the one capability-envelope admitted by this analysis, or a
+    /// structured projection explaining why no capability-envelope is admissible.
     pub fn capability_envelope_admission(&self) -> CapabilityEnvelopeAdmission {
         if let Some(projection) = self.first_local_rejection_projection() {
             return CapabilityEnvelopeAdmission::Rejected { projection };

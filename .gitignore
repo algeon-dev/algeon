@@ -16,6 +16,9 @@ rustc-ice-*.txt
 # IDE
 .idea/
 
+# Build settings
+env.sh
+
 *.log
 
 # Python artifacts
