@@ -1,475 +1,27 @@
-//! Approximate cuGraph memory pricing outside the strict bounded gate.
-//!
-//! These estimates are intentionally not strict-bounded contracts. They price a
-//! graph fragment before entering cuGraph so bounded service admission can fail
-//! locally with structured facts instead of relying on a raw RMM OOM.
-
 use arrow::datatypes::{DataType, SchemaRef};
 
+use super::{
+    BETWEENNESS_MAX_CONCURRENT_SOURCES, BETWEENNESS_PUSH_TUPLE_DEVICE_MEMORY_DENOMINATOR,
+    BETWEENNESS_SOURCE_ORIGIN_WIDTH_BYTES, GRAPH_MEMORY_BOUNDARY, GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES,
+    GRAPH_VERTEX_ESTIMATE_PROBE_MIN_BYTES, GraphCalibrationSource, GraphConstructionWorkspaceBounds,
+    GraphMemoryAdmissionEvidence, GraphMemoryCalibrationOverride, GraphMemoryClass, GraphMemoryEstimate,
+    GraphMemoryOwnerComponents, GraphMemoryRetainedOutputContribution, GraphPairCardinalityAdmissionMode,
+    GraphPairCardinalitySource, GraphPlanMemoryEstimate, GraphReservationReport, GraphSeedMode, GraphStatistics,
+    GraphVertexEstimate, GraphVertexEstimateSource, TRIANGLE_COUNT_CHUNK_SAFETY_DENOMINATOR,
+    TRIANGLE_COUNT_CHUNK_SAFETY_NUMERATOR, TRIANGLE_COUNT_DFG_REBUILD_VERTEX_COLUMNS,
+    TRIANGLE_COUNT_NO_STATS_EDGE_VERTEX_COLUMNS, TRIANGLE_COUNT_PAIR_LIST_VERTEX_COLUMNS,
+    TRIANGLE_COUNT_PEAK_INTERSECTION_VERTEX_COLUMNS, TRIANGLE_COUNT_SORT_STAGING_VERTEX_COLUMNS,
+    TRIANGLE_COUNT_VERTEX_SCRATCH_COLUMNS,
+};
 use crate::{
-    admission::canonical_execution_scope_fingerprint,
     error::{QueryError, QueryErrorCode, Result},
     execution_contracts::{MemoryReservationRequest, MemorySpaceId, ReservationKind},
-    metrics::{PlanNodeId, QueryId},
+    metrics::PlanNodeId,
     plan::{
         EdgeNormalizeSpec, GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphConstructionPolicy,
         GraphEdgeColumnBindings, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, estimated_output_rows,
     },
 };
-
-/// Stable graph memory-tier boundary used in reports and reservation facts.
-pub const GRAPH_MEMORY_BOUNDARY: &str = "graph_memory";
-
-/// Temporary bounded-admission probe that measures distinct graph endpoints.
-pub const GRAPH_VERTEX_ESTIMATE_BOUNDARY: &str = "graph_memory_vertex_estimate";
-
-/// Minimum exact-vertex probe reservation.
-///
-/// The edge-scaled model dominates for real graph inputs. This floor handles
-/// tiny graphs where RMM allocation alignment and cudf distinct intermediates
-/// exceed the byte-exact column copy size.
-pub const GRAPH_VERTEX_ESTIMATE_PROBE_MIN_BYTES: u64 = 64 * 1024;
-
-/// Stable local rejection reason for graph estimate denial.
-pub const GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON: &str = "graph_memory_estimate_exceeds_budget";
-
-/// Minimum live reservation used when a graph fragment is hard-limited by RMM.
-///
-/// Tiny model estimates are useful diagnostics, but cuGraph still needs a
-/// practical allocator envelope for graph construction and result conversion.
-/// Bounded admission reserves this floor so the RMM cap never exceeds the
-/// live graph reservation.
-pub const GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES: u64 = 1024 * 1024;
-
-/// cuGraph's single-GPU vertex-betweenness implementation tags concurrent
-/// sources with a `uint16_t` origin id. The requested seed count can be much
-/// larger, but those sources are not all resident in one source-by-vertex
-/// workspace at the same time.
-const BETWEENNESS_MAX_CONCURRENT_SOURCES: u64 = u16::MAX as u64;
-
-// The constants below mirror allocation shapes in the pinned cuGraph checkout;
-// `graph_memory_pricing_constants_match_pinned_cugraph_sources` fails loudly
-// when the mirrored upstream code drifts.
-
-/// `sizeof(origin_t)` in cuGraph's resident push tuple
-/// `(vertex_t, origin_t, edge_t)` (`betweenness_centrality_impl.cuh`); the two
-/// vertex-width components are added per-call, this is only the middle field.
-const BETWEENNESS_SOURCE_ORIGIN_WIDTH_BYTES: u64 = 2;
-/// cuGraph's `max_edge_tuple_data_ratio = 0.25`: multi-source BFS batches its
-/// frontier so resident push tuples never exceed a quarter of total device
-/// memory. Pricing above this ceiling would charge for an allocation
-/// libcugraph cannot make.
-const BETWEENNESS_PUSH_TUPLE_DEVICE_MEMORY_DENOMINATOR: u64 = 4;
-/// After 2-core pruning, cuGraph extracts the low-to-high-degree oriented edge
-/// list and rebuilds a graph from it (`extract_transform_if_e` →
-/// `create_graph_from_edgelist`): one src plus one dst column per DFG edge.
-const TRIANGLE_COUNT_DFG_REBUILD_VERTEX_COLUMNS: u64 = 2;
-/// Endpoint (src, dst) pair list that
-/// `transform_reduce_dst_nbr_intersection_of_e_endpoints_by_v` iterates;
-/// priced over all DFG edges at once as the unchunked upper bound.
-const TRIANGLE_COUNT_PAIR_LIST_VERTEX_COLUMNS: u64 = 2;
-/// `nbr_intersection` allocates its intersection index buffer from per-pair
-/// min degrees ("upper bound for intersection sizes") and keeps a same-order
-/// companion live across compaction — two buffers that scale with the chunk's
-/// min-degree sum rather than with E.
-const TRIANGLE_COUNT_PEAK_INTERSECTION_VERTEX_COLUMNS: u64 = 2;
-/// Envelope for the V-sized arrays concurrently live across the 2-core /
-/// renumber / count phases of `triangle_count_impl.cuh` (`core_numbers`,
-/// `renumber_map`, flag and count arrays).
-const TRIANGLE_COUNT_VERTEX_SCRATCH_COLUMNS: u64 = 4;
-/// Graph construction sorts/renumbers the edge list holding a staged copy of
-/// both endpoint columns. This transient is what the construction term alone
-/// under-covered on the DBLP calibration point.
-const TRIANGLE_COUNT_SORT_STAGING_VERTEX_COLUMNS: u64 = 2;
-/// Statistics-absent fallback envelope, deliberately LINEAR in edge count so
-/// the plan-time path (which never sees runtime statistics) cannot collapse
-/// back into the superlinear `V*min(V,1024)` whole-device ask, while still
-/// dominating the measured DBLP pool peak with wide margin. Pinned on both
-/// sides by `graph_memory_model_keeps_triangle_no_stats_fallback_topology_independent`
-/// (floor: ask >= measured peak) and
-/// `graph_memory_model_keeps_triangle_plan_time_fallback_below_whole_device_ticket`
-/// (ceiling: ticket stays well under device capacity).
-const TRIANGLE_COUNT_NO_STATS_EDGE_VERTEX_COLUMNS: u64 = 24;
-/// Numerator of the 5/4 peak-chunk safety margin: cuGraph chunks intersection
-/// work by dense renumbered dst id, which cannot be reproduced from sparse
-/// external ids, so pricing assumes peak chunk = average chunk (min-degree
-/// sum / chunk count) times this margin. On skewed degree distributions the
-/// true peak can exceed the margin; that residual under-ask is deliberately
-/// left to the graph stream lease, which contains it as a per-query retryable
-/// allocation failure instead of shared-pool pressure.
-const TRIANGLE_COUNT_CHUNK_SAFETY_NUMERATOR: u64 = 5;
-/// Denominator of the 5/4 peak-chunk safety margin described on
-/// [`TRIANGLE_COUNT_CHUNK_SAFETY_NUMERATOR`].
-const TRIANGLE_COUNT_CHUNK_SAFETY_DENOMINATOR: u64 = 4;
-
-/// Conservative class assigned to a cuGraph algorithm for approximate pricing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum GraphMemoryClass {
-    /// Output-sized algorithms with `O(V + E)` storage.
-    OutputSized,
-    /// Multi-array algorithms with extra per-level or ensemble state.
-    MultiArray,
-    /// Workspace-heavy algorithms with data-dependent allocation shape.
-    WorkspaceHeavyDataDependent,
-    /// Workspace-heavy algorithms whose memory is primarily seed-count driven.
-    WorkspaceHeavySeedDependent,
-    /// Explicit-pair similarity with one output row per pair relation row.
-    PairOutputSized,
-}
-
-impl GraphMemoryClass {
-    /// Stable label used in reports.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::OutputSized => "output_sized",
-            Self::MultiArray => "multi_array",
-            Self::WorkspaceHeavyDataDependent => "workspace_heavy_data_dependent",
-            Self::WorkspaceHeavySeedDependent => "workspace_heavy_seed_dependent",
-            Self::PairOutputSized => "pair_output_sized",
-        }
-    }
-
-    const fn is_data_dependent(self) -> bool {
-        matches!(self, Self::WorkspaceHeavyDataDependent | Self::WorkspaceHeavySeedDependent)
-    }
-}
-
-/// Provenance for cardinality evidence used by explicit-pair similarity memory
-/// admission.
-///
-/// A similarity call cannot reuse graph vertex or edge cardinality as a proxy:
-/// one pair relation row produces one output row and the relation is a
-/// multiset.  The source is therefore retained on the reservation report.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum GraphPairCardinalitySource {
-    /// A deterministic literal native-plan input supplied the exact row count.
-    PlanExact,
-    /// An explicit plan-level upper bound constrained the pair relation.
-    PlanHardUpperBound,
-    /// The side input was materialized before graph admission.
-    RuntimeMaterialized,
-}
-
-impl GraphPairCardinalitySource {
-    /// Stable label used in reports.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::PlanExact => "plan_exact",
-            Self::PlanHardUpperBound => "plan_hard_upper_bound",
-            Self::RuntimeMaterialized => "runtime_materialized",
-        }
-    }
-
-    /// Returns whether the evidence is available before bounded admission.
-    pub(crate) const fn is_pre_admission_bound(self) -> bool {
-        matches!(self, Self::PlanExact | Self::PlanHardUpperBound)
-    }
-}
-
-impl std::fmt::Display for GraphPairCardinalitySource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// Capability admission status projected into graph report rows.
-///
-/// The bounded controller emits [`Self::Bounded`]. Compatibility string
-/// labels are emitted only from the bounded capability contract.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum GraphPairCardinalityAdmissionMode {
-    /// No bounded admission was active; the row records observed execution
-    /// evidence only.
-    Unbounded,
-    /// Bounded admission used a plan-exact count or hard upper bound.
-    Bounded,
-}
-
-impl GraphPairCardinalityAdmissionMode {
-    /// Stable label used in reports.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Unbounded => "unbounded",
-            Self::Bounded => "strict_bounded",
-        }
-    }
-}
-
-impl std::fmt::Display for GraphPairCardinalityAdmissionMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl std::fmt::Display for GraphMemoryClass {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// Optional externally supplied graph calibration metadata.
-///
-/// Defaults intentionally carry no calibration. Callers should only provide
-/// these values from fixture metadata or a documented calibration run.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub struct GraphMemoryCalibrationOverride {
-    /// Raw edge rows before explicit edge normalization, when known.
-    pub raw_input_edges: Option<u64>,
-}
-
-impl GraphMemoryCalibrationOverride {
-    /// Returns an override with no calibration metadata.
-    pub const fn none() -> Self {
-        Self { raw_input_edges: None }
-    }
-
-    /// Attaches raw pre-normalization edge-row evidence.
-    pub const fn with_raw_input_edges(mut self, raw_input_edges: u64) -> Self {
-        self.raw_input_edges = Some(raw_input_edges);
-        self
-    }
-
-    /// Applies this override to model input.
-    pub fn apply_to_input(self, mut input: GraphMemoryModelInput) -> GraphMemoryModelInput {
-        if input.raw_input_edges.is_none()
-            && let Some(raw_input_edges) = self.raw_input_edges
-        {
-            input = input.with_raw_input_edges(raw_input_edges);
-        }
-        input
-    }
-}
-
-/// Source-selection mode for seed-dependent graph algorithms.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum GraphSeedMode {
-    /// Caller supplied a concrete seed list.
-    ExplicitSeedList,
-    /// Runtime must select `k` sources from graph vertices.
-    RuntimeKSelection,
-    /// Algorithm executes over every vertex as a source.
-    AllVertices,
-}
-
-impl GraphSeedMode {
-    /// Stable label used in reports.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ExplicitSeedList => "explicit_seed_list",
-            Self::RuntimeKSelection => "runtime_k_selection",
-            Self::AllVertices => "all_vertices",
-        }
-    }
-}
-
-impl std::fmt::Display for GraphSeedMode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// Outcome of graph memory-tier admission.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum GraphReservationOutcome {
-    /// No bounded budget was active, so the estimate was diagnostic-only.
-    NotBounded,
-    /// Estimate fit the current device budget.
-    Admitted,
-    /// Estimate exceeded the current device budget.
-    Denied,
-}
-
-impl GraphReservationOutcome {
-    /// Stable label used in reports.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::NotBounded => "not_bounded",
-            Self::Admitted => "admitted",
-            Self::Denied => "denied",
-        }
-    }
-}
-
-impl std::fmt::Display for GraphReservationOutcome {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// Provenance for the vertex-count signal used by graph memory pricing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum GraphVertexEstimateSource {
-    /// The model fell back to `2 * input_edges`.
-    EdgeEndpointUpperBound,
-    /// Exact distinct endpoint count measured from the runtime edge frame.
-    RuntimeExactDistinct,
-    /// Source-level statistics supplied a trusted vertex count.
-    SourceStatistics,
-    /// Graph dataset metadata supplied a trusted vertex count.
-    GraphMetadata,
-}
-
-impl GraphVertexEstimateSource {
-    /// Stable label used in reports.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::EdgeEndpointUpperBound => "edge_endpoint_upper_bound",
-            Self::RuntimeExactDistinct => "runtime_exact_distinct",
-            Self::SourceStatistics => "source_statistics",
-            Self::GraphMetadata => "graph_metadata",
-        }
-    }
-}
-
-impl std::fmt::Display for GraphVertexEstimateSource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// Provenance for non-default graph calibration inputs visible on reports.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
-pub enum GraphCalibrationSource {
-    /// No explicit graph calibration key was selected.
-    #[default]
-    None,
-    /// Raw pre-normalization edge-count evidence was available.
-    RawInputEdges,
-}
-
-impl GraphCalibrationSource {
-    /// Stable label used in reports.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::RawInputEdges => "raw_input_edges",
-        }
-    }
-}
-
-impl std::fmt::Display for GraphCalibrationSource {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// Refined vertex-count evidence for graph memory pricing.
-///
-/// Non-runtime callers must pass an exact or safety-padded count; admission uses
-/// this value directly after clamping it to the endpoint upper bound.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct GraphVertexEstimate {
-    /// Vertex-count signal before clamping to the endpoint upper bound.
-    pub count: u64,
-    /// Provenance for the count.
-    pub source: GraphVertexEstimateSource,
-}
-
-impl GraphVertexEstimate {
-    /// Exact endpoint count measured from the runtime edge-list frame.
-    pub const fn runtime_exact_distinct(count: u64) -> Self {
-        Self { count, source: GraphVertexEstimateSource::RuntimeExactDistinct }
-    }
-
-    /// Trusted vertex count supplied by source-level statistics.
-    pub const fn source_statistics(count: u64) -> Self {
-        Self { count, source: GraphVertexEstimateSource::SourceStatistics }
-    }
-
-    /// Trusted vertex count supplied by graph dataset metadata.
-    pub const fn graph_metadata(count: u64) -> Self {
-        Self { count, source: GraphVertexEstimateSource::GraphMetadata }
-    }
-}
-
-/// Runtime-derived topology evidence collected from the resident graph edge frame.
-///
-/// Some fields are direct measurements and some are conservative pricing terms
-/// derived from measured degree distributions. Fields that are not relevant to
-/// the probed algorithm are left unset.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct GraphStatistics {
-    /// Exact distinct endpoint count measured from the runtime edge-list frame.
-    pub exact_vertices: u64,
-    /// Maximum source out-degree when degree statistics were requested.
-    pub degree_max: Option<u64>,
-    /// 99th percentile source out-degree when degree statistics were requested.
-    pub degree_p99: Option<u64>,
-    /// Sum of oriented min-degree terms used by triangle-count workspace pricing.
-    pub sum_min_degree_oriented: Option<u64>,
-    /// Edge count in cuGraph's low-degree-to-high-degree oriented triangle DFG.
-    pub oriented_edge_count: Option<u64>,
-    /// Runtime-derived peak chunk min-degree pricing term used by triangle-count workspace pricing.
-    pub peak_chunk_min_degree_sum: Option<u64>,
-    /// Sum of resident source out-degrees used by betweenness push batching.
-    pub sum_out_degree: Option<u64>,
-}
-
-impl GraphStatistics {
-    /// Start a statistics row from exact runtime vertex evidence.
-    pub const fn runtime_exact_vertices(exact_vertices: u64) -> Self {
-        Self {
-            exact_vertices,
-            degree_max: None,
-            degree_p99: None,
-            sum_min_degree_oriented: None,
-            oriented_edge_count: None,
-            peak_chunk_min_degree_sum: None,
-            sum_out_degree: None,
-        }
-    }
-
-    /// Attach source out-degree distribution evidence.
-    pub const fn with_degree_distribution(mut self, degree_max: u64, degree_p99: u64) -> Self {
-        self.degree_max = Some(degree_max);
-        self.degree_p99 = Some(degree_p99);
-        self
-    }
-
-    /// Attach betweenness push-batching evidence.
-    pub const fn with_sum_out_degree(mut self, sum_out_degree: u64) -> Self {
-        self.sum_out_degree = Some(sum_out_degree);
-        self
-    }
-
-    /// Attach triangle-count oriented min-degree evidence and derived chunk pricing term.
-    pub const fn with_triangle_min_degree(
-        mut self,
-        sum_min_degree_oriented: u64,
-        oriented_edge_count: u64,
-        peak_chunk_min_degree_sum: u64,
-    ) -> Self {
-        self.sum_min_degree_oriented = Some(sum_min_degree_oriented);
-        self.oriented_edge_count = Some(oriented_edge_count);
-        self.peak_chunk_min_degree_sum = Some(peak_chunk_min_degree_sum);
-        self
-    }
-}
-
-/// Owner-provided phase bounds for raw single-GPU graph construction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[must_use]
-pub struct GraphConstructionWorkspaceBounds {
-    renumber_workspace_bytes: u64,
-    compression_workspace_bytes: u64,
-}
-
-impl GraphConstructionWorkspaceBounds {
-    /// Create construction workspace bounds from the owner-provided phases.
-    pub const fn new(renumber_workspace_bytes: u64, compression_workspace_bytes: u64) -> Self {
-        Self { renumber_workspace_bytes, compression_workspace_bytes }
-    }
-
-    /// Peak workspace used while renumbering endpoints.
-    pub const fn renumber_workspace_bytes(self) -> u64 {
-        self.renumber_workspace_bytes
-    }
-
-    /// Peak workspace used while sorting and compressing endpoints.
-    pub const fn compression_workspace_bytes(self) -> u64 {
-        self.compression_workspace_bytes
-    }
-}
 
 /// Plan/runtime inputs used by the approximate graph memory model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -571,1203 +123,6 @@ impl GraphMemoryModelInput {
     }
 }
 
-/// Typed retained-output contribution from the graph-memory owner.
-///
-/// The retained output is kept as a typed contribution instead of being
-/// recovered from a difference between rounded phase peaks.  That distinction
-/// matters when composing graph producers: a producer's output handle remains
-/// live after its isolated phase and is therefore an independent owner in the
-/// schedule fold.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct GraphMemoryRetainedOutputContribution {
-    bytes: u64,
-    row_count_upper_bound: u64,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum GraphMemoryOwnerTermRole {
-    GraphPersistent,
-    ConstructionTransient,
-    ExecutionWorkspace,
-    GraphLiveReservationFloorTopUp,
-    SideInputWorkspace,
-    RetainedOutput,
-}
-
-impl GraphMemoryOwnerTermRole {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::GraphPersistent => "graph_persistent",
-            Self::ConstructionTransient => "construction_transient",
-            Self::ExecutionWorkspace => "execution_workspace",
-            Self::GraphLiveReservationFloorTopUp => "graph_live_reservation_floor_top_up",
-            Self::SideInputWorkspace => "side_input_workspace",
-            Self::RetainedOutput => "retained_output",
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct GraphMemoryOwnerTermFact {
-    execution_scope_fingerprint: String,
-    graph_node_id: NodeId,
-    role: GraphMemoryOwnerTermRole,
-    bytes: u64,
-    row_count_upper_bound: Option<u64>,
-}
-
-impl GraphMemoryOwnerTermFact {
-    fn new(
-        execution_scope_fingerprint: String,
-        graph_node_id: NodeId,
-        role: GraphMemoryOwnerTermRole,
-        bytes: u64,
-        row_count_upper_bound: Option<u64>,
-    ) -> Result<Self> {
-        if bytes == u64::MAX {
-            return Err(graph_memory_arithmetic_error(role.as_str(), "saturated_owner_term"));
-        }
-        Ok(Self { execution_scope_fingerprint, graph_node_id, role, bytes, row_count_upper_bound })
-    }
-
-    pub(crate) fn execution_scope_fingerprint(&self) -> &str {
-        &self.execution_scope_fingerprint
-    }
-
-    pub(crate) const fn graph_node_id(&self) -> NodeId {
-        self.graph_node_id
-    }
-
-    pub(crate) const fn role(&self) -> GraphMemoryOwnerTermRole {
-        self.role
-    }
-
-    pub(crate) const fn bytes(&self) -> u64 {
-        self.bytes
-    }
-
-    pub(crate) const fn row_count_upper_bound(&self) -> Option<u64> {
-        self.row_count_upper_bound
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct GraphMemoryOwnerComponents {
-    graph_persistent_bytes: u64,
-    construction_transient_bytes: u64,
-    execution_workspace_bytes: u64,
-}
-
-impl GraphMemoryRetainedOutputContribution {
-    /// Builds a model-owned retained-output contribution.
-    pub(crate) const fn new(bytes: u64, row_count_upper_bound: u64) -> Self {
-        Self { bytes, row_count_upper_bound }
-    }
-
-    /// Device bytes retained by the producer after its isolated phase.
-    pub const fn bytes(self) -> u64 {
-        self.bytes
-    }
-
-    /// Upper bound on rows represented by the retained producer output.
-    ///
-    /// The row bound is carried with the bytes so an engine-owned consumer
-    /// preflight can price a downstream join without asking an adapter to
-    /// reverse-engineer graph output cardinality.
-    pub const fn row_count_upper_bound(self) -> u64 {
-        self.row_count_upper_bound
-    }
-}
-
-/// Approximate graph memory estimate.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GraphMemoryEstimate {
-    pub algorithm: GraphAlgorithm,
-    pub class: GraphMemoryClass,
-    pub raw_input_edges: Option<u64>,
-    pub input_edges: u64,
-    pub vertex_upper_bound: u64,
-    pub vertex_estimate: u64,
-    pub vertex_estimate_source: GraphVertexEstimateSource,
-    pub vertex_width_bytes: u64,
-    pub weight_width_bytes: Option<u64>,
-    pub pair_rows: Option<u64>,
-    pub pair_vertex_width_bytes: Option<u64>,
-    pub pair_cardinality_source: Option<GraphPairCardinalitySource>,
-    /// Admission contract that consumed [`Self::pair_cardinality_source`].
-    pub pair_cardinality_admission_mode: Option<GraphPairCardinalityAdmissionMode>,
-    pub has_edge_id: bool,
-    pub directed: bool,
-    pub renumber: bool,
-    pub construction_policy: GraphConstructionPolicy,
-    pub edge_normalize_inserted: bool,
-    pub calibration_source: GraphCalibrationSource,
-    pub seed_count: Option<u64>,
-    pub seed_mode: Option<GraphSeedMode>,
-    pub data_dependent: bool,
-    /// Peak bytes needed while constructing the native graph representation.
-    ///
-    /// The execution-only estimate may omit this diagnostic term, but
-    /// admission never uses that estimate to select a grant. A resident cache
-    /// needs its own accounted reservation before retaining a graph across
-    /// attempts.
-    pub construction_bytes: u64,
-    /// Peak bytes needed by the algorithm after graph construction.
-    pub execution_bytes: u64,
-    /// Typed bytes and row-count bound retained by the producer result handle.
-    ///
-    /// This is the owner-calculated `output_bytes` contribution. It is not
-    /// inferred from `requested_bytes` or `execution_bytes`, both of which may
-    /// include rounded workspace and phase terms.
-    pub retained_output_bytes: GraphMemoryRetainedOutputContribution,
-    /// Cold native-graph peak estimate. For algorithms with distinct native
-    /// lifetime phases this is the phase-aware peak, not a naïve sum of
-    /// construction and execution estimates. Admission composes any retained
-    /// source-stage owner separately when the plan proves one.
-    pub requested_bytes: u64,
-    owner_components: GraphMemoryOwnerComponents,
-}
-
-/// Opaque graph-memory model output.
-///
-/// The model is the only constructor for this token. It contains descriptive
-/// bytes only: it cannot form a generic admission requirement or alter the
-/// ledger's floor, capability, or fit proof. An engine-issued capability proof
-/// may retain its cold estimate as a soft immutable-grant target.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum GraphSourceStageLifetime {
-    /// The cold graph peak already owns the prepared edge frame emitted by the
-    /// native source. The source diagnostic is not a second GPU allocation.
-    SharedPreparedEdgeFrame,
-    /// Explicit edge normalization retains the source frame while it creates
-    /// the normalized graph input, so both owners are live at the cold peak.
-    SeparateNormalizedInput,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GraphMemoryAdmissionEvidence {
-    execution_scope_fingerprint: String,
-    cold_model_requested_bytes: u64,
-    warm_model_requested_bytes: u64,
-    retained_output_bytes: GraphMemoryRetainedOutputContribution,
-    owner_terms: Vec<GraphMemoryOwnerTermFact>,
-    source_stage_lifetime: GraphSourceStageLifetime,
-}
-
-impl GraphMemoryAdmissionEvidence {
-    fn from_bounded_plan_estimate(plan: &QueryPlan, node_id: NodeId, estimate: &GraphMemoryEstimate) -> Result<Self> {
-        // `requested_bytes` is already phase-aware: persistent graph/input
-        // owners survive into execution, while construction-only scratch does not.
-        let cold_model_requested_bytes = estimate.construction_bytes.max(estimate.requested_bytes).max(1);
-        let execution_scope_fingerprint = canonical_execution_scope_fingerprint(plan);
-        let live_reservation_floor_top_up_bytes =
-            graph_live_reservation_floor_top_up_bytes(cold_model_requested_bytes)?;
-        let mut owner_terms = estimate.owner_components.owner_terms(
-            execution_scope_fingerprint.clone(),
-            node_id,
-            estimate.retained_output_bytes,
-            live_reservation_floor_top_up_bytes,
-        )?;
-        if let Some(side_input_peak_bytes) = graph_side_input_workspace_peak_bytes(plan, node_id, estimate)? {
-            owner_terms.push(GraphMemoryOwnerTermFact::new(
-                execution_scope_fingerprint.clone(),
-                node_id,
-                GraphMemoryOwnerTermRole::SideInputWorkspace,
-                side_input_peak_bytes,
-                None,
-            )?);
-        }
-        Ok(Self {
-            execution_scope_fingerprint,
-            cold_model_requested_bytes,
-            warm_model_requested_bytes: estimate.execution_bytes,
-            retained_output_bytes: estimate.retained_output_bytes,
-            owner_terms,
-            source_stage_lifetime: if estimate.edge_normalize_inserted {
-                GraphSourceStageLifetime::SeparateNormalizedInput
-            } else {
-                GraphSourceStageLifetime::SharedPreparedEdgeFrame
-            },
-        })
-    }
-
-    pub(crate) fn matches_execution_scope_fingerprint(&self, fingerprint: &str) -> bool {
-        self.execution_scope_fingerprint == fingerprint
-    }
-
-    pub(crate) fn execution_scope_fingerprint(&self) -> &str {
-        &self.execution_scope_fingerprint
-    }
-
-    pub(crate) fn owner_term_facts(&self) -> &[GraphMemoryOwnerTermFact] {
-        &self.owner_terms
-    }
-
-    /// Returns the construction-inclusive model's descriptive byte estimate.
-    ///
-    /// This is diagnostic/model output. It may refine an engine-issued graph
-    /// capability proof's soft grant target, but is not accepted as a raw
-    /// public admission-request input.
-    pub fn cold_model_requested_bytes(&self) -> u64 {
-        self.cold_model_requested_bytes
-    }
-
-    /// Returns the execution-only model's descriptive byte estimate.
-    ///
-    /// This is a hypothetical cache-price diagnostic only. It is not accepted
-    /// by public admission request construction or device placement.
-    pub fn warm_model_requested_bytes(&self) -> u64 {
-        self.warm_model_requested_bytes
-    }
-
-    /// Returns the typed producer output contribution retained through the
-    /// composed consumer phase.
-    pub fn retained_output(&self) -> GraphMemoryRetainedOutputContribution {
-        self.retained_output_bytes
-    }
-
-    /// Returns the retained output bytes without exposing a caller-authored
-    /// byte input path.
-    pub fn retained_output_bytes(&self) -> u64 {
-        self.retained_output_bytes.bytes()
-    }
-
-    /// Returns the model-owned retained output row bound.
-    pub fn retained_output_rows_upper_bound(&self) -> u64 {
-        self.retained_output_bytes.row_count_upper_bound()
-    }
-
-    pub(crate) const fn source_stage_lifetime(&self) -> GraphSourceStageLifetime {
-        self.source_stage_lifetime
-    }
-
-    /// Composes the model's cold graph peak with the exact source-stage hint
-    /// retained by the matching native edge fragment.
-    ///
-    /// The lifecycle classification is model-owned: raw input shares the
-    /// prepared edge frame already priced by the graph peak, while an explicit
-    /// normalize operator keeps the source and its derived graph input live
-    /// together. Callers cannot choose this relation or inject a raw graph
-    /// model byte value.
-    pub(crate) fn cold_model_with_source_stage_bytes(&self, source_stage_bytes: u64) -> Result<u64> {
-        self.graph_peak_with_source_stage_bytes(self.cold_model_requested_bytes, source_stage_bytes)
-    }
-
-    /// Returns the graph-native live reservation after applying the canonical
-    /// bounded execution minimum. The model value remains available through
-    /// [`Self::cold_model_requested_bytes`] as diagnostics; this lower bound
-    /// is a reservation contract, not an observed allocation term.
-    pub(crate) fn bounded_live_graph_peak_bytes(&self) -> Result<u64> {
-        let Some(top_up) = self.graph_live_reservation_floor_top_up_bytes()? else {
-            return Ok(self.cold_model_requested_bytes);
-        };
-        self.cold_model_requested_bytes
-            .checked_add(top_up)
-            .ok_or_else(|| graph_memory_arithmetic_error("graph_live_reservation", "addition"))
-    }
-
-    /// Composes the bounded graph-native live minimum with a prepared source
-    /// frame using the same owner lifetime relation as the raw model.
-    pub(crate) fn bounded_live_graph_peak_with_source_stage_bytes(&self, source_stage_bytes: u64) -> Result<u64> {
-        let Some(top_up) = self.graph_live_reservation_floor_top_up_bytes()? else {
-            return self.cold_model_with_source_stage_bytes(source_stage_bytes);
-        };
-        let graph_peak = self
-            .cold_model_requested_bytes
-            .checked_add(top_up)
-            .ok_or_else(|| graph_memory_arithmetic_error("graph_live_reservation", "addition"))?;
-        self.graph_peak_with_source_stage_bytes(graph_peak, source_stage_bytes)
-    }
-
-    fn graph_peak_with_source_stage_bytes(&self, graph_peak_bytes: u64, source_stage_bytes: u64) -> Result<u64> {
-        if source_stage_bytes == u64::MAX || graph_peak_bytes == u64::MAX {
-            return Err(graph_memory_arithmetic_error("source_stage_graph_peak", "saturated"));
-        }
-        match self.source_stage_lifetime {
-            GraphSourceStageLifetime::SharedPreparedEdgeFrame => Ok(source_stage_bytes.max(graph_peak_bytes)),
-            GraphSourceStageLifetime::SeparateNormalizedInput => source_stage_bytes
-                .checked_add(graph_peak_bytes)
-                .ok_or_else(|| graph_memory_arithmetic_error("source_stage_graph_peak", "addition")),
-        }
-    }
-
-    pub(crate) fn graph_live_reservation_floor_top_up_bytes(&self) -> Result<Option<u64>> {
-        let expected = graph_live_reservation_floor_top_up_bytes(self.cold_model_requested_bytes)?;
-        let mut facts = self
-            .owner_terms
-            .iter()
-            .filter(|fact| fact.role() == GraphMemoryOwnerTermRole::GraphLiveReservationFloorTopUp);
-        let actual = facts.next().map(GraphMemoryOwnerTermFact::bytes);
-        if facts.next().is_some() || actual != expected {
-            return Err(graph_memory_arithmetic_error("graph_live_reservation_floor_top_up", "owner_term_mismatch")
-                .with_fact("reason", "graph_memory_owner_term_floor_mismatch"));
-        }
-        Ok(expected)
-    }
-}
-
-fn graph_side_input_workspace_peak_bytes(
-    plan: &QueryPlan,
-    graph_node_id: NodeId,
-    _estimate: &GraphMemoryEstimate,
-) -> Result<Option<u64>> {
-    let graph = match &plan.node(graph_node_id).ok_or_else(|| missing_graph_input_error(graph_node_id))?.kind {
-        PlanNode::GraphAlgorithm(graph) => graph,
-        _ => {
-            return Err(QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.graph_memory.side_input_workspace_preflight",
-                "graph memory evidence referenced a non-graph node",
-            )
-            .with_fact("reason", "side_input_workspace_preflight_unavailable")
-            .with_fact("side_input_reason", "graph_node_missing"));
-        },
-    };
-
-    #[cfg(feature = "cugraph")]
-    {
-        graph_side_input_workspace_peak_bytes_with_owner(plan, graph, _estimate)
-    }
-    #[cfg(not(feature = "cugraph"))]
-    {
-        let has_bounded_side_input = match &graph.spec.params {
-            GraphAlgorithmParams::Bfs(params) => params.has_predicates() || params.source_vertices.is_some(),
-            GraphAlgorithmParams::PersonalizedPageRank(_) => true,
-            _ => false,
-        };
-        if has_bounded_side_input {
-            return Err(side_input_workspace_preflight_unavailable("owner_contract_unavailable", None, None));
-        }
-        Ok(None)
-    }
-}
-
-fn side_input_workspace_preflight_unavailable(
-    side_input_reason: &'static str,
-    role: Option<&'static str>,
-    algorithm: Option<GraphAlgorithm>,
-) -> QueryError {
-    side_input_workspace_error(QueryErrorCode::UnsupportedPlanShape, side_input_reason, role, algorithm)
-}
-
-fn side_input_workspace_error(
-    code: QueryErrorCode,
-    side_input_reason: &'static str,
-    role: Option<&'static str>,
-    algorithm: Option<GraphAlgorithm>,
-) -> QueryError {
-    let error = QueryError::new(
-        code,
-        "nexus_query_engine.graph_memory.side_input_workspace_preflight",
-        "cuGraph side-input workspace preflight is unavailable",
-    )
-    .with_fact("reason", "side_input_workspace_preflight_unavailable")
-    .with_fact("side_input_reason", side_input_reason);
-    let error = match role {
-        Some(role) => error.with_fact("side_input_role", role),
-        None => error,
-    };
-    match algorithm {
-        Some(algorithm) => error.with_fact("algorithm", algorithm.as_str()),
-        None => error,
-    }
-}
-
-#[cfg(feature = "cugraph")]
-#[derive(Debug, Clone, Copy)]
-enum GraphSideInputColumns<'a> {
-    Vertex(&'a str),
-    Personalization { vertex: &'a str, value: &'a str },
-}
-
-#[cfg(feature = "cugraph")]
-#[derive(Debug, Clone, Copy)]
-struct GraphSideInputBinding<'a> {
-    role: &'static str,
-    input: NodeId,
-    columns: GraphSideInputColumns<'a>,
-}
-
-#[cfg(feature = "cugraph")]
-fn graph_side_input_workspace_peak_bytes_with_owner(
-    plan: &QueryPlan,
-    graph: &crate::plan::GraphAlgorithmNode,
-    estimate: &GraphMemoryEstimate,
-) -> Result<Option<u64>> {
-    match &graph.spec.params {
-        GraphAlgorithmParams::Bfs(_params) => {
-            let bindings = graph_side_input_bindings(graph)?;
-            let graph_vertex_type = graph_side_input_graph_vertex_type(plan, graph)?;
-            let source_rows = bindings
-                .iter()
-                .find(|binding| binding.role == "source_vertices")
-                .map(|binding| graph_side_input_rows(plan, binding))
-                .transpose()?
-                .unwrap_or(1);
-            let mut include_vertices_rows = None;
-            let mut exclude_vertices_rows = None;
-            let mut target_vertices_rows = None;
-            let mut include_edge_ids_rows = None;
-            for binding in &bindings {
-                let rows = graph_side_input_rows(plan, binding)?;
-                let GraphSideInputColumns::Vertex(column) = binding.columns else {
-                    return Err(side_input_workspace_preflight_unavailable(
-                        "invalid_bfs_binding",
-                        Some(binding.role),
-                        Some(graph.spec.algorithm),
-                    ));
-                };
-                graph_side_input_vertex_type(
-                    plan,
-                    binding.input,
-                    column,
-                    graph_vertex_type,
-                    binding.role,
-                    graph.spec.algorithm,
-                )?;
-                match binding.role {
-                    "source_vertices" => {},
-                    "include_vertices" => include_vertices_rows = Some(rows),
-                    "exclude_vertices" => exclude_vertices_rows = Some(rows),
-                    "target_vertices" => target_vertices_rows = Some(rows),
-                    "include_edge_ids" => include_edge_ids_rows = Some(rows),
-                    _ => {
-                        return Err(side_input_workspace_preflight_unavailable(
-                            "unknown_bfs_binding",
-                            Some(binding.role),
-                            Some(graph.spec.algorithm),
-                        ));
-                    },
-                }
-            }
-            let num_vertices = graph_side_input_count(estimate.vertex_estimate, "num_vertices", graph.spec.algorithm)?;
-            let num_edges = graph_side_input_count(estimate.input_edges, "num_edges", graph.spec.algorithm)?;
-            if include_vertices_rows.is_some() && exclude_vertices_rows.is_some() {
-                return Err(side_input_workspace_preflight_unavailable(
-                    "owner_input_rejected",
-                    None,
-                    Some(graph.spec.algorithm),
-                ));
-            }
-            if source_rows == 0 {
-                return Ok(Some(0));
-            }
-            let input = cugraph::cudf_interop::BfsSideInputPreflightInput::new(
-                graph_vertex_type,
-                graph_vertex_type,
-                num_vertices,
-                num_edges,
-                source_rows,
-                include_vertices_rows,
-                exclude_vertices_rows,
-                target_vertices_rows,
-                include_edge_ids_rows,
-            )
-            .map_err(|error| {
-                side_input_workspace_preflight_unavailable("owner_input_rejected", None, Some(graph.spec.algorithm))
-                    .with_source(error)
-            })?;
-            let preflight = cugraph::cudf_interop::bfs_side_input_workspace_preflight(&input).map_err(|error| {
-                side_input_workspace_preflight_unavailable("owner_query_failed", None, Some(graph.spec.algorithm))
-                    .with_source(error)
-            })?;
-            Ok(Some(preflight.peak_bytes()))
-        },
-        GraphAlgorithmParams::PersonalizedPageRank(_params) => {
-            let bindings = graph_side_input_bindings(graph)?;
-            let [binding] = bindings.as_slice() else {
-                return Err(side_input_workspace_preflight_unavailable(
-                    "personalization_binding_missing",
-                    Some("personalization"),
-                    Some(graph.spec.algorithm),
-                ));
-            };
-            let GraphSideInputColumns::Personalization { vertex, value } = binding.columns else {
-                return Err(side_input_workspace_preflight_unavailable(
-                    "invalid_personalization_binding",
-                    Some(binding.role),
-                    Some(graph.spec.algorithm),
-                ));
-            };
-            let graph_vertex_type = graph_side_input_graph_vertex_type(plan, graph)?;
-            graph_side_input_vertex_type(
-                plan,
-                binding.input,
-                vertex,
-                graph_vertex_type,
-                binding.role,
-                graph.spec.algorithm,
-            )?;
-            let value_type =
-                graph_side_input_value_type(plan, binding.input, value, binding.role, graph.spec.algorithm)?;
-            let rows = graph_side_input_rows(plan, binding)?;
-            let input = cugraph::cudf_interop::PersonalizedPageRankSideInputPreflightInput::new(
-                graph_vertex_type,
-                value_type,
-                rows,
-            )
-            .map_err(|error| {
-                side_input_workspace_preflight_unavailable(
-                    "owner_input_rejected",
-                    Some(binding.role),
-                    Some(graph.spec.algorithm),
-                )
-                .with_source(error)
-            })?;
-            let preflight = cugraph::cudf_interop::personalized_pagerank_side_input_workspace_preflight(&input)
-                .map_err(|error| {
-                    side_input_workspace_preflight_unavailable(
-                        "owner_query_failed",
-                        Some(binding.role),
-                        Some(graph.spec.algorithm),
-                    )
-                    .with_source(error)
-                })?;
-            Ok(Some(preflight.peak_bytes()))
-        },
-        _ => Ok(None),
-    }
-}
-
-#[cfg(feature = "cugraph")]
-fn graph_side_input_bindings<'a>(graph: &'a crate::plan::GraphAlgorithmNode) -> Result<Vec<GraphSideInputBinding<'a>>> {
-    let mut bindings = Vec::new();
-    match &graph.spec.params {
-        GraphAlgorithmParams::Bfs(params) => {
-            if params.predicates.include_edges.is_some() {
-                return Err(side_input_workspace_preflight_unavailable(
-                    "include_edges_owner_contract_missing",
-                    Some("include_edges"),
-                    Some(graph.spec.algorithm),
-                ));
-            }
-            if let Some(input) = params.source_vertices.as_ref() {
-                bindings.push(GraphSideInputBinding {
-                    role: "source_vertices",
-                    input: input.input,
-                    columns: GraphSideInputColumns::Vertex(input.column.as_str()),
-                });
-            }
-            if let Some(input) = params.predicates.include_vertices.as_ref() {
-                bindings.push(GraphSideInputBinding {
-                    role: "include_vertices",
-                    input: input.input,
-                    columns: GraphSideInputColumns::Vertex(input.column.as_str()),
-                });
-            }
-            if let Some(input) = params.predicates.exclude_vertices.as_ref() {
-                bindings.push(GraphSideInputBinding {
-                    role: "exclude_vertices",
-                    input: input.input,
-                    columns: GraphSideInputColumns::Vertex(input.column.as_str()),
-                });
-            }
-            if let Some(input) = params.predicates.target_vertices.as_ref() {
-                bindings.push(GraphSideInputBinding {
-                    role: "target_vertices",
-                    input: input.input,
-                    columns: GraphSideInputColumns::Vertex(input.column.as_str()),
-                });
-            }
-            if let Some(input) = params.predicates.include_edge_ids.as_ref() {
-                bindings.push(GraphSideInputBinding {
-                    role: "include_edge_ids",
-                    input: input.input,
-                    columns: GraphSideInputColumns::Vertex(input.column.as_str()),
-                });
-            }
-        },
-        GraphAlgorithmParams::PersonalizedPageRank(params) => {
-            let input = &params.personalization;
-            bindings.push(GraphSideInputBinding {
-                role: "personalization",
-                input: input.input,
-                columns: GraphSideInputColumns::Personalization {
-                    vertex: input.vertex.as_str(),
-                    value: input.value.as_str(),
-                },
-            });
-        },
-        _ => return Ok(bindings),
-    }
-
-    let mut expected_inputs = Vec::with_capacity(bindings.len() + 1);
-    expected_inputs.push(graph.input);
-    expected_inputs.extend(bindings.iter().map(|binding| binding.input));
-    if graph.inputs != expected_inputs {
-        return Err(side_input_workspace_preflight_unavailable(
-            "graph_input_binding_mismatch",
-            None,
-            Some(graph.spec.algorithm),
-        ));
-    }
-    let mut seen = std::collections::HashSet::with_capacity(expected_inputs.len());
-    for input in expected_inputs {
-        if !seen.insert(input) {
-            return Err(side_input_workspace_preflight_unavailable(
-                "side_input_node_reused",
-                None,
-                Some(graph.spec.algorithm),
-            )
-            .with_fact("node_id", input));
-        }
-    }
-    Ok(bindings)
-}
-
-#[cfg(feature = "cugraph")]
-fn graph_side_input_rows(plan: &QueryPlan, binding: &GraphSideInputBinding<'_>) -> Result<usize> {
-    let Some((rows, _)) = hard_row_upper_bound_for_plan_node(plan, binding.input) else {
-        return Err(side_input_workspace_preflight_unavailable("missing_row_upper_bound", Some(binding.role), None)
-            .with_fact("node_id", binding.input));
-    };
-    usize::try_from(rows).map_err(|_| {
-        side_input_workspace_preflight_unavailable("row_count_conversion_overflow", Some(binding.role), None)
-            .with_fact("row_count", rows)
-            .with_fact("node_id", binding.input)
-    })
-}
-
-#[cfg(feature = "cugraph")]
-fn graph_side_input_count(value: u64, term: &'static str, algorithm: GraphAlgorithm) -> Result<usize> {
-    usize::try_from(value).map_err(|_| {
-        side_input_workspace_preflight_unavailable("graph_count_conversion_overflow", None, Some(algorithm))
-            .with_fact("term", term)
-            .with_fact("value", value)
-    })
-}
-
-#[cfg(feature = "cugraph")]
-fn graph_side_input_graph_vertex_type(
-    plan: &QueryPlan,
-    graph: &crate::plan::GraphAlgorithmNode,
-) -> Result<cugraph::types::DataType> {
-    let schema = plan.node(graph.input).ok_or_else(|| missing_graph_input_error(graph.input))?.output_schema();
-    let field = schema.field_with_name(&graph.spec.edge_columns.source).map_err(|_| {
-        side_input_workspace_preflight_unavailable(
-            "graph_vertex_column_missing",
-            Some("graph_vertex"),
-            Some(graph.spec.algorithm),
-        )
-    })?;
-    cugraph_index_type_for_arrow(field.data_type(), "graph_vertex", graph.spec.algorithm)
-}
-
-#[cfg(feature = "cugraph")]
-fn graph_side_input_vertex_type(
-    plan: &QueryPlan,
-    node_id: NodeId,
-    column: &str,
-    expected: cugraph::types::DataType,
-    role: &'static str,
-    algorithm: GraphAlgorithm,
-) -> Result<()> {
-    let schema = plan
-        .node(node_id)
-        .ok_or_else(|| {
-            side_input_workspace_preflight_unavailable("side_input_node_missing", Some(role), Some(algorithm))
-                .with_fact("node_id", node_id)
-        })?
-        .output_schema();
-    let field = schema.field_with_name(column).map_err(|_| {
-        side_input_workspace_preflight_unavailable("side_input_column_missing", Some(role), Some(algorithm))
-            .with_fact("column", column)
-            .with_fact("node_id", node_id)
-    })?;
-    let actual = cugraph_index_type_for_arrow(field.data_type(), role, algorithm)?;
-    if actual != expected {
-        return Err(side_input_workspace_error(
-            QueryErrorCode::UnsupportedType,
-            "side_input_vertex_dtype_mismatch",
-            Some(role),
-            Some(algorithm),
-        )
-        .with_fact("expected_dtype", expected)
-        .with_fact("actual_dtype", actual)
-        .with_fact("column", column));
-    }
-    Ok(())
-}
-
-#[cfg(feature = "cugraph")]
-fn graph_side_input_value_type(
-    plan: &QueryPlan,
-    node_id: NodeId,
-    column: &str,
-    role: &'static str,
-    algorithm: GraphAlgorithm,
-) -> Result<cugraph::types::DataType> {
-    let schema = plan
-        .node(node_id)
-        .ok_or_else(|| {
-            side_input_workspace_preflight_unavailable("side_input_node_missing", Some(role), Some(algorithm))
-                .with_fact("node_id", node_id)
-        })?
-        .output_schema();
-    let field = schema.field_with_name(column).map_err(|_| {
-        side_input_workspace_preflight_unavailable("side_input_column_missing", Some(role), Some(algorithm))
-            .with_fact("column", column)
-            .with_fact("node_id", node_id)
-    })?;
-    match field.data_type() {
-        DataType::Float32 => Ok(cugraph::types::DataType::Float32),
-        DataType::Float64 => Ok(cugraph::types::DataType::Float64),
-        _ => Err(side_input_workspace_error(
-            QueryErrorCode::UnsupportedType,
-            "side_input_value_dtype_unsupported",
-            Some(role),
-            Some(algorithm),
-        )
-        .with_fact("column", column)),
-    }
-}
-
-#[cfg(feature = "cugraph")]
-fn cugraph_index_type_for_arrow(
-    data_type: &DataType,
-    role: &'static str,
-    algorithm: GraphAlgorithm,
-) -> Result<cugraph::types::DataType> {
-    match data_type {
-        DataType::Int32 => Ok(cugraph::types::DataType::Int32),
-        DataType::Int64 => Ok(cugraph::types::DataType::Int64),
-        _ => Err(side_input_workspace_error(
-            QueryErrorCode::UnsupportedType,
-            "side_input_vertex_dtype_unsupported",
-            Some(role),
-            Some(algorithm),
-        )
-        .with_fact("data_type", data_type)),
-    }
-}
-
-/// Planning-time graph memory estimate for a node in a native query plan.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GraphPlanMemoryEstimate {
-    pub node_id: NodeId,
-    pub estimate: GraphMemoryEstimate,
-}
-
-/// Fixed-point `ask / measured_peak` ratio for graph model calibration drift.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct GraphModelErrorRatio {
-    milli_ratio: u64,
-}
-
-impl GraphModelErrorRatio {
-    /// Build a ratio from model-requested bytes and measured graph peak bytes.
-    pub fn from_requested_and_measured(requested_bytes: u64, measured_peak_bytes: u64) -> Option<Self> {
-        if measured_peak_bytes == 0 {
-            return None;
-        }
-        let numerator = u128::from(requested_bytes).saturating_mul(1000);
-        let rounded = numerator.saturating_add(u128::from(measured_peak_bytes / 2)) / u128::from(measured_peak_bytes);
-        Some(Self { milli_ratio: rounded.min(u128::from(u64::MAX)) as u64 })
-    }
-
-    /// Stable decimal string with three fractional digits.
-    pub fn as_decimal_string(self) -> String {
-        format!("{}.{:03}", self.milli_ratio / 1000, self.milli_ratio % 1000)
-    }
-}
-
-impl std::fmt::Display for GraphModelErrorRatio {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.as_decimal_string())
-    }
-}
-
-/// Direct source for one graph attempt's measured device-memory peak.
-///
-/// This is deliberately separate from [`GraphCalibrationSource`]: that enum
-/// describes model inputs, while this one describes the runtime observation
-/// used to calibrate the completed graph attempt.  Consumers must not infer a
-/// source from a missing value or from an error string.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum GraphMeasuredPeakProvenance {
-    /// The graph execution's reservation resource reported its own high-water
-    /// mark. This is the preferred graph-stage measurement.
-    ReservationHighWater,
-    /// The graph execution did not expose a reservation high-water mark, so
-    /// the CUDA async-pool high-water delta bounded around that attempt was
-    /// used instead.
-    PoolDelta,
-    /// An exclusive resident-graph cache scope reported its own allocator
-    /// high-water mark after the warm graph execution had retired. This is
-    /// the only physical peak source for work that runs on the cache runtime
-    /// rather than the admitted attempt runtime.
-    CacheScopeHighWater,
-    /// Neither runtime measurement completed. `measured_peak_bytes` is
-    /// unavailable rather than a synthetic zero.
-    Unavailable,
-}
-
-impl GraphMeasuredPeakProvenance {
-    /// Stable label used by bounded public projections.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ReservationHighWater => "reservation_high_water",
-            Self::PoolDelta => "pool_delta",
-            Self::CacheScopeHighWater => "cache_scope_high_water",
-            Self::Unavailable => "unavailable",
-        }
-    }
-}
-
-impl std::fmt::Display for GraphMeasuredPeakProvenance {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// Engine-owned lifecycle state for one graph model claim.
-///
-/// A claim exists before graph-memory admission so a missing terminal state is
-/// deliberately fail-closed. The two terminal states distinguish a model
-/// admission denial from an actual entry into the graph executor; neither is
-/// inferred from an error string, an allocator event, or elapsed time.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum GraphClaimExecutionState {
-    /// The claim was recorded but no exact terminal graph boundary was
-    /// observed. This state is not execution evidence.
-    Pending,
-    /// The native graph algorithm executor was entered.
-    AlgorithmStarted,
-    /// Graph-memory pricing rejected the request because its tracked request
-    /// exceeded the current graph-admission budget, before the executor ran.
-    GraphMemoryAdmissionDenied,
-}
-
-impl GraphClaimExecutionState {
-    /// Stable label used by bounded public projections.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Pending => "pending",
-            Self::AlgorithmStarted => "algorithm_started",
-            Self::GraphMemoryAdmissionDenied => "graph_memory_admission_denied",
-        }
-    }
-}
-
-impl std::fmt::Display for GraphClaimExecutionState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-/// Fixed-shape model-claim versus measured-peak calibration row for one graph
-/// attempt.
-///
-/// The engine creates one of these before it enters the graph executor and
-/// fills the runtime measurement when that attempt leaves the executor. It is
-/// diagnostic only: the row cannot mint admission evidence or modify a
-/// device grant. `node_index` is retained solely as typed executor identity;
-/// consumers should use `node_id` for reporting.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GraphClaimCalibrationRow {
-    /// Query-wide diagnostic correlation id, when the execution context has
-    /// one. This is assigned by [`crate::metrics::QueryMetrics`].
-    pub query_id: Option<QueryId>,
-    /// Stable native graph node id for reports.
-    pub node_id: String,
-    /// Typed graph node identity used to correlate the post-execution sample
-    /// without parsing a report string.
-    pub node_index: usize,
-    /// The graph algorithm that owned this model claim and measured peak.
-    pub algorithm: GraphAlgorithm,
-    /// Construction-inclusive bytes requested by the graph memory model.
-    pub model_requested_bytes: u64,
-    /// Bytes requested from the graph pricing tier after its documented floor
-    /// and any live graph-input or similarity-input credit.
-    pub requested_bytes: u64,
-    /// The graph-pricing budget considered for this attempt, when one was
-    /// present. A missing budget is not rendered as a zero-byte budget.
-    pub budget_bytes: Option<u64>,
-    /// Exact engine state at the graph executor boundary. A pending claim is
-    /// intentionally not promoted to physical execution by an adapter.
-    pub execution_state: GraphClaimExecutionState,
-    /// Measured graph-stage peak bytes when a runtime observation completed.
-    pub measured_peak_bytes: Option<u64>,
-    /// Source of [`Self::measured_peak_bytes`].
-    pub measured_peak_provenance: GraphMeasuredPeakProvenance,
-    /// Fixed-point model-ask / measured-peak ratio, when a nonzero measured
-    /// peak was available.
-    pub graph_model_error_ratio: Option<GraphModelErrorRatio>,
-}
-
-impl GraphClaimCalibrationRow {
-    /// Builds the pending calibration row from the typed graph-pricing report.
-    ///
-    /// The report has no private execution identity, so the caller supplies
-    /// the plan node that produced it. Keeping this identity outside the
-    /// report avoids changing existing reservation-row semantics.
-    pub fn from_reservation_report(report: &GraphReservationReport, node_id: NodeId) -> Self {
-        Self {
-            query_id: report.query_id.clone(),
-            node_id: report.node_id.clone(),
-            node_index: node_id.index(),
-            algorithm: report.algorithm,
-            model_requested_bytes: report.model_requested_bytes,
-            requested_bytes: report.requested_bytes,
-            budget_bytes: report.budget_bytes,
-            execution_state: GraphClaimExecutionState::Pending,
-            measured_peak_bytes: None,
-            measured_peak_provenance: GraphMeasuredPeakProvenance::Unavailable,
-            graph_model_error_ratio: None,
-        }
-    }
-
-    /// Records one terminal graph-boundary state without allowing a later
-    /// observation to overwrite the first exact boundary.
-    pub(crate) fn record_execution_state(&mut self, execution_state: GraphClaimExecutionState) {
-        if self.execution_state == GraphClaimExecutionState::Pending {
-            self.execution_state = execution_state;
-        }
-    }
-
-    /// Records the one direct peak observation for this graph attempt.
-    ///
-    /// An unavailable source always clears the measured value and ratio. A
-    /// zero high-water mark remains an observed zero, but cannot form a
-    /// meaningful model-error ratio.
-    pub fn record_measured_peak(
-        &mut self,
-        measured_peak_bytes: Option<u64>,
-        measured_peak_provenance: GraphMeasuredPeakProvenance,
-    ) {
-        match measured_peak_provenance {
-            GraphMeasuredPeakProvenance::Unavailable => {
-                self.measured_peak_bytes = None;
-                self.graph_model_error_ratio = None;
-            },
-            GraphMeasuredPeakProvenance::ReservationHighWater
-            | GraphMeasuredPeakProvenance::PoolDelta
-            | GraphMeasuredPeakProvenance::CacheScopeHighWater => {
-                self.measured_peak_bytes = measured_peak_bytes;
-                self.graph_model_error_ratio = measured_peak_bytes.and_then(|peak| {
-                    GraphModelErrorRatio::from_requested_and_measured(self.model_requested_bytes, peak)
-                });
-            },
-        }
-        self.measured_peak_provenance = measured_peak_provenance;
-    }
-}
-
-/// Public graph memory-tier report row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct GraphReservationReport {
-    pub query_id: Option<QueryId>,
-    pub node_id: String,
-    pub algorithm: GraphAlgorithm,
-    pub class: GraphMemoryClass,
-    pub outcome: GraphReservationOutcome,
-    pub raw_input_edges: Option<u64>,
-    pub input_edges: u64,
-    pub vertex_upper_bound: u64,
-    pub vertex_estimate: u64,
-    pub vertex_estimate_source: GraphVertexEstimateSource,
-    pub vertex_width_bytes: u64,
-    pub weight_width_bytes: Option<u64>,
-    pub pair_rows: Option<u64>,
-    pub pair_vertex_width_bytes: Option<u64>,
-    pub pair_cardinality_source: Option<GraphPairCardinalitySource>,
-    /// Admission contract that consumed explicit-pair cardinality evidence.
-    pub pair_cardinality_admission_mode: Option<GraphPairCardinalityAdmissionMode>,
-    pub has_edge_id: bool,
-    pub directed: bool,
-    pub renumber: bool,
-    pub construction_policy: GraphConstructionPolicy,
-    pub edge_normalize_inserted: bool,
-    pub calibration_source: GraphCalibrationSource,
-    pub seed_count: Option<u64>,
-    pub seed_mode: Option<GraphSeedMode>,
-    pub data_dependent: bool,
-    pub model_requested_bytes: u64,
-    pub requested_bytes: u64,
-    pub budget_bytes: Option<u64>,
-    pub graph_model_error_ratio: Option<GraphModelErrorRatio>,
-    /// Measured graph-stage allocator high-water bytes, when runtime evidence
-    /// was available.  This is the denominator of [`Self::graph_model_error_ratio`].
-    pub measured_peak_bytes: Option<u64>,
-    pub statistics: Option<GraphStatistics>,
-    pub reason: Option<&'static str>,
-}
-
-impl GraphReservationReport {
-    /// Builds a report from an estimate and optional bounded budget.
-    pub fn from_estimate(node_id: impl ToString, estimate: GraphMemoryEstimate, budget_bytes: Option<u64>) -> Self {
-        let requested_bytes = if budget_bytes.is_some() {
-            estimate.requested_bytes.max(GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES)
-        } else {
-            estimate.requested_bytes
-        };
-        let denied = budget_bytes.is_some_and(|budget| requested_bytes > budget);
-        let outcome = match (budget_bytes, denied) {
-            (None, _) => GraphReservationOutcome::NotBounded,
-            (Some(_), true) => GraphReservationOutcome::Denied,
-            (Some(_), false) => GraphReservationOutcome::Admitted,
-        };
-        Self {
-            query_id: None,
-            node_id: node_id.to_string(),
-            algorithm: estimate.algorithm,
-            class: estimate.class,
-            outcome,
-            raw_input_edges: estimate.raw_input_edges,
-            input_edges: estimate.input_edges,
-            vertex_upper_bound: estimate.vertex_upper_bound,
-            vertex_estimate: estimate.vertex_estimate,
-            vertex_estimate_source: estimate.vertex_estimate_source,
-            vertex_width_bytes: estimate.vertex_width_bytes,
-            weight_width_bytes: estimate.weight_width_bytes,
-            pair_rows: estimate.pair_rows,
-            pair_vertex_width_bytes: estimate.pair_vertex_width_bytes,
-            pair_cardinality_source: estimate.pair_cardinality_source,
-            pair_cardinality_admission_mode: estimate.pair_cardinality_admission_mode,
-            has_edge_id: estimate.has_edge_id,
-            directed: estimate.directed,
-            renumber: estimate.renumber,
-            construction_policy: estimate.construction_policy,
-            edge_normalize_inserted: estimate.edge_normalize_inserted,
-            calibration_source: estimate.calibration_source,
-            seed_count: estimate.seed_count,
-            seed_mode: estimate.seed_mode,
-            data_dependent: estimate.data_dependent,
-            model_requested_bytes: estimate.requested_bytes,
-            requested_bytes,
-            budget_bytes,
-            graph_model_error_ratio: None,
-            measured_peak_bytes: None,
-            statistics: None,
-            reason: denied.then_some(GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON),
-        }
-    }
-
-    /// Converts the cold whole-peak model into the incremental reservation
-    /// needed when its graph-input edge frame is already live in the same query
-    /// grant.
-    ///
-    /// The model includes the normalized semantic edge frame and, after an
-    /// explicit edge-normalize stage, its retained source frame. Each live
-    /// owner is credited separately and capped at its modeled overlap, so a
-    /// wider input cannot erase graph construction, output, or workspace
-    /// bytes. The exact normalized-frame owner may use its physical tracker
-    /// charge as a tighter cap than semantic column widths.
-    #[cfg(any(feature = "cugraph", test))]
-    pub(crate) fn credit_live_graph_input(
-        mut self,
-        already_accounted_normalized_frame_bytes: u64,
-        exact_normalized_frame_charge_bytes: Option<u64>,
-        retained_normalization_source_bytes: u64,
-    ) -> Self {
-        let Some(budget_bytes) = self.budget_bytes else {
-            return self;
-        };
-        let credit_cap_bytes =
-            exact_normalized_frame_charge_bytes.unwrap_or_else(|| self.modeled_live_graph_input_frame_bytes());
-        let normalized_frame_credit_bytes =
-            credit_cap_bytes.min(already_accounted_normalized_frame_bytes).min(self.requested_bytes);
-        self.requested_bytes -= normalized_frame_credit_bytes;
-        let source_credit_cap_bytes =
-            if self.edge_normalize_inserted { self.modeled_live_graph_input_frame_bytes() } else { 0 };
-        let retained_source_credit_bytes =
-            source_credit_cap_bytes.min(retained_normalization_source_bytes).min(self.requested_bytes);
-        self.requested_bytes -= retained_source_credit_bytes;
-        let denied = self.requested_bytes > budget_bytes;
-        self.outcome = if denied { GraphReservationOutcome::Denied } else { GraphReservationOutcome::Admitted };
-        self.reason = denied.then_some(GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON);
-        self
-    }
-
-    #[cfg(any(feature = "cugraph", test))]
-    fn modeled_live_graph_input_frame_bytes(&self) -> u64 {
-        let semantic_edge_row_width =
-            semantic_edge_row_width_bytes(self.vertex_width_bytes, self.weight_width_bytes, self.has_edge_id);
-        self.input_edges.saturating_mul(semantic_edge_row_width)
-    }
-
-    /// Converts an isolated similarity model price into the incremental
-    /// reservation required while its explicit pair relation is already live.
-    ///
-    /// The model intentionally includes the pair columns because it is also
-    /// used for unbounded and planning-time estimates. Bounded execution must
-    /// reserve only the additional graph work when those exact bytes already
-    /// consume the same query grant. Credit no more than the modeled pair
-    /// overlap so a wider source frame cannot reduce unrelated graph work.
-    pub fn credit_live_similarity_pair_input(mut self, already_accounted_bytes: u64) -> Self {
-        let Some(budget_bytes) = self.budget_bytes else {
-            return self;
-        };
-        if !self.algorithm.is_similarity() {
-            return self;
-        }
-        let pair_input_overlap_bytes = self
-            .pair_rows
-            .zip(self.pair_vertex_width_bytes)
-            .map(|(rows, width)| rows.saturating_mul(width.saturating_mul(2)))
-            .unwrap_or(0);
-        let credit_bytes = pair_input_overlap_bytes.min(already_accounted_bytes);
-        if credit_bytes == 0 {
-            return self;
-        }
-
-        self.requested_bytes = self.requested_bytes.saturating_sub(credit_bytes);
-        let denied = self.requested_bytes > budget_bytes;
-        self.outcome = if denied { GraphReservationOutcome::Denied } else { GraphReservationOutcome::Admitted };
-        self.reason = denied.then_some(GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON);
-        self
-    }
-
-    /// Attach runtime graph statistics evidence to this row.
-    pub fn with_statistics(mut self, statistics: GraphStatistics) -> Self {
-        self.statistics = Some(statistics);
-        self
-    }
-
-    /// Attach the observed model error ratio for a completed graph execution.
-    pub fn record_model_error_ratio(&mut self, measured_peak_bytes: u64) {
-        self.measured_peak_bytes = Some(measured_peak_bytes);
-        self.graph_model_error_ratio =
-            GraphModelErrorRatio::from_requested_and_measured(self.model_requested_bytes, measured_peak_bytes);
-    }
-
-    /// Builds the structured local admission error for a denied graph fragment.
-    pub fn denied_error(&self, request: &MemoryReservationRequest, granted_bytes: u64) -> QueryError {
-        let mut error = request
-            .denied_error(granted_bytes)
-            .with_fact("reason", GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON)
-            .with_fact("algorithm", self.algorithm.as_str())
-            .with_fact("graph_memory_class", self.class.as_str())
-            .with_fact("input_edges", self.input_edges)
-            .with_fact("vertex_upper_bound", self.vertex_upper_bound)
-            .with_fact("vertex_estimate", self.vertex_estimate)
-            .with_fact("vertex_estimate_source", self.vertex_estimate_source.as_str())
-            .with_fact("vertex_width_bytes", self.vertex_width_bytes)
-            .with_fact("pair_rows", self.pair_rows.unwrap_or(0))
-            .with_fact(
-                "pair_cardinality_source",
-                self.pair_cardinality_source.map_or("none", GraphPairCardinalitySource::as_str),
-            )
-            .with_fact("directed", self.directed)
-            .with_fact("renumber", self.renumber)
-            .with_fact("construction_policy", self.construction_policy.as_str())
-            .with_fact("edge_normalize_inserted", self.edge_normalize_inserted)
-            .with_fact("calibration_source", self.calibration_source.as_str())
-            .with_fact("data_dependent", self.data_dependent);
-        if let Some(raw_input_edges) = self.raw_input_edges {
-            error = error.with_fact("raw_input_edges", raw_input_edges);
-        }
-        if let Some(seed_count) = self.seed_count {
-            error = error.with_fact("seed_count", seed_count);
-        }
-        if let Some(seed_mode) = self.seed_mode {
-            error = error.with_fact("seed_mode", seed_mode.as_str());
-        }
-        error
-    }
-}
-
-/// Approximate model for the graph memory tier.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct GraphMemoryModel;
 
@@ -2020,7 +375,7 @@ fn betweenness_seed_memory_input(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ModelBytes(u128);
+pub(crate) struct ModelBytes(pub(crate) u128);
 
 impl ModelBytes {
     fn from_u64(value: u64) -> Self {
@@ -2043,11 +398,11 @@ impl ModelBytes {
         Self(self.0.min(other.0))
     }
 
-    fn diagnostic_u64(self) -> u64 {
+    pub(crate) fn diagnostic_u64(self) -> u64 {
         self.0.min(u128::from(u64::MAX)) as u64
     }
 
-    fn bounded_u64(self, term: &'static str) -> Result<u64> {
+    pub(crate) fn bounded_u64(self, term: &'static str) -> Result<u64> {
         if self.0 >= u128::from(u64::MAX) {
             return Err(graph_memory_arithmetic_error(term, "saturated"));
         }
@@ -2055,7 +410,7 @@ impl ModelBytes {
     }
 }
 
-fn graph_memory_arithmetic_error(term: &'static str, operation: &'static str) -> QueryError {
+pub(super) fn graph_memory_arithmetic_error(term: &'static str, operation: &'static str) -> QueryError {
     QueryError::new(
         QueryErrorCode::InvalidPlan,
         "nexus_query_engine.graph_memory.arithmetic",
@@ -2066,11 +421,11 @@ fn graph_memory_arithmetic_error(term: &'static str, operation: &'static str) ->
     .with_fact("operation", operation)
 }
 
-fn project_model_bytes(value: ModelBytes, term: &'static str, diagnostic: bool) -> Result<u64> {
+pub(super) fn project_model_bytes(value: ModelBytes, term: &'static str, diagnostic: bool) -> Result<u64> {
     if diagnostic { Ok(value.diagnostic_u64()) } else { value.bounded_u64(term) }
 }
 
-fn graph_live_reservation_floor_top_up_bytes(cold_model_requested_bytes: u64) -> Result<Option<u64>> {
+pub(super) fn graph_live_reservation_floor_top_up_bytes(cold_model_requested_bytes: u64) -> Result<Option<u64>> {
     if cold_model_requested_bytes == u64::MAX {
         return Err(graph_memory_arithmetic_error("graph_live_reservation_floor_top_up", "saturated"));
     }
@@ -2084,86 +439,15 @@ fn graph_live_reservation_floor_top_up_bytes(cold_model_requested_bytes: u64) ->
 }
 
 #[derive(Debug, Clone, Copy)]
-struct GraphDerivedTerms {
-    construction: ModelBytes,
-    graph_persistent: ModelBytes,
-    construction_transient: ModelBytes,
-    output: ModelBytes,
-    execution_workspace: ModelBytes,
-    execution: ModelBytes,
-    requested: ModelBytes,
-    output_rows: u64,
-}
-
-impl GraphMemoryOwnerComponents {
-    fn from_derived(derived: GraphDerivedTerms, diagnostic_projection: bool) -> Result<Self> {
-        Ok(Self {
-            graph_persistent_bytes: project_model_bytes(
-                derived.graph_persistent,
-                "graph_persistent_bytes",
-                diagnostic_projection,
-            )?,
-            construction_transient_bytes: project_model_bytes(
-                derived.construction_transient,
-                "construction_transient_bytes",
-                diagnostic_projection,
-            )?,
-            execution_workspace_bytes: project_model_bytes(
-                derived.execution_workspace,
-                "execution_workspace_bytes",
-                diagnostic_projection,
-            )?,
-        })
-    }
-
-    fn owner_terms(
-        self,
-        execution_scope_fingerprint: String,
-        graph_node_id: NodeId,
-        retained_output: GraphMemoryRetainedOutputContribution,
-        live_reservation_floor_top_up_bytes: Option<u64>,
-    ) -> Result<Vec<GraphMemoryOwnerTermFact>> {
-        let mut terms = vec![
-            GraphMemoryOwnerTermFact::new(
-                execution_scope_fingerprint.clone(),
-                graph_node_id,
-                GraphMemoryOwnerTermRole::GraphPersistent,
-                self.graph_persistent_bytes,
-                None,
-            )?,
-            GraphMemoryOwnerTermFact::new(
-                execution_scope_fingerprint.clone(),
-                graph_node_id,
-                GraphMemoryOwnerTermRole::ConstructionTransient,
-                self.construction_transient_bytes,
-                None,
-            )?,
-            GraphMemoryOwnerTermFact::new(
-                execution_scope_fingerprint.clone(),
-                graph_node_id,
-                GraphMemoryOwnerTermRole::ExecutionWorkspace,
-                self.execution_workspace_bytes,
-                None,
-            )?,
-            GraphMemoryOwnerTermFact::new(
-                execution_scope_fingerprint.clone(),
-                graph_node_id,
-                GraphMemoryOwnerTermRole::RetainedOutput,
-                retained_output.bytes(),
-                Some(retained_output.row_count_upper_bound()),
-            )?,
-        ];
-        if let Some(bytes) = live_reservation_floor_top_up_bytes {
-            terms.push(GraphMemoryOwnerTermFact::new(
-                execution_scope_fingerprint,
-                graph_node_id,
-                GraphMemoryOwnerTermRole::GraphLiveReservationFloorTopUp,
-                bytes,
-                None,
-            )?);
-        }
-        Ok(terms)
-    }
+pub(super) struct GraphDerivedTerms {
+    pub(super) construction: ModelBytes,
+    pub(super) graph_persistent: ModelBytes,
+    pub(super) construction_transient: ModelBytes,
+    pub(super) output: ModelBytes,
+    pub(super) execution_workspace: ModelBytes,
+    pub(super) execution: ModelBytes,
+    pub(super) requested: ModelBytes,
+    pub(super) output_rows: u64,
 }
 
 fn checked_add_all(values: impl IntoIterator<Item = (ModelBytes, &'static str)>) -> Result<ModelBytes> {
@@ -2313,7 +597,7 @@ fn semantic_edge_row_width_model(input: GraphMemoryModelInput) -> Result<ModelBy
     ])
 }
 
-fn raw_libcugraph_property_output_staging(input: GraphMemoryModelInput) -> Result<ModelBytes> {
+pub(crate) fn raw_libcugraph_property_output_staging(input: GraphMemoryModelInput) -> Result<ModelBytes> {
     let property_width = match (input.weight_width_bytes, input.has_edge_id) {
         (None, false) => 0,
         (Some(width), false) => width,
@@ -2540,7 +824,7 @@ fn force_atlas2_phase_peak_model(
 }
 
 #[cfg(test)]
-fn force_atlas2_workspace_bytes(
+pub(crate) fn force_atlas2_workspace_bytes(
     input: GraphMemoryModelInput,
     vertex_estimate: u64,
     params: &GraphAlgorithmParams,
@@ -2553,15 +837,15 @@ fn force_atlas2_workspace_bytes(
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ForceAtlas2WorkspacePhaseBytes {
-    persistent_csr_and_decompressed_coo_bytes: u64,
-    persistent_number_map_and_positions_bytes: u64,
-    legacy_coo_sort_workspace_bytes: u64,
-    barnes_hut_workspace_bytes: u64,
+pub(crate) struct ForceAtlas2WorkspacePhaseBytes {
+    pub(crate) persistent_csr_and_decompressed_coo_bytes: u64,
+    pub(crate) persistent_number_map_and_positions_bytes: u64,
+    pub(crate) legacy_coo_sort_workspace_bytes: u64,
+    pub(crate) barnes_hut_workspace_bytes: u64,
 }
 
 #[cfg(test)]
-fn force_atlas2_workspace_phase_bytes(
+pub(crate) fn force_atlas2_workspace_phase_bytes(
     input: GraphMemoryModelInput,
     vertex_estimate: u64,
     params: &GraphAlgorithmParams,
@@ -2579,16 +863,16 @@ fn force_atlas2_workspace_phase_bytes(
 
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct ForceAtlas2PhasePeaks {
-    persistent_base_bytes: u64,
-    legacy_coo_sort_before_degree_bytes: u64,
-    barnes_hut_with_degree_bytes: u64,
-    post_barnes_result_conversion_bytes: u64,
+pub(crate) struct ForceAtlas2PhasePeaks {
+    pub(crate) persistent_base_bytes: u64,
+    pub(crate) legacy_coo_sort_before_degree_bytes: u64,
+    pub(crate) barnes_hut_with_degree_bytes: u64,
+    pub(crate) post_barnes_result_conversion_bytes: u64,
 }
 
 #[cfg(test)]
 impl ForceAtlas2PhasePeaks {
-    fn peak_bytes(self) -> u64 {
+    pub(crate) fn peak_bytes(self) -> u64 {
         self.legacy_coo_sort_before_degree_bytes
             .max(self.barnes_hut_with_degree_bytes)
             .max(self.post_barnes_result_conversion_bytes)
@@ -2597,7 +881,7 @@ impl ForceAtlas2PhasePeaks {
 }
 
 #[cfg(test)]
-fn force_atlas2_phase_peaks(
+pub(crate) fn force_atlas2_phase_peaks(
     input: GraphMemoryModelInput,
     vertex_estimate: u64,
     params: &GraphAlgorithmParams,
@@ -2859,7 +1143,11 @@ fn output_row_count_upper_bound_for_algorithm(
 }
 
 #[cfg(any(feature = "cugraph", test))]
-fn semantic_edge_row_width_bytes(vertex_width_bytes: u64, weight_width_bytes: Option<u64>, has_edge_id: bool) -> u64 {
+pub(crate) fn semantic_edge_row_width_bytes(
+    vertex_width_bytes: u64,
+    weight_width_bytes: Option<u64>,
+    has_edge_id: bool,
+) -> u64 {
     semantic_edge_row_width_model(GraphMemoryModelInput {
         vertex_width_bytes,
         weight_width_bytes,
@@ -3198,7 +1486,7 @@ pub fn query_plan_graph_vertex_upper_bound(plan: &QueryPlan) -> Option<u64> {
     graph_vertex_upper_bound_for_plan_node(plan, plan.root_id())
 }
 
-fn graph_memory_model_input_for_plan_node(
+pub(crate) fn graph_memory_model_input_for_plan_node(
     plan: &QueryPlan,
     graph: &crate::plan::GraphAlgorithmNode,
     calibration_override: GraphMemoryCalibrationOverride,
@@ -3276,7 +1564,7 @@ pub(crate) fn with_graph_construction_workspace_bounds_from_owner(
 }
 
 #[cfg(feature = "cugraph")]
-fn graph_construction_workspace_bounds_from_owner(
+pub(crate) fn graph_construction_workspace_bounds_from_owner(
     spec: &GraphAlgorithmSpec,
     input: GraphMemoryModelInput,
 ) -> Option<GraphConstructionWorkspaceBounds> {
@@ -3296,7 +1584,7 @@ fn graph_construction_workspace_bounds_from_owner(
 /// unit-tested without introducing an engine-side substitute for the owner
 /// contract.
 #[cfg(feature = "cugraph")]
-fn graph_construction_workspace_bounds_from_owner_query(
+pub(crate) fn graph_construction_workspace_bounds_from_owner_query(
     spec: &GraphAlgorithmSpec,
     input: GraphMemoryModelInput,
     query: impl FnOnce(&cugraph::cudf_interop::GraphConstructionPreflightInput) -> Option<GraphConstructionWorkspaceBounds>,
@@ -3365,7 +1653,10 @@ pub(crate) fn strict_similarity_pair_cardinality_for_plan(
 /// Derive only mathematically hard cardinality evidence.  This deliberately
 /// does not reuse [`estimated_output_rows`], whose contract is descriptive and
 /// unsuitable for strict bounded admission.
-fn hard_row_upper_bound_for_plan_node(plan: &QueryPlan, node_id: NodeId) -> Option<(u64, GraphPairCardinalitySource)> {
+pub(crate) fn hard_row_upper_bound_for_plan_node(
+    plan: &QueryPlan,
+    node_id: NodeId,
+) -> Option<(u64, GraphPairCardinalitySource)> {
     let node = plan.node(node_id)?;
     match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {
@@ -3725,7 +2016,7 @@ fn graph_field_type_error(
     .with_fact("arrow_type", format!("{data_type:?}"))
 }
 
-fn missing_graph_input_error(input: NodeId) -> QueryError {
+pub(super) fn missing_graph_input_error(input: NodeId) -> QueryError {
     QueryError::new(
         QueryErrorCode::InvalidPlan,
         "nexus_query_engine.graph_memory.plan_estimate",
@@ -3733,6 +2024,3 @@ fn missing_graph_input_error(input: NodeId) -> QueryError {
     )
     .with_fact("input", input.to_string())
 }
-
-#[cfg(test)]
-mod tests;
