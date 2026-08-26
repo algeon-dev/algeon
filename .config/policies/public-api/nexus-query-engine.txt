@@ -5145,6 +5145,7 @@ pub fn nexus_query_engine::plan::JoinSpec::with_datafusion_order_preserved_side(
 pub fn nexus_query_engine::plan::JoinSpec::with_mark_column_name(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn nexus_query_engine::plan::JoinSpec::with_null_equality(self, nexus_query_engine::plan::JoinNullEquality) -> Self
 pub fn nexus_query_engine::plan::JoinSpec::with_output_projection(self, alloc::vec::Vec<nexus_query_engine::plan::JoinOutputColumn>) -> Self
+pub fn nexus_query_engine::plan::JoinSpec::with_preserved_total_payload_bound_for_output(self, impl core::convert::Into<alloc::string::String>) -> Self
 pub fn nexus_query_engine::plan::JoinSpec::with_residual_predicate(self, nexus_query_engine::expr::Expr) -> Self
 pub struct nexus_query_engine::plan::LimitNode
 pub nexus_query_engine::plan::LimitNode::input: nexus_query_engine::plan::NodeId
