@@ -128,16 +128,26 @@
   background: rgba(255, 255, 255, 0.6);
   border-bottom: 1px solid rgba(180, 188, 196, 0.42);
   box-shadow: 0 10px 28px rgba(31, 41, 55, 0.08);
+}
+
+/* The glass blur lives on a pseudo-element, never on `.navbar` itself: a
+   non-`none` backdrop-filter makes `.navbar` the containing block for its
+   `position: fixed` descendants, which traps the mobile `.navbar-sidebar`
+   inside the navbar's height instead of the viewport. */
+.navbar::before {
   -webkit-backdrop-filter: blur(14px);
   backdrop-filter: blur(14px);
+  content: '';
+  inset: 0;
+  pointer-events: none;
+  position: absolute;
+  z-index: -1;
 }
 
 [data-theme='dark'] .navbar {
   background: rgba(20, 24, 33, 0.78);
   border-bottom: 1px solid rgba(91, 102, 115, 0.32);
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.22);
-  -webkit-backdrop-filter: blur(14px);
-  backdrop-filter: blur(14px);
 }
 
 @media (min-width: 997px) {
@@ -145,6 +155,75 @@
     /* The wide logo stretches the flex line; lift controls back to center. */
     transform: translateY(-0.2rem);
   }
+}
+
+@media (max-width: 996px) {
+  .navbar__toggle,
+  .navbar__search:not(:focus-within) {
+    /* Match the logo's lift without moving the expanded mobile search row. */
+    transform: translateY(-0.2rem);
+  }
+}
+
+/* The mobile sidebar header is only 83vw wide and also holds the color-mode
+   toggle and close button, so the wide wordmark must be allowed to shrink
+   instead of sliding under the controls at 320px. */
+.navbar-sidebar__brand .navbar__brand {
+  flex: 1 1 auto;
+}
+
+.navbar-sidebar__brand .navbar__logo {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+/* The navbar lifts the wordmark to compensate for its stretched flex line;
+   the drawer header centers the logo natively, so no lift here. */
+.navbar-sidebar__brand .navbar__logo img {
+  max-width: 100%;
+  min-width: 0;
+  object-fit: contain;
+  object-position: left center;
+  transform: none;
+}
+
+.navbar-sidebar__brand > :not(.navbar__brand) {
+  flex-shrink: 0;
+}
+
+/* Mobile drawer (src/theme/Navbar/MobileSidebar): one panel with the navbar
+   links, a color-mode row, then the docs tree. */
+.nx-mobile-drawer__color-mode {
+  align-items: center;
+  display: flex;
+  gap: 0.6rem;
+  width: 100%;
+}
+
+.nx-mobile-drawer__color-mode-icon {
+  display: none;
+  height: 1.1rem;
+  width: 1.1rem;
+}
+
+[data-theme-choice='system'] .nx-mobile-drawer__color-mode-icon--system,
+[data-theme-choice='light'] .nx-mobile-drawer__color-mode-icon--light,
+[data-theme-choice='dark'] .nx-mobile-drawer__color-mode-icon--dark {
+  display: initial;
+}
+
+.nx-mobile-drawer__separator {
+  border: 0;
+  border-top: 1px solid var(--ifm-color-emphasis-200);
+  height: 0;
+  margin: 0.5rem 0.75rem 0.75rem;
+}
+
+/* The navbar background is translucent for the glass effect; the drawer
+   must stay opaque over page content. */
+.navbar-sidebar,
+.navbar-sidebar__brand {
+  background: var(--ifm-background-surface-color);
 }
 
 [data-theme='dark'] .navbar-sidebar,
@@ -249,6 +328,13 @@
   display: inline;
 }
 
+/* The plugin gives its icon `z-index: 1`; contain it so it cannot paint above
+   the mobile drawer and backdrop, which sit in the navbar's stacking context
+   without a z-index of their own. */
+.navbar__search {
+  isolation: isolate;
+}
+
 .navbar__search .navbar__search-input {
   background-color: rgba(15, 20, 25, 0.08);
   border-radius: 999px;
@@ -261,6 +347,64 @@
 [data-theme='dark'] .navbar__search .navbar__search-input {
   background-color: rgba(230, 225, 207, 0.12);
   color: var(--nx-ayu-text);
+}
+
+/* Mobile search: Docusaurus pins the search wrapper to the navbar's right edge
+   as an absolute element, so a focused input grows over the wordmark instead
+   of pushing it. While focused, give the wrapper its own full-width row under
+   the navbar; unfocused it stays the plugin's 2rem icon. */
+@media (max-width: 576px) {
+  /* Collapsed state is a circle the size of the input's height (the plugin's
+     2rem width would make a tall oval), with the icon centered. Left padding
+     equal to the width leaves a zero-width content box, so the placeholder
+     stays hidden. Our desktop padding alone is 3.5rem and would keep the pill
+     wide enough to touch the wordmark at 320px. */
+  .navbar__search .navbar__search-input:not(:focus) {
+    padding: 0 0 0 2.45rem;
+    width: 2.45rem;
+  }
+
+  .navbar__search:not(:focus-within) [class*='searchIcon'] {
+    left: 50%;
+    transform: translate(-50%, -50%);
+  }
+
+  .navbar__items--right > [class*='navbarSearchContainer']:focus-within {
+    background: var(--ifm-background-surface-color);
+    border-bottom: 1px solid var(--ifm-toc-border-color);
+    box-shadow: var(--ifm-navbar-shadow);
+    left: 0;
+    padding: 0.5rem var(--ifm-navbar-padding-horizontal);
+    right: 0;
+    top: 100%;
+  }
+
+  /* Flex blockifies the autocomplete wrapper span, whose inline style is
+     `display: inline-block`. */
+  .navbar__search:focus-within {
+    display: flex;
+    margin-left: 0;
+  }
+
+  .navbar__search:focus-within > :has(> .navbar__search-input) {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .navbar__search:focus-within .navbar__search-input {
+    width: 100%;
+  }
+
+  .navbar__search:focus-within [class*='dropdownMenu'] {
+    max-width: none;
+    width: 100%;
+  }
+
+  /* The plugin hides the clear button once the input blurs, but a tap moves
+     focus to the button before its click lands; keep it while it holds focus. */
+  .navbar__items--right .navbar__search:focus-within [class*='searchClearButton'] {
+    display: block;
+  }
 }
 
 [data-theme='dark'] input[type='search']:not(.navbar__search-input) {
