@@ -1,137 +1,21 @@
-//! External interop boundaries.
+//! External interop boundary.
 //!
-//! Shared interop contract nouns live in [`rapids_interop`]. This module
-//! implements `cudf` producer and consumer adapters for:
+//! This module moves data between `cudf` and other systems such as Arrow and
+//! RAPIDS. Most callers should use the methods on [`crate::Series`] for one
+//! column or [`crate::DataFrame`] for a table. Use [`crate::core::Column`] and
+//! [`crate::core::Table`] only when explicit low-level ownership or borrowing
+//! control is required.
 //!
-//! - [`crate::core::Column`]
-//! - [`crate::core::ColumnView`]
-//! - [`crate::core::Table`]
-//! - [`crate::core::TableView`]
-//! - [`crate::Series`]
-//! - [`crate::DataFrame`]
-//! - [`PartitionedDataFrameExport`]
+//! To export from `cudf`, choose one of three contracts:
 //!
-//! # Contract Summary
+//! - `try_borrow_*_view` lends device buffers without transferring ownership.
+//! - `try_prepare_*_export` prepares data for consumer access or copying.
+//! - `try_into_owned_transfer` moves device-buffer ownership to the consumer.
 //!
-//! - Import shared contract types and traits directly from [`rapids_interop`].
-//! - Prepared export plus activated access is the primary consumer-neutral
-//!   single-GPU contract.
-//! - `cudf` now supports consumer-side import from the shared borrowed
-//!   compatibility descriptors back into low-level owned
-//!   [`crate::core::Column`] and [`crate::core::Table`] values via explicit
-//!   destination [`crate::Runtime`].
-//! - `cudf` also supports zero-copy consumer-side import from shared owned-transfer
-//!   roots back into low-level owned [`crate::core::Column`] and [`crate::core::Table`]
-//!   values. The current foreign-owner consumer slice covers the supported
-//!   fixed-width, binary-like string, list, struct, and dictionary layouts
-//!   while preserving `cudf` round-trip fast paths.
-//! - `cudf` now also supports low-level consumer-side import from shared
-//!   prepared-device export roots back into owned [`crate::core::Column`] and
-//!   [`crate::core::Table`] values via explicit same-device destination
-//!   [`crate::Runtime`]s.
-//! - [`rapids_interop::BorrowedColumnView`] and
-//!   [`rapids_interop::BorrowedTableView`] remain the borrowed GPU
-//!   compatibility profile.
-//! - [`rapids_interop::PreparedColumnExport`] and
-//!   [`rapids_interop::PreparedTableExport`] are producer-rooted prepared
-//!   export profiles for activated access.
-//! - Deep-copy import into an explicit destination [`crate::Runtime`] remains
-//!   the portability fallback when a consumer needs owned `cudf` values
-//!   instead of borrowing or moving ownership directly.
-//! - [`rapids_interop::PartitionedPreparedTableExport`] and
-//!   [`rapids_interop::PartitionedOwnedTableTransfer`] are explicit
-//!   multi-device wrappers around multiple already-valid single-device table
-//!   roots.
-//! - [`rapids_interop::ActiveColumnReadLease`] and
-//!   [`rapids_interop::ActiveTableReadLease`] model activated read access
-//!   with explicit read-start and completion contracts.
-//! - [`rapids_interop::CompletionWitness`] and
-//!   [`rapids_interop::LeaseCompletionResult`] make completion and drop
-//!   fallback visible at the shared contract layer.
-//! - Use [`cuda_stream_handle`] and [`cuda_event_handle`] when a caller already
-//!   has `cudf` runtime handles and needs to activate a shared prepared
-//!   lease with explicit CUDA stream or event facts.
-//! - [`runtime_release::OwnedColumnTransferReleaser`] and
-//!   [`runtime_release::OwnedTableTransferReleaser`] are CUDA-backed release
-//!   helpers for the signal-driven owned-transfer producer path. Their
-//!   caller-visible behavior follows the matching transfer root's declared
-//!   [`rapids_interop::ReleaseSynchronization`]: async roots return once
-//!   release has been accepted and scheduled, while
-//!   `MaySynchronizeInternally` roots may block while carrying out the
-//!   release contract.
-//! - [`runtime_release::PartitionedOwnedTableTransferReleaser`] mirrors that
-//!   release path for partitioned owned transfer by preserving one releaser
-//!   per retained-provenance partition. Import and release remain mutually
-//!   exclusive independently for each partition.
-//! - Borrowing and prepared export do not transfer ownership.
-//! - Borrowed compatibility and prepared export both avoid host copies on the
-//!   input path because they describe existing device buffers.
-//! - Prepared host export is a separate materialized profile: it copies the
-//!   active logical range to host-visible bytes and is not zero-copy.
-//! - Owned device transfer is a separate zero-copy ownership move profile for
-//!   true owner types such as [`crate::core::Column`] and
-//!   [`crate::core::Table`], not the default consumer story.
-//! - [`PartitionedDataFrameExport`] is an interop-only heterogeneous producer
-//!   surface; it does not change the ordinary single-provenance semantics of
-//!   [`crate::DataFrame`] or [`crate::core::Table`].
-//! - Consumer algorithms may still allocate or copy for outputs; this module
-//!   does not promise zero-copy output.
-//! - Current device-export support covers fixed-width layouts, the first
-//!   binary-like string layout slice, `List`, `Struct`, and `Dictionary`.
-//! - Nested-layout support is still intentionally narrow in this slice:
-//!   current coverage is the recursive semantic-column graph that can be
-//!   expressed by the existing fixed-width, binary-like string, list, struct,
-//!   and dictionary slices on one CUDA device.
-//! - [`crate::Series`] and [`crate::DataFrame`] are convenience adapters, not
-//!   the contract itself.
-//! - Producer projection requires explicit retained provenance.
-//! - Public `cudf` object construction now satisfies that contract through
-//!   explicit [`crate::Runtime`] ownership.
-//!
-//! # Public Boundary
-//!
-//! - Import shared contract nouns from [`rapids_interop`].
-//! - Use methods on [`crate::Series`] and [`crate::DataFrame`] as the primary
-//!   migration-oriented interop adapters.
-//! - Use methods on [`crate::core::Column`], [`crate::core::Table`],
-//!   [`crate::core::ColumnView`], and [`crate::core::TableView`] when you
-//!   need explicit low-level ownership or borrow control.
-//! - Use [`runtime_release`] and [`arrow_device`] only for `cudf`-specific
-//!   runtime-backed release helpers, CUDA handle projection, and Arrow glue.
-//! - [`arrow_host`] and [`arrow_device`] are different interop surfaces:
-//!   [`arrow_host`] converts through host `RecordBatch` values, while
-//!   [`arrow_device`] describes Arrow C Device ABI roots for existing
-//!   device-backed buffers.
-//!
-//! # Module Position
-//!
-//! `cudf::interop` deliberately remains at the crate root rather than under
-//! `cudf::core::interop`. The interop module spans both high-level types
-//! ([`crate::DataFrame`], [`crate::Series`]) and low-level types
-//! ([`crate::core::Column`], [`crate::core::ColumnView`],
-//! [`crate::core::Table`], [`crate::core::TableView`]), so it does not
-//! belong exclusively under `cudf::core`. High-level users should prefer
-//! the [`crate::DataFrame`] and [`crate::Series`] interop adapters;
-//! advanced users may use the low-level [`crate::core::Column`] /
-//! [`crate::core::ColumnView`] adapters directly.
-//!
-//! # `ColumnView` in Interop Signatures
-//!
-//! [`crate::core::ColumnView`] appears in interop producer signatures (e.g.,
-//! [`crate::core::ColumnView::try_borrow_column_view`],
-//! [`crate::core::ColumnView::try_prepare_device_column_export`]). This is
-//! intentional: interop operates at the `cudf::core::*` level where
-//! `ColumnView` is an appropriate advanced type. The public API layering
-//! refactor (Slice 3) removed `ColumnView` from `DataFrame`'s public
-//! surface, but it remains correct in interop signatures.
-//!
-//! # Consumer Import Naming
-//!
-//! Consumer import methods use the `try_import_from_*_into_runtime` naming
-//! convention. These are interop-boundary placement operations — they bring
-//! external data into a target [`crate::Runtime`]. This is distinct from the
-//! removed `DataFrame` operation-specific `_with_runtime` methods (Slice 4),
-//! which hid placement as a side effect of a compute operation.
+//! To import into `cudf`, call `try_import_from_*_into_runtime` with the
+//! destination [`crate::Runtime`]. [`runtime_release`] and [`arrow_device`]
+//! expose `cudf`-specific advanced controls; [`arrow_host`] converts through
+//! host `RecordBatch` values.
 
 pub mod arrow_device;
 pub mod arrow_host;
@@ -155,9 +39,9 @@ use std::sync::Arc;
 use borrowed::*;
 use column::{prepare_from_owned_column, prepare_host_from_owned_column, transfer_from_owned_column};
 use consumer_import::{
-    import_column_from_borrowed_view, import_column_from_owned_transfer, import_column_from_prepared_export,
-    import_partitioned_local_tables_from_prepared_export, import_table_from_borrowed_view,
-    import_table_from_owned_transfer, import_table_from_prepared_export, required_dataframe_import_names,
+    dataframe_import_names, import_column_from_borrowed_view, import_column_from_owned_transfer,
+    import_column_from_prepared_export, import_partitioned_local_tables_from_prepared_export,
+    import_table_from_borrowed_view, import_table_from_owned_transfer, import_table_from_prepared_export,
     wrap_imported_dataframe, wrap_imported_series,
 };
 use contracts::*;

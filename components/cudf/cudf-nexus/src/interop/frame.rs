@@ -364,85 +364,48 @@ impl TryIntoOwnedDeviceColumnTransfer for Series {
 }
 
 impl DataFrame {
-    /// Convenience consumer that deep-copies a shared borrowed interop table
-    /// descriptor into a high-level `DataFrame` using explicit caller-provided
-    /// schema names.
-    pub fn try_import_from_borrowed_table_view_into_runtime_and_names(
+    /// Imports a borrowed table view into a high-level `DataFrame`.
+    ///
+    /// Borrowed table views do not carry schema names, so `names` must be `Some`.
+    pub fn try_import_from_borrowed_table_view_into_runtime(
         borrowed: &BorrowedTableView<'_>,
+        names: Option<Vec<String>>,
         runtime: &Runtime,
-        names: Vec<String>,
     ) -> Result<Self, InteropError> {
-        let operation = "interop::DataFrame::try_import_from_borrowed_table_view_into_runtime_and_names";
+        let operation = "interop::DataFrame::try_import_from_borrowed_table_view_into_runtime";
+        let names = dataframe_import_names(names, None, operation)?;
         let table = Table::try_import_from_borrowed_table_view_into_runtime(borrowed, runtime)?;
         wrap_imported_dataframe(table, names, operation)
     }
 
-    /// Convenience consumer that imports a shared prepared table export root
-    /// into a high-level `DataFrame` using schema names carried on the shared
-    /// root.
+    /// Imports a shared prepared table export root into a high-level
+    /// `DataFrame`, using `names` when supplied or schema names carried on the
+    /// shared root otherwise.
     pub fn try_import_from_prepared_table_export_into_runtime(
         export: &PreparedTableExport<'_>,
+        names: Option<Vec<String>>,
         runtime: &Runtime,
     ) -> Result<Self, InteropError> {
         let operation = "interop::DataFrame::try_import_from_prepared_table_export_into_runtime";
-        let names = required_dataframe_import_names(
-            export.table().names(),
-            operation,
-            "DataFrame::try_import_from_prepared_table_export_into_runtime_and_names",
-        )?;
+        let names = dataframe_import_names(names, export.table().names(), operation)?;
         let table = Table::try_import_from_prepared_table_export_into_runtime(export, runtime)?;
         wrap_imported_dataframe(table, names, operation)
     }
 
-    /// Convenience consumer that imports a shared prepared table export root
-    /// into a high-level `DataFrame` using explicit caller-provided schema
-    /// names.
-    pub fn try_import_from_prepared_table_export_into_runtime_and_names(
-        export: &PreparedTableExport<'_>,
-        runtime: &Runtime,
-        names: Vec<String>,
-    ) -> Result<Self, InteropError> {
-        let operation = "interop::DataFrame::try_import_from_prepared_table_export_into_runtime_and_names";
-        let table = Table::try_import_from_prepared_table_export_into_runtime(export, runtime)?;
-        wrap_imported_dataframe(table, names, operation)
-    }
-
-    /// Convenience consumer that zero-copy imports a shared owned device
-    /// transfer root into a high-level `DataFrame` using schema names carried
-    /// on the shared root and binding the result to the provided explicit
-    /// runtime.
+    /// Zero-copy imports a shared owned device transfer root into a high-level
+    /// `DataFrame`, using `names` when supplied or schema names carried on the
+    /// shared root otherwise.
     ///
     /// This inherits the low-level `Table` import contract: the destination
     /// runtime must be pinned to the transfer device, and the imported frame
     /// is rebound to that runtime's retained provenance without a deep copy.
     pub fn try_import_from_owned_device_table_transfer_into_runtime(
         transfer: OwnedTableTransfer,
+        names: Option<Vec<String>>,
         runtime: &Runtime,
     ) -> Result<Self, InteropError> {
         let operation = "interop::DataFrame::try_import_from_owned_device_table_transfer_into_runtime";
-        let names = required_dataframe_import_names(
-            transfer.table().names(),
-            operation,
-            "DataFrame::try_import_from_owned_device_table_transfer_into_runtime_and_names",
-        )?;
-        let table = Table::try_import_from_owned_device_table_transfer_into_runtime(transfer, runtime)?;
-        wrap_imported_dataframe(table, names, operation)
-    }
-
-    /// Convenience consumer that zero-copy imports a shared owned device
-    /// transfer root into a high-level `DataFrame` using explicit
-    /// caller-provided schema names and binding the result to the provided
-    /// explicit runtime.
-    ///
-    /// This inherits the low-level `Table` import contract: the destination
-    /// runtime must be pinned to the transfer device, and the imported frame
-    /// is rebound to that runtime's retained provenance without a deep copy.
-    pub fn try_import_from_owned_device_table_transfer_into_runtime_and_names(
-        transfer: OwnedTableTransfer,
-        runtime: &Runtime,
-        names: Vec<String>,
-    ) -> Result<Self, InteropError> {
-        let operation = "interop::DataFrame::try_import_from_owned_device_table_transfer_into_runtime_and_names";
+        let names = dataframe_import_names(names, transfer.table().names(), operation)?;
         let table = Table::try_import_from_owned_device_table_transfer_into_runtime(transfer, runtime)?;
         wrap_imported_dataframe(table, names, operation)
     }

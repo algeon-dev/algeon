@@ -44,10 +44,3 @@ flock /tmp/cudf-gpu.lock cargo nextest run \
 
 Use `scripts/dev/bindings.sh cudf [--check]` for the two checked-in binding
 surfaces; consumer builds never run bindgen.
-
-## Migration provenance
-
-- Wrapper repository and archive: <https://github.com/DataFusion-Nexus/cudf-nexus>
-- Frozen imported tip: `a2e893dc7193964feeb4a045d47229d8a2a830ee`
-- Import merge: `f6f9046adae3ed6077efde97add417cbc5a11627`
-- Final path: `components/cudf`

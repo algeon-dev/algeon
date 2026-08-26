@@ -123,7 +123,8 @@ fn single_gpu_prepared_export_fallback_import_can_run_algorithm_and_handoff_resu
     let _event_lock = common::lock_event_observation();
 
     let consumer_runtime = common::sample_runtime();
-    let imported = DataFrame::try_import_from_prepared_table_export_into_runtime(&export, &consumer_runtime).unwrap();
+    let imported =
+        DataFrame::try_import_from_prepared_table_export_into_runtime(&export, None, &consumer_runtime).unwrap();
     assert_eq!(imported.testing_execution_domain_stream_value(), consumer_runtime.stream().testing_raw_handle_value());
     assert_eq!(imported.column_names(), vec!["src", "dst"]);
 
@@ -147,7 +148,7 @@ fn single_gpu_prepared_export_fallback_import_can_run_algorithm_and_handoff_resu
 
     let handoff_runtime = common::sample_runtime();
     let handed_off =
-        DataFrame::try_import_from_prepared_table_export_into_runtime(&result_export, &handoff_runtime).unwrap();
+        DataFrame::try_import_from_prepared_table_export_into_runtime(&result_export, None, &handoff_runtime).unwrap();
 
     assert_eq!(handed_off.column_names(), vec!["src", "out_degree"]);
     assert_eq!(sorted_out_degree_rows(&handed_off), vec![(1, 2), (2, 2), (3, 1)]);

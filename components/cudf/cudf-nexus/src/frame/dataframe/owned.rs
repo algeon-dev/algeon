@@ -44,6 +44,12 @@ use crate::{
 /// [`head`](Self::head), [`tail`](Self::tail), and [`slice`](Self::slice).
 /// Use those APIs to select row subsets, then inspect the resulting columns
 /// explicitly when you need host-visible values.
+///
+/// # Interop
+///
+/// Use a borrowed view for temporary device access, a prepared export when the
+/// consumer needs access or a copy, and an owned transfer when it takes over
+/// the device buffers.
 #[derive(Clone)]
 pub struct DataFrame {
     pub(super) columns: FastIndexMap<String, Arc<Column>>,

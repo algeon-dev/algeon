@@ -2,7 +2,7 @@
 sidebar_position: 1
 slug: /build
 title: Build & Test
-description: What you are building, how the repository fits together, and the upstream-defined requirements the guide targets.
+description: What you are building, how the repository fits together, and where native requirements are defined.
 ---
 
 # Overview
@@ -77,28 +77,11 @@ The full-feature build order follows those dependencies:
 
 ## Requirements
 
-The checked-out submodule gitlinks are the native-version source of truth, and
-their toolchain requirements are the upstream RAPIDS ones. Select a mutually
-compatible driver, CUDA toolkit, and host compiler; the supported ranges below
-do not imply that every cross-product is valid. To inspect the versions in a
-checkout, read `components/{cudf,cugraph,cuvs}/*/VERSION`.
-
-| Component | Requirement | Source |
-| --- | --- | --- |
-| OS | A RAPIDS-supported Linux (this guide uses Ubuntu 24.04 LTS) | [RAPIDS install](https://docs.rapids.ai/install/) |
-| GPU | NVIDIA Volta or newer — compute capability **7.0+** (`sm_70`) | RAPIDS install |
-| NVIDIA driver | ≥ 525.60.13 (CUDA 12) / ≥ 580.65.06 (CUDA 13) | RAPIDS install |
-| CUDA toolkit | 12.2, 12.5, 12.8, 12.9, or 13.0 through 13.3 | pinned cudf/cuvs/cugraph `dependencies.yaml` files |
-| Host compiler | gcc/g++ **14** | pinned native `dependencies.yaml` files |
-| CMake | ≥ **4.0** | `cmake_minimum_required` in all three pinned C++ projects |
-| Ninja | build dependency (RAPIDS scripts default to it) | cudf/cuvs/cugraph `dependencies.yaml` |
-| mold + clang | required linker for normal source Cargo builds | `datafusion-nexus/.cargo/config.toml` (+ host packages) |
-| Rust | MSRV 1.94; nightly for `rustfmt` | `Cargo.toml` and rustup |
-
-The libcudf/libcuvs/libcugraph builds target **your own GPU's architecture** by default
-(`CMAKE_CUDA_ARCHITECTURES=NATIVE`), so nothing here is tied to a specific GPU
-model. Build for additional architectures explicitly only when the binaries
-must run on a different GPU
-([Building from Source](./from-source.md#build-cudf-and-the-shared-rmm-prefix)).
+The checked-out submodule gitlinks are the native-version source of truth.
+Install the compatible GPU and native-build environment using the
+[RAPIDS install guide](https://docs.rapids.ai/install/), then follow
+[Prerequisites](./prerequisites.md) for this checkout's Rust, linker, and
+test-runner requirements. The source-build guide owns the checkout-local
+environment and cross-GPU build instructions.
 
 Continue with [Prerequisites](./prerequisites.md).

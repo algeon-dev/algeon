@@ -1,13 +1,12 @@
 # DataFusion Nexus Website
 
-The documentation site for [DataFusion Nexus](https://github.com/DataFusion-Nexus/datafusion-nexus),
-built with [Docusaurus](https://docusaurus.io/) 3.10.1.
+The documentation site for [DataFusion Nexus](https://github.com/DataFusion-Nexus/datafusion-nexus).
 
 `website/` is owned by the root repository. Source-build pages refer to the
 recursive checkout, root Cargo workspace, and native artifacts under
 `target/native/*`; component sources are pinned under `components/*`.
 
-> Requires Node.js >= 20.
+> Use the Node.js version declared in `package.json`.
 
 ## Install
 

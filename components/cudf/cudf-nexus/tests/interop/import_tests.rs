@@ -747,7 +747,7 @@ mod table_import_contracts {
         let prepared_export = prepared_source.try_prepare_device_table_export().unwrap();
         let _event_lock = common::lock_event_observation();
         let prepared_import =
-            DataFrame::try_import_from_prepared_table_export_into_runtime(&prepared_export, &destination_runtime)
+            DataFrame::try_import_from_prepared_table_export_into_runtime(&prepared_export, None, &destination_runtime)
                 .unwrap();
 
         let (expected_table, expected_names) = frame.clone().try_into_table().unwrap();
@@ -757,7 +757,7 @@ mod table_import_contracts {
             expected_names.clone(),
         );
         let owned_import =
-            DataFrame::try_import_from_owned_device_table_transfer_into_runtime(transfer, &destination_runtime)
+            DataFrame::try_import_from_owned_device_table_transfer_into_runtime(transfer, None, &destination_runtime)
                 .unwrap();
 
         let (prepared_table, prepared_names) = prepared_import.try_into_table().unwrap();
@@ -783,10 +783,10 @@ mod dataframe_import_contracts {
         let destination_runtime = common::sample_runtime();
 
         let imported = reset_exec_observation(|| {
-            DataFrame::try_import_from_borrowed_table_view_into_runtime_and_names(
+            DataFrame::try_import_from_borrowed_table_view_into_runtime(
                 &borrowed,
+                Some(vec!["left".to_string(), "right".to_string()]),
                 &destination_runtime,
-                vec!["left".to_string(), "right".to_string()],
             )
             .unwrap()
         });
@@ -813,7 +813,7 @@ mod dataframe_import_contracts {
         let _event_lock = common::lock_event_observation();
 
         let imported = reset_exec_observation(|| {
-            DataFrame::try_import_from_prepared_table_export_into_runtime(&export, &destination_runtime).unwrap()
+            DataFrame::try_import_from_prepared_table_export_into_runtime(&export, None, &destination_runtime).unwrap()
         });
         let (imported_table, imported_names) = imported.try_into_table().unwrap();
 
@@ -829,10 +829,10 @@ mod dataframe_import_contracts {
         let destination_runtime = common::sample_runtime();
         let _event_lock = common::lock_event_observation();
 
-        let imported = DataFrame::try_import_from_prepared_table_export_into_runtime_and_names(
+        let imported = DataFrame::try_import_from_prepared_table_export_into_runtime(
             &export,
+            Some(vec!["left".to_string(), "right".to_string()]),
             &destination_runtime,
-            vec!["left".to_string(), "right".to_string()],
         )
         .unwrap();
 
@@ -846,8 +846,8 @@ mod dataframe_import_contracts {
         let export = table.try_prepare_device_table_export().unwrap();
         let destination_runtime = common::sample_runtime();
 
-        let err =
-            DataFrame::try_import_from_prepared_table_export_into_runtime(&export, &destination_runtime).unwrap_err();
+        let err = DataFrame::try_import_from_prepared_table_export_into_runtime(&export, None, &destination_runtime)
+            .unwrap_err();
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
@@ -858,11 +858,8 @@ mod dataframe_import_contracts {
         assert_eq!(interop_error_context_value(&err, "reason"), Some("missing_schema_names"));
         assert_eq!(
             interop_error_context_value(&err, "remedy"),
-            Some(
-                "use DataFrame::try_import_from_prepared_table_export_into_runtime_and_names when the root does not carry schema names"
-            ),
+            Some("pass Some(names) when the root does not carry schema names"),
         );
-        assert_eq!(interop_error_context_value(&err, "explicit_names_variant"), None);
     }
 
     #[test]
@@ -872,10 +869,10 @@ mod dataframe_import_contracts {
         let destination_runtime = common::sample_runtime();
 
         let transfer = table.try_into_owned_transfer().unwrap();
-        let imported = DataFrame::try_import_from_owned_device_table_transfer_into_runtime_and_names(
+        let imported = DataFrame::try_import_from_owned_device_table_transfer_into_runtime(
             transfer,
+            Some(vec!["left".to_string(), "right".to_string()]),
             &destination_runtime,
-            vec!["left".to_string(), "right".to_string()],
         )
         .unwrap();
 
@@ -893,9 +890,12 @@ mod dataframe_import_contracts {
         let transfer = transfer_table.try_into_owned_transfer().unwrap();
         let named_transfer = owned_table_transfer_with_root_names(transfer, expected_names.clone());
 
-        let imported =
-            DataFrame::try_import_from_owned_device_table_transfer_into_runtime(named_transfer, &destination_runtime)
-                .unwrap();
+        let imported = DataFrame::try_import_from_owned_device_table_transfer_into_runtime(
+            named_transfer,
+            None,
+            &destination_runtime,
+        )
+        .unwrap();
         let (imported_table, imported_names) = imported.try_into_table().unwrap();
 
         assert_eq!(imported_names, expected_names);
@@ -909,8 +909,9 @@ mod dataframe_import_contracts {
         let destination_runtime = common::sample_runtime();
 
         let transfer = table.try_into_owned_transfer().unwrap();
-        let err = DataFrame::try_import_from_owned_device_table_transfer_into_runtime(transfer, &destination_runtime)
-            .unwrap_err();
+        let err =
+            DataFrame::try_import_from_owned_device_table_transfer_into_runtime(transfer, None, &destination_runtime)
+                .unwrap_err();
 
         assert_eq!(err.kind(), InteropErrorKind::InvalidView);
         assert_eq!(
@@ -921,11 +922,8 @@ mod dataframe_import_contracts {
         assert_eq!(interop_error_context_value(&err, "reason"), Some("missing_schema_names"));
         assert_eq!(
             interop_error_context_value(&err, "remedy"),
-            Some(
-                "use DataFrame::try_import_from_owned_device_table_transfer_into_runtime_and_names when the root does not carry schema names"
-            ),
+            Some("pass Some(names) when the root does not carry schema names"),
         );
-        assert_eq!(interop_error_context_value(&err, "explicit_names_variant"), None);
     }
 }
 

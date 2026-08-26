@@ -42,10 +42,3 @@ flock /tmp/cudf-gpu.lock cargo nextest run \
 Use `scripts/dev/bindings.sh cuvs --check` for checked bindings and
 `CUVS_NEXUS_SYS_SKIP_NATIVE=1 cargo check --locked -p cuvs-nexus-sys
 --all-targets --all-features` for the native-free sys contract.
-
-## Migration provenance
-
-- Wrapper repository and archive: <https://github.com/DataFusion-Nexus/cuvs-nexus>
-- Frozen imported tip: `f719914c2f6fd75168edb2059d1e54a9787e3340`
-- Import merge: `abec59e4a9b9d45b452dd3557dcc85f7c7119159`
-- Final path: `components/cuvs`
