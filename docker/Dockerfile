@@ -34,8 +34,6 @@ ARG CUDA_RUNTIME_IMAGE=nvidia/cuda:13.2.1-runtime-ubuntu24.04
 ARG CUDA_BASE_IMAGE=nvidia/cuda:13.2.1-base-ubuntu24.04
 ARG CPU_BASELINE
 ARG CPU_ARCH
-ARG CPU_PROFILE
-ARG CPU_PROFILE_KIND
 ARG CPU_TARGET
 ARG CPU_BINARY_SHA256
 ARG CPU_PROVENANCE_SHA256
@@ -48,8 +46,6 @@ USER root
 
 ARG CPU_BASELINE
 ARG CPU_ARCH
-ARG CPU_PROFILE
-ARG CPU_PROFILE_KIND
 ARG CPU_TARGET
 ARG CPU_BINARY_SHA256
 ARG CPU_PROVENANCE_SHA256
@@ -72,8 +68,6 @@ RUN printf '%s  %s\n' "${CPU_BINARY_SHA256}" /app/datafusion_nexus_server | sha2
     printf '%s  %s\n' "${CPU_PROVENANCE_SHA256}" /app/cpu-provenance.json | sha256sum -c - && \
     grep -Fx "cpu_baseline=${CPU_BASELINE}" /app/cpu-provenance.labels && \
     grep -Fx "cpu_arch=${CPU_ARCH}" /app/cpu-provenance.labels && \
-    grep -Fx "cpu_profile=${CPU_PROFILE}" /app/cpu-provenance.labels && \
-    grep -Fx "cpu_profile_kind=${CPU_PROFILE_KIND}" /app/cpu-provenance.labels && \
     grep -Fx "cpu_target=${CPU_TARGET}" /app/cpu-provenance.labels && \
     grep -Fx "binary_sha256=${CPU_BINARY_SHA256}" /app/cpu-provenance.labels
 
@@ -134,8 +128,6 @@ USER root
 
 ARG CPU_BASELINE
 ARG CPU_ARCH
-ARG CPU_PROFILE
-ARG CPU_PROFILE_KIND
 ARG CPU_TARGET
 ARG CPU_BINARY_SHA256
 ARG CPU_PROVENANCE_SHA256
@@ -152,8 +144,6 @@ RUN apt-get update && \
 # packaging inputs verified by docker/build-image.sh.
 LABEL org.datafusion-nexus.cpu-baseline="${CPU_BASELINE}" \
       org.datafusion-nexus.cpu-arch="${CPU_ARCH}" \
-      org.datafusion-nexus.cpu-profile="${CPU_PROFILE}" \
-      org.datafusion-nexus.cpu-profile-kind="${CPU_PROFILE_KIND}" \
       org.datafusion-nexus.cpu-target="${CPU_TARGET}" \
       org.datafusion-nexus.binary-sha256="${CPU_BINARY_SHA256}" \
       org.datafusion-nexus.provenance-sha256="${CPU_PROVENANCE_SHA256}"

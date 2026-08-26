@@ -103,7 +103,7 @@ cuDF/RMM → cuVS → cuGraph → DataFusion Nexus
 Before a long build, confirm that no selector escapes the checkout:
 
 ```bash
-env | sort | grep -E '^(NEXUS_ROOT|CUDF_|CUVS_|CUGRAPH_|LD_LIBRARY_PATH)='
+env | sort | grep -E '^(NEXUS_ROOT|INSTALL_PREFIX|LD_LIBRARY_PATH|CUDF_[^=]*|CUVS_[^=]*|CUGRAPH_[^=]*)='
 ```
 
 Every native path in the output must resolve under

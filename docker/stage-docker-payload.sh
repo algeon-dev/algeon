@@ -53,19 +53,18 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DIST_DIR="${CPU_PACKAGE_DIST_DIR:-$SCRIPT_DIR/dist}"
 POLICY_FILE="$REPO_ROOT/.config/policies/cpu-packaging.toml"
 POLICY_HELPER="$REPO_ROOT/scripts/build/cpu_packaging_policy.py"
-CPU_PACKAGE_PROFILE="${CPU_PACKAGE_PROFILE:-portable}"
 CPU_PACKAGE_TARGET_ROOT="${CPU_PACKAGE_TARGET_ROOT:-$REPO_ROOT/target/cpu-packaging}"
 FEATURES="$(python3 "$POLICY_HELPER" --policy "$POLICY_FILE" normalize-features \
     --features "${FEATURES:-iceberg,cugraph,cuvs,nvml}")"
 
-eval "$(python3 "$POLICY_HELPER" --policy "$POLICY_FILE" describe --profile "$CPU_PACKAGE_PROFILE")"
+eval "$(python3 "$POLICY_HELPER" --policy "$POLICY_FILE" describe)"
 
 case "${SKIP_CARGO_BUILD-0}" in
     0 | 1) SKIP_CARGO_BUILD="${SKIP_CARGO_BUILD-0}" ;;
     *) echo "ERROR: SKIP_CARGO_BUILD must be 0 or 1, got '${SKIP_CARGO_BUILD}'." >&2; exit 2 ;;
 esac
 
-python3 "$POLICY_HELPER" --policy "$POLICY_FILE" check-env --profile "$CPU_PACKAGE_PROFILE"
+python3 "$POLICY_HELPER" --policy "$POLICY_FILE" check-env
 
 CUDF_INSTALL_DIR="${CUDF_INSTALL_DIR:-$REPO_ROOT/target/native/cudf-install}"
 CUVS_INSTALL_DIR="${CUVS_INSTALL_DIR:-$REPO_ROOT/target/native/cuvs-install}"
@@ -91,8 +90,7 @@ cd "$REPO_ROOT"
 # ── 0. Compile or verify canonical artifact ─────────────────────────────────
 # The helper rejects every ambient codegen/config override, starts Cargo from
 # an isolated cwd/CARGO_HOME, and supplies the policy target + rustflags on the
-# command line. Profiles have separate target roots, so tuned artifacts cannot
-# masquerade as portable ones.
+# command line.
 CARGO_BUILD_ROOT="$CPU_PACKAGE_TARGET_ROOT/$CPU_ARTIFACT_DIR"
 BINARY="$CARGO_BUILD_ROOT/$CPU_TARGET_TRIPLE/$CPU_CARGO_PROFILE/datafusion_nexus_server"
 BUILD_PROVENANCE="$BINARY.cpu-provenance.json"
@@ -110,7 +108,6 @@ if [[ "$SKIP_CARGO_BUILD" == "0" ]]; then
         explicit_native_env+=(--explicit-env "CUGRAPH_CMAKE_BUILD_DIR=$CUGRAPH_CMAKE_BUILD_DIR")
     fi
     python3 "$POLICY_HELPER" --policy "$POLICY_FILE" build \
-        --profile "$CPU_PACKAGE_PROFILE" \
         --features "$FEATURES" \
         --target-root "$CPU_PACKAGE_TARGET_ROOT" \
         --manifest "$REPO_ROOT/crates/nexus-server/Cargo.toml" \
@@ -118,7 +115,6 @@ if [[ "$SKIP_CARGO_BUILD" == "0" ]]; then
 else
     echo "==> SKIP_CARGO_BUILD=1 — verifying canonical artifact before reuse"
     python3 "$POLICY_HELPER" --policy "$POLICY_FILE" verify-build \
-        --profile "$CPU_PACKAGE_PROFILE" \
         --features "$FEATURES" \
         --binary "$BINARY" \
         --provenance "$BUILD_PROVENANCE"
@@ -442,7 +438,6 @@ echo "OK: staged loader closure passed."
 
 # ── 9. Provenance + manifest ────────────────────────────────────────────────
 python3 "$POLICY_HELPER" --policy "$POLICY_FILE" stage \
-    --profile "$CPU_PACKAGE_PROFILE" \
     --features "$FEATURES" \
     --source-binary "$BINARY" \
     --staged-binary "$DIST_DIR/bin/datafusion_nexus_server" \
@@ -457,8 +452,6 @@ python3 "$POLICY_HELPER" verify-image-inputs \
     --labels "$DIST_DIR/cpu-provenance.labels" \
     --baseline "$CPU_BASELINE" \
     --arch "$CPU_IMAGE_ARCH" \
-    --profile "$CPU_POLICY_PROFILE" \
-    --profile-kind "$CPU_PROFILE_KIND" \
     --target "$CPU_TARGET_TRIPLE" \
     --binary-sha256 "$CPU_BINARY_SHA256" \
     --provenance-sha256 "$CPU_PROVENANCE_SHA256"
@@ -470,6 +463,6 @@ echo "==> Staged payload ($(du -sh "$DIST_DIR" | cut -f1) total):"
   done )
 echo ""
 IMAGE_REPOSITORY="${IMAGE_REPOSITORY:-datafusion-nexus-server}"
-IMAGE_TAG="$IMAGE_REPOSITORY:$CPU_IMAGE_TAG_SUFFIX"
+IMAGE_TAG="$IMAGE_REPOSITORY:$CPU_BASELINE"
 echo "==> SUCCESS: staging and validation passed."
 echo "==> NEXT: bash docker/build-image.sh  ($IMAGE_TAG)"

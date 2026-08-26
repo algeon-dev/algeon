@@ -23,7 +23,7 @@ run_rejected_env() {
   local output="${tmp_dir}/${name}.output"
   local status=0
   env -i PATH="${PATH}" HOME="${tmp_dir}/home" "${assignment}" \
-    python3 "${HELPER}" --policy "${POLICY}" check-env --profile portable \
+    python3 "${HELPER}" --policy "${POLICY}" check-env \
     >"${output}" 2>&1 || status=$?
   [[ "${status}" -eq 2 ]] || fail "${name}: expected exit 2, got ${status}"
   grep -Fq "ambient codegen/config override variables are forbidden" "${output}" \
@@ -63,16 +63,13 @@ assert policy["clean_environment"]["explicit_inputs"] == [
     "CUVS_ROOT",
     "CUGRAPH_CMAKE_BUILD_DIR",
 ]
-portable = policy["profiles"]["portable"]
-tuned = policy["profiles"]["tuned-local-v3"]
-assert portable["declared_baseline"] == "x86-64-v4"
-assert portable["rustflags"] == ["-C", "target-cpu=x86-64-v4"]
-assert tuned["declared_baseline"] == "x86-64-v3"
-assert tuned["artifact_dir"] != portable["artifact_dir"]
-assert tuned["image_tag_suffix"] != portable["image_tag_suffix"]
-assert "x86-64-v3" in tuned["deployment_requirement"]
+cpu = policy["cpu"]
+assert cpu["baseline"] == "x86-64-v4"
+assert cpu["rustflags"] == ["-C", "target-cpu=x86-64-v4"]
+assert cpu["artifact_dir"] == "x86-64-v4"
+assert "x86-64-v4" in cpu["deployment_requirement"]
 PY
-echo "PASS: portable and tuned profiles are separate declarative contracts"
+echo "PASS: CPU packaging has one fixed x86-64-v4 contract"
 
 cat >"${tmp_dir}/bin/cargo" <<'SH'
 #!/usr/bin/bash
@@ -138,7 +135,6 @@ env -i PATH="${tmp_dir}/bin:${PATH}" HOME="${tmp_dir}/home" \
   CUDAHOSTCXX='g++ -march=native' AR='ar --plugin=/tmp/unsafe' \
   CMAKE='/tmp/ambient-cmake' CMAKE_GENERATOR='Unix Makefiles' \
   python3 "${HELPER}" --policy "${POLICY}" build \
-    --profile portable \
     --features 'nvml,iceberg' \
     --target-root "${target_root}" \
     --manifest "${ROOT}/crates/nexus-server/Cargo.toml" \
@@ -148,7 +144,7 @@ env -i PATH="${tmp_dir}/bin:${PATH}" HOME="${tmp_dir}/home" \
     --explicit-env "CUGRAPH_CMAKE_BUILD_DIR=${tmp_dir}/cugraph" \
     >"${tmp_dir}/build.output"
 
-binary="${target_root}/portable-x86-64-v4/x86_64-unknown-linux-gnu/release/datafusion_nexus_server"
+binary="${target_root}/x86-64-v4/x86_64-unknown-linux-gnu/release/datafusion_nexus_server"
 build_provenance="${binary}.cpu-provenance.json"
 [[ -f "${binary}" && -f "${build_provenance}" ]] || fail "fake canonical build did not create artifact/provenance"
 
@@ -158,13 +154,13 @@ import sys
 
 with open(sys.argv[1], encoding="utf-8") as provenance_file:
     provenance = json.load(provenance_file)
-profile = provenance["cpu_profile"]
+cpu = provenance["cpu"]
 command = provenance["cargo_command"]
 assert provenance["provenance_kind"] == "canonical-build-artifact"
 assert provenance["features"] == ["iceberg", "nvml"]
-assert profile["declared_baseline"] == "x86-64-v4"
-assert profile["target_triple"] == "x86_64-unknown-linux-gnu"
-assert profile["effective_rustflags"] == ["-C", "target-cpu=x86-64-v4"]
+assert cpu["baseline"] == "x86-64-v4"
+assert cpu["target_triple"] == "x86_64-unknown-linux-gnu"
+assert cpu["effective_rustflags"] == ["-C", "target-cpu=x86-64-v4"]
 assert provenance["rustc_version"].startswith("rustc 1.95.0")
 assert "LLVM version: 22.0.0" in provenance["rustc_vv"]
 assert provenance["cargo_version"].startswith("cargo 1.95.0")
@@ -187,7 +183,7 @@ echo "PASS: canonical command and build provenance record exact policy/tool inpu
 
 env -i PATH="${tmp_dir}/bin:${PATH}" HOME="${tmp_dir}/home" \
   python3 "${HELPER}" --policy "${POLICY}" verify-build \
-    --profile portable --features 'iceberg,nvml' \
+    --features 'iceberg,nvml' \
     --binary "${binary}" --provenance "${build_provenance}" \
     >"${tmp_dir}/reuse.output"
 echo "PASS: verified canonical artifact can be reused"
@@ -196,7 +192,7 @@ cp "${binary}" "${tmp_dir}/binary.backup"
 printf 'tamper\n' >>"${binary}"
 status=0
 python3 "${HELPER}" --policy "${POLICY}" verify-build \
-  --profile portable --features 'iceberg,nvml' \
+  --features 'iceberg,nvml' \
   --binary "${binary}" --provenance "${build_provenance}" \
   >"${tmp_dir}/tampered-binary.output" 2>&1 || status=$?
 [[ "${status}" -eq 2 ]] || fail "tampered canonical artifact was accepted"
@@ -215,7 +211,7 @@ path.write_text(text.replace('deployment_requirement = "The host CPU', 'deployme
 PY
 status=0
 python3 "${HELPER}" --policy "${tmp_dir}/tampered-policy.toml" verify-build \
-  --profile portable --features 'iceberg,nvml' \
+  --features 'iceberg,nvml' \
   --binary "${binary}" --provenance "${build_provenance}" \
   >"${tmp_dir}/tampered-policy.output" 2>&1 || status=$?
 [[ "${status}" -eq 2 ]] || fail "changed policy was accepted for artifact reuse"
@@ -229,7 +225,7 @@ printf 'post-stage-patchelf-fixture\n' >>"${staged_binary}"
 stage_provenance="${tmp_dir}/dist/cpu-provenance.json"
 stage_labels="${tmp_dir}/dist/cpu-provenance.labels"
 python3 "${HELPER}" --policy "${POLICY}" stage \
-  --profile portable --features 'iceberg,nvml' \
+  --features 'iceberg,nvml' \
   --source-binary "${binary}" --staged-binary "${staged_binary}" \
   --build-provenance "${build_provenance}" \
   --output "${stage_provenance}" --labels-output "${stage_labels}" \
@@ -239,7 +235,7 @@ binary_sha=$(awk -F= '$1 == "binary_sha256" { print $2 }' "${stage_labels}")
 provenance_sha=$(sha256sum "${stage_provenance}" | awk '{print $1}')
 python3 "${HELPER}" verify-image-inputs \
   --provenance "${stage_provenance}" --labels "${stage_labels}" \
-  --baseline x86-64-v4 --arch amd64 --profile portable --profile-kind redistributable \
+  --baseline x86-64-v4 --arch amd64 \
   --target x86_64-unknown-linux-gnu \
   --binary-sha256 "${binary_sha}" --provenance-sha256 "${provenance_sha}" \
   >"${tmp_dir}/image-inputs.output"
@@ -248,7 +244,7 @@ echo "PASS: staged provenance and Docker label inputs agree"
 status=0
 python3 "${HELPER}" verify-image-inputs \
   --provenance "${stage_provenance}" --labels "${stage_labels}" \
-  --baseline x86-64-v3 --arch amd64 --profile portable --profile-kind redistributable \
+  --baseline x86-64-v3 --arch amd64 \
   --target x86_64-unknown-linux-gnu \
   --binary-sha256 "${binary_sha}" --provenance-sha256 "${provenance_sha}" \
   >"${tmp_dir}/tampered-label-input.output" 2>&1 || status=$?
@@ -256,22 +252,9 @@ python3 "${HELPER}" verify-image-inputs \
 grep -Fq 'Docker build input mismatch' "${tmp_dir}/tampered-label-input.output" || fail "missing Docker tamper diagnostic"
 echo "PASS: mismatched Docker label/build input fails"
 
-status=0
-python3 "${HELPER}" verify-image-inputs \
-  --provenance "${stage_provenance}" --labels "${stage_labels}" \
-  --baseline x86-64-v4 --arch amd64 --profile portable --profile-kind tuned-local \
-  --target x86_64-unknown-linux-gnu --binary-sha256 "${binary_sha}" \
-  --provenance-sha256 "${provenance_sha}" \
-  >"${tmp_dir}/tampered-kind-input.output" 2>&1 || status=$?
-[[ "${status}" -eq 2 ]] || fail "mismatched Docker profile kind build arg was accepted"
-grep -Fq 'cpu_profile_kind' "${tmp_dir}/tampered-kind-input.output" || fail "missing profile-kind tamper diagnostic"
-echo "PASS: mismatched Docker profile kind fails"
-
 for needle in \
   'org.datafusion-nexus.cpu-baseline="${CPU_BASELINE}"' \
   'org.datafusion-nexus.cpu-arch="${CPU_ARCH}"' \
-  'org.datafusion-nexus.cpu-profile="${CPU_PROFILE}"' \
-  'org.datafusion-nexus.cpu-profile-kind="${CPU_PROFILE_KIND}"' \
   'org.datafusion-nexus.cpu-target="${CPU_TARGET}"' \
   'cpu_baseline=${CPU_BASELINE}' \
   'CPU_PROVENANCE_SHA256' \
@@ -279,10 +262,10 @@ for needle in \
   grep -Fq "${needle}" docker/Dockerfile || fail "Dockerfile missing provenance assertion: ${needle}"
 done
 grep -Fq 'verify-build' docker/stage-docker-payload.sh || fail "SKIP_CARGO_BUILD path does not verify provenance"
-grep -Fq 'CPU_PACKAGE_PROFILE="${CPU_PACKAGE_PROFILE:-portable}"' docker/stage-docker-payload.sh \
-  || fail "staging script does not select a packaging profile"
-grep -Fq 'CPU_PACKAGE_PROFILE=tuned-local-v3 bash docker/stage-docker-payload.sh' website/docs/build/docker.md \
-  || fail "tuned profile is not exposed in the Docker build guide"
+if rg -n 'CPU_PACKAGE_PROFILE|tuned-local-v3|cpu_profile_kind|cpu_profile' \
+  docker .config/policies/cpu-packaging.toml website/docs/build/docker.md; then
+  fail "Docker packaging still contains a profile branch"
+fi
 status=0
 env RUSTFLAGS='-C target-cpu=x86-64-v3' bash docker/stage-docker-payload.sh \
   >"${tmp_dir}/build-script-dirty-env.output" 2>&1 || status=$?
@@ -300,14 +283,14 @@ grep -Fq 'cannot load provenance' "${tmp_dir}/skip-without-provenance.output" \
 # Exercise the complete SKIP/stage/image-entry path with the fake canonical artifact,
 # fake native libraries, and an isolated dist directory.
 mkdir -p "${tmp_dir}/cudf/lib" \
-  "${target_root}/portable-x86-64-v4/x86_64-unknown-linux-gnu/release/build/cudf-nexus-sys-fake/out/lib"
+  "${target_root}/x86-64-v4/x86_64-unknown-linux-gnu/release/build/cudf-nexus-sys-fake/out/lib"
 for library in libcudf.so librmm.so librapids_logger.so; do
   printf 'fake %s\n' "${library}" >"${tmp_dir}/cudf/lib/${library}"
 done
 printf 'fake cudf bridge\n' \
-  >"${target_root}/portable-x86-64-v4/x86_64-unknown-linux-gnu/release/build/cudf-nexus-sys-fake/out/lib/libcudf_rust.so"
+  >"${target_root}/x86-64-v4/x86_64-unknown-linux-gnu/release/build/cudf-nexus-sys-fake/out/lib/libcudf_rust.so"
 printf 'fake cudf RMM interop bridge\n' \
-  >"${target_root}/portable-x86-64-v4/x86_64-unknown-linux-gnu/release/build/cudf-nexus-sys-fake/out/lib/libcudf_rust_rmm_interop.so"
+  >"${target_root}/x86-64-v4/x86_64-unknown-linux-gnu/release/build/cudf-nexus-sys-fake/out/lib/libcudf_rust_rmm_interop.so"
 cat >"${tmp_dir}/bin/patchelf" <<'SH'
 #!/usr/bin/bash
 set -euo pipefail
@@ -398,7 +381,6 @@ for needle in \
   'build' \
   '--build-arg' \
   'CPU_BASELINE=x86-64-v4' \
-  'CPU_PROFILE=portable' \
   "CPU_BINARY_SHA256=${binary_sha}" \
   "CPU_PROVENANCE_SHA256=${provenance_sha}" \
   '-t' \
@@ -450,7 +432,6 @@ build_fake_variant() {
   local features=$1
   env -i PATH="${tmp_dir}/bin:${PATH}" HOME="${tmp_dir}/home" \
     python3 "${HELPER}" --policy "${POLICY}" build \
-      --profile portable \
       --features "${features}" \
       --target-root "${target_root}" \
       --manifest "${ROOT}/crates/nexus-server/Cargo.toml" \

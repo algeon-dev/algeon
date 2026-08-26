@@ -113,47 +113,11 @@ Other axes:
 
 ### CPU instruction-set portability (x86-64-v4 default)
 
-The binary must not contain CPU instructions the deploy host lacks, or it dies
-with an opaque `SIGILL`. The subtlety: `ahash` (a cuDF dependency) and *all*
-Rust/LLVM codegen pick their instruction set at **compile time** from
-`target_feature` — there is no runtime SIMD dispatch. The danger is building
-with `-C target-cpu=native` / `-march=native` on a modern build host (AVX-512 +
-AES-NI), which bakes those into unguarded code.
+This image targets **x86-64-v4**. Confirm that both the build machine and every
+deployment host support that ISA; otherwise it can terminate with `SIGILL`
+before `main`. Packaging fixes that target and rejects ambient codegen flags so
+the staged binary and image labels remain verifiable.
 
-The default packaging profile therefore pins a fixed **x86-64-v4** floor:
-
-- **Rust**: `.cargo/config.toml` sets `target-cpu=x86-64-v4` and selects the
-  mold linker via clang for normal source builds (install `mold` and `clang`
-  on the host first). v4 excludes `aes`, so ahash compiles its **portable
-  fallback** hasher for those builds. Redistributable builds additionally use
-  the clean, declarative `portable` profile in
-  `.config/policies/cpu-packaging.toml` from an isolated cwd/CARGO_HOME, so
-  workspace/home mold settings do not enter the packaged artifact; unsafe flags
-  cannot enter by another spelling because ambient flag/config variables are
-  rejected wholesale. Image baseline/profile/target labels come from that same
-  policy and are hard-checked against the staged provenance.
-- **C++ forked libs**: cuDF/cuGraph are built today with empty `CMAKE_CXX_FLAGS`
-  (conservative — 0 AES-NI / 0 AVX-512 in `libcudf.so`), so they are already
-  portable. Keep it that way: **never pass `-march=native`** to their builds;
-  pin `-march=x86-64-v4` if you want the floor to be explicit there too. The
-  AES-NI / AVX you *do* see in the binary comes from ring/aws-lc/zstd, which are
-  **runtime-dispatched** (CPU-checked before use) and safe on any x86-64.
-
-The v4 ISA is a **host precondition**. There is deliberately no in-process
-feature check: v4 instructions may execute before `main`, so a pre-v4 machine
-can terminate with `SIGILL` before a friendly diagnostic is possible.
-
-For a v3-compatible artifact, select the separate profile:
-
-```bash
-CPU_PACKAGE_PROFILE=tuned-local-v3 bash docker/stage-docker-payload.sh
-bash docker/build-image.sh
-```
-
-This uses a separate target directory, provenance profile, label, and image
-tag. Deploy it only to hosts implementing the full x86-64-v3 ISA; never retag
-it as the default v4 image. CPU SIMD is normally off this GPU engine's hot
-path, so the default profile remains v4.
 - **CUDA / driver**: built against the CUDA **13.2** toolkit. The harvested
   runtime libs are minor-version forward-compatible within CUDA 13.x. The host
   needs an NVIDIA driver new enough for CUDA 13 (**≥ 580**) and the
@@ -170,8 +134,8 @@ docker run --rm --gpus all -p 50051:50051 datafusion-nexus-server:x86-64-v4
 `docker/run.sh` is a fuller launcher that wires the common env vars (catalog,
 bounded resource profile, cuGraph) and forwards host AWS credentials. The complete,
 code-verified env-var reference lives in the Dockerfile header. It defaults to
-the default `:x86-64-v4` tag; set `NEXUS_SERVER_IMAGE` explicitly to run a
-tuned tag. Highlights:
+the default `:x86-64-v4` tag; set `NEXUS_SERVER_IMAGE` explicitly to use a
+different repository or tag. Highlights:
 
 - `NEXUS_SERVER_BIND` (default `0.0.0.0:50051`), `NEXUS_SERVER_LOG`,
   `NEXUS_SERVER_GPU_DEVICES`.
