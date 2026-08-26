@@ -76,10 +76,19 @@ execution belong in `crates/nexus-query-engine`.
 
 ## Build and test
 
-Use `--all-features` in every command: cargo keys build artifacts by feature
-unification, so mixing feature sets rebuilds the ~400-unit dependency graph
-each way. `-p <crate>` and `--workspace` share artifacts, so the targeted `-p`
-loops below cost nothing extra against the workspace gate.
+Use `--all-features` in every Cargo command except this one repository-owned
+cargo-hack feature-isolation command:
+
+```bash
+cargo hack check --workspace --each-feature --exclude-features default --locked --keep-going
+```
+
+That exact compile-only command is the sole exception; it proves package-local
+no-feature and non-default feature compilation. Do not generalize the
+exception to tests, Clippy, or ad-hoc feature combinations. Cargo keys build
+artifacts by feature unification, so mixing feature sets rebuilds the ~400-unit
+dependency graph each way. `-p <crate>` and `--workspace` share artifacts, so
+the targeted `-p` loops below cost nothing extra against the workspace gate.
 
 ```bash
 # Build and lint, any package

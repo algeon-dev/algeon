@@ -50,6 +50,7 @@ formatting. Then install the repository's canonical test runner:
 ```bash
 rustup toolchain install nightly
 cargo install --locked --version 0.9.140 cargo-nextest
+cargo install --locked --version 0.6.45 cargo-hack
 ```
 
 ## Optional fixture dependency

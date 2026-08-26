@@ -33,6 +33,13 @@ if [[ "${1:-}" == "nextest" && "${2:-}" == "--version" ]]; then
   echo "cargo-nextest 0.9.140"
   exit 0
 fi
+if [[ "${1:-}" == "hack" && "${2:-}" == "--version" ]]; then
+  echo "cargo-hack 0.6.45"
+  exit 0
+fi
+if [[ "${1:-}" == "hack" && "${2:-}" == "check" ]]; then
+  exit 0
+fi
 if [[ "${1:-}" == "nextest" && "${2:-}" == "show-config" ]]; then
   echo "group: gpu (max threads = num-cpus)"
   echo "group: gpu-exclusive (max threads = 1)"
