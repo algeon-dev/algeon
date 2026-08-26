@@ -6,7 +6,11 @@ pub use nexus_query_engine::{
         BackendMetricDescriptor, BackendMetricKind, BackendMetricLabel, BackendMetricUnit, BackendMetricUpdatePoint,
         backend_metric_descriptors,
     },
-    observability::AdmissionRequestId,
+    observability::{
+        AdmissionRequestId, GpuJobLifecycleState, RuntimeGpuJobObservation, RuntimeObservationExportError,
+        RuntimeObservationExportErrorKind, RuntimeObservationExportErrorStatus, RuntimeObservationPayload,
+        RuntimeTimelineEvent, SealedRuntimeObservationSnapshot, write_runtime_observation_jsonl,
+    },
     runtime::{
         BACKEND_ATTEMPT_DURATION_BUCKET_COUNT, BACKEND_METRIC_DEVICE_CAPACITY, BackendAdmissionHealth,
         BackendAdmissionMetricsSnapshot, BackendAttemptDisposition, BackendAttemptDuration,

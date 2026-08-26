@@ -311,10 +311,7 @@ impl NexusAttempt {
     /// callback can retain the exact completed report together with the
     /// snapshot that embeds it without a detached completion task.
     pub fn register_sealed_report_observer<F>(&self, observer: F)
-    where F: Fn(Option<Arc<QueryAttemptReport>>, nexus_query_engine::observability::SealedRuntimeObservationSnapshot)
-            + Send
-            + Sync
-            + 'static {
+    where F: Fn(Option<Arc<QueryAttemptReport>>, SealedRuntimeObservationSnapshot) + Send + Sync + 'static {
         let completion = self.completion.uncounted();
         self.state.admission_binding.register_seal_observer(move |snapshot| {
             let report = completion.try_report();

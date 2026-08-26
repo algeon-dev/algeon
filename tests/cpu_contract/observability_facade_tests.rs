@@ -1,6 +1,7 @@
 use datafusion_nexus::observability::{
     BackendMetricKind, BackendMetricSample, BackendMetricSampleValue, BackendMetricUnit, BackendMetricsSnapshot,
-    backend_metric_descriptors,
+    GpuJobLifecycleState, RuntimeObservationExportError, RuntimeObservationPayload, RuntimeTimelineEvent,
+    SealedRuntimeObservationSnapshot, backend_metric_descriptors, write_runtime_observation_jsonl,
 };
 
 #[test]
@@ -23,5 +24,17 @@ fn backend_observability_facade_preserves_descriptor_and_projection_contracts() 
             .flat_map(|descriptor| snapshot.project_backend_metric(descriptor).expect("canonical descriptor projects"))
             .map(|BackendMetricSample { value, .. }| value)
             .collect()
+    };
+}
+
+#[test]
+fn runtime_observability_facade_exposes_timeline_and_jsonl_contracts() {
+    let _export: fn(&SealedRuntimeObservationSnapshot, &mut Vec<u8>) -> Result<(), RuntimeObservationExportError> =
+        write_runtime_observation_jsonl::<Vec<u8>>;
+    let _inspect_gpu_job = |event: &RuntimeTimelineEvent| {
+        matches!(
+            &event.payload,
+            RuntimeObservationPayload::GpuJob(job) if job.lifecycle == GpuJobLifecycleState::Started
+        )
     };
 }
