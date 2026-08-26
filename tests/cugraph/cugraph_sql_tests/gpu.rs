@@ -634,10 +634,20 @@ async fn cugraph_sql_backend_session_records_query_service_admission_metrics() {
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("tiny_directed_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
 
-    let df = ctx.sql("SELECT * FROM cugraph_degrees_all('tiny_directed_edges', 'src', 'dst')").await.unwrap();
-    let plan = df.create_physical_plan().await.unwrap();
-    let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
+    let attempt = backend.begin_attempt(datafusion_nexus::attempt::AttemptOptions::default()).unwrap();
+    let completion = attempt.completion();
+    let plan =
+        attempt.plan_sql(&ctx, "SELECT * FROM cugraph_degrees_all('tiny_directed_edges', 'src', 'dst')").await.unwrap();
+    let mut stream = attempt.execute_physical_plan(Arc::clone(&plan), &ctx).unwrap();
+    let mut batches = Vec::new();
+    while let Some(batch) = stream.next().await {
+        batches.push(batch.unwrap());
+    }
+    let report = completion.await;
     assert!(!batches.is_empty());
+    let physical = report.timestamps.physical_execution_started_ns.expect("cuGraph attempt records physical start");
+    let gpu = report.timestamps.gpu_execution_started_ns.expect("cuGraph attempt records GPU start");
+    assert!(gpu >= physical);
 
     let cugraph_plan = find_cugraph_algo_exec(plan.as_ref()).expect("physical plan should contain CugraphAlgoExec");
     let cugraph_display = displayable(cugraph_plan).indent(false).to_string();

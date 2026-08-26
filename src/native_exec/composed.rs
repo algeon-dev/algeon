@@ -647,11 +647,11 @@ impl ExecutionPlan for NexusNativeComposedExec {
                     })?;
                 let ordered_runtime_occurrence_ids =
                     admitted_composed_projection.as_ref().map(|_| runtime_occurrence_ids.clone());
+                let attempt_ticket = super::admission::query_admission_ticket_from_task_context(task_context.as_ref())
+                    .or_else(|| execution_config.query_admission_ticket())
+                    .filter(|ticket| ticket.is_attempt_bound());
                 if let Some(projection) = admitted_composed_projection
-                    && let Some(ticket) =
-                        super::admission::query_admission_ticket_from_task_context(task_context.as_ref())
-                            .or_else(|| execution_config.query_admission_ticket())
-                            .filter(|ticket| ticket.is_attempt_bound())
+                    && let Some(ticket) = &attempt_ticket
                 {
                     ticket.record_attempt_composed_schedule_projection(projection).map_err(|error| {
                         DataFusionError::from(mark_native_runtime_error(
@@ -675,8 +675,7 @@ impl ExecutionPlan for NexusNativeComposedExec {
                     ))
                 })?;
                 let observation = context_lease.context().runtime_observation().clone();
-                if let Some(ticket) = super::admission::query_admission_ticket_from_task_context(task_context.as_ref())
-                {
+                if let Some(ticket) = attempt_ticket {
                     ticket.record_attempt_gpu_execution_started();
                 }
                 let cursor_executor = gpu_executor.clone();
