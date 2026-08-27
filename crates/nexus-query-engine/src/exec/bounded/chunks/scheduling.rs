@@ -486,7 +486,7 @@ fn start_scheduled_source_read(
     budget_boundary: &'static str,
     attempt: usize,
     max_attempts: usize,
-    strict_token_budget: bool,
+    hard_token_budget: bool,
     prefetch: bool,
 ) -> Result<ScheduledLocalParquetRead> {
     context.check_cancellation("nexus_query_engine.exec.bounded.source_scheduler_start")?;
@@ -504,7 +504,7 @@ fn start_scheduled_source_read(
     .with_source_read_contract(contract.quality.as_str(), contract.planning_bytes, contract.estimated_bytes);
     let reservation = reservations.try_reserve(request, metrics)?;
     let source_token_budget =
-        if strict_token_budget { reservation.bytes() } else { reservations.available_bytes_including(&reservation) };
+        if hard_token_budget { reservation.bytes() } else { reservations.available_bytes_including(&reservation) };
     ScheduledLocalParquetRead::spawn(
         context.clone(),
         source.clone(),

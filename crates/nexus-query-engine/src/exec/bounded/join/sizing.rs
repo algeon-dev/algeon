@@ -4,7 +4,7 @@
 // reservation pattern) to size the work reservation before the gather
 // runs. After the materialize completes, the caller observes the actual
 // `device_allocated_bytes` of the output and reconciles via
-// `shrink_to_observed`; strict-bounded mode hard-fails if observed
+// `shrink_to_observed`; bounded mode hard-fails if observed
 // exceeds the upper bound.
 //
 // The bound is mathematically valid under cuDF's `NULLIFY` bounds
@@ -109,7 +109,7 @@ pub struct JoinOutputColumnUpperBoundInput {
 ///
 /// Returns `Ok(0)` when `columns.is_empty()`. Returns
 /// `QueryErrorCode::UnsupportedPlanShape` for any column whose Arrow
-/// dtype is not supported by the strict-bounded materialize path; the
+/// dtype is not supported by the bounded materialize path; the
 /// caller's admission gate is expected to reject these plans before
 /// the materialize is reached, so this function as a defense-in-depth.
 pub fn join_output_upper_bound_bytes(
@@ -172,7 +172,7 @@ fn unsupported_dtype(column: &JoinOutputColumnUpperBoundInput) -> QueryError {
     QueryError::new(
         QueryErrorCode::UnsupportedPlanShape,
         "nexus_query_engine.bounded.join.sizing",
-        "join output column dtype is not supported by strict-bounded materialize upper bound",
+        "join output column dtype is not supported by bounded materialize upper bound",
     )
     .with_fact("dtype", format!("{:?}", column.data_type))
     .with_fact("reason", "unsupported_join_output_dtype")

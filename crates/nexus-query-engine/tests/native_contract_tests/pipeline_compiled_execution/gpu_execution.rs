@@ -113,7 +113,7 @@ fn compiled_gpu_executor_runs_shared_source_hash_join_without_rereading() {
 }
 
 #[test]
-fn execute_query_plan_rejects_grouped_aggregate_join_build_input_without_strict_envelope() {
+fn execute_query_plan_rejects_grouped_aggregate_join_build_input_without_bounded_envelope() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("nexus-query-engine-compiled-aggregate-join-input");
     let left_path = dir.join("left.parquet");
@@ -514,7 +514,7 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
             nexus_query_engine::runtime::ExecutionBoundaryPolicy::default()
         )
         .is_some(),
-        "GPU sink plans admitted by strict compiled execution must emit modeled bounded-join facts"
+        "GPU sink plans admitted by compiled execution must emit modeled bounded-join facts"
     );
     assert!(
         nexus_query_engine::admission::bounded_join_unsupported_shape_facts(
@@ -522,7 +522,7 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
             nexus_query_engine::runtime::ExecutionBoundaryPolicy::default()
         )
         .is_none(),
-        "GPU sink plans admitted by strict compiled execution must not emit unsupported bounded-join facts"
+        "GPU sink plans admitted by compiled execution must not emit unsupported bounded-join facts"
     );
     let mut passthrough_builder = QueryPlanBuilder::new();
     let passthrough_source = passthrough_builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
@@ -544,7 +544,7 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
     )
     .expect("GPU-resident passthrough must retain the producer occurrence in its composed proof");
     let context = bounded_context_for_proofs(shared_runtime(runtime), [composed_proof]);
-    let result = execute_query_plan(&context, &plan).expect("strict compiled GPU sink join should execute");
+    let result = execute_query_plan(&context, &plan).expect("compiled GPU sink join should execute");
     let QueryOutput::GpuResident(handle) = result.output() else {
         panic!("GPU sink should keep the compiled output resident");
     };

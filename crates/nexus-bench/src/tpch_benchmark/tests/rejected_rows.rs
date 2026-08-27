@@ -48,7 +48,7 @@ fn benchmark_report_header_and_not_selected_rows_are_stable() {
     assert!(text.contains("# tpch_benchmark_native_max_source_reads_in_flight=2\n"));
     assert!(!text.contains("tpch_benchmark_native_source_cache_"));
     assert!(text.contains("q02\tnot_supported\tbounded_rejected\tnative_bounded_join_unsupported\toperator_hashjoin"));
-    assert!(text.contains("execution_mode=unsupported_strict_bounded"));
+    assert!(text.contains("execution_mode=unsupported_bounded"));
     assert!(text.contains("contract_status=blocked_by_lower_level"));
     assert!(!text.contains("bounded_join_reservation_facts"));
     assert!(!text.contains("bounded_join_execution_family"));

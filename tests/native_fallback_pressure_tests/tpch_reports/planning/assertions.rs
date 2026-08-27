@@ -6,7 +6,7 @@ mod highlighted;
 mod rows;
 
 use highlighted::assert_highlighted_planning_rows_and_tsv;
-use rows::{assert_planning_rows, strict_contract_row_is_family_path_free};
+use rows::{admission_contract_row_is_family_path_free, assert_planning_rows};
 
 pub(super) fn assert_tpch_datafusion_planning_report_contract(
     report: &NativeDataFusionPlanningReport,
@@ -47,7 +47,7 @@ fn assert_duplicate_query_rows_are_mixed_plan_fragments(report: &NativeDataFusio
         assert_eq!(
             whole_plan.outcome,
             Some(NativeDataFusionPlanningOutcome::NotSupported),
-            "{query_id} duplicate diagnostics should keep the whole-plan strict rejection as the first row"
+            "{query_id} duplicate diagnostics should keep the whole-plan bounded rejection as the first row"
         );
         assert!(
             whole_plan.rejected_before_execution,

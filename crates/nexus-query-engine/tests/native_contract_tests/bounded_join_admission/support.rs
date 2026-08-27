@@ -57,7 +57,7 @@ fn assert_rejection_facts_are_family_free(facts: &std::collections::BTreeMap<&'s
     }
 }
 
-fn assert_strict_report_has_modeled_subcontract(
+fn assert_admission_report_has_modeled_subcontract(
     report: &CapabilityContractReport,
     expected_contract: &'static str,
     label: &str,
@@ -70,11 +70,11 @@ fn assert_strict_report_has_modeled_subcontract(
                 && row.contract_status == ContractStatus::Modeled
                 && row.contract_quality == ContractQuality::CapabilityProof
         }),
-        "{label}: strict report should expose modeled subcontract {expected_contract}"
+        "{label}: admission report should expose modeled subcontract {expected_contract}"
     );
 }
 
-fn assert_strict_report_lacks_modeled_subcontract(
+fn assert_admission_report_lacks_modeled_subcontract(
     report: &CapabilityContractReport,
     unexpected_contract: &'static str,
     label: &str,
@@ -86,7 +86,7 @@ fn assert_strict_report_lacks_modeled_subcontract(
                 && row.required_contract == unexpected_contract
                 && row.contract_status == ContractStatus::Modeled
         }),
-        "{label}: strict report must not expose modeled subcontract {unexpected_contract}"
+        "{label}: admission report must not expose modeled subcontract {unexpected_contract}"
     );
 }
 

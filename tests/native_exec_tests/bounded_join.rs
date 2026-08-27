@@ -153,23 +153,25 @@ fn native_optimizer_rule_rewrites_bounded_q11_aggregate_over_join_subplan_inputs
     assert_eq!(accepted.compiled_graph.sink_kind, "host_arrow_materialization");
     assert!(accepted.compiled_graph.gate_count > 0);
     assert!(accepted.compiled_graph.sink_gate_count > 0);
-    let strict_report = &accepted.report;
-    assert_eq!(strict_report.execution_mode(), CapabilityEnvelopeStatus::Admitted);
-    assert!(strict_report.is_ready());
-    assert_strict_report_has_host_sink_boundary(strict_report);
-    assert_strict_report_has_join_path_gates(strict_report);
+    let admission_report = &accepted.report;
+    assert_eq!(admission_report.execution_mode(), CapabilityEnvelopeStatus::Admitted);
+    assert!(admission_report.is_ready());
+    assert_admission_report_has_host_sink_boundary(admission_report);
+    assert_admission_report_has_join_path_gates(admission_report);
     assert!(
-        strict_report
+        admission_report
             .stable_kv_rows()
             .iter()
             .all(|row| !row.contains("bounded_join_execution_family") && !row.contains("BoundedJoinExecutionPath")),
-        "strict bounded planner diagnostics must not require family/path vocabulary"
+        "bounded planner diagnostics must not require family/path vocabulary"
     );
 
     fs::remove_dir_all(dir).unwrap();
 }
 
-fn assert_strict_report_has_host_sink_boundary(report: &nexus_query_engine::contract_report::CapabilityContractReport) {
+fn assert_admission_report_has_host_sink_boundary(
+    report: &nexus_query_engine::contract_report::CapabilityContractReport,
+) {
     assert!(
         report.gate_rows().iter().any(|row| {
             row.owner.to_string() == "sink_boundary"
@@ -178,11 +180,11 @@ fn assert_strict_report_has_host_sink_boundary(report: &nexus_query_engine::cont
                 && row.required_contract == "query_engine_explicit_sink_materialization_reservation"
                 && row.contract_quality == ContractQuality::QueryEngineOwnedBoundary
         }),
-        "accepted strict bounded diagnostics must identify the host materialization sink boundary"
+        "accepted bounded diagnostics must identify the host materialization sink boundary"
     );
 }
 
-fn assert_strict_report_has_join_path_gates(report: &nexus_query_engine::contract_report::CapabilityContractReport) {
+fn assert_admission_report_has_join_path_gates(report: &nexus_query_engine::contract_report::CapabilityContractReport) {
     for kind in [
         ReservationKind::SourceRead,
         ReservationKind::BuildSide,
@@ -194,7 +196,7 @@ fn assert_strict_report_has_join_path_gates(report: &nexus_query_engine::contrac
     ] {
         assert!(
             report.gate_rows().iter().any(|row| row.reservation_kind == kind),
-            "accepted strict bounded diagnostics should include reservation gate {kind:?}"
+            "accepted bounded diagnostics should include reservation gate {kind:?}"
         );
     }
 
@@ -210,7 +212,7 @@ fn assert_strict_report_has_join_path_gates(report: &nexus_query_engine::contrac
     ] {
         assert!(
             !stable_rows.contains(retired_term),
-            "strict bounded diagnostics must not contain retired family/path term {retired_term}"
+            "bounded diagnostics must not contain retired family/path term {retired_term}"
         );
     }
 }
@@ -405,7 +407,7 @@ fn native_composed_exec_preserves_deferred_host_materialization_facts_on_runtime
 }
 
 #[test]
-fn strict_bounded_planner_rows_cover_supported_join_path_while_runtime_rejection_still_reports_legacy_error_facts() {
+fn bounded_planner_rows_cover_supported_join_path_while_runtime_rejection_still_reports_legacy_error_facts() {
     let dir = unique_temp_dir("datafusion-nexus-bounded-join-rejection-split");
     let left = dir.join("left.parquet");
     let right = dir.join("right.parquet");
@@ -422,10 +424,10 @@ fn strict_bounded_planner_rows_cover_supported_join_path_while_runtime_rejection
 
         assert_eq!(diagnostics.capability_contract.accepted_candidates.len(), 1);
         assert!(diagnostics.capability_contract.rejected_candidates.is_empty());
-        let strict_rows = diagnostics.capability_contract.accepted_candidates[0].report.gate_rows();
-        assert!(strict_rows.iter().any(|row| row.reservation_kind == ReservationKind::Materialization));
+        let admission_rows = diagnostics.capability_contract.accepted_candidates[0].report.gate_rows();
+        assert!(admission_rows.iter().any(|row| row.reservation_kind == ReservationKind::Materialization));
         assert!(
-            strict_rows
+            admission_rows
                 .iter()
                 .map(|row| row.to_stable_kv_row())
                 .all(|row| !row.contains("bounded_join_execution_family") && !row.contains("BoundedJoinExecutionPath"))

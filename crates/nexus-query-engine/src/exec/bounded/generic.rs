@@ -529,7 +529,8 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
         filtered_input = filtered_input.with_graph_residency(graph_residency);
     }
     // Resolve pair cardinality before reading side inputs so the admission bound is enforceable.
-    let strict_pair_cardinality = match crate::graph_memory::strict_similarity_pair_cardinality_for_plan(plan, graph) {
+    let bounded_pair_cardinality = match crate::graph_memory::bounded_similarity_pair_cardinality_for_plan(plan, graph)
+    {
         Ok(evidence) => evidence,
         Err(error) => {
             reservations.release(input_reservation, metrics);
@@ -624,7 +625,7 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
             side_inputs: &side_inputs,
             input_edges: sanitized_input_rows,
             raw_input_edges: source_raw_input_edges,
-            strict_pair_cardinality,
+            bounded_pair_cardinality,
             budget_bytes: Some(graph_reservable_remaining_bytes),
             device_total_memory_bytes,
             allow_nulls: false,
@@ -717,7 +718,7 @@ pub(in crate::exec::bounded) fn execute_bounded_graph_algorithm_from_inputs(
             side_inputs: &side_inputs,
             input_edges: sanitized_input_rows,
             raw_input_edges: source_raw_input_edges,
-            strict_pair_cardinality,
+            bounded_pair_cardinality,
             budget_bytes: Some(graph_reservable_remaining_bytes),
             device_total_memory_bytes,
             allow_nulls: false,

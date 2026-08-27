@@ -141,7 +141,7 @@ export const tpcdsSf100Benchmark = {
     "iterations": 1,
     "wallTimeFields": "per_measured_iteration",
     "datasetMode": "sf100_external",
-    "nativePipelineExecutionMode": "strict_bounded",
+    "nativePipelineExecutionMode": "bounded",
     "nativeProfileName": "sf100_gpu_throughput",
     "nativeProfileSource": "env_profile",
     "nativeDeviceBudgetBytes": 102005473280,

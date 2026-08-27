@@ -80,7 +80,7 @@ pub enum ProjectionSimplificationRejectedReason {
     SchemaMismatch,
     /// Projection contains a non-column expression or changes column mapping.
     NonIdentityExpression,
-    /// Projection is part of a strict bounded shape contract.
+    /// Projection is part of a bounded shape contract.
     ShapeContract,
 }
 

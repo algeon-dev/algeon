@@ -76,7 +76,7 @@ fn node_executable_decision(plan: &QueryPlan, node: &QueryNode) -> CapabilityDec
         PlanNode::Filter(filter) => {
             // Exact replace-with-backrefs output preflight owns projection
             // column-input REGEXP_REPLACE only. Filter predicates have no
-            // parallel size API yet, so strict admission rejects them instead
+            // parallel size API yet, so admission rejects them instead
             // of launching unpreflighted string expansion under bounded tokens.
             if filter.predicate.contains_regexp_replace() {
                 CapabilityDecision::rejected(

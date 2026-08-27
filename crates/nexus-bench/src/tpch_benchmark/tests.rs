@@ -109,7 +109,7 @@ fn benchmark_query_progress_line_identifies_query_and_profile() {
 
     assert!(line.starts_with("[native_tpch_benchmark] stage=query_start query=q07 index=3/3"));
     assert!(line.contains("dataset_mode=sf100_external"));
-    assert!(line.contains("execution_mode=strict_bounded"));
+    assert!(line.contains("execution_mode=bounded"));
     assert!(line.contains("relational_execution=native_no_datafusion_cpu"));
     assert!(line.contains("memory_policy=bounded"));
     assert!(line.contains("native_profile=custom"));
@@ -503,7 +503,7 @@ fn not_supported_planning_row(query_id: &str) -> NativeDataFusionPlanningRow {
     }
 }
 
-fn strict_bounded_gate_row(
+fn bounded_gate_row(
     kind: nexus_query_engine::runtime::ReservationKind,
     quality: nexus_query_engine::capability::ContractQuality,
     unresolved_preflight_gap: Option<&'static str>,
@@ -536,22 +536,22 @@ fn strict_bounded_gate_row(
 
 fn accepted_capability_contract_rows() -> Vec<nexus_query_engine::contract_report::CapabilityContractGateRow> {
     vec![
-        strict_bounded_gate_row(
+        bounded_gate_row(
             nexus_query_engine::runtime::ReservationKind::SourceRead,
             nexus_query_engine::capability::ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
             Some("libcudf_parquet_decoded_output_preflight_unavailable"),
         ),
-        strict_bounded_gate_row(
+        bounded_gate_row(
             nexus_query_engine::runtime::ReservationKind::FinalSort,
             nexus_query_engine::capability::ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
             Some("libcudf_final_sort_order_preflight_unavailable"),
         ),
-        strict_bounded_gate_row(
+        bounded_gate_row(
             nexus_query_engine::runtime::ReservationKind::OperatorOutput,
             nexus_query_engine::capability::ContractQuality::HardBudgetedReportWithUnresolvedPreflight,
             Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable"),
         ),
-        strict_bounded_gate_row(
+        bounded_gate_row(
             nexus_query_engine::runtime::ReservationKind::Materialization,
             nexus_query_engine::capability::ContractQuality::QueryEngineOwnedBoundary,
             None,

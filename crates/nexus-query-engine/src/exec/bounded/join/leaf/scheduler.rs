@@ -202,7 +202,7 @@ pub(super) fn start_join_leaf_scheduled_source_read(
     metrics: &mut QueryMetrics,
     requested_bytes: u64,
     memory_boundary: &'static str,
-    strict_token_budget: bool,
+    hard_token_budget: bool,
     prefetch: bool,
     attempt: usize,
     max_attempts: usize,
@@ -221,7 +221,7 @@ pub(super) fn start_join_leaf_scheduled_source_read(
     );
     let reservation = reservations.try_reserve(request, metrics)?;
     let source_token_budget =
-        if strict_token_budget { reservation.bytes() } else { reservations.available_bytes_including(&reservation) };
+        if hard_token_budget { reservation.bytes() } else { reservations.available_bytes_including(&reservation) };
     ScheduledLocalParquetRead::spawn(
         context.clone(),
         source.clone(),

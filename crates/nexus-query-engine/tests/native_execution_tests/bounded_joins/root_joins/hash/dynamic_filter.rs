@@ -1696,7 +1696,7 @@ fn bounded_native_query_applies_filter_dynamic_filter_through_projection_alias()
 }
 
 #[test]
-fn bounded_native_query_rejects_aggregate_keyset_dynamic_filter_without_strict_envelope() {
+fn bounded_native_query_rejects_aggregate_keyset_dynamic_filter_without_bounded_envelope() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-aggregate-dynamic-filter");
     let left_path = dir.join("lineitem.parquet");
@@ -1747,7 +1747,7 @@ fn bounded_native_query_rejects_aggregate_keyset_dynamic_filter_without_strict_e
     let context = backend_context_with_grant(1024 * 1024);
 
     let error = match execute_query_plan(&context, &optimized.plan) {
-        Ok(_) => panic!("aggregate keyset join input needs explicit strict envelope admission"),
+        Ok(_) => panic!("aggregate keyset join input needs explicit bounded envelope admission"),
         Err(error) => error,
     };
     assert_bounded_join_rejection_contract(&error);
@@ -1761,7 +1761,7 @@ fn bounded_native_query_rejects_aggregate_keyset_dynamic_filter_without_strict_e
 }
 
 #[test]
-fn bounded_native_query_rejects_build_dynamic_filter_below_aggregate_probe_without_strict_envelope() {
+fn bounded_native_query_rejects_build_dynamic_filter_below_aggregate_probe_without_bounded_envelope() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-aggregate-probe-dynamic-filter");
     let fact_path = dir.join("store_returns.parquet");
@@ -1816,7 +1816,7 @@ fn bounded_native_query_rejects_build_dynamic_filter_below_aggregate_probe_witho
     let context = backend_context_with_grant(1024 * 1024);
 
     let error = match execute_query_plan(&context, &optimized.plan) {
-        Ok(_) => panic!("aggregate probe input needs explicit strict envelope admission"),
+        Ok(_) => panic!("aggregate probe input needs explicit bounded envelope admission"),
         Err(error) => error,
     };
     assert_bounded_join_rejection_contract(&error);

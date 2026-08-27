@@ -726,7 +726,7 @@ fn validated_under_for_tests() -> QueryGpuValidatedUnder {
     QueryGpuValidatedUnder {
         native_optimizer_rule_installed: true,
         optimizer_config_source: "test".to_string(),
-        execution_mode: Some("strict_bounded".to_string()),
+        execution_mode: Some("bounded".to_string()),
         final_plan_requirements: Vec::new(),
         session_config_fingerprint: "test".to_string(),
         optimizer_fingerprint: "test".to_string(),

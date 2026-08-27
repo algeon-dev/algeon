@@ -75,7 +75,7 @@ export const tpchSf100Benchmark = {
     "wallTimeFields": "per_measured_iteration_mean",
     "datasetMode": "sf100_external",
     "parquetPushdownFilters": "session_default",
-    "nativePipelineExecutionMode": "strict_bounded",
+    "nativePipelineExecutionMode": "bounded",
     "nativeMemoryPolicy": "bounded",
     "nativeProfileName": "sf100_gpu_throughput",
     "nativeProfileSource": "env_profile",

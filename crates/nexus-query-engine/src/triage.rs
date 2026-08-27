@@ -46,7 +46,7 @@ impl TriageCode {
             Self::InvalidInput => "invalid_input",
             Self::InvalidPlan => "invalid_plan",
             // Compatibility wire label retained for existing report consumers.
-            Self::CapabilityEnvelopeRejected => "strict_bounded_rejected",
+            Self::CapabilityEnvelopeRejected => "bounded_rejected",
             Self::MemoryReservationDenied => "memory_reservation_denied",
             Self::ResourceExhausted => "resource_exhausted",
             Self::ServiceOverloaded => "service_overloaded",
@@ -320,8 +320,7 @@ impl CapabilityContractReport {
             .enumerate()
             .filter(|(_, row)| row.contract_status.as_str() != "modeled")
             .map(|(index, row)| {
-                let mut evidence =
-                    TriageEvidenceRef::new("strict_bounded_contract_report.gate_rows").with_row_index(index);
+                let mut evidence = TriageEvidenceRef::new("bounded_contract_report.gate_rows").with_row_index(index);
                 if let Some(query_id) = query_id.clone() {
                     evidence = evidence.with_query_id(query_id);
                 }

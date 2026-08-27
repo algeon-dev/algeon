@@ -174,13 +174,13 @@ fn aggregate_strategy_capability_analysis_records_grouped_aggregate_without_node
     );
 
     let report = CapabilityContractReport::from_capability_analysis(&analysis)
-        .expect("modeled aggregate capability should produce a strict contract report");
+        .expect("modeled aggregate capability should produce a admission contract report");
     assert!(report.gate_rows().iter().any(|row| {
         row.required_contract == "aggregate_contract" && row.contract_status == ContractStatus::Modeled
     }));
     assert!(
         report.gate_rows().iter().all(|row| row.contract_status != ContractStatus::RejectedByCapability),
-        "optimized strategy candidate rejections are local strategy facts, not strict capability failures"
+        "optimized strategy candidate rejections are local strategy facts, not bounded capability failures"
     );
 }
 

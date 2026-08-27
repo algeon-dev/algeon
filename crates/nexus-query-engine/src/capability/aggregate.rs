@@ -39,7 +39,7 @@ pub enum AggregateExecutionStage {
     FinalMerge,
 }
 
-/// Native aggregate state shape relevant to strict bounded admission.
+/// Native aggregate state shape relevant to bounded admission.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::capability) enum AggregateStateContract {
     /// No distinct or group-only dedup state is required.

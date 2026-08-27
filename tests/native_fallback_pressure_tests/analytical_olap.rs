@@ -30,8 +30,8 @@ async fn native_pipeline_analytical_olap_fallback_report_pins_lowering_diagnosti
 }
 
 #[tokio::test]
-async fn native_pipeline_analytical_olap_strict_planning_report_pins_capability_first_admission_surface() {
-    let dir = unique_temp_dir("datafusion-nexus-analytical-olap-strict-planning");
+async fn native_pipeline_analytical_olap_capability_first_planning_report_pins_capability_first_admission_surface() {
+    let dir = unique_temp_dir("datafusion-nexus-analytical-olap-capability-first-planning");
     write_tiny_tpch_parquet_dataset(&dir).unwrap();
 
     let items = analytical_olap_datafusion_planning_workload_items(&dir, tpch_report_session_config()).await.unwrap();
@@ -39,9 +39,9 @@ async fn native_pipeline_analytical_olap_strict_planning_report_pins_capability_
 
     assert_eq!(planning_query_count(&report), ANALYTICAL_OLAP_QUERY_COUNT);
     assert_eq!(
-        ANALYTICAL_OLAP_STRICT_ADMISSION_EXPECTATIONS.len(),
+        ANALYTICAL_OLAP_ADMISSION_EXPECTATIONS.len(),
         ANALYTICAL_OLAP_QUERY_COUNT,
-        "every analytical OLAP query must declare its strict-admission expectation"
+        "every analytical OLAP query must declare its admission expectation"
     );
     assert!(
         ANALYTICAL_OLAP_QUERIES.iter().any(
@@ -56,31 +56,31 @@ async fn native_pipeline_analytical_olap_strict_planning_report_pins_capability_
         assert_planning_row_has_family_free_rejection_diagnostics(query.id, row);
 
         assert_eq!(
-            analytical_olap_strict_admission(query.id),
-            Some(AnalyticalOlapCurrentStrictAdmission::Accepted),
-            "{} must have an explicit strict-admission expectation",
+            analytical_olap_admission(query.id),
+            Some(AnalyticalOlapCurrentAdmission::Accepted),
+            "{} must have an explicit admission expectation",
             query.id
         );
         assert_eq!(row.outcome, Some(NativeDataFusionPlanningOutcome::Selected), "{}", query.id);
         assert_eq!(row.reason_code, None, "{}", query.id);
         assert!(!row.rejected_before_execution, "{}", query.id);
-        assert!(!row.capability_contract_rows.is_empty(), "{} should emit strict gate rows", query.id);
+        assert!(!row.capability_contract_rows.is_empty(), "{} should emit admission gate rows", query.id);
         assert!(!row.capability_compiled_graphs.is_empty(), "{} should emit compiled graph rows", query.id);
         if query.capability_first_admission == AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin {
             assert_eq!(
                 row.outcome,
                 Some(NativeDataFusionPlanningOutcome::Selected),
-                "{} expected superset win should be admitted by capability-first strict planning",
+                "{} expected superset win should be admitted by capability-first capability-first planning",
                 query.id
             );
             assert!(
                 !row.capability_contract_rows.is_empty() && !row.capability_compiled_graphs.is_empty(),
-                "{} expected superset win should emit strict gate rows and compiled graph diagnostics",
+                "{} expected superset win should emit admission gate rows and compiled graph diagnostics",
                 query.id
             );
         }
     }
-    assert_no_legacy_rejection_terms("analytical_olap_strict_planning_tsv", &report.to_tsv());
+    assert_no_legacy_rejection_terms("analytical_olap_capability_first_planning_tsv", &report.to_tsv());
 
     fs::remove_dir_all(dir).unwrap();
 }

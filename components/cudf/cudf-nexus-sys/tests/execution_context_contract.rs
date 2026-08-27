@@ -108,15 +108,15 @@ use BINDINGS_RS as TABLE_FFI_RS;
 use BINDINGS_RS as UNARY_FFI_RS;
 use BINDINGS_RS as VALIDATION_FFI_RS;
 
-#[path = "execution_context_strict_contract/interop.rs"]
+#[path = "execution_context_contract/interop.rs"]
 mod interop;
-#[path = "execution_context_strict_contract/io.rs"]
+#[path = "execution_context_contract/io.rs"]
 mod io;
-#[path = "execution_context_strict_contract/operation.rs"]
+#[path = "execution_context_contract/operation.rs"]
 mod operation;
-#[path = "execution_context_strict_contract/resolver.rs"]
+#[path = "execution_context_contract/resolver.rs"]
 mod resolver;
-#[path = "execution_context_strict_contract/scalar.rs"]
+#[path = "execution_context_contract/scalar.rs"]
 mod scalar;
 
 fn find_marker_ignoring_ascii_whitespace(source: &str, marker: &str) -> Option<usize> {

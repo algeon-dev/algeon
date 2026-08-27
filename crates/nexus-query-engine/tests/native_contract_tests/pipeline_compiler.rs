@@ -804,12 +804,12 @@ fn compile_pipeline_reports_exact_source_read_preflight_when_lower_layer_covers_
     assert_eq!(source_gate.quality(), ContractQuality::ExactPreflight);
 
     let report = CapabilityContractReport::from_compiled_pipeline(&analysis, &pipeline)
-        .expect("exact source preflight should be valid strict contract evidence");
+        .expect("exact source preflight should be valid admission contract evidence");
     let source_row = report
         .gate_rows()
         .iter()
         .find(|row| row.reservation_kind == ReservationKind::SourceRead)
-        .expect("strict report should contain source-read row");
+        .expect("admission report should contain source-read row");
     assert_eq!(source_row.required_contract, "parquet_source_read_exact_preflight");
     assert_eq!(source_row.contract_quality, ContractQuality::ExactPreflight);
     assert_eq!(source_row.unresolved_preflight_gap, None);
@@ -840,7 +840,7 @@ fn compile_pipeline_keeps_source_read_fallback_contract_for_uncovered_source() {
 
 #[test]
 fn compiled_pipeline_validate_rejects_resource_consumer_without_carrying_edge() {
-    let pipeline = strict_validation_fixture_with(|parts| {
+    let pipeline = invariant_validation_fixture_with(|parts| {
         parts.edges[4] = PipelineEdge::new(
             PipelineEdgeId::new(4),
             PipelineTaskId::new(4),
@@ -859,7 +859,7 @@ fn compiled_pipeline_validate_rejects_resource_consumer_without_carrying_edge() 
 
 #[test]
 fn compiled_pipeline_validate_rejects_task_input_resource_without_recorded_consumer() {
-    let pipeline = strict_validation_fixture_with(|parts| {
+    let pipeline = invariant_validation_fixture_with(|parts| {
         parts.edges[4] = PipelineEdge::new(
             PipelineEdgeId::new(4),
             PipelineTaskId::new(4),
@@ -884,7 +884,7 @@ fn compiled_pipeline_validate_rejects_task_input_resource_without_recorded_consu
 
 #[test]
 fn compiled_pipeline_validate_rejects_join_probe_without_matching_build_dependency() {
-    let pipeline = strict_validation_fixture_with(|parts| {
+    let pipeline = invariant_validation_fixture_with(|parts| {
         parts.edges[2] = PipelineEdge::new(
             PipelineEdgeId::new(2),
             PipelineTaskId::new(0),
@@ -901,7 +901,7 @@ fn compiled_pipeline_validate_rejects_join_probe_without_matching_build_dependen
 
 #[test]
 fn compiled_pipeline_validate_rejects_barrier_without_upstream_dominance() {
-    let pipeline = strict_validation_fixture_with(|parts| {
+    let pipeline = invariant_validation_fixture_with(|parts| {
         parts.barriers.push(
             PipelineBarrier::new(PipelineBarrierId::new(3), PipelineBarrierKind::SourceChunkBoundary)
                 .with_upstream_tasks(vec![PipelineTaskId::new(0)])
@@ -918,7 +918,7 @@ fn compiled_pipeline_validate_rejects_barrier_without_upstream_dominance() {
 
 #[test]
 fn compiled_pipeline_validate_rejects_unresolved_preflight_gate_mislabeled_as_exact() {
-    let pipeline = strict_validation_fixture_with(|parts| {
+    let pipeline = invariant_validation_fixture_with(|parts| {
         parts.gates[0] = ReservationGate::new(
             ReservationGateId::new(0),
             ReservationGateOwner::Edge(PipelineEdgeId::new(0)),
@@ -944,7 +944,7 @@ fn compiled_pipeline_validate_rejects_unresolved_preflight_gate_mislabeled_as_ex
 
 #[test]
 fn compiled_pipeline_validate_rejects_hard_budgeted_quality_without_tracked_gap() {
-    let pipeline = strict_validation_fixture_with(|parts| {
+    let pipeline = invariant_validation_fixture_with(|parts| {
         parts.gates[0] = ReservationGate::new(
             ReservationGateId::new(0),
             ReservationGateOwner::Edge(PipelineEdgeId::new(0)),
@@ -975,7 +975,7 @@ fn compiled_pipeline_validate_rejects_hard_budgeted_quality_without_tracked_gap(
 
 #[test]
 fn compiled_pipeline_validate_rejects_gate_owner_scope_mismatch() {
-    let pipeline = strict_validation_fixture_with(|parts| {
+    let pipeline = invariant_validation_fixture_with(|parts| {
         parts.tasks[1] = PipelineTask::new(PipelineTaskId::new(1), PipelineTaskKind::SourceRead)
             .with_output_resources(vec![ResidentResourceId::new(1)])
             .with_gates(vec![ReservationGateId::new(0)]);
@@ -1035,7 +1035,7 @@ fn assert_pipeline_validation_error(error: &QueryError, expected_message: &str) 
 }
 
 #[derive(Debug, Clone)]
-struct StrictValidationFixtureParts {
+struct InvariantValidationFixtureParts {
     tasks: Vec<PipelineTask>,
     edges: Vec<PipelineEdge>,
     barriers: Vec<PipelineBarrier>,
@@ -1044,13 +1044,13 @@ struct StrictValidationFixtureParts {
     sink: SinkBoundary,
 }
 
-fn strict_validation_fixture_with(update: impl FnOnce(&mut StrictValidationFixtureParts)) -> CompiledPipeline {
-    let mut parts = strict_validation_fixture_parts();
+fn invariant_validation_fixture_with(update: impl FnOnce(&mut InvariantValidationFixtureParts)) -> CompiledPipeline {
+    let mut parts = invariant_validation_fixture_parts();
     update(&mut parts);
     CompiledPipeline::new(parts.tasks, parts.edges, parts.barriers, parts.resources, parts.gates, parts.sink)
 }
 
-fn strict_validation_fixture_parts() -> StrictValidationFixtureParts {
+fn invariant_validation_fixture_parts() -> InvariantValidationFixtureParts {
     let left_source = PipelineTaskId::new(0);
     let right_source = PipelineTaskId::new(1);
     let build = PipelineTaskId::new(2);
@@ -1141,7 +1141,7 @@ fn strict_validation_fixture_parts() -> StrictValidationFixtureParts {
     ];
 
     let sink = SinkBoundary::new(SinkBoundaryKind::HostArrowMaterialization, sink_task).with_gates(vec![sink_gate]);
-    StrictValidationFixtureParts { tasks, edges, barriers, resources, gates, sink }
+    InvariantValidationFixtureParts { tasks, edges, barriers, resources, gates, sink }
 }
 
 fn compile_admitted_join_case(

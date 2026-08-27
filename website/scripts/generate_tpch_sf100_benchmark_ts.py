@@ -181,7 +181,7 @@ def main() -> None:
         "datasetMode": meta_or("tpch_benchmark_dataset_mode", "sf100_external"),
         "parquetPushdownFilters": meta_or("tpch_benchmark_parquet_pushdown_filters", "session_default"),
         "nativePipelineExecutionMode": meta_or(
-            "tpch_benchmark_native_pipeline_execution_mode", "strict_bounded"
+            "tpch_benchmark_native_pipeline_execution_mode", "bounded"
         ),
         "nativeMemoryPolicy": meta_or("tpch_benchmark_native_memory_policy", "bounded"),
         "nativeProfileName": meta_or("tpch_benchmark_native_profile_name", "sf100_gpu_throughput"),

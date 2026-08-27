@@ -358,7 +358,7 @@ pub(super) fn edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> Result
 }
 
 /// Returns cardinality evidence that is exact in the physical DataFusion
-/// plan. Inexact optimizer estimates must never be used for strict bounded
+/// plan. Inexact optimizer estimates must never be used for bounded
 /// graph admission.
 pub(super) fn exact_execution_plan_output_rows(plan: &dyn ExecutionPlan) -> Result<Option<u64>> {
     let statistics_context = StatisticsContext::new();
@@ -372,7 +372,7 @@ pub(super) fn exact_execution_plan_output_rows(plan: &dyn ExecutionPlan) -> Resu
 
     // Do not treat the plan-level `Precision::Exact` field as authoritative
     // for a parallel edge scan. DataFusion may populate it from one physical
-    // fragment; a strict graph ticket needs either all partition facts or
+    // fragment; a bounded graph ticket needs either all partition facts or
     // stronger native/footer evidence selected above.
     let mut total = 0_u64;
     for partition in 0..partition_count {

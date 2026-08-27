@@ -67,7 +67,7 @@ fn bounded_native_query_rejects_unsupported_join_under_aggregate_before_source_r
 }
 
 #[test]
-fn bounded_native_query_rejects_grouped_aggregate_join_build_input_without_strict_envelope() {
+fn bounded_native_query_rejects_grouped_aggregate_join_build_input_without_bounded_envelope() {
     let runtime = backend_runtime();
     let dir = unique_temp_dir("nexus-query-engine-bounded-aggregate-join-input");
     let left_path = dir.join("left.parquet");
@@ -130,7 +130,7 @@ fn bounded_native_query_rejects_grouped_aggregate_join_build_input_without_stric
     let context = bounded_join_execution_context(&runtime);
 
     let error = match execute_query_plan(&context, &plan) {
-        Ok(_) => panic!("grouped aggregate join-build input needs explicit strict envelope admission"),
+        Ok(_) => panic!("grouped aggregate join-build input needs explicit bounded envelope admission"),
         Err(error) => error,
     };
     assert_bounded_join_rejection_contract(&error);

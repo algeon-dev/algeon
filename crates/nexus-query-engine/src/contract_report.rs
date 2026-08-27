@@ -171,12 +171,12 @@ impl CapabilityContractReport {
     /// Serializes this report with its established compatibility schema.
     pub fn to_json(&self) -> Value {
         json!({
-            "schema": "nexus_query_engine.strict_bounded_contract_report.v1",
+            "schema": "nexus_query_engine.bounded_contract_report.v1",
             "query_id": self.query_id.as_ref().map(QueryId::as_str),
             "trace_id": self.trace_id.as_ref().map(TraceId::as_str),
             "triage": self.triage_summary().to_json(),
             "execution_mode": self.execution_mode.as_str(),
-            "strict_bounded_ready": self.is_ready(),
+            "bounded_ready": self.is_ready(),
             "gate_rows": self.gate_rows.iter().map(CapabilityContractGateRow::to_json).collect::<Vec<_>>(),
         })
     }

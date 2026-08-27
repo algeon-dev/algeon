@@ -17,8 +17,8 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
         assert!(!row.rejected_before_execution, "{query_id} should be replaced by native execution");
         assert!(
             row.capability_contract_rows.iter().map(|gate| gate.to_stable_kv_row()).all(|rendered| {
-                strict_contract_row_is_family_path_free(&rendered)
-                    && strict_contract_row_excludes_adaptive_terms(&rendered)
+                admission_contract_row_is_family_path_free(&rendered)
+                    && admission_contract_row_excludes_adaptive_terms(&rendered)
             }),
             "{query_id} should not expose retired family/path facts"
         );
@@ -60,7 +60,7 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
             && gate.contract_quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight
             && gate.unresolved_preflight_gap
                 == Some("libcudf_groupby_aggregate_temporary_workspace_preflight_unavailable")),
-        "q17 should keep aggregate preflight gaps as strict contract quality evidence"
+        "q17 should keep aggregate preflight gaps as admission contract quality evidence"
     );
     assert!(
         !q17.capability_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::FinalSort),
@@ -86,7 +86,7 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
             "capability_contract_rows\tcapability_compiled_graphs\tnative_optimizer\tedge_normalize_inserted"
         )
     );
-    assert!(text.contains("execution_mode=strict_bounded"));
+    assert!(text.contains("execution_mode=bounded"));
     assert!(text.contains("contract_status=modeled"));
     assert!(text.contains("contract_quality="));
     assert!(!text.contains("bounded_join_reservation_facts"));
@@ -100,7 +100,7 @@ pub(super) fn assert_highlighted_planning_rows_and_tsv(
     assert!(text.contains("\tselected\t"));
 }
 
-fn strict_contract_row_excludes_adaptive_terms(rendered: &str) -> bool {
+fn admission_contract_row_excludes_adaptive_terms(rendered: &str) -> bool {
     !rendered.contains("retry")
         && !rendered.contains("spill")
         && !rendered.contains("downgrade")

@@ -13,7 +13,7 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport) {
             {
                 assert!(
                     !row.capability_contract_rows.is_empty(),
-                    "{} accepted bounded join row should expose strict contract gates",
+                    "{} accepted bounded join row should expose admission contract gates",
                     row.query_id
                 );
                 assert!(
@@ -26,29 +26,29 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport) {
                         gate.execution_mode == CapabilityEnvelopeStatus::Admitted
                             && gate.contract_status == ContractStatus::Modeled
                     }),
-                    "{} accepted strict bounded gates should be modeled strict-bounded rows",
+                    "{} accepted bounded gates should be modeled bounded rows",
                     row.query_id
                 );
                 assert!(
                     row.capability_contract_rows
                         .iter()
                         .any(|gate| gate.reservation_kind == ReservationKind::Materialization),
-                    "{} accepted strict bounded gates should include host materialization",
+                    "{} accepted bounded gates should include host materialization",
                     row.query_id
                 );
                 assert!(
                     row.capability_contract_rows
                         .iter()
                         .map(|gate| gate.to_stable_kv_row())
-                        .all(|rendered| strict_contract_row_is_family_path_free(&rendered)),
-                    "{} strict contract rows should not preserve family/path vocabulary",
+                        .all(|rendered| admission_contract_row_is_family_path_free(&rendered)),
+                    "{} admission contract rows should not preserve family/path vocabulary",
                     row.query_id
                 );
             } else {
                 if row.final_disposition == FinalPlanDisposition::Native {
                     assert!(
                         row.capability_contract_rows.is_empty(),
-                        "{} non-join accepted row is outside the current strict join gate report surface",
+                        "{} non-join accepted row is outside the current bounded join gate report surface",
                         row.query_id
                     );
                     assert!(row.capability_compiled_graphs.is_empty());
@@ -75,8 +75,8 @@ pub(super) fn assert_planning_rows(report: &NativeDataFusionPlanningReport) {
                 row.capability_contract_rows
                     .iter()
                     .map(|gate| gate.to_stable_kv_row())
-                    .all(|rendered| strict_contract_row_is_family_path_free(&rendered)),
-                "{} rejected strict contract rows should not preserve family/path vocabulary",
+                    .all(|rendered| admission_contract_row_is_family_path_free(&rendered)),
+                "{} rejected admission contract rows should not preserve family/path vocabulary",
                 row.query_id
             );
             assert_ne!(row.final_disposition, FinalPlanDisposition::Native);
@@ -153,7 +153,7 @@ fn assert_no_legacy_rejection_terms(label: &str, rendered: &str) {
     }
 }
 
-pub(super) fn strict_contract_row_is_family_path_free(rendered: &str) -> bool {
+pub(super) fn admission_contract_row_is_family_path_free(rendered: &str) -> bool {
     !rendered.contains("bounded_join_execution_family")
         && !rendered.contains("bounded_join_required_shape_contract")
         && !rendered.contains("bounded_join_contract_modes")

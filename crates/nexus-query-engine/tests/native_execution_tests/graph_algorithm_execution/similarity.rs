@@ -177,7 +177,7 @@ fn assert_bounded_similarity_pair_input_is_admitted() {
     let runtime = Arc::new(admitted.runtime().unwrap());
     let gpu_inputs = gpu_inputs_for(&admitted, &runtime);
     let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap_or_else(|error| {
-        panic!("strict bounded similarity must admit its live pair input exactly once: {error:#?}")
+        panic!("bounded similarity must admit its live pair input exactly once: {error:#?}")
     });
     assert_eq!(result.metrics().graph_reservation_rows.len(), 1);
     let report = &result.metrics().graph_reservation_rows[0];
@@ -192,7 +192,7 @@ fn assert_bounded_similarity_pair_input_is_admitted() {
 }
 
 #[test]
-fn strict_bounded_similarity_accepts_gpu_pair_input_exactly_once() {
+fn bounded_similarity_accepts_gpu_pair_input_exactly_once() {
     assert_bounded_similarity_pair_input_is_admitted();
 }
 

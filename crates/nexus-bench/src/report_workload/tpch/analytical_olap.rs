@@ -21,7 +21,7 @@ pub struct AnalyticalOlapQuery {
     pub sql: &'static str,
     pub workload_class: AnalyticalOlapWorkloadClass,
     pub expected_lowering: AnalyticalOlapLoweringExpectation,
-    pub current_strict_admission: AnalyticalOlapCurrentStrictAdmission,
+    pub current_admission: AnalyticalOlapCurrentAdmission,
     pub capability_first_admission: AnalyticalOlapCapabilityFirstAdmission,
 }
 
@@ -60,12 +60,12 @@ impl AnalyticalOlapLoweringExpectation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AnalyticalOlapCurrentStrictAdmission {
+pub enum AnalyticalOlapCurrentAdmission {
     Accepted,
     RejectedBeforeExecution,
 }
 
-impl AnalyticalOlapCurrentStrictAdmission {
+impl AnalyticalOlapCurrentAdmission {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Accepted => "accepted",
@@ -95,7 +95,7 @@ pub const ANALYTICAL_OLAP_QUERIES: &[AnalyticalOlapQuery] = &[
         id: "adhoc_olap_01_customer_order_lineitem_star",
         workload_class: AnalyticalOlapWorkloadClass::StarSchemaJoin,
         expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
+        current_admission: AnalyticalOlapCurrentAdmission::Accepted,
         capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT c.c_mktsegment, o.o_orderstatus, SUM(l.l_extendedprice) AS revenue
@@ -111,7 +111,7 @@ LIMIT 5
         id: "adhoc_olap_02_part_supplier_supply_star",
         workload_class: AnalyticalOlapWorkloadClass::StarSchemaJoin,
         expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
+        current_admission: AnalyticalOlapCurrentAdmission::Accepted,
         capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT p.p_brand, s.s_nationkey, SUM(ps.ps_supplycost) AS supply_cost
@@ -127,7 +127,7 @@ LIMIT 5
         id: "adhoc_olap_03_region_nation_customer_orders",
         workload_class: AnalyticalOlapWorkloadClass::StarSchemaJoin,
         expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
+        current_admission: AnalyticalOlapCurrentAdmission::Accepted,
         capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT r.r_name, n.n_name, COUNT(o.o_orderkey) AS order_count
@@ -144,7 +144,7 @@ LIMIT 5
         id: "adhoc_olap_04_supplier_same_nation_self_join",
         workload_class: AnalyticalOlapWorkloadClass::SelfJoin,
         expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
+        current_admission: AnalyticalOlapCurrentAdmission::Accepted,
         capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT s1.s_nationkey, COUNT(*) AS supplier_pairs
@@ -160,7 +160,7 @@ LIMIT 5
         id: "adhoc_olap_05_customer_order_self_join",
         workload_class: AnalyticalOlapWorkloadClass::SelfJoin,
         expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
+        current_admission: AnalyticalOlapCurrentAdmission::Accepted,
         capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT o1.o_custkey, COUNT(*) AS order_pairs
@@ -176,7 +176,7 @@ LIMIT 5
         id: "adhoc_olap_06_customer_in_join_aggregate_subquery",
         workload_class: AnalyticalOlapWorkloadClass::DecorrelatableSubquery,
         expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
+        current_admission: AnalyticalOlapCurrentAdmission::Accepted,
         capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin,
         sql: "
 SELECT c.c_custkey, SUM(o.o_totalprice) AS customer_total
@@ -197,7 +197,7 @@ LIMIT 5
         id: "adhoc_olap_07_nested_exists_customer_orders_lineitem",
         workload_class: AnalyticalOlapWorkloadClass::DecorrelatableSubquery,
         expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
+        current_admission: AnalyticalOlapCurrentAdmission::Accepted,
         capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT c.c_custkey, COUNT(o.o_orderkey) AS matched_orders
@@ -217,7 +217,7 @@ LIMIT 5
         id: "adhoc_olap_08_order_revenue_reused_cte",
         workload_class: AnalyticalOlapWorkloadClass::MultiJoinResidentPressure,
         expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
+        current_admission: AnalyticalOlapCurrentAdmission::Accepted,
         capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::ExpectedSupersetWin,
         sql: "
 WITH order_revenue AS (
@@ -239,7 +239,7 @@ LIMIT 5
         id: "adhoc_olap_09_nation_supplier_lineitem_topk",
         workload_class: AnalyticalOlapWorkloadClass::AggregateSortTopK,
         expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
+        current_admission: AnalyticalOlapCurrentAdmission::Accepted,
         capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT n.n_name, SUM(l.l_extendedprice) AS revenue
@@ -255,7 +255,7 @@ LIMIT 3
         id: "adhoc_olap_10_part_lineitem_supplier_topk",
         workload_class: AnalyticalOlapWorkloadClass::AggregateSortTopK,
         expected_lowering: AnalyticalOlapLoweringExpectation::NativeQueryPlan,
-        current_strict_admission: AnalyticalOlapCurrentStrictAdmission::Accepted,
+        current_admission: AnalyticalOlapCurrentAdmission::Accepted,
         capability_first_admission: AnalyticalOlapCapabilityFirstAdmission::Accepted,
         sql: "
 SELECT p.p_type, s.s_nationkey, SUM(l.l_quantity) AS quantity
