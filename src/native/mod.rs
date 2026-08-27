@@ -35,7 +35,7 @@ use nexus_query_engine::{
     plan::{NodeId as NativeNodeId, PlanNode as NativePlanNode, QueryPlan as NativeQueryPlan},
     source::{SourceDiagnostics as NativeSourceDiagnostics, SourceNode as NativeSourceNode},
 };
-use normalize::normalize_native_plan;
+use normalize::{make_declared_ordered_hash_join_fetch_explicit, normalize_native_plan};
 pub(crate) use pruning::scan_predicate_exactly_matches_filter;
 pub(crate) use source::native_parquet_file_reader_factory_is_supported;
 use source::source_diagnostics_for_normalized_plan;
@@ -116,7 +116,17 @@ fn lower_physical_plan_to_native_with_mode(
     plan: Arc<dyn ExecutionPlan>,
     mode: NativeLoweringMode,
 ) -> NativeLoweringResult {
-    match normalize_native_plan(plan.as_ref()) {
+    let normalized = normalize_native_plan(plan.as_ref()).map(|mut normalized| {
+        if mode == NativeLoweringMode::Final {
+            make_declared_ordered_hash_join_fetch_explicit(
+                &mut normalized,
+                plan.properties().output_ordering(),
+                plan.schema(),
+            );
+        }
+        normalized
+    });
+    match normalized {
         Ok(normalized)
             if mode == NativeLoweringMode::CountOnly
                 && !normalized.aggregate_root().is_some_and(|root| {

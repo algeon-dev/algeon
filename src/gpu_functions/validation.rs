@@ -2,6 +2,10 @@
 
 use std::collections::BTreeMap;
 
+use datafusion::{
+    common::TableReference,
+    sql::sqlparser::{dialect::GenericDialect, parser::Parser, tokenizer::Token},
+};
 use serde_json::{Map, Value};
 
 /// Current common validation-envelope version.
@@ -12,6 +16,7 @@ pub(crate) const GPU_CALL_SCHEMA_VERSION: u32 = 1;
 pub(crate) struct GpuRelationReference {
     /// One-, two-, or three-part DataFusion table reference.
     pub(crate) table: String,
+    pub(crate) reference: TableReference,
 }
 
 /// Parsed common `gpu_validate_call` request envelope.
@@ -139,21 +144,36 @@ fn parse_relation(role: &str, relation: &Value) -> Result<GpuRelationReference, 
         return Err(invalid(format!("call_json.relations.{role} must be an object")));
     };
     reject_unknown_keys(relation, &["table"])?;
-    let table = relation.get("table").and_then(Value::as_str).filter(|table| valid_table_reference(table)).ok_or_else(
-        || invalid(format!("call_json.relations.{role}.table must be a one-, two-, or three-part table reference")),
-    )?;
-    Ok(GpuRelationReference { table: table.to_string() })
+    let raw = relation.get("table").and_then(Value::as_str).ok_or_else(|| {
+        invalid(format!("call_json.relations.{role}.table must be a one-, two-, or three-part table reference"))
+    })?;
+    let reference = parse_table_reference(raw).ok_or_else(|| GpuCallRequestError {
+        code: "invalid_table_reference",
+        message: format!("call_json.relations.{role}.table must be a valid one-, two-, or three-part SQL identifier"),
+    })?;
+    Ok(GpuRelationReference { table: reference.to_quoted_string(), reference })
 }
 
-fn valid_table_reference(table: &str) -> bool {
-    let parts = table.split('.').collect::<Vec<_>>();
-    (1..=3).contains(&parts.len()) && parts.iter().copied().all(is_simple_identifier)
-}
-
-fn is_simple_identifier(part: &str) -> bool {
-    let mut chars = part.chars();
-    matches!(chars.next(), Some(first) if first == '_' || first.is_ascii_alphabetic())
-        && chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
+pub(crate) fn parse_table_reference(raw: &str) -> Option<TableReference> {
+    let dialect = GenericDialect;
+    let mut parser = Parser::new(&dialect).try_with_sql(raw).ok()?;
+    let identifiers = parser.parse_multipart_identifier().ok()?;
+    if parser.peek_token().token != Token::EOF || !(1..=3).contains(&identifiers.len()) {
+        return None;
+    }
+    let parts =
+        identifiers
+            .into_iter()
+            .map(|identifier| {
+                if identifier.quote_style.is_some() { identifier.value } else { identifier.value.to_ascii_lowercase() }
+            })
+            .collect::<Vec<_>>();
+    match parts.as_slice() {
+        [table] => Some(TableReference::bare(table.as_str())),
+        [schema, table] => Some(TableReference::partial(schema.as_str(), table.as_str())),
+        [catalog, schema, table] => Some(TableReference::full(catalog.as_str(), schema.as_str(), table.as_str())),
+        _ => None,
+    }
 }
 
 fn reject_unknown_keys(object: &Map<String, Value>, allowed: &[&str]) -> Result<(), GpuCallRequestError> {
@@ -182,6 +202,25 @@ mod tests {
         .unwrap();
         assert_eq!(request.relations["input"].table, "catalog.schema.input");
         assert_eq!(request.normalized_json()["schema_version"], 1);
+    }
+
+    #[test]
+    fn parses_quoted_uuid_references_and_rejects_trailing_sql() {
+        let request = GpuCallRequest::parse(
+            r#"{"schema_version":1,"relations":{"input":{"table":"datafusion.\"3f1c2b8e-6d4a-4e0b-9a7c-5b2d8e1f4a60\".input"}},"options":{}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            request.relations["input"].reference,
+            TableReference::full("datafusion", "3f1c2b8e-6d4a-4e0b-9a7c-5b2d8e1f4a60", "input")
+        );
+        assert_eq!(request.relations["input"].table, r#"datafusion."3f1c2b8e-6d4a-4e0b-9a7c-5b2d8e1f4a60".input"#);
+
+        let error = GpuCallRequest::parse(
+            r#"{"schema_version":1,"relations":{"input":{"table":"input; DROP TABLE target"}},"options":{}}"#,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "invalid_table_reference");
     }
 
     #[test]

@@ -185,7 +185,9 @@ pub(super) fn validate_aggregate_root_operator_schemas(
     if let Some(projection) = pre_aggregate_projection {
         validate_schema(projection.schema())?;
     }
-    validate_schema(root.aggregate.schema())?;
+    if !root.aggregate_allows_partial {
+        validate_schema(root.aggregate.schema())?;
+    }
     validate_schema(Arc::clone(&root.aggregate_output_schema))?;
     if let Some(projection) = post_aggregate_projection {
         validate_schema(projection.schema())?;

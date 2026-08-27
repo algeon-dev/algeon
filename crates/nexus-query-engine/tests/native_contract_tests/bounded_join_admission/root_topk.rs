@@ -263,6 +263,28 @@ fn bounded_root_topk_join_aggregate_allows_sort_fetch_hash_join_input_subcontrac
 }
 
 #[test]
+fn bounded_root_topk_allows_one_left_join_after_grouped_aggregate_topk() {
+    let plan = root_topk_grouped_aggregate_input_left_join_plan();
+    let analysis = plan.capability_analysis();
+
+    assert!(
+        analysis.admits_root_topk_join_aggregate_pipeline(),
+        "decision={:?}",
+        analysis.root_topk_join_aggregate_admission
+    );
+    let report = CapabilityContractReport::from_capability_analysis(&analysis).unwrap();
+    assert_admission_report_has_modeled_subcontract(
+        &report,
+        "root_topk_sort_fetch_hash_join_input_subcontract",
+        "grouped aggregate TopK left join",
+    );
+    let admission = nexus_query_engine::admission::bounded_pipeline_admission(&plan)
+        .expect("bounded admission should not fail")
+        .expect("grouped aggregate TopK left join should be admitted");
+    assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
+}
+
+#[test]
 fn bounded_root_topk_join_aggregate_sort_fetch_join_input_subcontract_excludes_keyless_and_cross() {
     for variant in [
         RootTopKJoinAggregateVariant::SortFetchKeylessJoinInput,

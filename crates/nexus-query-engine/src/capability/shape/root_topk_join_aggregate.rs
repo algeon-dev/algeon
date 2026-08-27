@@ -74,7 +74,35 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
         .copied()
         .filter(|node_id| matches!(plan.node(*node_id).map(|node| &node.kind), Some(PlanNode::Join(_))))
         .collect::<Vec<_>>();
-    let required_join_count = if direct_sort_fetch_aggregate_candidate { 1 } else { 2 };
+    if join_ids.is_empty() {
+        return Err(CapabilityDecision::rejected(
+            "root_topk_join_aggregate_requires_join_fragment",
+            [("reachable_join_count", join_ids.len().to_string()), ("required_join_count", "1".to_string())],
+        ));
+    }
+    let root_join_id = post_root_root_join_id(plan, post_root_candidate_id, &join_ids)?;
+    let root_join = join_node_with_missing_reason(
+        plan,
+        root_join_id,
+        "root_topk_join_aggregate_missing_node",
+        "root_topk_join_aggregate_requires_keyed_join_fragment",
+    )?;
+    let aggregate_topk_bounds_root_join_input = root_join
+        .inputs
+        .iter()
+        .copied()
+        .map(|input| root_topk_grouped_aggregate_topk_input_nodes(plan, input))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .any(|nodes| nodes.is_some());
+    let required_join_count = if direct_sort_fetch_join_input_candidate
+        || direct_sort_fetch_aggregate_candidate
+        || aggregate_topk_bounds_root_join_input
+    {
+        1
+    } else {
+        2
+    };
     if join_ids.len() < required_join_count {
         return Err(CapabilityDecision::rejected(
             "root_topk_join_aggregate_requires_join_fragment",
@@ -84,7 +112,6 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
             ],
         ));
     }
-    let root_join_id = post_root_root_join_id(plan, post_root_candidate_id, &join_ids)?;
     let mut keyless_or_cross_join_ids = Vec::new();
     let mut keyed_filtered_semi_join_ids = Vec::new();
     let mut left_output_bounded_join_ids = Vec::new();
@@ -108,20 +135,21 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
             root_topk_join_has_aggregate_fan_in_left_context(plan, join, &root_reachable)?;
         let allow_left_anti_grouped_aggregate_input = join.spec.join_type == JoinType::LeftAnti
             && root_topk_join_feeds_grouped_aggregate(plan, *join_id, &root_reachable)?;
-        let allow_sort_fetch_aggregate_keyed_left = direct_sort_fetch_aggregate_candidate
+        let allow_sort_fetch_keyed_left = (direct_sort_fetch_aggregate_candidate
+            || (aggregate_topk_bounds_root_join_input && *join_id == root_join_id))
             && join.spec.join_type == JoinType::Left
             && join.spec.build_side == JoinSide::Right;
         let allow_left_output_bounded_join = (allow_aggregate_fan_in_left || allow_left_anti_grouped_aggregate_input)
             && !allow_distinct_dedup_keyed_outer
             && !allow_window_keyed_full_outer
-            && !allow_sort_fetch_aggregate_keyed_left;
+            && !allow_sort_fetch_keyed_left;
         match require_supported_root_topk_join(
             *join_id,
             join,
             allow_distinct_dedup_keyed_outer,
             allow_window_keyed_full_outer,
             allow_keyless_outer_cross_window,
-            allow_sort_fetch_aggregate_keyed_left,
+            allow_sort_fetch_keyed_left,
             allow_left_output_bounded_join,
         )? {
             RootTopKJoinSubcontract::KeylessConditional | RootTopKJoinSubcontract::ProjectedCross => {
@@ -140,7 +168,9 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
                 if allow_left_output_bounded_join && join.spec.join_type == JoinType::Left {
                     left_output_bounded_join_ids.push(*join_id);
                 }
-                if direct_sort_fetch_join_input_candidate && *join_id == post_root_candidate_id {
+                if (direct_sort_fetch_join_input_candidate && *join_id == post_root_candidate_id)
+                    || (aggregate_topk_bounds_root_join_input && *join_id == root_join_id)
+                {
                     sort_fetch_hash_join_input_subcontract = true;
                 }
             },
@@ -177,7 +207,7 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
                 plan,
                 &root_reachable,
                 &keyless_or_cross_join_ids,
-                !keyless_outer_cross_window_join_ids.is_empty(),
+                !keyless_outer_cross_window_join_ids.is_empty() || aggregate_topk_bounds_root_join_input,
                 window_ids.is_empty(),
             )?
         };
@@ -187,7 +217,8 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
         aggregate_id,
         aggregate_projection_id,
         &keyless_or_cross_join_ids,
-    )? {
+    )? && !aggregate_topk_bounds_root_join_input
+    {
         require_root_topk_source_reduction_proof(
             plan,
             &aggregate_input_reachable,
@@ -225,6 +256,39 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
         final_sort_id,
         final_limit_id,
     })
+}
+
+fn root_topk_grouped_aggregate_topk_input_nodes(
+    plan: &QueryPlan,
+    input: NodeId,
+) -> Result<Option<[NodeId; 2]>, CapabilityDecision> {
+    let Some((limit_id, _chain_ids)) = peel_resident_unary_chain_for_capability(plan, input) else {
+        return Err(CapabilityDecision::rejected(
+            "root_topk_join_aggregate_missing_node",
+            [("node_id", input.to_string()), ("role", "root_join_input".to_string())],
+        ));
+    };
+    let Some(PlanNode::Limit(limit)) = plan.node(limit_id).map(|node| &node.kind) else {
+        return Ok(None);
+    };
+    if limit.spec.skip != 0 || limit.spec.fetch.is_none() {
+        return Ok(None);
+    }
+    let sort_id = limit.input;
+    let Some(PlanNode::Sort(sort)) = plan.node(sort_id).map(|node| &node.kind) else {
+        return Ok(None);
+    };
+    let Some((aggregate_id, _chain_ids)) = peel_resident_unary_chain_for_capability(plan, sort.input) else {
+        return Ok(None);
+    };
+    if matches!(
+        plan.node(aggregate_id).map(|node| &node.kind),
+        Some(PlanNode::Aggregate(aggregate)) if !aggregate.spec.group_exprs.is_empty()
+    ) {
+        Ok(Some([limit_id, sort_id]))
+    } else {
+        Ok(None)
+    }
 }
 
 fn root_topk_shared_computed_producer_ids(
@@ -702,7 +766,7 @@ fn require_supported_root_topk_join(
     allow_distinct_dedup_keyed_outer: bool,
     allow_window_keyed_full_outer: bool,
     allow_keyless_outer_cross_window: bool,
-    allow_sort_fetch_aggregate_keyed_left: bool,
+    allow_sort_fetch_keyed_left: bool,
     allow_left_output_bounded_join: bool,
 ) -> Result<RootTopKJoinSubcontract, CapabilityDecision> {
     if join.spec.build_artifact_id.is_some() || join.spec.output_projection.is_empty() {
@@ -726,7 +790,7 @@ fn require_supported_root_topk_join(
                     || (allow_distinct_dedup_keyed_outer
                         && join.spec.join_type == JoinType::Left
                         && join.spec.build_side == JoinSide::Right)
-                    || (allow_sort_fetch_aggregate_keyed_left
+                    || (allow_sort_fetch_keyed_left
                         && join.spec.join_type == JoinType::Left
                         && join.spec.build_side == JoinSide::Right)
                     || (allow_left_output_bounded_join
@@ -742,7 +806,7 @@ fn require_supported_root_topk_join(
                     || (allow_distinct_dedup_keyed_outer
                         && join.spec.join_type == JoinType::Left
                         && join.spec.build_side == JoinSide::Right)
-                    || (allow_sort_fetch_aggregate_keyed_left
+                    || (allow_sort_fetch_keyed_left
                         && join.spec.join_type == JoinType::Left
                         && join.spec.build_side == JoinSide::Right)
                     || (allow_left_output_bounded_join
@@ -795,6 +859,17 @@ fn root_topk_distinct_aggregate_ids(
 ) -> Result<Vec<NodeId>, CapabilityDecision> {
     let mut distinct_aggregate_ids = Vec::new();
     let window_input_sort_ids = root_topk_window_input_sort_ids(plan, &root_topk_window_ids(plan, reachable)?)?;
+    let mut grouped_aggregate_topk_input_ids = BTreeSet::new();
+    for node_id in reachable {
+        let Some(PlanNode::Join(join)) = plan.node(*node_id).map(|node| &node.kind) else {
+            continue;
+        };
+        for input in join.inputs {
+            if let Some(node_ids) = root_topk_grouped_aggregate_topk_input_nodes(plan, input)? {
+                grouped_aggregate_topk_input_ids.extend(node_ids);
+            }
+        }
+    }
     for node_id in reachable {
         let Some(node) = plan.node(*node_id) else {
             return Err(CapabilityDecision::rejected(
@@ -835,6 +910,7 @@ fn root_topk_distinct_aggregate_ids(
                 }
             },
             PlanNode::Sort(_) if window_input_sort_ids.contains(node_id) => {},
+            PlanNode::Sort(_) | PlanNode::Limit(_) if grouped_aggregate_topk_input_ids.contains(node_id) => {},
             PlanNode::Sort(_)
             | PlanNode::Limit(_)
             | PlanNode::Union(_)
