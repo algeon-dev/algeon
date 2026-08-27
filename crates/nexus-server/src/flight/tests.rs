@@ -13,8 +13,14 @@ use arrow::{
 };
 use arrow_flight::decode::FlightRecordBatchStream;
 use datafusion::{
-    datasource::{MemTable, TableProvider},
+    common::TableReference,
+    datasource::{MemTable, TableProvider, provider_as_source},
+    execution::SessionStateBuilder,
+    logical_expr::LogicalPlanBuilder,
     prelude::SessionConfig,
+};
+use datafusion_nexus::gpu_functions::{
+    GPU_DESCRIBE_FUNCTION_FUNCTION, GPU_LIST_FUNCTIONS_FUNCTION, GPU_VALIDATE_CALL_FUNCTION,
 };
 use futures::future::BoxFuture;
 
@@ -118,6 +124,101 @@ fn get_tables_metadata_log_uses_the_same_collection_error_for_fields_and_cause()
     assert!(!output.contains("unrelated first failure"), "{output}");
 }
 
+#[test]
+fn statement_status_log_flattens_resolved_sql_and_keeps_all_fields() {
+    let buffer = SharedLogBuffer::default();
+    let writer = buffer.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_target(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    let status = Status::invalid_argument("terminal failure");
+
+    tracing::subscriber::with_default(subscriber, || {
+        log_statement_status(
+            "terminal-query",
+            Some("SELECT 1\tFROM t\nWHERE x = 1"),
+            "planning",
+            Instant::now(),
+            &status,
+        );
+    });
+
+    let output = String::from_utf8(buffer.0.lock().expect("log buffer lock").clone()).expect("UTF-8 logs");
+    assert_eq!(output.lines().count(), 1, "resolved SQL must remain one log line: {output}");
+    assert!(output.contains("query_id=\"terminal-query\""), "{output}");
+    assert!(output.contains("sql=SELECT 1 FROM t WHERE x = 1"), "{output}");
+    assert!(output.contains("outcome=\"failed\""), "{output}");
+    assert!(output.contains("stage=\"planning\""), "{output}");
+    assert!(output.contains("grpc_code=InvalidArgument"), "{output}");
+    assert!(output.contains("elapsed_ms="), "{output}");
+    assert!(output.contains("error=\"terminal failure\""), "{output}");
+}
+
+#[test]
+fn statement_status_log_omits_sql_before_ticket_resolution() {
+    let buffer = SharedLogBuffer::default();
+    let writer = buffer.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_target(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    let status = Status::invalid_argument("unknown ticket");
+
+    tracing::subscriber::with_default(subscriber, || {
+        log_statement_status("unknown-query", None, "ticket", Instant::now(), &status);
+    });
+
+    let output = String::from_utf8(buffer.0.lock().expect("log buffer lock").clone()).expect("UTF-8 logs");
+    assert!(output.contains("query_id=\"unknown-query\""), "{output}");
+    assert!(output.contains("outcome=\"failed\""), "{output}");
+    assert!(output.contains("stage=\"ticket\""), "{output}");
+    assert!(output.contains("grpc_code=InvalidArgument"), "{output}");
+    assert!(output.contains("elapsed_ms="), "{output}");
+    assert!(output.contains("error=\"unknown ticket\""), "{output}");
+    assert!(!output.contains("sql="), "unresolved tickets must not fabricate SQL context: {output}");
+}
+
+#[test]
+fn execution_terminal_log_includes_resolved_sql() {
+    let service = super::service::bounded_test_service(Duration::from_secs(30));
+    let sql = "SELECT 1\nFROM user_rows";
+    let planning = service
+        .coordinator
+        .register_with_id("terminal-execution-query", sql, None, None, service.runtime_observation_config)
+        .expect("coordinator-owned fixture registers");
+    let execution = planning.into_execution().expect("planning promotes to execution");
+    let terminal = CoordinatorExecutionTerminal::new(
+        execution,
+        "terminal-execution-query".to_string(),
+        Arc::from(sql),
+        Instant::now(),
+    );
+    let buffer = SharedLogBuffer::default();
+    let writer = buffer.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_target(false)
+        .with_writer(move || writer.clone())
+        .finish();
+    let status = Status::internal("stream failed");
+
+    tracing::subscriber::with_default(subscriber, || {
+        terminal.finish_captured("stream", &status, CapturedError::from_status(&status));
+    });
+
+    let output = String::from_utf8(buffer.0.lock().expect("log buffer lock").clone()).expect("UTF-8 logs");
+    assert!(output.contains("query_id=\"terminal-execution-query\""), "{output}");
+    assert!(output.contains("sql=SELECT 1 FROM user_rows"), "{output}");
+    assert!(output.contains("stage=\"stream\""), "{output}");
+    assert!(output.contains("grpc_code=Internal"), "{output}");
+}
+
 fn query_stats_payload(service: &DatafusionNexusFlightSqlService, query_id: &str) -> String {
     String::from_utf8(
         service.coordinator.query_stats(query_id).expect("completed Flight query should retain stats").to_vec(),
@@ -145,25 +246,56 @@ fn assert_single_sealed_attempt_report(payload: &str, expected_outcome: &str) {
 #[test]
 fn statement_execution_domain_classifier_is_fail_closed() {
     let service = super::service::bounded_test_service(Duration::from_secs(30));
-    for sql in [
+    let validate_call = r#"{"schema_version":1,"relations":{"input":{"table":"input"}},"options":{}}"#;
+    let metadata_queries = [
         "SHOW TABLES",
         "SHOW COLUMNS FROM t",
         "DESCRIBE t",
         "DESC t",
         "SELECT table_name FROM information_schema.tables",
         "SELECT a.table_name FROM information_schema.tables a JOIN information_schema.columns b ON a.table_name = b.table_name",
-    ] {
+        &format!(
+            "SELECT function_name, provider, domain, available, summary \
+             FROM {GPU_LIST_FUNCTIONS_FUNCTION}() \
+             WHERE provider IN ('cugraph', 'cuvs') \
+             ORDER BY function_name"
+        ),
+        &format!(
+            "SELECT function_name, provider \
+             FROM {GPU_DESCRIBE_FUNCTION_FUNCTION}('cuvs_pca') \
+             WHERE provider = 'cuvs' \
+             ORDER BY function_name"
+        ),
+        &format!(
+            "SELECT valid, error_code, message \
+             FROM {GPU_VALIDATE_CALL_FUNCTION}('cuvs_pca', '{validate_call}') \
+             WHERE valid \
+             ORDER BY function_name"
+        ),
+        &format!(
+            "SELECT i.table_name, g.function_name \
+             FROM information_schema.tables i \
+             JOIN {GPU_LIST_FUNCTIONS_FUNCTION}() g ON true \
+             WHERE i.table_name IS NOT NULL \
+             ORDER BY g.function_name"
+        ),
+    ];
+    for sql in metadata_queries {
         let statement = service.parse_flight_statement(sql).unwrap();
         assert_eq!(service.classify_statement_candidate(&statement), StatementExecutionDomain::Metadata, "{sql}");
     }
 
-    for sql in [
+    let data_queries = [
         "SELECT 1",
         "SHOW FUNCTIONS",
         "SHOW FULL TABLES",
         "SELECT * FROM user_table",
         "SELECT i.table_name FROM information_schema.tables i JOIN user_table u ON true",
-    ] {
+        "SELECT * FROM gpu_list_functions",
+        "SELECT * FROM unknown_gpu_metadata_udtf()",
+        "SELECT g.function_name, u.id FROM gpu_list_functions() g JOIN user_table u ON true",
+    ];
+    for sql in data_queries {
         let statement = service.parse_flight_statement(sql).unwrap();
         assert_eq!(service.classify_statement_candidate(&statement), StatementExecutionDomain::Data, "{sql}");
     }
@@ -198,23 +330,72 @@ fn metadata_planning_removes_only_the_three_nexus_physical_rules() {
 
 #[tokio::test]
 async fn metadata_logical_proof_rejects_user_sources_and_source_free_queries() {
-    let ctx = Arc::new(SessionContext::new_with_config(SessionConfig::new().with_information_schema(true)));
+    let backend = crate::backend::InstalledTestGpuBackend::new();
+    let state = backend
+        .install_on(
+            SessionStateBuilder::new_with_default_features()
+                .with_config(SessionConfig::new().with_information_schema(true)),
+        )
+        .unwrap()
+        .build();
+    let ctx = Arc::new(SessionContext::new_with_state(state));
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-    ctx.register_table("user_table", Arc::new(MemTable::try_new(schema, vec![vec![]]).unwrap())).unwrap();
+    ctx.register_table("user_table", Arc::new(MemTable::try_new(Arc::clone(&schema), vec![vec![]]).unwrap())).unwrap();
     let service = DatafusionNexusFlightSqlService::new(
         Arc::clone(&ctx),
-        NexusNativeOptimizerConfig::default(),
-        Arc::new(QueryAdmission::new_for_tests()),
+        backend.optimizer_config().clone(),
+        Arc::new(QueryAdmission::from_test_backend(backend.backend())),
         Duration::from_secs(30),
         #[cfg(feature = "cugraph")]
         None,
     );
+
+    let validate_call = r#"{"schema_version":1,"relations":{"input":{"table":"input"}},"options":{}}"#;
+    for sql in [
+        format!(
+            "SELECT function_name, provider \
+             FROM {GPU_LIST_FUNCTIONS_FUNCTION}() \
+             WHERE provider = 'cuvs' \
+             ORDER BY function_name"
+        ),
+        format!(
+            "SELECT function_name, provider \
+             FROM {GPU_DESCRIBE_FUNCTION_FUNCTION}('cuvs_pca') \
+             WHERE provider = 'cuvs' \
+             ORDER BY function_name"
+        ),
+        format!(
+            "SELECT valid, error_code, message \
+             FROM {GPU_VALIDATE_CALL_FUNCTION}('cuvs_pca', '{validate_call}') \
+             WHERE valid \
+             ORDER BY function_name"
+        ),
+    ] {
+        let plan = ctx.state().create_logical_plan(&sql).await.unwrap();
+        service
+            .verify_metadata_logical_plan(&plan, "datafusion_nexus.test.metadata_proof")
+            .expect("real built-in GPU metadata providers must satisfy the metadata proof");
+    }
 
     let information_schema =
         ctx.state().create_logical_plan("SELECT table_name FROM information_schema.tables").await.unwrap();
     service.verify_metadata_logical_plan(&information_schema, "datafusion_nexus.test.metadata_proof").unwrap();
     let describe = ctx.state().create_logical_plan("DESCRIBE user_table").await.unwrap();
     service.verify_metadata_logical_plan(&describe, "datafusion_nexus.test.metadata_proof").unwrap();
+
+    let spoofed_provider = Arc::new(MemTable::try_new(Arc::clone(&schema), vec![vec![]]).unwrap());
+    let spoofed_plan = LogicalPlanBuilder::scan(
+        TableReference::Bare { table: format!("{GPU_LIST_FUNCTIONS_FUNCTION}()").into() },
+        provider_as_source(spoofed_provider),
+        None,
+    )
+    .unwrap()
+    .build()
+    .unwrap();
+    let error = service
+        .verify_metadata_logical_plan(&spoofed_plan, "datafusion_nexus.test.metadata_proof")
+        .expect_err("a same-name user provider must not satisfy the metadata proof");
+    assert_eq!(error.code(), ErrorCode::InvalidRequest);
 
     for sql in ["SELECT 1", "SELECT i.table_name FROM information_schema.tables i JOIN user_table u ON true"] {
         let plan = ctx.state().create_logical_plan(sql).await.unwrap();
@@ -223,6 +404,20 @@ async fn metadata_logical_proof_rejects_user_sources_and_source_free_queries() {
             .expect_err("non-metadata logical plans must fail proof");
         assert_eq!(error.code(), ErrorCode::InvalidRequest, "{sql}: {error:?}");
     }
+
+    let mixed_gpu_user = ctx
+        .state()
+        .create_logical_plan(&format!(
+            "SELECT g.function_name, u.id \
+             FROM {GPU_LIST_FUNCTIONS_FUNCTION}() g \
+             JOIN user_table u ON true"
+        ))
+        .await
+        .unwrap();
+    let error = service
+        .verify_metadata_logical_plan(&mixed_gpu_user, "datafusion_nexus.test.metadata_proof")
+        .expect_err("GPU metadata mixed with a user table must fail proof");
+    assert_eq!(error.code(), ErrorCode::InvalidRequest);
 }
 
 #[tokio::test]
@@ -687,12 +882,11 @@ async fn update_set_plain_datafusion_key_still_succeeds() {
 async fn deduplicated_prepared_update_retains_sealed_attempt_report() {
     let service = super::service::bounded_test_service(Duration::from_secs(30));
     let query_id = "deduplicated-prepared-update".to_string();
-    let planning_lease = service
-        .register_query(query_id.clone(), "CREATE VIEW deduplicated_update_view AS SELECT 1".to_string(), None)
-        .unwrap();
+    let sql = "CREATE VIEW deduplicated_update_view AS SELECT 1".to_string();
+    let planning_lease = service.register_query(query_id.clone(), sql.clone(), None).unwrap();
 
     let count = service
-        .complete_deduplicated_update(planning_lease, None)
+        .complete_deduplicated_update(planning_lease, sql, None)
         .await
         .expect("deduplicated prepared update should complete through its attempt owner");
 

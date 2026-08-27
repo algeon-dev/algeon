@@ -183,9 +183,6 @@ impl FlightSqlServerBuilder {
             None => Listen::Addr(config.bind_addr),
         };
         let addr = listen.addr()?;
-        log_server_config_snapshot(&config);
-        warn_if_cugraph_built_but_disabled(&config);
-
         if self.session_context.is_some() && self.backend.is_none() {
             return Err(ServerError::builder_validation(
                 "server_session_without_backend",
@@ -200,6 +197,10 @@ impl FlightSqlServerBuilder {
             },
             None => backend_from_server_config(&config)?,
         };
+        let mut effective_config = config.clone();
+        effective_config.native_optimizer_config = backend.optimizer_config().clone();
+        log_server_config_snapshot(&effective_config);
+        warn_if_cugraph_built_but_disabled(&effective_config);
 
         let admission_init_start = Instant::now();
         let admission = Arc::new(admission::QueryAdmission::from_backend(&backend));
@@ -209,7 +210,7 @@ impl FlightSqlServerBuilder {
         );
         admission.log_query_service_state(None, "server_startup");
 
-        let mut native_optimizer_config = backend.optimizer_config().clone();
+        let mut native_optimizer_config = effective_config.native_optimizer_config.clone();
         let io_lifecycle = Arc::new(io_lifecycle::ServerIoLifecycle::new());
         let native_execution_config = native_optimizer_config
             .native_execution_config()
@@ -220,30 +221,26 @@ impl FlightSqlServerBuilder {
 
         let ctx = match self.session_context {
             Some(ctx) => {
-                validate_injected_session_matches_server_config(&ctx, &backend, &config)?;
+                validate_injected_session_matches_server_config(&ctx, &backend, &effective_config)?;
                 ctx
             },
-            None => {
-                let mut session_config = config.clone();
-                session_config.native_optimizer_config = native_optimizer_config.clone();
-                Arc::new(session::build_session_context_with_backend(&session_config, &backend).await?)
-            },
+            None => Arc::new(session::build_session_context_with_backend(&effective_config, &backend).await?),
         };
 
-        let auth_interceptor = auth::AuthInterceptor::new(config.auth.mode.clone(), auth::TokenStore::new());
-        log_auth_mode_snapshot(&config.auth.mode);
+        let auth_interceptor = auth::AuthInterceptor::new(effective_config.auth.mode.clone(), auth::TokenStore::new());
+        log_auth_mode_snapshot(&effective_config.auth.mode);
         let service = flight::DatafusionNexusFlightSqlService::new_with_io_lifecycle(
             Arc::clone(&ctx),
             native_optimizer_config.clone(),
             admission,
-            config.statement_ticket_ttl,
+            effective_config.statement_ticket_ttl,
             auth_interceptor,
             io_lifecycle,
-            config.cugraph.as_ref().map(|cugraph| {
+            effective_config.cugraph.as_ref().map(|cugraph| {
                 session::cugraph_sql_config(cugraph, native_optimizer_config.native_execution_config().clone())
             }),
         )
-        .with_server_config_diagnostics(&config);
+        .with_server_config_diagnostics(&effective_config);
         let local_addr = matches!(&listen, Listen::Prebound(_)).then_some(addr);
         Ok(FlightSqlServer { service, listen, shutdown: self.shutdown, ctx, backend: Some(backend), local_addr })
     }
@@ -917,9 +914,24 @@ fn compare_profile_field(
 fn validate_injected_session_matches_server_config(
     ctx: &SessionContext,
     backend: &NexusGpuBackend,
-    _config: &ServerConfig,
+    config: &ServerConfig,
 ) -> Result<()> {
-    validate_injected_session_backend_binding(backend.is_session_state_bound(&ctx.state()))
+    validate_injected_session_backend_binding(backend.is_session_state_bound(&ctx.state()))?;
+    let requires_single_partition = config
+        .native_optimizer_config
+        .final_plan_requirements()
+        .contains(&crate::planner::FinalPlanRequirement::NoDataFusionCpu);
+    let target_partitions = ctx.state().config_options().execution.target_partitions;
+    if requires_single_partition && target_partitions != 1 {
+        return Err(ServerError::builder_validation(
+            "server_session_optimizer_policy_mismatch",
+            "injected session_context target partitions were not derived from the strict injected backend",
+        )
+        .with_fact("config_field", "datafusion.execution.target_partitions")
+        .with_fact("expected_value", 1)
+        .with_fact("actual_value", target_partitions));
+    }
+    Ok(())
 }
 
 fn validate_injected_session_backend_binding(source_matches: bool) -> Result<()> {

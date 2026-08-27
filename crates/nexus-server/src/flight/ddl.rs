@@ -9,6 +9,7 @@ impl DatafusionNexusFlightSqlService {
         statement_kind: UpdateStatementKind,
     ) -> Result<i64, Status> {
         let query_id = planning_lease.key().query_id().to_string();
+        let sql: Arc<str> = sql.into();
         let attempt = match self.admission.begin_attempt(crate::attempt::AttemptOptions {
             query_id: Some(query_id.clone()),
             trace_context: correlation_id.clone(),
@@ -62,6 +63,7 @@ impl DatafusionNexusFlightSqlService {
         let coordinator_terminal = CoordinatorExecutionTerminal::new_with_attempt_report(
             execution_lease,
             query_id.clone(),
+            Arc::clone(&sql),
             Instant::now(),
             attempt.is_some(),
         );
@@ -76,7 +78,7 @@ impl DatafusionNexusFlightSqlService {
         tracing::info!(
             query_id,
             correlation_id = tracing_correlation_id(correlation_id.as_deref()),
-            sql,
+            sql = sql.as_ref(),
             statement_kind = ?statement_kind,
             "executing Flight SQL update statement"
         );
@@ -251,6 +253,7 @@ impl DatafusionNexusFlightSqlService {
     pub(super) async fn complete_deduplicated_update(
         &self,
         planning_lease: QueryPlanningLease,
+        sql: String,
         correlation_id: Option<String>,
     ) -> Result<i64, Status> {
         let query_id = planning_lease.key().query_id().to_string();
@@ -287,6 +290,7 @@ impl DatafusionNexusFlightSqlService {
         let coordinator_terminal = CoordinatorExecutionTerminal::new_with_attempt_report(
             execution_lease,
             query_id.clone(),
+            sql.into(),
             Instant::now(),
             attempt.is_some(),
         );

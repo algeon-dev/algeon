@@ -1,6 +1,6 @@
 //! DataFusion table functions for the unified GPU function control plane.
 
-use std::sync::Arc;
+use std::{any::TypeId, sync::Arc};
 
 use arrow::{
     array::{ArrayRef, BooleanArray, StringArray},
@@ -10,8 +10,8 @@ use arrow::{
 use datafusion::{
     catalog::{Session, TableFunction, TableFunctionImpl, TableProvider},
     common::{DataFusionError, Result, ScalarValue},
-    datasource::{MemTable, TableType},
-    logical_expr::Expr,
+    datasource::{MemTable, TableType, source_as_provider},
+    logical_expr::{Expr, TableSource},
     physical_plan::ExecutionPlan,
 };
 use serde_json::{Map, Value};
@@ -110,6 +110,11 @@ enum MetadataKind {
 struct GpuMetadataProvider {
     catalog: Arc<GpuFunctionCatalog>,
     kind: MetadataKind,
+}
+
+/// Whether `source` is backed by a built-in GPU metadata table function.
+pub fn is_builtin_gpu_metadata_table_source(source: &Arc<dyn TableSource>) -> bool {
+    source_as_provider(source).is_ok_and(|provider| provider.as_ref().type_id() == TypeId::of::<GpuMetadataProvider>())
 }
 
 #[async_trait::async_trait]

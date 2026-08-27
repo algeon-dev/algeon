@@ -299,17 +299,36 @@ pub(super) fn status_outcome(code: Code) -> &'static str {
     if code == Code::Cancelled { "cancelled" } else { "failed" }
 }
 
-pub(super) fn log_statement_status(query_id: &str, stage: &'static str, started_at: Instant, status: &Status) {
+pub(super) fn log_statement_status(
+    query_id: &str,
+    sql: Option<&str>,
+    stage: &'static str,
+    started_at: Instant,
+    status: &Status,
+) {
     let outcome = status_outcome(status.code());
-    tracing::warn!(
-        query_id,
-        outcome,
-        stage,
-        grpc_code = ?status.code(),
-        elapsed_ms = started_at.elapsed().as_millis(),
-        error = status.message(),
-        "failed Flight SQL statement"
-    );
+    if let Some(sql) = sql {
+        tracing::warn!(
+            query_id,
+            sql = %StableValue(sql),
+            outcome,
+            stage,
+            grpc_code = ?status.code(),
+            elapsed_ms = started_at.elapsed().as_millis(),
+            error = status.message(),
+            "failed Flight SQL statement"
+        );
+    } else {
+        tracing::warn!(
+            query_id,
+            outcome,
+            stage,
+            grpc_code = ?status.code(),
+            elapsed_ms = started_at.elapsed().as_millis(),
+            error = status.message(),
+            "failed Flight SQL statement"
+        );
+    }
 }
 
 #[cfg(test)]

@@ -1,3 +1,5 @@
+use std::ops::ControlFlow;
+
 use datafusion::{
     common::{
         TableReference,
@@ -5,7 +7,10 @@ use datafusion::{
     },
     sql::{
         parser::Statement as DataFusionSqlStatement,
-        sqlparser::ast::{DescribeAlias, ShowStatementOptions, Statement as SqlStatement},
+        sqlparser::ast::{
+            DescribeAlias, ObjectName, ObjectNamePart, Query as SqlQuery, ShowStatementOptions,
+            Statement as SqlStatement, TableFactor, Visit, Visitor,
+        },
     },
 };
 
@@ -49,14 +54,7 @@ impl DatafusionNexusFlightSqlService {
             | SqlStatement::Explain { describe_alias: DescribeAlias::Describe | DescribeAlias::Desc, .. } => {
                 StatementExecutionDomain::Metadata
             },
-            SqlStatement::Query(_) => self
-                .ctx
-                .state()
-                .resolve_table_references(datafusion_statement)
-                .ok()
-                .filter(|references| !references.is_empty())
-                .filter(|references| references.iter().all(table_reference_is_information_schema))
-                .map_or(StatementExecutionDomain::Data, |_| StatementExecutionDomain::Metadata),
+            SqlStatement::Query(query) if query_sources_are_metadata(query) => StatementExecutionDomain::Metadata,
             _ => StatementExecutionDomain::Data,
         }
     }
@@ -70,14 +68,17 @@ impl DatafusionNexusFlightSqlService {
             return Ok(());
         }
 
-        let mut saw_information_schema_scan = false;
+        let mut saw_metadata_scan = false;
         let mut rejection = None;
         plan.apply(|node| {
             match node {
-                LogicalPlan::TableScan(scan) if table_reference_is_information_schema(&scan.table_name) => {
-                    saw_information_schema_scan = true;
+                LogicalPlan::TableScan(scan)
+                    if table_reference_is_information_schema(&scan.table_name)
+                        || ::datafusion_nexus::gpu_functions::is_builtin_gpu_metadata_table_source(&scan.source) =>
+                {
+                    saw_metadata_scan = true;
                 },
-                LogicalPlan::TableScan(_) => rejection = Some("non_information_schema_scan"),
+                LogicalPlan::TableScan(_) => rejection = Some("non_metadata_scan"),
                 LogicalPlan::Dml(_) => rejection = Some("dml"),
                 LogicalPlan::Copy(_) => rejection = Some("copy"),
                 LogicalPlan::Ddl(_) => rejection = Some("ddl"),
@@ -88,7 +89,7 @@ impl DatafusionNexusFlightSqlService {
         })
         .expect("metadata logical-plan inspection is infallible");
 
-        let rejection = rejection.or((!saw_information_schema_scan).then_some("missing_information_schema_scan"));
+        let rejection = rejection.or((!saw_metadata_scan).then_some("missing_metadata_scan"));
         if let Some(reason) = rejection {
             return Err(Error::new(
                 ErrorCode::InvalidRequest,
@@ -536,6 +537,64 @@ fn show_options_are_empty(options: &ShowStatementOptions) -> bool {
         && options.limit.is_none()
         && options.limit_from.is_none()
         && options.filter_position.is_none()
+}
+
+fn query_sources_are_metadata(query: &SqlQuery) -> bool {
+    let mut proof = MetadataSourceCandidateProof::default();
+    let _ = query.visit(&mut proof);
+    proof.saw_source && !proof.rejected
+}
+
+#[derive(Default)]
+struct MetadataSourceCandidateProof {
+    saw_source: bool,
+    rejected: bool,
+}
+
+impl Visitor for MetadataSourceCandidateProof {
+    type Break = ();
+
+    fn pre_visit_table_factor(&mut self, factor: &TableFactor) -> ControlFlow<Self::Break> {
+        let source_is_metadata = match factor {
+            TableFactor::Table { name, args: None, .. } => object_name_is_information_schema(name),
+            TableFactor::Table { name, args: Some(_), .. } | TableFactor::Function { name, .. } => {
+                object_name_is_builtin_gpu_metadata_function(name)
+            },
+            TableFactor::Derived { .. }
+            | TableFactor::NestedJoin { .. }
+            | TableFactor::Pivot { .. }
+            | TableFactor::Unpivot { .. } => return ControlFlow::Continue(()),
+            _ => false,
+        };
+        self.saw_source = true;
+        if source_is_metadata {
+            ControlFlow::Continue(())
+        } else {
+            self.rejected = true;
+            ControlFlow::Break(())
+        }
+    }
+}
+
+fn object_name_is_information_schema(name: &ObjectName) -> bool {
+    name.0
+        .iter()
+        .rev()
+        .nth(1)
+        .and_then(ObjectNamePart::as_ident)
+        .is_some_and(|ident| ident.value.eq_ignore_ascii_case("information_schema"))
+}
+
+fn object_name_is_builtin_gpu_metadata_function(name: &ObjectName) -> bool {
+    name.0.last().and_then(ObjectNamePart::as_ident).is_some_and(|ident| {
+        [
+            ::datafusion_nexus::gpu_functions::GPU_LIST_FUNCTIONS_FUNCTION,
+            ::datafusion_nexus::gpu_functions::GPU_DESCRIBE_FUNCTION_FUNCTION,
+            ::datafusion_nexus::gpu_functions::GPU_VALIDATE_CALL_FUNCTION,
+        ]
+        .iter()
+        .any(|function| ident.value.eq_ignore_ascii_case(function))
+    })
 }
 
 fn show_columns_options_are_supported(options: &ShowStatementOptions) -> bool {

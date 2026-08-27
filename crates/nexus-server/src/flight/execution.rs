@@ -232,7 +232,7 @@ impl DatafusionNexusFlightSqlService {
                     &query_id,
                     request_correlation_id.as_deref(),
                 );
-                log_statement_status(&query_id, "ticket", Instant::now(), &status);
+                log_statement_status(&query_id, None, "ticket", Instant::now(), &status);
                 status
             })?;
 
@@ -250,6 +250,7 @@ impl DatafusionNexusFlightSqlService {
             started_at,
             ..
         } = ticket;
+        let sql: Arc<str> = sql.into();
         let ticket_kind = match StatementTicketKind::from_code(kind) {
             Ok(ticket_kind) => ticket_kind,
             Err(status) => {
@@ -281,6 +282,7 @@ impl DatafusionNexusFlightSqlService {
         let coordinator_terminal = CoordinatorExecutionTerminal::new_with_attempt_report(
             execution_lease,
             query_id.clone(),
+            Arc::clone(&sql),
             started_at,
             attempt.is_some(),
         );

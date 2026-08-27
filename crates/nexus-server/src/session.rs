@@ -19,13 +19,15 @@ pub async fn build_session_context_with_backend(
     config: &ServerConfig,
     backend: &NexusGpuBackend,
 ) -> crate::error::Result<SessionContext> {
-    let session_config = build_session_config(config)?;
+    let mut effective_config = config.clone();
+    effective_config.native_optimizer_config = backend.optimizer_config().clone();
+    let session_config = build_session_config(&effective_config)?;
     let builder = SessionStateBuilder::new_with_default_features().with_config(session_config);
-    let builder = match &config.cugraph {
+    let builder = match &effective_config.cugraph {
         Some(cugraph) => backend
             .install_on_with_cugraph_sql(
                 builder,
-                cugraph_sql_config(cugraph, config.native_optimizer_config.native_execution_config().clone()),
+                cugraph_sql_config(cugraph, backend.optimizer_config().native_execution_config().clone()),
             )
             .map_err(|error| ServerError::session("failed to install backend native session", error))?,
         None => backend
@@ -36,11 +38,11 @@ pub async fn build_session_context_with_backend(
     let ctx = SessionContext::new_with_state(state);
 
     #[cfg(feature = "iceberg")]
-    register_iceberg_catalog(&ctx, config).await?;
-    if let Some(workspace) = &config.workspace {
+    register_iceberg_catalog(&ctx, &effective_config).await?;
+    if let Some(workspace) = &effective_config.workspace {
         crate::workspace::install_workspace_overlay(&ctx, workspace)?;
     }
-    crate::workspace::warn_if_default_schema_is_read_only(&ctx, config);
+    crate::workspace::warn_if_default_schema_is_read_only(&ctx, &effective_config);
 
     Ok(ctx)
 }

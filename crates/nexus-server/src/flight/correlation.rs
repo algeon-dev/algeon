@@ -430,7 +430,12 @@ mod correlation_tests {
             .register_with_id(query_id, "SELECT private_sql_literal", None, None, service.runtime_observation_config)
             .expect("coordinator-owned fixture registers");
         let execution = planning.into_execution().unwrap();
-        let terminal = CoordinatorExecutionTerminal::new(execution, query_id.to_string(), Instant::now());
+        let terminal = CoordinatorExecutionTerminal::new(
+            execution,
+            query_id.to_string(),
+            Arc::from("SELECT private_sql_literal"),
+            Instant::now(),
+        );
 
         let _flight_error = datafusion_error_to_flight_error(
             DataFusionError::Execution("runtime batch failed".to_string()),
@@ -460,6 +465,7 @@ mod correlation_tests {
         let terminal = CoordinatorExecutionTerminal::new_with_attempt_report(
             execution,
             QUERY_ID.to_string(),
+            Arc::from("SELECT 1 AS one"),
             Instant::now(),
             true,
         );
@@ -514,6 +520,7 @@ mod correlation_tests {
         let terminal = CoordinatorExecutionTerminal::new_with_attempt_report(
             execution,
             QUERY_ID.to_string(),
+            Arc::from("SELECT 1 AS one"),
             Instant::now(),
             true,
         );
