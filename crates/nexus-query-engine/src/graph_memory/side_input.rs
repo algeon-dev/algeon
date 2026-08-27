@@ -2,7 +2,7 @@
 use arrow::datatypes::DataType;
 
 #[cfg(feature = "cugraph")]
-use super::model::hard_row_upper_bound_for_plan_node;
+use super::model::{hard_row_upper_bound_for_plan_node, semantic_edge_row_width_bytes};
 use super::{evidence::GraphMemoryEstimate, model::missing_graph_input_error};
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
@@ -80,6 +80,7 @@ fn side_input_workspace_error(
 #[derive(Debug, Clone, Copy)]
 enum GraphSideInputColumns<'a> {
     Vertex(&'a str),
+    Edge { source: &'a str, destination: &'a str, edge_id: Option<&'a str> },
     Personalization { vertex: &'a str, value: &'a str },
 }
 
@@ -111,32 +112,50 @@ fn graph_side_input_workspace_peak_bytes_with_owner(
             let mut exclude_vertices_rows = None;
             let mut target_vertices_rows = None;
             let mut include_edge_ids_rows = None;
+            let mut include_edges = None;
             for binding in &bindings {
                 let rows = graph_side_input_rows(plan, binding)?;
-                let GraphSideInputColumns::Vertex(column) = binding.columns else {
-                    return Err(side_input_workspace_preflight_unavailable(
-                        "invalid_bfs_binding",
-                        Some(binding.role),
-                        Some(graph.spec.algorithm),
-                    ));
-                };
-                graph_side_input_vertex_type(
-                    plan,
-                    binding.input,
-                    column,
-                    graph_vertex_type,
-                    binding.role,
-                    graph.spec.algorithm,
-                )?;
-                match binding.role {
-                    "source_vertices" => {},
-                    "include_vertices" => include_vertices_rows = Some(rows),
-                    "exclude_vertices" => exclude_vertices_rows = Some(rows),
-                    "target_vertices" => target_vertices_rows = Some(rows),
-                    "include_edge_ids" => include_edge_ids_rows = Some(rows),
-                    _ => {
+                match binding.columns {
+                    GraphSideInputColumns::Vertex(column) => {
+                        graph_side_input_vertex_type(
+                            plan,
+                            binding.input,
+                            column,
+                            graph_vertex_type,
+                            binding.role,
+                            graph.spec.algorithm,
+                        )?;
+                        match binding.role {
+                            "source_vertices" => {},
+                            "include_vertices" => include_vertices_rows = Some(rows),
+                            "exclude_vertices" => exclude_vertices_rows = Some(rows),
+                            "target_vertices" => target_vertices_rows = Some(rows),
+                            "include_edge_ids" => include_edge_ids_rows = Some(rows),
+                            _ => {
+                                return Err(side_input_workspace_preflight_unavailable(
+                                    "unknown_bfs_binding",
+                                    Some(binding.role),
+                                    Some(graph.spec.algorithm),
+                                ));
+                            },
+                        }
+                    },
+                    GraphSideInputColumns::Edge { source, destination, edge_id } => {
+                        for column in [Some(source), Some(destination), edge_id].into_iter().flatten() {
+                            graph_side_input_vertex_type(
+                                plan,
+                                binding.input,
+                                column,
+                                graph_vertex_type,
+                                binding.role,
+                                graph.spec.algorithm,
+                            )?;
+                        }
+                        include_edges = Some((rows, 2 + usize::from(edge_id.is_some())));
+                    },
+                    GraphSideInputColumns::Personalization { .. } => {
                         return Err(side_input_workspace_preflight_unavailable(
-                            "unknown_bfs_binding",
+                            "invalid_bfs_binding",
                             Some(binding.role),
                             Some(graph.spec.algorithm),
                         ));
@@ -174,7 +193,19 @@ fn graph_side_input_workspace_peak_bytes_with_owner(
                 side_input_workspace_preflight_unavailable("owner_query_failed", None, Some(graph.spec.algorithm))
                     .with_source(error)
             })?;
-            Ok(Some(preflight.peak_bytes()))
+            let include_edges_peak = include_edges
+                .map(|(rows, key_count)| {
+                    include_edges_alignment_workspace_peak_bytes(
+                        estimate,
+                        graph_vertex_type,
+                        rows,
+                        key_count,
+                        graph.spec.algorithm,
+                    )
+                })
+                .transpose()?
+                .unwrap_or(0);
+            Ok(Some(preflight.peak_bytes().max(include_edges_peak)))
         },
         GraphAlgorithmParams::PersonalizedPageRank(_params) => {
             let bindings = graph_side_input_bindings(graph)?;
@@ -233,17 +264,96 @@ fn graph_side_input_workspace_peak_bytes_with_owner(
 }
 
 #[cfg(feature = "cugraph")]
+fn include_edges_alignment_workspace_peak_bytes(
+    estimate: &GraphMemoryEstimate,
+    graph_vertex_type: cugraph::types::DataType,
+    build_rows: usize,
+    key_count: usize,
+    algorithm: GraphAlgorithm,
+) -> Result<u64> {
+    let key_type = match graph_vertex_type {
+        cugraph::types::DataType::Int32 => cudf::TypeId::Int32,
+        cugraph::types::DataType::Int64 => cudf::TypeId::Int64,
+        _ => {
+            return Err(side_input_workspace_preflight_unavailable(
+                "include_edges_key_dtype_unsupported",
+                Some("include_edges"),
+                Some(algorithm),
+            ));
+        },
+    };
+    let key_types = vec![key_type; key_count];
+    let retained_build_bytes =
+        cudf::ops::join::FilteredJoin::pre_build_reservation_size_bytes_for_fixed_width_metadata(
+            &key_types,
+            build_rows,
+            cudf::ops::join::FilteredJoinOptions::new().null_equality(cudf::NullEquality::Unequal),
+        )
+        .map_err(|error| {
+            side_input_workspace_preflight_unavailable("owner_query_failed", Some("include_edges"), Some(algorithm))
+                .with_source(error)
+        })?;
+    let retained_build_bytes = u64::try_from(retained_build_bytes).map_err(|_| {
+        side_input_workspace_preflight_unavailable(
+            "owner_byte_count_conversion_overflow",
+            Some("include_edges"),
+            Some(algorithm),
+        )
+    })?;
+    let build_rows = u64::try_from(build_rows).map_err(|_| {
+        side_input_workspace_preflight_unavailable(
+            "row_count_conversion_overflow",
+            Some("include_edges"),
+            Some(algorithm),
+        )
+    })?;
+    let key_count = u64::try_from(key_count).map_err(|_| {
+        side_input_workspace_preflight_unavailable(
+            "key_count_conversion_overflow",
+            Some("include_edges"),
+            Some(algorithm),
+        )
+    })?;
+    let null_mask_bytes = build_rows.div_ceil(512).checked_mul(64);
+    let key_frame_bytes = build_rows
+        .checked_mul(estimate.vertex_width_bytes)
+        .and_then(|bytes| bytes.checked_add(null_mask_bytes?))
+        .and_then(|bytes| bytes.checked_mul(key_count));
+    let probe_state_bytes = estimate.input_edges;
+    let gather_map_bytes = estimate.input_edges.checked_mul(4);
+    let edge_column_count = 2 + u64::from(estimate.weight_width_bytes.is_some()) + u64::from(estimate.has_edge_id);
+    let edge_frame_bytes = estimate
+        .input_edges
+        .checked_mul(semantic_edge_row_width_bytes(
+            estimate.vertex_width_bytes,
+            estimate.weight_width_bytes,
+            estimate.has_edge_id,
+        ))
+        .and_then(|bytes| {
+            let masks = estimate.input_edges.div_ceil(512).checked_mul(64)?.checked_mul(edge_column_count)?;
+            bytes.checked_add(masks)
+        });
+    let join_phase_peak = key_frame_bytes
+        .and_then(|bytes| bytes.checked_mul(2))
+        .and_then(|bytes| bytes.checked_add(retained_build_bytes))
+        .and_then(|bytes| bytes.checked_add(probe_state_bytes))
+        .and_then(|bytes| bytes.checked_add(gather_map_bytes?));
+    let gather_phase_peak = gather_map_bytes.and_then(|bytes| bytes.checked_add(edge_frame_bytes?));
+    match (join_phase_peak, gather_phase_peak) {
+        (Some(join), Some(gather)) => Ok(join.max(gather)),
+        _ => Err(side_input_workspace_preflight_unavailable(
+            "owner_byte_count_overflow",
+            Some("include_edges"),
+            Some(algorithm),
+        )),
+    }
+}
+
+#[cfg(feature = "cugraph")]
 fn graph_side_input_bindings<'a>(graph: &'a crate::plan::GraphAlgorithmNode) -> Result<Vec<GraphSideInputBinding<'a>>> {
     let mut bindings = Vec::new();
     match &graph.spec.params {
         GraphAlgorithmParams::Bfs(params) => {
-            if params.predicates.include_edges.is_some() {
-                return Err(side_input_workspace_preflight_unavailable(
-                    "include_edges_owner_contract_missing",
-                    Some("include_edges"),
-                    Some(graph.spec.algorithm),
-                ));
-            }
             if let Some(input) = params.source_vertices.as_ref() {
                 bindings.push(GraphSideInputBinding {
                     role: "source_vertices",
@@ -277,6 +387,17 @@ fn graph_side_input_bindings<'a>(graph: &'a crate::plan::GraphAlgorithmNode) -> 
                     role: "include_edge_ids",
                     input: input.input,
                     columns: GraphSideInputColumns::Vertex(input.column.as_str()),
+                });
+            }
+            if let Some(input) = params.predicates.include_edges.as_ref() {
+                bindings.push(GraphSideInputBinding {
+                    role: "include_edges",
+                    input: input.input,
+                    columns: GraphSideInputColumns::Edge {
+                        source: input.source.as_str(),
+                        destination: input.destination.as_str(),
+                        edge_id: input.edge_id.as_deref(),
+                    },
                 });
             }
         },

@@ -311,17 +311,30 @@ fn join_evidence(join: &JoinNode, left: &PlanColumnEvidence, right: &PlanColumnE
             JoinSide::Left => left,
             JoinSide::Right => right,
         };
-        if let Some(bound) = input.string_payload_bound(projected.column.name()) {
-            let mut bound = bound.clone();
-            if projected.side != bounded_side
-                && !bounded_is_unique
-                && !join.spec.preserves_total_payload_bound_for_output(&projected.output_name)
-            {
+        let mut bound = input.string_payload_bound(projected.column.name()).cloned();
+        if projected.side != bounded_side
+            && !bounded_is_unique
+            && !join.spec.preserves_total_payload_bound_for_output(&projected.output_name)
+        {
+            if let Some(bound) = &mut bound {
                 bound.total_payload_upper_bound_bytes = None;
             }
-            if bound.total_payload_upper_bound_bytes.is_some() || bound.max_single_value_length_bytes.is_some() {
-                output.string_payload_bounds.insert(projected.output_name.clone(), bound);
+            if join.spec.join_type == crate::plan::JoinType::Inner
+                && let Some(equivalent) = equivalent_bounded_join_key_bound(join, projected, left, right, bounded_side)
+                && equivalent.total_payload_upper_bound_bytes.is_some()
+            {
+                if let Some(bound) = &mut bound {
+                    bound.total_payload_upper_bound_bytes = equivalent.total_payload_upper_bound_bytes;
+                    bound.lineages.extend(equivalent.lineages.iter().cloned());
+                } else {
+                    bound = Some(equivalent.clone());
+                }
             }
+        }
+        if let Some(bound) = bound
+            && (bound.total_payload_upper_bound_bytes.is_some() || bound.max_single_value_length_bytes.is_some())
+        {
+            output.string_payload_bounds.insert(projected.output_name.clone(), bound);
         }
     }
 
@@ -344,6 +357,24 @@ fn join_evidence(join: &JoinNode, left: &PlanColumnEvidence, right: &PlanColumnE
         output.unique_keys.extend(remap_unique_keys(right, right_mapping));
     }
     output
+}
+
+fn equivalent_bounded_join_key_bound<'a>(
+    join: &JoinNode,
+    projected: &crate::plan::JoinOutputColumn,
+    left: &'a PlanColumnEvidence,
+    right: &'a PlanColumnEvidence,
+    bounded_side: JoinSide,
+) -> Option<&'a StringPayloadBound> {
+    join.spec.keys.iter().find_map(|key| match (projected.side, bounded_side) {
+        (JoinSide::Left, JoinSide::Right) if key.left.name() == projected.column.name() => {
+            right.string_payload_bound(key.right.name())
+        },
+        (JoinSide::Right, JoinSide::Left) if key.right.name() == projected.column.name() => {
+            left.string_payload_bound(key.left.name())
+        },
+        _ => None,
+    })
 }
 
 fn side_is_unique_on_join_keys(

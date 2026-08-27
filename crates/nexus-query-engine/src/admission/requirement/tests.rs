@@ -2977,6 +2977,235 @@ fn production_shaped_string_lookup_caps_payload_without_row_multiplication() {
     assert!(owner_terms.iter().all(|term| term.bytes() < 1_u64 << 40));
 }
 
+fn pagerank_like_string_producer() -> QueryPlanCapabilityProof {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("vertex", DataType::Utf8, false),
+        Field::new("value", DataType::Float64, false),
+    ]));
+    let file = LocalParquetFile::new("/tmp/pagerank-like-string-output.parquet")
+        .with_row_groups(vec![0])
+        .with_row_group_rows(vec![64])
+        .with_row_group_bytes(vec![4_096])
+        .with_projected_row_group_bytes(vec![4_096], vec![4_096])
+        .with_variable_width_payload_evidence(std::collections::BTreeMap::from([(
+            0,
+            crate::parquet_stats::ParquetVariableWidthPayloadEvidence::new(
+                0,
+                vec![0],
+                1_024,
+                crate::parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary,
+            ),
+        )]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![file],
+        Arc::clone(&schema),
+        vec!["vertex".to_owned(), "value".to_owned()],
+    )));
+    let aggregate = builder.add_aggregate(
+        source,
+        AggregateSpec::new(
+            vec![Expr::column("vertex")],
+            vec![AggregateExpr::new(AggregateFunction::Max, Expr::column("value"), "value")],
+        ),
+        schema,
+    );
+    let plan = builder.finish_gpu_resident(aggregate);
+    QueryPlanCapabilityProof::for_query_plan(&plan).expect("PageRank-like output must issue a finite producer proof")
+}
+
+fn graph_metadata_join_consumer(
+    join_type: JoinType,
+    bounded_side: Option<JoinSide>,
+    top_k_before_enrichment: bool,
+    hydrated: bool,
+) -> QueryPlan {
+    let graph_schema = Arc::new(Schema::new(vec![
+        Field::new("vertex", DataType::Utf8, false),
+        Field::new("value", DataType::Float64, false),
+    ]));
+    let metadata_schema = Arc::new(Schema::new(vec![
+        Field::new("vertexId", DataType::Utf8, false),
+        Field::new("vertexName", DataType::Utf8, false),
+        Field::new("assetType", DataType::Utf8, false),
+        Field::new("vertexPriority", DataType::Int64, false),
+    ]));
+    let metadata_file = LocalParquetFile::new("/tmp/graph-metadata.parquet");
+    let metadata_file = if hydrated {
+        metadata_file
+            .with_row_groups(vec![0])
+            .with_row_group_rows(vec![96])
+            .with_row_group_bytes(vec![8_192])
+            .with_projected_row_group_bytes(vec![8_192], vec![8_192])
+            .with_variable_width_payload_evidence(std::collections::BTreeMap::from([
+                (
+                    0,
+                    crate::parquet_stats::ParquetVariableWidthPayloadEvidence::new(
+                        0,
+                        vec![0],
+                        1_536,
+                        crate::parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary,
+                    ),
+                ),
+                (
+                    1,
+                    crate::parquet_stats::ParquetVariableWidthPayloadEvidence::new(
+                        1,
+                        vec![0],
+                        2_048,
+                        crate::parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary,
+                    ),
+                ),
+                (
+                    2,
+                    crate::parquet_stats::ParquetVariableWidthPayloadEvidence::new(
+                        2,
+                        vec![0],
+                        1_024,
+                        crate::parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary,
+                    ),
+                ),
+            ]))
+    } else {
+        metadata_file
+    };
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("vertex", DataType::Utf8, false),
+        Field::new("value", DataType::Float64, false),
+        Field::new("vertexName", DataType::Utf8, false),
+        Field::new("assetType", DataType::Utf8, false),
+        Field::new("vertexPriority", DataType::Int64, false),
+    ]));
+    let mut builder = QueryPlanBuilder::new();
+    let graph =
+        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("pagerank", Arc::clone(&graph_schema))));
+    let graph = if top_k_before_enrichment {
+        let sort = builder.add_sort(
+            graph,
+            SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)]),
+            Arc::clone(&graph_schema),
+        );
+        builder.add_limit(sort, LimitSpec::fetch(20), Arc::clone(&graph_schema))
+    } else {
+        graph
+    };
+    let metadata = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![metadata_file],
+        metadata_schema,
+        vec!["vertexId".to_owned(), "vertexName".to_owned(), "assetType".to_owned(), "vertexPriority".to_owned()],
+    )));
+    let mut join_spec = JoinSpec::new(
+        join_type,
+        vec![JoinKey::new(
+            crate::expr::ColumnRef::input(0, "vertex", "vertex"),
+            crate::expr::ColumnRef::input(1, "vertexId", "vertexId"),
+        )],
+    )
+    .with_build_side(JoinSide::Right)
+    .with_output_projection(vec![
+        JoinOutputColumn::left(crate::expr::ColumnRef::input(0, "vertex", "vertex"), "vertex"),
+        JoinOutputColumn::left(crate::expr::ColumnRef::input(0, "value", "value"), "value"),
+        JoinOutputColumn::right(crate::expr::ColumnRef::input(1, "vertexName", "vertexName"), "vertexName"),
+        JoinOutputColumn::right(crate::expr::ColumnRef::input(1, "assetType", "assetType"), "assetType"),
+        JoinOutputColumn::right(
+            crate::expr::ColumnRef::input(1, "vertexPriority", "vertexPriority"),
+            "vertexPriority",
+        ),
+    ]);
+    if let Some(bounded_side) = bounded_side {
+        join_spec = join_spec.with_at_most_one_match_per_bounded_row(bounded_side);
+    }
+    let join = builder.add_join(graph, metadata, join_spec, Arc::clone(&output_schema));
+    if top_k_before_enrichment {
+        return builder.finish_with_host_sink(join);
+    }
+    let sort = builder.add_sort(
+        join,
+        SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)]),
+        Arc::clone(&output_schema),
+    );
+    let limit = builder.add_limit(sort, LimitSpec::fetch(20), output_schema);
+    builder.finish_with_host_sink(limit)
+}
+
+#[test]
+fn graph_to_metadata_inner_join_uses_bounded_key_payload_evidence() {
+    let producer = pagerank_like_string_producer();
+    let inner = graph_metadata_join_consumer(JoinType::Inner, Some(JoinSide::Right), false, true);
+    let proof = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+        &inner,
+        QueryPlanCapabilityProof::for_composed_consumer_plan(&inner)
+            .expect("mixed LocalParquet and graph consumer must issue a structural proof"),
+        [("pagerank".to_owned(), producer)],
+    )
+    .expect("the bounded metadata key must prove the equal inner-join output key payload");
+    assert!(proof.resolve_reservation_envelope(reservation_policy()).is_ok());
+
+    let left = graph_metadata_join_consumer(JoinType::Left, None, false, true);
+    let error = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+        &left,
+        QueryPlanCapabilityProof::for_composed_consumer_plan(&left)
+            .expect("mixed LocalParquet and graph consumer must issue a structural proof"),
+        [("pagerank".to_owned(), pagerank_like_string_producer())],
+    )
+    .expect_err("left enrichment without metadata uniqueness must remain fail closed");
+    assert_eq!(error.fact_value("schedule_reason"), Some("consumer_string_payload_evidence_missing"));
+}
+
+#[test]
+fn graph_to_metadata_left_join_requires_authoritative_lookup_uniqueness() {
+    for top_k_before_enrichment in [true, false] {
+        let qualified =
+            graph_metadata_join_consumer(JoinType::Left, Some(JoinSide::Left), top_k_before_enrichment, true);
+        let proof = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+            &qualified,
+            QueryPlanCapabilityProof::for_composed_consumer_plan(&qualified).unwrap(),
+            [("pagerank".to_owned(), pagerank_like_string_producer())],
+        )
+        .expect("authoritative metadata uniqueness must bound each left graph row to one match");
+        proof
+            .resolve_reservation_envelope(reservation_policy())
+            .expect("qualified left enrichment must resolve a finite reservation envelope");
+        crate::admission::bounded_pipeline_admission(&qualified)
+            .expect("qualified left enrichment capability admission must not error")
+            .expect("qualified left enrichment must select a compiled bounded pipeline");
+
+        let unqualified = graph_metadata_join_consumer(JoinType::Left, None, top_k_before_enrichment, true);
+        let error = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+            &unqualified,
+            QueryPlanCapabilityProof::for_composed_consumer_plan(&unqualified).unwrap(),
+            [("pagerank".to_owned(), pagerank_like_string_producer())],
+        )
+        .expect_err("column names cannot substitute for authoritative metadata uniqueness");
+        assert_eq!(error.fact_value("schedule_reason"), Some("consumer_string_payload_evidence_missing"));
+    }
+}
+
+#[test]
+fn graph_to_metadata_planning_defers_footer_dependent_admission_until_hydration() {
+    let planning = graph_metadata_join_consumer(JoinType::Inner, Some(JoinSide::Right), false, false);
+    let structural = QueryPlanCapabilityProof::for_composed_consumer_plan(&planning)
+        .expect("planning must accept the supported mixed graph/metadata topology without footer I/O");
+    let error = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+        &planning,
+        structural,
+        [("pagerank".to_owned(), pagerank_like_string_producer())],
+    )
+    .expect_err("an unhydrated metadata source cannot promise a live device grant");
+    assert_eq!(error.fact_value("schedule_reason"), Some("consumer_local_source_owner_missing"));
+
+    let prepared = graph_metadata_join_consumer(JoinType::Inner, Some(JoinSide::Right), false, true);
+    let proof = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+        &prepared,
+        QueryPlanCapabilityProof::for_composed_consumer_plan(&prepared).unwrap(),
+        [("pagerank".to_owned(), pagerank_like_string_producer())],
+    )
+    .expect("hydrated source evidence must complete the same engine-owned proof");
+    proof
+        .resolve_reservation_envelope(reservation_policy())
+        .expect("prepared proof must resolve a finite reservation envelope");
+}
+
 #[test]
 fn composed_consumer_rejects_join_output_row_overflow() {
     let consumer_plan = graph_output_inner_join_consumer(DataType::Int64, false, false);

@@ -176,6 +176,18 @@ pub(super) fn projection_root_global_limit_join_without_aggregate_plan() -> Quer
     projection_root_global_limit_join_aggregate_plan_with_variant(ProjectionGlobalLimitPlanVariant::NoAggregate)
 }
 
+#[test]
+fn projection_global_limit_admits_projection_over_join_without_aggregate() {
+    let plan = projection_root_global_limit_join_without_aggregate_plan();
+    assert_eq!(plan.nodes().iter().filter(|node| matches!(node.kind, PlanNode::Limit(_))).count(), 1);
+    let analysis = plan.capability_analysis();
+    assert!(analysis.admits_projection_global_limit_pipeline(), "{analysis:#?}");
+    let admission = nexus_query_engine::admission::bounded_pipeline_admission(&plan)
+        .unwrap()
+        .expect("projection/global-limit join should be admitted");
+    assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::ProjectionGlobalLimit);
+}
+
 pub(super) fn projection_root_global_limit_aggregate_without_join_plan() -> QueryPlan {
     projection_root_global_limit_join_aggregate_plan_with_variant(ProjectionGlobalLimitPlanVariant::NoJoin)
 }
@@ -266,8 +278,10 @@ fn projection_root_global_limit_join_aggregate_plan_with_variant(
 
     let (limit_input, limit_schema, projection_exprs, projection_schema) =
         if variant == ProjectionGlobalLimitPlanVariant::NoAggregate {
+            let pushed_join_fetch =
+                builder.add_limit(joined_input, LimitSpec::fetch(10), Arc::clone(&join_schema));
             (
-                joined_input,
+                pushed_join_fetch,
                 Arc::clone(&join_schema),
                 vec![Expr::column("v"), Expr::column("k")],
                 Arc::clone(&join_projection_schema),

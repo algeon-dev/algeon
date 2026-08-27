@@ -1,5 +1,7 @@
 #include "join_common.hpp"
 
+#include <rmm/mr/cuda_memory_resource.hpp>
+
 using namespace cudf_rust::join;
 
 extern "C" {
@@ -52,6 +54,54 @@ cudf_status_t cudf_filtered_join_pre_build_reservation_size_ex(cudf_table_view_h
     auto* build_view = reinterpret_cast<cudf::table_view*>(build);
     *out             = cudf::filtered_join::pre_build_reservation_size(
       *build_view, load_factor, exec->stream, *exec->mr);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
+cudf_status_t cudf_filtered_join_fixed_width_metadata_pre_build_reservation_size(
+  cudf_type_id_t const* build_key_types,
+  size_t build_key_count,
+  size_t build_rows,
+  double load_factor,
+  size_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = 0;
+  CUDF_RUST_NULL_CHECK(build_key_types, "build_key_types is null");
+  if (build_key_count == 0) {
+    set_error("build_key_count must be greater than zero");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  if (build_rows > static_cast<size_t>(std::numeric_limits<cudf::size_type>::max())) {
+    set_error("build_rows exceeds cudf::size_type maximum");
+    return CUDF_ERROR_INVALID_OPERATION;
+  }
+  CUDF_RUST_TRY
+  {
+    alignas(std::max_align_t) static std::byte dummy_storage{};
+    std::vector<cudf::column_view> columns;
+    columns.reserve(build_key_count);
+    for (size_t index = 0; index < build_key_count; ++index) {
+      auto const dtype = cudf::data_type{to_cudf_type_id(build_key_types[index])};
+      if (!cudf::is_fixed_width(dtype)) {
+        set_error("filtered join metadata preflight only supports fixed-width key types");
+        return CUDF_ERROR_INVALID_OPERATION;
+      }
+      columns.emplace_back(dtype,
+                           static_cast<cudf::size_type>(build_rows),
+                           static_cast<void const*>(&dummy_storage),
+                           nullptr,
+                           0,
+                           0,
+                           std::vector<cudf::column_view>{});
+    }
+    rmm::mr::cuda_memory_resource memory_resource;
+    *out = cudf::filtered_join::pre_build_reservation_size(
+      cudf::table_view{columns},
+      load_factor,
+      cudf::get_default_stream(),
+      memory_resource);
     return CUDF_SUCCESS;
   }
   CUDF_RUST_CATCH

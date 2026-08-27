@@ -170,6 +170,36 @@ pub fn filter_join_indices_in(
 }
 
 impl FilteredJoin {
+    /// Return exact retained build bytes for fixed-width keys from schema and row metadata.
+    pub fn pre_build_reservation_size_bytes_for_fixed_width_metadata(
+        build_key_types: &[TypeId],
+        build_rows: usize,
+        options: FilteredJoinOptions,
+    ) -> Result<usize> {
+        let operation = "filtered_join::pre_build_reservation_size_bytes_for_fixed_width_metadata";
+        let raw_types = build_key_types.iter().copied().map(TypeId::to_raw).collect::<Vec<_>>();
+        let mut out = 0usize;
+        error::check_status_in_with_details(
+            unsafe {
+                cudf_sys::cudf_filtered_join_fixed_width_metadata_pre_build_reservation_size(
+                    raw_types.as_ptr(),
+                    raw_types.len(),
+                    build_rows,
+                    options.load_factor_value(),
+                    &mut out,
+                )
+            },
+            operation,
+            [
+                ("build_key_count", raw_types.len().to_string()),
+                ("build_rows", build_rows.to_string()),
+                ("load_factor", options.load_factor_value().to_string()),
+                ("reservation_contract", "filtered_join_fixed_width_metadata".to_string()),
+            ],
+        )?;
+        Ok(out)
+    }
+
     /// Return exact device bytes that must be reserved before building a
     /// reusable filtered-join artifact from this right-side build key table.
     ///

@@ -1,4 +1,11 @@
-use datafusion::{common::config::ConfigOptions, physical_optimizer::PhysicalOptimizerRule};
+use datafusion::{
+    common::{Constraint, Constraints, config::ConfigOptions},
+    datasource::{
+        file_format::parquet::ParquetFormat,
+        listing::{ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl},
+    },
+    physical_optimizer::PhysicalOptimizerRule,
+};
 use datafusion_nexus::{
     gpu_coverage::{QueryGpuCoverageOverall, validate_query},
     planner::{FinalPlanDisposition, NexusFinalPlanRequirementRule, NexusNativeOptimizerConfig, classify_final_plan},
@@ -53,25 +60,6 @@ fn cugraph_input_is_runtime_native(plan: &dyn datafusion::physical_plan::Executi
 
 fn plan_contains_named_node(plan: &dyn datafusion::physical_plan::ExecutionPlan, name: &str) -> bool {
     plan.name() == name || plan.children().into_iter().any(|child| plan_contains_named_node(child.as_ref(), name))
-}
-
-fn assert_include_edges_owner_rejection(
-    backend: &NexusGpuBackend,
-    plan: &dyn datafusion::physical_plan::ExecutionPlan,
-    error: &datafusion::common::DataFusionError,
-) {
-    let nexus = typed_nexus_error(error);
-    assert_eq!(nexus.fact_value("reason"), Some("side_input_workspace_preflight_unavailable"));
-    assert_eq!(nexus.fact_value("side_input_reason"), Some("include_edges_owner_contract_missing"));
-    assert_eq!(nexus.fact_value("side_input_role"), Some("include_edges"));
-    assert_eq!(nexus.fact_value("native_code"), Some("unsupported_plan_shape"));
-
-    let metrics = NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(plan));
-    assert!(metrics.graph_runtime_rows.is_empty(), "include_edges must reject before graph GPU execution");
-    assert!(metrics.graph_reservation_rows.is_empty(), "include_edges must reject before graph reservation execution");
-    assert_eq!(metrics.host_to_device_uploads, 0, "include_edges rejection must not upload a graph input");
-    assert_eq!(metrics.gpu_resident_input_handoffs, 0, "include_edges rejection must not hand off a GPU input");
-    assert_eq!(backend.admission_snapshot().unwrap().active_queries, 0, "include_edges must reject before admission");
 }
 
 fn register_edges_with_upstream_only_list(ctx: &SessionContext, table_name: &str) {
@@ -322,13 +310,30 @@ async fn cugraph_sql_gpu_pagerank_forceatlas2_join_executes_as_one_scheduled_com
         assert_eq!(top_k_plan.schema().field_with_name("value").unwrap().data_type(), &DataType::Float64);
         let top_k_composed =
             find_composed_exec(top_k_plan.as_ref()).expect("PageRank top-k must lower to one composed native consumer");
-        let top_k_native_plan = top_k_composed.native_plan_for_test().to_string();
-        for expected in ["GpuResidentSource", "Sort", "Limit"] {
-            assert!(
-                top_k_native_plan.contains(expected),
-                "{weight_type:?} PageRank top-k consumer must include {expected}:\n{top_k_native_plan}"
-            );
-        }
+        let top_k_native_plan = top_k_composed.native_plan_for_test();
+        assert!(top_k_native_plan.unreachable_node_ids().is_empty());
+        assert_eq!(
+            top_k_native_plan.nodes().len(),
+            3,
+            "{weight_type:?} PageRank top-k must lower to GpuResidentSource -> Sort -> Limit"
+        );
+        let [source_node, sort_node, limit_node] = top_k_native_plan.nodes() else {
+            panic!("{weight_type:?} PageRank top-k must lower to GpuResidentSource -> Sort -> Limit");
+        };
+        assert!(
+            matches!(&source_node.kind, PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::GpuResident(_)))
+        );
+        let PlanNode::Sort(sort) = &sort_node.kind else {
+            panic!("{weight_type:?} PageRank top-k consumer must sort its GPU-resident input");
+        };
+        assert_eq!(sort.input, source_node.id);
+        let PlanNode::Limit(limit) = &limit_node.kind else {
+            panic!("{weight_type:?} PageRank top-k consumer must apply a limit after sorting");
+        };
+        assert_eq!(limit.input, sort_node.id);
+        assert_eq!(limit.spec.skip, 0);
+        assert_eq!(limit.spec.fetch, Some(100));
+        assert_eq!(top_k_native_plan.root_id(), limit_node.id);
         let mut top_k_stream = top_k_attempt.execute_physical_plan(Arc::clone(&top_k_plan), &ctx).unwrap();
         let mut top_k_batches = Vec::new();
         while let Some(batch) = top_k_stream.next().await {
@@ -1024,7 +1029,7 @@ async fn cugraph_sql_gpu_similarity_short_circuits_empty_pairs_and_rejects_absen
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_include_edges_predicate_executes_end_to_end() {
-    let (backend, ctx) = default_backend_cugraph_sql_context();
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
     register_allowed_bfs_edges(&ctx, "allowed_edges");
 
@@ -1040,8 +1045,131 @@ async fn cugraph_sql_gpu_bfs_include_edges_predicate_executes_end_to_end() {
         .await
         .unwrap();
     let plan = df.create_physical_plan().await.unwrap();
-    let error = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap_err();
-    assert_include_edges_owner_rejection(&backend, plan.as_ref(), &error);
+    let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
+    let batch = single_batch(&batches);
+    assert_eq!(bfs_distance_for(batch, 0), Some(0));
+    assert_eq!(bfs_distance_for(batch, 2), Some(1));
+    assert_eq!(bfs_distance_for(batch, 3), Some(2));
+    assert_eq!(bfs_distance_for(batch, 1), None);
+    let metrics = NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(plan.as_ref()));
+    assert_eq!(metrics.graph_runtime_rows.len(), 1);
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_camel_case_side_inputs_execute_every_shared_relation_shape() {
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    let register = |table_name: &str, fields: Vec<Field>, columns: Vec<ArrayRef>| {
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(Arc::clone(&schema), columns).unwrap();
+        ctx.register_table(table_name, Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap())).unwrap();
+    };
+    register(
+        "camelEdges",
+        vec![
+            Field::new("edgeSrc", DataType::Int64, false),
+            Field::new("edgeDst", DataType::Int64, false),
+            Field::new("edgeWeight", DataType::Float64, false),
+            Field::new("edgeKey", DataType::Int64, false),
+        ],
+        vec![
+            Arc::new(Int64Array::from(vec![0_i64, 0, 1, 2])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![1_i64, 2, 2, 0])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![1.0_f64, 1.0, 1.0, 1.0])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![10_i64, 11, 12, 13])) as ArrayRef,
+        ],
+    );
+    register(
+        "camelSources",
+        vec![Field::new("sourceVertex", DataType::Int64, false)],
+        vec![Arc::new(Int64Array::from(vec![0_i64])) as ArrayRef],
+    );
+    register(
+        "camelIncluded",
+        vec![Field::new("includeVertex", DataType::Int64, false)],
+        vec![Arc::new(Int64Array::from(vec![0_i64, 1, 2])) as ArrayRef],
+    );
+    register(
+        "camelExcluded",
+        vec![Field::new("excludeVertex", DataType::Int64, false)],
+        vec![Arc::new(Int64Array::from(vec![2_i64])) as ArrayRef],
+    );
+    register(
+        "camelTargets",
+        vec![Field::new("targetVertex", DataType::Int64, false)],
+        vec![Arc::new(Int64Array::from(vec![2_i64])) as ArrayRef],
+    );
+    register(
+        "camelAllowedEdges",
+        vec![
+            Field::new("edgeSource", DataType::Int64, false),
+            Field::new("edgeDestination", DataType::Int64, false),
+            Field::new("edgeId", DataType::Int64, false),
+        ],
+        vec![
+            Arc::new(Int64Array::from(vec![0_i64, 0, 1, 2])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![1_i64, 2, 2, 0])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![10_i64, 11, 12, 13])) as ArrayRef,
+        ],
+    );
+    register(
+        "camelSeeds",
+        vec![Field::new("seedVertex", DataType::Int64, false), Field::new("seedValue", DataType::Float64, false)],
+        vec![
+            Arc::new(Int64Array::from(vec![0_i64])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![1.0_f64])) as ArrayRef,
+        ],
+    );
+    register(
+        "camelPairs",
+        vec![Field::new("pairLeft", DataType::Int64, false), Field::new("pairRight", DataType::Int64, false)],
+        vec![Arc::new(Int64Array::from(vec![0_i64])) as ArrayRef, Arc::new(Int64Array::from(vec![1_i64])) as ArrayRef],
+    );
+
+    let cases = [
+        (
+            "source_vertices",
+            "SELECT * FROM cugraph_bfs('camelEdges', NULL, 'edgeSrc', 'edgeDst', NULL, \
+             '{\"source_vertices_table\":\"camelSources\",\"source_vertex_col\":\"sourceVertex\"}')",
+        ),
+        (
+            "include_vertices",
+            "SELECT * FROM cugraph_bfs('camelEdges', 0, 'edgeSrc', 'edgeDst', NULL, \
+             '{\"include_vertices_table\":\"camelIncluded\",\"include_vertex_col\":\"includeVertex\"}')",
+        ),
+        (
+            "exclude_vertices",
+            "SELECT * FROM cugraph_bfs('camelEdges', 0, 'edgeSrc', 'edgeDst', NULL, \
+             '{\"exclude_vertices_table\":\"camelExcluded\",\"exclude_vertex_col\":\"excludeVertex\"}')",
+        ),
+        (
+            "target_vertices",
+            "SELECT * FROM cugraph_bfs('camelEdges', 0, 'edgeSrc', 'edgeDst', NULL, \
+             '{\"target_vertices_table\":\"camelTargets\",\"target_vertex_col\":\"targetVertex\"}')",
+        ),
+        (
+            "include_edges",
+            "SELECT * FROM cugraph_bfs('camelEdges', 0, 'edgeSrc', 'edgeDst', NULL, \
+             '{\"edge_id_col\":\"edgeKey\",\"include_edges_table\":\"camelAllowedEdges\",\
+               \"include_edge_src_col\":\"edgeSource\",\
+               \"include_edge_dst_col\":\"edgeDestination\",\"include_edge_id_col\":\"edgeId\"}')",
+        ),
+        (
+            "personalization",
+            "SELECT * FROM cugraph_personalized_pagerank('camelEdges', 'edgeSrc', 'edgeDst', 'edgeWeight', \
+             '{\"personalization_table\":\"camelSeeds\",\"personalization_vertex_col\":\"seedVertex\",\
+               \"personalization_value_col\":\"seedValue\"}')",
+        ),
+        (
+            "vertex_pairs",
+            "SELECT * FROM cugraph_jaccard('camelEdges', 'edgeSrc', 'edgeDst', 'edgeWeight', \
+             '{\"vertex_pairs_table\":\"camelPairs\",\"first_vertex_col\":\"pairLeft\",\
+               \"second_vertex_col\":\"pairRight\"}')",
+        ),
+    ];
+    for (role, sql) in cases {
+        let batches = ctx.sql(sql).await.unwrap().collect().await.unwrap_or_else(|error| panic!("{role}: {error:?}"));
+        assert!(batches.iter().map(RecordBatch::num_rows).sum::<usize>() > 0, "{role} returned no rows");
+    }
 }
 
 #[tokio::test]
@@ -1406,6 +1534,8 @@ async fn cugraph_sql_gpu_pagerank_utf8_is_native_and_matches_dense_numeric_ids()
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_string_pagerank_parity_edges(&ctx, "string_edges", "numeric_edges");
     register_string_vertex_memtable(&ctx, "node_universe", "vertex", &["a", "b", "c", "d", "isolated"]);
+    let large_limit = cudf::frame::dataframe::HostBatchCursorConfig::DEFAULT_MAX_ROWS + 1;
+    register_large_string_pagerank_edges(&ctx, "large_string_edges", "large_numeric_edges", large_limit);
     let string_sql = "SELECT vertex, value FROM cugraph_pagerank('string_edges', 'src', 'dst')";
 
     let coverage = validate_query(&ctx, string_sql).await.unwrap();
@@ -1451,6 +1581,74 @@ async fn cugraph_sql_gpu_pagerank_utf8_is_native_and_matches_dense_numeric_ids()
     let top_k_values = top_k_batch.column(1).as_any().downcast_ref::<Float64Array>().unwrap();
     assert_eq!(top_k_batch.num_rows(), 2);
     assert!(top_k_values.value(0) >= top_k_values.value(1));
+
+    let direct_large_sql = format!(
+        "SELECT vertex, value \
+         FROM cugraph_pagerank('large_string_edges', 'src', 'dst') \
+         ORDER BY value DESC \
+         LIMIT {large_limit}"
+    );
+    let nested_large_sql = format!(
+        "SELECT vertex, value \
+         FROM (SELECT vertex, value \
+               FROM cugraph_pagerank('large_string_edges', 'src', 'dst') \
+               ORDER BY value DESC \
+               LIMIT {large_limit}) AS ranked"
+    );
+    let outer_large_sql = format!(
+        "SELECT vertex, value \
+         FROM (SELECT vertex, value FROM cugraph_pagerank('large_string_edges', 'src', 'dst')) AS ranked \
+         ORDER BY value DESC \
+         LIMIT {large_limit}"
+    );
+    let mut large_values = Vec::new();
+    for (shape, sql) in [
+        ("direct", direct_large_sql.as_str()),
+        ("nested", nested_large_sql.as_str()),
+        ("outer", outer_large_sql.as_str()),
+    ] {
+        let df = ctx.sql(sql).await.unwrap();
+        assert_eq!(df.schema().field(0).data_type(), &DataType::Utf8, "{shape} PageRank schema");
+        let plan = df.create_physical_plan().await.unwrap();
+        assert_eq!(classify_final_plan(plan.as_ref()), FinalPlanDisposition::Native, "{shape} PageRank plan");
+        let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx()).await.unwrap();
+        assert!(batches.len() > 1, "{shape} string PageRank top-k must span multiple host batches");
+        let values = pagerank_values(&batches);
+        assert_eq!(values.len(), large_limit, "{shape} string PageRank top-k row count");
+        assert!(values.iter().all(|value| value.is_finite()), "{shape} PageRank values must be finite");
+        assert!(values.windows(2).all(|pair| pair[0] >= pair[1]), "{shape} string PageRank top-k must be descending");
+        large_values.push((shape, values));
+    }
+    let direct_values = &large_values[0].1;
+    for (shape, values) in large_values.iter().skip(1) {
+        assert!(
+            values.iter().zip(direct_values).all(|(actual, expected)| (actual - expected).abs() <= 1.0e-12),
+            "{shape} PageRank top-k must agree with the direct shape"
+        );
+    }
+
+    let numeric_large_sql = format!(
+        "SELECT vertex, value \
+         FROM cugraph_pagerank('large_numeric_edges', 'src', 'dst') \
+         ORDER BY value DESC \
+         LIMIT {large_limit}"
+    );
+    let numeric_large_df = ctx.sql(&numeric_large_sql).await.unwrap();
+    let numeric_large_plan = numeric_large_df.create_physical_plan().await.unwrap();
+    let numeric_consumer =
+        find_composed_exec(numeric_large_plan.as_ref()).expect("numeric PageRank top-k must remain composed");
+    let numeric_native_plan = numeric_consumer.native_plan_for_test().to_string();
+    for expected in ["GpuResidentSource", "Sort", "Limit"] {
+        assert!(
+            numeric_native_plan.contains(expected),
+            "numeric PageRank top-k consumer must retain {expected} in Source -> Sort -> Limit path:\n{numeric_native_plan}"
+        );
+    }
+    let numeric_large_batches = datafusion::physical_plan::collect(numeric_large_plan, ctx.task_ctx()).await.unwrap();
+    assert!(numeric_large_batches.len() > 1, "numeric PageRank top-k must span multiple host batches");
+    let numeric_large_values = pagerank_values(&numeric_large_batches);
+    assert_eq!(numeric_large_values.len(), large_limit);
+    assert!(numeric_large_values.windows(2).all(|pair| pair[0] >= pair[1]));
     drop_session_context_on_blocking_thread(ctx).await;
 
     let string_batch = single_batch(&string_batches);
@@ -1479,8 +1677,190 @@ async fn cugraph_sql_gpu_pagerank_utf8_is_native_and_matches_dense_numeric_ids()
 }
 
 #[tokio::test]
+async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively() {
+    let dir = unique_temp_dir("datafusion-nexus-cugraph-string-metadata-enrichment");
+    let metadata_path = dir.join("metadata.parquet");
+    let metadata_schema = Arc::new(Schema::new(vec![
+        Field::new("vertexId", DataType::Utf8, false),
+        Field::new("vertexName", DataType::Utf8, false),
+        Field::new("vertexPriority", DataType::Int64, false),
+    ]));
+    let metadata_batch = RecordBatch::try_new(
+        Arc::clone(&metadata_schema),
+        vec![
+            Arc::new(StringArray::from(vec!["a", "b", "c", "d", "isolated"])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["A", "B", "C", "D", "Isolated"])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![9, 8, 7, 6, 5])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let mut writer =
+        ArrowWriter::try_new(fs::File::create(&metadata_path).unwrap(), Arc::clone(&metadata_schema), None).unwrap();
+    writer.write(&metadata_batch).unwrap();
+    writer.close().unwrap();
+
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    register_string_pagerank_parity_edges(&ctx, "string_edges", "numeric_edges");
+    ctx.register_parquet("vertex_metadata", metadata_path.to_str().unwrap(), ParquetReadOptions::default())
+        .await
+        .unwrap();
+    let metadata_url = ListingTableUrl::parse(metadata_path.to_str().unwrap()).unwrap();
+    let metadata_options = ListingOptions::new(Arc::new(ParquetFormat::default())).with_file_extension(".parquet");
+    let metadata_config =
+        ListingTableConfig::new(metadata_url).with_listing_options(metadata_options).with_schema(metadata_schema);
+    let unique_metadata = ListingTable::try_new(metadata_config)
+        .unwrap()
+        .with_constraints(Constraints::new_unverified(vec![Constraint::Unique(vec![0])]));
+    ctx.register_table("vertex_metadata_unique", Arc::new(unique_metadata)).unwrap();
+
+    let queries = [
+        (
+            "PageRank",
+            "SELECT g.vertex, g.value, m.\"vertexName\", m.\"vertexPriority\" \
+             FROM cugraph_pagerank('string_edges', 'src', 'dst') g \
+             JOIN vertex_metadata m ON g.vertex = m.\"vertexId\" \
+             ORDER BY g.value DESC LIMIT 3",
+        ),
+        (
+            "BFS",
+            "SELECT g.vertex, g.distance, m.\"vertexName\", m.\"vertexPriority\" \
+             FROM cugraph_bfs('string_edges', 'a', 'src', 'dst', NULL, '{}') g \
+             JOIN vertex_metadata m ON g.vertex = m.\"vertexId\" \
+             ORDER BY g.distance, g.vertex LIMIT 10",
+        ),
+        (
+            "PageRank Left pre-enrichment Top-K",
+            "SELECT g.vertex, g.value, m.\"vertexName\", m.\"vertexPriority\" \
+             FROM (SELECT vertex, value FROM cugraph_pagerank('string_edges', 'src', 'dst') \
+                   ORDER BY value DESC LIMIT 3) g \
+             LEFT JOIN vertex_metadata_unique m ON g.vertex = m.\"vertexId\"",
+        ),
+        (
+            "PageRank Left post-enrichment Top-K",
+            "SELECT g.vertex, g.value, m.\"vertexName\", m.\"vertexPriority\" \
+             FROM cugraph_pagerank('string_edges', 'src', 'dst') g \
+             LEFT JOIN vertex_metadata_unique m ON g.vertex = m.\"vertexId\" \
+             ORDER BY g.value DESC LIMIT 3",
+        ),
+        (
+            "BFS Left pre-enrichment Top-K",
+            "SELECT g.vertex, g.distance, m.\"vertexName\", m.\"vertexPriority\" \
+             FROM (SELECT vertex, distance FROM cugraph_bfs('string_edges', 'a', 'src', 'dst', NULL, '{}') \
+                   ORDER BY distance, vertex LIMIT 3) g \
+             LEFT JOIN vertex_metadata_unique m ON g.vertex = m.\"vertexId\"",
+        ),
+        (
+            "BFS Left post-enrichment Top-K",
+            "SELECT g.vertex, g.distance, m.\"vertexName\", m.\"vertexPriority\" \
+             FROM cugraph_bfs('string_edges', 'a', 'src', 'dst', NULL, '{}') g \
+             LEFT JOIN vertex_metadata_unique m ON g.vertex = m.\"vertexId\" \
+             ORDER BY g.distance, g.vertex LIMIT 3",
+        ),
+    ];
+    for (algorithm, sql) in queries {
+        let df = ctx.sql(sql).await.unwrap_or_else(|error| panic!("{algorithm} metadata SQL must plan: {error}"));
+        let plan = df.create_physical_plan().await.unwrap();
+        assert_eq!(
+            classify_final_plan(plan.as_ref()),
+            FinalPlanDisposition::Native,
+            "{algorithm} metadata join\n{}",
+            displayable(plan.as_ref()).indent(false)
+        );
+        let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx())
+            .await
+            .unwrap_or_else(|error| panic!("{algorithm} metadata join must execute: {error}"));
+        assert!(batches.iter().map(RecordBatch::num_rows).sum::<usize>() > 0);
+    }
+
+    drop_session_context_on_blocking_thread(ctx).await;
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn native_metadata_join_limit_and_distinct_keep_the_same_empty_and_nonempty_plan_contract() {
+    let dir = unique_temp_dir("datafusion-nexus-empty-metadata-join-contract");
+    let relationship_path = dir.join("relationships.parquet");
+    let empty_metadata_path = dir.join("empty-metadata.parquet");
+    let nonempty_metadata_path = dir.join("nonempty-metadata.parquet");
+    let relationship_schema = Arc::new(Schema::new(vec![
+        Field::new("semantic", DataType::Utf8, false),
+        Field::new("targetId", DataType::Utf8, false),
+        Field::new("sourceId", DataType::Utf8, false),
+    ]));
+    let relationship_batch = RecordBatch::try_new(
+        Arc::clone(&relationship_schema),
+        vec![
+            Arc::new(StringArray::from(vec!["depends_on"])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["vertex-1"])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["subject-1"])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let metadata_schema = Arc::new(Schema::new(vec![
+        Field::new("vertexId", DataType::Utf8, false),
+        Field::new("vertexPriority", DataType::Int64, false),
+    ]));
+    let empty_metadata_batch = RecordBatch::try_new(
+        Arc::clone(&metadata_schema),
+        vec![Arc::new(StringArray::from(vec!["vertex-2"])) as ArrayRef, Arc::new(Int64Array::from(vec![7])) as ArrayRef],
+    )
+    .unwrap();
+    let nonempty_metadata_batch = RecordBatch::try_new(
+        Arc::clone(&metadata_schema),
+        vec![Arc::new(StringArray::from(vec!["vertex-1"])) as ArrayRef, Arc::new(Int64Array::from(vec![7])) as ArrayRef],
+    )
+    .unwrap();
+    for (path, schema, batch) in [
+        (&relationship_path, relationship_schema, relationship_batch),
+        (&empty_metadata_path, Arc::clone(&metadata_schema), empty_metadata_batch),
+        (&nonempty_metadata_path, metadata_schema, nonempty_metadata_batch),
+    ] {
+        let mut writer = ArrowWriter::try_new(fs::File::create(path).unwrap(), schema, None).unwrap();
+        writer.write(&batch).unwrap();
+        writer.close().unwrap();
+    }
+
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    for (table, path) in [
+        ("relationships", &relationship_path),
+        ("metadata_empty", &empty_metadata_path),
+        ("metadata_nonempty", &nonempty_metadata_path),
+    ] {
+        ctx.register_parquet(table, path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+    }
+
+    let select = "e.\"semantic\", n.\"vertexId\", n.\"vertexPriority\"";
+    for (metadata, expected_rows) in [("metadata_empty", 0), ("metadata_nonempty", 1)] {
+        let from = format!(
+            "FROM relationships e JOIN {metadata} n ON e.\"targetId\" = n.\"vertexId\" \
+             WHERE e.\"sourceId\" = 'subject-1' AND n.\"vertexPriority\" >= 7"
+        );
+        let queries = [
+            format!("SELECT {select} {from} LIMIT 100"),
+            format!("SELECT DISTINCT {select} {from} LIMIT 100"),
+            format!("SELECT DISTINCT {select} {from} ORDER BY n.\"vertexPriority\" DESC, n.\"vertexId\" LIMIT 100"),
+        ];
+        for sql in queries {
+            let df = ctx.sql(&sql).await.unwrap();
+            let plan = df.create_physical_plan().await.unwrap();
+            assert_eq!(
+                classify_final_plan(plan.as_ref()),
+                FinalPlanDisposition::Native,
+                "{sql}\n{}",
+                displayable(plan.as_ref()).indent(false)
+            );
+            let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx()).await.unwrap();
+            assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), expected_rows, "{sql}");
+        }
+    }
+
+    drop_session_context_on_blocking_thread(ctx).await;
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn cugraph_sql_gpu_bfs_utf8_include_edges_maps_logical_ids_end_to_end() {
-    let (backend, ctx) = default_backend_cugraph_sql_context();
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_string_bfs_edges(&ctx, "raw_edges");
     register_string_allowed_bfs_edges(&ctx, "allowed_edges");
 
@@ -1497,9 +1877,13 @@ async fn cugraph_sql_gpu_bfs_utf8_include_edges_maps_logical_ids_end_to_end() {
         .await
         .unwrap();
     let plan = df.create_physical_plan().await.unwrap();
-    let error = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap_err();
+    let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
     drop_session_context_on_blocking_thread(ctx).await;
-    assert_include_edges_owner_rejection(&backend, plan.as_ref(), &error);
+    let batch = single_batch(&batches);
+    assert_eq!(string_bfs_distance_for(batch, "a"), Some(0));
+    assert_eq!(string_bfs_distance_for(batch, "c"), Some(1));
+    assert_eq!(string_bfs_distance_for(batch, "d"), Some(2));
+    assert_eq!(string_bfs_distance_for(batch, "b"), None);
 }
 
 #[tokio::test]
@@ -1512,8 +1896,7 @@ async fn cugraph_sql_gpu_bfs_utf8_nullable_edges_drop_actual_null_rows() {
             "SELECT vertex, distance, predecessor, reachable \
              FROM cugraph_bfs('raw_edges', 'a', 'src', 'dst', NULL, \
                   '{\"construction_policy\":\"raw_libcugraph\",\
-                     \"output_mode\":\"normalized\"}') \
-             ORDER BY vertex",
+                     \"output_mode\":\"normalized\"}')",
         )
         .await
         .unwrap()
@@ -1530,7 +1913,7 @@ async fn cugraph_sql_gpu_bfs_utf8_nullable_edges_drop_actual_null_rows() {
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_path_reconstructs_utf8_target_path_end_to_end() {
-    let (backend, ctx) = default_backend_cugraph_sql_context();
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_string_bfs_edges(&ctx, "raw_edges");
     register_string_allowed_bfs_edges(&ctx, "allowed_edges");
     register_string_vertex_memtable(&ctx, "targets", "vertex_id", &["d"]);
@@ -1551,20 +1934,22 @@ async fn cugraph_sql_gpu_bfs_path_reconstructs_utf8_target_path_end_to_end() {
         .await
         .unwrap();
     let plan = df.create_physical_plan().await.unwrap();
-    let error = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap_err();
+    let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
     drop_session_context_on_blocking_thread(ctx).await;
-    assert_include_edges_owner_rejection(&backend, plan.as_ref(), &error);
+    let batch = single_batch(&batches);
+    assert_eq!(int64_column(batch, 0), vec![0, 1, 2]);
+    let vertices = batch.column(3).as_any().downcast_ref::<StringArray>().unwrap();
+    assert_eq!((0..batch.num_rows()).map(|row| vertices.value(row)).collect::<Vec<_>>(), vec!["a", "c", "d"]);
+    assert_eq!(int64_column(batch, 4), vec![0, 1, 2]);
 }
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_include_edges_drops_actual_null_predicate_rows() {
-    let (backend, ctx) = default_backend_cugraph_sql_context();
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
     register_nullable_allowed_bfs_edges_with_nulls(&ctx, "allowed_edges");
 
-    // Keep the nullable whitelist fixture: the owner contract rejects the
-    // graph before null-row filtering or GPU execution can begin.
-    let df = ctx
+    let batches = ctx
         .sql(
             "SELECT vertex, distance, predecessor \
              FROM cugraph_bfs('raw_edges', 0, 'src', 'dst', NULL, \
@@ -1574,10 +1959,15 @@ async fn cugraph_sql_gpu_bfs_include_edges_drops_actual_null_predicate_rows() {
                      \"include_edge_dst_col\":\"allowed_dst\"}')",
         )
         .await
+        .unwrap()
+        .collect()
+        .await
         .unwrap();
-    let plan = df.create_physical_plan().await.unwrap();
-    let error = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap_err();
-    assert_include_edges_owner_rejection(&backend, plan.as_ref(), &error);
+    let batch = single_batch(&batches);
+    assert_eq!(bfs_distance_for(batch, 0), Some(0));
+    assert_eq!(bfs_distance_for(batch, 2), Some(1));
+    assert_eq!(bfs_distance_for(batch, 3), Some(2));
+    assert_eq!(bfs_distance_for(batch, 1), None);
 }
 
 #[tokio::test]
@@ -1609,7 +1999,7 @@ async fn cugraph_sql_gpu_bfs_target_vertices_with_null_values_is_rejected() {
 
 #[tokio::test]
 async fn cugraph_sql_gpu_bfs_include_edges_empty_after_drop_is_explicit_error() {
-    let (backend, ctx) = default_backend_cugraph_sql_context();
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
     register_all_null_allowed_bfs_edges(&ctx, "allowed_edges");
 
@@ -1626,5 +2016,8 @@ async fn cugraph_sql_gpu_bfs_include_edges_empty_after_drop_is_explicit_error() 
         .unwrap();
     let plan = df.create_physical_plan().await.unwrap();
     let error = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap_err();
-    assert_include_edges_owner_rejection(&backend, plan.as_ref(), &error);
+    let nexus = typed_nexus_error(&error);
+    assert_eq!(nexus.fact_value("predicate_role"), Some("include_edges"));
+    assert_eq!(nexus.fact_value("input_rows"), Some("2"));
+    assert_eq!(nexus.fact_value("null_rows_dropped"), Some("2"));
 }

@@ -82,14 +82,8 @@ pub(in crate::capability) fn root_join_shape_decision(plan: &QueryPlan) -> Resul
             [("reachable_join_count", reachable_join_count.to_string())],
         ));
     }
-    validate_resident_source_filter_projection_leaf_pipeline_for_capability(
-        plan,
-        root_join.inputs[join_side_index(JoinSide::Left)],
-    )?;
-    validate_resident_source_filter_projection_leaf_pipeline_for_capability(
-        plan,
-        root_join.inputs[join_side_index(JoinSide::Right)],
-    )?;
+    validate_resident_leaf_pipeline_for_capability(plan, root_join.inputs[join_side_index(JoinSide::Left)])?;
+    validate_resident_leaf_pipeline_for_capability(plan, root_join.inputs[join_side_index(JoinSide::Right)])?;
     Ok(())
 }
 
@@ -117,7 +111,7 @@ pub(in crate::capability) fn validate_general_post_root_stages(
     Ok(())
 }
 
-pub(in crate::capability) fn validate_resident_source_filter_projection_leaf_pipeline_for_capability(
+pub(in crate::capability) fn validate_resident_leaf_pipeline_for_capability(
     plan: &QueryPlan,
     node_id: NodeId,
 ) -> Result<(), CapabilityDecision> {
@@ -129,11 +123,16 @@ pub(in crate::capability) fn validate_resident_source_filter_projection_leaf_pip
     };
     match &node.kind {
         PlanNode::Source(_) => Ok(()),
-        PlanNode::Filter(filter) => {
-            validate_resident_source_filter_projection_leaf_pipeline_for_capability(plan, filter.input)
-        },
-        PlanNode::Projection(projection) => {
-            validate_resident_source_filter_projection_leaf_pipeline_for_capability(plan, projection.input)
+        PlanNode::Filter(filter) => validate_resident_leaf_pipeline_for_capability(plan, filter.input),
+        PlanNode::Projection(projection) => validate_resident_leaf_pipeline_for_capability(plan, projection.input),
+        PlanNode::Limit(limit) if limit.spec.fetch.is_some() => {
+            let Some(PlanNode::Sort(sort)) = plan.node(limit.input).map(|node| &node.kind) else {
+                return Err(CapabilityDecision::rejected(
+                    "source_leaf_pipeline_requires_source_filter_projection",
+                    [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+                ));
+            };
+            validate_resident_leaf_pipeline_for_capability(plan, sort.input)
         },
         PlanNode::Join(_)
         | PlanNode::Aggregate(_)

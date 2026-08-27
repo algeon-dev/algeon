@@ -552,6 +552,14 @@ cudf_status_t cudf_filtered_join_pre_build_reservation_size_ex(cudf_table_view_h
                                                                size_t* out,
                                                                cudf_exec_options_t const* options);
 
+/// Return exact retained filtered-join build bytes from fixed-width schema metadata.
+cudf_status_t cudf_filtered_join_fixed_width_metadata_pre_build_reservation_size(
+  cudf_type_id_t const* build_key_types,
+  size_t build_key_count,
+  size_t build_rows,
+  double load_factor,
+  size_t* out);
+
 /// Destroy a reusable filtered-join handle under its build-time device and
 /// memory resource. Ownership is consumed on call; failure quarantines it.
 cudf_status_t cudf_filtered_join_destroy(cudf_filtered_join_handle handle);

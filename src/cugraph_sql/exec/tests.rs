@@ -728,6 +728,49 @@ fn graph_producer_unique_key_contract_is_limited_to_vertex_row_results() {
         Some(std::collections::BTreeSet::from(["vertex".to_string()])),
     );
 
+    let bfs = CugraphAlgoExec::try_new(
+        bfs_spec(),
+        Arc::clone(&edge_source),
+        Vec::new(),
+        None,
+        None,
+        NexusNativeExecutionConfig::bounded_default(),
+    )
+    .expect("raw BFS producer should build");
+    assert_eq!(
+        gpu_resident_producer_unique_output_key(&bfs),
+        Some(std::collections::BTreeSet::from(["vertex".to_string()])),
+    );
+
+    let mut normalized_bfs_spec = bfs_spec();
+    let CugraphAlgorithmParams::Bfs(params) = &mut normalized_bfs_spec.params else { unreachable!() };
+    params.output.mode = CugraphBfsOutputMode::Normalized;
+    normalized_bfs_spec.output_schema = result_schema_for_params(CugraphAlgorithm::Bfs, &normalized_bfs_spec.params);
+    let normalized_bfs = CugraphAlgoExec::try_new(
+        normalized_bfs_spec,
+        Arc::clone(&edge_source),
+        Vec::new(),
+        None,
+        None,
+        NexusNativeExecutionConfig::bounded_default(),
+    )
+    .expect("normalized BFS producer should build");
+    assert_eq!(
+        gpu_resident_producer_unique_output_key(&normalized_bfs),
+        Some(std::collections::BTreeSet::from(["vertex".to_string()])),
+    );
+
+    let path_bfs = CugraphAlgoExec::try_new(
+        bfs_utf8_path_spec(),
+        memory_string_edge_source(),
+        Vec::new(),
+        None,
+        None,
+        NexusNativeExecutionConfig::bounded_default(),
+    )
+    .expect("path BFS producer should build");
+    assert_eq!(gpu_resident_producer_unique_output_key(&path_bfs), None);
+
     let non_unique_algorithm = CugraphAlgoExec::try_new(
         triangle_spec(),
         edge_source,
@@ -804,9 +847,9 @@ fn logical_bfs_path_gpu_plan_decodes_the_traversal_schema_before_host_reconstruc
 }
 
 #[test]
-fn string_pagerank_plan_assigns_i64_ids_and_applies_top_k_before_decode() {
+fn string_pagerank_plan_restores_subsumed_top_k_order_after_decode() {
     let mut result_options = CugraphResultPlanOptions::new(None, Some(3));
-    result_options.pre_decode_sort = Some(SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)]));
+    result_options.subsumed_top_k_sort = Some(SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)]));
     let plan = cugraph_schema_query_plan(
         &pagerank_utf8_spec(),
         string_edge_schema(),
@@ -849,12 +892,54 @@ fn string_pagerank_plan_assigns_i64_ids_and_applies_top_k_before_decode() {
         .iter()
         .find(|node| matches!(&node.kind, PlanNode::Limit(limit) if limit.input == sort.id))
         .expect("logical PageRank limit must consume the sorted numeric graph result");
-    let PlanNode::Join(decode) = &plan.root_node().kind else {
-        panic!("logical PageRank root must decode through a hash join");
+    let decode = plan
+        .nodes()
+        .iter()
+        .find(|node| matches!(&node.kind, PlanNode::Join(decode) if decode.inputs == [limit.id, codebook.id]))
+        .expect("logical PageRank top-k must decode through a hash join");
+    let PlanNode::Sort(post_decode_sort) = &plan.root_node().kind else {
+        panic!("logical PageRank top-k root must restore ordering after decode");
     };
 
-    assert_eq!(decode.inputs, [limit.id, codebook.id]);
+    assert_eq!(post_decode_sort.input, decode.id);
+    assert_eq!(post_decode_sort.spec, result_options.subsumed_top_k_sort.unwrap());
     assert_eq!(plan.output_schema().field(0), &Field::new("vertex", DataType::Utf8, false));
+}
+
+#[test]
+fn string_pagerank_subsumes_only_bounded_sorts() {
+    let producer = CugraphAlgoExec::try_new(
+        pagerank_utf8_spec(),
+        memory_string_edge_source(),
+        vec![],
+        None,
+        None,
+        NexusNativeExecutionConfig::bounded_default(),
+    )
+    .expect("string PageRank producer should build");
+    let consumer_plan = |with_limit| {
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
+            &producer.gpu_result_input_name,
+            producer.schema(),
+        )));
+        let sort = builder.add_sort(
+            source,
+            SortSpec::new(vec![SortExpr::new(Expr::column("value"), true, false)]),
+            producer.schema(),
+        );
+        let root = if with_limit { builder.add_limit(sort, LimitSpec::fetch(2), producer.schema()) } else { sort };
+        builder.finish_gpu_resident(root)
+    };
+
+    assert!(
+        node::pushed_logical_consumer_options(&producer, &consumer_plan(false)).unwrap().is_none(),
+        "an unbounded string sort must stay in the ordinary composed consumer",
+    );
+    assert!(
+        node::pushed_logical_consumer_options(&producer, &consumer_plan(true)).unwrap().is_some(),
+        "a bounded string top-k may be restored after decode by the producer",
+    );
 }
 
 #[test]

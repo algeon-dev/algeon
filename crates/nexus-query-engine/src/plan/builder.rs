@@ -90,6 +90,12 @@ impl QueryPlanBuilder {
     /// Adds a limit node that preserves input ordering facts.
     pub fn add_limit(&mut self, input: NodeId, spec: LimitSpec, output_schema: SchemaRef) -> NodeId {
         self.assert_input_exists(input);
+        if spec.skip == 0
+            && self.node(input).output_schema() == &output_schema
+            && matches!(&self.node(input).kind, PlanNode::Limit(limit) if limit.spec == spec)
+        {
+            return input;
+        }
         let output_ordering = self.node(input).facts.output_ordering.clone();
         self.push(
             PlanNode::Limit(LimitNode { input, spec }),

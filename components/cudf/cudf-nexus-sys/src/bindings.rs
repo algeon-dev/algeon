@@ -2575,6 +2575,14 @@ unsafe extern "C" {
         out: *mut usize,
         options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
+    #[doc = " Return exact retained filtered-join build bytes from fixed-width schema metadata."]
+    pub fn cudf_filtered_join_fixed_width_metadata_pre_build_reservation_size(
+        build_key_types: *const cudf_type_id_t,
+        build_key_count: usize,
+        build_rows: usize,
+        load_factor: f64,
+        out: *mut usize,
+    ) -> cudf_status_t;
     #[doc = " Destroy a reusable filtered-join handle under its build-time device and\n memory resource. Ownership is consumed on call; failure quarantines it."]
     pub fn cudf_filtered_join_destroy(handle: cudf_filtered_join_handle) -> cudf_status_t;
     #[doc = " Return device bytes retained by a reusable filtered-join build artifact."]

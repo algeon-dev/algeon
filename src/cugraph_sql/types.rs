@@ -1572,6 +1572,27 @@ fn bfs_result_schema_with_vertex_type(params: &CugraphBfsParams, vertex_type: Da
     Arc::new(Schema::new(fields))
 }
 
+pub(crate) fn result_schema_for_vertex_domain(
+    algorithm: CugraphAlgorithm,
+    params: &CugraphAlgorithmParams,
+    domain: Option<&CugraphVertexIdDomain>,
+) -> SchemaRef {
+    let Some(domain) = domain else {
+        return result_schema_for_params(algorithm, params);
+    };
+
+    match (algorithm, params) {
+        (CugraphAlgorithm::Bfs, CugraphAlgorithmParams::Bfs(params)) => {
+            bfs_result_schema_for_vertex_domain(params, domain)
+        },
+        (CugraphAlgorithm::PageRank, _) if domain.is_string_logical() => Arc::new(Schema::new(vec![
+            Field::new("vertex", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+        ])),
+        _ => result_schema_for_params(algorithm, params),
+    }
+}
+
 /// SQL output schema for one parsed cuGraph algorithm call.
 pub fn result_schema_for_params(algorithm: CugraphAlgorithm, params: &CugraphAlgorithmParams) -> SchemaRef {
     match (algorithm, params) {

@@ -858,8 +858,13 @@ impl GpuResidentProducer for CugraphAlgoExec {
     }
 
     fn unique_output_key_columns(&self) -> Option<&'static [&'static str]> {
-        matches!(self.spec.algorithm, CugraphAlgorithm::PageRank | CugraphAlgorithm::PersonalizedPageRank)
-            .then_some(&["vertex"])
+        let one_row_per_vertex =
+            matches!(self.spec.algorithm, CugraphAlgorithm::PageRank | CugraphAlgorithm::PersonalizedPageRank)
+                || matches!(
+                    &self.spec.params,
+                    CugraphAlgorithmParams::Bfs(params) if params.output.mode != CugraphBfsOutputMode::Path
+                );
+        one_row_per_vertex.then_some(&["vertex"])
     }
 
     fn rewrite_subsumed_composed_consumer(
@@ -909,7 +914,7 @@ impl GpuResidentProducer for CugraphAlgoExec {
     }
 }
 
-fn pushed_logical_consumer_options(
+pub(super) fn pushed_logical_consumer_options(
     producer: &CugraphAlgoExec,
     consumer_plan: &nexus_query_engine::plan::QueryPlan,
 ) -> Result<Option<CugraphResultPlanOptions>> {
@@ -940,7 +945,7 @@ fn pushed_logical_consumer_options(
         match &node.kind {
             PlanNode::Sort(sort)
                 if sort.input == input
-                    && result_options.pre_decode_sort.is_none()
+                    && result_options.subsumed_top_k_sort.is_none()
                     && sort.spec.expressions.iter().all(|expression| {
                         let NativeExpr::Column(column) = &expression.expr else {
                             return false;
@@ -952,7 +957,7 @@ fn pushed_logical_consumer_options(
                         }
                     }) =>
             {
-                result_options.pre_decode_sort = Some(sort.spec.clone());
+                result_options.subsumed_top_k_sort = Some(sort.spec.clone());
             },
             PlanNode::Limit(limit)
                 if limit.input == input
@@ -967,6 +972,9 @@ fn pushed_logical_consumer_options(
         input = node.id;
     }
     if remaining.is_empty() || consumer_plan.root_id() != input {
+        return Ok(None);
+    }
+    if result_options.subsumed_top_k_sort.is_some() && result_options.limit.is_none() {
         return Ok(None);
     }
     Ok(Some(result_options))
