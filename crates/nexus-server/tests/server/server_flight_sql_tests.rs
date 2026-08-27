@@ -2,7 +2,10 @@ use std::{
     fs::File,
     net::TcpListener,
     path::Path,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -24,13 +27,20 @@ use arrow_flight::{
     },
 };
 use datafusion::{
+    catalog::Session,
+    datasource::{TableProvider, TableType},
     execution::SessionStateBuilder,
+    logical_expr::{
+        Expr, LogicalPlan,
+        planner::{PlannedRelation, RelationPlanner, RelationPlannerContext, RelationPlanning},
+    },
+    physical_plan::ExecutionPlan,
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
+    sql::sqlparser::ast::TableFactor,
 };
 use datafusion_nexus::{
     backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend},
     native_exec::NexusNativeExecutionConfig,
-    planner::NexusNativeOptimizerConfig,
 };
 #[cfg(not(feature = "cugraph"))]
 use nexus_server::ERROR_OPERATION_METADATA_KEY;
@@ -78,7 +88,7 @@ fn build_injected_test_backend(config: &mut ServerConfig) -> NexusGpuBackend {
         })
         .collect();
     config.native_optimizer_config =
-        NexusNativeOptimizerConfig::default().with_native_execution_config(NexusNativeExecutionConfig::bounded(
+        config.native_optimizer_config.clone().with_native_execution_config(NexusNativeExecutionConfig::bounded(
             INJECTED_BACKEND_TEST_DEVICE_BUDGET_BYTES,
             NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES,
             NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK,

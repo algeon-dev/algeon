@@ -64,6 +64,7 @@ use super::{
     coordinator::{
         CoordinatorTicketPayload, QueryCoordinator, QueryCoordinatorConfig, QueryCoordinatorError,
         QueryCoordinatorErrorKind, QueryExecutionLease, QueryPlanningLease, QueryPlanningReportDeliveryTerminal,
+        StatementExecutionDomain,
     },
     diagnostics::log_native_planning_report_for_tables,
     error::{adapter_error_to_status, datafusion_error_to_captured_error, datafusion_error_to_status_for_operation},
@@ -71,7 +72,10 @@ use super::{
 };
 use crate::{
     adapter_error::{DataFusionErrorExt, Error, ErrorCode, ErrorLogDiagnostics},
-    adapter_session::{NexusSessionStateBuilderExt, install_nexus_native_rule_with_session_config},
+    adapter_session::{
+        NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
+        NexusSessionStateBuilderExt, install_nexus_native_rule_with_session_config,
+    },
     cugraph_sql::CugraphSqlConfig,
     gpu_coverage::{ExplainGpuOutputMode, parse_explain_gpu, validate_query},
     gpu_coverage_sql::{coverage_batch, coverage_schema},
@@ -79,7 +83,7 @@ use crate::{
         ServerInternalNativeMetricsCapture as NativeMetricsCapture,
         ServerInternalNativeObservationActivityFactory as NativeObservationActivityFactory,
     },
-    planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
+    planner::{NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME, NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     session_config::DataFusionNexusSessionConfig,
 };
 

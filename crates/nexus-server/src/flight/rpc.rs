@@ -19,14 +19,14 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         self.check_auth(&request)?;
         let correlation_id = request_correlation_id(&request)?;
         let sql = query.query;
-        // Every statement-query invocation starts with the attempt-owned
-        // coordinator registration. `EXPLAIN GPU` never executes a physical
-        // plan or acquires GPU admission, but its diagnostic planning and
-        // Flight lifecycle still publish one immutable attempt report.
-        let registration = if query.transaction_id.is_none() {
-            self.register_new_attempt_query(sql.clone(), correlation_id.clone())
-        } else {
+        let parsed_statement = self.parse_flight_statement(&sql);
+        let execution_domain = parsed_statement
+            .as_ref()
+            .map_or(StatementExecutionDomain::Data, |statement| self.classify_statement_candidate(statement));
+        let registration = if query.transaction_id.is_some() || execution_domain == StatementExecutionDomain::Metadata {
             self.register_new_query(sql.clone(), correlation_id.clone())
+        } else {
+            self.register_new_attempt_query(sql.clone(), correlation_id.clone())
         };
         let (query_id, mut planning_lease) = registration.map_err(|(query_id, status)| {
             status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
@@ -104,6 +104,8 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
                 planning_started_at,
                 StatementTicketKind::Statement,
                 None,
+                parsed_statement,
+                execution_domain,
             )
             .instrument(query_span.clone())
             .await
@@ -139,17 +141,18 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
                 return Err(record_non_attempt_failure(self, &correlation_id, error)?);
             },
         };
-        let sql = match self.prepared_statements.get(&handle).map(|entry| entry.sql.clone()) {
-            Some(sql) => sql,
-            None => {
-                let error = Error::new(
-                    ErrorCode::ObjectNotFound,
-                    "datafusion_nexus.server.flight.get_flight_info_prepared_statement.resolve",
-                    format!("unknown prepared statement handle: {handle}"),
-                );
-                return Err(record_non_attempt_failure(self, &correlation_id, error)?);
-            },
-        };
+        let (sql, execution_domain) =
+            match self.prepared_statements.get(&handle).map(|entry| (entry.sql.clone(), entry.execution_domain)) {
+                Some(entry) => entry,
+                None => {
+                    let error = Error::new(
+                        ErrorCode::ObjectNotFound,
+                        "datafusion_nexus.server.flight.get_flight_info_prepared_statement.resolve",
+                        format!("unknown prepared statement handle: {handle}"),
+                    );
+                    return Err(record_non_attempt_failure(self, &correlation_id, error)?);
+                },
+            };
         if let Some(error) = explain_gpu_endpoint_error(
             &sql,
             "datafusion_nexus.server.flight.get_flight_info_prepared_statement.explain_gpu",
@@ -157,10 +160,14 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         ) {
             return Err(record_non_attempt_failure(self, &correlation_id, error)?);
         }
-        let (query_id, planning_lease) =
-            self.register_new_attempt_query(sql.clone(), correlation_id.clone()).map_err(|(query_id, status)| {
-                status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
-            })?;
+        let registration = match execution_domain {
+            StatementExecutionDomain::Metadata => self.register_new_query(sql.clone(), correlation_id.clone()),
+            StatementExecutionDomain::Data => self.register_new_attempt_query(sql.clone(), correlation_id.clone()),
+        };
+        let (query_id, planning_lease) = registration.map_err(|(query_id, status)| {
+            status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref())
+        })?;
+        let parsed_statement = self.parse_flight_statement(&sql);
         let query_span = DatafusionNexusFlightSqlService::query_span(
             &query_id,
             correlation_id.as_deref(),
@@ -188,6 +195,8 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
                 planning_started_at,
                 StatementTicketKind::PreparedStatement,
                 Some(handle.clone()),
+                parsed_statement,
+                execution_domain,
             )
             .instrument(query_span.clone())
             .await
@@ -694,9 +703,16 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         // not consume GPU admission; the physical plan and plan-scoped native
         // ticket happen later when the client executes this prepared statement.
         let state = self.ctx.state();
+        let parsed_statement = self.parse_flight_statement(&sql);
+        let execution_domain = parsed_statement
+            .as_ref()
+            .map_or(StatementExecutionDomain::Data, |statement| self.classify_statement_candidate(statement));
         drop(_query_enter);
         let logical_plan = tokio::select! {
-            result = state.create_logical_plan(&sql)
+            result = async {
+                let statement = parsed_statement?;
+                state.statement_to_plan(statement).await
+            }
                 .instrument(DatafusionNexusFlightSqlService::query_stage_span(
                     Some(&query_span),
                     &query_id,
@@ -731,6 +747,17 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
                 return Err(status);
             }
         };
+        if execution_domain == StatementExecutionDomain::Metadata
+            && let Err(error) = self.verify_metadata_logical_plan(
+                &logical_plan,
+                "datafusion_nexus.server.flight.do_action_create_prepared_statement.metadata_logical_proof",
+            )
+        {
+            let (status, captured) = adapter_error_to_status_and_capture(error);
+            let status = status_with_query_id_and_correlation_id(status, &query_id, correlation_id.as_deref());
+            planning_lease.finish_captured("planning", &status, captured);
+            return Err(status);
+        }
         if let Err(error) = reject_parameterized_plan(
             &logical_plan,
             "datafusion_nexus.server.flight.do_action_create_prepared_statement.parameter_binding",
@@ -778,7 +805,8 @@ impl FlightSqlService for DatafusionNexusFlightSqlService {
         // Reuse the returned opaque handle as this action's query_id so the
         // successful create action remains addressable through GetQueryStats.
         let handle = query_id.clone();
-        self.prepared_statements.insert(handle.clone(), PreparedStatementEntry::new(sql, no_result_ddl));
+        self.prepared_statements
+            .insert(handle.clone(), PreparedStatementEntry::new(sql, no_result_ddl, execution_domain));
         tracing::info!(prepared_statement_handle = handle.as_str(), "created Flight SQL prepared statement");
         planning_lease.succeed();
 

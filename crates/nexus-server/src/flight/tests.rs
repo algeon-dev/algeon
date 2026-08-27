@@ -142,6 +142,89 @@ fn assert_single_sealed_attempt_report(payload: &str, expected_outcome: &str) {
     assert!(payload.contains("# sealed=true"), "{payload}");
 }
 
+#[test]
+fn statement_execution_domain_classifier_is_fail_closed() {
+    let service = super::service::bounded_test_service(Duration::from_secs(30));
+    for sql in [
+        "SHOW TABLES",
+        "SHOW COLUMNS FROM t",
+        "DESCRIBE t",
+        "DESC t",
+        "SELECT table_name FROM information_schema.tables",
+        "SELECT a.table_name FROM information_schema.tables a JOIN information_schema.columns b ON a.table_name = b.table_name",
+    ] {
+        let statement = service.parse_flight_statement(sql).unwrap();
+        assert_eq!(service.classify_statement_candidate(&statement), StatementExecutionDomain::Metadata, "{sql}");
+    }
+
+    for sql in [
+        "SELECT 1",
+        "SHOW FUNCTIONS",
+        "SHOW FULL TABLES",
+        "SELECT * FROM user_table",
+        "SELECT i.table_name FROM information_schema.tables i JOIN user_table u ON true",
+    ] {
+        let statement = service.parse_flight_statement(sql).unwrap();
+        assert_eq!(service.classify_statement_candidate(&statement), StatementExecutionDomain::Data, "{sql}");
+    }
+}
+
+#[test]
+fn metadata_planning_removes_only_the_three_nexus_physical_rules() {
+    let service = super::service::bounded_test_service(Duration::from_secs(30));
+    let base_rules =
+        service.ctx.state().physical_optimizers().iter().map(|rule| rule.name().to_string()).collect::<Vec<_>>();
+    let metadata_rules = service
+        .metadata_query_planning()
+        .ctx
+        .state()
+        .physical_optimizers()
+        .iter()
+        .map(|rule| rule.name().to_string())
+        .collect::<Vec<_>>();
+    let removed = [
+        NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME,
+        NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
+        NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME,
+    ];
+
+    assert!(removed.iter().all(|name| base_rules.iter().any(|rule| rule == name)), "{base_rules:?}");
+    assert!(removed.iter().all(|name| metadata_rules.iter().all(|rule| rule != name)), "{metadata_rules:?}");
+    assert_eq!(
+        metadata_rules,
+        base_rules.into_iter().filter(|rule| !removed.contains(&rule.as_str())).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn metadata_logical_proof_rejects_user_sources_and_source_free_queries() {
+    let ctx = Arc::new(SessionContext::new_with_config(SessionConfig::new().with_information_schema(true)));
+    let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+    ctx.register_table("user_table", Arc::new(MemTable::try_new(schema, vec![vec![]]).unwrap())).unwrap();
+    let service = DatafusionNexusFlightSqlService::new(
+        Arc::clone(&ctx),
+        NexusNativeOptimizerConfig::default(),
+        Arc::new(QueryAdmission::new_for_tests()),
+        Duration::from_secs(30),
+        #[cfg(feature = "cugraph")]
+        None,
+    );
+
+    let information_schema =
+        ctx.state().create_logical_plan("SELECT table_name FROM information_schema.tables").await.unwrap();
+    service.verify_metadata_logical_plan(&information_schema, "datafusion_nexus.test.metadata_proof").unwrap();
+    let describe = ctx.state().create_logical_plan("DESCRIBE user_table").await.unwrap();
+    service.verify_metadata_logical_plan(&describe, "datafusion_nexus.test.metadata_proof").unwrap();
+
+    for sql in ["SELECT 1", "SELECT i.table_name FROM information_schema.tables i JOIN user_table u ON true"] {
+        let plan = ctx.state().create_logical_plan(sql).await.unwrap();
+        let error = service
+            .verify_metadata_logical_plan(&plan, "datafusion_nexus.test.metadata_proof")
+            .expect_err("non-metadata logical plans must fail proof");
+        assert_eq!(error.code(), ErrorCode::InvalidRequest, "{sql}: {error:?}");
+    }
+}
+
 #[tokio::test]
 async fn explain_gpu_success_retains_one_sealed_attempt_report() {
     let service = super::service::bounded_test_service(Duration::from_secs(30));

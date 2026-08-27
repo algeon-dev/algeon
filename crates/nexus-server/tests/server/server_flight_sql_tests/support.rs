@@ -151,6 +151,81 @@ fn collect_string_column(batches: &[arrow::record_batch::RecordBatch], column: &
     out
 }
 
+#[derive(Debug)]
+struct ScanFailingTableProvider {
+    schema: Arc<Schema>,
+    scan_called: AtomicBool,
+}
+
+impl ScanFailingTableProvider {
+    fn new(schema: Arc<Schema>) -> Self {
+        Self { schema, scan_called: AtomicBool::new(false) }
+    }
+
+    fn scan_called(&self) -> bool {
+        self.scan_called.load(Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl TableProvider for ScanFailingTableProvider {
+    fn schema(&self) -> Arc<Schema> {
+        Arc::clone(&self.schema)
+    }
+
+    fn table_type(&self) -> TableType {
+        TableType::Base
+    }
+
+    async fn scan(
+        &self,
+        _state: &dyn Session,
+        _projection: Option<&Vec<usize>>,
+        _filters: &[Expr],
+        _limit: Option<usize>,
+    ) -> datafusion::common::Result<Arc<dyn ExecutionPlan>> {
+        self.scan_called.store(true, Ordering::SeqCst);
+        Err(datafusion::error::DataFusionError::Execution(
+            "metadata regression provider row scan invoked".to_string(),
+        ))
+    }
+}
+
+#[derive(Debug)]
+struct ControlledPlanReplacement {
+    enabled: AtomicBool,
+    replacement: LogicalPlan,
+}
+
+impl ControlledPlanReplacement {
+    fn new(replacement: LogicalPlan) -> Self {
+        Self { enabled: AtomicBool::new(false), replacement }
+    }
+
+    fn set_enabled(&self, enabled: bool) {
+        self.enabled.store(enabled, Ordering::SeqCst);
+    }
+}
+
+impl RelationPlanner for ControlledPlanReplacement {
+    fn plan_relation(
+        &self,
+        relation: TableFactor,
+        _context: &mut dyn RelationPlannerContext,
+    ) -> datafusion::common::Result<RelationPlanning> {
+        let alias = match &relation {
+            TableFactor::Table { name, alias, .. }
+                if self.enabled.load(Ordering::SeqCst)
+                    && name.to_string().eq_ignore_ascii_case("information_schema.tables") =>
+            {
+                alias.clone()
+            },
+            _ => return Ok(RelationPlanning::Original(Box::new(relation))),
+        };
+        Ok(RelationPlanning::Planned(Box::new(PlannedRelation::new(self.replacement.clone(), alias))))
+    }
+}
+
 /// Warm the process-wide CUDA context exactly once. The first CUDA call pays a
 /// multi-second `cuInit()` cost; doing it here (every test reserves an address
 /// before spawning a server) keeps that cost off each server's connect window,

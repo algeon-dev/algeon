@@ -60,6 +60,30 @@ impl StatementTicketKind {
         }
     }
 
+    pub(super) const fn metadata_logical_proof_operation(self) -> &'static str {
+        match self {
+            Self::Statement => "datafusion_nexus.server.flight.get_flight_info_statement.metadata_logical_proof",
+            Self::PreparedStatement => {
+                "datafusion_nexus.server.flight.get_flight_info_prepared_statement.metadata_logical_proof"
+            },
+            Self::ExplainGpuRows | Self::ExplainGpuJson => {
+                "datafusion_nexus.server.flight.get_flight_info_statement.explain_gpu"
+            },
+        }
+    }
+
+    pub(super) const fn execute_metadata_logical_proof_operation(self) -> &'static str {
+        match self {
+            Self::Statement => "datafusion_nexus.server.flight.do_get_statement.metadata_logical_proof",
+            Self::PreparedStatement => {
+                "datafusion_nexus.server.flight.do_get_prepared_statement.metadata_logical_proof"
+            },
+            Self::ExplainGpuRows | Self::ExplainGpuJson => {
+                "datafusion_nexus.server.flight.do_get_statement.explain_gpu"
+            },
+        }
+    }
+
     pub(super) const fn execute_stream_operation(self) -> &'static str {
         match self {
             Self::Statement => "datafusion_nexus.server.flight.do_get_statement.execute_stream",
