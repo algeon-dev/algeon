@@ -400,8 +400,8 @@ pub(super) fn count_star_probe_column_mapping_for_tasks(
     tasks: &[FileScanTask],
 ) -> Result<Option<TableFormatColumnMapping>> {
     if tasks.is_empty()
-        || !tasks.iter().all(|task| task.project_field_ids.is_empty())
-        || !tasks.iter().any(|task| task.record_count.is_none())
+        || !tasks.iter().all(|task| task.project_field_ids().is_empty())
+        || !tasks.iter().any(|task| task.record_count().is_none())
     {
         return Ok(None);
     }
@@ -453,8 +453,8 @@ fn count_star_probe_name_mapping_candidates_for_tasks(
     field_id: i32,
 ) -> std::result::Result<Option<Vec<String>>, TableFormatUnsupportedFeatureCode> {
     let mut candidates = None;
-    for task in tasks.iter().filter(|task| task.record_count.is_none()) {
-        let Some(mapping) = task.name_mapping.as_deref() else {
+    for task in tasks.iter().filter(|task| task.record_count().is_none()) {
+        let Some(mapping) = task.name_mapping().map(|mapping| mapping.as_ref()) else {
             continue;
         };
         let (mut task_candidates, rejected_code) =
@@ -477,11 +477,11 @@ pub(super) fn count_star_probe_field_is_direct_file_column_for_missing_count_tas
     tasks: &[FileScanTask],
     field_id: i32,
 ) -> Result<bool> {
-    for task in tasks.iter().filter(|task| task.record_count.is_none()) {
+    for task in tasks.iter().filter(|task| task.record_count().is_none()) {
         let Some(field) = task.schema().as_struct().field_by_id(field_id) else {
             return Ok(false);
         };
-        if task.partition_spec.as_deref().is_some_and(|spec| identity_partition_source_field(spec, field_id)) {
+        if task.partition_spec().is_some_and(|spec| identity_partition_source_field(spec, field_id)) {
             return Ok(false);
         }
         let data_type = iceberg_field_to_arrow_data_type(field)?;
@@ -498,36 +498,36 @@ pub(super) fn append_task_facts(
     task: FileScanTask,
     parent_filter_enforces_task_predicate: bool,
 ) -> Result<()> {
-    let file_id = if task.data_file_path.is_empty() {
+    let file_id = if task.data_file_path().is_empty() {
         format!("iceberg-data-file-{task_index}")
     } else {
         format!(
             "iceberg-data-file-{task_index}-h{}",
-            fnv1a64_hex(credential_free_endpoint_identity(&task.data_file_path).as_bytes())
+            fnv1a64_hex(credential_free_endpoint_identity(task.data_file_path()).as_bytes())
         )
     };
-    let file_format = table_format_data_file_format(task.data_file_format);
-    let read_capability = read_capability_for_location(&task.data_file_path);
+    let file_format = table_format_data_file_format(task.data_file_format());
+    let read_capability = read_capability_for_location(task.data_file_path());
     let source_content_identity = iceberg_task_content_identity(plan.snapshot_id.as_deref(), &task);
     let mut data_file = TableFormatDataFile::new(
         file_id.clone(),
-        task.data_file_path.clone(),
+        task.data_file_path().to_owned(),
         file_format.clone(),
         read_capability.clone(),
     )
-    .with_size_bytes(task.file_size_in_bytes);
+    .with_size_bytes(task.file_size_in_bytes());
     if let Some(content_identity) = source_content_identity {
         data_file = data_file.with_source_content_identity(content_identity);
     }
-    if let Some(record_count) = task.record_count {
+    if let Some(record_count) = task.record_count() {
         data_file = data_file.with_row_count(record_count);
     }
     append_partition_values(plan, &mut data_file, &file_id, &task)?;
-    if task.data_file_format != DataFileFormat::Parquet {
+    if task.data_file_format() != DataFileFormat::Parquet {
         plan.unsupported_features.push(TableFormatUnsupportedFeature::for_file(
             TableFormatUnsupportedFeatureCode::IcebergNonParquetDataFile,
             file_id.clone(),
-            format!("Iceberg data file format {} is not native Parquet", task.data_file_format),
+            format!("Iceberg data file format {} is not native Parquet", task.data_file_format()),
         ));
     }
 
@@ -539,7 +539,7 @@ pub(super) fn append_task_facts(
         ));
     }
 
-    if task.predicate.is_some() && !parent_filter_enforces_task_predicate {
+    if task.predicate().is_some() && !parent_filter_enforces_task_predicate {
         plan.unsupported_features.push(TableFormatUnsupportedFeature::for_file(
             TableFormatUnsupportedFeatureCode::IcebergResidualPredicateUnsupported,
             file_id.clone(),
@@ -548,17 +548,22 @@ pub(super) fn append_task_facts(
     }
 
     let equality_delete_field_ids = task_equality_delete_field_ids(&task);
-    let mut scan_field_ids = task.project_field_ids.clone();
+    let mut scan_field_ids = task.project_field_ids().to_vec();
     for field_id in &equality_delete_field_ids {
         if !scan_field_ids.contains(field_id) {
             scan_field_ids.push(*field_id);
         }
     }
-    let name_mapping_candidates =
-        append_name_mapping_unsupported_features(plan, &file_id, &task.name_mapping, task.schema(), &scan_field_ids);
+    let name_mapping_candidates = append_name_mapping_unsupported_features(
+        plan,
+        &file_id,
+        task.name_mapping().map(|mapping| mapping.as_ref()),
+        task.schema(),
+        &scan_field_ids,
+    );
 
-    let partition_spec = task.partition_spec.as_deref();
-    for field_id in task.project_field_ids.iter().copied() {
+    let partition_spec = task.partition_spec().map(|spec| spec.as_ref());
+    for field_id in task.project_field_ids().iter().copied() {
         let name_mapping_candidates = name_mapping_candidates.as_ref().and_then(|candidates| {
             candidates
                 .iter()
@@ -599,7 +604,7 @@ pub(super) fn append_task_facts(
         )?;
     }
 
-    for (delete_index, delete_file) in task.deletes.iter().enumerate() {
+    for (delete_index, delete_file) in task.deletes().iter().enumerate() {
         append_delete_file_facts(plan, &mut data_file, &file_id, delete_index, delete_file)?;
     }
 
@@ -610,7 +615,7 @@ pub(super) fn append_task_facts(
 
 fn task_equality_delete_field_ids(task: &FileScanTask) -> Vec<i32> {
     let mut field_ids = Vec::new();
-    for delete_file in &task.deletes {
+    for delete_file in task.deletes() {
         if delete_file.file_type != DataContentType::EqualityDeletes {
             continue;
         }
@@ -629,10 +634,10 @@ pub(super) fn append_partition_values(
     file_id: &str,
     task: &FileScanTask,
 ) -> Result<()> {
-    let Some(partition) = task.partition.as_ref().filter(|partition| !partition.fields().is_empty()) else {
+    let Some(partition) = task.partition().filter(|partition| !partition.fields().is_empty()) else {
         return Ok(());
     };
-    let Some(partition_spec) = task.partition_spec.as_ref() else {
+    let Some(partition_spec) = task.partition_spec() else {
         plan.unsupported_features.push(TableFormatUnsupportedFeature::for_file(
             TableFormatUnsupportedFeatureCode::IcebergPartitionTransformUnsupported,
             file_id,
@@ -703,11 +708,11 @@ struct ProjectedNameMappingCandidates {
 fn append_name_mapping_unsupported_features(
     plan: &mut TableFormatScanPlan,
     file_id: &str,
-    mapping: &Option<Arc<IcebergNameMapping>>,
+    mapping: Option<&IcebergNameMapping>,
     schema: &IcebergSchema,
     projected_field_ids: &[i32],
 ) -> Option<Vec<ProjectedNameMappingCandidates>> {
-    let mapping = mapping.as_deref()?;
+    let mapping = mapping?;
 
     let (candidates, rejected_code) = name_mapping_candidates_for_field_ids(mapping, schema, projected_field_ids);
     if let Some(code) = rejected_code {
@@ -894,7 +899,7 @@ pub(super) fn append_delete_file_facts(
             fnv1a64_hex(credential_free_endpoint_identity(&delete_file.file_path).as_bytes())
         )
     };
-    let format = table_format_data_file_format_from_path(&delete_file.file_path);
+    let format = table_format_data_file_format(delete_file.file_format);
     let content = table_format_delete_content(delete_file.file_type);
     let read_capability = read_capability_for_location(&delete_file.file_path);
     let mut table_delete = TableFormatDeleteFile::for_data_file(
@@ -954,9 +959,9 @@ pub(super) fn iceberg_task_content_identity(snapshot_id: Option<&str>, task: &Fi
     if snapshot_id.is_empty() {
         return None;
     }
-    let path_hash = fnv1a64_hex(credential_free_endpoint_identity(&task.data_file_path).as_bytes());
-    let rows = task.record_count.map_or_else(|| "unknown".to_string(), |rows| rows.to_string());
-    Some(format!("iceberg_snapshot_{snapshot_id}_file_{path_hash}_size_{}_rows_{rows}", task.file_size_in_bytes))
+    let path_hash = fnv1a64_hex(credential_free_endpoint_identity(task.data_file_path()).as_bytes());
+    let rows = task.record_count().map_or_else(|| "unknown".to_string(), |rows| rows.to_string());
+    Some(format!("iceberg_snapshot_{snapshot_id}_file_{path_hash}_size_{}_rows_{rows}", task.file_size_in_bytes()))
 }
 
 pub(super) fn fnv1a64_hex(bytes: &[u8]) -> String {
@@ -971,17 +976,6 @@ pub(super) fn table_format_data_file_format(format: DataFileFormat) -> TableForm
         DataFileFormat::Orc => TableFormatDataFileFormat::Orc,
         DataFileFormat::Avro => TableFormatDataFileFormat::Avro,
         DataFileFormat::Puffin => TableFormatDataFileFormat::Unknown("puffin".to_string()),
-    }
-}
-
-pub(super) fn table_format_data_file_format_from_path(path: &str) -> TableFormatDataFileFormat {
-    let extension = path.rsplit_once('.').map(|(_, extension)| extension.to_ascii_lowercase());
-    match extension.as_deref() {
-        Some("parquet") => TableFormatDataFileFormat::Parquet,
-        Some("orc") => TableFormatDataFileFormat::Orc,
-        Some("avro") => TableFormatDataFileFormat::Avro,
-        Some(format) => TableFormatDataFileFormat::Unknown(format.to_string()),
-        None => TableFormatDataFileFormat::Unknown("unknown".to_string()),
     }
 }
 

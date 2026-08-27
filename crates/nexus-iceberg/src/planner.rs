@@ -8,8 +8,8 @@ use futures::StreamExt;
 use iceberg::{
     scan::FileScanTask,
     spec::{
-        DEFAULT_SCHEMA_NAME_MAPPING, DataContentType, DataFileFormat, Literal, NameMapping, PrimitiveLiteral,
-        PrimitiveType, Transform,
+        DataContentType, DataFileFormat, Literal, NameMapping, PrimitiveLiteral, PrimitiveType, TableProperties,
+        Transform,
     },
 };
 use tokio::time::Instant;
@@ -248,7 +248,7 @@ impl<'a> IcebergScanPlanner<'a> {
             .table()
             .metadata()
             .properties()
-            .get(DEFAULT_SCHEMA_NAME_MAPPING)
+            .get(TableProperties::PROPERTY_DEFAULT_NAME_MAPPING)
             .map(|raw| {
                 serde_json::from_str::<NameMapping>(raw).map(|mapping| neutral_name_mapping(&mapping)).map_err(
                     |_source| {
@@ -313,14 +313,14 @@ impl<'a> IcebergScanPlanner<'a> {
     }
 
     fn task_to_data_file(&self, task: FileScanTask, semantics: &ManifestSemantics) -> IcebergResult<IcebergDataFile> {
-        let manifest_data = semantics.data.get(&task.data_file_path).ok_or_else(|| {
+        let manifest_data = semantics.data.get(task.data_file_path()).ok_or_else(|| {
             self.invalid_metadata(
                 IcebergOperation::ManifestInterpretation,
                 "Iceberg task data file is absent from the frozen manifest facts",
             )
         })?;
-        let format = file_format(task.data_file_format);
-        if format != manifest_data.format || task.file_size_in_bytes != manifest_data.file_size_bytes {
+        let format = file_format(task.data_file_format());
+        if format != manifest_data.format || task.file_size_in_bytes() != manifest_data.file_size_bytes {
             return Err(self.invalid_metadata(
                 IcebergOperation::ManifestInterpretation,
                 "Iceberg task data file disagrees with frozen manifest facts",
@@ -328,18 +328,18 @@ impl<'a> IcebergScanPlanner<'a> {
         }
         let partition_values = self.partition_values(&task)?;
         let delete_files = task
-            .deletes
+            .deletes()
             .iter()
             .map(|delete| self.task_to_delete_file(delete, semantics))
             .collect::<IcebergResult<Vec<_>>>()?;
         Ok(IcebergDataFile {
-            location: task.data_file_path,
+            location: task.data_file_path().to_owned(),
             format,
-            file_size_bytes: task.file_size_in_bytes,
-            range: IcebergFileRange { start: task.start, length: task.length },
-            record_count: task.record_count,
+            file_size_bytes: task.file_size_in_bytes(),
+            range: IcebergFileRange { start: task.start(), length: task.length() },
+            record_count: task.record_count(),
             sequence: manifest_data.sequence,
-            encryption_key_metadata_present: task.key_metadata.is_some()
+            encryption_key_metadata_present: task.key_metadata().is_some()
                 || manifest_data.encryption_key_metadata_present,
             partition_values,
             delete_files,
@@ -357,7 +357,8 @@ impl<'a> IcebergScanPlanner<'a> {
                 "Iceberg task delete file is absent from the frozen manifest facts",
             )
         })?;
-        if delete_content(task_delete.file_type) != manifest_delete.content
+        if file_format(task_delete.file_format) != manifest_delete.format
+            || delete_content(task_delete.file_type) != manifest_delete.content
             || task_delete.file_size_in_bytes != manifest_delete.file_size_bytes
             || task_delete.partition_spec_id != manifest_delete.partition_spec_id
             || task_delete.equality_ids.clone().unwrap_or_default() != manifest_delete.equality_field_ids
@@ -382,8 +383,8 @@ impl<'a> IcebergScanPlanner<'a> {
     }
 
     fn partition_values(&self, task: &FileScanTask) -> IcebergResult<Vec<IcebergPartitionValue>> {
-        let (Some(partition), Some(spec)) = (&task.partition, task.partition_spec.as_deref()) else {
-            if task.partition.as_ref().is_some_and(|partition| !partition.fields().is_empty()) {
+        let (Some(partition), Some(spec)) = (task.partition(), task.partition_spec()) else {
+            if task.partition().is_some_and(|partition| !partition.fields().is_empty()) {
                 return Err(self.invalid_metadata(
                     IcebergOperation::ManifestInterpretation,
                     "Iceberg task exposes partition values without a partition spec",
@@ -683,8 +684,8 @@ mod tests {
         expr::Reference,
         io::FileIO,
         spec::{
-            DEFAULT_SCHEMA_NAME_MAPPING, DataContentType, DataFileBuilder, DataFileFormat, Literal, ManifestListWriter,
-            ManifestWriterBuilder, Struct, TableMetadata,
+            DataContentType, DataFileBuilder, DataFileFormat, Literal, ManifestListWriter, ManifestWriterBuilder,
+            Struct, TableMetadata, TableProperties,
         },
         table::Table,
     };
@@ -726,7 +727,7 @@ mod tests {
                 .replace("{{ table_metadata_1_location }}", metadata_location.to_str().expect("UTF-8 metadata path"));
             let mut metadata_json =
                 serde_json::from_str::<serde_json::Value>(&metadata_json).expect("parse fixture metadata JSON");
-            metadata_json["properties"][DEFAULT_SCHEMA_NAME_MAPPING] =
+            metadata_json["properties"][TableProperties::PROPERTY_DEFAULT_NAME_MAPPING] =
                 serde_json::Value::String(r#"[{"field-id":1,"names":["x","legacy_x"]}]"#.to_string());
             let metadata = serde_json::from_value::<TableMetadata>(metadata_json).expect("parse fixture metadata");
             let table = Table::builder()
