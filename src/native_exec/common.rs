@@ -28,7 +28,7 @@ use datafusion::{
         metrics::RecordOutput,
     },
 };
-use futures::Stream;
+use futures::{FutureExt, Stream};
 use nexus_query_engine::{
     observability::RuntimeObservationHandle,
     plan::{PlanNode, QueryPlan},
@@ -335,22 +335,22 @@ where
 }
 
 /// Runs a host-facing native query future on its device's dedicated GPU executor.
-pub(crate) async fn run_gpu_execution_task<B, F, T>(
+pub(crate) fn run_gpu_execution_task<B, F, T>(
     executor: GpuExecutorLease,
     observation: RuntimeObservationHandle,
     operation: &'static str,
     build_future: B,
-) -> DataFusionResult<T>
+) -> impl Future<Output = DataFusionResult<T>> + Send
 where
     B: FnOnce(nexus_query_engine::observability::RuntimeStreamLeaseScope) -> F + Send + 'static,
     F: Future<Output = DataFusionResult<T>> + Send + 'static,
     T: Send + 'static,
 {
-    executor.run_observed_scoped(GpuExecutionJobKind::QueryExecution, observation, build_future).await.map_err(
-        |error| {
+    executor.run_observed_scoped(GpuExecutionJobKind::QueryExecution, observation, build_future).map(move |result| {
+        result.map_err(|error| {
             DataFusionError::from(native_query_runtime_error(operation, "dedicated GPU execution task failed", error))
-        },
-    )?
+        })?
+    })
 }
 
 /// Collects `input_name`s of every GPU-resident source node in the plan.

@@ -127,6 +127,7 @@ async fn auxiliary_context_setup_uses_auxiliary_capacity_without_changing_its_ob
     started_receiver.await.expect("first auxiliary context setup starts");
 
     let saturated = pool
+        .clone()
         .run_observed_scoped_in_class(
             GpuExecutionJobKind::ContextSetup,
             GpuExecutionJobClass::Auxiliary,

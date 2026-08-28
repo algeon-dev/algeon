@@ -1,3 +1,4 @@
+use futures::future::BoxFuture;
 use nexus_query_engine::observability::RuntimeTerminalOutcome;
 
 use super::*;
@@ -274,14 +275,16 @@ impl CoordinatorExecutionTerminal {
     /// Waits for the coordinator lease to be released after the attempt's
     /// immutable report has been retained. Flight holds this at stream EOF so
     /// a completed DoGet cannot race an immediately following GetQueryStats.
-    pub(super) async fn wait_finished(&self) {
-        loop {
-            let notified = self.finished.notified();
-            if self.is_finished() {
-                return;
+    pub(super) fn wait_finished(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async move {
+            loop {
+                let notified = self.finished.notified();
+                if self.is_finished() {
+                    return;
+                }
+                notified.await;
             }
-            notified.await;
-        }
+        })
     }
 
     /// Releases a terminal outcome deferred until the attempt-owned sealed

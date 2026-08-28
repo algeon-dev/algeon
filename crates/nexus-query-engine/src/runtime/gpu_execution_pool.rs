@@ -213,18 +213,18 @@ impl GpuExecutorLease {
 
     /// Runs one observed job and provides explicit job/worker correlation to
     /// work that may acquire a service-stream lease.
-    pub async fn run_observed_scoped<B, F, T>(
+    pub fn run_observed_scoped<B, F, T>(
         &self,
         kind: GpuExecutionJobKind,
         observation: RuntimeObservationHandle,
         build_future: B,
-    ) -> Result<T>
+    ) -> impl Future<Output = Result<T>> + Send + 'static + use<B, F, T>
     where
         B: FnOnce(RuntimeStreamLeaseScope) -> F + Send + 'static,
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        self.pool.run_observed_scoped(kind, observation, build_future).await
+        self.pool.clone().run_observed_scoped(kind, observation, build_future)
     }
 }
 
@@ -426,23 +426,23 @@ impl GpuExecutionPool {
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        self.run_observed_scoped(kind, observation, move |_scope| future).await
+        self.clone().run_observed_scoped(kind, observation, move |_scope| future).await
     }
 
     /// Runs one observed job and passes its explicit job/worker correlation to
     /// work that may acquire a service-stream lease.
-    pub async fn run_observed_scoped<B, F, T>(
-        &self,
+    pub fn run_observed_scoped<B, F, T>(
+        self,
         kind: GpuExecutionJobKind,
         observation: RuntimeObservationHandle,
         build_future: B,
-    ) -> Result<T>
+    ) -> impl Future<Output = Result<T>> + Send + 'static
     where
         B: FnOnce(RuntimeStreamLeaseScope) -> F + Send + 'static,
         F: Future<Output = T> + Send + 'static,
         T: Send + 'static,
     {
-        self.run_observed_scoped_in_class(kind, kind.job_class(), observation, build_future).await
+        self.run_observed_scoped_in_class(kind, kind.job_class(), observation, build_future)
     }
 
     /// Runs one observed job through an explicit bounded resource class.
@@ -452,7 +452,7 @@ impl GpuExecutionPool {
     /// admitted attempt's root-context reservation rather than inferred from
     /// that observability label.
     pub(crate) async fn run_observed_scoped_in_class<B, F, T>(
-        &self,
+        self,
         kind: GpuExecutionJobKind,
         class: GpuExecutionJobClass,
         observation: RuntimeObservationHandle,
