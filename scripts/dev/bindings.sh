@@ -93,7 +93,7 @@ generate_cudf() {
         --no-layout-tests \
         --use-core \
         --ctypes-prefix core::ffi \
-        --rust-target 1.94 \
+        --rust-target 1.95 \
         --rust-edition 2024 \
         --sort-semantically \
         --merge-extern-blocks \
@@ -110,7 +110,7 @@ generate_cudf() {
         --no-layout-tests \
         --use-core \
         --ctypes-prefix core::ffi \
-        --rust-target 1.94 \
+        --rust-target 1.95 \
         --rust-edition 2024 \
         --sort-semantically \
         --merge-extern-blocks \

@@ -758,8 +758,8 @@ fn sample_provenance() -> Provenance {
             version: "26.06.00".to_string(),
         },
         toolchains: ToolchainVersions {
-            rustc: "rustc 1.94".to_string(),
-            cargo: "cargo 1.94".to_string(),
+            rustc: "rustc 1.95".to_string(),
+            cargo: "cargo 1.95".to_string(),
             cuda_toolkit: "Cuda compilation tools".to_string(),
             cuda_driver: "580.1".to_string(),
             nsight_systems: "Nsight Systems".to_string(),

@@ -234,7 +234,7 @@ where T: Any + Send + Sync
 {
     fn new(operation: &'static str) -> Result<Self, Error> {
         let id = NEXT_SLOT_ID
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| current.checked_add(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| current.checked_add(1))
             .map_err(|_| {
                 BindingExtensions::lifecycle_error(
                     operation,
@@ -263,7 +263,7 @@ where T: Any + Send + Sync
 
     fn next_generation_id(&self, operation: &'static str) -> Result<u64, Error> {
         self.next_generation_id
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| current.checked_add(1))
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| current.checked_add(1))
             .map_err(|_| {
                 BindingExtensions::lifecycle_error(
                     operation,
@@ -448,20 +448,19 @@ where T: Any + Send + Sync
     fn release(self: &Arc<Self>, generation: Arc<Generation<T>>) {
         let current_thread = std::thread::current().id();
         let mut lifecycle = self.lifecycle.lock().expect("binding extension lifecycle mutex poisoned");
-        let prior_leases =
-            match generation
-                .external_leases
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| current.checked_sub(1))
-            {
-                Ok(prior_leases) => prior_leases,
-                Err(_) => {
-                    *lifecycle = Lifecycle::Poisoned { reason: "binding_extension_lease_count_underflow" };
-                    drop(lifecycle);
-                    self.lifecycle_changed.notify_all();
-                    drop(generation);
-                    return;
-                },
-            };
+        let prior_leases = match generation
+            .external_leases
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| current.checked_sub(1))
+        {
+            Ok(prior_leases) => prior_leases,
+            Err(_) => {
+                *lifecycle = Lifecycle::Poisoned { reason: "binding_extension_lease_count_underflow" };
+                drop(lifecycle);
+                self.lifecycle_changed.notify_all();
+                drop(generation);
+                return;
+            },
+        };
         if prior_leases > 1 {
             drop(lifecycle);
             drop(generation);
