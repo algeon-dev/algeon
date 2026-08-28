@@ -760,6 +760,17 @@ fn graph_producer_unique_key_contract_is_limited_to_vertex_row_results() {
         Some(std::collections::BTreeSet::from(["vertex".to_string()])),
     );
 
+    let projected_normalized_bfs = CugraphAlgoExec::try_new(
+        normalized_bfs.spec.clone(),
+        Arc::clone(&edge_source),
+        Vec::new(),
+        Some(vec![1]),
+        None,
+        NexusNativeExecutionConfig::bounded_default(),
+    )
+    .expect("projected normalized BFS producer should build");
+    assert_eq!(gpu_resident_producer_unique_output_key(&projected_normalized_bfs), None);
+
     let path_bfs = CugraphAlgoExec::try_new(
         bfs_utf8_path_spec(),
         memory_string_edge_source(),
@@ -2375,15 +2386,18 @@ async fn cugraph_sql_bfs_table_function_records_graph_residency_for_datafusion_p
 
     let plan = ctx
         .sql(
-            "SELECT COUNT(*) AS reached \
+            "SELECT distance, COUNT(*) AS reached \
              FROM cugraph_bfs('citation_edges', 0, 'src', 'dst', NULL, \
-             '{\"depth_limit\": 3, \"output_mode\": \"normalized\"}')",
+             '{\"depth_limit\": 3, \"output_mode\": \"normalized\"}') \
+             WHERE distance <= 3 GROUP BY distance",
         )
         .await
         .unwrap()
         .create_physical_plan()
         .await
         .unwrap();
+    let lowering = crate::native::lower_physical_plan_to_native(Arc::clone(&plan));
+    assert_eq!(lowering.selected_count(), 1, "grouped BFS result should lower: {:#?}", lowering.report);
     let exec = cugraph_exec_in_plan(Arc::clone(&plan)).expect("planned SQL should contain CugraphAlgoExec");
     let exec = exec.downcast_ref::<CugraphAlgoExec>().unwrap();
     let descriptor =
