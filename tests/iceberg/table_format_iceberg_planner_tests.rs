@@ -8,7 +8,7 @@ use datafusion_nexus::{
         TableFormatDirectDeviceReadDisposition, TableFormatPartitionTransform, TableFormatReadCapability,
         TableFormatScalarValue, TableFormatScanRequest,
         iceberg::{
-            IcebergTableFormatPlanner, ResolvedIcebergTable, SourceAccessPolicy,
+            IcebergTableFormatPlanner, ResolvedTable, SourceAccessPolicy,
             iceberg_file_scan_tasks_to_table_format_scan_plan,
         },
     },
@@ -366,7 +366,7 @@ fn identity_timestamp_and_decimal_partition_values_keep_typed_metadata_literals(
 async fn table_format_planner_carries_plan_files_partition_spec_into_scan_plan() {
     let fixture = MetadataOnlyIcebergFixture::new();
     fixture.write_current_manifest_list().await;
-    let resolved = ResolvedIcebergTable::from_table(fixture.table, SourceAccessPolicy::s3_default_chain(None)).unwrap();
+    let resolved = ResolvedTable::from_table(fixture.table, SourceAccessPolicy::s3_default_chain(None)).unwrap();
     let planner = IcebergTableFormatPlanner::new(resolved);
     let request = TableFormatScanRequest::default();
     let resolved = planner.resolve_table_format_scan(request.clone()).await.unwrap();

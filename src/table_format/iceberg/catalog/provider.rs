@@ -48,7 +48,7 @@ impl IcebergProviderOptions {
 
 /// Wraps a loaded Iceberg table in the unified dual-mode provider.
 fn build_table_provider(
-    resolved: nexus_iceberg::ResolvedIcebergTable,
+    resolved: nexus_iceberg::ResolvedTable,
     catalog_type: &str,
     parquet_read_strategy_config: Option<TableFormatParquetReadStrategyConfig>,
     provider_options: &IcebergProviderOptions,
@@ -78,7 +78,7 @@ fn build_table_provider(
 /// Implementations should avoid leaking credentials in errors. `load_table`
 /// must accept identifiers previously returned by `list_tables`.
 #[async_trait]
-pub trait IcebergCatalogBackend: fmt::Debug + Send + Sync {
+pub trait CatalogBackend: fmt::Debug + Send + Sync {
     /// List all top-level namespaces exposed by this catalog.
     async fn list_namespaces(&self) -> Result<Vec<NamespaceIdent>>;
 
@@ -90,7 +90,7 @@ pub trait IcebergCatalogBackend: fmt::Debug + Send + Sync {
     /// The DataFusion wrapper consumes the returned resolution directly, so
     /// the CPU delegate, leaf scan candidate, and native source policy share
     /// the same snapshot and source-access facts.
-    async fn load_table(&self, table: &TableIdent) -> Result<nexus_iceberg::ResolvedIcebergTable>;
+    async fn load_table(&self, table: &TableIdent) -> Result<nexus_iceberg::ResolvedTable>;
 
     /// Table-format Parquet read-strategy config associated with this catalog.
     ///
@@ -112,18 +112,18 @@ pub trait IcebergCatalogBackend: fmt::Debug + Send + Sync {
 /// catalog from silently dropping server cache or native read settings.
 #[derive(Debug, Clone)]
 pub struct NexusIcebergCatalogSource {
-    backend: Arc<nexus_iceberg::IcebergCatalogBackend>,
+    backend: Arc<nexus_iceberg::CatalogBackend>,
     parquet_read_strategy_config: Option<TableFormatParquetReadStrategyConfig>,
 }
 
 impl NexusIcebergCatalogSource {
     /// Adapts an owned, already-connected leaf backend for DataFusion.
-    pub fn new(backend: nexus_iceberg::IcebergCatalogBackend) -> Self {
+    pub fn new(backend: nexus_iceberg::CatalogBackend) -> Self {
         Self::from_shared_backend(Arc::new(backend))
     }
 
     /// Adapts a shared, already-connected leaf backend for DataFusion.
-    pub fn from_shared_backend(backend: Arc<nexus_iceberg::IcebergCatalogBackend>) -> Self {
+    pub fn from_shared_backend(backend: Arc<nexus_iceberg::CatalogBackend>) -> Self {
         Self { backend, parquet_read_strategy_config: None }
     }
 
@@ -134,7 +134,7 @@ impl NexusIcebergCatalogSource {
     }
 
     /// Returns the connected leaf backend without exposing its credentials.
-    pub const fn backend(&self) -> &Arc<nexus_iceberg::IcebergCatalogBackend> {
+    pub const fn backend(&self) -> &Arc<nexus_iceberg::CatalogBackend> {
         &self.backend
     }
 }
@@ -143,7 +143,7 @@ impl NexusIcebergCatalogSource {
 /// DataFusion boundary. The leaf backend intentionally has no implementation
 /// of this root trait: callers must choose an explicit root read strategy.
 #[async_trait]
-impl IcebergCatalogBackend for NexusIcebergCatalogSource {
+impl CatalogBackend for NexusIcebergCatalogSource {
     async fn list_namespaces(&self) -> Result<Vec<NamespaceIdent>> {
         self.backend
             .list_namespaces()
@@ -171,7 +171,7 @@ impl IcebergCatalogBackend for NexusIcebergCatalogSource {
 
     async fn list_tables(&self, namespace: &NamespaceIdent) -> Result<Vec<TableIdent>> {
         self.backend
-            .list_tables(nexus_iceberg::IcebergNamespace { parts: namespace.as_ref().clone() })
+            .list_tables(nexus_iceberg::Namespace { parts: namespace.as_ref().clone() })
             .await
             .map_err(|error| {
                 crate::table_format::iceberg::adapter::root_error_from_iceberg(
@@ -195,9 +195,9 @@ impl IcebergCatalogBackend for NexusIcebergCatalogSource {
             .collect()
     }
 
-    async fn load_table(&self, table: &TableIdent) -> Result<nexus_iceberg::ResolvedIcebergTable> {
+    async fn load_table(&self, table: &TableIdent) -> Result<nexus_iceberg::ResolvedTable> {
         self.backend
-            .load_table(nexus_iceberg::IcebergTableIdentifier {
+            .load_table(nexus_iceberg::TableIdentifier {
                 namespace: table.namespace().as_ref().clone(),
                 name: table.name().to_string(),
             })
@@ -263,7 +263,7 @@ impl CatalogProvider for NexusIcebergCatalogProvider {
 pub struct NexusIcebergSchemaProvider {
     namespace: NamespaceIdent,
     known_table_names: Vec<String>,
-    backend: Arc<dyn IcebergCatalogBackend>,
+    backend: Arc<dyn CatalogBackend>,
     catalog_type: String,
     provider_options: IcebergProviderOptions,
     parquet_read_strategy_config: Option<TableFormatParquetReadStrategyConfig>,
@@ -275,7 +275,7 @@ impl NexusIcebergSchemaProvider {
     fn new(
         namespace: NamespaceIdent,
         known_table_names: Vec<String>,
-        backend: Arc<dyn IcebergCatalogBackend>,
+        backend: Arc<dyn CatalogBackend>,
         catalog_type: impl Into<String>,
         provider_options: IcebergProviderOptions,
         parquet_read_strategy_config: Option<TableFormatParquetReadStrategyConfig>,
@@ -442,7 +442,7 @@ impl SchemaProvider for NexusIcebergSchemaProvider {
 /// to form a flat DataFusion schema name. If two namespaces flatten to the
 /// same name, the later insertion replaces the earlier one.
 pub async fn build_catalog_provider_from_backend(
-    backend: Arc<dyn IcebergCatalogBackend>,
+    backend: Arc<dyn CatalogBackend>,
     catalog_type: impl Into<String>,
 ) -> Result<NexusIcebergCatalogProvider> {
     build_catalog_provider_from_backend_with_options(backend, catalog_type, IcebergProviderOptions::default()).await
@@ -450,7 +450,7 @@ pub async fn build_catalog_provider_from_backend(
 
 /// Builds a [`NexusIcebergCatalogProvider`] with explicit provider options.
 pub async fn build_catalog_provider_from_backend_with_options(
-    backend: Arc<dyn IcebergCatalogBackend>,
+    backend: Arc<dyn CatalogBackend>,
     catalog_type: impl Into<String>,
     provider_options: IcebergProviderOptions,
 ) -> Result<NexusIcebergCatalogProvider> {
@@ -468,7 +468,7 @@ pub async fn build_catalog_provider_from_backend_with_options(
 ///
 /// Dotted namespace strings are interpreted as multi-level Iceberg namespaces.
 pub async fn build_scoped_catalog_provider_from_backend(
-    backend: Arc<dyn IcebergCatalogBackend>,
+    backend: Arc<dyn CatalogBackend>,
     catalog_type: impl Into<String>,
     namespace: &str,
 ) -> Result<NexusIcebergCatalogProvider> {
@@ -483,7 +483,7 @@ pub async fn build_scoped_catalog_provider_from_backend(
 
 /// Builds a namespace-scoped [`NexusIcebergCatalogProvider`] with explicit provider options.
 pub async fn build_scoped_catalog_provider_from_backend_with_options(
-    backend: Arc<dyn IcebergCatalogBackend>,
+    backend: Arc<dyn CatalogBackend>,
     catalog_type: impl Into<String>,
     namespace: &str,
     provider_options: IcebergProviderOptions,
@@ -493,7 +493,7 @@ pub async fn build_scoped_catalog_provider_from_backend_with_options(
 }
 
 async fn build_catalog_provider_for_namespaces(
-    backend: Arc<dyn IcebergCatalogBackend>,
+    backend: Arc<dyn CatalogBackend>,
     catalog_type: String,
     namespaces: Vec<NamespaceIdent>,
     provider_options: IcebergProviderOptions,
@@ -573,7 +573,7 @@ mod tests {
     }
 
     #[async_trait]
-    impl IcebergCatalogBackend for StrategyMockBackend {
+    impl CatalogBackend for StrategyMockBackend {
         async fn list_namespaces(&self) -> Result<Vec<NamespaceIdent>> {
             Ok(vec![NamespaceIdent::new("tpch_sf1".to_string())])
         }
@@ -582,7 +582,7 @@ mod tests {
             Ok(vec![TableIdent::new(namespace.clone(), "nation".to_string())])
         }
 
-        async fn load_table(&self, _table: &TableIdent) -> Result<nexus_iceberg::ResolvedIcebergTable> {
+        async fn load_table(&self, _table: &TableIdent) -> Result<nexus_iceberg::ResolvedTable> {
             unreachable!("this test only inspects schema-provider construction")
         }
 

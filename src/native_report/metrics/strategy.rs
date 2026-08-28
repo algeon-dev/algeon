@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use datafusion::physical_plan::metrics::MetricsSet;
 
 use super::labels::{
-    labels_by_name, max_optional_usize, optional_str, optional_string_label, optional_usize, optional_usize_label,
-    string_label, usize_label,
+    labels_by_name, optional_str, optional_string_label, optional_usize, optional_usize_label, string_label,
+    usize_label,
 };
 
 const NATIVE_AGGREGATE_STRATEGY_ROWS_METRIC_NAME: &str = "native_aggregate_strategy_rows";
@@ -682,17 +682,15 @@ impl NativeJoinStrategyMetricRow {
     }
 
     pub(super) fn merge_runtime_from(&mut self, other: Self) {
-        self.observed_build_rows = max_optional_usize(self.observed_build_rows, other.observed_build_rows);
-        self.build_side_bytes = max_optional_usize(self.build_side_bytes, other.build_side_bytes);
-        self.probe_side_bytes = max_optional_usize(self.probe_side_bytes, other.probe_side_bytes);
-        self.estimated_output_rows = max_optional_usize(self.estimated_output_rows, other.estimated_output_rows);
-        self.estimated_output_bytes = max_optional_usize(self.estimated_output_bytes, other.estimated_output_bytes);
-        self.build_partition_batch_count =
-            max_optional_usize(self.build_partition_batch_count, other.build_partition_batch_count);
-        self.probe_partition_batch_count =
-            max_optional_usize(self.probe_partition_batch_count, other.probe_partition_batch_count);
-        self.build_partitioned_bytes = max_optional_usize(self.build_partitioned_bytes, other.build_partitioned_bytes);
-        self.probe_partitioned_bytes = max_optional_usize(self.probe_partitioned_bytes, other.probe_partitioned_bytes);
+        self.observed_build_rows = self.observed_build_rows.max(other.observed_build_rows);
+        self.build_side_bytes = self.build_side_bytes.max(other.build_side_bytes);
+        self.probe_side_bytes = self.probe_side_bytes.max(other.probe_side_bytes);
+        self.estimated_output_rows = self.estimated_output_rows.max(other.estimated_output_rows);
+        self.estimated_output_bytes = self.estimated_output_bytes.max(other.estimated_output_bytes);
+        self.build_partition_batch_count = self.build_partition_batch_count.max(other.build_partition_batch_count);
+        self.probe_partition_batch_count = self.probe_partition_batch_count.max(other.probe_partition_batch_count);
+        self.build_partitioned_bytes = self.build_partitioned_bytes.max(other.build_partitioned_bytes);
+        self.probe_partitioned_bytes = self.probe_partitioned_bytes.max(other.probe_partitioned_bytes);
         self.partitioned_hash_join_count =
             self.partitioned_hash_join_count.saturating_add(other.partitioned_hash_join_count);
         self.hash_join_build_count = self.hash_join_build_count.saturating_add(other.hash_join_build_count);

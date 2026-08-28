@@ -158,7 +158,7 @@ impl IcebergNativeSmokeConfig {
                     default_chain_opt_in,
                     Some((aws_access_key_id, aws_secret_access_key, aws_session_token)),
                 );
-                let mut catalog_config = GlueIcebergCatalogConfig::new(catalog_handle, warehouse, region)
+                let mut catalog_config = GlueCatalogConfig::new(catalog_handle, warehouse, region)
                     .with_source_access_policy(source_access_policy);
                 if let Some(catalog_id) = catalog_id {
                     catalog_config = catalog_config.with_catalog_id(catalog_id);
@@ -376,7 +376,7 @@ pub enum IcebergNativeSmokeFixture {
     GlueS3 {
         /// Canonical leaf catalog configuration that freezes the source policy
         /// carried into each resolved table.
-        catalog_config: GlueIcebergCatalogConfig,
+        catalog_config: GlueCatalogConfig,
         database: String,
         table: String,
         credential_source: &'static str,
@@ -540,19 +540,19 @@ impl IcebergNativeSmokeFixture {
         }
     }
 
-    pub(crate) fn rest_config(&self) -> Option<RestIcebergCatalogConfig> {
+    pub(crate) fn rest_config(&self) -> Option<RestCatalogConfig> {
         let Self::RestS3 { catalog_handle, uri, warehouse, source_access_policy, .. } = self else {
             return None;
         };
         Some(
-            RestIcebergCatalogConfig::new(catalog_handle.clone(), uri.clone(), warehouse.clone())
+            RestCatalogConfig::new(catalog_handle.clone(), uri.clone(), warehouse.clone())
                 .with_source_access_policy(source_access_policy.clone()),
         )
     }
 
     pub(crate) fn glue_catalog_config(
         &self,
-    ) -> Option<datafusion_nexus::table_format::iceberg::catalog::GlueIcebergCatalogConfig> {
+    ) -> Option<datafusion_nexus::table_format::iceberg::catalog::GlueCatalogConfig> {
         let Self::GlueS3 { catalog_config, .. } = self else {
             return None;
         };

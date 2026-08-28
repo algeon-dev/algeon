@@ -8,16 +8,17 @@ use fnv::FnvHasher;
 
 use super::{
     DataContentType, DataFileFormat, DataType, Error, ErrorCode, FileIO, FileScanTask, FileScanTaskDeleteFile,
-    IcebergNameMapping, IcebergScanPlanningTimeoutContext, IcebergSchema, Literal, PartitionSpec, PrimitiveLiteral,
+    IcebergScanPlanningTimeoutContext, Literal, PartitionSpec, PrimitiveLiteral,
     REMOTE_FOOTER_FIELD_ID_PROOF_CONCURRENCY, Result, StreamExt, TASK_CONVERSION_OPERATION, TableFormat,
     TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource, TableFormatDataFile,
     TableFormatDataFileFormat, TableFormatDeleteFile, TableFormatDeleteFileContent,
     TableFormatParquetReadStrategyConfig, TableFormatParquetSourceMetadata, TableFormatPartitionTransform,
     TableFormatPartitionValue, TableFormatReadCapability, TableFormatScalarValue, TableFormatScanPlan,
-    TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode, Transform, credential_free_endpoint_identity,
-    iceberg_field_to_arrow_data_type, iceberg_schema_to_datafusion_arrow_schema, iceberg_type_to_arrow_data_type,
-    is_supported_arrow_type, remote_iceberg_parquet_footer, remote_iceberg_parquet_footer_row_count,
-    resolve_table_format_parquet_source_with_metadata, scan_plan_needs_field_id_footer_schema,
+    TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode, Transform, VendorNameMapping, VendorSchema,
+    credential_free_endpoint_identity, iceberg_field_to_arrow_data_type, iceberg_schema_to_datafusion_arrow_schema,
+    iceberg_type_to_arrow_data_type, is_supported_arrow_type, remote_iceberg_parquet_footer,
+    remote_iceberg_parquet_footer_row_count, resolve_table_format_parquet_source_with_metadata,
+    scan_plan_needs_field_id_footer_schema,
 };
 
 /// Converts already planned Iceberg file tasks into adapter-owned scan facts.
@@ -708,8 +709,8 @@ struct ProjectedNameMappingCandidates {
 fn append_name_mapping_unsupported_features(
     plan: &mut TableFormatScanPlan,
     file_id: &str,
-    mapping: Option<&IcebergNameMapping>,
-    schema: &IcebergSchema,
+    mapping: Option<&VendorNameMapping>,
+    schema: &VendorSchema,
     projected_field_ids: &[i32],
 ) -> Option<Vec<ProjectedNameMappingCandidates>> {
     let mapping = mapping?;
@@ -726,8 +727,8 @@ fn append_name_mapping_unsupported_features(
 }
 
 fn name_mapping_candidates_for_field_ids(
-    mapping: &IcebergNameMapping,
-    schema: &IcebergSchema,
+    mapping: &VendorNameMapping,
+    schema: &VendorSchema,
     field_ids: &[i32],
 ) -> (Vec<ProjectedNameMappingCandidates>, Option<TableFormatUnsupportedFeatureCode>) {
     let mut candidates = Vec::with_capacity(field_ids.len());
@@ -772,7 +773,7 @@ fn name_mapping_candidates_for_field_ids(
 
 pub(super) fn append_table_format_column_mapping(
     plan: &mut TableFormatScanPlan,
-    schema: &IcebergSchema,
+    schema: &VendorSchema,
     partition_spec: Option<&PartitionSpec>,
     field_id: i32,
     name_mapping_candidates: Option<&[String]>,

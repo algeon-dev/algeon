@@ -1,6 +1,6 @@
 //! Local AWS Glue-compatible E2E runner backed by Moto + RustFS.
 //!
-//! This exercises the real `GlueIcebergCatalogBackend` without requiring
+//! This exercises the real `GlueCatalogBackend` without requiring
 //! a developer-owned AWS Glue catalog. Bring up `fixture/iceberg-local` first,
 //! then run with `NEXUS_ICEBERG_GLUE_LOCAL_E2E=1`.
 
@@ -10,7 +10,7 @@ use datafusion::catalog::CatalogProvider;
 use datafusion_nexus::table_format::iceberg::{
     SourceAccessPolicy,
     catalog::{
-        GlueIcebergCatalogBackend, GlueIcebergCatalogConfig, IcebergCatalogBackend, NexusIcebergCatalogSource,
+        CatalogBackend, GlueCatalogBackend, GlueCatalogConfig, NexusIcebergCatalogSource,
         build_scoped_catalog_provider_from_backend,
     },
 };
@@ -74,7 +74,7 @@ impl LocalGlueFixture {
         }
     }
 
-    fn catalog_config(&self) -> GlueIcebergCatalogConfig {
+    fn catalog_config(&self) -> GlueCatalogConfig {
         let source_access = SourceAccessPolicy::S3(
             SourceAccessPolicy::s3_custom_endpoint(
                 self.s3_endpoint.clone(),
@@ -85,7 +85,7 @@ impl LocalGlueFixture {
             .clone()
             .with_static_credentials(self.s3_access_key.clone(), self.s3_secret_key.clone(), None),
         );
-        GlueIcebergCatalogConfig::new("glue", self.warehouse.clone(), "us-east-1")
+        GlueCatalogConfig::new("glue", self.warehouse.clone(), "us-east-1")
             .with_uri(self.glue_uri.clone())
             .with_catalog_static_credentials(self.catalog_access_key.clone(), self.catalog_secret_key.clone(), None)
             .with_source_access_policy(source_access)
@@ -200,10 +200,9 @@ async fn glue_local_backend_and_provider_discover_table(fixture: &LocalGlueFixtu
     result
 }
 
-async fn validate_provider(config: &GlueIcebergCatalogConfig, namespace: &NamespaceIdent) -> E2eResult<()> {
-    let backend: Arc<dyn IcebergCatalogBackend> = Arc::new(NexusIcebergCatalogSource::new(
-        GlueIcebergCatalogBackend::connect(config.clone()).await?.into_backend(),
-    ));
+async fn validate_provider(config: &GlueCatalogConfig, namespace: &NamespaceIdent) -> E2eResult<()> {
+    let backend: Arc<dyn CatalogBackend> =
+        Arc::new(NexusIcebergCatalogSource::new(GlueCatalogBackend::connect(config.clone()).await?.into_backend()));
     let namespace_name = namespace.to_string();
     let provider = build_scoped_catalog_provider_from_backend(Arc::clone(&backend), "glue", &namespace_name).await?;
 

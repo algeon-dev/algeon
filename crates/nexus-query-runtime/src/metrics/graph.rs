@@ -4,7 +4,6 @@ use nexus_query_planning::{
 };
 
 use super::{QueryId, QueryMetrics};
-use crate::harness::max_option;
 
 /// cuGraph algorithm runtime metric row.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -106,7 +105,7 @@ impl QueryMetrics {
             return;
         };
         row.record_measured_peak(measured_peak_bytes, measured_peak_provenance);
-        self.max_task_observed_peak_bytes = max_option(self.max_task_observed_peak_bytes, measured_peak_bytes);
+        self.max_task_observed_peak_bytes = self.max_task_observed_peak_bytes.max(measured_peak_bytes);
     }
 
     /// Records the exact transition into the native graph algorithm executor.

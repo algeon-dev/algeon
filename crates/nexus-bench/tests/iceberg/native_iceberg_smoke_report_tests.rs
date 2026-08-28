@@ -9,7 +9,7 @@ use datafusion_nexus::{
         TableFormat, TableFormatDataFile, TableFormatDataFileFormat, TableFormatParquetReadStrategyConfig,
         TableFormatReadCapability, TableFormatScanPlan, TableFormatUnsupportedFeature,
         TableFormatUnsupportedFeatureCode,
-        iceberg::{SourceAccessPolicy, catalog::GlueIcebergCatalogConfig},
+        iceberg::{SourceAccessPolicy, catalog::GlueCatalogConfig},
         resolve_table_format_parquet_source,
     },
 };
@@ -96,7 +96,7 @@ fn glue_s3_fixture_accepts_local_moto_and_rustfs_endpoints() {
     let IcebergNativeSmokeFixture::GlueS3 { catalog_config, .. } = &config.fixture else {
         panic!("expected glue_s3 fixture");
     };
-    let expected = GlueIcebergCatalogConfig::new("glue", "s3://lakehouse/warehouse", "us-east-1")
+    let expected = GlueCatalogConfig::new("glue", "s3://lakehouse/warehouse", "us-east-1")
         .with_uri("http://localhost:5001")
         .with_source_access_policy(SourceAccessPolicy::s3_custom_endpoint(
             "http://localhost:9000",

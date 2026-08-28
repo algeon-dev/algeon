@@ -110,7 +110,7 @@ impl IcebergServerConfig {
     /// Returns the source-access policy frozen while parsing server config.
     ///
     /// The connected leaf catalog places this exact policy in every
-    /// `ResolvedIcebergTable`; the root uses the same value to build its
+    /// `ResolvedTable`; the root uses the same value to build its
     /// native source-storage profile.
     pub const fn source_access_policy(&self) -> &crate::table_format::iceberg::SourceAccessPolicy {
         &self.source_access
@@ -125,7 +125,7 @@ impl IcebergServerConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum IcebergCatalogBackendConfig {
     Glue(GlueServerBackendConfig),
-    Rest(crate::table_format::iceberg::catalog::RestIcebergCatalogConfig),
+    Rest(crate::table_format::iceberg::catalog::RestCatalogConfig),
 }
 
 /// Glue-backend connection config carried by [`IcebergCatalogBackendConfig::Glue`].
@@ -182,13 +182,13 @@ pub(super) fn iceberg_source_storage_profile(
 
 #[cfg(feature = "iceberg")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum IcebergCatalogKind {
+enum CatalogKind {
     Glue,
     Rest,
 }
 
 #[cfg(feature = "iceberg")]
-fn iceberg_catalog_kind(values: &mut EnvValues<'_>) -> Result<IcebergCatalogKind> {
+fn iceberg_catalog_kind(values: &mut EnvValues<'_>) -> Result<CatalogKind> {
     match values.string(NEXUS_ICEBERG_CATALOG_KIND_ENV) {
         // A defaulted backend selects the wrong catalog for someone: fail
         // closed instead of optimizing for one deployment style.
@@ -197,8 +197,8 @@ fn iceberg_catalog_kind(values: &mut EnvValues<'_>) -> Result<IcebergCatalogKind
             "is required when Iceberg settings are present; set `glue` or `rest`",
         )),
         Some(raw) => match raw.trim().to_ascii_lowercase().as_str() {
-            "glue" => Ok(IcebergCatalogKind::Glue),
-            "rest" => Ok(IcebergCatalogKind::Rest),
+            "glue" => Ok(CatalogKind::Glue),
+            "rest" => Ok(CatalogKind::Rest),
             other => Err(ServerError::invalid_config(
                 NEXUS_ICEBERG_CATALOG_KIND_ENV,
                 format!("must be `glue` or `rest`, got `{other}`"),
@@ -251,15 +251,15 @@ pub(super) fn iceberg_config(values: &mut EnvValues<'_>) -> Result<Option<Iceber
     };
 
     let default_catalog_name = match kind {
-        IcebergCatalogKind::Glue => DEFAULT_GLUE_CATALOG_NAME,
-        IcebergCatalogKind::Rest => DEFAULT_REST_CATALOG_HANDLE,
+        CatalogKind::Glue => DEFAULT_GLUE_CATALOG_NAME,
+        CatalogKind::Rest => DEFAULT_REST_CATALOG_HANDLE,
     };
     let catalog_name =
         values.string(NEXUS_ICEBERG_CATALOG_NAME_ENV).unwrap_or_else(|| default_catalog_name.to_string());
 
     let backend = match kind {
-        IcebergCatalogKind::Glue => IcebergCatalogBackendConfig::Glue(glue_backend_config(values, &warehouse)?),
-        IcebergCatalogKind::Rest => IcebergCatalogBackendConfig::Rest(rest_backend_config(values, warehouse.clone())?),
+        CatalogKind::Glue => IcebergCatalogBackendConfig::Glue(glue_backend_config(values, &warehouse)?),
+        CatalogKind::Rest => IcebergCatalogBackendConfig::Rest(rest_backend_config(values, warehouse.clone())?),
     };
     let source_access = iceberg_source_access_policy(values, &backend)?;
     let parquet_read_strategy_config = iceberg_parquet_read_strategy_config(values, &source_access)?;
@@ -502,13 +502,12 @@ pub(super) fn glue_backend_config(values: &mut EnvValues<'_>, warehouse: &str) -
 pub(super) fn rest_backend_config(
     values: &mut EnvValues<'_>,
     warehouse: String,
-) -> Result<crate::table_format::iceberg::catalog::RestIcebergCatalogConfig> {
+) -> Result<crate::table_format::iceberg::catalog::RestCatalogConfig> {
     let uri = values.required_string(NEXUS_ICEBERG_REST_URI_ENV)?;
     let catalog_handle =
         values.string(NEXUS_ICEBERG_REST_CATALOG_HANDLE_ENV).unwrap_or_else(|| DEFAULT_REST_CATALOG_HANDLE.to_string());
 
-    let mut config =
-        crate::table_format::iceberg::catalog::RestIcebergCatalogConfig::new(catalog_handle, uri, warehouse);
+    let mut config = crate::table_format::iceberg::catalog::RestCatalogConfig::new(catalog_handle, uri, warehouse);
     if let Some(prefix) = values.string(NEXUS_ICEBERG_REST_PREFIX_ENV) {
         config = config.with_prefix(prefix);
     }

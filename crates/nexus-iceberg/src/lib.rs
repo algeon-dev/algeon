@@ -17,28 +17,23 @@ mod planner;
 mod resolved;
 
 #[cfg(feature = "glue")]
-pub use catalog::GlueIcebergCatalogBackend;
+pub use catalog::GlueCatalogBackend;
 #[cfg(feature = "rest")]
-pub use catalog::RestIcebergCatalogBackend;
+pub use catalog::RestCatalogBackend;
 #[cfg(feature = "catalog")]
-pub use catalog::{IcebergCatalogBackend, IcebergCatalogKind, IcebergNamespace};
-pub use error::{
-    IcebergCatalogErrorKind, IcebergError, IcebergErrorCode, IcebergErrorContext, IcebergErrorStatus, IcebergOperation,
-    IcebergResult, classify_error_message,
-};
+pub use catalog::{CatalogBackend, CatalogKind, Namespace};
+pub use error::{CatalogErrorKind, Error, ErrorCode, ErrorContext, ErrorStatus, Operation, Result};
 #[cfg(feature = "catalog")]
-pub use planner::{IcebergScanPlanner, IcebergScanPlanningOptions};
+pub use planner::ScanPlanningOptions;
 #[cfg(feature = "catalog")]
-pub use resolved::ResolvedIcebergTable;
+pub use resolved::ResolvedTable;
 pub use scan::{
-    IcebergColumnBinding, IcebergColumnRole, IcebergColumnSource, IcebergDataFile, IcebergDefaultValue,
-    IcebergDeleteContent, IcebergDeleteFile, IcebergFileFormat, IcebergFileRange, IcebergFileSequence,
-    IcebergNameMapping, IcebergNameMappingField, IcebergPartitionTransform, IcebergPartitionValue,
-    IcebergPredicateEnforcement, IcebergPredicateIntent, IcebergProjection, IcebergPruningIntent,
-    IcebergResidualPredicate, IcebergScalarValue, IcebergScanCandidate, IcebergScanRequest, IcebergSchema,
-    IcebergSchemaField, IcebergSourceLimit, IcebergTableIdentifier, ResolvedIcebergSnapshot, ResolvedIcebergTableFacts,
+    ColumnBinding, ColumnRole, ColumnSource, DataFile, DefaultValue, DeleteContent, DeleteFile, FileFormat, FileRange,
+    FileSequence, NameMapping, NameMappingField, PartitionTransform, PartitionValue, PredicateEnforcement,
+    PredicateIntent, Projection, PruningIntent, ResidualPredicate, ResolvedSnapshot, ResolvedTableFacts, ScalarValue,
+    ScanCandidate, ScanRequest, Schema, SchemaField, SourceLimit, TableIdentifier,
 };
 pub use source_access::{
-    GlueIcebergCatalogConfig, RestIcebergCatalogConfig, S3CredentialMode, S3CredentialRef, S3FileIoConfigVerification,
+    GlueCatalogConfig, RestCatalogConfig, S3CredentialMode, S3CredentialRef, S3FileIoConfigVerification,
     S3SourceAccessPolicy, S3SourceAccessRef, SourceAccessPolicy,
 };

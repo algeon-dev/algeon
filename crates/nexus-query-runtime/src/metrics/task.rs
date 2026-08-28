@@ -3,7 +3,6 @@ use std::{collections::BTreeMap, time::Duration};
 use cudf::ExecutionBudgetReport;
 
 use super::{CompiledTaskId, PlanNodeId, PlanTaskMapping, QueryId, QueryMetrics};
-use crate::harness::max_option;
 
 /// Metrics aggregated across tasks of the same operator kind.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -26,8 +25,8 @@ impl TaskOperatorMetrics {
     pub(super) fn merge_from(&mut self, other: Self) {
         self.task_count = self.task_count.saturating_add(other.task_count);
         self.elapsed_time += other.elapsed_time;
-        self.max_observed_peak_bytes = max_option(self.max_observed_peak_bytes, other.max_observed_peak_bytes);
-        self.max_retained_bytes = max_option(self.max_retained_bytes, other.max_retained_bytes);
+        self.max_observed_peak_bytes = self.max_observed_peak_bytes.max(other.max_observed_peak_bytes);
+        self.max_retained_bytes = self.max_retained_bytes.max(other.max_retained_bytes);
     }
 }
 
@@ -54,8 +53,8 @@ impl TaskRuntimeMetrics {
             self.operator_kind = other.operator_kind;
         }
         self.elapsed_time += other.elapsed_time;
-        self.max_observed_peak_bytes = max_option(self.max_observed_peak_bytes, other.max_observed_peak_bytes);
-        self.max_retained_bytes = max_option(self.max_retained_bytes, other.max_retained_bytes);
+        self.max_observed_peak_bytes = self.max_observed_peak_bytes.max(other.max_observed_peak_bytes);
+        self.max_retained_bytes = self.max_retained_bytes.max(other.max_retained_bytes);
     }
 }
 
@@ -109,8 +108,8 @@ impl QueryMetrics {
     pub fn record_budgeted_execution(&mut self, operation: impl Into<String>, report: &ExecutionBudgetReport) {
         let observed_peak_bytes = report.allocator_high_water_bytes().map(|bytes| bytes as u64);
         let retained_bytes = report.retained_bytes().map(|bytes| bytes as u64);
-        self.max_task_observed_peak_bytes = max_option(self.max_task_observed_peak_bytes, observed_peak_bytes);
-        self.max_task_retained_bytes = max_option(self.max_task_retained_bytes, retained_bytes);
+        self.max_task_observed_peak_bytes = self.max_task_observed_peak_bytes.max(observed_peak_bytes);
+        self.max_task_retained_bytes = self.max_task_retained_bytes.max(retained_bytes);
         let mut event = BudgetedExecutionEvent::new(operation, report);
         event.query_id = self.inherited_query_id();
         self.budgeted_execution_events.push(event);
@@ -237,16 +236,16 @@ impl QueryMetrics {
             ..Default::default()
         });
         row.operator_kind = operator_kind.clone();
-        row.max_observed_peak_bytes = max_option(row.max_observed_peak_bytes, observed_peak_bytes);
-        row.max_retained_bytes = max_option(row.max_retained_bytes, retained_bytes);
+        row.max_observed_peak_bytes = row.max_observed_peak_bytes.max(observed_peak_bytes);
+        row.max_retained_bytes = row.max_retained_bytes.max(retained_bytes);
 
         let operator = self.task_operator_metrics.entry(operator_kind.clone()).or_insert_with(|| TaskOperatorMetrics {
             query_id: query_id.clone(),
             operator_kind,
             ..Default::default()
         });
-        operator.max_observed_peak_bytes = max_option(operator.max_observed_peak_bytes, observed_peak_bytes);
-        operator.max_retained_bytes = max_option(operator.max_retained_bytes, retained_bytes);
+        operator.max_observed_peak_bytes = operator.max_observed_peak_bytes.max(observed_peak_bytes);
+        operator.max_retained_bytes = operator.max_retained_bytes.max(retained_bytes);
     }
 
     /// Builds the query-local mapping surface between plan node ids and compiled task ids.

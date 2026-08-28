@@ -5,4 +5,4 @@
 //! to the DataFusion-free Iceberg leaf. The root catalog module only adapts a
 //! resolved leaf backend to DataFusion's catalog provider traits.
 
-pub use nexus_iceberg::{RestIcebergCatalogBackend, RestIcebergCatalogConfig};
+pub use nexus_iceberg::{RestCatalogBackend, RestCatalogConfig};

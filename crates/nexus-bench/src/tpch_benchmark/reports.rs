@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics;
-use nexus_query_engine::{contract_report::CapabilityDecisionRow, harness::max_option as max_optional_usize};
+use nexus_query_engine::contract_report::CapabilityDecisionRow;
 
 use super::*;
 
@@ -570,20 +570,20 @@ struct TaskHighWaterSummary {
 impl TaskHighWaterSummary {
     fn merge_operator_row(&mut self, row: &NativeTaskOperatorMetricRow) {
         self.task_count = self.task_count.saturating_add(row.task_count);
-        self.max_observed_peak_bytes = max_optional_usize(self.max_observed_peak_bytes, row.max_observed_peak_bytes);
-        self.max_retained_bytes = max_optional_usize(self.max_retained_bytes, row.max_retained_bytes);
+        self.max_observed_peak_bytes = self.max_observed_peak_bytes.max(row.max_observed_peak_bytes);
+        self.max_retained_bytes = self.max_retained_bytes.max(row.max_retained_bytes);
     }
 
     fn merge_runtime_row(&mut self, row: &NativeTaskRuntimeMetricRow) {
-        self.max_observed_peak_bytes = max_optional_usize(self.max_observed_peak_bytes, row.max_observed_peak_bytes);
-        self.max_retained_bytes = max_optional_usize(self.max_retained_bytes, row.max_retained_bytes);
+        self.max_observed_peak_bytes = self.max_observed_peak_bytes.max(row.max_observed_peak_bytes);
+        self.max_retained_bytes = self.max_retained_bytes.max(row.max_retained_bytes);
     }
 
     fn merge_synthetic_high_water(&mut self, task_count: usize, bytes: Option<usize>) {
         self.task_count = self.task_count.saturating_add(task_count);
         if let Some(bytes) = bytes {
-            self.max_observed_peak_bytes = max_optional_usize(self.max_observed_peak_bytes, Some(bytes));
-            self.max_retained_bytes = max_optional_usize(self.max_retained_bytes, Some(bytes));
+            self.max_observed_peak_bytes = self.max_observed_peak_bytes.max(Some(bytes));
+            self.max_retained_bytes = self.max_retained_bytes.max(Some(bytes));
         }
     }
 

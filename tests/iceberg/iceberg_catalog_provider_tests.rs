@@ -19,7 +19,7 @@ use datafusion::{
     prelude::{SessionConfig, SessionContext},
 };
 use datafusion_nexus::table_format::iceberg::catalog::{
-    IcebergCatalogBackend, NexusIcebergCatalogProvider, build_catalog_provider_from_backend,
+    CatalogBackend, NexusIcebergCatalogProvider, build_catalog_provider_from_backend,
     build_scoped_catalog_provider_from_backend,
 };
 use iceberg::{NamespaceIdent, TableIdent};
@@ -45,7 +45,7 @@ impl MockIcebergCatalogBackend {
 }
 
 #[async_trait]
-impl IcebergCatalogBackend for MockIcebergCatalogBackend {
+impl CatalogBackend for MockIcebergCatalogBackend {
     async fn list_namespaces(&self) -> datafusion_nexus::error::Result<Vec<NamespaceIdent>> {
         Ok(self.namespaces.clone())
     }
@@ -57,10 +57,7 @@ impl IcebergCatalogBackend for MockIcebergCatalogBackend {
         Ok(idents)
     }
 
-    async fn load_table(
-        &self,
-        _table: &TableIdent,
-    ) -> datafusion_nexus::error::Result<nexus_iceberg::ResolvedIcebergTable> {
+    async fn load_table(&self, _table: &TableIdent) -> datafusion_nexus::error::Result<nexus_iceberg::ResolvedTable> {
         Err(datafusion_nexus::error::Error::new(
             datafusion_nexus::error::ErrorCode::CudfDependencyFailure,
             "mock_backend.load_table",
@@ -397,7 +394,7 @@ impl CountingMockBackend {
 }
 
 #[async_trait]
-impl IcebergCatalogBackend for CountingMockBackend {
+impl CatalogBackend for CountingMockBackend {
     async fn list_namespaces(&self) -> datafusion_nexus::error::Result<Vec<NamespaceIdent>> {
         self.inner.list_namespaces().await
     }
@@ -406,10 +403,7 @@ impl IcebergCatalogBackend for CountingMockBackend {
         self.inner.list_tables(namespace).await
     }
 
-    async fn load_table(
-        &self,
-        table: &TableIdent,
-    ) -> datafusion_nexus::error::Result<nexus_iceberg::ResolvedIcebergTable> {
+    async fn load_table(&self, table: &TableIdent) -> datafusion_nexus::error::Result<nexus_iceberg::ResolvedTable> {
         self.load_count.fetch_add(1, Ordering::SeqCst);
         self.inner.load_table(table).await
     }

@@ -10,8 +10,6 @@ use nexus_query_planning::{
     graph_observation::GraphMeasuredPeakRow,
 };
 
-use crate::harness::max_option;
-
 mod aggregate;
 mod backend_descriptor;
 mod boundary;
@@ -354,13 +352,12 @@ impl QueryMetrics {
         self.source_read_runtime_rows.extend(other.source_read_runtime_rows);
         self.input_batches = self.input_batches.saturating_add(other.input_batches);
         self.input_rows = self.input_rows.saturating_add(other.input_rows);
-        self.peak_device_memory_bytes = max_option(self.peak_device_memory_bytes, other.peak_device_memory_bytes);
+        self.peak_device_memory_bytes = self.peak_device_memory_bytes.max(other.peak_device_memory_bytes);
         self.resident_dataframe_peak_bytes =
-            max_option(self.resident_dataframe_peak_bytes, other.resident_dataframe_peak_bytes);
-        self.allocator_high_water_bytes = max_option(self.allocator_high_water_bytes, other.allocator_high_water_bytes);
-        self.max_task_observed_peak_bytes =
-            max_option(self.max_task_observed_peak_bytes, other.max_task_observed_peak_bytes);
-        self.max_task_retained_bytes = max_option(self.max_task_retained_bytes, other.max_task_retained_bytes);
+            self.resident_dataframe_peak_bytes.max(other.resident_dataframe_peak_bytes);
+        self.allocator_high_water_bytes = self.allocator_high_water_bytes.max(other.allocator_high_water_bytes);
+        self.max_task_observed_peak_bytes = self.max_task_observed_peak_bytes.max(other.max_task_observed_peak_bytes);
+        self.max_task_retained_bytes = self.max_task_retained_bytes.max(other.max_task_retained_bytes);
         self.task_kind_by_compiled_task_id.extend(other.task_kind_by_compiled_task_id);
         self.plan_task_mapping_rows.extend(other.plan_task_mapping_rows);
         if self.plan_task_mapping_datafusion_shape.is_none() {

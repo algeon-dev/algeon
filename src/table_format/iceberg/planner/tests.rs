@@ -3,7 +3,7 @@ use std::{path::PathBuf, sync::Arc};
 use datafusion::logical_expr::{Cast, col, lit};
 use iceberg::{
     scan::FileScanTask,
-    spec::{DataContentType, DataFileFormat, NestedField, PrimitiveType, Schema as IcebergSchema, Struct, Type},
+    spec::{DataContentType, DataFileFormat, NestedField, PrimitiveType, Schema as VendorSchema, Struct, Type},
 };
 use nexus_iceberg::S3FileIoConfigVerification;
 
@@ -22,9 +22,9 @@ use crate::{
     },
 };
 
-fn iceberg_schema() -> Arc<IcebergSchema> {
+fn iceberg_schema() -> Arc<VendorSchema> {
     Arc::new(
-        IcebergSchema::builder()
+        VendorSchema::builder()
             .with_fields([Arc::new(NestedField::required(1, "id", Type::Primitive(PrimitiveType::Long)))])
             .build()
             .unwrap(),

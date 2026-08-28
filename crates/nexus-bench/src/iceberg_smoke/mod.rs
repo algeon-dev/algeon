@@ -43,14 +43,12 @@ use datafusion_nexus::{
         TableFormatScanRequest, TableFormatUnsupportedFeatureCode,
         iceberg::{
             AWS_ACCESS_KEY_ID_ENV, AWS_DEFAULT_REGION_ENV, AWS_PROFILE_ENV, AWS_REGION_ENV, AWS_SECRET_ACCESS_KEY_ENV,
-            AWS_SECURITY_TOKEN_ENV, AWS_SESSION_TOKEN_ENV, IcebergTableFormatPlanner, IcebergTableIdentifier,
+            AWS_SECURITY_TOKEN_ENV, AWS_SESSION_TOKEN_ENV, IcebergTableFormatPlanner,
             NEXUS_ICEBERG_S3_ACCESS_KEY_ID_ENV, NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_DEFAULT_CHAIN,
             NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV, NEXUS_ICEBERG_S3_SECRET_ACCESS_KEY_ENV,
-            NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV, NexusIcebergTableProvider, ResolvedIcebergTable, SourceAccessPolicy,
-            catalog::{
-                GlueIcebergCatalogBackend, GlueIcebergCatalogConfig, RestIcebergCatalogBackend,
-                RestIcebergCatalogConfig,
-            },
+            NEXUS_ICEBERG_S3_SESSION_TOKEN_ENV, NexusIcebergTableProvider, ResolvedTable, SourceAccessPolicy,
+            TableIdentifier,
+            catalog::{GlueCatalogBackend, GlueCatalogConfig, RestCatalogBackend, RestCatalogConfig},
             source_access_policy_to_native_source_storage_profile,
         },
         resolve_table_format_parquet_source_with_metadata,

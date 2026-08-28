@@ -4,7 +4,6 @@
 //! [`crate::report::PlanningReport`] for "why was this not native?". This module
 //! logs that evidence without adding a public reporting API:
 //!
-//! - [`log_native_planning_report`] emits one debug line per query with
 //!   selection counts plus the first unsupported-capability class.
 //! - [`log_native_planning_report_for_tables`] also emits a warn line for
 //!   data-layout-fixable capability misses, with the referenced table list and reason.
@@ -60,16 +59,6 @@ impl FlightSqlNativeNotSupportedClass {
             _ => Self::Other,
         }
     }
-}
-
-/// Emit one `tracing::debug!` line summarising a Flight SQL native planning
-/// report.
-///
-/// The line carries the per-query identifier plus selection counts, the first
-/// unsupported native candidate as context, and its classifier bucket. No-op
-/// for an empty report so pure-CPU sessions do not generate noise.
-pub fn log_native_planning_report(query_id: &str, report: Option<&PlanningReport>) {
-    log_native_planning_report_for_tables(query_id, report, "");
 }
 
 /// Emit the native planning diagnostics for a Flight SQL query, including a
@@ -221,8 +210,8 @@ mod tests {
     fn log_native_planning_report_is_noop_for_empty_inputs() {
         // The helper unconditionally checks emptiness before logging, so we
         // only need to assert it does not panic for the no-op paths.
-        log_native_planning_report("q-empty", None);
-        log_native_planning_report("q-empty", Some(&PlanningReport::new()));
+        log_native_planning_report_for_tables("q-empty", None, "");
+        log_native_planning_report_for_tables("q-empty", Some(&PlanningReport::new()), "");
     }
 
     #[test]

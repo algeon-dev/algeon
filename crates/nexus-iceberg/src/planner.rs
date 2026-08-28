@@ -8,29 +8,27 @@ use futures::StreamExt;
 use iceberg::{
     scan::FileScanTask,
     spec::{
-        DataContentType, DataFileFormat, Literal, NameMapping, PrimitiveLiteral, PrimitiveType, TableProperties,
-        Transform,
+        DataContentType, DataFileFormat, Literal, NameMapping as VendorNameMapping, PrimitiveLiteral, PrimitiveType,
+        TableProperties, Transform,
     },
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use crate::{
-    IcebergColumnBinding, IcebergDataFile, IcebergDeleteContent, IcebergDeleteFile, IcebergError, IcebergErrorCode,
-    IcebergErrorContext, IcebergErrorStatus, IcebergFileFormat, IcebergFileRange, IcebergFileSequence,
-    IcebergNameMapping, IcebergNameMappingField, IcebergOperation, IcebergPartitionTransform, IcebergPartitionValue,
-    IcebergPredicateEnforcement, IcebergResidualPredicate, IcebergResult, IcebergScalarValue, IcebergScanCandidate,
-    IcebergScanRequest, ResolvedIcebergTable,
+    ColumnBinding, DataFile, DeleteContent, DeleteFile, Error, ErrorCode, ErrorContext, FileFormat, FileRange,
+    FileSequence, NameMapping, NameMappingField, Operation, PartitionTransform, PartitionValue, PredicateEnforcement,
+    ResidualPredicate, ResolvedTable, Result, ScalarValue, ScanCandidate, ScanRequest,
 };
 
 /// Execution controls for one Iceberg metadata-planning operation.
 ///
 /// A snapshot override is permitted only when it matches the snapshot frozen
-/// by [`ResolvedIcebergTable`]. This prevents a catalog refresh or a caller
+/// by [`ResolvedTable`]. This prevents a catalog refresh or a caller
 /// mistake from silently changing the snapshot behind the resolved table
 /// facts.
 #[derive(Debug, Clone)]
-pub struct IcebergScanPlanningOptions {
+pub struct ScanPlanningOptions {
     /// Optional explicit assertion of the snapshot frozen in the resolved
     /// table. A differing value is rejected before any manifest reads.
     pub snapshot_id: Option<i64>,
@@ -44,35 +42,32 @@ pub struct IcebergScanPlanningOptions {
     pub cancellation: Option<CancellationToken>,
 }
 
-impl Default for IcebergScanPlanningOptions {
+impl Default for ScanPlanningOptions {
     fn default() -> Self {
         Self { snapshot_id: None, case_sensitive: true, manifest_concurrency: 16, timeout: None, cancellation: None }
     }
 }
 
-/// Plans a frozen Iceberg table into a neutral [`IcebergScanCandidate`].
+/// Plans a frozen Iceberg table into a neutral [`ScanCandidate`].
 ///
 /// This planner owns Iceberg table-scan construction, manifest interpretation,
 /// task conversion, and timeout/cancellation handling. It deliberately does
 /// not select a CPU/native execution strategy or expose source credentials.
+/// [`ResolvedTable::plan_scan`] is its only entry point.
 #[derive(Debug, Clone, Copy)]
-pub struct IcebergScanPlanner<'a> {
-    resolved: &'a ResolvedIcebergTable,
+pub(crate) struct ScanPlanner<'a> {
+    resolved: &'a ResolvedTable,
 }
 
-impl<'a> IcebergScanPlanner<'a> {
-    pub const fn new(resolved: &'a ResolvedIcebergTable) -> Self {
+impl<'a> ScanPlanner<'a> {
+    pub(crate) const fn new(resolved: &'a ResolvedTable) -> Self {
         Self { resolved }
     }
 
     /// Plans Iceberg file tasks for the table's frozen snapshot.
-    pub async fn plan(
-        &self,
-        mut request: IcebergScanRequest,
-        options: IcebergScanPlanningOptions,
-    ) -> IcebergResult<IcebergScanCandidate> {
+    pub(crate) async fn plan(&self, mut request: ScanRequest, options: ScanPlanningOptions) -> Result<ScanCandidate> {
         let control = PlanningControl::new(&options, self.error_context());
-        control.check(IcebergOperation::ScanPlanning)?;
+        control.check(Operation::ScanPlanning)?;
         self.validate_options(&options)?;
         self.normalize_predicate_intent(&mut request)?;
 
@@ -101,9 +96,9 @@ impl<'a> IcebergScanPlanner<'a> {
             request.pruning.file_pruning_applied = true;
         }
 
-        control.check(IcebergOperation::ScanPlanning)?;
-        let scan = scan_builder.build().map_err(|source| self.source_error(IcebergOperation::ScanPlanning, source))?;
-        control.check(IcebergOperation::ScanPlanning)?;
+        control.check(Operation::ScanPlanning)?;
+        let scan = scan_builder.build().map_err(|source| self.source_error(Operation::ScanPlanning, source))?;
+        control.check(Operation::ScanPlanning)?;
 
         // `FileScanTask` intentionally omits manifest sequence facts and the
         // referenced data file for position deletes. Interpret the frozen
@@ -114,11 +109,11 @@ impl<'a> IcebergScanPlanner<'a> {
             None => ManifestSemantics::default(),
         };
 
-        let mut task_stream = control.wait(IcebergOperation::ManifestLoad, scan.plan_files()).await?;
+        let mut task_stream = control.wait(Operation::ManifestLoad, scan.plan_files()).await?;
         let mut data_files = Vec::new();
         loop {
             let next = control
-                .wait(IcebergOperation::ManifestInterpretation, async {
+                .wait(Operation::ManifestInterpretation, async {
                     match task_stream.next().await {
                         Some(task) => task.map(Some),
                         None => Ok(None),
@@ -135,35 +130,32 @@ impl<'a> IcebergScanPlanner<'a> {
             data_files.truncate(file_limit);
         }
 
-        IcebergScanCandidate::try_new(self.resolved.facts().clone(), request, data_files, name_mapping)
+        ScanCandidate::try_new(self.resolved.facts().clone(), request, data_files, name_mapping)
             .map_err(|error| error.with_context(self.error_context()))
     }
 
-    fn validate_options(&self, options: &IcebergScanPlanningOptions) -> IcebergResult<()> {
+    fn validate_options(&self, options: &ScanPlanningOptions) -> Result<()> {
         if options.manifest_concurrency == 0 {
             return Err(self.invalid_metadata(
-                IcebergOperation::ScanPlanning,
+                Operation::ScanPlanning,
                 "Iceberg manifest planning concurrency must be greater than zero",
             ));
         }
         let frozen_snapshot_id = self.resolved.facts().snapshot.snapshot_id;
         if options.snapshot_id.is_some() && options.snapshot_id != frozen_snapshot_id {
             return Err(self.invalid_metadata(
-                IcebergOperation::ScanPlanning,
+                Operation::ScanPlanning,
                 "requested snapshot does not match the frozen resolved-table snapshot",
             ));
         }
         Ok(())
     }
 
-    fn frozen_snapshot(
-        &self,
-        options: &IcebergScanPlanningOptions,
-    ) -> IcebergResult<Option<iceberg::spec::SnapshotRef>> {
+    fn frozen_snapshot(&self, options: &ScanPlanningOptions) -> Result<Option<iceberg::spec::SnapshotRef>> {
         let Some(snapshot_id) = self.resolved.facts().snapshot.snapshot_id else {
             if options.snapshot_id.is_some() {
                 return Err(self.invalid_metadata(
-                    IcebergOperation::ScanPlanning,
+                    Operation::ScanPlanning,
                     "an empty table cannot be planned with a snapshot override",
                 ));
             }
@@ -171,45 +163,41 @@ impl<'a> IcebergScanPlanner<'a> {
         };
         let metadata = self.resolved.table().metadata();
         let snapshot = metadata.snapshot_by_id(snapshot_id).cloned().ok_or_else(|| {
-            self.invalid_metadata(
-                IcebergOperation::ScanPlanning,
-                "frozen Iceberg snapshot is absent from table metadata",
-            )
+            self.invalid_metadata(Operation::ScanPlanning, "frozen Iceberg snapshot is absent from table metadata")
         })?;
-        let schema = snapshot
-            .schema(metadata)
-            .map_err(|source| self.source_error(IcebergOperation::SchemaInterpretation, source))?;
+        let schema =
+            snapshot.schema(metadata).map_err(|source| self.source_error(Operation::SchemaInterpretation, source))?;
         if schema.schema_id() != self.resolved.facts().schema.schema_id {
             return Err(self.invalid_metadata(
-                IcebergOperation::SchemaInterpretation,
+                Operation::SchemaInterpretation,
                 "frozen snapshot schema does not match resolved-table schema facts",
             ));
         }
         Ok(Some(snapshot))
     }
 
-    fn normalize_predicate_intent(&self, request: &mut IcebergScanRequest) -> IcebergResult<()> {
+    fn normalize_predicate_intent(&self, request: &mut ScanRequest) -> Result<()> {
         let Some(predicate) = request.iceberg_predicate.as_ref() else {
             return Ok(());
         };
         match request.predicate.enforcement {
-            IcebergPredicateEnforcement::NotPresent => {
-                request.predicate.enforcement = IcebergPredicateEnforcement::ConsumerMustEnforce;
-                request.predicate.residual = Some(IcebergResidualPredicate { canonical: predicate.to_string() });
+            PredicateEnforcement::NotPresent => {
+                request.predicate.enforcement = PredicateEnforcement::ConsumerMustEnforce;
+                request.predicate.residual = Some(ResidualPredicate { canonical: predicate.to_string() });
             },
-            IcebergPredicateEnforcement::FullyEnforced => {
+            PredicateEnforcement::FullyEnforced => {
                 return Err(self.invalid_metadata(
-                    IcebergOperation::ScanPlanning,
+                    Operation::ScanPlanning,
                     "Iceberg manifest pruning cannot be declared as full row-level predicate enforcement",
                 ));
             },
-            IcebergPredicateEnforcement::PartiallyEnforced | IcebergPredicateEnforcement::ConsumerMustEnforce => {},
+            PredicateEnforcement::PartiallyEnforced | PredicateEnforcement::ConsumerMustEnforce => {},
         }
         Ok(())
     }
 
-    fn bind_scan_columns(&self, request: &IcebergScanRequest) -> IcebergResult<Option<Vec<String>>> {
-        let crate::IcebergProjection::Columns(bindings) = &request.projection else {
+    fn bind_scan_columns(&self, request: &ScanRequest) -> Result<Option<Vec<String>>> {
+        let crate::Projection::Columns(bindings) = &request.projection else {
             return Ok(None);
         };
         let mut names = Vec::with_capacity(bindings.len() + request.filter_bindings.len());
@@ -222,7 +210,7 @@ impl<'a> IcebergScanPlanner<'a> {
         Ok(Some(names))
     }
 
-    fn bind_column_name(&self, binding: &IcebergColumnBinding) -> IcebergResult<String> {
+    fn bind_column_name(&self, binding: &ColumnBinding) -> Result<String> {
         self.resolved
             .facts()
             .schema
@@ -233,27 +221,26 @@ impl<'a> IcebergScanPlanner<'a> {
             .ok_or_else(|| {
                 let mut context = self.error_context();
                 context.field_id = Some(binding.field_id);
-                IcebergError::new(
-                    IcebergErrorCode::UnsupportedSchema,
-                    IcebergErrorStatus::Permanent,
-                    IcebergOperation::SchemaInterpretation,
+                Error::new(
+                    ErrorCode::UnsupportedSchema,
+                    Operation::SchemaInterpretation,
                     "Iceberg task planning supports only top-level projection and filter fields",
                 )
                 .with_context(context)
             })
     }
 
-    fn extract_name_mapping(&self) -> IcebergResult<Option<IcebergNameMapping>> {
+    fn extract_name_mapping(&self) -> Result<Option<NameMapping>> {
         self.resolved
             .table()
             .metadata()
             .properties()
             .get(TableProperties::PROPERTY_DEFAULT_NAME_MAPPING)
             .map(|raw| {
-                serde_json::from_str::<NameMapping>(raw).map(|mapping| neutral_name_mapping(&mapping)).map_err(
+                serde_json::from_str::<VendorNameMapping>(raw).map(|mapping| neutral_name_mapping(&mapping)).map_err(
                     |_source| {
                         self.invalid_metadata(
-                            IcebergOperation::ManifestInterpretation,
+                            Operation::ManifestInterpretation,
                             "Iceberg schema name mapping property is invalid",
                         )
                     },
@@ -266,18 +253,17 @@ impl<'a> IcebergScanPlanner<'a> {
         &self,
         snapshot: &iceberg::spec::SnapshotRef,
         control: &PlanningControl,
-    ) -> IcebergResult<ManifestSemantics> {
-        let manifest_list = control
-            .wait(IcebergOperation::ManifestLoad, self.resolved.table().manifest_list_reader(snapshot).load())
-            .await?;
+    ) -> Result<ManifestSemantics> {
+        let manifest_list =
+            control.wait(Operation::ManifestLoad, self.resolved.table().manifest_list_reader(snapshot).load()).await?;
         let mut semantics = ManifestSemantics::default();
         for manifest_file in manifest_list.entries() {
             let manifest = control
-                .wait(IcebergOperation::ManifestLoad, self.resolved.table().manifest_reader().read(manifest_file))
+                .wait(Operation::ManifestLoad, self.resolved.table().manifest_reader().read(manifest_file))
                 .await?;
             for entry in manifest.entries().iter().filter(|entry| entry.is_alive()) {
-                control.check(IcebergOperation::ManifestInterpretation)?;
-                let sequence = IcebergFileSequence {
+                control.check(Operation::ManifestInterpretation)?;
+                let sequence = FileSequence {
                     data_sequence_number: entry.sequence_number(),
                     file_sequence_number: entry.file_sequence_number,
                 };
@@ -312,17 +298,17 @@ impl<'a> IcebergScanPlanner<'a> {
         Ok(semantics)
     }
 
-    fn task_to_data_file(&self, task: FileScanTask, semantics: &ManifestSemantics) -> IcebergResult<IcebergDataFile> {
+    fn task_to_data_file(&self, task: FileScanTask, semantics: &ManifestSemantics) -> Result<DataFile> {
         let manifest_data = semantics.data.get(task.data_file_path()).ok_or_else(|| {
             self.invalid_metadata(
-                IcebergOperation::ManifestInterpretation,
+                Operation::ManifestInterpretation,
                 "Iceberg task data file is absent from the frozen manifest facts",
             )
         })?;
         let format = file_format(task.data_file_format());
         if format != manifest_data.format || task.file_size_in_bytes() != manifest_data.file_size_bytes {
             return Err(self.invalid_metadata(
-                IcebergOperation::ManifestInterpretation,
+                Operation::ManifestInterpretation,
                 "Iceberg task data file disagrees with frozen manifest facts",
             ));
         }
@@ -331,12 +317,12 @@ impl<'a> IcebergScanPlanner<'a> {
             .deletes()
             .iter()
             .map(|delete| self.task_to_delete_file(delete, semantics))
-            .collect::<IcebergResult<Vec<_>>>()?;
-        Ok(IcebergDataFile {
+            .collect::<Result<Vec<_>>>()?;
+        Ok(DataFile {
             location: task.data_file_path().to_owned(),
             format,
             file_size_bytes: task.file_size_in_bytes(),
-            range: IcebergFileRange { start: task.start(), length: task.length() },
+            range: FileRange { start: task.start(), length: task.length() },
             record_count: task.record_count(),
             sequence: manifest_data.sequence,
             encryption_key_metadata_present: task.key_metadata().is_some()
@@ -350,10 +336,10 @@ impl<'a> IcebergScanPlanner<'a> {
         &self,
         task_delete: &iceberg::scan::FileScanTaskDeleteFile,
         semantics: &ManifestSemantics,
-    ) -> IcebergResult<IcebergDeleteFile> {
+    ) -> Result<DeleteFile> {
         let manifest_delete = semantics.delete.get(&task_delete.file_path).ok_or_else(|| {
             self.invalid_metadata(
-                IcebergOperation::ManifestInterpretation,
+                Operation::ManifestInterpretation,
                 "Iceberg task delete file is absent from the frozen manifest facts",
             )
         })?;
@@ -364,11 +350,11 @@ impl<'a> IcebergScanPlanner<'a> {
             || task_delete.equality_ids.clone().unwrap_or_default() != manifest_delete.equality_field_ids
         {
             return Err(self.invalid_metadata(
-                IcebergOperation::ManifestInterpretation,
+                Operation::ManifestInterpretation,
                 "Iceberg task delete file disagrees with frozen manifest facts",
             ));
         }
-        Ok(IcebergDeleteFile {
+        Ok(DeleteFile {
             location: task_delete.file_path.clone(),
             format: manifest_delete.format,
             content: manifest_delete.content,
@@ -382,11 +368,11 @@ impl<'a> IcebergScanPlanner<'a> {
         })
     }
 
-    fn partition_values(&self, task: &FileScanTask) -> IcebergResult<Vec<IcebergPartitionValue>> {
+    fn partition_values(&self, task: &FileScanTask) -> Result<Vec<PartitionValue>> {
         let (Some(partition), Some(spec)) = (task.partition(), task.partition_spec()) else {
             if task.partition().is_some_and(|partition| !partition.fields().is_empty()) {
                 return Err(self.invalid_metadata(
-                    IcebergOperation::ManifestInterpretation,
+                    Operation::ManifestInterpretation,
                     "Iceberg task exposes partition values without a partition spec",
                 ));
             }
@@ -394,7 +380,7 @@ impl<'a> IcebergScanPlanner<'a> {
         };
         if partition.fields().len() != spec.fields().len() {
             return Err(self.invalid_metadata(
-                IcebergOperation::ManifestInterpretation,
+                Operation::ManifestInterpretation,
                 "Iceberg task partition value count does not match its partition spec",
             ));
         }
@@ -406,10 +392,9 @@ impl<'a> IcebergScanPlanner<'a> {
                 let source_field = task.schema().field_by_id(partition_field.source_id).ok_or_else(|| {
                     let mut context = self.error_context();
                     context.field_id = Some(partition_field.source_id);
-                    IcebergError::new(
-                        IcebergErrorCode::UnsupportedSchema,
-                        IcebergErrorStatus::Permanent,
-                        IcebergOperation::SchemaInterpretation,
+                    Error::new(
+                        ErrorCode::UnsupportedSchema,
+                        Operation::SchemaInterpretation,
                         "Iceberg partition field references a source field absent from the snapshot schema",
                     )
                     .with_context(context)
@@ -417,8 +402,8 @@ impl<'a> IcebergScanPlanner<'a> {
                 let result_type = partition_field
                     .transform
                     .result_type(source_field.field_type.as_ref())
-                    .map_err(|source| self.source_error(IcebergOperation::SchemaInterpretation, source))?;
-                Ok(IcebergPartitionValue {
+                    .map_err(|source| self.source_error(Operation::SchemaInterpretation, source))?;
+                Ok(PartitionValue {
                     source_field_id: partition_field.source_id,
                     partition_field_id: partition_field.field_id,
                     transform: partition_transform(partition_field.transform),
@@ -428,21 +413,20 @@ impl<'a> IcebergScanPlanner<'a> {
             .collect()
     }
 
-    fn source_error(&self, operation: IcebergOperation, source: iceberg::Error) -> IcebergError {
-        IcebergError::from_iceberg_error(operation, source).with_context(self.error_context())
+    fn source_error(&self, operation: Operation, source: iceberg::Error) -> Error {
+        Error::from_iceberg_error(operation, source).with_context(self.error_context())
     }
 
-    fn invalid_metadata(&self, operation: IcebergOperation, message: &'static str) -> IcebergError {
-        IcebergError::new(IcebergErrorCode::InvalidMetadata, IcebergErrorStatus::Permanent, operation, message)
-            .with_context(self.error_context())
+    fn invalid_metadata(&self, operation: Operation, message: &'static str) -> Error {
+        Error::new(ErrorCode::InvalidMetadata, operation, message).with_context(self.error_context())
     }
 
-    fn error_context(&self) -> IcebergErrorContext {
-        IcebergErrorContext {
+    fn error_context(&self) -> ErrorContext {
+        ErrorContext {
             table_identifier: Some(self.resolved.facts().table.display_name()),
             snapshot_id: self.resolved.facts().snapshot.snapshot_id,
             schema_id: Some(self.resolved.facts().schema.schema_id),
-            ..IcebergErrorContext::default()
+            ..ErrorContext::default()
         }
     }
 }
@@ -454,30 +438,20 @@ struct ManifestSemantics {
 }
 
 impl ManifestSemantics {
-    fn insert_data(
-        &mut self,
-        location: &str,
-        facts: ManifestDataFacts,
-        planner: &IcebergScanPlanner<'_>,
-    ) -> IcebergResult<()> {
+    fn insert_data(&mut self, location: &str, facts: ManifestDataFacts, planner: &ScanPlanner<'_>) -> Result<()> {
         if self.data.insert(location.to_string(), facts).is_some() {
             return Err(planner.invalid_metadata(
-                IcebergOperation::ManifestInterpretation,
+                Operation::ManifestInterpretation,
                 "frozen Iceberg manifests contain duplicate live data-file locations",
             ));
         }
         Ok(())
     }
 
-    fn insert_delete(
-        &mut self,
-        location: &str,
-        facts: ManifestDeleteFacts,
-        planner: &IcebergScanPlanner<'_>,
-    ) -> IcebergResult<()> {
+    fn insert_delete(&mut self, location: &str, facts: ManifestDeleteFacts, planner: &ScanPlanner<'_>) -> Result<()> {
         if self.delete.insert(location.to_string(), facts).is_some() {
             return Err(planner.invalid_metadata(
-                IcebergOperation::ManifestInterpretation,
+                Operation::ManifestInterpretation,
                 "frozen Iceberg manifests contain duplicate live delete-file locations",
             ));
         }
@@ -487,18 +461,18 @@ impl ManifestSemantics {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ManifestDataFacts {
-    format: IcebergFileFormat,
+    format: FileFormat,
     file_size_bytes: u64,
-    sequence: IcebergFileSequence,
+    sequence: FileSequence,
     encryption_key_metadata_present: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ManifestDeleteFacts {
-    format: IcebergFileFormat,
-    content: IcebergDeleteContent,
+    format: FileFormat,
+    content: DeleteContent,
     file_size_bytes: u64,
-    sequence: IcebergFileSequence,
+    sequence: FileSequence,
     encryption_key_metadata_present: bool,
     referenced_data_file: Option<String>,
     equality_field_ids: Vec<i32>,
@@ -508,11 +482,11 @@ struct ManifestDeleteFacts {
 struct PlanningControl {
     deadline: Option<Instant>,
     cancellation: Option<CancellationToken>,
-    context: IcebergErrorContext,
+    context: ErrorContext,
 }
 
 impl PlanningControl {
-    fn new(options: &IcebergScanPlanningOptions, context: IcebergErrorContext) -> Self {
+    fn new(options: &ScanPlanningOptions, context: ErrorContext) -> Self {
         Self {
             deadline: options.timeout.map(|timeout| Instant::now() + timeout),
             cancellation: options.cancellation.clone(),
@@ -520,7 +494,7 @@ impl PlanningControl {
         }
     }
 
-    fn check(&self, operation: IcebergOperation) -> IcebergResult<()> {
+    fn check(&self, operation: Operation) -> Result<()> {
         if self.cancellation.as_ref().is_some_and(CancellationToken::is_cancelled) {
             return Err(self.cancelled(operation));
         }
@@ -530,7 +504,7 @@ impl PlanningControl {
         Ok(())
     }
 
-    async fn wait<T, F>(&self, operation: IcebergOperation, future: F) -> IcebergResult<T>
+    async fn wait<T, F>(&self, operation: Operation, future: F) -> Result<T>
     where F: Future<Output = iceberg::Result<T>> {
         self.check(operation)?;
         let timeout = self.deadline.map(|deadline| deadline.saturating_duration_since(Instant::now()));
@@ -552,123 +526,113 @@ impl PlanningControl {
             },
             (None, None) => future.await,
         };
-        result.map_err(|source| IcebergError::from_iceberg_error(operation, source).with_context(self.context.clone()))
+        result.map_err(|source| Error::from_iceberg_error(operation, source).with_context(self.context.clone()))
     }
 
-    fn cancelled(&self, operation: IcebergOperation) -> IcebergError {
-        IcebergError::new(
-            IcebergErrorCode::Cancelled,
-            IcebergErrorStatus::Cancelled,
-            operation,
-            "Iceberg scan planning was cancelled",
-        )
-        .with_context(self.context.clone())
+    fn cancelled(&self, operation: Operation) -> Error {
+        Error::new(ErrorCode::Cancelled, operation, "Iceberg scan planning was cancelled")
+            .with_context(self.context.clone())
     }
 
-    fn timed_out(&self, operation: IcebergOperation) -> IcebergError {
-        IcebergError::new(
-            IcebergErrorCode::Timeout,
-            IcebergErrorStatus::Temporary,
-            operation,
-            "Iceberg scan planning exceeded its deadline",
-        )
-        .with_context(self.context.clone())
+    fn timed_out(&self, operation: Operation) -> Error {
+        Error::new(ErrorCode::Timeout, operation, "Iceberg scan planning exceeded its deadline")
+            .with_context(self.context.clone())
     }
 }
 
-fn file_format(format: DataFileFormat) -> IcebergFileFormat {
+fn file_format(format: DataFileFormat) -> FileFormat {
     match format {
-        DataFileFormat::Avro => IcebergFileFormat::Avro,
-        DataFileFormat::Orc => IcebergFileFormat::Orc,
-        DataFileFormat::Parquet => IcebergFileFormat::Parquet,
-        DataFileFormat::Puffin => IcebergFileFormat::Puffin,
+        DataFileFormat::Avro => FileFormat::Avro,
+        DataFileFormat::Orc => FileFormat::Orc,
+        DataFileFormat::Parquet => FileFormat::Parquet,
+        DataFileFormat::Puffin => FileFormat::Puffin,
     }
 }
 
-fn delete_content(content: DataContentType) -> IcebergDeleteContent {
+fn delete_content(content: DataContentType) -> DeleteContent {
     match content {
-        DataContentType::PositionDeletes => IcebergDeleteContent::Position,
-        DataContentType::EqualityDeletes => IcebergDeleteContent::Equality,
+        DataContentType::PositionDeletes => DeleteContent::Position,
+        DataContentType::EqualityDeletes => DeleteContent::Equality,
         DataContentType::Data => unreachable!("data files never become delete-file facts"),
     }
 }
 
-fn partition_transform(transform: Transform) -> IcebergPartitionTransform {
+fn partition_transform(transform: Transform) -> PartitionTransform {
     match transform {
-        Transform::Identity => IcebergPartitionTransform::Identity,
-        Transform::Bucket(buckets) => IcebergPartitionTransform::Bucket(buckets),
-        Transform::Truncate(width) => IcebergPartitionTransform::Truncate(width),
-        Transform::Year => IcebergPartitionTransform::Year,
-        Transform::Month => IcebergPartitionTransform::Month,
-        Transform::Day => IcebergPartitionTransform::Day,
-        Transform::Hour => IcebergPartitionTransform::Hour,
-        Transform::Void => IcebergPartitionTransform::Void,
-        Transform::Unknown => IcebergPartitionTransform::Unknown,
+        Transform::Identity => PartitionTransform::Identity,
+        Transform::Bucket(buckets) => PartitionTransform::Bucket(buckets),
+        Transform::Truncate(width) => PartitionTransform::Truncate(width),
+        Transform::Year => PartitionTransform::Year,
+        Transform::Month => PartitionTransform::Month,
+        Transform::Day => PartitionTransform::Day,
+        Transform::Hour => PartitionTransform::Hour,
+        Transform::Void => PartitionTransform::Void,
+        Transform::Unknown => PartitionTransform::Unknown,
     }
 }
 
 fn partition_scalar(
     value: Option<&Literal>,
     result_type: &iceberg::spec::Type,
-    planner: &IcebergScanPlanner<'_>,
-) -> IcebergResult<IcebergScalarValue> {
+    planner: &ScanPlanner<'_>,
+) -> Result<ScalarValue> {
     let Some(value) = value else {
-        return Ok(IcebergScalarValue::Null);
+        return Ok(ScalarValue::Null);
     };
     let Some(primitive) = value.as_primitive_literal() else {
         return Err(planner.invalid_metadata(
-            IcebergOperation::ManifestInterpretation,
+            Operation::ManifestInterpretation,
             "Iceberg partition values must be primitive literals",
         ));
     };
     let iceberg::spec::Type::Primitive(result_type) = result_type else {
         return Err(planner.invalid_metadata(
-            IcebergOperation::SchemaInterpretation,
+            Operation::SchemaInterpretation,
             "Iceberg partition transform produced a non-primitive result type",
         ));
     };
     match (result_type, primitive) {
-        (PrimitiveType::Boolean, PrimitiveLiteral::Boolean(value)) => Ok(IcebergScalarValue::Boolean(value)),
-        (PrimitiveType::Int, PrimitiveLiteral::Int(value)) => Ok(IcebergScalarValue::Int(value)),
-        (PrimitiveType::Long, PrimitiveLiteral::Long(value)) => Ok(IcebergScalarValue::Long(value)),
+        (PrimitiveType::Boolean, PrimitiveLiteral::Boolean(value)) => Ok(ScalarValue::Boolean(value)),
+        (PrimitiveType::Int, PrimitiveLiteral::Int(value)) => Ok(ScalarValue::Int(value)),
+        (PrimitiveType::Long, PrimitiveLiteral::Long(value)) => Ok(ScalarValue::Long(value)),
         (PrimitiveType::Float, PrimitiveLiteral::Float(value)) => {
-            Ok(IcebergScalarValue::Float { bits: value.into_inner().to_bits() })
+            Ok(ScalarValue::Float { bits: value.into_inner().to_bits() })
         },
         (PrimitiveType::Double, PrimitiveLiteral::Double(value)) => {
-            Ok(IcebergScalarValue::Double { bits: value.into_inner().to_bits() })
+            Ok(ScalarValue::Double { bits: value.into_inner().to_bits() })
         },
-        (PrimitiveType::Decimal { scale, .. }, PrimitiveLiteral::Int128(unscaled)) => Ok(IcebergScalarValue::Decimal {
+        (PrimitiveType::Decimal { scale, .. }, PrimitiveLiteral::Int128(unscaled)) => Ok(ScalarValue::Decimal {
             unscaled,
             scale: i32::try_from(*scale).map_err(|_error| {
-                planner.invalid_metadata(IcebergOperation::SchemaInterpretation, "Iceberg decimal scale exceeds i32")
+                planner.invalid_metadata(Operation::SchemaInterpretation, "Iceberg decimal scale exceeds i32")
             })?,
         }),
-        (PrimitiveType::Date, PrimitiveLiteral::Int(value)) => Ok(IcebergScalarValue::Date(value)),
-        (PrimitiveType::Time, PrimitiveLiteral::Long(value)) => Ok(IcebergScalarValue::Time(value)),
+        (PrimitiveType::Date, PrimitiveLiteral::Int(value)) => Ok(ScalarValue::Date(value)),
+        (PrimitiveType::Time, PrimitiveLiteral::Long(value)) => Ok(ScalarValue::Time(value)),
         (PrimitiveType::Timestamp | PrimitiveType::Timestamptz, PrimitiveLiteral::Long(value)) => {
-            Ok(IcebergScalarValue::TimestampMicros(value))
+            Ok(ScalarValue::TimestampMicros(value))
         },
         (PrimitiveType::TimestampNs | PrimitiveType::TimestamptzNs, PrimitiveLiteral::Long(value)) => {
-            Ok(IcebergScalarValue::TimestampNanos(value))
+            Ok(ScalarValue::TimestampNanos(value))
         },
-        (PrimitiveType::String, PrimitiveLiteral::String(value)) => Ok(IcebergScalarValue::String(value)),
-        (PrimitiveType::Uuid, PrimitiveLiteral::UInt128(value)) => Ok(IcebergScalarValue::Uuid(value.to_be_bytes())),
+        (PrimitiveType::String, PrimitiveLiteral::String(value)) => Ok(ScalarValue::String(value)),
+        (PrimitiveType::Uuid, PrimitiveLiteral::UInt128(value)) => Ok(ScalarValue::Uuid(value.to_be_bytes())),
         (PrimitiveType::Fixed(_) | PrimitiveType::Binary, PrimitiveLiteral::Binary(value)) => {
-            Ok(IcebergScalarValue::Binary(value))
+            Ok(ScalarValue::Binary(value))
         },
         _ => Err(planner.invalid_metadata(
-            IcebergOperation::ManifestInterpretation,
+            Operation::ManifestInterpretation,
             "Iceberg partition literal does not match its transform result type",
         )),
     }
 }
 
-fn neutral_name_mapping(mapping: &NameMapping) -> IcebergNameMapping {
-    IcebergNameMapping { fields: mapping.fields().iter().map(neutral_name_mapping_field).collect() }
+fn neutral_name_mapping(mapping: &VendorNameMapping) -> NameMapping {
+    NameMapping { fields: mapping.fields().iter().map(neutral_name_mapping_field).collect() }
 }
 
-fn neutral_name_mapping_field(field: &iceberg::spec::MappedField) -> IcebergNameMappingField {
-    IcebergNameMappingField {
+fn neutral_name_mapping_field(field: &iceberg::spec::MappedField) -> NameMappingField {
+    NameMappingField {
         field_id: field.field_id(),
         names: field.names().to_vec(),
         fields: field.fields().iter().map(|field| neutral_name_mapping_field(field)).collect(),
@@ -692,8 +656,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        IcebergColumnRole, IcebergColumnSource, IcebergPredicateEnforcement, IcebergProjection, IcebergSourceLimit,
-        SourceAccessPolicy,
+        ColumnRole, ColumnSource, ErrorStatus, PredicateEnforcement, Projection, SourceAccessPolicy, SourceLimit,
     };
 
     const METADATA_TEMPLATE: &str = include_str!("testdata/metadata_v2.json");
@@ -836,8 +799,8 @@ mod tests {
             (data_location, delete_location)
         }
 
-        fn resolved(&self) -> ResolvedIcebergTable {
-            ResolvedIcebergTable::from_table(self.table.clone(), SourceAccessPolicy::s3_default_chain(None::<String>))
+        fn resolved(&self) -> ResolvedTable {
+            ResolvedTable::from_table(self.table.clone(), SourceAccessPolicy::s3_default_chain(None::<String>))
                 .expect("resolve fixture table")
         }
     }
@@ -847,33 +810,33 @@ mod tests {
         let fixture = ManifestFixture::new();
         let (data_location, delete_location) = fixture.write_current_snapshot_manifests().await;
         let resolved = fixture.resolved();
-        let request = IcebergScanRequest {
-            projection: IcebergProjection::Columns(vec![IcebergColumnBinding {
+        let request = ScanRequest {
+            projection: Projection::Columns(vec![ColumnBinding {
                 field_id: 1,
                 output_name: "customer_id".to_string(),
-                source: IcebergColumnSource::PartitionConstant,
-                role: IcebergColumnRole::Projected,
+                source: ColumnSource::PartitionConstant,
+                role: ColumnRole::Projected,
                 missing_default: None,
             }]),
-            filter_bindings: vec![IcebergColumnBinding {
+            filter_bindings: vec![ColumnBinding {
                 field_id: 2,
                 output_name: "y".to_string(),
-                source: IcebergColumnSource::PhysicalFile,
-                role: IcebergColumnRole::FilterOnly,
+                source: ColumnSource::PhysicalFile,
+                role: ColumnRole::FilterOnly,
                 missing_default: None,
             }],
-            predicate: crate::IcebergPredicateIntent::none(),
+            predicate: crate::PredicateIntent::none(),
             iceberg_predicate: Some(Reference::new("y").greater_than(iceberg::spec::Datum::long(0))),
-            source_limit: IcebergSourceLimit { row_limit: Some(10), file_limit: Some(1) },
-            pruning: crate::IcebergPruningIntent::default(),
+            source_limit: SourceLimit { row_limit: Some(10), file_limit: Some(1) },
+            pruning: crate::PruningIntent::default(),
         };
 
-        let candidate = resolved.plan_scan(request, IcebergScanPlanningOptions::default()).await.expect("plan fixture");
+        let candidate = resolved.plan_scan(request, ScanPlanningOptions::default()).await.expect("plan fixture");
 
         assert_eq!(candidate.planned_data_file_count(), 1);
         assert_eq!(candidate.planned_delete_file_count(), 1);
         assert_eq!(candidate.resolved_table.snapshot.sequence_number, Some(1));
-        assert_eq!(candidate.request.predicate.enforcement, IcebergPredicateEnforcement::ConsumerMustEnforce);
+        assert_eq!(candidate.request.predicate.enforcement, PredicateEnforcement::ConsumerMustEnforce);
         assert!(candidate.request.predicate.residual.as_ref().unwrap().canonical.contains("y >"));
         assert!(candidate.request.pruning.partition_pruning_applied);
         assert!(candidate.request.pruning.manifest_pruning_applied);
@@ -881,25 +844,19 @@ mod tests {
 
         let data_file = &candidate.data_files[0];
         assert_eq!(data_file.location, data_location);
-        assert_eq!(
-            data_file.sequence,
-            IcebergFileSequence { data_sequence_number: Some(1), file_sequence_number: Some(1) }
-        );
+        assert_eq!(data_file.sequence, FileSequence { data_sequence_number: Some(1), file_sequence_number: Some(1) });
         assert!(data_file.encryption_key_metadata_present);
         assert_eq!(data_file.partition_values.len(), 1);
         assert_eq!(data_file.partition_values[0].source_field_id, 1);
         assert_eq!(data_file.partition_values[0].partition_field_id, 1000);
-        assert_eq!(data_file.partition_values[0].transform, IcebergPartitionTransform::Identity);
-        assert_eq!(data_file.partition_values[0].value, IcebergScalarValue::Long(100));
+        assert_eq!(data_file.partition_values[0].transform, PartitionTransform::Identity);
+        assert_eq!(data_file.partition_values[0].value, ScalarValue::Long(100));
 
         let delete_file = &data_file.delete_files[0];
         assert_eq!(delete_file.location, delete_location);
-        assert_eq!(delete_file.content, IcebergDeleteContent::Position);
+        assert_eq!(delete_file.content, DeleteContent::Position);
         assert_eq!(delete_file.referenced_data_file.as_deref(), Some(data_location.as_str()));
-        assert_eq!(
-            delete_file.sequence,
-            IcebergFileSequence { data_sequence_number: Some(1), file_sequence_number: Some(1) }
-        );
+        assert_eq!(delete_file.sequence, FileSequence { data_sequence_number: Some(1), file_sequence_number: Some(1) });
         assert!(delete_file.encryption_key_metadata_present);
         assert_eq!(
             candidate.name_mapping.as_ref().unwrap().fields[0].names,
@@ -915,34 +872,34 @@ mod tests {
 
         let snapshot_error = resolved
             .plan_scan(
-                IcebergScanRequest::default(),
-                IcebergScanPlanningOptions { snapshot_id: Some(frozen_snapshot_id + 1), ..Default::default() },
+                ScanRequest::default(),
+                ScanPlanningOptions { snapshot_id: Some(frozen_snapshot_id + 1), ..Default::default() },
             )
             .await
             .expect_err("mismatched snapshot must fail");
-        assert_eq!(snapshot_error.code, IcebergErrorCode::InvalidMetadata);
-        assert_eq!(snapshot_error.operation, IcebergOperation::ScanPlanning);
+        assert_eq!(snapshot_error.code(), ErrorCode::InvalidMetadata);
+        assert_eq!(snapshot_error.operation(), Operation::ScanPlanning);
 
         let timeout_error = resolved
             .plan_scan(
-                IcebergScanRequest::default(),
-                IcebergScanPlanningOptions { timeout: Some(Duration::ZERO), ..Default::default() },
+                ScanRequest::default(),
+                ScanPlanningOptions { timeout: Some(Duration::ZERO), ..Default::default() },
             )
             .await
             .expect_err("zero deadline must fail");
-        assert_eq!(timeout_error.code, IcebergErrorCode::Timeout);
-        assert_eq!(timeout_error.status, IcebergErrorStatus::Temporary);
+        assert_eq!(timeout_error.code(), ErrorCode::Timeout);
+        assert_eq!(timeout_error.status(), ErrorStatus::Temporary);
 
         let cancellation = CancellationToken::new();
         cancellation.cancel();
         let cancelled_error = resolved
             .plan_scan(
-                IcebergScanRequest::default(),
-                IcebergScanPlanningOptions { cancellation: Some(cancellation), ..Default::default() },
+                ScanRequest::default(),
+                ScanPlanningOptions { cancellation: Some(cancellation), ..Default::default() },
             )
             .await
             .expect_err("cancelled planning must fail");
-        assert_eq!(cancelled_error.code, IcebergErrorCode::Cancelled);
-        assert_eq!(cancelled_error.status, IcebergErrorStatus::Cancelled);
+        assert_eq!(cancelled_error.code(), ErrorCode::Cancelled);
+        assert_eq!(cancelled_error.status(), ErrorStatus::Cancelled);
     }
 }
