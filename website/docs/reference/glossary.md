@@ -26,7 +26,7 @@ defined here.
 - **IR (`QueryPlan`)** — the engine's closed, DataFusion-free intermediate
   representation. Unlike DataFusion's open `ExecutionPlan` trait, it is an
   owned type the engine fully controls. See
-  [Why two crates](../design/index.mdx#why-two-crates).
+  [Why two crates](../design/index.mdx#why-two-crates-datafusion-nexus--nexus-query-engine).
 - **Scan facts** — the format-neutral description of a source scan (files,
   schema, pruning facts) that lowering hands to the engine in place of
   DataFusion source nodes. See

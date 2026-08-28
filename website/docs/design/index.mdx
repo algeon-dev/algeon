@@ -161,7 +161,7 @@ Three deep contracts sit behind this overview, each on its own page:
         It has no DataFusion dependency.</>,
     },
     {
-      kind: 'bindings', name: 'components/cudf + components/cugraph + components/cuvs', note: 'safe Rust over RAPIDS', tone: 'gpu',
+      kind: 'bindings', name: 'components/(cudf, cugraph, cuvs, others)', note: 'safe Rust over RAPIDS', tone: 'gpu',
       boundary: 'FFI / C ABI boundary',
       sub: 'cudf · cugraph · cuvs',
       detail: <>The binding crates own RAII device memory, runtime and stream
@@ -181,7 +181,7 @@ Three deep contracts sit behind this overview, each on its own page:
   owned <code>QueryPlan</code> IR.</>}
 />
 
-### Why two crates
+### Why two crates (datafusion-nexus & nexus-query-engine)
 
 The split is structural, not cosmetic. `nexus-query-engine` deliberately
 consumes a closed, owned `QueryPlan` instead of DataFusion's open

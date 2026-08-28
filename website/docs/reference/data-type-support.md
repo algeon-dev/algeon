@@ -59,9 +59,9 @@ cuGraph table functions have a narrower edge-table contract:
 
 - Source and destination vertex columns must use one of the numeric types
   declared for the function in the generated [cuGraph vertex ID support
-  matrix](../cugraph/vertex-id-support.mdx), or must both belong to the
-  logical string family (`Utf8`, `LargeUtf8`, `Utf8View`) when that function
-  declares logical string support.
+  matrix](../cugraph/graph-options.mdx#vertex-id-support-by-function), or must
+  both belong to the logical string family (`Utf8`, `LargeUtf8`, `Utf8View`)
+  when that function declares logical string support.
 - Logical string endpoints share one codebook even when their physical Arrow
   string types differ. Vertex-identity output columns are canonicalized to
   `Utf8`; numeric scores, distances, counts, coordinates, and opaque labels

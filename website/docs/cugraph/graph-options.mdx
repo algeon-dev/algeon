@@ -1,11 +1,27 @@
 ---
-sidebar_position: 4
-title: Graph Construction Options
-sidebar_label: Graph Construction Options
-description: Shared graph construction options accepted by every cuGraph function.
+sidebar_position: 2
+title: Graph Inputs and Construction
+sidebar_label: Graph Inputs and Construction
+description: Vertex ID contracts and shared graph construction options for cuGraph functions.
 ---
 
-# Graph Construction Options
+import VertexIdSupport from './_vertex-id-support.mdx';
+
+# Graph Inputs and Construction
+
+Every `cugraph_*` function builds a GPU graph from an edge relation. Before
+choosing algorithm-specific options, establish two parts of the graph input
+contract:
+
+- the vertex-ID domain carried by the source and destination columns;
+- the construction semantics applied to the edge rows.
+
+The concrete function descriptor remains authoritative when an algorithm
+narrows either part of this shared contract.
+
+<VertexIdSupport />
+
+## Construction options
 
 Every `cugraph_*` function accepts these shared options inside `options_json`,
 alongside any algorithm-specific options. They control how the GPU graph is

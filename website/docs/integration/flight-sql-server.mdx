@@ -113,12 +113,23 @@ timeouts, authentication, and result conversion in the client service.
 
 ## Use an interactive client
 
+Choose either client for an interactive session.
+
+### DataBow
+
 [`databow`](https://github.com/columnar-tech/databow) exercises the ADBC driver
-path, while [`arrow_cli`](https://github.com/sundy-li/arrow_cli) connects
-directly over Flight SQL:
+path:
 
 ```bash
 databow --driver flightsql --uri grpc://127.0.0.1:50051
+```
+
+### arrow_cli
+
+[`arrow_cli`](https://github.com/sundy-li/arrow_cli) connects directly over
+Flight SQL:
+
+```bash
 arrow_cli --host 127.0.0.1 --port 50051 --timeout 120
 ```
 
