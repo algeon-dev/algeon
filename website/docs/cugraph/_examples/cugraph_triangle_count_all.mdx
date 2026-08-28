@@ -21,8 +21,9 @@ FROM cugraph_triangle_count_all('citation_edges', 'src', 'dst');
 
 `SUM` counts each triangle once per corner, so the graph holds ~67.5M distinct
 triangles; the busiest single paper (the SIFT paper, *Distinctive Image
-Features from Scale-Invariant Keypoints*) sits on 143,168 of them. The full
-scan, GPU graph build, and count return in about 0.6 s.
+Features from Scale-Invariant Keypoints*) sits on 143,168 of them. In this run
+the full scan, GPU graph build, and count returned in about 0.6 s on the
+[capture host](../demo-dataset.mdx).
 
 ### Local clustering coefficient in plain SQL
 

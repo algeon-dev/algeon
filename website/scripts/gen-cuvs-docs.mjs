@@ -104,15 +104,13 @@ function assertRenderableOutputFields(spec) {
   }
 }
 
-function renderRelations(spec) {
+function renderInputs(spec) {
   return [
-    'Every execution relation argument is a parenthesized `SELECT` subquery. The planner retains that relation as a real logical and physical child; a bare table identifier or quoted table-name string is rejected. Metadata validation instead uses a registered named table or view in its relation envelope.',
+    'Each relation argument is a parenthesized `SELECT` subquery that the planner keeps as a real child; metadata validation resolves a registered table or view for the same role instead. See [Vector Inputs](../vector-inputs.mdx) for the relation identity rules and the ID, dense-vector type, null, finite-value, and runtime-dimension contract.',
     '',
     table(['Role', 'Required', 'Validation reference', 'Description'], spec.relation_roles.map(role => [
       code(role.name), role.required === false ? 'no' : 'yes', code(role.reference?.type || 'table'), cell(role.description),
     ])),
-    '',
-    'See [Vector Inputs](../vector-inputs.mdx) for the ID and dense-vector type, null, finite-value, and runtime-dimension contract.',
   ].join('\n');
 }
 
@@ -197,17 +195,33 @@ function renderVectorBindingShapes(spec) {
   ].join('\n');
 }
 
+// A repeated field's descriptor name carries an `<index>` placeholder; the
+// physical column count equals the value of the literal option it names.
+function repeatedFieldSentence(field) {
+  const prefix = field.name.replace(/<index>$/, '');
+  if (prefix === field.name) throw new Error(`repeated result field ${field.name} must end with <index>`);
+  return `The output contains ${code(field.repeats)} such columns, ${code(`${prefix}0`)} through ${code(`${prefix}<${field.repeats} - 1>`)}.`;
+}
+
 function renderOutputSchema(spec) {
   return [
     table(['Column', 'Type', 'Nullable', 'Description'], spec.result_schemas.fields.map(field => [
       code(field.name),
       code(field.data_type),
       field.nullable ? 'yes' : 'no',
-      cell([field.description, field.repeats ? `repeats: ${field.repeats}` : ''].filter(Boolean).join('; ')),
+      cell(field.repeats ? `${field.description} ${repeatedFieldSentence(field)}` : field.description),
     ])),
     '',
     '**Concrete schemas are call-specific.** Run `gpu_validate_call` against registered relations to inspect the output schema after the actual ID types and literal options are validated.',
   ].join('\n');
+}
+
+function quickstartPrerequisite(spec, entry) {
+  const relations = Object.entries(entry.validation.call.relations || {});
+  if (relations.length === 0) throw new Error(`${spec.function_name}: validation call names no relations`);
+  const named = relations.map(([role, relation]) => `${code(relation.table)} (the ${code(role)} role)`);
+  const passed = named.length > 1 ? 'each passed' : 'passed';
+  return `The call below expects the registered relation${named.length > 1 ? 's' : ''} ${named.join(' and ')}, ${passed} as a parenthesized ${code('SELECT')} subquery. Substitute your own relations and column names.`;
 }
 
 function renderPage(spec) {
@@ -216,12 +230,12 @@ function renderPage(spec) {
     generator: 'website/scripts/gen-cuvs-docs.mjs',
     spec,
     title: entry.quickstart.display_name,
-    quickstartSql: entry.quickstart.sql,
-    relationInputs: renderRelations(spec),
-    scalarArgumentsAndOptions: renderArguments(spec),
-    outputSchema: renderOutputSchema(spec),
+    quickstart: { prerequisite: quickstartPrerequisite(spec, entry), sql: entry.quickstart.sql },
+    inputs: renderInputs(spec),
+    argumentsAndOptions: renderArguments(spec),
+    output: renderOutputSchema(spec),
     examples: null,
-    limitations: spec.limitations.map(limitation => `- ${prose(limitation)}`).join('\n'),
+    limits: spec.limitations.map(limitation => `- ${prose(limitation)}`).join('\n'),
     validation: validationBlock({
       functionName: spec.function_name,
       call: entry.validation.call,

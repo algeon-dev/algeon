@@ -138,7 +138,7 @@ docker ps --filter ancestor=datafusion-nexus-server:x86-64-v4
 
 ### Local fixture launcher
 
-`docker/run.sh` is a convenience launcher for local fixture-style runs. It uses
+`docker/run.sh` is a convenience launcher for local demo runs. It uses
 host networking, enables cuGraph SQL by default, sets bounded native memory
 knobs, and wires the local Iceberg REST/RustFS defaults. It defaults to
 `datafusion-nexus-server:x86-64-v4`; set `NEXUS_SERVER_IMAGE` explicitly for a

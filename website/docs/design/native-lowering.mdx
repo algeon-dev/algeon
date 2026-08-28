@@ -87,8 +87,10 @@ only one lowered plan with one selected candidate. It then:
 1. runs the engine-owned native optimizer;
 2. rechecks declared output ordering;
 3. applies the engine-owned native cost decision; and
-4. builds capability diagnostics and rejects unsupported bounded execution
-   before creating a wrapper.
+4. builds capability diagnostics and rejects a plan whose kernel, type, or
+   semantic requirements are unsupported before creating a wrapper. Memory
+   sizing is not part of this check; the query allocator enforces the grant at
+   run time.
 
 Every non-selection returns the original executable DataFusion plan. A
 native-capable plan declined by cost is distinct from an unsupported plan.

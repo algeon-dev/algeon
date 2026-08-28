@@ -14,6 +14,13 @@ relation of vectors, runs a GPU vector operation, and returns rows you can join
 and filter alongside the rest of your query, over the data already in your
 session — no separate vector store and no copy to keep in sync.
 
+Three functions are available today: exact brute-force kNN
+(`cuvs_brute_force_knn`), KMeans clustering (`cuvs_kmeans`), and PCA
+(`cuvs_pca`). They execute on the GPU when the prerequisites in
+[Execution](#execution) are met. The surface is still work in progress:
+approximate indexes, persistent indexes, and other cuVS algorithms are not
+exposed yet, and the function list will grow.
+
 The function registry, JSON schemas, and generated pages below come from the
 same live metadata API exposed to embedded and Flight SQL clients.
 
@@ -46,9 +53,22 @@ column and request schemas are in the
 
 ## Execution
 
+A `cuvs_*` call runs on the GPU when all of the following hold:
+
+1. the binary was built with the `cuvs` feature (otherwise every call returns a
+   structured `required_feature_disabled` error, and `gpu_list_functions`
+   reports the family as unavailable);
+2. the session installed cuVS SQL: embedded sessions chain
+   `try_with_cuvs_sql()` as shown in
+   [DataFusion Session](../integration/datafusion-session.mdx#add-cugraph-and-cuvs-sql),
+   and the Flight SQL server installs it on every session it builds;
+3. a `NexusGpuBackend` is installed, because execution needs an admitted query
+   memory domain.
+
 `gpu_validate_call` validates schemas and options without scanning relations or
 executing GPU work. At runtime, `cuvs_*` calls use the admitted query memory
-domain, and its allocator enforces the configured cap.
+domain, and its allocator enforces the configured cap; an input that does not
+fit that cap fails with a typed allocation error rather than spilling.
 
 cuVS SQL also has no persistent cross-statement cache for brute-force indexes,
 KMeans models, PCA transforms, or result relations. Each call creates the
@@ -62,7 +82,8 @@ server requirements.
 
 ## Next steps
 
-- **[Integrate cuVS](../integration/overview.mdx)** — use the bounded server
-  contract and inspect availability through the GPU function catalog.
-- **[Configure the server](../integration/configuration.mdx)** — review
-  per-device capacity and cache admission settings.
+- **[Integrate cuVS](../integration/overview.mdx)** — pick an embedded
+  session or the Flight SQL server, then confirm availability with
+  `gpu_list_functions`.
+- **[Configure the server](../integration/configuration.mdx)** — set the
+  per-device memory cap that each call runs inside.

@@ -2,23 +2,28 @@
 sidebar_position: 1
 slug: /build
 title: Build & Test
-description: What you are building, how the repository fits together, and where native requirements are defined.
+description: What you are building, how the repository fits together, and the order in which the pages of this guide are meant to be followed.
 ---
 
-# Overview
+# Build & Test
 
 DataFusion Nexus sits above a feature-selected GPU stack. Relational execution
-uses RAPIDS cuDF, and graph SQL adds cuGraph. The cuVS SQL surface can be
-discovered and planned, but cannot run under bounded admission yet. A
-full-feature source build still includes libcuvs because cuGraph links it, so
-the native libraries must be built in a fixed, bottom-up order.
+uses RAPIDS cuDF, graph SQL adds cuGraph, and vector SQL adds cuVS. cuGraph
+links libcuvs, so a full-feature source build always includes it, and the
+native libraries must be built in a fixed, bottom-up order.
 
-This guide walks the whole path: system prerequisites, one recursive clone,
-checkout-local environment selection, building each layer, running the verified
-test surface, and optionally packaging the Flight SQL server into a Docker
-image. [Building from Source](./from-source.md) owns that complete linear path;
-the Docker packaging path follows it in
-[Building with Docker](./docker.md).
+Follow the pages in this order:
+
+1. [Prerequisites](./prerequisites.md) — the GPU, compiler, Rust, and
+   test-runner environment.
+2. [Building from Source](./from-source.md) — one recursive clone, one build
+   shell, the three native builds, the Rust workspace, and the full gate.
+3. [Tests](./tests.md) — the full gate in detail, partial edit loops, and
+   maintainer diagnostics.
+4. [Building with Docker](./docker.md) — optional packaging of the Flight SQL
+   server after a source build.
+5. [Troubleshooting](./troubleshooting.md) — native failures whose error text
+   does not point at the cause.
 
 ## The stack
 
@@ -53,8 +58,6 @@ datafusion-nexus/
 
 ## Build order
 
-Keep this dependency model in mind:
-
 ```text
 libcudf ── produces ──> librmm.so
                             ├──> libcuvs
@@ -65,35 +68,23 @@ nexus-query-engine depends on both and preserves the public facade.
 datafusion-nexus depends on that facade and uses the enabled cuDF, cuVS, and cuGraph Rust bindings.
 ```
 
-The full-feature build order follows those dependencies:
+The full-feature build follows those dependencies, and each step below is
+one command in [Building from Source](./from-source.md):
 
-Set `CMAKE_CUDA_ARCHITECTURES` once before this sequence. Each native layer
-records the requested target and the full-kernel real cubin set in its primary
-shared library under `target/native/`; downstream builds reject a different
-architecture contract early. An explicitly selected external prefix is exempt,
-since nexus scripts did not build it and it carries no such record.
+1. **libcudf and shared RMM** — `scripts/build/build_libcudf.sh` installs into
+   `target/native/cudf-install`, the one shared dependency prefix.
+2. **libcuvs** — `scripts/build/build_libcuvs.sh` consumes that RMM and installs
+   into `target/native/cuvs-install`.
+3. **libcugraph** — `scripts/build/build_libcugraph.sh` consumes the same RMM
+   and cuVS installs and builds into `target/native/cugraph-build`.
+4. **Rust workspace** — `cargo build --workspace --all-features`, then the
+   single full gate `bash scripts/check_all.sh`, run bare.
+5. **Docker image** — optional. `docker/stage-docker-payload.sh` stages the
+   release binary and the locally built RAPIDS libraries;
+   `docker/build-image.sh` produces the runnable image.
 
-1. **libcudf and shared RMM** — `bash scripts/build/build_libcudf.sh` drives
-   `components/cudf/cudf`, installs into `target/native/cudf-install`, and
-   prepares the one shared dependency prefix.
-2. **libcuvs** — `bash scripts/build/build_libcuvs.sh` consumes that RMM and
-   installs into `target/native/cuvs-install`.
-3. **libcugraph** — `bash scripts/build/build_libcugraph.sh` consumes the same
-   RMM and cuVS installs and builds into `target/native/cugraph-build`.
-4. **Unified Rust workspace** — `cargo build --workspace --all-features`, then
-   bare `bash scripts/check_all.sh` for the canonical full pre-merge surface.
-5. **Docker image** — optional packaging for the standalone Flight SQL server.
-   `docker/stage-docker-payload.sh` stages the release binary and the locally built forked
-   RAPIDS libraries; `docker/build-image.sh` then harvests the CUDA runtime
-   libraries into a runnable image ([Building with Docker](./docker.md)).
-
-## Requirements
-
-The checked-out submodule gitlinks are the native-version source of truth.
-Install the compatible GPU and native-build environment using the
-[RAPIDS install guide](https://docs.rapids.ai/install/), then follow
-[Prerequisites](./prerequisites.md) for this checkout's Rust, linker, and
-test-runner requirements. The source-build guide owns the checkout-local
-environment and cross-GPU build instructions.
+All three native layers share one `CMAKE_CUDA_ARCHITECTURES` value; the build
+scripts record it in each library and reject a mismatched downstream build.
+The source-build page explains how to choose it.
 
 Continue with [Prerequisites](./prerequisites.md).

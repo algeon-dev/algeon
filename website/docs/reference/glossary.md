@@ -26,11 +26,11 @@ defined here.
 - **IR (`QueryPlan`)** — planning's closed, DataFusion-free intermediate
   representation. Unlike DataFusion's open `ExecutionPlan` trait, it is an
   owned type the native stack fully controls and the engine facade re-exports.
-  See [Why the native stack is layered](../design/index.mdx#why-the-native-stack-is-layered).
+  See [Crates and ownership](../design/index.mdx#crates-and-ownership).
 - **Scan facts** — the format-neutral description of a source scan (files,
   schema, pruning facts) that lowering hands to the engine in place of
   DataFusion source nodes. See
-  [The design contract](../design/index.mdx#the-design-contract).
+  [How a query runs](../design/index.mdx#how-a-query-runs).
 - **GPU island** — an explicit GPU execution fragment entered through a
   specialized SQL call (`cugraph_*`, `cuvs_*`), as opposed to GPU work selected
   from a relational candidate. Counted together with native fragments in
@@ -71,26 +71,23 @@ defined here.
   never grows, shrinks, borrows, or moves to another device. See
   [Device profiles and grants](../design/admission.mdx#device-profiles-and-grants).
 - **Ledger (`DeviceLedger`)** — the per-device integer accounting authority
-  for grants, cache charges, protection, and attempt slots. It is capacity
+  for grants, resident cache charges, and attempt slots. It is capacity
   arithmetic, not a residency oracle. See
   [Device profiles and grants](../design/admission.mdx#device-profiles-and-grants).
 - **Envelope (`AdmissionEnvelope`)** — the physical resources built around a
   committed grant: attempt lane, root stream, allocation domain, and worker
   scope. Execution sees it only complete. See
-  [Transaction and release lifecycle](../design/admission.mdx#transaction-and-release-lifecycle).
-- **Protection** — the queue-fairness reserve for an older waiter that has
-  been overtaken too often: one future slot plus released bytes toward its
-  floor on one compatible ledger. It is not priority or preemption. See
-  [Queue and placement](../design/admission.mdx#queue-and-placement).
+  [Resident handoff and release](../design/admission.mdx#resident-handoff-and-release).
 - **Allocation domain** — the device-memory accounting scope an attempt
   allocates within, capped by its grant; each device's resident cache has its
   own shared domain outside any grant. See
-  [Admission](../design/admission.mdx#transaction-and-release-lifecycle) and
+  [Allocation enforcement](../design/admission.mdx#allocation-enforcement) and
   [Cache Design](../design/cache.mdx#one-gpu-cache-domain-per-device).
-- **Bounded execution** — execution that must establish its device-memory
-  bound before GPU work begins; a shape that cannot prove the bound is
-  rejected at planning or admission, never partially run. See
-  [Admission & Memory Governance](../design/admission.mdx).
+- **Bounded execution** — a query runs inside the GPU memory cap it was
+  granted; an allocation beyond that cap returns a typed allocation error
+  instead of spilling or replaying on CPU. Planning checks kernels, types,
+  semantics, and plan scope, not a predicted byte requirement. See
+  [Allocation enforcement](../design/admission.mdx#allocation-enforcement).
 
 ## Data and caching
 

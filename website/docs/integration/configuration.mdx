@@ -164,9 +164,10 @@ but execution returns a structured `required_feature_disabled` error.
 Per-call `options_json` overrides these defaults; see
 [Graph Inputs and Construction](../cugraph/graph-options.mdx).
 
-cuVS has no enable variable. Nexus installs its metadata and relation-aware
-planner with the backend; execution availability is described in
-[cuVS SQL API](../cuvs/overview.mdx#execution-availability).
+cuVS has no enable variable. The server installs cuVS SQL on every session it
+builds; the `cuvs` feature decides whether the functions execute or return a
+structured `required_feature_disabled` error. See
+[cuVS execution](../cuvs/overview.mdx#execution).
 
 ## Iceberg and workspace
 

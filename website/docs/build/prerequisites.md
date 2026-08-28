@@ -16,7 +16,7 @@ their `dependencies.yaml` and `CMakeLists.txt` files take precedence if they
 differ from those upstream references.
 
 This page covers only what connects that upstream environment to DataFusion
-Nexus.
+Nexus. Linux is the only supported platform.
 
 ## Native build environment
 
@@ -32,20 +32,29 @@ sudo apt-get install -y build-essential git clang mold
 ```
 
 The root [`.cargo/config.toml`](https://github.com/DataFusion-Nexus/datafusion-nexus/blob/main/.cargo/config.toml)
-selects `clang` and `mold` for normal source builds. If the pinned native
-sources require a compiler that is not your distribution default, install that
-compiler as directed by their checked-out dependency files, then set it in the
-[build shell](./from-source.md#2-configure-the-build-shell).
+selects `clang` and `mold` for normal source builds.
+
+The [build shell](./from-source.md#2-configure-the-build-shell) on the next
+page sets `CC`, `CXX`, and `CUDAHOSTCXX`; the native build scripts and CMake
+read those variables. The example uses `/usr/bin/gcc-14` and
+`/usr/bin/g++-14`, so confirm both paths exist before starting, or decide now
+which RAPIDS-compatible host compiler you will substitute in that block:
+
+```bash
+ls /usr/bin/gcc-14 /usr/bin/g++-14
+```
 
 Native binaries target the build GPU by default. When they must run on a
-different GPU, build the required architectures explicitly as described in
-[Building from Source](./from-source.md#3-build-the-native-stack).
+different GPU, choose the architecture list before the first native build as
+described in [Building from Source](./from-source.md#choosing-cuda-architectures).
 
 ## Rust toolchain and test runner
 
 Install Rust with the [official Rustup instructions](https://rustup.rs/). The
-workspace declares its MSRV in `Cargo.toml`; nightly is needed only for
-formatting. Then install the repository's canonical test runner:
+workspace declares its MSRV in `Cargo.toml` (currently Rust 1.95); nightly is
+needed only for formatting. `scripts/check_all.sh` requires these exact
+versions of the test runner and feature checker and exits before any work if
+they differ:
 
 ```bash
 rustup toolchain install nightly

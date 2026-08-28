@@ -3,7 +3,8 @@ use serde_json::{Map, Value, json};
 
 use super::super::{
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsPredicateInputs, CugraphBfsSource,
-    CugraphBfsSourceVertex, CugraphGraphOptions, CugraphSqlConfig, CugraphVertexSelector, stable_result_schema,
+    CugraphBfsSourceVertex, CugraphGraphOptions, CugraphPageRankParams, CugraphSqlConfig, CugraphVertexSelector,
+    stable_result_schema,
 };
 
 pub(super) fn schema_json(schema: &SchemaRef) -> String {
@@ -134,69 +135,39 @@ fn graph_options_schema_json(algorithm: CugraphAlgorithm, options: &CugraphGraph
 
 fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
     match CugraphAlgorithmParams::from_native_defaults(algorithm, None) {
-        CugraphAlgorithmParams::PageRank(params) => {
-            json!({
-                "alpha": {
-                    "scope": "algorithm",
-                    "type": "Float64",
-                    "default": params.alpha,
-                    "min": 0.0,
-                    "max": 1.0
-                },
-                "epsilon": {
-                    "scope": "algorithm",
-                    "type": "Float64",
-                    "default": params.epsilon,
-                    "exclusive_min": 0.0
-                },
-                "max_iterations": {
-                    "scope": "algorithm",
-                    "type": "UInt32",
-                    "default": params.max_iterations,
-                    "min": 1
-                }
-            })
-        },
+        CugraphAlgorithmParams::PageRank(params) => Value::Object(pagerank_iteration_options(&params)),
         CugraphAlgorithmParams::PersonalizedPageRank(params) => {
-            json!({
-                "alpha": {
-                    "scope": "algorithm",
-                    "type": "Float64",
-                    "default": params.pagerank.alpha,
-                    "min": 0.0,
-                    "max": 1.0
-                },
-                "epsilon": {
-                    "scope": "algorithm",
-                    "type": "Float64",
-                    "default": params.pagerank.epsilon,
-                    "exclusive_min": 0.0
-                },
-                "max_iterations": {
-                    "scope": "algorithm",
-                    "type": "UInt32",
-                    "default": params.pagerank.max_iterations,
-                    "min": 1
-                },
-                "personalization_table": {
+            let mut object = pagerank_iteration_options(&params.pagerank);
+            object.insert(
+                "personalization_table".to_string(),
+                json!({
                     "scope": "side_input",
                     "type": "Utf8",
                     "required": true,
                     "description": "Table containing personalized PageRank vertex weights."
-                },
-                "personalization_vertex_col": {
+                }),
+            );
+            object.insert(
+                "personalization_vertex_col".to_string(),
+                json!({
                     "scope": "side_input",
                     "type": "Utf8",
                     "required": true,
-                    "example": params.personalization.vertex_col
-                },
-                "personalization_value_col": {
+                    "example": params.personalization.vertex_col,
+                    "description": "Column in personalization_table naming the vertices the random walk restarts at; vertices absent from the table receive no restart mass."
+                }),
+            );
+            object.insert(
+                "personalization_value_col".to_string(),
+                json!({
                     "scope": "side_input",
                     "type": "Utf8",
                     "required": true,
-                    "example": params.personalization.value_col
-                }
-            })
+                    "example": params.personalization.value_col,
+                    "description": "Column in personalization_table holding each personalization vertex's relative restart weight; larger values pull more rank toward that vertex."
+                }),
+            );
+            Value::Object(object)
         },
         CugraphAlgorithmParams::Bfs(_) => bfs_options_schema_json(),
         CugraphAlgorithmParams::Louvain(params) => {
@@ -205,19 +176,22 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
                     "scope": "algorithm",
                     "type": "UInt32",
                     "default": params.max_level,
-                    "min": 1
+                    "min": 1,
+                    "description": "Maximum number of hierarchy levels (coarsening rounds) to run. Lowering it truncates the hierarchy earlier."
                 },
                 "threshold": {
                     "scope": "algorithm",
                     "type": "Float64",
                     "default": params.threshold,
-                    "min": 0.0
+                    "min": 0.0,
+                    "description": "Minimum modularity gain: a vertex move is accepted, and a level continues, only while the gain exceeds this threshold. Larger values stop earlier with a coarser result."
                 },
                 "resolution": {
                     "scope": "algorithm",
                     "type": "Float64",
                     "default": params.resolution,
-                    "exclusive_min": 0.0
+                    "exclusive_min": 0.0,
+                    "description": "Resolution parameter (gamma) in the modularity formula. Higher values produce more, smaller communities; lower values produce fewer, larger ones."
                 }
             })
         },
@@ -227,13 +201,15 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
                     "scope": "algorithm",
                     "type": "Float64",
                     "default": params.epsilon,
-                    "exclusive_min": 0.0
+                    "exclusive_min": 0.0,
+                    "description": "Power-iteration convergence tolerance: iteration stops once the L1 norm of the score change between consecutive iterations drops below epsilon. Smaller values tighten convergence and may need more iterations."
                 },
                 "max_iterations": {
                     "scope": "algorithm",
                     "type": "UInt32",
                     "default": params.max_iterations,
-                    "min": 1
+                    "min": 1,
+                    "description": "Upper bound on power iterations. The call fails with a non-convergence error if the bound is reached before epsilon is met."
                 }
             })
         },
@@ -244,25 +220,29 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
                     "type": "Float64",
                     "default": params.alpha,
                     "exclusive_min": 0.0,
-                    "max": 1.0
+                    "max": 1.0,
+                    "description": "Attenuation factor applied per path length; larger values let longer paths contribute more. cuGraph requires alpha below the inverse of the graph's largest eigenvalue for the iteration to converge."
                 },
                 "beta": {
                     "scope": "algorithm",
                     "type": "Float64",
                     "default": params.beta,
-                    "exclusive_min": 0.0
+                    "exclusive_min": 0.0,
+                    "description": "Constant added to every vertex's score in each iteration. One scalar applies to all vertices; per-vertex betas are not exposed."
                 },
                 "epsilon": {
                     "scope": "algorithm",
                     "type": "Float64",
                     "default": params.epsilon,
-                    "exclusive_min": 0.0
+                    "exclusive_min": 0.0,
+                    "description": "Convergence tolerance: iteration stops once the L1 sum of score changes between consecutive iterations is below the vertex count multiplied by epsilon. Smaller values tighten convergence and may need more iterations."
                 },
                 "max_iterations": {
                     "scope": "algorithm",
                     "type": "UInt32",
                     "default": params.max_iterations,
-                    "min": 1
+                    "min": 1,
+                    "description": "Upper bound on Katz iterations."
                 }
             })
         },
@@ -272,18 +252,21 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
                     "scope": "algorithm",
                     "type": "Float64",
                     "default": params.epsilon,
-                    "exclusive_min": 0.0
+                    "exclusive_min": 0.0,
+                    "description": "Convergence tolerance on the summed change in hub scores between consecutive iterations. Smaller values tighten convergence and may need more iterations."
                 },
                 "max_iterations": {
                     "scope": "algorithm",
                     "type": "UInt32",
                     "default": params.max_iterations,
-                    "min": 1
+                    "min": 1,
+                    "description": "Upper bound on HITS iterations."
                 },
                 "normalize": {
                     "scope": "algorithm",
                     "type": "Boolean",
-                    "default": params.normalize
+                    "default": params.normalize,
+                    "description": "When true, the final hub and authority score arrays are each scaled to L1 norm 1.0 before being returned."
                 }
             })
         },
@@ -300,7 +283,8 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
                 "scope": "algorithm",
                 "type": "Float64|null",
                 "default": params.cutoff,
-                "min": 0.0
+                "min": 0.0,
+                "description": "Maximum edge-weight sum to explore from the source; vertices farther than the cutoff are reported unreachable. Null means no cutoff."
             }
         }),
         CugraphAlgorithmParams::CoreNumber(params) => {
@@ -309,7 +293,8 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
                     "scope": "algorithm",
                     "type": "Utf8",
                     "allowed_values": ["in", "out", "in_out"],
-                    "default": params.degree_type.as_str()
+                    "default": params.degree_type.as_str(),
+                    "description": "Which edges count toward a vertex's degree in the k-core decomposition: incoming (in), outgoing (out), or both (in_out)."
                 }
             })
         },
@@ -319,13 +304,15 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
                     "scope": "algorithm",
                     "type": "UInt32",
                     "default": params.k,
-                    "min": 1
+                    "min": 1,
+                    "description": "Order of the core to extract: vertices whose core number is below k are dropped along with their edges."
                 },
                 "degree_type": {
                     "scope": "algorithm",
                     "type": "Utf8",
                     "allowed_values": ["in", "out", "in_out"],
-                    "default": params.degree_type.as_str()
+                    "default": params.degree_type.as_str(),
+                    "description": "Degree direction used by the underlying core-number computation: incoming (in), outgoing (out), or both (in_out)."
                 }
             })
         },
@@ -335,24 +322,28 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
                     "scope": "algorithm",
                     "type": "UInt32",
                     "default": params.max_level,
-                    "min": 1
+                    "min": 1,
+                    "description": "Maximum number of hierarchy levels (coarsening rounds) to run. Lowering it truncates the hierarchy earlier."
                 },
                 "resolution": {
                     "scope": "algorithm",
                     "type": "Float64",
                     "default": params.resolution,
-                    "exclusive_min": 0.0
+                    "exclusive_min": 0.0,
+                    "description": "Resolution parameter (gamma) in the modularity formula. Higher values produce more, smaller communities; lower values produce fewer, larger ones."
                 },
                 "theta": {
                     "scope": "algorithm",
                     "type": "Float64",
                     "default": params.theta,
-                    "exclusive_min": 0.0
+                    "exclusive_min": 0.0,
+                    "description": "Scales the modularity gain in the Leiden refinement phase when computing the probability of joining a random community. Larger values make refinement more random."
                 },
                 "seed": {
                     "scope": "algorithm",
                     "type": "UInt64",
-                    "default": params.seed
+                    "default": params.seed,
+                    "description": "Seed for the native random-number generator state that drives the randomized refinement phase. Different seeds explore different refinements."
                 }
             })
         },
@@ -362,36 +353,42 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
                     "scope": "algorithm",
                     "type": "Float64",
                     "default": params.min_weight,
-                    "min": 0.0
+                    "min": 0.0,
+                    "description": "Floor for edge weights in the final Louvain graph: an edge that no ensemble partition placed inside a community keeps this weight instead of zero."
                 },
                 "ensemble_size": {
                     "scope": "algorithm",
                     "type": "UInt32",
                     "default": params.ensemble_size,
-                    "min": 1
+                    "min": 1,
+                    "description": "Number of truncated Louvain runs on permuted inputs whose partitions vote on the final edge weights. Larger ensembles smooth the weights at proportionally higher cost."
                 },
                 "max_level": {
                     "scope": "algorithm",
                     "type": "UInt32",
                     "default": params.max_level,
-                    "min": 1
+                    "min": 1,
+                    "description": "Maximum number of hierarchy levels for the final Louvain pass."
                 },
                 "threshold": {
                     "scope": "algorithm",
                     "type": "Float64",
                     "default": params.threshold,
-                    "min": 0.0
+                    "min": 0.0,
+                    "description": "Minimum modularity gain for each level of the final Louvain pass; a level continues only while the gain exceeds it."
                 },
                 "resolution": {
                     "scope": "algorithm",
                     "type": "Float64",
                     "default": params.resolution,
-                    "exclusive_min": 0.0
+                    "exclusive_min": 0.0,
+                    "description": "Resolution parameter (gamma) in the modularity formula. Higher values produce more, smaller communities; lower values produce fewer, larger ones."
                 },
                 "seed": {
                     "scope": "algorithm",
                     "type": "UInt64",
-                    "default": params.seed
+                    "default": params.seed,
+                    "description": "Seed for the native random-number generator state that permutes the input for each ensemble run. Different seeds produce different ensembles."
                 }
             })
         },
@@ -401,44 +398,51 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
                     "scope": "algorithm",
                     "type": "UInt32",
                     "default": params.n_clusters,
-                    "min": 1
+                    "min": 1,
+                    "description": "Number of clusters the k-means stage assigns."
                 },
                 "n_eigenvectors": {
                     "scope": "algorithm",
                     "type": "UInt32",
                     "default": params.n_eigenvectors,
-                    "min": 1
+                    "min": 1,
+                    "description": "Number of leading eigenvectors computed for the spectral embedding that k-means clusters."
                 },
                 "evs_tolerance": {
                     "scope": "algorithm",
                     "type": "Float64",
                     "default": params.evs_tolerance,
-                    "min": 0.0
+                    "min": 0.0,
+                    "description": "Convergence tolerance for the eigenvalue solver. Smaller values compute a more accurate embedding at higher cost."
                 },
                 "evs_max_iterations": {
                     "scope": "algorithm",
                     "type": "UInt32",
                     "default": params.evs_max_iterations,
                     "min": 1,
-                    "max": i32::MAX
+                    "max": i32::MAX,
+                    "description": "Maximum eigenvalue-solver iterations."
                 },
                 "k_means_tolerance": {
                     "scope": "algorithm",
                     "type": "Float64",
                     "default": params.k_means_tolerance,
-                    "min": 0.0
+                    "min": 0.0,
+                    "description": "Convergence tolerance for the k-means stage."
                 },
                 "k_means_max_iterations": {
                     "scope": "algorithm",
                     "type": "UInt32",
                     "default": params.k_means_max_iterations,
                     "min": 1,
-                    "max": i32::MAX
+                    "max": i32::MAX,
+                    "description": "Maximum k-means iterations."
                 },
                 "seed": {
                     "scope": "algorithm",
                     "type": "UInt64",
-                    "default": params.seed
+                    "default": params.seed,
+                    "description": "Seed for the random initialization (Lanczos start vector and k-means centroid seeding). It does not make the partition bit-identical across runs; same-seed replays may land in a different but equally valid assignment."
                 }
             })
         },
@@ -449,85 +453,100 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
                     "type": "UInt32",
                     "default": params.max_iter,
                     "min": 1,
-                    "max": i32::MAX
+                    "max": i32::MAX,
+                    "description": "Number of layout iterations to run; the layout stops after this many without error. cuGraph suggests 50-100 iterations for quick results and discourages more than 1000."
                 },
                 "outbound_attraction_distribution": {
                     "scope": "algorithm",
                     "type": "Boolean",
-                    "default": params.outbound_attraction_distribution
+                    "default": params.outbound_attraction_distribution,
+                    "description": "Distributes attraction along outbound edges so hubs attract less and are pushed toward the borders."
                 },
                 "lin_log_mode": {
                     "scope": "algorithm",
                     "type": "Boolean",
-                    "default": params.lin_log_mode
+                    "default": params.lin_log_mode,
+                    "description": "Switches the attraction model from lin-lin to lin-log, which makes clusters tighter; scaling_ratio usually needs readjusting."
                 },
                 "prevent_overlapping": {
                     "scope": "algorithm",
                     "type": "Boolean",
                     "default": params.prevent_overlapping,
-                    "valid_when": "true requires vertex_attributes_table and vertex_radius_col"
+                    "valid_when": "true requires vertex_attributes_table and vertex_radius_col",
+                    "description": "Prevents vertices from overlapping, using the per-vertex radius side input."
                 },
                 "overlap_scaling_ratio": {
                     "scope": "algorithm",
                     "type": "Float64",
                     "default": params.overlap_scaling_ratio,
-                    "exclusive_min": 0.0
+                    "exclusive_min": 0.0,
+                    "description": "Scales the repulsion force between two overlapping vertices when prevent_overlapping is true."
                 },
                 "edge_weight_influence": {
                     "scope": "algorithm",
                     "type": "Float64",
                     "default": params.edge_weight_influence,
-                    "min": 0.0
+                    "min": 0.0,
+                    "description": "How much edge weights influence attraction: 0 ignores weights, 1 is the normal weighting, and larger values amplify heavy edges."
                 },
                 "jitter_tolerance": {
                     "scope": "algorithm",
                     "type": "Float64",
                     "default": params.jitter_tolerance,
-                    "min": 0.0
+                    "min": 0.0,
+                    "description": "How much swinging is tolerated when adapting speed; lower values give less speed and more precision, and values above 1 are discouraged."
                 },
                 "barnes_hut_optimize": {
                     "scope": "algorithm",
                     "type": "Boolean",
-                    "default": params.barnes_hut_optimize
+                    "default": params.barnes_hut_optimize,
+                    "description": "Uses the Barnes-Hut approximation for repulsion instead of the slower exact computation."
                 },
                 "barnes_hut_theta": {
                     "scope": "algorithm",
                     "type": "Float64",
                     "default": params.barnes_hut_theta,
                     "min": 0.0,
-                    "max": 1.0
+                    "max": 1.0,
+                    "description": "Barnes-Hut trade-off in [0, 1]: 1 favors speed, 0 favors accuracy. Used only when barnes_hut_optimize is true."
                 },
                 "scaling_ratio": {
                     "scope": "algorithm",
                     "type": "Float64",
                     "default": params.scaling_ratio,
-                    "exclusive_min": 0.0
+                    "exclusive_min": 0.0,
+                    "description": "Repulsion strength; larger values spread the layout out. Readjust it when switching lin_log_mode."
                 },
                 "strong_gravity_mode": {
                     "scope": "algorithm",
                     "type": "Boolean",
-                    "default": params.strong_gravity_mode
+                    "default": params.strong_gravity_mode,
+                    "description": "Uses a stronger gravity law that pulls distant vertices toward the center harder; it can dominate the other forces."
                 },
                 "gravity": {
                     "scope": "algorithm",
                     "type": "Float64",
                     "default": params.gravity,
-                    "min": 0.0
+                    "min": 0.0,
+                    "description": "Strength of the pull toward the center, which keeps disconnected islands from drifting away."
                 },
                 "verbose": {
                     "scope": "algorithm",
                     "type": "Boolean",
-                    "default": params.verbose
+                    "default": params.verbose,
+                    "description": "Makes cuGraph print convergence information at each iteration."
                 },
                 "seed": {
                     "scope": "algorithm",
                     "type": "UInt64",
-                    "default": params.seed
+                    "default": params.seed,
+                    "description": "Seed for the random initial positions used when initial_positions_table is not supplied. It does not make layouts reproducible; reruns may place individual vertices far apart."
                 },
                 "vertex_attributes_table": {
                     "scope": "side_input",
                     "type": "Utf8|null",
                     "default": null,
+                    "description": "Optional relation with exactly one row per graph vertex carrying radius, mobility, and/or mass attributes.",
                     "side_input": {
                         "role": "vertex_attributes",
                         "column_options": ["vertex_attributes_vertex_col", "vertex_radius_col", "vertex_mobility_col", "vertex_mass_col"]
@@ -538,33 +557,38 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
                     "type": "Utf8|null",
                     "default": null,
                     "column_of": "vertex_attributes_table",
-                    "expected_type_ref": "vertex_domain"
+                    "expected_type_ref": "vertex_domain",
+                    "description": "Vertex identifier column in vertex_attributes_table; must match the edge endpoint domain."
                 },
                 "vertex_radius_col": {
                     "scope": "side_input",
                     "type": "Utf8|null",
                     "default": null,
                     "column_of": "vertex_attributes_table",
-                    "expected_type_ref": "Float32"
+                    "expected_type_ref": "Float32",
+                    "description": "Per-vertex radius, used when prevent_overlapping is true."
                 },
                 "vertex_mobility_col": {
                     "scope": "side_input",
                     "type": "Utf8|null",
                     "default": null,
                     "column_of": "vertex_attributes_table",
-                    "expected_type_ref": "Float32"
+                    "expected_type_ref": "Float32",
+                    "description": "Per-vertex mobility: a scaling factor on the vertex's displacement at each iteration."
                 },
                 "vertex_mass_col": {
                     "scope": "side_input",
                     "type": "Utf8|null",
                     "default": null,
                     "column_of": "vertex_attributes_table",
-                    "expected_type_ref": "Float32"
+                    "expected_type_ref": "Float32",
+                    "description": "Per-vertex mass, which controls attraction to other vertices; when omitted, each vertex's mass is its degree plus one."
                 },
                 "initial_positions_table": {
                     "scope": "side_input",
                     "type": "Utf8|null",
                     "default": null,
+                    "description": "Optional relation with exactly one warm-start x/y position per graph vertex; when omitted, initial positions are random.",
                     "side_input": {
                         "role": "initial_positions",
                         "column_options": ["initial_positions_vertex_col", "initial_x_col", "initial_y_col"]
@@ -575,21 +599,24 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
                     "type": "Utf8|null",
                     "default": null,
                     "column_of": "initial_positions_table",
-                    "expected_type_ref": "vertex_domain"
+                    "expected_type_ref": "vertex_domain",
+                    "description": "Vertex identifier column in initial_positions_table; must match the edge endpoint domain."
                 },
                 "initial_x_col": {
                     "scope": "side_input",
                     "type": "Utf8|null",
                     "default": null,
                     "column_of": "initial_positions_table",
-                    "expected_type_ref": "Float32"
+                    "expected_type_ref": "Float32",
+                    "description": "Starting x-axis position per vertex."
                 },
                 "initial_y_col": {
                     "scope": "side_input",
                     "type": "Utf8|null",
                     "default": null,
                     "column_of": "initial_positions_table",
-                    "expected_type_ref": "Float32"
+                    "expected_type_ref": "Float32",
+                    "description": "Starting y-axis position per vertex."
                 }
             })
         },
@@ -602,6 +629,42 @@ fn algorithm_options_schema_json(algorithm: CugraphAlgorithm) -> Value {
         | CugraphAlgorithmParams::TriangleCountAll(_)
         | CugraphAlgorithmParams::MinimumSpanningTree(_) => json!({}),
     }
+}
+
+fn pagerank_iteration_options(params: &CugraphPageRankParams) -> Map<String, Value> {
+    Map::from_iter([
+        (
+            "alpha".to_string(),
+            json!({
+                "scope": "algorithm",
+                "type": "Float64",
+                "default": params.alpha,
+                "min": 0.0,
+                "max": 1.0,
+                "description": "Damping factor: the probability that the random walk follows an outgoing edge instead of restarting. Higher values let distant structure influence scores more; lower values keep rank closer to the restart distribution."
+            }),
+        ),
+        (
+            "epsilon".to_string(),
+            json!({
+                "scope": "algorithm",
+                "type": "Float64",
+                "default": params.epsilon,
+                "exclusive_min": 0.0,
+                "description": "Convergence tolerance: iteration stops once the L1 sum of score changes between consecutive iterations is below the vertex count multiplied by epsilon. Smaller values tighten convergence and may need more iterations."
+            }),
+        ),
+        (
+            "max_iterations".to_string(),
+            json!({
+                "scope": "algorithm",
+                "type": "UInt32",
+                "default": params.max_iterations,
+                "min": 1,
+                "description": "Upper bound on PageRank iterations. If the bound is reached before epsilon is met, the scores computed so far are returned."
+            }),
+        ),
+    ])
 }
 
 fn similarity_options_schema_json() -> Value {
@@ -667,7 +730,8 @@ fn betweenness_options_schema_json(
         json!({
             "scope": "algorithm",
             "type": "Boolean",
-            "default": normalized
+            "default": normalized,
+            "description": "When true, scores are scaled by the maximum possible value for the vertex count and directedness so results lie in [0, 1]; when false, raw shortest-path counts are returned."
         }),
     );
     if let Some(include_endpoints) = include_endpoints {
@@ -676,7 +740,8 @@ fn betweenness_options_schema_json(
             json!({
                 "scope": "algorithm",
                 "type": "Boolean",
-                "default": include_endpoints
+                "default": include_endpoints,
+                "description": "When true, the two endpoints of each shortest path count as lying on that path; the traditional formulation (false) excludes them."
             }),
         );
     }

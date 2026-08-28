@@ -1,23 +1,27 @@
 ---
 sidebar_position: 1
 slug: /cuopt
-description: SQL-visible cuOpt optimization over DataFusion Nexus SQL sessions (in progress).
+description: SQL-visible cuOpt optimization over DataFusion Nexus SQL sessions (work in progress).
 ---
 
 # cuOpt SQL API (WIP)
 
-:::note[In progress]
+:::note[Work in progress]
 
-The cuOpt SQL surface is under active development. This page is a placeholder
-that describes the intended shape; the `cuopt_*` table functions are not yet
-available, and the details below may change before release.
+The cuOpt SQL surface is under development. The `cuopt_*` table functions are
+not yet exposed in a release: there is no `cuopt` Cargo feature yet, and a
+query that calls a `cuopt_*` function currently fails as an unknown table
+function. The shape described below is the intended direction and may change.
 
 :::
 
-DataFusion Nexus will expose NVIDIA
+DataFusion Nexus plans to expose NVIDIA
 [**cuOpt**](https://github.com/nvidia/cuopt) as SQL table functions over
-DataFusion SQL sessions — the same pattern already used by the
-[cuGraph SQL API](../cugraph/overview.mdx). Each `cuopt_*` function will read a
-relation of decision inputs, run a GPU optimization workload, and return rows
-you can join and filter alongside the rest of your query, over the data already
-in your session — no separate solver service and no copy to keep in sync.
+DataFusion SQL sessions, following the same pattern as the
+[cuGraph SQL API](../cugraph/overview.mdx) and the
+[cuVS SQL API](../cuvs/overview.mdx): each `cuopt_*` function reads a relation
+of decision inputs, runs a GPU optimization workload, and returns rows you can
+join and filter alongside the rest of your query.
+
+Until the functions ship, `gpu_list_functions` does not list a `cuopt` family,
+and no relation shape or option schema is final.

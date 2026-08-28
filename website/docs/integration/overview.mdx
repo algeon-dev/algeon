@@ -6,44 +6,58 @@ description: Choose between embedding DataFusion Nexus in a Rust service or runn
 
 # Integrating Nexus
 
-DataFusion Nexus fits behind ordinary DataFusion APIs. Choose the integration
-surface that matches the service boundary you own:
+DataFusion Nexus runs GPU execution behind ordinary DataFusion APIs: you keep
+your SQL, DataFrame code, and Arrow results, and choose the integration
+surface that matches the service boundary you own. Throughout these docs,
+"native" means Nexus's GPU execution path.
 
 | Surface | Use it when | Start here |
 | --- | --- | --- |
 | DataFusion session | You already own a Rust backend, DataFusion session lifecycle, auth, tenancy, and result formatting. | [DataFusion Session](./datafusion-session.mdx) |
 | Flight SQL server | You want a remote Arrow Flight SQL endpoint for non-Rust clients, notebooks, agents, or service-to-service calls. | [Flight SQL server](./flight-sql-server.mdx) |
-| Embedded backend example | You want one Rust process with product-owned REST workflows and an ad-hoc Flight SQL side door sharing one GPU-native admission ledger. | [Embedded Backend Example](./embedded-backend-example.mdx) |
+| Embedded backend example | You want one Rust process that serves product-owned REST workflows and an additional Flight SQL endpoint from one shared GPU backend. | [Embedded Backend Example](./embedded-backend-example.mdx) |
 
-All three surfaces use the same cuDF relational execution path. With the
-`cugraph` feature, `cugraph_*` table functions are executable. Backend-installed
-sessions also expose discoverable and plannable `cuvs_*` functions, but their
-execution is not yet available; see
-[cuVS execution availability](../cuvs/overview.mdx#execution-availability).
-The `iceberg` feature adds Iceberg/Glue/REST/S3 source integration.
+All three surfaces use the same cuDF relational execution path. The `cugraph`
+feature makes the `cugraph_*` table functions executable. The `cuvs` feature
+makes the three documented `cuvs_*` functions executable once the session
+installs cuVS SQL and a backend is configured; see
+[cuVS execution](../cuvs/overview.mdx#execution). The `iceberg` feature adds
+Iceberg/Glue/REST/S3 source integration.
 
 ## Common flow
 
-1. Build the stack with the features your deployment needs. The full source
-   build is covered in [Build & Test](../build/overview.md).
-2. Pick an integration surface: a DataFusion session, the Flight SQL server,
-   or the embedded dual-frontend example combining both.
-3. Size GPU memory and configure table sources before running user queries. The
-   environment-variable contract is in [Configuration](./configuration.mdx).
-4. If you use GPU SQL, follow
-   [Discover & Validate GPU Functions](../guides/gpu-function-discovery.mdx)
-   to list, describe, and validate available calls; filter the inventory by
-   `provider` when needed. The
-   [GPU Function Catalog API](../reference/gpu-function-catalog.mdx) defines
-   the exact metadata and validation schemas.
-5. Before shipping a query, check whether its planned path stays on the GPU —
-   and why not, if it doesn't — with
-   [GPU coverage validation](./gpu-coverage-validation.mdx)
-   (`nexus_explain_coverage` in embedded SQL, `EXPLAIN GPU` through Flight SQL,
-   and `validate_query` in Rust).
-6. At your application boundary, enrich errors that carry a typed Nexus source,
-   then keep your existing policy for ordinary DataFusion failures. See
-   [Handling Errors](./handling-errors.mdx).
+1. **Build first.** Build the native libraries and then the Rust stack with
+   the features your deployment needs, following
+   [Build & Test](../build/overview.md). Every surface below starts from that
+   build.
+2. **Pick an entry point.** Embed a
+   [DataFusion session](./datafusion-session.mdx) in your Rust service, start
+   the [Flight SQL server](./flight-sql-server.mdx) for remote clients, or run
+   the [embedded example](./embedded-backend-example.mdx) that combines both.
+   In each case, declare the GPUs the process may use before running queries;
+   the server-side settings are in [Configuration](./configuration.mdx).
+3. **Provide tables.** In an embedded session, register tables as you would
+   in plain DataFusion (`CREATE EXTERNAL TABLE ... STORED AS PARQUET` or
+   `register_parquet`); see
+   [Execute one attempt per query](./datafusion-session.mdx#execute-one-attempt-per-query).
+   The server reads local Parquet or Iceberg tables from a REST or Glue
+   catalog configured under
+   [Iceberg and workspace](./configuration.mdx#iceberg-and-workspace). If you
+   use the `cugraph_*` or `cuvs_*` functions, list and validate the installed
+   calls with [Discover & Validate GPU Functions](../guides/gpu-function-discovery.mdx).
+4. **Check whether a query runs on the GPU.** Before shipping a query, ask for
+   its planned execution path, and the reason for any part that stays on the
+   CPU, with [GPU coverage validation](./gpu-coverage-validation.mdx):
+   `nexus_explain_coverage` in embedded SQL, `EXPLAIN GPU` through Flight SQL,
+   or `validate_query` in Rust. Plans not selected for GPU execution stay in
+   DataFusion and still return results.
+5. **Handle failures.** A GPU execution failure is not replayed on CPU; it
+   comes back as an error with a stable code, kind, and status. At your
+   application boundary, act on errors that carry a typed Nexus identity and
+   keep your existing policy for ordinary DataFusion failures. See
+   [Handling Errors](./handling-errors.mdx). Queries that cannot get GPU
+   execution capacity in time return `service_overloaded` backpressure rather
+   than waiting indefinitely; waiters are served first-in, first-out.
 
 The [cuGraph SQL API](../cugraph/overview.mdx) and
 [cuVS SQL API](../cuvs/overview.mdx) sections are the function-level

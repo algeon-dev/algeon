@@ -20,26 +20,25 @@ Measure how often each edge lies on shortest paths between vertex pairs, exactly
 cugraph_edge_betweenness_centrality(table_name [, src_col, dst_col [, weight_col [, options_json]]])
 ```
 
-## Relation inputs
+## Quickstart
 
-The first positional argument names a registered edge table or view (the `edges` role). Parenthesized relation subqueries are not accepted; metadata validation uses the same registered name.
+The call below expects a registered edge table or view `target_edges` with endpoint columns `src` and `dst`. Substitute your own registered relations.
 
-## Vertex ID types
+```sql
+SELECT * FROM cugraph_edge_betweenness_centrality('target_edges');
+```
 
-The `edges` relation declares the accepted vertex-ID domains. Numeric calls preserve the existing numeric schema. When logical string support is declared, `Utf8`, `LargeUtf8`, and `Utf8View` endpoint columns share one logical domain; their vertex-identity outputs are canonicalized to `Utf8`.
+## Inputs
 
-| Domain | Accepted endpoint inputs | Output contract |
-| --- | --- | --- |
-| Numeric edge endpoints | `Int32`, `Int64` | The numeric output schema is used for numeric calls. |
-| Logical string edge endpoints | `Utf8`, `LargeUtf8`, `Utf8View` | Vertex identity columns are canonicalized to `Utf8`; scores, distances, counts, coordinates, and opaque labels remain numeric. |
+`table_name` must be a registered edge table or view (the `edges` role); parenthesized subqueries are not accepted, and metadata validation resolves the same registered name.
 
-The native mapping type is `Int64`. Call-specific output schemas come from `gpu_validate_call`.
+Endpoint columns accept numeric `Int32`, `Int64` vertex IDs or logical string `Utf8`, `LargeUtf8`, `Utf8View` vertex IDs; string vertex-identity outputs are canonicalized to `Utf8` (native mapping `Int64`) while scores, distances, counts, coordinates, and opaque labels stay numeric. The shared vertex-ID contract is summarized in [Vertex ID support](../../graph-options.mdx#vertex-id-support-by-function); the concrete call-specific schema comes from `gpu_validate_call`.
 
 Logical string side-input limitations:
 
 - edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs
 
-## Scalar arguments & JSON options
+## Arguments and options
 
 ### Positional scalar arguments
 
@@ -55,14 +54,14 @@ Logical string side-input limitations:
 | --- | --- | --- | --- | --- |
 | `exact_vertex_threshold` | `UInt64` | `100000` |  | Maximum actual graph vertex count allowed for exact betweenness without explicit seeds or k. |
 | `k` | `UInt64\|null` | `null` | min 1; mutually exclusive with `seeds` | Deterministic approximate seed count. Execution uses the first k distinct graph vertices in stable order and refuses k larger than the actual vertex count. |
-| `normalized` | `Boolean` | `true` |  |  |
+| `normalized` | `Boolean` | `true` |  | When true, scores are scaled by the maximum possible value for the vertex count and directedness so results lie in [0, 1]; when false, raw shortest-path counts are returned. |
 | `seeds` | `List<Int64>\|List<Utf8>\|null` | `null` | mutually exclusive with `k` | Explicit homogeneous integer or string seed vertices for approximate betweenness. Null requests exact all-vertex betweenness unless k is set. |
 
 ### Graph construction options
 
 Graph construction follows the shared defaults (`directed=true`, renumbering, `python_cugraph` policy) documented in [Graph Construction Options](../../graph-options.mdx).
 
-## Output schema
+## Output
 
 | Column | Type | Nullable | Description |
 | --- | --- | --- | --- |
@@ -70,7 +69,7 @@ Graph construction follows the shared defaults (`directed=true`, renumbering, `p
 | `destination` | `Int64\|Utf8` | no | Algorithm result column. |
 | `score` | `Float64` | no | Algorithm result column. |
 
-These are generic descriptor schemas; [validate the call](#validate-before-running) to get the concrete, table-specific output schema.
+These are generic descriptor schemas; [validate the call](#validate-the-call) to get the concrete, table-specific output schema.
 
 ## Examples
 
@@ -78,11 +77,11 @@ import Examples from '../../_examples/cugraph_edge_betweenness_centrality.mdx';
 
 <Examples />
 
-## Limitations & lifecycle
+## Limits
 
 _No algorithm-specific limitations._
 
-## Validate before running
+## Validate the call
 
 Dry-run validation checks registered relation metadata, column presence, static dtypes, and options only; it does not scan edge data, construct a graph, or prove source-vertex existence:
 

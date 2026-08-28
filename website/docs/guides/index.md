@@ -6,8 +6,8 @@ description: Operational recipes for fixtures and local end-to-end flows.
 
 # Guides
 
-Operational recipes for GPU SQL workflows, local fixtures, end-to-end flows,
-and demo services.
+Step-by-step recipes for working with GPU SQL functions and for running the
+local fixtures behind the end-to-end flows and demo services.
 
 ## Available guides
 

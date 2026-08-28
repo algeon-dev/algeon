@@ -9,7 +9,8 @@ Toolchain and setup problems are documented where the tool is: missing
 mold/clang, CMake and host-compiler versions in
 [Prerequisites](./prerequisites.md); checkout-local native selectors in
 [Building from Source](./from-source.md#2-configure-the-build-shell); and
-test-runner, fingerprint, and `target/`-size issues in [Tests](./tests.md).
+test-runner, fingerprint, and `target/`-size issues in
+[Tests](./tests.md#maintainer-reference).
 This page keeps the failures whose error text does not point at the cause.
 
 ## cuGraph configure aborts: private RMM detected
@@ -78,14 +79,8 @@ bash scripts/build/build_libcugraph.sh
 The old cuDF-only `CUDF_CMAKE_CUDA_ARCHITECTURES` selector is intentionally
 rejected. The wrapper maps the shared CMake selector to cuDF internally.
 
-To inspect what the canonical builds requested and actually contain:
-
-```bash
-for root in "$CUDF_INSTALL_DIR" "$CUVS_INSTALL_DIR" "$CUGRAPH_CMAKE_BUILD_DIR"; do
-  echo "== $root =="
-  cat "$root/share/nexus-native/cuda-architectures.env"
-done
-```
+The record each layer carries, and how to inspect it, is described under
+[The architecture contract record](./from-source.md#the-architecture-contract-record).
 
 ## GPU op aborts: `cudaErrorNoKernelImageForDevice`
 
