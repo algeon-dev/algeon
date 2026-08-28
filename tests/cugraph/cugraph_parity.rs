@@ -6,7 +6,10 @@
 //! cuGraph oracle data, curated Katz CSVs, or a small hand-verified contract.
 //! ECG is the exception: its randomized ensemble is checked for replay
 //! stability and partition quality against the oracle, not an exact
-//! cross-build partition.
+//! cross-build partition. Spectral modularity maximization is the same kind
+//! of exception: its seed only fixes the random initialization, so replays
+//! are checked for partition quality against the initial run and the oracle,
+//! not exact equality.
 
 #[path = "cugraph_parity/compare.rs"]
 mod compare;
@@ -250,26 +253,44 @@ async fn all_registered_algorithms_execute_on_gpu_and_match_oracles() {
         let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx())
             .await
             .unwrap_or_else(|error| panic!("{}: GPU execution failed for {sql}: {error}", spec.label));
-        if spec.algorithm == CugraphAlgorithm::Ecg {
+        let dataset = loaded.manifest.dataset(spec.dataset).expect("parity spec dataset was validated");
+        let edges = datasets::load_edges(&loaded.data_root, dataset)
+            .unwrap_or_else(|error| panic!("{}: dataset edge load failed: {error}", spec.label));
+        if matches!(spec.algorithm, CugraphAlgorithm::Ecg | CugraphAlgorithm::SpectralModularityMaximization) {
             // A DataFusion physical plan owns consumable file-scan state, so
             // collecting the same `plan` twice only replays an exhausted
             // source. Rebuild it from the same logical DataFrame to exercise
             // the same SQL, binary, and seed with a fresh execution graph.
-            let replay_plan = df.create_physical_plan().await.unwrap_or_else(|error| {
-                panic!("{}: ECG replay physical planning failed for {sql}: {error}", spec.label)
-            });
+            let replay_plan = df
+                .create_physical_plan()
+                .await
+                .unwrap_or_else(|error| panic!("{}: replay physical planning failed for {sql}: {error}", spec.label));
             assert!(
                 plan_contains_cugraph_exec(replay_plan.as_ref()),
-                "{}: ECG replay query did not plan a CugraphAlgoExec:\n{}",
+                "{}: replay query did not plan a CugraphAlgoExec:\n{}",
                 spec.label,
                 datafusion::physical_plan::displayable(replay_plan.as_ref()).indent(false)
             );
             let replay = datafusion::physical_plan::collect(replay_plan, ctx.task_ctx())
                 .await
                 .unwrap_or_else(|error| panic!("{}: GPU replay failed for {sql}: {error}", spec.label));
-            compare::compare_repeated_partitions(&batches, &replay).unwrap_or_else(|reason| {
-                panic!("{}: same-binary, same-seed ECG replay was unstable: {reason}\nSQL: {sql}", spec.label)
-            });
+            if spec.algorithm == CugraphAlgorithm::Ecg {
+                compare::compare_repeated_partitions(&batches, &replay).unwrap_or_else(|reason| {
+                    panic!("{}: same-binary, same-seed ECG replay was unstable: {reason}\nSQL: {sql}", spec.label)
+                });
+            } else {
+                // Spectral promises a stable quality, not a bit-identical
+                // partition: a fixed seed does not survive GPU scheduling
+                // order in k-means centroid accumulation.
+                compare::compare_repeated_partition_quality(&batches, &replay, &edges, spec.tolerance).unwrap_or_else(
+                    |reason| {
+                        panic!(
+                            "{}: same-binary, same-seed spectral replay was unstable: {reason}\nSQL: {sql}",
+                            spec.label
+                        )
+                    },
+                );
+            }
         }
         let reference_vertices = match spec.truth_source {
             ParityTruthSource::RefCsv { path } => Some(
@@ -278,9 +299,6 @@ async fn all_registered_algorithms_execute_on_gpu_and_match_oracles() {
             ),
             ParityTruthSource::OracleJson | ParityTruthSource::HandVerified { .. } => None,
         };
-        let dataset = loaded.manifest.dataset(spec.dataset).expect("parity spec dataset was validated");
-        let edges = datasets::load_edges(&loaded.data_root, dataset)
-            .unwrap_or_else(|error| panic!("{}: dataset edge load failed: {error}", spec.label));
         compare::compare(spec, &batches, &document, reference_vertices.as_deref(), &edges)
             .unwrap_or_else(|reason| panic!("{}: GPU/oracle parity failed: {reason}\nSQL: {sql}", spec.label));
         assert!(
