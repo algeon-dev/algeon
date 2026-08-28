@@ -157,19 +157,50 @@ pub const DEFAULT_BETWEENNESS_EXACT_VERTEX_THRESHOLD: u64 = 100_000;
 pub enum GraphBetweennessSeeds {
     /// Host literal seed vertices from SQL options.
     I64(Vec<i64>),
+    /// Already-encoded seed vertices supplied by a native side-input node.
+    Input {
+        /// Native node/column binding for the encoded seed values.
+        input: GraphPredicateInput,
+        /// Proven upper bound used by graph admission before execution.
+        row_count_upper_bound: u64,
+    },
 }
 
 impl GraphBetweennessSeeds {
-    /// Number of requested seed vertices.
+    /// Literal seed count, or the proven row-count upper bound for encoded
+    /// relation-backed seeds.
     pub fn len(&self) -> usize {
         match self {
             Self::I64(values) => values.len(),
+            Self::Input { row_count_upper_bound, .. } => usize::try_from(*row_count_upper_bound).unwrap_or(usize::MAX),
         }
     }
 
     /// Whether the seed list is empty.
     pub fn is_empty(&self) -> bool {
-        self.len() == 0
+        match self {
+            Self::I64(values) => values.is_empty(),
+            Self::Input { row_count_upper_bound, .. } => *row_count_upper_bound == 0,
+        }
+    }
+
+    /// Proven seed-row upper bound used by graph planning and admission.
+    pub fn row_count_upper_bound(&self) -> u64 {
+        match self {
+            Self::I64(values) => values.len() as u64,
+            Self::Input { row_count_upper_bound, .. } => *row_count_upper_bound,
+        }
+    }
+}
+
+impl GraphBetweennessSeeds {
+    /// Visits the encoded seed side-input node, when present.
+    pub fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+        match self {
+            Self::I64(_) => None,
+            Self::Input { input, .. } => Some(input.input),
+        }
+        .into_iter()
     }
 }
 
@@ -190,6 +221,13 @@ pub struct GraphBetweennessCentralityParams {
     pub include_endpoints: bool,
     /// Conservative all-vertex threshold for exact execution.
     pub exact_vertex_threshold: u64,
+}
+
+impl GraphBetweennessCentralityParams {
+    /// Visits explicit seed side-input nodes in stable role order.
+    pub fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.seeds.iter().flat_map(GraphBetweennessSeeds::side_input_node_ids)
+    }
 }
 
 impl Default for GraphBetweennessCentralityParams {
@@ -219,6 +257,13 @@ pub struct GraphEdgeBetweennessCentralityParams {
     pub normalized: bool,
     /// Conservative all-vertex threshold for exact execution.
     pub exact_vertex_threshold: u64,
+}
+
+impl GraphEdgeBetweennessCentralityParams {
+    /// Visits explicit seed side-input nodes in stable role order.
+    pub fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.seeds.iter().flat_map(GraphBetweennessSeeds::side_input_node_ids)
+    }
 }
 
 impl Default for GraphEdgeBetweennessCentralityParams {

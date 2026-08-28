@@ -294,6 +294,18 @@ pub(super) fn register_vertex_pair_memtable(
     ctx.register_table(table_name, provider).unwrap();
 }
 
+pub(super) fn register_personalization_memtable(ctx: &SessionContext, table_name: &str, vertex_type: DataType) {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("vertex", vertex_type.clone(), false),
+        Field::new("value", DataType::Float64, false),
+    ]));
+    let batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![edge_column(&vertex_type), edge_column(&DataType::Float64)])
+            .unwrap();
+    let provider = Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap());
+    ctx.register_table(table_name, provider).unwrap();
+}
+
 /// Registers the small undirected graph used to prove weighted similarity.
 ///
 /// Its pair `(0, 1)` has weighted neighborhoods `{1: 1, 2: 2}` and
@@ -505,6 +517,120 @@ pub(super) fn register_string_pagerank_parity_edges(ctx: &SessionContext, string
         .unwrap();
 }
 
+pub(super) fn register_mixed_string_algorithm_parity_edges(
+    ctx: &SessionContext,
+    string_table: &str,
+    numeric_table: &str,
+) {
+    let string_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Utf8View, false),
+        Field::new("dst", DataType::LargeUtf8, false),
+        Field::new("weight", DataType::Float64, false),
+    ]));
+    let string_batch = RecordBatch::try_new(
+        Arc::clone(&string_schema),
+        vec![
+            Arc::new(StringViewArray::from(vec!["a", "a", "b", "c", "c", "d"])) as ArrayRef,
+            Arc::new(LargeStringArray::from(vec!["b", "c", "c", "a", "d", "b"])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![1.0_f64, 2.0, 1.0, 2.0, 1.0, 1.0])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table(string_table, Arc::new(MemTable::try_new(string_schema, vec![vec![string_batch]]).unwrap()))
+        .unwrap();
+
+    let numeric_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+        Field::new("weight", DataType::Float64, false),
+    ]));
+    let numeric_batch = RecordBatch::try_new(
+        Arc::clone(&numeric_schema),
+        vec![
+            Arc::new(Int64Array::from(vec![1_i64, 1, 2, 3, 3, 4])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![2_i64, 3, 3, 1, 4, 2])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![1.0_f64, 2.0, 1.0, 2.0, 1.0, 1.0])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table(numeric_table, Arc::new(MemTable::try_new(numeric_schema, vec![vec![numeric_batch]]).unwrap()))
+        .unwrap();
+}
+
+pub(super) fn register_string_algorithm_parity_side_inputs(ctx: &SessionContext) {
+    let string_seed_schema = Arc::new(Schema::new(vec![
+        Field::new("vertex", DataType::Utf8, false),
+        Field::new("value", DataType::Float64, false),
+    ]));
+    let string_seed_batch = RecordBatch::try_new(
+        Arc::clone(&string_seed_schema),
+        vec![
+            Arc::new(StringArray::from(vec!["a", "c"])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![0.75_f64, 0.25])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table(
+        "string_ppr_seeds",
+        Arc::new(MemTable::try_new(string_seed_schema, vec![vec![string_seed_batch]]).unwrap()),
+    )
+    .unwrap();
+
+    let numeric_seed_schema = Arc::new(Schema::new(vec![
+        Field::new("vertex", DataType::Int64, false),
+        Field::new("value", DataType::Float64, false),
+    ]));
+    let numeric_seed_batch = RecordBatch::try_new(
+        Arc::clone(&numeric_seed_schema),
+        vec![
+            Arc::new(Int64Array::from(vec![1_i64, 3])) as ArrayRef,
+            Arc::new(Float64Array::from(vec![0.75_f64, 0.25])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table(
+        "numeric_ppr_seeds",
+        Arc::new(MemTable::try_new(numeric_seed_schema, vec![vec![numeric_seed_batch]]).unwrap()),
+    )
+    .unwrap();
+
+    let string_pair_schema = Arc::new(Schema::new(vec![
+        Field::new("first", DataType::LargeUtf8, false),
+        Field::new("second", DataType::Utf8View, false),
+    ]));
+    let string_pair_batch = RecordBatch::try_new(
+        Arc::clone(&string_pair_schema),
+        vec![
+            Arc::new(LargeStringArray::from(vec!["a", "b", "a"])) as ArrayRef,
+            Arc::new(StringViewArray::from(vec!["b", "d", "a"])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table(
+        "string_candidate_pairs",
+        Arc::new(MemTable::try_new(string_pair_schema, vec![vec![string_pair_batch]]).unwrap()),
+    )
+    .unwrap();
+
+    let numeric_pair_schema = Arc::new(Schema::new(vec![
+        Field::new("first", DataType::Int64, false),
+        Field::new("second", DataType::Int64, false),
+    ]));
+    let numeric_pair_batch = RecordBatch::try_new(
+        Arc::clone(&numeric_pair_schema),
+        vec![
+            Arc::new(Int64Array::from(vec![1_i64, 2, 1])) as ArrayRef,
+            Arc::new(Int64Array::from(vec![2_i64, 4, 1])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table(
+        "numeric_candidate_pairs",
+        Arc::new(MemTable::try_new(numeric_pair_schema, vec![vec![numeric_pair_batch]]).unwrap()),
+    )
+    .unwrap();
+}
+
 pub(super) fn register_large_string_pagerank_edges(
     ctx: &SessionContext,
     string_table: &str,
@@ -685,6 +811,8 @@ pub(super) fn edge_column(data_type: &DataType) -> ArrayRef {
         DataType::Float32 => Arc::new(Float32Array::from(vec![1.0_f32, 2.0])) as ArrayRef,
         DataType::Float64 => Arc::new(Float64Array::from(vec![1.0_f64, 2.0])) as ArrayRef,
         DataType::Utf8 => Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef,
+        DataType::LargeUtf8 => Arc::new(LargeStringArray::from(vec!["a", "b"])) as ArrayRef,
+        DataType::Utf8View => Arc::new(StringViewArray::from(vec!["a", "b"])) as ArrayRef,
         other => panic!("test helper does not support {other:?}"),
     }
 }

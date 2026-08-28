@@ -389,6 +389,248 @@ async fn cugraph_validation_rejects_invalid_common_envelopes_before_graph_parsin
 }
 
 #[tokio::test]
+async fn cugraph_vertex_id_descriptors_match_registry_string_contracts() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+
+    for definition in CUGRAPH_OPERATION_REGISTRY {
+        let batches = ctx
+            .sql(&format!(
+                "SELECT relation_roles_json, result_schemas_json FROM gpu_describe_function('{}')",
+                definition.sql_function_name
+            ))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let batch = single_batch(&batches);
+        let relations = json_value(string_value(batch, 0, 0));
+        let contract = &relations[0]["vertex_id_contract"];
+        let string_capable = definition.supports_logical_string_vertices();
+        assert_eq!(
+            contract["logical_string_endpoint_types"],
+            if string_capable { serde_json::json!(["Utf8", "LargeUtf8", "Utf8View"]) } else { serde_json::json!([]) },
+            "{}",
+            definition.sql_function_name
+        );
+        assert_eq!(contract["call_specific_authority"], "gpu_validate_call");
+        assert_eq!(contract["edge_id_supported_for_logical_string"], false);
+        assert_eq!(contract["logical_string_output_type"].is_string(), string_capable);
+        assert_eq!(contract["native_logical_mapping_type"].as_str(), string_capable.then_some("Int64"));
+
+        let result_schemas = json_value(string_value(batch, 1, 0));
+        let has_logical_output = result_schemas["schemas"]
+            .as_object()
+            .unwrap()
+            .values()
+            .flat_map(|schema| schema["fields"].as_array().unwrap())
+            .any(|field| field["data_type"] == "Int64|Utf8");
+        assert_eq!(has_logical_output, string_capable, "{}", definition.sql_function_name);
+    }
+}
+
+#[tokio::test]
+async fn cugraph_string_selector_descriptors_publish_their_logical_types() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+
+    for function_name in ["cugraph_sssp", "cugraph_betweenness_centrality", "cugraph_edge_betweenness_centrality"] {
+        let batches = ctx
+            .sql(&format!(
+                "SELECT argument_descriptions_json, options_schema_json FROM gpu_describe_function('{function_name}')"
+            ))
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap();
+        let batch = single_batch(&batches);
+        let arguments = json_value(string_value(batch, 0, 0));
+        let options = json_value(string_value(batch, 1, 0));
+        if function_name == "cugraph_sssp" {
+            let source =
+                arguments.as_array().unwrap().iter().find(|argument| argument["name"] == "source_vertex").unwrap();
+            assert_eq!(source["type"], "Int64|Utf8");
+        } else {
+            assert_eq!(options["algorithm_options"]["seeds"]["type"], "List<Int64>|List<Utf8>|null");
+        }
+    }
+}
+
+#[tokio::test]
+async fn cugraph_m1_algorithms_validate_all_string_endpoint_family_combinations() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    let endpoint_types = [
+        ("utf8_large", DataType::Utf8, DataType::LargeUtf8),
+        ("large_view", DataType::LargeUtf8, DataType::Utf8View),
+        ("view_utf8", DataType::Utf8View, DataType::Utf8),
+    ];
+    for (table, src_type, dst_type) in &endpoint_types {
+        register_edge_memtable(&ctx, table, src_type.clone(), dst_type.clone(), DataType::Float64);
+    }
+
+    let algorithms = [
+        CugraphAlgorithm::PageRank,
+        CugraphAlgorithm::Louvain,
+        CugraphAlgorithm::EigenvectorCentrality,
+        CugraphAlgorithm::KatzCentrality,
+        CugraphAlgorithm::Hits,
+        CugraphAlgorithm::DegreesAll,
+        CugraphAlgorithm::InDegreesAll,
+        CugraphAlgorithm::OutDegreesAll,
+        CugraphAlgorithm::WeaklyConnectedComponents,
+        CugraphAlgorithm::StronglyConnectedComponents,
+        CugraphAlgorithm::TriangleCountAll,
+        CugraphAlgorithm::CoreNumber,
+        CugraphAlgorithm::KCore,
+        CugraphAlgorithm::Leiden,
+        CugraphAlgorithm::Ecg,
+        CugraphAlgorithm::ForceAtlas2,
+    ];
+    for algorithm in algorithms {
+        for (table, _, _) in &endpoint_types {
+            let batch = validate(
+                &ctx,
+                algorithm.function_name(),
+                table,
+                serde_json::json!({"src_col": "src", "dst_col": "dst"}),
+            )
+            .await;
+            assert!(
+                bool_value(&batch, 0, 0),
+                "{} rejected {table}: {}",
+                algorithm.function_name(),
+                string_value(&batch, 2, 0)
+            );
+            assert_eq!(json_value(string_value(&batch, 6, 0))["fields"][0]["data_type"], "Utf8");
+        }
+    }
+}
+
+#[tokio::test]
+async fn cugraph_m2_relation_side_inputs_validate_and_canonicalize_string_outputs() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "string_edges", DataType::Utf8, DataType::LargeUtf8, DataType::Float64);
+    register_personalization_memtable(&ctx, "personalization", DataType::Utf8View);
+    register_vertex_pair_memtable(&ctx, "candidate_pairs", DataType::Utf8View, DataType::LargeUtf8, false);
+
+    let personalized = validate(
+        &ctx,
+        "cugraph_personalized_pagerank",
+        "string_edges",
+        serde_json::json!({
+            "src_col": "src",
+            "dst_col": "dst",
+            "weight_col": "weight",
+            "personalization_table": "personalization",
+            "personalization_vertex_col": "vertex",
+            "personalization_value_col": "value"
+        }),
+    )
+    .await;
+    assert!(bool_value(&personalized, 0, 0), "{}", string_value(&personalized, 2, 0));
+    assert_eq!(json_value(string_value(&personalized, 6, 0))["fields"][0]["data_type"], "Utf8");
+
+    for function in ["cugraph_jaccard", "cugraph_sorensen", "cugraph_overlap", "cugraph_cosine"] {
+        let similarity = validate(
+            &ctx,
+            function,
+            "string_edges",
+            serde_json::json!({
+                "src_col": "src",
+                "dst_col": "dst",
+                "weight_col": "weight",
+                "vertex_pairs_table": "candidate_pairs",
+                "first_vertex_col": "first",
+                "second_vertex_col": "second"
+            }),
+        )
+        .await;
+        assert!(bool_value(&similarity, 0, 0), "{function}: {}", string_value(&similarity, 2, 0));
+        let fields = json_value(string_value(&similarity, 6, 0));
+        assert_eq!(fields["fields"][0]["data_type"], "Utf8");
+        assert_eq!(fields["fields"][1]["data_type"], "Utf8");
+    }
+}
+
+#[tokio::test]
+async fn cugraph_m3_string_selectors_validate_with_concrete_utf8_output_schemas() {
+    let state = SessionStateBuilder::new_with_default_features()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    register_edge_memtable(&ctx, "string_edges", DataType::Utf8View, DataType::LargeUtf8, DataType::Float64);
+
+    let cases = [
+        (
+            "cugraph_sssp",
+            serde_json::json!({
+                "src_col": "src",
+                "dst_col": "dst",
+                "weight_col": "weight",
+                "source_vertex": "alice"
+            }),
+            vec!["vertex", "predecessor"],
+        ),
+        (
+            "cugraph_betweenness_centrality",
+            serde_json::json!({"src_col": "src", "dst_col": "dst", "seeds": ["alice", "carol"]}),
+            vec!["vertex"],
+        ),
+        (
+            "cugraph_edge_betweenness_centrality",
+            serde_json::json!({"src_col": "src", "dst_col": "dst", "seeds": ["alice"]}),
+            vec!["source", "destination"],
+        ),
+    ];
+    for (function, options, identity_columns) in cases {
+        let batch = validate(&ctx, function, "string_edges", options).await;
+        assert!(bool_value(&batch, 0, 0), "{function}: {}", string_value(&batch, 2, 0));
+        let schema = json_value(string_value(&batch, 6, 0));
+        for identity in identity_columns {
+            let field = schema["fields"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|field| field["name"] == identity)
+                .unwrap_or_else(|| panic!("{function} missing {identity}"));
+            assert_eq!(field["data_type"], "Utf8", "{function}.{identity}");
+        }
+    }
+
+    let mismatch = validate(
+        &ctx,
+        "cugraph_sssp",
+        "string_edges",
+        serde_json::json!({
+            "src_col": "src",
+            "dst_col": "dst",
+            "weight_col": "weight",
+            "source_vertex": 1
+        }),
+    )
+    .await;
+    assert!(!bool_value(&mismatch, 0, 0));
+    assert_eq!(string_value(&mismatch, 1, 0), "vertex_dtype_mismatch");
+}
+
+#[tokio::test]
 async fn cugraph_reinstall_is_idempotent_and_conflicting_graph_defaults_are_rejected() {
     let builder = SessionStateBuilder::new_with_default_features()
         .try_with_cugraph_sql(CugraphSqlConfig::default())

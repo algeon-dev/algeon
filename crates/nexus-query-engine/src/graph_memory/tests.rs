@@ -5,7 +5,8 @@ use arrow::datatypes::{Field, Schema};
 use super::*;
 #[cfg(feature = "cugraph")]
 use crate::plan::{
-    GraphEdgePredicateInput, GraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams, GraphPredicateInput,
+    GraphBetweennessCentralityParams, GraphBetweennessSeeds, GraphEdgePredicateInput,
+    GraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams, GraphPredicateInput,
 };
 use crate::{
     expr::{AggregateSpec, ColumnRef, Expr, LiteralValue},
@@ -91,6 +92,34 @@ fn personalized_pagerank_side_input_plan(side_rows: Option<u64>) -> QueryPlan {
             pagerank: GraphPageRankParams::default(),
             personalization: GraphPageRankPersonalizationInput::new(side, "vertex", "value"),
         }),
+    );
+    let graph = builder.add_graph_algorithm(edge, spec);
+    builder.finish_gpu_resident(graph)
+}
+
+#[cfg(feature = "cugraph")]
+fn betweenness_seed_side_input_plan(seed_row_bound: u64) -> QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let edge = builder.add_source(SourceNode::GpuResident(
+        crate::source::GpuResidentSource::new("betweenness-side-edges", edge_schema()).with_row_count_upper_bound(20),
+    ));
+    let seed_schema = Arc::new(Schema::new(vec![Field::new("vertex", DataType::Int64, false)]));
+    let seeds = builder.add_source(SourceNode::GpuResident(
+        crate::source::GpuResidentSource::new("betweenness-side-seeds", seed_schema)
+            .with_row_count_upper_bound(seed_row_bound),
+    ));
+    let params = GraphBetweennessCentralityParams {
+        seeds: Some(GraphBetweennessSeeds::Input {
+            input: GraphPredicateInput::new(seeds, "vertex"),
+            row_count_upper_bound: seed_row_bound,
+        }),
+        ..Default::default()
+    };
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::BetweennessCentrality,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions::default(),
+        GraphAlgorithmParams::BetweennessCentrality(params),
     );
     let graph = builder.add_graph_algorithm(edge, spec);
     builder.finish_gpu_resident(graph)
@@ -489,6 +518,29 @@ fn personalized_pagerank_side_input_owner_requires_a_hard_row_bound() {
     assert_eq!(error.fact_value("reason"), Some("side_input_workspace_preflight_unavailable"));
     assert_eq!(error.fact_value("side_input_reason"), Some("missing_row_upper_bound"));
     assert_eq!(error.fact_value("side_input_role"), Some("personalization"));
+}
+
+#[cfg(feature = "cugraph")]
+#[test]
+fn relation_backed_betweenness_seeds_use_the_proven_row_bound_for_admission() {
+    let estimate = graph_memory_estimates_for_plan(
+        &betweenness_seed_side_input_plan(3),
+        GraphMemoryCalibrationOverride::none(),
+        None,
+    )
+    .expect("bounded betweenness seed relation must remain priceable")
+    .pop()
+    .expect("one graph estimate");
+    assert_eq!(estimate.estimate.seed_count, Some(3));
+    assert_eq!(estimate.estimate.seed_mode, Some(GraphSeedMode::ExplicitSeedList));
+
+    let evidence = graph_memory_bounded_admission_evidence_for_plan(
+        &betweenness_seed_side_input_plan(3),
+        GraphMemoryCalibrationOverride::none(),
+        None,
+    )
+    .expect("bounded betweenness seed relation must produce admission evidence");
+    assert!(evidence.cold_model_requested_bytes() > 0);
 }
 
 #[cfg(feature = "cugraph")]

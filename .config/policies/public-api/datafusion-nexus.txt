@@ -284,6 +284,8 @@ pub datafusion_nexus::cugraph_sql::CugraphBfsSourceVertex::Utf8(alloc::string::S
 impl datafusion_nexus::cugraph_sql::CugraphBfsSourceVertex
 pub fn datafusion_nexus::cugraph_sql::CugraphBfsSourceVertex::as_i64(&self) -> core::option::Option<i64>
 pub const fn datafusion_nexus::cugraph_sql::CugraphBfsSourceVertex::is_utf8(&self) -> bool
+impl core::convert::From<datafusion_nexus::cugraph_sql::CugraphBfsSourceVertex> for datafusion_nexus::cugraph_sql::CugraphVertexSelector
+pub fn datafusion_nexus::cugraph_sql::CugraphVertexSelector::from(datafusion_nexus::cugraph_sql::CugraphBfsSourceVertex) -> Self
 impl core::default::Default for datafusion_nexus::cugraph_sql::CugraphBfsSourceVertex
 pub fn datafusion_nexus::cugraph_sql::CugraphBfsSourceVertex::default() -> Self
 pub enum datafusion_nexus::cugraph_sql::CugraphGraphConstructionPolicy
@@ -297,6 +299,14 @@ pub datafusion_nexus::cugraph_sql::CugraphKCoreDegreeType::InOut
 pub datafusion_nexus::cugraph_sql::CugraphKCoreDegreeType::Out
 impl datafusion_nexus::cugraph_sql::CugraphKCoreDegreeType
 pub fn datafusion_nexus::cugraph_sql::CugraphKCoreDegreeType::as_str(self) -> &'static str
+pub enum datafusion_nexus::cugraph_sql::CugraphVertexSelector
+pub datafusion_nexus::cugraph_sql::CugraphVertexSelector::Int64(i64)
+pub datafusion_nexus::cugraph_sql::CugraphVertexSelector::Utf8(alloc::string::String)
+impl datafusion_nexus::cugraph_sql::CugraphVertexSelector
+pub const fn datafusion_nexus::cugraph_sql::CugraphVertexSelector::as_i64(&self) -> core::option::Option<i64>
+pub const fn datafusion_nexus::cugraph_sql::CugraphVertexSelector::is_utf8(&self) -> bool
+impl core::convert::From<datafusion_nexus::cugraph_sql::CugraphBfsSourceVertex> for datafusion_nexus::cugraph_sql::CugraphVertexSelector
+pub fn datafusion_nexus::cugraph_sql::CugraphVertexSelector::from(datafusion_nexus::cugraph_sql::CugraphBfsSourceVertex) -> Self
 pub struct datafusion_nexus::cugraph_sql::CugraphAlgoExec
 impl datafusion_physical_plan::display::DisplayAs for datafusion_nexus::cugraph_sql::CugraphAlgoExec
 pub fn datafusion_nexus::cugraph_sql::CugraphAlgoExec::fmt_as(&self, datafusion_physical_plan::display::DisplayFormatType, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -336,7 +346,7 @@ pub datafusion_nexus::cugraph_sql::CugraphBetweennessCentralityParams::seeds: co
 impl core::default::Default for datafusion_nexus::cugraph_sql::CugraphBetweennessCentralityParams
 pub fn datafusion_nexus::cugraph_sql::CugraphBetweennessCentralityParams::default() -> Self
 pub struct datafusion_nexus::cugraph_sql::CugraphBetweennessSeeds
-pub datafusion_nexus::cugraph_sql::CugraphBetweennessSeeds::vertices: alloc::vec::Vec<i64>
+pub datafusion_nexus::cugraph_sql::CugraphBetweennessSeeds::vertices: alloc::vec::Vec<datafusion_nexus::cugraph_sql::CugraphVertexSelector>
 impl datafusion_nexus::cugraph_sql::CugraphBetweennessSeeds
 pub fn datafusion_nexus::cugraph_sql::CugraphBetweennessSeeds::is_empty(&self) -> bool
 pub fn datafusion_nexus::cugraph_sql::CugraphBetweennessSeeds::len(&self) -> usize
@@ -453,6 +463,8 @@ pub struct datafusion_nexus::cugraph_sql::CugraphMstParams
 pub struct datafusion_nexus::cugraph_sql::CugraphOperationDefinition
 pub datafusion_nexus::cugraph_sql::CugraphOperationDefinition::algorithm: datafusion_nexus::cugraph_sql::CugraphAlgorithm
 pub datafusion_nexus::cugraph_sql::CugraphOperationDefinition::sql_function_name: &'static str
+impl datafusion_nexus::cugraph_sql::CugraphOperationDefinition
+pub const fn datafusion_nexus::cugraph_sql::CugraphOperationDefinition::supports_logical_string_vertices(&self) -> bool
 pub struct datafusion_nexus::cugraph_sql::CugraphOutDegreesAllParams
 pub struct datafusion_nexus::cugraph_sql::CugraphPageRankParams
 pub datafusion_nexus::cugraph_sql::CugraphPageRankParams::alpha: f64
@@ -493,7 +505,7 @@ impl core::default::Default for datafusion_nexus::cugraph_sql::CugraphSqlConfig
 pub fn datafusion_nexus::cugraph_sql::CugraphSqlConfig::default() -> Self
 pub struct datafusion_nexus::cugraph_sql::CugraphSsspParams
 pub datafusion_nexus::cugraph_sql::CugraphSsspParams::cutoff: core::option::Option<f64>
-pub datafusion_nexus::cugraph_sql::CugraphSsspParams::source_vertex: i64
+pub datafusion_nexus::cugraph_sql::CugraphSsspParams::source_vertex: datafusion_nexus::cugraph_sql::CugraphVertexSelector
 pub struct datafusion_nexus::cugraph_sql::CugraphTableReference
 impl datafusion_nexus::cugraph_sql::CugraphTableReference
 pub fn datafusion_nexus::cugraph_sql::CugraphTableReference::parse(&str) -> datafusion_common::error::Result<Self>

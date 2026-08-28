@@ -360,7 +360,7 @@ fn betweenness_seed_memory_input(
 ) -> GraphSeedMemoryInput {
     match seeds {
         Some(seeds) => GraphSeedMemoryInput {
-            requested_count: seeds.len() as u64,
+            requested_count: seeds.row_count_upper_bound(),
             mode: GraphSeedMode::ExplicitSeedList,
             explicit_seed_list: true,
             requires_runtime_seed_selection: false,

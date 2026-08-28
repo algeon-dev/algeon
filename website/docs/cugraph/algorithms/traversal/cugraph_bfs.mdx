@@ -24,6 +24,22 @@ cugraph_bfs(table_name, source_vertex_or_vertices [, src_col, dst_col [, weight_
 
 The first positional argument names a registered edge table or view (the `edges` role). Parenthesized relation subqueries are not accepted; metadata validation uses the same registered name.
 
+## Vertex ID types
+
+The `edges` relation declares the accepted vertex-ID domains. Numeric calls preserve the existing numeric schema. When logical string support is declared, `Utf8`, `LargeUtf8`, and `Utf8View` endpoint columns share one logical domain; their vertex-identity outputs are canonicalized to `Utf8`.
+
+| Domain | Accepted endpoint inputs | Output contract |
+| --- | --- | --- |
+| Numeric edge endpoints | `Int32`, `Int64` | The numeric output schema is used for numeric calls. |
+| Logical string edge endpoints | `Utf8`, `LargeUtf8`, `Utf8View` | Vertex identity columns are canonicalized to `Utf8`; scores, distances, counts, coordinates, and opaque labels remain numeric. |
+
+The native mapping type is `Int64`. Call-specific output schemas come from `gpu_validate_call`.
+
+Logical string side-input limitations:
+
+- edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs
+- string logical vertex-domain BFS rejects edge_id_col, include_edge_ids_*, and include_edge_id_col
+
 ## Scalar arguments & JSON options
 
 ### Positional scalar arguments
@@ -136,7 +152,7 @@ Dry-run validation checks registered relation metadata, column presence, static 
 ```sql
 SELECT * FROM gpu_validate_call(
   'cugraph_bfs',
-  '{"options":{"depth_limit":4,"dst_col":"dst","source_vertex":123,"src_col":"src"},"relations":{"edges":{"table":"target_edges"}},"schema_version":1}'
+  '{"schema_version":1,"relations":{"edges":{"table":"target_edges"}},"options":{"source_vertex":123,"src_col":"src","dst_col":"dst","depth_limit":4}}'
 );
 ```
 

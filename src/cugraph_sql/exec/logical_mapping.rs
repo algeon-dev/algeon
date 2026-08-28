@@ -36,15 +36,43 @@ pub(super) fn add_logical_mapping_plan(
     predicate_nodes: Vec<nexus_query_engine::plan::NodeId>,
     predicate_schemas: Vec<SchemaRef>,
 ) -> Result<LogicalMappingPlan> {
+    let native_id_type = spec
+        .algorithm
+        .definition()
+        .logical_string_contract()
+        .ok_or_else(|| {
+            plan_error(format!(
+                "cuGraph {} does not opt in to logical string vertex mapping",
+                spec.algorithm.function_name()
+            ))
+        })?
+        .native_id_type
+        .data_type();
     let mut mapped_inputs = Vec::new();
-    if let Some(batch) = bfs_literal_string_source_batch(spec)? {
+    if let Some((batch, column)) = logical_literal_vertex_batch(spec)? {
         let schema = batch.schema();
         let node =
             builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
-        mapped_inputs.push((node, schema, vec!["__source_vertex".to_string()]));
+        mapped_inputs.push((node, schema, vec![column]));
     }
-    for (index, (node, schema)) in predicate_nodes.into_iter().zip(predicate_schemas).enumerate() {
-        mapped_inputs.push((node, schema, logical_predicate_columns(spec, index)));
+    let source_specs = spec.predicate_source_specs();
+    if predicate_nodes.len() != predicate_schemas.len() || predicate_nodes.len() != source_specs.len() {
+        return Err(plan_error(format!(
+            "cuGraph {} logical mapping side-input contract has {} nodes, {} schemas, and {} role specifications",
+            spec.algorithm.function_name(),
+            predicate_nodes.len(),
+            predicate_schemas.len(),
+            source_specs.len()
+        )));
+    }
+    for ((node, schema), source) in predicate_nodes.into_iter().zip(predicate_schemas).zip(source_specs) {
+        let columns = source
+            .columns
+            .into_iter()
+            .filter(|column| column.role == PredicateSourceColumnRole::Vertex)
+            .map(|column| column.name)
+            .collect();
+        mapped_inputs.push((node, schema, columns));
     }
 
     let mut domain_sources = vec![(edge, Arc::clone(&edge_schema), vec![spec.src_col.clone(), spec.dst_col.clone()])];
@@ -69,7 +97,7 @@ pub(super) fn add_logical_mapping_plan(
     );
     let codebook_schema = Arc::new(Schema::new(vec![
         Field::new(LOGICAL_VERTEX_COLUMN, DataType::Utf8, false),
-        Field::new(NATIVE_VERTEX_COLUMN, DataType::Int64, false),
+        Field::new(NATIVE_VERTEX_COLUMN, native_id_type.clone(), false),
     ]));
     let codebook = builder.add_window(
         sorted,
@@ -88,10 +116,11 @@ pub(super) fn add_logical_mapping_plan(
         &[spec.src_col.clone(), spec.dst_col.clone()],
         codebook,
         false,
+        &native_id_type,
     )?;
     let mut encoded_predicates = Vec::with_capacity(mapped_inputs.len());
     for (node, schema, columns) in mapped_inputs {
-        let (encoded, _) = encode_relation_columns(builder, node, schema, &columns, codebook, true)?;
+        let (encoded, _) = encode_relation_columns(builder, node, schema, &columns, codebook, true, &native_id_type)?;
         encoded_predicates.push(encoded);
     }
 
@@ -111,26 +140,20 @@ pub(super) fn decode_logical_graph_result(
     mut root_schema: SchemaRef,
     codebook: nexus_query_engine::plan::NodeId,
 ) -> Result<(nexus_query_engine::plan::NodeId, SchemaRef)> {
-    let columns: &[(&str, bool)] = match spec.algorithm {
-        CugraphAlgorithm::PageRank => &[("vertex", false)],
-        CugraphAlgorithm::Bfs => &[("vertex", false), ("predecessor", true)],
-        _ => {
-            return Err(plan_error(format!(
-                "cuGraph {} does not opt in to logical string vertex mapping",
-                spec.algorithm.function_name()
-            )));
-        },
-    };
-    for (column, nullable) in columns {
-        // Every BFS predecessor is selected from an original edge occurrence,
-        // so decoding cannot exceed the endpoint domain's total payload.
-        let preserves_total_payload_bound = spec.algorithm == CugraphAlgorithm::Bfs && *column == "predecessor";
+    let contract = spec.algorithm.definition().logical_string_contract().ok_or_else(|| {
+        plan_error(format!(
+            "cuGraph {} does not opt in to logical string vertex mapping",
+            spec.algorithm.function_name()
+        ))
+    })?;
+    for column in contract.output_columns {
+        let preserves_total_payload_bound = column.multiplicity != CugraphLogicalOutputMultiplicity::OnePerVertex;
         (root, root_schema) = decode_relation_column(
             builder,
             root,
             root_schema,
-            column,
-            *nullable,
+            column.name,
+            column.nullable,
             codebook,
             preserves_total_payload_bound,
         )?;
@@ -170,6 +193,7 @@ fn encode_relation_columns(
     columns: &[String],
     codebook: nexus_query_engine::plan::NodeId,
     preserve_nulls: bool,
+    native_id_type: &DataType,
 ) -> Result<(nexus_query_engine::plan::NodeId, SchemaRef)> {
     for column in columns {
         let field = schema.field_with_name(column).map_err(|_| {
@@ -202,7 +226,7 @@ fn encode_relation_columns(
                 .filter(|field| Some(field.name().as_str()) != temporary_key)
                 .map(|current| {
                     if current.name() == column {
-                        Field::new(column, DataType::Int64, preserve_nulls)
+                        Field::new(column, native_id_type.clone(), preserve_nulls)
                     } else {
                         current.as_ref().clone()
                     }
@@ -293,78 +317,65 @@ fn decode_relation_column(
 fn logical_execution_spec(spec: &CugraphAlgorithmSpec) -> Result<CugraphAlgorithmSpec> {
     let mut execution_spec = spec.clone();
     execution_spec.output_schema = match &spec.params {
-        CugraphAlgorithmParams::PageRank(_) => stable_result_schema(CugraphAlgorithm::PageRank),
         CugraphAlgorithmParams::Bfs(params) => bfs_numeric_execution_schema(params)?,
-        _ => {
-            return Err(plan_error(format!(
-                "cuGraph {} does not opt in to logical string vertex mapping",
-                spec.algorithm.function_name()
-            )));
-        },
+        _ => result_schema_for_params(spec.algorithm, &spec.params),
     };
     Ok(execution_spec)
 }
 
-fn logical_predicate_columns(spec: &CugraphAlgorithmSpec, index: usize) -> Vec<String> {
-    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
-        return Vec::new();
+pub(super) fn logical_literal_vertex_batch(spec: &CugraphAlgorithmSpec) -> Result<Option<(RecordBatch, String)>> {
+    let (column, values): (&str, Vec<&str>) = match &spec.params {
+        CugraphAlgorithmParams::Bfs(params) => {
+            let Some(values) = params.source.literal_values() else {
+                return Ok(None);
+            };
+            if !values.first().is_some_and(CugraphBfsSourceVertex::is_utf8) {
+                return Ok(None);
+            }
+            let values = values
+                .iter()
+                .map(|value| match value {
+                    CugraphBfsSourceVertex::Utf8(value) => Ok(value.as_str()),
+                    CugraphBfsSourceVertex::Int64(_) => {
+                        Err(plan_error("string BFS source list contained a numeric value"))
+                    },
+                })
+                .collect::<Result<Vec<_>>>()?;
+            ("__source_vertex", values)
+        },
+        CugraphAlgorithmParams::Sssp(params) => match &params.source_vertex {
+            CugraphVertexSelector::Utf8(value) => ("__source_vertex", vec![value.as_str()]),
+            CugraphVertexSelector::Int64(_) => return Ok(None),
+        },
+        CugraphAlgorithmParams::BetweennessCentrality(params) => {
+            let Some(seeds) = &params.seeds else { return Ok(None) };
+            logical_betweenness_seed_values(seeds)?
+        },
+        CugraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
+            let Some(seeds) = &params.seeds else { return Ok(None) };
+            logical_betweenness_seed_values(seeds)?
+        },
+        _ => return Ok(None),
     };
-    bfs_logical_predicate_columns(params, index)
-}
-
-pub(super) fn bfs_literal_string_source_batch(spec: &CugraphAlgorithmSpec) -> Result<Option<RecordBatch>> {
-    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
-        return Ok(None);
-    };
-    let Some(values) = params.source.literal_values() else {
-        return Ok(None);
-    };
-    if !values.first().is_some_and(CugraphBfsSourceVertex::is_utf8) {
-        return Ok(None);
-    }
-    let values = values
-        .iter()
-        .map(|value| match value {
-            CugraphBfsSourceVertex::Utf8(value) => Ok(value.as_str()),
-            CugraphBfsSourceVertex::Int64(_) => Err(plan_error("string BFS source list contained a numeric value")),
-        })
-        .collect::<Result<Vec<_>>>()?;
-    let schema = Arc::new(Schema::new(vec![Field::new("__source_vertex", DataType::Utf8, false)]));
+    let schema = Arc::new(Schema::new(vec![Field::new(column, DataType::Utf8, false)]));
     RecordBatch::try_new(schema, vec![Arc::new(StringArray::from(values)) as ArrayRef])
-        .map(Some)
+        .map(|batch| Some((batch, column.to_string())))
         .map_err(DataFusionError::from)
 }
 
-pub(super) fn bfs_logical_predicate_columns(params: &CugraphBfsParams, index: usize) -> Vec<String> {
-    let source_offset = usize::from(params.source.planned_source_vertices_input());
-    if index < source_offset {
-        return match &params.source {
-            CugraphBfsSource::Relation(input) => vec![input.column.clone()],
-            _ => Vec::new(),
-        };
+fn logical_betweenness_seed_values(seeds: &CugraphBetweennessSeeds) -> Result<(&'static str, Vec<&str>)> {
+    if !seeds.vertices.first().is_some_and(CugraphVertexSelector::is_utf8) {
+        return Ok(("__seed_vertex", Vec::new()));
     }
-    let index = index - source_offset;
-    let mut expected_index = 0;
-    for input in [
-        params.predicates.include_vertices.as_ref(),
-        params.predicates.exclude_vertices.as_ref(),
-        params.predicates.target_vertices.as_ref(),
-        params.predicates.include_edge_ids.as_ref(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if index == expected_index {
-            return vec![input.column.clone()];
-        }
-        expected_index += 1;
-    }
-    if let Some(input) = &params.predicates.include_edges
-        && index == expected_index
-    {
-        return vec![input.source_col.clone(), input.destination_col.clone()];
-    }
-    Vec::new()
+    let values = seeds
+        .vertices
+        .iter()
+        .map(|vertex| match vertex {
+            CugraphVertexSelector::Utf8(value) => Ok(value.as_str()),
+            CugraphVertexSelector::Int64(_) => Err(plan_error("string betweenness seeds contained a numeric value")),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(("__seed_vertex", values))
 }
 
 fn bfs_numeric_execution_schema(params: &CugraphBfsParams) -> Result<SchemaRef> {

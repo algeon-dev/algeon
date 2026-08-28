@@ -21,6 +21,8 @@ pub use parser::parse_cugraph_algorithm_spec;
 pub use table_function::CugraphAlgoTableProvider;
 pub(crate) use table_function::is_feature_disabled_execution_plan;
 pub use table_function::{cugraph_table_functions, register_cugraph_udtfs};
+#[cfg(feature = "cugraph")]
+pub(crate) use types::CugraphLogicalOutputMultiplicity;
 pub use types::{
     CUGRAPH_BETWEENNESS_CENTRALITY_FUNCTION, CUGRAPH_BFS_FUNCTION, CUGRAPH_CORE_NUMBER_FUNCTION,
     CUGRAPH_COSINE_FUNCTION, CUGRAPH_DEGREES_ALL_FUNCTION, CUGRAPH_ECG_FUNCTION,
@@ -42,11 +44,12 @@ pub use types::{
     CugraphOutDegreesAllParams, CugraphPageRankParams, CugraphPageRankPersonalizationTable,
     CugraphPersonalizedPageRankParams, CugraphSccParams, CugraphSimilarityParams, CugraphSpectralClusteringParams,
     CugraphSqlConfig, CugraphSsspParams, CugraphTableReference, CugraphTriangleCountAllParams, CugraphVertexPairTable,
-    CugraphWccParams, GpuIslandHostBoundaryConfig, bfs_result_schema, result_schema_for_params, stable_result_schema,
+    CugraphVertexSelector, CugraphWccParams, GpuIslandHostBoundaryConfig, bfs_result_schema, result_schema_for_params,
+    stable_result_schema,
 };
 pub(crate) use types::{
-    CugraphVertexIdDomain, result_schema_for_vertex_domain, validate_similarity_pair_table_schema,
-    validate_vertex_id_domain_support_for_call, vertex_id_domain_for_call,
+    CugraphVertexIdDomain, PredicateSourceColumnRole, PredicateSourceSpec, result_schema_for_vertex_domain,
+    validate_similarity_pair_table_schema, validate_vertex_id_domain_support_for_call, vertex_id_domain_for_call,
 };
 
 use crate::error::{Error, ErrorCode};
@@ -83,20 +86,28 @@ fn unsupported_option_error(message: impl Into<String>) -> DataFusionError {
         .into()
 }
 
-fn validate_bfs_logical_edge_id_capability(spec: &CugraphAlgorithmSpec, logical_mapping: bool) -> Result<()> {
-    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
+fn validate_logical_edge_id_capability(spec: &CugraphAlgorithmSpec, logical_mapping: bool) -> Result<()> {
+    if !logical_mapping {
         return Ok(());
+    }
+    let (include_edge_ids, include_edge_id_col) = match &spec.params {
+        CugraphAlgorithmParams::Bfs(params) => (
+            params.predicates.include_edge_ids.is_some(),
+            params.predicates.include_edges.as_ref().is_some_and(|input| input.edge_id_col.is_some()),
+        ),
+        _ => (false, false),
     };
-    if !logical_mapping || (spec.edge_id_col.is_none() && params.predicates.include_edge_ids.is_none()) {
+    if spec.edge_id_col.is_none() && !include_edge_ids && !include_edge_id_col {
         return Ok(());
     }
     Err(Error::new(
         ErrorCode::RequiredGpuOperationUnsupported,
         "datafusion_nexus.cugraph_sql.logical_mapping.preflight",
-        "cuGraph BFS logical vertex-id mapping does not support edge-id inputs",
+        format!("cuGraph {} logical vertex-id mapping does not support edge-id inputs", spec.algorithm.function_name()),
     )
     .with_fact("edge_id_col", spec.edge_id_col.is_some())
-    .with_fact("include_edge_ids", params.predicates.include_edge_ids.is_some())
+    .with_fact("include_edge_ids", include_edge_ids)
+    .with_fact("include_edge_id_col", include_edge_id_col)
     .into())
 }
 

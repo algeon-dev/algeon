@@ -860,7 +860,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_eq!(
         spec.params,
         CugraphAlgorithmParams::Sssp(datafusion_nexus::cugraph_sql::CugraphSsspParams {
-            source_vertex: 5,
+            source_vertex: datafusion_nexus::cugraph_sql::CugraphVertexSelector::Int64(5),
             cutoff: Some(10.5)
         }),
     );
@@ -880,7 +880,7 @@ fn cugraph_sql_planning_parses_algorithm_options() {
     assert_eq!(
         spec.params,
         CugraphAlgorithmParams::Sssp(datafusion_nexus::cugraph_sql::CugraphSsspParams {
-            source_vertex: 5,
+            source_vertex: datafusion_nexus::cugraph_sql::CugraphVertexSelector::Int64(5),
             cutoff: None
         }),
     );

@@ -543,7 +543,7 @@ async fn cugraph_bfs_table_function_scan_rejects_mixed_logical_vertex_domains() 
         .unwrap();
     let error = df.create_physical_plan().await.unwrap_err().to_string();
     assert!(
-        error.contains("string source_vertex requires a string source column"),
+        error.contains("string vertex selector requires a string source column"),
         "unexpected planning error: {error}"
     );
 }

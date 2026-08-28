@@ -47,7 +47,7 @@ pub use structure::{
 };
 pub use traversal::{
     GraphBfsEndpointPolicy, GraphBfsParams, GraphBfsPredicateInputs, GraphEdgePredicateInput, GraphPredicateInput,
-    GraphSsspParams,
+    GraphSsspParams, GraphSsspSource,
 };
 
 /// Algorithm-specific parameters.
@@ -123,6 +123,9 @@ impl GraphAlgorithmParams {
             Self::Bfs(params) => Box::new(params.side_input_node_ids()),
             Self::PersonalizedPageRank(params) => Box::new(params.side_input_node_ids()),
             Self::Similarity(params) => Box::new(params.side_input_node_ids()),
+            Self::Sssp(params) => Box::new(params.side_input_node_ids()),
+            Self::BetweennessCentrality(params) => Box::new(params.side_input_node_ids()),
+            Self::EdgeBetweennessCentrality(params) => Box::new(params.side_input_node_ids()),
             _ => Box::new(std::iter::empty()),
         }
     }

@@ -54,7 +54,7 @@ use nexus_query_engine::{
     observability::RuntimeObservationConfig,
     plan::{
         GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBetweennessCentralityParams,
-        GraphBetweennessSeeds, GraphBfsEndpointPolicy, GraphBfsParams,
+        GraphBetweennessSeeds as NativeGraphBetweennessSeeds, GraphBfsEndpointPolicy, GraphBfsParams,
         GraphBfsPredicateInputs as NativeGraphBfsPredicateInputs, GraphConstructionOptions, GraphConstructionPolicy,
         GraphCoreNumberParams, GraphDegreesAllParams, GraphEcgParams, GraphEdgeBetweennessCentralityParams,
         GraphEdgeColumnBindings, GraphEdgePredicateInput as NativeGraphEdgePredicateInput,
@@ -64,9 +64,9 @@ use nexus_query_engine::{
         GraphPageRankPersonalizationInput as NativeGraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams,
         GraphPredicateInput as NativeGraphPredicateInput, GraphResidencyDescriptor, GraphResidencyPlanAnalysis,
         GraphSccParams, GraphSourceFingerprintBypassReason, GraphSpectralClusteringParams, GraphSsspParams,
-        GraphTriangleCountAllParams, GraphWccParams, JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, PlanNode,
-        ProjectionOutput, QueryPlanBuilder, WindowFunction, WindowSpec, graph_residency_descriptor_for_edge_plan,
-        planned_resident_graph_key,
+        GraphSsspSource, GraphTriangleCountAllParams, GraphWccParams, JoinKey, JoinOutputColumn, JoinSide, JoinSpec,
+        JoinType, PlanNode, ProjectionOutput, QueryPlanBuilder, WindowFunction, WindowSpec,
+        graph_residency_descriptor_for_edge_plan, planned_resident_graph_key,
     },
     runtime::{
         ExecutionContext,
@@ -76,9 +76,10 @@ use nexus_query_engine::{
 };
 
 use super::{
-    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsOutputMode, CugraphBfsParams,
-    CugraphBfsSource, CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphKCoreDegreeType,
-    GpuIslandHostBoundaryConfig, plan_error, stable_result_schema, vertex_id_domain_for_call,
+    CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBetweennessSeeds, CugraphBfsOutputMode,
+    CugraphBfsParams, CugraphBfsSourceVertex, CugraphGraphConstructionPolicy, CugraphKCoreDegreeType,
+    CugraphLogicalOutputMultiplicity, CugraphVertexSelector, GpuIslandHostBoundaryConfig, PredicateSourceColumnRole,
+    plan_error, result_schema_for_params, vertex_id_domain_for_call,
 };
 use crate::{
     error::{Error, ErrorCode},

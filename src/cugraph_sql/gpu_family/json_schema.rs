@@ -3,7 +3,7 @@ use serde_json::{Map, Value, json};
 
 use super::super::{
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsPredicateInputs, CugraphBfsSource,
-    CugraphBfsSourceVertex, CugraphGraphOptions, CugraphSqlConfig, stable_result_schema,
+    CugraphBfsSourceVertex, CugraphGraphOptions, CugraphSqlConfig, CugraphVertexSelector, stable_result_schema,
 };
 
 pub(super) fn schema_json(schema: &SchemaRef) -> String {
@@ -23,6 +23,26 @@ pub(super) fn schema_json_value(schema: &SchemaRef) -> Value {
                 })
             })
             .collect::<Vec<_>>()
+    })
+}
+
+pub(super) fn vertex_id_contract_json(algorithm: CugraphAlgorithm) -> Value {
+    let numeric_endpoint_types = match algorithm.native_algorithm().vertex_id_type_support() {
+        nexus_query_engine::plan::GraphVertexIdTypeSupport::Int32OrInt64 => json!(["Int32", "Int64"]),
+        nexus_query_engine::plan::GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType => json!(["Int32"]),
+    };
+    let logical_string = algorithm.definition().logical_string_contract();
+    json!({
+        "numeric_endpoint_types": numeric_endpoint_types,
+        "logical_string_endpoint_types": if logical_string.is_some() {
+            json!(["Utf8", "LargeUtf8", "Utf8View"])
+        } else {
+            json!([])
+        },
+        "logical_string_output_type": logical_string.map(|_| "Utf8"),
+        "native_logical_mapping_type": logical_string.map(|contract| format!("{:?}", contract.native_id_type.data_type())),
+        "edge_id_supported_for_logical_string": false,
+        "call_specific_authority": "gpu_validate_call",
     })
 }
 
@@ -60,8 +80,8 @@ pub(super) fn options_schema_json(algorithm: CugraphAlgorithm, config: &CugraphS
         schema.as_object_mut().expect("options schema is an object").insert(
             "type_aliases".to_string(),
             json!({
-                "vertex_domain": "same Int32 or Int64 domain as src_col and dst_col",
-                "vertex_pairs_domain": "same physical Int32 or Int64 dtype as vertex_domain"
+                "vertex_domain": "same numeric or logical string domain as src_col and dst_col",
+                "vertex_pairs_domain": "same Int32/Int64 dtype for numeric graphs; any Utf8/LargeUtf8/Utf8View member for logical string graphs"
             }),
         );
     }
@@ -550,10 +570,10 @@ fn betweenness_options_schema_json(
         "seeds".to_string(),
         json!({
             "scope": "algorithm",
-            "type": "List<Int64>|null",
+            "type": "List<Int64>|List<Utf8>|null",
             "default": null,
             "mutually_exclusive_with": "k",
-            "description": "Explicit seed vertices for approximate betweenness. Null requests exact all-vertex betweenness unless k is set."
+            "description": "Explicit homogeneous integer or string seed vertices for approximate betweenness. Null requests exact all-vertex betweenness unless k is set."
         }),
     );
     object.insert(
@@ -786,7 +806,17 @@ pub(super) fn result_schemas_json(algorithm: CugraphAlgorithm) -> String {
             }),
         )
     } else {
-        ("default", json!({"default": schema_json_value(&stable_result_schema(algorithm))}))
+        let mut schema = schema_json_value(&stable_result_schema(algorithm));
+        if let Some(contract) = algorithm.definition().logical_string_contract()
+            && let Some(fields) = schema.get_mut("fields").and_then(Value::as_array_mut)
+        {
+            for field in fields {
+                if contract.output_columns.iter().any(|column| field["name"] == column.name) {
+                    field["data_type"] = json!("Int64|Utf8");
+                }
+            }
+        }
+        ("default", json!({"default": schema}))
     };
     json!({
         "default_schema": default_schema,
@@ -894,12 +924,14 @@ fn params_json(params: &CugraphAlgorithmParams) -> Value {
             json!({"epsilon": params.epsilon, "max_iterations": params.max_iterations, "normalize": params.normalize})
         },
         CugraphAlgorithmParams::BetweennessCentrality(params) => {
-            json!({"seeds": params.seeds.as_ref().map(|seeds| &seeds.vertices), "k": params.k, "normalized": params.normalized, "include_endpoints": params.include_endpoints, "exact_vertex_threshold": params.exact_vertex_threshold})
+            json!({"seeds": params.seeds.as_ref().map(|seeds| seeds.vertices.iter().map(vertex_selector_json).collect::<Vec<_>>()), "k": params.k, "normalized": params.normalized, "include_endpoints": params.include_endpoints, "exact_vertex_threshold": params.exact_vertex_threshold})
         },
         CugraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
-            json!({"seeds": params.seeds.as_ref().map(|seeds| &seeds.vertices), "k": params.k, "normalized": params.normalized, "exact_vertex_threshold": params.exact_vertex_threshold})
+            json!({"seeds": params.seeds.as_ref().map(|seeds| seeds.vertices.iter().map(vertex_selector_json).collect::<Vec<_>>()), "k": params.k, "normalized": params.normalized, "exact_vertex_threshold": params.exact_vertex_threshold})
         },
-        CugraphAlgorithmParams::Sssp(params) => json!({"source_vertex": params.source_vertex, "cutoff": params.cutoff}),
+        CugraphAlgorithmParams::Sssp(params) => {
+            json!({"source_vertex": vertex_selector_json(&params.source_vertex), "cutoff": params.cutoff})
+        },
         CugraphAlgorithmParams::CoreNumber(params) => json!({"degree_type": params.degree_type.as_str()}),
         CugraphAlgorithmParams::KCore(params) => json!({"k": params.k, "degree_type": params.degree_type.as_str()}),
         CugraphAlgorithmParams::Leiden(params) => {
@@ -971,6 +1003,13 @@ fn source_vertex_json(source_vertex: &CugraphBfsSourceVertex) -> Value {
     match source_vertex {
         CugraphBfsSourceVertex::Int64(value) => json!(value),
         CugraphBfsSourceVertex::Utf8(value) => json!(value),
+    }
+}
+
+fn vertex_selector_json(selector: &CugraphVertexSelector) -> Value {
+    match selector {
+        CugraphVertexSelector::Int64(value) => json!(value),
+        CugraphVertexSelector::Utf8(value) => json!(value),
     }
 }
 

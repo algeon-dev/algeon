@@ -34,6 +34,8 @@ pub(super) fn argument_descriptions_json(algorithm: CugraphAlgorithm) -> String 
                 "required": true,
                 "selector_policy": "literal scalar/list source selector, or NULL with source_vertices_table/source_vertex_col options"
             })
+        } else if algorithm.definition().supports_logical_string_vertices() {
+            json!({"name": "source_vertex", "type": "Int64|Utf8", "required": true})
         } else {
             json!({"name": "source_vertex", "type": "Int64", "required": true})
         };
@@ -224,7 +226,7 @@ pub(super) fn limitations_json(algorithm: CugraphAlgorithm) -> String {
         limitations.extend([
             "similarity is explicit-pair only; all-pairs candidate generation and all-pairs top-k search are not exposed",
             "options_json must name vertex_pairs_table, first_vertex_col, and second_vertex_col",
-            "candidate-pair columns must share the same Int32 or Int64 dtype and match the graph vertex domain",
+            "candidate-pair columns must match the graph vertex domain; logical string graphs accept Utf8, LargeUtf8, or Utf8View independently per column",
             "null candidate-pair values are rejected at execution and are never dropped",
             "candidate pairs are a multiset: duplicate, reversed, and self pairs remain distinct output rows",
             "result rows have no global ordering; use ORDER BY when order is required",

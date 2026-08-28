@@ -57,19 +57,23 @@ These types do not have native execution support today:
 :::warning[cuGraph edge columns are stricter]
 cuGraph table functions have a narrower edge-table contract:
 
-- Source and destination vertex columns are normally `Int32` or `Int64`, and
-  both columns must use the same dtype.
-- `cugraph_bfs` alone also accepts string (`Utf8`, `LargeUtf8`, `Utf8View`)
-  source and destination columns through logical vertex-id mapping; every
-  other algorithm requires integer vertex columns.
-- `cugraph_minimum_spanning_tree` and
-  `cugraph_spectral_modularity_maximization` use cuGraph C API edge-type
-  dispatch and accept `Int32` vertex columns only.
+- Source and destination vertex columns must use one of the numeric types
+  declared for the function in the generated [cuGraph vertex ID support
+  matrix](../cugraph/vertex-id-support.mdx), or must both belong to the
+  logical string family (`Utf8`, `LargeUtf8`, `Utf8View`) when that function
+  declares logical string support.
+- Logical string endpoints share one codebook even when their physical Arrow
+  string types differ. Vertex-identity output columns are canonicalized to
+  `Utf8`; numeric scores, distances, counts, coordinates, and opaque labels
+  keep their function-defined numeric types.
+- Some legacy cuGraph dispatch paths remain `Int32`-only. The generated
+  matrix is the source for that per-function distinction; this overview does
+  not maintain a second algorithm inventory.
 - Edge weight columns, when supplied, must be `Float32` or `Float64`.
-- `edge_id_col`, when supplied, must use the same vertex-id domain as the edge
-  endpoints. BFS logical string vertex mapping does not support `edge_id_col`
-  or the edge-id predicate options (`include_edge_ids_*`,
-  `include_edge_id_col`).
+- `edge_id_col`, when supplied for a numeric graph, must use the same numeric
+  vertex-id domain as the edge endpoints. Logical string vertex mapping does
+  not support `edge_id_col` or edge-ID predicate options such as
+  `include_edge_ids_*` and `include_edge_id_col`.
 :::
 
 The unified SQL metadata functions expose the same contract at runtime. Use

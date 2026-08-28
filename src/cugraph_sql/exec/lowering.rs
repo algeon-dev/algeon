@@ -221,7 +221,7 @@ pub(super) fn cugraph_schema_query_plan(
         })
         .collect::<Vec<_>>();
     let logical_mapping = graph_uses_logical_mapping(spec, &edge_schema)?;
-    crate::cugraph_sql::validate_bfs_logical_edge_id_capability(spec, logical_mapping)?;
+    crate::cugraph_sql::validate_logical_edge_id_capability(spec, logical_mapping)?;
     let (execution_spec, graph_input, graph_edge_schema, graph_predicates, codebook) = if logical_mapping {
         let mapping = add_logical_mapping_plan(
             &mut builder,
@@ -563,7 +563,7 @@ pub(super) fn native_algorithm_params(
         }),
         CugraphAlgorithmParams::BetweennessCentrality(params) => {
             GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
-                seeds: params.seeds.as_ref().map(|seeds| GraphBetweennessSeeds::I64(seeds.vertices.clone())),
+                seeds: params.seeds.as_ref().map(|seeds| native_betweenness_seeds(seeds, predicate_nodes)),
                 k: params.k,
                 normalized: params.normalized,
                 include_endpoints: params.include_endpoints,
@@ -572,14 +572,21 @@ pub(super) fn native_algorithm_params(
         },
         CugraphAlgorithmParams::EdgeBetweennessCentrality(params) => {
             GraphAlgorithmParams::EdgeBetweennessCentrality(GraphEdgeBetweennessCentralityParams {
-                seeds: params.seeds.as_ref().map(|seeds| GraphBetweennessSeeds::I64(seeds.vertices.clone())),
+                seeds: params.seeds.as_ref().map(|seeds| native_betweenness_seeds(seeds, predicate_nodes)),
                 k: params.k,
                 normalized: params.normalized,
                 exact_vertex_threshold: params.exact_vertex_threshold,
             })
         },
         CugraphAlgorithmParams::Sssp(params) => {
-            GraphAlgorithmParams::Sssp(GraphSsspParams { source_vertex: params.source_vertex, cutoff: params.cutoff })
+            let source_vertex = match &params.source_vertex {
+                CugraphVertexSelector::Int64(value) => GraphSsspSource::I64(*value),
+                CugraphVertexSelector::Utf8(_) => GraphSsspSource::Input(NativeGraphPredicateInput::new(
+                    predicate_nodes.first().copied().expect("SSSP source node missing"),
+                    "__source_vertex",
+                )),
+            };
+            GraphAlgorithmParams::Sssp(GraphSsspParams { source_vertex, cutoff: params.cutoff })
         },
         CugraphAlgorithmParams::DegreesAll(_) => GraphAlgorithmParams::DegreesAll(GraphDegreesAllParams),
         CugraphAlgorithmParams::InDegreesAll(_) => GraphAlgorithmParams::InDegreesAll(GraphInDegreesAllParams),
@@ -652,6 +659,32 @@ pub(super) fn native_algorithm_params(
                 ),
             ))
         },
+    }
+}
+
+fn native_betweenness_seeds(
+    seeds: &CugraphBetweennessSeeds,
+    predicate_nodes: &[nexus_query_engine::plan::NodeId],
+) -> NativeGraphBetweennessSeeds {
+    match seeds.vertices.first() {
+        Some(CugraphVertexSelector::Int64(_)) => NativeGraphBetweennessSeeds::I64(
+            seeds
+                .vertices
+                .iter()
+                .map(|vertex| match vertex {
+                    CugraphVertexSelector::Int64(value) => *value,
+                    CugraphVertexSelector::Utf8(_) => unreachable!("parser rejects mixed betweenness seed domains"),
+                })
+                .collect(),
+        ),
+        Some(CugraphVertexSelector::Utf8(_)) => NativeGraphBetweennessSeeds::Input {
+            input: NativeGraphPredicateInput::new(
+                predicate_nodes.first().copied().expect("betweenness seed node missing"),
+                "__seed_vertex",
+            ),
+            row_count_upper_bound: seeds.vertices.len() as u64,
+        },
+        None => unreachable!("parser rejects empty betweenness seed lists"),
     }
 }
 

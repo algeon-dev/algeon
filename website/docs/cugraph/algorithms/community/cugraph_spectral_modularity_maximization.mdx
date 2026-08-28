@@ -24,6 +24,17 @@ cugraph_spectral_modularity_maximization(table_name [, src_col, dst_col [, weigh
 
 The first positional argument names a registered edge table or view (the `edges` role). Parenthesized relation subqueries are not accepted; metadata validation uses the same registered name.
 
+## Vertex ID types
+
+The `edges` relation declares the accepted vertex-ID domains. Numeric calls preserve the existing numeric schema. When logical string support is declared, `Utf8`, `LargeUtf8`, and `Utf8View` endpoint columns share one logical domain; their vertex-identity outputs are canonicalized to `Utf8`.
+
+| Domain | Accepted endpoint inputs | Output contract |
+| --- | --- | --- |
+| Numeric edge endpoints | `Int32` | Vertex identity output columns remain numeric. |
+| Logical string edge endpoints | Not supported | No canonical string output is declared. |
+
+This is a legacy Int32-only vertex-ID contract; logical string endpoints are not supported.
+
 ## Scalar arguments & JSON options
 
 ### Positional scalar arguments
@@ -77,7 +88,7 @@ Dry-run validation checks registered relation metadata, column presence, static 
 ```sql
 SELECT * FROM gpu_validate_call(
   'cugraph_spectral_modularity_maximization',
-  '{"options":{"dst_col":"dst","src_col":"src"},"relations":{"edges":{"table":"target_edges"}},"schema_version":1}'
+  '{"schema_version":1,"relations":{"edges":{"table":"target_edges"}},"options":{"src_col":"src","dst_col":"dst"}}'
 );
 ```
 

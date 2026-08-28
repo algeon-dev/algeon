@@ -10,7 +10,8 @@ use super::{
     CugraphBfsOutputOptions, CugraphBfsPredicateInputs, CugraphBfsSource, CugraphBfsSourceVertex,
     CugraphGraphConstructionPolicy, CugraphGraphEdgePredicateTable, CugraphGraphOptions, CugraphGraphPredicateTable,
     CugraphKCoreDegreeType, CugraphPageRankParams, CugraphSimilarityParams, CugraphSqlConfig, CugraphTableReference,
-    CugraphVertexPairTable, literal_string_arg, plan_error, result_schema_for_params, unsupported_option_error,
+    CugraphVertexPairTable, CugraphVertexSelector, literal_string_arg, plan_error, result_schema_for_params,
+    unsupported_option_error,
 };
 
 pub fn parse_cugraph_algorithm_spec(
@@ -834,12 +835,28 @@ fn parse_betweenness_seeds(value: &Value, key: &str) -> Result<Option<CugraphBet
     if value.is_null() {
         return Ok(None);
     }
-    let values =
-        value.as_array().ok_or_else(|| plan_error(format!("cuGraph option '{key}' must be an integer array")))?;
+    let values = value
+        .as_array()
+        .ok_or_else(|| plan_error(format!("cuGraph option '{key}' must be an integer or string array")))?;
     if values.is_empty() {
         return Err(plan_error("betweenness seeds must not be empty"));
     }
-    let vertices = values.iter().map(|value| json_i64(value, key)).collect::<Result<Vec<_>>>()?;
+    let vertices = values
+        .iter()
+        .map(|value| {
+            if let Some(value) = value.as_i64() {
+                Ok(CugraphVertexSelector::Int64(value))
+            } else if let Some(value) = value.as_str() {
+                Ok(CugraphVertexSelector::Utf8(value.to_string()))
+            } else {
+                Err(plan_error(format!("cuGraph option '{key}' entries must be integers or strings")))
+            }
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let string_domain = vertices.first().is_some_and(CugraphVertexSelector::is_utf8);
+    if vertices.iter().any(|vertex| vertex.is_utf8() != string_domain) {
+        return Err(plan_error("betweenness seeds must not mix integer and string vertices"));
+    }
     Ok(Some(CugraphBetweennessSeeds { vertices }))
 }
 
@@ -1213,7 +1230,7 @@ fn literal_source_vertex_value(
             .map(|value| Some(CugraphBfsSourceVertex::Int64(value)))
             .map_err(|_| plan_error("source_vertex exceeds i64::MAX")),
         ScalarValue::Utf8(Some(value)) | ScalarValue::LargeUtf8(Some(value)) | ScalarValue::Utf8View(Some(value))
-            if algorithm == CugraphAlgorithm::Bfs =>
+            if matches!(algorithm, CugraphAlgorithm::Bfs | CugraphAlgorithm::Sssp) =>
         {
             Ok(Some(CugraphBfsSourceVertex::Utf8(value.clone())))
         },
@@ -1288,7 +1305,10 @@ mod tests {
         let CugraphAlgorithmParams::BetweennessCentrality(params) = spec.params else {
             panic!("expected betweenness params");
         };
-        assert_eq!(params.seeds.expect("seeds").vertices, vec![0, 2, 4]);
+        assert_eq!(
+            params.seeds.expect("seeds").vertices,
+            vec![CugraphVertexSelector::Int64(0), CugraphVertexSelector::Int64(2), CugraphVertexSelector::Int64(4)]
+        );
         assert!(!params.normalized);
         assert!(params.include_endpoints);
         assert_eq!(params.exact_vertex_threshold, 7);

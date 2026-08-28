@@ -70,7 +70,7 @@ pub(super) fn graph_algorithm_parameters(params: &crate::plan::GraphAlgorithmPar
         ),
         crate::plan::GraphAlgorithmParams::Sssp(params) => format!(
             "source_vertex={},cutoff={}",
-            params.source_vertex,
+            graph_sssp_source_label(&params.source_vertex),
             params.cutoff.map_or_else(|| "none".to_string(), |v| v.to_string()),
         ),
         crate::plan::GraphAlgorithmParams::DegreesAll(_) => String::new(),
@@ -133,7 +133,23 @@ pub(super) fn graph_algorithm_parameters(params: &crate::plan::GraphAlgorithmPar
 
 #[cfg(feature = "cugraph")]
 fn graph_betweenness_seeds_label(seeds: Option<&crate::plan::GraphBetweennessSeeds>) -> String {
-    seeds.map_or_else(|| "all".to_string(), |seeds| seeds.len().to_string())
+    seeds.map_or_else(
+        || "all".to_string(),
+        |seeds| match seeds {
+            crate::plan::GraphBetweennessSeeds::I64(values) => values.len().to_string(),
+            crate::plan::GraphBetweennessSeeds::Input { input, row_count_upper_bound } => {
+                format!("input:{}:{}:rows<={row_count_upper_bound}", input.input, input.column)
+            },
+        },
+    )
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_sssp_source_label(source: &crate::plan::GraphSsspSource) -> String {
+    match source {
+        crate::plan::GraphSsspSource::I64(value) => value.to_string(),
+        crate::plan::GraphSsspSource::Input(input) => format!("input:{}:{}", input.input, input.column),
+    }
 }
 
 #[cfg(feature = "cugraph")]

@@ -1,0 +1,44 @@
+---
+sidebar_position: 2
+description: cuGraph vertex ID input and output contracts generated from the unified GPU catalog.
+---
+
+{/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}
+
+# cuGraph Vertex ID Support
+
+This matrix is generated from each function descriptor’s structured `edges.vertex_id_contract`. It is the authoritative overview of numeric endpoint inputs, logical string endpoint inputs, canonical string output, side-input limitations, and legacy Int32-only dispatch.
+
+Logical string input means any `Utf8`, `LargeUtf8`, or `Utf8View` edge endpoint. The physical string types may be mixed within one graph call; vertex-identity outputs use the declared canonical string type. Numeric endpoint requirements remain function-specific and are not widened by logical string support.
+
+| Function | Numeric endpoint types | Logical string endpoint types | Canonical string output | Logical side-input limitation | Legacy Int32-only |
+| --- | --- | --- | --- | --- | --- |
+| [Betweenness Centrality](./algorithms/centrality/cugraph_betweenness_centrality.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs | No |
+| [BFS](./algorithms/traversal/cugraph_bfs.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs; string logical vertex-domain BFS rejects edge_id_col, include_edge_ids_*, and include_edge_id_col | No |
+| [Core Number](./algorithms/structure/cugraph_core_number.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs | No |
+| [Cosine](./algorithms/similarity/cugraph_cosine.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs; candidate-pair columns must match the graph vertex domain; logical string graphs accept Utf8, LargeUtf8, or Utf8View independently per column | No |
+| [Degrees All](./algorithms/structure/cugraph_degrees_all.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs | No |
+| [ECG](./algorithms/community/cugraph_ecg.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs | No |
+| [Edge Betweenness Centrality](./algorithms/centrality/cugraph_edge_betweenness_centrality.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs | No |
+| [Eigenvector Centrality](./algorithms/centrality/cugraph_eigenvector_centrality.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs | No |
+| [ForceAtlas2](./algorithms/layout/cugraph_force_atlas2.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs | No |
+| [HITS](./algorithms/centrality/cugraph_hits.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs | No |
+| [In Degrees All](./algorithms/structure/cugraph_in_degrees_all.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs | No |
+| [Jaccard](./algorithms/similarity/cugraph_jaccard.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs; candidate-pair columns must match the graph vertex domain; logical string graphs accept Utf8, LargeUtf8, or Utf8View independently per column | No |
+| [K-Core](./algorithms/structure/cugraph_k_core.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs | No |
+| [Katz Centrality](./algorithms/centrality/cugraph_katz_centrality.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs | No |
+| [Leiden](./algorithms/community/cugraph_leiden.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs | No |
+| [Louvain](./algorithms/community/cugraph_louvain.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs | No |
+| [Minimum Spanning Tree](./algorithms/connectivity/cugraph_minimum_spanning_tree.mdx) | `Int32` | Not supported | — | Not applicable | Yes |
+| [Out Degrees All](./algorithms/structure/cugraph_out_degrees_all.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs | No |
+| [Overlap](./algorithms/similarity/cugraph_overlap.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs; candidate-pair columns must match the graph vertex domain; logical string graphs accept Utf8, LargeUtf8, or Utf8View independently per column | No |
+| [PageRank](./algorithms/centrality/cugraph_pagerank.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs | No |
+| [Personalized PageRank](./algorithms/centrality/cugraph_personalized_pagerank.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs | No |
+| [Sorensen](./algorithms/similarity/cugraph_sorensen.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs; candidate-pair columns must match the graph vertex domain; logical string graphs accept Utf8, LargeUtf8, or Utf8View independently per column | No |
+| [Spectral Modularity Maximization](./algorithms/community/cugraph_spectral_modularity_maximization.mdx) | `Int32` | Not supported | — | Not applicable | Yes |
+| [SSSP](./algorithms/traversal/cugraph_sssp.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs | No |
+| [Strongly Connected Components](./algorithms/connectivity/cugraph_strongly_connected_components.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs | No |
+| [Triangle Count All](./algorithms/structure/cugraph_triangle_count_all.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs | No |
+| [Weakly Connected Components](./algorithms/connectivity/cugraph_weakly_connected_components.mdx) | `Int32`, `Int64` | `Utf8`, `LargeUtf8`, `Utf8View` | `Utf8` | edge ID columns and edge-ID predicate side inputs are not supported for logical string graphs | No |
+
+Use `gpu_describe_function` for the full descriptor and `gpu_validate_call` for the concrete call-specific schema and side-input validation.

@@ -163,8 +163,38 @@ impl GraphEdgePredicateInput {
 #[derive(Debug, Clone, PartialEq)]
 pub struct GraphSsspParams {
     /// Source vertex for the SSSP traversal.
-    pub source_vertex: i64,
+    pub source_vertex: GraphSsspSource,
     /// Maximum edge-weight sum to consider. `None` means no cutoff.
     /// Must be >= 0 when set.
     pub cutoff: Option<f64>,
+}
+
+/// SSSP source binding. Numeric calls retain the direct scalar path; logical
+/// string calls bind one already-encoded vertex side input.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraphSsspSource {
+    /// Direct numeric source vertex.
+    I64(i64),
+    /// One-row encoded source-vertex input.
+    Input(GraphPredicateInput),
+}
+
+impl std::fmt::Display for GraphSsspSource {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::I64(value) => write!(formatter, "{value}"),
+            Self::Input(input) => write!(formatter, "input:{}:{}", input.input, input.column),
+        }
+    }
+}
+
+impl GraphSsspParams {
+    /// Visits the source side-input node when this call uses one.
+    pub fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+        match &self.source_vertex {
+            GraphSsspSource::I64(_) => None,
+            GraphSsspSource::Input(input) => Some(input.input),
+        }
+        .into_iter()
+    }
 }
