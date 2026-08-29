@@ -14,17 +14,23 @@ use nexus_query_engine::expr::{BinaryOp, Expr, LiteralValue};
 /// column-name arrays.
 pub const SOURCE_UNIQUE_KEYS_METADATA_KEY: &str = "datafusion_nexus.source_unique_keys.v2";
 
-/// Returns a copy of `schema` with the declared source unique-key groups.
+/// Returns a copy of `schema` with the declared source unique-key groups
+/// recorded on the key columns' fields.
+///
+/// Unique-key evidence is source-scoped, so it is carried only on fields. A
+/// schema-level entry would share one key across every source in a plan:
+/// `build_join_schema` concatenates both sides' schema metadata and keeps the
+/// last writer, so a join between two keyed sources silently replaces one
+/// source's evidence with the other's. That also breaks physical optimizer
+/// rules that declare `schema_check()`, which reject any schema metadata
+/// change across the rule.
 ///
 /// Column names are preserved exactly, including whitespace and punctuation.
 /// Empty key groups are omitted because they cannot prove a row bound.
 pub fn schema_with_source_unique_keys(schema: &Schema, unique_keys: &[&[&str]]) -> Schema {
-    let encoded = encode_source_unique_keys(unique_keys);
-    if encoded.is_empty() {
+    if encode_source_unique_keys(unique_keys).is_empty() {
         return schema.clone();
     }
-    let mut metadata = schema.metadata().clone();
-    metadata.insert(SOURCE_UNIQUE_KEYS_METADATA_KEY.to_string(), encoded);
     let fields = schema
         .fields()
         .iter()
@@ -44,7 +50,7 @@ pub fn schema_with_source_unique_keys(schema: &Schema, unique_keys: &[&[&str]]) 
             field
         })
         .collect::<Vec<_>>();
-    Schema::new_with_metadata(fields, metadata)
+    Schema::new_with_metadata(fields, schema.metadata().clone())
 }
 
 pub(crate) fn reader_predicate_proves_source_at_most_one_row(schemas: &[&Schema], predicate: &Expr) -> bool {
@@ -247,6 +253,34 @@ mod tests {
         let predicate = Expr::binary(Expr::column("id"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(7)));
 
         assert!(reader_predicate_proves_source_at_most_one_row(&[&schema], &predicate));
+    }
+
+    #[test]
+    fn source_unique_key_metadata_survives_join_without_replacing_another_source() {
+        use datafusion::{common::JoinType, physical_plan::joins::utils::build_join_schema};
+
+        let date_dim = schema_with_source_unique_keys(
+            &Schema::new(vec![Field::new("d_date_sk", DataType::Int64, false)]),
+            &[&["d_date_sk"]],
+        );
+        let store = schema_with_source_unique_keys(
+            &Schema::new(vec![Field::new("s_store_sk", DataType::Int64, false)]),
+            &[&["s_store_sk"]],
+        );
+
+        // `build_join_schema` concatenates schema metadata and keeps the last
+        // writer, so a shared schema-level key would drop one side's evidence
+        // and change the joined metadata with join orientation.
+        for (left, right) in [(&date_dim, &store), (&store, &date_dim)] {
+            let (joined, _) = build_join_schema(left, right, &JoinType::Inner);
+            assert_eq!(joined.metadata().get(SOURCE_UNIQUE_KEYS_METADATA_KEY), None);
+        }
+
+        let (joined, _) = build_join_schema(&date_dim, &store, &JoinType::Inner);
+        let date_key = Expr::binary(Expr::column("d_date_sk"), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(7)));
+        let store_key = Expr::binary(Expr::column("s_store_sk"), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(9)));
+        assert!(reader_predicate_proves_source_at_most_one_row(&[&joined], &date_key));
+        assert!(reader_predicate_proves_source_at_most_one_row(&[&joined], &store_key));
     }
 
     #[test]
