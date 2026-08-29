@@ -12,6 +12,10 @@ readme = "../README.md"
 keywords = ["cugraph", "cuda", "gpu", "graph", "rapids"]
 build = "build.rs"
 
+[package.metadata.docs.rs]
+default-target = "x86_64-unknown-linux-gnu"
+targets = []
+
 [lib]
 name = "cugraph"
 

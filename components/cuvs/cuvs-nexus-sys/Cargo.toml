@@ -13,6 +13,10 @@ readme = "../README.md"
 categories = ["api-bindings", "external-ffi-bindings"]
 keywords = ["cuvs", "cuda", "ffi", "gpu", "rapids"]
 
+[package.metadata.docs.rs]
+default-target = "x86_64-unknown-linux-gnu"
+targets = []
+
 [lints]
 workspace = true
 
@@ -20,12 +24,13 @@ workspace = true
 name = "cuvs_sys"
 
 [package.metadata.bindgen-cli]
-version = "0.72.1"
+version = "0.73.2"
 
 [build-dependencies]
 anyhow.workspace = true
 cc.workspace = true
 cmake-package.workspace = true
+nexus-build-support.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true

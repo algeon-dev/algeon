@@ -1,6 +1,6 @@
 //! Raw FFI bindings to the cuGraph C API.
 //!
-//! This crate provides auto-generated bindings via `bindgen`. Users should
+//! This crate provides checked-in bindings generated with `bindgen`. Users should
 //! prefer the safe `cugraph` crate instead of using these bindings directly.
 
 #![allow(non_upper_case_globals)]
@@ -14,7 +14,7 @@
 #![allow(rustdoc::broken_intra_doc_links)]
 #![allow(rustdoc::bare_urls)]
 
-include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+include!("bindings.rs");
 
 #[cfg(test)]
 mod tests {

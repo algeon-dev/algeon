@@ -13,12 +13,13 @@
 ## Subtractive development
 
 - Prefer extending existing code over adding parallel paths and the smallest
-  change that fully solves the current requirement. About to add a second way
-  to do something? Stop and propose removing or consolidating the first.
+  change that fully solves the current requirement. Reuse or consolidate
+  existing paths within the task; ask only when doing so requires an
+  unrequested public-contract change or expansion of scope.
 - Never add speculative abstractions, configuration, or "just in case"
   fallbacks; every defensive branch should protect a supported input, failure
-  mode, or invariant. Remove obsolete or backward-compatibility paths not
-  required by a contract in this file instead of stacking new code on top.
+  mode, or invariant. Remove redundant paths involved in the requested change
+  only after confirming that no supported caller or contract requires them.
 
 ## Comments
 
@@ -60,11 +61,11 @@ compatibility belong in `crates/nexus-query-engine`.
 - The query domain's allocator is the single arbiter of a query's allocation limit. Never add a second Rust-side reservation, per-operator subgrant, or estimate-derived veto.
 - Use one compiled schedule, per-device ledger, and immutable grant; deferred refinement stays inside that grant.
 - Admit by operator capability, never customer, SQL text, names, one-off algorithm allowlists, or plan-shape matching.
-- Keep one truth source; consolidate and delete special constructors, flags, matchers, or ledgers.
+- Keep one truth source; consolidate redundant constructors, flags, matchers, or ledgers within the requested change, preserving supported callers and contracts.
 - Output and resident facts carry scope, occurrence, schema, and provenance; allocation failures are typed at their source and reported with their cleanup disposition.
 - `PlanningReport` distinguishes accepted, deferred, and rejected candidates with structured reasons.
 - Keep backend memory models in component owners and IR, facts, schedules, and admission backend neutral.
-- Before adding an operator, identify its allocation, facts, lifetime, diagnostics, and test owners; otherwise stop.
+- Before adding an operator, identify its allocation, facts, lifetime, diagnostics, and test owners from existing code. Ask only if unresolved ownership affects the contract.
 - The ledger is integer accounting, not a residency oracle; model aggregate partial/final state explicitly.
 
 ## Build and test
@@ -99,9 +100,14 @@ cargo nextest run -p nexus-bench --all-features
 bash scripts/check_all.sh
 ```
 
-Run focused checks first, then broaden validation with the change's blast
-radius. `bash scripts/check_all.sh --fast` and every explicit `--lane` are
-partial and must not be reported as full validation.
+Select commands above by the change's blast radius; they are not a checklist
+for every task. Run focused checks first and broaden when the affected
+contracts or failures warrant it. Finish when the requested work and relevant
+checks are complete, with no unresolved task-related failures. Read-only
+reviews and prose-only edits do not require Cargo or GPU checks unless requested.
+Full pre-merge validation still requires `bash scripts/check_all.sh`.
+`bash scripts/check_all.sh --fast` and every explicit `--lane` are partial and
+must not be reported as full validation.
 
 ## Writing tests
 

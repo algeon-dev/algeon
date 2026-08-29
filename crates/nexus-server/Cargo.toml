@@ -14,6 +14,11 @@ categories = ["database", "hardware-support"]
 build = "build.rs"
 autotests = false
 
+[package.metadata.docs.rs]
+default-target = "x86_64-unknown-linux-gnu"
+targets = []
+features = ["cugraph", "cuvs", "nvml"]
+
 [features]
 default = []
 cugraph = ["datafusion-nexus/cugraph", "dep:cugraph-sys", "nexus-query-engine/cugraph"]

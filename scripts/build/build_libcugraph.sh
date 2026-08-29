@@ -19,6 +19,7 @@
 #   CUDF_INSTALL_DIR          cudf install prefix (default: target/native/cudf-install)
 #   CUVS_INSTALL_DIR          canonical cuVS prefix (default: target/native/cuvs-install)
 #   CUGRAPH_CMAKE_BUILD_DIR   cuGraph build dir   (default: target/native/cugraph-build)
+#   CUGRAPH_INSTALL_DIR       cuGraph install dir (default: target/native/cugraph-install)
 #   CMAKE_CUDA_ARCHITECTURES  CUDA arch list (default: NATIVE, cugraph/build.sh's default)
 set -euo pipefail
 
@@ -26,6 +27,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 source "${repo_root}/scripts/build/cuda_architecture_contract.sh"
 upstream_build="${repo_root}/components/cugraph/cugraph/build.sh"
 build_dir="${CUGRAPH_CMAKE_BUILD_DIR:-${repo_root}/target/native/cugraph-build}"
+install_dir="${CUGRAPH_INSTALL_DIR:-${repo_root}/target/native/cugraph-install}"
 cudf_install_dir="${CUDF_INSTALL_DIR:-${repo_root}/target/native/cudf-install}"
 default_cuvs_install_dir="${repo_root}/target/native/cuvs-install"
 cuvs_install_dir="${CUVS_INSTALL_DIR:-${default_cuvs_install_dir}}"
@@ -274,7 +276,45 @@ nexus_cuda_require_matching_contracts \
     "cuDF" "${cudf_install_dir}" "cuGraph" "${build_dir}" \
     "bash scripts/build/build_libcudf.sh && bash scripts/build/build_libcuvs.sh && bash scripts/build/build_libcugraph.sh"
 
+cmake --install "${build_dir}" --prefix "${install_dir}"
+for dependency_include in \
+    "${build_dir}/_deps/raft-src/cpp/include" \
+    "${build_dir}/_deps/raft-build/include" \
+    "${build_dir}/_deps/dlpack-src/include"; do
+    if [[ ! -d "${dependency_include}" ]]; then
+        echo "error: canonical cuGraph build is missing dependency headers '${dependency_include}'." >&2
+        exit 1
+    fi
+    cp -a "${dependency_include}/." "${install_dir}/include/"
+done
+crate_version="$(python3 - "${repo_root}/Cargo.toml" <<'PY'
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as source:
+    print(tomllib.load(source)["workspace"]["package"]["version"])
+PY
+)"
+install -d --mode=0755 "${install_dir}/share/cugraph-nexus"
+printf '%s\n' "${crate_version}" >"${install_dir}/share/cugraph-nexus/crate-version"
+for required in \
+    "lib/libcugraph.so" \
+    "lib/libcugraph_common.so" \
+    "lib/libcugraph_c.so" \
+    "include/cugraph_c/algorithms.h" \
+    "include/raft/core/handle.hpp" \
+    "include/dlpack/dlpack.h" \
+    "share/cugraph-nexus/crate-version"; do
+    [[ -f "${install_dir}/${required}" ]] || {
+        echo "error: canonical cuGraph install is missing ${required}" >&2
+        exit 1
+    }
+done
+nexus_cuda_write_contract \
+    "${install_dir}" "${install_dir}/lib/libcugraph.so" "${cuda_architectures}" >/dev/null
+
 echo "libcugraph native build OK: rmm/rapids_logger=${cudf_install_dir}, cuVS=${cuvs_install_dir}"
+echo "canonical cuGraph prefix: ${install_dir}"
 echo "resolved libcuvs: ${cuvs_library_path}"
 echo "native contract metadata: ${metadata_path}"
 echo "CUDA architectures: requested=${cuda_architectures}, real=$(nexus_cuda_read_contract_value "${architecture_contract}" real)"

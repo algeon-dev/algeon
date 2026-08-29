@@ -230,7 +230,7 @@ defined and maintained in the website documentation:
 - [Prerequisites](website/docs/build/prerequisites.md): System dependencies,
   CUDA requirements, compiler pairings, and linker setup.
 - [Building from Source](website/docs/build/from-source.md): Recursive clone,
-  checkout-local native selectors (`CUDF_INSTALL_DIR`,
+  checkout-local native selectors (`CUDF_INSTALL_DIR`, `NEXUS_NATIVE_DIR`,
   `CUGRAPH_CMAKE_BUILD_DIR`, `CUVS_INSTALL_DIR`), native build order, and Rust
   workspace compilation.
 

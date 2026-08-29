@@ -59,6 +59,42 @@ CUDF_INSTALL_DIR="${install_dir}" \
 CUDF_CPP_BUILD_DIR="${build_dir}" \
     "${repo_root}/scripts/build/bootstrap_cudf_install.sh"
 
+shim_source_dir="${repo_root}/components/cudf/cudf-nexus-sys/native"
+shim_build_dir="${repo_root}/target/native/cudf-rust-build"
+CUDF_INSTALL_DIR="${install_dir}" \
+CUDF_CPP_BUILD_DIR="${build_dir}" \
+cmake -S "${shim_source_dir}" -B "${shim_build_dir}" -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX="${install_dir}" \
+    -DCMAKE_CUDA_ARCHITECTURES="${cuda_architectures}" \
+    -DCUDF_RUST_ENABLE_TEST_HOOKS=OFF \
+    -DCUDF_RUST_ENABLE_CLANG_TIDY=OFF
+cmake --build "${shim_build_dir}" --parallel "${PARALLEL_LEVEL:-$(nproc)}"
+cmake --install "${shim_build_dir}"
+
+crate_version="$(python3 - "${repo_root}/Cargo.toml" <<'PY'
+import sys
+import tomllib
+
+with open(sys.argv[1], "rb") as source:
+    print(tomllib.load(source)["workspace"]["package"]["version"])
+PY
+)"
+install -d --mode=0755 "${install_dir}/share/cudf_rust"
+printf '%s\n' "${crate_version}" >"${install_dir}/share/cudf_rust/crate-version"
+
+for required in \
+    "lib/libcudf_rust.so" \
+    "lib/libcudf_rust_rmm_interop.so" \
+    "include/cudf_rust/cudf_rust.h" \
+    "share/cudf_rust/cargo-link.txt" \
+    "share/cudf_rust/crate-version"; do
+    [[ -f "${install_dir}/${required}" ]] || {
+        echo "error: canonical cuDF install is missing ${required}" >&2
+        exit 1
+    }
+done
+
 cudf_library=""
 for candidate in "${install_dir}/lib/libcudf.so" "${install_dir}/lib64/libcudf.so"; do
     if [[ -f "${candidate}" ]]; then

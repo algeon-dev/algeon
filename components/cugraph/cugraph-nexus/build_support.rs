@@ -44,6 +44,24 @@ pub(crate) fn prioritize_rapids_cccl_include_dirs(native_include_dirs: Vec<PathB
     cccl_dirs
 }
 
+pub(crate) fn cuda_toolkit_include_dirs(toolkit_root: &Path) -> Vec<PathBuf> {
+    let mut include_dirs = Vec::new();
+    for include_dir in [
+        toolkit_root.join("include"),
+        toolkit_root.join("targets").join("x86_64-linux").join("include"),
+        toolkit_root.join("targets").join("aarch64-linux").join("include"),
+    ] {
+        if include_dir.is_dir() && !include_dirs.contains(&include_dir) {
+            include_dirs.push(include_dir.clone());
+        }
+        let cccl = include_dir.join("cccl");
+        if cccl.is_dir() && !include_dirs.contains(&cccl) {
+            include_dirs.push(cccl);
+        }
+    }
+    include_dirs
+}
+
 fn is_rapids_cccl_include_dir(dir: &Path) -> bool {
     dir.join("cuda").join("std").join("version").is_file()
         || dir.join("cub").join("version.cuh").is_file()

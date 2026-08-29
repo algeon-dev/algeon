@@ -38,5 +38,5 @@ flock /tmp/cudf-gpu.lock cargo nextest run -p cuvs-nexus -p cuvs-nexus-sys --all
 ```
 
 Use `scripts/dev/bindings.sh cuvs --check` for checked bindings and
-`CUVS_NEXUS_SYS_SKIP_NATIVE=1 cargo check --locked -p cuvs-nexus-sys
---all-targets --all-features` for the native-free sys contract.
+`DOCS_RS=1 cargo check --workspace --all-targets --all-features --locked
+--target-dir target/native-free-check` for the native-free workspace contract.

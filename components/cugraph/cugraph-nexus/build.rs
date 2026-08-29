@@ -2,7 +2,7 @@ mod build_support;
 
 use std::{collections::BTreeSet, env, path::PathBuf};
 
-use build_support::{resolve_shim_compile_layout, system_include_args};
+use build_support::{cuda_toolkit_include_dirs, resolve_shim_compile_layout, system_include_args};
 
 fn emit_link_search_path(path: &str) {
     println!("cargo:rustc-link-search=native={}", path);
@@ -43,6 +43,11 @@ fn insert_include_dir(include_dirs: &mut Vec<PathBuf>, path: PathBuf) {
 }
 
 fn main() {
+    println!("cargo:rerun-if-env-changed=DOCS_RS");
+    if env::var_os("DOCS_RS").is_some() {
+        return;
+    }
+
     let mut runtime_dirs = BTreeSet::new();
     let mut native_include_dirs = Vec::new();
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
@@ -52,9 +57,19 @@ fn main() {
         runtime_dirs.insert(path);
     }
     if let Ok(root) = env::var("DEP_CUDF_RUST_ROOT") {
-        insert_include_dir(&mut native_include_dirs, PathBuf::from(root).join("include"));
+        let include = PathBuf::from(root).join("include");
+        insert_include_dir(&mut native_include_dirs, include.join("rapids"));
+        insert_include_dir(&mut native_include_dirs, include);
     }
     insert_include_dirs_from_env_path_list(&mut native_include_dirs, "DEP_CUGRAPH_NATIVE_INCLUDE_DIRS");
+    let cuda_toolkit_root = env::var_os("CUDAToolkit_ROOT")
+        .or_else(|| env::var_os("CUDA_HOME"))
+        .or_else(|| env::var_os("CUDA_PATH"))
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/usr/local/cuda"));
+    for include_dir in cuda_toolkit_include_dirs(&cuda_toolkit_root) {
+        insert_include_dir(&mut native_include_dirs, include_dir);
+    }
     let mut native_link_dirs = Vec::new();
     insert_include_dirs_from_env_path_list(&mut native_link_dirs, "DEP_CUGRAPH_NATIVE_LINK_DIRS");
 
@@ -64,6 +79,9 @@ fn main() {
         "DEP_CUGRAPH_NATIVE_LINK_DIRS",
         "DEP_CUDF_RUST_ROOT",
         "DEP_CUDF_RUST_RUNTIME_LIB_DIR",
+        "CUDAToolkit_ROOT",
+        "CUDA_HOME",
+        "CUDA_PATH",
         "CXX",
     ] {
         println!("cargo:rerun-if-env-changed={env_var}");

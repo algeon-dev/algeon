@@ -7,7 +7,9 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use build_support::{prioritize_rapids_cccl_include_dirs, resolve_shim_compile_layout, system_include_args};
+use build_support::{
+    cuda_toolkit_include_dirs, prioritize_rapids_cccl_include_dirs, resolve_shim_compile_layout, system_include_args,
+};
 
 fn read_build_rs() -> String {
     let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -130,4 +132,14 @@ fn native_include_roots_use_isystem() {
     let rendered = args.iter().map(|arg| arg.to_string_lossy().into_owned()).collect::<Vec<_>>();
 
     assert_eq!(rendered, vec!["-isystem".to_string(), "/opt/cugraph/include".to_string()]);
+}
+
+#[test]
+fn cuda_toolkit_include_roots_cover_toolkit_and_cccl_headers() {
+    let root = TestDir::new();
+    let include = root.path().join("include");
+    let cccl = include.join("cccl");
+    fs::create_dir_all(&cccl).expect("create CUDA include dirs");
+
+    assert_eq!(cuda_toolkit_include_dirs(root.path()), vec![include, cccl]);
 }

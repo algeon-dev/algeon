@@ -16,6 +16,11 @@ build = "build.rs"
 # synthetic admission hooks never need a caller-enableable public feature.
 autotests = false
 
+[package.metadata.docs.rs]
+default-target = "x86_64-unknown-linux-gnu"
+targets = []
+features = ["cugraph", "cuvs", "nvml"]
+
 [features]
 default = []
 cugraph = ["dep:cugraph", "dep:cugraph-sys", "nexus-query-planning/cugraph", "nexus-query-runtime/cugraph"]

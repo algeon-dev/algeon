@@ -6,7 +6,15 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const SKIP_NATIVE_ENV: &str = "CUVS_NEXUS_SYS_SKIP_NATIVE";
+const NATIVE_COMPONENT: nexus_build_support::NativeComponent = nexus_build_support::NativeComponent {
+    crate_name: "cuvs-nexus-sys",
+    install_dir_name: "cuvs-install",
+    required_library: "lib/libcuvs.so",
+    override_env: Some("CUVS_ROOT"),
+    source_required_env: None,
+    source_tree_sentinel: None,
+    build_script: "scripts/build/build_libcuvs.sh",
+};
 
 fn emit_path_list(key: &str, paths: &[PathBuf]) -> String {
     let encoded = env::join_paths(paths).expect("native paths are valid OS strings");
@@ -118,40 +126,17 @@ fn dedup_paths(paths: impl IntoIterator<Item = PathBuf>) -> Vec<PathBuf> {
     paths.into_iter().collect::<BTreeSet<_>>().into_iter().collect()
 }
 
-fn native_build_disabled() -> bool {
-    if env::var_os("DOCS_RS").is_some() {
-        return true;
-    }
-    match env::var(SKIP_NATIVE_ENV) {
-        Ok(value) if value == "1" => true,
-        Ok(value) => panic!("{SKIP_NATIVE_ENV} must be exactly 1 when set, found {value:?}"),
-        Err(env::VarError::NotPresent) => false,
-        Err(env::VarError::NotUnicode(_)) => panic!("{SKIP_NATIVE_ENV} must be valid UTF-8"),
-    }
-}
-
-fn select_workspace_cuvs_root() -> Option<PathBuf> {
-    if env::var_os("CUVS_ROOT").is_some() || env::var_os("LIBCUVS_USE_PYTHON").is_some() {
-        return None;
-    }
-    let manifest_dir = PathBuf::from(env::var_os("CARGO_MANIFEST_DIR")?);
-    let workspace_root = manifest_dir.parent()?.parent()?.parent()?;
-    let candidate = workspace_root.join("target/native/cuvs-install");
-    let config_paths =
-        [candidate.join("lib/cmake/cuvs/cuvs-config.cmake"), candidate.join("lib64/cmake/cuvs/cuvs-config.cmake")];
-    if !config_paths.iter().any(|path| path.is_file()) {
-        return None;
-    }
-
-    let candidate = fs::canonicalize(&candidate).unwrap_or_else(|error| {
-        panic!("failed to canonicalize workspace cuVS prefix {}: {error}", candidate.display())
-    });
+fn select_prebuilt_cuvs_root(prefix: &Path) -> PathBuf {
+    let prefix = fs::canonicalize(prefix)
+        .unwrap_or_else(|error| panic!("failed to canonicalize cuVS prefix {}: {error}", prefix.display()));
     // SAFETY: Cargo build scripts are single-threaded, and native discovery
     // reads CUVS_ROOT only after this assignment.
-    unsafe {
-        env::set_var("CUVS_ROOT", &candidate);
+    if env::var_os("CUVS_ROOT").is_none() {
+        unsafe {
+            env::set_var("CUVS_ROOT", &prefix);
+        }
     }
-    Some(candidate)
+    prefix
 }
 
 fn track_cuvs_prefix(prefix: &Path) {
@@ -186,7 +171,7 @@ fn main() {
         "CUDA_HOME",
         "CUDA_PATH",
         "DOCS_RS",
-        SKIP_NATIVE_ENV,
+        "NEXUS_NATIVE_DIR",
         "CUVS_RS_SKIP_STALENESS_CHECK",
         "CUVS_RS_ENFORCE_STALENESS_CHECK",
         "CUVS_ENFORCE_STALENESS_CHECK",
@@ -195,13 +180,20 @@ fn main() {
         println!("cargo::rerun-if-env-changed={name}");
     }
 
-    if native_build_disabled() {
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let linking =
+        nexus_build_support::resolve_native_linking(&NATIVE_COMPONENT, &manifest_dir, &|name| env::var_os(name));
+    if matches!(linking, nexus_build_support::NativeLinking::Skip) {
         return;
     }
-
-    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
-    let workspace_cuvs_root = select_workspace_cuvs_root();
-    if let Some(prefix) = &workspace_cuvs_root {
+    let selected_prefix = match linking {
+        nexus_build_support::NativeLinking::Prebuilt(prefix) => Some(select_prebuilt_cuvs_root(&prefix)),
+        nexus_build_support::NativeLinking::Missing(_) if env::var_os("LIBCUVS_USE_PYTHON").is_some() => None,
+        nexus_build_support::NativeLinking::Missing(missing) => panic!("{missing}"),
+        nexus_build_support::NativeLinking::SourceTree => unreachable!("cuVS has no source-tree native mode"),
+        nexus_build_support::NativeLinking::Skip => unreachable!(),
+    };
+    if let Some(prefix) = &selected_prefix {
         track_cuvs_prefix(prefix);
     }
     if let Some(git_index) = cmake::recorded_cuvs_gitlink_input() {

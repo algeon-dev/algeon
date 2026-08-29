@@ -13,6 +13,13 @@ documentation = "https://docs.rs/cugraph-nexus-sys"
 readme = "../README.md"
 keywords = ["cugraph", "cuda", "ffi", "gpu", "rapids"]
 
+[package.metadata.bindgen-cli]
+version = "0.73.2"
+
+[package.metadata.docs.rs]
+default-target = "x86_64-unknown-linux-gnu"
+targets = []
+
 [lib]
 name = "cugraph_sys"
 
@@ -20,4 +27,4 @@ name = "cugraph_sys"
 workspace = true
 
 [build-dependencies]
-bindgen.workspace = true
+nexus-build-support.workspace = true

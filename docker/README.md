@@ -17,7 +17,7 @@ The split:
 
 | Layer | Source | How it gets in |
 |---|---|---|
-| Forked cuDF/cuGraph/RMM `.so` | root `target/native/cudf-install` and `target/native/cugraph-build` | **bundled** by `stage-docker-payload.sh` → `dist/lib/` |
+| Forked cuDF/cuGraph/RMM `.so` | root `target/native/cudf-install` and `target/native/cugraph-install` | **bundled** by `stage-docker-payload.sh` → `dist/lib/` |
 | Canonical cuVS `.so` | root `target/native/cuvs-install` | **bundled** by `stage-docker-payload.sh`; `libcuvs.so` for either accelerator and `libcuvs_c.so` for the `cuvs` feature |
 | `libcudf_rust*.so` FFI bridges | cudf-nexus-sys CMake `OUT_DIR` | **bundled** by `stage-docker-payload.sh` |
 | CUDA toolkit (`libcudart`, `libcublas`, `libnvrtc`, …) | official `nvidia/cuda:*-runtime` | **harvested** in-Dockerfile via `ldd` |
@@ -50,10 +50,10 @@ the build record and canonical artifact still match the selected policy.
 Prerequisites: the forked libs must already be built —
 `target/native/cudf-install/lib/libcudf.so`,
 `target/native/cuvs-install/lib/libcuvs.so`, and (for cugraph)
-`target/native/cugraph-build/libcugraph.so`. Override their locations with
-`CUDF_INSTALL_DIR`, `CUVS_INSTALL_DIR`, and `CUGRAPH_CMAKE_BUILD_DIR`.
-The Cargo build receives `CUVS_ROOT=$CUVS_INSTALL_DIR`, and cuGraph must have
-been configured against that same prefix. `readelf` and `ldd` are mandatory
+`target/native/cugraph-install/lib/libcugraph.so`. Set `NEXUS_NATIVE_DIR` when
+the matching `cudf-install`, `cuvs-install`, and `cugraph-install` prefixes live
+under a different native root. cuGraph must have been configured against that
+root's cuVS prefix. `readelf` and `ldd` are mandatory
 closure checks; `patchelf` and `binutils` (strip) on
 the host are recommended; without them the image falls back to `LD_LIBRARY_PATH`.
 

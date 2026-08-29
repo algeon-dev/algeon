@@ -1,11 +1,7 @@
 use std::{fs, path::PathBuf};
 
 fn bindings_rs_path() -> PathBuf {
-    if let Some(path) = option_env!("CUGRAPH_SYS_BINDINGS_RS") {
-        PathBuf::from(path)
-    } else {
-        panic!("CUGRAPH_SYS_BINDINGS_RS is not set; build.rs should export it for coverage tests");
-    }
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/bindings.rs")
 }
 
 fn generated_bindings() -> String {

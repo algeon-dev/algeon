@@ -10,7 +10,7 @@ mod support;
 use support::{include_dir, manifest_dir, strip_c_comments};
 
 fn bindings_rs_path() -> PathBuf {
-    PathBuf::from(env!("CUGRAPH_SYS_BINDINGS_RS"))
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/bindings.rs")
 }
 
 fn parse_cugraph_includes(source: &str) -> Vec<String> {

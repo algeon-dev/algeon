@@ -80,6 +80,10 @@ id = "nexus-bench"
 lane = "cpu"
 
 [[exception]]
+id = "nexus-build-support"
+lane = "cpu"
+
+[[exception]]
 id = "nexus-iceberg"
 lane = "cpu"
 

@@ -63,9 +63,10 @@ case "${SKIP_CARGO_BUILD-0}" in
     *) echo "ERROR: SKIP_CARGO_BUILD must be 0 or 1, got '${SKIP_CARGO_BUILD}'." >&2; exit 2 ;;
 esac
 
-CUDF_INSTALL_DIR="${CUDF_INSTALL_DIR:-$REPO_ROOT/target/native/cudf-install}"
-CUVS_INSTALL_DIR="${CUVS_INSTALL_DIR:-$REPO_ROOT/target/native/cuvs-install}"
-CUGRAPH_CMAKE_BUILD_DIR="${CUGRAPH_CMAKE_BUILD_DIR:-$REPO_ROOT/target/native/cugraph-build}"
+NEXUS_NATIVE_DIR="${NEXUS_NATIVE_DIR:-$REPO_ROOT/target/native}"
+CUDF_INSTALL_DIR="$NEXUS_NATIVE_DIR/cudf-install"
+CUVS_INSTALL_DIR="$NEXUS_NATIVE_DIR/cuvs-install"
+CUGRAPH_INSTALL_DIR="$NEXUS_NATIVE_DIR/cugraph-install"
 
 # /app/lib is where the Dockerfile places the runtime libraries.
 RUNTIME_LIB_DIR="/app/lib"
@@ -78,9 +79,7 @@ want_cuvs_runtime=0
 [[ $want_cugraph -eq 1 || $want_cuvs -eq 1 ]] && want_cuvs_runtime=1
 
 echo "==> FEATURES            : $FEATURES   (cugraph=$want_cugraph cuvs=$want_cuvs)"
-echo "==> CUDF_INSTALL_DIR    : $CUDF_INSTALL_DIR"
-[[ $want_cuvs_runtime -eq 1 ]] && echo "==> CUVS_INSTALL_DIR    : $CUVS_INSTALL_DIR"
-[[ $want_cugraph -eq 1 ]] && echo "==> CUGRAPH_CMAKE_BUILD_DIR: $CUGRAPH_CMAKE_BUILD_DIR"
+echo "==> NEXUS_NATIVE_DIR    : $NEXUS_NATIVE_DIR"
 
 cd "$REPO_ROOT"
 
@@ -94,21 +93,11 @@ BUILD_RECORD="$BINARY.build-record.json"
 
 if [[ "$SKIP_CARGO_BUILD" == "0" ]]; then
     echo "==> Building canonical datafusion_nexus_server artifact ..."
-    explicit_native_env=(--explicit-env "CUDF_INSTALL_DIR=$CUDF_INSTALL_DIR")
-    if [[ $want_cuvs_runtime -eq 1 ]]; then
-        explicit_native_env+=(
-            --explicit-env "CUVS_INSTALL_DIR=$CUVS_INSTALL_DIR"
-            --explicit-env "CUVS_ROOT=$CUVS_INSTALL_DIR"
-        )
-    fi
-    if [[ $want_cugraph -eq 1 ]]; then
-        explicit_native_env+=(--explicit-env "CUGRAPH_CMAKE_BUILD_DIR=$CUGRAPH_CMAKE_BUILD_DIR")
-    fi
     python3 "$POLICY_HELPER" build \
         --features "$FEATURES" \
         --target-root "$CPU_PACKAGE_TARGET_ROOT" \
         --manifest "$REPO_ROOT/crates/nexus-server/Cargo.toml" \
-        "${explicit_native_env[@]}"
+        --explicit-env "NEXUS_NATIVE_DIR=$NEXUS_NATIVE_DIR"
 else
     echo "==> SKIP_CARGO_BUILD=1 — verifying canonical artifact before reuse"
     python3 "$POLICY_HELPER" verify-build \
@@ -212,11 +201,12 @@ resolve_needed_realpath() {
 }
 
 if [[ $want_cugraph -eq 1 ]]; then
-    [[ -d "$CUGRAPH_CMAKE_BUILD_DIR" ]] || {
-        echo "ERROR: $CUGRAPH_CMAKE_BUILD_DIR not found — build cugraph-nexus first." >&2
+    CUGRAPH_LIB="$CUGRAPH_INSTALL_DIR/lib"
+    [[ -d "$CUGRAPH_LIB" ]] || {
+        echo "ERROR: $CUGRAPH_LIB not found — build cugraph-nexus first." >&2
         exit 1
     }
-    GRAPH_CUVS_REALPATH=$(resolve_needed_realpath "$CUGRAPH_CMAKE_BUILD_DIR/libcugraph.so" libcuvs) || {
+    GRAPH_CUVS_REALPATH=$(resolve_needed_realpath "$CUGRAPH_LIB/libcugraph.so" libcuvs) || {
         echo "ERROR: ldd could not resolve libcugraph.so to a canonical libcuvs.so." >&2
         exit 1
     }
@@ -231,11 +221,11 @@ if [[ $want_cugraph -eq 1 ]]; then
         echo "  canonical: $CANONICAL_CUVS_REALPATH" >&2
         exit 1
     }
-    echo "==> Staging forked cuGraph libs from $CUGRAPH_CMAKE_BUILD_DIR"
-    copy_lib "$CUGRAPH_CMAKE_BUILD_DIR/libcugraph.so"        || { echo "ERROR: libcugraph.so missing" >&2; exit 1; }
-    copy_lib "$CUGRAPH_CMAKE_BUILD_DIR/libcugraph_c.so"      || { echo "ERROR: libcugraph_c.so missing" >&2; exit 1; }
-    copy_lib "$CUGRAPH_CMAKE_BUILD_DIR/libcugraph_common.so" || { echo "ERROR: libcugraph_common.so missing" >&2; exit 1; }
-    copy_lib "$CUGRAPH_CMAKE_BUILD_DIR/libcugraph_mg.so"     || { echo "ERROR: libcugraph_mg.so missing" >&2; exit 1; }
+    echo "==> Staging forked cuGraph libs from $CUGRAPH_LIB"
+    copy_lib "$CUGRAPH_LIB/libcugraph.so"        || { echo "ERROR: libcugraph.so missing" >&2; exit 1; }
+    copy_lib "$CUGRAPH_LIB/libcugraph_c.so"      || { echo "ERROR: libcugraph_c.so missing" >&2; exit 1; }
+    copy_lib "$CUGRAPH_LIB/libcugraph_common.so" || { echo "ERROR: libcugraph_common.so missing" >&2; exit 1; }
+    copy_lib "$CUGRAPH_LIB/libcugraph_mg.so"     || { echo "ERROR: libcugraph_mg.so missing" >&2; exit 1; }
 fi
 
 # rapids_logger may be linked as a shared library, or absorbed into the
