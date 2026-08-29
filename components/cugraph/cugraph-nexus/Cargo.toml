@@ -3,12 +3,12 @@ name = "cugraph-nexus"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
-description = "Workspace-internal safe libcugraph execution component for DataFusion Nexus"
+description = "Safe libcugraph execution component for DataFusion Nexus"
 license-file = "../../../LICENSE"
 repository.workspace = true
 homepage.workspace = true
+documentation = "https://docs.rs/cugraph-nexus"
 readme = "../README.md"
-publish = false
 keywords = ["cugraph", "cuda", "gpu", "graph", "rapids"]
 build = "build.rs"
 

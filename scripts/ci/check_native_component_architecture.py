@@ -33,11 +33,9 @@ def manifest_contracts() -> None:
                 names.extend(dependency_names(value))
         return names
 
-    for crate, directory in COMPONENTS.items():
+    for directory in COMPONENTS.values():
         manifest_path = directory / "Cargo.toml"
         manifest = tomllib.loads(manifest_path.read_text())
-        if manifest.get("package", {}).get("publish") is not False:
-            fail(f"{manifest_path.relative_to(ROOT)} must set package.publish = false")
         for dependency in dependency_names(manifest):
             if dependency == "datafusion" or dependency.startswith("datafusion-"):
                 fail(f"{manifest_path.relative_to(ROOT)} must not depend on {dependency}")

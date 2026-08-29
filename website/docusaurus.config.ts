@@ -12,7 +12,7 @@ const GITHUB_URL = `https://github.com/${GITHUB_ORG}/${GITHUB_REPO}`;
 const config: Config = {
   title: 'DataFusion Nexus',
   tagline: 'A DataFusion physical-plan adapter that lowers supported plans into a native, cuDF-backed query engine.',
-  favicon: 'img/nexus-icon.png',
+  favicon: 'favicon.ico',
 
   // Future flags, see https://docusaurus.io/docs/api/docusaurus-config#future
   future: {

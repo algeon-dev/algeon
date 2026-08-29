@@ -4,6 +4,13 @@ description = "Flight SQL server for the datafusion-nexus native GPU adapter."
 version = { workspace = true }
 edition = "2024"
 rust-version = { workspace = true }
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/nexus-server"
+readme = "../../README.md"
+keywords = ["datafusion", "flight-sql", "gpu", "cuda", "rapids"]
+categories = ["database", "hardware-support"]
 build = "build.rs"
 autotests = false
 
@@ -12,11 +19,6 @@ default = []
 cugraph = ["datafusion-nexus/cugraph", "dep:cugraph-sys", "nexus-query-engine/cugraph"]
 cuvs = ["datafusion-nexus/cuvs", "dep:cuvs-sys", "nexus-query-engine/cuvs"]
 nvml = ["datafusion-nexus/nvml", "nexus-query-engine/nvml"]
-iceberg = [
-  "datafusion-nexus/iceberg",
-  "dep:nexus-iceberg",
-  "nexus-iceberg/all-catalogs",
-]
 
 [lints]
 workspace = true
@@ -37,7 +39,6 @@ dashmap = "6.2"
 datafusion = { workspace = true }
 datafusion-nexus = { workspace = true, default-features = false, features = ["server-internal"] }
 futures = { workspace = true }
-nexus-iceberg = { workspace = true, optional = true }
 nexus-query-engine = { workspace = true }
 parquet = { workspace = true }
 prost = { workspace = true }
@@ -51,6 +52,9 @@ tonic = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 uuid = { version = "1.23", features = ["v4"] }
+
+[build-dependencies]
+nexus-build-support = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
@@ -73,11 +77,6 @@ path = "tests/server_multi_gpu_tests_gpu_exclusive.rs"
 [[test]]
 name = "server_config_tests_cpu"
 path = "tests/server_config_tests_cpu.rs"
-
-[[test]]
-name = "server_iceberg_tests_cpu"
-path = "tests/server_iceberg_tests_cpu.rs"
-required-features = ["iceberg"]
 
 [[test]]
 name = "server_cugraph_tests_gpu"

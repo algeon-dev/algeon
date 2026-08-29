@@ -1089,7 +1089,7 @@ dependencies = [
  "regex",
  "rustc-hash",
  "shlex 2.0.1",
- "syn 2.0.117",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -2286,9 +2286,7 @@ dependencies = [
  "fnv",
  "futures",
  "hex",
- "iceberg",
- "iceberg-datafusion",
- "nexus-iceberg",
+ "nexus-build-support",
  "nexus-query-engine",
  "nexus-workloads",
  "object_store",
@@ -3197,7 +3195,7 @@ dependencies = [
 [[package]]
 name = "iceberg"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust.git#0aeccb8c8d4e81e6e2e916427e183607049cd4a5"
+source = "git+https://github.com/apache/iceberg-rust.git#be48041fc64a661eb6c39530d3a0d19d7134cf51"
 dependencies = [
  "aes-gcm",
  "anyhow",
@@ -3256,7 +3254,7 @@ dependencies = [
 [[package]]
 name = "iceberg-catalog-glue"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust.git#0aeccb8c8d4e81e6e2e916427e183607049cd4a5"
+source = "git+https://github.com/apache/iceberg-rust.git#be48041fc64a661eb6c39530d3a0d19d7134cf51"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3271,7 +3269,7 @@ dependencies = [
 [[package]]
 name = "iceberg-catalog-rest"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust.git#0aeccb8c8d4e81e6e2e916427e183607049cd4a5"
+source = "git+https://github.com/apache/iceberg-rust.git#be48041fc64a661eb6c39530d3a0d19d7134cf51"
 dependencies = [
  "async-trait",
  "chrono",
@@ -3289,25 +3287,9 @@ dependencies = [
 ]
 
 [[package]]
-name = "iceberg-datafusion"
-version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust.git#0aeccb8c8d4e81e6e2e916427e183607049cd4a5"
-dependencies = [
- "anyhow",
- "async-trait",
- "dashmap",
- "datafusion",
- "futures",
- "iceberg",
- "parquet",
- "tokio",
- "uuid",
-]
-
-[[package]]
 name = "iceberg-property-macro"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust.git#0aeccb8c8d4e81e6e2e916427e183607049cd4a5"
+source = "git+https://github.com/apache/iceberg-rust.git#be48041fc64a661eb6c39530d3a0d19d7134cf51"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -3317,7 +3299,7 @@ dependencies = [
 [[package]]
 name = "iceberg-storage-opendal"
 version = "0.10.1"
-source = "git+https://github.com/apache/iceberg-rust.git#0aeccb8c8d4e81e6e2e916427e183607049cd4a5"
+source = "git+https://github.com/apache/iceberg-rust.git#be48041fc64a661eb6c39530d3a0d19d7134cf51"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3941,8 +3923,7 @@ dependencies = [
  "datafusion",
  "datafusion-nexus",
  "futures",
- "iceberg",
- "iceberg-datafusion",
+ "nexus-build-support",
  "nexus-query-engine",
  "nexus-workloads",
  "object_store",
@@ -3952,6 +3933,10 @@ dependencies = [
  "tempfile",
  "tokio",
 ]
+
+[[package]]
+name = "nexus-build-support"
+version = "0.1.0"
 
 [[package]]
 name = "nexus-examples"
@@ -3967,6 +3952,7 @@ dependencies = [
  "datafusion",
  "datafusion-nexus",
  "futures",
+ "nexus-build-support",
  "nexus-server",
  "opentelemetry",
  "opentelemetry-proto",
@@ -4014,6 +4000,7 @@ dependencies = [
  "cuvs-nexus-sys",
  "fnv",
  "futures",
+ "nexus-build-support",
  "nexus-query-planning",
  "nexus-query-runtime",
  "object_store",
@@ -4078,7 +4065,7 @@ dependencies = [
  "datafusion",
  "datafusion-nexus",
  "futures",
- "nexus-iceberg",
+ "nexus-build-support",
  "nexus-query-engine",
  "parquet",
  "prost",
@@ -4108,9 +4095,8 @@ dependencies = [
  "datafusion",
  "datafusion-nexus",
  "futures",
- "iceberg",
- "iceberg-catalog-glue",
  "nexus-bench",
+ "nexus-build-support",
  "nexus-examples",
  "nexus-query-engine",
  "nexus-server",

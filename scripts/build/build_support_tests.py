@@ -13,14 +13,13 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[2]
-SUPPORT = ROOT / "scripts/build/rapids.rs"
+SUPPORT = ROOT / "components/cudf/nexus-build-support/src/lib.rs"
 
 
 @dataclass(frozen=True)
 class InclusionSite:
     name: str
     source: str
-    support_source: str
     generic: bool
     bins: bool
     tests: bool
@@ -30,11 +29,10 @@ class InclusionSite:
 
 
 SITES = (
-    InclusionSite("root", "build.rs", "scripts/build/rapids.rs", True, False, True, True, True, False),
+    InclusionSite("root", "build.rs", True, False, True, True, True, False),
     InclusionSite(
         "engine",
         "crates/nexus-query-engine/build.rs",
-        "../../scripts/build/rapids.rs",
         True,
         False,
         True,
@@ -45,7 +43,6 @@ SITES = (
     InclusionSite(
         "bench",
         "crates/nexus-bench/build.rs",
-        "../../scripts/build/rapids.rs",
         True,
         True,
         True,
@@ -56,7 +53,6 @@ SITES = (
     InclusionSite(
         "examples",
         "crates/nexus-examples/build.rs",
-        "../../scripts/build/rapids.rs",
         True,
         False,
         False,
@@ -67,7 +63,6 @@ SITES = (
     InclusionSite(
         "server",
         "crates/nexus-server/build.rs",
-        "../../scripts/build/rapids.rs",
         True,
         True,
         True,
@@ -230,9 +225,6 @@ def assert_link_target_output(site: InclusionSite, output: str, runtime_dir: Pat
     for line, expected in expectations.items():
         if (line in output) != expected:
             raise AssertionError(f"{site.name}: expected {line!r} presence={expected}\n{output}")
-    tracked = f"cargo:rerun-if-changed={site.support_source}"
-    if tracked not in output:
-        raise AssertionError(f"{site.name}: missing support-source tracking directive {tracked!r}\n{output}")
 
 
 def assert_cudf_rust_runtime_tracking(output: str, runtime_dir: Path) -> None:
@@ -368,6 +360,14 @@ def main() -> int:
         assert_manifest_contract()
         with tempfile.TemporaryDirectory(prefix="datafusion-nexus-build-support-") as temporary:
             temporary_path = Path(temporary)
+            support_rlib = temporary_path / "libnexus_build_support.rlib"
+            compile_support = run(
+                [
+                    "rustc", "--edition=2024", "-D", "warnings", "--crate-type=lib",
+                    "--crate-name", "nexus_build_support", str(SUPPORT), "-o", str(support_rlib),
+                ]
+            )
+            require_success(compile_support, "build-support library compilation")
             policy_binary = temporary_path / "rapids-policy-tests"
             compile_policy = run(
                 ["rustc", "--edition=2024", "-D", "warnings", "--test", str(SUPPORT), "-o", str(policy_binary)]
@@ -392,6 +392,8 @@ def main() -> int:
                         "--crate-name",
                         f"build_support_smoke_{site.name}",
                         str(ROOT / site.source),
+                        "--extern",
+                        f"nexus_build_support={support_rlib}",
                         "-o",
                         str(executable),
                     ]

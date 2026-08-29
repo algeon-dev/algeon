@@ -35,7 +35,7 @@ mod cugraph_optional_fixture;
 // helpers are only exercised by Cargo test modules that this binary does not pull in.
 #[allow(dead_code, unused_imports)]
 mod cugraph_sql_tests;
-#[cfg(all(feature = "datafusion-baseline-contract-validate", not(test)))]
+#[cfg(all(feature = "datafusion-baseline-contract-validate", feature = "iceberg", not(test)))]
 #[path = "../datafusion_baseline_contract_validate.rs"]
 mod datafusion_baseline_contract_validate;
 #[cfg(all(feature = "embedded-backend-e2e", not(test)))]
@@ -178,12 +178,12 @@ async fn run_validate_query(_args: Vec<String>) -> ToolResult<()> {
     Err("validate-query requires --features validate-query".into())
 }
 
-#[cfg(all(feature = "datafusion-baseline-contract-validate", not(test)))]
+#[cfg(all(feature = "datafusion-baseline-contract-validate", feature = "iceberg", not(test)))]
 async fn run_datafusion_baseline_contract_validate(args: Vec<String>) -> ToolResult<()> {
     datafusion_baseline_contract_validate::run(args).await
 }
 
-#[cfg(not(all(feature = "datafusion-baseline-contract-validate", not(test))))]
+#[cfg(not(all(feature = "datafusion-baseline-contract-validate", feature = "iceberg", not(test))))]
 async fn run_datafusion_baseline_contract_validate(_args: Vec<String>) -> ToolResult<()> {
     Err(
         "datafusion-baseline-contract-validate requires --features datafusion-baseline-contract-validate and normal cargo run execution"

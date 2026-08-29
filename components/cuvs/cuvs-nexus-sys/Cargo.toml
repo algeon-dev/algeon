@@ -8,6 +8,7 @@ description = "Generated low-level FFI bindings to the NVIDIA cuVS C API"
 license-file = "../../../LICENSE"
 repository.workspace = true
 homepage.workspace = true
+documentation = "https://docs.rs/cuvs-nexus-sys"
 readme = "../README.md"
 categories = ["api-bindings", "external-ffi-bindings"]
 keywords = ["cuvs", "cuda", "ffi", "gpu", "rapids"]

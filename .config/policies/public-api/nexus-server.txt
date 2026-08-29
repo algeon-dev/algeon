@@ -7,9 +7,6 @@ pub nexus_server::AuthMode::Disabled
 impl nexus_server::AuthMode
 pub fn nexus_server::AuthMode::token_ttl(&self) -> core::option::Option<core::time::Duration>
 pub fn nexus_server::AuthMode::validate(&self) -> nexus_server::Result<()>
-pub enum nexus_server::IcebergCatalogBackendConfig
-pub nexus_server::IcebergCatalogBackendConfig::Glue(nexus_server::GlueServerBackendConfig)
-pub nexus_server::IcebergCatalogBackendConfig::Rest(nexus_iceberg::source_access::RestCatalogConfig)
 pub enum nexus_server::PasswordHashError
 pub nexus_server::PasswordHashError::HashFailure(alloc::string::String)
 pub nexus_server::PasswordHashError::InvalidHash(alloc::string::String)
@@ -44,32 +41,6 @@ pub fn nexus_server::FlightSqlServerBuilder::config(self, nexus_server::ServerCo
 pub fn nexus_server::FlightSqlServerBuilder::listener(self, std::net::tcp::TcpListener) -> Self
 pub fn nexus_server::FlightSqlServerBuilder::session_context(self, alloc::sync::Arc<datafusion::execution::context::SessionContext>) -> Self
 pub fn nexus_server::FlightSqlServerBuilder::shutdown(self, nexus_server::ServerShutdown) -> Self
-pub struct nexus_server::GlueServerBackendConfig
-pub nexus_server::GlueServerBackendConfig::catalog_handle: alloc::string::String
-pub nexus_server::GlueServerBackendConfig::catalog_id: core::option::Option<alloc::string::String>
-pub nexus_server::GlueServerBackendConfig::profile: core::option::Option<alloc::string::String>
-pub nexus_server::GlueServerBackendConfig::region: alloc::string::String
-pub nexus_server::GlueServerBackendConfig::s3_endpoint: core::option::Option<alloc::string::String>
-pub nexus_server::GlueServerBackendConfig::s3_path_style_access: core::option::Option<bool>
-pub nexus_server::GlueServerBackendConfig::s3_region: core::option::Option<alloc::string::String>
-pub nexus_server::GlueServerBackendConfig::uri: core::option::Option<alloc::string::String>
-pub nexus_server::GlueServerBackendConfig::warehouse: alloc::string::String
-impl core::fmt::Debug for nexus_server::GlueServerBackendConfig
-pub fn nexus_server::GlueServerBackendConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct nexus_server::IcebergServerConfig
-pub nexus_server::IcebergServerConfig::backend: nexus_server::IcebergCatalogBackendConfig
-pub nexus_server::IcebergServerConfig::catalog_name: alloc::string::String
-pub nexus_server::IcebergServerConfig::namespace: alloc::string::String
-pub nexus_server::IcebergServerConfig::parquet_read_strategy_config: datafusion_nexus::table_format::scan::config::TableFormatParquetReadStrategyConfig
-pub nexus_server::IcebergServerConfig::scan_planning_timeout: core::time::Duration
-pub nexus_server::IcebergServerConfig::tables: alloc::vec::Vec<nexus_server::IcebergTableRegistrationConfig>
-impl nexus_server::IcebergServerConfig
-pub const fn nexus_server::IcebergServerConfig::source_access_policy(&self) -> &nexus_iceberg::source_access::SourceAccessPolicy
-impl core::fmt::Debug for nexus_server::IcebergServerConfig
-pub fn nexus_server::IcebergServerConfig::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-pub struct nexus_server::IcebergTableRegistrationConfig
-pub nexus_server::IcebergTableRegistrationConfig::alias: alloc::string::String
-pub nexus_server::IcebergTableRegistrationConfig::table: alloc::string::String
 #[non_exhaustive] pub struct nexus_server::NexusServerNativeConfigOption
 pub nexus_server::NexusServerNativeConfigOption::description: &'static str
 pub nexus_server::NexusServerNativeConfigOption::env_var: &'static str
@@ -83,7 +54,6 @@ pub nexus_server::ServerConfig::cugraph: core::option::Option<nexus_server::Cugr
 pub nexus_server::ServerConfig::gpu_device_profiles: alloc::vec::Vec<nexus_query_runtime::runtime::backend_core::GpuBackendDeviceProfile>
 pub nexus_server::ServerConfig::gpu_devices: alloc::vec::Vec<usize>
 pub nexus_server::ServerConfig::gpu_memory_ownership: alloc::vec::Vec<(usize, nexus_query_runtime::runtime::backend_core::GpuMemoryOwnership)>
-pub nexus_server::ServerConfig::iceberg: core::option::Option<nexus_server::IcebergServerConfig>
 pub nexus_server::ServerConfig::native_optimizer_config: datafusion_nexus::planner::NexusNativeOptimizerConfig
 pub nexus_server::ServerConfig::observability: nexus_server::ServerObservabilityConfig
 pub nexus_server::ServerConfig::queue_policy: datafusion_nexus::backend::NexusGpuQueuePolicy
