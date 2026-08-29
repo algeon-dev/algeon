@@ -141,10 +141,8 @@ pub fn nexus_query_runtime::attempt::cancellation_state_at(nexus_query_runtime::
 pub fn nexus_query_runtime::attempt::effective_queue_expiry(std::time::Instant, core::option::Option<std::time::Instant>, core::time::Duration) -> std::time::Instant
 pub mod nexus_query_runtime::metrics
 pub use nexus_query_runtime::metrics::CompiledTaskId
-pub use nexus_query_runtime::metrics::MemorySpaceId
 pub use nexus_query_runtime::metrics::PlanNodeId
 pub use nexus_query_runtime::metrics::QueryId
-pub use nexus_query_runtime::metrics::ReservationKind
 pub use nexus_query_runtime::metrics::TraceId
 pub enum nexus_query_runtime::metrics::BackendDurationProjectionError
 pub nexus_query_runtime::metrics::BackendDurationProjectionError::UnsupportedUnit
@@ -616,10 +614,8 @@ impl nexus_query_runtime::metrics::TaskRuntimeMetrics
 pub fn nexus_query_runtime::metrics::TaskRuntimeMetrics::to_json(&self) -> serde_json::value::Value
 pub const nexus_query_runtime::metrics::BACKEND_ATTEMPT_DURATION_BUCKETS_NS: [u64; 7]
 pub const nexus_query_runtime::metrics::BACKEND_METRIC_DESCRIPTORS: &[nexus_query_runtime::metrics::BackendMetricDescriptor]
-pub const nexus_query_runtime::metrics::DATAFUSION_PROJECTION_METRIC_DESCRIPTORS: &[nexus_query_runtime::metrics::MetricDescriptor]
 pub const nexus_query_runtime::metrics::QUERY_METRIC_DESCRIPTORS: &[nexus_query_runtime::metrics::MetricDescriptor]
 pub const fn nexus_query_runtime::metrics::backend_metric_descriptors() -> &'static [nexus_query_runtime::metrics::BackendMetricDescriptor]
-pub fn nexus_query_runtime::metrics::native_datafusion_metric_descriptors() -> impl core::iter::traits::iterator::Iterator<Item = &'static nexus_query_runtime::metrics::MetricDescriptor>
 pub fn nexus_query_runtime::metrics::project_backend_duration_histogram(&nexus_query_runtime::metrics::BackendMetricDescriptor, u64) -> core::result::Result<nexus_query_runtime::metrics::BackendDurationHistogramProjection, nexus_query_runtime::metrics::BackendDurationProjectionError>
 pub mod nexus_query_runtime::observability
 pub use nexus_query_runtime::observability::AttemptComposedScheduleOccurrence
@@ -2541,8 +2537,8 @@ pub fn nexus_query_runtime::runtime::RuntimeObservationBuildError::drop(&mut sel
 pub struct nexus_query_runtime::runtime::RuntimeObservedExecutionContext
 impl nexus_query_runtime::runtime::RuntimeObservedExecutionContext
 pub fn nexus_query_runtime::runtime::RuntimeObservedExecutionContext::context(&self) -> &nexus_query_runtime::runtime::ExecutionContext
-pub fn nexus_query_runtime::runtime::RuntimeObservedExecutionContext::into_parts(self) -> (nexus_query_runtime::runtime::ExecutionContext, nexus_query_runtime::observability::RuntimeObservationSession)
-pub fn nexus_query_runtime::runtime::RuntimeObservedExecutionContext::observation(&self) -> &nexus_query_runtime::observability::RuntimeObservationSession
+pub fn nexus_query_runtime::runtime::RuntimeObservedExecutionContext::into_parts(self) -> (nexus_query_runtime::runtime::ExecutionContext, nexus_query_runtime::observability::RuntimeObservationOwner)
+pub fn nexus_query_runtime::runtime::RuntimeObservedExecutionContext::observation(&self) -> &nexus_query_runtime::observability::RuntimeObservationOwner
 pub struct nexus_query_runtime::runtime::RuntimeObservedExecutionContextBuilder
 impl nexus_query_runtime::runtime::RuntimeObservedExecutionContextBuilder
 pub fn nexus_query_runtime::runtime::RuntimeObservedExecutionContextBuilder::build(self) -> core::result::Result<nexus_query_runtime::runtime::ExecutionContext, nexus_query_runtime::runtime::RuntimeObservationBuildError>

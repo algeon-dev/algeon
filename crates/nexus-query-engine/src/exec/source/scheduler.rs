@@ -875,21 +875,19 @@ mod observation_tests {
         let runtime = cudf::Runtime::new().unwrap();
         let pool = crate::runtime::ServiceStreamPool::new(runtime.device(), 1).unwrap();
         let held = pool.acquire().unwrap();
-        let owner = RuntimeObservationOwner::new(
-            "source-lease-contention",
-            None,
-            RuntimeObservationConfig::bounded(64, 64 * 1024),
-        );
-        let lifecycle = RuntimePlanExecutionLifecycle::from_owner(owner.clone(), PlanExecutionId::new("source-plan"));
-        let context = crate::runtime::ExecutionContext::builder()
+        let observed_context = crate::runtime::ExecutionContext::builder()
             .with_runtime(runtime)
             .with_service_stream_pool(pool.clone())
-            .build()
-            .unwrap()
-            .with_runtime_observation_owner(owner.clone())
-            .unwrap()
-            .with_runtime_execution_scope(lifecycle.execution_scope())
+            .with_runtime_observation_session(RuntimeObservationSession::new(
+                "source-lease-contention",
+                None,
+                RuntimeObservationConfig::bounded(64, 64 * 1024),
+            ))
+            .build_with_runtime_observation()
             .unwrap();
+        let owner = observed_context.observation().clone();
+        let lifecycle = RuntimePlanExecutionLifecycle::from_owner(owner.clone(), PlanExecutionId::new("source-plan"));
+        let context = observed_context.context().with_runtime_execution_scope(lifecycle.execution_scope()).unwrap();
         let observation = test_observation(&owner);
         let worker_observation = observation.clone();
         let waiter = thread::spawn(move || acquire_source_read_lease_then_enqueue(&context, Some(&worker_observation)));
@@ -929,22 +927,20 @@ mod observation_tests {
         let pool = crate::runtime::ServiceStreamPool::new(runtime.device(), 1).unwrap();
         let held = pool.acquire().unwrap();
         let clock = Arc::new(DeterministicRuntimeObservationClock::new(None));
-        let owner = RuntimeObservationOwner::from_session(RuntimeObservationSession::with_clock(
-            "source-queue-clock",
-            None,
-            RuntimeObservationConfig::bounded(64, 64 * 1024),
-            clock.clone(),
-        ));
-        let lifecycle = RuntimePlanExecutionLifecycle::from_owner(owner.clone(), PlanExecutionId::new("source-plan"));
-        let context = crate::runtime::ExecutionContext::builder()
+        let observed_context = crate::runtime::ExecutionContext::builder()
             .with_runtime(runtime)
             .with_service_stream_pool(pool.clone())
-            .build()
-            .unwrap()
-            .with_runtime_observation_owner(owner.clone())
-            .unwrap()
-            .with_runtime_execution_scope(lifecycle.execution_scope())
+            .with_runtime_observation_session(RuntimeObservationSession::with_clock(
+                "source-queue-clock",
+                None,
+                RuntimeObservationConfig::bounded(64, 64 * 1024),
+                clock.clone(),
+            ))
+            .build_with_runtime_observation()
             .unwrap();
+        let owner = observed_context.observation().clone();
+        let lifecycle = RuntimePlanExecutionLifecycle::from_owner(owner.clone(), PlanExecutionId::new("source-plan"));
+        let context = observed_context.context().with_runtime_execution_scope(lifecycle.execution_scope()).unwrap();
         let observation = test_observation(&owner);
         let worker_observation = observation.clone();
         let lease_waiter =
@@ -1020,19 +1016,20 @@ mod observation_tests {
         let pool = crate::runtime::ServiceStreamPool::new(runtime.device(), 1).unwrap();
         let held = pool.acquire().unwrap();
         let cancellation = crate::runtime::ExecutionCancellation::new();
-        let owner =
-            RuntimeObservationOwner::new("source-lease-cancel", None, RuntimeObservationConfig::bounded(64, 64 * 1024));
-        let lifecycle = RuntimePlanExecutionLifecycle::from_owner(owner.clone(), PlanExecutionId::new("source-plan"));
-        let context = crate::runtime::ExecutionContext::builder()
+        let observed_context = crate::runtime::ExecutionContext::builder()
             .with_runtime(runtime)
             .with_service_stream_pool(pool.clone())
             .with_cancellation(cancellation.clone())
-            .build()
-            .unwrap()
-            .with_runtime_observation_owner(owner.clone())
-            .unwrap()
-            .with_runtime_execution_scope(lifecycle.execution_scope())
+            .with_runtime_observation_session(RuntimeObservationSession::new(
+                "source-lease-cancel",
+                None,
+                RuntimeObservationConfig::bounded(64, 64 * 1024),
+            ))
+            .build_with_runtime_observation()
             .unwrap();
+        let owner = observed_context.observation().clone();
+        let lifecycle = RuntimePlanExecutionLifecycle::from_owner(owner.clone(), PlanExecutionId::new("source-plan"));
+        let context = observed_context.context().with_runtime_execution_scope(lifecycle.execution_scope()).unwrap();
         let observation = test_observation(&owner);
         let worker_observation = observation.clone();
         let waiter = thread::spawn(move || acquire_source_read_lease_then_enqueue(&context, Some(&worker_observation)));

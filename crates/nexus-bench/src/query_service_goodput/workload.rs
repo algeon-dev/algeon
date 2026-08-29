@@ -117,6 +117,7 @@ const ADHOC_ITEMS: &[(&str, &str)] = &[
 ];
 
 /// Graph items and the seed-count parameter that sets their work units.
+#[cfg(feature = "cugraph")]
 const GRAPH_ITEMS: &[(&str, u64)] = &[
     ("pagerank", 1),
     ("bfs", 1),
@@ -141,6 +142,7 @@ const GRAPH_ITEMS: &[(&str, u64)] = &[
 /// outputs. A wrong result still cannot pass the fingerprint: a plain row
 /// count is the vertex count for every vertex-keyed algorithm and would be
 /// identical whether the scores were computed or not.
+#[cfg(feature = "cugraph")]
 fn graph_sql(name: &str, seed: i64) -> Option<String> {
     let sql = match name {
         "pagerank" => format!(

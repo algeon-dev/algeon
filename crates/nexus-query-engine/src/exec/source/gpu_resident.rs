@@ -6,7 +6,7 @@ use super::{ExecutionContext, GpuDataFrame, GpuResidentInputMap, QueryError, Que
 /// handle from another admitted attempt on the same device is borrowed
 /// directly. Its resident ownership keeps the producer allocation alive, so
 /// the consumer neither copies nor charges those bytes to its own cap.
-pub fn read_gpu_resident_source(
+pub(in crate::exec) fn read_gpu_resident_source(
     context: &ExecutionContext,
     source: &crate::source::GpuResidentSource,
     inputs: &GpuResidentInputMap,

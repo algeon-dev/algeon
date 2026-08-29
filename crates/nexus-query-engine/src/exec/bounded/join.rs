@@ -52,7 +52,4 @@ pub(super) use leaf::{
     try_start_bounded_join_leaf_local_parquet_source_prefetch,
 };
 
-pub use crate::materialization_sizing::{
-    JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, STRING_OFFSET_BYTES_CONSERVATIVE,
-    join_output_upper_bound_bytes,
-};
+use crate::materialization_sizing::{JoinOutputColumnUpperBoundInput, join_output_upper_bound_bytes};

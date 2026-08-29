@@ -4,6 +4,16 @@ use nexus_query_engine::admission::{
 
 use super::*;
 
+fn bounded_pipeline_admission(
+    plan: &nexus_query_engine::plan::QueryPlan,
+) -> nexus_query_engine::error::Result<Option<nexus_query_engine::admission::BoundedPipelineAdmission>> {
+    nexus_query_engine::admission::bounded_pipeline_decision(
+        plan,
+        nexus_query_engine::mode::StatisticalAggregateExecutionMode::default(),
+    )?
+    .into_execution_admission()
+}
+
 #[path = "bounded_join_admission/aggregate_over_join_subplans.rs"]
 mod aggregate_over_join_subplans;
 #[path = "bounded_join_admission/mixed_residual.rs"]

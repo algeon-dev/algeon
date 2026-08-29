@@ -39,7 +39,7 @@ pub(in crate::exec::bounded) use stream::{
     execute_compiled_bounded_aggregate_from_stream,
 };
 
-pub use crate::materialization_sizing::{PartialAggregateShape, partial_aggregate_upper_bound_bytes};
+use crate::materialization_sizing::{PartialAggregateShape, partial_aggregate_upper_bound_bytes};
 
 fn aggregate_source_chunk_planning_policy(
     context: &ExecutionContext,

@@ -11,12 +11,7 @@ mod scope;
 mod shared;
 mod support;
 
-#[doc(hidden)]
-pub use bounded::bounded_cugraph_pipeline_admission;
-pub use bounded::{
-    BoundedPipelineAdmission, bounded_pipeline_admission, bounded_pipeline_admission_with_statistical_aggregate_mode,
-    bounded_pipeline_rejection_projection, bounded_pipeline_rejection_projection_with_statistical_aggregate_mode,
-};
+pub use bounded::{BoundedPipelineAdmission, BoundedPipelineDecision, bounded_pipeline_decision};
 pub use diagnostics::{bounded_join_modeled_facts, bounded_join_unsupported_shape_facts};
 #[doc(hidden)]
 pub use diagnostics::{

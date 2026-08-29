@@ -55,20 +55,10 @@ pub use bounded::pipeline::{
     CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
     CompiledSchedulingCycle, CompiledTaskExecutor, CompiledTaskOutput, ReleasedCompiledResource,
 };
-pub use bounded::{
-    JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, PartialAggregateShape,
-    STRING_OFFSET_BYTES_CONSERVATIVE, join_output_upper_bound_bytes, partial_aggregate_upper_bound_bytes,
-};
 use edge_normalize::execute_edge_normalize;
-#[cfg(all(any(test, feature = "test-hooks"), feature = "cugraph"))]
-#[doc(hidden)]
-pub use graph_algorithm::force_next_graph_statistics_optional_resource_exhausted_for_test;
 use nvtx::attempt_execution_range;
 use output::QueryOutput;
-pub use source::{
-    ResolvedRemoteParquetDatasourceProbe, probe_resolved_remote_parquet_datasource, read_gpu_resident_source,
-    read_literal_batch_source, read_local_parquet_source,
-};
+use source::{read_gpu_resident_source, read_literal_batch_source, read_local_parquet_source};
 
 use self::{
     bounded::*,
@@ -77,7 +67,7 @@ use self::{
     materialize::*,
     operators::*,
     order::*,
-    output::{QueryExecutionOutcome, QueryExecutionResult as ExecutionResult, QueryOutput as Output},
+    output::{QueryExecutionOutcome, QueryOutput as Output},
     util::*,
     vector_algorithm::*,
 };
@@ -93,9 +83,8 @@ use crate::{
     metrics::{QueryId, QueryMetrics, SourceReadRuntimeMetrics, TraceId},
     mode::StatisticalAggregateExecutionMode,
     observability::{
-        PlanEdgeRow, PlanExecutionId, PlanNodeRow, RuntimeExecutionObservationScope, RuntimeObservationConfig,
-        RuntimeObservationOwner, RuntimeObservationSession, RuntimePlanExecutionLifecycle, RuntimePlanNodeId,
-        RuntimeQueryLifecycle, RuntimeTerminalOutcome, RuntimeTopologyRecord, RuntimeTraceId,
+        PlanEdgeRow, PlanExecutionId, PlanNodeRow, RuntimeExecutionObservationScope, RuntimePlanNodeId,
+        RuntimeTerminalOutcome, RuntimeTopologyRecord,
     },
     plan::{
         AggregateNode, FilterNode, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinType, LimitNode, NodeId,
@@ -121,7 +110,7 @@ use crate::{
 /// Frontends use this capability-first boundary before host work or native
 /// admission. Execution entrypoints call the same validation internally.
 pub fn preflight_query_plan(plan: &QueryPlan) -> Result<()> {
-    crate::validation::validate_query_plan(plan)
+    nexus_query_planning::validate_query_plan(plan)
 }
 
 /// Validates a native plan and applies the bounded execution shape contract.
@@ -211,144 +200,43 @@ impl HashJoinCacheKey {
     }
 }
 
-/// Execute a native plan with no external GPU-resident inputs.
-///
-/// The plan is validated before execution. Output residency follows
-/// [`ResultSink`]: host sinks materialize Arrow output, while GPU-resident
-/// sinks return a runtime/device-affine handle.
-pub fn execute_query_plan(context: &ExecutionContext, plan: &QueryPlan) -> Result<ExecutionResult> {
-    execute_query_plan_with_gpu_inputs(context, plan, &GpuResidentInputMap::new())
+/// Borrowed inputs for one native plan execution.
+pub struct QueryExecutionRequest<'a> {
+    plan: &'a QueryPlan,
+    gpu_inputs: Option<&'a GpuResidentInputMap>,
 }
 
-/// Execute a native plan with caller-supplied GPU-resident inputs.
-///
-/// `gpu_inputs` is keyed by the names referenced by GPU-resident source nodes
-/// in `plan`. Bounded plans dispatch through the context's bounded pipeline
-/// contract.
-pub fn execute_query_plan_with_gpu_inputs(
-    context: &ExecutionContext,
-    plan: &QueryPlan,
-    gpu_inputs: &GpuResidentInputMap,
-) -> Result<ExecutionResult> {
-    let query_id = context.query_id().cloned().unwrap_or_else(QueryId::mint);
-    let trace_id = context.trace_id().cloned();
+impl<'a> QueryExecutionRequest<'a> {
+    /// Creates an execution request without external GPU-resident inputs.
+    pub const fn new(plan: &'a QueryPlan) -> Self {
+        Self { plan, gpu_inputs: None }
+    }
 
-    execute_query_plan_with_correlation(context, plan, gpu_inputs, query_id.clone(), trace_id.clone())
-        .map_err(|error| with_optional_trace_id(error.with_query_id(query_id), trace_id.as_ref()))
+    /// Supplies GPU-resident inputs keyed by the source names in the plan.
+    pub const fn with_gpu_inputs(mut self, gpu_inputs: &'a GpuResidentInputMap) -> Self {
+        self.gpu_inputs = Some(gpu_inputs);
+        self
+    }
 }
 
-/// Executes a native plan while retaining metrics and sealed observations on
+/// Executes one native plan and retains metrics and observation evidence on
 /// both success and structured failure.
-pub fn execute_query_plan_observed(
-    context: &ExecutionContext,
-    plan: &QueryPlan,
-    config: RuntimeObservationConfig,
-) -> QueryExecutionOutcome {
-    execute_query_plan_with_gpu_inputs_observed(context, plan, &GpuResidentInputMap::new(), config)
+///
+/// A query-service context finishes only this plan execution. A standalone
+/// observed context built by [`ExecutionContext::builder`] owns query
+/// terminalization and returns its sealed snapshot in the outcome.
+pub fn execute_query_plan(context: &ExecutionContext, request: QueryExecutionRequest<'_>) -> QueryExecutionOutcome {
+    let empty_inputs = GpuResidentInputMap::new();
+    let gpu_inputs = request.gpu_inputs.unwrap_or(&empty_inputs);
+    execute_query_plan_with_observation(context, request.plan, gpu_inputs)
 }
 
-/// Executes a native plan with GPU-resident inputs while retaining metrics and
-/// sealed observations on every structured outcome.
-pub fn execute_query_plan_with_gpu_inputs_observed(
-    context: &ExecutionContext,
-    plan: &QueryPlan,
-    gpu_inputs: &GpuResidentInputMap,
-    config: RuntimeObservationConfig,
-) -> QueryExecutionOutcome {
-    let query_id = context.query_id().cloned().unwrap_or_else(QueryId::mint);
-    let trace_id = context.trace_id().cloned();
-    let observation = match context.runtime_observation_owner() {
-        Some(owner) => ExecutionObservationAuthority::PlanOwner(owner),
-        None if context.runtime_observation().is_enabled() => {
-            ExecutionObservationAuthority::PlanHandle(context.runtime_observation().clone())
-        },
-        None => ExecutionObservationAuthority::QueryOwner(RuntimeObservationOwner::new(
-            query_id.clone(),
-            trace_id.as_ref().map(|trace_id| RuntimeTraceId::new(trace_id.to_string())),
-            config,
-        )),
-    };
-    execute_query_plan_with_gpu_inputs_and_runtime_observation_authority(context, plan, gpu_inputs, observation)
-}
-
-/// Executes using a caller-created owner. This injection point supports
-/// deterministic clocks while the lifecycle still consumes seal authority.
-pub fn execute_query_plan_with_runtime_observation(
-    context: &ExecutionContext,
-    plan: &QueryPlan,
-    observation: RuntimeObservationSession,
-) -> QueryExecutionOutcome {
-    execute_query_plan_with_gpu_inputs_and_runtime_observation(context, plan, &GpuResidentInputMap::new(), observation)
-}
-
-/// Evidence-preserving execution with explicit GPU inputs and owner lifetime.
-pub fn execute_query_plan_with_gpu_inputs_and_runtime_observation(
+fn execute_query_plan_with_observation(
     context: &ExecutionContext,
     plan: &QueryPlan,
     gpu_inputs: &GpuResidentInputMap,
-    observation: RuntimeObservationSession,
 ) -> QueryExecutionOutcome {
-    execute_query_plan_with_gpu_inputs_and_runtime_observation_authority(
-        context,
-        plan,
-        gpu_inputs,
-        ExecutionObservationAuthority::QueryOwner(RuntimeObservationOwner::from_session(observation)),
-    )
-}
-
-enum ExecutionObservationAuthority {
-    QueryOwner(RuntimeObservationOwner),
-    PlanOwner(RuntimeObservationOwner),
-    PlanHandle(crate::observability::RuntimeObservationHandle),
-}
-
-impl ExecutionObservationAuthority {
-    fn handle(&self) -> crate::observability::RuntimeObservationHandle {
-        match self {
-            Self::QueryOwner(owner) | Self::PlanOwner(owner) => owner.handle(),
-            Self::PlanHandle(handle) => handle.clone(),
-        }
-    }
-
-    fn owner(&self) -> Option<RuntimeObservationOwner> {
-        match self {
-            Self::QueryOwner(owner) | Self::PlanOwner(owner) => Some(owner.clone()),
-            Self::PlanHandle(_) => None,
-        }
-    }
-}
-
-enum ExecutionObservationLifecycle {
-    Query(RuntimeQueryLifecycle),
-    Plan(RuntimePlanExecutionLifecycle),
-}
-
-impl ExecutionObservationLifecycle {
-    fn execution_scope(&self) -> RuntimeExecutionObservationScope {
-        match self {
-            Self::Query(lifecycle) => lifecycle.execution_scope(),
-            Self::Plan(lifecycle) => lifecycle.execution_scope(),
-        }
-    }
-
-    fn finish(self, outcome: RuntimeTerminalOutcome) -> Option<crate::observability::SealedRuntimeObservationSnapshot> {
-        match self {
-            Self::Query(lifecycle) => lifecycle.finish(outcome),
-            Self::Plan(lifecycle) => {
-                lifecycle.finish(outcome);
-                None
-            },
-        }
-    }
-}
-
-fn execute_query_plan_with_gpu_inputs_and_runtime_observation_authority(
-    context: &ExecutionContext,
-    plan: &QueryPlan,
-    gpu_inputs: &GpuResidentInputMap,
-    observation: ExecutionObservationAuthority,
-) -> QueryExecutionOutcome {
-    let observation_handle = observation.handle();
+    let observation_handle = context.runtime_observation().clone();
     let manifest_query_id = observation_handle.query_id().map(|id| QueryId::new(id.as_str()));
     let manifest_trace_id = observation_handle.trace_id().map(|id| TraceId::new(id.as_str()));
     let manifest_is_authoritative = manifest_query_id.is_some();
@@ -367,26 +255,11 @@ fn execute_query_plan_with_gpu_inputs_and_runtime_observation_authority(
         });
     let plan_execution_id =
         PlanExecutionId::new(format!("native-plan-{}", NEXT_PLAN_EXECUTION_ID.fetch_add(1, Ordering::Relaxed)));
-    let lifecycle = match &observation {
-        ExecutionObservationAuthority::QueryOwner(owner) => {
-            ExecutionObservationLifecycle::Query(RuntimeQueryLifecycle::from_owner(owner.clone(), plan_execution_id))
-        },
-        ExecutionObservationAuthority::PlanOwner(owner) => ExecutionObservationLifecycle::Plan(
-            RuntimePlanExecutionLifecycle::from_owner(owner.clone(), plan_execution_id),
-        ),
-        ExecutionObservationAuthority::PlanHandle(handle) => ExecutionObservationLifecycle::Plan(
-            RuntimePlanExecutionLifecycle::from_handle(handle.clone(), plan_execution_id),
-        ),
-    };
+    let lifecycle = context.begin_runtime_execution_observation(plan_execution_id);
     let execution_scope = lifecycle.execution_scope();
     record_query_plan_topology(&execution_scope, plan);
     let mut metrics = query_metrics(context, query_id.clone(), trace_id.clone());
-    let observation_owner = observation.owner();
     let result = observed_context
-        .and_then(|context| match observation_owner {
-            Some(owner) => context.with_runtime_observation_owner(owner),
-            None => Ok(context),
-        })
         .and_then(|context| context.with_runtime_execution_scope(execution_scope.clone()))
         .and_then(|observed_context| {
             execute_query_plan_output(&observed_context, plan, gpu_inputs, &mut metrics, Some(&execution_scope))
@@ -439,18 +312,6 @@ fn plan_node_kind(node: &PlanNode) -> &'static str {
         PlanNode::GraphAlgorithm(_) => "graph_algorithm",
         PlanNode::VectorAlgorithm(_) => "vector_algorithm",
     }
-}
-
-fn execute_query_plan_with_correlation(
-    context: &ExecutionContext,
-    plan: &QueryPlan,
-    gpu_inputs: &GpuResidentInputMap,
-    query_id: QueryId,
-    trace_id: Option<TraceId>,
-) -> Result<ExecutionResult> {
-    let mut metrics = query_metrics(context, query_id, trace_id);
-    let output = execute_query_plan_output(context, plan, gpu_inputs, &mut metrics, None)?;
-    Ok(ExecutionResult::new(output, metrics))
 }
 
 fn query_metrics(context: &ExecutionContext, query_id: QueryId, trace_id: Option<TraceId>) -> QueryMetrics {
@@ -653,7 +514,10 @@ mod tests {
 
     use super::*;
     use crate::{
-        observability::{RuntimeObservationLossReason, write_runtime_observation_jsonl},
+        observability::{
+            RuntimeObservationConfig, RuntimeObservationLossReason, RuntimeObservationSession,
+            write_runtime_observation_jsonl,
+        },
         plan::QueryPlanBuilder,
         runtime::ExecutionCancellation,
         source::{LiteralBatchSource, SourceNode},
@@ -706,16 +570,13 @@ mod tests {
     #[test]
     fn source_location_key_failure_preserves_successful_execution() {
         let plan = literal_plan();
-        let context = ExecutionContext::builder()
+        let observed = ExecutionContext::builder()
             .with_query_id("key-unavailable-success")
-            .build()
-            .expect("execution context builds");
+            .with_runtime_observation_session(unavailable_key_session("key-unavailable-success"))
+            .build_with_runtime_observation()
+            .expect("observed execution context builds");
 
-        let outcome = execute_query_plan_with_runtime_observation(
-            &context,
-            &plan,
-            unavailable_key_session("key-unavailable-success"),
-        );
+        let outcome = execute_query_plan(observed.context(), QueryExecutionRequest::new(&plan));
 
         let output = outcome.result().expect("source-location key failure must not fail the query");
         assert_eq!(output.as_host_arrow().expect("host sink returns Arrow").num_rows(), 1);
@@ -723,35 +584,17 @@ mod tests {
     }
 
     #[test]
-    fn source_location_key_failure_preserves_failure_and_cancellation() {
+    fn source_location_key_failure_preserves_cancellation() {
         let plan = literal_plan();
-        let mismatched_context =
-            ExecutionContext::builder().with_query_id("different-query").build().expect("execution context builds");
-        let failed = execute_query_plan_with_runtime_observation(
-            &mismatched_context,
-            &plan,
-            unavailable_key_session("key-unavailable-failure"),
-        );
-        let failure = match failed.result() {
-            Err(error) => error,
-            Ok(_) => panic!("query identity mismatch remains a failure"),
-        };
-        assert_eq!(failure.code(), QueryErrorCode::InvalidPlan);
-        assert_eq!(failure.fact_value("reason"), Some("runtime_observation_query_id_mismatch"));
-        assert_key_unavailable_evidence(&failed, RuntimeTerminalOutcome::from_query_error(failure));
-
         let cancellation = ExecutionCancellation::new();
         cancellation.cancel();
-        let cancelled_context = ExecutionContext::builder()
+        let observed = ExecutionContext::builder()
             .with_query_id("key-unavailable-cancelled")
             .with_cancellation(cancellation)
-            .build()
-            .expect("cancelled execution context builds");
-        let cancelled = execute_query_plan_with_runtime_observation(
-            &cancelled_context,
-            &plan,
-            unavailable_key_session("key-unavailable-cancelled"),
-        );
+            .with_runtime_observation_session(unavailable_key_session("key-unavailable-cancelled"))
+            .build_with_runtime_observation()
+            .expect("cancelled observed execution context builds");
+        let cancelled = execute_query_plan(observed.context(), QueryExecutionRequest::new(&plan));
         assert!(matches!(cancelled.result(), Err(error) if error.code() == QueryErrorCode::Cancelled));
         assert_key_unavailable_evidence(&cancelled, RuntimeTerminalOutcome::Cancelled);
     }

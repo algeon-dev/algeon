@@ -8,10 +8,7 @@ use std::{
     fs::File,
     net::TcpListener,
     path::Path,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicUsize, Ordering},
-    },
+    sync::{Arc, Mutex},
     time::{Duration, Instant},
 };
 
@@ -278,46 +275,36 @@ async fn the_active_attempt_limit_holds_a_fourth_query_back_while_capacity_is_st
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn flight_queries_execute_concurrently_on_one_device_with_independent_grants() {
-    let server = ConcurrencyServer::spawn(4096).await;
+    let server = ConcurrencyServer::spawn(4_000_000).await;
 
     // Pin two slots so the third, real Flight query is guaranteed to execute
     // while two other query domains are live rather than racing to overlap.
     let holders = vec![server.hold_one_slot().await, server.hold_one_slot().await];
     server.wait_for_admission(2, 0).await;
 
-    let observed_peak = Arc::new(AtomicUsize::new(0));
-    let watcher_backend = server.backend.clone();
-    let watcher_peak = Arc::clone(&observed_peak);
-    let watcher_stop = CancellationToken::new();
-    let watcher_token = watcher_stop.clone();
-    let watcher = tokio::spawn(async move {
-        while !watcher_token.is_cancelled() {
-            if let Ok(snapshot) = watcher_backend.admission_snapshot() {
-                watcher_peak.fetch_max(snapshot.active_queries, Ordering::Relaxed);
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-    });
-
     let mut client = server.client().await;
-    let flight_info = client.execute(CONCURRENCY_SQL.to_string(), None).await.expect("plan overlapping query");
+    let flight_info = client
+        .execute("select value from concurrency_rows order by value desc limit 1000000".to_string(), None)
+        .await
+        .expect("plan overlapping query");
     let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).expect("ticket");
-    let batches = client
-        .do_get(ticket)
-        .await
-        .expect("overlapping DoGet")
-        .try_collect::<Vec<_>>()
-        .await
-        .expect("overlapping query succeeds while two other domains are live");
-    assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 4);
+    let mut stream = client.do_get(ticket).await.expect("overlapping DoGet");
+    let first = stream.try_next().await.expect("first Flight batch").expect("the overlapping query delivers rows");
 
-    watcher_stop.cancel();
-    watcher.await.expect("watcher task should not panic");
-    assert_eq!(
-        observed_peak.load(Ordering::Relaxed),
-        MAX_ACTIVE_ATTEMPTS,
-        "the Flight query must have been admitted alongside both holders"
-    );
+    // The million-row result exceeds the bounded Flight channel. Holding the
+    // client stream after its first batch keeps the server-side attempt live,
+    // so this observes all three grants directly instead of sampling a short
+    // query and hoping a timer catches it.
+    server.wait_for_admission(MAX_ACTIVE_ATTEMPTS, 0).await;
+    let report = server.backend.device_ledger_reports().expect("ledger report").remove(0);
+    assert_eq!(report.grants.len(), MAX_ACTIVE_ATTEMPTS, "both holders and the Flight query own grants: {report:?}");
+    assert!(report.grants.iter().all(|grant| grant.grant_bytes == QUERY_CAP_BYTES));
+
+    let mut rows = first.num_rows();
+    while let Some(batch) = stream.try_next().await.expect("remaining Flight batches") {
+        rows += batch.num_rows();
+    }
+    assert_eq!(rows, 1_000_000);
 
     drop(holders);
     server.shutdown().await;

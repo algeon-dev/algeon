@@ -175,7 +175,7 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
         )
         .expect("tiny explicit cap is admissible");
     let tiny_context = tiny.acquire_context().expect("tiny context");
-    let tiny_error = match crate::exec::execute_query_plan_with_gpu_inputs(tiny_context.context(), &pagerank, &inputs) {
+    let tiny_error = match execute_plan(tiny_context.context(), &pagerank, Some(&inputs)) {
         Ok(_) => panic!("actual allocation must exceed the one-byte query cap"),
         Err(error) => error,
     };
@@ -195,7 +195,7 @@ fn frozen_resident_edges_release_the_producer_cap_and_feed_both_graph_orientatio
             .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_evidence(evidence))
             .expect("remaining capacity admits graph consumer");
         let consumer_context = consumer.acquire_context().expect("consumer context");
-        let result = crate::exec::execute_query_plan_with_gpu_inputs(consumer_context.context(), plan, &inputs)
+        let result = execute_plan(consumer_context.context(), plan, Some(&inputs))
             .expect("frozen edges execute without relocation");
         assert_eq!(result.metrics().boundary.device_to_device_copies, 0);
         assert_eq!(result.metrics().boundary.device_to_device_copied_bytes, 0);
@@ -272,7 +272,6 @@ fn graph_gpu_input_from_another_admitted_attempt_borrows_the_resident_domain_wit
         std::sync::Arc::clone(&edge_schema),
     )
     .expect("producer GPU input handle");
-    let producer_input_placement = producer_input.placement();
     let producer_usage_before = producer_context
         .context()
         .attempt_allocation_domain_usage()
@@ -282,52 +281,19 @@ fn graph_gpu_input_from_another_admitted_attempt_borrows_the_resident_domain_wit
 
     let mut inputs = crate::runtime::resident::GpuResidentInputMap::new();
     inputs.insert("edges".to_string(), producer_input);
-    let source = crate::source::GpuResidentSource::new("edges", std::sync::Arc::clone(&edge_schema));
-    let mut same_attempt_metrics = crate::metrics::QueryMetrics::default();
-    let same_attempt_frame =
-        crate::exec::read_gpu_resident_source(producer_context.context(), &source, &inputs, &mut same_attempt_metrics)
-            .expect("same-attempt GPU input remains a zero-copy handoff");
-    assert_eq!(same_attempt_metrics.boundary.gpu_resident_input_handoffs, 1);
-    assert_eq!(same_attempt_metrics.boundary.device_to_device_copies, 0);
-    assert_eq!(same_attempt_frame.placement(), producer_input_placement);
-    drop(same_attempt_frame);
+    let same_attempt =
+        execute_plan(producer_context.context(), &plan, Some(&inputs)).expect("same-attempt zero-copy graph execution");
+    assert_eq!(same_attempt.metrics().boundary.gpu_resident_input_handoffs, 1);
+    assert_eq!(same_attempt.metrics().boundary.device_to_device_copies, 0);
+    assert_eq!(same_attempt.metrics().boundary.device_to_device_copied_bytes, 0);
+    drop(same_attempt);
 
     let consumer_usage_before = consumer_context
         .context()
         .attempt_allocation_domain_usage()
         .expect("consumer domain usage")
         .expect("consumer domain usage is present");
-    let mut handoff_metrics = crate::metrics::QueryMetrics::default();
-    let borrowed =
-        crate::exec::read_gpu_resident_source(consumer_context.context(), &source, &inputs, &mut handoff_metrics)
-            .expect("foreign GPU input is borrowed before graph execution");
-
-    assert_eq!(handoff_metrics.boundary.gpu_resident_input_handoffs, 1);
-    assert_eq!(handoff_metrics.boundary.device_to_device_copies, 0);
-    assert_eq!(handoff_metrics.boundary.device_to_device_copied_bytes, 0);
-    assert_eq!(borrowed.placement(), producer_input_placement);
-    let consumer_usage_after = consumer_context
-        .context()
-        .attempt_allocation_domain_usage()
-        .expect("consumer domain usage after relocation")
-        .expect("consumer domain usage is present");
-    assert!(
-        consumer_usage_after.current_bytes == consumer_usage_before.current_bytes,
-        "resident input bytes must not be charged to the consuming attempt domain"
-    );
-    let producer_usage_after = producer_context
-        .context()
-        .attempt_allocation_domain_usage()
-        .expect("producer domain usage after relocation")
-        .expect("producer domain usage is present");
-    assert_eq!(
-        producer_usage_after.current_bytes, producer_usage_before.current_bytes,
-        "borrowing the resident input must not allocate into the producer attempt domain"
-    );
-    drop(borrowed);
-    consumer_runtime.synchronize().expect("consumer handoff stream synchronization");
-
-    let result = crate::exec::execute_query_plan_with_gpu_inputs(consumer_context.context(), &plan, &inputs)
+    let result = execute_plan(consumer_context.context(), &plan, Some(&inputs))
         .expect("graph execution after the source-domain handoff");
     assert_eq!(result.metrics().boundary.gpu_resident_input_handoffs, 1);
     assert_eq!(result.metrics().boundary.device_to_device_copies, 0);
@@ -336,6 +302,24 @@ fn graph_gpu_input_from_another_admitted_attempt_borrows_the_resident_domain_wit
         panic!("graph plan must materialize its result at the declared host sink");
     };
     assert_eq!(output.num_rows(), 4, "PageRank must see the copied four-vertex edge list");
+    let consumer_usage_after = consumer_context
+        .context()
+        .attempt_allocation_domain_usage()
+        .expect("consumer domain usage after execution")
+        .expect("consumer domain usage is present");
+    assert_eq!(
+        consumer_usage_after.current_bytes, consumer_usage_before.current_bytes,
+        "resident input bytes must not remain charged to the consuming attempt domain"
+    );
+    let producer_usage_after = producer_context
+        .context()
+        .attempt_allocation_domain_usage()
+        .expect("producer domain usage after execution")
+        .expect("producer domain usage is present");
+    assert_eq!(
+        producer_usage_after.current_bytes, producer_usage_before.current_bytes,
+        "borrowing the resident input must not allocate into the producer attempt domain"
+    );
 
     drop(result);
     drop(inputs);
@@ -440,7 +424,7 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
     .expect("resident graph input");
     let mut inputs = crate::runtime::resident::GpuResidentInputMap::new();
     inputs.insert("edges".to_string(), input);
-    let result = crate::exec::execute_query_plan_with_gpu_inputs(context, &plan, &inputs)
+    let result = execute_plan(context, &plan, Some(&inputs))
         .expect("cache-enabled PageRank execution");
     let ledger_report = service.device_ledger_reports().expect("ledger report").remove(0);
     assert!(ledger_report.cache_evictable_resident_bytes > 0, "the parked graph remains ledger-owned after execution");
@@ -616,7 +600,7 @@ fn executor_produced_resident_parquet_output_freezes_without_quarantine() {
     attempt_observation.record_physical_execution_started().unwrap();
     attempt_observation.record_gpu_execution_started().unwrap();
     let producer_context = producer.acquire_context().expect("producer context");
-    let result = crate::exec::execute_query_plan(producer_context.context(), &plan)
+    let result = execute_plan(producer_context.context(), &plan, None)
         .expect("multi row-group resident scan executes");
     let (output, _) = result.into_parts();
     let resident = output.as_gpu_resident().expect("GPU-resident sink produces a resident output owner");

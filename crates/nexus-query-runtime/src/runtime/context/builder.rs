@@ -32,7 +32,9 @@ use super::{
 use crate::observability::{RuntimeObservationConfig, RuntimeQueryId, RuntimeTraceId};
 use crate::{
     metrics::{QueryId, TraceId},
-    observability::{RuntimeObservationHandle, RuntimeObservationSession, RuntimeTerminalOutcome},
+    observability::{
+        RuntimeObservationHandle, RuntimeObservationOwner, RuntimeObservationSession, RuntimeTerminalOutcome,
+    },
 };
 
 /// Builder for [`ExecutionContext`].
@@ -323,7 +325,7 @@ impl ExecutionContextBuilder {
         self.build_context(RuntimeObservationHandle::disabled())
     }
 
-    /// Builds a cloneable execution context paired with its unique observation owner.
+    /// Builds a cloneable execution context paired with its observation owner.
     #[cfg(any(test, feature = "test-hooks"))]
     pub fn build_with_runtime_observation(
         self,
@@ -342,7 +344,11 @@ impl ExecutionContextBuilder {
     ) -> std::result::Result<RuntimeObservedExecutionContext, RuntimeObservationBuildError> {
         let handle = observation.handle();
         match self.build_context(handle) {
-            Ok(context) => Ok(RuntimeObservedExecutionContext::new(context, observation)),
+            Ok(mut context) => {
+                let owner = RuntimeObservationOwner::from_session(observation);
+                context.runtime_observation_owner = Some(owner.clone());
+                Ok(RuntimeObservedExecutionContext::new(context, owner))
+            },
             Err(error) => Err(RuntimeObservationBuildError::new(error, observation)),
         }
     }

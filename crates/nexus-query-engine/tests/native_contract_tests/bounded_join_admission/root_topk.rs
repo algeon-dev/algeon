@@ -43,7 +43,7 @@ fn bounded_root_topk_join_aggregate_allows_shared_source_reuse() {
         analysis.admits_root_topk_join_aggregate_pipeline(),
         "source reuse is a modeled source-read contract, not computed producer fanout"
     );
-    let admission = nexus_query_engine::admission::bounded_pipeline_admission(&plan)
+    let admission = bounded_pipeline_admission(&plan)
         .expect("bounded admission should not fail")
         .expect("shared-source root TopK join/aggregate pipeline should be admitted");
     assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
@@ -81,7 +81,7 @@ fn bounded_root_topk_join_aggregate_allows_shared_computed_fanout_with_explicit_
         });
         assert!(has_expected_shared_producer, "{variant:?}: expected shared {expected_shared_operator} producer");
 
-        let admission = nexus_query_engine::admission::bounded_pipeline_admission(&plan)
+        let admission = bounded_pipeline_admission(&plan)
             .expect("bounded admission should not fail")
             .unwrap_or_else(|| panic!("{variant:?} root TopK join/aggregate pipeline should be admitted"));
         assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
@@ -122,7 +122,7 @@ fn bounded_root_topk_join_aggregate_allows_distinct_and_keyless_subcontracts() {
             analysis.admits_root_topk_join_aggregate_pipeline(),
             "{variant:?} should be admitted only through an explicit distinct/keyless subcontract"
         );
-        let admission = nexus_query_engine::admission::bounded_pipeline_admission(&plan)
+        let admission = bounded_pipeline_admission(&plan)
             .expect("bounded admission should not fail")
             .unwrap_or_else(|| panic!("{variant:?} root TopK join/aggregate pipeline should be admitted"));
         assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
@@ -163,7 +163,7 @@ fn bounded_root_topk_join_aggregate_allows_sort_fetch_hash_join_input_subcontrac
             analysis.admits_root_topk_join_aggregate_pipeline(),
             "{variant:?} should be admitted only through an explicit sort-fetch hash-join-input subcontract"
         );
-        let admission = nexus_query_engine::admission::bounded_pipeline_admission(&plan)
+        let admission = bounded_pipeline_admission(&plan)
             .expect("bounded admission should not fail")
             .unwrap_or_else(|| panic!("{variant:?} root TopK pipeline should be admitted"));
         assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
@@ -180,7 +180,7 @@ fn bounded_root_topk_allows_one_left_join_after_grouped_aggregate_topk() {
         "decision={:?}",
         analysis.root_topk_join_aggregate_admission
     );
-    let admission = nexus_query_engine::admission::bounded_pipeline_admission(&plan)
+    let admission = bounded_pipeline_admission(&plan)
         .expect("bounded admission should not fail")
         .expect("grouped aggregate TopK left join should be admitted");
     assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
@@ -215,7 +215,7 @@ fn bounded_root_topk_join_aggregate_allows_sort_fetch_join_aggregate_subcontract
             "{variant:?} should be admitted only through an explicit sort-fetch join-aggregate subcontract: {:?}",
             analysis.root_topk_join_aggregate_admission
         );
-        let admission = nexus_query_engine::admission::bounded_pipeline_admission(&plan)
+        let admission = bounded_pipeline_admission(&plan)
             .expect("bounded admission should not fail")
             .unwrap_or_else(|| panic!("{variant:?} root TopK pipeline should be admitted"));
         assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
@@ -242,7 +242,7 @@ fn bounded_root_topk_join_aggregate_allows_null_filtered_aggregate_fan_in_subcon
             "null-filtered left-join aggregate fan-in should be admitted after rewriting marker filters to LeftAnti ({variant:?}): {:?}",
             analysis.root_topk_join_aggregate_admission
         );
-        let admission = nexus_query_engine::admission::bounded_pipeline_admission(&plan)
+        let admission = bounded_pipeline_admission(&plan)
             .expect("bounded admission should not fail")
             .expect("null-filtered aggregate fan-in root TopK pipeline should be admitted");
         assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
@@ -345,7 +345,7 @@ fn bounded_root_topk_join_aggregate_shape_miss_does_not_mask_general_rejection()
         assert_ne!(projection.reason, "root_topk_join_aggregate_requires_grouped_aggregate_fragment");
     }
     let admission =
-        nexus_query_engine::admission::bounded_pipeline_admission(&plan).expect("bounded admission should not fail");
+        bounded_pipeline_admission(&plan).expect("bounded admission should not fail");
     if let Some(admission) = admission {
         assert_ne!(
             admission.envelope(),

@@ -28,9 +28,7 @@ use nexus_query_engine::{
     chunk::{SourceChunkPlanningPolicy, plan_local_parquet_source_chunks},
     error::QueryErrorCode,
     exec::{
-        execute_query_plan_with_gpu_inputs as execute_query_plan_with_gpu_inputs_direct,
-        execute_query_plan_with_gpu_inputs_observed as execute_query_plan_with_gpu_inputs_observed_direct,
-        materialize_gpu_result_to_host,
+        QueryExecutionRequest, execute_query_plan as execute_query_plan_direct, materialize_gpu_result_to_host,
         output::{QueryExecutionResult, QueryOutput},
     },
     expr::{
@@ -39,7 +37,7 @@ use nexus_query_engine::{
     },
     metrics::QueryMetrics,
     mode::StatisticalAggregateExecutionMode,
-    observability::{RuntimeObservationConfig, RuntimeObservationOwner},
+    observability::RuntimeObservationOwner,
     plan::{
         JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec, JoinType, PlanNode, ProjectionOutput,
         QueryPlan, QueryPlanBuilder, WindowFunction, WindowSpec,
@@ -329,11 +327,9 @@ impl BackendQueryContext {
         nexus_query_engine::exec::preflight_bounded_query_plan(plan, self.policy.statistical_aggregate_execution_mode)?;
         let evidence = capability_evidence_for_fixture_plan(plan)?;
         let admitted = self.admit_evidence_with_observation(evidence, Some(RuntimeObservationOwner::disabled()))?;
-        let outcome = execute_query_plan_with_gpu_inputs_observed_direct(
+        let outcome = execute_query_plan_direct(
             admitted.context.context(),
-            plan,
-            gpu_inputs,
-            RuntimeObservationConfig::disabled(),
+            QueryExecutionRequest::new(plan).with_gpu_inputs(gpu_inputs),
         );
         let (result, metrics, _observation) = outcome.into_parts();
         let result = result.map(|output| QueryExecutionResult::new(output, metrics));
@@ -372,7 +368,12 @@ impl TestExecutionContext for AdmittedPlanContext {
         plan: &QueryPlan,
         gpu_inputs: &GpuResidentInputMap,
     ) -> nexus_query_engine::error::Result<QueryExecutionResult> {
-        execute_query_plan_with_gpu_inputs_direct(self.context.context(), plan, gpu_inputs)
+        let outcome = execute_query_plan_direct(
+            self.context.context(),
+            QueryExecutionRequest::new(plan).with_gpu_inputs(gpu_inputs),
+        );
+        let (result, metrics, _observation) = outcome.into_parts();
+        result.map(|output| QueryExecutionResult::new(output, metrics))
     }
 }
 

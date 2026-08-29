@@ -810,8 +810,7 @@ impl AttemptAdmissionBinding {
         self.observation_owner.register_seal_observer(observer);
     }
 
-    #[doc(hidden)]
-    pub fn into_parts(self) -> (RuntimeObservationOwner, AttemptFinalizerSlot) {
+    pub(crate) fn into_parts(self) -> (RuntimeObservationOwner, AttemptFinalizerSlot) {
         (self.observation_owner, self.finalizer_slot)
     }
 }

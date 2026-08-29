@@ -9,7 +9,7 @@ pub use super::compiled::{
     CompiledSchedulingCycle, CompiledTaskExecutor, CompiledTaskOutput, ReleasedCompiledResource,
 };
 use crate::{
-    admission::{bounded_cugraph_pipeline_admission, bounded_pipeline_admission_with_statistical_aggregate_mode},
+    admission::bounded_pipeline_decision,
     error::Result,
     exec::output::QueryOutput,
     metrics::QueryMetrics,
@@ -24,14 +24,8 @@ pub(in crate::exec) fn try_execute_bounded_pipeline(
     metrics: &mut QueryMetrics,
     observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
 ) -> Result<Option<QueryOutput>> {
-    let admission = if plan.contains_graph_algorithm() {
-        bounded_cugraph_pipeline_admission(plan)?
-    } else {
-        bounded_pipeline_admission_with_statistical_aggregate_mode(
-            plan,
-            context.statistical_aggregate_execution_mode(),
-        )?
-    };
+    let admission =
+        bounded_pipeline_decision(plan, context.statistical_aggregate_execution_mode())?.into_execution_admission()?;
     let Some(admission) = admission else {
         return Ok(None);
     };

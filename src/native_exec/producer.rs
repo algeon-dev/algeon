@@ -21,8 +21,7 @@ use datafusion::{
 };
 use futures::future::BoxFuture;
 use nexus_query_engine::{
-    exec::{execute_query_plan_observed, output::QueryOutput},
-    observability::RuntimeObservationConfig,
+    exec::{QueryExecutionRequest, execute_query_plan, output::QueryOutput},
     plan::QueryPlan,
     runtime::{ExecutionContext, SourceStorageProfile, resident::GpuResultHandle},
 };
@@ -278,11 +277,7 @@ impl NexusNativeGpuProducerExec {
             self.plan_task_mapping_datafusion_shape.as_deref(),
         );
         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
-        let runtime_observation_config = self.metrics_capture.as_ref().map_or_else(
-            RuntimeObservationConfig::native_execution,
-            NativeExecutionMetricsCapture::runtime_observation_config,
-        );
-        let outcome = execute_query_plan_observed(native_context, plan, runtime_observation_config);
+        let outcome = execute_query_plan(native_context, QueryExecutionRequest::new(plan));
         let output = metrics.finalize_query_outcome(outcome).map_err(|error| {
             DataFusionError::from(native_query_runtime_error(
                 "datafusion_nexus.native_gpu_producer.execute_gpu",

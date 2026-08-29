@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use crate::{
-    capability::{CapabilityAnalysis, CapabilityRejectionOwner, CapabilityRejectionProjection},
+    capability::{CapabilityRejectionOwner, CapabilityRejectionProjection},
     error::QueryError,
+    mode::StatisticalAggregateExecutionMode,
     plan::QueryPlan,
 };
 
@@ -15,9 +16,10 @@ pub fn bounded_join_unsupported_shape_facts(plan: &QueryPlan) -> Option<BTreeMap
         return None;
     }
 
-    match super::bounded_pipeline_rejection_projection(plan) {
-        Ok(Some(projection)) => Some(bounded_join_unsupported_shape_facts_with_projection(plan, Some(&projection))),
-        Ok(None) => None,
+    match super::bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default()) {
+        Ok(decision) => decision
+            .rejection_projection()
+            .map(|projection| bounded_join_unsupported_shape_facts_with_projection(plan, Some(projection))),
         Err(error) => {
             let mut facts = bounded_join_unsupported_shape_facts_with_projection(plan, None);
             insert_bounded_join_rejection_projection_error_facts(&mut facts, &error);
@@ -31,8 +33,11 @@ pub fn bounded_join_modeled_facts(plan: &QueryPlan) -> Option<BTreeMap<&'static 
     if !plan.contains_join() {
         return None;
     }
-    matches!(super::bounded_pipeline_rejection_projection(plan), Ok(None))
-        .then(|| bounded_join_modeled_facts_unchecked(plan))
+    matches!(
+        super::bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default()),
+        Ok(decision) if decision.admission().is_some()
+    )
+    .then(|| bounded_join_modeled_facts_unchecked(plan))
 }
 
 #[doc(hidden)]
@@ -41,9 +46,8 @@ pub fn bounded_join_unsupported_shape_facts_with_projection(
     rejection_projection: Option<&CapabilityRejectionProjection>,
 ) -> BTreeMap<&'static str, String> {
     let mut facts = BTreeMap::new();
-    let analysis = plan.capability_analysis();
     insert_join_strategy_facts(&mut facts, plan);
-    insert_local_rejection_facts(&mut facts, &analysis, rejection_projection);
+    insert_local_rejection_facts(&mut facts, plan, rejection_projection);
     facts
 }
 
@@ -141,10 +145,11 @@ fn insert_csv_fact(facts: &mut BTreeMap<&'static str, String>, key: &'static str
 
 fn insert_local_rejection_facts(
     facts: &mut BTreeMap<&'static str, String>,
-    analysis: &CapabilityAnalysis,
+    plan: &QueryPlan,
     rejection_projection: Option<&CapabilityRejectionProjection>,
 ) {
-    let analysis_projection = analysis.first_rejection_projection();
+    let analysis_projection =
+        rejection_projection.is_none().then(|| plan.capability_analysis().first_rejection_projection()).flatten();
     if let Some(rejection) = rejection_projection.or(analysis_projection.as_ref()) {
         facts.insert("bounded_join_rejection_scope", rejection.contract_scope.as_str().to_string());
         facts.insert("bounded_join_rejection_owner", rejection_owner_fact(&rejection.owner));

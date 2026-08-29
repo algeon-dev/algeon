@@ -30,11 +30,10 @@ mod schema;
 mod zero_column_count;
 
 use cache_runtime::*;
-pub use cudf_contract::{ResolvedRemoteParquetDatasourceProbe, probe_resolved_remote_parquet_datasource};
 use cudf_contract::{
     cudf_local_parquet_source_chunk, cudf_local_parquet_source_chunk_batch, cudf_local_parquet_source_file_selection,
 };
-pub use gpu_resident::read_gpu_resident_source;
+pub(in crate::exec) use gpu_resident::read_gpu_resident_source;
 use lakehouse_cache::*;
 pub(super) use metrics::{
     attach_row_group_facts, attach_row_group_facts_if_absent, format_row_groups, record_bounded_parquet_source_metrics,
@@ -64,7 +63,7 @@ pub(in crate::exec) fn parquet_chunk_path_fact(chunk: &SourceChunk) -> String {
 /// Read a local Parquet source into a GPU dataframe.
 ///
 /// The source is validated before reading and is then read directly.
-pub fn read_local_parquet_source(
+pub(in crate::exec) fn read_local_parquet_source(
     context: &ExecutionContext,
     source_node_id: NodeId,
     source: &LocalParquetSource,
@@ -141,7 +140,7 @@ fn promote_source_cache_load(
 }
 
 /// Import a literal host Arrow source into a GPU dataframe.
-pub fn read_literal_batch_source(
+pub(in crate::exec) fn read_literal_batch_source(
     context: &ExecutionContext,
     source: &crate::source::LiteralBatchSource,
     metrics: &mut QueryMetrics,

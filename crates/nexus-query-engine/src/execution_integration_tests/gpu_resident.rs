@@ -49,6 +49,20 @@ fn try_guaranteed_runtime_test_service() -> Result<QueryService> {
     try_guaranteed_runtime_test_service_with_concurrency(1)
 }
 
+fn execute_plan(
+    context: &crate::runtime::ExecutionContext,
+    plan: &crate::plan::QueryPlan,
+    gpu_inputs: Option<&crate::runtime::resident::GpuResidentInputMap>,
+) -> Result<crate::exec::output::QueryExecutionResult> {
+    let mut request = crate::exec::QueryExecutionRequest::new(plan);
+    if let Some(gpu_inputs) = gpu_inputs {
+        request = request.with_gpu_inputs(gpu_inputs);
+    }
+    let outcome = crate::exec::execute_query_plan(context, request);
+    let (result, metrics, _observation) = outcome.into_parts();
+    result.map(|output| crate::exec::output::QueryExecutionResult::new(output, metrics))
+}
+
 fn runtime_test_service_with_profiles(
     config: QueryExecutionConfig,
     queue_bounds: QueueBounds,

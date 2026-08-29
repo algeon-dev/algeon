@@ -11,12 +11,12 @@ use arrow::{
 };
 use nexus_query_engine::{
     error::{QueryError, QueryErrorCode},
-    exec::execute_query_plan_with_runtime_observation,
+    exec::{QueryExecutionRequest, execute_query_plan},
     metrics::{QueryId, TraceId},
     observability::{
-        DeterministicRuntimeObservationClock, QueryBoundaryKind, RuntimeObservationConfig, RuntimeObservationHandle,
-        RuntimeObservationPayload, RuntimeObservationRecordDisposition, RuntimeObservationSession, RuntimeQueryId,
-        RuntimeTerminalOutcome, RuntimeTraceId,
+        QueryBoundaryKind, RuntimeObservationConfig, RuntimeObservationHandle, RuntimeObservationPayload,
+        RuntimeObservationRecordDisposition, RuntimeObservationSession, RuntimeQueryId, RuntimeTerminalOutcome,
+        RuntimeTraceId,
     },
     plan::QueryPlanBuilder,
     runtime::{
@@ -27,19 +27,6 @@ use nexus_query_engine::{
 };
 
 const LARGE_BYTE_LIMIT: u64 = 16 * 1024 * 1024;
-
-fn test_session(
-    config: RuntimeObservationConfig,
-) -> (RuntimeObservationSession, Arc<DeterministicRuntimeObservationClock>) {
-    let clock = Arc::new(DeterministicRuntimeObservationClock::new(Some(1_234_567)));
-    let session = RuntimeObservationSession::with_clock(
-        "query-observation",
-        Some(RuntimeTraceId::new("trace-parent")),
-        config,
-        clock.clone(),
-    );
-    (session, clock)
-}
 
 fn query_started() -> RuntimeObservationPayload {
     RuntimeObservationPayload::QueryBoundary { boundary: QueryBoundaryKind::Started }
@@ -67,15 +54,18 @@ fn observed_execution_cancellation_preserves_error_metrics_and_partial_events() 
     let plan = plan.finish_with_host_sink(source);
     let cancellation = ExecutionCancellation::new();
     cancellation.cancel();
-    let context = ExecutionContext::builder()
+    let observed = ExecutionContext::builder()
         .with_query_id("observed-cancel")
         .with_cancellation(cancellation)
-        .build()
+        .with_runtime_observation_session(RuntimeObservationSession::new(
+            "observed-cancel",
+            None,
+            RuntimeObservationConfig::bounded(16, LARGE_BYTE_LIMIT),
+        ))
+        .build_with_runtime_observation()
         .expect("context builds before execution");
-    let (session, _) = test_session(RuntimeObservationConfig::bounded(16, LARGE_BYTE_LIMIT));
-    let session = RuntimeObservationSession::new("observed-cancel", None, session.config());
 
-    let outcome = execute_query_plan_with_runtime_observation(&context, &plan, session);
+    let outcome = execute_query_plan(observed.context(), QueryExecutionRequest::new(&plan));
     assert!(matches!(outcome.result(), Err(error) if error.code() == QueryErrorCode::Cancelled));
     assert_eq!(outcome.metrics().query_id().as_str(), "observed-cancel");
     let snapshot = outcome.observation().expect("enabled execution returns sealed evidence");
@@ -92,32 +82,24 @@ fn explicit_observed_execution_uses_manifest_identity_on_query_mismatch() {
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
     let mut plan = QueryPlanBuilder::new();
     let source = plan.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
-    let plan = plan.finish_with_host_sink(source);
-    let context = ExecutionContext::builder()
+    let _plan = plan.finish_with_host_sink(source);
+    let failure = ExecutionContext::builder()
         .with_query_id("context-query")
         .with_trace_id("shared-trace")
-        .build()
-        .expect("context builds");
-    let session = RuntimeObservationSession::new(
-        "manifest-query",
-        Some(RuntimeTraceId::new("shared-trace")),
-        RuntimeObservationConfig::bounded(32, LARGE_BYTE_LIMIT),
-    );
-
-    let outcome = execute_query_plan_with_runtime_observation(&context, &plan, session);
-    let error = match outcome.result() {
-        Err(error) => error,
-        Ok(_) => panic!("query identity mismatch must fail before execution"),
-    };
+        .with_runtime_observation_session(RuntimeObservationSession::new(
+            "manifest-query",
+            Some(RuntimeTraceId::new("shared-trace")),
+            RuntimeObservationConfig::bounded(32, LARGE_BYTE_LIMIT),
+        ))
+        .build_with_runtime_observation()
+        .expect_err("query identity mismatch must fail during context construction");
+    let (error, observation) = failure.into_parts();
     assert_eq!(error.fact_value("reason"), Some("runtime_observation_query_id_mismatch"));
-    assert_eq!(error.query_id().map(QueryId::as_str), Some("manifest-query"));
-    assert_eq!(error.trace_id().map(TraceId::as_str), Some("shared-trace"));
-    assert_eq!(outcome.metrics().query_id().as_str(), "manifest-query");
-    assert_eq!(outcome.metrics().trace_id.as_ref().map(TraceId::as_str), Some("shared-trace"));
-    let snapshot = outcome.observation().expect("mismatch still seals observation");
+    let snapshot =
+        observation.seal(RuntimeTerminalOutcome::from_query_error(&error)).expect("mismatch returns seal authority");
     assert_eq!(snapshot.manifest().query_id.as_str(), "manifest-query");
     assert_eq!(snapshot.manifest().trace_id.as_ref().map(RuntimeTraceId::as_str), Some("shared-trace"));
-    assert_eq!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::from_query_error(error)));
+    assert_eq!(snapshot.footer().terminal, Some(RuntimeTerminalOutcome::from_query_error(&error)));
 }
 
 #[test]
@@ -126,29 +108,21 @@ fn explicit_observed_execution_uses_manifest_identity_on_trace_mismatch() {
     let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
     let mut plan = QueryPlanBuilder::new();
     let source = plan.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
-    let plan = plan.finish_with_host_sink(source);
-    let context = ExecutionContext::builder()
+    let _plan = plan.finish_with_host_sink(source);
+    let failure = ExecutionContext::builder()
         .with_query_id("shared-query")
         .with_trace_id("context-trace")
-        .build()
-        .expect("context builds");
-    let session = RuntimeObservationSession::new(
-        "shared-query",
-        Some(RuntimeTraceId::new("manifest-trace")),
-        RuntimeObservationConfig::bounded(32, LARGE_BYTE_LIMIT),
-    );
-
-    let outcome = execute_query_plan_with_runtime_observation(&context, &plan, session);
-    let error = match outcome.result() {
-        Err(error) => error,
-        Ok(_) => panic!("trace identity mismatch must fail before execution"),
-    };
+        .with_runtime_observation_session(RuntimeObservationSession::new(
+            "shared-query",
+            Some(RuntimeTraceId::new("manifest-trace")),
+            RuntimeObservationConfig::bounded(32, LARGE_BYTE_LIMIT),
+        ))
+        .build_with_runtime_observation()
+        .expect_err("trace identity mismatch must fail during context construction");
+    let (error, observation) = failure.into_parts();
     assert_eq!(error.fact_value("reason"), Some("runtime_observation_trace_id_mismatch"));
-    assert_eq!(error.query_id().map(QueryId::as_str), Some("shared-query"));
-    assert_eq!(error.trace_id().map(TraceId::as_str), Some("manifest-trace"));
-    assert_eq!(outcome.metrics().query_id().as_str(), "shared-query");
-    assert_eq!(outcome.metrics().trace_id.as_ref().map(TraceId::as_str), Some("manifest-trace"));
-    let snapshot = outcome.observation().expect("mismatch still seals observation");
+    let snapshot =
+        observation.seal(RuntimeTerminalOutcome::from_query_error(&error)).expect("mismatch returns seal authority");
     assert_eq!(snapshot.manifest().query_id.as_str(), "shared-query");
     assert_eq!(snapshot.manifest().trace_id.as_ref().map(RuntimeTraceId::as_str), Some("manifest-trace"));
 }
@@ -166,7 +140,7 @@ fn execution_context_workers_receive_recording_handle_without_owner_authority() 
 
     let snapshot = observed.context().runtime_observation().live_snapshot().expect("original sees clone record");
     assert_eq!(snapshot.manifest().query_id.as_str(), "context-query");
-    assert_eq!(snapshot.events().len(), 1);
+    assert_eq!(snapshot.events().iter().filter(|event| event.payload == query_started()).count(), 2);
     let sealed = observed.observation().seal(RuntimeTerminalOutcome::Succeeded).expect("owner seals after worker");
     assert!(sealed.footer().complete);
     assert_eq!(cloned.runtime_observation().record(query_started), RuntimeObservationRecordDisposition::Sealed);
@@ -416,7 +390,17 @@ fn observed_context_identity_changes_require_manifest_equality() {
     let same = observed.context().with_query_id("fixed-query").expect("same query id is allowed");
     let same = same.with_trace_id("fixed-trace").expect("same trace id is allowed");
     same.runtime_observation().record(query_started);
-    assert_eq!(observed.observation().live_snapshot().expect("owner sees clone record").events().len(), 1);
+    assert_eq!(
+        observed
+            .observation()
+            .live_snapshot()
+            .expect("owner sees clone record")
+            .events()
+            .iter()
+            .filter(|event| event.payload == query_started())
+            .count(),
+        2
+    );
 
     let query_error = observed.context().with_query_id("other-query").expect_err("query id cannot diverge");
     assert_eq!(query_error.fact_value("reason"), Some("runtime_observation_query_id_mismatch"));

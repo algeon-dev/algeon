@@ -325,16 +325,25 @@ fn observed_compiled_root_join_records_registered_tasks_without_reservation_even
     write_join_parquets(&left_path, &right_path);
     let plan = root_join_data_plan(&left_path, &right_path);
     let pipeline = compile_pipeline(&plan, &plan.capability_analysis()).expect("observed root join compiles");
-    let context = bounded_context(shared_runtime(runtime), &plan);
+    let (context, observation) = bounded_observed_context(shared_runtime(runtime), &plan);
 
-    let outcome = nexus_query_engine::exec::execute_query_plan_observed(
+    let outcome = nexus_query_engine::exec::execute_query_plan(
         &context,
-        &plan,
-        nexus_query_engine::observability::RuntimeObservationConfig::native_execution(),
+        nexus_query_engine::exec::QueryExecutionRequest::new(&plan),
     );
-    assert!(matches!(outcome.result(), Ok(QueryOutput::HostArrow(_))));
-    let metrics = outcome.metrics();
-    let snapshot = outcome.observation().expect("observed compiled execution seals evidence");
+    let (result, metrics, plan_observation) = outcome.into_parts();
+    assert!(matches!(result, Ok(QueryOutput::HostArrow(_))));
+    assert!(plan_observation.is_none(), "one plan must not seal its query observation");
+    context._handle.finish();
+    drop(context);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let snapshot = loop {
+        if let Some(snapshot) = observation.sealed_snapshot() {
+            break snapshot;
+        }
+        assert!(std::time::Instant::now() < deadline, "query observation seals after cleanup");
+        std::thread::yield_now();
+    };
     assert!(snapshot.events().iter().all(|event| !matches!(
         event.payload,
         nexus_query_engine::observability::RuntimeObservationPayload::Reservation(_)
@@ -475,9 +484,7 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
         .expect("GPU sink root join should be admitted");
     assert_eq!(admission.pipeline().sink().kind(), SinkBoundaryKind::GpuResidentOutput);
     assert!(
-        nexus_query_engine::admission::bounded_pipeline_rejection_projection(&plan)
-            .expect("bounded rejection projection should not fail")
-            .is_none(),
+        bounded_pipeline_rejection_projection(&plan).expect("bounded rejection projection should not fail").is_none(),
         "GPU sink should stay inside the compiled bounded envelope"
     );
     assert!(

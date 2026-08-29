@@ -23,7 +23,6 @@ mod resident;
 mod source_batching_policy;
 
 use aggregate::*;
-pub use aggregate::{PartialAggregateShape, partial_aggregate_upper_bound_bytes};
 pub(in crate::exec::bounded) use aggregate::{
     SourceAdjacentAggregateChunkCapHints, apply_source_adjacent_aggregate_chunk_caps,
 };
@@ -55,10 +54,6 @@ pub(in crate::exec::bounded) use join::{
     plan_bounded_aggregate_input_local_parquet_source_stream, plan_bounded_join_leaf_local_parquet_source_stream,
     plan_bounded_shared_join_aggregate_local_parquet_source_stream, release_bounded_compiled_join_probe_state,
     stream_bounded_join_leaf_local_parquet_source_chunks, try_start_bounded_join_leaf_local_parquet_source_prefetch,
-};
-pub use join::{
-    JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, STRING_OFFSET_BYTES_CONSERVATIVE,
-    join_output_upper_bound_bytes,
 };
 pub(in crate::exec::bounded) use partition_row_policy::BoundedPartitionRowPolicy;
 pub(in crate::exec::bounded) use partition_target_policy::BoundedPartitionTargetPolicy;
@@ -150,29 +145,24 @@ pub(super) fn preflight_bounded_join_plan(
             "bounded native join execution requires an executable compiled pipeline",
             "bounded_join_plan_shape_unsupported",
         );
-        let mut projection_error_source = None;
-        let rejection_projection =
-            match crate::admission::bounded_pipeline_rejection_projection_with_statistical_aggregate_mode(
-                plan,
-                statistical_aggregate_execution_mode,
-            ) {
-                Ok(Some(projection)) => Some(projection),
-                Ok(None) => return Ok(()),
-                Err(projection_error) => {
-                    projection_error_source = Some(projection_error);
-                    None
-                },
-            };
-        let mut facts =
-            crate::admission::bounded_join_unsupported_shape_facts_with_projection(plan, rejection_projection.as_ref());
-        if let Some(projection_error) = projection_error_source.as_ref() {
-            crate::admission::insert_bounded_join_rejection_projection_error_facts(&mut facts, projection_error);
-        }
+        let decision = match crate::admission::bounded_pipeline_decision(plan, statistical_aggregate_execution_mode) {
+            Ok(decision) => decision,
+            Err(projection_error) => {
+                let mut facts = crate::admission::bounded_join_unsupported_shape_facts_with_projection(plan, None);
+                crate::admission::insert_bounded_join_rejection_projection_error_facts(&mut facts, &projection_error);
+                for (key, value) in facts {
+                    error = error.with_fact(key, value);
+                }
+                return Err(error.with_source(projection_error));
+            },
+        };
+        let Some(rejection_projection) = decision.rejection_projection() else {
+            return Ok(());
+        };
+        let facts =
+            crate::admission::bounded_join_unsupported_shape_facts_with_projection(plan, Some(rejection_projection));
         for (key, value) in facts {
             error = error.with_fact(key, value);
-        }
-        if let Some(projection_error) = projection_error_source {
-            error = error.with_source(projection_error);
         }
         return Err(error);
     }

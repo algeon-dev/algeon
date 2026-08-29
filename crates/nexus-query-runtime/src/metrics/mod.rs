@@ -25,10 +25,7 @@ mod source_read;
 mod task;
 
 use correlation::inherited_query_id;
-pub use nexus_query_planning::{
-    correlation::{CompiledTaskId, PlanNodeId, QueryId, TraceId},
-    execution_contracts::{MemorySpaceId, ReservationKind},
-};
+pub use nexus_query_planning::correlation::{CompiledTaskId, PlanNodeId, QueryId, TraceId};
 
 pub use self::{
     aggregate::AggregateStrategyDecisionMetrics,
@@ -39,10 +36,7 @@ pub use self::{
     },
     boundary::BoundaryMetrics,
     correlation::PlanTaskMapping,
-    descriptor::{
-        DATAFUSION_PROJECTION_METRIC_DESCRIPTORS, MetricAggregation, MetricDescriptor, MetricDirection, MetricUnit,
-        QUERY_METRIC_DESCRIPTORS, native_datafusion_metric_descriptors,
-    },
+    descriptor::{MetricAggregation, MetricDescriptor, MetricDirection, MetricUnit, QUERY_METRIC_DESCRIPTORS},
     dynamic_filter::{DynamicFilterRuntimeMetrics, DynamicFilterSourceSnapshot},
     graph::GraphAlgorithmRuntimeMetrics,
     join::{JoinOperatorMetrics, JoinStrategyDecisionMetrics},

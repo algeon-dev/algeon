@@ -1,19 +1,5 @@
 use super::{DataFrame, ExecutionContext, ExecutionOverrides, QueryError, QueryErrorCode, Result};
 
-#[cfg(feature = "cugraph")]
-thread_local! {
-    // Graph statistics probing is synchronous today. Keeping this test hook
-    // thread-local prevents one integration test from consuming another test's
-    // forced optional-resource exhaustion.
-    static FORCE_NEXT_GRAPH_STATISTICS_OPTIONAL_RESOURCE_EXHAUSTED: std::cell::Cell<bool> =
-        const { std::cell::Cell::new(false) };
-}
-
-#[cfg(all(any(test, feature = "test-hooks"), feature = "cugraph"))]
-pub fn force_next_graph_statistics_optional_resource_exhausted_for_test() {
-    FORCE_NEXT_GRAPH_STATISTICS_OPTIONAL_RESOURCE_EXHAUSTED.with(|force| force.set(true));
-}
-
 /// Runs the runtime graph vertex-count probe on the attempt's own runtime.
 ///
 /// This runtime sizing only informs betweenness seed selection. It carries no

@@ -41,8 +41,9 @@ use super::{
 use crate::{
     metrics::{QueryId, TraceId},
     observability::{
-        AttemptComposedScheduleProjection, RuntimeObservationHandle, RuntimeObservationSession,
-        RuntimeStreamLeaseScope, RuntimeTaskId, RuntimeTraceId, RuntimeWorkerId,
+        AttemptComposedScheduleProjection, PlanExecutionId, RuntimeExecutionObservationScope, RuntimeObservationHandle,
+        RuntimePlanExecutionLifecycle, RuntimeQueryLifecycle, RuntimeStreamLeaseScope, RuntimeTaskId,
+        RuntimeTerminalOutcome, RuntimeTraceId, RuntimeWorkerId, SealedRuntimeObservationSnapshot,
     },
 };
 
@@ -1061,34 +1062,89 @@ pub struct LeasedExecutionContext {
     context: ExecutionContext,
 }
 
-/// Root execution context paired with the unique runtime observation owner.
+/// Root execution context paired with its runtime observation owner.
 ///
-/// Clones obtained from [`Self::context`] contain only the recording handle.
-/// The owner remains here until query-owned cleanup can seal it.
+/// The context retains the owner internally so native execution can select the
+/// correct query or plan completion boundary. Callers that need to inspect or
+/// finish the standalone observation retain the same shared owner here.
 #[derive(Debug)]
 pub struct RuntimeObservedExecutionContext {
     context: ExecutionContext,
-    observation: RuntimeObservationSession,
+    observation: crate::observability::RuntimeObservationOwner,
 }
 
 impl RuntimeObservedExecutionContext {
-    pub(super) fn new(context: ExecutionContext, observation: RuntimeObservationSession) -> Self {
+    pub(super) fn new(context: ExecutionContext, observation: crate::observability::RuntimeObservationOwner) -> Self {
         Self { context, observation }
     }
 
-    /// Returns the cloneable execution context carrying recording access only.
+    /// Returns the execution context carrying the observation lifecycle state.
     pub fn context(&self) -> &ExecutionContext {
         &self.context
     }
 
     /// Returns the owner-only terminal-seal capability.
-    pub fn observation(&self) -> &RuntimeObservationSession {
+    pub fn observation(&self) -> &crate::observability::RuntimeObservationOwner {
         &self.observation
     }
 
-    /// Separates the cloneable execution context from its owner capability.
-    pub fn into_parts(self) -> (ExecutionContext, RuntimeObservationSession) {
+    /// Returns the execution context together with its shared owner.
+    pub fn into_parts(self) -> (ExecutionContext, crate::observability::RuntimeObservationOwner) {
         (self.context, self.observation)
+    }
+}
+
+/// One native execution observation boundary selected from context ownership.
+///
+/// This type exposes plan recording and terminal completion without exposing
+/// the observation owner stored by the execution context.
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct RuntimeExecutionObservationLifecycle {
+    inner: RuntimeExecutionObservationLifecycleInner,
+}
+
+#[derive(Debug)]
+enum RuntimeExecutionObservationLifecycleInner {
+    Query(RuntimeQueryLifecycle),
+    Plan(RuntimePlanExecutionLifecycle),
+}
+
+impl RuntimeExecutionObservationLifecycle {
+    fn for_context(context: &ExecutionContext, plan_execution_id: PlanExecutionId) -> Self {
+        let inner = match &context.runtime_observation_owner {
+            Some(owner) if context.query_service_admitted => RuntimeExecutionObservationLifecycleInner::Plan(
+                RuntimePlanExecutionLifecycle::from_owner(owner.clone(), plan_execution_id),
+            ),
+            Some(owner) => RuntimeExecutionObservationLifecycleInner::Query(RuntimeQueryLifecycle::from_owner(
+                owner.clone(),
+                plan_execution_id,
+            )),
+            None => RuntimeExecutionObservationLifecycleInner::Plan(RuntimePlanExecutionLifecycle::from_handle(
+                context.runtime_observation.clone(),
+                plan_execution_id,
+            )),
+        };
+        Self { inner }
+    }
+
+    /// Returns the record-only scope for one native plan invocation.
+    pub fn execution_scope(&self) -> RuntimeExecutionObservationScope {
+        match &self.inner {
+            RuntimeExecutionObservationLifecycleInner::Query(lifecycle) => lifecycle.execution_scope(),
+            RuntimeExecutionObservationLifecycleInner::Plan(lifecycle) => lifecycle.execution_scope(),
+        }
+    }
+
+    /// Completes this plan or standalone query according to context ownership.
+    pub fn finish(self, outcome: RuntimeTerminalOutcome) -> Option<SealedRuntimeObservationSnapshot> {
+        match self.inner {
+            RuntimeExecutionObservationLifecycleInner::Query(lifecycle) => lifecycle.finish(outcome),
+            RuntimeExecutionObservationLifecycleInner::Plan(lifecycle) => {
+                lifecycle.finish(outcome);
+                None
+            },
+        }
     }
 }
 
@@ -1399,13 +1455,14 @@ impl ExecutionContext {
         &self.runtime_observation
     }
 
-    /// Returns the shared observation owner carried from query admission.
-    ///
-    /// Only engine execution may retain terminal-seal authority. Public
-    /// callers receive the record-only [`RuntimeObservationHandle`] above.
+    /// Opens one native execution boundary without exposing the context's
+    /// observation owner.
     #[doc(hidden)]
-    pub fn runtime_observation_owner(&self) -> Option<crate::observability::RuntimeObservationOwner> {
-        self.runtime_observation_owner.clone()
+    pub fn begin_runtime_execution_observation(
+        &self,
+        plan_execution_id: PlanExecutionId,
+    ) -> RuntimeExecutionObservationLifecycle {
+        RuntimeExecutionObservationLifecycle::for_context(self, plan_execution_id)
     }
 
     /// Returns the active native plan-execution scope.
@@ -1427,14 +1484,6 @@ impl ExecutionContext {
         }
         let mut context = self.clone();
         context.runtime_observation = observation;
-        Ok(context)
-    }
-
-    /// Returns a clone carrying the shared owner created before admission.
-    #[doc(hidden)]
-    pub fn with_runtime_observation_owner(&self, owner: crate::observability::RuntimeObservationOwner) -> Result<Self> {
-        let mut context = self.with_runtime_observation_handle(owner.handle())?;
-        context.runtime_observation_owner = Some(owner);
         Ok(context)
     }
 

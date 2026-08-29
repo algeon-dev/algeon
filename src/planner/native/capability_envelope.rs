@@ -1,9 +1,6 @@
 use datafusion::common::{DataFusionError, Result as DataFusionResult};
 use nexus_query_engine::{
-    admission::{
-        bounded_pipeline_admission_with_statistical_aggregate_mode,
-        bounded_pipeline_rejection_projection_with_statistical_aggregate_mode,
-    },
+    admission::bounded_pipeline_decision,
     contract_report::{CapabilityContractReport, CapabilityDecisionRow},
     mode::CapabilityEnvelopeStatus,
     pipeline::CompiledPipeline,
@@ -143,12 +140,9 @@ pub(super) fn accepted_plan_contract_diagnostics(
         });
     }
 
-    let admission = bounded_pipeline_admission_with_statistical_aggregate_mode(
-        plan,
-        execution_config.statistical_aggregate_execution_mode(),
-    )
-    .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))?
-    .ok_or_else(|| {
+    let decision = bounded_pipeline_decision(plan, execution_config.statistical_aggregate_execution_mode())
+        .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))?;
+    let admission = decision.admission().ok_or_else(|| {
         capability_contract_candidate_error("bounded rewrite has no capability-envelope admission evidence")
     })?;
     let report = stamp_capability_report_correlation(
@@ -177,13 +171,8 @@ pub(super) fn capability_envelope_admission_is_rejected(
     if composed_admission_requires_producer_binding(plan) {
         return Ok(false);
     }
-    match bounded_pipeline_admission_with_statistical_aggregate_mode(
-        plan,
-        execution_config.statistical_aggregate_execution_mode(),
-    ) {
-        Ok(Some(_)) => Ok(false),
-        Ok(None) => Ok(true),
-        Err(error) if error.code() == nexus_query_engine::error::QueryErrorCode::UnsupportedPlanShape => Ok(true),
+    match bounded_pipeline_decision(plan, execution_config.statistical_aggregate_execution_mode()) {
+        Ok(decision) => Ok(decision.admission().is_none()),
         Err(error) => Err(capability_contract_report_error(stamp_native_error_correlation(error, execution_config))),
     }
 }
@@ -225,13 +214,10 @@ fn first_blocking_contract_row(
     plan: &QueryPlan,
     execution_config: &NexusNativeExecutionConfig,
 ) -> DataFusionResult<Option<CapabilityDecisionRow>> {
-    if let Some(projection) = bounded_pipeline_rejection_projection_with_statistical_aggregate_mode(
-        plan,
-        execution_config.statistical_aggregate_execution_mode(),
-    )
-    .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))?
-    {
-        return CapabilityDecisionRow::from_rejection_projection(0, &projection).map(Some).map_err(|error| {
+    let decision = bounded_pipeline_decision(plan, execution_config.statistical_aggregate_execution_mode())
+        .map_err(|error| capability_contract_report_error(stamp_native_error_correlation(error, execution_config)))?;
+    if let Some(projection) = decision.rejection_projection() {
+        return CapabilityDecisionRow::from_rejection_projection(0, projection).map(Some).map_err(|error| {
             capability_contract_report_error(stamp_native_error_correlation(error, execution_config))
         });
     }

@@ -37,12 +37,6 @@ pub use nexus_query_engine::chunk::plan_local_parquet_source_chunks_with_executi
 pub use nexus_query_engine::chunk::plan_local_parquet_source_chunks_with_metadata_cache
 pub use nexus_query_engine::chunk::plan_source_chunk_batches
 pub mod nexus_query_engine::exec
-pub use nexus_query_engine::exec::JoinOutputColumnUpperBoundInput
-pub use nexus_query_engine::exec::PER_COLUMN_ALIGNMENT_PADDING_BYTES
-pub use nexus_query_engine::exec::PartialAggregateShape
-pub use nexus_query_engine::exec::STRING_OFFSET_BYTES_CONSERVATIVE
-pub use nexus_query_engine::exec::join_output_upper_bound_bytes
-pub use nexus_query_engine::exec::partial_aggregate_upper_bound_bytes
 pub mod nexus_query_engine::exec::output
 pub enum nexus_query_engine::exec::output::QueryOutput
 pub nexus_query_engine::exec::output::QueryOutput::GpuResident(nexus_query_runtime::runtime::resident::GpuResultHandle)
@@ -69,29 +63,13 @@ pub fn nexus_query_engine::exec::output::QueryExecutionResult::into_parts(self) 
 pub fn nexus_query_engine::exec::output::QueryExecutionResult::metrics(&self) -> &nexus_query_runtime::metrics::QueryMetrics
 pub fn nexus_query_engine::exec::output::QueryExecutionResult::new(nexus_query_engine::exec::output::QueryOutput, nexus_query_runtime::metrics::QueryMetrics) -> Self
 pub fn nexus_query_engine::exec::output::QueryExecutionResult::output(&self) -> &nexus_query_engine::exec::output::QueryOutput
-pub struct nexus_query_engine::exec::ResolvedRemoteParquetDatasourceProbe
-pub nexus_query_engine::exec::ResolvedRemoteParquetDatasourceProbe::backend_build_status: alloc::string::String
-pub nexus_query_engine::exec::ResolvedRemoteParquetDatasourceProbe::credential_mode: alloc::string::String
-pub nexus_query_engine::exec::ResolvedRemoteParquetDatasourceProbe::device_read_preferred: bool
-pub nexus_query_engine::exec::ResolvedRemoteParquetDatasourceProbe::per_read_evidence_available: bool
-pub nexus_query_engine::exec::ResolvedRemoteParquetDatasourceProbe::read_strategy: alloc::string::String
-pub nexus_query_engine::exec::ResolvedRemoteParquetDatasourceProbe::remote_read_mode: alloc::string::String
-pub nexus_query_engine::exec::ResolvedRemoteParquetDatasourceProbe::size_bytes: core::option::Option<u64>
-pub nexus_query_engine::exec::ResolvedRemoteParquetDatasourceProbe::source_capability_disposition: alloc::string::String
-pub nexus_query_engine::exec::ResolvedRemoteParquetDatasourceProbe::supports_device_read: bool
-pub nexus_query_engine::exec::ResolvedRemoteParquetDatasourceProbe::uri_scheme: alloc::string::String
-pub fn nexus_query_engine::exec::execute_query_plan(&nexus_query_runtime::runtime::context::ExecutionContext, &nexus_query_planning::plan::core::QueryPlan) -> nexus_query_planning::error::Result<nexus_query_engine::exec::output::QueryExecutionResult>
-pub fn nexus_query_engine::exec::execute_query_plan_observed(&nexus_query_runtime::runtime::context::ExecutionContext, &nexus_query_planning::plan::core::QueryPlan, nexus_query_runtime::observability::recorder::RuntimeObservationConfig) -> nexus_query_engine::exec::output::QueryExecutionOutcome
-pub fn nexus_query_engine::exec::execute_query_plan_with_gpu_inputs(&nexus_query_runtime::runtime::context::ExecutionContext, &nexus_query_planning::plan::core::QueryPlan, &nexus_query_runtime::runtime::resident::GpuResidentInputMap) -> nexus_query_planning::error::Result<nexus_query_engine::exec::output::QueryExecutionResult>
-pub fn nexus_query_engine::exec::execute_query_plan_with_gpu_inputs_and_runtime_observation(&nexus_query_runtime::runtime::context::ExecutionContext, &nexus_query_planning::plan::core::QueryPlan, &nexus_query_runtime::runtime::resident::GpuResidentInputMap, nexus_query_runtime::observability::recorder::RuntimeObservationSession) -> nexus_query_engine::exec::output::QueryExecutionOutcome
-pub fn nexus_query_engine::exec::execute_query_plan_with_gpu_inputs_observed(&nexus_query_runtime::runtime::context::ExecutionContext, &nexus_query_planning::plan::core::QueryPlan, &nexus_query_runtime::runtime::resident::GpuResidentInputMap, nexus_query_runtime::observability::recorder::RuntimeObservationConfig) -> nexus_query_engine::exec::output::QueryExecutionOutcome
-pub fn nexus_query_engine::exec::execute_query_plan_with_runtime_observation(&nexus_query_runtime::runtime::context::ExecutionContext, &nexus_query_planning::plan::core::QueryPlan, nexus_query_runtime::observability::recorder::RuntimeObservationSession) -> nexus_query_engine::exec::output::QueryExecutionOutcome
+pub struct nexus_query_engine::exec::QueryExecutionRequest<'a>
+impl<'a> nexus_query_engine::exec::QueryExecutionRequest<'a>
+pub const fn nexus_query_engine::exec::QueryExecutionRequest<'a>::new(&'a nexus_query_planning::plan::core::QueryPlan) -> Self
+pub const fn nexus_query_engine::exec::QueryExecutionRequest<'a>::with_gpu_inputs(self, &'a nexus_query_runtime::runtime::resident::GpuResidentInputMap) -> Self
+pub fn nexus_query_engine::exec::execute_query_plan(&nexus_query_runtime::runtime::context::ExecutionContext, nexus_query_engine::exec::QueryExecutionRequest<'_>) -> nexus_query_engine::exec::output::QueryExecutionOutcome
 pub fn nexus_query_engine::exec::materialize_gpu_result_to_host(nexus_query_runtime::runtime::resident::GpuResultHandle, &mut nexus_query_runtime::metrics::QueryMetrics) -> nexus_query_planning::error::Result<arrow_array::record_batch::RecordBatch>
 pub fn nexus_query_engine::exec::preflight_bounded_query_plan(&nexus_query_planning::plan::core::QueryPlan, nexus_query_planning::mode::StatisticalAggregateExecutionMode) -> nexus_query_planning::error::Result<()>
 pub fn nexus_query_engine::exec::preflight_query_plan(&nexus_query_planning::plan::core::QueryPlan) -> nexus_query_planning::error::Result<()>
-pub fn nexus_query_engine::exec::probe_resolved_remote_parquet_datasource(&nexus_query_runtime::runtime::context::ExecutionContext, &nexus_query_planning::source::read_policy::ResolvedParquetSource, core::option::Option<u64>) -> nexus_query_planning::error::Result<nexus_query_engine::exec::ResolvedRemoteParquetDatasourceProbe>
-pub fn nexus_query_engine::exec::read_gpu_resident_source(&nexus_query_runtime::runtime::context::ExecutionContext, &nexus_query_planning::source::GpuResidentSource, &nexus_query_runtime::runtime::resident::GpuResidentInputMap, &mut nexus_query_runtime::metrics::QueryMetrics) -> nexus_query_planning::error::Result<nexus_query_runtime::runtime::resident::GpuDataFrame>
-pub fn nexus_query_engine::exec::read_literal_batch_source(&nexus_query_runtime::runtime::context::ExecutionContext, &nexus_query_planning::source::LiteralBatchSource, &mut nexus_query_runtime::metrics::QueryMetrics) -> nexus_query_planning::error::Result<nexus_query_runtime::runtime::resident::GpuDataFrame>
-pub fn nexus_query_engine::exec::read_local_parquet_source(&nexus_query_runtime::runtime::context::ExecutionContext, nexus_query_planning::plan::core::NodeId, &nexus_query_planning::source::parquet::LocalParquetSource, &mut nexus_query_runtime::metrics::QueryMetrics) -> nexus_query_planning::error::Result<nexus_query_runtime::runtime::resident::GpuDataFrame>
 pub mod nexus_query_engine::harness
 pub use nexus_query_engine::harness::StableFnv1a64
