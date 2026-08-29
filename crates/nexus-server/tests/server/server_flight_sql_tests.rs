@@ -10,7 +10,11 @@ use std::{
 };
 
 use arrow::{
-    array::{Array, BooleanArray, Int32Array, Int64Array, StringArray, UInt8Array, UInt32Array, UnionArray},
+    array::{
+        Array, BooleanArray, Float64Array, Int32Array, Int64Array, ListArray, StringArray, UInt8Array, UInt32Array,
+        UnionArray,
+    },
+    buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
@@ -46,7 +50,8 @@ use datafusion_nexus::{
 use nexus_server::ERROR_OPERATION_METADATA_KEY;
 use nexus_server::{
     ERROR_CODE_METADATA_KEY, ERROR_KIND_METADATA_KEY, ERROR_STATUS_METADATA_KEY, FlightSqlServer, ServerConfig,
-    ServerShutdown, serve_with_listener,
+    ServerShutdown, UNSUPPORTED_COLUMN_METADATA_KEY, UNSUPPORTED_COLUMN_ROLE_METADATA_KEY,
+    UNSUPPORTED_COLUMN_TYPE_METADATA_KEY, serve_with_listener,
 };
 
 fn declare_test_gpu_ownership(config: &mut ServerConfig) {

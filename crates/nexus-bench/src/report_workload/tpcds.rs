@@ -168,11 +168,11 @@ pub fn tpcds_report_session_config() -> SessionConfig {
 /// Session config used for native TPC-DS planning and execution contexts.
 ///
 /// This starts from [`tpcds_report_session_config`] and disables DataFusion
-/// table-level statistics collection. DataFusion 54.0.0's crates.io physical
-/// join statistics can overflow on large multi-join TPC-DS plans; native source
-/// planning reads row-group metadata directly from Parquet footers instead of
+/// table-level statistics collection. DataFusion physical join statistics
+/// can overflow on large multi-join TPC-DS plans; native source planning
+/// reads row-group metadata directly from Parquet footers instead of
 /// relying on those table estimates.
-/// DataFusion 54 defaults uncorrelated scalar subqueries to `ScalarSubqueryExec`;
+/// DataFusion defaults uncorrelated scalar subqueries to `ScalarSubqueryExec`;
 /// native TPC-DS report/admission contracts require the relationalized join form
 /// the native IR can lower.
 pub fn tpcds_native_report_session_config() -> SessionConfig {

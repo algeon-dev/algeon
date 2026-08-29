@@ -1195,30 +1195,28 @@ mod tests {
     fn adapter_unsupported_column_facts_are_client_visible() {
         let status = datafusion_error_to_status_for_operation(
             Error::new(
-                ErrorCode::UnsupportedType,
-                "datafusion_nexus.native.lowering.table_format",
-                "native table-format capability does not support the projected type",
+                ErrorCode::FinalPlanRequirementUnsatisfied,
+                "datafusion_nexus.planner.final_plan_requirement",
+                "GPU execution does not support projected column `countDetail` with Arrow type `List(Float64)`",
             )
+            .with_fact("reason", "unsupported_type")
             .with_fact("unsupported_column", "countDetail")
-            .with_fact(
-                "unsupported_column_type",
-                "Map(\"entries\": non-null Struct(\"key\": non-null Utf8, \"value\": Int32), unsorted)",
-            )
+            .with_fact("unsupported_column_type", "List(Float64)")
             .with_fact("unsupported_column_role", "projected")
             .into(),
             TEST_OPERATION,
         );
 
-        assert_eq!(status.code(), Code::Unimplemented);
-        assert_error_metadata(&status, "unsupported_type", "unsupported", "permanent");
-        assert!(status.message().contains("does not support the projected type"));
-        assert_metadata_value(&status, UNSUPPORTED_COLUMN_METADATA_KEY, "countDetail");
-        assert_metadata_value(
-            &status,
-            UNSUPPORTED_COLUMN_TYPE_METADATA_KEY,
-            "Map(\"entries\": non-null Struct(\"key\": non-null Utf8, \"value\": Int32), unsorted)",
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert_error_metadata(&status, "final_plan_requirement_unsatisfied", "planning", "permanent");
+        assert_eq!(
+            status.message(),
+            "GPU execution does not support projected column `countDetail` with Arrow type `List(Float64)`"
         );
+        assert_metadata_value(&status, UNSUPPORTED_COLUMN_METADATA_KEY, "countDetail");
+        assert_metadata_value(&status, UNSUPPORTED_COLUMN_TYPE_METADATA_KEY, "List(Float64)");
         assert_metadata_value(&status, UNSUPPORTED_COLUMN_ROLE_METADATA_KEY, "projected");
+        assert_metadata_value(&status, REASON_METADATA_KEY, "unsupported_type");
         assert_no_diagnostic_fields(status.message());
     }
 

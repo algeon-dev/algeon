@@ -16,8 +16,8 @@ use std::{
 
 use arrow::{
     array::{
-        Array, FixedSizeListArray, Float32Array, Int32Array, Int64Array, LargeListBuilder, LargeStringArray,
-        LargeStringBuilder, ListArray, ListBuilder, StringArray, StringBuilder,
+        Array, BooleanArray, FixedSizeListArray, Float32Array, Int32Array, Int64Array, LargeListBuilder,
+        LargeStringArray, LargeStringBuilder, ListArray, ListBuilder, StringArray, StringBuilder, StringViewArray,
     },
     buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
     datatypes::{DataType as ArrowDataType, Field, Schema},
@@ -92,6 +92,34 @@ fn record_batch_buffer_memory_size(batch: &RecordBatch) -> usize {
     batch.columns().iter().fold(0usize, |total, column| {
         total.checked_add(column.get_buffer_memory_size()).expect("test RecordBatch buffer memory must fit usize")
     })
+}
+
+fn empty_string_array(data_type: &ArrowDataType) -> Arc<dyn Array> {
+    match data_type {
+        ArrowDataType::Utf8 => Arc::new(StringArray::from(Vec::<Option<&str>>::new())),
+        ArrowDataType::LargeUtf8 => Arc::new(LargeStringArray::from(Vec::<Option<&str>>::new())),
+        ArrowDataType::Utf8View => Arc::new(StringViewArray::from(Vec::<Option<&str>>::new())),
+        data_type => panic!("expected a string data type, got {data_type:?}"),
+    }
+}
+
+fn empty_child_list_gpu_batch(
+    runtime: &Runtime,
+    child_type: ArrowDataType,
+    rows: usize,
+    root_validity: Option<Vec<bool>>,
+) -> GpuRecordBatch {
+    let item = Arc::new(Field::new("item", child_type, true));
+    let list = ListArray::new(
+        Arc::clone(&item),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0; rows + 1])),
+        empty_string_array(item.data_type()),
+        root_validity.map(NullBuffer::from),
+    );
+    let schema = Arc::new(Schema::new(vec![Field::new("values", ArrowDataType::List(item), true)]));
+    let host = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(list)]).unwrap();
+    let frame = DataFrame::from_record_batch(runtime, &host).unwrap();
+    GpuRecordBatch::new(frame, schema).unwrap()
 }
 
 fn fixed_size_list_float32_gpu_batch(runtime: &Runtime, values: Vec<Option<f32>>) -> GpuRecordBatch {
@@ -1364,6 +1392,48 @@ fn host_batch_cursor_estimates_large_list_string_offsets_validity_and_children()
 }
 
 #[test]
+fn host_batch_cursor_materializes_lists_with_zero_active_string_children() {
+    let runtime = sample_runtime();
+
+    for child_type in [ArrowDataType::Utf8, ArrowDataType::LargeUtf8, ArrowDataType::Utf8View] {
+        let cases = [
+            (10, Some(vec![false; 10]), None),
+            (10, Some(vec![true; 10]), None),
+            (12, Some(vec![true; 12]), Some((1, 10))),
+            (0, Some(Vec::new()), None),
+        ];
+
+        for (rows, validity, slice) in cases {
+            let gpu = empty_child_list_gpu_batch(&runtime, child_type.clone(), rows, validity);
+            let gpu = if let Some((offset, length)) = slice {
+                GpuRecordBatch::new(gpu.frame().slice(offset, length).unwrap(), Arc::clone(gpu.schema())).unwrap()
+            } else {
+                gpu
+            };
+            let expected_rows = slice.map_or(rows, |(_, length)| length);
+            let mut cursor = gpu
+                .into_host_batch_cursor(HostBatchCursorConfig {
+                    target_materialization_bytes: usize::MAX,
+                    max_materialization_bytes: usize::MAX,
+                    max_rows: usize::MAX,
+                })
+                .unwrap();
+            let prepared = cursor.prepare_next_batch().unwrap().unwrap();
+            let estimate = prepared.estimated_materialization_bytes();
+            let materialized = cursor.materialize_prepared_batch(prepared).unwrap();
+            let actual = record_batch_buffer_memory_size(&materialized);
+
+            assert_eq!(materialized.num_rows(), expected_rows);
+            assert_eq!(
+                materialized.column(0).data_type(),
+                &ArrowDataType::List(Arc::new(Field::new("item", child_type.clone(), true)))
+            );
+            assert!(actual <= estimate, "{child_type:?}: actual={actual} estimate={estimate}");
+        }
+    }
+}
+
+#[test]
 fn host_batch_cursor_estimates_numeric_list_and_fixed_size_list_buffers() {
     let runtime = sample_runtime();
     let list_item = Arc::new(Field::new("item", ArrowDataType::Int64, false));
@@ -1405,6 +1475,35 @@ fn host_batch_cursor_estimates_numeric_list_and_fixed_size_list_buffers() {
         assert_eq!(materialized.schema(), host.schema());
         assert!(actual <= estimate, "{:?}: actual={actual} estimate={estimate}", host.column(0).data_type());
     }
+}
+
+#[test]
+fn host_batch_cursor_estimates_bit_packed_boolean_list_values() {
+    let runtime = sample_runtime();
+    let item = Arc::new(Field::new("item", ArrowDataType::Boolean, true));
+    let list = ListArray::new(
+        Arc::clone(&item),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0, 3, 3, 5])),
+        Arc::new(BooleanArray::from(vec![Some(true), Some(false), None, Some(true), Some(false)])),
+        Some(NullBuffer::from(vec![true, false, true])),
+    );
+    let schema = Arc::new(Schema::new(vec![Field::new("values", ArrowDataType::List(item), true)]));
+    let host = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(list)]).unwrap();
+    let frame = DataFrame::from_record_batch(&runtime, &host).unwrap();
+    let mut cursor = GpuRecordBatch::new(frame, schema)
+        .unwrap()
+        .into_host_batch_cursor(HostBatchCursorConfig {
+            target_materialization_bytes: usize::MAX,
+            max_materialization_bytes: usize::MAX,
+            max_rows: usize::MAX,
+        })
+        .unwrap();
+    let prepared = cursor.prepare_next_batch().unwrap().unwrap();
+    let estimate = prepared.estimated_materialization_bytes();
+    let materialized = cursor.materialize_prepared_batch(prepared).unwrap();
+
+    assert_eq!(materialized.column(0).to_data(), host.column(0).to_data());
+    assert!(record_batch_buffer_memory_size(&materialized) <= estimate);
 }
 
 #[test]

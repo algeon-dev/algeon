@@ -147,9 +147,6 @@ pub(super) fn table_format_column_requirements(
                 if !is_supported_native_type(&mapping.data_type) {
                     return Err(CapabilityReason::UnsupportedType);
                 }
-                if is_list_carry_type(&mapping.data_type) {
-                    return Err(CapabilityReason::UnsupportedType);
-                }
                 if missing_columns_seen.insert(mapping.logical_name.clone()) {
                     missing_columns.push(NativeMissingColumn::new(
                         mapping.logical_name.as_str(),

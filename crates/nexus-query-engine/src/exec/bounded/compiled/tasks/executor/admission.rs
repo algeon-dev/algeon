@@ -90,6 +90,8 @@ impl CompiledGpuTaskExecutor<'_> {
     }
 
     pub(super) fn join_materialize_admission_floor_bytes(&self, task: &PipelineTask) -> Result<u64> {
+        const LIST_ONE_ROW_OUTPUT_FLOOR_BYTES: u64 = 72;
+
         if task.kind() != PipelineTaskKind::JoinMaterialize {
             return Ok(0);
         }
@@ -102,17 +104,28 @@ impl CompiledGpuTaskExecutor<'_> {
                 .with_fact("compiled_task_id", task.id())
                 .with_fact("plan_node_id", node_id));
         };
+        let mut list_output_floor = 0u64;
         let output_columns = node
             .output_schema()
             .fields()
             .iter()
-            .map(|field| crate::exec::JoinOutputColumnUpperBoundInput {
-                data_type: field.data_type().clone(),
-                input_max_string_length_bytes: string_floor_max_bytes(field.data_type()),
-                input_total_string_bytes: None,
+            .filter_map(|field| {
+                if matches!(
+                    field.data_type(),
+                    arrow::datatypes::DataType::List(_) | arrow::datatypes::DataType::LargeList(_)
+                ) {
+                    list_output_floor = list_output_floor.saturating_add(LIST_ONE_ROW_OUTPUT_FLOOR_BYTES);
+                    return None;
+                }
+                Some(crate::exec::JoinOutputColumnUpperBoundInput {
+                    data_type: field.data_type().clone(),
+                    input_max_string_length_bytes: string_floor_max_bytes(field.data_type()),
+                    input_total_string_bytes: None,
+                })
             })
             .collect::<Vec<_>>();
-        let output_floor = crate::exec::join_output_upper_bound_bytes(1, &output_columns)?;
+        let output_floor =
+            crate::exec::join_output_upper_bound_bytes(1, &output_columns)?.saturating_add(list_output_floor);
         let gather_map_floor =
             cudf::DataFrameJoinPairIndices::reservation_size_bytes_for_len(1).map(|bytes| bytes as u64).unwrap_or(64);
         let stream_target_bytes = reusable_hash_join_stream_target_output_bytes(self.context, &self.reservations);

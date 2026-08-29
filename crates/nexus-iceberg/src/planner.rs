@@ -273,7 +273,7 @@ impl<'a> IcebergScanPlanner<'a> {
         let mut semantics = ManifestSemantics::default();
         for manifest_file in manifest_list.entries() {
             let manifest = control
-                .wait(IcebergOperation::ManifestLoad, manifest_file.load_manifest(self.resolved.table().file_io()))
+                .wait(IcebergOperation::ManifestLoad, self.resolved.table().manifest_reader().read(manifest_file))
                 .await?;
             for entry in manifest.entries().iter().filter(|entry| entry.is_alive()) {
                 control.check(IcebergOperation::ManifestInterpretation)?;

@@ -37,6 +37,26 @@ fn iceberg_schema() -> Arc<Schema> {
     )
 }
 
+fn fixture_delete_file(
+    file_path: impl Into<String>,
+    file_size_in_bytes: u64,
+    file_type: DataContentType,
+    equality_ids: Option<Vec<i32>>,
+) -> FileScanTaskDeleteFile {
+    FileScanTaskDeleteFile {
+        file_path: file_path.into(),
+        file_size_in_bytes,
+        file_type,
+        partition_spec_id: 0,
+        equality_ids,
+        referenced_data_file: None,
+        content_offset: None,
+        content_size_in_bytes: None,
+        record_count: None,
+        key_metadata: None,
+    }
+}
+
 fn file_scan_task(
     path: impl Into<String>,
     format: DataFileFormat,
@@ -428,14 +448,8 @@ async fn table_format_planner_carries_plan_files_partition_spec_into_scan_plan()
 
 #[test]
 fn position_delete_files_are_preserved_and_admit_native_execution() {
-    let delete_file = FileScanTaskDeleteFile {
-        file_path: "/tmp/iceberg/table/delete-0001.parquet".to_string(),
-        file_size_in_bytes: 512,
-        file_type: DataContentType::PositionDeletes,
-        partition_spec_id: 0,
-        equality_ids: None,
-        key_metadata: None,
-    };
+    let delete_file =
+        fixture_delete_file("/tmp/iceberg/table/delete-0001.parquet", 512, DataContentType::PositionDeletes, None);
 
     let plan = iceberg_file_scan_tasks_to_table_format_scan_plan(
         Some("67890".to_string()),
@@ -463,14 +477,12 @@ fn position_delete_files_are_preserved_and_admit_native_execution() {
 
 #[test]
 fn equality_delete_files_are_preserved_but_reject_without_delete_footer_field_id_proof() {
-    let delete_file = FileScanTaskDeleteFile {
-        file_path: "/tmp/iceberg/table/delete-0001.parquet".to_string(),
-        file_size_in_bytes: 512,
-        file_type: DataContentType::EqualityDeletes,
-        partition_spec_id: 0,
-        equality_ids: Some(vec![1]),
-        key_metadata: None,
-    };
+    let delete_file = fixture_delete_file(
+        "/tmp/iceberg/table/delete-0001.parquet",
+        512,
+        DataContentType::EqualityDeletes,
+        Some(vec![1]),
+    );
 
     let plan = iceberg_file_scan_tasks_to_table_format_scan_plan(
         Some("67890".to_string()),

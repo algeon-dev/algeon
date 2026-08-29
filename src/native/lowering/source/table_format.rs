@@ -28,7 +28,7 @@ use super::{
 use crate::{
     capability::CapabilityReason,
     native::{
-        expression_contract::{is_list_carry_type, is_supported_native_type, validate_physical_expr},
+        expression_contract::{is_supported_native_type, validate_physical_expr},
         lowering::{LoweredNativeInput, RequiredFields, expr::lower_physical_expr_with_bindings},
         normalize::NormalizedNativeSource,
         source::{NativeParquetColumnRequirements, attach_row_group_byte_metadata},

@@ -1,7 +1,8 @@
 //! Maintenance loop, shutdown plan, and clock abstraction.
 
-use std::{future::Future, pin::Pin, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 
+use futures::future::BoxFuture;
 use tokio::{sync::futures::Notified, task::JoinHandle};
 use tokio_util::sync::CancellationToken;
 
@@ -20,7 +21,7 @@ use crate::adapter_error::{Error, ErrorCode};
 pub(crate) trait CoordinatorMaintenanceClock: Send + Sync + 'static {
     fn now(&self) -> Instant;
 
-    fn sleep_until(&self, deadline: Instant) -> Pin<Box<dyn Future<Output = ()> + Send + '_>>;
+    fn sleep_until(&self, deadline: Instant) -> BoxFuture<'_, ()>;
 }
 
 pub(crate) struct TokioCoordinatorMaintenanceClock;
@@ -30,7 +31,7 @@ impl CoordinatorMaintenanceClock for TokioCoordinatorMaintenanceClock {
         Instant::now()
     }
 
-    fn sleep_until(&self, deadline: Instant) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+    fn sleep_until(&self, deadline: Instant) -> BoxFuture<'_, ()> {
         Box::pin(tokio::time::sleep_until(tokio::time::Instant::from_std(deadline)))
     }
 }

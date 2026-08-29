@@ -48,8 +48,10 @@ The supported DataFusion scalar-function names are:
 | Temporal | `date_part`/`extract` for admitted date/timestamp fields, `date_trunc` for day through microsecond units on timezone-free timestamps, and `to_timestamp_seconds` for supported integer inputs. |
 
 Exact dtype rules still apply. In particular, timezone-aware timestamps and
-UTF-8 list columns are carry/projection types rather than general scalar or key
-types. See [Data Type Support](./data-type-support.md).
+the supported [basic-list carry matrix](./data-type-support.md#basic-list-carry-matrix)
+are carry/projection types rather than general scalar or key types. Lists
+remain invalid as expression values, keys, grouping or sort values, partitions,
+aggregate inputs, and window inputs.
 
 ## Aggregates
 

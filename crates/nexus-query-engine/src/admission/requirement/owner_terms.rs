@@ -1296,9 +1296,25 @@ pub(crate) fn literal_batch_source_owner_terms(plan: &QueryPlan) -> Result<Vec<A
                 owner_term_error("literal_source_rows_exceed_u64", Some(OwnerTermRole::SourceStage), None)
             })?;
             let columns = literal_batch_output_columns(source)?;
-            let bytes = crate::exec::join_output_upper_bound_bytes(rows, &columns).map_err(|_| {
+            let mut bytes = crate::exec::join_output_upper_bound_bytes(rows, &columns).map_err(|_| {
                 owner_term_error("literal_source_bytes_unavailable", Some(OwnerTermRole::SourceStage), None)
             })?;
+            for (index, field) in source.schema.fields().iter().enumerate() {
+                if matches!(field.data_type(), DataType::List(_) | DataType::LargeList(_)) {
+                    let arrays = source.batches.iter().map(|batch| Arc::clone(batch.column(index))).collect::<Vec<_>>();
+                    let list_bytes = cudf::interop::arrow_host::estimate_list_import_device_memory_bytes(&arrays)
+                        .map_err(|_| {
+                            owner_term_error("literal_source_bytes_unavailable", Some(OwnerTermRole::SourceStage), None)
+                        })?;
+                    bytes = bytes
+                        .checked_add(u64::try_from(list_bytes).map_err(|_| {
+                            owner_term_error("literal_source_bytes_saturated", Some(OwnerTermRole::SourceStage), None)
+                        })?)
+                        .ok_or_else(|| {
+                            owner_term_error("literal_source_bytes_saturated", Some(OwnerTermRole::SourceStage), None)
+                        })?;
+                }
+            }
             if bytes == u64::MAX {
                 return Err(owner_term_error("literal_source_bytes_saturated", Some(OwnerTermRole::SourceStage), None));
             }
@@ -1324,8 +1340,11 @@ pub(crate) fn literal_batch_output_columns(
         .iter()
         .enumerate()
         .map(|(index, field)| {
+            if matches!(field.data_type(), DataType::List(_) | DataType::LargeList(_)) {
+                return Ok(None);
+            }
             if let Some(column) = fixed_width_consumer_output_column(field.data_type()) {
-                return Ok(column);
+                return Ok(Some(column));
             }
             let stats = source.batches.iter().try_fold((0_u64, 0_u64), |acc, batch| {
                 let array = batch.column(index);
@@ -1354,11 +1373,12 @@ pub(crate) fn literal_batch_output_columns(
                     None,
                 ));
             };
-            Ok(crate::exec::JoinOutputColumnUpperBoundInput {
+            Ok(Some(crate::exec::JoinOutputColumnUpperBoundInput {
                 data_type: field.data_type().clone(),
                 input_max_string_length_bytes: Some(max_len),
                 input_total_string_bytes: Some(total_bytes),
-            })
+            }))
         })
+        .filter_map(|column| column.transpose())
         .collect()
 }

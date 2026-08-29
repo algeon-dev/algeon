@@ -35,7 +35,7 @@ use nexus_query_engine::{
     plan::{NodeId as NativeNodeId, PlanNode as NativePlanNode, QueryPlan as NativeQueryPlan},
     source::{SourceDiagnostics as NativeSourceDiagnostics, SourceNode as NativeSourceNode},
 };
-use normalize::{make_declared_ordered_hash_join_fetch_explicit, normalize_native_plan};
+use normalize::{NormalizedNativeInput, make_declared_ordered_hash_join_fetch_explicit, normalize_native_plan};
 pub(crate) use pruning::scan_predicate_exactly_matches_filter;
 pub(crate) use source::native_parquet_file_reader_factory_is_supported;
 use source::source_diagnostics_for_normalized_plan;
@@ -47,7 +47,7 @@ pub(crate) use source::{
 };
 use validate::{native_zero_column_count_source_is_safe, validate_sort_ordering};
 
-use crate::report::{GpuCandidate, PlanningReport};
+use crate::report::{GpuCandidate, PlanningReport, UnsupportedColumnDetail};
 
 const DECLARED_OUTPUT_ORDERING_SORT_OPERATOR: &str = "SortExec";
 
@@ -153,7 +153,13 @@ fn lower_physical_plan_to_native_with_mode(
         Ok(normalized) => lower_normalized_plan(&normalized).map_or_else(
             |reason| {
                 let mut report = PlanningReport::new();
-                report.push_not_supported(normalized.candidate.clone(), reason);
+                if reason == crate::capability::CapabilityReason::UnsupportedType
+                    && let Some(detail) = unsupported_column_for_normalized_plan(&normalized, plan.schema())
+                {
+                    report.push_not_supported_column(normalized.candidate.clone(), reason, detail);
+                } else {
+                    report.push_not_supported(normalized.candidate.clone(), reason);
+                }
                 NativeLoweringResult {
                     plans: Vec::new(),
                     report,
@@ -240,10 +246,126 @@ fn lower_physical_plan_to_native_with_mode(
         ),
         Err(rejection) => {
             let mut report = PlanningReport::new();
-            report.push_not_supported(rejection.candidate, rejection.reason);
+            if rejection.reason == crate::capability::CapabilityReason::UnsupportedType
+                && let Some(detail) = unsupported_column_for_schema(&plan.schema(), "projected")
+            {
+                report.push_not_supported_column(rejection.candidate, rejection.reason, detail);
+            } else {
+                report.push_not_supported(rejection.candidate, rejection.reason);
+            }
             NativeLoweringResult { plans: Vec::new(), report, source_diagnostics: Vec::new() }
         },
     }
+}
+
+fn unsupported_column_for_normalized_plan(
+    normalized: &normalize::NormalizedNativePlan<'_>,
+    output_schema: arrow::datatypes::SchemaRef,
+) -> Option<UnsupportedColumnDetail> {
+    unsupported_column_for_schema(&output_schema, "projected")
+        .or_else(|| unsupported_column_for_input(normalized.root_input()))
+}
+
+fn unsupported_column_for_input(input: &NormalizedNativeInput<'_>) -> Option<UnsupportedColumnDetail> {
+    match input {
+        NormalizedNativeInput::Source(source) => {
+            if let Some(filter) = source.filter
+                && let Some(detail) =
+                    unsupported_column_for_expression(filter.predicate(), &filter.input().schema(), "filter")
+            {
+                return Some(detail);
+            }
+            if let Some(scan_plan) = source.table_format_scan_exec().and_then(|scan| scan.scan_plan())
+                && let Some(column) = scan_plan.first_unsupported_column()
+            {
+                return Some(UnsupportedColumnDetail::new(
+                    column.logical_name,
+                    nexus_query_engine::datatypes::diagnostic_arrow_type(column.data_type),
+                    column.role.code(),
+                ));
+            }
+            let schema = match source.scan {
+                normalize::NormalizedNativeScan::LocalParquet(scan) => scan.schema(),
+                normalize::NormalizedNativeScan::TableFormat(scan) => scan.schema(),
+            };
+            unsupported_column_for_schema(&schema, "source")
+        },
+        NormalizedNativeInput::GpuResidentSource(source) => {
+            unsupported_column_for_schema(&source.source_exec.schema(), "source")
+        },
+        NormalizedNativeInput::LiteralSource(source) => {
+            let schema = match source {
+                normalize::NormalizedNativeLiteralSource::PlaceholderRow(source) => source.schema(),
+                normalize::NormalizedNativeLiteralSource::Empty(source) => source.schema(),
+                normalize::NormalizedNativeLiteralSource::Memory(source) => source.schema(),
+            };
+            unsupported_column_for_schema(&schema, "source")
+        },
+        NormalizedNativeInput::Filter(filter) => {
+            unsupported_column_for_expression(filter.filter.predicate(), &filter.filter.input().schema(), "filter")
+                .or_else(|| unsupported_column_for_input(&filter.input))
+        },
+        NormalizedNativeInput::Projection(projection) => {
+            unsupported_column_for_schema(&projection.projection.schema(), "projected")
+                .or_else(|| unsupported_column_for_input(&projection.input))
+        },
+        NormalizedNativeInput::Limit(limit) => unsupported_column_for_input(&limit.input),
+        NormalizedNativeInput::Aggregate(aggregate) => {
+            unsupported_column_for_schema(&aggregate.aggregate_output_schema, "aggregate")
+                .or_else(|| unsupported_column_for_input(&aggregate.input))
+        },
+        NormalizedNativeInput::Sort(sort) => sort
+            .sort
+            .ordering()
+            .iter()
+            .find_map(|expr| unsupported_column_for_expression(&expr.expr, sort.sort.input_schema(), "sort_key"))
+            .or_else(|| unsupported_column_for_input(&sort.input)),
+        NormalizedNativeInput::Window(window) => unsupported_column_for_schema(&window.window.schema(), "window")
+            .or_else(|| unsupported_column_for_input(&window.input)),
+        NormalizedNativeInput::HashJoin(join) => {
+            unsupported_column_for_input(&join.left).or_else(|| unsupported_column_for_input(&join.right))
+        },
+        NormalizedNativeInput::CrossJoin(join) => {
+            unsupported_column_for_input(&join.left).or_else(|| unsupported_column_for_input(&join.right))
+        },
+        NormalizedNativeInput::NestedLoopJoin(join) => {
+            unsupported_column_for_input(&join.left).or_else(|| unsupported_column_for_input(&join.right))
+        },
+        NormalizedNativeInput::Union(union) => unsupported_column_for_schema(&union.union.schema(), "union")
+            .or_else(|| union.inputs.iter().find_map(unsupported_column_for_input)),
+    }
+}
+
+fn unsupported_column_for_expression(
+    expression: &Arc<dyn datafusion::physical_expr::PhysicalExpr>,
+    schema: &arrow::datatypes::SchemaRef,
+    role: &'static str,
+) -> Option<UnsupportedColumnDetail> {
+    let mut required = std::collections::BTreeSet::new();
+    validate::collect_required_columns(expression, schema, &mut required).ok()?;
+    schema.fields().iter().find_map(|field| {
+        (required.contains(field.name()) && !expression_contract::is_supported_native_type(field.data_type()))
+            .then(|| unsupported_column_detail(field, role))
+    })
+}
+
+fn unsupported_column_for_schema(
+    schema: &arrow::datatypes::SchemaRef,
+    role: &'static str,
+) -> Option<UnsupportedColumnDetail> {
+    schema
+        .fields()
+        .iter()
+        .find(|field| !expression_contract::is_supported_native_type(field.data_type()))
+        .map(|field| unsupported_column_detail(field, role))
+}
+
+fn unsupported_column_detail(field: &arrow::datatypes::FieldRef, role: &'static str) -> UnsupportedColumnDetail {
+    UnsupportedColumnDetail::new(
+        field.name(),
+        nexus_query_engine::datatypes::diagnostic_arrow_type(field.data_type()),
+        role,
+    )
 }
 
 pub(crate) fn reestablish_declared_output_ordering_if_needed(

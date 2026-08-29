@@ -127,13 +127,9 @@ impl QueryPlanCapabilityProof {
     /// Validates one lowered native query plan before issuing its capability proof.
     pub fn for_query_plan_preflighted(plan: &QueryPlan) -> Result<Self> {
         crate::exec::preflight_query_plan(plan)?;
-        Self::for_query_plan(plan).ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                "nexus_query_engine.admission.query_plan_capability_proof",
-                "native query plan did not issue an exact capability proof",
-            )
-        })
+        let requirement =
+            AttemptCapabilityEvidence::for_query_plan_with_policy(plan, OwnerTermConstructionPolicy::PriceLiteralBatch);
+        Ok(Self { requirement })
     }
 
     /// Derives the consumer proof used only while composing an exact GPU

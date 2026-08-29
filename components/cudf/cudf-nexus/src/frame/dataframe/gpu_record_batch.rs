@@ -1300,6 +1300,20 @@ fn validate_list_schema_contract(
         .with_detail("expected_child_arrow_type", format!("{:?}", child_field.data_type()))
         .with_detail("reason", "schema_list_child_dtype_mismatch"));
     }
+    let child_null_count = child_view.null_count().map_err(|error| error.reanchor_if_needed(operation))?;
+    if !child_field.is_nullable() && child_null_count > 0 {
+        return Err(Error::new_with(
+            ErrorCode::NullUnexpected,
+            operation,
+            format!(
+                "Arrow schema field '{field_name}' declares a non-nullable list child but the DataFrame child contains nulls"
+            ),
+        )
+        .with_detail("field_name", field_name.to_string())
+        .with_detail("field_index", field_index.to_string())
+        .with_detail("child_null_count", child_null_count.to_string())
+        .with_detail("reason", "schema_list_child_nullability_mismatch"));
+    }
 
     Ok(())
 }

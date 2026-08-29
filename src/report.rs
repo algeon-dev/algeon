@@ -16,6 +16,19 @@ use serde_json::{Value, json};
 
 use crate::capability::CapabilityReason;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UnsupportedColumnDetail {
+    pub(crate) name: String,
+    pub(crate) data_type: String,
+    pub(crate) role: &'static str,
+}
+
+impl UnsupportedColumnDetail {
+    pub(crate) fn new(name: impl Into<String>, data_type: impl Into<String>, role: &'static str) -> Self {
+        Self { name: name.into(), data_type: data_type.into(), role }
+    }
+}
+
 /// Physical-plan candidate considered for native GPU execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GpuCandidate {
@@ -148,6 +161,7 @@ pub struct PlanningReport {
     query_id: Option<QueryId>,
     trace_id: Option<TraceId>,
     outcomes: Vec<CandidateOutcome>,
+    unsupported_columns: Vec<Option<UnsupportedColumnDetail>>,
 }
 
 /// Headline capability miss caused by table layout metadata rather than unsupported
@@ -166,7 +180,8 @@ impl PlanningReport {
     }
 
     pub fn from_outcomes(outcomes: impl IntoIterator<Item = CandidateOutcome>) -> Self {
-        Self { outcomes: outcomes.into_iter().collect(), ..Self::default() }
+        let outcomes = outcomes.into_iter().collect::<Vec<_>>();
+        Self { unsupported_columns: vec![None; outcomes.len()], outcomes, ..Self::default() }
     }
 
     /// Returns the query-wide diagnostic correlation id, when assigned.
@@ -231,10 +246,22 @@ impl PlanningReport {
 
     pub fn push_selected(&mut self, candidate: GpuCandidate) {
         self.outcomes.push(CandidateOutcome::Selected { candidate });
+        self.unsupported_columns.push(None);
     }
 
     pub fn push_not_supported(&mut self, candidate: GpuCandidate, capability_reason: CapabilityReason) {
         self.outcomes.push(CandidateOutcome::NotSupported { candidate, capability_reason });
+        self.unsupported_columns.push(None);
+    }
+
+    pub(crate) fn push_not_supported_column(
+        &mut self,
+        candidate: GpuCandidate,
+        capability_reason: CapabilityReason,
+        detail: UnsupportedColumnDetail,
+    ) {
+        self.outcomes.push(CandidateOutcome::NotSupported { candidate, capability_reason });
+        self.unsupported_columns.push(Some(detail));
     }
 
     pub fn push_not_selected_by_cost(
@@ -244,11 +271,23 @@ impl PlanningReport {
         evidence: NativeCandidateCostEvidence,
     ) {
         self.outcomes.push(CandidateOutcome::NotSelectedByCost { candidate, cost_reason, evidence });
+        self.unsupported_columns.push(None);
     }
 
     /// Returns outcomes in discovery order.
     pub fn outcomes(&self) -> &[CandidateOutcome] {
         &self.outcomes
+    }
+
+    pub(crate) fn unsupported_column(&self, outcome_index: usize) -> Option<&UnsupportedColumnDetail> {
+        self.unsupported_columns.get(outcome_index).and_then(Option::as_ref)
+    }
+
+    pub(crate) fn with_unsupported_columns_from(mut self, other: &PlanningReport) -> Self {
+        if self.outcomes.len() == other.outcomes.len() {
+            self.unsupported_columns.clone_from(&other.unsupported_columns);
+        }
+        self
     }
 
     pub fn selected_count(&self) -> usize {

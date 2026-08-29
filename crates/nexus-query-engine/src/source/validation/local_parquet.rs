@@ -1,9 +1,7 @@
 use arrow::datatypes::{DataType as ArrowDataType, Field};
 
 use crate::{
-    datatypes::{
-        arrow_data_types_match_except_list_child_names, cudf_dtype_from_arrow_type, is_supported_list_carry_type,
-    },
+    datatypes::{arrow_data_types_match_except_list_child_names, cudf_dtype_from_arrow_type},
     error::{QueryError, QueryErrorCode, Result},
     expr::LiteralValue,
     source::{
@@ -576,17 +574,6 @@ fn validate_represented_missing_columns(source: &LocalParquetSource) -> Result<(
                 "missing source columns can only represent nullable logical columns",
             )
             .with_fact("reason", "non_nullable_missing_column")
-            .with_fact("missing_index", missing_index)
-            .with_fact("missing_column", missing_column.name.as_str())
-            .with_fact("missing_type", format!("{:?}", missing_column.data_type)));
-        }
-        if is_supported_list_carry_type(&missing_column.data_type) {
-            return Err(QueryError::new(
-                QueryErrorCode::UnsupportedType,
-                "nexus_query_engine.local_parquet_source.validate",
-                "missing source list columns are not supported by native execution",
-            )
-            .with_fact("reason", "unsupported_missing_column_type")
             .with_fact("missing_index", missing_index)
             .with_fact("missing_column", missing_column.name.as_str())
             .with_fact("missing_type", format!("{:?}", missing_column.data_type)));

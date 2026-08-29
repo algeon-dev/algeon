@@ -39,6 +39,7 @@ impl SourceSchema {
 pub struct SourceColumn {
     pub(super) name: String,
     pub(super) data_type: DataType,
+    pub(super) arrow_data_type: Option<ArrowDataType>,
     pub(super) nullable: bool,
 }
 
@@ -46,7 +47,26 @@ impl SourceColumn {
     /// Create a source schema column.
     pub fn new(name: impl Into<String>, data_type: DataType, nullable: bool) -> Result<Self> {
         let name = checked_name(name.into(), OP_COLUMN_NEW, "source column")?;
-        Ok(Self { name, data_type, nullable })
+        Ok(Self { name, data_type, arrow_data_type: None, nullable })
+    }
+
+    /// Create a list source column with its complete Arrow child schema.
+    pub fn new_list(name: impl Into<String>, arrow_data_type: ArrowDataType, nullable: bool) -> Result<Self> {
+        let name = checked_name(name.into(), OP_COLUMN_NEW, "source column")?;
+        let data_type = crate::interop::arrow_host::cudf_dtype_from_arrow_type(&arrow_data_type)
+            .map_err(|error| error.reanchor(OP_COLUMN_NEW).with_column(name.clone()))?;
+        if data_type.id() != TypeId::List {
+            return Err(Error::new_with(
+                ErrorCode::TypeMismatch,
+                OP_COLUMN_NEW,
+                "list source column Arrow type must map to cudf LIST",
+            )
+            .with_column(name)
+            .with_fact(FACT_TYPE_ID, data_type.id())
+            .with_detail("arrow_type", format!("{arrow_data_type:?}"))
+            .with_detail("reason", "source_list_arrow_type_mismatch"));
+        }
+        Ok(Self { name, data_type, arrow_data_type: Some(arrow_data_type), nullable })
     }
 
     /// Column name.
@@ -57,6 +77,11 @@ impl SourceColumn {
     /// Logical cuDF data type.
     pub fn data_type(&self) -> DataType {
         self.data_type
+    }
+
+    /// Complete Arrow list type retained for typed source materialization.
+    pub fn arrow_data_type(&self) -> Option<&ArrowDataType> {
+        self.arrow_data_type.as_ref()
     }
 
     /// Source-level nullability truth.

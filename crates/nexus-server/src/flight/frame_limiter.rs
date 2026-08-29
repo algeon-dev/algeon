@@ -44,7 +44,7 @@ struct ActiveBatch {
 /// Flight defaults and checked with `prost::Message::encoded_len`; oversized
 /// ranges are reduced with a binary row search.
 pub(super) struct FlightFrameLimiter {
-    input: Pin<Box<dyn Stream<Item = Result<RecordBatch, FlightError>> + Send>>,
+    input: BoxStream<'static, Result<RecordBatch, FlightError>>,
     active: Option<ActiveBatch>,
     max_frame_bytes: usize,
     probe_observer: Option<Arc<dyn Fn(CompactProbeObservation) + Send + Sync>>,
@@ -367,7 +367,7 @@ fn frame_too_large_error(
 }
 
 struct ExactFlightFrameGuard {
-    input: Pin<Box<dyn Stream<Item = Result<FlightData, FlightError>> + Send>>,
+    input: BoxStream<'static, Result<FlightData, FlightError>>,
     max_frame_bytes: usize,
     done: bool,
 }

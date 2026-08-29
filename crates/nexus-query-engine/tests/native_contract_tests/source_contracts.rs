@@ -687,7 +687,7 @@ fn local_parquet_source_rejects_output_override_missing_execution_schema_field()
 }
 
 #[test]
-fn local_parquet_source_rejects_missing_nullable_list_columns() {
+fn local_parquet_source_accepts_missing_nullable_list_columns() {
     let list_type = DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)));
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::UInt32, false),
@@ -701,11 +701,28 @@ fn local_parquet_source_rejects_missing_nullable_list_columns() {
     .with_missing_columns(vec![MissingColumn::new("missing_tags", list_type, true)])
     .with_column_roles(vec!["key".to_string(), "missing_tags".to_string()], Vec::new());
 
-    let error = validate_local_parquet_source(&source).unwrap_err();
+    validate_local_parquet_source(&source).unwrap();
+}
 
+#[test]
+fn local_parquet_source_rejects_missing_lists_with_unsupported_children() {
+    let list_type = DataType::List(Arc::new(Field::new("item", DataType::Float64, true)));
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::UInt32, false),
+        Field::new("missing_values", list_type.clone(), true),
+    ]));
+    let source = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new("/tmp/source-contract.parquet").with_row_group_rows(vec![3])],
+        schema,
+        vec!["key".to_string()],
+    )
+    .with_missing_columns(vec![MissingColumn::new("missing_values", list_type, true)])
+    .with_column_roles(vec!["key".to_string(), "missing_values".to_string()], Vec::new());
+
+    let error = validate_local_parquet_source(&source).unwrap_err();
     assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
     assert_eq!(error.fact_value("reason"), Some("unsupported_missing_column_type"));
-    assert_eq!(error.fact_value("missing_column"), Some("missing_tags"));
+    assert_eq!(error.fact_value("missing_column"), Some("missing_values"));
 }
 
 #[test]

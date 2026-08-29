@@ -19,6 +19,26 @@ fn iceberg_schema() -> Arc<IcebergSchema> {
     )
 }
 
+fn fixture_delete_file(
+    file_path: &str,
+    file_size_in_bytes: u64,
+    file_type: DataContentType,
+    equality_ids: Option<Vec<i32>>,
+) -> FileScanTaskDeleteFile {
+    FileScanTaskDeleteFile {
+        file_path: file_path.to_string(),
+        file_size_in_bytes,
+        file_type,
+        partition_spec_id: 0,
+        equality_ids,
+        referenced_data_file: None,
+        content_offset: None,
+        content_size_in_bytes: None,
+        record_count: None,
+        key_metadata: None,
+    }
+}
+
 /// Plain single-file task fixture. Row-level and sequence metadata stay
 /// absent because these tests exercise identity, limits, and delete facts.
 fn fixture_task(data_file_path: &str, record_count: Option<u64>, deletes: Vec<FileScanTaskDeleteFile>) -> FileScanTask {
@@ -248,14 +268,8 @@ fn predicate_free_scan_limit_prunes_dropped_file_local_unsupported_features() {
 
 #[test]
 fn predicate_free_scan_limit_keeps_all_files_when_delete_semantics_are_present() {
-    let delete_file = FileScanTaskDeleteFile {
-        file_path: "s3://bucket/table/delete.parquet".to_string(),
-        file_size_in_bytes: 512,
-        file_type: DataContentType::PositionDeletes,
-        partition_spec_id: 0,
-        equality_ids: None,
-        key_metadata: None,
-    };
+    let delete_file =
+        fixture_delete_file("s3://bucket/table/delete.parquet", 512, DataContentType::PositionDeletes, None);
     let task = fixture_task("s3://bucket/table/data.parquet", Some(17), vec![delete_file]);
     let mut plan =
         iceberg_file_scan_tasks_to_table_format_scan_plan_with_config(None, None, [task], &Default::default())
@@ -376,14 +390,12 @@ fn predicate_free_scan_limit_trims_delete_files_when_live_lower_bound_covers_lim
 
 #[test]
 fn iceberg_delete_file_id_hashes_credential_free_object_path() {
-    let delete_file = FileScanTaskDeleteFile {
-        file_path: "s3://secret-bucket/table/delete.parquet?X-Amz-Signature=do-not-leak".to_string(),
-        file_size_in_bytes: 512,
-        file_type: DataContentType::PositionDeletes,
-        partition_spec_id: 0,
-        equality_ids: None,
-        key_metadata: None,
-    };
+    let delete_file = fixture_delete_file(
+        "s3://secret-bucket/table/delete.parquet?X-Amz-Signature=do-not-leak",
+        512,
+        DataContentType::PositionDeletes,
+        None,
+    );
     let task = fixture_task(
         "s3://secret-bucket/table/prefix/data.parquet?X-Amz-Signature=data-token",
         Some(17),
@@ -412,14 +424,8 @@ fn iceberg_task_delete_attachment_preserves_data_row_groups() {
         TableFormatReadCapability::object_store("s3"),
     )
     .with_row_groups(vec![2, 3]);
-    let delete_file = FileScanTaskDeleteFile {
-        file_path: "s3://bucket/table/delete.parquet".to_string(),
-        file_size_in_bytes: 512,
-        file_type: DataContentType::PositionDeletes,
-        partition_spec_id: 0,
-        equality_ids: None,
-        key_metadata: None,
-    };
+    let delete_file =
+        fixture_delete_file("s3://bucket/table/delete.parquet", 512, DataContentType::PositionDeletes, None);
 
     append_delete_file_facts(&mut plan, &mut data_file, "data-0", 0, &delete_file).unwrap();
 
@@ -430,14 +436,8 @@ fn iceberg_task_delete_attachment_preserves_data_row_groups() {
 
 #[test]
 fn iceberg_position_delete_files_are_associated_for_native_execution() {
-    let delete_file = FileScanTaskDeleteFile {
-        file_path: "s3://bucket/table/delete.parquet".to_string(),
-        file_size_in_bytes: 512,
-        file_type: DataContentType::PositionDeletes,
-        partition_spec_id: 0,
-        equality_ids: None,
-        key_metadata: None,
-    };
+    let delete_file =
+        fixture_delete_file("s3://bucket/table/delete.parquet", 512, DataContentType::PositionDeletes, None);
     let task = fixture_task("s3://bucket/table/data.parquet", Some(17), vec![delete_file]);
 
     let plan =
@@ -454,14 +454,8 @@ fn iceberg_position_delete_files_are_associated_for_native_execution() {
 
 #[test]
 fn iceberg_equality_delete_files_without_footer_field_id_proof_are_structured_rejections() {
-    let delete_file = FileScanTaskDeleteFile {
-        file_path: "s3://bucket/table/delete.parquet".to_string(),
-        file_size_in_bytes: 512,
-        file_type: DataContentType::EqualityDeletes,
-        partition_spec_id: 0,
-        equality_ids: Some(vec![1]),
-        key_metadata: None,
-    };
+    let delete_file =
+        fixture_delete_file("s3://bucket/table/delete.parquet", 512, DataContentType::EqualityDeletes, Some(vec![1]));
     let task = fixture_task("s3://bucket/table/data.parquet", Some(17), vec![delete_file]);
 
     let plan =
@@ -480,14 +474,8 @@ fn iceberg_equality_delete_files_without_footer_field_id_proof_are_structured_re
 
 #[test]
 fn iceberg_equality_delete_files_without_key_ids_remain_structured_rejections() {
-    let delete_file = FileScanTaskDeleteFile {
-        file_path: "s3://bucket/table/delete.parquet".to_string(),
-        file_size_in_bytes: 512,
-        file_type: DataContentType::EqualityDeletes,
-        partition_spec_id: 0,
-        equality_ids: None,
-        key_metadata: None,
-    };
+    let delete_file =
+        fixture_delete_file("s3://bucket/table/delete.parquet", 512, DataContentType::EqualityDeletes, None);
     let task = fixture_task("s3://bucket/table/data.parquet", Some(17), vec![delete_file]);
 
     let plan =

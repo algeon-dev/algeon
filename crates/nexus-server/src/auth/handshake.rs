@@ -8,11 +8,11 @@
 //! `FlightSqlServiceClient` automatically captures that header for
 //! subsequent RPCs.
 
-use std::{pin::Pin, sync::LazyLock};
+use std::sync::LazyLock;
 
 use arrow_flight::{HandshakeRequest, HandshakeResponse};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64_STANDARD};
-use futures::Stream;
+use futures::stream::BoxStream;
 use tonic::{
     Request, Response, Status, Streaming,
     metadata::{AsciiMetadataValue, MetadataMap},
@@ -38,7 +38,7 @@ pub(crate) fn warm_unknown_user_timing_decoy() {
 
 /// Type alias for the streaming handshake response returned by
 /// [`arrow_flight::sql::server::FlightSqlService::do_handshake`].
-type HandshakeResponseStream = Pin<Box<dyn Stream<Item = Result<HandshakeResponse, Status>> + Send>>;
+type HandshakeResponseStream = BoxStream<'static, Result<HandshakeResponse, Status>>;
 
 /// Handle a Flight SQL handshake. Returns the same response stream type
 /// expected by [`arrow_flight::sql::server::FlightSqlService::do_handshake`].

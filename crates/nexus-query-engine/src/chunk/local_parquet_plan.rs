@@ -149,13 +149,13 @@ fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
         chunks.push(zero_column_count_identity_chunk(source_node_id, source, file, file_index, 0, policy, &[], false));
     }
 
-    if source.is_zero_column_count_source()
+    if source.read_columns.is_empty()
         && let Some(chunk) = chunks.iter().find(|chunk| chunk.known_row_count.is_none())
     {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "nexus_query_engine.source_chunk.plan",
-            "zero-column count source requires parquet row-count metadata for each planned chunk",
+            "zero-read-column source requires parquet row-count metadata for each planned chunk",
         )
         .with_fact("reason", "row_count_metadata_unavailable")
         .with_fact("path", crate::source::parquet_source_path_fact(&chunk.location, &chunk.path))
@@ -204,7 +204,11 @@ pub(super) fn validate_chunk_planning_source(source: &LocalParquetSource) -> Res
         .with_fact("reason", "empty_files"));
     }
 
-    if source.read_columns.is_empty() && !source.is_zero_column_count_source() {
+    if source.read_columns.is_empty()
+        && !source.is_zero_column_count_source()
+        && source.missing_columns.is_empty()
+        && source.partition_columns.is_empty()
+    {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
             "nexus_query_engine.source_chunk.plan",

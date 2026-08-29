@@ -390,6 +390,7 @@ fn native_execution_cost_selection_report(
         },
     }))
     .with_correlation_from(report)
+    .with_unsupported_columns_from(report)
 }
 
 fn native_execution_rejection_report_for_candidate(

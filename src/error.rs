@@ -763,7 +763,7 @@ fn diagnostic_source_path<'a>(error: &'a (dyn StdError + 'static)) -> Option<&'a
 
 /// Returns human-facing text for the current DataFusion error layer.
 ///
-/// DataFusion 54 renders SQL parser errors with `Debug` in
+/// DataFusion renders SQL parser errors with `Debug` in
 /// [`DataFusionError::message`]. This extractor uses the parser's `Display`
 /// representation so Rust enum syntax does not leak into diagnostics.
 pub fn datafusion_error_human_message(error: &DataFusionError) -> String {

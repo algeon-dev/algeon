@@ -6,7 +6,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use arrow::{array::Int64Array, record_batch::RecordBatch};
+use arrow::{
+    array::{Array, Int64Array},
+    record_batch::RecordBatch,
+};
 use datafusion::{
     common::ScalarValue,
     logical_expr::Operator,
@@ -14,7 +17,9 @@ use datafusion::{
     physical_plan::{empty::EmptyExec, filter::FilterExec},
 };
 use nexus_query_engine::{
+    exec::{execute_query_plan, output::QueryOutput},
     plan::PlanNode,
+    runtime::ExecutionContext,
     source::{self, CredentialMode, ResolvedParquetSource, SourceColumnRef as NativeSourceColumnRef},
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
@@ -1208,7 +1213,7 @@ fn table_format_field_id_mapping_allows_timestamp_timezone_footer_normalization(
 }
 
 #[test]
-fn table_format_missing_nullable_list_column_is_rejected_before_native_source_materialization() {
+fn table_format_missing_nullable_list_column_retains_its_declared_type() {
     let footer_field = Field::new("other", DataType::Int64, false)
         .with_metadata(HashMap::from([(PARQUET_FIELD_ID_META_KEY.to_string(), "1".to_string())]));
     let footer_schema = Arc::new(Schema::new(vec![footer_field]));
@@ -1232,7 +1237,7 @@ fn table_format_missing_nullable_list_column_is_rejected_before_native_source_ma
             Some(3),
             "tags",
             Some("tags"),
-            list_type,
+            list_type.clone(),
             true,
             TableFormatColumnSource::DirectTopLevelFileColumn,
             crate::table_format::TableFormatColumnRole::Projected,
@@ -1242,9 +1247,67 @@ fn table_format_missing_nullable_list_column_is_rejected_before_native_source_ma
         table_format_column_requirements(&scan_plan, &file_schema, scan_schema, None, &RequiredFields::all()).unwrap();
     let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
 
-    let error = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap_err();
+    let groups = table_format_source_read_groups(&scan_plan, &requirements, Arc::clone(&output_schema)).unwrap();
 
-    assert_eq!(error, CapabilityReason::UnsupportedType);
+    assert_eq!(requirements.read_columns, ["tags"]);
+    assert!(requirements.missing_columns.is_empty());
+    assert_eq!(output_schema.field(0).data_type(), &list_type);
+    assert_eq!(groups.len(), 1);
+    assert_eq!(groups[0].requirements.missing_columns.len(), 1);
+    assert_eq!(groups[0].requirements.missing_columns[0].data_type, list_type);
+}
+
+#[test]
+fn table_format_field_id_missing_nullable_list_executes_as_declared_typed_nulls() {
+    let dir = unique_table_format_temp_dir("field-id-missing-list-execution");
+    let path = dir.join("part.parquet");
+    write_field_id_parquet_file(&path, "other", 1);
+    let child = Arc::new(Field::new("logical_item", DataType::Boolean, true));
+    let list_type = DataType::List(Arc::clone(&child));
+    let scan_schema = Arc::new(Schema::new(vec![Field::new("flags", list_type.clone(), true)]));
+    let scan_plan = TableFormatScanPlan::new(TableFormat::Iceberg)
+        .with_logical_schema(Arc::clone(&scan_schema))
+        .with_native_source_schema(Arc::clone(&scan_schema))
+        .with_data_file(
+            TableFormatDataFile::new(
+                "file-0",
+                path.display().to_string(),
+                TableFormatDataFileFormat::Parquet,
+                TableFormatReadCapability::local_file_system(),
+            )
+            .with_resolved_parquet_source(ResolvedParquetSource::local_kvikio(path.display().to_string())),
+        )
+        .with_projected_column(TableFormatColumnMapping::new(
+            Some(3),
+            "flags",
+            Some("physical_flags"),
+            list_type,
+            true,
+            TableFormatColumnSource::DirectTopLevelFileColumn,
+            crate::table_format::TableFormatColumnRole::Projected,
+        ));
+    let scan_exec = test_scan_exec(scan_plan, Arc::clone(&scan_schema));
+    let mut builder = NativeQueryPlanBuilder::new();
+    let lowered =
+        lower_table_format_source_input(&scan_exec, None, &mut builder, &RequiredFields::all(), None).unwrap();
+    let plan = builder.finish_with_host_sink(lowered.node);
+    let context = ExecutionContext::from_shared_runtime(Arc::new(cudf::Runtime::new().unwrap())).unwrap();
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("table-format list source should materialize host Arrow output");
+    };
+    assert_eq!(batch.schema(), scan_schema);
+    assert_eq!(batch.num_rows(), 2);
+    let flags = batch.column(0).as_any().downcast_ref::<arrow::array::ListArray>().unwrap();
+    assert_eq!(flags.null_count(), 2);
+    assert_eq!(flags.values().len(), 0);
+    assert_eq!(flags.value_type(), DataType::Boolean);
+    let DataType::List(field) = flags.data_type() else {
+        panic!("table-format output should retain the declared List type");
+    };
+    assert_eq!(field.name(), "logical_item");
+    fs::remove_dir_all(dir).ok();
 }
 
 #[test]

@@ -114,9 +114,6 @@ pub(super) fn table_format_requirements_for_file(
             if table_format_mapping_is_predicate_required(mapping, base) {
                 return Err(CapabilityReason::IcebergFieldIdMappingUnsupported);
             }
-            if is_list_carry_type(&mapping.data_type) {
-                return Err(CapabilityReason::UnsupportedType);
-            }
             if missing_seen.insert(mapping.logical_name.clone()) {
                 missing_columns.push(NativeMissingColumn::new(
                     mapping.logical_name.as_str(),

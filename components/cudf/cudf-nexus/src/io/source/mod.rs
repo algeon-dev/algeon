@@ -27,6 +27,7 @@ use std::{
     sync::Arc,
 };
 
+use arrow::datatypes::DataType as ArrowDataType;
 use parquet::{
     basic::{ConvertedType, LogicalType, Type as ParquetPhysicalType},
     file::reader::{FileReader, SerializedFileReader},
@@ -293,6 +294,11 @@ fn is_supported_partition_dtype(data_type: DataType) -> bool {
 
 fn is_supported_missing_null_dtype(data_type: DataType) -> bool {
     is_supported_partition_dtype(data_type)
+}
+
+fn is_supported_missing_null_column(column: &SourceColumn) -> bool {
+    is_supported_missing_null_dtype(column.data_type)
+        || column.data_type.id() == TypeId::List && column.arrow_data_type.is_some()
 }
 
 fn partition_value_matches_dtype(value: &PartitionValue, data_type: DataType) -> bool {

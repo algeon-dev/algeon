@@ -35,16 +35,17 @@ fn native_local_parquet_source_scan_limit_applies_before_parent_operators() {
 }
 
 #[test]
-fn native_local_parquet_source_materializes_missing_nullable_columns() {
+fn native_local_parquet_source_materializes_missing_nullable_string_lists() {
     let dir = unique_temp_dir("nexus-query-engine-native-missing-nullable-source-columns");
     let path = dir.join("input.parquet");
     let context = backend_context();
     let runtime = Arc::new(context.runtime().unwrap());
     write_input_parquet(&runtime, &path);
 
+    let list_type = DataType::List(Arc::new(Field::new("item", DataType::Utf8, true)));
     let source_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
-        Field::new("missing_payload", DataType::Int64, true),
+        Field::new("missing_tags", list_type.clone(), true),
     ]));
     let source = LocalParquetSource::from_files(
         vec![
@@ -55,8 +56,8 @@ fn native_local_parquet_source_materializes_missing_nullable_columns() {
         Arc::clone(&source_schema),
         vec!["key".to_string()],
     )
-    .with_missing_columns(vec![MissingColumn::new("missing_payload", DataType::Int64, true)])
-    .with_column_roles(vec!["key".to_string(), "missing_payload".to_string()], Vec::new());
+    .with_missing_columns(vec![MissingColumn::new("missing_tags", list_type, true)])
+    .with_column_roles(vec!["key".to_string(), "missing_tags".to_string()], Vec::new());
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
@@ -69,23 +70,26 @@ fn native_local_parquet_source_materializes_missing_nullable_columns() {
     assert_eq!(batch.num_rows(), 4);
     assert_eq!(batch.num_columns(), 2);
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 1, 3]);
-    let missing = batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
+    assert_eq!(batch.schema(), source_schema);
+    let missing = batch.column(1).as_any().downcast_ref::<ListArray>().unwrap();
     assert_eq!(missing.null_count(), 4);
+    assert_eq!(missing.values().len(), 0);
 
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
-fn bounded_native_local_parquet_source_materializes_missing_nullable_columns() {
+fn bounded_native_local_parquet_source_materializes_missing_nullable_boolean_lists() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-missing-nullable-source-columns");
     let path = dir.join("input.parquet");
     let context = backend_context();
     let runtime = Arc::new(context.runtime().unwrap());
     write_input_parquet(&runtime, &path);
 
+    let list_type = DataType::List(Arc::new(Field::new("item", DataType::Boolean, true)));
     let source_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
-        Field::new("missing_payload", DataType::Int64, true),
+        Field::new("missing_flags", list_type.clone(), true),
     ]));
     let source = LocalParquetSource::from_files(
         vec![
@@ -97,8 +101,8 @@ fn bounded_native_local_parquet_source_materializes_missing_nullable_columns() {
         Arc::clone(&source_schema),
         vec!["key".to_string()],
     )
-    .with_missing_columns(vec![MissingColumn::new("missing_payload", DataType::Int64, true)])
-    .with_column_roles(vec!["key".to_string(), "missing_payload".to_string()], Vec::new());
+    .with_missing_columns(vec![MissingColumn::new("missing_flags", list_type, true)])
+    .with_column_roles(vec!["key".to_string(), "missing_flags".to_string()], Vec::new());
 
     let mut builder = QueryPlanBuilder::new();
     let source = builder.add_source(SourceNode::LocalParquet(source));
@@ -111,8 +115,51 @@ fn bounded_native_local_parquet_source_materializes_missing_nullable_columns() {
     };
     assert_eq!(batch.num_rows(), 4);
     assert_eq!(int32_array(batch, 0).values().as_ref(), &[1, 2, 1, 3]);
-    let missing = batch.column(1).as_any().downcast_ref::<Int64Array>().unwrap();
+    assert_eq!(batch.schema(), source_schema);
+    let missing = batch.column(1).as_any().downcast_ref::<ListArray>().unwrap();
     assert_eq!(missing.null_count(), 4);
+    assert_eq!(missing.values().len(), 0);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn native_zero_read_column_source_materializes_missing_integer_lists_for_nonzero_and_zero_rows() {
+    let dir = unique_temp_dir("nexus-query-engine-native-zero-read-missing-list");
+    let path = dir.join("input.parquet");
+    let context = backend_context();
+    let runtime = Arc::new(context.runtime().unwrap());
+    write_input_parquet(&runtime, &path);
+
+    let list_type = DataType::List(Arc::new(Field::new("item", DataType::Int64, false)));
+    let source_schema = Arc::new(Schema::new(vec![Field::new("missing_ports", list_type.clone(), true)]));
+    for (scan_limit, expected_rows) in [(None, 4), (Some(0), 0)] {
+        let source = LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new(&path)
+                    .with_file_size_bytes(fs::metadata(&path).unwrap().len())
+                    .with_row_group_rows(vec![4]),
+            ],
+            Arc::clone(&source_schema),
+            Vec::new(),
+        )
+        .with_missing_columns(vec![MissingColumn::new("missing_ports", list_type.clone(), true)])
+        .with_column_roles(vec!["missing_ports".to_string()], Vec::new())
+        .with_scan_limit(scan_limit);
+        let mut builder = QueryPlanBuilder::new();
+        let source = builder.add_source(SourceNode::LocalParquet(source));
+        let plan = builder.finish_with_host_sink(source);
+
+        let result = execute_query_plan(&context, &plan).unwrap();
+        let QueryOutput::HostArrow(batch) = result.output() else {
+            panic!("host sink should materialize one RecordBatch");
+        };
+        assert_eq!(batch.schema(), source_schema);
+        assert_eq!(batch.num_rows(), expected_rows);
+        let missing = batch.column(0).as_any().downcast_ref::<ListArray>().unwrap();
+        assert_eq!(missing.null_count(), expected_rows);
+        assert_eq!(missing.values().len(), 0);
+    }
 
     fs::remove_dir_all(dir).unwrap();
 }

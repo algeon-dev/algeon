@@ -33,8 +33,8 @@ use crate::{
             ParquetTableReadOptions, ParquetTableWriteOptions,
         },
         source::{
-            LocalParquetSource, LocalParquetSourceKind, PartitionValue, SourceChunk, SourceColumnRef, SourceReadMode,
-            plan_local_parquet_source_chunks,
+            LocalParquetSource, LocalParquetSourceKind, PartitionValue, SourceChunk, SourceColumn, SourceColumnRef,
+            SourceReadMode, plan_local_parquet_source_chunks,
         },
     },
     ops::ast::AstExpression,
@@ -775,7 +775,7 @@ fn empty_parquet_source_frame(
             .with_column(output.name().to_string())
             .with_detail("reason", "schema_column_missing")
         })?;
-        pairs.push((output.name().to_string(), runtime.empty_series(schema_column.data_type())?));
+        pairs.push((output.name().to_string(), empty_source_series(runtime, schema_column)?));
         seen.insert(output.name().to_string());
     }
 
@@ -793,7 +793,7 @@ fn empty_parquet_source_frame(
                 .with_column(required.name().to_string())
                 .with_detail("reason", "schema_column_missing")
             })?;
-            pairs.push((required.name().to_string(), runtime.empty_series(schema_column.data_type())?));
+            pairs.push((required.name().to_string(), empty_source_series(runtime, schema_column)?));
             seen.insert(required.name().to_string());
         }
     }
@@ -856,6 +856,23 @@ fn null_source_scalar(runtime: &Runtime, data_type: DataType) -> Result<Scalar> 
             "source null dtype is not supported",
         )
         .with_detail("reason", "unsupported_source_null_dtype")),
+    }
+}
+
+fn empty_source_series(runtime: &Runtime, column: &SourceColumn) -> Result<Series> {
+    match column.arrow_data_type() {
+        Some(data_type) => crate::interop::arrow_host::all_null_list_series(runtime, data_type, 0),
+        None => runtime.empty_series(column.data_type()),
+    }
+}
+
+fn all_null_source_series(runtime: &Runtime, column: &SourceColumn, rows: usize) -> Result<Series> {
+    match column.arrow_data_type() {
+        Some(data_type) => crate::interop::arrow_host::all_null_list_series(runtime, data_type, rows),
+        None => {
+            let scalar = null_source_scalar(runtime, column.data_type())?;
+            runtime.series_from_scalar(&scalar, rows)
+        },
     }
 }
 
@@ -939,13 +956,7 @@ fn materialize_one_missing_null_column(
         .with_column(name.to_string())
         .with_detail("reason", "missing_null_for_non_nullable_column"));
     }
-    let scalar = null_source_scalar(runtime, schema_column.data_type()).map_err(|error| {
-        error
-            .reanchor("dataframe::read_parquet_source")
-            .with_detail("reason", "missing_null_materialization_failed")
-            .with_column(name.to_string())
-    })?;
-    let series = runtime.series_from_scalar(&scalar, row_count).map_err(|error| {
+    let series = all_null_source_series(runtime, schema_column, row_count).map_err(|error| {
         error
             .reanchor("dataframe::read_parquet_source")
             .with_detail("reason", "missing_null_materialization_failed")
@@ -998,13 +1009,7 @@ fn materialize_one_all_null_read_column(
         .with_column(name.to_string())
         .with_detail("reason", "all_null_read_for_non_nullable_column"));
     }
-    let scalar = null_source_scalar(runtime, schema_column.data_type()).map_err(|error| {
-        error
-            .reanchor("dataframe::read_parquet_source")
-            .with_detail("reason", "all_null_read_materialization_failed")
-            .with_column(name.to_string())
-    })?;
-    let series = runtime.series_from_scalar(&scalar, row_count).map_err(|error| {
+    let series = all_null_source_series(runtime, schema_column, row_count).map_err(|error| {
         error
             .reanchor("dataframe::read_parquet_source")
             .with_detail("reason", "all_null_read_materialization_failed")

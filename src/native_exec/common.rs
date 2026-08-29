@@ -8,7 +8,6 @@
 
 use std::{
     collections::BTreeSet,
-    future::Future,
     pin::Pin,
     sync::Arc,
     task::{Context, Poll},
@@ -28,7 +27,7 @@ use datafusion::{
         metrics::RecordOutput,
     },
 };
-use futures::{FutureExt, Stream};
+use futures::{FutureExt, Stream, future::BoxFuture};
 use nexus_query_engine::{
     observability::RuntimeObservationHandle,
     plan::{PlanNode, QueryPlan},
@@ -217,10 +216,8 @@ struct NativeHostOutputStep {
     reservation: Option<MemoryReservation>,
 }
 
-type BoxedNativeHostOutputFuture =
-    Pin<Box<dyn Future<Output = DataFusionResult<NativeHostOutputCursor>> + Send + 'static>>;
-type BoxedNativeHostOutputStepFuture =
-    Pin<Box<dyn Future<Output = DataFusionResult<NativeHostOutputStep>> + Send + 'static>>;
+type BoxedNativeHostOutputFuture = BoxFuture<'static, DataFusionResult<NativeHostOutputCursor>>;
+type BoxedNativeHostOutputStepFuture = BoxFuture<'static, DataFusionResult<NativeHostOutputStep>>;
 
 enum NativeHostOutputState {
     LoadingInitial(BoxedNativeHostOutputFuture),

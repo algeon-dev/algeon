@@ -18,6 +18,25 @@ fn import_record_batch(batch: &RecordBatch) -> cudf::Result<DataFrame> {
     DataFrame::from_record_batch(&runtime, batch)
 }
 
+fn integer_array(data_type: &ArrowDataType, values: &[Option<i64>]) -> ArrayRef {
+    macro_rules! array {
+        ($array:ty, $native:ty) => {
+            Arc::new(<$array>::from(values.iter().map(|value| value.map(|value| value as $native)).collect::<Vec<_>>()))
+        };
+    }
+    match data_type {
+        ArrowDataType::Int8 => array!(Int8Array, i8),
+        ArrowDataType::Int16 => array!(Int16Array, i16),
+        ArrowDataType::Int32 => array!(Int32Array, i32),
+        ArrowDataType::Int64 => array!(Int64Array, i64),
+        ArrowDataType::UInt8 => array!(UInt8Array, u8),
+        ArrowDataType::UInt16 => array!(UInt16Array, u16),
+        ArrowDataType::UInt32 => array!(UInt32Array, u32),
+        ArrowDataType::UInt64 => array!(UInt64Array, u64),
+        data_type => panic!("expected an integer data type, got {data_type:?}"),
+    }
+}
+
 fn assert_string_list_value(array: &ListArray, index: usize, expected: &[Option<&str>]) {
     let values = array.value(index);
     let strings = values.as_any().downcast_ref::<StringArray>().unwrap();
@@ -438,7 +457,7 @@ fn test_arrow_host_record_batch_schema_validation_reanchors_schema_errors() {
 }
 
 #[test]
-fn test_arrow_host_schema_validation_accepts_timezone_and_numeric_lists_before_copy() {
+fn test_arrow_host_schema_validation_accepts_timezone_and_fixed_width_lists_before_copy() {
     use cudf::interop::arrow_host::{cudf_dtype_from_arrow_type, validate_arrow_schema};
 
     let tz_dtype = cudf_dtype_from_arrow_type(&ArrowDataType::Timestamp(TimeUnit::Microsecond, Some("UTC".into())))
@@ -453,18 +472,13 @@ fn test_arrow_host_schema_validation_accepts_timezone_and_numeric_lists_before_c
     let mapped = validate_arrow_schema(&numeric_list_schema, 0).expect("numeric Arrow lists should be admitted");
     assert_eq!(mapped.fields()[0].cudf_data_type(), DataType::new(TypeId::List));
 
-    let unsupported_list_schema = Schema::new(vec![Field::new(
+    let boolean_list_schema = Schema::new(vec![Field::new(
         "items",
         ArrowDataType::List(Arc::new(Field::new("item", ArrowDataType::Boolean, true))),
         true,
     )]);
-    let nested_err =
-        validate_arrow_schema(&unsupported_list_schema, 0).expect_err("unsupported list children should be rejected");
-    assert_eq!(nested_err.kind(), ErrorKind::Unsupported);
-    assert_eq!(nested_err.code(), ErrorCode::UnsupportedDtype);
-    assert_eq!(nested_err.operation(), "arrow_host::validate_arrow_schema");
-    assert_eq!(error_context_value(&nested_err, "field_name").as_deref(), Some("items"));
-    assert_eq!(error_context_value(&nested_err, "reason").as_deref(), Some("unsupported_arrow_type"));
+    let mapped = validate_arrow_schema(&boolean_list_schema, 0).expect("Boolean Arrow lists should be admitted");
+    assert_eq!(mapped.fields()[0].cudf_data_type(), DataType::new(TypeId::List));
 }
 
 #[test]
@@ -925,6 +939,148 @@ fn test_list_float32_import_exports_numeric_child_with_root_and_child_validity()
 }
 
 #[test]
+fn test_integer_list_widths_round_trip_across_list_shapes() {
+    let child_types = [
+        ArrowDataType::Int8,
+        ArrowDataType::Int16,
+        ArrowDataType::Int32,
+        ArrowDataType::Int64,
+        ArrowDataType::UInt8,
+        ArrowDataType::UInt16,
+        ArrowDataType::UInt32,
+        ArrowDataType::UInt64,
+    ];
+
+    for (index, child_type) in child_types.into_iter().enumerate() {
+        let (offsets, values, root_validity, child_nullable, slice) = match index % 4 {
+            0 => (
+                vec![0, 2, 2, 2, 4],
+                vec![Some(1), None, Some(3), Some(4)],
+                Some(vec![true, true, false, true]),
+                true,
+                None,
+            ),
+            1 => (vec![0, 1, 1, 3], vec![Some(1), Some(2), Some(3)], None, false, None),
+            2 => (vec![0, 1, 3, 3, 4], vec![Some(1), None, Some(3), Some(4)], None, true, Some((1, 2))),
+            _ => (vec![0], Vec::new(), Some(Vec::new()), true, None),
+        };
+        let item = Arc::new(Field::new("item", child_type.clone(), child_nullable));
+        let list = ListArray::new(
+            Arc::clone(&item),
+            OffsetBuffer::new(ScalarBuffer::from(offsets)),
+            integer_array(&child_type, &values),
+            root_validity.map(NullBuffer::from),
+        );
+        let array: ArrayRef = match slice {
+            Some((offset, length)) => Arc::new(list.slice(offset, length)),
+            None => Arc::new(list),
+        };
+        let schema = Arc::new(Schema::new(vec![Field::new("items", ArrowDataType::List(item), true)]));
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![array]).unwrap();
+
+        let frame = import_record_batch(&batch).unwrap();
+        let materialized = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema))
+            .unwrap()
+            .to_host_record_batch()
+            .unwrap();
+        assert_eq!(materialized.schema(), schema);
+        assert_eq!(materialized.column(0).to_data(), batch.column(0).to_data(), "{child_type:?}");
+    }
+
+    let item = Arc::new(Field::new("element", ArrowDataType::Int64, true));
+    let list = LargeListArray::new(
+        Arc::clone(&item),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0i64, 2, 2, 3])),
+        integer_array(&ArrowDataType::Int64, &[Some(10), None, Some(30)]),
+        Some(NullBuffer::from(vec![true, false, true])),
+    );
+    let schema = Arc::new(Schema::new(vec![Field::new("items", ArrowDataType::LargeList(item), true)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(list)]).unwrap();
+    let frame = import_record_batch(&batch).unwrap();
+    let materialized = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema))
+        .unwrap()
+        .to_host_record_batch()
+        .unwrap();
+    assert_eq!(materialized.column(0).to_data(), batch.column(0).to_data());
+}
+
+#[test]
+fn test_list_boolean_import_unpacks_bool8_and_reexports_exact_values() {
+    let item = Arc::new(Field::new("item", ArrowDataType::Boolean, true));
+    let lists = ListArray::new(
+        Arc::clone(&item),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0, 3, 3, 3, 4])),
+        Arc::new(BooleanArray::from(vec![Some(true), Some(false), None, Some(true)])),
+        Some(NullBuffer::from(vec![true, true, false, true])),
+    );
+    let schema = Arc::new(Schema::new(vec![Field::new("flags", ArrowDataType::List(item), true)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(lists)]).unwrap();
+
+    let frame = import_record_batch(&batch).unwrap();
+    let series = frame.series("flags").unwrap();
+    let export = series.try_prepare_device_column_export().unwrap();
+    let child = match export.column().layout() {
+        rapids_interop::ColumnLayout::List { child, .. } => *child,
+        layout => panic!("expected list layout, got {layout:?}"),
+    };
+    let child = export.semantic_columns().iter().find(|column| column.id() == child).unwrap();
+    assert_eq!(child.data_type().id(), rapids_interop::TypeId::Bool8);
+
+    let materialized = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema))
+        .unwrap()
+        .to_host_record_batch()
+        .unwrap();
+    assert_eq!(materialized.schema(), schema);
+    assert_eq!(materialized.column(0).to_data(), batch.column(0).to_data());
+}
+
+#[test]
+fn test_large_list_boolean_slice_and_zero_child_shapes_round_trip() {
+    let item = Arc::new(Field::new("element", ArrowDataType::Boolean, true));
+    let full = LargeListArray::new(
+        Arc::clone(&item),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0i64, 1, 3, 3, 4])),
+        Arc::new(BooleanArray::from(vec![Some(false), Some(true), None, Some(false)])),
+        Some(NullBuffer::from(vec![true, true, false, true])),
+    );
+    let sliced = full.slice(1, 2);
+    let schema = Arc::new(Schema::new(vec![Field::new("flags", ArrowDataType::LargeList(Arc::clone(&item)), true)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(sliced)]).unwrap();
+    let frame = import_record_batch(&batch).unwrap();
+    let materialized = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema))
+        .unwrap()
+        .to_host_record_batch()
+        .unwrap();
+    let expected = LargeListArray::new(
+        item,
+        OffsetBuffer::new(ScalarBuffer::from(vec![0i64, 2, 2])),
+        Arc::new(BooleanArray::from(vec![Some(true), None])),
+        Some(NullBuffer::from(vec![true, false])),
+    );
+    assert_eq!(materialized.schema(), schema);
+    assert_eq!(materialized.column(0).to_data(), expected.to_data());
+
+    for rows in [3, 0] {
+        let offsets = vec![0; rows + 1];
+        let lists = ListArray::new(
+            Arc::new(Field::new("item", ArrowDataType::Boolean, true)),
+            OffsetBuffer::new(ScalarBuffer::from(offsets)),
+            Arc::new(BooleanArray::from(Vec::<Option<bool>>::new())),
+            Some(NullBuffer::from(vec![false; rows])),
+        );
+        let schema = Arc::new(Schema::new(vec![Field::new("flags", lists.data_type().clone(), true)]));
+        let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(lists)]).unwrap();
+        let frame = import_record_batch(&batch).unwrap();
+        let materialized = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema))
+            .unwrap()
+            .to_host_record_batch()
+            .unwrap();
+        assert_eq!(materialized.schema(), schema);
+        assert_eq!(materialized.column(0).to_data(), batch.column(0).to_data());
+    }
+}
+
+#[test]
 fn test_fixed_size_list_float32_import_synthesizes_cudf_list_offsets() {
     let item = Arc::new(Field::new("item", ArrowDataType::Float32, true));
     let values = Arc::new(Float32Array::from(vec![Some(1.0), Some(2.0), Some(3.0), None, Some(5.0), Some(6.0)]));
@@ -1030,6 +1186,46 @@ fn test_gpu_record_batch_rejects_list_string_claiming_float32_child_schema() {
     assert_eq!(error_context_value(&error, "actual_child_cudf_type").as_deref(), Some("string"));
     assert_eq!(error_context_value(&error, "expected_child_arrow_type").as_deref(), Some("Float32"));
     assert_eq!(error_context_value(&error, "reason").as_deref(), Some("schema_list_child_dtype_mismatch"));
+}
+
+#[test]
+fn test_gpu_record_batch_rejects_nullable_list_child_claiming_non_nullable_schema() {
+    let source_item = Arc::new(Field::new("item", ArrowDataType::Int64, true));
+    let source = ListArray::new(
+        Arc::clone(&source_item),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0, 2, 3])),
+        Arc::new(Int64Array::from(vec![Some(10), None, Some(30)])),
+        None,
+    );
+    let source_schema = Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::List(source_item), false)]));
+    let source_batch = RecordBatch::try_new(source_schema, vec![Arc::new(source)]).unwrap();
+    let frame = import_record_batch(&source_batch).unwrap();
+    let claimed_schema = Arc::new(Schema::new(vec![Field::new(
+        "features",
+        ArrowDataType::List(Arc::new(Field::new("item", ArrowDataType::Int64, false))),
+        false,
+    )]));
+
+    let error = cudf::frame::dataframe::GpuRecordBatch::new(frame, claimed_schema)
+        .expect_err("a nullable list child must not claim a non-nullable child schema");
+
+    assert_eq!(error.code(), ErrorCode::NullUnexpected);
+    assert_eq!(error_context_value(&error, "child_null_count").as_deref(), Some("1"));
+    assert_eq!(error_context_value(&error, "reason").as_deref(), Some("schema_list_child_nullability_mismatch"));
+}
+
+#[test]
+fn test_arrow_list_constructor_rejects_child_length_mismatch_before_import() {
+    let child = Arc::new(Field::new("item", ArrowDataType::Int64, true));
+    let error = ListArray::try_new(
+        child,
+        OffsetBuffer::new(ScalarBuffer::from(vec![0, 2])),
+        Arc::new(Int64Array::from(vec![1])),
+        None,
+    )
+    .expect_err("list offsets outside the child array must fail before cudf import");
+
+    assert!(error.to_string().contains("offset"), "{error}");
 }
 
 #[test]
