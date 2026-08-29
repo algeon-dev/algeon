@@ -922,14 +922,16 @@ impl CapturedError {
 
     pub(super) fn from_adapter_error(error: &Error) -> Self {
         let source_diagnostics = ErrorSourceDiagnostics::from_source(error.source_error());
-        let safe_facts = error.facts().log_safe_projection();
         Self {
             code: error.code().as_str().to_string(),
             kind: error.kind().as_str().to_string(),
             status: error.status().as_str().to_string(),
             operation: error.operation().to_string(),
             message: error.message().to_string(),
-            facts: safe_facts.retained_entries(),
+            // Query-caller capture keeps the log-safe projection plus the
+            // explicitly caller-visible schema details. Operational logs keep
+            // using the log-safe projection alone and never see identifiers.
+            facts: error.facts().retained_capture_entries(),
             diagnostic: source_diagnostics.chain().unwrap_or_else(|| error.message()).to_string(),
             source_chain: source_diagnostics.chain().map(str::to_string),
             root_cause: source_diagnostics.root_cause().map(str::to_string),
@@ -945,7 +947,6 @@ impl CapturedError {
     ) -> Self {
         let source_diagnostics = ErrorSourceDiagnostics::from_error(error);
         let diagnostic = source_diagnostics.chain().map(str::to_string).unwrap_or_else(|| message.clone());
-        let safe_facts = facts.log_safe_projection();
         Self {
             code: code.as_str().to_string(),
             kind: code.kind().as_str().to_string(),
@@ -953,7 +954,7 @@ impl CapturedError {
             operation: operation.to_string(),
             diagnostic,
             message,
-            facts: safe_facts.retained_entries(),
+            facts: facts.retained_capture_entries(),
             source_chain: source_diagnostics.chain().map(str::to_string),
             root_cause: source_diagnostics.root_cause().map(str::to_string),
         }

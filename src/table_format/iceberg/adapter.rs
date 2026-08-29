@@ -9,9 +9,9 @@ use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Fields, Schema as ArrowSchema, SchemaRef, UnionFields};
 use nexus_iceberg::{
-    ColumnBinding, ColumnRole, ColumnSource, DefaultValue, DeleteContent, DeleteFile, Error as IcebergError,
-    ErrorCode as IcebergErrorCode, ErrorStatus, FileFormat, NameMapping, NameMappingField, PartitionTransform,
-    ScalarValue, ScanCandidate, ScanRequest, Schema, SchemaField,
+    ClassificationProvenance, ColumnBinding, ColumnRole, ColumnSource, DefaultValue, DeleteContent, DeleteFile,
+    Error as IcebergError, ErrorCode as IcebergErrorCode, ErrorStatus, FileFormat, NameMapping, NameMappingField,
+    PartitionTransform, ScalarValue, ScanCandidate, ScanRequest, Schema, SchemaField,
 };
 
 use crate::{
@@ -557,10 +557,14 @@ fn read_capability(location: &str) -> TableFormatReadCapability {
 /// machine classification and typed safe facts without attaching any raw
 /// upstream error source to the root error.
 pub fn root_error_from_iceberg(source: IcebergError, operation: &'static str, message: impl Into<String>) -> Error {
+    // Fixed enum strings only: safe for operational logs and stable for
+    // operators distinguishing typed causes from chain-text fallbacks.
+    let provenance: ClassificationProvenance = source.classification_provenance();
     let mut error = Error::new(root_error_code(&source), operation, message)
         .with_log_safe_fact("iceberg_error_code", source.code().as_str())
         .with_log_safe_fact("iceberg_error_status", iceberg_error_status_code(source.status()))
         .with_log_safe_fact("iceberg_operation", source.operation().as_str())
+        .with_log_safe_fact("iceberg_classification_provenance", provenance.as_str())
         .with_fact("iceberg_message", source.sanitized_message().to_string());
     let context = source.typed_context();
     if let Some(kind) = context.catalog_kind {
@@ -646,6 +650,36 @@ mod tests {
         assert!(error.fact_value("iceberg_message").is_some_and(|message| !message.contains("password")));
         assert!(error.fact_value("iceberg_message").is_some_and(|message| !message.contains("secret")));
         assert!(error.source_error().is_none(), "the root boundary must not retain a leaf/vendor source chain");
+    }
+
+    #[test]
+    fn leaf_and_scan_classifiers_agree_on_typed_and_wrapper_cases() {
+        use iceberg::{Error as VendorIcebergError, ErrorKind};
+
+        // A typed not-found whose message names a timeout keeps its typed
+        // cause on both the leaf and the scan paths.
+        let make_not_found = || VendorIcebergError::new(ErrorKind::TableNotFound, "list table timed out after 30s");
+        let leaf = IcebergError::from_iceberg_error(Operation::TableLoad, make_not_found());
+        let scan_code = crate::table_format::iceberg::catalog::classify_iceberg_scan_error(&make_not_found());
+        assert_eq!(leaf.code(), IcebergErrorCode::NotFound);
+        assert_eq!(scan_code, ErrorCode::SourceObjectNotFound);
+        let root = root_error_from_iceberg(leaf, "datafusion_nexus.test.iceberg", "Iceberg table load failed");
+        assert_eq!(root.code(), ErrorCode::SourceObjectNotFound);
+        assert_eq!(root.fact_value("iceberg_classification_provenance"), Some("typed_kind"));
+
+        // A timeout wrapper around an expired-token leaf is authentication
+        // on both paths, not a timeout.
+        let make_auth = || {
+            VendorIcebergError::new(ErrorKind::Unexpected, "catalog request failed: deadline exceeded")
+                .with_source(std::io::Error::other("ExpiredTokenException: token expired"))
+        };
+        let leaf = IcebergError::from_iceberg_error(Operation::CatalogConnect, make_auth());
+        let scan_code = crate::table_format::iceberg::catalog::classify_iceberg_scan_error(&make_auth());
+        assert_eq!(leaf.code(), IcebergErrorCode::Authentication);
+        assert_eq!(scan_code, ErrorCode::SourceUnauthenticated);
+        let root = root_error_from_iceberg(leaf, "datafusion_nexus.test.iceberg", "Iceberg catalog connection failed");
+        assert_eq!(root.code(), ErrorCode::SourceUnauthenticated);
+        assert_eq!(root.fact_value("iceberg_classification_provenance"), Some("message_fallback"));
     }
 
     #[test]

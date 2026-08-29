@@ -33,6 +33,8 @@ const FALLBACK_MESSAGE: &str = "datafusion-nexus error without a message";
 pub type Result<T> = std::result::Result<T, Error>;
 
 const MAX_SOURCE_CHAIN_DEPTH: usize = 32;
+const MAX_SOURCE_CHAIN_MESSAGE_BYTES: usize = 512;
+const MAX_SOURCE_CHAIN_BYTES: usize = 2_048;
 const MAX_LOG_CAUSE_BYTES: usize = 512;
 const MAX_LOG_SOURCE_PATH_BYTES: usize = 1_024;
 const MAX_NEXUS_ERROR_TRAVERSAL_DEPTH: usize = 64;
@@ -42,6 +44,20 @@ const MAX_LOG_SAFE_FACT_VALUE_BYTES: usize = 256;
 const MAX_LOG_SAFE_FACTS_RENDERED_BYTES: usize = 2_048;
 pub(crate) const ERROR_FACTS_TRUNCATED_KEY: &str = "error_facts_truncated";
 
+/// Caller-visible strict-rejection schema details.
+///
+/// These fact keys name the query caller's own schema detail (unsupported
+/// column name, Arrow type, and role) for actionable validation failures such
+/// as [`ErrorCode::FinalPlanRequirementUnsatisfied`]. They are deliberately
+/// *not* [`Error::with_log_safe_fact`] disclosure: values may contain user
+/// identifiers, so operational logs and [`fmt::Debug`] must never carry them.
+/// The server projection owner retains them explicitly for query-caller
+/// surfaces (Flight metadata allowlist, query-stats capture) alongside the
+/// log-safe projection. Do not extend this list without defining the
+/// disclosure contract of each projection that consumes it.
+const CLIENT_SCHEMA_DETAIL_FACT_KEYS: &[&str] =
+    &["unsupported_column", "unsupported_column_type", "unsupported_column_role"];
+
 /// DataFusion error inspection helpers provided by datafusion-nexus.
 pub trait DataFusionErrorExt {
     /// Finds the first Nexus [`Error`] in this DataFusion error tree.
@@ -50,7 +66,9 @@ pub trait DataFusionErrorExt {
     /// [`std::error::Error::source`] links are followed, while every
     /// [`DataFusionError::Collection`] branch is visited in collection order.
     /// The first match in that order is returned. Traversal is bounded
-    /// defensively by both depth and total node count.
+    /// defensively by both depth and total node count. A `None` result only
+    /// means no Nexus error was found within that budget; it does not prove
+    /// that branches beyond the budget contain no Nexus identity.
     fn find_nexus_error(&self) -> Option<&Error>;
 }
 
@@ -199,6 +217,45 @@ impl Facts {
 
         LogSafeFactProjection { entries, truncated }
     }
+
+    /// Retained entries for query-caller-visible capture (query stats).
+    ///
+    /// Combines the log-safe operational projection with the explicitly
+    /// caller-visible schema details from [`CLIENT_SCHEMA_DETAIL_FACT_KEYS`].
+    /// Detail values are raw caller schema identifiers: they are sanitized
+    /// and bounded exactly like log-safe values, but their presence here is
+    /// an explicit per-key disclosure choice, not a general log-safety claim.
+    /// A single `error_facts_truncated` marker covers truncation in either
+    /// projection. Operational logs and [`fmt::Debug`] keep using
+    /// [`Self::log_safe_projection`] without these details.
+    pub fn retained_capture_entries(&self) -> Vec<(String, String)> {
+        let safe = self.log_safe_projection();
+        let (mut details, details_truncated) = self.client_detail_entries();
+        let mut entries =
+            safe.entries.iter().map(|(key, value)| ((*key).to_string(), value.clone())).collect::<Vec<_>>();
+        entries.append(&mut details);
+        entries.sort_by(|left, right| left.0.cmp(&right.0));
+        if safe.truncated || details_truncated {
+            entries.push((ERROR_FACTS_TRUNCATED_KEY.to_string(), "true".to_string()));
+            entries.sort_by(|left, right| left.0.cmp(&right.0));
+        }
+        entries
+    }
+
+    fn client_detail_entries(&self) -> (Vec<(String, String)>, bool) {
+        let mut entries = Vec::with_capacity(CLIENT_SCHEMA_DETAIL_FACT_KEYS.len());
+        let mut truncated = false;
+        for key in CLIENT_SCHEMA_DETAIL_FACT_KEYS {
+            let Some(raw) = self.values.get(*key).filter(|fact| !fact.log_safe).map(|fact| fact.value.as_str()) else {
+                continue;
+            };
+            let sanitized = sanitize_log_text(raw);
+            let (value, value_truncated) = truncate_with_marker(&sanitized, MAX_LOG_SAFE_FACT_VALUE_BYTES);
+            truncated |= value_truncated;
+            entries.push((key.to_string(), value));
+        }
+        (entries, truncated)
+    }
 }
 
 impl fmt::Debug for Facts {
@@ -286,9 +343,12 @@ fn truncate_with_marker(value: &str, max_bytes: usize) -> (String, bool) {
 
 /// Structured adapter error with stable classification and facts.
 ///
-/// [`fmt::Display`] renders only the human-facing [`Self::message`]. Consumers
-/// that need machine-readable diagnostics should use the typed accessors or
-/// [`fmt::Debug`] rather than parsing display text.
+/// [`fmt::Display`] renders only the human-facing [`Self::message`].
+/// Machine policy must use the typed accessors (`code`, `kind`, `status`,
+/// `operation`, fact lookups, `find_nexus_error`), never parsed text.
+/// [`fmt::Debug`] is a human diagnostic: it carries only the bounded
+/// log-safe fact projection and omits the source chain, so it is not a
+/// machine-readable contract either.
 pub struct Error {
     code: ErrorCode,
     operation: &'static str,
@@ -303,7 +363,10 @@ pub struct Error {
 /// `kind`, `status`, `operation`, facts) separate from human root-cause text.
 /// This formatter walks `std::error::Error::source()` and renders project
 /// errors by their human message, not by their structured `Display`
-/// representation. Server-side logs should use [`ErrorLogDiagnostics`].
+/// representation. Each layer's text is capped at
+/// `MAX_SOURCE_CHAIN_MESSAGE_BYTES` and the joined chain at
+/// `MAX_SOURCE_CHAIN_BYTES`, both with `...` markers; the in-process error is
+/// never rewritten. Server-side logs should use [`ErrorLogDiagnostics`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErrorSourceDiagnostics {
     chain: Option<String>,
@@ -327,6 +390,12 @@ pub struct ErrorLogDiagnostics {
 
 impl ErrorLogDiagnostics {
     /// Builds log diagnostics from `error` and all of its sources.
+    ///
+    /// Each layer's text is truncated to the log cause budget before it is
+    /// retained, so one extreme foreign `Display` cannot force every
+    /// projection to render it in full. A foreign implementation can still
+    /// spend memory producing its own message; that cost cannot be bounded
+    /// from the outside.
     pub fn from_error(error: &(dyn StdError + 'static)) -> Self {
         let mut current = Some(error);
         let mut cause = None;
@@ -338,7 +407,9 @@ impl ErrorLogDiagnostics {
             if diagnostics.source_path.is_none() {
                 diagnostics.set_source_path(diagnostic_source_path(error));
             }
-            let message = log_diagnostic_error_message(error);
+            let (message, message_truncated) =
+                truncate_with_marker(&log_diagnostic_error_message(error), MAX_LOG_CAUSE_BYTES);
+            diagnostics.truncated |= message_truncated;
             if !message.is_empty() {
                 cause = Some(message);
             }
@@ -415,18 +486,36 @@ impl ErrorSourceDiagnostics {
 
     fn from_iter(mut current: Option<&(dyn StdError + 'static)>) -> Self {
         let mut messages = Vec::new();
+        let mut chain_bytes = 0usize;
+        let mut chain_dropped = false;
         for _ in 0..MAX_SOURCE_CHAIN_DEPTH {
             let Some(error) = current else {
                 break;
             };
-            let message = diagnostic_error_message(error);
+            // Truncate each layer's own text before retaining it: an extreme
+            // but supported foreign `Display` must not make every projection
+            // unbounded. Markers keep the cut observable; the in-process error
+            // itself is never rewritten.
+            let (message, _) = truncate_with_marker(&diagnostic_error_message(error), MAX_SOURCE_CHAIN_MESSAGE_BYTES);
             if !message.is_empty() && messages.last() != Some(&message) {
+                chain_bytes = chain_bytes.saturating_add(message.len());
+                if chain_bytes > MAX_SOURCE_CHAIN_BYTES {
+                    chain_dropped = true;
+                    break;
+                }
                 messages.push(message);
             }
             current = error.source();
         }
         let root_cause = messages.last().cloned();
-        let chain = (!messages.is_empty()).then(|| messages.join(": "));
+        let chain = (!messages.is_empty()).then(|| {
+            let joined = messages.join(": ");
+            let (mut capped, truncated) = truncate_with_marker(&joined, MAX_SOURCE_CHAIN_BYTES);
+            if chain_dropped && !truncated {
+                capped = truncate_with_marker(&format!("{capped} ..."), MAX_SOURCE_CHAIN_BYTES).0;
+            }
+            capped
+        });
         Self { chain, root_cause }
     }
 }
@@ -468,7 +557,13 @@ impl Error {
     /// still redacts URI and credential-like tokens and enforces size caps as
     /// defense in depth, but sanitization does not make an unsafe value safe to
     /// opt in. Ordinary and externally supplied facts must use
-    /// [`Self::with_fact`] and remain hidden by default. The reserved
+    /// [`Self::with_fact`] and remain hidden by default.
+    ///
+    /// Caller-visible schema details (for example strict-rejection column
+    /// names) are also [`Self::with_fact`] facts, never log-safe ones, even
+    /// though the server projection owner retains them explicitly for
+    /// query-caller surfaces. Operational logs must not carry user
+    /// identifiers to make a document claim true. The reserved
     /// `error_facts_truncated` key remains available through raw typed lookup,
     /// but cannot be opted into the projection; only the projection itself may
     /// emit that retained marker.
@@ -735,25 +830,20 @@ fn redact_uri_tokens(message: &str) -> String {
         .join(" ")
 }
 
-// cuDF classification preserves permanent size/host-limit codes first, then
-// generic resource exhaustion, retry status (`Temporary`/`Persistent`), and
-// permanent failures by cuDF kind. This keeps
-// cuDF's coarse status contract intact. Attempt retry advice is derived only
-// from a sealed report; Persistent still records a condition needing
-// escalation or intervention. Notable permanent mappings:
+// Allocation attribution is owned by `cudf-nexus`: the typed FFI failure
+// source proves a query-limit rejection or physical exhaustion, while a
+// budget-scope annotation is only a usage snapshot of the scope the error
+// passed through. See `cudf::allocation_attribution`. Attempt retry advice is
+// derived only from a sealed report; Persistent still records a condition
+// needing escalation or intervention. Notable permanent mappings:
 // `NotFound` is treated as invalid input, `ExecutionContext` is treated as an
 // invariant violation, and unknown kinds fall back to dependency failure.
 fn code_for_cudf_error(error: &cudf::Error) -> ErrorCode {
-    if error.budget_exhaustion().is_some() {
-        return ErrorCode::QueryMemoryLimitExceeded;
-    }
-    if let Some(detail) = error.ffi_detail() {
-        match detail.failure_source {
-            cudf::CudfErrorFailureSource::ReservationLimit => return ErrorCode::QueryMemoryLimitExceeded,
-            cudf::CudfErrorFailureSource::Physical => return ErrorCode::DeviceOutOfMemory,
-            cudf::CudfErrorFailureSource::Unknown => {},
-            _ => {},
-        }
+    match cudf::allocation_attribution(error) {
+        cudf::CudfAllocationAttribution::ConfirmedQueryLimit => return ErrorCode::QueryMemoryLimitExceeded,
+        cudf::CudfAllocationAttribution::ConfirmedPhysical => return ErrorCode::DeviceOutOfMemory,
+        cudf::CudfAllocationAttribution::UnattributedAllocationFailure => return ErrorCode::DeviceAllocationFailed,
+        cudf::CudfAllocationAttribution::NonAllocationFailure => {},
     }
     match cudf::classify_cudf_error(error) {
         cudf::CudfErrorClassification::SizeOverflow => ErrorCode::SizeOverflow,
@@ -1278,6 +1368,62 @@ mod tests {
     }
 
     #[test]
+    fn source_diagnostics_bound_extreme_chain_bytes_without_rewriting_the_error() {
+        let mut error = DataFusionError::Execution("y".repeat(4_096));
+        for depth in 0..8 {
+            error = DataFusionError::Context(format!("wrapper-{depth}"), Box::new(error));
+        }
+        let error_display = error.to_string();
+        assert!(error_display.len() > 4_096);
+
+        let diagnostics = ErrorSourceDiagnostics::from_error(&error);
+
+        let chain = diagnostics.chain().expect("source chain should be present");
+        assert!(chain.len() <= 2_048, "chain must be bounded: {}", chain.len());
+        assert!(chain.contains("..."), "the cut must stay observable: {chain}");
+        let root_cause = diagnostics.root_cause().expect("root cause should be present");
+        assert!(root_cause.len() <= 512, "root cause must be bounded: {}", root_cause.len());
+        assert_eq!(error.to_string(), error_display, "projection must not rewrite the in-process error");
+    }
+
+    #[test]
+    fn log_diagnostics_mark_truncation_from_any_layer_not_just_the_cause() {
+        let error = Error::new(ErrorCode::Internal, "datafusion_nexus.test.log_layer_truncation", "outer wrapper")
+            .with_source(DataFusionError::Context(
+                "middle ".to_string() + &"m".repeat(4_000),
+                Box::new(DataFusionError::Execution("leaf cause".to_string())),
+            ));
+
+        let diagnostics = ErrorLogDiagnostics::from_error(&error);
+
+        assert_eq!(diagnostics.cause(), Some("leaf cause"));
+        assert!(diagnostics.truncated(), "an intermediate cut must stay observable");
+    }
+
+    #[test]
+    fn retained_capture_keeps_caller_schema_detail_outside_log_projection() {
+        let error = Error::new(
+            ErrorCode::FinalPlanRequirementUnsatisfied,
+            "datafusion_nexus.test.strict_capture",
+            "strict rejection probe",
+        )
+        .with_fact("unsupported_column", "countDetail")
+        .with_fact("unsupported_column_type", "List(Int64)")
+        .with_log_safe_fact("reason", "unsupported_type");
+
+        let logs = error.facts().log_safe_projection().rendered().unwrap_or_default();
+        assert!(!logs.contains("countDetail"), "operational logs must not carry caller schema detail: {logs}");
+
+        let retained = error.facts().retained_capture_entries();
+        assert!(
+            retained.contains(&("unsupported_column".to_string(), "countDetail".to_string())),
+            "query-caller capture must retain the strict-rejection detail: {retained:?}"
+        );
+        assert!(retained.contains(&("unsupported_column_type".to_string(), "List(Int64)".to_string())), "{retained:?}");
+        assert!(retained.contains(&("reason".to_string(), "unsupported_type".to_string())), "{retained:?}");
+    }
+
+    #[test]
     fn source_diagnostics_render_project_errors_by_message_not_structured_display() {
         let native = nexus_query_engine::error::QueryError::new(
             nexus_query_engine::error::QueryErrorCode::CudfDependencyFailure,
@@ -1343,5 +1489,154 @@ mod tests {
         assert_eq!(diagnostics.cause().expect("bounded cause").len(), MAX_LOG_CAUSE_BYTES);
         assert!(diagnostics.cause().expect("bounded cause").ends_with("..."));
         assert!(diagnostics.truncated());
+    }
+
+    fn cudf_allocation_error_for_test(
+        code: cudf::ErrorCode,
+        failure_source: Option<cudf::CudfErrorFailureSource>,
+        with_budget_scope: bool,
+    ) -> cudf::Error {
+        use cudf::testing::error as cudf_test_error;
+        let mut error =
+            cudf_test_error::new_with_for_test(code, "cudf.test.allocation_attribution", "synthetic cudf failure");
+        if let Some(failure_source) = failure_source {
+            error = cudf_test_error::with_ffi_detail_for_test(
+                error,
+                cudf::CudfErrorDetail {
+                    status: 0,
+                    failure_source,
+                    domain_id: 0,
+                    member_id: 0,
+                    generation: 0,
+                    requested_bytes: 4096,
+                    alignment: 256,
+                    cuda_error: -1,
+                    message: "synthetic allocation failure".to_string(),
+                },
+            );
+        }
+        if with_budget_scope {
+            error = cudf_test_error::with_budget_exhaustion_for_test(
+                error,
+                cudf_test_error::budget_exhaustion_detail_for_test(
+                    1024,
+                    1024,
+                    1024,
+                    512,
+                    4096,
+                    1,
+                    "test_boundary",
+                    "cudf.test.allocation_attribution",
+                ),
+            );
+        }
+        error
+    }
+
+    #[test]
+    fn cudf_physical_failure_with_budget_scope_is_device_out_of_memory() {
+        let error = Error::from_cudf(
+            "datafusion_nexus.test.allocation_attribution",
+            "wrapped cudf failure",
+            cudf_allocation_error_for_test(
+                cudf::ErrorCode::OutOfMemory,
+                Some(cudf::CudfErrorFailureSource::Physical),
+                true,
+            ),
+        );
+
+        assert_eq!(error.code(), ErrorCode::DeviceOutOfMemory);
+    }
+
+    #[test]
+    fn cudf_reservation_limit_is_query_memory_limit_exceeded() {
+        let error = Error::from_cudf(
+            "datafusion_nexus.test.allocation_attribution",
+            "wrapped cudf failure",
+            cudf_allocation_error_for_test(
+                cudf::ErrorCode::OutOfMemory,
+                Some(cudf::CudfErrorFailureSource::ReservationLimit),
+                true,
+            ),
+        );
+
+        assert_eq!(error.code(), ErrorCode::QueryMemoryLimitExceeded);
+    }
+
+    #[test]
+    fn cudf_unknown_allocation_with_scope_usage_is_not_a_cap_rejection() {
+        let error = Error::from_cudf(
+            "datafusion_nexus.test.allocation_attribution",
+            "wrapped cudf failure",
+            cudf_allocation_error_for_test(
+                cudf::ErrorCode::OutOfMemory,
+                Some(cudf::CudfErrorFailureSource::Unknown),
+                true,
+            ),
+        );
+
+        assert_eq!(error.code(), ErrorCode::DeviceAllocationFailed);
+    }
+
+    #[test]
+    fn cudf_dependency_failure_through_a_budgeted_scope_is_not_a_cap_rejection() {
+        let error = Error::from_cudf(
+            "datafusion_nexus.test.allocation_attribution",
+            "wrapped cudf failure",
+            cudf_allocation_error_for_test(cudf::ErrorCode::IoFailure, None, true),
+        );
+
+        assert_eq!(error.code(), ErrorCode::CudfDependencyFailure);
+    }
+
+    #[test]
+    fn adapter_and_native_boundaries_agree_on_cudf_allocation_attribution() {
+        let cases = [
+            (
+                cudf::ErrorCode::OutOfMemory,
+                Some(cudf::CudfErrorFailureSource::Physical),
+                true,
+                ErrorCode::DeviceOutOfMemory,
+                nexus_query_engine::error::QueryErrorCode::DeviceOutOfMemory,
+            ),
+            (
+                cudf::ErrorCode::OutOfMemory,
+                Some(cudf::CudfErrorFailureSource::ReservationLimit),
+                true,
+                ErrorCode::QueryMemoryLimitExceeded,
+                nexus_query_engine::error::QueryErrorCode::QueryMemoryLimitExceeded,
+            ),
+            (
+                cudf::ErrorCode::OutOfMemory,
+                Some(cudf::CudfErrorFailureSource::Unknown),
+                true,
+                ErrorCode::DeviceAllocationFailed,
+                nexus_query_engine::error::QueryErrorCode::DeviceAllocationFailed,
+            ),
+            (
+                cudf::ErrorCode::IoFailure,
+                None,
+                true,
+                ErrorCode::CudfDependencyFailure,
+                nexus_query_engine::error::QueryErrorCode::CudfDependencyFailure,
+            ),
+        ];
+
+        for (index, (code, failure_source, with_budget_scope, expected_adapter, expected_native)) in
+            cases.into_iter().enumerate()
+        {
+            let adapter = Error::from_cudf(
+                "datafusion_nexus.test.allocation_attribution",
+                "wrapped cudf failure",
+                cudf_allocation_error_for_test(code, failure_source, with_budget_scope),
+            );
+            assert_eq!(adapter.code(), expected_adapter, "adapter mismatch for case {index}");
+            let native = nexus_query_engine::error::QueryError::from_cudf(
+                "nexus_query_engine.test.allocation_attribution",
+                "wrapped cudf failure",
+                cudf_allocation_error_for_test(code, failure_source, with_budget_scope),
+            );
+            assert_eq!(native.code(), expected_native, "native mismatch for case {index}");
+        }
     }
 }

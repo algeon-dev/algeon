@@ -45,6 +45,47 @@ pub enum ErrorStatus {
     Cancelled,
 }
 
+/// Where the [`Error`] code came from.
+///
+/// The leaf normalizes vendor failures through several evidence levels.
+/// The provenance records which level decided so operators can tell a typed
+/// upstream cause apart from a chain-text fallback without re-reading the
+/// vendor error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClassificationProvenance {
+    /// The caller chose the code directly via [`Error::new`] or
+    /// [`Error::retryable`]; no inference happened.
+    Explicit,
+    /// The upstream typed `iceberg::ErrorKind` decided the code. Wrapper
+    /// message text never overrides this level.
+    TypedKind,
+    /// The kind was generic but the transport reported the condition as
+    /// retryable, promoting it to [`ErrorCode::TemporaryDependency`].
+    RetryableTransport,
+    /// A bounded scan of the source-chain text decided the code. Catalog
+    /// backends flatten typed SDK errors into text, so authentication and
+    /// access markers found here are structured transport detail, not a
+    /// guess — but they are still weaker than a typed kind.
+    MessageFallback,
+    /// Neither the typed kind, the retryable bit, nor the bounded chain
+    /// text identified the condition; the error is generic
+    /// [`ErrorCode::Internal`].
+    Unclassified,
+}
+
+impl ClassificationProvenance {
+    /// Stable code for logs and adapter conversions.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Explicit => "explicit",
+            Self::TypedKind => "typed_kind",
+            Self::RetryableTransport => "retryable_transport",
+            Self::MessageFallback => "message_fallback",
+            Self::Unclassified => "unclassified",
+        }
+    }
+}
+
 /// The leaf operation that failed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operation {
@@ -117,6 +158,7 @@ pub struct Error {
     // a public field would let a caller store an unredacted vendor message.
     sanitized_message: String,
     typed_context: Box<ErrorContext>,
+    provenance: ClassificationProvenance,
 }
 
 impl Error {
@@ -146,6 +188,7 @@ impl Error {
             operation,
             sanitized_message: sanitize_message(sanitized_message.as_ref()),
             typed_context: Box::default(),
+            provenance: ClassificationProvenance::Explicit,
         }
     }
 
@@ -180,11 +223,18 @@ impl Error {
         &self.typed_context
     }
 
+    /// Returns which evidence level decided the [`ErrorCode`](Self::code).
+    pub const fn classification_provenance(&self) -> ClassificationProvenance {
+        self.provenance
+    }
+
     #[cfg(feature = "catalog")]
     /// Normalizes an `iceberg-rust` error without retaining its source chain.
     pub fn from_iceberg_error(operation: Operation, source: iceberg::Error) -> Self {
-        let code = classify_iceberg_error(&source);
-        Self::with_status(code, status_for(code, source.retryable()), operation, source.message())
+        let (code, provenance) = classify_iceberg_error(&source);
+        let mut error = Self::with_status(code, status_for(code, source.retryable()), operation, source.message());
+        error.provenance = provenance;
+        error
     }
 }
 
@@ -207,15 +257,24 @@ impl fmt::Display for Error {
 
 impl StdError for Error {}
 
-/// Classifies a dependency message when its transport condition is more
-/// specific than the upstream Iceberg error kind.
-pub(crate) fn classify_error_message(message: &str, retryable: bool) -> ErrorCode {
+/// Single-message fallback composition used by [`classify_iceberg_error`]:
+/// specific markers first, then transient wrappers.
+#[cfg(test)]
+fn classify_error_message_for_test(message: &str, retryable: bool) -> ErrorCode {
+    if let Some(code) = classify_specific_message(message) {
+        return code;
+    }
+    if let Some(code) = classify_transient_message(message) {
+        return code;
+    }
+    if retryable { ErrorCode::TemporaryDependency } else { ErrorCode::Internal }
+}
+
+/// Authentication, access, and not-found markers: an explicit leaf condition
+/// that a generic timeout or cancellation wrapper must not override.
+fn classify_specific_message(message: &str) -> Option<ErrorCode> {
     let text = message.to_ascii_lowercase();
-    if contains_any(&text, &["cancelled", "canceled", "request aborted", "operation aborted"]) {
-        ErrorCode::Cancelled
-    } else if contains_any(&text, &["timeout", "timed out", "deadline exceeded"]) {
-        ErrorCode::Timeout
-    } else if contains_any(
+    if contains_any(
         &text,
         &[
             "unauthenticated",
@@ -232,7 +291,7 @@ pub(crate) fn classify_error_message(message: &str, retryable: bool) -> ErrorCod
             " 401",
         ],
     ) {
-        ErrorCode::Authentication
+        Some(ErrorCode::Authentication)
     } else if contains_any(
         &text,
         &[
@@ -248,13 +307,24 @@ pub(crate) fn classify_error_message(message: &str, retryable: bool) -> ErrorCod
             " 403",
         ],
     ) {
-        ErrorCode::Access
+        Some(ErrorCode::Access)
     } else if contains_any(&text, &["not found", "does not exist", "http_404", " 404"]) {
-        ErrorCode::NotFound
-    } else if retryable {
-        ErrorCode::TemporaryDependency
+        Some(ErrorCode::NotFound)
     } else {
-        ErrorCode::Internal
+        None
+    }
+}
+
+/// Generic cancellation and timeout wrappers, consulted only after the whole
+/// bounded chain has been scanned for a more specific leaf condition.
+fn classify_transient_message(message: &str) -> Option<ErrorCode> {
+    let text = message.to_ascii_lowercase();
+    if contains_any(&text, &["cancelled", "canceled", "request aborted", "operation aborted"]) {
+        Some(ErrorCode::Cancelled)
+    } else if contains_any(&text, &["timeout", "timed out", "deadline exceeded"]) {
+        Some(ErrorCode::Timeout)
+    } else {
+        None
     }
 }
 
@@ -267,32 +337,55 @@ fn status_for(code: ErrorCode, retryable: bool) -> ErrorStatus {
     }
 }
 
+/// Maximum source-chain layers consulted by [`classify_iceberg_error`].
+/// Matches the adapter's foreign-error traversal budget so a classification
+/// made here can be reproduced at the DataFusion boundary.
+const MAX_CLASSIFICATION_CHAIN_DEPTH: usize = 32;
+
 #[cfg(feature = "catalog")]
-fn classify_iceberg_error(source: &iceberg::Error) -> ErrorCode {
+fn classify_iceberg_error(source: &iceberg::Error) -> (ErrorCode, ClassificationProvenance) {
     use iceberg::ErrorKind;
 
-    // Inspect vendor source messages only while the error is live. They can
-    // carry the HTTP/auth condition while Iceberg's outer message is generic;
-    // no source text is retained by the normalized leaf error.
-    let mut current: Option<&(dyn StdError + 'static)> = Some(source);
-    while let Some(error) = current {
-        let message_code = classify_error_message(&error.to_string(), false);
-        if message_code != ErrorCode::Internal {
-            return message_code;
-        }
-        current = error.source();
-    }
+    // The typed kind is the strongest evidence and is never overridden by
+    // wrapper text: a `TableNotFound` whose message mentions `timeout` stays
+    // `NotFound`.
     match source.kind() {
-        ErrorKind::NamespaceNotFound | ErrorKind::TableNotFound => ErrorCode::NotFound,
+        ErrorKind::NamespaceNotFound | ErrorKind::TableNotFound => {
+            return (ErrorCode::NotFound, ClassificationProvenance::TypedKind);
+        },
         ErrorKind::DataInvalid | ErrorKind::PreconditionFailed | ErrorKind::CatalogCommitConflicts => {
-            ErrorCode::InvalidMetadata
+            return (ErrorCode::InvalidMetadata, ClassificationProvenance::TypedKind);
         },
-        ErrorKind::FeatureUnsupported => ErrorCode::UnsupportedSchema,
-        ErrorKind::Unexpected if source.retryable() => ErrorCode::TemporaryDependency,
-        ErrorKind::Unexpected | ErrorKind::NamespaceAlreadyExists | ErrorKind::TableAlreadyExists => {
-            ErrorCode::Internal
+        ErrorKind::FeatureUnsupported => {
+            return (ErrorCode::UnsupportedSchema, ClassificationProvenance::TypedKind);
         },
-        _ => ErrorCode::Internal,
+        ErrorKind::Unexpected | ErrorKind::NamespaceAlreadyExists | ErrorKind::TableAlreadyExists | _ => {},
+    }
+
+    // The kind is generic, so consult the bounded source chain. Vendor source
+    // messages are inspected only while the error is live; no source text is
+    // retained by the normalized leaf error. The scan runs in two passes so
+    // an explicit leaf condition (for example `ExpiredToken`) wins over a
+    // generic timeout or cancellation wrapper around it.
+    for pass in [false, true] {
+        let mut current: Option<&(dyn StdError + 'static)> = Some(source);
+        for _ in 0..MAX_CLASSIFICATION_CHAIN_DEPTH {
+            let Some(error) = current else { break };
+            let matched = if pass {
+                classify_transient_message(&error.to_string())
+            } else {
+                classify_specific_message(&error.to_string())
+            };
+            if let Some(code) = matched {
+                return (code, ClassificationProvenance::MessageFallback);
+            }
+            current = error.source();
+        }
+    }
+    if source.retryable() {
+        (ErrorCode::TemporaryDependency, ClassificationProvenance::RetryableTransport)
+    } else {
+        (ErrorCode::Internal, ClassificationProvenance::Unclassified)
     }
 }
 
@@ -421,10 +514,64 @@ mod tests {
 
     #[test]
     fn error_message_classification_preserves_auth_access_and_transient_cases() {
-        assert_eq!(classify_error_message("service returned AccessDeniedException", false), ErrorCode::Access);
-        assert_eq!(classify_error_message("ExpiredTokenException from catalog", false), ErrorCode::Authentication);
-        assert_eq!(classify_error_message("catalog request timed out", false), ErrorCode::Timeout);
-        assert_eq!(classify_error_message("dependency unavailable", true), ErrorCode::TemporaryDependency);
+        assert_eq!(classify_error_message_for_test("service returned AccessDeniedException", false), ErrorCode::Access);
+        assert_eq!(
+            classify_error_message_for_test("ExpiredTokenException from catalog", false),
+            ErrorCode::Authentication
+        );
+        assert_eq!(classify_error_message_for_test("catalog request timed out", false), ErrorCode::Timeout);
+        assert_eq!(classify_error_message_for_test("dependency unavailable", true), ErrorCode::TemporaryDependency);
+    }
+
+    #[cfg(feature = "catalog")]
+    #[test]
+    fn typed_not_found_with_timeout_text_stays_not_found() {
+        use iceberg::{Error, ErrorKind};
+
+        let source = Error::new(ErrorKind::TableNotFound, "catalog request cancelled after timing out after 30s");
+        let error = super::Error::from_iceberg_error(Operation::TableLoad, source);
+
+        assert_eq!(error.code(), ErrorCode::NotFound);
+        assert_eq!(error.classification_provenance(), ClassificationProvenance::TypedKind);
+    }
+
+    #[cfg(feature = "catalog")]
+    #[test]
+    fn timeout_wrapper_with_expired_token_leaf_is_authentication() {
+        use iceberg::{Error, ErrorKind};
+
+        let source = Error::new(ErrorKind::Unexpected, "catalog request failed: deadline exceeded")
+            .with_source(std::io::Error::other("ExpiredTokenException: request expired"));
+        let error = super::Error::from_iceberg_error(Operation::CatalogConnect, source);
+
+        assert_eq!(error.code(), ErrorCode::Authentication);
+        assert_eq!(error.classification_provenance(), ClassificationProvenance::MessageFallback);
+        assert_eq!(error.status(), ErrorStatus::Permanent);
+    }
+
+    #[cfg(feature = "catalog")]
+    #[test]
+    fn retryable_unexpected_without_markers_is_temporary_with_transport_provenance() {
+        use iceberg::{Error, ErrorKind};
+
+        let source = Error::new(ErrorKind::Unexpected, "catalog request failed").with_retryable(true);
+        let error = super::Error::from_iceberg_error(Operation::CatalogConnect, source);
+
+        assert_eq!(error.code(), ErrorCode::TemporaryDependency);
+        assert_eq!(error.classification_provenance(), ClassificationProvenance::RetryableTransport);
+        assert_eq!(error.status(), ErrorStatus::Temporary);
+    }
+
+    #[cfg(feature = "catalog")]
+    #[test]
+    fn unmarked_unexpected_is_internal_and_unclassified() {
+        use iceberg::{Error, ErrorKind};
+
+        let source = Error::new(ErrorKind::Unexpected, "catalog request failed");
+        let error = super::Error::from_iceberg_error(Operation::CatalogConnect, source);
+
+        assert_eq!(error.code(), ErrorCode::Internal);
+        assert_eq!(error.classification_provenance(), ClassificationProvenance::Unclassified);
     }
 
     #[cfg(feature = "catalog")]

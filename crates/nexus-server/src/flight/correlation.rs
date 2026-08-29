@@ -302,7 +302,8 @@ mod correlation_tests {
             status.metadata().get(crate::error::ERROR_OPERATION_METADATA_KEY).and_then(|value| value.to_str().ok()),
             Some("datafusion_nexus.native_exec.host_batch_cursor")
         );
-        assert!(status.message().contains("resource exhausted"), "{status:?}");
+        assert!(status.message().contains("host materialization limit"), "{status:?}");
+        assert!(!status.message().to_ascii_lowercase().contains("retry later"), "{status:?}");
         assert!(!status.message().contains("internal server error"), "{status:?}");
 
         let payload = sealed_query_stats(&service, &query_id).await;

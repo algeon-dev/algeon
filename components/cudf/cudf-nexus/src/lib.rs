@@ -228,8 +228,9 @@ pub mod testing;
 // — Types and error —
 pub use core::{
     error::{
-        BudgetExhaustionDetail, CudfErrorClassification, CudfErrorDetail, CudfErrorFailureSource, Error, ErrorCode,
-        ErrorKind, ErrorStatus, Result, classify_cudf_error,
+        BudgetExhaustionDetail, CudfAllocationAttribution, CudfErrorClassification, CudfErrorDetail,
+        CudfErrorFailureSource, Error, ErrorCode, ErrorKind, ErrorStatus, Result, allocation_attribution,
+        classify_cudf_error,
     },
     memory::{
         AllocatorEvent, AllocatorEventAction, AllocatorEventCompleteness, AllocatorEventDomainIdentity,

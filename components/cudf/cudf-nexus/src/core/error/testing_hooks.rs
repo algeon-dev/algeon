@@ -2,11 +2,47 @@ use std::{ffi::c_void, io};
 
 use rapids_interop::InteropError;
 
-use super::{Error, ErrorCode};
+use super::{BudgetExhaustionDetail, CudfErrorDetail, Error, ErrorCode};
 use crate::core::{Result, types::TypeId};
 
 pub(crate) fn new_with_for_test(code: ErrorCode, operation: &'static str, message: impl Into<String>) -> Error {
     Error::new_with(code, operation, message)
+}
+
+/// Testing-only: attach a typed FFI failure payload, mirroring the payload
+/// copied at the failed native shim boundary.
+pub(crate) fn with_ffi_detail_for_test(error: Error, detail: CudfErrorDetail) -> Error {
+    error.with_ffi_detail(detail)
+}
+
+/// Testing-only: build the typed budget-exhaustion counters attached by a
+/// hard budget token's `annotate_error` path.
+pub(crate) fn budget_exhaustion_detail_for_test(
+    hard_budget_bytes: usize,
+    peak_bytes: usize,
+    peak_aligned_bytes: usize,
+    current_bytes: usize,
+    largest_failed_allocation_bytes: usize,
+    failed_allocation_count: usize,
+    boundary: &'static str,
+    operation: &'static str,
+) -> BudgetExhaustionDetail {
+    BudgetExhaustionDetail::new(
+        hard_budget_bytes,
+        peak_bytes,
+        peak_aligned_bytes,
+        current_bytes,
+        largest_failed_allocation_bytes,
+        failed_allocation_count,
+        boundary,
+        operation,
+    )
+}
+
+/// Testing-only: attach typed budget-exhaustion counters, mirroring the
+/// annotation a budget scope adds to every error that passes through it.
+pub(crate) fn with_budget_exhaustion_for_test(error: Error, detail: BudgetExhaustionDetail) -> Error {
+    error.with_budget_exhaustion_if_absent(detail)
 }
 
 pub(crate) fn from_interop_in_for_test(error: InteropError, operation: &'static str) -> Error {

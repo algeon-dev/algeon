@@ -110,8 +110,11 @@ pub struct QueryServiceDeviceAdmissionSnapshot {
 ///             AppAction::Http429
 ///         }
 ///     }
+///     BudgetUnavailable { .. } => AppAction::ShedWithNewCapOrDevice,
 ///     CapabilityRejected | InvalidInput => AppAction::Shed,
 ///     Cancelled => AppAction::Shed,
+///     // Returned both for pre-admission errors outside the categories
+///     // above and for every post-admission error except cancellation.
 ///     ExecutionFailure => AppAction::Http503,
 /// }
 /// ```
@@ -139,8 +142,12 @@ pub enum QueryAdmissionOutcome {
     InvalidInput,
     /// Caller cancellation or deadline stopped the attempt before completion.
     Cancelled,
-    /// A dependency, invariant, or native execution failure occurred after
-    /// admission.  No retry policy is implied by this label.
+    /// A failure that is not admission capacity, an impossible cap, a
+    /// capability rejection, invalid input, or cancellation. [`Self::from_error`]
+    /// returns it for any such pre-admission error; [`Self::from_execution_error`]
+    /// returns it for every post-admission error except cancellation. The
+    /// label therefore cannot prove execution started, and no retry policy
+    /// is implied by it.
     ExecutionFailure,
 }
 

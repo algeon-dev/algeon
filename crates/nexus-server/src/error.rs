@@ -27,6 +27,25 @@ pub const ALGORITHM_METADATA_KEY: &str = "x-datafusion-nexus-algorithm";
 pub const ITERATIONS_METADATA_KEY: &str = "x-datafusion-nexus-iterations";
 pub const MAX_ITERATIONS_METADATA_KEY: &str = "x-datafusion-nexus-max-iterations";
 pub const EPSILON_METADATA_KEY: &str = "x-datafusion-nexus-epsilon";
+/// Lists client-detail fact keys withheld from Flight metadata because their
+/// values are not transmittable ASCII (comma-joined fact keys).
+pub const OMITTED_FACTS_METADATA_KEY: &str = "x-datafusion-nexus-omitted-facts";
+
+/// Maximum bytes for one client-detail metadata value. Longer ASCII values
+/// are truncated with a `...` marker; the full diagnosis stays available in
+/// the status message and query stats. The fact-metadata key set is fixed, so
+/// this per-value bound is also a fixed total bound by construction.
+const MAX_CLIENT_FACT_METADATA_VALUE_BYTES: usize = 256;
+
+/// Maximum bytes for a client status message derived from foreign
+/// DataFusion text. Bounds what one extreme upstream `Display` can emit onto
+/// the wire; the in-process error is never rewritten.
+const MAX_CLIENT_DATAFUSION_MESSAGE_BYTES: usize = 2_048;
+
+/// Maximum depth for server-side DataFusion error traversal. Mirrors the
+/// adapter chain budget: classification always terminates with a defined
+/// code, returning the deepest node reached when the budget is exhausted.
+const MAX_SERVER_DATAFUSION_TRAVERSAL_DEPTH: usize = 32;
 
 pub type Result<T> = std::result::Result<T, ServerError>;
 
@@ -341,6 +360,12 @@ pub(crate) fn adapter_error_to_status(error: &Error) -> Status {
     let message = client_status_message(error);
     let diagnostics = ErrorLogDiagnostics::from_error(error);
     let log_messages = adapter_status_log_messages(error.message(), message.as_str(), &diagnostics);
+    // The logged `error_message` is owner-authored adapter text: foreign
+    // DataFusion text enters it only through the bounded
+    // `client_datafusion_error_message` constructor, and foreign source chains
+    // only through the bounded `cause`/`source_path` diagnostics above.
+    // Arbitrary foreign `Display` implementations can still spend memory
+    // producing their own message; that cost cannot be bounded from outside.
     let log_facts = adapter_status_log_facts(error);
     macro_rules! log_status_conversion {
         ($level:expr) => {
@@ -472,9 +497,47 @@ fn client_status_message(error: &Error) -> String {
             "temporary source object storage failure while processing the request; retry later".to_string()
         },
         ErrorCode::ServiceOverloaded => "service overloaded; retry later".to_string(),
-        _ if error.kind() == ErrorKind::ResourceExhausted => {
-            format!("resource exhausted: {}. Retry later or reduce query resource usage.", error.message())
-        },
+        // Resource messages never promise that an unchanged retry will
+        // succeed: only confirmed admission overload (above) describes queue
+        // pressure. Cap, shape, and physical failures name the change the
+        // caller must make; execution failures point at the sealed attempt
+        // report instead of synthesizing retry permission from the
+        // `Temporary` status or the gRPC `RESOURCE_EXHAUSTED` code.
+        ErrorCode::QueryMemoryLimitExceeded => format!(
+            "query memory cap exceeded: {}. Raise the query memory cap or reduce query resource usage; retrying the same request unchanged cannot succeed",
+            error.message()
+        ),
+        ErrorCode::QueryBudgetUnavailable => format!(
+            "query budget cannot fit on any eligible device: {}. Request a smaller query cap or wait for device capacity to free; do not retry the same request unchanged",
+            error.message()
+        ),
+        ErrorCode::SizeOverflow => format!(
+            "result size computation overflowed the platform range: {}. Change the request shape to produce a smaller result; retrying the same request unchanged cannot succeed",
+            error.message()
+        ),
+        ErrorCode::HostMaterializationLimitExceeded => format!(
+            "one result row exceeds the configured host materialization limit: {}. Narrow the request or raise the limit; retrying the same request unchanged cannot succeed",
+            error.message()
+        ),
+        ErrorCode::HostStagingLimitExceeded => format!(
+            "host staging exceeded its configured byte ceiling: {}. Narrow the request or raise the ceiling; retrying the same request unchanged cannot succeed",
+            error.message()
+        ),
+        ErrorCode::FlightFrameTooLarge => format!(
+            "one row exceeds the Flight message limit: {}. Project a smaller value; retrying the same request unchanged cannot succeed",
+            error.message()
+        ),
+        ErrorCode::DeviceOutOfMemory
+        | ErrorCode::DeviceAllocationFailed
+        | ErrorCode::MemoryReservationFailed
+        | ErrorCode::CudfResourceExhausted => format!(
+            "device memory exhausted while processing the request: {}. Reduce query resource usage and consult the sealed attempt report for retry guidance; retrying the same request unchanged may fail again",
+            error.message()
+        ),
+        _ if error.kind() == ErrorKind::ResourceExhausted => format!(
+            "resource exhausted while processing the request: {}. Change the request to use fewer resources; do not retry the same request unchanged",
+            error.message()
+        ),
         _ if matches!(
             error.kind(),
             ErrorKind::Execution | ErrorKind::DependencyFailure | ErrorKind::InvariantViolation | ErrorKind::Internal
@@ -486,6 +549,38 @@ fn client_status_message(error: &Error) -> String {
     }
 }
 
+/// Whether raw native diagnostic text may cross the Flight boundary as the
+/// `native_message` trailer.
+///
+/// `native_message` remains trusted in-process diagnosis, but its key being
+/// allowlisted must not by itself publish raw text: internal, execution,
+/// dependency, invariant, and resource failures stay generic on the wire.
+/// Only client-actionable validation kinds project it alongside their
+/// structured facts.
+fn native_message_is_client_visible(error: &Error) -> bool {
+    matches!(
+        error.kind(),
+        ErrorKind::Cancelled
+            | ErrorKind::NotFound
+            | ErrorKind::PermissionDenied
+            | ErrorKind::Unauthenticated
+            | ErrorKind::Planning
+            | ErrorKind::InvalidInput
+            | ErrorKind::Unsupported
+    )
+}
+
+/// Client wire contract for Flight error metadata.
+///
+/// Stable identity (`error-code`, `error-kind`, `error-status`,
+/// `error-operation`) is always present and never truncated. Client-detail
+/// facts use an explicit per-key allowlist below: values must be transmittable
+/// ASCII metadata and are capped at
+/// [`MAX_CLIENT_FACT_METADATA_VALUE_BYTES`] with a `...` marker. Values that
+/// cannot cross the wire (for example non-ASCII schema details) are omitted
+/// and listed under [`OMITTED_FACTS_METADATA_KEY`]; the full diagnosis stays
+/// available in the status message and query stats. The key set is fixed, so
+/// the per-value bound is also a fixed total bound by construction.
 fn status_with_error_metadata(mut status: Status, error: &Error) -> Status {
     insert_metadata(status.metadata_mut(), ERROR_CODE_METADATA_KEY, error.code().as_str());
     insert_metadata(status.metadata_mut(), ERROR_KIND_METADATA_KEY, error.kind().as_str());
@@ -498,17 +593,43 @@ fn status_with_error_metadata(mut status: Status, error: &Error) -> Status {
             root_cause: diagnostics.root_cause().map(str::to_string),
         }));
     }
-    insert_fact_metadata(status.metadata_mut(), UNSUPPORTED_COLUMN_METADATA_KEY, error, "unsupported_column");
-    insert_fact_metadata(status.metadata_mut(), UNSUPPORTED_COLUMN_TYPE_METADATA_KEY, error, "unsupported_column_type");
-    insert_fact_metadata(status.metadata_mut(), UNSUPPORTED_COLUMN_ROLE_METADATA_KEY, error, "unsupported_column_role");
-    insert_fact_metadata(status.metadata_mut(), PREDICATE_ROLE_METADATA_KEY, error, "predicate_role");
-    insert_fact_metadata(status.metadata_mut(), REASON_METADATA_KEY, error, "reason");
-    insert_fact_metadata(status.metadata_mut(), REQUIRED_OPTION_METADATA_KEY, error, "required_option");
-    insert_fact_metadata(status.metadata_mut(), NATIVE_MESSAGE_METADATA_KEY, error, "native_message");
-    insert_fact_metadata(status.metadata_mut(), ALGORITHM_METADATA_KEY, error, "algorithm");
-    insert_fact_metadata(status.metadata_mut(), ITERATIONS_METADATA_KEY, error, "iterations");
-    insert_fact_metadata(status.metadata_mut(), MAX_ITERATIONS_METADATA_KEY, error, "max_iterations");
-    insert_fact_metadata(status.metadata_mut(), EPSILON_METADATA_KEY, error, "epsilon");
+    let mut omitted: Vec<&'static str> = Vec::new();
+    insert_fact_metadata(
+        status.metadata_mut(),
+        UNSUPPORTED_COLUMN_METADATA_KEY,
+        error,
+        "unsupported_column",
+        &mut omitted,
+    );
+    insert_fact_metadata(
+        status.metadata_mut(),
+        UNSUPPORTED_COLUMN_TYPE_METADATA_KEY,
+        error,
+        "unsupported_column_type",
+        &mut omitted,
+    );
+    insert_fact_metadata(
+        status.metadata_mut(),
+        UNSUPPORTED_COLUMN_ROLE_METADATA_KEY,
+        error,
+        "unsupported_column_role",
+        &mut omitted,
+    );
+    insert_fact_metadata(status.metadata_mut(), PREDICATE_ROLE_METADATA_KEY, error, "predicate_role", &mut omitted);
+    insert_fact_metadata(status.metadata_mut(), REASON_METADATA_KEY, error, "reason", &mut omitted);
+    insert_fact_metadata(status.metadata_mut(), REQUIRED_OPTION_METADATA_KEY, error, "required_option", &mut omitted);
+    if native_message_is_client_visible(error) {
+        insert_fact_metadata(status.metadata_mut(), NATIVE_MESSAGE_METADATA_KEY, error, "native_message", &mut omitted);
+    }
+    insert_fact_metadata(status.metadata_mut(), ALGORITHM_METADATA_KEY, error, "algorithm", &mut omitted);
+    insert_fact_metadata(status.metadata_mut(), ITERATIONS_METADATA_KEY, error, "iterations", &mut omitted);
+    insert_fact_metadata(status.metadata_mut(), MAX_ITERATIONS_METADATA_KEY, error, "max_iterations", &mut omitted);
+    insert_fact_metadata(status.metadata_mut(), EPSILON_METADATA_KEY, error, "epsilon", &mut omitted);
+    if !omitted.is_empty()
+        && let Ok(marker) = MetadataValue::try_from(omitted.join(","))
+    {
+        status.metadata_mut().insert(OMITTED_FACTS_METADATA_KEY, marker);
+    }
     status
 }
 
@@ -522,13 +643,37 @@ fn insert_fact_metadata(
     metadata: &mut tonic::metadata::MetadataMap,
     metadata_key: &'static str,
     error: &Error,
-    fact_key: &str,
+    fact_key: &'static str,
+    omitted: &mut Vec<&'static str>,
 ) {
-    if let Some(value) = error.fact_value(fact_key)
-        && let Ok(value) = MetadataValue::try_from(value)
-    {
-        metadata.insert(metadata_key, value);
+    let Some(value) = error.fact_value(fact_key) else {
+        return;
+    };
+    if !value.is_ascii() {
+        omitted.push(fact_key);
+        return;
     }
+    let (value, _) = truncate_metadata_value(value, MAX_CLIENT_FACT_METADATA_VALUE_BYTES);
+    if let Ok(value) = MetadataValue::try_from(value.as_str()) {
+        metadata.insert(metadata_key, value);
+    } else {
+        omitted.push(fact_key);
+    }
+}
+
+fn truncate_metadata_value(value: &str, max_bytes: usize) -> (String, bool) {
+    if value.len() <= max_bytes {
+        return (value.to_string(), false);
+    }
+    const MARKER: &str = "...";
+    if max_bytes <= MARKER.len() {
+        return (MARKER[..max_bytes].to_string(), true);
+    }
+    let mut end = max_bytes - MARKER.len();
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    (format!("{}{MARKER}", &value[..end]), true)
 }
 
 fn adapter_error_from_datafusion_error(error: DataFusionError, operation: &'static str) -> Error {
@@ -541,25 +686,58 @@ fn adapter_error_from_datafusion_error(error: DataFusionError, operation: &'stat
 fn client_datafusion_error_message(error: &DataFusionError) -> String {
     let effective = effective_datafusion_error(error);
     let human_message = datafusion_error_human_message(effective);
-    match effective {
+    let message = match effective {
         DataFusionError::SQL(_, _) => format!("invalid SQL statement: {human_message}"),
         _ => human_message,
-    }
+    };
+    // Foreign upstream text enters the client message here; cap what one
+    // extreme `Display` can emit onto the wire. The in-process error keeps its
+    // full text for trusted diagnosis.
+    truncate_metadata_value(message.as_str(), MAX_CLIENT_DATAFUSION_MESSAGE_BYTES).0
 }
 
+/// Resolves the effective DataFusion error following the same precedence as
+/// classification: `Context`/`Diagnostic` unwrap, `Collection` follows the
+/// first branch, `Shared` unwraps.
+///
+/// Traversal is iterative with an explicit depth budget so an extreme but
+/// supported wrapper tree always terminates with a defined error. When the
+/// budget is exhausted the deepest node reached is returned; callers must not
+/// treat the result as proof that deeper layers hold no other variant.
 fn effective_datafusion_error(error: &DataFusionError) -> &DataFusionError {
-    match error {
-        DataFusionError::Context(_, source) | DataFusionError::Diagnostic(_, source) => {
-            effective_datafusion_error(source)
-        },
-        DataFusionError::Collection(errors) => errors.first().map(effective_datafusion_error).unwrap_or(error),
-        DataFusionError::Shared(source) => effective_datafusion_error(source),
-        _ => error,
+    let mut current = error;
+    for _ in 0..MAX_SERVER_DATAFUSION_TRAVERSAL_DEPTH {
+        match current {
+            DataFusionError::Context(_, source) | DataFusionError::Diagnostic(_, source) => current = source.as_ref(),
+            DataFusionError::Collection(errors) => match errors.first() {
+                Some(first) => current = first,
+                None => break,
+            },
+            DataFusionError::Shared(source) => current = source.as_ref(),
+            _ => break,
+        }
     }
+    current
 }
 
 fn classify_datafusion_error(error: &DataFusionError) -> ErrorCode {
-    match error {
+    // Iterative descent with the same budget as `effective_datafusion_error`:
+    // wrapper layers are peeled first (preserving first-Collection-branch
+    // precedence), then the deepest node reached is classified. The mapping
+    // below is unchanged; only unbounded recursion is removed.
+    let mut current = error;
+    for _ in 0..MAX_SERVER_DATAFUSION_TRAVERSAL_DEPTH {
+        match current {
+            DataFusionError::Context(_, source) | DataFusionError::Diagnostic(_, source) => current = source.as_ref(),
+            DataFusionError::Collection(errors) => match errors.first() {
+                Some(first) => current = first,
+                None => return ErrorCode::Internal,
+            },
+            DataFusionError::Shared(source) => current = source.as_ref(),
+            _ => break,
+        }
+    }
+    match current {
         DataFusionError::SQL(_, _) => ErrorCode::SqlParse,
         DataFusionError::Plan(_) => ErrorCode::DataFusionPlanning,
         DataFusionError::SchemaError(schema, _) => match schema.as_ref() {
@@ -574,17 +752,10 @@ fn classify_datafusion_error(error: &DataFusionError) -> ErrorCode {
         // them behind the generic `Internal` client surface.
         DataFusionError::Execution(_) => ErrorCode::Internal,
         DataFusionError::ResourcesExhausted(_) => ErrorCode::MemoryReservationFailed,
-        DataFusionError::Context(_, source) => classify_datafusion_error(source),
-        // DataFusion diagnostics add spans, notes, and hints around several
-        // planning failures. Their wrapped `Plan` variant has no structured
-        // relation-miss discriminator, so it cannot truthfully be projected
-        // as `ObjectNotFound` without parsing display text. Preserve the
-        // generic planning classification instead.
-        DataFusionError::Diagnostic(_, source) => classify_datafusion_error(source),
-        DataFusionError::Collection(errors) => {
-            errors.first().map(classify_datafusion_error).unwrap_or(ErrorCode::Internal)
+        DataFusionError::Context(_, _) | DataFusionError::Diagnostic(_, _) | DataFusionError::Shared(_) => {
+            ErrorCode::Internal
         },
-        DataFusionError::Shared(source) => classify_datafusion_error(source),
+        DataFusionError::Collection(_) => ErrorCode::Internal,
         DataFusionError::Internal(_)
         | DataFusionError::ArrowError(_, _)
         | DataFusionError::IoError(_)
@@ -1148,8 +1319,60 @@ mod tests {
 
         assert_eq!(status.code(), Code::ResourceExhausted);
         assert_error_metadata(&status, "host_materialization_limit_exceeded", "resource_exhausted", "permanent");
-        assert!(status.message().contains("resource exhausted"));
+        assert!(status.message().contains("host materialization limit"), "{}", status.message());
+        assert!(
+            !status.message().to_ascii_lowercase().contains("retry later"),
+            "permanent limit must not suggest an unchanged retry: {}",
+            status.message()
+        );
         assert_no_diagnostic_fields(status.message());
+    }
+
+    #[test]
+    fn resource_failures_name_a_change_and_never_promise_an_unchanged_retry() {
+        let cases = [
+            (ErrorCode::QueryMemoryLimitExceeded, "query memory cap exceeded"),
+            (ErrorCode::QueryBudgetUnavailable, "query budget cannot fit"),
+            (ErrorCode::SizeOverflow, "overflowed the platform range"),
+            (ErrorCode::HostStagingLimitExceeded, "host staging exceeded"),
+            (ErrorCode::FlightFrameTooLarge, "Flight message limit"),
+            (ErrorCode::DeviceOutOfMemory, "sealed attempt report"),
+            (ErrorCode::DeviceAllocationFailed, "sealed attempt report"),
+            (ErrorCode::MemoryReservationFailed, "sealed attempt report"),
+            (ErrorCode::CudfResourceExhausted, "sealed attempt report"),
+        ];
+
+        for (code, expected) in cases {
+            let status = datafusion_error_to_status_for_operation(
+                Error::new(code, TEST_OPERATION, "synthetic resource failure").into(),
+                TEST_OPERATION,
+            );
+
+            assert_eq!(status.code(), Code::ResourceExhausted, "unexpected Flight code for {code}");
+            assert!(status.message().contains(expected), "{code} must name its remediation, got: {}", status.message());
+            assert!(
+                !status.message().to_ascii_lowercase().contains("retry later"),
+                "{code} must not suggest an unchanged retry, got: {}",
+                status.message()
+            );
+            assert_no_diagnostic_fields(status.message());
+        }
+    }
+
+    #[test]
+    fn queue_overload_remains_the_only_resource_message_that_suggests_a_retry() {
+        let status = datafusion_error_to_status_for_operation(
+            Error::new(
+                ErrorCode::ServiceOverloaded,
+                "datafusion_nexus.native.query_service.admit",
+                "native query service queue is full",
+            )
+            .into(),
+            TEST_OPERATION,
+        );
+
+        assert_eq!(status.code(), Code::ResourceExhausted);
+        assert_eq!(status.message(), "service overloaded; retry later");
     }
 
     #[test]
@@ -1365,11 +1588,120 @@ mod tests {
         assert_no_diagnostic_fields(status.message());
     }
 
+    fn strict_rejection_error(column: &str, column_type: &str) -> Error {
+        Error::new(
+            ErrorCode::FinalPlanRequirementUnsatisfied,
+            "datafusion_nexus.planner.final_plan_requirement",
+            format!("GPU execution does not support projected column `{column}` with Arrow type `{column_type}`"),
+        )
+        .with_log_safe_fact("reason", "unsupported_type")
+        .with_fact("unsupported_column", column)
+        .with_fact("unsupported_column_type", column_type)
+        .with_fact("unsupported_column_role", "projected")
+    }
+
+    #[test]
+    fn strict_unsupported_column_projections_distinguish_message_metadata_logs_and_stats() {
+        // ASCII short detail: every client projection carries it, logs do not.
+        let ascii = strict_rejection_error("countDetail", "List(Decimal128(10, 2))");
+        let status = adapter_error_to_status(&ascii);
+        assert!(status.message().contains("countDetail"), "{}", status.message());
+        assert_metadata_value(&status, UNSUPPORTED_COLUMN_METADATA_KEY, "countDetail");
+        assert!(status.metadata().get(OMITTED_FACTS_METADATA_KEY).is_none());
+        let logs = adapter_status_log_facts(&ascii).rendered.as_deref().unwrap_or_default().to_string();
+        assert!(!logs.contains("countDetail"), "{logs}");
+        let captured = CapturedError::from_adapter_error(&ascii);
+        assert!(captured.facts.contains(&("unsupported_column".to_string(), "countDetail".to_string())));
+
+        // Non-ASCII detail: the message and query-stats capture keep it, the
+        // ASCII-only metadata omits it and says so.
+        let unicode = strict_rejection_error("訂單明細", "List(Int64)");
+        let status = adapter_error_to_status(&unicode);
+        assert!(status.message().contains("訂單明細"), "{}", status.message());
+        assert!(status.metadata().get(UNSUPPORTED_COLUMN_METADATA_KEY).is_none());
+        assert_metadata_value(&status, OMITTED_FACTS_METADATA_KEY, "unsupported_column");
+        let logs = adapter_status_log_facts(&unicode).rendered.as_deref().unwrap_or_default().to_string();
+        assert!(!logs.contains("訂單明細"), "{logs}");
+        let captured = CapturedError::from_adapter_error(&unicode);
+        assert!(captured.facts.contains(&("unsupported_column".to_string(), "訂單明細".to_string())));
+
+        // Over-long ASCII detail: the message keeps it whole, metadata and
+        // capture truncate it with a marker.
+        let long_column = "x".repeat(300);
+        let long = strict_rejection_error(&long_column, "List(Int64)");
+        let status = adapter_error_to_status(&long);
+        assert!(status.message().contains(&long_column), "{}", status.message().len());
+        let wire = status
+            .metadata()
+            .get(UNSUPPORTED_COLUMN_METADATA_KEY)
+            .expect("long ASCII detail stays on the wire truncated")
+            .to_str()
+            .expect("wire values stay ASCII")
+            .to_string();
+        assert_eq!(wire.len(), MAX_CLIENT_FACT_METADATA_VALUE_BYTES, "{wire}");
+        assert!(wire.ends_with("..."), "{wire}");
+        let captured = CapturedError::from_adapter_error(&long);
+        let retained = captured
+            .facts
+            .iter()
+            .find(|(key, _)| key == "unsupported_column")
+            .expect("capture keeps the truncated detail")
+            .1
+            .clone();
+        assert!(retained.len() <= MAX_CLIENT_FACT_METADATA_VALUE_BYTES, "{retained}");
+        assert!(retained.ends_with("..."), "{retained}");
+        assert!(retained.starts_with(&"x".repeat(200)), "{retained}");
+        assert!(captured.facts.contains(&("error_facts_truncated".to_string(), "true".to_string())));
+
+        // URI-like detail: metadata carries the ASCII wire value raw while
+        // retained capture sanitizes it like every other retained fact.
+        let uri = strict_rejection_error("s3://bucket/secret/key", "Utf8");
+        let status = adapter_error_to_status(&uri);
+        assert_metadata_value(&status, UNSUPPORTED_COLUMN_METADATA_KEY, "s3://bucket/secret/key");
+        let captured = CapturedError::from_adapter_error(&uri);
+        assert!(captured.facts.contains(&("unsupported_column".to_string(), "<redacted-uri>".to_string())));
+    }
+
+    #[test]
+    fn deep_wrapper_classification_terminates_at_traversal_budget() {
+        let mut error =
+            DataFusionError::SQL(Box::new(ParserError::ParserError("Expected: an SQL statement".into())), None);
+        for depth in 0..40 {
+            error = DataFusionError::Context(format!("wrapper layer {depth}"), Box::new(error));
+        }
+
+        assert_eq!(classify_datafusion_error(&error), ErrorCode::Internal);
+
+        let mut shallow =
+            DataFusionError::SQL(Box::new(ParserError::ParserError("Expected: an SQL statement".into())), None);
+        for depth in 0..3 {
+            shallow = DataFusionError::Context(format!("wrapper layer {depth}"), Box::new(shallow));
+        }
+        assert_eq!(classify_datafusion_error(&shallow), ErrorCode::SqlParse);
+    }
+
+    #[test]
+    fn extreme_foreign_message_is_bounded_on_the_wire_but_kept_in_process() {
+        let error = DataFusionError::SQL(Box::new(ParserError::ParserError("y".repeat(100_000))), None);
+        assert!(error.to_string().len() > 100_000);
+
+        let captured = datafusion_error_to_captured_error(&error, TEST_OPERATION);
+        assert!(captured.message.len() <= MAX_CLIENT_DATAFUSION_MESSAGE_BYTES, "{}", captured.message.len());
+        assert!(captured.message.ends_with("..."), "{}", &captured.message[captured.message.len() - 10..]);
+
+        let status = datafusion_error_to_status_for_operation(error, TEST_OPERATION);
+        assert_eq!(status.code(), Code::InvalidArgument);
+        assert!(status.message().len() <= MAX_CLIENT_DATAFUSION_MESSAGE_BYTES, "{}", status.message().len());
+        assert!(status.message().ends_with("..."));
+    }
+
     #[test]
     fn adapter_graph_execution_failure_stays_generic() {
         // An internal/execution-kind graph failure must not surface the native
-        // message: it is collapsed to the generic internal message and the
-        // graph-context enrichment is gated to client-actionable graph kinds.
+        // message anywhere on the client projection: the status message is
+        // generic and the `native_message` trailer is withheld for
+        // non-client-actionable kinds. Raw native text stays trusted
+        // in-process diagnosis only.
         let status = datafusion_error_to_status_for_operation(
             Error::new(
                 ErrorCode::Internal,
@@ -1386,6 +1718,33 @@ mod tests {
         assert_eq!(status.message(), "internal server error while processing the request");
         assert!(!status.message().contains("internal cuGraph scheduler state"));
         assert!(!status.message().contains("reason="));
+        assert!(status.metadata().get(NATIVE_MESSAGE_METADATA_KEY).is_none());
+    }
+
+    #[test]
+    fn internal_native_message_is_withheld_from_flight_metadata_but_actionable_kinds_keep_it() {
+        let internal = datafusion_error_to_status_for_operation(
+            Error::new(ErrorCode::Internal, TEST_OPERATION, "native execution failed")
+                .with_fact("native_message", "internal scheduler state corruption marker")
+                .into(),
+            TEST_OPERATION,
+        );
+
+        assert_eq!(internal.message(), "internal server error while processing the request");
+        assert!(internal.metadata().get(NATIVE_MESSAGE_METADATA_KEY).is_none());
+
+        let actionable = datafusion_error_to_status_for_operation(
+            Error::new(ErrorCode::UnsupportedType, TEST_OPERATION, "native validation failed")
+                .with_fact("native_message", "BFS predicate id column dtype must match the graph vertex dtype")
+                .into(),
+            TEST_OPERATION,
+        );
+
+        assert_metadata_value(
+            &actionable,
+            NATIVE_MESSAGE_METADATA_KEY,
+            "BFS predicate id column dtype must match the graph vertex dtype",
+        );
     }
 
     #[test]
