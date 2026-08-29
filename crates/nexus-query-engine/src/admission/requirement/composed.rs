@@ -1690,6 +1690,9 @@ pub(crate) fn arrow_fixed_width_cudf_type_id(data_type: &DataType) -> Option<cud
         DataType::Duration(TimeUnit::Millisecond) => cudf::TypeId::DurationMilliseconds,
         DataType::Duration(TimeUnit::Microsecond) => cudf::TypeId::DurationMicroseconds,
         DataType::Duration(TimeUnit::Nanosecond) => cudf::TypeId::DurationNanoseconds,
+        DataType::Decimal32(_, _) | DataType::Decimal64(_, _) => {
+            crate::datatypes::cudf_dtype_from_arrow_type(data_type)?.id()
+        },
         DataType::Decimal128(_, _) => cudf::TypeId::Decimal128,
         _ => return None,
     })
@@ -1862,31 +1865,11 @@ pub(crate) fn cugraph_side_input_columns(
 pub(crate) fn fixed_width_consumer_output_column(
     data_type: &DataType,
 ) -> Option<crate::exec::JoinOutputColumnUpperBoundInput> {
-    match data_type {
-        DataType::Boolean
-        | DataType::Int8
-        | DataType::UInt8
-        | DataType::Int16
-        | DataType::UInt16
-        | DataType::Int32
-        | DataType::UInt32
-        | DataType::Int64
-        | DataType::UInt64
-        | DataType::Float32
-        | DataType::Float64
-        | DataType::Date32
-        | DataType::Date64
-        | DataType::Time32(_)
-        | DataType::Time64(_)
-        | DataType::Timestamp(_, None)
-        | DataType::Duration(_)
-        | DataType::Decimal128(_, _) => Some(crate::exec::JoinOutputColumnUpperBoundInput {
-            data_type: data_type.clone(),
-            input_max_string_length_bytes: None,
-            input_total_string_bytes: None,
-        }),
-        _ => None,
-    }
+    arrow_fixed_width_cudf_type_id(data_type).map(|_| crate::exec::JoinOutputColumnUpperBoundInput {
+        data_type: data_type.clone(),
+        input_max_string_length_bytes: None,
+        input_total_string_bytes: None,
+    })
 }
 
 pub(crate) fn checked_consumer_add(left: u64, right: u64, reason: &'static str) -> Result<u64> {
@@ -2204,20 +2187,8 @@ pub(crate) fn bounded_consumer_frame_components(rows: u64, schema: &SchemaRef) -
 }
 
 pub(crate) fn fixed_width_byte_size(data_type: &DataType) -> Option<u64> {
-    match data_type {
-        DataType::Boolean | DataType::Int8 | DataType::UInt8 => Some(1),
-        DataType::Int16 | DataType::UInt16 => Some(2),
-        DataType::Int32 | DataType::UInt32 | DataType::Float32 | DataType::Date32 | DataType::Time32(_) => Some(4),
-        DataType::Int64
-        | DataType::UInt64
-        | DataType::Float64
-        | DataType::Date64
-        | DataType::Time64(_)
-        | DataType::Timestamp(_, _)
-        | DataType::Duration(_) => Some(8),
-        DataType::Decimal128(_, _) => Some(16),
-        _ => None,
-    }
+    arrow_fixed_width_cudf_type_id(data_type)?;
+    crate::datatypes::arrow_fixed_width_byte_size(data_type)
 }
 
 pub(crate) fn cugraph_graph_execution_capability() -> ReservationRequirement {

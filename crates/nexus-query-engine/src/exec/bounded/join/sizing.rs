@@ -129,21 +129,6 @@ pub fn join_output_upper_bound_bytes(
 fn column_upper_bound_bytes(expected_output_rows: u64, column: &JoinOutputColumnUpperBoundInput) -> Result<u64> {
     let policy = JoinOutputSizingPolicy::default();
     let data_bytes = match &column.data_type {
-        ArrowDataType::Boolean | ArrowDataType::Int8 | ArrowDataType::UInt8 => expected_output_rows,
-        ArrowDataType::Int16 | ArrowDataType::UInt16 => expected_output_rows.saturating_mul(2),
-        ArrowDataType::Int32
-        | ArrowDataType::UInt32
-        | ArrowDataType::Float32
-        | ArrowDataType::Date32
-        | ArrowDataType::Time32(_) => expected_output_rows.saturating_mul(4),
-        ArrowDataType::Int64
-        | ArrowDataType::UInt64
-        | ArrowDataType::Float64
-        | ArrowDataType::Date64
-        | ArrowDataType::Time64(_) => expected_output_rows.saturating_mul(8),
-        ArrowDataType::Timestamp(_, None) => expected_output_rows.saturating_mul(8),
-        ArrowDataType::Duration(_) => expected_output_rows.saturating_mul(8),
-        ArrowDataType::Decimal128(_, _) => expected_output_rows.saturating_mul(16),
         ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View => {
             let data = match (column.input_max_string_length_bytes, column.input_total_string_bytes) {
                 (Some(max_len), Some(total)) => expected_output_rows.saturating_mul(max_len).min(total),
@@ -162,7 +147,13 @@ fn column_upper_bound_bytes(expected_output_rows: u64, column: &JoinOutputColumn
                 expected_output_rows.saturating_add(1).saturating_mul(policy.string_offset_bytes_conservative());
             data.saturating_add(offsets)
         },
-        _ => return Err(unsupported_dtype(column)),
+        ArrowDataType::Timestamp(_, Some(_)) => return Err(unsupported_dtype(column)),
+        data_type => {
+            crate::datatypes::cudf_dtype_from_arrow_type(data_type).ok_or_else(|| unsupported_dtype(column))?;
+            let width =
+                crate::datatypes::arrow_fixed_width_byte_size(data_type).ok_or_else(|| unsupported_dtype(column))?;
+            expected_output_rows.saturating_mul(width)
+        },
     };
     let null_mask = policy.null_mask_bytes(expected_output_rows);
     Ok(data_bytes.saturating_add(null_mask).saturating_add(policy.per_column_alignment_padding_bytes()))

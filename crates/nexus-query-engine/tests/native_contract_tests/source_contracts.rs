@@ -246,6 +246,27 @@ fn local_parquet_source_reader_predicate_rejects_list_carry_columns() {
 }
 
 #[test]
+fn local_parquet_source_reader_predicate_rejects_narrow_decimal_carry_columns() {
+    for amount_type in [DataType::Decimal32(9, 2), DataType::Decimal64(18, 2)] {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("key", DataType::UInt32, false),
+            Field::new("amount", amount_type, true),
+        ]));
+        let source = LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new("/tmp/reader-predicate-narrow-decimal.parquet")
+                    .with_stable_id("reader-predicate-narrow-decimal")
+                    .with_file_size_bytes(1024),
+            ],
+            schema,
+            vec!["key".to_string(), "amount".to_string()],
+        );
+
+        assert!(!source.reader_predicate_is_supported(&Expr::is_not_null(Expr::column("amount"))));
+    }
+}
+
+#[test]
 fn local_parquet_source_reader_predicate_accepts_decimal32_range_equality_and_in_list() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::UInt32, false),
@@ -817,6 +838,31 @@ fn local_parquet_source_rejects_invalid_partition_column_contracts() {
     let error = validate_local_parquet_source(&wrong_type).unwrap_err();
     assert_eq!(error.fact_value("reason"), Some("partition_value_type_mismatch"));
     assert_eq!(error.fact_value("partition_column"), Some("part"));
+}
+
+#[test]
+fn local_parquet_source_rejects_narrow_decimal_partition_values_locally() {
+    for partition_type in [DataType::Decimal32(9, 2), DataType::Decimal64(18, 2)] {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("key", DataType::UInt32, false),
+            Field::new("part", partition_type.clone(), true),
+        ]));
+        let source = LocalParquetSource::from_files(
+            vec![
+                LocalParquetFile::new("/tmp/source-contract.parquet")
+                    .with_partition_values(vec![LiteralValue::Null(partition_type.clone())]),
+            ],
+            schema,
+            vec!["key".to_string()],
+        )
+        .with_partition_columns(vec![PartitionColumn::new("part", partition_type.clone(), true)]);
+
+        let error = validate_local_parquet_source(&source).unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::UnsupportedType);
+        assert_eq!(error.fact_value("reason"), Some("narrow_decimal_partition_unsupported"));
+        assert_eq!(error.fact_value("partition_type"), Some(format!("{partition_type:?}").as_str()));
+        assert_eq!(error.fact_value("partition_column"), Some("part"));
+    }
 }
 
 #[test]

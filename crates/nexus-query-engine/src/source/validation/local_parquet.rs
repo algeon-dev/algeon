@@ -1,7 +1,9 @@
 use arrow::datatypes::{DataType as ArrowDataType, Field};
 
 use crate::{
-    datatypes::{arrow_data_types_match_except_list_child_names, cudf_dtype_from_arrow_type},
+    datatypes::{
+        arrow_data_types_match_except_list_child_names, cudf_dtype_from_arrow_type, is_narrow_decimal_carry_type,
+    },
     error::{QueryError, QueryErrorCode, Result},
     expr::LiteralValue,
     source::{
@@ -647,6 +649,19 @@ fn validate_represented_partition_columns(source: &LocalParquetSource) -> Result
 }
 
 fn validate_partition_value_type(partition_column: &PartitionColumn, partition_value: &LiteralValue) -> Result<()> {
+    if is_narrow_decimal_carry_type(&partition_column.data_type)
+        || is_narrow_decimal_carry_type(&partition_value.data_type())
+    {
+        return Err(QueryError::new(
+            QueryErrorCode::UnsupportedType,
+            "nexus_query_engine.local_parquet_source.validate",
+            "narrow decimal partition values are not supported by native parquet sources",
+        )
+        .with_fact("reason", "narrow_decimal_partition_unsupported")
+        .with_fact("partition_type", format!("{:?}", partition_column.data_type))
+        .with_fact("partition_value", partition_value));
+    }
+
     if matches!(partition_value, LiteralValue::Null(_)) && !partition_column.nullable {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,

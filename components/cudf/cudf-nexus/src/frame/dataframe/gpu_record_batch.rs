@@ -1174,7 +1174,7 @@ impl GpuRecordBatch {
     /// stored Arrow field type, the host array is cast before the final
     /// `RecordBatch` is built.
     pub fn to_host_record_batch(&self) -> Result<RecordBatch> {
-        let batch = self.frame.to_record_batch()?;
+        let batch = self.frame.to_record_batch_with_arrow_schema(&self.mapped_schema)?;
         record_batch_with_schema_contract(batch, &self.schema)
     }
 

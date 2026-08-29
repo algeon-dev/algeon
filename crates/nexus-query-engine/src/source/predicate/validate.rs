@@ -9,8 +9,8 @@ use super::super::{
 };
 use crate::{
     datatypes::{
-        arrow_decimal_scale_to_cudf_scale, cudf_dtype_from_arrow_type, is_supported_arrow_type,
-        is_supported_list_carry_type, is_timestamp_with_timezone,
+        arrow_decimal_scale_to_cudf_scale, cudf_dtype_from_arrow_type, is_narrow_decimal_carry_type,
+        is_supported_arrow_type, is_supported_list_carry_type, is_timestamp_with_timezone,
     },
     expr::{Expr, LiteralValue},
 };
@@ -154,6 +154,7 @@ fn reader_predicate_column_type_is_supported(data_type: &DataType) -> bool {
     is_supported_arrow_type(data_type)
         && !is_timestamp_with_timezone(data_type)
         && !is_supported_list_carry_type(data_type)
+        && !is_narrow_decimal_carry_type(data_type)
 }
 
 fn reader_predicate_literal_is_supported(value: &LiteralValue) -> bool {

@@ -289,22 +289,8 @@ pub(super) fn exact_fixed_width_column_upper_bound_bytes(
     nullable: bool,
     row_count: u64,
 ) -> Option<u64> {
-    let element_size = match data_type {
-        arrow::datatypes::DataType::Boolean | arrow::datatypes::DataType::Int8 | arrow::datatypes::DataType::UInt8 => 1,
-        arrow::datatypes::DataType::Int16 | arrow::datatypes::DataType::UInt16 => 2,
-        arrow::datatypes::DataType::Int32
-        | arrow::datatypes::DataType::UInt32
-        | arrow::datatypes::DataType::Float32
-        | arrow::datatypes::DataType::Date32 => 4,
-        arrow::datatypes::DataType::Int64
-        | arrow::datatypes::DataType::UInt64
-        | arrow::datatypes::DataType::Float64
-        | arrow::datatypes::DataType::Date64
-        | arrow::datatypes::DataType::Timestamp(_, _)
-        | arrow::datatypes::DataType::Duration(_) => 8,
-        arrow::datatypes::DataType::Decimal128(_, _) => 16,
-        _ => return None,
-    };
+    crate::datatypes::cudf_dtype_from_arrow_type(data_type)?;
+    let element_size = crate::datatypes::arrow_fixed_width_byte_size(data_type)?;
     let data_bytes = row_count.checked_mul(element_size)?;
     let mask_bytes = if nullable { null_mask_allocation_size_bytes(row_count) } else { 0 };
     data_bytes.checked_add(mask_bytes)

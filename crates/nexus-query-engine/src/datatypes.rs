@@ -7,8 +7,8 @@
 use std::collections::HashMap;
 
 use arrow::datatypes::{
-    DECIMAL128_MAX_SCALE, DataType as ArrowDataType, Decimal128Type, Field, Fields, TimeUnit,
-    validate_decimal_precision_and_scale,
+    DECIMAL128_MAX_SCALE, DataType as ArrowDataType, Decimal32Type, Decimal64Type, Decimal128Type, Field, Fields,
+    TimeUnit, validate_decimal_precision_and_scale,
 };
 use cudf::{DataType as CudfDataType, TimestampResolution, TypeId};
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
@@ -42,6 +42,10 @@ pub fn cudf_dtype_from_arrow_type(data_type: &ArrowDataType) -> Option<CudfDataT
         },
         ArrowDataType::Decimal128(precision, scale) => is_supported_decimal128(*precision, *scale)
             .then(|| CudfDataType::fixed_point(TypeId::Decimal128, arrow_decimal_scale_to_cudf_scale(*scale))),
+        ArrowDataType::Decimal32(precision, scale) => is_supported_decimal32(*precision, *scale)
+            .then(|| CudfDataType::fixed_point(TypeId::Decimal32, arrow_decimal_scale_to_cudf_scale(*scale))),
+        ArrowDataType::Decimal64(precision, scale) => is_supported_decimal64(*precision, *scale)
+            .then(|| CudfDataType::fixed_point(TypeId::Decimal64, arrow_decimal_scale_to_cudf_scale(*scale))),
         ArrowDataType::Date32 => Some(CudfDataType::new(TypeId::TimestampDays)),
         ArrowDataType::Date64 => Some(CudfDataType::new(TypeId::TimestampMilliseconds)),
         ArrowDataType::Time32(unit) | ArrowDataType::Time64(unit) => {
@@ -77,12 +81,23 @@ pub fn is_supported_list_carry_type(data_type: &ArrowDataType) -> bool {
     }
 }
 
+/// Returns whether this Arrow type is a narrow decimal admitted only for carry/projection.
+pub fn is_narrow_decimal_carry_type(data_type: &ArrowDataType) -> bool {
+    matches!(
+        data_type,
+        ArrowDataType::Decimal32(precision, scale) if is_supported_decimal32(*precision, *scale)
+    ) || matches!(
+        data_type,
+        ArrowDataType::Decimal64(precision, scale) if is_supported_decimal64(*precision, *scale)
+    )
+}
+
 /// Returns the physical byte width for Arrow scalar fixed-width values used by
 /// native sizing heuristics.
 ///
 /// This is not a general Arrow memory-layout classifier: it intentionally
-/// preserves the native execution paths that did not size `Float16`, decimal32,
-/// decimal64, or fixed-size binary values as fixed-width inputs.
+/// preserves the native execution paths that do not size `Float16` or
+/// fixed-size binary values as fixed-width inputs.
 pub fn arrow_fixed_width_byte_size(data_type: &ArrowDataType) -> Option<u64> {
     match data_type {
         ArrowDataType::Boolean | ArrowDataType::Int8 | ArrowDataType::UInt8 => Some(1),
@@ -91,14 +106,16 @@ pub fn arrow_fixed_width_byte_size(data_type: &ArrowDataType) -> Option<u64> {
         | ArrowDataType::UInt32
         | ArrowDataType::Float32
         | ArrowDataType::Date32
-        | ArrowDataType::Time32(_) => Some(4),
+        | ArrowDataType::Time32(_)
+        | ArrowDataType::Decimal32(_, _) => Some(4),
         ArrowDataType::Int64
         | ArrowDataType::UInt64
         | ArrowDataType::Float64
         | ArrowDataType::Date64
         | ArrowDataType::Time64(_)
         | ArrowDataType::Timestamp(_, _)
-        | ArrowDataType::Duration(_) => Some(8),
+        | ArrowDataType::Duration(_)
+        | ArrowDataType::Decimal64(_, _) => Some(8),
         ArrowDataType::Decimal128(_, _) => Some(16),
         ArrowDataType::Decimal256(_, _) => Some(32),
         ArrowDataType::Null
@@ -119,8 +136,6 @@ pub fn arrow_fixed_width_byte_size(data_type: &ArrowDataType) -> Option<u64> {
         | ArrowDataType::Struct(_)
         | ArrowDataType::Union(_, _)
         | ArrowDataType::Dictionary(_, _)
-        | ArrowDataType::Decimal32(_, _)
-        | ArrowDataType::Decimal64(_, _)
         | ArrowDataType::Map(_, _)
         | ArrowDataType::RunEndEncoded(_, _) => None,
     }
@@ -157,6 +172,8 @@ pub fn diagnostic_arrow_type(data_type: &ArrowDataType) -> String {
         ArrowDataType::Duration(unit) => format!("Duration({unit:?})"),
         ArrowDataType::Time32(unit) => format!("Time32({unit:?})"),
         ArrowDataType::Time64(unit) => format!("Time64({unit:?})"),
+        ArrowDataType::Decimal32(precision, scale) => format!("Decimal32({precision}, {scale})"),
+        ArrowDataType::Decimal64(precision, scale) => format!("Decimal64({precision}, {scale})"),
         ArrowDataType::Decimal128(precision, scale) => format!("Decimal128({precision}, {scale})"),
         ArrowDataType::Decimal256(precision, scale) => format!("Decimal256({precision}, {scale})"),
         _ => format!("{data_type:?}"),
@@ -267,11 +284,13 @@ pub fn timestamp_unit_to_cudf_resolution(unit: &TimeUnit) -> TimestampResolution
 
 /// Returns whether the native engine supports an explicit cast.
 pub fn is_supported_arrow_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
-    is_supported_arrow_implicit_cast(source_type, target_type)
-        || is_supported_decimal_to_float64_cast(source_type, target_type)
-        || is_supported_numeric_to_decimal_cast(source_type, target_type)
-        || is_supported_decimal_to_integral_cast(source_type, target_type)
-        || is_supported_float64_to_int64_cast(source_type, target_type)
+    !is_narrow_decimal_carry_type(source_type)
+        && !is_narrow_decimal_carry_type(target_type)
+        && (is_supported_arrow_implicit_cast(source_type, target_type)
+            || is_supported_decimal_to_float64_cast(source_type, target_type)
+            || is_supported_numeric_to_decimal_cast(source_type, target_type)
+            || is_supported_decimal_to_integral_cast(source_type, target_type)
+            || is_supported_float64_to_int64_cast(source_type, target_type))
 }
 
 /// Returns whether the native engine may insert or preserve an implicit cast.
@@ -378,6 +397,14 @@ fn is_supported_decimal128(precision: u8, scale: i8) -> bool {
     validate_decimal_precision_and_scale::<Decimal128Type>(precision, scale).is_ok()
 }
 
+fn is_supported_decimal32(precision: u8, scale: i8) -> bool {
+    validate_decimal_precision_and_scale::<Decimal32Type>(precision, scale).is_ok()
+}
+
+fn is_supported_decimal64(precision: u8, scale: i8) -> bool {
+    validate_decimal_precision_and_scale::<Decimal64Type>(precision, scale).is_ok()
+}
+
 fn is_supported_string_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
     matches!(
         (source_type, target_type),
@@ -447,6 +474,8 @@ mod tests {
             (ArrowDataType::Time64(TimeUnit::Nanosecond), 8),
             (ArrowDataType::Timestamp(TimeUnit::Microsecond, None), 8),
             (ArrowDataType::Duration(TimeUnit::Nanosecond), 8),
+            (ArrowDataType::Decimal32(9, 2), 4),
+            (ArrowDataType::Decimal64(18, 2), 8),
             (ArrowDataType::Decimal128(10, 2), 16),
             (ArrowDataType::Decimal256(30, 2), 32),
         ];
@@ -462,8 +491,6 @@ mod tests {
         let data_type = ArrowDataType::List(Arc::new(Field::new("item", ArrowDataType::Int32, true)));
 
         assert_eq!(arrow_fixed_width_byte_size(&ArrowDataType::Float16), None);
-        assert_eq!(arrow_fixed_width_byte_size(&ArrowDataType::Decimal32(9, 2)), None);
-        assert_eq!(arrow_fixed_width_byte_size(&ArrowDataType::Decimal64(18, 2)), None);
         assert_eq!(arrow_fixed_width_byte_size(&ArrowDataType::FixedSizeBinary(16)), None);
         assert_eq!(arrow_fixed_width_byte_size(&ArrowDataType::Utf8), None);
         assert_eq!(arrow_fixed_width_byte_size(&ArrowDataType::LargeUtf8), None);

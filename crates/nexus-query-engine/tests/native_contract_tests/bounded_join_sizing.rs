@@ -148,6 +148,15 @@ fn decimal128_uses_sixteen_bytes() {
 }
 
 #[test]
+fn decimal32_and_decimal64_use_four_and_eight_bytes() {
+    let rows = 100;
+    for (data_type, width) in [(ArrowDataType::Decimal32(9, 2), 4), (ArrowDataType::Decimal64(18, 6), 8)] {
+        let bound = join_output_upper_bound_bytes(rows, &[fixed_column(data_type.clone())]).unwrap();
+        assert_eq!(bound, fixed_column_expected(rows, width), "dtype {data_type:?}");
+    }
+}
+
+#[test]
 fn string_column_bound_uses_max_length_times_rows_plus_offsets() {
     // High-fanout many-to-one gather: 1000 output rows over an input
     // where the longest string is 1000 bytes. The safe upper bound

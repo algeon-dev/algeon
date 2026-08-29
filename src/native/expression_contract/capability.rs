@@ -10,7 +10,8 @@ use datafusion::{
     },
 };
 use nexus_query_engine::datatypes::{
-    is_supported_arrow_cast, is_supported_arrow_type, is_supported_list_carry_type, is_timestamp_with_timezone,
+    is_narrow_decimal_carry_type, is_supported_arrow_cast, is_supported_arrow_type, is_supported_list_carry_type,
+    is_timestamp_with_timezone,
 };
 
 use super::{ExpressionCapability, ExpressionRejection};
@@ -162,6 +163,10 @@ pub(in crate::native) fn is_list_carry_type(data_type: &DataType) -> bool {
     is_supported_list_carry_type(data_type)
 }
 
+pub(in crate::native) fn is_narrow_decimal_carry(data_type: &DataType) -> bool {
+    is_narrow_decimal_carry_type(data_type)
+}
+
 pub(in crate::native) fn is_supported_native_cast(source_type: &DataType, target_type: &DataType) -> bool {
     is_supported_arrow_cast(source_type, target_type)
 }
@@ -245,6 +250,8 @@ pub(in crate::native) fn compatible_types(left: &DataType, right: &DataType) -> 
         && !is_timestamp_with_timezone_type(right)
         && !is_list_carry_type(left)
         && !is_list_carry_type(right)
+        && !is_narrow_decimal_carry(left)
+        && !is_narrow_decimal_carry(right)
         && (left == right || is_supported_native_cast(left, right) || is_supported_native_cast(right, left))
 }
 

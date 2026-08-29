@@ -293,7 +293,7 @@ fn is_supported_partition_dtype(data_type: DataType) -> bool {
 }
 
 fn is_supported_missing_null_dtype(data_type: DataType) -> bool {
-    is_supported_partition_dtype(data_type)
+    is_supported_partition_dtype(data_type) || matches!(data_type.id(), TypeId::Decimal32 | TypeId::Decimal64)
 }
 
 fn is_supported_missing_null_column(column: &SourceColumn) -> bool {

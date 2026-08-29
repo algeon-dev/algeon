@@ -1,7 +1,10 @@
 use arrow::datatypes::{DataType as ArrowDataType, TimeUnit};
 
 use super::*;
-use crate::datatypes::{is_supported_arrow_implicit_cast, is_supported_list_carry_type, is_timestamp_with_timezone};
+use crate::datatypes::{
+    is_narrow_decimal_carry_type, is_supported_arrow_implicit_cast, is_supported_list_carry_type,
+    is_timestamp_with_timezone,
+};
 
 pub(super) fn require_boolean(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
     if matches!(data_type, ArrowDataType::Boolean) {
@@ -67,7 +70,7 @@ pub(super) fn require_timestamp_preserving_output(
 pub(super) fn require_timezone_free_operator_key(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
     if is_timestamp_with_timezone(data_type) {
         unsupported_type(context, data_type, "expected timezone-free operator key")
-    } else if is_supported_list_carry_type(data_type) {
+    } else if is_supported_list_carry_type(data_type) || is_narrow_decimal_carry_type(data_type) {
         unsupported_type(context, data_type, "expected scalar operator key")
     } else {
         Ok(())
@@ -77,7 +80,7 @@ pub(super) fn require_timezone_free_operator_key(data_type: &ArrowDataType, cont
 pub(super) fn require_scalar_operator_value(data_type: &ArrowDataType, context: &'static str) -> Result<()> {
     if is_timestamp_with_timezone(data_type) {
         unsupported_type(context, data_type, "expected timezone-free scalar operator value")
-    } else if is_supported_list_carry_type(data_type) {
+    } else if is_supported_list_carry_type(data_type) || is_narrow_decimal_carry_type(data_type) {
         unsupported_type(context, data_type, "expected scalar operator value")
     } else {
         Ok(())
@@ -103,8 +106,8 @@ pub(super) fn require_compatible_types(
 ) -> Result<()> {
     if is_timestamp_with_timezone(left)
         || is_timestamp_with_timezone(right)
-        || list_carry_operand(left)
-        || list_carry_operand(right)
+        || carry_only_operand(left)
+        || carry_only_operand(right)
     {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
@@ -133,8 +136,8 @@ pub(super) fn require_compatible_types(
 pub(super) fn require_comparable_types(left: &ArrowDataType, right: &ArrowDataType) -> Result<()> {
     if is_timestamp_with_timezone(left)
         || is_timestamp_with_timezone(right)
-        || list_carry_operand(left)
-        || list_carry_operand(right)
+        || carry_only_operand(left)
+        || carry_only_operand(right)
     {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedType,
@@ -162,8 +165,8 @@ pub(super) fn require_comparable_types(left: &ArrowDataType, right: &ArrowDataTy
     }
 }
 
-fn list_carry_operand(data_type: &ArrowDataType) -> bool {
-    is_supported_list_carry_type(data_type)
+fn carry_only_operand(data_type: &ArrowDataType) -> bool {
+    is_supported_list_carry_type(data_type) || is_narrow_decimal_carry_type(data_type)
 }
 
 fn carry_operand_rejection_reason(
@@ -175,6 +178,11 @@ fn carry_operand_rejection_reason(
         match operation {
             "comparison" => "timestamp_timezone_comparison_unsupported",
             _ => "timestamp_timezone_operator_unsupported",
+        }
+    } else if is_narrow_decimal_carry_type(left) || is_narrow_decimal_carry_type(right) {
+        match operation {
+            "comparison" => "narrow_decimal_comparison_unsupported",
+            _ => "narrow_decimal_operator_unsupported",
         }
     } else {
         "list_operator_unsupported"

@@ -15,8 +15,8 @@ use datafusion::{
 
 use super::{
     ExpressionCapability, ExpressionRejection, ScalarFunctionKind, SupportedBinaryOperator, cast_capability,
-    compatible_types, is_integral_type, is_list_carry_type, is_numeric_or_decimal_type, is_string_type,
-    is_supported_native_type, is_supported_to_timestamp_seconds_cast, is_supported_try_cast_pair,
+    compatible_types, is_integral_type, is_list_carry_type, is_narrow_decimal_carry, is_numeric_or_decimal_type,
+    is_string_type, is_supported_native_type, is_supported_to_timestamp_seconds_cast, is_supported_try_cast_pair,
     is_timestamp_with_timezone_type,
 };
 use crate::native::literal::{
@@ -161,7 +161,10 @@ fn validate_try_cast_expr(try_cast: &TryCastExpr, input_schema: &SchemaRef) -> R
 fn validate_null_predicate_arg(expr: &Arc<dyn PhysicalExpr>, input_schema: &SchemaRef) -> Result<(), CapabilityReason> {
     validate_physical_expr(expr, input_schema)?;
     let data_type = physical_expr_data_type(expr, input_schema)?;
-    if is_timestamp_with_timezone_type(&data_type) || is_list_carry_type(&data_type) {
+    if is_timestamp_with_timezone_type(&data_type)
+        || is_list_carry_type(&data_type)
+        || is_narrow_decimal_carry(&data_type)
+    {
         Err(CapabilityReason::UnsupportedType)
     } else {
         Ok(())
@@ -538,7 +541,12 @@ fn validate_binary_expr(binary: &BinaryExpr, input_schema: &SchemaRef) -> Result
     {
         return Err(CapabilityReason::UnsupportedType);
     }
-    if operator.rejects_list_carry() && (is_list_carry_type(&left_type) || is_list_carry_type(&right_type)) {
+    if operator.rejects_list_carry()
+        && (is_list_carry_type(&left_type)
+            || is_list_carry_type(&right_type)
+            || is_narrow_decimal_carry(&left_type)
+            || is_narrow_decimal_carry(&right_type))
+    {
         return Err(CapabilityReason::UnsupportedType);
     }
     if matches!(binary.op(), Operator::StringConcat) {

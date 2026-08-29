@@ -51,11 +51,18 @@ Exact dtype rules still apply. In particular, timezone-aware timestamps, the
 supported [basic-list carry matrix](./data-type-support.md#basic-list-carry-matrix),
 and the positive-width numeric
 [`FixedSizeList<T, D>` matrix](./data-type-support.md#numeric-fixed-size-list-carry-matrix)
-are carry/projection types rather than general scalar or key types. A carried
-`FixedSizeList` retains its declared dimension, child field, and nullability;
-each non-null row must have that dimension. Lists remain invalid as expression
-values, keys, grouping or sort values, partitions, aggregate inputs, and window
-inputs.
+are carry/projection types rather than general scalar or key types. The
+[narrow-decimal carry matrix](./data-type-support.md#narrow-decimal-carry-matrix)
+follows the same boundary: schema-aware output preserves `Decimal32(P, S)` or
+`Decimal64(P, S)`, including raw values, nulls, precision, and scale, with 4- or
+8-byte raw values respectively. Without an external Arrow schema, untyped
+cuDF Decimal32/64 output retains the canonical `Decimal128(38, S)` mapping.
+Narrow decimals are rejected by local capability analysis in expressions,
+predicates, literals, comparisons, casts, join or grouping keys, sort keys,
+partitions, aggregate inputs, and window inputs. A carried `FixedSizeList`
+retains its declared dimension, child field, and nullability; each non-null row
+must have that dimension. Lists remain invalid as expression values, keys,
+grouping or sort values, partitions, aggregate inputs, and window inputs.
 
 ## Aggregates
 

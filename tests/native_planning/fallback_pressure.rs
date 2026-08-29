@@ -350,6 +350,38 @@ async fn native_fallback_pressure_report_keeps_supported_typed_null_literals_out
 }
 
 #[tokio::test]
+async fn native_fallback_pressure_reports_narrow_decimal_literals_as_unsupported_expressions() {
+    let dir = unique_temp_dir("datafusion-nexus-native-fallback-pressure-narrow-decimal-literal");
+    let path = dir.join("input.parquet");
+    write_numeric_parquet_file(&path);
+    let scan = parquet_scan(&path).await;
+    let projection = |value, alias| {
+        Arc::new(ProjectionExec::try_new(vec![ProjectionExpr::new(lit(value), alias)], Arc::clone(&scan)).unwrap())
+            as Arc<dyn ExecutionPlan>
+    };
+    let report = NativeFallbackPressureReport::collect([
+        NativeFallbackPressureWorkloadItem::new(
+            "decimal32_literal",
+            projection(ScalarValue::Decimal32(Some(123), 9, 2), "amount32"),
+        ),
+        NativeFallbackPressureWorkloadItem::new(
+            "decimal64_literal",
+            projection(ScalarValue::Decimal64(Some(-456), 18, 2), "amount64"),
+        ),
+    ]);
+
+    for query_id in ["decimal32_literal", "decimal64_literal"] {
+        let row = report_row(&report, query_id);
+        assert_eq!(row.outcome, Some(NativeFallbackPressureOutcome::NotSupported));
+        assert_eq!(row.reason_code.as_deref(), Some("unsupported_expression"));
+        assert_eq!(row.unsupported_category.as_deref(), Some("expression"));
+        assert!(!row.rejected_before_execution);
+    }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes() {
     let dir = unique_temp_dir("datafusion-nexus-native-datafusion-planning-report");
     let path = dir.join("input.parquet");

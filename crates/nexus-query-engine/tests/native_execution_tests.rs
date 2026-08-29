@@ -14,10 +14,11 @@ use std::{
 
 use arrow::{
     array::{
-        Array, ArrayRef, AsArray, BooleanArray, Date32Array, Date64Array, Decimal128Array, DurationNanosecondArray,
-        FixedSizeListArray, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array, Int64Array, LargeListArray,
-        LargeStringArray, ListArray, StringArray, StringViewArray, Time32MillisecondArray, Time64NanosecondArray,
-        TimestampMicrosecondArray, TimestampNanosecondArray, UInt8Array, UInt16Array, UInt32Array, UInt64Array,
+        Array, ArrayRef, AsArray, BooleanArray, Date32Array, Date64Array, Decimal32Array, Decimal64Array,
+        Decimal128Array, DurationNanosecondArray, FixedSizeListArray, Float32Array, Float64Array, Int8Array,
+        Int16Array, Int32Array, Int64Array, LargeListArray, LargeStringArray, ListArray, StringArray, StringViewArray,
+        Time32MillisecondArray, Time64NanosecondArray, TimestampMicrosecondArray, TimestampNanosecondArray, UInt8Array,
+        UInt16Array, UInt32Array, UInt64Array,
     },
     buffer::{NullBuffer, OffsetBuffer, ScalarBuffer},
     datatypes::{DataType, Field, Schema, TimeUnit},
