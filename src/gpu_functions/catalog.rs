@@ -100,11 +100,9 @@ impl GpuFunctionCatalog {
 }
 
 fn validate_descriptor(descriptor: &GpuFunctionDescriptor) -> Result<()> {
-    for (field, value) in [
-        ("function_name", descriptor.function_name.as_str()),
-        ("provider", descriptor.provider.as_str()),
-        ("domain", descriptor.domain.as_str()),
-    ] {
+    for (field, value) in
+        [("function_name", descriptor.function_name.as_str()), ("provider", descriptor.provider.as_str())]
+    {
         if !is_identifier(value) {
             return Err(catalog_error(format!("GPU descriptor {field} must be a non-empty lowercase identifier")));
         }
@@ -186,7 +184,6 @@ mod tests {
         GpuFunctionDescriptor {
             function_name: format!("fake_{name}"),
             provider: "fake".to_string(),
-            domain: "test".to_string(),
             signature: format!("fake_{name}()"),
             summary: "test function".to_string(),
             relation_roles: json!([]),

@@ -10,8 +10,8 @@ description: Schema reference for discovering installed cuGraph and cuVS SQL fun
 
 The unified GPU function catalog lets humans and agents discover every
 SQL-visible GPU function and dry-run a call without reading server source. It
-contains installed cuGraph and cuVS families; filter by `provider` or `domain`
-for a provider-specific view.
+contains installed cuGraph and cuVS families; filter by `provider` for a
+provider-specific view.
 
 For the task-oriented list, describe, validate, and execute workflow, use
 [Discover & Validate GPU Functions](../guides/gpu-function-discovery.mdx).
@@ -32,7 +32,7 @@ themselves. Rows are ordered by `function_name` before ordinary SQL projection
 or filtering.
 
 ```sql
-SELECT function_name, provider, domain, available, summary
+SELECT function_name, provider, available, summary
 FROM gpu_list_functions()
 WHERE provider IN ('cugraph', 'cuvs')
 ORDER BY function_name;
@@ -42,7 +42,6 @@ ORDER BY function_name;
 | --- | --- | --- | --- |
 | `function_name` | `Utf8` | no | Exact canonical execution-function name. |
 | `provider` | `Utf8` | no | Implementation provider, such as `cugraph` or `cuvs`. |
-| `domain` | `Utf8` | no | User-facing domain, such as `graph` or `vector`. |
 | `available` | `Boolean` | no | Whether the function can be planned for GPU execution in this session and build. |
 | `unavailable_reason` | `Utf8` | yes | Stable reason code when `available=false`. |
 | `signature` | `Utf8` | no | Canonical SQL execution signature. |
@@ -70,7 +69,6 @@ FROM gpu_describe_function('cuvs_brute_force_knn');
 | --- | --- | --- | --- |
 | `function_name` | `Utf8` | no | Exact canonical execution-function name. |
 | `provider` | `Utf8` | no | Implementation provider. |
-| `domain` | `Utf8` | no | User-facing domain. |
 | `available` | `Boolean` | no | Current session/build planning availability. |
 | `unavailable_reason` | `Utf8` | yes | Stable reason code when unavailable. |
 | `signature` | `Utf8` | no | Canonical SQL execution signature. |

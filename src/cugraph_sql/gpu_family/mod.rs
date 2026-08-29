@@ -153,7 +153,6 @@ fn descriptor(
     GpuFunctionDescriptor {
         function_name: algorithm.function_name().to_string(),
         provider: "cugraph".to_string(),
-        domain: "graph".to_string(),
         signature: signature(algorithm),
         summary: descriptions::summary(algorithm).to_string(),
         relation_roles: json!([{
@@ -164,7 +163,7 @@ fn descriptor(
         argument_descriptions: argument_descriptions(algorithm),
         options_schema: value(&json_schema::options_schema_json(algorithm, config)),
         result_schemas,
-        validation_request_schema: validation_request_schema(algorithm, config),
+        validation_request_schema: validation_request_schema(),
         examples: examples(algorithm),
         limitations: value(&descriptions::limitations_json(algorithm)),
         availability,
@@ -205,7 +204,7 @@ fn argument_descriptions(algorithm: CugraphAlgorithm) -> Value {
     arguments
 }
 
-fn validation_request_schema(algorithm: CugraphAlgorithm, config: &CugraphSqlConfig) -> Value {
+fn validation_request_schema() -> Value {
     json!({
         "type": "object",
         "description": "The common validation envelope supports only version 1. There is no version 0 reader or version negotiation; any other schema_version is rejected before cuGraph family dispatch.",
@@ -231,8 +230,7 @@ fn validation_request_schema(algorithm: CugraphAlgorithm, config: &CugraphSqlCon
             },
             "options": {
                 "type": "object",
-                "description": "Flat cuGraph option object (no nested 'options'): src_col, dst_col, weight_col, source_vertex, graph options, and algorithm options. See options_schema_json.",
-                "x_cugraph_options_schema": value(&json_schema::options_schema_json(algorithm, config))
+                "description": "Flat cuGraph option object (no nested 'options'): src_col, dst_col, weight_col, source_vertex, graph options, and algorithm options. See options_schema_json."
             }
         }
     })

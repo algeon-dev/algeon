@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 
 import { dirname, join } from 'node:path';
 
 export const REQUIRED_DESCRIPTOR_KEYS = [
-  'function_name', 'provider', 'domain', 'available', 'unavailable_reason',
+  'function_name', 'provider', 'available', 'unavailable_reason',
   'signature', 'summary', 'relation_roles_json', 'argument_descriptions_json',
   'options_schema_json', 'result_schemas_json',
   'validation_request_schema_json', 'examples_json', 'limitations_json',
@@ -25,7 +25,7 @@ export function parseJson(file, key, value) {
   }
 }
 
-export function loadProviderSpecs({ specDir, provider, domain, namePattern, validate }) {
+export function loadProviderSpecs({ specDir, provider, namePattern, validate }) {
   if (!existsSync(specDir)) throw new Error(`missing ${specDir}; run the descriptor capture script first`);
   const names = new Set();
   const specs = readdirSync(specDir)
@@ -40,7 +40,7 @@ export function loadProviderSpecs({ specDir, provider, domain, namePattern, vali
       if (!namePattern.test(spec.function_name)) throw new Error(`${file}: invalid canonical ${provider} function name`);
       if (names.has(spec.function_name)) throw new Error(`${file}: duplicate function descriptor`);
       names.add(spec.function_name);
-      if (spec.provider !== provider || spec.domain !== domain) throw new Error(`${file}: expected a ${provider} ${domain} descriptor`);
+      if (spec.provider !== provider) throw new Error(`${file}: expected a ${provider} descriptor`);
       if (typeof spec.available !== 'boolean' || !(spec.unavailable_reason === null || typeof spec.unavailable_reason === 'string')) {
         throw new Error(`${file}: invalid availability fields`);
       }

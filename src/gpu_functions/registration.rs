@@ -71,7 +71,6 @@ mod tests {
             vec![GpuFunctionDescriptor {
                 function_name: self.name.to_string(),
                 provider: self.id.to_string(),
-                domain: "test".to_string(),
                 signature: format!("{}()", self.name),
                 summary: "test".to_string(),
                 relation_roles: json!([]),

@@ -42,7 +42,6 @@ function loadSpecs() {
   return loadProviderSpecs({
     specDir: SPEC_DIR,
     provider: 'cuvs',
-    domain: 'vector',
     namePattern: /^cuvs_[a-z0-9_]+$/,
     validate(file, spec) {
       if (!Array.isArray(spec.relation_roles) || spec.relation_roles.length === 0 || spec.relation_roles.some(role => !role?.name)) {

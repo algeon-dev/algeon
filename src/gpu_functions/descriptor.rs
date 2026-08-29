@@ -37,8 +37,6 @@ pub(crate) struct GpuFunctionDescriptor {
     pub(crate) function_name: String,
     /// Stable implementation provider identifier, for example `cuvs`.
     pub(crate) provider: String,
-    /// Stable user-facing domain identifier, for example `vector`.
-    pub(crate) domain: String,
     /// Canonical SQL execution signature.
     pub(crate) signature: String,
     /// Short human-readable description.
