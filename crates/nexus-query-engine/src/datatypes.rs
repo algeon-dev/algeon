@@ -21,7 +21,7 @@ pub fn is_supported_arrow_type(data_type: &ArrowDataType) -> bool {
 /// Converts a supported Arrow type to its cuDF dtype.
 ///
 /// Unsupported nested types and decimal shapes outside the native policy return
-/// `None`. Timezone-aware timestamps and basic-list columns are admitted only
+/// `None`. Timezone-aware timestamps and supported list columns are admitted only
 /// as carry types; operator validation decides where their semantics are
 /// unsupported.
 pub fn cudf_dtype_from_arrow_type(data_type: &ArrowDataType) -> Option<CudfDataType> {
@@ -54,6 +54,11 @@ pub fn cudf_dtype_from_arrow_type(data_type: &ArrowDataType) -> Option<CudfDataT
         ArrowDataType::List(field) | ArrowDataType::LargeList(field) if is_supported_basic_list_child(field) => {
             Some(CudfDataType::new(TypeId::List))
         },
+        ArrowDataType::FixedSizeList(field, dimension)
+            if *dimension > 0 && is_supported_fixed_size_list_child(field) =>
+        {
+            Some(CudfDataType::new(TypeId::List))
+        },
         _ => None,
     }
 }
@@ -65,7 +70,11 @@ pub fn is_timestamp_with_timezone(data_type: &ArrowDataType) -> bool {
 
 /// Returns whether this Arrow type is a list admitted only for carry/projection.
 pub fn is_supported_list_carry_type(data_type: &ArrowDataType) -> bool {
-    matches!(data_type, ArrowDataType::List(field) | ArrowDataType::LargeList(field) if is_supported_basic_list_child(field))
+    match data_type {
+        ArrowDataType::List(field) | ArrowDataType::LargeList(field) => is_supported_basic_list_child(field),
+        ArrowDataType::FixedSizeList(field, dimension) => *dimension > 0 && is_supported_fixed_size_list_child(field),
+        _ => false,
+    }
 }
 
 /// Returns the physical byte width for Arrow scalar fixed-width values used by
@@ -176,6 +185,13 @@ pub(crate) fn arrow_data_types_match_except_list_child_names(left: &ArrowDataTyp
         | (ArrowDataType::LargeList(left_field), ArrowDataType::LargeList(right_field)) => {
             arrow_fields_match_except_name(left_field.as_ref(), right_field.as_ref())
         },
+        (
+            ArrowDataType::FixedSizeList(left_field, left_dimension),
+            ArrowDataType::FixedSizeList(right_field, right_dimension),
+        ) => {
+            left_dimension == right_dimension
+                && arrow_fields_match_except_name(left_field.as_ref(), right_field.as_ref())
+        },
         _ => left == right,
     }
 }
@@ -197,6 +213,22 @@ fn is_supported_basic_list_child(field: &arrow::datatypes::FieldRef) -> bool {
             | ArrowDataType::Utf8
             | ArrowDataType::LargeUtf8
             | ArrowDataType::Utf8View
+    )
+}
+
+fn is_supported_fixed_size_list_child(field: &arrow::datatypes::FieldRef) -> bool {
+    matches!(
+        field.data_type(),
+        ArrowDataType::Int8
+            | ArrowDataType::Int16
+            | ArrowDataType::Int32
+            | ArrowDataType::Int64
+            | ArrowDataType::UInt8
+            | ArrowDataType::UInt16
+            | ArrowDataType::UInt32
+            | ArrowDataType::UInt64
+            | ArrowDataType::Float32
+            | ArrowDataType::Float64
     )
 }
 

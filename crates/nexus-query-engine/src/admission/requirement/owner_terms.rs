@@ -1300,7 +1300,7 @@ pub(crate) fn literal_batch_source_owner_terms(plan: &QueryPlan) -> Result<Vec<A
                 owner_term_error("literal_source_bytes_unavailable", Some(OwnerTermRole::SourceStage), None)
             })?;
             for (index, field) in source.schema.fields().iter().enumerate() {
-                if matches!(field.data_type(), DataType::List(_) | DataType::LargeList(_)) {
+                if crate::datatypes::is_supported_list_carry_type(field.data_type()) {
                     let arrays = source.batches.iter().map(|batch| Arc::clone(batch.column(index))).collect::<Vec<_>>();
                     let list_bytes = cudf::interop::arrow_host::estimate_list_import_device_memory_bytes(&arrays)
                         .map_err(|_| {
@@ -1340,7 +1340,7 @@ pub(crate) fn literal_batch_output_columns(
         .iter()
         .enumerate()
         .map(|(index, field)| {
-            if matches!(field.data_type(), DataType::List(_) | DataType::LargeList(_)) {
+            if crate::datatypes::is_supported_list_carry_type(field.data_type()) {
                 return Ok(None);
             }
             if let Some(column) = fixed_width_consumer_output_column(field.data_type()) {

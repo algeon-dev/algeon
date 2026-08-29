@@ -180,7 +180,7 @@ fn vector_validation_rejects_invalid_bindings_parameters_and_output_schema() {
 }
 
 #[test]
-fn vector_column_binding_validates_fixed_size_list_element_type() {
+fn vector_column_binding_validates_fixed_size_list_element_type_after_relational_carry() {
     let schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new(
@@ -205,9 +205,8 @@ fn vector_column_binding_validates_fixed_size_list_element_type() {
     let mut non_vector_builder = QueryPlanBuilder::new();
     let non_vector_source =
         non_vector_builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("non_vector_input", schema)));
-    let error = preflight_query_plan(&non_vector_builder.finish_with_host_sink(non_vector_source))
-        .expect_err("numeric list schemas remain unsupported outside typed vector ingress");
-    assert_eq!(error.operation(), "nexus_query_engine.plan.validate_schema");
+    preflight_query_plan(&non_vector_builder.finish_with_host_sink(non_vector_source))
+        .expect("numeric FixedSizeList remains valid as a relational carry column");
 }
 
 #[test]
@@ -273,7 +272,7 @@ fn large_list_vector_column_defers_dimension_validation_to_the_device_witness() 
 }
 
 #[test]
-fn vector_column_ingress_tracks_safe_projection_lineage_without_global_list_support() {
+fn vector_column_ingress_tracks_safe_projection_lineage_with_relational_carry_support() {
     let source_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int64, false),
         Field::new(

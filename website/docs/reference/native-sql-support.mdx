@@ -47,10 +47,13 @@ The supported DataFusion scalar-function names are:
 | Nulls | `nullif` for compatible native types. |
 | Temporal | `date_part`/`extract` for admitted date/timestamp fields, `date_trunc` for day through microsecond units on timezone-free timestamps, and `to_timestamp_seconds` for supported integer inputs. |
 
-Exact dtype rules still apply. In particular, timezone-aware timestamps and
-the supported [basic-list carry matrix](./data-type-support.md#basic-list-carry-matrix)
-including floating-point `List`/`LargeList` children are carry/projection types
-rather than general scalar or key types. Lists remain invalid as expression
+Exact dtype rules still apply. In particular, timezone-aware timestamps, the
+supported [basic-list carry matrix](./data-type-support.md#basic-list-carry-matrix),
+and the positive-width numeric
+[`FixedSizeList<T, D>` matrix](./data-type-support.md#numeric-fixed-size-list-carry-matrix)
+are carry/projection types rather than general scalar or key types. A carried
+`FixedSizeList` retains its declared dimension, child field, and nullability;
+each non-null row must have that dimension. Lists remain invalid as expression
 values, keys, grouping or sort values, partitions, aggregate inputs, and window
 inputs.
 

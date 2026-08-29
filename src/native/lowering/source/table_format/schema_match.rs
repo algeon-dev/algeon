@@ -116,6 +116,13 @@ pub(super) fn table_format_arrow_data_types_match_except_list_child_names(left: 
         | (DataType::LargeList(left_field), DataType::LargeList(right_field)) => {
             table_format_arrow_fields_match_except_name(left_field.as_ref(), right_field.as_ref())
         },
+        (
+            DataType::FixedSizeList(left_field, left_dimension),
+            DataType::FixedSizeList(right_field, right_dimension),
+        ) => {
+            left_dimension == right_dimension
+                && table_format_arrow_fields_match_except_name(left_field.as_ref(), right_field.as_ref())
+        },
         _ => left == right,
     }
 }

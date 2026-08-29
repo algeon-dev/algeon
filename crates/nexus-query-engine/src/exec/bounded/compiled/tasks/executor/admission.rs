@@ -110,10 +110,7 @@ impl CompiledGpuTaskExecutor<'_> {
             .fields()
             .iter()
             .filter_map(|field| {
-                if matches!(
-                    field.data_type(),
-                    arrow::datatypes::DataType::List(_) | arrow::datatypes::DataType::LargeList(_)
-                ) {
+                if crate::datatypes::is_supported_list_carry_type(field.data_type()) {
                     list_output_floor = list_output_floor.saturating_add(LIST_ONE_ROW_OUTPUT_FLOOR_BYTES);
                     return None;
                 }
