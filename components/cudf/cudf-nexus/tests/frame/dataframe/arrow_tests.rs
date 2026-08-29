@@ -82,6 +82,15 @@ fn assert_float32_list_value(array: &ListArray, index: usize, expected: &[Option
     }
 }
 
+fn assert_float64_large_list_value(array: &LargeListArray, index: usize, expected: &[f64]) {
+    let values = array.value(index);
+    let floats = values.as_primitive::<arrow::datatypes::Float64Type>();
+    assert_eq!(floats.len(), expected.len());
+    for (actual, expected) in floats.values().iter().zip(expected) {
+        assert_eq!(actual.to_bits(), expected.to_bits());
+    }
+}
+
 fn decimal128_series(values: &[i64], scale: i32) -> cudf::Result<cudf::Series> {
     crate::common::series("amount", values)?.astype(DataType::fixed_point(TypeId::Decimal128, scale))
 }
@@ -906,17 +915,20 @@ fn test_sliced_list_utf8_import_normalizes_offsets() {
 fn test_list_float32_import_exports_numeric_child_with_root_and_child_validity() {
     let item = Arc::new(Field::new("item", ArrowDataType::Float32, true));
     let values = Arc::new(Float32Array::from(vec![Some(1.0), None, Some(3.0), Some(4.0), Some(5.0)]));
-    let lists = ListArray::new(
+    let lists = Arc::new(ListArray::new(
         Arc::clone(&item),
         OffsetBuffer::new(ScalarBuffer::from(vec![0, 2, 2, 3, 5])),
         values,
         Some(NullBuffer::from(vec![true, false, true, true])),
-    );
+    ));
     let schema = Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::List(item), true)]));
-    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(lists)]).unwrap();
+    let arrays = vec![Arc::clone(&lists) as ArrayRef];
+    let estimated = cudf::interop::arrow_host::estimate_list_import_device_memory_bytes(&arrays).unwrap();
+    let batch = RecordBatch::try_new(Arc::clone(&schema), arrays).unwrap();
 
     let frame = import_record_batch(&batch).unwrap();
     assert_eq!(frame.series("features").unwrap().dtype().unwrap(), DataType::new(TypeId::List));
+    assert!(estimated >= frame.series("features").unwrap().device_allocated_size_bytes().unwrap());
     let materialized = frame.to_record_batch().unwrap();
     let features = materialized.column(0).as_any().downcast_ref::<ListArray>().unwrap();
 
@@ -936,6 +948,38 @@ fn test_list_float32_import_exports_numeric_child_with_root_and_child_validity()
     let child = export.semantic_columns().iter().find(|column| column.id() == child).unwrap();
     assert_eq!(child.data_type().id(), rapids_interop::TypeId::Float32);
     assert!(matches!(child.layout(), rapids_interop::ColumnLayout::FixedWidth { .. }));
+}
+
+#[test]
+fn test_sliced_large_list_float64_import_preserves_non_null_special_values_and_empty_rows() {
+    let item = Arc::new(Field::new("element", ArrowDataType::Float64, false));
+    let values = Arc::new(Float64Array::from(vec![123.0, f64::INFINITY, f64::NEG_INFINITY, -0.0, f64::NAN, 42.0, 7.0]));
+    let full = LargeListArray::new(
+        Arc::clone(&item),
+        OffsetBuffer::new(ScalarBuffer::from(vec![0i64, 1, 3, 3, 3, 5, 7])),
+        values,
+        None,
+    );
+    let sliced = Arc::new(full.slice(1, 4));
+    let schema = Arc::new(Schema::new(vec![Field::new("features", ArrowDataType::LargeList(item), false)]));
+    let arrays = vec![Arc::clone(&sliced) as ArrayRef];
+    let estimated = cudf::interop::arrow_host::estimate_list_import_device_memory_bytes(&arrays).unwrap();
+    let batch = RecordBatch::try_new(Arc::clone(&schema), arrays).unwrap();
+
+    let frame = import_record_batch(&batch).unwrap();
+    assert!(estimated >= frame.series("features").unwrap().device_allocated_size_bytes().unwrap());
+    let materialized = cudf::frame::dataframe::GpuRecordBatch::new(frame, Arc::clone(&schema))
+        .unwrap()
+        .to_host_record_batch()
+        .unwrap();
+
+    assert_eq!(materialized.schema(), schema);
+    let features = materialized.column(0).as_any().downcast_ref::<LargeListArray>().unwrap();
+    assert_eq!(features.value_offsets(), &[0, 2, 2, 2, 4]);
+    assert_float64_large_list_value(features, 0, &[f64::INFINITY, f64::NEG_INFINITY]);
+    assert_float64_large_list_value(features, 1, &[]);
+    assert_float64_large_list_value(features, 2, &[]);
+    assert_float64_large_list_value(features, 3, &[-0.0, f64::NAN]);
 }
 
 #[test]

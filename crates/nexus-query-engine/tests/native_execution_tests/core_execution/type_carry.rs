@@ -14,6 +14,8 @@ fn basic_list_child_array(data_type: &DataType) -> ArrayRef {
         DataType::UInt16 => integer_array!(UInt16Array, u16),
         DataType::UInt32 => integer_array!(UInt32Array, u32),
         DataType::UInt64 => integer_array!(UInt64Array, u64),
+        DataType::Float32 => Arc::new(Float32Array::from(vec![Some(f32::NAN), None, Some(f32::NEG_INFINITY)])),
+        DataType::Float64 => Arc::new(Float64Array::from(vec![Some(-0.0), None, Some(f64::INFINITY)])),
         DataType::Utf8 => Arc::new(StringArray::from(vec![Some("one"), None, Some("three")])),
         DataType::LargeUtf8 => Arc::new(LargeStringArray::from(vec![Some("one"), None, Some("three")])),
         DataType::Utf8View => Arc::new(StringViewArray::from(vec![Some("one"), None, Some("three")])),
@@ -32,6 +34,8 @@ fn basic_list_record_batch() -> RecordBatch {
         ("uint16", DataType::UInt16),
         ("uint32", DataType::UInt32),
         ("uint64", DataType::UInt64),
+        ("float32", DataType::Float32),
+        ("float64", DataType::Float64),
         ("utf8", DataType::Utf8),
         ("large_utf8", DataType::LargeUtf8),
         ("utf8_view", DataType::Utf8View),
@@ -52,6 +56,8 @@ fn basic_list_record_batch() -> RecordBatch {
     for (name, child_type) in [
         ("int64", DataType::Int64),
         ("boolean", DataType::Boolean),
+        ("float32", DataType::Float32),
+        ("float64", DataType::Float64),
         ("utf8", DataType::Utf8),
         ("large_utf8", DataType::LargeUtf8),
         ("utf8_view", DataType::Utf8View),
@@ -82,12 +88,14 @@ pub(super) fn basic_list_payload_batch(keys: &[i32]) -> RecordBatch {
     let int_child = Arc::new(Field::new("element", DataType::Int64, true));
     let bool_child = Arc::new(Field::new("element", DataType::Boolean, true));
     let string_child = Arc::new(Field::new("element", DataType::Utf8, true));
+    let float_child = Arc::new(Field::new("element", DataType::Float32, true));
     let schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int32, false),
         Field::new("discarded", DataType::Int64, false),
         Field::new("ints", DataType::List(Arc::clone(&int_child)), true),
         Field::new("flags", DataType::List(Arc::clone(&bool_child)), true),
         Field::new("tags", DataType::List(Arc::clone(&string_child)), true),
+        Field::new("scores", DataType::List(Arc::clone(&float_child)), true),
     ]));
     let tags = keys.iter().map(|key| Some(format!("tag-{key}"))).collect::<Vec<_>>();
     RecordBatch::try_new(
@@ -108,6 +116,14 @@ pub(super) fn basic_list_payload_batch(keys: &[i32]) -> RecordBatch {
                 None,
             )),
             Arc::new(ListArray::new(string_child, offsets, Arc::new(StringArray::from(tags)), None)),
+            Arc::new(ListArray::new(
+                float_child,
+                OffsetBuffer::new(ScalarBuffer::from((0..=keys.len() as i32).collect::<Vec<_>>())),
+                Arc::new(Float32Array::from(
+                    keys.iter().map(|key| *key as f32 + 0.25).collect::<Vec<_>>(),
+                )),
+                None,
+            )),
         ],
     )
     .unwrap()
@@ -118,9 +134,11 @@ pub(super) fn assert_basic_list_payload_rows(batch: &RecordBatch, key_column: us
     let ints = batch.column(list_start).as_any().downcast_ref::<ListArray>().unwrap();
     let flags = batch.column(list_start + 1).as_any().downcast_ref::<ListArray>().unwrap();
     let tags = batch.column(list_start + 2).as_any().downcast_ref::<ListArray>().unwrap();
+    let scores = batch.column(list_start + 3).as_any().downcast_ref::<ListArray>().unwrap();
     let int_values = ints.values().as_primitive::<arrow::datatypes::Int64Type>();
     let flag_values = flags.values().as_any().downcast_ref::<BooleanArray>().unwrap();
     let tag_values = tags.values().as_any().downcast_ref::<StringArray>().unwrap();
+    let score_values = scores.values().as_primitive::<arrow::datatypes::Float32Type>();
     assert_eq!(int_values.values().as_ref(), &keys.iter().map(|key| i64::from(*key) * 10).collect::<Vec<_>>());
     assert_eq!(flag_values.iter().collect::<Vec<_>>(), keys.iter().map(|key| Some(key % 2 == 0)).collect::<Vec<_>>());
     assert_eq!(
@@ -131,6 +149,10 @@ pub(super) fn assert_basic_list_payload_rows(batch: &RecordBatch, key_column: us
             .iter()
             .map(|value| value.as_deref())
             .collect::<Vec<_>>()
+    );
+    assert_eq!(
+        score_values.values().as_ref(),
+        &keys.iter().map(|key| *key as f32 + 0.25).collect::<Vec<_>>()
     );
 }
 
@@ -304,6 +326,7 @@ fn native_scalar_filter_projection_alias_sort_and_topk_carry_basic_list_payloads
         Field::new("integer_payload", input_schema.field(2).data_type().clone(), true),
         Field::new("boolean_payload", input_schema.field(3).data_type().clone(), true),
         Field::new("string_payload", input_schema.field(4).data_type().clone(), true),
+        Field::new("float_payload", input_schema.field(5).data_type().clone(), true),
     ]));
 
     let execute = |limit: Option<usize>| {
@@ -320,7 +343,13 @@ fn native_scalar_filter_projection_alias_sort_and_topk_carry_basic_list_payloads
         let projection = builder.add_projection(
             filter,
             projection_outputs(
-                vec![Expr::column("key"), Expr::column("ints"), Expr::column("flags"), Expr::column("tags")],
+                vec![
+                    Expr::column("key"),
+                    Expr::column("ints"),
+                    Expr::column("flags"),
+                    Expr::column("tags"),
+                    Expr::column("scores"),
+                ],
                 Arc::clone(&output_schema),
             ),
         );

@@ -429,8 +429,8 @@ fn list_child_import_device_bytes(
     let width = match child_type {
         ArrowDataType::Boolean | ArrowDataType::Int8 | ArrowDataType::UInt8 => Some(1),
         ArrowDataType::Int16 | ArrowDataType::UInt16 => Some(2),
-        ArrowDataType::Int32 | ArrowDataType::UInt32 => Some(4),
-        ArrowDataType::Int64 | ArrowDataType::UInt64 => Some(8),
+        ArrowDataType::Int32 | ArrowDataType::UInt32 | ArrowDataType::Float32 => Some(4),
+        ArrowDataType::Int64 | ArrowDataType::UInt64 | ArrowDataType::Float64 => Some(8),
         ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View => None,
         _ => unreachable!("caller validates the basic list child type"),
     };

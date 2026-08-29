@@ -357,12 +357,12 @@ fn write_update_edges_parquet(path: &Path) {
     write_int64_pairs_parquet(path, ["src", "dst"], [0, 1], [1, 2]);
 }
 
-fn write_unsupported_float_list_parquet(path: &Path) {
-    let child = Arc::new(Field::new("element", DataType::Float64, true));
+fn write_unsupported_decimal_list_parquet(path: &Path) {
+    let child = Arc::new(Field::new("element", DataType::Decimal128(10, 2), true));
     let values = ListArray::new(
         Arc::clone(&child),
         OffsetBuffer::new(ScalarBuffer::from(vec![0, 1, 2])),
-        Arc::new(Float64Array::from(vec![1.0, 2.0])),
+        Arc::new(Decimal128Array::from(vec![100_i128, 200]).with_precision_and_scale(10, 2).unwrap()),
         None,
     );
     let schema = Arc::new(Schema::new(vec![Field::new("unsupported_values", DataType::List(child), true)]));
