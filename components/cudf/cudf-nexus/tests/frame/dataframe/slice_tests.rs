@@ -1,8 +1,8 @@
 //! Tests for DataFrame row slicing helpers.
 
-use cudf::{DataFrame, ErrorCode, ErrorKind};
+use cudf::{DataFrame, ErrorCode, ErrorKind, ExecutionBudgetRequest};
 
-use crate::common::{column_from_slice, error_context_value};
+use crate::common::{column_from_slice, error_context_value, with_test_runtime};
 
 /// Helper: build a 5-row, 2-column DataFrame for slicing tests.
 fn sample_df() -> DataFrame {
@@ -151,6 +151,25 @@ fn test_slice_offset_beyond_end() {
     let s = df.slice(999, 10).unwrap();
     assert_eq!(s.num_rows(), 0);
     assert_eq!(s.column_names(), vec!["id", "val"]);
+}
+
+#[test]
+fn test_slice_with_budget_reports_member_accounting_on_rejection() {
+    let df = sample_df();
+    let token = with_test_runtime(|runtime| {
+        runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("partition_slice")).unwrap()
+    });
+
+    let err = df.slice_with_budget(0, 5, &token).expect_err("one-byte budget should not cover the gathered slice copy");
+
+    assert_eq!(err.code(), ErrorCode::OutOfMemory);
+    assert_eq!(error_context_value(&err, "budget_boundary").as_deref(), Some("partition_slice"));
+    assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
+    // The member accounting this path previously dropped by taking a raw
+    // execution lease instead of the caller's budget token.
+    assert!(error_context_value(&err, "budget_peak_bytes").is_some());
+    assert!(error_context_value(&err, "budget_current_bytes").is_some());
+    assert_eq!(error_context_value(&err, "budget_failed_allocation_count").as_deref(), Some("1"));
 }
 
 #[test]
