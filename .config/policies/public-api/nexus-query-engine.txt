@@ -780,6 +780,7 @@ pub fn nexus_query_engine::datatypes::arrow_fixed_width_byte_size(&arrow_schema:
 pub fn nexus_query_engine::datatypes::cudf_dtype_from_arrow_type(&arrow_schema::datatype::DataType) -> core::option::Option<cudf::core::types::DataType>
 pub fn nexus_query_engine::datatypes::diagnostic_arrow_type(&arrow_schema::datatype::DataType) -> alloc::string::String
 pub fn nexus_query_engine::datatypes::is_arrow_fixed_width(&arrow_schema::datatype::DataType) -> bool
+pub fn nexus_query_engine::datatypes::is_narrow_decimal_carry_type(&arrow_schema::datatype::DataType) -> bool
 pub fn nexus_query_engine::datatypes::is_supported_arrow_cast(&arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType) -> bool
 pub fn nexus_query_engine::datatypes::is_supported_arrow_implicit_cast(&arrow_schema::datatype::DataType, &arrow_schema::datatype::DataType) -> bool
 pub fn nexus_query_engine::datatypes::is_supported_arrow_type(&arrow_schema::datatype::DataType) -> bool
@@ -2450,6 +2451,7 @@ pub nexus_query_engine::observability::AttemptFailureCode::UnsupportedOperator
 pub nexus_query_engine::observability::AttemptFailureCode::UnsupportedPlanShape
 pub nexus_query_engine::observability::AttemptFailureCode::UnsupportedType
 impl nexus_query_engine::observability::AttemptFailureCode
+pub const fn nexus_query_engine::observability::AttemptFailureCode::as_str(self) -> &'static str
 pub const fn nexus_query_engine::observability::AttemptFailureCode::from_query_error_code(nexus_query_engine::error::QueryErrorCode) -> Self
 pub enum nexus_query_engine::observability::AttemptFailureFactKey
 pub nexus_query_engine::observability::AttemptFailureFactKey::AllocationSource
@@ -3064,10 +3066,16 @@ pub nexus_query_engine::observability::QueryAttemptReport::timestamps: nexus_que
 pub nexus_query_engine::observability::QueryAttemptReport::trace_context: core::option::Option<nexus_query_engine::observability::AttemptTraceContext>
 pub nexus_query_engine::observability::QueryAttemptReport::unix_epoch_ns: core::option::Option<u64>
 impl nexus_query_engine::observability::QueryAttemptReport
+pub fn nexus_query_engine::observability::QueryAttemptReport::admitted_to_gpu_dispatch_ns(&self) -> core::option::Option<u64>
+pub fn nexus_query_engine::observability::QueryAttemptReport::admitted_to_physical_execution_ns(&self) -> core::option::Option<u64>
 pub fn nexus_query_engine::observability::QueryAttemptReport::cleanup_ns(&self) -> core::option::Option<u64>
+pub fn nexus_query_engine::observability::QueryAttemptReport::gpu_dispatch_to_terminal_ns(&self) -> core::option::Option<u64>
 pub fn nexus_query_engine::observability::QueryAttemptReport::physical_execution_ns(&self) -> core::option::Option<u64>
+pub fn nexus_query_engine::observability::QueryAttemptReport::physical_to_gpu_dispatch_ns(&self) -> core::option::Option<u64>
 pub fn nexus_query_engine::observability::QueryAttemptReport::planning_ns(&self) -> core::option::Option<u64>
+pub fn nexus_query_engine::observability::QueryAttemptReport::post_planning_pre_admission_ns(&self) -> core::option::Option<u64>
 pub fn nexus_query_engine::observability::QueryAttemptReport::queue_wait_ns(&self) -> core::option::Option<u64>
+pub fn nexus_query_engine::observability::QueryAttemptReport::submitted_to_gpu_dispatch_ns(&self) -> core::option::Option<u64>
 pub fn nexus_query_engine::observability::QueryAttemptReport::total_ns(&self) -> core::option::Option<u64>
 impl nexus_query_engine::observability::QueryAttemptReport
 pub fn nexus_query_engine::observability::QueryAttemptReport::sealed_projection(&self) -> nexus_query_engine::observability::SealedAttemptProjection
@@ -5419,6 +5427,7 @@ pub fn nexus_query_engine::runtime::resident::GpuResultHandle::frame(&self) -> &
 pub fn nexus_query_engine::runtime::resident::GpuResultHandle::graph_residency(&self) -> core::option::Option<&nexus_query_engine::plan::GraphResidencyDescriptor>
 pub fn nexus_query_engine::runtime::resident::GpuResultHandle::into_gpu_frame(self) -> nexus_query_engine::runtime::resident::GpuDataFrame
 pub fn nexus_query_engine::runtime::resident::GpuResultHandle::into_host_batch_cursor(self, nexus_query_engine::runtime::ExecutionCancellation, cudf::frame::dataframe::gpu_record_batch::HostBatchCursorConfig) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::resident::GpuHostBatchCursor>
+pub fn nexus_query_engine::runtime::resident::GpuResultHandle::into_host_batch_cursor_with_host_schema(self, arrow_schema::schema::SchemaRef, nexus_query_engine::runtime::ExecutionCancellation, cudf::frame::dataframe::gpu_record_batch::HostBatchCursorConfig) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::resident::GpuHostBatchCursor>
 pub fn nexus_query_engine::runtime::resident::GpuResultHandle::new(&nexus_query_engine::runtime::ExecutionContext, nexus_query_engine::runtime::resident::GpuDataFrame, arrow_schema::schema::SchemaRef) -> nexus_query_engine::error::Result<Self>
 pub fn nexus_query_engine::runtime::resident::GpuResultHandle::num_columns(&self) -> usize
 pub fn nexus_query_engine::runtime::resident::GpuResultHandle::num_rows(&self) -> usize

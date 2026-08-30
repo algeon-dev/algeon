@@ -63,7 +63,7 @@ impl datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot
 pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::attempt_id(&self) -> nexus_query_engine::observability::attempt_report::AttemptId
 pub fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::execution(&self) -> core::option::Option<&datafusion_nexus::attempt::GraphClaimCalibrationExecution>
 pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::execution_complete(&self) -> bool
-pub fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::rows(&self) -> &[nexus_query_engine::graph_memory::GraphClaimCalibrationRow]
+pub fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::rows(&self) -> &[nexus_query_engine::graph_memory::evidence::GraphClaimCalibrationRow]
 pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::truncated(&self) -> bool
 pub mod datafusion_nexus::backend
 pub use datafusion_nexus::backend::DeviceCapabilities
@@ -1053,7 +1053,7 @@ impl datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot
 pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::attempt_id(&self) -> nexus_query_engine::observability::attempt_report::AttemptId
 pub fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::execution(&self) -> core::option::Option<&datafusion_nexus::attempt::GraphClaimCalibrationExecution>
 pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::execution_complete(&self) -> bool
-pub fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::rows(&self) -> &[nexus_query_engine::graph_memory::GraphClaimCalibrationRow]
+pub fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::rows(&self) -> &[nexus_query_engine::graph_memory::evidence::GraphClaimCalibrationRow]
 pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::truncated(&self) -> bool
 pub const datafusion_nexus::native_exec::NATIVE_NEXUS_DATAFUSION_METRIC_NAMES: &[&str]
 pub const datafusion_nexus::native_exec::SERVER_CAPTURE_LOSS_METRIC_NAME: &str
@@ -1831,9 +1831,18 @@ pub use datafusion_nexus::observability::GpuBackendCloseSnapshot
 pub use datafusion_nexus::observability::GpuBackendDeviceStartupRecord
 pub use datafusion_nexus::observability::GpuExecutionPoolSnapshot
 pub use datafusion_nexus::observability::GpuExecutionQuerySnapshot
+pub use datafusion_nexus::observability::GpuJobLifecycleState
 pub use datafusion_nexus::observability::QueryServiceAdmissionSnapshot
 pub use datafusion_nexus::observability::QueryServiceDeviceAdmissionSnapshot
+pub use datafusion_nexus::observability::RuntimeGpuJobObservation
+pub use datafusion_nexus::observability::RuntimeObservationExportError
+pub use datafusion_nexus::observability::RuntimeObservationExportErrorKind
+pub use datafusion_nexus::observability::RuntimeObservationExportErrorStatus
+pub use datafusion_nexus::observability::RuntimeObservationPayload
+pub use datafusion_nexus::observability::RuntimeTimelineEvent
+pub use datafusion_nexus::observability::SealedRuntimeObservationSnapshot
 pub use datafusion_nexus::observability::backend_metric_descriptors
+pub use datafusion_nexus::observability::write_runtime_observation_jsonl
 pub mod datafusion_nexus::planner
 pub use datafusion_nexus::planner::CapabilityContractGateRow
 pub use datafusion_nexus::planner::CapabilityContractReport
