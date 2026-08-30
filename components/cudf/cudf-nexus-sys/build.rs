@@ -29,7 +29,7 @@ fn main() {
     // A CMake cache may otherwise retain a different compiler, native prefix,
     // or test-hook configuration across Cargo rebuilds.
     build_support::cmake::discard_stale_cmake_build_dir(&cc, &cxx, test_hooks);
-    build_support::cmake::check_libcudf_staleness(&manifest_dir);
+    let staleness = build_support::cmake::check_libcudf_staleness(&manifest_dir);
 
     let mut config = cmake::Config::new(&native_dir);
     configure_common(&mut config, &manifest_dir);
@@ -37,7 +37,15 @@ fn main() {
 
     // Build the shim, replay CMake's link manifest, and expose the resolved
     // runtime identity to downstream RAPIDS consumers.
-    let install_dir = config.build();
+    let install_dir = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| config.build())) {
+        Ok(dir) => dir,
+        Err(payload) => {
+            if let Some(ref report) = staleness {
+                build_support::cmake::emit_stale_build_diagnostic(report);
+            }
+            std::panic::resume_unwind(payload);
+        },
+    };
     let runtime_shim = emit_shim_metadata(&install_dir, &manifest_dir, &native_dir);
 
     // The `native_abi_contract` integration test validates the production
@@ -48,7 +56,7 @@ fn main() {
     let production_shim = if test_hooks == "OFF" {
         runtime_shim.clone()
     } else {
-        build_production_shim(&install_dir, &native_dir, &manifest_dir, &cc, &cxx)
+        build_production_shim(&install_dir, &native_dir, &manifest_dir, &cc, &cxx, staleness.as_ref())
     };
 
     // Downstream identity contract: the exported root, the runtime library
@@ -69,7 +77,14 @@ fn main() {
 /// build and the root re-assertion in one function guarantees the auxiliary
 /// prefix never becomes `DEP_CUDF_RUST_ROOT` while the replayed link search,
 /// rpath, and `cudf-rust-runtime-lib` metadata keep naming the primary prefix.
-fn build_production_shim(install_dir: &Path, native_dir: &Path, manifest_dir: &Path, cc: &Path, cxx: &Path) -> PathBuf {
+fn build_production_shim(
+    install_dir: &Path,
+    native_dir: &Path,
+    manifest_dir: &Path,
+    cc: &Path,
+    cxx: &Path,
+    staleness: Option<&build_support::cmake::StalenessReport>,
+) -> PathBuf {
     let out_dir = PathBuf::from(env::var("OUT_DIR").expect("OUT_DIR must be set"));
     let production_out = out_dir.join("production-out");
     build_support::cmake::discard_stale_cmake_build_dir_at(&production_out, cc, cxx, "OFF");
@@ -77,7 +92,17 @@ fn build_production_shim(install_dir: &Path, native_dir: &Path, manifest_dir: &P
     production_config.out_dir(&production_out);
     configure_common(&mut production_config, manifest_dir);
     production_config.define("CUDF_RUST_ENABLE_TEST_HOOKS", "OFF");
-    let production_shim = production_config.build().join("lib/libcudf_rust.so");
+    let production_install = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| production_config.build()))
+    {
+        Ok(dir) => dir,
+        Err(payload) => {
+            if let Some(report) = staleness {
+                build_support::cmake::emit_stale_build_diagnostic(report);
+            }
+            std::panic::resume_unwind(payload);
+        },
+    };
+    let production_shim = production_install.join("lib/libcudf_rust.so");
     build_support::cmake::reassert_primary_root(install_dir);
     production_shim
 }

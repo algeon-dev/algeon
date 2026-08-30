@@ -187,6 +187,9 @@ fn main() {
         "CUDA_PATH",
         "DOCS_RS",
         SKIP_NATIVE_ENV,
+        "CUVS_RS_SKIP_STALENESS_CHECK",
+        "CUVS_RS_ENFORCE_STALENESS_CHECK",
+        "CUVS_ENFORCE_STALENESS_CHECK",
         "PATH",
     ] {
         println!("cargo::rerun-if-env-changed={name}");
@@ -196,6 +199,7 @@ fn main() {
         return;
     }
 
+    let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
     let workspace_cuvs_root = select_workspace_cuvs_root();
     if let Some(prefix) = &workspace_cuvs_root {
         track_cuvs_prefix(prefix);
@@ -204,6 +208,7 @@ fn main() {
         println!("cargo::rerun-if-changed={}", git_index.display());
     }
     let metadata = cmake::locate_cuvs().unwrap_or_else(|error| panic!("{error:#}"));
+    cmake::check_libcuvs_staleness(&manifest_dir, &metadata);
     println!("cargo::rerun-if-changed={}", metadata.libcuvs_c.display());
     println!("cargo::rerun-if-changed={}", metadata.libcuvs.display());
     let cuda = cuda_toolkit().unwrap_or_else(|error| panic!("{error}"));

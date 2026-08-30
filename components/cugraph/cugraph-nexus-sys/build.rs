@@ -69,6 +69,7 @@ fn main() {
     let validated_loader =
         build_support::validate_cugraph_cuvs_loader(&contract.native_link_dirs, &contract.runtime_lib_dirs, &cuvs)
             .unwrap_or_else(|err| panic!("{err}"));
+    build_support::check_libcugraph_staleness(&manifest_dir, &contract.native_link_dirs);
     if !contract.runtime_lib_dirs.iter().any(|path| path == &cuvs.runtime_lib_dir) {
         contract.runtime_lib_dirs.push(cuvs.runtime_lib_dir.clone());
     }
@@ -107,6 +108,9 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CUGRAPH_SYS_AUTO_BUILD");
     println!("cargo:rerun-if-env-changed=CUDF_INSTALL_DIR");
     println!("cargo:rerun-if-env-changed=CUVS_INSTALL_DIR");
+    println!("cargo:rerun-if-env-changed=CUGRAPH_RS_SKIP_STALENESS_CHECK");
+    println!("cargo:rerun-if-env-changed=CUGRAPH_RS_ENFORCE_STALENESS_CHECK");
+    println!("cargo:rerun-if-env-changed=CUGRAPH_ENFORCE_STALENESS_CHECK");
     println!("cargo:rerun-if-env-changed=LD_LIBRARY_PATH");
     println!("cargo:rerun-if-env-changed=CMAKE_CUDA_ARCHITECTURES");
     println!("cargo:rerun-if-changed=wrapper.h");

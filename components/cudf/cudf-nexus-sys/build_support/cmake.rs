@@ -134,6 +134,7 @@ pub(crate) fn locate_prebuilt_libcudf(install_dir: Option<&Path>, build_dir: Opt
 /// Return the install prefix for a libcudf shared library in the conventional
 /// `<prefix>/lib{,64}/libcudf.so` layout. A C++ build-tree library has no
 /// install prefix and returns `None`.
+#[allow(dead_code)]
 pub(crate) fn installed_prefix_for_libcudf(library_path: &Path) -> Option<&Path> {
     let library_dir = library_path.parent()?;
     matches!(library_dir.file_name().and_then(|name| name.to_str()), Some("lib" | "lib64"))
@@ -395,21 +396,26 @@ pub(crate) fn verify_primary_shim_identity(primary_root: &Path, runtime_lib: &Pa
     Ok(())
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct StalenessReport {
+    pub(crate) total_newer: usize,
+    pub(crate) libcudf_so: PathBuf,
+    pub(crate) newest_path: PathBuf,
+}
+
 /// Warn (via `cargo:warning=`) when libcudf C++ sources are newer than the
 /// selected libcudf binary. `CUDF_RS_SKIP_STALENESS_CHECK=1` only suppresses
 /// the warning; it remains a tracked native fingerprint input.
-pub(crate) fn check_libcudf_staleness(manifest_dir: &Path) {
+pub(crate) fn check_libcudf_staleness(manifest_dir: &Path) -> Option<StalenessReport> {
     if env::var_os("CUDF_RS_SKIP_STALENESS_CHECK").is_some() {
-        return;
+        return None;
     }
 
     let install_dir = env::var_os("CUDF_INSTALL_DIR").map(PathBuf::from);
     let build_dir = env::var_os("CUDF_CPP_BUILD_DIR").map(PathBuf::from);
-    let Some(libcudf_so) = locate_prebuilt_libcudf(install_dir.as_deref(), build_dir.as_deref()) else {
-        return;
-    };
-    let Ok(libcudf_meta) = fs::metadata(&libcudf_so) else { return };
-    let Ok(libcudf_mtime) = libcudf_meta.modified() else { return };
+    let libcudf_so = locate_prebuilt_libcudf(install_dir.as_deref(), build_dir.as_deref())?;
+    let Ok(libcudf_meta) = fs::metadata(&libcudf_so) else { return None };
+    let Ok(libcudf_mtime) = libcudf_meta.modified() else { return None };
 
     // cudf-sys lives at <repo>/cudf-nexus-sys, libcudf submodule at <repo>/cudf.
     let cudf_cpp = manifest_dir.join("../cudf/cpp");
@@ -419,7 +425,7 @@ pub(crate) fn check_libcudf_staleness(manifest_dir: &Path) {
     let mut total_newer = 0usize;
     for dir in &scan_dirs {
         if !dir.is_dir() {
-            return;
+            return None;
         }
         let (dir_newest, count) = find_newest_source(dir, libcudf_mtime);
         total_newer += count;
@@ -431,18 +437,42 @@ pub(crate) fn check_libcudf_staleness(manifest_dir: &Path) {
     }
 
     if total_newer == 0 {
-        return;
+        return None;
     }
 
-    let display_path = newest.expect("a newer libcudf source requires a newest source path").0.display().to_string();
-    let rebuild_command = match installed_prefix_for_libcudf(&libcudf_so) {
-        Some(install_prefix) => format!("`INSTALL_PREFIX={} ./build.sh libcudf`", install_prefix.display()),
-        None => "`./build.sh libcudf -n`".to_owned(),
-    };
+    let newest_path = newest.expect("a newer libcudf source requires a newest source path").0;
+    let display_path = newest_path.display().to_string();
     println!(
-        "cargo:warning=libcudf appears stale: {total_newer} source file(s) under cudf/cpp/{{src,include}} are newer than {}. In cudf/, run {rebuild_command} to rebuild the selected libcudf. (newest: {}) Set CUDF_RS_SKIP_STALENESS_CHECK=1 to silence.",
+        "cargo:warning=libcudf appears stale: {total_newer} source file(s) under cudf/cpp/{{src,include}} are newer than {}. Run `bash scripts/build/build_libcudf.sh` to rebuild libcudf. (newest: {}) Set CUDF_RS_SKIP_STALENESS_CHECK=1 to silence.",
         libcudf_so.display(),
         display_path,
+    );
+
+    if env::var_os("CUDF_RS_ENFORCE_STALENESS_CHECK").is_some() || env::var_os("CUDF_ENFORCE_STALENESS_CHECK").is_some()
+    {
+        panic!(
+            "\n{}\n[ERROR] libcudf is stale: {total_newer} source file(s) under cudf/cpp/{{src,include}} are newer than {}.\n\
+             Run `bash scripts/build/build_libcudf.sh` to rebuild libcudf, or set CUDF_RS_SKIP_STALENESS_CHECK=1 to silence.\n{}\n",
+            "=".repeat(80),
+            libcudf_so.display(),
+            "=".repeat(80),
+        );
+    }
+
+    Some(StalenessReport { total_newer, libcudf_so, newest_path })
+}
+
+pub(crate) fn emit_stale_build_diagnostic(report: &StalenessReport) {
+    eprintln!(
+        "\n{}\n[ERROR] cudf-nexus-sys native build failed and native libcudf appears stale!\n\
+         {count} source file(s) under cudf/cpp/{{src,include}} are newer than {lib}.\n\
+         (Newest source: {newest})\n\
+         👉 Fix: Run `bash scripts/build/build_libcudf.sh` from the repository root.\n{}\n",
+        "=".repeat(80),
+        "=".repeat(80),
+        count = report.total_newer,
+        lib = report.libcudf_so.display(),
+        newest = report.newest_path.display(),
     );
 }
 
