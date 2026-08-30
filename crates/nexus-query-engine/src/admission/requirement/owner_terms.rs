@@ -1004,7 +1004,7 @@ pub(crate) fn generic_gpu_resident_owner_terms(
     let rows = query_plan_hard_row_upper_bound(plan).ok_or_else(|| {
         owner_term_error("gpu_resident_row_bound_unavailable", Some(OwnerTermRole::RetainedOutput), None)
     })?;
-    let output_evidence = PlanColumnEvidenceAnalysis::for_plan(plan, &HashMap::new()).root(plan);
+    let output_evidence = PlanColumnEvidenceAnalysis::for_plan(plan, &HashMap::new())?.root(plan);
     let output_bytes = bounded_consumer_frame_bytes_with_evidence(rows, plan.output_schema(), &output_evidence)
         .map_err(|error| {
             owner_term_error("gpu_resident_output_bytes_unavailable", Some(OwnerTermRole::RetainedOutput), None)

@@ -392,7 +392,7 @@ async fn native_host_resolves_lakehouse_metadata_before_admission_context() {
         "datafusion_nexus.native_exec.execute",
         "metadata resolution must complete before the real admission context reaches the intentionally unsupported read"
     );
-    assert_eq!(native.fact_value("native_operation"), Some("nexus_query_engine.local_parquet_chunk.read"));
+    assert_eq!(native.fact_value("native_operation"), Some("nexus_query_engine.source_metadata.object_store_footer"));
     assert!(get_calls.load(Ordering::Relaxed) > 0, "footer metadata must resolve before context acquisition");
     remove_fixture(dir);
 }
@@ -489,7 +489,7 @@ async fn native_composed_resolves_consumer_and_producer_metadata_before_admissio
         "datafusion_nexus.native_gpu_producer.execute_gpu",
         "consumer and producer metadata must resolve before their real admission contexts reach the intentionally unsupported read"
     );
-    assert_eq!(native.fact_value("native_operation"), Some("nexus_query_engine.local_parquet_chunk.read"));
+    assert_eq!(native.fact_value("native_operation"), Some("nexus_query_engine.source_metadata.object_store_footer"));
     assert!(consumer_gets.load(Ordering::Relaxed) > 0, "consumer footer metadata must resolve before admission");
     assert!(producer_gets.load(Ordering::Relaxed) > 0, "producer footer metadata must resolve before admission");
     remove_fixture(dir);

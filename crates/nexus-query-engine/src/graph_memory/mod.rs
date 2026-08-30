@@ -20,7 +20,6 @@ pub(crate) use evidence::{
 };
 #[cfg(feature = "cugraph")]
 pub(crate) use model::bounded_similarity_pair_cardinality_for_plan;
-pub(crate) use model::query_plan_node_hard_row_upper_bound;
 #[cfg(feature = "cugraph")]
 pub(crate) use model::with_graph_construction_workspace_bounds_from_owner;
 pub use model::{
@@ -40,6 +39,7 @@ pub(crate) use model::{
 pub(crate) use model::{
     graph_construction_workspace_bounds_from_owner, graph_construction_workspace_bounds_from_owner_query,
 };
+pub(crate) use model::{query_plan_node_hard_row_upper_bound, query_plan_node_hard_row_upper_bound_with_resident_rows};
 
 #[cfg(test)]
 use crate::{

@@ -571,6 +571,49 @@ impl Error {
         error.with_source(source)
     }
 
+    pub(crate) fn from_native_with_blocking_diagnostics(
+        operation: &'static str,
+        message: impl Into<String>,
+        source: nexus_query_engine::error::QueryError,
+    ) -> Self {
+        const CLIENT_FACTS: &[&str] = &[
+            "stage",
+            "phase",
+            "schedule_reason",
+            "sort_rejection_reason",
+            "reason",
+            "occurrence_id",
+            "node_id",
+            "input_node_id",
+            "column",
+            "left_rows",
+            "right_rows",
+            "output_rows",
+            "input_row_multiplicity",
+            "producer_row_count_upper_bound",
+            "consumer_row_count_upper_bound",
+            "max_compatible_managed_capacity_bytes",
+            "minimum_compatible_required_floor_bytes",
+            "minimum_compatible_dominant_owner",
+            "minimum_compatible_dominant_owner_role",
+            "minimum_compatible_dominant_owner_bytes",
+            "minimum_compatible_dominant_owner_occurrence",
+        ];
+        let mut message = message.into();
+        message.push_str(": ");
+        message.push_str(source.message());
+        let facts = CLIENT_FACTS
+            .iter()
+            .filter_map(|key| source.fact_value(key).map(|value| format!("{key}={value}")))
+            .collect::<Vec<_>>();
+        if !facts.is_empty() {
+            message.push_str(" [");
+            message.push_str(&facts.join(", "));
+            message.push(']');
+        }
+        Self::from_native(operation, message, source)
+    }
+
     #[cfg(feature = "test-support")]
     #[doc(hidden)]
     pub fn from_native_for_test(
@@ -1061,6 +1104,65 @@ mod tests {
         }
         assert!(!rendered.contains("private-table"), "{rendered}");
         assert!(!rendered.contains("/private/customer"), "{rendered}");
+    }
+
+    #[test]
+    fn blocking_native_diagnostics_reach_display_without_unrelated_facts() {
+        let native = nexus_query_engine::error::QueryError::new(
+            nexus_query_engine::error::QueryErrorCode::UnsupportedPlanShape,
+            "nexus_query_engine.admission.composed_consumer",
+            "a composed graph attempt lacks a complete ordered memory schedule",
+        )
+        .with_fact("schedule_reason", "consumer_local_source_rows_unavailable")
+        .with_fact("stage", "prepared_composed_admission")
+        .with_fact("node_id", 17)
+        .with_fact("path", "/private/customer.parquet")
+        .with_fact("literal", "secret");
+        let adapter = Error::from_native_with_blocking_diagnostics(
+            "datafusion_nexus.native_composed.admission_proof",
+            "failed to derive the complete engine-owned composed admission bound",
+            native,
+        );
+        let display = adapter.to_string();
+
+        assert!(display.contains("a composed graph attempt lacks a complete ordered memory schedule"));
+        assert!(display.contains("schedule_reason=consumer_local_source_rows_unavailable"));
+        assert!(display.contains("stage=prepared_composed_admission"));
+        assert!(display.contains("node_id=17"));
+        assert!(!display.contains("/private/customer.parquet"));
+        assert!(!display.contains("secret"));
+        assert_eq!(adapter.fact_value("path"), Some("/private/customer.parquet"));
+        assert!(DataFusionError::from(adapter).to_string().contains("stage=prepared_composed_admission"));
+
+        let native = nexus_query_engine::error::QueryError::new(
+            nexus_query_engine::error::QueryErrorCode::ServiceOverloaded,
+            "nexus_query_engine.query_service.admission",
+            "the complete requirement exceeds every compatible device capacity",
+        )
+        .with_fact("reason", "impossible_requirement")
+        .with_fact("stage", "ticket_admission")
+        .with_fact("minimum_compatible_required_floor_bytes", 200)
+        .with_fact("max_compatible_managed_capacity_bytes", 100)
+        .with_fact("minimum_compatible_dominant_owner", "consumer")
+        .with_fact("minimum_compatible_dominant_owner_role", "consumer_output")
+        .with_fact("minimum_compatible_dominant_owner_bytes", 150);
+        let adapter = Error::from_native_with_blocking_diagnostics(
+            "datafusion_nexus.native_exec.context",
+            "failed to acquire backend query-service nexus native execution context",
+            native,
+        );
+        assert_eq!(adapter.fact_value("native_code"), Some("service_overloaded"));
+        let display = DataFusionError::from(adapter).to_string();
+        for fact in [
+            "reason=impossible_requirement",
+            "minimum_compatible_required_floor_bytes=200",
+            "max_compatible_managed_capacity_bytes=100",
+            "minimum_compatible_dominant_owner=consumer",
+            "minimum_compatible_dominant_owner_role=consumer_output",
+            "minimum_compatible_dominant_owner_bytes=150",
+        ] {
+            assert!(display.contains(fact), "{display}");
+        }
     }
 
     #[test]

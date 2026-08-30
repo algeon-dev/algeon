@@ -318,7 +318,7 @@ impl AttemptReservationSchedule {
         &self.consumer_dominated_term_ids
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-hooks"))]
     pub(crate) fn consumer_peak_term_groups(&self) -> &[Vec<OwnerTermId>] {
         &self.consumer_peak_term_groups
     }

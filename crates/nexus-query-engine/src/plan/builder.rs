@@ -213,7 +213,8 @@ impl QueryPlanBuilder {
     }
 
     /// Finishes the plan with a host Arrow materialization sink whose external
-    /// schema may differ from the executable root schema by field names.
+    /// field names, nullability, and metadata may differ from the executable
+    /// root schema. Field count, order, and Arrow types remain exact.
     pub fn finish_with_host_sink_schema(self, root: NodeId, schema: SchemaRef) -> QueryPlan {
         self.finish(root, ResultSink::HostArrow { input: root, schema })
     }

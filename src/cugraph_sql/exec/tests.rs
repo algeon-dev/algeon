@@ -511,7 +511,7 @@ fn production_string_logical_proof(
     .expect("string logical mapping must materialize between its producers and graph")
 }
 
-fn production_required_floor_bytes(proof: QueryPlanCapabilityProof) -> (u64, u64) {
+fn production_required_floor_bytes(proof: QueryPlanCapabilityProof) -> (u64, u64, u64) {
     let backend = test_gpu_backend();
     let error = backend
         .backend()
@@ -530,7 +530,11 @@ fn production_required_floor_bytes(proof: QueryPlanCapabilityProof) -> (u64, u64
             .unwrap_or_else(|_| panic!("production admission fact '{key}' must be u64"))
     };
     assert_eq!(parse_fact("max_compatible_managed_capacity_bytes"), 256 * 1024 * 1024);
-    (parse_fact("minimum_compatible_required_floor_bytes"), parse_fact("minimum_compatible_dominant_owner_bytes"))
+    (
+        parse_fact("minimum_compatible_required_floor_bytes"),
+        parse_fact("minimum_compatible_dominant_owner_bytes"),
+        parse_fact("minimum_compatible_owner_term_count"),
+    )
 }
 
 fn sorted_native_edge_source(row_group_rows: Vec<u64>, config: &NexusNativeExecutionConfig) -> Arc<dyn ExecutionPlan> {
@@ -1123,12 +1127,102 @@ fn string_pagerank_large_bound_prices_one_graph_after_both_endpoint_lookups() {
         &[2_300_000_000, 2_406_637_611],
     );
     let proof = production_string_logical_proof(&plan, &edge_plan, &[]);
-    let (required_floor, dominant_owner) = production_required_floor_bytes(proof);
+    let (required_floor, dominant_owner, _) = production_required_floor_bytes(proof);
     assert!(
         required_floor > 4_706_637_611 && required_floor < 1_u64 << 40,
         "production-shaped PageRank admission must remain below one TiB instead of exploding to EiB"
     );
     assert!(dominant_owner > 0 && dominant_owner < 1_u64 << 40);
+}
+
+#[test]
+fn string_jaccard_70_by_70_retires_shared_mapping_intermediates_before_the_final_sort() {
+    let rows = 70;
+    let spec = logical_string_spec(CugraphAlgorithm::Jaccard);
+    let pair_schema = Arc::new(Schema::new(vec![
+        Field::new("first", DataType::Utf8, false),
+        Field::new("second", DataType::Utf8, false),
+    ]));
+    let result_options = CugraphResultPlanOptions {
+        subsumed_top_k_sort: Some(SortSpec::new(vec![SortExpr::new(Expr::column("similarity"), true, false)])),
+        limit: Some(70),
+        ..Default::default()
+    };
+    let plan = cugraph_schema_query_plan(
+        &spec,
+        string_edge_schema(),
+        vec![Arc::clone(&pair_schema)],
+        &[Some(rows)],
+        &result_options,
+        false,
+        Some(rows),
+        None,
+    )
+    .expect("70-edge/70-pair logical string Jaccard plan must build");
+    let source_bounds = plan
+        .nodes()
+        .iter()
+        .filter_map(|node| match &node.kind {
+            PlanNode::Source(source) => match source.as_ref() {
+                nexus_query_engine::source::SourceNode::GpuResident(source) => {
+                    source.row_count_upper_bound.map(|bound| (source.input_name.as_str(), bound))
+                },
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    let side_input_name = cugraph_side_input_name(0);
+    assert!(source_bounds.contains(&(CUGRAPH_EDGE_INPUT_NAME, rows)));
+    assert!(source_bounds.contains(&(side_input_name.as_str(), rows)));
+
+    let edge_plan = production_string_parquet_plan(
+        "/tmp/production-string-jaccard-edges.parquet",
+        string_edge_schema(),
+        rows,
+        &[2_300_000_000, 2_406_637_611],
+    );
+    let pair_plan = production_string_parquet_plan(
+        "/tmp/production-string-jaccard-pairs.parquet",
+        pair_schema,
+        rows,
+        &[2_100_000_000, 2_200_000_000],
+    );
+    let proof = production_string_logical_proof(&plan, &edge_plan, &[pair_plan]);
+    let lifetimes = proof
+        .composed_consumer_owner_lifetimes_for_test(&plan)
+        .expect("the exact logical mapping scope must expose its structured schedule");
+    let lifetime =
+        |node_id, role| lifetimes.iter().find(|entry| entry.node_id == node_id && entry.role == role).copied().unwrap();
+    let codebook = plan.nodes().iter().find(|node| matches!(node.kind, PlanNode::Window(_))).unwrap();
+    let graph = plan.nodes().iter().find(|node| matches!(node.kind, PlanNode::GraphAlgorithm(_))).unwrap();
+    let PlanNode::GraphAlgorithm(graph_node) = &graph.kind else { unreachable!() };
+    let final_sort = plan.node(plan.root_id()).unwrap();
+    let PlanNode::Sort(sort) = &final_sort.kind else { panic!("the fixture must end after decode with a sort") };
+    let pair = lifetime(graph_node.inputs[1], "consumer_output");
+    let graph_output = lifetime(graph.id, "retained_output");
+    let graph_execution = lifetime(graph.id, "execution_workspace");
+    let codebook = lifetime(codebook.id, "consumer_output");
+    let decoded = lifetime(sort.input, "consumer_output");
+    let final_sort = lifetime(final_sort.id, "consumer_workspace");
+    assert_eq!(pair.last_group, graph_execution.first_group, "encoded pairs live through graph execution");
+    assert_eq!(pair.last_group, graph_output.first_group);
+    assert_eq!(codebook.last_group, decoded.first_group, "the shared codebook lives through the final decode join");
+    assert!(codebook.last_group < final_sort.first_group, "the codebook must retire before the final sort workspace");
+    assert_eq!(decoded.last_group, final_sort.first_group);
+    assert_eq!((pair.bytes, pair.first_group, pair.last_group), (1_760, 9, 11));
+    assert_eq!((codebook.bytes, codebook.first_group, codebook.last_group), (9_006_642_739, 5, 15));
+    assert_eq!((decoded.bytes, decoded.first_group, decoded.last_group), (18_013_277_878, 15, 16));
+    assert_eq!((final_sort.bytes, final_sort.first_group, final_sort.last_group), (36_026_555_756, 16, 16));
+    let (required_floor, dominant_owner, owner_term_count) = production_required_floor_bytes(proof);
+
+    assert_eq!(owner_term_count, 40, "the semantic fixture includes both pair encodes and both result sorts");
+    assert_eq!(dominant_owner, final_sort.bytes);
+    assert!(
+        required_floor < 101_492_260_864,
+        "last-use retirement must keep the 70/70 floor below the production managed capacity: {required_floor}",
+    );
+    assert!(dominant_owner < required_floor);
 }
 
 #[test]
@@ -1237,7 +1331,7 @@ fn string_bfs_maps_edge_relation_predicates_and_both_result_vertices() {
         ),
     ];
     let proof = production_string_logical_proof(&admission_plan, &edge_plan, &predicate_plans);
-    let (required_floor, dominant_owner) = production_required_floor_bytes(proof);
+    let (required_floor, dominant_owner, _) = production_required_floor_bytes(proof);
     assert!(
         required_floor > 4_706_637_611 && required_floor < 1_u64 << 40,
         "production-shaped BFS admission must remain below one TiB instead of exploding to EiB"

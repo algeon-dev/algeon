@@ -5,8 +5,7 @@ use arrow::datatypes::{Field, SchemaRef};
 use super::{source::local_parquet_execution_frame_schema, *};
 use crate::{
     datatypes::{
-        arrow_data_types_match_except_list_child_names, arrow_fields_match_except_name,
-        is_supported_arrow_implicit_cast, is_supported_arrow_type,
+        arrow_data_types_match_except_list_child_names, is_supported_arrow_implicit_cast, is_supported_arrow_type,
     },
     plan::{QueryNode, UnionNode},
     source::validate_literal_batch_source,
@@ -227,20 +226,42 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
                 .with_fact("root_node", sink_input.id)
                 .with_fact("available_columns", comma_separated(sink_available)));
             }
-            if !fields_match_except_name(sink_field.as_ref(), root_field.as_ref()) {
+            if sink_field.data_type() != root_field.data_type() {
                 return Err(QueryError::new(
                     QueryErrorCode::InvalidPlan,
                     "nexus_query_engine.plan.validate_sink",
-                    "host sink schema field must match the root node output by ordinal except for field name",
+                    "host sink Arrow type must match the root node output by ordinal",
                 )
                 .with_fact("root_node", sink_input.id)
                 .with_fact("field_index", index)
                 .with_fact("sink_field", sink_field.name())
                 .with_fact("root_field", root_field.name())
                 .with_fact("sink_type", format!("{:?}", sink_field.data_type()))
-                .with_fact("root_type", format!("{:?}", root_field.data_type()))
+                .with_fact("root_type", format!("{:?}", root_field.data_type())));
+            }
+            if sink_field.is_nullable() != root_field.is_nullable() {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.plan.validate_sink",
+                    "host sink nullability must match the root node output by ordinal",
+                )
+                .with_fact("root_node", sink_input.id)
+                .with_fact("field_index", index)
+                .with_fact("sink_field", sink_field.name())
+                .with_fact("root_field", root_field.name())
                 .with_fact("sink_nullable", sink_field.is_nullable())
-                .with_fact("root_nullable", root_field.is_nullable())
+                .with_fact("root_nullable", root_field.is_nullable()));
+            }
+            if sink_field.metadata() != root_field.metadata() {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.plan.validate_sink",
+                    "host sink field metadata must match the root node output by ordinal",
+                )
+                .with_fact("root_node", sink_input.id)
+                .with_fact("field_index", index)
+                .with_fact("sink_field", sink_field.name())
+                .with_fact("root_field", root_field.name())
                 .with_fact("sink_metadata", format!("{:?}", sink_field.metadata()))
                 .with_fact("root_metadata", format!("{:?}", root_field.metadata())));
             }
@@ -248,10 +269,6 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
     }
 
     Ok(())
-}
-
-fn fields_match_except_name(sink_field: &Field, root_field: &Field) -> bool {
-    arrow_fields_match_except_name(sink_field, root_field)
 }
 
 fn validate_reachability(plan: &QueryPlan) -> Result<()> {

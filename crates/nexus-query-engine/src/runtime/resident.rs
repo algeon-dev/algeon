@@ -11,7 +11,10 @@ use std::{
     },
 };
 
-use arrow::{datatypes::SchemaRef, record_batch::RecordBatch};
+use arrow::{
+    datatypes::SchemaRef,
+    record_batch::{RecordBatch, RecordBatchOptions},
+};
 use cudf::{
     DataFrame, DataFrameFilteredJoin, DataFrameHashJoin, ExecutionPlacement,
     frame::dataframe::{
@@ -319,6 +322,7 @@ pub(crate) struct GpuLocalParquetCachedResult {
 /// resident result until the final chunk is materialized or the cursor drops.
 pub struct GpuHostBatchCursor {
     cursor: CudfHostBatchCursor,
+    output_schema: SchemaRef,
     cancellation: ExecutionCancellation,
     _runtime: Arc<cudf::Runtime>,
     _device_placement: DevicePlacement,
@@ -392,13 +396,14 @@ impl GpuHostBatchCursor {
     /// reservation is acquired and immediately before the device-to-host copy.
     pub fn materialize_prepared_batch(&mut self, prepared: GpuPreparedHostBatch) -> Result<RecordBatch> {
         self.cancellation.check("nexus_query_engine.host_batch_cursor.materialize")?;
-        self.cursor.materialize_prepared_batch(prepared.prepared).map_err(|error| {
+        let batch = self.cursor.materialize_prepared_batch(prepared.prepared).map_err(|error| {
             QueryError::from_cudf(
                 "nexus_query_engine.host_batch_cursor.materialize",
                 "failed to materialize bounded native output chunk to host Arrow",
                 error,
             )
-        })
+        })?;
+        bind_host_output_schema(batch, &self.output_schema)
     }
 
     /// Materialize the next bounded host chunk. Cancellation is checked before
@@ -622,6 +627,28 @@ impl GpuResultHandle {
         cancellation: ExecutionCancellation,
         config: HostBatchCursorConfig,
     ) -> Result<GpuHostBatchCursor> {
+        let output_schema = Arc::clone(self.schema());
+        self.into_host_batch_cursor_with_bound_schema(output_schema, cancellation, config)
+    }
+
+    /// Consume this result into a bounded host materializer using an external
+    /// schema whose field names, nullability, and metadata are bound by ordinal.
+    pub fn into_host_batch_cursor_with_host_schema(
+        self,
+        output_schema: SchemaRef,
+        cancellation: ExecutionCancellation,
+        config: HostBatchCursorConfig,
+    ) -> Result<GpuHostBatchCursor> {
+        validate_host_output_schema_binding(self.schema(), &output_schema)?;
+        self.into_host_batch_cursor_with_bound_schema(output_schema, cancellation, config)
+    }
+
+    fn into_host_batch_cursor_with_bound_schema(
+        self,
+        output_schema: SchemaRef,
+        cancellation: ExecutionCancellation,
+        config: HostBatchCursorConfig,
+    ) -> Result<GpuHostBatchCursor> {
         let Self {
             batch,
             runtime,
@@ -640,6 +667,7 @@ impl GpuResultHandle {
         })?;
         Ok(GpuHostBatchCursor {
             cursor,
+            output_schema,
             cancellation,
             _runtime: runtime,
             _device_placement: device_placement,
@@ -648,6 +676,52 @@ impl GpuResultHandle {
             _graph_residency: graph_residency,
         })
     }
+}
+
+fn validate_host_output_schema_binding(internal_schema: &SchemaRef, output_schema: &SchemaRef) -> Result<()> {
+    const OPERATION: &str = "nexus_query_engine.host_output_schema_binding";
+    if internal_schema.fields().len() != output_schema.fields().len() {
+        return Err(QueryError::new(
+            crate::error::QueryErrorCode::InvalidPlan,
+            OPERATION,
+            "internal executable schema and external host schema have different field counts",
+        )
+        .with_fact("reason", "host_output_field_count_mismatch")
+        .with_fact("internal_field_count", internal_schema.fields().len())
+        .with_fact("external_field_count", output_schema.fields().len()));
+    }
+
+    for (ordinal, (internal, external)) in
+        internal_schema.fields().iter().zip(output_schema.fields().iter()).enumerate()
+    {
+        if internal.data_type() != external.data_type() {
+            return Err(QueryError::new(
+                crate::error::QueryErrorCode::InvalidPlan,
+                OPERATION,
+                "internal executable field and external host field have different Arrow types",
+            )
+            .with_fact("reason", "host_output_field_type_mismatch")
+            .with_fact("ordinal", ordinal)
+            .with_fact("internal_field", internal.name())
+            .with_fact("external_field", external.name())
+            .with_fact("internal_arrow_type", format!("{:?}", internal.data_type()))
+            .with_fact("external_arrow_type", format!("{:?}", external.data_type())));
+        }
+    }
+    Ok(())
+}
+
+fn bind_host_output_schema(batch: RecordBatch, output_schema: &SchemaRef) -> Result<RecordBatch> {
+    let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
+    RecordBatch::try_new_with_options(Arc::clone(output_schema), batch.columns().to_vec(), &options).map_err(|error| {
+        QueryError::new(
+            crate::error::QueryErrorCode::Internal,
+            "nexus_query_engine.host_output_schema_binding",
+            "failed to apply the validated external host schema to a materialized native output batch",
+        )
+        .with_fact("reason", "host_output_schema_projection_failed")
+        .with_source(error)
+    })
 }
 
 impl GpuLocalParquetCachedResult {
@@ -927,10 +1001,10 @@ fn source_column_memory_identities(frame: &DataFrame) -> HashSet<ColumnMemoryIde
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{collections::HashMap, sync::Arc};
 
     use arrow::{
-        array::{Array, Int32Array, StringArray},
+        array::{Array, Int32Array, StringArray, UInt64Array},
         datatypes::{DataType, Field, Schema},
         record_batch::RecordBatch,
     };
@@ -1043,6 +1117,78 @@ mod tests {
         let error = cursor.next_batch().expect_err("cancellation must stop the next host chunk");
         assert_eq!(error.code(), crate::error::QueryErrorCode::Cancelled);
         assert_eq!(cursor.remaining_rows(), 2);
+    }
+
+    #[test]
+    fn host_output_schema_binding_preserves_duplicate_names_metadata_and_values() {
+        let runtime = Arc::new(cudf::Runtime::new().unwrap());
+        let context = ExecutionContext::builder().with_shared_runtime(Arc::clone(&runtime)).build().unwrap();
+        let internal_schema = Arc::new(Schema::new(vec![
+            Field::new("left_first", DataType::Utf8, true),
+            Field::new("right_first", DataType::Utf8, true),
+            Field::new("shared_targets_internal", DataType::UInt64, false),
+        ]));
+        let input = RecordBatch::try_new(
+            Arc::clone(&internal_schema),
+            vec![
+                Arc::new(StringArray::from(vec![Some("a"), None])) as Arc<dyn Array>,
+                Arc::new(StringArray::from(vec![Some("b"), Some("c")])) as Arc<dyn Array>,
+                Arc::new(UInt64Array::from(vec![2, 1])) as Arc<dyn Array>,
+            ],
+        )
+        .unwrap();
+        let field_metadata = HashMap::from([("source".to_string(), "datafusion".to_string())]);
+        let output_schema = Arc::new(
+            Schema::new(vec![
+                Field::new("first", DataType::Utf8, true).with_metadata(field_metadata),
+                Field::new("first", DataType::Utf8, false),
+                Field::new("shared_targets", DataType::UInt64, true),
+            ])
+            .with_metadata(HashMap::from([("query".to_string(), "self_join".to_string())])),
+        );
+        let frame = GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &input).unwrap());
+        let handle = GpuResultHandle::new(&context, frame, internal_schema).unwrap();
+        let mut cursor = handle
+            .into_host_batch_cursor_with_host_schema(
+                Arc::clone(&output_schema),
+                ExecutionCancellation::new(),
+                HostBatchCursorConfig::default(),
+            )
+            .unwrap();
+
+        let output = cursor.next_batch().unwrap().unwrap();
+        assert_eq!(output.schema(), output_schema);
+        assert_eq!(output.column(0).as_any().downcast_ref::<StringArray>().unwrap().value(0), "a");
+        assert!(output.column(0).as_any().downcast_ref::<StringArray>().unwrap().is_null(1));
+        assert_eq!(output.column(1).as_any().downcast_ref::<StringArray>().unwrap().value(1), "c");
+        assert_eq!(output.column(2).as_any().downcast_ref::<UInt64Array>().unwrap().values(), &[2, 1]);
+    }
+
+    #[test]
+    fn host_output_schema_binding_rejects_count_and_type_mismatches_with_ordinal_facts() {
+        let internal = Arc::new(Schema::new(vec![
+            Field::new("left_first", DataType::Utf8, true),
+            Field::new("shared_targets_internal", DataType::UInt64, false),
+        ]));
+        let short = Arc::new(Schema::new(vec![Field::new("first", DataType::Utf8, true)]));
+        let count_error = validate_host_output_schema_binding(&internal, &short).unwrap_err();
+        assert_eq!(count_error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(count_error.fact_value("reason"), Some("host_output_field_count_mismatch"));
+        assert_eq!(count_error.fact_value("internal_field_count"), Some("2"));
+        assert_eq!(count_error.fact_value("external_field_count"), Some("1"));
+
+        let reordered = Arc::new(Schema::new(vec![
+            Field::new("shared_targets", DataType::UInt64, false),
+            Field::new("first", DataType::Utf8, true),
+        ]));
+        let type_error = validate_host_output_schema_binding(&internal, &reordered).unwrap_err();
+        assert_eq!(type_error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(type_error.fact_value("reason"), Some("host_output_field_type_mismatch"));
+        assert_eq!(type_error.fact_value("ordinal"), Some("0"));
+        assert_eq!(type_error.fact_value("internal_field"), Some("left_first"));
+        assert_eq!(type_error.fact_value("external_field"), Some("shared_targets"));
+        assert_eq!(type_error.fact_value("internal_arrow_type"), Some("Utf8"));
+        assert_eq!(type_error.fact_value("external_arrow_type"), Some("UInt64"));
     }
 
     #[test]

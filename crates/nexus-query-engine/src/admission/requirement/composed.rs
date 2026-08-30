@@ -71,7 +71,15 @@ pub(crate) fn composed_consumer_bound_with_peak_terms(
         .iter()
         .map(|output| (output.occurrence_id.clone(), output.column_evidence.clone()))
         .collect::<HashMap<_, _>>();
-    let column_evidence = PlanColumnEvidenceAnalysis::for_plan(consumer_plan, &resident_outputs);
+    let resident_row_upper_bounds = producer_outputs
+        .iter()
+        .map(|output| (output.occurrence_id.clone(), output.row_count_upper_bound))
+        .collect::<HashMap<_, _>>();
+    let column_evidence = PlanColumnEvidenceAnalysis::for_plan_with_resident_rows(
+        consumer_plan,
+        &resident_outputs,
+        &resident_row_upper_bounds,
+    )?;
     let mut used_occurrences = HashSet::with_capacity(outputs.len());
     let mut memo = HashMap::new();
     let root = consumer_plan.root_id();
@@ -131,27 +139,45 @@ pub(crate) fn memoized_graph_consumer_peak_groups(
     memo: &HashMap<NodeId, ComposedConsumerBranchBound>,
     owner_terms: &[AllocationOwnerTerm],
 ) -> Result<Vec<Vec<OwnerTermId>>> {
-    fn visit(plan: &QueryPlan, node_id: NodeId, seen: &mut HashSet<NodeId>, order: &mut Vec<NodeId>) -> Result<()> {
-        if !seen.insert(node_id) {
+    fn visit(
+        plan: &QueryPlan,
+        node_id: NodeId,
+        visiting: &mut HashSet<NodeId>,
+        seen: &mut HashSet<NodeId>,
+        order: &mut Vec<NodeId>,
+    ) -> Result<()> {
+        if seen.contains(&node_id) {
             return Ok(());
+        }
+        if !visiting.insert(node_id) {
+            return Err(composed_schedule_error("consumer_plan_cycle", None).with_fact("node_id", node_id));
         }
         let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
         for input in node.input_ids() {
-            visit(plan, *input, seen, order)?;
+            visit(plan, *input, visiting, seen, order)?;
         }
+        visiting.remove(&node_id);
+        seen.insert(node_id);
         order.push(node_id);
         Ok(())
     }
 
     let mut order = Vec::new();
-    visit(plan, plan.root_id(), &mut HashSet::new(), &mut order)?;
+    visit(plan, plan.root_id(), &mut HashSet::new(), &mut HashSet::new(), &mut order)?;
+    let mut remaining_consumers = HashMap::<NodeId, usize>::new();
+    for node_id in &order {
+        let node = plan.node(*node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
+        for input in node.input_ids() {
+            *remaining_consumers.entry(*input).or_default() += 1;
+        }
+    }
     let scope = canonical_execution_scope_fingerprint(plan);
     let mut live = Vec::<OwnerTermId>::new();
-    let mut live_set = HashSet::<OwnerTermId>::new();
+    let mut live_references = HashMap::<OwnerTermId, usize>::new();
     let mut groups = Vec::new();
     for node_id in order {
         let Some(bound) = memo.get(&node_id) else {
-            continue;
+            return Err(composed_schedule_error("consumer_bound_missing", None).with_fact("node_id", node_id));
         };
         let node_terms = owner_terms
             .iter()
@@ -190,7 +216,7 @@ pub(crate) fn memoized_graph_consumer_peak_groups(
                     .collect::<Vec<_>>(),
                 node_terms
                     .iter()
-                    .filter(|term| term.is_execution_phase_term())
+                    .filter(|term| term.is_execution_phase_term() || term.is_retained_output())
                     .map(|term| term.id.clone())
                     .collect::<Vec<_>>(),
             ] {
@@ -206,8 +232,44 @@ pub(crate) fn memoized_graph_consumer_peak_groups(
             group.extend(node_terms.iter().map(|term| term.id.clone()));
             groups.push(group);
         }
+        let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
+        for input in node.input_ids() {
+            let Some(remaining) = remaining_consumers.get_mut(input) else {
+                return Err(composed_schedule_error("consumer_count_missing", None)
+                    .with_fact("node_id", node_id)
+                    .with_fact("input_node_id", input));
+            };
+            *remaining = remaining.checked_sub(1).ok_or_else(|| {
+                composed_schedule_error("consumer_count_underflow", None).with_fact("node_id", node_id)
+            })?;
+            if *remaining == 0
+                && let Some(input_bound) = memo.get(input)
+            {
+                for term_id in &input_bound.final_owned_term_ids {
+                    let Some(references) = live_references.get_mut(term_id) else {
+                        return Err(composed_schedule_error("consumer_live_term_missing", None)
+                            .with_fact("node_id", node_id)
+                            .with_fact("input_node_id", input)
+                            .with_fact("owner_role", term_id.role_label()));
+                    };
+                    *references = references.checked_sub(1).ok_or_else(|| {
+                        composed_schedule_error("consumer_live_term_reference_underflow", None)
+                            .with_fact("node_id", node_id)
+                            .with_fact("input_node_id", input)
+                    })?;
+                    if *references == 0 {
+                        live_references.remove(term_id);
+                        live.retain(|live_term| live_term != term_id);
+                    }
+                }
+            }
+        }
         for term_id in &bound.final_owned_term_ids {
-            if live_set.insert(term_id.clone()) {
+            let references = live_references.entry(term_id.clone()).or_default();
+            *references = references.checked_add(1).ok_or_else(|| {
+                composed_schedule_error("consumer_live_term_reference_overflow", None).with_fact("node_id", node_id)
+            })?;
+            if *references == 1 {
                 live.push(term_id.clone());
             }
         }
@@ -756,7 +818,7 @@ pub(crate) fn composed_consumer_graph_peak_bytes(
     column_evidence: &PlanColumnEvidenceAnalysis,
     memo: &mut HashMap<NodeId, ComposedConsumerBranchBound>,
 ) -> Result<ComposedConsumerBranchBound> {
-    let input = composed_consumer_branch_bound(
+    let mut input = composed_consumer_branch_bound(
         plan,
         graph.input,
         outputs,
@@ -765,6 +827,23 @@ pub(crate) fn composed_consumer_graph_peak_bytes(
         column_evidence,
         memo,
     )?;
+    for side_input in graph.inputs.iter().skip(1) {
+        let mut input_inventory = owner_terms.to_vec();
+        input_inventory.extend(input.owner_terms.iter().cloned());
+        let side = composed_consumer_branch_bound(
+            plan,
+            *side_input,
+            outputs,
+            used_occurrences,
+            &input_inventory,
+            column_evidence,
+            memo,
+        )?;
+        input.owner_terms.extend(side.owner_terms);
+        input.peak_owner_term_groups.extend(side.peak_owner_term_groups);
+        input.final_owned_term_ids.extend(side.final_owned_term_ids);
+        input.dominated_owner_term_ids.extend(side.dominated_owner_term_ids);
+    }
     let scope = canonical_execution_scope_fingerprint(plan);
     let graph_terms = owner_terms
         .iter()
@@ -782,7 +861,7 @@ pub(crate) fn composed_consumer_graph_peak_bytes(
         .collect::<Vec<_>>();
     let execution = graph_terms
         .iter()
-        .filter(|term| term.is_execution_phase_term())
+        .filter(|term| term.is_execution_phase_term() || term.is_retained_output())
         .map(|term| term.id.clone())
         .collect::<Vec<_>>();
     if construction.is_empty() || execution.is_empty() {
@@ -1467,13 +1546,23 @@ pub(crate) fn composed_consumer_join_peak_bytes(
     let key_metadata = build_keys
         .iter()
         .map(|key| hash_join_key_metadata(&build.schema, &build_column_evidence, build.rows, key.name()))
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Result<Vec<_>>>()
+        .map_err(|error| {
+            error.with_fact("node_id", node_id).with_fact("left_rows", left.rows).with_fact("right_rows", right.rows)
+        })?;
     for key in &join.spec.keys {
         let probe_key = match join.spec.build_side {
             JoinSide::Left => &key.right,
             JoinSide::Right => &key.left,
         };
-        hash_join_key_metadata(&probe.schema, &probe_column_evidence, probe.rows, probe_key.name())?;
+        hash_join_key_metadata(&probe.schema, &probe_column_evidence, probe.rows, probe_key.name()).map_err(
+            |error| {
+                error
+                    .with_fact("node_id", node_id)
+                    .with_fact("left_rows", left.rows)
+                    .with_fact("right_rows", right.rows)
+            },
+        )?;
     }
     let output_rows = match join.spec.join_type {
         JoinType::Inner if join.spec.has_at_most_one_match_per_bounded_row(JoinSide::Left) => left.rows,
@@ -1522,7 +1611,14 @@ pub(crate) fn composed_consumer_join_peak_bytes(
         .map_err(|_| composed_schedule_error("consumer_join_pair_indices_exceed_u64", None))?;
     let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
     let output_bytes =
-        bounded_consumer_frame_bytes_with_evidence(output_rows, node.output_schema(), &column_evidence.node(node_id))?;
+        bounded_consumer_frame_bytes_with_evidence(output_rows, node.output_schema(), &column_evidence.node(node_id))
+            .map_err(|error| {
+            error
+                .with_fact("node_id", node_id)
+                .with_fact("left_rows", left.rows)
+                .with_fact("right_rows", right.rows)
+                .with_fact("output_rows", output_rows)
+        })?;
     let hash_term = consumer_owner_term(
         node_id,
         OwnerTermRole::ConsumerHashTable,
@@ -1806,53 +1902,40 @@ pub(crate) fn cugraph_side_input_frame_upper_bound_bytes(plan: &QueryPlan) -> Re
 pub(crate) fn cugraph_side_input_columns(
     plan: &QueryPlan,
 ) -> Result<Vec<crate::exec::JoinOutputColumnUpperBoundInput>> {
-    let literal = match &plan.root_node().kind {
-        PlanNode::Source(source) => match source.as_ref() {
-            SourceNode::LiteralBatch(source) => Some(source),
-            _ => None,
-        },
-        _ => None,
-    };
+    let evidence = PlanColumnEvidenceAnalysis::for_plan(plan, &HashMap::new())?.root(plan);
     plan.output_schema()
         .fields()
         .iter()
-        .enumerate()
-        .map(|(index, field)| {
+        .map(|field| {
             if let Some(column) = fixed_width_consumer_output_column(field.data_type()) {
                 return Ok(column);
             }
-            let Some(literal) = literal else {
+            if !matches!(field.data_type(), DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View) {
+                return Err(composed_schedule_error("side_input_schema_unmodeled", None)
+                    .with_fact("phase", "side_input_frame")
+                    .with_fact("column", field.name())
+                    .with_fact("data_type", format!("{:?}", field.data_type())));
+            }
+            let Some(bound) = evidence.string_payload_bound(field.name()) else {
                 return Err(composed_schedule_error("side_input_schema_unmodeled", None)
                     .with_fact("phase", "side_input_frame")
                     .with_fact("column", field.name())
                     .with_fact("data_type", format!("{:?}", field.data_type())));
             };
-            let stats = literal.batches.iter().try_fold((0_u64, 0_u64), |acc, batch| {
-                let array = batch.column(index);
-                let mut lengths =
-                    (0..array.len()).filter(|row| !array.is_null(*row)).map(|row| match field.data_type() {
-                        DataType::Utf8 => {
-                            array.as_any().downcast_ref::<StringArray>().map(|array| array.value(row).len())
-                        },
-                        DataType::LargeUtf8 => {
-                            array.as_any().downcast_ref::<LargeStringArray>().map(|array| array.value(row).len())
-                        },
-                        DataType::Utf8View => {
-                            array.as_any().downcast_ref::<StringViewArray>().map(|array| array.value(row).len())
-                        },
-                        _ => None,
-                    });
-                lengths.try_fold(acc, |(max_len, total_bytes), length| {
-                    let length = u64::try_from(length?).ok()?;
-                    Some((max_len.max(length), total_bytes.checked_add(length)?))
-                })
-            });
-            let Some((max_len, total_bytes)) = stats else {
-                return Err(composed_schedule_error("side_input_literal_string_stats_unavailable", None)
+            let (Some(max_len), Some(total_bytes)) =
+                (bound.max_single_value_length_bytes, bound.total_payload_upper_bound_bytes)
+            else {
+                return Err(composed_schedule_error("side_input_string_payload_incomplete", None)
                     .with_fact("phase", "side_input_frame")
                     .with_fact("column", field.name())
                     .with_fact("data_type", format!("{:?}", field.data_type())));
             };
+            if bound.lineages.is_empty() {
+                return Err(composed_schedule_error("side_input_string_payload_lineage_missing", None)
+                    .with_fact("phase", "side_input_frame")
+                    .with_fact("column", field.name())
+                    .with_fact("data_type", format!("{:?}", field.data_type())));
+            }
             Ok(crate::exec::JoinOutputColumnUpperBoundInput {
                 data_type: field.data_type().clone(),
                 input_max_string_length_bytes: Some(max_len),

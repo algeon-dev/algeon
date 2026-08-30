@@ -381,10 +381,10 @@ pub(crate) fn composed_admission_capability_proof(
         })?;
     QueryPlanCapabilityProof::resolve_composed_graph_attempt(consumer_plan, consumer_proof, candidates).map_err(
         |error| {
-            DataFusionError::from(Error::from_native(
+            DataFusionError::from(Error::from_native_with_blocking_diagnostics(
                 "datafusion_nexus.native_composed.admission_proof",
                 "failed to derive the complete engine-owned composed admission bound",
-                error,
+                error.with_fact("stage", "prepared_composed_admission"),
             ))
         },
     )
@@ -745,21 +745,16 @@ impl ExecutionPlan for NexusNativeComposedExec {
                                 .with_fact("result_sink", "host_arrow"),
                             ));
                         };
-                        let handle = GpuResultHandle::new(&context, handle.into_gpu_frame(), output_schema).map_err(
-                            |error| {
-                                DataFusionError::from(native_query_runtime_error(
-                                    "datafusion_nexus.native_composed.host_batch_cursor",
-                                    "failed to bind deferred composed output to the DataFusion host schema",
-                                    error,
-                                ))
-                            },
-                        )?;
                         let cursor = handle
-                            .into_host_batch_cursor(context.cancellation().clone(), HostBatchCursorConfig::default())
+                            .into_host_batch_cursor_with_host_schema(
+                                output_schema,
+                                context.cancellation().clone(),
+                                HostBatchCursorConfig::default(),
+                            )
                             .map_err(|error| {
                                 DataFusionError::from(native_query_runtime_error(
                                     "datafusion_nexus.native_composed.host_batch_cursor",
-                                    "failed to create deferred composed host-output cursor",
+                                    "failed to bind and create deferred composed host-output cursor",
                                     error,
                                 ))
                             })?;
