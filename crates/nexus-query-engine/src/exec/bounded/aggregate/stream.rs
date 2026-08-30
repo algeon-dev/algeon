@@ -2,8 +2,8 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
     AggregateNode, BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream, BoundedPlan, CommittedPartial,
-    ExecutionContext, GpuDataFrame, MemoryControlPolicy, NodeId, QueryError, ResidentFrameStreamPayload,
-    ResidentGpuFrame, Result, SourceChunk, aggregate_spec_has_distinct,
+    CompiledIncrementalPartitionedMerge, ExecutionContext, GpuDataFrame, MemoryControlPolicy, NodeId, QueryError,
+    ResidentFrameStreamPayload, ResidentGpuFrame, Result, SourceChunk, aggregate_spec_has_distinct,
     aggregate_spec_has_floating_statistical_aggregate, aggregate_spec_has_median, aggregate_spec_requires_whole_input,
     attach_budget_token_failure_facts, execute_aggregate_with_budget, execute_bounded_generic_unary,
     execute_bounded_generic_unary_from_frame, execute_bounded_generic_union, execute_bounded_raw_source_chunk,
@@ -12,6 +12,7 @@ use super::{
     execute_partial_aggregate_with_budget, execution_budget_token_for_boundary, execution_overrides,
     materialize_bounded_join_leaf_local_parquet_source_stream, observe_device_memory_bytes,
     partial_aggregate_work_reservation_upper_bound_bytes, release_partials_reverse,
+    should_execute_incremental_partitioned_final_aggregate_merge,
     statistical_partial_aggregate_work_reservation_upper_bound_bytes,
     stream_bounded_join_leaf_local_parquet_source_chunks, unsupported_bounded_shape,
 };
@@ -93,17 +94,24 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
             );
         }
 
-        let mut partials = Vec::with_capacity(inputs.len());
+        let mut partials = CompiledStreamPartials::new(
+            execution,
+            node_id,
+            aggregate,
+            input_schema,
+            output_schema,
+            inputs.len(),
+            Some(inputs.num_rows()),
+        )?;
         while let Some(input) = inputs.next_yielded_frame(execution) {
             let mut input = match input {
                 Ok(input) => input,
                 Err(error) => {
-                    release_partials_reverse(partials);
                     return Err(error);
                 },
             };
             let input = input.take_for_release();
-            match execute_compiled_bounded_partial_aggregate_from_frame_with_retry(
+            let chunk_partials = match execute_compiled_bounded_partial_aggregate_from_frame_with_retry(
                 execution,
                 node_id,
                 aggregate,
@@ -111,33 +119,19 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_stream(
                 output_schema,
                 input,
             ) {
-                Ok(chunk_partials) => partials.extend(chunk_partials),
+                Ok(chunk_partials) => chunk_partials,
                 Err(error) => {
-                    release_partials_reverse(partials);
                     inputs.release_remaining_frames();
                     return Err(error);
                 },
+            };
+            if let Err(error) = partials.extend(execution, chunk_partials) {
+                inputs.release_remaining_frames();
+                return Err(error);
             }
         }
 
-        if partials.is_empty() {
-            return execute_compiled_bounded_aggregate_from_empty_input(
-                execution,
-                node_id,
-                aggregate,
-                input_schema,
-                output_schema,
-            );
-        }
-
-        execute_compiled_bounded_final_aggregate_merge(
-            execution,
-            node_id,
-            aggregate,
-            input_schema,
-            output_schema,
-            partials,
-        )
+        partials.finish(execution)
     })();
     inputs.release_producer(execution);
     result
@@ -173,8 +167,16 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_source_s
         );
     }
 
-    let mut partials = Vec::with_capacity(stream.chunk_count());
-    let stream_result = stream_bounded_join_leaf_local_parquet_source_chunks(execution, stream, |input, execution| {
+    let mut partials = CompiledStreamPartials::new(
+        execution,
+        node_id,
+        aggregate,
+        input_schema,
+        output_schema,
+        stream.chunk_count(),
+        None,
+    )?;
+    stream_bounded_join_leaf_local_parquet_source_chunks(execution, stream, |input, execution| {
         let chunk_partials = execute_compiled_bounded_partial_aggregate_from_frame_with_retry(
             execution,
             node_id,
@@ -183,25 +185,105 @@ pub(in crate::exec::bounded) fn execute_compiled_bounded_aggregate_from_source_s
             output_schema,
             input,
         )?;
-        partials.extend(chunk_partials);
-        Ok(())
-    });
-    if let Err(error) = stream_result {
-        release_partials_reverse(partials);
-        return Err(error);
-    }
+        partials.extend(execution, chunk_partials)
+    })?;
+    partials.finish(execution)
+}
 
-    if partials.is_empty() {
-        return execute_compiled_bounded_aggregate_from_empty_input(
-            execution,
+/// Partial-aggregate accumulator for one compiled aggregate stream.
+///
+/// Partitioned-merge shapes fold partials incrementally so retained state
+/// stays near the merged result; every other shape retains its partials for
+/// the whole-set final merge.
+enum CompiledStreamPartials<'a> {
+    Retained {
+        node_id: NodeId,
+        aggregate: &'a AggregateNode,
+        input_schema: &'a ArrowSchemaRef,
+        output_schema: &'a ArrowSchemaRef,
+        partials: Vec<CommittedPartial>,
+    },
+    Incremental(Box<CompiledIncrementalPartitionedMerge<'a>>),
+}
+
+impl<'a> CompiledStreamPartials<'a> {
+    fn new(
+        execution: &BoundedExecutionAttempt<'_>,
+        node_id: NodeId,
+        aggregate: &'a AggregateNode,
+        input_schema: &'a ArrowSchemaRef,
+        output_schema: &'a ArrowSchemaRef,
+        expected_partials: usize,
+        expected_input_rows: Option<u64>,
+    ) -> Result<Self> {
+        if should_execute_incremental_partitioned_final_aggregate_merge(execution.context(), aggregate, input_schema) {
+            return CompiledIncrementalPartitionedMerge::new(
+                execution.context(),
+                node_id,
+                aggregate,
+                input_schema,
+                output_schema,
+                expected_partials,
+                expected_input_rows,
+            )
+            .map(|merge| Self::Incremental(Box::new(merge)));
+        }
+        Ok(Self::Retained {
             node_id,
             aggregate,
             input_schema,
             output_schema,
-        );
+            partials: Vec::with_capacity(expected_partials),
+        })
     }
 
-    execute_compiled_bounded_final_aggregate_merge(execution, node_id, aggregate, input_schema, output_schema, partials)
+    fn extend(
+        &mut self,
+        execution: &mut BoundedExecutionAttempt<'_>,
+        chunk_partials: Vec<CommittedPartial>,
+    ) -> Result<()> {
+        match self {
+            Self::Retained { partials, .. } => {
+                partials.extend(chunk_partials);
+                Ok(())
+            },
+            Self::Incremental(merge) => {
+                let mut chunk_partials = chunk_partials.into_iter();
+                for partial in chunk_partials.by_ref() {
+                    if let Err(error) = merge.push(execution, partial) {
+                        release_partials_reverse(chunk_partials.collect());
+                        return Err(error);
+                    }
+                }
+                Ok(())
+            },
+        }
+    }
+
+    fn finish(self, execution: &mut BoundedExecutionAttempt<'_>) -> Result<ResidentGpuFrame> {
+        match self {
+            Self::Retained { node_id, aggregate, input_schema, output_schema, partials } => {
+                if partials.is_empty() {
+                    return execute_compiled_bounded_aggregate_from_empty_input(
+                        execution,
+                        node_id,
+                        aggregate,
+                        input_schema,
+                        output_schema,
+                    );
+                }
+                execute_compiled_bounded_final_aggregate_merge(
+                    execution,
+                    node_id,
+                    aggregate,
+                    input_schema,
+                    output_schema,
+                    partials,
+                )
+            },
+            Self::Incremental(merge) => merge.finish(execution),
+        }
+    }
 }
 
 fn execute_compiled_bounded_statistical_aggregate_from_stream(

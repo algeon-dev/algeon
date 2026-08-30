@@ -42,7 +42,8 @@ mod unary;
 pub(super) fn join_build_key_uniqueness_probe_can_fallback(error: &QueryError) -> bool {
     matches!(
         error.code(),
-        QueryErrorCode::CudfResourceExhausted
+        QueryErrorCode::QueryMemoryLimitExceeded
+            | QueryErrorCode::CudfResourceExhausted
             | QueryErrorCode::CudfTemporaryFailure
             | QueryErrorCode::MemoryReservationFailed
             | QueryErrorCode::ServiceOverloaded

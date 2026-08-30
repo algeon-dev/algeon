@@ -10,6 +10,8 @@ pub(in crate::exec::bounded) struct BoundedFinalMergePolicy {
     partitioned_final_merge_max_partial_partition_floor: usize,
     final_merge_min_fan_in: usize,
     final_merge_retry_fan_in_divisor: usize,
+    incremental_partition_batch_divisor: u64,
+    incremental_min_flush_divisor: u64,
 }
 
 impl BoundedFinalMergePolicy {
@@ -17,6 +19,8 @@ impl BoundedFinalMergePolicy {
     pub(in crate::exec::bounded) const DEFAULT_PARTITIONED_FINAL_MERGE_MAX_PARTIAL_PARTITION_FLOOR: usize = 32;
     pub(in crate::exec::bounded) const DEFAULT_FINAL_MERGE_MIN_FAN_IN: usize = 2;
     pub(in crate::exec::bounded) const DEFAULT_FINAL_MERGE_RETRY_FAN_IN_DIVISOR: usize = 2;
+    pub(in crate::exec::bounded) const DEFAULT_INCREMENTAL_PARTITION_BATCH_DIVISOR: u64 = 4;
+    pub(in crate::exec::bounded) const DEFAULT_INCREMENTAL_MIN_FLUSH_DIVISOR: u64 = 8;
 
     pub(in crate::exec::bounded) fn partitioned_final_merge_partial_partition_floor(
         self,
@@ -53,6 +57,17 @@ impl BoundedFinalMergePolicy {
     pub(in crate::exec::bounded) fn compiled_final_merge_fan_in(self, fan_in: usize, partial_count: usize) -> usize {
         fan_in.clamp(self.final_merge_min_fan_in, partial_count)
     }
+
+    /// Raw partial bytes an incremental merge batches before one hash partition.
+    pub(in crate::exec::bounded) fn incremental_partition_batch_bytes(self, partition_target_bytes: u64) -> u64 {
+        (partition_target_bytes / self.incremental_partition_batch_divisor).max(1)
+    }
+
+    /// Smallest pending byte count that folds into a partition's merged state;
+    /// above it a partition folds once its pending slices match the state.
+    pub(in crate::exec::bounded) fn incremental_min_flush_bytes(self, partition_target_bytes: u64) -> u64 {
+        (partition_target_bytes / self.incremental_min_flush_divisor).max(1)
+    }
 }
 
 impl Default for BoundedFinalMergePolicy {
@@ -63,6 +78,8 @@ impl Default for BoundedFinalMergePolicy {
                 Self::DEFAULT_PARTITIONED_FINAL_MERGE_MAX_PARTIAL_PARTITION_FLOOR,
             final_merge_min_fan_in: Self::DEFAULT_FINAL_MERGE_MIN_FAN_IN,
             final_merge_retry_fan_in_divisor: Self::DEFAULT_FINAL_MERGE_RETRY_FAN_IN_DIVISOR,
+            incremental_partition_batch_divisor: Self::DEFAULT_INCREMENTAL_PARTITION_BATCH_DIVISOR,
+            incremental_min_flush_divisor: Self::DEFAULT_INCREMENTAL_MIN_FLUSH_DIVISOR,
         }
     }
 }

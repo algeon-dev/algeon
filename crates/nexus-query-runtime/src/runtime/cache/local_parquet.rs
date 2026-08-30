@@ -770,7 +770,10 @@ impl GpuLocalParquetSourceCache {
             Err(error)
                 if matches!(
                     error.code(),
-                    QueryErrorCode::CudfResourceExhausted | QueryErrorCode::DeviceAllocationFailed
+                    QueryErrorCode::QueryMemoryLimitExceeded
+                        | QueryErrorCode::DeviceOutOfMemory
+                        | QueryErrorCode::DeviceAllocationFailed
+                        | QueryErrorCode::CudfResourceExhausted
                 ) =>
             {
                 self.clear_promotion(&key)?;

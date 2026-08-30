@@ -22,6 +22,7 @@ pub(super) use final_merge::{
     AlignedGroupKeyPartitionPartial, execute_aligned_group_key_partitioned_final_aggregate_merge,
     execute_compiled_bounded_final_aggregate_merge, execute_final_aggregate_merge, reduce_merge_fan_in,
 };
+use final_merge::{CompiledIncrementalPartitionedMerge, should_execute_incremental_partitioned_final_aggregate_merge};
 use partitioned::{
     execute_compiled_bounded_partitioned_aggregate_from_frame, partitioned_aggregate_partition_count,
     should_partition_compiled_grouped_aggregate,

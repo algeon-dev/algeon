@@ -517,8 +517,13 @@ fn bounded_native_query_routes_many_string_morsels_away_from_source_adjacent_par
     assert!(!partial_strategy_rows.is_empty());
     // Variable-width group keys take the group-key hash partition path even when
     // source chunk count exceeds the old 64-morsel gate; admission is live-set based.
+    // Later batches may reduce locally once the first batch proved strong
+    // reduction, but none is demoted to row-balanced streaming.
     assert!(partial_strategy_rows.iter().all(|decision| {
-        decision.facts.get("source_adjacent_partition_strategy").map(String::as_str) == Some("group_key")
+        matches!(
+            decision.facts.get("source_adjacent_partition_strategy").map(String::as_str),
+            Some("group_key" | "local_reduction")
+        )
     }));
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -1554,6 +1559,165 @@ fn bounded_native_query_uses_configured_source_cap_when_budget_model_allows_it()
         panic!("host sink should materialize one RecordBatch");
     };
     assert_eq!(batch.num_rows(), 3);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_sizes_source_adjacent_raw_batches_from_decoded_bytes_and_reduces_skewed_keys_locally() {
+    let dir = unique_temp_dir("nexus-query-engine-bounded-source-adjacent-raw-batch-feedback");
+    let path = dir.join("input.parquet");
+    let row_groups = 64;
+    let rows_per_row_group = 65_536;
+    let input_schema = write_skewed_string_key_row_grouped_parquet(&path, row_groups, rows_per_row_group);
+    let projected_schema = Arc::new(Schema::new(vec![
+        Field::new("l_returnflag", DataType::Utf8, false),
+        Field::new("value", DataType::Int64, false),
+    ]));
+    let aggregated_schema = Arc::new(Schema::new(vec![
+        Field::new("l_returnflag", DataType::Utf8, false),
+        Field::new("sum_value", DataType::Int64, true),
+    ]));
+    // Footer row counts and projected bytes size the first batch before any
+    // decoded observation exists, exactly as adapter lowering supplies them.
+    let source = fixture_local_parquet_source::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["flag".to_string(), "value".to_string()],
+    );
+    let projection = vec![Expr::column("flag").alias("l_returnflag"), Expr::column("value")];
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("l_returnflag")],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "sum_value")],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema));
+    let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema);
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    // The encoded-byte batching target admits every row group into one raw
+    // batch, whose decoded rows plus stage, partition, and slice copies cannot
+    // fit under this cap; decoded-byte sizing must keep each batch inside it
+    // without falling back to allocator rejections and split retries.
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 256 * 1024 * 1024,
+        max_source_chunk_bytes: 64 * 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 4,
+        min_retry_chunk_row_groups: 1,
+    });
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.source_chunks_planned, row_groups as u64);
+    assert_eq!(metrics.row_groups_committed, row_groups as u64);
+    assert_eq!(metrics.source_chunks_retried, 0, "batches must be sized to fit, not recovered by splitting");
+    assert_eq!(metrics.retry_resource_exhausted_count, 0);
+    let raw_batches =
+        metrics.task_runtime_metrics.keys().filter(|task_id| task_id.contains("source_adjacent_raw_batch")).count();
+    assert!(raw_batches >= 2, "decoded-byte sizing must split the source into several raw batches: {raw_batches}");
+
+    let partial_strategies = metrics
+        .aggregate_strategy_decisions
+        .iter()
+        .filter(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("partial"))
+        .map(|decision| decision.facts.get("source_adjacent_partition_strategy").cloned().unwrap_or_default())
+        .collect::<Vec<_>>();
+    assert!(partial_strategies.iter().any(|strategy| strategy == "group_key"), "{partial_strategies:?}");
+    assert!(partial_strategies.iter().any(|strategy| strategy == "local_reduction"), "{partial_strategies:?}");
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    assert_eq!(batch.num_rows(), 2);
+    let (expected_f, expected_o) = skewed_string_key_expected_sums(row_groups * rows_per_row_group);
+    let keys = batch.column(0).as_string::<i32>();
+    let sums = int64_array(batch, 1);
+    for row in 0..batch.num_rows() {
+        let expected = if keys.value(row) == "F" { expected_f } else { expected_o };
+        assert_eq!(sums.value(row), expected, "sum for key {}", keys.value(row));
+    }
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn bounded_native_query_leaves_local_reduction_when_a_later_batch_stops_reducing() {
+    let dir = unique_temp_dir("nexus-query-engine-bounded-source-adjacent-cardinality-shift");
+    let path = dir.join("input.parquet");
+    let row_groups = 64;
+    let rows_per_row_group = 65_536;
+    let input_schema = write_cardinality_shift_string_key_parquet(&path, row_groups, rows_per_row_group);
+    let projected_schema = Arc::new(Schema::new(vec![
+        Field::new("l_returnflag", DataType::Utf8, false),
+        Field::new("value", DataType::Int64, false),
+    ]));
+    let aggregated_schema = Arc::new(Schema::new(vec![
+        Field::new("l_returnflag", DataType::Utf8, false),
+        Field::new("sum_value", DataType::Int64, true),
+    ]));
+    let source = fixture_local_parquet_source::from_files(
+        vec![LocalParquetFile::new(&path).with_file_size_bytes(fs::metadata(&path).unwrap().len())],
+        Arc::clone(&input_schema),
+        vec!["flag".to_string(), "value".to_string()],
+    );
+    let projection = vec![Expr::column("flag").alias("l_returnflag"), Expr::column("value")];
+    let aggregate = AggregateSpec::new(
+        vec![Expr::column("l_returnflag")],
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "sum_value")],
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LocalParquet(source));
+    let projection = builder.add_projection(source, projection_outputs(projection, projected_schema));
+    let aggregate = builder.add_aggregate(projection, aggregate, aggregated_schema);
+    let plan = builder.finish_with_host_sink(aggregate);
+
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: 256 * 1024 * 1024,
+        max_source_chunk_bytes: 64 * 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 4,
+        min_retry_chunk_row_groups: 1,
+    });
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let metrics = result.metrics();
+    assert_eq!(metrics.row_groups_committed, row_groups as u64);
+    let partial_strategies = metrics
+        .aggregate_strategy_decisions
+        .iter()
+        .filter(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("partial"))
+        .map(|decision| decision.facts.get("source_adjacent_partition_strategy").cloned().unwrap_or_default())
+        .collect::<Vec<_>>();
+    // The two-key half proves strong reduction, the distinct-key half must
+    // stop the local reduction once a batch's partial stops shrinking, and the
+    // observation must never demote the plan to row-balanced streaming.
+    assert!(partial_strategies.iter().any(|strategy| strategy == "local_reduction"), "{partial_strategies:?}");
+    let last_local_reduction =
+        partial_strategies.iter().rposition(|strategy| strategy == "local_reduction").expect("local reduction ran");
+    assert!(
+        partial_strategies[last_local_reduction + 1..].iter().any(|strategy| strategy == "group_key"),
+        "distinct keys must return to group-key partitions: {partial_strategies:?}"
+    );
+    assert!(partial_strategies.iter().all(|strategy| strategy == "group_key" || strategy == "local_reduction"));
+
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+    let rows = row_groups * rows_per_row_group;
+    assert_eq!(batch.num_rows(), 2 + rows / 2);
+    let keys = batch.column(0).as_string::<i32>();
+    let sums = int64_array(batch, 1);
+    let mut seen_a = 0i64;
+    let mut seen_b = 0i64;
+    for row in 0..batch.num_rows() {
+        match keys.value(row) {
+            "A" => seen_a = sums.value(row),
+            "B" => seen_b = sums.value(row),
+            _ => assert_eq!(sums.value(row), 1, "distinct key {} must count once", keys.value(row)),
+        }
+    }
+    assert_eq!(seen_a, (rows / 2 / 2) as i64);
+    assert_eq!(seen_b, (rows / 2 / 2) as i64);
 
     fs::remove_dir_all(dir).unwrap();
 }

@@ -16,6 +16,10 @@ use super::{
 pub(in crate::exec::bounded) struct RawSourceInput {
     pub(in crate::exec::bounded) partial: CommittedPartial,
     pub(in crate::exec::bounded) source_row_group_count: u64,
+    /// Rows decoded by the source read before source-adjacent stages ran.
+    pub(in crate::exec::bounded) source_rows: u64,
+    /// Device bytes of the decoded source frame before source-adjacent stages ran.
+    pub(in crate::exec::bounded) source_bytes: u64,
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_chunk_with_retry(
@@ -123,9 +127,11 @@ pub(in crate::exec::bounded) fn execute_bounded_raw_source_chunk(
         attach_chunk_resource_facts(error, chunk, "source_chunk_read", 1, 1, execution.metrics_mut())
     })?;
     let source_row_group_count = reported_source_chunk_read_row_groups(chunk, source.observed_row_group_count);
+    let source_rows = source.frame.num_rows() as u64;
+    let source_bytes = source.observed_bytes;
     let input = CommittedPartial::with_device_bytes(source.frame, source.observed_bytes);
     let partial = execute_source_adjacent_chunk_stages(execution, bounded, chunk, input, 1, 1)?;
-    Ok(RawSourceInput { partial, source_row_group_count })
+    Ok(RawSourceInput { partial, source_row_group_count, source_rows, source_bytes })
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_raw_source_chunk_batch(
@@ -141,9 +147,11 @@ pub(in crate::exec::bounded) fn execute_bounded_raw_source_chunk_batch(
             attach_source_batch_resource_facts(error, batch, "source_chunk_read", 1, 1, execution.metrics_mut())
         })?;
     let source_row_group_count = reported_source_chunk_batch_read_row_groups(batch, source.observed_row_group_count);
+    let source_rows = source.frame.num_rows() as u64;
+    let source_bytes = source.observed_bytes;
     let input = CommittedPartial::with_device_bytes(source.frame, source.observed_bytes);
     let partial = execute_source_adjacent_chunk_stages(execution, bounded, first_chunk, input, 1, 1)?;
-    Ok(RawSourceInput { partial, source_row_group_count })
+    Ok(RawSourceInput { partial, source_row_group_count, source_rows, source_bytes })
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_chunk_attempt(

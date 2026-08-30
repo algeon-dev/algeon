@@ -7,9 +7,13 @@ use crate::{
 };
 
 mod compiled;
+mod incremental;
 mod partitioned;
 
 pub(in crate::exec::bounded) use compiled::execute_compiled_bounded_final_aggregate_merge;
+pub(in crate::exec::bounded::aggregate) use incremental::{
+    CompiledIncrementalPartitionedMerge, should_execute_incremental_partitioned_final_aggregate_merge,
+};
 pub(in crate::exec::bounded) use partitioned::{
     AlignedGroupKeyPartitionPartial, execute_aligned_group_key_partitioned_final_aggregate_merge,
     execute_final_aggregate_merge,
