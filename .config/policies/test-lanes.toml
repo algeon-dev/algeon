@@ -342,7 +342,7 @@ lane = "cpu"
 reason = "Current-resource invariant tests are source audits of the native memory split and allocator-routing contract."
 
 [[binary]]
-id = "cudf-nexus-sys::execution_context_strict_contract"
+id = "cudf-nexus-sys::execution_context_contract"
 lane = "cpu"
 reason = "Execution-context contracts inspect native headers and sources for strict explicit-resource requirements."
 
