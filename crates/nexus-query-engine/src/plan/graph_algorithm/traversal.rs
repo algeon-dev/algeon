@@ -20,6 +20,10 @@ pub struct GraphBfsParams {
     pub predicates: GraphBfsPredicateInputs,
     /// SQL-facing policy for absent source/target endpoints after edge filters.
     pub endpoint_policy: GraphBfsEndpointPolicy,
+    /// Bounded source-to-target path output request. The source and target
+    /// bindings remain the canonical `source_vertices`/`source_vertex` and
+    /// `predicates.target_vertices` fields above.
+    pub path_output: Option<GraphBfsPathOutput>,
     /// Whether the BFS output should include per-row target metadata columns.
     ///
     /// When true, `target_vertices` must be present. The executor appends
@@ -38,6 +42,7 @@ impl GraphBfsParams {
             depth_limit,
             predicates: GraphBfsPredicateInputs::default(),
             endpoint_policy: GraphBfsEndpointPolicy::Strict,
+            path_output: None,
             return_target_info: false,
         }
     }
@@ -50,6 +55,20 @@ impl GraphBfsParams {
     /// Visits every side-input node id in stable role order.
     pub fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
         self.source_vertices.iter().map(|input| input.input).chain(self.predicates.node_ids())
+    }
+}
+
+/// Hard bounds required to extract one BFS path on device.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct GraphBfsPathOutput {
+    /// Maximum rows in the source-to-target path frame.
+    pub max_output_rows: u64,
+}
+
+impl GraphBfsPathOutput {
+    /// Create a bounded path-output request.
+    pub const fn new(max_output_rows: u64) -> Self {
+        Self { max_output_rows }
     }
 }
 

@@ -540,9 +540,9 @@ fn derive_graph_terms(
         ])?
     };
     let construction = construction_base.add(construction_transient, "construction")?;
-    let output = output_bytes_model(spec.algorithm, input, vertex_estimate, pair_rows)?;
+    let output = output_bytes_model(spec, input, vertex_estimate, pair_rows)?;
     let seed_input = graph_seed_memory_input(&spec.params, vertex_estimate);
-    let workspace = workspace_bytes_model(
+    let mut workspace = workspace_bytes_model(
         spec.algorithm,
         &spec.params,
         graph_memory_class(spec.algorithm),
@@ -552,6 +552,14 @@ fn derive_graph_terms(
         pair_rows,
         pair_vertex_width_bytes,
     )?;
+    if let GraphAlgorithmParams::Bfs(params) = &spec.params
+        && let Some(path_output) = params.path_output
+    {
+        workspace = workspace.add(
+            bfs_path_extraction_peak_model(input, vertex_estimate, path_output.max_output_rows)?,
+            "bfs_path_extraction_peak",
+        )?;
+    }
     let execution = output.add(workspace, "execution_output_workspace")?;
     let requested = match spec.algorithm {
         GraphAlgorithm::ForceAtlas2 => {
@@ -581,7 +589,7 @@ fn derive_graph_terms(
         execution_workspace: workspace,
         execution,
         requested,
-        output_rows: output_row_count_upper_bound_for_algorithm(spec.algorithm, input, vertex_estimate, pair_rows),
+        output_rows: output_row_count_upper_bound_for_algorithm(spec, input, vertex_estimate, pair_rows),
     })
 }
 
@@ -610,12 +618,17 @@ pub(crate) fn raw_libcugraph_property_output_staging(input: GraphMemoryModelInpu
 }
 
 fn output_bytes_model(
-    algorithm: GraphAlgorithm,
+    spec: &GraphAlgorithmSpec,
     input: GraphMemoryModelInput,
     vertex_estimate: u64,
     pair_rows: Option<u64>,
 ) -> Result<ModelBytes> {
-    let (rows, width) = match algorithm {
+    if let GraphAlgorithmParams::Bfs(params) = &spec.params
+        && let Some(path_output) = params.path_output
+    {
+        return model_product(path_output.max_output_rows, 40, "bfs_path_output_bytes");
+    }
+    let (rows, width) = match spec.algorithm {
         GraphAlgorithm::Jaccard | GraphAlgorithm::Sorensen | GraphAlgorithm::Overlap | GraphAlgorithm::Cosine => {
             (pair_rows.unwrap_or(0), 24)
         },
@@ -630,6 +643,66 @@ fn output_bytes_model(
         _ => (vertex_estimate, 16),
     };
     model_product(rows, width, "output_bytes")
+}
+
+#[cfg(feature = "cugraph")]
+fn bfs_path_extraction_peak_model(
+    input: GraphMemoryModelInput,
+    predecessor_rows: u64,
+    max_output_rows: u64,
+) -> Result<ModelBytes> {
+    let vertex_type = match input.vertex_width_bytes {
+        4 => cugraph::types::DataType::Int32,
+        8 => cugraph::types::DataType::Int64,
+        width => {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "nexus_query_engine.graph_memory.bfs_path_preflight",
+                "BFS path extraction requires Int32 or Int64 vertices",
+            )
+            .with_fact("vertex_width_bytes", width));
+        },
+    };
+    let predecessor_rows = usize::try_from(predecessor_rows)
+        .map_err(|_| graph_memory_arithmetic_error("bfs_path_predecessor_rows", "conversion"))?;
+    let max_output_rows = usize::try_from(max_output_rows)
+        .map_err(|_| graph_memory_arithmetic_error("bfs_path_output_rows", "conversion"))?;
+    let preflight = cugraph::traversal::extract_paths_preflight(
+        &cugraph::traversal::ExtractPathsPreflightInput::new(vertex_type, 1, predecessor_rows, 1, max_output_rows)
+            .map_err(|error| {
+                QueryError::new(
+                    QueryErrorCode::UnsupportedPlanShape,
+                    "nexus_query_engine.graph_memory.bfs_path_preflight",
+                    "native BFS path allocation preflight rejected the bounded input",
+                )
+                .with_fact("reason", "bfs_path_owner_preflight_unavailable")
+                .with_source(error)
+            })?,
+    )
+    .map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::UnsupportedPlanShape,
+            "nexus_query_engine.graph_memory.bfs_path_preflight",
+            "native BFS path allocation preflight failed",
+        )
+        .with_fact("reason", "bfs_path_owner_preflight_unavailable")
+        .with_source(error)
+    })?;
+    Ok(ModelBytes::from_u64(preflight.peak_bytes()))
+}
+
+#[cfg(not(feature = "cugraph"))]
+fn bfs_path_extraction_peak_model(
+    _input: GraphMemoryModelInput,
+    _predecessor_rows: u64,
+    _max_output_rows: u64,
+) -> Result<ModelBytes> {
+    Err(QueryError::new(
+        QueryErrorCode::UnsupportedPlanShape,
+        "nexus_query_engine.graph_memory.bfs_path_preflight",
+        "native BFS path allocation preflight is unavailable without cuGraph",
+    )
+    .with_fact("reason", "bfs_path_owner_preflight_unavailable"))
 }
 
 fn edge_betweenness_output_row_width_model(input: GraphMemoryModelInput) -> Result<u64> {
@@ -1125,12 +1198,17 @@ fn edge_betweenness_state_width_model(input: GraphMemoryModelInput) -> Result<u6
 /// retained byte contribution lets an engine-owned consumer proof derive a
 /// downstream output bound without asking an adapter to guess bytes or rows.
 fn output_row_count_upper_bound_for_algorithm(
-    algorithm: GraphAlgorithm,
+    spec: &GraphAlgorithmSpec,
     input: GraphMemoryModelInput,
     vertex_estimate: u64,
     pair_rows: Option<u64>,
 ) -> u64 {
-    match algorithm {
+    if let GraphAlgorithmParams::Bfs(params) = &spec.params
+        && let Some(path_output) = params.path_output
+    {
+        return path_output.max_output_rows;
+    }
+    match spec.algorithm {
         GraphAlgorithm::Jaccard | GraphAlgorithm::Sorensen | GraphAlgorithm::Overlap | GraphAlgorithm::Cosine => {
             pair_rows.unwrap_or(0)
         },

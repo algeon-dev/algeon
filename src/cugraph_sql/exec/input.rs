@@ -500,10 +500,6 @@ pub(super) struct EagerCugraphHostOutput {
 }
 
 impl EagerCugraphHostOutput {
-    pub(super) fn into_parts(self) -> (Arc<Vec<RecordBatch>>, Arc<MemoryReservation>) {
-        (self.batches, self.reservation)
-    }
-
     pub(super) fn into_parts_with_evidence(
         self,
     ) -> (Arc<Vec<RecordBatch>>, Arc<MemoryReservation>, Option<HostReservationEvidence>) {
@@ -512,10 +508,6 @@ impl EagerCugraphHostOutput {
 
     pub(super) fn shared_parts(&self) -> (Arc<Vec<RecordBatch>>, Arc<MemoryReservation>) {
         (Arc::clone(&self.batches), Arc::clone(&self.reservation))
-    }
-
-    pub(super) fn host_evidence(&self) -> Option<&HostReservationEvidence> {
-        self.host_evidence.as_ref()
     }
 
     pub(super) fn from_shared_parts(

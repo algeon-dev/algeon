@@ -2175,6 +2175,7 @@ pub(crate) fn sort_metadata_for_attested_graph_result(
     plan: &QueryPlan,
     graph_result_input_name: &str,
     producer_row_count_upper_bound: Option<u64>,
+    producer_column_evidence: Option<&PlanColumnEvidence>,
 ) -> Result<SortMetadataDescriptor> {
     if !is_attested_graph_result_bounded_consumer_plan(plan, graph_result_input_name) {
         return Err(sort_owner_error("consumer_topology_unmodeled", "sort_plan"));
@@ -2272,7 +2273,7 @@ pub(crate) fn sort_metadata_for_attested_graph_result(
     let sort_output_schema =
         plan.node(sort_node_id).ok_or_else(|| sort_owner_error("sort_node_missing", "sort_plan"))?.output_schema();
     let (output_frame_bytes, output_null_mask_bytes) =
-        bounded_consumer_frame_components(row_count, sort_output_schema)?;
+        bounded_consumer_frame_components(row_count, sort_output_schema, producer_column_evidence)?;
     let limit = limit
         .map(|(limit_node_id, limit_node)| {
             if limit_node.input != sort_node_id || plan.root_id() != limit_node_id || sort_node.input != source_node_id
@@ -2332,19 +2333,54 @@ pub(crate) fn sort_metadata_for_attested_graph_result(
     })
 }
 
-pub(crate) fn bounded_consumer_frame_components(rows: u64, schema: &SchemaRef) -> Result<(u64, u64)> {
+pub(crate) fn bounded_consumer_frame_components(
+    rows: u64,
+    schema: &SchemaRef,
+    evidence: Option<&PlanColumnEvidence>,
+) -> Result<(u64, u64)> {
     let mut frame = 0_u64;
     let mut null_mask = 0_u64;
     for field in schema.fields() {
-        let width = fixed_width_byte_size(field.data_type())
-            .ok_or_else(|| sort_owner_error("sort_output_dtype_unmodeled", "sort_output"))?;
-        let data =
-            rows.checked_mul(width).ok_or_else(|| sort_owner_error("sort_output_bytes_overflow", "sort_output"))?;
+        let empty_evidence = PlanColumnEvidence::default();
+        let column =
+            consumer_output_column_with_evidence(field, evidence.unwrap_or(&empty_evidence)).map_err(|error| {
+                let reason = match error.fact_value("schedule_reason") {
+                    Some("consumer_string_payload_evidence_missing") => "sort_output_string_payload_evidence_missing",
+                    Some("consumer_string_payload_lineage_missing") => "sort_output_string_payload_lineage_missing",
+                    _ => "sort_output_dtype_unmodeled",
+                };
+                sort_owner_error(reason, "sort_output").with_fact("column", field.name())
+            })?;
+        let data = if matches!(column.data_type, DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View) {
+            let payload = match (column.input_max_string_length_bytes, column.input_total_string_bytes) {
+                (Some(max), Some(total)) => rows
+                    .checked_mul(max)
+                    .ok_or_else(|| sort_owner_error("sort_output_bytes_overflow", "sort_output"))?
+                    .min(total),
+                (Some(max), None) => rows
+                    .checked_mul(max)
+                    .ok_or_else(|| sort_owner_error("sort_output_bytes_overflow", "sort_output"))?,
+                (None, Some(total)) => total,
+                (None, None) => {
+                    return Err(sort_owner_error("sort_output_string_payload_evidence_missing", "sort_output")
+                        .with_fact("column", field.name()));
+                },
+            };
+            let offsets = rows
+                .checked_add(1)
+                .and_then(|value| value.checked_mul(crate::exec::STRING_OFFSET_BYTES_CONSERVATIVE))
+                .ok_or_else(|| sort_owner_error("sort_output_bytes_overflow", "sort_output"))?;
+            payload.checked_add(offsets).ok_or_else(|| sort_owner_error("sort_output_bytes_overflow", "sort_output"))?
+        } else {
+            let width = fixed_width_byte_size(&column.data_type)
+                .ok_or_else(|| sort_owner_error("sort_output_dtype_unmodeled", "sort_output"))?;
+            rows.checked_mul(width).ok_or_else(|| sort_owner_error("sort_output_bytes_overflow", "sort_output"))?
+        };
         frame = frame
             .checked_add(data)
             .and_then(|value| value.checked_add(crate::exec::PER_COLUMN_ALIGNMENT_PADDING_BYTES))
             .ok_or_else(|| sort_owner_error("sort_output_bytes_overflow", "sort_output"))?;
-        let mask = if rows == 0 {
+        let mask = if rows == 0 || !field.is_nullable() {
             0
         } else {
             rows.div_ceil(512)

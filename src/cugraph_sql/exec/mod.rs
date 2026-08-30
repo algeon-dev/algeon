@@ -1,6 +1,4 @@
 use std::{
-    collections::{HashMap, HashSet},
-    hash::{Hash, Hasher},
     pin::Pin,
     sync::{
         Arc,
@@ -11,7 +9,7 @@ use std::{
 };
 
 use arrow::{
-    array::{Array, ArrayRef, Int32Array, Int64Array, LargeStringArray, StringArray, StringViewArray},
+    compute::SortOptions,
     datatypes::{DataType, Schema, SchemaRef},
     record_batch::RecordBatch,
 };
@@ -26,7 +24,7 @@ use datafusion::{
         context::TaskContext,
         memory_pool::{MemoryConsumer, MemoryReservation},
     },
-    physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr, expressions::Column},
+    physical_expr::{EquivalenceProperties, Partitioning, PhysicalExpr, PhysicalSortExpr, expressions::Column},
     physical_plan::{
         ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, RecordBatchStream,
         ReplaceChildrenOptions, SendableRecordBatchStream, StatisticsArgs, StatisticsContext,

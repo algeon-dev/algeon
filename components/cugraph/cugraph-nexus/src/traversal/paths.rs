@@ -4,23 +4,124 @@ use std::{marker::PhantomData, ptr};
 
 use cugraph_sys::{
     cugraph_error_t, cugraph_extract_paths, cugraph_extract_paths_result_get_max_path_length,
-    cugraph_extract_paths_result_get_paths, cugraph_extract_paths_result_t, cugraph_paths_result_get_distances,
-    cugraph_paths_result_get_predecessors, cugraph_paths_result_get_vertices, cugraph_paths_result_t,
-    cugraph_type_erased_device_array_view_t,
+    cugraph_extract_paths_result_get_paths, cugraph_extract_paths_result_t, cugraph_extract_paths_workspace_preflight,
+    cugraph_paths_result_get_distances, cugraph_paths_result_get_predecessors, cugraph_paths_result_get_vertices,
+    cugraph_paths_result_t, cugraph_type_erased_device_array_view_t,
 };
 
 use crate::{
     array::{DeviceArray, RawDeviceArrayView},
     cuda::{DeviceResourceKind, drop_device_resource},
-    error::{Error, ErrorKind, Result, check_error, require_non_null},
+    error::{Error, ErrorKind, Result, check_error, check_host_error, require_non_null},
     graph::{Forward, Graph},
     handle::{EnteredContext, ResourceHandleLease},
     structure::{
         VertexSelection,
         typed_results::{Distances, VertexIds},
     },
-    types::CugraphElement,
+    types::{CugraphElement, DataType},
 };
+
+const EXTRACT_PATHS_PREFLIGHT_OPERATION: &str = "extract_paths_workspace_preflight";
+
+/// Allocation shape consumed by the native extract-paths owner preflight.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[must_use]
+pub struct ExtractPathsPreflightInput {
+    vertex_type: DataType,
+    source_count: usize,
+    predecessor_count: usize,
+    destination_count: usize,
+    max_path_length_upper_bound: usize,
+}
+
+impl ExtractPathsPreflightInput {
+    pub fn new(
+        vertex_type: DataType,
+        source_count: usize,
+        predecessor_count: usize,
+        destination_count: usize,
+        max_path_length_upper_bound: usize,
+    ) -> Result<Self> {
+        if !vertex_type.is_supported_index_type() {
+            return Err(Error::new(ErrorKind::UnsupportedType, EXTRACT_PATHS_PREFLIGHT_OPERATION)
+                .with_message(format!("vertex_type must be Int32 or Int64, got {vertex_type}")));
+        }
+        Ok(Self { vertex_type, source_count, predecessor_count, destination_count, max_path_length_upper_bound })
+    }
+}
+
+/// Owner-computed device allocation terms for one extract-paths call.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[must_use]
+pub struct ExtractPathsPreflight {
+    source_bytes: u64,
+    destination_copy_bytes: u64,
+    predecessor_copy_bytes: u64,
+    path_output_bytes: u64,
+    workspace_bytes: u64,
+    peak_bytes: u64,
+}
+
+impl ExtractPathsPreflight {
+    pub const fn source_bytes(self) -> u64 {
+        self.source_bytes
+    }
+    pub const fn destination_copy_bytes(self) -> u64 {
+        self.destination_copy_bytes
+    }
+    pub const fn predecessor_copy_bytes(self) -> u64 {
+        self.predecessor_copy_bytes
+    }
+    pub const fn path_output_bytes(self) -> u64 {
+        self.path_output_bytes
+    }
+    pub const fn workspace_bytes(self) -> u64 {
+        self.workspace_bytes
+    }
+    pub const fn peak_bytes(self) -> u64 {
+        self.peak_bytes
+    }
+}
+
+/// Query the native extract-paths allocation contract without CUDA allocation.
+pub fn extract_paths_preflight(input: &ExtractPathsPreflightInput) -> Result<ExtractPathsPreflight> {
+    let mut source_bytes = 0usize;
+    let mut destination_copy_bytes = 0usize;
+    let mut predecessor_copy_bytes = 0usize;
+    let mut path_output_bytes = 0usize;
+    let mut workspace_bytes = 0usize;
+    let mut peak_bytes = 0usize;
+    let mut error: *mut cugraph_error_t = ptr::null_mut();
+    // SAFETY: all inputs are validated scalars and all outputs are writable;
+    // the C contract is host-only and does not access CUDA state.
+    let code = unsafe {
+        cugraph_extract_paths_workspace_preflight(
+            input.vertex_type.into(),
+            input.source_count,
+            input.predecessor_count,
+            input.destination_count,
+            input.max_path_length_upper_bound,
+            &mut source_bytes,
+            &mut destination_copy_bytes,
+            &mut predecessor_copy_bytes,
+            &mut path_output_bytes,
+            &mut workspace_bytes,
+            &mut peak_bytes,
+            &mut error,
+        )
+    };
+    // SAFETY: the C API owns an error object only on failure; consume it once.
+    unsafe { check_host_error(code, error, EXTRACT_PATHS_PREFLIGHT_OPERATION) }?;
+    Ok(ExtractPathsPreflight {
+        source_bytes: source_bytes as u64,
+        destination_copy_bytes: destination_copy_bytes as u64,
+        predecessor_copy_bytes: predecessor_copy_bytes as u64,
+        path_output_bytes: path_output_bytes as u64,
+        workspace_bytes: workspace_bytes as u64,
+        peak_bytes: peak_bytes as u64,
+    })
+}
 
 pub(crate) struct PathsResult {
     raw: *mut cugraph_paths_result_t,
@@ -267,6 +368,27 @@ pub(crate) fn extract_paths<'a, V: CugraphElement + 'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn extract_paths_preflight_reports_native_owner_terms() {
+        let input = ExtractPathsPreflightInput::new(DataType::Int64, 1, 10, 1, 7).unwrap();
+        let preflight = extract_paths_preflight(&input).expect("host-only preflight succeeds");
+        assert_eq!(preflight.source_bytes(), 8);
+        assert_eq!(preflight.destination_copy_bytes(), 8);
+        assert_eq!(preflight.predecessor_copy_bytes(), 80);
+        assert_eq!(preflight.path_output_bytes(), 56);
+        assert!(preflight.workspace_bytes() >= 16);
+        let retained_copies = preflight.destination_copy_bytes() + preflight.predecessor_copy_bytes();
+        assert!(preflight.peak_bytes() >= retained_copies + preflight.workspace_bytes());
+        assert!(preflight.peak_bytes() >= retained_copies + preflight.path_output_bytes());
+    }
+
+    #[test]
+    fn extract_paths_preflight_rejects_overflow() {
+        let input = ExtractPathsPreflightInput::new(DataType::Int64, 1, 1, usize::MAX, 2).unwrap();
+        let err = extract_paths_preflight(&input).expect_err("overflow must fail closed");
+        assert_eq!(err.kind(), ErrorKind::InvalidInput);
+    }
 
     #[test]
     fn paths_result_from_raw_rejects_null() {

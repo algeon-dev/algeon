@@ -887,9 +887,6 @@ pub(crate) fn local_parquet_source_owner_terms(plan: &QueryPlan) -> Result<Vec<A
     let scope = canonical_execution_scope_fingerprint(plan);
     let unreachable = plan.unreachable_node_ids().into_iter().collect::<HashSet<_>>();
     let mut terms = Vec::new();
-    let mut has_local_source = false;
-    let mut has_non_local_source = false;
-    let mut has_disallowed_non_local_source = false;
     for node in plan.nodes() {
         if unreachable.contains(&node.id) {
             continue;
@@ -899,7 +896,6 @@ pub(crate) fn local_parquet_source_owner_terms(plan: &QueryPlan) -> Result<Vec<A
         };
         match source.as_ref() {
             SourceNode::LocalParquet(source) => {
-                has_local_source = true;
                 let Some(bytes) = estimated_local_parquet_source_bytes(source) else {
                     return Err(owner_term_error(
                         "local_source_bytes_unavailable",
@@ -917,16 +913,8 @@ pub(crate) fn local_parquet_source_owner_terms(plan: &QueryPlan) -> Result<Vec<A
                     None,
                 )?);
             },
-            SourceNode::GpuResident(_) => has_non_local_source = true,
-            SourceNode::LiteralBatch(source) if source.row_count() > 0 && !source.schema.fields().is_empty() => {
-                has_non_local_source = true;
-                has_disallowed_non_local_source = true;
-            },
-            SourceNode::LiteralBatch(_) => {},
+            SourceNode::GpuResident(_) | SourceNode::LiteralBatch(_) => {},
         }
-    }
-    if has_local_source && has_non_local_source && has_disallowed_non_local_source {
-        return Err(owner_term_error("mixed_source_kinds", Some(OwnerTermRole::SourceStage), None));
     }
     Ok(terms)
 }

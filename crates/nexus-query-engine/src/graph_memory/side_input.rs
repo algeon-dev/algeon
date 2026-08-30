@@ -99,7 +99,7 @@ fn graph_side_input_workspace_peak_bytes_with_owner(
     estimate: &GraphMemoryEstimate,
 ) -> Result<Option<u64>> {
     match &graph.spec.params {
-        GraphAlgorithmParams::Bfs(_params) => {
+        GraphAlgorithmParams::Bfs(params) => {
             let bindings = graph_side_input_bindings(graph)?;
             let graph_vertex_type = graph_side_input_graph_vertex_type(plan, graph)?;
             let source_rows = bindings
@@ -169,6 +169,17 @@ fn graph_side_input_workspace_peak_bytes_with_owner(
                     "owner_input_rejected",
                     None,
                     Some(graph.spec.algorithm),
+                ));
+            }
+            if params.path_output.is_some() && target_vertices_rows.is_none_or(|rows| rows == 0) {
+                return Err(side_input_workspace_preflight_unavailable(
+                    "bfs_path_target_cardinality_invalid",
+                    Some("target_vertices"),
+                    Some(graph.spec.algorithm),
+                )
+                .with_fact(
+                    "target_rows",
+                    target_vertices_rows.map_or_else(|| "none".to_string(), |rows| rows.to_string()),
                 ));
             }
             if source_rows == 0 {

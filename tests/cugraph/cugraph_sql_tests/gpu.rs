@@ -1132,6 +1132,47 @@ async fn cugraph_sql_gpu_string_jaccard_70_by_70_executes_with_bounded_producers
     let metrics = NativeDataFusionExecutionMetrics::from_metrics(&plan_metrics_recursive(plan.as_ref()));
     assert_eq!(metrics.graph_runtime_rows.len(), 1);
 
+    ctx.sql(
+        "CREATE VIEW string_candidate_pairs_values AS \
+         SELECT first, second FROM (VALUES \
+           ('vertex-0', 'vertex-2'), \
+           ('vertex-0', 'vertex-3'), \
+           ('vertex-0', 'vertex-4'), \
+           ('vertex-1', 'vertex-3'), \
+           ('vertex-1', 'vertex-4'), \
+           ('vertex-2', 'vertex-4') \
+         ) AS pairs(first, second)",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+    let values_df = ctx
+        .sql(
+            "SELECT first, second, similarity \
+             FROM cugraph_jaccard(\
+               'string_similarity_edges', 'src', 'dst', NULL, \
+               '{\"vertex_pairs_table\":\"string_candidate_pairs_values\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}'\
+             ) ORDER BY similarity DESC",
+        )
+        .await
+        .unwrap();
+    let values_plan = values_df.create_physical_plan().await.unwrap();
+    assert_eq!(classify_final_plan(values_plan.as_ref()), FinalPlanDisposition::Native);
+    assert!(
+        find_composed_exec(values_plan.as_ref()).is_some(),
+        "VALUES-backed string Jaccard must remain one native composed GPU island",
+    );
+    let values_batches = datafusion::physical_plan::collect(Arc::clone(&values_plan), ctx.task_ctx()).await.unwrap();
+    let values_batch = single_batch(&values_batches);
+    assert_eq!(values_batch.num_rows(), 6);
+    assert_eq!(values_batch.schema().field(0).data_type(), &DataType::Utf8);
+    assert_eq!(values_batch.schema().field(1).data_type(), &DataType::Utf8);
+    assert_eq!(values_batch.schema().field(2).data_type(), &DataType::Float64);
+    let similarities = values_batch.column(2).as_any().downcast_ref::<Float64Array>().unwrap();
+    assert!((1..similarities.len()).all(|row| similarities.value(row - 1) >= similarities.value(row)));
+
     drop_session_context_on_blocking_thread(ctx).await;
     fs::remove_dir_all(dir).unwrap();
 }
@@ -1453,6 +1494,91 @@ async fn cugraph_sql_gpu_bfs_utf8_source_list_executes_multi_source() {
     assert_eq!(string_bfs_distance_for(batch, "y"), Some(1));
     assert_eq!(string_bfs_predecessor_for(batch, "c"), Some("b".to_string()));
     assert_eq!(string_bfs_predecessor_for(batch, "y"), Some("x".to_string()));
+}
+
+#[tokio::test]
+async fn cugraph_sql_bfs_path_ordering_satisfies_strict_final_plan_without_sort_exec() {
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    let vertices = [
+        "bd2f79216e59522ab2ce48a860bcbfdf",
+        "9c369bda5e2752df7dda44ad8bffd4209afa2324",
+        "0506fd4818344024781bd1ccd573e9cf1f0f9dd8",
+        "80010341c28f2c670107a85423d7108b",
+        "78e4713e48a0fad2bec00cb8ace0a7481568b54a",
+        "1563260218f042627fff19494703c405613aa573",
+        "f24db1a10764c275d5cd2e3ab17bca31",
+    ];
+    let edge_schema =
+        Arc::new(Schema::new(vec![Field::new("src", DataType::Utf8, false), Field::new("dst", DataType::Utf8, false)]));
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![
+            Arc::new(StringArray::from(vertices[..6].to_vec())) as ArrayRef,
+            Arc::new(StringArray::from(vertices[1..].to_vec())) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    ctx.register_table("raw_edges", Arc::new(MemTable::try_new(edge_schema, vec![vec![edge_batch]]).unwrap())).unwrap();
+    register_string_vertex_memtable(&ctx, "targets", "vertex_id", &vertices[6..]);
+
+    let plan = ctx
+        .sql(
+            "SELECT path_index, source, target, vertex, distance \
+             FROM cugraph_bfs('raw_edges', 'bd2f79216e59522ab2ce48a860bcbfdf', 'src', 'dst', NULL, \
+                  '{\"construction_policy\":\"raw_libcugraph\",\
+                     \"depth_limit\":6,\
+                     \"output_mode\":\"path\",\
+                     \"target_vertices_table\":\"targets\",\
+                     \"target_vertex_col\":\"vertex_id\"}') \
+             ORDER BY path_index",
+        )
+        .await
+        .unwrap()
+        .create_physical_plan()
+        .await
+        .unwrap();
+
+    assert!(find_cugraph_algo_exec(plan.as_ref()).is_some());
+    assert!(!plan_contains_named_node(plan.as_ref(), "SortExec"));
+    let requirement =
+        NexusFinalPlanRequirementRule::new(NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement());
+    requirement
+        .optimize(Arc::clone(&plan), &ConfigOptions::default())
+        .expect("path_index ordering must satisfy NoDataFusionCpu without a DataFusion sort");
+    let batches = datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx()).await.unwrap();
+    let batch = single_batch(&batches);
+    assert_eq!(int64_column(batch, 0), (0_i64..=6).collect::<Vec<_>>());
+    let path = batch.column(3).as_any().downcast_ref::<StringArray>().unwrap();
+    assert_eq!((0..batch.num_rows()).map(|row| path.value(row)).collect::<Vec<_>>(), vertices);
+
+    drop_session_context_on_blocking_thread(ctx).await;
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_bfs_path_depth_zero_returns_the_source_target_vertex() {
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    register_directed_bfs_edges(&ctx, "raw_edges");
+    register_i64_vertex_values(&ctx, "targets", "vertex_id", vec![0]);
+
+    let batches = ctx
+        .sql(
+            "SELECT path_index, source, target, vertex, distance \
+             FROM cugraph_bfs('raw_edges', 0, 'src', 'dst', NULL, \
+                  '{\"construction_policy\":\"raw_libcugraph\",\
+                     \"depth_limit\":0,\
+                     \"output_mode\":\"path\",\
+                     \"target_vertices_table\":\"targets\",\
+                     \"target_vertex_col\":\"vertex_id\"}')",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    let batch = single_batch(&batches);
+    for column in 0..5 {
+        assert_eq!(int64_column(batch, column), vec![0]);
+    }
 }
 
 #[tokio::test]

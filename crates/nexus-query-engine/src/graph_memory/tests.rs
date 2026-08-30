@@ -11,8 +11,8 @@ use crate::plan::{
 use crate::{
     expr::{AggregateSpec, ColumnRef, Expr, LiteralValue},
     plan::{
-        GraphBfsParams, GraphConstructionOptions, GraphForceAtlas2Params, GraphPageRankParams, GraphSimilarityParams,
-        GraphTriangleCountAllParams, JoinKey, JoinSpec, QueryPlanBuilder,
+        GraphBfsParams, GraphBfsPathOutput, GraphConstructionOptions, GraphForceAtlas2Params, GraphPageRankParams,
+        GraphSimilarityParams, GraphTriangleCountAllParams, JoinKey, JoinSpec, QueryPlanBuilder,
     },
     source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
 };
@@ -124,6 +124,86 @@ fn personalized_pagerank_side_input_plan(side_rows: Option<u64>) -> QueryPlan {
     );
     let graph = builder.add_graph_algorithm(edge, spec);
     builder.finish_gpu_resident(graph)
+}
+
+#[cfg(feature = "cugraph")]
+#[test]
+fn bounded_bfs_path_evidence_prices_only_the_bounded_retained_frame() {
+    let plan = bfs_side_input_plan(
+        Arc::new(Schema::new(vec![Field::new("target", DataType::Int64, false)])),
+        Some(1),
+        |target| {
+            let mut params = GraphBfsParams::new(0, Some(6));
+            params.predicates.target_vertices = Some(GraphPredicateInput::new(target, "target"));
+            params.path_output = Some(GraphBfsPathOutput::new(7));
+            params
+        },
+    );
+    let evidence =
+        graph_memory_bounded_admission_evidence_for_plan(&plan, GraphMemoryCalibrationOverride::none(), None)
+            .expect("bounded BFS path must produce graph evidence");
+
+    assert_eq!(evidence.retained_output_rows_upper_bound(), 7);
+    assert_eq!(evidence.retained_output_bytes(), 7 * 40);
+    assert!(evidence.warm_model_requested_bytes() > evidence.retained_output_bytes());
+}
+
+#[cfg(feature = "cugraph")]
+#[test]
+fn bounded_bfs_path_rejects_provably_empty_target_before_execution() {
+    let plan = bfs_side_input_plan(
+        Arc::new(Schema::new(vec![Field::new("target", DataType::Int64, false)])),
+        Some(0),
+        |target| {
+            let mut params = GraphBfsParams::new(0, Some(0));
+            params.predicates.target_vertices = Some(GraphPredicateInput::new(target, "target"));
+            params.path_output = Some(GraphBfsPathOutput::new(1));
+            params
+        },
+    );
+    let error = graph_memory_bounded_admission_evidence_for_plan(&plan, GraphMemoryCalibrationOverride::none(), None)
+        .expect_err("a provably empty path target must fail closed");
+    assert_eq!(error.fact_value("side_input_reason"), Some("bfs_path_target_cardinality_invalid"));
+}
+
+#[cfg(feature = "cugraph")]
+#[test]
+fn bounded_bfs_path_accepts_a_target_relation_upper_bound_above_one() {
+    let plan = bfs_side_input_plan(
+        Arc::new(Schema::new(vec![Field::new("target", DataType::Int64, false)])),
+        Some(2),
+        |target| {
+            let mut params = GraphBfsParams::new(0, Some(6));
+            params.predicates.target_vertices = Some(GraphPredicateInput::new(target, "target"));
+            params.path_output = Some(GraphBfsPathOutput::new(7));
+            params
+        },
+    );
+    let evidence =
+        graph_memory_bounded_admission_evidence_for_plan(&plan, GraphMemoryCalibrationOverride::none(), None)
+            .expect("a relation upper bound must price every possible target row");
+
+    assert_eq!(evidence.retained_output_rows_upper_bound(), 7);
+}
+
+#[cfg(feature = "cugraph")]
+#[test]
+fn bounded_bfs_path_rejects_output_byte_overflow() {
+    let plan = bfs_side_input_plan(
+        Arc::new(Schema::new(vec![Field::new("target", DataType::Int64, false)])),
+        Some(1),
+        |target| {
+            let mut params = GraphBfsParams::new(0, None);
+            params.predicates.target_vertices = Some(GraphPredicateInput::new(target, "target"));
+            params.path_output = Some(GraphBfsPathOutput::new(u64::MAX));
+            params
+        },
+    );
+    let error = graph_memory_bounded_admission_evidence_for_plan(&plan, GraphMemoryCalibrationOverride::none(), None)
+        .expect_err("path byte overflow must fail closed");
+
+    assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
+    assert_eq!(error.fact_value("reason"), Some("bfs_path_owner_preflight_unavailable"));
 }
 
 #[cfg(feature = "cugraph")]

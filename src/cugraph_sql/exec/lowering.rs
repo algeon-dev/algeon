@@ -168,14 +168,6 @@ fn cugraph_execution_plan(
     edge_row_upper_bound: Option<u64>,
     edge_vertex_upper_bound: Option<u64>,
 ) -> Result<nexus_query_engine::plan::QueryPlan> {
-    let defer_final_projection = is_bfs_path_output(spec);
-    let deferred_options;
-    let result_options = if defer_final_projection {
-        deferred_options = CugraphResultPlanOptions::default();
-        &deferred_options
-    } else {
-        result_options
-    };
     cugraph_schema_query_plan(
         spec,
         edge_schema,
@@ -249,7 +241,10 @@ pub(super) fn cugraph_schema_query_plan(
     } else {
         (spec.clone(), input, Arc::clone(&edge_schema), predicate_nodes, None)
     };
-    let graph_spec = native_graph_spec(&execution_spec, edge_normalize_inserted, &graph_predicates);
+    let bfs_path_output_rows =
+        bfs_path_output_row_bound(&execution_spec, edge_vertex_upper_bound, edge_row_upper_bound)?;
+    let graph_spec =
+        native_graph_spec(&execution_spec, edge_normalize_inserted, &graph_predicates, bfs_path_output_rows);
     let mut root_schema = Arc::clone(&graph_spec.output_schema);
     let mut root = builder.try_add_graph_algorithm(graph_input, graph_spec).map_err(|error| {
         DataFusionError::from(Error::from_native(
@@ -270,6 +265,13 @@ pub(super) fn cugraph_schema_query_plan(
     }
     if let Some(codebook) = codebook {
         (root, root_schema) = decode_logical_graph_result(&mut builder, spec, root, root_schema, codebook)?;
+        if is_bfs_path_output(spec) {
+            root = builder.add_sort(
+                root,
+                SortSpec::new(vec![SortExpr::new(NativeExpr::column("path_index"), false, false)]),
+                Arc::clone(&root_schema),
+            );
+        }
     }
     if logical_mapping && let Some(sort) = &result_options.subsumed_top_k_sort {
         root = builder.add_sort(root, sort.clone(), Arc::clone(&root_schema));
@@ -307,7 +309,7 @@ pub(super) fn cugraph_execution_capability_proof_with_edge_row_upper_bound(
     edge_row_upper_bound: Option<u64>,
     edge_vertex_upper_bound: Option<u64>,
 ) -> Result<(nexus_query_engine::plan::QueryPlan, nexus_query_engine::admission::QueryPlanCapabilityProof)> {
-    cugraph_execution_capability_proof_with_resident_edge_plan(
+    cugraph_execution_capability_proof_with_resident_input_plans(
         spec,
         edge_schema,
         predicate_schemas,
@@ -317,10 +319,11 @@ pub(super) fn cugraph_execution_capability_proof_with_edge_row_upper_bound(
         edge_row_upper_bound,
         edge_vertex_upper_bound,
         None,
+        &[],
     )
 }
 
-pub(super) fn cugraph_execution_capability_proof_with_resident_edge_plan(
+pub(super) fn cugraph_execution_capability_proof_with_resident_input_plans(
     spec: &CugraphAlgorithmSpec,
     edge_schema: SchemaRef,
     predicate_schemas: Vec<SchemaRef>,
@@ -330,6 +333,7 @@ pub(super) fn cugraph_execution_capability_proof_with_resident_edge_plan(
     edge_row_upper_bound: Option<u64>,
     edge_vertex_upper_bound: Option<u64>,
     resident_edge_plan: Option<&nexus_query_engine::plan::QueryPlan>,
+    resident_side_input_plans: &[(String, nexus_query_engine::plan::QueryPlan)],
 ) -> Result<(nexus_query_engine::plan::QueryPlan, nexus_query_engine::admission::QueryPlanCapabilityProof)> {
     let plan = cugraph_execution_plan(
         spec,
@@ -341,28 +345,34 @@ pub(super) fn cugraph_execution_capability_proof_with_resident_edge_plan(
         edge_row_upper_bound,
         edge_vertex_upper_bound,
     )?;
-    let graph_proof = match resident_edge_plan {
-        Some(edge_plan) =>
-            nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan_with_resident_inputs(
-                &plan,
-                [(CUGRAPH_EDGE_INPUT_NAME, edge_plan)],
-            )
-            .map_err(|error| {
-                DataFusionError::from(Error::from_native(
-                    "datafusion_nexus.cugraph_sql.plan_capability_proof",
-                    "native cuGraph resident edge evidence did not match the execution plan",
-                    error,
-                ))
-            })?,
-        None => nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&plan),
+    let mut resident_inputs =
+        Vec::with_capacity(usize::from(resident_edge_plan.is_some()) + resident_side_input_plans.len());
+    if let Some(edge_plan) = resident_edge_plan {
+        resident_inputs.push((CUGRAPH_EDGE_INPUT_NAME, edge_plan));
+    }
+    resident_inputs.extend(resident_side_input_plans.iter().map(|(name, plan)| (name.as_str(), plan)));
+    let graph_proof = if resident_inputs.is_empty() {
+        nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&plan)
+    } else {
+        nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan_with_resident_inputs(
+            &plan,
+            resident_inputs,
+        )
+        .map_err(|error| {
+            DataFusionError::from(Error::from_native(
+                "datafusion_nexus.cugraph_sql.plan_capability_proof",
+                "native cuGraph resident input evidence did not match the execution plan",
+                error,
+            ))
+        })?
     }
     .ok_or_else(|| {
-            DataFusionError::from(Error::new(
-                ErrorCode::InvalidExecutionPlan,
-                "datafusion_nexus.cugraph_sql.plan_capability_proof",
-                "native cuGraph query plan did not expose capability evidence",
-            ))
-        })?;
+        DataFusionError::from(Error::new(
+            ErrorCode::InvalidExecutionPlan,
+            "datafusion_nexus.cugraph_sql.plan_capability_proof",
+            "native cuGraph query plan did not expose capability evidence",
+        ))
+    })?;
     Ok((plan, graph_proof))
 }
 
@@ -389,6 +399,7 @@ pub(super) fn native_graph_spec(
     spec: &CugraphAlgorithmSpec,
     edge_normalize_inserted: bool,
     predicate_nodes: &[nexus_query_engine::plan::NodeId],
+    bfs_path_output_rows: Option<u64>,
 ) -> GraphAlgorithmSpec {
     let mut edge_columns =
         GraphEdgeColumnBindings::new(spec.src_col.clone(), spec.dst_col.clone(), spec.weight_col.clone());
@@ -396,7 +407,7 @@ pub(super) fn native_graph_spec(
         edge_columns = edge_columns.with_edge_id(edge_id.clone());
     }
     let algorithm = native_algorithm(spec.algorithm);
-    let params = native_algorithm_params(&spec.params, predicate_nodes);
+    let params = native_algorithm_params(&spec.params, predicate_nodes, bfs_path_output_rows);
     let output_schema = algorithm.definition().result_schema_for_params(&params);
     GraphAlgorithmSpec::new(
         algorithm,
@@ -435,7 +446,29 @@ pub(super) fn native_graph_spec_for_placement_hint(
             )))
         })
         .collect::<Vec<_>>();
-    native_graph_spec(spec, edge_normalize_inserted, &predicate_nodes)
+    native_graph_spec(spec, edge_normalize_inserted, &predicate_nodes, None)
+}
+
+fn bfs_path_output_row_bound(
+    spec: &CugraphAlgorithmSpec,
+    edge_vertex_upper_bound: Option<u64>,
+    edge_row_upper_bound: Option<u64>,
+) -> Result<Option<u64>> {
+    let CugraphAlgorithmParams::Bfs(params) = &spec.params else {
+        return Ok(None);
+    };
+    if params.output.mode != CugraphBfsOutputMode::Path {
+        return Ok(None);
+    }
+    if let Some(depth) = params.depth_limit {
+        let depth = u64::try_from(depth).map_err(|_| plan_error("BFS path depth_limit must be non-negative"))?;
+        return depth.checked_add(1).map(Some).ok_or_else(|| plan_error("BFS path output row bound overflowed u64"));
+    }
+    edge_vertex_upper_bound
+        .or_else(|| edge_row_upper_bound.and_then(|rows| rows.checked_mul(2)))
+        .map(|rows| rows.max(1))
+        .map(Some)
+        .ok_or_else(|| plan_error("BFS path output requires a depth or graph vertex row bound"))
 }
 
 pub(super) fn bfs_normalized_output_projection(
@@ -520,6 +553,7 @@ pub(super) fn native_algorithm(algorithm: CugraphAlgorithm) -> GraphAlgorithm {
 pub(super) fn native_algorithm_params(
     params: &CugraphAlgorithmParams,
     predicate_nodes: &[nexus_query_engine::plan::NodeId],
+    bfs_path_output_rows: Option<u64>,
 ) -> GraphAlgorithmParams {
     match params {
         CugraphAlgorithmParams::PageRank(params) => GraphAlgorithmParams::PageRank(GraphPageRankParams {
@@ -543,7 +577,7 @@ pub(super) fn native_algorithm_params(
             })
         },
         CugraphAlgorithmParams::Bfs(params) => {
-            GraphAlgorithmParams::Bfs(Box::new(native_bfs_params(params, predicate_nodes)))
+            GraphAlgorithmParams::Bfs(Box::new(native_bfs_params(params, predicate_nodes, bfs_path_output_rows)))
         },
         CugraphAlgorithmParams::Louvain(params) => GraphAlgorithmParams::Louvain(GraphLouvainParams {
             max_level: params.max_level,
@@ -699,6 +733,7 @@ fn native_betweenness_seeds(
 pub(super) fn native_bfs_params(
     params: &super::CugraphBfsParams,
     predicate_nodes: &[nexus_query_engine::plan::NodeId],
+    path_output_rows: Option<u64>,
 ) -> GraphBfsParams {
     let mut native = GraphBfsParams::new(params.source.as_i64().unwrap_or(0), params.depth_limit);
     let mut next = predicate_nodes.iter().copied();
@@ -733,6 +768,9 @@ pub(super) fn native_bfs_params(
     native.return_target_info = params.output.return_target_info;
     if params.output.mode == CugraphBfsOutputMode::Path {
         native.endpoint_policy = GraphBfsEndpointPolicy::EmptyOnMissingPathEndpoint;
+        native.path_output = Some(nexus_query_engine::plan::GraphBfsPathOutput::new(
+            path_output_rows.expect("bounded BFS path plan must carry an output row bound"),
+        ));
     }
     native
 }
@@ -808,14 +846,12 @@ mod tests {
         )
         .expect("cuGraph plan must expose a capability proof");
 
-        let defer_final_projection = is_bfs_path_output(spec);
-        let deferred_options = CugraphResultPlanOptions::default();
         let runtime_plan = cugraph_schema_query_plan(
             spec,
             edge_schema,
             Vec::new(),
             &predicate_row_upper_bounds,
-            if defer_final_projection { &deferred_options } else { &result_options },
+            &result_options,
             false,
             None,
             None,

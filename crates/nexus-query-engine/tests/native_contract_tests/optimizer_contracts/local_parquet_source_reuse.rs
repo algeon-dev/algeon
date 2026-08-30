@@ -661,6 +661,7 @@ fn graph_bfs_local_source_reuse_plan() -> nexus_query_engine::plan::QueryPlan {
             ..Default::default()
         },
         endpoint_policy: GraphBfsEndpointPolicy::Strict,
+        path_output: None,
         return_target_info: false,
     };
     let spec = GraphAlgorithmSpec::with_stable_schema(

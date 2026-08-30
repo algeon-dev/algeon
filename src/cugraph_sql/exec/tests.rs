@@ -103,6 +103,13 @@ fn memory_string_edge_source() -> Arc<dyn ExecutionPlan> {
     MemorySourceConfig::try_new_exec(&[vec![batch]], schema, None).unwrap() as Arc<dyn ExecutionPlan>
 }
 
+fn memory_string_path_target_source() -> Arc<dyn ExecutionPlan> {
+    let schema = Arc::new(Schema::new(vec![Field::new("target_vertex", DataType::Utf8, false)]));
+    let batch =
+        RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(StringArray::from(vec!["bob"])) as ArrayRef]).unwrap();
+    MemorySourceConfig::try_new_exec(&[vec![batch]], schema, None).unwrap() as Arc<dyn ExecutionPlan>
+}
+
 fn memory_edge_source(rows: usize) -> Arc<dyn ExecutionPlan> {
     let schema = edge_schema();
     let src = Arc::new(Int64Array::from_iter_values((0..rows).map(|row| row as i64))) as ArrayRef;
@@ -426,7 +433,7 @@ fn graph_ticket_plan_and_proof_with_resident_edge_plan(
 ) -> (nexus_query_engine::plan::QueryPlan, nexus_query_engine::admission::QueryPlanCapabilityProof) {
     let edge_vertex_upper_bound =
         edge_source_graph_vertex_estimate(exec.edge_source.as_ref()).map(|estimate| estimate.count);
-    cugraph_execution_capability_proof_with_resident_edge_plan(
+    cugraph_execution_capability_proof_with_resident_input_plans(
         &exec.spec,
         exec.edge_source.schema(),
         exec.predicate_sources.iter().map(|source| source.schema()).collect(),
@@ -436,6 +443,7 @@ fn graph_ticket_plan_and_proof_with_resident_edge_plan(
         exec.input_row_bounds.edge_row_upper_bound(),
         edge_vertex_upper_bound,
         Some(edge_plan),
+        &[],
     )
     .expect("prepared graph fixture must issue a resident-input-bound proof")
 }
@@ -729,6 +737,8 @@ fn bfs_utf8_path_spec() -> CugraphAlgorithmSpec {
     let mut spec = bfs_utf8_spec();
     let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("test spec is BFS") };
     params.output.mode = CugraphBfsOutputMode::Path;
+    params.predicates.target_vertices =
+        Some(CugraphGraphPredicateTable::new(CugraphTableReference::parse("targets").unwrap(), "target_vertex"));
     spec.output_schema = result_schema_for_params(CugraphAlgorithm::Bfs, &spec.params);
     spec
 }
@@ -812,7 +822,7 @@ fn graph_producer_unique_key_contract_is_limited_to_vertex_row_results() {
     let path_bfs = CugraphAlgoExec::try_new(
         bfs_utf8_path_spec(),
         memory_string_edge_source(),
-        Vec::new(),
+        vec![memory_string_path_target_source()],
         None,
         None,
         NexusNativeExecutionConfig::bounded_default(),
@@ -874,13 +884,13 @@ fn cugraph_algo_exec_does_not_request_input_repartitioning() {
 }
 
 #[test]
-fn logical_bfs_path_gpu_plan_decodes_the_traversal_schema_before_host_reconstruction() {
+fn logical_bfs_path_gpu_plan_decodes_the_bounded_path_schema() {
     let spec = bfs_utf8_path_spec();
     let plan = cugraph_schema_query_plan(
         &spec,
         string_edge_schema(),
-        Vec::new(),
-        &[],
+        vec![Arc::new(Schema::new(vec![Field::new("target_vertex", DataType::Utf8, false)]))],
+        &[Some(1)],
         &CugraphResultPlanOptions::default(),
         false,
         Some(3),
@@ -889,10 +899,88 @@ fn logical_bfs_path_gpu_plan_decodes_the_traversal_schema_before_host_reconstruc
     .expect("logical BFS path GPU plan should build");
     let schema = plan.root_node().output_schema();
 
-    assert_eq!(schema.fields().len(), 3);
-    assert_eq!(schema.field(0), &Field::new("vertex", DataType::Utf8, false));
-    assert_eq!(schema.field(1).name(), "distance");
-    assert_eq!(schema.field(2), &Field::new("predecessor", DataType::Utf8, true));
+    assert_eq!(schema.fields().len(), 5);
+    assert_eq!(schema.field(0), &Field::new("path_index", DataType::Int64, false));
+    assert_eq!(schema.field(1), &Field::new("source", DataType::Utf8, false));
+    assert_eq!(schema.field(2), &Field::new("target", DataType::Utf8, false));
+    assert_eq!(schema.field(3), &Field::new("vertex", DataType::Utf8, false));
+    assert_eq!(schema.field(4), &Field::new("distance", DataType::Int64, false));
+    let PlanNode::Sort(sort) = &plan.root_node().kind else {
+        panic!("logical BFS path decoding must restore path_index ordering");
+    };
+    assert_eq!(sort.spec, SortSpec::new(vec![SortExpr::new(Expr::column("path_index"), false, false)]));
+}
+
+#[test]
+fn bfs_path_exec_declares_ordering_only_while_path_index_is_preserved() {
+    let ordered = CugraphAlgoExec::try_new(
+        bfs_utf8_path_spec(),
+        memory_string_edge_source(),
+        vec![memory_string_path_target_source()],
+        None,
+        None,
+        NexusNativeExecutionConfig::bounded_default(),
+    )
+    .expect("bounded BFS path exec should build");
+    assert!(ordered.properties().output_ordering().is_some());
+
+    let projected = CugraphAlgoExec::try_new(
+        bfs_utf8_path_spec(),
+        memory_string_edge_source(),
+        vec![memory_string_path_target_source()],
+        Some(vec![1, 2, 3, 4]),
+        None,
+        NexusNativeExecutionConfig::bounded_default(),
+    )
+    .expect("projected BFS path exec should build");
+    assert!(projected.properties().output_ordering().is_none());
+}
+
+#[tokio::test]
+async fn bfs_path_materializes_only_the_bounded_frame_under_small_host_limit() {
+    let backend = test_gpu_backend();
+    let mut spec = bfs_spec();
+    let CugraphAlgorithmParams::Bfs(params) = &mut spec.params else { unreachable!("fixture is BFS") };
+    params.depth_limit = Some(6);
+    params.output.mode = CugraphBfsOutputMode::Path;
+    params.predicates.target_vertices =
+        Some(CugraphGraphPredicateTable::new(CugraphTableReference::parse("targets").unwrap(), "target_vertex"));
+    spec.output_schema = result_schema_for_params(spec.algorithm, &spec.params);
+
+    let target_schema = Arc::new(Schema::new(vec![Field::new("target_vertex", DataType::Int64, false)]));
+    let target_batch =
+        RecordBatch::try_new(Arc::clone(&target_schema), vec![Arc::new(Int64Array::from(vec![6])) as ArrayRef])
+            .unwrap();
+    let target_source = MemorySourceConfig::try_new_exec(&[vec![target_batch]], target_schema, None).unwrap();
+    let output_limit = 1024;
+    let exec = CugraphAlgoExec::try_new_with_host_boundary_config(
+        spec,
+        memory_edge_source(1_000),
+        vec![target_source],
+        None,
+        None,
+        backend_execution_config(&backend),
+        GpuIslandHostBoundaryConfig::try_new(1024 * 1024, output_limit).unwrap(),
+    )
+    .expect("the bounded path must plan below the deliberately small host-output limit");
+    let plan = Arc::new(exec) as Arc<dyn ExecutionPlan>;
+    let batches = collect(Arc::clone(&plan), Arc::new(TaskContext::default()))
+        .await
+        .expect("only the seven-row path should cross the host boundary");
+    let rows = batches.iter().map(RecordBatch::num_rows).sum::<usize>();
+    assert_eq!(rows, 7);
+    let vertices = batches
+        .iter()
+        .flat_map(|batch| batch.column(3).as_any().downcast_ref::<Int64Array>().unwrap().values().iter().copied())
+        .collect::<Vec<_>>();
+    assert_eq!(vertices, (0_i64..=6).collect::<Vec<_>>());
+
+    let metrics = NativeDataFusionExecutionMetrics::from_metrics(
+        &plan.metrics().expect("the graph execution must publish boundary metrics"),
+    );
+    assert_eq!(metrics.device_to_host_materializations, 1);
+    assert_eq!(metrics.device_to_host_materialized_rows, 7);
+    assert!(metrics.device_to_host_materialized_bytes <= output_limit);
 }
 
 #[test]
@@ -1353,32 +1441,6 @@ fn string_bfs_maps_edge_relation_predicates_and_both_result_vertices() {
 }
 
 #[test]
-fn logical_bfs_path_reconstruction_applies_the_final_schema_after_gpu_decode() {
-    let spec = bfs_utf8_path_spec();
-    let traversal_schema = Arc::new(Schema::new(vec![
-        Field::new("vertex", DataType::Utf8, false),
-        Field::new("distance", DataType::Int64, true),
-        Field::new("predecessor", DataType::Utf8, true),
-    ]));
-    let traversal = RecordBatch::try_new(
-        traversal_schema,
-        vec![
-            Arc::new(StringArray::from(vec!["alice", "bob"])) as ArrayRef,
-            Arc::new(Int64Array::from(vec![0, 1])) as ArrayRef,
-            Arc::new(StringArray::from(vec![None, Some("alice")])) as ArrayRef,
-        ],
-    )
-    .unwrap();
-
-    let path = reconstruct_bfs_path_batch(&spec, &traversal, BfsPathVertex::Utf8("bob".to_string()))
-        .expect("GPU-decoded traversal output should reconstruct into the five-column path schema");
-
-    assert_eq!(path.schema(), spec.output_schema);
-    assert_eq!(path.num_columns(), 5);
-    assert_eq!(path.num_rows(), 2);
-}
-
-#[test]
 fn string_pagerank_and_bfs_are_gpu_producers_while_bfs_path_remains_host_owned() {
     let pagerank = CugraphAlgoExec::try_new(
         pagerank_utf8_spec(),
@@ -1405,7 +1467,7 @@ fn string_pagerank_and_bfs_are_gpu_producers_while_bfs_path_remains_host_owned()
     let numeric_path = CugraphAlgoExec::try_new(
         bfs_utf8_path_spec(),
         memory_string_edge_source(),
-        vec![],
+        vec![memory_string_path_target_source()],
         None,
         None,
         NexusNativeExecutionConfig::bounded_default(),

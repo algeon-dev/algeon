@@ -117,6 +117,17 @@ impl CugraphAlgoExec {
         // one immutable ticket is minted after metadata preparation.
         let native_execution_config = native_execution_config.without_query_admission_ticket();
         let metrics_capture = native_execution_config.new_metrics_capture();
+        let equivalence_properties = if is_bfs_path_output(&spec) {
+            match schema.index_of("path_index") {
+                Ok(index) => EquivalenceProperties::new_with_orderings(
+                    Arc::clone(&schema),
+                    [[PhysicalSortExpr::new(Arc::new(Column::new("path_index", index)), SortOptions::default())]],
+                ),
+                Err(_) => EquivalenceProperties::new(Arc::clone(&schema)),
+            }
+        } else {
+            EquivalenceProperties::new(Arc::clone(&schema))
+        };
         Ok(Self {
             spec,
             edge_source,
@@ -133,7 +144,7 @@ impl CugraphAlgoExec {
             gpu_result_input_name,
             metrics: ExecutionPlanMetricsSet::new(),
             cache: Arc::new(PlanProperties::new(
-                EquivalenceProperties::new(schema),
+                equivalence_properties,
                 Partitioning::UnknownPartitioning(1),
                 EmissionType::Final,
                 Boundedness::Bounded,
@@ -689,17 +700,6 @@ impl CugraphAlgoExec {
             } = staged_inputs.upload(native_context, &mut graph_metrics, Arc::clone(&task_context)).await?;
             let edge_frame =
                 attach_graph_residency(edge_frame, self.graph_residency.as_ref(), edge_schema.as_ref(), &self.spec);
-            let path_target = bfs_path_target_vertex(
-                native_context,
-                &self.spec,
-                &predicate_frames,
-                task_context.as_ref(),
-                self.host_boundary_config.max_output_staging_bytes(),
-                Some(&host_evidence),
-                &mut graph_metrics,
-            )?;
-            let result_options =
-                if path_target.is_some() { CugraphResultPlanOptions::default() } else { self.result_options.clone() };
             let handle = execute_cugraph_query_to_gpu_with_options(
                 native_context,
                 &mut graph_metrics,
@@ -708,7 +708,7 @@ impl CugraphAlgoExec {
                 edge_frame,
                 predicate_frames,
                 self.input_row_bounds.predicate_row_upper_bounds(),
-                &result_options,
+                &self.result_options,
                 self.edge_normalize_inserted(),
                 self.input_row_bounds.edge_row_upper_bound(),
                 edge_source_graph_vertex_estimate(self.edge_source.as_ref()).map(|estimate| estimate.count),
@@ -722,17 +722,6 @@ impl CugraphAlgoExec {
                 Some(&host_evidence),
                 &mut graph_metrics,
             )?;
-            if let Some(path_target) = path_target {
-                let (path, reservation) = materialize_bfs_path_output_from_host(
-                    output,
-                    &self.spec,
-                    path_target,
-                    self.result_options.projection.as_ref(),
-                    self.result_options.limit,
-                    self.host_boundary_config.max_output_staging_bytes(),
-                )?;
-                return Ok(EagerCugraphHostOutput::from_shared_parts(self.schema(), Arc::new(vec![path]), reservation));
-            }
             Ok(output)
         };
         let result = result.await;
