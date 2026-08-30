@@ -53,53 +53,9 @@ cudf_status_t maybe_fail_column_view_metadata_read()
   return CUDF_ERROR_UNKNOWN;
 }
 
-void maybe_fail_fixed_width_host_import_after_data_copy()
+void maybe_inject_import_fault(bool injected, char const* message)
 {
-  if (cudf::rust::test_support::take_fixed_width_host_import_after_data_copy()) {
-    throw std::runtime_error("test fixed-width host import failure after data copy");
-  }
-}
-
-void maybe_fail_fixed_width_host_import_after_null_mask_copy()
-{
-  if (cudf::rust::test_support::take_fixed_width_host_import_after_null_mask_copy()) {
-    throw std::runtime_error("test fixed-width host import failure after null mask copy");
-  }
-}
-
-void maybe_fail_strings_host_import_after_offsets_copy()
-{
-  if (cudf::rust::test_support::take_strings_host_import_after_offsets_copy()) {
-    throw std::runtime_error("test strings host import failure after offsets copy");
-  }
-}
-
-void maybe_fail_strings_host_import_after_chars_copy()
-{
-  if (cudf::rust::test_support::take_strings_host_import_after_chars_copy()) {
-    throw std::runtime_error("test strings host import failure after chars copy");
-  }
-}
-
-void maybe_fail_strings_host_import_after_null_mask_copy()
-{
-  if (cudf::rust::test_support::take_strings_host_import_after_null_mask_copy()) {
-    throw std::runtime_error("test strings host import failure after null mask copy");
-  }
-}
-
-void maybe_fail_strings_host_import_before_make_strings_column()
-{
-  if (cudf::rust::test_support::take_strings_host_import_before_make_strings_column()) {
-    throw std::runtime_error("test strings host import failure before make_strings_column");
-  }
-}
-
-void maybe_fail_strings_host_import_after_make_strings_column()
-{
-  if (cudf::rust::test_support::take_strings_host_import_after_make_strings_column()) {
-    throw std::runtime_error("test strings host import failure after make_strings_column");
-  }
+  if (injected) { throw std::runtime_error(message); }
 }
 
 cudf_status_t resolve_column_view_null_count(cudf::column_view const& view,
@@ -303,7 +259,9 @@ cudf_status_t cudf_column_create_fixed_width_from_host_ex(cudf_type_id_t type_id
     cudf_host_source_copy_sync_guard host_copy_guard{exec->stream};
     if (data_bytes > 0) { host_copy_guard.mark_copy_may_be_pending(); }
     dev_data.emplace(data, data_bytes, exec->stream, *exec->mr);
-    maybe_fail_fixed_width_host_import_after_data_copy();
+    maybe_inject_import_fault(
+      cudf::rust::test_support::take_fixed_width_host_import_after_data_copy(),
+      "test fixed-width host import failure after data copy");
 
     if (null_mask != nullptr && size > 0) {
       auto const compact_mask_bytes = static_cast<size_t>((size + 7) / 8);
@@ -313,7 +271,9 @@ cudf_status_t cudf_column_create_fixed_width_from_host_ex(cudf_type_id_t type_id
       std::memcpy(padded_mask.data(), null_mask, compact_mask_bytes);
       if (alloc_mask_bytes > 0) { host_copy_guard.mark_copy_may_be_pending(); }
       dev_null_mask.emplace(padded_mask.data(), alloc_mask_bytes, exec->stream, *exec->mr);
-      maybe_fail_fixed_width_host_import_after_null_mask_copy();
+      maybe_inject_import_fault(
+        cudf::rust::test_support::take_fixed_width_host_import_after_null_mask_copy(),
+        "test fixed-width host import failure after null mask copy");
     }
 
     host_copy_guard.synchronize_and_release();
@@ -1067,12 +1027,15 @@ cudf_status_t cudf_column_create_strings_ex(char const** strings,
     auto const offsets_bytes = offsets_count * sizeof(int32_t);
     if (offsets_bytes > 0) { host_copy_guard.mark_copy_may_be_pending(); }
     dev_offsets.emplace(host_offsets.data(), offsets_bytes, exec->stream, *exec->mr);
-    maybe_fail_strings_host_import_after_offsets_copy();
+    maybe_inject_import_fault(
+      cudf::rust::test_support::take_strings_host_import_after_offsets_copy(),
+      "test strings host import failure after offsets copy");
 
     auto const chars_bytes = static_cast<size_t>(total_chars);
     if (chars_bytes > 0) { host_copy_guard.mark_copy_may_be_pending(); }
     dev_chars.emplace(host_chars.data(), chars_bytes, exec->stream, *exec->mr);
-    maybe_fail_strings_host_import_after_chars_copy();
+    maybe_inject_import_fault(cudf::rust::test_support::take_strings_host_import_after_chars_copy(),
+                              "test strings host import failure after chars copy");
 
     if (null_count > 0) {
       auto const compact_mask_bytes = (num_strings_size + 7) / 8;
@@ -1082,10 +1045,14 @@ cudf_status_t cudf_column_create_strings_ex(char const** strings,
       std::memcpy(padded_mask.data(), null_mask, compact_mask_bytes);
       if (alloc_mask_bytes > 0) { host_copy_guard.mark_copy_may_be_pending(); }
       dev_null_mask.emplace(padded_mask.data(), alloc_mask_bytes, exec->stream, *exec->mr);
-      maybe_fail_strings_host_import_after_null_mask_copy();
+      maybe_inject_import_fault(
+        cudf::rust::test_support::take_strings_host_import_after_null_mask_copy(),
+        "test strings host import failure after null mask copy");
     }
 
-    maybe_fail_strings_host_import_before_make_strings_column();
+    maybe_inject_import_fault(
+      cudf::rust::test_support::take_strings_host_import_before_make_strings_column(),
+      "test strings host import failure before make_strings_column");
     host_copy_guard.synchronize_and_release();
 
     auto offsets_col = std::make_unique<cudf::column>(cudf::data_type(cudf::type_id::INT32),
@@ -1104,7 +1071,9 @@ cudf_status_t cudf_column_create_strings_ex(char const** strings,
                                       static_cast<cudf::size_type>(null_count),
                                       std::move(null_mask_buffer));
     }
-    maybe_fail_strings_host_import_after_make_strings_column();
+    maybe_inject_import_fault(
+      cudf::rust::test_support::take_strings_host_import_after_make_strings_column(),
+      "test strings host import failure after make_strings_column");
 
     *out = cudf_release_column_handle(std::move(col), cudf_capture_exec_provenance(*exec));
     return CUDF_SUCCESS;
