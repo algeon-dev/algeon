@@ -34,6 +34,16 @@ case "${1:-}" in
     if [[ "${FAKE_LIVE_INVENTORY_STATUS:-0}" -ne 0 ]]; then
       echo "RAW_LIVE_INVENTORY_FAILURE" >&2
     fi
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --inventory-out | --cargo-metadata-out) printf '{}\n' >"$2"; shift 2 ;;
+        --lanes-out)
+          [[ "${FAKE_SKIP_LANES_FILE:-0}" -eq 1 ]] || printf '%s\n' "${FAKE_SELECTED_LANES-cpu}" >"$2"
+          shift 2
+          ;;
+        *) shift ;;
+      esac
+    done
     exit "${FAKE_LIVE_INVENTORY_STATUS:-0}"
     ;;
   scripts/ci/tests/check_cpu_packaging_tests.sh | scripts/ci/check_native_sources.sh | scripts/ci/check_component_packages.sh | scripts/dev/bindings.sh | scripts/ci/tests/check_dependency_direction_tests.sh | scripts/ci/tests/check_doctest_report_tests.sh | scripts/ci/tests/check_phase_test_counts_tests.sh | scripts/ci/tests/check_phase_failed_tests_tests.sh | scripts/ci/tests/check_gpu_test_lane_tests.sh | scripts/ci/tests/check_native_sources_tests.sh | scripts/ci/tests/check_doctest_rustdoc_tests.sh | scripts/ci/tests/check_gpu_scheduling_tests.sh | scripts/ci/tests/check_clean_target_artifacts_tests.sh | scripts/ci/tests/check_pass_as_skip_policy_tests.sh | scripts/ci/tests/check_public_api_surface_tests.sh)
@@ -83,6 +93,10 @@ if [[ "${1:-}" == "hack" && "${2:-}" == "check" ]]; then
     echo "RAW_MSRV_FAILURE" >&2
   fi
   exit "${FAKE_MSRV_STATUS:-0}"
+fi
+if [[ "${1:-}" == "clippy" ]]; then
+  [[ "${FAKE_CLIPPY_STATUS:-0}" -eq 0 ]] || echo "RAW_CLIPPY_FAILURE" >&2
+  exit "${FAKE_CLIPPY_STATUS:-0}"
 fi
 if [[ "${1:-}" == "nextest" && "${2:-}" == "show-config" ]]; then
   echo "group: gpu (max threads = ${FAKE_GPU_CAP:-num-cpus})"
@@ -385,7 +399,7 @@ assert_contains "${tmp_dir}/default.output" "CHECK SOURCE END: root="
 assert_contains "${tmp_dir}/default.output" "GPU scheduling preflight: shared: profile=default group=gpu configured_cap=num-cpus explicit_test_threads=16"
 assert_contains "${tmp_dir}/default.output" "exclusive: group=gpu-exclusive configured_cap=1 explicit_test_threads=1"
 assert_contains "${tmp_dir}/default.output" "GPU scheduling final: shared: profile=default group=gpu configured_cap=num-cpus explicit_test_threads=16"
-assert_contains "${tmp_dir}/default.log" "cargo <nextest> <show-config> <--color> <never> <-P> <default> <test-groups> <--workspace> <--all-features>"
+assert_contains "${tmp_dir}/default.log" "cargo <nextest> <show-config> <--color> <never> <-P> <default> <test-groups> <--cargo-metadata>"
 assert_contains "${tmp_dir}/default.log" "cargo <hack> <check> <--workspace> <--all-features> <--locked> <--rust-version> <--workspace-behavior=cargo>"
 assert_contains "${tmp_dir}/default.log" "cargo <hack> <check> <--workspace> <--each-feature> <--exclude-features> <default> <--locked> <--keep-going>"
 if [[ $(grep -cF 'cargo <hack> <check> <--workspace> <--all-features> <--locked> <--rust-version> <--workspace-behavior=cargo>' "${tmp_dir}/default.log") -ne 1 ]]; then
@@ -398,9 +412,8 @@ if [[ "${feature_isolation_command}" != 'cargo <hack> <check> <--workspace> <--e
   echo "FAIL: feature-isolation command shape drifted: ${feature_isolation_command}" >&2
   exit 1
 fi
-assert_contains "${tmp_dir}/default.log" "cargo <nextest> <run> <--workspace> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)> <--no-fail-fast> <--final-status-level> <fail>"
-assert_contains "${tmp_dir}/default.log" "cargo <nextest> <run> <-P> <default> <--workspace> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <16> <--final-status-level> <fail>"
-assert_contains "${tmp_dir}/default.log" "cargo <nextest> <run> <-P> <default> <--workspace> <--all-features> <-E> <group(gpu-exclusive)> <--no-fail-fast> <--test-threads> <1> <--final-status-level> <fail>"
+assert_contains "${tmp_dir}/default.log" "cargo <nextest> <run> <--cargo-metadata> <${tmp_dir}/phase-logs/cargo-metadata.json> <--binaries-metadata> <${tmp_dir}/phase-logs/binaries-metadata.json> <-E> <not group(gpu) & not group(gpu-exclusive)> <--no-fail-fast>"
+assert_contains "${tmp_dir}/default.log" "cargo <nextest> <run> <-P> <default> <--cargo-metadata> <${tmp_dir}/phase-logs/cargo-metadata.json> <--binaries-metadata> <${tmp_dir}/phase-logs/binaries-metadata.json> <-E> <group(gpu)>"
 assert_contains "${tmp_dir}/default.log" "cargo <test> <--workspace> <--all-features> <--doc> <--no-fail-fast>"
 assert_contains "${tmp_dir}/default.log" "cargo <+nightly> <fmt> <--all> <--check>"
 assert_contains "${tmp_dir}/default.log" "cargo <clippy> <--workspace> <--all-targets> <--all-features>"
@@ -413,9 +426,8 @@ assert_contains "${tmp_dir}/default.log" "bash <scripts/ci/tests/check_gpu_sched
 assert_contains "${tmp_dir}/default.output" "PHASE SUMMARY (18 phases: 18 PASS, 0 FAIL, 0 SKIPPED)"
 assert_contains "${tmp_dir}/default.output" "Phase | Status | Duration | Counts"
 assert_not_contains "${tmp_dir}/default.output" "FAILURES"
-assert_contains "${tmp_dir}/default.output" "==> [cpu-tests] cargo nextest run --workspace --all-features -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast --final-status-level fail"
-assert_contains "${tmp_dir}/default.output" "==> [gpu-shared-tests] flock /tmp/cudf-gpu.lock cargo nextest run -P default --workspace --all-features -E group(gpu) --no-fail-fast --test-threads 16 --final-status-level fail"
-assert_contains "${tmp_dir}/default.output" "==> [gpu-exclusive-tests] flock /tmp/cudf-gpu.lock cargo nextest run -P default --workspace --all-features -E group(gpu-exclusive) --no-fail-fast --test-threads 1 --final-status-level fail"
+assert_contains "${tmp_dir}/default.output" "==> [gpu-shared-tests] flock /tmp/cudf-gpu.lock cargo nextest run -P default --cargo-metadata"
+assert_contains "${tmp_dir}/default.output" "==> [gpu-exclusive-tests] flock /tmp/cudf-gpu.lock cargo nextest run -P default --cargo-metadata"
 assert_contains "${tmp_dir}/default.output" "==> [public-api-surface] bash scripts/ci/check_public_api_surface.sh check --all-features"
 assert_phase_contains "${tmp_dir}/default.output" policy-selftests "policy-selftests | PASS | 0.100s | checks=14"
 assert_phase_contains "${tmp_dir}/default.output" msrv-check "msrv-check | PASS | 0.100s | -"
@@ -431,8 +443,8 @@ for phase_log in policy-selftests native-sources checked-bindings component-pack
     exit 1
   }
 done
-default_shared_flock="flock </tmp/cudf-gpu.lock> <cargo> <nextest> <run> <-P> <default> <--workspace> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <16> <--final-status-level> <fail>"
-default_exclusive_flock="flock </tmp/cudf-gpu.lock> <cargo> <nextest> <run> <-P> <default> <--workspace> <--all-features> <-E> <group(gpu-exclusive)> <--no-fail-fast> <--test-threads> <1> <--final-status-level> <fail>"
+default_shared_flock="flock </tmp/cudf-gpu.lock> <cargo> <nextest> <run> <-P> <default> <--cargo-metadata> <${tmp_dir}/phase-logs/cargo-metadata.json> <--binaries-metadata> <${tmp_dir}/phase-logs/binaries-metadata.json> <-E> <group(gpu)>"
+default_exclusive_flock="flock </tmp/cudf-gpu.lock> <cargo> <nextest> <run> <-P> <default> <--cargo-metadata> <${tmp_dir}/phase-logs/cargo-metadata.json> <--binaries-metadata> <${tmp_dir}/phase-logs/binaries-metadata.json> <-E> <group(gpu-exclusive)>"
 assert_before "${tmp_dir}/default.log" "${default_shared_flock}" "${default_exclusive_flock}"
 default_doctest_flock="flock </tmp/cudf-gpu.lock> <cargo> <test> <--workspace> <--all-features> <--doc> <--no-fail-fast>"
 assert_before "${tmp_dir}/default.log" "${default_exclusive_flock}" "${default_doctest_flock}"
@@ -451,7 +463,7 @@ echo "PASS: full surface includes pinned fmt, one workspace-wide test/doc/clippy
 run_check twelve_cores env FAKE_NPROC_OUTPUT=12 /usr/bin/bash scripts/check_all.sh --lane gpu-shared
 assert_status twelve_cores 0
 assert_contains "${tmp_dir}/twelve_cores.output" "configured_cap=num-cpus explicit_test_threads=12"
-assert_contains "${tmp_dir}/twelve_cores.log" "cargo <nextest> <run> <-P> <default> <--workspace> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <12>"
+assert_contains "${tmp_dir}/twelve_cores.log" "cargo <nextest> <run> <-P> <default> <--cargo-metadata> <${tmp_dir}/phase-logs/cargo-metadata.json> <--binaries-metadata> <${tmp_dir}/phase-logs/binaries-metadata.json> <-E> <group(gpu)>"
 assert_phase_contains "${tmp_dir}/twelve_cores.output" gpu-shared-tests "gpu-shared-tests | PASS | 0.100s | run=2 passed=2 failed=0 skipped=6"
 echo "PASS: shared-GPU concurrency follows the available CPU count"
 
@@ -486,7 +498,7 @@ assert_phase_contains "${tmp_dir}/lane_cpu.output" gpu-shared-tests "gpu-shared-
 
 run_check lane_shared /usr/bin/bash scripts/check_all.sh --lane gpu-shared
 assert_status lane_shared 0
-assert_contains "${tmp_dir}/lane_shared.log" "flock </tmp/cudf-gpu.lock> <cargo> <nextest> <run> <-P> <default> <--workspace> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <16>"
+assert_contains "${tmp_dir}/lane_shared.log" "flock </tmp/cudf-gpu.lock> <cargo> <nextest> <run> <-P> <default> <--cargo-metadata>"
 assert_not_contains "${tmp_dir}/lane_shared.log" "cargo <nextest> <run> <--workspace> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)>"
 assert_not_contains "${tmp_dir}/lane_shared.log" "group(gpu-exclusive)"
 assert_not_contains "${tmp_dir}/lane_shared.log" "nexus-bench"
@@ -494,7 +506,7 @@ assert_phase_contains "${tmp_dir}/lane_shared.output" gpu-shared-tests "gpu-shar
 
 run_check lane_exclusive /usr/bin/bash scripts/check_all.sh --lane gpu-exclusive
 assert_status lane_exclusive 0
-assert_contains "${tmp_dir}/lane_exclusive.log" "flock </tmp/cudf-gpu.lock> <cargo> <nextest> <run> <-P> <default> <--workspace> <--all-features> <-E> <group(gpu-exclusive)>"
+assert_contains "${tmp_dir}/lane_exclusive.log" "flock </tmp/cudf-gpu.lock> <cargo> <nextest> <run> <-P> <default> <--cargo-metadata>"
 assert_not_contains "${tmp_dir}/lane_exclusive.log" "cargo <nextest> <run> <--workspace> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)>"
 assert_not_contains "${tmp_dir}/lane_exclusive.log" "<group(gpu)>"
 
@@ -547,7 +559,7 @@ assert_contains "${tmp_dir}/lane_cpu_failure.output" "RAW_CPU_FAILURE"
 assert_phase_contains "${tmp_dir}/lane_cpu_failure.output" cpu-tests "cpu-tests | FAIL(42) | 0.100s | run=3 passed=2 failed=1 skipped=5"
 assert_contains "${tmp_dir}/phase-logs/cpu-tests.log" "RAW_CPU_FAILURE"
 assert_contains "${tmp_dir}/lane_cpu_failure.output" "--- cpu-tests [FAIL(42), 0.100s] ---"
-assert_contains "${tmp_dir}/lane_cpu_failure.output" "command: cargo nextest run --workspace --all-features -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast --final-status-level fail"
+assert_contains "${tmp_dir}/lane_cpu_failure.output" "command: cargo nextest run --cargo-metadata ${tmp_dir}/phase-logs/cargo-metadata.json --binaries-metadata ${tmp_dir}/phase-logs/binaries-metadata.json -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast --final-status-level fail"
 assert_contains "${tmp_dir}/lane_cpu_failure.output" "log: ${tmp_dir}/phase-logs/cpu-tests.log"
 assert_contains "${tmp_dir}/lane_cpu_failure.output" "failed tests (1):"
 assert_contains "${tmp_dir}/lane_cpu_failure.output" "fake_cpu::broke"
@@ -566,7 +578,7 @@ assert_contains "${tmp_dir}/feature_isolation_failure.output" "RAW_FEATURE_ISOLA
 assert_phase_contains "${tmp_dir}/feature_isolation_failure.output" feature-isolation-check "feature-isolation-check | FAIL(42) | 0.100s | -"
 assert_phase_contains "${tmp_dir}/feature_isolation_failure.output" cpu-tests "cpu-tests | PASS | 0.100s | run=3"
 assert_contains "${tmp_dir}/feature_isolation_failure.output" "--- feature-isolation-check [FAIL(42), 0.100s] ---"
-assert_contains "${tmp_dir}/feature_isolation_failure.output" "command: cargo hack check --workspace --each-feature --exclude-features default --locked --keep-going"
+assert_contains "${tmp_dir}/feature_isolation_failure.output" "command: CARGO_TARGET_DIR=target/check-all/feature-isolation cargo hack check --workspace --each-feature --exclude-features default --locked --keep-going"
 assert_contains "${tmp_dir}/feature_isolation_failure.output" "log: ${tmp_dir}/phase-logs/feature-isolation-check.log"
 echo "PASS: feature-isolation failure is preserved and fails the aggregated full gate"
 
@@ -580,6 +592,66 @@ assert_contains "${tmp_dir}/live_inventory_failure.output" "--- live-inventory [
 assert_contains "${tmp_dir}/live_inventory_failure.output" "command: bash scripts/ci/check_gpu_test_lane.sh --all-features"
 assert_contains "${tmp_dir}/phase-logs/live-inventory.log" "RAW_LIVE_INVENTORY_FAILURE"
 echo "PASS: failed live inventory is logged and blocks selected lanes"
+
+run_check dev_cpu env FAKE_SELECTED_LANES=cpu /usr/bin/bash scripts/check_all.sh \
+  --dev -p datafusion-nexus --test cpu_contract_tests
+assert_status dev_cpu 0
+assert_contains "${tmp_dir}/dev_cpu.output" "mode=dev lane=scoped package=datafusion-nexus test=cpu_contract_tests"
+assert_contains "${tmp_dir}/dev_cpu.output" "PARTIAL: full pre-merge validation was not run."
+assert_contains "${tmp_dir}/dev_cpu.log" "cargo <clippy> <-p> <datafusion-nexus> <--all-targets> <--all-features>"
+assert_contains "${tmp_dir}/dev_cpu.log" "bash <scripts/ci/check_gpu_test_lane.sh> <--all-features> <--package> <datafusion-nexus> <--test> <cpu_contract_tests>"
+assert_contains "${tmp_dir}/dev_cpu.log" "cargo <nextest> <run> <--cargo-metadata>"
+assert_not_contains "${tmp_dir}/dev_cpu.log" "flock "
+assert_not_contains "${tmp_dir}/dev_cpu.log" "cargo <nextest> <show-config>"
+assert_contains "${tmp_dir}/phase-logs/phases.tsv" $'cpu-tests\tPASS'
+assert_contains "${tmp_dir}/phase-logs/run.tsv" $'mode\tdev'
+echo "PASS: focused CPU development loop stays package-scoped and avoids GPU locks"
+
+run_check dev_gpu env FAKE_SELECTED_LANES=gpu-shared /usr/bin/bash scripts/check_all.sh \
+  --dev -p datafusion-nexus --test native_planning_tests
+assert_status dev_gpu 0
+assert_contains "${tmp_dir}/dev_gpu.log" "cargo <nextest> <show-config>"
+if [[ $(grep -c '^flock ' "${tmp_dir}/dev_gpu.log") -ne 1 ]]; then
+  echo "FAIL: focused shared-GPU loop must acquire exactly one GPU lock" >&2
+  exit 1
+fi
+assert_not_contains "${tmp_dir}/dev_gpu.log" "<--workspace>"
+echo "PASS: focused GPU development loop reuses scoped binaries and locks only execution"
+
+run_check dev_lint_failure env FAKE_CLIPPY_STATUS=41 /usr/bin/bash scripts/check_all.sh \
+  --dev -p datafusion-nexus --test cpu_contract_tests
+assert_status dev_lint_failure 1
+assert_contains "${tmp_dir}/dev_lint_failure.output" "ABORT: focused lint failed"
+assert_not_contains "${tmp_dir}/dev_lint_failure.log" "bash <scripts/ci/check_gpu_test_lane.sh>"
+assert_not_contains "${tmp_dir}/dev_lint_failure.log" "cargo <nextest> <run>"
+assert_contains "${tmp_dir}/phase-logs/phases.tsv" $'clippy\tFAIL(41)'
+
+run_check dev_cpu_failure env $'FAKE_SELECTED_LANES=cpu\ngpu-shared' FAKE_CPU_TEST_STATUS=42 \
+  /usr/bin/bash scripts/check_all.sh --dev -p datafusion-nexus
+assert_status dev_cpu_failure 1
+assert_contains "${tmp_dir}/dev_cpu_failure.output" "ABORT: focused CPU tests failed"
+assert_not_contains "${tmp_dir}/dev_cpu_failure.log" "flock "
+assert_contains "${tmp_dir}/phase-logs/phases.tsv" $'gpu-shared-tests\tSKIPPED(blocked)'
+
+for bad_lanes in empty invalid missing; do
+  bad_env=(env FAKE_SELECTED_LANES=)
+  [[ "${bad_lanes}" != invalid ]] || bad_env=(env FAKE_SELECTED_LANES=unexpected)
+  [[ "${bad_lanes}" != missing ]] || bad_env=(env FAKE_SKIP_LANES_FILE=1)
+  run_check "dev_lanes_${bad_lanes}" "${bad_env[@]}" /usr/bin/bash scripts/check_all.sh \
+    --dev -p datafusion-nexus --test cpu_contract_tests
+  assert_status "dev_lanes_${bad_lanes}" 1
+  assert_not_contains "${tmp_dir}/dev_lanes_${bad_lanes}.log" "cargo <nextest> <run>"
+done
+echo "PASS: focused development failures stop before dependent test and GPU work"
+
+run_check dev_missing_package /usr/bin/bash scripts/check_all.sh --dev
+assert_status dev_missing_package 2
+assert_contains "${tmp_dir}/dev_missing_package.output" "--dev requires -p PACKAGE"
+
+run_check public_scoped_lane /usr/bin/bash scripts/check_all.sh --lane scoped
+assert_status public_scoped_lane 2
+assert_contains "${tmp_dir}/public_scoped_lane.output" "--lane must be all, cpu, gpu, gpu-shared, gpu-exclusive, or policy"
+echo "PASS: focused development CLI fails closed on incomplete or internal-only scope"
 
 run_check source_changed env FAKE_MUTATE_WORKTREE=1 FAKE_MUTATE_TARGET="${mutation_fixture}" /usr/bin/bash scripts/check_all.sh
 assert_status source_changed 1

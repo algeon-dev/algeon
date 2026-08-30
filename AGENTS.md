@@ -80,6 +80,9 @@ cargo hack check --workspace --each-feature --exclude-features default --locked 
 That exact compile-only command is the sole exception; it proves package-local
 no-feature and non-default feature compilation. Do not generalize the
 exception to tests, Clippy, or ad-hoc feature combinations.
+The harness may replay nextest binaries previously built with `--all-features`
+using `--cargo-metadata` and `--binaries-metadata`; nextest rejects feature and
+package selection flags during that replay.
 
 ```bash
 # Build and lint, any package
@@ -88,6 +91,9 @@ cargo clippy --workspace --all-targets --all-features
 cargo +nightly fmt --all
 
 # Targeted edit loops
+bash scripts/check_all.sh --dev -p datafusion-nexus --test cpu_contract_tests
+bash scripts/check_all.sh --dev -p datafusion-nexus --test native_planning_tests
+bash scripts/check_all.sh --dev -p nexus-query-engine --test native_contract_tests
 cargo nextest run -p datafusion-nexus --all-features --test cpu_contract_tests
 cargo nextest run -p datafusion-nexus --all-features --test native_planning_tests
 cargo nextest run -p nexus-query-engine --all-features --test native_contract_tests
@@ -103,7 +109,11 @@ bash scripts/check_all.sh
 Select commands above by the change's blast radius; they are not a checklist
 for every task. Run focused checks first and broaden when the affected
 contracts or failures warrant it. Finish when the requested work and relevant
-checks are complete, with no unresolved task-related failures. Read-only
+checks are complete, with no unresolved task-related failures. For ordinary
+implementation work, passing the relevant focused lint and behavior tests is
+the stopping condition. Run the full gate only for pre-merge validation or
+when the task explicitly requests it. Report a focused or lane run as partial;
+do not automatically expand it into the full gate. Read-only
 reviews and prose-only edits do not require Cargo or GPU checks unless requested.
 Full pre-merge validation still requires `bash scripts/check_all.sh`.
 `bash scripts/check_all.sh --fast` and every explicit `--lane` are partial and

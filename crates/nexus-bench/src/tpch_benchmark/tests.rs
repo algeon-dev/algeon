@@ -6,6 +6,7 @@ use super::*;
 
 mod config_dataset;
 mod output_fingerprint;
+mod provenance;
 mod rejected_rows;
 mod report_rows;
 mod runtime_failures;
@@ -36,6 +37,7 @@ fn allocator_high_water_placeholder_is_none_without_runtime_contract() {
     let report = NativeTpchBenchmarkReport {
         metadata: benchmark_metadata(),
         config,
+        devices: Vec::new(),
         rows: vec![NativeTpchBenchmarkRow::accepted(
             "q01",
             accepted_planning_row("q01"),
@@ -90,7 +92,7 @@ fn benchmark_query_progress_line_identifies_query_and_profile() {
     let config = NativeTpchBenchmarkConfig {
         query_ids: vec!["q07".to_string()],
         native_memory_policy: NativeTpchMemoryPolicy::bounded_custom(
-            94_489_280_512,
+            NativeTpchDeviceBudget::Explicit { bytes: 94_489_280_512 },
             34_359_738_368,
             1024,
             DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
@@ -200,6 +202,7 @@ fn benchmark_report_schema_v4_rows_match_header_columns() {
     let report = NativeTpchBenchmarkReport {
         metadata: benchmark_metadata(),
         config,
+        devices: Vec::new(),
         rows: vec![
             NativeTpchBenchmarkRow::accepted(
                 "q01",

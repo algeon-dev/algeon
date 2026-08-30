@@ -40,7 +40,7 @@ fn native_profile_defaults_to_conservative() {
 
     assert_eq!(profile.profile_name, TPCH_NATIVE_PROFILE_CONSERVATIVE);
     assert_eq!(profile.profile_source, "default");
-    assert_eq!(profile.device_budget_bytes, DEFAULT_NATIVE_DEVICE_BUDGET_BYTES);
+    assert_eq!(profile.device_budget, NativeTpchDeviceBudget::Automatic);
     assert_eq!(profile.max_source_chunk_bytes, DEFAULT_NATIVE_MAX_SOURCE_CHUNK_BYTES);
     assert_eq!(profile.max_row_groups_per_chunk, DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK);
     assert_eq!(profile.max_retry_attempts, DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS);
@@ -55,7 +55,7 @@ fn native_profile_resolves_sf100_gpu_throughput() {
 
     assert_eq!(profile.profile_name, TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT);
     assert_eq!(profile.profile_source, "env_profile");
-    assert_eq!(profile.device_budget_bytes, TPCH_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES);
+    assert_eq!(profile.device_budget, NativeTpchDeviceBudget::Automatic);
     assert_eq!(profile.max_source_chunk_bytes, TPCH_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES);
     assert_eq!(profile.max_row_groups_per_chunk, TPCH_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
     assert_eq!(profile.max_retry_attempts, DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS);
@@ -87,7 +87,6 @@ fn native_profile_source_chunk_planning_reaches_execution_config() {
 #[test]
 fn native_profile_exact_overrides_resolve_to_named_profile() {
     let profile = tpch_native_profile_settings_from([
-        (NEXUS_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, "102005473280"),
         (NEXUS_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "34359738368"),
         (NEXUS_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1024"),
         (NEXUS_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV, "4"),
@@ -98,6 +97,36 @@ fn native_profile_exact_overrides_resolve_to_named_profile() {
 
     assert_eq!(profile.profile_name, TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT);
     assert_eq!(profile.profile_source, "resolved_values");
+}
+
+#[test]
+fn explicit_device_budget_override_is_custom_and_explicit() {
+    let profile = tpch_native_profile_settings_from([
+        (NEXUS_TPCH_BENCH_NATIVE_PROFILE_ENV, "sf100_gpu_throughput"),
+        (NEXUS_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, "15032385536"),
+    ])
+    .unwrap();
+
+    assert_eq!(profile.profile_name, TPCH_NATIVE_PROFILE_CUSTOM);
+    assert_eq!(profile.profile_source, "custom_overrides");
+    assert_eq!(profile.device_budget, NativeTpchDeviceBudget::Explicit { bytes: 15_032_385_536 });
+    assert_eq!(
+        profile.device_budget.memory_limit(),
+        nexus_query_engine::runtime::GpuDeviceMemoryLimit::Explicit { limit_bytes: 15_032_385_536 }
+    );
+    assert_eq!(profile.max_source_chunk_bytes, TPCH_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES);
+    assert_eq!(profile.max_row_groups_per_chunk, TPCH_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK);
+    assert_eq!(profile.max_retry_attempts, DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS);
+    assert_eq!(profile.min_retry_chunk_row_groups, DEFAULT_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS);
+    assert_eq!(
+        profile.source_chunk_planning_mode,
+        nexus_query_engine::runtime::SourceChunkPlanningMode::LocalParquetThroughput
+    );
+
+    assert_eq!(
+        NativeTpchDeviceBudget::Automatic.memory_limit(),
+        nexus_query_engine::runtime::GpuDeviceMemoryLimit::default()
+    );
 }
 
 #[test]

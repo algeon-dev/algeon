@@ -162,6 +162,9 @@ pub(super) trait TsvRow {
 pub(super) struct NativeTpchBenchmarkReport {
     pub(super) metadata: TpchDatasetMetadata,
     pub(super) config: NativeTpchBenchmarkConfig,
+    /// Devices the installed backend resolved for this run; empty when no
+    /// backend was built (planning-only or test reports).
+    pub(super) devices: Vec<DeviceProvenance>,
     pub(super) rows: Vec<NativeTpchBenchmarkRow>,
 }
 
@@ -198,6 +201,7 @@ impl NativeTpchBenchmarkReport {
             &mut output,
             self.config.native_memory_policy,
             self.config.max_source_reads_in_flight,
+            self.devices.first().map(|device| device.managed_capacity_bytes),
         );
         debug_assert_eq!(NativeTpchBenchmarkTsvRow::COLUMNS.join("\t"), NATIVE_TPCH_BENCHMARK_TSV_HEADER);
         output.push_str(NATIVE_TPCH_BENCHMARK_TSV_HEADER);

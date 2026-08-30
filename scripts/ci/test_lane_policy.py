@@ -201,11 +201,13 @@ def load_inventory(path: Path) -> list[InventoryBinary]:
 def validate_inventory(
     catalog: dict[str, ExceptionEntry],
     inventory: list[InventoryBinary],
+    *,
+    require_complete_catalog: bool = True,
 ) -> dict[str, tuple[str, str | None]]:
     inventory_by_id = {record.binary_id: record for record in inventory}
     problems: list[str] = []
 
-    stale = sorted(catalog.keys() - inventory_by_id.keys())
+    stale = sorted(catalog.keys() - inventory_by_id.keys()) if require_complete_catalog else []
     if stale:
         for binary_id in stale:
             problems.append(f"stale exception entry: {binary_id}")
@@ -307,10 +309,23 @@ def command_validate(args: argparse.Namespace) -> None:
     entries = load_catalog(args.catalog)
     check_nextest(args.nextest)
     inventory = load_inventory(args.inventory)
-    assigned = validate_inventory(entries, inventory)
+    assigned = validate_inventory(
+        entries,
+        inventory,
+        require_complete_catalog=not args.allow_catalog_subset,
+    )
     cpu = sum(lane == "cpu" for lane, _ in assigned.values())
     shared = sum(res == "shared" for _, res in assigned.values())
     exclusive = sum(res == "exclusive" for _, res in assigned.values())
+    if args.lanes_out is not None:
+        selected = []
+        if cpu:
+            selected.append("cpu")
+        if shared:
+            selected.append("gpu-shared")
+        if exclusive:
+            selected.append("gpu-exclusive")
+        args.lanes_out.write_text("\n".join(selected) + "\n", encoding="utf-8")
     print(f"OK: all {len(inventory)} live test binaries classified (cpu={cpu}, gpu_shared={shared}, gpu_exclusive={exclusive}).")
 
 
@@ -333,6 +348,12 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="nextest binaries-only JSON inventory",
     )
+    validate.add_argument(
+        "--allow-catalog-subset",
+        action="store_true",
+        help="validate a package-scoped inventory without treating unrelated catalog entries as stale",
+    )
+    validate.add_argument("--lanes-out", type=Path, help="write the non-empty lanes in this inventory")
     validate.set_defaults(function=command_validate)
     return parser
 

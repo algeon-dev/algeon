@@ -107,6 +107,7 @@ fn sf100_matrix_report(q07_join_strategy_rows: Vec<NativeJoinStrategyMetricRow>)
     NativeTpchBenchmarkReport {
         metadata: benchmark_sf100_metadata(),
         config,
+        devices: Vec::new(),
         rows: vec![
             skip_cpu_accepted_row("q03", NativeDataFusionExecutionMetrics::default()),
             skip_cpu_accepted_row("q04", q04_filtered_join_metrics()),
@@ -126,7 +127,7 @@ fn sf100_matrix_report(q07_join_strategy_rows: Vec<NativeJoinStrategyMetricRow>)
 
 fn sf100_bounded_memory_policy() -> NativeTpchMemoryPolicy {
     NativeTpchMemoryPolicy::bounded_custom(
-        94_489_280_512,
+        NativeTpchDeviceBudget::Explicit { bytes: 94_489_280_512 },
         34_359_738_368,
         1024,
         DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,

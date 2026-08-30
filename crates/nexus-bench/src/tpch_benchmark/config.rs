@@ -4,6 +4,7 @@ use datafusion_nexus::{
     backend::NexusGpuBackend,
     planner::{DataFusionCpuExecutionPolicy, NexusNativeOptimizerConfig},
 };
+use nexus_query_engine::runtime::GpuDeviceMemoryLimit;
 
 use super::*;
 
@@ -19,7 +20,6 @@ pub(super) const NEXUS_TPCH_BENCH_NATIVE_MIN_RETRY_CHUNK_ROW_GROUPS_ENV: &str =
 pub(super) const NEXUS_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV: &str =
     "NEXUS_TPCH_BENCH_NATIVE_SOURCE_CHUNK_PLANNING_MODE";
 
-pub(super) const DEFAULT_NATIVE_DEVICE_BUDGET_BYTES: u64 = 14 * 1024 * 1024 * 1024;
 pub(super) const DEFAULT_NATIVE_MAX_SOURCE_CHUNK_BYTES: u64 = 512 * 1024 * 1024;
 pub(super) const DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK: usize = 1;
 pub(super) const DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS: usize = 4;
@@ -33,7 +33,6 @@ const REMOVED_NATIVE_MEMORY_POLICY_ENV: &str = "NEXUS_TPCH_BENCH_NATIVE_MEMORY_P
 pub(super) const TPCH_NATIVE_PROFILE_CONSERVATIVE: &str = "conservative";
 pub(super) const TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT: &str = "sf100_gpu_throughput";
 pub(super) const TPCH_NATIVE_PROFILE_CUSTOM: &str = "custom";
-pub(super) const TPCH_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES: u64 = 102_005_473_280;
 pub(super) const TPCH_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES: u64 = 34_359_738_368;
 pub(super) const TPCH_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK: usize = 1024;
 
@@ -77,6 +76,27 @@ impl NativeTpchRuntimeResources {
             Some(backend) => backend.install_on(builder).map_err(|error| DataFusionError::External(Box::new(error))),
             None => Ok(builder),
         }
+    }
+
+    pub(super) fn device_provenance(&self) -> Vec<DeviceProvenance> {
+        self.backend
+            .as_ref()
+            .map(|backend| {
+                backend
+                    .device_startup_records()
+                    .iter()
+                    .map(|record| DeviceProvenance {
+                        ordinal: record.device_ordinal,
+                        model_name: record.model_name.clone(),
+                        uuid: record.uuid.clone(),
+                        physical_total_bytes: record.physical_total_bytes,
+                        cuda_total_bytes: record.facts.total_bytes,
+                        managed_capacity_bytes: record.capacity_bytes,
+                        default_query_limit_bytes: record.resource_profile.default_query_limit_bytes,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -128,7 +148,7 @@ impl NativeTpchBenchmarkConfig {
     ) -> NexusNativeExecutionConfig {
         let policy = self.native_memory_policy;
         NexusNativeExecutionConfig::bounded(
-            policy.device_budget_bytes,
+            policy.device_budget.planning_template_bytes(),
             policy.max_source_chunk_bytes,
             policy.max_row_groups_per_chunk,
             policy.max_retry_attempts,
@@ -145,9 +165,7 @@ impl NativeTpchBenchmarkConfig {
         let optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config);
         let backend = crate::gpu_backend::build_installed_gpu_backend(
             optimizer_config,
-            nexus_query_engine::runtime::GpuDeviceMemoryLimit::Explicit {
-                limit_bytes: self.native_memory_policy.device_budget_bytes,
-            },
+            self.native_memory_policy.device_budget.memory_limit(),
             self.max_source_reads_in_flight,
             1,
             DataFusionCpuExecutionPolicy::Reject,
@@ -236,11 +254,59 @@ impl NativeTpchScaleFactor {
     }
 }
 
+/// Managed device capacity the benchmark asks the runtime backend for. The
+/// per-query cap is always the resolved managed capacity: the benchmark never
+/// installs a separate default query limit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NativeTpchDeviceBudget {
+    /// Resolve capacity from the installed device through the runtime's
+    /// automatic policy (physical memory minus its headroom).
+    Automatic,
+    /// Explicit managed capacity; the runtime rejects values above the owned
+    /// device memory with a structured error instead of clamping.
+    Explicit { bytes: u64 },
+}
+
+impl NativeTpchDeviceBudget {
+    pub(super) fn memory_limit(self) -> GpuDeviceMemoryLimit {
+        match self {
+            Self::Automatic => GpuDeviceMemoryLimit::default(),
+            Self::Explicit { bytes } => GpuDeviceMemoryLimit::Explicit { limit_bytes: bytes },
+        }
+    }
+
+    /// Budget carried by the unadmitted execution-config template. Backend
+    /// admission replaces it with the device grant, so an automatic budget
+    /// uses the adapter's fallback rather than guessing a capacity here.
+    pub(super) fn planning_template_bytes(self) -> u64 {
+        match self {
+            Self::Automatic => NexusNativeExecutionConfig::AUTO_SIZED_DEVICE_BUDGET_FALLBACK_BYTES,
+            Self::Explicit { bytes } => bytes,
+        }
+    }
+
+    pub(super) const fn as_policy_str(self) -> &'static str {
+        match self {
+            Self::Automatic => "automatic",
+            Self::Explicit { .. } => "explicit",
+        }
+    }
+}
+
+impl std::fmt::Display for NativeTpchDeviceBudget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Automatic => f.write_str("automatic"),
+            Self::Explicit { bytes } => write!(f, "{bytes}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct NativeTpchMemoryPolicy {
     pub(super) profile_name: &'static str,
     pub(super) profile_source: &'static str,
-    pub(super) device_budget_bytes: u64,
+    pub(super) device_budget: NativeTpchDeviceBudget,
     pub(super) max_source_chunk_bytes: u64,
     pub(super) max_row_groups_per_chunk: usize,
     pub(super) max_retry_attempts: usize,
@@ -251,7 +317,7 @@ pub(super) struct NativeTpchMemoryPolicy {
 impl NativeTpchMemoryPolicy {
     #[cfg(test)]
     pub(super) const fn bounded_custom(
-        device_budget_bytes: u64,
+        device_budget: NativeTpchDeviceBudget,
         max_source_chunk_bytes: u64,
         max_row_groups_per_chunk: usize,
         max_retry_attempts: usize,
@@ -261,7 +327,7 @@ impl NativeTpchMemoryPolicy {
         Self {
             profile_name: TPCH_NATIVE_PROFILE_CUSTOM,
             profile_source: "direct_config",
-            device_budget_bytes,
+            device_budget,
             max_source_chunk_bytes,
             max_row_groups_per_chunk,
             max_retry_attempts,
@@ -274,7 +340,7 @@ impl NativeTpchMemoryPolicy {
         Self {
             profile_name: profile.profile_name,
             profile_source: profile.profile_source,
-            device_budget_bytes: profile.device_budget_bytes,
+            device_budget: profile.device_budget,
             max_source_chunk_bytes: profile.max_source_chunk_bytes,
             max_row_groups_per_chunk: profile.max_row_groups_per_chunk,
             max_retry_attempts: profile.max_retry_attempts,
@@ -288,7 +354,7 @@ impl NativeTpchMemoryPolicy {
     }
 
     fn validate(self) -> DataFusionResult<()> {
-        validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, self.device_budget_bytes)?;
+        validate_device_budget(self.device_budget)?;
         validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, self.max_source_chunk_bytes)?;
         validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, self.max_row_groups_per_chunk)?;
         validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV, self.max_retry_attempts)?;
@@ -302,7 +368,7 @@ impl Default for NativeTpchMemoryPolicy {
         Self {
             profile_name: TPCH_NATIVE_PROFILE_CONSERVATIVE,
             profile_source: "default",
-            device_budget_bytes: DEFAULT_NATIVE_DEVICE_BUDGET_BYTES,
+            device_budget: NativeTpchDeviceBudget::Automatic,
             max_source_chunk_bytes: DEFAULT_NATIVE_MAX_SOURCE_CHUNK_BYTES,
             max_row_groups_per_chunk: DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK,
             max_retry_attempts: DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
@@ -316,7 +382,7 @@ impl Default for NativeTpchMemoryPolicy {
 pub(super) struct NativeTpchProfileSettings {
     pub(super) profile_name: &'static str,
     pub(super) profile_source: &'static str,
-    pub(super) device_budget_bytes: u64,
+    pub(super) device_budget: NativeTpchDeviceBudget,
     pub(super) max_source_chunk_bytes: u64,
     pub(super) max_row_groups_per_chunk: usize,
     pub(super) max_retry_attempts: usize,
@@ -329,7 +395,7 @@ impl NativeTpchProfileSettings {
         Self {
             profile_name: base.name,
             profile_source: base.source,
-            device_budget_bytes: base.device_budget_bytes,
+            device_budget: base.device_budget,
             max_source_chunk_bytes: base.max_source_chunk_bytes,
             max_row_groups_per_chunk: base.max_row_groups_per_chunk,
             max_retry_attempts: base.max_retry_attempts,
@@ -343,7 +409,7 @@ impl NativeTpchProfileSettings {
 struct NativeTpchProfileBase {
     name: &'static str,
     source: &'static str,
-    device_budget_bytes: u64,
+    device_budget: NativeTpchDeviceBudget,
     max_source_chunk_bytes: u64,
     max_row_groups_per_chunk: usize,
     max_retry_attempts: usize,
@@ -377,7 +443,9 @@ pub(super) fn native_tpch_profile_settings_with_env(
         || source_chunk_planning_mode.is_some();
 
     if let Some(value) = device_budget_bytes {
-        resolved.device_budget_bytes = parse_env_u64_value(NEXUS_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, value)?;
+        resolved.device_budget = NativeTpchDeviceBudget::Explicit {
+            bytes: parse_env_u64_value(NEXUS_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, value)?,
+        };
     }
     if let Some(value) = max_source_chunk_bytes {
         resolved.max_source_chunk_bytes =
@@ -429,7 +497,7 @@ pub(super) fn native_tpch_profile_settings_with_env(
 }
 
 fn validate_tpch_profile_settings(profile: &NativeTpchProfileSettings) -> DataFusionResult<()> {
-    validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, profile.device_budget_bytes)?;
+    validate_device_budget(profile.device_budget)?;
     validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, profile.max_source_chunk_bytes)?;
     validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, profile.max_row_groups_per_chunk)?;
     validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_MAX_RETRY_ATTEMPTS_ENV, profile.max_retry_attempts)?;
@@ -443,7 +511,7 @@ fn native_tpch_profile_base(profile: Option<&str>) -> DataFusionResult<NativeTpc
         TPCH_NATIVE_PROFILE_CONSERVATIVE => Ok(NativeTpchProfileBase {
             name: TPCH_NATIVE_PROFILE_CONSERVATIVE,
             source: "default",
-            device_budget_bytes: DEFAULT_NATIVE_DEVICE_BUDGET_BYTES,
+            device_budget: NativeTpchDeviceBudget::Automatic,
             max_source_chunk_bytes: DEFAULT_NATIVE_MAX_SOURCE_CHUNK_BYTES,
             max_row_groups_per_chunk: DEFAULT_NATIVE_MAX_ROW_GROUPS_PER_CHUNK,
             max_retry_attempts: DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
@@ -453,7 +521,7 @@ fn native_tpch_profile_base(profile: Option<&str>) -> DataFusionResult<NativeTpc
         TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT => Ok(NativeTpchProfileBase {
             name: TPCH_NATIVE_PROFILE_SF100_GPU_THROUGHPUT,
             source: "env_profile",
-            device_budget_bytes: TPCH_SF100_GPU_THROUGHPUT_DEVICE_BUDGET_BYTES,
+            device_budget: NativeTpchDeviceBudget::Automatic,
             max_source_chunk_bytes: TPCH_SF100_GPU_THROUGHPUT_MAX_SOURCE_CHUNK_BYTES,
             max_row_groups_per_chunk: TPCH_SF100_GPU_THROUGHPUT_MAX_ROW_GROUPS_PER_CHUNK,
             max_retry_attempts: DEFAULT_NATIVE_MAX_RETRY_ATTEMPTS,
@@ -467,7 +535,7 @@ fn native_tpch_profile_base(profile: Option<&str>) -> DataFusionResult<NativeTpc
 }
 
 fn same_tpch_profile_values(profile: &NativeTpchProfileSettings, base: NativeTpchProfileBase) -> bool {
-    profile.device_budget_bytes == base.device_budget_bytes
+    profile.device_budget == base.device_budget
         && profile.max_source_chunk_bytes == base.max_source_chunk_bytes
         && profile.max_row_groups_per_chunk == base.max_row_groups_per_chunk
         && profile.max_retry_attempts == base.max_retry_attempts
@@ -567,6 +635,15 @@ fn optional_env_bool(name: &'static str) -> DataFusionResult<Option<bool>> {
         "true" | "1" | "yes" | "on" => Ok(Some(true)),
         "false" | "0" | "no" | "off" => Ok(Some(false)),
         other => Err(plan_error(format!("invalid {name}: {other}; expected true or false"))),
+    }
+}
+
+fn validate_device_budget(device_budget: NativeTpchDeviceBudget) -> DataFusionResult<()> {
+    match device_budget {
+        NativeTpchDeviceBudget::Automatic => Ok(()),
+        NativeTpchDeviceBudget::Explicit { bytes } => {
+            validate_nonzero(NEXUS_TPCH_BENCH_NATIVE_DEVICE_BUDGET_BYTES_ENV, bytes)
+        },
     }
 }
 

@@ -8,9 +8,35 @@ cd "$(dirname "$0")/../.."
 
 REQUIRED_NEXTEST_VERSION=0.9.140
 
+package=""
+test_target=""
+allow_catalog_subset=0
+inventory_out=""
+cargo_metadata_out=""
+lanes_out=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --all-features) shift ;;
+    -p | --package)
+      [[ $# -ge 2 && -n "${2-}" ]] || { echo "ERROR: $1 requires a value" >&2; exit 2; }
+      package=$2
+      allow_catalog_subset=1
+      shift 2
+      ;;
+    --test)
+      [[ $# -ge 2 && -n "${2-}" ]] || { echo "ERROR: --test requires a value" >&2; exit 2; }
+      test_target=$2
+      shift 2
+      ;;
+    --inventory-out | --cargo-metadata-out | --lanes-out)
+      [[ $# -ge 2 && -n "${2-}" ]] || { echo "ERROR: $1 requires a value" >&2; exit 2; }
+      case "$1" in
+        --inventory-out) inventory_out=$2 ;;
+        --cargo-metadata-out) cargo_metadata_out=$2 ;;
+        --lanes-out) lanes_out=$2 ;;
+      esac
+      shift 2
+      ;;
     *) echo "ERROR: unsupported argument for lane inventory: $1" >&2; exit 2 ;;
   esac
 done
@@ -34,7 +60,7 @@ inventory_tmp=$(mktemp -d "${TMPDIR:-/tmp}/datafusion-nexus-test-inventory.XXXXX
   exit 2
 }
 trap "rm -rf "${inventory_tmp}"" EXIT
-workspace_inventory_json="${inventory_tmp}/workspace.json"
+workspace_inventory_json=${inventory_out:-"${inventory_tmp}/workspace.json"}
 inventory_stderr="${inventory_tmp}/inventory.stderr"
 
 list_inventory() {
@@ -51,9 +77,22 @@ list_inventory() {
 }
 
 : >"${inventory_stderr}"
-list_inventory "${workspace_inventory_json}" --workspace --all-features || exit $?
+if [[ -n "${cargo_metadata_out}" ]]; then
+  cargo metadata --format-version 1 --all-features >"${cargo_metadata_out}" || {
+    echo "ERROR: cargo metadata failed; test artifacts cannot be reused safely." >&2
+    exit 2
+  }
+fi
+inventory_scope=(--workspace)
+if [[ -n "${package}" ]]; then
+  inventory_scope=(-p "${package}")
+fi
+[[ -z "${test_target}" ]] || inventory_scope+=(--test "${test_target}")
+list_inventory "${workspace_inventory_json}" "${inventory_scope[@]}" --all-features || exit $?
 
 validation_status=0
-python3 scripts/ci/test_lane_policy.py validate-inventory \
-  --inventory "${workspace_inventory_json}" || validation_status=$?
+validation_args=(validate-inventory --inventory "${workspace_inventory_json}")
+[[ "${allow_catalog_subset}" -eq 0 ]] || validation_args+=(--allow-catalog-subset)
+[[ -z "${lanes_out}" ]] || validation_args+=(--lanes-out "${lanes_out}")
+python3 scripts/ci/test_lane_policy.py "${validation_args[@]}" || validation_status=$?
 exit "${validation_status}"

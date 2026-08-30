@@ -81,18 +81,31 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_chunk_batch(
                 .map_or_else(|| Ok(chunk.clone()), Ok)
         })
         .collect::<Result<Vec<_>>>()?;
-    let cudf_files = chunks
-        .iter()
-        .map(|chunk| {
-            let file = crate::chunk::source_file_for_chunk(
-                source,
-                chunk,
-                "nexus_query_engine.local_parquet_chunk_batch.file_cudf",
-            )?;
-            let cudf_file = cudf_local_parquet_file_for_chunk(context, chunk)?;
-            Ok(attach_cudf_variable_width_payload_evidence(cudf_file, file))
-        })
-        .collect::<Result<Vec<_>>>()?;
+    // Chunk planning splits one source file into row-group chunks, so a batch
+    // names the same file once per chunk. The cudf source must list each
+    // distinct source file once and point every chunk at that file's position:
+    // the reader merges same-file chunks into one reader input by file index,
+    // so a per-chunk file entry would open one handle and parse one footer per
+    // row group instead of per file.
+    let mut cudf_files = Vec::new();
+    let mut cudf_file_positions = std::collections::BTreeMap::new();
+    let mut batch_file_indexes = Vec::with_capacity(chunks.len());
+    for chunk in &chunks {
+        let file = crate::chunk::source_file_for_chunk(
+            source,
+            chunk,
+            "nexus_query_engine.local_parquet_chunk_batch.file_cudf",
+        )?;
+        let position = match cudf_file_positions.entry(chunk.file_index) {
+            std::collections::btree_map::Entry::Occupied(entry) => *entry.get(),
+            std::collections::btree_map::Entry::Vacant(entry) => {
+                let cudf_file = cudf_local_parquet_file_for_chunk(context, chunk)?;
+                cudf_files.push(attach_cudf_variable_width_payload_evidence(cudf_file, file));
+                *entry.insert(cudf_files.len() - 1)
+            },
+        };
+        batch_file_indexes.push(position);
+    }
     let mut cudf_source = cudf_local_parquet_source_from_files(
         source,
         cudf_files,
@@ -107,8 +120,8 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_chunk_batch(
     })?;
     let cudf_chunks = chunks
         .iter()
-        .enumerate()
-        .map(|(batch_file_index, chunk)| {
+        .zip(batch_file_indexes)
+        .map(|(chunk, batch_file_index)| {
             let row_groups = if chunk.reads_all_row_groups { None } else { Some(chunk.row_group_indexes.clone()) };
             cudf::io::source::SourceChunk::from_source_file_selection(
                 &cudf_source,

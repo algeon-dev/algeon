@@ -9,6 +9,8 @@ pub(super) async fn run_native_tpch_benchmark(
     config.validate()?;
     let (_root, metadata) = dataset::prepare_benchmark_dataset(config, work_dir).await?;
     let runtime_resources = config.new_runtime_resources()?;
+    let provenance = RunProvenance::collect(&runtime_resources);
+    eprintln!("{}", run_start_line(config, &provenance));
     let mut rows = Vec::with_capacity(config.query_ids.len());
 
     let selected_queries = config.selected_queries();
@@ -20,7 +22,7 @@ pub(super) async fn run_native_tpch_benchmark(
 
     runtime_resources.shutdown()?;
 
-    Ok(NativeTpchBenchmarkReport { metadata, config: config.clone(), rows })
+    Ok(NativeTpchBenchmarkReport { metadata, config: config.clone(), devices: provenance.devices, rows })
 }
 
 pub(super) fn benchmark_query_progress_line(
