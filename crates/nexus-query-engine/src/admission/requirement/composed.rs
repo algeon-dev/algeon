@@ -1218,10 +1218,6 @@ pub(crate) fn composed_consumer_aggregate_peak_bytes(
     column_evidence: &PlanColumnEvidenceAnalysis,
     memo: &mut HashMap<NodeId, ComposedConsumerBranchBound>,
 ) -> Result<ComposedConsumerBranchBound> {
-    if !aggregate_owner_state_is_supported(aggregate) {
-        return Err(composed_schedule_error("consumer_aggregate_state_unmodeled", None));
-    }
-
     let input = composed_consumer_branch_bound(
         plan,
         aggregate.input,
@@ -1231,6 +1227,10 @@ pub(crate) fn composed_consumer_aggregate_peak_bytes(
         column_evidence,
         memo,
     )?;
+    let distinct_workspace_bytes = composed_global_nunique_workspace_bytes(aggregate, &input.schema, input.rows)?;
+    if distinct_workspace_bytes.is_none() && !aggregate_owner_state_is_supported(aggregate) {
+        return Err(composed_schedule_error("consumer_aggregate_state_unmodeled", None));
+    }
     let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
     let output_schema = node.output_schema();
     let output_rows = if aggregate.spec.group_exprs.is_empty() { 1 } else { input.rows };
@@ -1258,10 +1258,26 @@ pub(crate) fn composed_consumer_aggregate_peak_bytes(
     let output_bytes = output_term.bytes();
     let partial_term_id = partial_term.id.clone();
     let output_term_id = output_term.id.clone();
-    let peak_owner_term_groups = consumer_unary_peak_groups(&input, [partial_term_id.clone(), output_term_id.clone()]);
-    let peak_owner_term_ids = flatten_consumer_peak_groups(&peak_owner_term_groups);
+    let mut peak_owner_term_groups =
+        consumer_unary_peak_groups(&input, [partial_term_id.clone(), output_term_id.clone()]);
     let mut terms = input.owner_terms;
     terms.extend([partial_term, output_term]);
+    if let Some(distinct_workspace_bytes) = distinct_workspace_bytes {
+        let workspace = AllocationOwnerTerm::new(
+            OwnerId::Aggregate(node_id),
+            OwnerTermRole::AggregateDistinctWorkspace,
+            OccurrenceId::PlanLocal(node_id),
+            canonical_execution_scope_fingerprint(plan),
+            AllocationClass::ActivePhase,
+            distinct_workspace_bytes,
+            None,
+        )?;
+        let mut workspace_peak = input.final_owned_term_ids.clone();
+        workspace_peak.push(workspace.id.clone());
+        peak_owner_term_groups.insert(peak_owner_term_groups.len() - 1, workspace_peak);
+        terms.push(workspace);
+    }
+    let peak_owner_term_ids = flatten_consumer_peak_groups(&peak_owner_term_groups);
     let mut inventory = owner_terms.to_vec();
     inventory.extend(terms.iter().cloned());
     let additional_peak_bytes = consumer_peak_groups_bytes(&peak_owner_term_groups, &inventory)?;
@@ -1277,6 +1293,82 @@ pub(crate) fn composed_consumer_aggregate_peak_bytes(
         final_owned_term_ids: vec![output_term_id],
         allocation_state: AttemptReservationConsumerState::Bounded,
         consumed_occurrences: Vec::new(),
+    })
+}
+
+fn composed_global_nunique_workspace_bytes(
+    aggregate: &AggregateNode,
+    input_schema: &SchemaRef,
+    input_rows: u64,
+) -> Result<Option<u64>> {
+    if aggregate.spec.grouping_sets.is_some() || !aggregate.spec.group_exprs.is_empty() {
+        return Ok(None);
+    }
+    let mut distincts = aggregate.spec.aggr_exprs.iter().filter(|expr| {
+        expr.function == AggregateFunction::NUnique || expr.distinct && expr.function == AggregateFunction::Count
+    });
+    let Some(distinct) = distincts.next() else {
+        return Ok(None);
+    };
+    if distincts.next().is_some() {
+        return Err(composed_schedule_error("consumer_aggregate_state_unmodeled", None)
+            .with_fact("aggregate_contract", "global_single_fixed_width_nunique"));
+    }
+    for expr in &aggregate.spec.aggr_exprs {
+        if expr.filter.is_some() {
+            return Err(composed_schedule_error("consumer_aggregate_state_unmodeled", None)
+                .with_fact("aggregate_contract", "global_single_fixed_width_nunique"));
+        }
+        if expr.function == AggregateFunction::NUnique || expr.distinct && expr.function == AggregateFunction::Count {
+            continue;
+        } else if expr.function != AggregateFunction::Count || expr.distinct {
+            return Err(composed_schedule_error("consumer_aggregate_state_unmodeled", None)
+                .with_fact("aggregate_contract", "global_single_fixed_width_nunique"));
+        }
+    }
+    let Expr::Column(column) = &distinct.expr else {
+        return Err(composed_schedule_error("consumer_aggregate_nunique_owner_preflight_unavailable", None)
+            .with_fact("aggregate_owner_reason", "nunique_argument_not_column"));
+    };
+    let field = input_schema.field_with_name(column.name()).map_err(|_| {
+        composed_schedule_error("consumer_aggregate_nunique_owner_preflight_unavailable", None)
+            .with_fact("aggregate_owner_reason", "nunique_input_column_missing")
+            .with_fact("column", column.name())
+    })?;
+    if field.is_nullable() {
+        return Err(composed_schedule_error("consumer_aggregate_nunique_owner_preflight_unavailable", None)
+            .with_fact("aggregate_owner_reason", "nunique_nullable_input_unmodeled")
+            .with_fact("column", field.name())
+            .with_fact("data_type", format!("{:?}", field.data_type())));
+    }
+    let type_id = arrow_fixed_width_cudf_type_id(field.data_type()).ok_or_else(|| {
+        composed_schedule_error("consumer_aggregate_nunique_owner_preflight_unavailable", None)
+            .with_fact("aggregate_owner_reason", "nunique_variable_width_input_unmodeled")
+            .with_fact("column", field.name())
+            .with_fact("data_type", format!("{:?}", field.data_type()))
+    })?;
+    let rows = usize::try_from(input_rows).map_err(|_| {
+        composed_schedule_error("consumer_aggregate_nunique_owner_preflight_unavailable", None)
+            .with_fact("aggregate_owner_reason", "nunique_input_rows_exceed_usize")
+            .with_fact("input_rows", input_rows)
+    })?;
+    let preflight =
+        cudf::ScalarReductionDistinctWorkspacePreflight::for_metadata(rows, cudf::DataType::new(type_id), 0).map_err(
+            |error| {
+                composed_schedule_error("consumer_aggregate_nunique_owner_preflight_unavailable", None)
+                    .with_fact(
+                        "aggregate_owner_reason",
+                        error.detail_value("reason").unwrap_or("libcudf_nunique_workspace_preflight_failed"),
+                    )
+                    .with_fact("column", field.name())
+                    .with_fact("data_type", format!("{:?}", field.data_type()))
+                    .with_fact("input_rows", input_rows)
+            },
+        )?;
+    u64::try_from(preflight.active_workspace_peak_bytes()).map(Some).map_err(|_| {
+        composed_schedule_error("consumer_aggregate_nunique_owner_preflight_unavailable", None)
+            .with_fact("aggregate_owner_reason", "nunique_workspace_exceeds_u64")
+            .with_fact("input_rows", input_rows)
     })
 }
 

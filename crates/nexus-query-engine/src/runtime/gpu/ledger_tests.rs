@@ -22,6 +22,7 @@ fn requirement(floor: u64, hint: Option<u64>) -> AttemptRequirement {
         requires_composed_producer_binding: false,
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
+        deferred_graph_phases: Vec::new(),
     }
 }
 
@@ -554,6 +555,7 @@ fn zero_request_floor_resolves_against_each_candidate_profile() {
         requires_composed_producer_binding: false,
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
+        deferred_graph_phases: Vec::new(),
     };
 
     assert_eq!(small.required_floor_bytes_for(&zero_floor).unwrap(), 8);
@@ -579,6 +581,7 @@ fn request_floor_cannot_lower_the_candidate_profile_floor() {
         requires_composed_producer_binding: false,
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
+        deferred_graph_phases: Vec::new(),
     };
 
     assert_eq!(ledger.required_floor_bytes_for(&requirement).unwrap(), 107);
@@ -601,6 +604,7 @@ fn requirement_floor_above_the_candidate_profile_floor_is_preserved() {
         requires_composed_producer_binding: false,
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
+        deferred_graph_phases: Vec::new(),
     };
 
     assert_eq!(ledger.required_floor_bytes_for(&requirement).unwrap(), 127);
@@ -636,6 +640,7 @@ fn overflowing_floor_is_rejected_structurally() {
         requires_composed_producer_binding: false,
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
+        deferred_graph_phases: Vec::new(),
     };
     assert!(ledger.try_admit(request(1), &overflowing).is_err());
 }
@@ -667,6 +672,49 @@ fn live_reservation_accounting_stays_exact() {
     assert_eq!(grant.live_reserved_bytes(), 100);
     drop(retained);
     assert_eq!(grant.live_reserved_bytes(), 0);
+}
+
+#[test]
+fn attempt_phase_transition_is_atomic_and_does_not_double_count_the_grant_or_retained_frame() {
+    let ledger = DeviceLedger::new(profile(1_000, 100, 1));
+    let grant = ledger.try_admit(request(1), &requirement(100, Some(500))).unwrap().expect("admits");
+    let retained = grant.retain_live_reservation(100).unwrap().expect("retains input");
+    let before = ledger.snapshot().unwrap();
+
+    let phase = grant.activate_phase(400).expect("graph phase fits the immutable attempt grant");
+    let active = ledger.snapshot().unwrap();
+    assert!(active.sequence > before.sequence);
+    assert_eq!(active.live_grants_bytes, before.live_grants_bytes);
+    assert_eq!(active.live_reserved_bytes, before.live_reserved_bytes);
+    assert_eq!(grant.remaining_live_reservation_bytes().unwrap(), 300);
+    assert!(!grant.try_reserve_live_bytes(301).unwrap(), "the active phase bound gates new allocations");
+    let phase_live = grant.retain_live_reservation(300).unwrap().expect("the exact phase remainder fits");
+    assert_eq!(grant.remaining_live_reservation_bytes().unwrap(), 0);
+    let error = grant.activate_phase(400).expect_err("one immutable grant has one active phase");
+    assert_eq!(error.fact_value("reason"), Some("attempt_phase_already_active"));
+
+    drop(phase_live);
+    drop(phase);
+    let released = ledger.snapshot().unwrap();
+    assert!(released.sequence > active.sequence);
+    assert_eq!(released.live_grants_bytes, before.live_grants_bytes);
+    assert_eq!(released.live_reserved_bytes, before.live_reserved_bytes);
+    drop(retained);
+}
+
+#[test]
+fn attempt_phase_transition_rejects_before_mutation_when_bound_or_retained_input_does_not_fit() {
+    let ledger = DeviceLedger::new(profile(1_000, 100, 1));
+    let grant = ledger.try_admit(request(1), &requirement(100, Some(500))).unwrap().expect("admits");
+    let retained = grant.retain_live_reservation(300).unwrap().expect("retains input");
+    let before = ledger.snapshot().unwrap();
+
+    for required_bytes in [299, 501] {
+        let error = grant.activate_phase(required_bytes).expect_err("phase must fit grant and retained input");
+        assert_eq!(error.fact_value("reason"), Some("attempt_phase_exceeds_immutable_grant"));
+        assert_eq!(ledger.snapshot().unwrap(), before);
+    }
+    drop(retained);
 }
 
 #[test]

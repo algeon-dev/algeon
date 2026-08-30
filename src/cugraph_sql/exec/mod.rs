@@ -218,5 +218,7 @@ pub(super) fn finalize_graph_query_outcome(
     operation: &'static str,
     message: &'static str,
 ) -> Result<QueryOutput> {
-    metrics.merge_outcome(outcome).map_err(|error| DataFusionError::from(Error::from_native(operation, message, error)))
+    metrics
+        .merge_outcome(outcome)
+        .map_err(|error| DataFusionError::from(Error::from_native_with_blocking_diagnostics(operation, message, error)))
 }

@@ -1366,12 +1366,32 @@ pub fn graph_memory_estimates_for_plan(
     calibration_override: GraphMemoryCalibrationOverride,
     device_total_memory_bytes: Option<u64>,
 ) -> Result<Vec<GraphPlanMemoryEstimate>> {
+    graph_memory_estimates_for_plan_with_resident_rows(
+        plan,
+        calibration_override,
+        device_total_memory_bytes,
+        &HashMap::new(),
+    )
+}
+
+fn graph_memory_estimates_for_plan_with_resident_rows(
+    plan: &QueryPlan,
+    calibration_override: GraphMemoryCalibrationOverride,
+    device_total_memory_bytes: Option<u64>,
+    resident_rows: &HashMap<String, u64>,
+) -> Result<Vec<GraphPlanMemoryEstimate>> {
     let mut estimates = Vec::new();
     for node in plan.nodes() {
         let PlanNode::GraphAlgorithm(graph) = &node.kind else {
             continue;
         };
-        let Some(mut input) = graph_memory_model_input_for_plan_node(plan, graph, calibration_override)? else {
+        let Some(mut input) = graph_memory_model_input_for_plan_node_with_resident_rows(
+            plan,
+            graph,
+            calibration_override,
+            resident_rows,
+        )?
+        else {
             continue;
         };
         input = calibration_override.apply_to_input(input);
@@ -1405,6 +1425,31 @@ pub fn graph_memory_bounded_admission_evidence_for_plan(
         )
         .with_fact("reason", if estimates.is_empty() { "missing_graph_scope" } else { "ambiguous_graph_scope" })
         .with_fact("graph_node_count", estimates.len()));
+    };
+    GraphMemoryAdmissionEvidence::from_bounded_plan_estimate(plan, estimate.node_id, &estimate.estimate)
+}
+
+pub(crate) fn graph_memory_bounded_admission_evidence_for_plan_with_resident_rows(
+    plan: &QueryPlan,
+    calibration_override: GraphMemoryCalibrationOverride,
+    device_total_memory_bytes: Option<u64>,
+    resident_rows: &HashMap<String, u64>,
+) -> Result<GraphMemoryAdmissionEvidence> {
+    let mut estimates = graph_memory_estimates_for_plan_with_resident_rows(
+        plan,
+        calibration_override,
+        device_total_memory_bytes,
+        resident_rows,
+    )?;
+    let graph_node_count = estimates.len();
+    let Some(estimate) = (graph_node_count == 1).then(|| estimates.pop()).flatten() else {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_memory.resident_admission_evidence",
+            "resident graph-phase admission evidence requires exactly one graph node",
+        )
+        .with_fact("reason", if graph_node_count == 0 { "missing_graph_scope" } else { "ambiguous_graph_scope" })
+        .with_fact("graph_node_count", graph_node_count));
     };
     GraphMemoryAdmissionEvidence::from_bounded_plan_estimate(plan, estimate.node_id, &estimate.estimate)
 }
@@ -1493,12 +1538,24 @@ pub fn query_plan_graph_vertex_upper_bound(plan: &QueryPlan) -> Option<u64> {
     graph_vertex_upper_bound_for_plan_node(plan, plan.root_id())
 }
 
+#[cfg(test)]
 pub(crate) fn graph_memory_model_input_for_plan_node(
     plan: &QueryPlan,
     graph: &crate::plan::GraphAlgorithmNode,
     calibration_override: GraphMemoryCalibrationOverride,
 ) -> Result<Option<GraphMemoryModelInput>> {
-    let Some(edge_counts) = graph_plan_edge_counts(plan, graph.input, calibration_override.raw_input_edges)? else {
+    graph_memory_model_input_for_plan_node_with_resident_rows(plan, graph, calibration_override, &HashMap::new())
+}
+
+fn graph_memory_model_input_for_plan_node_with_resident_rows(
+    plan: &QueryPlan,
+    graph: &crate::plan::GraphAlgorithmNode,
+    calibration_override: GraphMemoryCalibrationOverride,
+    resident_rows: &HashMap<String, u64>,
+) -> Result<Option<GraphMemoryModelInput>> {
+    let Some(edge_counts) =
+        graph_plan_edge_counts(plan, graph.input, calibration_override.raw_input_edges, resident_rows)?
+    else {
         return Ok(None);
     };
     let input_schema =
@@ -1844,12 +1901,13 @@ fn graph_plan_edge_counts(
     plan: &QueryPlan,
     graph_input: NodeId,
     configured_raw_input_edges: Option<u64>,
+    resident_rows: &HashMap<String, u64>,
 ) -> Result<Option<GraphPlanEdgeCounts>> {
     let Some(node) = plan.node(graph_input) else {
         return Ok(None);
     };
     if let PlanNode::EdgeNormalize(edge_normalize) = &node.kind {
-        let Some(raw_input_edges) = hard_row_upper_bound_for_plan_node(plan, edge_normalize.input)
+        let Some(raw_input_edges) = hard_row_upper_bound_with_resident_rows(plan, edge_normalize.input, resident_rows)
             .map(|(rows, _)| rows)
             .or(configured_raw_input_edges)
         else {
@@ -1861,8 +1919,9 @@ fn graph_plan_edge_counts(
             graph_vertex_upper_bound: graph_vertex_upper_bound_for_plan_node(plan, edge_normalize.input),
         }));
     }
-    let Some(input_edges) =
-        hard_row_upper_bound_for_plan_node(plan, graph_input).map(|(rows, _)| rows).or(configured_raw_input_edges)
+    let Some(input_edges) = hard_row_upper_bound_with_resident_rows(plan, graph_input, resident_rows)
+        .map(|(rows, _)| rows)
+        .or(configured_raw_input_edges)
     else {
         return Ok(None);
     };

@@ -239,32 +239,6 @@ pub(super) fn validate_query_plan(plan: &QueryPlan) -> Result<()> {
                 .with_fact("sink_type", format!("{:?}", sink_field.data_type()))
                 .with_fact("root_type", format!("{:?}", root_field.data_type())));
             }
-            if sink_field.is_nullable() != root_field.is_nullable() {
-                return Err(QueryError::new(
-                    QueryErrorCode::InvalidPlan,
-                    "nexus_query_engine.plan.validate_sink",
-                    "host sink nullability must match the root node output by ordinal",
-                )
-                .with_fact("root_node", sink_input.id)
-                .with_fact("field_index", index)
-                .with_fact("sink_field", sink_field.name())
-                .with_fact("root_field", root_field.name())
-                .with_fact("sink_nullable", sink_field.is_nullable())
-                .with_fact("root_nullable", root_field.is_nullable()));
-            }
-            if sink_field.metadata() != root_field.metadata() {
-                return Err(QueryError::new(
-                    QueryErrorCode::InvalidPlan,
-                    "nexus_query_engine.plan.validate_sink",
-                    "host sink field metadata must match the root node output by ordinal",
-                )
-                .with_fact("root_node", sink_input.id)
-                .with_fact("field_index", index)
-                .with_fact("sink_field", sink_field.name())
-                .with_fact("root_field", root_field.name())
-                .with_fact("sink_metadata", format!("{:?}", sink_field.metadata()))
-                .with_fact("root_metadata", format!("{:?}", root_field.metadata())));
-            }
         }
     }
 

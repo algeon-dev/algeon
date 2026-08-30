@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use arrow::datatypes::{Field, Schema};
 
@@ -45,6 +45,35 @@ fn bounded_evidence_for_spec_with_vertex_bound(
     let plan = builder.finish_gpu_resident(graph);
     graph_memory_bounded_admission_evidence_for_plan(&plan, GraphMemoryCalibrationOverride::none(), None)
         .expect("bounded graph test plan must produce evidence")
+}
+
+#[test]
+fn resident_row_evidence_replaces_only_the_matching_gpu_input_cardinality() {
+    let spec = GraphAlgorithmSpec::with_stable_schema(
+        GraphAlgorithm::PageRank,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions::default(),
+        GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
+    );
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("edges", edge_schema()).with_row_count_upper_bound(100_000_000),
+    ));
+    let graph = builder.add_graph_algorithm(source, spec);
+    let plan = builder.finish_gpu_resident(graph);
+    let static_evidence =
+        graph_memory_bounded_admission_evidence_for_plan(&plan, GraphMemoryCalibrationOverride::none(), None)
+            .expect("the static source bound must remain modelable");
+    let resident_evidence = graph_memory_bounded_admission_evidence_for_plan_with_resident_rows(
+        &plan,
+        GraphMemoryCalibrationOverride::none(),
+        None,
+        &HashMap::from([("edges".to_owned(), 10)]),
+    )
+    .expect("the matching resident frame supplies exact runtime rows");
+
+    assert!(resident_evidence.cold_model_requested_bytes() < static_evidence.cold_model_requested_bytes());
+    assert!(resident_evidence.retained_output_rows_upper_bound() < static_evidence.retained_output_rows_upper_bound());
 }
 
 #[cfg(feature = "cugraph")]

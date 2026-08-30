@@ -68,6 +68,20 @@ static_assert(offsetof(cudf_sorted_order_radix_preflight_result_t, retained_orde
               sizeof(uint64_t) * 4);
 static_assert(offsetof(cudf_sorted_order_radix_preflight_result_t, active_phase_peak_bytes) ==
               sizeof(uint64_t) * 5);
+static_assert(std::is_standard_layout_v<cudf_distinct_count_workspace_preflight_result_t>,
+              "distinct-count workspace preflight result must be standard layout");
+static_assert(sizeof(cudf_distinct_count_workspace_preflight_result_t) == sizeof(uint64_t) * 4,
+              "distinct-count workspace preflight result ABI size changed");
+static_assert(alignof(cudf_distinct_count_workspace_preflight_result_t) == alignof(uint64_t),
+              "distinct-count workspace preflight result ABI alignment changed");
+static_assert(offsetof(cudf_distinct_count_workspace_preflight_result_t,
+                       preprocessing_retained_bytes) == 0);
+static_assert(offsetof(cudf_distinct_count_workspace_preflight_result_t,
+                       static_set_storage_bytes) == sizeof(uint64_t));
+static_assert(offsetof(cudf_distinct_count_workspace_preflight_result_t,
+                       insertion_count_bytes) == sizeof(uint64_t) * 2);
+static_assert(offsetof(cudf_distinct_count_workspace_preflight_result_t,
+                       active_workspace_peak_bytes) == sizeof(uint64_t) * 3);
 static_assert(std::is_standard_layout_v<cudf_gather_fixed_width_column_metadata_t>,
               "gather fixed-width metadata must be standard layout");
 static_assert(sizeof(cudf_gather_fixed_width_column_metadata_t) == sizeof(int32_t) * 3,

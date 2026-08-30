@@ -221,6 +221,8 @@ pub(crate) enum LedgerTransitionKind {
     CacheUnpinned,
     LiveReservationCharged,
     LiveReservationReleased,
+    AttemptPhaseActivated,
+    AttemptPhaseReleased,
 }
 
 /// One immutable ledger mutation observed atomically with its state change.
@@ -327,6 +329,7 @@ impl fmt::Debug for DeviceLedgerInner {
 struct DeviceLedgerState {
     sequence: u64,
     next_grant_generation: u64,
+    next_phase_generation: u64,
     grants: BTreeMap<u64, ActiveGrant>,
     protection: Option<SlotProtection>,
     health: DeviceAdmissionHealth,
@@ -339,6 +342,13 @@ struct ActiveGrant {
     admission_request_id: AdmissionRequestId,
     grant_bytes: u64,
     live_reserved_bytes: u64,
+    active_phase: Option<ActiveGrantPhase>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ActiveGrantPhase {
+    generation: u64,
+    required_bytes: u64,
 }
 
 impl DeviceLedgerState {
@@ -360,6 +370,7 @@ impl DeviceLedger {
                 state: Mutex::new(DeviceLedgerState {
                     sequence: 0,
                     next_grant_generation: 1,
+                    next_phase_generation: 1,
                     grants: BTreeMap::new(),
                     protection: None,
                     health: DeviceAdmissionHealth::Open,
@@ -418,6 +429,7 @@ impl DeviceLedger {
                 requires_composed_producer_binding: false,
                 attested_cugraph_graph_execution_scopes: Vec::new(),
                 reservation_shapes: Vec::new(),
+                deferred_graph_phases: Vec::new(),
             },
         )
     }
@@ -825,9 +837,10 @@ impl DeviceLedger {
             state.protection = None;
         }
         state.next_grant_generation = next_grant_generation;
-        state
-            .grants
-            .insert(generation, ActiveGrant { admission_request_id: waiter_id, grant_bytes, live_reserved_bytes: 0 });
+        state.grants.insert(
+            generation,
+            ActiveGrant { admission_request_id: waiter_id, grant_bytes, live_reserved_bytes: 0, active_phase: None },
+        );
         self.bump_sequence_and_notify_locked(state, LedgerTransitionKind::GrantAdmitted);
         Ok(MemoryGrant {
             inner: Arc::new(MemoryGrantInner {
@@ -1083,6 +1096,13 @@ pub(crate) struct MemoryGrantLiveReservation {
     inner: Arc<MemoryGrantLiveReservationInner>,
 }
 
+#[derive(Debug)]
+pub(crate) struct MemoryGrantPhase {
+    grant: MemoryGrant,
+    generation: u64,
+    required_bytes: u64,
+}
+
 struct MemoryGrantLiveReservationInner {
     grant: MemoryGrant,
     bytes: u64,
@@ -1157,7 +1177,62 @@ impl MemoryGrant {
         let Some(active) = state.grants.get(&self.inner.identity.generation) else {
             return Ok(0);
         };
-        Ok(active.grant_bytes.saturating_sub(active.live_reserved_bytes))
+        let active_limit = active.active_phase.map_or(active.grant_bytes, |phase| phase.required_bytes);
+        Ok(active_limit.saturating_sub(active.live_reserved_bytes))
+    }
+
+    pub(crate) fn activate_phase(&self, required_bytes: u64) -> Result<MemoryGrantPhase> {
+        self.check_resource_epoch("nexus_query_engine.runtime.gpu.memory_grant.activate_phase")?;
+        if required_bytes == 0 {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.runtime.gpu.memory_grant.activate_phase",
+                "an attempt phase requires a positive immutable byte bound",
+            )
+            .with_fact("reason", "zero_attempt_phase_bound"));
+        }
+        let ledger = DeviceLedger { inner: Arc::clone(&self.inner.ledger) };
+        let mut state = ledger.lock_state("activate_phase")?;
+        let phase_generation = state.next_phase_generation;
+        let next_phase_generation = phase_generation.checked_add(1).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::Internal,
+                "nexus_query_engine.runtime.gpu.memory_grant.activate_phase",
+                "attempt phase generation exhausted",
+            )
+            .with_fact("reason", "attempt_phase_generation_exhausted")
+        })?;
+        let active = state.grants.get_mut(&self.inner.identity.generation).ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::MemoryReservationFailed,
+                "nexus_query_engine.runtime.gpu.memory_grant.activate_phase",
+                "the immutable attempt grant is no longer active",
+            )
+            .with_fact("reason", "attempt_phase_grant_inactive")
+        })?;
+        if active.active_phase.is_some() {
+            return Err(QueryError::new(
+                QueryErrorCode::MemoryReservationFailed,
+                "nexus_query_engine.runtime.gpu.memory_grant.activate_phase",
+                "the immutable attempt grant already has an active phase",
+            )
+            .with_fact("reason", "attempt_phase_already_active"));
+        }
+        if required_bytes > active.grant_bytes || active.live_reserved_bytes > required_bytes {
+            return Err(QueryError::new(
+                QueryErrorCode::MemoryReservationFailed,
+                "nexus_query_engine.runtime.gpu.memory_grant.activate_phase",
+                "the next attempt phase does not fit the immutable grant and retained input",
+            )
+            .with_fact("reason", "attempt_phase_exceeds_immutable_grant")
+            .with_fact("required_phase_bytes", required_bytes)
+            .with_fact("grant_bytes", active.grant_bytes)
+            .with_fact("retained_live_bytes", active.live_reserved_bytes));
+        }
+        active.active_phase = Some(ActiveGrantPhase { generation: phase_generation, required_bytes });
+        state.next_phase_generation = next_phase_generation;
+        ledger.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::AttemptPhaseActivated);
+        Ok(MemoryGrantPhase { grant: self.clone(), generation: phase_generation, required_bytes })
     }
 
     /// Attempts to charge new device-resident bytes to this grant.
@@ -1174,7 +1249,8 @@ impl MemoryGrant {
         let Some(next_live_reserved_bytes) = active.live_reserved_bytes.checked_add(bytes) else {
             return Ok(false);
         };
-        if next_live_reserved_bytes > active.grant_bytes {
+        let active_limit = active.active_phase.map_or(active.grant_bytes, |phase| phase.required_bytes);
+        if next_live_reserved_bytes > active_limit {
             return Ok(false);
         }
         active.live_reserved_bytes = next_live_reserved_bytes;
@@ -1298,6 +1374,41 @@ impl MemoryGrantLiveReservation {
 impl Drop for MemoryGrantLiveReservationInner {
     fn drop(&mut self) {
         self.grant.release_live_bytes(self.bytes);
+    }
+}
+
+impl MemoryGrantPhase {
+    pub(crate) fn grant_identity(&self) -> GrantIdentity {
+        self.grant.identity()
+    }
+
+    pub(crate) const fn required_bytes(&self) -> u64 {
+        self.required_bytes
+    }
+}
+
+impl Drop for MemoryGrantPhase {
+    fn drop(&mut self) {
+        let ledger = DeviceLedger { inner: Arc::clone(&self.grant.inner.ledger) };
+        if ledger.in_transition_observer() {
+            ledger.panic_on_transition_observer_reentrancy("release_phase");
+        }
+        let Ok(mut state) = ledger.inner.state.lock() else {
+            eprintln!("[nexus-query-engine] warning: failed to release immutable attempt phase");
+            return;
+        };
+        let Some(active) = state.grants.get_mut(&self.grant.identity().generation) else {
+            return;
+        };
+        let Some(phase) = active.active_phase else {
+            return;
+        };
+        if phase.generation != self.generation || phase.required_bytes != self.required_bytes {
+            eprintln!("[nexus-query-engine] warning: immutable attempt phase identity mismatch during release");
+            return;
+        }
+        active.active_phase = None;
+        ledger.bump_sequence_and_notify_locked(&mut state, LedgerTransitionKind::AttemptPhaseReleased);
     }
 }
 

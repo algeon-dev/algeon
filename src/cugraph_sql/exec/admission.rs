@@ -41,6 +41,35 @@ pub(super) async fn exact_native_edge_source_gpu_plan(
     Ok(Some(plan.clone_with_gpu_resident_sink()))
 }
 
+fn deferred_cugraph_graph_proof(
+    graph_execution_plan: &nexus_query_engine::plan::QueryPlan,
+    graph_execution_proof: QueryPlanCapabilityProof,
+    edge_source: &dyn ExecutionPlan,
+    exact_edge_source_gpu_plan: Option<&nexus_query_engine::plan::QueryPlan>,
+) -> Result<Option<QueryPlanCapabilityProof>> {
+    let Some(edge_plan) = exact_edge_source_gpu_plan else {
+        return Ok(None);
+    };
+    if as_nexus_native_composed_exec(edge_source).is_some() {
+        return Ok(None);
+    }
+    QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt(
+        graph_execution_plan,
+        graph_execution_proof,
+        CUGRAPH_EDGE_INPUT_NAME,
+        edge_plan,
+        std::iter::empty(),
+    )
+    .map_err(|error| {
+        Error::from_native(
+            "datafusion_nexus.cugraph_sql.graph_ticket_ask",
+            "failed to derive the deferred cuGraph phase admission contract",
+            error,
+        )
+        .into()
+    })
+}
+
 pub(super) fn cugraph_execution_config_after_staging(
     spec: &CugraphAlgorithmSpec,
     edge_source: &dyn ExecutionPlan,
@@ -126,11 +155,6 @@ pub(super) fn cugraph_execution_config_with_graph_aware_ticket(
         edge_vertex_upper_bound,
         exact_edge_source_gpu_plan,
     )?;
-    let mut graph_model_ask = if execution_config.query_admission_source().is_none() {
-        None
-    } else {
-        cugraph_graph_model_ask_bytes(&graph_execution_plan, edge_source, &execution_config)?
-    };
     let materialized_side_input_plans = predicate_sources
         .iter()
         .enumerate()
@@ -139,13 +163,36 @@ pub(super) fn cugraph_execution_config_with_graph_aware_ticket(
                 .map(|plan| (super::lowering::cugraph_side_input_name(index), plan.clone_with_gpu_resident_sink()))
         })
         .collect::<Option<Vec<_>>>();
+    let mut graph_model_ask = if execution_config.query_admission_source().is_none() {
+        None
+    } else {
+        cugraph_graph_model_ask_bytes(&graph_execution_plan, edge_source, &execution_config)?
+    };
+    let static_graph_phase_exceeds_device = execution_config
+        .query_admission_source()
+        .zip(graph_model_ask.as_ref())
+        .is_some_and(|(source, model)| model.exceeds_device_total_memory_bytes(source.max_device_total_memory_bytes()));
+    let deferred_graph_proof = if static_graph_phase_exceeds_device && materialized_side_input_plans.is_some() {
+        deferred_cugraph_graph_proof(
+            &graph_execution_plan,
+            graph_execution_proof.clone(),
+            edge_source,
+            exact_edge_source_gpu_plan,
+        )?
+    } else {
+        None
+    };
+    if deferred_graph_proof.is_some() {
+        graph_model_ask = None;
+    }
     // A cuGraph attempt executes its graph operation and may also execute
     // lowered native edge/predicate fragments under the same ticket. Keep one
     // aggregate proof for that whole invocation so the engine can verify each
     // fragment at execution time without treating the graph proof as blanket
     // authorization for a different native plan.
-    let scheduled_graph_proof = match (exact_edge_source_gpu_plan, graph_model_ask.as_ref()) {
-        (Some(edge_plan), Some(model_ask))
+    let scheduled_graph_proof = match (deferred_graph_proof, exact_edge_source_gpu_plan, graph_model_ask.as_ref()) {
+        (Some(deferred), _, _) => Some(deferred),
+        (None, Some(edge_plan), Some(model_ask))
             if as_nexus_native_composed_exec(edge_source).is_none() && materialized_side_input_plans.is_some() =>
         {
             let graph_with_evidence = graph_execution_proof
@@ -238,12 +285,13 @@ pub(super) fn validate_cugraph_graph_owner_preflight(
     result_options: &CugraphResultPlanOptions,
     edge_normalize_inserted: bool,
     execution_config: &NexusNativeExecutionConfig,
+    exact_edge_source_gpu_plan: Option<&nexus_query_engine::plan::QueryPlan>,
 ) -> Result<()> {
     if execution_config.query_admission_source().is_none() {
         return Ok(());
     }
     let edge_vertex_upper_bound = edge_source_graph_vertex_estimate(edge_source).map(|estimate| estimate.count);
-    let (graph_execution_plan, _) = cugraph_execution_capability_proof_with_edge_row_upper_bound(
+    let (graph_execution_plan, graph_execution_proof) = cugraph_execution_capability_proof_with_edge_row_upper_bound(
         spec,
         edge_source.schema(),
         predicate_sources.iter().map(|source| source.schema()).collect(),
@@ -253,7 +301,19 @@ pub(super) fn validate_cugraph_graph_owner_preflight(
         input_row_bounds.edge_row_upper_bound(),
         edge_vertex_upper_bound,
     )?;
-    let _ = cugraph_graph_model_ask_bytes(&graph_execution_plan, edge_source, execution_config)?;
+    let graph_model_ask = cugraph_graph_model_ask_bytes(&graph_execution_plan, edge_source, execution_config)?;
+    let static_graph_phase_exceeds_device = execution_config
+        .query_admission_source()
+        .zip(graph_model_ask.as_ref())
+        .is_some_and(|(source, model)| model.exceeds_device_total_memory_bytes(source.max_device_total_memory_bytes()));
+    if static_graph_phase_exceeds_device {
+        let _ = deferred_cugraph_graph_proof(
+            &graph_execution_plan,
+            graph_execution_proof,
+            edge_source,
+            exact_edge_source_gpu_plan,
+        )?;
+    }
     Ok(())
 }
 

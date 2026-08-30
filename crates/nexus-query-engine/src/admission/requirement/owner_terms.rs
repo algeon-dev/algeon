@@ -48,6 +48,7 @@ pub(crate) enum OwnerTermRole {
     GraphLiveReservationFloorTopUp,
     SideInputWorkspace,
     AggregatePartialState,
+    AggregateDistinctWorkspace,
     AggregateOutput,
     RetainedOutput,
     SourceStage,
@@ -82,6 +83,7 @@ impl OwnerTermRole {
             Self::GraphLiveReservationFloorTopUp => "graph_live_reservation_floor_top_up",
             Self::SideInputWorkspace => "side_input_workspace",
             Self::AggregatePartialState => "aggregate_partial_state",
+            Self::AggregateDistinctWorkspace => "aggregate_distinct_workspace",
             Self::AggregateOutput => "aggregate_output",
             Self::RetainedOutput => "retained_output",
             Self::SourceStage => "source_stage",
@@ -398,8 +400,12 @@ pub(crate) fn owner_term_shape_is_valid(owner: &OwnerId, role: OwnerTermRole, cl
         },
         OwnerId::Producer(_) => role == OwnerTermRole::RetainedOutput && class == AllocationClass::AttemptRetained,
         OwnerId::Aggregate(_) => {
-            matches!(role, OwnerTermRole::AggregatePartialState | OwnerTermRole::AggregateOutput)
-                && class == AllocationClass::ActivePhase
+            matches!(
+                role,
+                OwnerTermRole::AggregatePartialState
+                    | OwnerTermRole::AggregateDistinctWorkspace
+                    | OwnerTermRole::AggregateOutput
+            ) && class == AllocationClass::ActivePhase
         },
         OwnerId::Source(_) => role == OwnerTermRole::SourceStage && class == AllocationClass::ActivePhase,
         OwnerId::Consumer(_) => {
@@ -613,7 +619,12 @@ impl AllocationOwnerTerm {
             },
             (OwnerId::Aggregate(node_id), role, OccurrenceId::PlanLocal(occurrence)) => {
                 node_id == occurrence
-                    && matches!(role, OwnerTermRole::AggregatePartialState | OwnerTermRole::AggregateOutput)
+                    && matches!(
+                        role,
+                        OwnerTermRole::AggregatePartialState
+                            | OwnerTermRole::AggregateDistinctWorkspace
+                            | OwnerTermRole::AggregateOutput
+                    )
             },
             (OwnerId::Consumer(node_id), role, OccurrenceId::PlanLocal(occurrence)) => {
                 node_id == occurrence

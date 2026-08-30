@@ -355,6 +355,7 @@ fn impossible_requirement_is_rejected_at_submit_without_queueing() {
         requires_composed_producer_binding: false,
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
+        deferred_graph_phases: Vec::new(),
     };
     let error = service
         .admit_query_with_request(

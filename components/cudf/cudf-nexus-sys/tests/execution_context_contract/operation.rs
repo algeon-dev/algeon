@@ -1223,6 +1223,147 @@ fn reduction_ex_entries_use_required_exec_options() {
 }
 
 #[test]
+fn distinct_count_workspace_preflight_preserves_owner_and_abi_contract() {
+    for field in [
+        "preprocessing_retained_bytes",
+        "static_set_storage_bytes",
+        "insertion_count_bytes",
+        "active_workspace_peak_bytes",
+    ] {
+        assert!(VENDORED_DISTINCT_COUNT_HPP.contains(field), "distinct-count owner result must expose `{field}`");
+        assert!(REDUCTION_H.contains(field), "distinct-count C ABI result must expose `{field}`");
+        assert!(REDUCTION_FFI_RS.contains(field), "distinct-count Rust binding must expose `{field}`");
+    }
+    assert!(
+        VENDORED_DISTINCT_COUNT_HPP.contains("distinct_count_workspace_preflight("),
+        "distinct-count owner must expose the preflight entry point"
+    );
+    assert!(
+        REDUCTION_H.contains("cudf_distinct_count_workspace_preflight("),
+        "distinct-count C ABI must expose the preflight entry point"
+    );
+    assert!(
+        REDUCTION_CPP.contains("cudf::distinct_count_workspace_preflight("),
+        "distinct-count C ABI must call the owner preflight"
+    );
+    assert!(
+        REDUCTION_FFI_RS.contains("pub fn cudf_distinct_count_workspace_preflight("),
+        "distinct-count Rust binding must expose the preflight entry point"
+    );
+    assert!(
+        VENDORED_DISTINCT_COUNT_CU.contains("preprocessed_table::create_reservation_size"),
+        "distinct-count preflight must use the owner preprocessing reservation helper"
+    );
+    assert!(
+        VENDORED_DISTINCT_COUNT_CU.contains("make_valid_extent<ProbingScheme, storage_type>"),
+        "distinct-count owner must use cuco's pinned extent helper"
+    );
+    assert!(
+        VENDORED_DISTINCT_COUNT_CU.contains("bucket_storage_ref"),
+        "distinct-count owner must account for cuco bucket-storage alignment"
+    );
+    assert!(
+        VENDORED_DISTINCT_COUNT_CU.contains("rmm::CUDA_ALLOCATION_ALIGNMENT"),
+        "distinct-count owner bytes must use the reservation allocator's device alignment"
+    );
+    assert!(
+        VENDORED_DISTINCT_COUNT_CU.contains("distinct_count_static_set_extent<probing_scheme_type>"),
+        "runtime distinct-count allocation must share the preflight extent helper"
+    );
+}
+
+fn call_distinct_count_workspace_preflight(
+    num_rows: i64,
+    key_type: cudf_sys::cudf_type_id_t,
+    null_count: i64,
+    key_count: i32,
+) -> (cudf_sys::cudf_status_t, cudf_sys::cudf_distinct_count_workspace_preflight_result_t) {
+    let mut result = cudf_sys::cudf_distinct_count_workspace_preflight_result_t {
+        preprocessing_retained_bytes: u64::MAX,
+        static_set_storage_bytes: u64::MAX,
+        insertion_count_bytes: u64::MAX,
+        active_workspace_peak_bytes: u64::MAX,
+    };
+    let status = unsafe {
+        cudf_sys::cudf_distinct_count_workspace_preflight(num_rows, key_type, null_count, key_count, &mut result)
+    };
+    (status, result)
+}
+
+#[test]
+fn distinct_count_workspace_preflight_zero_rows_is_zero() {
+    let (status, result) = call_distinct_count_workspace_preflight(0, cudf_sys::CUDF_TYPE_INT32, 0, 1);
+    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(result.preprocessing_retained_bytes, 0);
+    assert_eq!(result.static_set_storage_bytes, 0);
+    assert_eq!(result.insertion_count_bytes, 0);
+    assert_eq!(result.active_workspace_peak_bytes, 0);
+}
+
+#[test]
+fn distinct_count_workspace_preflight_one_and_multiple_rows_are_split() {
+    let (one_status, one) = call_distinct_count_workspace_preflight(1, cudf_sys::CUDF_TYPE_INT32, 0, 1);
+    assert_eq!(one_status, cudf_sys::CUDF_SUCCESS);
+    assert!(one.preprocessing_retained_bytes > 0);
+    assert!(one.static_set_storage_bytes > 0);
+    assert!(one.insertion_count_bytes > 0);
+    assert_eq!(
+        one.active_workspace_peak_bytes,
+        one.preprocessing_retained_bytes + one.static_set_storage_bytes + one.insertion_count_bytes
+    );
+
+    let (many_status, many) = call_distinct_count_workspace_preflight(1024, cudf_sys::CUDF_TYPE_INT32, 0, 1);
+    assert_eq!(many_status, cudf_sys::CUDF_SUCCESS);
+    assert!(many.static_set_storage_bytes > one.static_set_storage_bytes);
+    assert_eq!(many.insertion_count_bytes, one.insertion_count_bytes);
+    assert_eq!(
+        many.active_workspace_peak_bytes,
+        many.preprocessing_retained_bytes + many.static_set_storage_bytes + many.insertion_count_bytes
+    );
+}
+
+#[test]
+fn distinct_count_workspace_preflight_rejects_unsupported_shapes() {
+    for (key_type, null_count, key_count) in
+        [(cudf_sys::CUDF_TYPE_INT32, 1, 1), (cudf_sys::CUDF_TYPE_STRING, 0, 1), (cudf_sys::CUDF_TYPE_INT32, 0, 2)]
+    {
+        let (status, result) = call_distinct_count_workspace_preflight(1, key_type, null_count, key_count);
+        assert_eq!(status, cudf_sys::CUDF_ERROR_INVALID_ARGUMENT);
+        assert_eq!(result.preprocessing_retained_bytes, 0);
+        assert_eq!(result.static_set_storage_bytes, 0);
+        assert_eq!(result.insertion_count_bytes, 0);
+        assert_eq!(result.active_workspace_peak_bytes, 0);
+    }
+}
+
+#[test]
+fn distinct_count_workspace_preflight_rejects_negative_and_overflow_rows() {
+    let (negative_status, negative) = call_distinct_count_workspace_preflight(-1, cudf_sys::CUDF_TYPE_INT32, 0, 1);
+    assert_eq!(negative_status, cudf_sys::CUDF_ERROR_INVALID_ARGUMENT);
+    assert_eq!(negative.preprocessing_retained_bytes, 0);
+    assert_eq!(negative.static_set_storage_bytes, 0);
+    assert_eq!(negative.insertion_count_bytes, 0);
+    assert_eq!(negative.active_workspace_peak_bytes, 0);
+
+    let rows_overflow = i64::from(i32::MAX) + 1;
+    let (overflow_status, overflow) =
+        call_distinct_count_workspace_preflight(rows_overflow, cudf_sys::CUDF_TYPE_INT32, 0, 1);
+    assert_eq!(overflow_status, cudf_sys::CUDF_ERROR_SIZE_OVERFLOW);
+    assert_eq!(overflow.preprocessing_retained_bytes, 0);
+    assert_eq!(overflow.static_set_storage_bytes, 0);
+    assert_eq!(overflow.insertion_count_bytes, 0);
+    assert_eq!(overflow.active_workspace_peak_bytes, 0);
+}
+
+#[test]
+fn distinct_count_workspace_preflight_rejects_null_output() {
+    let status = unsafe {
+        cudf_sys::cudf_distinct_count_workspace_preflight(0, cudf_sys::CUDF_TYPE_INT32, 0, 1, std::ptr::null_mut())
+    };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_NULL);
+}
+
+#[test]
 fn reduction_duplicate_non_ex_production_apis_are_removed() {
     for (name, source, marker) in [
         ("reduction native header", REDUCTION_H, "cudf_status_t cudf_reduce("),

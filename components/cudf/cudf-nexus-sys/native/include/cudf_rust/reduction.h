@@ -37,6 +37,23 @@ typedef enum {
   CUDF_SCAN_EXCLUSIVE = 1,
 } cudf_scan_type_t;
 
+/// Allocation-free workspace bytes for a fixed-width, single-column distinct count.
+typedef struct cudf_distinct_count_workspace_preflight_result_t {
+  uint64_t preprocessing_retained_bytes;
+  uint64_t static_set_storage_bytes;
+  uint64_t insertion_count_bytes;
+  uint64_t active_workspace_peak_bytes;
+} cudf_distinct_count_workspace_preflight_result_t;
+
+/// Compute the native workspace bound for a global distinct count without allocating device memory.
+/// Only one non-null, non-nested, fixed-width key column is supported.
+cudf_status_t cudf_distinct_count_workspace_preflight(
+  int64_t num_rows,
+  cudf_type_id_t key_type,
+  int64_t null_count,
+  int32_t key_count,
+  cudf_distinct_count_workspace_preflight_result_t* out);
+
 /// Create a simple reduce aggregation.
 cudf_status_t cudf_reduce_aggregation_create(cudf_reduce_aggregation_kind_t kind,
                                              cudf_reduce_aggregation_handle* out);

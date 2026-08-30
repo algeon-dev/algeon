@@ -678,7 +678,9 @@ fn execute_query_plan_output(
 ) -> Result<Output> {
     context.check_cancellation("nexus_query_engine.exec.execute_query_plan")?;
     validate_query_plan(plan)?;
-    context.validate_admitted_plan_capabilities(plan)?;
+    let context = context.with_admitted_gpu_inputs(plan, gpu_inputs)?;
+    let context = &context;
+    context.validate_admitted_plan_capabilities_with_gpu_inputs(plan, gpu_inputs)?;
     let _attempt_execution_range = attempt_execution_range(context);
     let _order_tracking = DataFusionOrderTrackingGuard::new(
         context.statistical_aggregate_execution_mode().is_datafusion_exact()
@@ -720,7 +722,11 @@ pub fn materialize_gpu_result_to_host(handle: GpuResultHandle, metrics: &mut Que
 }
 
 fn gpu_result_handle(context: &ExecutionContext, plan: &QueryPlan, frame: GpuDataFrame) -> Result<GpuResultHandle> {
-    GpuResultHandle::new(context, frame, Arc::clone(plan.output_schema()))
+    GpuResultHandle::new(
+        context,
+        frame.with_producer_execution_scope(crate::admission::canonical_execution_scope_fingerprint(plan)),
+        Arc::clone(plan.output_schema()),
+    )
 }
 
 fn execute_node(

@@ -522,7 +522,10 @@ fn remap_unique_keys(
         .collect()
 }
 
-fn identity_source_column<'a>(expr: &'a Expr, input_schema: Option<&arrow::datatypes::SchemaRef>) -> Option<&'a str> {
+pub(crate) fn identity_source_column<'a>(
+    expr: &'a Expr,
+    input_schema: Option<&arrow::datatypes::SchemaRef>,
+) -> Option<&'a str> {
     if let Some(column) = alias_wrapped_column(expr) {
         return Some(column.name());
     }

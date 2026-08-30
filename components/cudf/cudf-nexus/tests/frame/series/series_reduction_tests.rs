@@ -3,7 +3,8 @@
 //! All tests require a GPU.
 
 use cudf::{
-    ErrorCode, ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest, ExecutionBudgetStatus, ReduceAgg, TypeId,
+    ErrorCode, ErrorKind, ExecutionBudgetEnforcement, ExecutionBudgetRequest, ExecutionBudgetStatus, ReduceAgg,
+    ScalarReductionDistinctWorkspacePreflight, TypeId,
     core::error::{FactKeyName, FactValue},
     testing::prelude::*,
 };
@@ -143,6 +144,42 @@ fn test_prepared_scalar_sum_i32_reports_int64_output_and_returns_scalar() {
     assert_eq!(output.output_rows(), 1);
     assert_eq!(output.scalar().data_type().unwrap().id(), TypeId::Int64);
     assert_eq!(output.scalar().value::<i64>().unwrap(), 60);
+}
+
+#[test]
+fn test_distinct_workspace_preflight_zero_rows_has_no_workspace() {
+    let preflight =
+        ScalarReductionDistinctWorkspacePreflight::for_metadata(0, cudf::DataType::new(TypeId::Int64), 0).unwrap();
+
+    assert_eq!(preflight.preprocessing_retained_bytes(), 0);
+    assert_eq!(preflight.static_set_storage_bytes(), 0);
+    assert_eq!(preflight.insertion_count_bytes(), 0);
+    assert_eq!(preflight.active_workspace_peak_bytes(), 0);
+}
+
+#[test]
+fn test_prepared_nunique_uses_the_same_workspace_owner_contract() {
+    let s = crate::common::series::<i64>("label", &[3, 3, 7, 11]).unwrap();
+    let prepared = s.prepare_scalar_reduction(ReduceAgg::NUnique { null_policy: cudf::NullPolicy::Exclude }).unwrap();
+    let expected =
+        ScalarReductionDistinctWorkspacePreflight::for_metadata(s.len(), cudf::DataType::new(TypeId::Int64), 0)
+            .unwrap();
+    assert_eq!(prepared.distinct_workspace_preflight(), Some(expected));
+
+    let token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(
+                ExecutionBudgetRequest::new(expected.active_workspace_peak_bytes()).with_boundary("global_nunique"),
+            )
+            .unwrap()
+    });
+    let outcome = prepared.execute_with_budget(&token).unwrap();
+    assert_eq!(outcome.value().scalar().value::<i32>().unwrap(), 3);
+    assert_eq!(outcome.report().unresolved_contract(), None);
+    assert_eq!(
+        outcome.report().context_facts().get("distinct_workspace_active_peak_bytes"),
+        Some(&expected.active_workspace_peak_bytes().to_string()),
+    );
 }
 
 #[test]

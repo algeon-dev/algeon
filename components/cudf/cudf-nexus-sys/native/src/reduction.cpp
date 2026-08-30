@@ -8,11 +8,16 @@
 #include <cudf/column/column.hpp>
 #include <cudf/column/column_view.hpp>
 #include <cudf/reduction.hpp>
+#include <cudf/reduction/distinct_count.hpp>
 #include <cudf/scalar/scalar.hpp>
 #include <cudf/types.hpp>
 #include <cudf/utilities/memory_resource.hpp>
 
+#include <cstddef>
+#include <cstdint>
 #include <memory>
+
+static_assert(sizeof(std::size_t) <= sizeof(std::uint64_t));
 
 namespace {
 cudf_status_t to_scan_type(cudf_scan_type_t input, cudf::scan_type* out)
@@ -35,6 +40,28 @@ cudf_status_t to_null_policy(int32_t input, cudf::null_policy* out)
 }  // namespace
 
 extern "C" {
+cudf_status_t cudf_distinct_count_workspace_preflight(
+  int64_t num_rows,
+  cudf_type_id_t key_type,
+  int64_t null_count,
+  int32_t key_count,
+  cudf_distinct_count_workspace_preflight_result_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = {};
+  CUDF_RUST_TRY
+  {
+    auto const result = cudf::distinct_count_workspace_preflight(
+      num_rows, cudf::data_type{to_cudf_type_id(key_type)}, null_count, key_count);
+    out->preprocessing_retained_bytes = static_cast<uint64_t>(result.preprocessing_retained_bytes);
+    out->static_set_storage_bytes = static_cast<uint64_t>(result.static_set_storage_bytes);
+    out->insertion_count_bytes = static_cast<uint64_t>(result.insertion_count_bytes);
+    out->active_workspace_peak_bytes = static_cast<uint64_t>(result.active_workspace_peak_bytes);
+    return CUDF_SUCCESS;
+  }
+  CUDF_RUST_CATCH
+}
+
 cudf_status_t cudf_reduce_aggregation_create(cudf_reduce_aggregation_kind_t kind,
                                              cudf_reduce_aggregation_handle* out)
 {

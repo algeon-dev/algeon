@@ -42,6 +42,40 @@ pub struct AttemptCapabilityEvidence {
     /// Private, exact plan scopes resolved only after the service fixes
     /// scheduling and chunk policy for this admission.
     pub(crate) reservation_shapes: Vec<AttemptReservationShape>,
+    /// Graph phases whose row-dependent owner terms are derived only after an
+    /// admitted native producer has yielded its retained GPU frame.
+    pub(crate) deferred_graph_phases: Vec<DeferredGraphPhaseDescriptor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeferredGraphPhaseDescriptor {
+    graph_execution_scope_fingerprint: String,
+    producer_execution_scope_fingerprint: String,
+    input_name: String,
+    input_schema: SchemaRef,
+    static_edge_row_upper_bound: u64,
+}
+
+impl DeferredGraphPhaseDescriptor {
+    pub(crate) fn matches_graph_plan(&self, plan: &QueryPlan) -> bool {
+        self.graph_execution_scope_fingerprint == canonical_execution_scope_fingerprint(plan)
+    }
+
+    pub(crate) fn producer_execution_scope_fingerprint(&self) -> &str {
+        &self.producer_execution_scope_fingerprint
+    }
+
+    pub(crate) fn input_name(&self) -> &str {
+        &self.input_name
+    }
+
+    pub(crate) fn input_schema(&self) -> &SchemaRef {
+        &self.input_schema
+    }
+
+    pub(crate) const fn static_edge_row_upper_bound(&self) -> u64 {
+        self.static_edge_row_upper_bound
+    }
 }
 
 /// Collision-free structural identity for one graph plan whose frontend owns
@@ -480,7 +514,57 @@ impl QueryPlanCapabilityProof {
         if direct_input != *source_node {
             return Err(composed_schedule_error("graph_input_source_identity_mismatch", Some(input_name)));
         }
-        Ok(None)
+        Self::combine_deferred_cugraph_graph_phase(graph_plan, graph, input_name, producer_plan)
+    }
+
+    fn combine_deferred_cugraph_graph_phase(
+        graph_plan: &QueryPlan,
+        mut graph: Self,
+        input_name: &str,
+        producer_plan: &QueryPlan,
+    ) -> Result<Option<Self>> {
+        if !eligible_deferred_graph_edge_producer(producer_plan) {
+            return Ok(None);
+        }
+        let graph_sources = graph_plan
+            .nodes()
+            .iter()
+            .filter_map(|node| match &node.kind {
+                PlanNode::Source(source) => match source.as_ref() {
+                    SourceNode::GpuResident(source) => Some(source),
+                    _ => None,
+                },
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let [graph_source] = graph_sources.as_slice() else {
+            return Ok(None);
+        };
+        if graph_source.input_name != input_name || graph_source.schema != *producer_plan.output_schema() {
+            return Err(composed_schedule_error("deferred_graph_input_schema_mismatch", Some(input_name)));
+        }
+        let Some(static_edge_row_upper_bound) = graph_source.row_count_upper_bound else {
+            return Ok(None);
+        };
+        let [attested_scope] = graph.requirement.attested_cugraph_graph_execution_scopes.as_slice() else {
+            return Err(composed_schedule_error("deferred_graph_scope_missing_or_ambiguous", Some(input_name)));
+        };
+        if !attested_scope.matches(graph_plan) {
+            return Err(composed_schedule_error("deferred_graph_scope_mismatch", Some(input_name)));
+        }
+        let graph_scope = canonical_execution_scope_fingerprint(graph_plan);
+        graph.requirement.reservation_shapes.retain(|shape| !shape.matches_execution_scope_fingerprint(&graph_scope));
+        graph.requirement.owner_terms.retain(|term| term.execution_scope_fingerprint() != graph_scope);
+        graph.requirement.soft_working_set_hint_bytes = None;
+        graph.requirement.deferred_graph_phases.push(DeferredGraphPhaseDescriptor {
+            graph_execution_scope_fingerprint: graph_scope,
+            producer_execution_scope_fingerprint: canonical_execution_scope_fingerprint(producer_plan),
+            input_name: input_name.to_owned(),
+            input_schema: graph_source.schema.clone(),
+            static_edge_row_upper_bound,
+        });
+        let producer = Self::for_cugraph_materialized_graph_input_producer_plan(producer_plan)?;
+        Self::combine(graph, [producer]).map(Some)
     }
 
     pub(crate) fn normalize_composed_candidate(candidate: ComposedGraphProducerCandidate) -> Result<(String, Self)> {
@@ -765,7 +849,10 @@ impl QueryPlanCapabilityProof {
         let [(occurrence_id, producer)] = producers else {
             return Ok(None);
         };
-        if !producer.requirement.reservation_shapes.iter().any(|shape| shape.ordered_schedule().is_some()) {
+        let has_complete_schedule =
+            producer.requirement.reservation_shapes.iter().any(|shape| shape.ordered_schedule().is_some());
+        let has_deferred_graph_phase = producer.requirement.deferred_graph_phases.len() == 1;
+        if !has_complete_schedule && !has_deferred_graph_phase {
             return Ok(None);
         }
         let unreachable = consumer_plan.unreachable_node_ids();
@@ -785,6 +872,9 @@ impl QueryPlanCapabilityProof {
         let mut requirement =
             AttemptCapabilityEvidence::aggregate([producer.requirement.clone(), consumer.requirement])?;
         requirement.requires_composed_producer_binding = false;
+        if has_deferred_graph_phase {
+            requirement.mark_deferred_graph_result_passthrough_scope(consumer_plan)?;
+        }
         Ok(Some(Self { requirement }))
     }
 
@@ -987,7 +1077,78 @@ impl QueryPlanCapabilityProof {
     }
 }
 
+fn eligible_deferred_graph_edge_producer(plan: &QueryPlan) -> bool {
+    if !matches!(plan.sink(), ResultSink::GpuResident { .. }) {
+        return false;
+    }
+    let mut node_id = plan.sink().input();
+    let mut visited = 0usize;
+    let mut saw_filter = false;
+    loop {
+        let Some(node) = plan.node(node_id) else {
+            return false;
+        };
+        visited = visited.saturating_add(1);
+        match &node.kind {
+            PlanNode::Projection(projection) if !saw_filter => {
+                let Some(input_schema) = plan.node(projection.input).map(|input| input.output_schema()) else {
+                    return false;
+                };
+                if projection
+                    .outputs
+                    .iter()
+                    .any(|output| identity_source_column(&output.expr, Some(input_schema)).is_none())
+                {
+                    return false;
+                }
+                node_id = projection.input;
+            },
+            PlanNode::Filter(filter) if !saw_filter => {
+                saw_filter = true;
+                node_id = filter.input;
+            },
+            PlanNode::Source(source) if saw_filter && matches!(source.as_ref(), SourceNode::LocalParquet(_)) => {
+                break;
+            },
+            _ => return false,
+        }
+    }
+    visited == plan.nodes().len()
+}
+
 impl AttemptCapabilityEvidence {
+    fn mark_deferred_graph_result_passthrough_scope(&mut self, plan: &QueryPlan) -> Result<()> {
+        let matching = self
+            .reservation_shapes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, shape)| {
+                (shape.matches(plan) && shape.is_attested_graph_result_passthrough_scope()).then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let [index] = matching.as_slice() else {
+            return Err(composed_schedule_error("deferred_graph_passthrough_scope_missing_or_ambiguous", None));
+        };
+        self.reservation_shapes[*index].mark_deferred_graph_result_passthrough_scope();
+        Ok(())
+    }
+
+    pub(crate) fn deferred_graph_phase_for_plan(
+        &self,
+        plan: &QueryPlan,
+    ) -> Result<Option<&DeferredGraphPhaseDescriptor>> {
+        let matching = self
+            .deferred_graph_phases
+            .iter()
+            .filter(|descriptor| descriptor.matches_graph_plan(plan))
+            .collect::<Vec<_>>();
+        match matching.as_slice() {
+            [] => Ok(None),
+            [descriptor] => Ok(Some(*descriptor)),
+            _ => Err(composed_schedule_error("deferred_graph_phase_scope_ambiguous", None)),
+        }
+    }
+
     pub(super) fn output_column_evidence_for_scope(&self, execution_scope_fingerprint: &str) -> PlanColumnEvidence {
         let matching = self
             .reservation_shapes
@@ -1210,6 +1371,7 @@ impl AttemptCapabilityEvidence {
             requires_composed_producer_binding: false,
             attested_cugraph_graph_execution_scopes: Vec::new(),
             reservation_shapes: Vec::new(),
+            deferred_graph_phases: Vec::new(),
         }
     }
 
@@ -1223,7 +1385,8 @@ impl AttemptCapabilityEvidence {
             && test_requirement.bound_derivation.is_none()
             && test_requirement.reservation_shapes.is_empty()
             && !test_requirement.requires_composed_producer_binding
-            && test_requirement.attested_cugraph_graph_execution_scopes.is_empty();
+            && test_requirement.attested_cugraph_graph_execution_scopes.is_empty()
+            && test_requirement.deferred_graph_phases.is_empty();
         if !placement_only {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -1787,6 +1950,7 @@ impl AttemptCapabilityEvidence {
         let mut owner_terms = Vec::new();
         let mut attested_cugraph_graph_execution_scopes = Vec::new();
         let mut reservation_shapes = Vec::new();
+        let mut deferred_graph_phases: Vec<DeferredGraphPhaseDescriptor> = Vec::new();
         let mut cugraph_side_input_scopes = HashSet::new();
         let mut requires_composed_producer_binding = false;
         for fragment in fragments {
@@ -1859,6 +2023,17 @@ impl AttemptCapabilityEvidence {
                     attested_cugraph_graph_execution_scopes.push(scope);
                 }
             }
+            for descriptor in fragment.deferred_graph_phases {
+                if let Some(existing) = deferred_graph_phases.iter().find(|existing| {
+                    existing.graph_execution_scope_fingerprint == descriptor.graph_execution_scope_fingerprint
+                }) {
+                    if *existing != descriptor {
+                        return Err(composed_schedule_error("deferred_graph_phase_identity_conflict", None));
+                    }
+                } else {
+                    deferred_graph_phases.push(descriptor);
+                }
+            }
             for shape in fragment.reservation_shapes {
                 // A reservation shape is an allocation occurrence.  Structural
                 // equality is evidence identity, not runtime multiplicity;
@@ -1885,6 +2060,7 @@ impl AttemptCapabilityEvidence {
         aggregate.requires_composed_producer_binding = requires_composed_producer_binding;
         aggregate.attested_cugraph_graph_execution_scopes = attested_cugraph_graph_execution_scopes;
         aggregate.reservation_shapes = reservation_shapes;
+        aggregate.deferred_graph_phases = deferred_graph_phases;
         if let Some(graph_shape_index) = aggregate.exact_attested_graph_reservation_shape_index()
             && aggregate.reservation_shapes[graph_shape_index].has_graph_memory_phase()
         {

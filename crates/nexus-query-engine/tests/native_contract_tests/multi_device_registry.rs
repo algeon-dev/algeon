@@ -238,6 +238,7 @@ fn query_service_memory_failure_callback_ignores_budget_failures() {
                 requires_composed_producer_binding: false,
                 attested_cugraph_graph_execution_scopes: Vec::new(),
                 reservation_shapes: Vec::new(),
+                deferred_graph_phases: Vec::new(),
             },
         ))
         .unwrap()
@@ -567,6 +568,7 @@ fn protection_retargets_on_health_close_and_unrelated_devices_stay_work_conservi
                 requires_composed_producer_binding: false,
                 attested_cugraph_graph_execution_scopes: Vec::new(),
                 reservation_shapes: Vec::new(),
+                deferred_graph_phases: Vec::new(),
             },
         ))
         .unwrap();

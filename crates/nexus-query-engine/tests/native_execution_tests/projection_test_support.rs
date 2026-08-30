@@ -42,19 +42,3 @@ pub(super) fn assert_bounded_duplicate_host_sink_schema_restoration() {
 
     fs::remove_dir_all(dir).unwrap();
 }
-
-pub(super) fn host_sink_schema_validation_error(
-    root_schema: Arc<Schema>,
-    sink_schema: Arc<Schema>,
-) -> nexus_query_engine::error::QueryError {
-    let mut builder = QueryPlanBuilder::new();
-    let source =
-        builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("missing_input", Arc::clone(&root_schema))));
-    let plan = builder.finish_with_host_sink_schema(source, sink_schema);
-    let context = backend_context();
-
-    match execute_query_plan(&context, &plan) {
-        Ok(_) => panic!("native validation should reject host sink schema drift before source read"),
-        Err(error) => error,
-    }
-}

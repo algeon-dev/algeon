@@ -16,13 +16,13 @@ pub use inventory::{
     NexusNvmlTelemetry, device_budget_bytes_from_facts,
 };
 pub(crate) use lanes::{DeviceLanePermit, DeviceWorkerScope};
-pub(crate) use ledger::LedgerTransition;
 #[cfg(test)]
 pub(crate) use ledger::LedgerTransitionKind;
 pub use ledger::{
     DeviceAdmissionHealth, DeviceLedger, DeviceLedgerGrantRow, DeviceLedgerReport, GrantIdentity, LedgerSnapshot,
     MemoryGrant,
 };
+pub(crate) use ledger::{LedgerTransition, MemoryGrantPhase};
 pub use memory_failure::{DeviceMemoryFailureReport, DeviceMemoryFailureTracker};
 pub(crate) use owner::{DeviceOwnerToken, LiveBackendLease, claim_live_backend, normalize_device_ordinals};
 pub(crate) use placement::PlacementRequest;

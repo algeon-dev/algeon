@@ -543,6 +543,19 @@ fn sorted_native_edge_source(row_group_rows: Vec<u64>, config: &NexusNativeExecu
     })
 }
 
+fn filtered_native_edge_source(
+    row_group_rows: Vec<u64>,
+    config: &NexusNativeExecutionConfig,
+) -> Arc<dyn ExecutionPlan> {
+    native_edge_source_with_root(row_group_rows, config, |builder, source| {
+        builder.add_filter(
+            source,
+            Expr::binary(Expr::column("src"), BinaryOp::Gt, Expr::literal(LiteralValue::Int64(0))),
+            edge_schema(),
+        )
+    })
+}
+
 fn native_edge_source_with_root(
     row_group_rows: Vec<u64>,
     config: &NexusNativeExecutionConfig,
@@ -2360,6 +2373,38 @@ fn cugraph_algo_exec_uses_native_edge_cold_model_as_immutable_grant_target() {
             .soft_working_set_hint_bytes(),
         Some(model_ask.cold_model_requested_bytes().max(GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES))
     );
+}
+
+#[test]
+fn filtered_native_edge_ticket_defers_graph_pricing_to_the_retained_runtime_frame() {
+    let backend = test_gpu_backend();
+    let config = NexusNativeExecutionConfig::bounded(64 * 1024 * 1024, 512, 1, 3, 1)
+        .with_query_admission_source(admission_source(&backend));
+    let edge_source = filtered_native_edge_source(vec![100_000_000], &config);
+    let native = as_nexus_native_exec(edge_source.as_ref()).expect("fixture must lower to one native edge producer");
+    let edge_plan = native.native_plan().clone_with_gpu_resident_sink();
+    let exec = CugraphAlgoExec::try_new(triangle_spec(), edge_source, vec![], None, None, config)
+        .expect("filtered native edge source must remain a valid graph producer");
+    let input_row_bounds =
+        CugraphInputRowBounds::from_execution_plans(exec.edge_source.as_ref(), &exec.predicate_sources)
+            .expect("native source metadata supplies its static producer bound");
+    let (exec, graph_plan) = exec
+        .issue_graph_aware_ticket_after_staging(input_row_bounds, &TaskContext::default(), Some(&edge_plan))
+        .expect("eligible filtered producer must mint one deferred graph ticket");
+    let ticket = exec.native_execution_config.query_admission_ticket().expect("one graph-aware ticket is issued");
+    let graph = graph_ticket_proof_with_resident_edge_plan(&exec, &edge_plan);
+    let expected = QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt(
+        &graph_plan,
+        graph,
+        CUGRAPH_EDGE_INPUT_NAME,
+        &edge_plan,
+        std::iter::empty(),
+    )
+    .expect("deferred graph contract must derive")
+    .expect("Source-Filter-GPU sink is eligible");
+
+    assert_eq!(ticket.attempt_capability_proof(), Some(&expected));
+    assert_eq!(expected.soft_working_set_hint_bytes(), None);
 }
 
 #[test]

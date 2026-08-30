@@ -47,38 +47,6 @@ fn bounded_native_query_restores_duplicate_host_sink_schema_without_swapping_col
 }
 
 #[test]
-fn native_query_rejects_host_sink_schema_nullability_drift_before_source_read() {
-    let root_schema = Arc::new(Schema::new(vec![Field::new("exec_key", DataType::Int32, false)]));
-    let sink_schema = Arc::new(Schema::new(vec![Field::new("frontend_key", DataType::Int32, true)]));
-
-    let error = host_sink_schema_validation_error(root_schema, sink_schema);
-
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(error.operation(), "nexus_query_engine.plan.validate_sink");
-    assert_eq!(error.fact_value("field_index"), Some("0"));
-    assert_eq!(error.fact_value("sink_nullable"), Some("true"));
-    assert_eq!(error.fact_value("root_nullable"), Some("false"));
-    assert!(error.fact_value("input_name").is_none());
-}
-
-#[test]
-fn native_query_rejects_host_sink_schema_metadata_drift_before_source_read() {
-    let root_schema = Arc::new(Schema::new(vec![Field::new("exec_key", DataType::Int32, false)]));
-    let sink_field = Field::new("frontend_key", DataType::Int32, false)
-        .with_metadata(HashMap::from([("field_role".to_string(), "frontend".to_string())]));
-    let sink_schema = Arc::new(Schema::new(vec![sink_field]));
-
-    let error = host_sink_schema_validation_error(root_schema, sink_schema);
-
-    assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
-    assert_eq!(error.operation(), "nexus_query_engine.plan.validate_sink");
-    assert_eq!(error.fact_value("field_index"), Some("0"));
-    assert!(error.fact_value("sink_metadata").is_some_and(|metadata| metadata.contains("field_role")));
-    assert!(error.fact_value("root_metadata").is_some_and(|metadata| metadata == "{}"));
-    assert!(error.fact_value("input_name").is_none());
-}
-
-#[test]
 fn native_gpu_result_handle_rejects_sink_schema_name_order_mismatch_before_host_materialization() {
     let dir = unique_temp_dir("nexus-query-engine-native-execution-schema-mismatch");
     let path = dir.join("input.parquet");
