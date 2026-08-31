@@ -318,6 +318,59 @@ pub fn all_null_list_series(runtime: &Runtime, data_type: &ArrowDataType, rows: 
 /// Returns the device bytes retained when Arrow list arrays are concatenated
 /// into one cudf list column.
 pub fn estimate_list_import_device_memory_bytes(arrays: &[ArrayRef]) -> Result<usize> {
+    list_import_device_allocation_bytes(arrays)?.into_iter().try_fold(0usize, |total, bytes| {
+        checked_size_add(total, bytes, "arrow_host::estimate_list_import_device_memory_bytes", "summing list buffers")
+    })
+}
+
+/// Returns the aligned-live-byte budget required to import same-schema Arrow
+/// record batches into one cudf dataframe.
+#[doc(hidden)]
+pub fn estimate_record_batches_import_required_budget_bytes(batches: &[RecordBatch]) -> Result<usize> {
+    let operation = "arrow_host::estimate_record_batches_import_required_budget_bytes";
+    let Some(first_batch) = batches.first() else {
+        return Err(Error::new_with(ErrorCode::EmptyInput, operation, "at least one record batch is required"));
+    };
+    let schema = first_batch.schema();
+    for (batch_index, batch) in batches.iter().enumerate().skip(1) {
+        if batch.schema() != schema {
+            return Err(Error::new_with(
+                ErrorCode::TypeMismatch,
+                operation,
+                format!("record batch {batch_index} does not share the first batch's schema"),
+            ));
+        }
+    }
+
+    let total_rows = batches.iter().try_fold(0usize, |total, batch| {
+        checked_size_add(total, batch.num_rows(), operation, "summing record batch rows")
+    })?;
+    if i32::try_from(total_rows).is_err() {
+        return Err(Error::new_with(
+            ErrorCode::ValueOutOfRange,
+            operation,
+            "combined row count exceeds cudf's supported column length",
+        )
+        .with_detail("rows", total_rows.to_string()));
+    }
+
+    let mut required = 0usize;
+    for (index, field) in schema.fields().iter().enumerate() {
+        let arrays = batches.iter().map(|batch| Arc::clone(batch.column(index))).collect::<Vec<_>>();
+        let allocations = import_column_device_allocation_bytes(&arrays, field.data_type(), operation)?;
+        for bytes in allocations {
+            required = checked_size_add(
+                required,
+                import_allocation_charge(bytes, operation)?,
+                operation,
+                "summing aligned import allocations",
+            )?;
+        }
+    }
+    Ok(required)
+}
+
+fn list_import_device_allocation_bytes(arrays: &[ArrayRef]) -> Result<Vec<usize>> {
     let operation = "arrow_host::estimate_list_import_device_memory_bytes";
     let Some(first) = arrays.first() else {
         return Err(Error::new_with(ErrorCode::EmptyInput, operation, "at least one Arrow list array is required"));
@@ -380,14 +433,72 @@ pub fn estimate_list_import_device_memory_bytes(arrays: &[ArrayRef]) -> Result<u
     let root_offset_count = checked_size_add(root_rows, 1, operation, "sizing list offset count")?;
     let root_offsets = checked_size_mul(root_offset_count, 4, operation, "sizing list offsets")?;
     let root_validity = if root_has_nulls { cudf_null_mask_allocation_size_bytes(root_rows) } else { 0 };
-    let child_data = list_child_import_device_bytes(child_type, child_rows, string_chars, operation)?;
+    let child_data = list_child_import_device_allocation_bytes(child_type, child_rows, string_chars, operation)?;
     let child_validity = if child_has_nulls { cudf_null_mask_allocation_size_bytes(child_rows) } else { 0 };
-    checked_size_add(
-        checked_size_add(root_offsets, root_validity, operation, "sizing list root buffers")?,
-        checked_size_add(child_data, child_validity, operation, "sizing list child buffers")?,
-        operation,
-        "sizing imported list column",
-    )
+    let mut allocations = vec![root_offsets];
+    if root_validity > 0 {
+        allocations.push(root_validity);
+    }
+    allocations.extend(child_data);
+    if child_validity > 0 {
+        allocations.push(child_validity);
+    }
+    Ok(allocations)
+}
+
+fn import_column_device_allocation_bytes(
+    arrays: &[ArrayRef],
+    data_type: &ArrowDataType,
+    operation: &'static str,
+) -> Result<Vec<usize>> {
+    if matches!(data_type, ArrowDataType::List(_) | ArrowDataType::LargeList(_) | ArrowDataType::FixedSizeList(_, _)) {
+        return list_import_device_allocation_bytes(arrays).map_err(|error| error.reanchor(operation));
+    }
+
+    let rows = arrays
+        .iter()
+        .try_fold(0usize, |total, array| checked_size_add(total, array.len(), operation, "summing column rows"))?;
+    let has_nulls = arrays.iter().any(|array| array.null_count() > 0);
+    let mut allocations =
+        if matches!(data_type, ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View) {
+            let chars = arrays.iter().try_fold(0usize, |total, array| {
+                checked_size_add(
+                    total,
+                    active_string_bytes(array.as_ref(), 0, array.len(), data_type, operation)?,
+                    operation,
+                    "summing string character bytes",
+                )
+            })?;
+            let offsets = checked_size_mul(
+                checked_size_add(rows, 1, operation, "sizing string offsets")?,
+                4,
+                operation,
+                "sizing string offsets",
+            )?;
+            vec![offsets, chars]
+        } else {
+            let dtype = cudf_dtype_from_arrow_type_in(data_type, operation)?;
+            let width = dtype.id().size_in_bytes()?.ok_or_else(|| {
+                Error::new_with(ErrorCode::UnsupportedDtype, operation, "Arrow import type has no fixed-width layout")
+                    .with_detail("arrow_type", format!("{data_type:?}"))
+            })?;
+            let width = usize::try_from(width).map_err(|_| size_overflow(operation, "converting cudf type width"))?;
+            vec![checked_size_mul(rows, width, operation, "sizing fixed-width values")?]
+        };
+    if has_nulls {
+        allocations.push(cudf_null_mask_allocation_size_bytes(rows));
+    }
+    Ok(allocations)
+}
+
+fn import_allocation_charge(bytes: usize, operation: &'static str) -> Result<usize> {
+    const CUDA_ALLOCATION_ALIGNMENT_BYTES: usize = 256;
+    if bytes == 0 {
+        return Ok(0);
+    }
+    let rounded =
+        checked_size_add(bytes, CUDA_ALLOCATION_ALIGNMENT_BYTES - 1, operation, "rounding import allocation")?;
+    Ok(rounded / CUDA_ALLOCATION_ALIGNMENT_BYTES * CUDA_ALLOCATION_ALIGNMENT_BYTES)
 }
 
 fn active_list_child_range(array: &dyn Array, operation: &'static str) -> Result<(ArrayRef, usize, usize)> {
@@ -493,12 +604,12 @@ fn active_string_bytes(
     }
 }
 
-fn list_child_import_device_bytes(
+fn list_child_import_device_allocation_bytes(
     child_type: &ArrowDataType,
     child_rows: usize,
     string_chars: usize,
     operation: &'static str,
-) -> Result<usize> {
+) -> Result<Vec<usize>> {
     let width = match child_type {
         ArrowDataType::Boolean | ArrowDataType::Int8 | ArrowDataType::UInt8 => Some(1),
         ArrowDataType::Int16 | ArrowDataType::UInt16 => Some(2),
@@ -508,18 +619,24 @@ fn list_child_import_device_bytes(
         _ => unreachable!("caller validates the basic list child type"),
     };
     if let Some(width) = width {
-        return checked_size_mul(child_rows, width, operation, "sizing fixed-width list child values");
+        return Ok(vec![checked_size_mul(child_rows, width, operation, "sizing fixed-width list child values")?]);
     }
     if child_rows == 0 {
-        return Ok(0);
+        return Ok(Vec::new());
     }
     let child_offset_count = checked_size_add(child_rows, 1, operation, "sizing string child offset count")?;
-    checked_size_add(
-        checked_size_mul(child_offset_count, 4, operation, "sizing string child offsets")?,
-        string_chars,
-        operation,
-        "sizing string child buffers",
-    )
+    Ok(vec![checked_size_mul(child_offset_count, 4, operation, "sizing string child offsets")?, string_chars])
+}
+
+fn list_child_import_device_bytes(
+    child_type: &ArrowDataType,
+    child_rows: usize,
+    string_chars: usize,
+    operation: &'static str,
+) -> Result<usize> {
+    list_child_import_device_allocation_bytes(child_type, child_rows, string_chars, operation)?
+        .into_iter()
+        .try_fold(0usize, |total, bytes| checked_size_add(total, bytes, operation, "summing list child buffers"))
 }
 
 /// Conservatively estimate the Arrow buffer capacity retained by a host-copy
@@ -1305,7 +1422,9 @@ pub fn dataframe_from_record_batch(runtime: &Runtime, batch: &RecordBatch) -> Re
 /// count overflows, a column type is unsupported by the host import path, or
 /// a copy fails.
 pub fn dataframe_from_record_batches(runtime: &Runtime, batches: &[RecordBatch]) -> Result<DataFrame> {
-    record_host_import_call();
+    if batches.len() != 1 {
+        record_host_import_call();
+    }
     let Some(first_batch) = batches.first() else {
         return Err(Error::new_with(
             ErrorCode::EmptyInput,

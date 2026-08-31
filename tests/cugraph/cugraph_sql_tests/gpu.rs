@@ -374,6 +374,36 @@ async fn cugraph_sql_gpu_pagerank_forceatlas2_join_executes_as_one_scheduled_com
         assert_eq!(rows.len(), 100);
         assert!(rows.windows(2).all(|pair| pair[0].value >= pair[1].value));
     }
+
+    for (algorithm, sql) in [
+        (
+            "PageRank",
+            "SELECT vertex, value FROM cugraph_pagerank(\
+             'phase_c_top_k_edges', 'src', 'dst', 'weight') LIMIT 3",
+        ),
+        (
+            "Eigenvector",
+            "SELECT vertex, value FROM cugraph_eigenvector_centrality(\
+             'phase_c_top_k_edges', 'src', 'dst', 'weight') LIMIT 3",
+        ),
+    ] {
+        let plan = ctx.sql(sql).await.unwrap().create_physical_plan().await.unwrap();
+        let composed = find_composed_exec(plan.as_ref())
+            .unwrap_or_else(|| panic!("{algorithm} bare limit must lower to one composed native consumer"));
+        let [source, limit] = composed.native_plan_for_test().nodes() else {
+            panic!("{algorithm} bare limit must lower to GpuResidentSource -> Limit");
+        };
+        assert!(
+            matches!(&source.kind, PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::GpuResident(source) if source.row_count_upper_bound == Some(3)))
+        );
+        assert!(
+            matches!(&limit.kind, PlanNode::Limit(limit) if limit.input == source.id && limit.spec.fetch == Some(3))
+        );
+        let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx())
+            .await
+            .unwrap_or_else(|error| panic!("{algorithm} bare limit must execute: {error}"));
+        assert_eq!(batches.iter().map(RecordBatch::num_rows).sum::<usize>(), 3);
+    }
 }
 
 #[tokio::test]
@@ -2004,6 +2034,7 @@ async fn cugraph_sql_gpu_m2_string_side_inputs_and_edge_subset_match_numeric_ide
 #[tokio::test]
 async fn cugraph_graph_outputs_feed_an_outer_graph_and_personalization_side_input_on_device() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
+    register_mixed_string_algorithm_parity_edges(&ctx, "string_edges", "numeric_edges");
     let edge_schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int32, false),
         Field::new("dst", DataType::Int32, false),
@@ -2074,6 +2105,39 @@ async fn cugraph_graph_outputs_feed_an_outer_graph_and_personalization_side_inpu
     );
     let personalized_batches = datafusion::physical_plan::collect(personalized_plan, ctx.task_ctx()).await.unwrap();
     assert!(personalized_batches.iter().map(RecordBatch::num_rows).sum::<usize>() > 0);
+
+    ctx.sql(
+        "CREATE VIEW string_top_seeds AS \
+         SELECT vertex, value FROM cugraph_pagerank('string_edges', 'src', 'dst') \
+         ORDER BY value DESC, vertex LIMIT 2",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+    let string_personalized = ctx
+        .sql(
+            "SELECT vertex, value FROM cugraph_personalized_pagerank(\
+                 'string_edges', 'src', 'dst', NULL, \
+                 '{\"personalization_table\":\"string_top_seeds\",\
+                    \"personalization_vertex_col\":\"vertex\",\
+                    \"personalization_value_col\":\"value\"}') \
+             ORDER BY value DESC, vertex LIMIT 5",
+        )
+        .await
+        .unwrap();
+    assert_eq!(string_personalized.schema().field(0).data_type(), &DataType::Utf8);
+    let string_personalized_plan = string_personalized.create_physical_plan().await.unwrap();
+    assert_eq!(
+        classify_final_plan(string_personalized_plan.as_ref()),
+        FinalPlanDisposition::Native,
+        "{}",
+        displayable(string_personalized_plan.as_ref()).indent(false)
+    );
+    let string_personalized_batches =
+        datafusion::physical_plan::collect(string_personalized_plan, ctx.task_ctx()).await.unwrap();
+    assert!(string_personalized_batches.iter().map(RecordBatch::num_rows).sum::<usize>() > 0);
     drop_session_context_on_blocking_thread(ctx).await;
 }
 
@@ -2093,8 +2157,9 @@ async fn graph_results_support_aggregate_provenance_union_and_global_row_number_
             "SELECT vertex, 'pagerank' AS provenance \
              FROM cugraph_pagerank('ordinary_graph_edges', 'src', 'dst', 'weight') \
              UNION ALL \
-             SELECT vertex, 'bfs' AS provenance \
-             FROM cugraph_bfs('ordinary_graph_edges', 0, 'src', 'dst')",
+             SELECT vertex, 'katz' AS provenance \
+             FROM cugraph_katz_centrality('ordinary_graph_edges', 'src', 'dst', 'weight') \
+             ORDER BY provenance",
         ),
         (
             "global row number",
@@ -2107,11 +2172,13 @@ async fn graph_results_support_aggregate_provenance_union_and_global_row_number_
     for (label, sql) in queries {
         let dataframe = ctx.sql(sql).await.unwrap_or_else(|error| panic!("{label} SQL must plan: {error}"));
         let plan = dataframe.create_physical_plan().await.unwrap();
+        let lowering = datafusion_nexus::native::lower_physical_plan_to_native_for_test(Arc::clone(&plan));
         assert_eq!(
             classify_final_plan(plan.as_ref()),
             FinalPlanDisposition::Native,
-            "{label}\n{}",
+            "{label}\n{}\n{:#?}",
             displayable(plan.as_ref()).indent(false),
+            lowering.report,
         );
         let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx())
             .await
@@ -2364,7 +2431,7 @@ async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively
         writer.close().unwrap();
     }
 
-    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    let (backend, ctx) = default_backend_cugraph_sql_context();
     register_string_pagerank_parity_edges(&ctx, "string_edges", "numeric_edges");
     ctx.register_parquet("vertex_metadata", metadata_path.to_str().unwrap(), ParquetReadOptions::default())
         .await
@@ -2448,6 +2515,60 @@ async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively
             .unwrap_or_else(|error| panic!("{algorithm} metadata join must execute: {error}"));
         assert!(batches.iter().map(RecordBatch::num_rows).sum::<usize>() > 0);
     }
+
+    ctx.sql(
+        "CREATE VIEW role_pairs AS \
+         SELECT first, second FROM (VALUES ('a', 'b'), ('c', 'd')) AS pairs(first, second)",
+    )
+    .await
+    .unwrap()
+    .collect()
+    .await
+    .unwrap();
+    let filtered_roles_sql = "WITH scores AS (\
+             SELECT first, second, similarity \
+             FROM cugraph_jaccard(\
+               'string_edges', 'src', 'dst', NULL, \
+               '{\"vertex_pairs_table\":\"role_pairs\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}'\
+             )\
+         ), roles AS (\
+             SELECT \"vertexId\", \"vertexName\" \
+             FROM vertex_metadata \
+             WHERE \"vertexId\" IN ('a', 'b', 'c')\
+         ) \
+         SELECT a.\"vertexName\" AS role_a, b.\"vertexName\" AS role_b, s.similarity \
+         FROM scores s \
+         LEFT JOIN roles a ON a.\"vertexId\" = s.first \
+         LEFT JOIN roles b ON b.\"vertexId\" = s.second \
+         ORDER BY s.similarity DESC, s.first, s.second";
+    let attempt = backend.begin_attempt(datafusion_nexus::attempt::AttemptOptions::default()).unwrap();
+    let completion = attempt.completion();
+    let plan = attempt.plan_sql(&ctx, filtered_roles_sql).await.unwrap();
+    assert_eq!(
+        classify_final_plan(plan.as_ref()),
+        FinalPlanDisposition::Native,
+        "filtered two-alias role enrichment\n{}",
+        displayable(plan.as_ref()).indent(false)
+    );
+    let mut stream = attempt.execute_physical_plan(plan, &ctx).unwrap();
+    let mut batches = Vec::new();
+    while let Some(batch) = stream.next().await {
+        batches.push(batch.expect("filtered two-alias role enrichment must execute"));
+    }
+    let report = completion.await;
+    assert!(matches!(report.outcome, nexus_query_engine::observability::RuntimeTerminalOutcome::Succeeded));
+    let schedule =
+        report.composed_schedule.as_ref().expect("the retained filtered producers must use one ordered schedule");
+    let filtered_roles = schedule
+        .producer_occurrences
+        .iter()
+        .find(|producer| producer.occurrence_id.starts_with("__nexus_shared_resident_"))
+        .expect("the shared filtered roles must be one retained producer occurrence");
+    assert!(filtered_roles.retained_output_bytes > 0);
+    let batch = single_batch(&batches);
+    assert_eq!(batch.num_rows(), 3, "duplicate role metadata must preserve left-join multiplicity");
+    assert_eq!(batch.column(0).null_count(), 0);
+    assert_eq!(batch.column(1).null_count(), 1, "missing role metadata must preserve the graph result row");
 
     drop_session_context_on_blocking_thread(ctx).await;
     fs::remove_dir_all(dir).unwrap();

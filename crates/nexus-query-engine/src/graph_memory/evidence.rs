@@ -14,9 +14,37 @@ use crate::{
     admission::canonical_execution_scope_fingerprint,
     error::{QueryError, Result},
     execution_contracts::MemoryReservationRequest,
+    expr::alias_wrapped_column,
     metrics::QueryId,
-    plan::{GraphAlgorithm, GraphConstructionPolicy, NodeId, QueryPlan},
+    plan::{GraphAlgorithm, GraphConstructionPolicy, NodeId, PlanNode, QueryPlan},
 };
+
+pub(crate) fn graph_output_is_final(plan: &QueryPlan, graph_node_id: NodeId) -> bool {
+    let mut node_id = plan.root_id();
+    loop {
+        if node_id == graph_node_id {
+            return true;
+        }
+        let Some(PlanNode::Projection(projection)) = plan.node(node_id).map(|node| &node.kind) else {
+            return false;
+        };
+        let Some(input_schema) = plan.node(projection.input).map(|node| node.output_schema()) else {
+            return false;
+        };
+        if projection.outputs.iter().any(|output| {
+            let Some(column) = alias_wrapped_column(&output.expr) else {
+                return true;
+            };
+            match input_schema.field_with_name(column.name()) {
+                Ok(field) => field.data_type() != output.field.data_type(),
+                Err(_) => true,
+            }
+        }) {
+            return false;
+        }
+        node_id = projection.input;
+    }
+}
 
 /// Typed retained-output contribution from the graph-memory owner.
 ///
@@ -36,6 +64,7 @@ pub(crate) enum GraphMemoryOwnerTermRole {
     GraphPersistent,
     ConstructionTransient,
     ExecutionWorkspace,
+    GraphOutput,
     SsspUnitWeights,
     GraphLiveReservationFloorTopUp,
     SideInputWorkspace,
@@ -48,6 +77,7 @@ impl GraphMemoryOwnerTermRole {
             Self::GraphPersistent => "graph_persistent",
             Self::ConstructionTransient => "construction_transient",
             Self::ExecutionWorkspace => "execution_workspace",
+            Self::GraphOutput => "graph_output",
             Self::SsspUnitWeights => "sssp_unit_weights",
             Self::GraphLiveReservationFloorTopUp => "graph_live_reservation_floor_top_up",
             Self::SideInputWorkspace => "side_input_workspace",
@@ -222,6 +252,7 @@ impl GraphMemoryAdmissionEvidence {
             execution_scope_fingerprint.clone(),
             node_id,
             estimate.retained_output_bytes,
+            graph_output_is_final(plan, node_id),
             live_reservation_floor_top_up_bytes,
         )?;
         if let Some(side_input_peak_bytes) = graph_side_input_workspace_peak_bytes(plan, node_id, estimate)? {
@@ -818,7 +849,8 @@ impl GraphMemoryOwnerComponents {
         self,
         execution_scope_fingerprint: String,
         graph_node_id: NodeId,
-        retained_output: GraphMemoryRetainedOutputContribution,
+        graph_output: GraphMemoryRetainedOutputContribution,
+        graph_output_is_final: bool,
         live_reservation_floor_top_up_bytes: Option<u64>,
     ) -> Result<Vec<GraphMemoryOwnerTermFact>> {
         let mut terms = vec![
@@ -846,9 +878,13 @@ impl GraphMemoryOwnerComponents {
             GraphMemoryOwnerTermFact::new(
                 execution_scope_fingerprint.clone(),
                 graph_node_id,
-                GraphMemoryOwnerTermRole::RetainedOutput,
-                retained_output.bytes(),
-                Some(retained_output.row_count_upper_bound()),
+                if graph_output_is_final {
+                    GraphMemoryOwnerTermRole::RetainedOutput
+                } else {
+                    GraphMemoryOwnerTermRole::GraphOutput
+                },
+                graph_output.bytes(),
+                graph_output_is_final.then(|| graph_output.row_count_upper_bound()),
             )?,
         ];
         if let Some(bytes) = self.sssp_unit_weight_bytes {

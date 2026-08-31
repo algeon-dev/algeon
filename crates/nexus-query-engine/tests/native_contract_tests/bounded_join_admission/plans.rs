@@ -462,6 +462,44 @@ pub(crate) fn serial_aggregate_multi_join_spine_plan() -> nexus_query_engine::pl
     builder.finish_with_host_sink(sort)
 }
 
+pub(crate) fn sort_between_two_joins_plan() -> nexus_query_engine::plan::QueryPlan {
+    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+    let mut builder = QueryPlanBuilder::new();
+    let sources = ["left", "middle", "right"].map(|name| {
+        builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+            format!("/tmp/sorted-multi-join-{name}.parquet"),
+            Arc::clone(&schema),
+            vec!["key".to_string()],
+        )))
+    });
+    let first_join = builder.add_join(
+        sources[0],
+        sources[1],
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "key", "key"), ColumnRef::input(1, "key", "key"))],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key")]),
+        Arc::clone(&schema),
+    );
+    let sorted = builder.add_sort(
+        first_join,
+        SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]),
+        Arc::clone(&schema),
+    );
+    let second_join = builder.add_join(
+        sorted,
+        sources[2],
+        JoinSpec::new(
+            JoinType::Left,
+            vec![JoinKey::new(ColumnRef::input(0, "key", "key"), ColumnRef::input(1, "key", "key"))],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key")]),
+        Arc::clone(&schema),
+    );
+    builder.finish_with_host_sink(second_join)
+}
+
 pub(super) fn single_join_with_aggregate_input_plan(aggregate_side: JoinSide) -> nexus_query_engine::plan::QueryPlan {
     let customer_schema = Arc::new(Schema::new(vec![Field::new("c_custkey", DataType::Int32, false)]));
     let orders_schema = Arc::new(Schema::new(vec![

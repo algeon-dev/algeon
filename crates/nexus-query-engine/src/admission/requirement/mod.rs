@@ -11,10 +11,7 @@ use std::{
     sync::Arc,
 };
 
-use arrow::{
-    array::{Array, LargeStringArray, StringArray, StringViewArray},
-    datatypes::{DataType, Schema, SchemaRef, TimeUnit},
-};
+use arrow::datatypes::{DataType, Schema, SchemaRef, TimeUnit};
 
 use crate::{
     admission::{
@@ -23,7 +20,7 @@ use crate::{
             AttemptReservationConsumerState, AttemptReservationProducerOccurrence, AttemptReservationSchedule,
             AttemptReservationShape, canonical_execution_scope_fingerprint,
         },
-        string_payload::{PlanColumnEvidence, PlanColumnEvidenceAnalysis, identity_source_column},
+        string_payload::{PlanColumnEvidence, PlanColumnEvidenceAnalysis},
     },
     capability::ReservationRequirement,
     datatypes::cudf_dtype_from_arrow_type,
@@ -31,7 +28,7 @@ use crate::{
     expr::{AggregateFunction, Expr, LiteralValue, alias_wrapped_column, representation_cast_preserves_identity},
     graph_memory::{
         GraphMemoryAdmissionEvidence, GraphMemoryOwnerTermFact, GraphMemoryOwnerTermRole, GraphSourceStageLifetime,
-        query_plan_hard_row_upper_bound, query_plan_node_hard_row_upper_bound,
+        graph_output_is_final, query_plan_hard_row_upper_bound, query_plan_node_hard_row_upper_bound,
     },
     plan::{
         AggregateNode, JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, ResultSink,

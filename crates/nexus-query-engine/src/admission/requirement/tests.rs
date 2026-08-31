@@ -238,20 +238,58 @@ fn filtered_edge_producer_defers_only_the_graph_phase_under_one_attempt_proof() 
 }
 
 #[test]
-fn exact_limit_edge_producer_stays_on_the_static_graph_admission_path() {
+fn deferred_graph_with_cold_evidence_preserves_its_output_contract_and_hint() {
+    let (graph_plan, producer_plan) = filtered_pagerank_plan_and_producer(false);
+    let evidence =
+        graph_memory_bounded_admission_evidence_for_plan(&graph_plan, GraphMemoryCalibrationOverride::none(), None)
+            .expect("bounded PageRank must produce cold graph evidence");
+    let expected_rows = evidence.retained_output_rows_upper_bound();
+    let expected_hint = evidence.bounded_live_graph_peak_bytes().expect("cold graph peak must be finite");
+    let graph = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan_with_resident_inputs(
+        &graph_plan,
+        [("edges", &producer_plan)],
+    )
+    .expect("resident edge evidence must bind")
+    .expect("PageRank must issue a graph proof")
+    .with_graph_memory_admission_evidence(&evidence)
+    .expect("cold graph evidence must attach");
+    let combined = QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt(
+        &graph_plan,
+        graph,
+        "edges",
+        &producer_plan,
+        std::iter::empty(),
+    )
+    .expect("the deferred contract must be derivable")
+    .expect("the direct materialized edge must defer its graph phase");
+
+    assert_eq!(combined.graph_result_retained_output_row_upper_bound().unwrap(), expected_rows);
+    assert_eq!(combined.soft_working_set_hint_bytes(), Some(expected_hint));
+    let envelope = combined.resolve_reservation_envelope(reservation_policy()).expect("producer phase must resolve");
+    let requirement = combined.as_requirement().clone().with_reservation_envelope(&envelope);
+    assert_eq!(requirement.soft_working_set_hint_bytes, Some(expected_hint));
+}
+
+#[test]
+fn exact_limit_edge_producer_uses_the_same_deferred_dependency_path() {
     let (graph_plan, producer_plan) = filtered_pagerank_plan_and_producer(true);
     let graph = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&graph_plan)
         .expect("PageRank must issue its attested execution proof");
+    let combined = QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt(
+        &graph_plan,
+        graph,
+        "edges",
+        &producer_plan,
+        std::iter::empty(),
+    )
+    .expect("the occurrence dependency must be derivable")
+    .expect("the exact producer must use the same deferred graph phase");
     assert!(
-        QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt(
-            &graph_plan,
-            graph,
-            "edges",
-            &producer_plan,
-            std::iter::empty(),
-        )
-        .expect("an unsupported deferred topology is a normal shape miss")
-        .is_none()
+        combined
+            .as_requirement()
+            .deferred_resident_phase_for_plan(&graph_plan)
+            .expect("descriptor lookup must remain unambiguous")
+            .is_some()
     );
 }
 
@@ -923,14 +961,24 @@ fn priced_literal_path_can_join_local_parquet_metadata() {
         .map(AllocationOwnerTerm::bytes)
         .collect::<Vec<_>>();
     source_bytes.sort_unstable();
-    assert_eq!(source_bytes, vec![512, 788]);
+    assert_eq!(source_bytes, vec![512, 768]);
     proof
         .resolve_reservation_envelope(reservation_policy())
         .expect("priced literal and Parquet source owners must resolve under one attempt envelope");
 
     let generic = QueryPlanCapabilityProof::for_query_plan(&plan).unwrap();
-    let error = generic.resolve_reservation_envelope(reservation_policy()).unwrap_err();
-    assert_eq!(error.fact_value("reason"), Some("attempt_owner_term_literal_source_bytes_unavailable"));
+    let mut generic_source_bytes = generic
+        .as_requirement()
+        .owner_terms
+        .iter()
+        .filter(|term| term.is_source_stage())
+        .map(AllocationOwnerTerm::bytes)
+        .collect::<Vec<_>>();
+    generic_source_bytes.sort_unstable();
+    assert_eq!(generic_source_bytes, source_bytes);
+    generic
+        .resolve_reservation_envelope(reservation_policy())
+        .expect("literal source ownership must not depend on which proof constructor called the analysis");
 }
 
 #[test]
@@ -1230,7 +1278,7 @@ fn composed_consumer_prices_literal_source_stage_mixed_with_local_source() {
         .iter()
         .find(|term| term.id.owner == OwnerId::Source(literal))
         .expect("the composed proof must price the literal source as a SourceStage owner");
-    assert_eq!(literal_term.bytes(), 328);
+    assert_eq!(literal_term.bytes(), 256);
     assert_eq!(literal_term.class, AllocationClass::ActivePhase);
     assert_eq!(literal_term.id.occurrence, OccurrenceId::PlanLocal(literal));
 
@@ -3970,6 +4018,78 @@ fn pagerank_result_sort_limit_plan(input_name: &str, row_bound: u64, fetch: usiz
     builder.finish_gpu_resident(limit)
 }
 
+fn pagerank_producer_limit_plan(fetch: usize) -> QueryPlan {
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+    ]));
+    let params = GraphAlgorithmParams::PageRank(GraphPageRankParams::default());
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("edges", edge_schema).with_row_count_upper_bound(10).with_graph_vertex_upper_bound(10),
+    ));
+    let graph = builder.add_graph_algorithm(
+        edges,
+        GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::PageRank,
+            GraphEdgeColumnBindings::new("src", "dst", None::<String>),
+            GraphConstructionOptions::default(),
+            params,
+        ),
+    );
+    let limit = builder.add_limit(
+        graph,
+        LimitSpec::fetch(fetch),
+        graph_result_schema_for_params(
+            GraphAlgorithm::PageRank,
+            &GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
+        ),
+    );
+    builder.finish_gpu_resident(limit)
+}
+
+fn graph_result_limit_consumer(input_name: &str, row_bound: u64, fetch: usize, schema: Arc<Schema>) -> QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new(input_name, Arc::clone(&schema)).with_row_count_upper_bound(row_bound),
+    ));
+    let limit = builder.add_limit(source, LimitSpec::fetch(fetch), schema);
+    builder.finish_with_host_sink(limit)
+}
+
+#[test]
+fn graph_producer_limit_uses_the_final_output_as_its_composed_contract() {
+    let producer_plan = pagerank_producer_limit_plan(3);
+    let evidence =
+        graph_memory_bounded_admission_evidence_for_plan(&producer_plan, GraphMemoryCalibrationOverride::none(), None)
+            .expect("bounded PageRank with a final limit must produce graph evidence");
+    assert_eq!(evidence.retained_output_rows_upper_bound(), 10);
+    let producer = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&producer_plan)
+        .expect("PageRank must issue a graph proof")
+        .with_graph_memory_admission_evidence(&evidence)
+        .expect("graph evidence must bind to the limited producer plan");
+    assert!(producer.requirement.owner_terms.iter().any(|term| {
+        matches!(term.id.owner, OwnerId::Graph(_))
+            && term.id.role == OwnerTermRole::GraphOutput
+            && term.class == AllocationClass::ActivePhase
+    }));
+    assert!(producer.requirement.owner_terms.iter().any(|term| {
+        matches!(term.id.owner, OwnerId::Producer(_))
+            && term.id.role == OwnerTermRole::RetainedOutput
+            && term.retained_row_count_upper_bound() == Some(3)
+    }));
+
+    let consumer_plan = graph_result_limit_consumer("graph_result", 3, 3, Arc::clone(producer_plan.output_schema()));
+    let consumer = QueryPlanCapabilityProof::for_composed_consumer_plan(&consumer_plan)
+        .expect("the bounded limit must issue a composed consumer proof");
+    QueryPlanCapabilityProof::combine_composed_graph_attempt(
+        &consumer_plan,
+        consumer,
+        [("graph_result".to_owned(), producer)],
+    )
+    .expect("the consumer source and final producer output must share one row contract");
+}
+
 fn literal_edge_plan_for_personalized_pagerank() -> QueryPlan {
     let schema = Arc::new(Schema::new(vec![
         Field::new("src", DataType::Int64, false),
@@ -4511,7 +4631,10 @@ fn graph_result_sort_producer_row_bound_failures_remain_sticky() {
     )
     .unwrap();
     let ambiguous_error = ambiguous.resolve_reservation_envelope(reservation_policy()).unwrap_err();
-    assert_eq!(ambiguous_error.fact_value("sort_rejection_reason"), Some("sort_owner_producer_graph_scope_ambiguous"));
+    assert_eq!(
+        ambiguous_error.fact_value("sort_rejection_reason"),
+        Some("sort_owner_producer_retained_output_ambiguous")
+    );
 
     let mismatched_plan = graph_result_sort_plan(DataType::Int32, false, Some(2), 1);
     let mismatched = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(

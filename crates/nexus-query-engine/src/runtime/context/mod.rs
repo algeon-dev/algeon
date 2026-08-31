@@ -1755,6 +1755,20 @@ impl ExecutionContext {
         let Some((proof, immutable_grant)) = self.validated_admitted_identity(plan)? else {
             return Ok(None);
         };
+        let projection_identity = || match proof.reservation_envelope().bound_derivation() {
+            Some(AttemptBoundDerivation::OrderedTimeline) => Ok(Some((
+                proof.grant_identity().attempt_id,
+                proof.selected_device(),
+                proof.grant_identity().generation,
+            ))),
+            Some(AttemptBoundDerivation::ConservativeOwnerSum) => Ok(None),
+            None => Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.runtime.context",
+                "an admitted execution proof has no selected bound derivation",
+            )
+            .with_fact("reason", "attempt_bound_derivation_unavailable")),
+        };
         if let Some(descriptor) = proof.submitted_capability_evidence().deferred_resident_phase_for_plan(plan)? {
             if descriptor.is_composed_consumer()
                 && self.activated_deferred_resident_phase.is_none()
@@ -1765,11 +1779,7 @@ impl ExecutionContext {
                     plan,
                     occurrence_ids,
                     immutable_grant.budget_bytes(),
-                    Some((
-                        proof.grant_identity().attempt_id,
-                        proof.selected_device(),
-                        proof.grant_identity().generation,
-                    )),
+                    projection_identity()?,
                 );
             }
             let activated = self.activated_deferred_resident_phase.as_ref().ok_or_else(|| {
@@ -1815,25 +1825,11 @@ impl ExecutionContext {
         let Some(occurrence_ids) = occurrence_ids else {
             return Ok(None);
         };
-        let projection_identity = match proof.reservation_envelope().bound_derivation() {
-            Some(AttemptBoundDerivation::OrderedTimeline) => {
-                Some((proof.grant_identity().attempt_id, proof.selected_device(), proof.grant_identity().generation))
-            },
-            Some(AttemptBoundDerivation::ConservativeOwnerSum) => None,
-            None => {
-                return Err(QueryError::new(
-                    QueryErrorCode::UnsupportedPlanShape,
-                    "nexus_query_engine.runtime.context",
-                    "an admitted execution proof has no selected bound derivation",
-                )
-                .with_fact("reason", "attempt_bound_derivation_unavailable"));
-            },
-        };
         proof.reservation_envelope().validate_and_project_composed_execution(
             plan,
             occurrence_ids,
             immutable_grant.budget_bytes(),
-            projection_identity,
+            projection_identity()?,
         )
     }
 

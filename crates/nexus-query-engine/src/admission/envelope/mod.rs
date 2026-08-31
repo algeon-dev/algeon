@@ -323,6 +323,29 @@ impl AttemptReservationSchedule {
             .collect()
     }
 
+    fn referenced_composed_occurrence_scope_counts(&self) -> HashMap<&str, usize> {
+        let mut occurrences = HashMap::<&str, HashSet<String>>::new();
+        for term_id in self
+            .attempt_wide_fixed_term_ids
+            .iter()
+            .chain(self.producer_phases.iter().flat_map(|phase| {
+                phase
+                    .isolated_peak_term_groups
+                    .iter()
+                    .flatten()
+                    .chain(&phase.alternative_term_ids)
+                    .chain(&phase.concurrent_side_input_term_ids)
+                    .chain(&phase.dominated_term_ids)
+            }))
+            .chain(self.consumer_peak_term_groups.iter().flatten())
+            .chain(&self.consumer_dominated_term_ids)
+            .filter(|term_id| term_id.is_composed_occurrence())
+        {
+            occurrences.entry(term_id.execution_scope_fingerprint()).or_default().insert(term_id.occurrence_label());
+        }
+        occurrences.into_iter().map(|(scope, occurrences)| (scope, occurrences.len())).collect()
+    }
+
     #[cfg(test)]
     pub(crate) fn attempt_wide_fixed_term_ids(&self) -> &[OwnerTermId] {
         &self.attempt_wide_fixed_term_ids
@@ -443,6 +466,10 @@ impl AttemptReservationSchedule {
         }
         for scope in self.referenced_scope_fingerprints() {
             expected_scope_counts.entry(scope).or_insert(1);
+        }
+        for (scope, referenced) in self.referenced_composed_occurrence_scope_counts() {
+            let count = expected_scope_counts.entry(scope).or_default();
+            *count = (*count).max(referenced);
         }
         if expected_scope_counts
             .iter()

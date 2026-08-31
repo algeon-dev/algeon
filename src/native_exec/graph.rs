@@ -97,11 +97,6 @@ impl GraphAdmissionModelAsk {
     pub(crate) fn cold_model_evidence(&self) -> &GraphMemoryAdmissionEvidence {
         &self.cold_model_evidence
     }
-
-    #[cfg(feature = "cugraph")]
-    pub(crate) fn exceeds_device_total_memory_bytes(&self, device_total_memory_bytes: u64) -> bool {
-        self.cold_model_requested_bytes > device_total_memory_bytes
-    }
 }
 
 /// Frontend-neutral graph-model diagnostics exposed by a graph execution node.

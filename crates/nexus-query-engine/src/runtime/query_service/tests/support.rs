@@ -302,7 +302,6 @@ fn requirement(floor: u64, hint: Option<u64>) -> AttemptRequirement {
         attested_cugraph_graph_execution_scopes: Vec::new(),
         reservation_shapes: Vec::new(),
         deferred_resident_phases: Vec::new(),
-        runtime_refinable_output_scopes: Vec::new(),
     }
 }
 

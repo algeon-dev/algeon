@@ -41,31 +41,84 @@ pub(super) async fn exact_native_edge_source_gpu_plan(
     Ok(Some(plan.clone_with_gpu_resident_sink()))
 }
 
-fn deferred_cugraph_graph_proof(
-    graph_execution_plan: &nexus_query_engine::plan::QueryPlan,
-    graph_execution_proof: QueryPlanCapabilityProof,
-    edge_source: &dyn ExecutionPlan,
-    exact_edge_source_gpu_plan: Option<&nexus_query_engine::plan::QueryPlan>,
-) -> Result<Option<QueryPlanCapabilityProof>> {
-    let Some(edge_plan) = exact_edge_source_gpu_plan else {
-        return Ok(None);
-    };
-    if as_nexus_native_composed_exec(edge_source).is_some() {
-        return Ok(None);
+fn materialized_producer_proof(
+    plan: &nexus_query_engine::plan::QueryPlan,
+    source: &dyn ExecutionPlan,
+) -> Result<QueryPlanCapabilityProof> {
+    if let Some(composed) = as_nexus_native_composed_exec(source) {
+        return composed_admission_capability_proof(plan, composed.gpu_inputs()).map_err(|error| {
+            Error::new(
+                ErrorCode::InvalidExecutionPlan,
+                "datafusion_nexus.cugraph_sql.graph_ticket_ask",
+                "failed to derive complete composed producer evidence",
+            )
+            .with_source(error)
+            .into()
+        });
     }
-    QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt(
-        graph_execution_plan,
-        graph_execution_proof,
-        CUGRAPH_EDGE_INPUT_NAME,
-        edge_plan,
-        std::iter::empty(),
-    )
-    .map_err(|error| {
+    QueryPlanCapabilityProof::for_cugraph_materialized_input_producer_plan(plan).map_err(|error| {
         Error::from_native(
             "datafusion_nexus.cugraph_sql.graph_ticket_ask",
-            "failed to derive the deferred cuGraph phase admission contract",
+            "failed to derive native materialized producer evidence",
             error,
         )
+        .into()
+    })
+}
+
+fn compile_cugraph_occurrence_schedule(
+    graph_plan: &nexus_query_engine::plan::QueryPlan,
+    graph_proof: &QueryPlanCapabilityProof,
+    edge_source: &dyn ExecutionPlan,
+    side_input_sources: &[Arc<dyn ExecutionPlan>],
+    edge_plan: Option<&nexus_query_engine::plan::QueryPlan>,
+    side_input_plans: Option<&[(String, nexus_query_engine::plan::QueryPlan)]>,
+    graph_model_ask: Option<&GraphAdmissionModelAsk>,
+) -> Result<Option<QueryPlanCapabilityProof>> {
+    let (Some(edge_plan), Some(side_input_plans), Some(graph_model_ask)) =
+        (edge_plan, side_input_plans, graph_model_ask)
+    else {
+        return Ok(None);
+    };
+    if side_input_plans.len() != side_input_sources.len() {
+        return Ok(None);
+    }
+
+    let graph_proof = graph_proof
+        .clone()
+        .with_graph_memory_admission_evidence(graph_model_ask.cold_model_evidence())
+        .map_err(|error| {
+        Error::from_native(
+            "datafusion_nexus.cugraph_sql.graph_ticket_ask",
+            "failed to attach graph memory evidence before compiling its producer dependencies",
+            error,
+        )
+    })?;
+    let edge_proof = materialized_producer_proof(edge_plan, edge_source)?;
+    let mut producers = Vec::with_capacity(side_input_plans.len() + 1);
+    producers.push((CUGRAPH_EDGE_INPUT_NAME.to_owned(), edge_proof));
+    for ((input_name, plan), source) in side_input_plans.iter().zip(side_input_sources) {
+        producers.push((input_name.clone(), materialized_producer_proof(plan, source.as_ref())?));
+    }
+    QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt_with_proofs(
+        graph_plan,
+        graph_proof,
+        CUGRAPH_EDGE_INPUT_NAME,
+        edge_plan,
+        producers,
+    )
+    .map_err(|error| {
+        let schedule_reason =
+            error.fact_value("schedule_reason").or_else(|| error.fact_value("reason")).map(ToOwned::to_owned);
+        let error = Error::from_native(
+            "datafusion_nexus.cugraph_sql.graph_ticket_ask",
+            "failed to compile the cuGraph producer occurrence schedule",
+            error,
+        );
+        match schedule_reason {
+            Some(reason) => error.with_fact("compiler_reason", reason),
+            None => error,
+        }
         .into()
     })
 }
@@ -95,7 +148,7 @@ pub(super) fn cugraph_execution_config_after_staging(
     } else {
         execution_config
     };
-    let (execution_config, graph_execution_plan) = cugraph_execution_config_with_graph_aware_ticket(
+    let (execution_config, graph_execution_plan) = compile_cugraph_admission_ticket(
         spec,
         edge_source,
         predicate_sources,
@@ -128,7 +181,7 @@ fn bind_cugraph_ticket_to_attempt(
     Ok(execution_config.with_existing_query_admission_ticket(ticket))
 }
 
-pub(super) fn cugraph_execution_config_with_graph_aware_ticket(
+fn compile_cugraph_admission_ticket(
     spec: &CugraphAlgorithmSpec,
     edge_source: &dyn ExecutionPlan,
     predicate_sources: &[Arc<dyn ExecutionPlan>],
@@ -169,128 +222,15 @@ pub(super) fn cugraph_execution_config_with_graph_aware_ticket(
     } else {
         cugraph_graph_model_ask_bytes(&graph_execution_plan, edge_source, &execution_config)?
     };
-    let static_graph_phase_exceeds_device = execution_config
-        .query_admission_source()
-        .zip(graph_model_ask.as_ref())
-        .is_some_and(|(source, model)| model.exceeds_device_total_memory_bytes(source.max_device_total_memory_bytes()));
-    let deferred_graph_proof = if static_graph_phase_exceeds_device && materialized_side_input_plans.is_some() {
-        deferred_cugraph_graph_proof(
-            &graph_execution_plan,
-            graph_execution_proof.clone(),
-            edge_source,
-            exact_edge_source_gpu_plan,
-        )?
-    } else {
-        None
-    };
-    if deferred_graph_proof.is_some() {
-        graph_model_ask = None;
-    }
-    // A cuGraph attempt executes its graph operation and may also execute
-    // lowered native edge/predicate fragments under the same ticket. Keep one
-    // aggregate proof for that whole invocation so the engine can verify each
-    // fragment at execution time without treating the graph proof as blanket
-    // authorization for a different native plan.
-    let scheduled_graph_proof = match (deferred_graph_proof, exact_edge_source_gpu_plan, graph_model_ask.as_ref()) {
-        (Some(deferred), _, _) => Some(deferred),
-        (None, Some(edge_plan), Some(model_ask))
-            if as_nexus_native_composed_exec(edge_source).is_some() && predicate_sources.is_empty() =>
-        {
-            let graph_with_evidence = graph_execution_proof
-                .clone()
-                .with_graph_memory_admission_evidence(model_ask.cold_model_evidence())
-                .map_err(|error| {
-                    Error::from_native(
-                        "datafusion_nexus.cugraph_sql.graph_ticket_ask",
-                        "failed to attach cuGraph memory evidence before composing its graph-producing edge input",
-                        error,
-                    )
-                })?;
-            let composed =
-                as_nexus_native_composed_exec(edge_source).expect("match guard requires a composed native edge source");
-            let edge_proof =
-                composed_admission_capability_proof(edge_plan, composed.gpu_inputs()).map_err(|error| {
-                    Error::new(
-                        ErrorCode::InvalidExecutionPlan,
-                        "datafusion_nexus.cugraph_sql.graph_ticket_ask",
-                        "failed to derive the graph-producing edge-source admission proof",
-                    )
-                    .with_source(error)
-                })?;
-            Some(
-                QueryPlanCapabilityProof::combine_composed_graph_attempt(
-                    &graph_execution_plan,
-                    graph_with_evidence,
-                    [(CUGRAPH_EDGE_INPUT_NAME.to_owned(), edge_proof)],
-                )
-                .map_err(|error| {
-                    Error::from_native(
-                        "datafusion_nexus.cugraph_sql.graph_ticket_ask",
-                        "failed to derive the ordered graph-to-graph admission schedule",
-                        error,
-                    )
-                })?,
-            )
-        },
-        (None, Some(edge_plan), Some(model_ask))
-            if as_nexus_native_composed_exec(edge_source).is_none() && materialized_side_input_plans.is_some() =>
-        {
-            let graph_with_evidence = graph_execution_proof
-                .clone()
-                .with_graph_memory_admission_evidence(model_ask.cold_model_evidence())
-                .map_err(|error| {
-                    Error::from_native(
-                        "datafusion_nexus.cugraph_sql.graph_ticket_ask",
-                        "failed to attach cuGraph memory evidence before composing its native edge input",
-                        error,
-                    )
-                })?;
-            let side_input_proofs = materialized_side_input_plans
-                .as_ref()
-                .expect("match guard requires materialized side-input plans")
-                .iter()
-                .zip(predicate_sources)
-                .map(|((name, plan), source)| {
-                    let proof = if let Some(composed) = as_nexus_native_composed_exec(source.as_ref()) {
-                        composed_admission_capability_proof(plan, composed.gpu_inputs()).map_err(|error| {
-                            Error::new(
-                                ErrorCode::InvalidExecutionPlan,
-                                "datafusion_nexus.cugraph_sql.graph_ticket_ask",
-                                "failed to derive the complete composed side-input admission proof",
-                            )
-                            .with_source(error)
-                        })?
-                    } else {
-                        QueryPlanCapabilityProof::for_cugraph_materialized_input_producer_plan(plan).map_err(
-                            |error| {
-                                Error::from_native(
-                                    "datafusion_nexus.cugraph_sql.graph_ticket_ask",
-                                    "failed to derive native cuGraph side-input producer evidence",
-                                    error,
-                                )
-                            },
-                        )?
-                    };
-                    Ok((name.clone(), proof))
-                })
-                .collect::<Result<Vec<_>>>()?;
-            QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt_with_proofs(
-                &graph_execution_plan,
-                graph_with_evidence,
-                CUGRAPH_EDGE_INPUT_NAME,
-                edge_plan,
-                side_input_proofs,
-            )
-            .map_err(|error| {
-                Error::from_native(
-                    "datafusion_nexus.cugraph_sql.graph_ticket_ask",
-                    "failed to derive the ordered cuGraph edge-mapping admission schedule",
-                    error,
-                )
-            })?
-        },
-        _ => None,
-    };
+    let scheduled_graph_proof = compile_cugraph_occurrence_schedule(
+        &graph_execution_plan,
+        &graph_execution_proof,
+        edge_source,
+        predicate_sources,
+        exact_edge_source_gpu_plan,
+        materialized_side_input_plans.as_deref(),
+        graph_model_ask.as_ref(),
+    )?;
     let materialized_edge_input_scheduled = scheduled_graph_proof.is_some();
     let mut fragment_proofs = vec![scheduled_graph_proof.unwrap_or(graph_execution_proof)];
     if materialized_edge_input_scheduled {
@@ -350,13 +290,12 @@ pub(super) fn validate_cugraph_graph_owner_preflight(
     result_options: &CugraphResultPlanOptions,
     edge_normalize_inserted: bool,
     execution_config: &NexusNativeExecutionConfig,
-    exact_edge_source_gpu_plan: Option<&nexus_query_engine::plan::QueryPlan>,
 ) -> Result<()> {
     if execution_config.query_admission_source().is_none() {
         return Ok(());
     }
     let edge_vertex_upper_bound = edge_source_graph_vertex_estimate(edge_source).map(|estimate| estimate.count);
-    let (graph_execution_plan, graph_execution_proof) = cugraph_execution_capability_proof_with_edge_row_upper_bound(
+    let (graph_execution_plan, _) = cugraph_execution_capability_proof_with_edge_row_upper_bound(
         spec,
         edge_source.schema(),
         predicate_sources.iter().map(|source| source.schema()).collect(),
@@ -366,19 +305,7 @@ pub(super) fn validate_cugraph_graph_owner_preflight(
         input_row_bounds.edge_row_upper_bound(),
         edge_vertex_upper_bound,
     )?;
-    let graph_model_ask = cugraph_graph_model_ask_bytes(&graph_execution_plan, edge_source, execution_config)?;
-    let static_graph_phase_exceeds_device = execution_config
-        .query_admission_source()
-        .zip(graph_model_ask.as_ref())
-        .is_some_and(|(source, model)| model.exceeds_device_total_memory_bytes(source.max_device_total_memory_bytes()));
-    if static_graph_phase_exceeds_device {
-        let _ = deferred_cugraph_graph_proof(
-            &graph_execution_plan,
-            graph_execution_proof,
-            edge_source,
-            exact_edge_source_gpu_plan,
-        )?;
-    }
+    let _ = cugraph_graph_model_ask_bytes(&graph_execution_plan, edge_source, execution_config)?;
     Ok(())
 }
 
@@ -473,6 +400,11 @@ pub(super) fn cugraph_graph_model_ask_bytes(
 pub(super) fn edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> Result<Option<u64>> {
     if let Some(source) = edge_source.downcast_ref::<datafusion::datasource::source::DataSourceExec>()
         && let Some(rows) = crate::native::exact_row_count_for_datafusion_local_parquet_scan(source)
+    {
+        return Ok(Some(rows));
+    }
+    if let Some(composed) = as_nexus_native_composed_exec(edge_source)
+        && let Some(rows) = composed.hard_output_row_upper_bound()
     {
         return Ok(Some(rows));
     }

@@ -19,7 +19,6 @@ pub(crate) struct NormalizedComposedProducer {
     pub(crate) concurrent_side_input_term_ids: Vec<OwnerTermId>,
     pub(crate) dominated_term_ids: Vec<OwnerTermId>,
     pub(crate) nested_schedule: bool,
-    pub(crate) runtime_refinable: bool,
     pub(crate) proof: QueryPlanCapabilityProof,
 }
 
@@ -134,8 +133,51 @@ pub(crate) fn composed_consumer_bound_with_peak_terms(
             Some(&unconsumed.occurrence_id),
         ));
     }
+    transfer_gpu_sink_consumer_output(consumer_plan, &mut root_bound)?;
     root_bound.consumed_occurrences = producer_outputs.iter().map(|output| output.occurrence_id.clone()).collect();
     Ok(root_bound)
+}
+
+fn transfer_gpu_sink_consumer_output(plan: &QueryPlan, bound: &mut ComposedConsumerBranchBound) -> Result<()> {
+    let ResultSink::GpuResident { input } = plan.sink() else {
+        return Ok(());
+    };
+    let transferable = bound
+        .final_owned_term_ids
+        .iter()
+        .filter_map(|term_id| {
+            bound.owner_terms.iter().find(|term| term.id() == term_id && term.id.role == OwnerTermRole::ConsumerOutput)
+        })
+        .collect::<Vec<_>>();
+    let [output] = transferable.as_slice() else {
+        return Ok(());
+    };
+    let old_id = output.id().clone();
+    let retained = AllocationOwnerTerm::new(
+        OwnerId::Producer(*input),
+        OwnerTermRole::RetainedOutput,
+        OccurrenceId::PlanLocal(*input),
+        canonical_execution_scope_fingerprint(plan),
+        AllocationClass::AttemptRetained,
+        output.bytes(),
+        Some(bound.rows),
+    )?;
+    let new_id = retained.id().clone();
+    for term_id in bound
+        .peak_owner_term_groups
+        .iter_mut()
+        .flatten()
+        .chain(bound.peak_owner_term_ids.iter_mut())
+        .chain(bound.dominated_owner_term_ids.iter_mut())
+        .chain(bound.final_owned_term_ids.iter_mut())
+    {
+        if *term_id == old_id {
+            *term_id = new_id.clone();
+        }
+    }
+    bound.owner_terms.retain(|term| term.id() != &old_id);
+    bound.owner_terms.push(retained);
+    Ok(())
 }
 
 pub(crate) fn memoized_graph_consumer_peak_groups(
@@ -348,7 +390,7 @@ pub(crate) fn composed_consumer_branch_bound_uncached(
                         ));
                     }
                     if let Some(consumer_row_count_upper_bound) = source.row_count_upper_bound
-                        && consumer_row_count_upper_bound != output.row_count_upper_bound
+                        && consumer_row_count_upper_bound < output.row_count_upper_bound
                     {
                         return Err(composed_schedule_error(
                             "consumer_source_row_bound_mismatch",
@@ -410,25 +452,24 @@ pub(crate) fn composed_consumer_branch_bound_uncached(
                 SourceNode::LiteralBatch(source) => {
                     let rows = u64::try_from(source.row_count())
                         .map_err(|_| composed_schedule_error("consumer_literal_source_rows_exceed_u64", None))?;
-                    let columns = literal_batch_output_columns(source)?;
-                    let bytes = crate::exec::join_output_upper_bound_bytes(rows, &columns)
-                        .map_err(|_| composed_schedule_error("consumer_literal_source_bytes_unavailable", None))?;
-                    let source_term = AllocationOwnerTerm::new(
-                        OwnerId::Source(node_id),
-                        OwnerTermRole::SourceStage,
-                        OccurrenceId::PlanLocal(node_id),
-                        canonical_execution_scope_fingerprint(plan),
-                        AllocationClass::ActivePhase,
-                        bytes,
-                        None,
-                    )?;
+                    let source_term = owner_terms.iter().find(|term| {
+                        matches!(term.id.owner, OwnerId::Source(id) if id == node_id)
+                            && term.id.role == OwnerTermRole::SourceStage
+                            && term.id.occurrence == OccurrenceId::PlanLocal(node_id)
+                            && term.execution_scope_fingerprint() == canonical_execution_scope_fingerprint(plan)
+                    });
+                    let Some(source_term) = source_term else {
+                        return Err(composed_schedule_error("consumer_literal_source_owner_missing", None)
+                            .with_fact("node_id", node_id));
+                    };
+                    let bytes = source_term.bytes.get();
                     let source_term_id = source_term.id.clone();
                     Ok(ComposedConsumerBranchBound {
                         rows,
                         schema: source.schema.clone(),
                         final_owned_bytes: bytes,
                         additional_peak_bytes: bytes,
-                        owner_terms: vec![source_term],
+                        owner_terms: Vec::new(),
                         peak_owner_term_groups: vec![vec![source_term_id.clone()]],
                         peak_owner_term_ids: vec![source_term_id.clone()],
                         dominated_owner_term_ids: Vec::new(),
@@ -861,9 +902,12 @@ pub(crate) fn composed_consumer_graph_peak_bytes(
         .iter()
         .filter(|term| term.id.owner == OwnerId::Graph(node_id) && term.execution_scope_fingerprint() == scope)
         .collect::<Vec<_>>();
-    let retained =
-        graph_terms.iter().filter(|term| term.id.role == OwnerTermRole::RetainedOutput).copied().collect::<Vec<_>>();
-    let [retained] = retained.as_slice() else {
+    let outputs = graph_terms
+        .iter()
+        .filter(|term| matches!(term.id.role, OwnerTermRole::GraphOutput | OwnerTermRole::RetainedOutput))
+        .copied()
+        .collect::<Vec<_>>();
+    let [output] = outputs.as_slice() else {
         return Err(composed_schedule_error("consumer_graph_owner_terms_unavailable", None));
     };
     let construction = graph_terms
@@ -889,8 +933,9 @@ pub(crate) fn composed_consumer_graph_peak_bytes(
     let mut inventory = owner_terms.to_vec();
     inventory.extend(input.owner_terms.iter().cloned());
     let additional_peak_bytes = consumer_peak_groups_bytes(&peak_owner_term_groups, &inventory)?;
-    let rows = retained
+    let rows = output
         .retained_row_count_upper_bound()
+        .or_else(|| query_plan_node_hard_row_upper_bound(plan, node_id))
         .ok_or_else(|| composed_schedule_error("consumer_graph_output_rows_unavailable", None))?;
     Ok(ComposedConsumerBranchBound {
         rows,
@@ -899,13 +944,13 @@ pub(crate) fn composed_consumer_graph_peak_bytes(
             .ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?
             .output_schema()
             .clone(),
-        final_owned_bytes: retained.bytes(),
+        final_owned_bytes: output.bytes(),
         additional_peak_bytes,
         owner_terms: input.owner_terms,
         peak_owner_term_groups,
         peak_owner_term_ids,
         dominated_owner_term_ids: input.dominated_owner_term_ids,
-        final_owned_term_ids: vec![retained.id.clone()],
+        final_owned_term_ids: vec![output.id.clone()],
         allocation_state: AttemptReservationConsumerState::Bounded,
         consumed_occurrences: Vec::new(),
     })
@@ -2296,7 +2341,7 @@ pub(crate) fn sort_metadata_for_attested_graph_result(
     validate_sort_key_metadata(&keys)?;
     if let (Some(consumer_row_count_upper_bound), Some(producer_row_count_upper_bound)) =
         (source_node.row_count_upper_bound, producer_row_count_upper_bound)
-        && consumer_row_count_upper_bound != producer_row_count_upper_bound
+        && consumer_row_count_upper_bound < producer_row_count_upper_bound
     {
         return Err(sort_owner_error("graph_result_row_bound_mismatch", "sort_input")
             .with_fact("producer_row_count_upper_bound", producer_row_count_upper_bound)

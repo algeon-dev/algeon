@@ -50,6 +50,7 @@ use datafusion::{
         projection::{ProjectionExec, ProjectionExpr},
         repartition::RepartitionExec,
         sorts::{sort::SortExec, sort_preserving_merge::SortPreservingMergeExec},
+        union::UnionExec,
         windows::{BoundedWindowAggExec, create_udwf_window_expr},
     },
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},

@@ -270,7 +270,6 @@ impl CugraphAlgoExec {
             &prepared.result_options,
             prepared.edge_normalize_inserted(),
             &prepared.native_execution_config,
-            exact_edge_source_gpu_plan.as_ref(),
         )?;
         check_host_staging_cancellation(&cancellation)?;
         let mut staged_inputs = collected_inputs.prepare_logical_inputs(&prepared.spec)?;
