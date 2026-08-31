@@ -1151,6 +1151,15 @@ pub(in crate::capability) fn validate_closed_multi_join_subtree(
         PlanNode::Filter(filter) => validate_closed_multi_join_subtree(plan, filter.input, join_count),
         PlanNode::Projection(projection) => validate_closed_multi_join_subtree(plan, projection.input, join_count),
         PlanNode::Sort(sort) => validate_closed_multi_join_subtree(plan, sort.input, join_count),
+        PlanNode::Limit(limit) if limit.spec.fetch.is_some() => {
+            let Some(PlanNode::Sort(sort)) = plan.node(limit.input).map(|node| &node.kind) else {
+                return Err(CapabilityDecision::rejected(
+                    "closed_multi_join_subgraph_unsupported_node",
+                    [("node_id", node_id.to_string()), ("operator", node_operator_fact(&node.kind).to_string())],
+                ));
+            };
+            validate_closed_multi_join_subtree(plan, sort.input, join_count)
+        },
         PlanNode::Aggregate(_)
         | PlanNode::Window(_)
         | PlanNode::Limit(_)

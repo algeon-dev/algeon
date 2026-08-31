@@ -768,6 +768,77 @@ fn graph_output_inner_join_sort_limit_consumer() -> QueryPlan {
     builder.finish_with_host_sink(limited)
 }
 
+fn graph_output_shared_topk_semi_and_left_join_consumer() -> QueryPlan {
+    let ranked_schema = Arc::new(Schema::new(vec![
+        Field::new("vertex", DataType::Int64, false),
+        Field::new("value", DataType::Float64, false),
+    ]));
+    let metadata_schema = Arc::new(Schema::new(vec![
+        Field::new("vertex_id", DataType::Int64, false),
+        Field::new("vertex_name", DataType::Int64, false),
+    ]));
+    let mut builder = QueryPlanBuilder::new();
+    let graph = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("only", Arc::clone(&ranked_schema))));
+    let sorted = builder.add_sort(
+        graph,
+        SortSpec::new(vec![SortExpr::new(Expr::column("value"), false, false)]),
+        Arc::clone(&ranked_schema),
+    );
+    let ranked = builder.add_limit(sorted, LimitSpec::fetch(5), Arc::clone(&ranked_schema));
+    let metadata = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![
+            LocalParquetFile::new("/tmp/shared-topk-metadata.parquet")
+                .with_row_groups(vec![0])
+                .with_row_group_rows(vec![4])
+                .with_row_group_bytes(vec![128])
+                .with_projected_row_group_bytes(vec![128], vec![128]),
+        ],
+        Arc::clone(&metadata_schema),
+        vec!["vertex_id".to_owned(), "vertex_name".to_owned()],
+    )));
+    let filtered_metadata = builder.add_join(
+        metadata,
+        ranked,
+        JoinSpec::new(
+            JoinType::LeftSemi,
+            vec![JoinKey::new(
+                crate::expr::ColumnRef::input(0, "vertex_id", "vertex_id"),
+                crate::expr::ColumnRef::input(1, "vertex", "vertex"),
+            )],
+        )
+        .with_build_side(JoinSide::Right)
+        .with_output_projection(vec![
+            JoinOutputColumn::left(crate::expr::ColumnRef::input(0, "vertex_id", "vertex_id"), "vertex_id"),
+            JoinOutputColumn::left(crate::expr::ColumnRef::input(0, "vertex_name", "vertex_name"), "vertex_name"),
+        ]),
+        Arc::clone(&metadata_schema),
+    );
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("vertex", DataType::Int64, false),
+        Field::new("value", DataType::Float64, false),
+        Field::new("vertex_name", DataType::Int64, true),
+    ]));
+    let enriched = builder.add_join(
+        ranked,
+        filtered_metadata,
+        JoinSpec::new(
+            JoinType::Left,
+            vec![JoinKey::new(
+                crate::expr::ColumnRef::input(0, "vertex", "vertex"),
+                crate::expr::ColumnRef::input(1, "vertex_id", "vertex_id"),
+            )],
+        )
+        .with_build_side(JoinSide::Right)
+        .with_output_projection(vec![
+            JoinOutputColumn::left(crate::expr::ColumnRef::input(0, "vertex", "vertex"), "vertex"),
+            JoinOutputColumn::left(crate::expr::ColumnRef::input(0, "value", "value"), "value"),
+            JoinOutputColumn::right(crate::expr::ColumnRef::input(1, "vertex_name", "vertex_name"), "vertex_name"),
+        ]),
+        output_schema,
+    );
+    builder.finish_with_host_sink(enriched)
+}
+
 fn reservation_policy() -> AttemptReservationPolicy {
     AttemptReservationPolicy::new(
         64 * 1024,
@@ -3427,6 +3498,30 @@ fn composed_graph_schedule_prices_nullable_keys_and_rejects_missing_string_paylo
         assert_eq!(error.fact_value("right_rows"), Some("8"));
         assert_eq!(error.fact_value("column"), Some("vertex"));
     }
+}
+
+#[test]
+fn composed_graph_schedule_prices_one_shared_topk_across_semi_and_left_joins() {
+    let plan = graph_output_shared_topk_semi_and_left_join_consumer();
+    let combined = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
+        &plan,
+        QueryPlanCapabilityProof::for_composed_consumer_plan(&plan)
+            .expect("the shared Top-K consumer must issue its local-source owner proof"),
+        [ComposedGraphProducerCandidate::new(
+            Some("only".to_owned()),
+            Some("only".to_owned()),
+            Some(production_graph_proof(GraphAlgorithm::PageRank)),
+        )],
+    )
+    .expect("one ranked Top-K shared by metadata filtering and enrichment must have one complete owner schedule");
+    let owner_terms = &combined.as_requirement().owner_terms;
+
+    assert!(owner_terms.iter().any(|term| term.id().role == OwnerTermRole::ConsumerPredicateMask));
+    assert_eq!(
+        owner_terms.iter().map(|term| term.id()).collect::<HashSet<_>>().len(),
+        owner_terms.len(),
+        "shared owner terms must be carried for pricing and emitted once"
+    );
 }
 
 #[test]

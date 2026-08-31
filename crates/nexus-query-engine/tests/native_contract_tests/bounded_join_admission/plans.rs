@@ -500,6 +500,64 @@ pub(crate) fn sort_between_two_joins_plan() -> nexus_query_engine::plan::QueryPl
     builder.finish_with_host_sink(second_join)
 }
 
+pub(crate) fn shared_topk_multi_join_final_sort_plan() -> nexus_query_engine::plan::QueryPlan {
+    let ranked_schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+    let metadata_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("name", DataType::Int32, false),
+    ]));
+    let mut builder = QueryPlanBuilder::new();
+    let ranked = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("ranked", Arc::clone(&ranked_schema)).with_row_count_upper_bound(5),
+    ));
+    let ranked = builder.add_sort(
+        ranked,
+        SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]),
+        Arc::clone(&ranked_schema),
+    );
+    let ranked = builder.add_limit(ranked, LimitSpec::fetch(5), Arc::clone(&ranked_schema));
+    let filter_ranked_schema = Arc::new(Schema::new(vec![Field::new("filter_key", DataType::Int32, false)]));
+    let filter_ranked = builder
+        .add_projection(ranked, projection_outputs(vec![Expr::column("key")], Arc::clone(&filter_ranked_schema)));
+    let metadata = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/shared-topk-metadata.parquet",
+        Arc::clone(&metadata_schema),
+        vec!["key".to_string(), "name".to_string()],
+    )));
+    let filtered_metadata = builder.add_join(
+        metadata,
+        filter_ranked,
+        JoinSpec::new(
+            JoinType::LeftSemi,
+            vec![JoinKey::new(ColumnRef::input(0, "key", "key"), ColumnRef::input(1, "filter_key", "filter_key"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "name", "name"), "name"),
+        ]),
+        Arc::clone(&metadata_schema),
+    );
+    let enriched = builder.add_join(
+        ranked,
+        filtered_metadata,
+        JoinSpec::new(
+            JoinType::Left,
+            vec![JoinKey::new(ColumnRef::input(0, "key", "key"), ColumnRef::input(1, "key", "key"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key"),
+            JoinOutputColumn::right(ColumnRef::input(1, "name", "name"), "name"),
+        ]),
+        Arc::clone(&metadata_schema),
+    );
+    let sorted = builder.add_sort(
+        enriched,
+        SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]),
+        metadata_schema,
+    );
+    builder.finish_with_host_sink(sorted)
+}
+
 pub(super) fn single_join_with_aggregate_input_plan(aggregate_side: JoinSide) -> nexus_query_engine::plan::QueryPlan {
     let customer_schema = Arc::new(Schema::new(vec![Field::new("c_custkey", DataType::Int32, false)]));
     let orders_schema = Arc::new(Schema::new(vec![

@@ -341,7 +341,7 @@ pub(crate) fn composed_consumer_branch_bound(
             schema: Arc::clone(&cached.schema),
             final_owned_bytes: cached.final_owned_bytes,
             additional_peak_bytes: 0,
-            owner_terms: Vec::new(),
+            owner_terms: cached.owner_terms.clone(),
             peak_owner_term_groups: Vec::new(),
             peak_owner_term_ids: Vec::new(),
             dominated_owner_term_ids: Vec::new(),
@@ -1648,9 +1648,10 @@ pub(crate) fn composed_consumer_join_peak_bytes(
     column_evidence: &PlanColumnEvidenceAnalysis,
     memo: &mut HashMap<NodeId, ComposedConsumerBranchBound>,
 ) -> Result<ComposedConsumerBranchBound> {
-    if !matches!(join.spec.join_type, JoinType::Inner | JoinType::Left)
+    if !matches!(join.spec.join_type, JoinType::Inner | JoinType::Left | JoinType::LeftSemi)
         || join.spec.residual_predicate.is_some()
         || join.spec.keys.is_empty()
+        || (join.spec.join_type == JoinType::LeftSemi && join.spec.build_side != JoinSide::Right)
     {
         return Err(composed_schedule_error("consumer_join_topology_unmodeled", None));
     }
@@ -1723,39 +1724,80 @@ pub(crate) fn composed_consumer_join_peak_bytes(
             .rows
             .checked_mul(right.rows.max(1))
             .ok_or_else(|| composed_schedule_error("consumer_join_output_rows_overflow", None))?,
+        JoinType::LeftSemi => left.rows,
         _ => return Err(composed_schedule_error("consumer_join_topology_unmodeled", None)),
     };
     let output_rows_usize = usize::try_from(output_rows)
         .map_err(|_| composed_schedule_error("consumer_join_output_rows_exceed_usize", None))?;
-    let preprocessing_mode = cudf::ops::join::HashJoinPreprocessingMode::for_keys(&key_metadata);
-    let hash_preflight = cudf::ops::join::hash_join_allocation_preflight_for_metadata(
-        &key_metadata,
-        build.rows,
-        cudf::DataFrameHashJoinOptions::new().load_factor_value(),
-        preprocessing_mode,
-    )
-    .map_err(|error| {
-        composed_schedule_error("consumer_join_hash_preflight_unavailable", None)
-            .with_fact("cudf_error", error.to_string())
-            .with_fact("required_contract", cudf::ops::join::HASH_JOIN_ALLOCATION_PREFLIGHT_CONTRACT)
-    })?;
-    let hash_table_bytes = u64::try_from(hash_preflight.active_phase_peak_bytes())
-        .map_err(|_| composed_schedule_error("consumer_join_hash_preflight_exceeds_u64", None))?;
-    let pair_indices_bytes = cudf::DataFrameHashJoinPairIndices::reservation_size_bytes_for_len(output_rows_usize)
-        .map_err(|_| {
-            composed_join_preflight_error(
-                "consumer_join_pair_indices_preflight_unavailable",
-                node_id,
-                join,
-                left.rows,
-                right.rows,
-                build.rows,
-                probe.rows,
-                output_rows,
-            )
+    let (hash_table_bytes, pair_indices_bytes, filtered_workspace_bytes, filtered_probe_state_bytes) = if join
+        .spec
+        .join_type
+        == JoinType::LeftSemi
+    {
+        let null_equality = match join.spec.null_equality {
+            crate::plan::JoinNullEquality::NullsDoNotMatch => cudf::NullEquality::Unequal,
+            crate::plan::JoinNullEquality::NullsMatch => cudf::NullEquality::Equal,
+        };
+        let options = cudf::ops::join::FilteredJoinOptions::new().null_equality(null_equality);
+        let build_preflight =
+            cudf::ops::join::filtered_join_allocation_preflight_for_metadata(&key_metadata, build.rows, options)
+                .map_err(|error| {
+                    composed_schedule_error("consumer_join_filtered_build_preflight_unavailable", None)
+                        .with_fact("cudf_error", error.to_string())
+                        .with_fact("required_contract", cudf::ops::join::FILTERED_JOIN_ALLOCATION_PREFLIGHT_CONTRACT)
+                })?;
+        let probe_preflight = cudf::ops::join::filtered_join_probe_allocation_preflight(probe.rows, output_rows)
+            .map_err(|error| {
+                composed_schedule_error("consumer_join_filtered_probe_preflight_unavailable", None)
+                    .with_fact("cudf_error", error.to_string())
+                    .with_fact("required_contract", cudf::ops::join::FILTERED_JOIN_ALLOCATION_PREFLIGHT_CONTRACT)
+            })?;
+        let build_frame_bytes =
+            bounded_consumer_frame_bytes_with_evidence(build.rows, &build.schema, &build_column_evidence)?;
+        (
+            u64::try_from(build_preflight.active_build_phase_peak_bytes())
+                .map_err(|_| composed_schedule_error("consumer_join_filtered_build_preflight_exceeds_u64", None))?,
+            u64::try_from(probe_preflight.gather_map_bytes())
+                .map_err(|_| composed_schedule_error("consumer_join_pair_indices_exceed_u64", None))?,
+            build_frame_bytes,
+            u64::try_from(probe_preflight.retained_probe_state_bytes())
+                .map_err(|_| composed_schedule_error("consumer_join_filtered_probe_state_exceeds_u64", None))?,
+        )
+    } else {
+        let preprocessing_mode = cudf::ops::join::HashJoinPreprocessingMode::for_keys(&key_metadata);
+        let hash_preflight = cudf::ops::join::hash_join_allocation_preflight_for_metadata(
+            &key_metadata,
+            build.rows,
+            cudf::DataFrameHashJoinOptions::new().load_factor_value(),
+            preprocessing_mode,
+        )
+        .map_err(|error| {
+            composed_schedule_error("consumer_join_hash_preflight_unavailable", None)
+                .with_fact("cudf_error", error.to_string())
+                .with_fact("required_contract", cudf::ops::join::HASH_JOIN_ALLOCATION_PREFLIGHT_CONTRACT)
         })?;
-    let pair_indices_bytes = u64::try_from(pair_indices_bytes)
-        .map_err(|_| composed_schedule_error("consumer_join_pair_indices_exceed_u64", None))?;
+        let pair_indices_bytes = cudf::DataFrameHashJoinPairIndices::reservation_size_bytes_for_len(output_rows_usize)
+            .map_err(|_| {
+                composed_join_preflight_error(
+                    "consumer_join_pair_indices_preflight_unavailable",
+                    node_id,
+                    join,
+                    left.rows,
+                    right.rows,
+                    build.rows,
+                    probe.rows,
+                    output_rows,
+                )
+            })?;
+        (
+            u64::try_from(hash_preflight.active_phase_peak_bytes())
+                .map_err(|_| composed_schedule_error("consumer_join_hash_preflight_exceeds_u64", None))?,
+            u64::try_from(pair_indices_bytes)
+                .map_err(|_| composed_schedule_error("consumer_join_pair_indices_exceed_u64", None))?,
+            0,
+            0,
+        )
+    };
     let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
     let output_bytes =
         bounded_consumer_frame_bytes_with_evidence(output_rows, node.output_schema(), &column_evidence.node(node_id))
@@ -1782,7 +1824,27 @@ pub(crate) fn composed_consumer_join_peak_bytes(
     )?;
     let output_term =
         consumer_owner_term(node_id, OwnerTermRole::ConsumerOutput, AllocationClass::ActivePhase, output_bytes, plan)?;
-    let current_terms = vec![hash_term, pair_term, output_term];
+    let mut current_terms = Vec::new();
+    if filtered_workspace_bytes > 0 {
+        current_terms.push(consumer_owner_term(
+            node_id,
+            OwnerTermRole::ConsumerWorkspace,
+            AllocationClass::ActivePhase,
+            filtered_workspace_bytes,
+            plan,
+        )?);
+    }
+    current_terms.push(hash_term);
+    if filtered_probe_state_bytes > 0 {
+        current_terms.push(consumer_owner_term(
+            node_id,
+            OwnerTermRole::ConsumerPredicateMask,
+            AllocationClass::ActivePhase,
+            filtered_probe_state_bytes,
+            plan,
+        )?);
+    }
+    current_terms.extend([pair_term, output_term]);
     let final_owned_term_id = current_terms.last().expect("join output term inserted").id.clone();
     let mut peak_owner_term_groups = left.peak_owner_term_groups.clone();
     for group in &right.peak_owner_term_groups {

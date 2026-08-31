@@ -482,6 +482,7 @@ fn shared_resident_producer_edges_are_in_d3_5_envelope(pipeline: &CompiledPipeli
                 | PipelineTaskKind::Unary
                 | PipelineTaskKind::Aggregate
                 | PipelineTaskKind::Window
+                | PipelineTaskKind::Limit
                 | PipelineTaskKind::JoinMaterialize
                 | PipelineTaskKind::Union
         ) && edge.resources().len() == 1
@@ -498,6 +499,7 @@ fn pipeline_has_computed_shared_resident_producer(pipeline: &CompiledPipeline) -
                 PipelineTaskKind::Unary
                     | PipelineTaskKind::Aggregate
                     | PipelineTaskKind::Window
+                    | PipelineTaskKind::Limit
                     | PipelineTaskKind::JoinMaterialize
                     | PipelineTaskKind::Union
             )
@@ -533,6 +535,7 @@ fn computed_shared_resident_producers_have_satisfied_lineage(plan: &QueryPlan, p
                 PipelineTaskKind::Unary
                     | PipelineTaskKind::Aggregate
                     | PipelineTaskKind::Window
+                    | PipelineTaskKind::Limit
                     | PipelineTaskKind::JoinMaterialize
                     | PipelineTaskKind::Union
             )

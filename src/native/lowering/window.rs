@@ -29,7 +29,7 @@ use super::{
     expr::{collect_required_field_indices, lower_physical_expr_with_bindings},
     lower_native_input,
     naming::{sanitize_field_name, unique_name_with_suffix},
-    sort::lower_sort_ordering_with_input,
+    sort::{lower_sort_ordering_unprojected_with_input, project_sort_output},
 };
 use crate::{
     capability::CapabilityReason,
@@ -54,15 +54,10 @@ pub(super) fn lower_sort_input(
     }
     child_required.extend(_required_output_fields.requested_indices(sort.sort.output_schema().fields().len())?);
     let input = lower_native_input(&sort.input, builder, &RequiredFields::only(child_required))?;
-    let sorted = lower_sort_ordering_with_input(
-        builder,
-        sort.sort.ordering(),
-        sort.sort.input_schema(),
-        sort.sort.output_schema(),
-        input,
-        _required_output_fields,
-    )?;
-    apply_sort_fetch_limit(builder, sorted, sort.fetch)
+    let sorted =
+        lower_sort_ordering_unprojected_with_input(builder, sort.sort.ordering(), sort.sort.input_schema(), input)?;
+    let limited = apply_sort_fetch_limit(builder, sorted, sort.fetch)?;
+    project_sort_output(builder, sort.sort.output_schema(), limited, _required_output_fields)
 }
 
 fn apply_sort_fetch_limit(

@@ -59,8 +59,10 @@ fn join_indices_and_hash_join_slice6_surface_is_publicly_importable() {
     use cudf::{
         DataFrame, DataFrameHashJoin, DataFrameProjectedCrossJoinPlan,
         ops::join::{
-            HashJoin, HashJoinAllocationPreflight, HashJoinKeyMetadata, HashJoinOptions, HashJoinPreprocessingMode,
-            HashJoinStringOffsetWidth, JoinIndices, NullEquality, full_join_indices, full_join_indices_in,
+            FilteredJoinAllocationPreflight, FilteredJoinProbeAllocationPreflight, HashJoin,
+            HashJoinAllocationPreflight, HashJoinKeyMetadata, HashJoinOptions, HashJoinPreprocessingMode,
+            HashJoinStringOffsetWidth, JoinIndices, NullEquality, filtered_join_allocation_preflight_for_metadata,
+            filtered_join_probe_allocation_preflight, full_join_indices, full_join_indices_in,
             hash_join_allocation_preflight_for_metadata, inner_join_indices, inner_join_indices_in, left_join_indices,
             left_join_indices_in,
         },
@@ -70,6 +72,8 @@ fn join_indices_and_hash_join_slice6_surface_is_publicly_importable() {
     let _: Option<HashJoin> = None;
     let _: Option<JoinIndices> = None;
     let _: Option<HashJoinAllocationPreflight> = None;
+    let _: Option<FilteredJoinAllocationPreflight> = None;
+    let _: Option<FilteredJoinProbeAllocationPreflight> = None;
     let _: Option<DataFrameProjectedCrossJoinPlan> = None;
     let _ = (
         HashJoin::new,
@@ -104,6 +108,8 @@ fn join_indices_and_hash_join_slice6_surface_is_publicly_importable() {
         HashJoinKeyMetadata::string,
         HashJoinStringOffsetWidth::I32,
         HashJoinPreprocessingMode::for_keys,
+        filtered_join_allocation_preflight_for_metadata,
+        filtered_join_probe_allocation_preflight,
         hash_join_allocation_preflight_for_metadata,
     );
     let _ = DataFrame::materialize_join_indices_reservation_size_bytes::<[&str; 1], &str>;

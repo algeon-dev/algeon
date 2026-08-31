@@ -1,4 +1,6 @@
 use std::sync::Arc;
+#[cfg(feature = "cugraph")]
+use std::{collections::BTreeMap, sync::Mutex};
 
 use arrow::datatypes::{DataType, Schema, SchemaRef};
 #[cfg(feature = "cugraph")]
@@ -47,16 +49,23 @@ use crate::{
 };
 
 #[cfg(feature = "cugraph")]
+type CugraphScanContract = (Option<Vec<usize>>, Option<usize>);
+
+#[cfg(feature = "cugraph")]
+type ResultInputNamesByScan = BTreeMap<CugraphScanContract, String>;
+
+#[cfg(feature = "cugraph")]
 #[derive(Debug)]
 pub struct CugraphAlgoTableProvider {
     spec: CugraphAlgorithmSpec,
     native_execution_config: NexusNativeExecutionConfig,
+    result_input_names: Mutex<ResultInputNamesByScan>,
 }
 
 #[cfg(feature = "cugraph")]
 impl CugraphAlgoTableProvider {
     pub fn new(spec: CugraphAlgorithmSpec, native_execution_config: NexusNativeExecutionConfig) -> Self {
-        Self { spec, native_execution_config }
+        Self { spec, native_execution_config, result_input_names: Mutex::new(BTreeMap::new()) }
     }
 
     pub fn spec(&self) -> &CugraphAlgorithmSpec {
@@ -111,13 +120,22 @@ impl TableProvider for CugraphAlgoTableProvider {
         let edge_source_plan = LogicalPlanBuilder::from(scan).project(edge_source_projection(&spec))?.build()?;
         let edge_source = planning_state.create_physical_plan(&edge_source_plan).await?;
         let predicate_sources = predicate_source_plans(&planning_state, session_state, &spec, &vertex_domain).await?;
-        Ok(Arc::new(CugraphAlgoExec::try_new(
+        let result_input_key = (projection.cloned(), limit);
+        let gpu_result_input_name = self
+            .result_input_names
+            .lock()
+            .expect("cuGraph result input name registry mutex cannot be poisoned")
+            .entry(result_input_key)
+            .or_insert_with(CugraphAlgoExec::next_gpu_result_input_name)
+            .clone();
+        Ok(Arc::new(CugraphAlgoExec::try_new_with_reserved_gpu_result_input_name(
             spec,
             edge_source,
             predicate_sources,
             projection.cloned(),
             limit,
             native_execution_config,
+            gpu_result_input_name,
         )?))
     }
 }

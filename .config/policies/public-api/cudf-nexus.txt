@@ -5833,6 +5833,11 @@ pub fn cudf::ops::join::FilteredJoin::pre_build_reservation_size_bytes_for_fixed
 pub fn cudf::ops::join::FilteredJoin::pre_build_reservation_size_bytes_in(&cudf::core::Table, cudf::ops::join::FilteredJoinOptions, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<usize>
 impl core::fmt::Debug for cudf::ops::join::FilteredJoin
 pub fn cudf::ops::join::FilteredJoin::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
+pub struct cudf::ops::join::FilteredJoinAllocationPreflight
+impl cudf::ops::join::FilteredJoinAllocationPreflight
+pub fn cudf::ops::join::FilteredJoinAllocationPreflight::active_build_phase_peak_bytes(&self) -> usize
+pub fn cudf::ops::join::FilteredJoinAllocationPreflight::retained_build_bytes(&self) -> usize
+pub fn cudf::ops::join::FilteredJoinAllocationPreflight::temporary_row_validity_workspace_bytes(&self) -> usize
 pub struct cudf::ops::join::FilteredJoinOptions
 impl cudf::ops::join::FilteredJoinOptions
 pub fn cudf::ops::join::FilteredJoinOptions::load_factor(self, f64) -> Self
@@ -5842,6 +5847,10 @@ pub fn cudf::ops::join::FilteredJoinOptions::null_eq(&self) -> cudf::core::types
 pub fn cudf::ops::join::FilteredJoinOptions::null_equality(self, cudf::core::types::NullEquality) -> Self
 impl core::default::Default for cudf::ops::join::FilteredJoinOptions
 pub fn cudf::ops::join::FilteredJoinOptions::default() -> Self
+pub struct cudf::ops::join::FilteredJoinProbeAllocationPreflight
+impl cudf::ops::join::FilteredJoinProbeAllocationPreflight
+pub fn cudf::ops::join::FilteredJoinProbeAllocationPreflight::gather_map_bytes(self) -> usize
+pub fn cudf::ops::join::FilteredJoinProbeAllocationPreflight::retained_probe_state_bytes(self) -> usize
 pub struct cudf::ops::join::FilteredJoinProbeState
 impl cudf::ops::join::FilteredJoinProbeState
 pub fn cudf::ops::join::FilteredJoinProbeState::device_allocated_size_bytes(&self) -> cudf::core::error::Result<usize>
@@ -5938,6 +5947,7 @@ impl core::default::Default for cudf::MergeOptions
 pub fn cudf::MergeOptions::default() -> Self
 pub struct cudf::ops::join::SingleSideJoinIndices
 pub cudf::ops::join::SingleSideJoinIndices::indices: cudf::core::Column
+pub const cudf::ops::join::FILTERED_JOIN_ALLOCATION_PREFLIGHT_CONTRACT: &str
 pub const cudf::ops::join::HASH_JOIN_ALLOCATION_PREFLIGHT_CONTRACT: &str
 pub fn cudf::ops::join::conditional_full_join_indices(&cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, &cudf::ops::ast::AstExpression) -> cudf::core::error::Result<cudf::ops::join::JoinIndices>
 pub fn cudf::ops::join::conditional_full_join_indices_in(&cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, &cudf::ops::ast::AstExpression, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<cudf::ops::join::JoinIndices>
@@ -5969,6 +5979,8 @@ pub fn cudf::ops::join::cross_join(&cudf::core::table::TableView<'_>, &cudf::cor
 pub fn cudf::ops::join::cross_join_in(&cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<cudf::core::Table>
 pub fn cudf::ops::join::filter_join_indices(&cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, &cudf::core::column::ColumnView<'_>, &cudf::core::column::ColumnView<'_>, &cudf::ops::ast::AstExpression, cudf::JoinType) -> cudf::core::error::Result<cudf::ops::join::JoinIndices>
 pub fn cudf::ops::join::filter_join_indices_in(&cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, &cudf::core::column::ColumnView<'_>, &cudf::core::column::ColumnView<'_>, &cudf::ops::ast::AstExpression, cudf::JoinType, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<cudf::ops::join::JoinIndices>
+pub fn cudf::ops::join::filtered_join_allocation_preflight_for_metadata(&[cudf::ops::join::HashJoinKeyMetadata], u64, cudf::ops::join::FilteredJoinOptions) -> cudf::core::error::Result<cudf::ops::join::FilteredJoinAllocationPreflight>
+pub fn cudf::ops::join::filtered_join_probe_allocation_preflight(u64, u64) -> cudf::core::error::Result<cudf::ops::join::FilteredJoinProbeAllocationPreflight>
 pub fn cudf::ops::join::full_join(&cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, cudf::core::types::NullEquality) -> cudf::core::error::Result<cudf::ops::join::JoinSides>
 pub fn cudf::ops::join::full_join_indices(&cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, cudf::core::types::NullEquality) -> cudf::core::error::Result<cudf::ops::join::JoinIndices>
 pub fn cudf::ops::join::full_join_indices_in(&cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, cudf::core::types::NullEquality, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<cudf::ops::join::JoinIndices>
