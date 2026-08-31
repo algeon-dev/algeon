@@ -25,8 +25,8 @@ fn crate_root_doc_workflow_smoke() {
 }
 
 #[test]
-fn host_column_data_is_publicly_reexported() {
-    use cudf::{HostColumnData, Series};
+fn host_column_data_is_reachable_from_its_owner_module() {
+    use cudf::{Series, frame::HostColumnData};
 
     fn build_series<T: HostColumnData>(name: &str, data: &[T]) -> cudf::Result<Series> {
         crate::common::series(name, data)
@@ -62,26 +62,26 @@ fn runtime_raw_scalar_factories_smoke() {
     let decimal32 = rt.decimal32_raw_scalar(12_345, -2).unwrap();
     let decimal64 = rt.decimal64_raw_scalar(-98_765_432, -4).unwrap();
     let decimal128 = rt.decimal128_raw_scalar(123_456_789_012_345_678_901i128, -6).unwrap();
-    let decimal = rt.decimal_raw_scalar(-77, DataType::fixed_point(TypeId::Decimal64, -3)).unwrap();
+    let decimal = rt.decimal_raw_scalar(-77, DataType::fixed_point(TypeId::Decimal64, -3).unwrap()).unwrap();
     let timestamp = rt.timestamp_raw_scalar(1_700_000_123_456, TimestampResolution::Microseconds).unwrap();
     let duration = rt.duration_raw_scalar(-42_000_000, TimestampResolution::Nanoseconds).unwrap();
     let null_decimal = rt.null_decimal32_raw_scalar(-2).unwrap();
     let null_timestamp = rt.null_timestamp_raw_scalar(TimestampResolution::Milliseconds).unwrap();
     let null_duration = rt.null_duration_raw_scalar(TimestampResolution::Seconds).unwrap();
 
-    assert_eq!(decimal32.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal32, -2));
+    assert_eq!(decimal32.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal32, -2).unwrap());
     assert_eq!(decimal32.decimal32_raw_value().unwrap(), 12_345);
-    assert_eq!(decimal64.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4));
+    assert_eq!(decimal64.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4).unwrap());
     assert_eq!(decimal64.decimal64_raw_value().unwrap(), -98_765_432);
-    assert_eq!(decimal128.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal128, -6));
+    assert_eq!(decimal128.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal128, -6).unwrap());
     assert_eq!(decimal128.decimal128_raw_value().unwrap(), 123_456_789_012_345_678_901i128);
-    assert_eq!(decimal.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal64, -3));
+    assert_eq!(decimal.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal64, -3).unwrap());
     assert_eq!(decimal.decimal64_raw_value().unwrap(), -77);
     assert_eq!(timestamp.data_type().unwrap(), DataType::new(TypeId::TimestampMicroseconds));
     assert_eq!(timestamp.timestamp_raw_value().unwrap(), 1_700_000_123_456);
     assert_eq!(duration.data_type().unwrap(), DataType::new(TypeId::DurationNanoseconds));
     assert_eq!(duration.duration_raw_value().unwrap(), -42_000_000);
-    assert_eq!(null_decimal.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal32, -2));
+    assert_eq!(null_decimal.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal32, -2).unwrap());
     assert_eq!(null_timestamp.data_type().unwrap(), DataType::new(TypeId::TimestampMilliseconds));
     assert_eq!(null_duration.data_type().unwrap(), DataType::new(TypeId::DurationSeconds));
     assert!(!null_decimal.is_valid().unwrap());
@@ -107,7 +107,7 @@ fn ops_expr_raw_literal_functions_are_publicly_importable() {
     let df = DataFrame::from_series([("x", rt.series(&[1i32, 2, 3]).unwrap())]).unwrap();
     let decimal = lit_decimal64_raw(-98_765_432, -4).alias("amount").eval(&df).unwrap();
 
-    assert_eq!(decimal.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4));
+    assert_eq!(decimal.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4).unwrap());
     assert_eq!(decimal.len(), 3);
 }
 
@@ -319,25 +319,6 @@ fn factorization_surface_smoke() {
 }
 
 #[test]
-fn lookup_table_is_publicly_reexported() {
-    use cudf::{ExecutionOverrides, LookupTable, Runtime};
-
-    let runtime = Runtime::builder().build().unwrap();
-    let keys = crate::common::series("id", &["u1", "u2"]).unwrap();
-    let values = crate::common::series("label", &["alice", "bob"]).unwrap();
-    let table = LookupTable::new_in_runtime(&runtime, keys, values).unwrap();
-    let copied = table.copy_into_runtime(&runtime).unwrap();
-    let input = runtime.series(&["u2", "u9"]).unwrap();
-    let ctx = ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
-
-    assert_eq!(table.placement(), runtime.placement());
-    assert_eq!(copied.placement(), runtime.placement());
-
-    let probed = copied.probe_in(&input, &ctx).unwrap();
-    assert_eq!(probed.to_optional_strings().unwrap(), vec![Some("bob".to_string()), None]);
-}
-
-#[test]
 fn scalar_reduction_prepared_surface_is_publicly_reexported() {
     use cudf::{ReduceAgg, ScalarReductionOutput, ScalarReductionOutputShape, SeriesPreparedScalarReduction, TypeId};
 
@@ -413,7 +394,7 @@ fn frame_submodules_expose_specialized_high_level_types() {
     use cudf::{
         DataFrame, Runtime,
         frame::{
-            dataframe::{GpuRecordBatch, JsonReadOptions, MeltOptions, MultiParquetReadOptions, ParquetReadOptions},
+            dataframe::{GpuRecordBatch, JsonReadOptions, MultiParquetReadOptions, ParquetReadOptions},
             factorization::{DictionaryEncodingOptions, DictionaryKeyOrder},
         },
     };
@@ -423,7 +404,6 @@ fn frame_submodules_expose_specialized_high_level_types() {
     let _parquet = ParquetReadOptions::builder().filepath("data.parquet").with_runtime(&rt).build();
     let _multi_parquet =
         MultiParquetReadOptions::builder().filepaths(&["part-0.parquet", "part-1.parquet"]).with_runtime(&rt).build();
-    let _melt = MeltOptions::builder().id_vars(&["id"]).value_vars(&["value"]).build();
     let _factorization = DictionaryEncodingOptions::new().key_order(DictionaryKeyOrder::FirstSeen);
 
     let frame = DataFrame::from_series([("id", rt.series(&[1i32, 2, 3]).unwrap())]).unwrap();
@@ -450,7 +430,6 @@ fn testing_submodules_expose_domain_scoped_hooks() {
     let _ = cudf::testing::groupby::trigger_groupby_request_count_limit_error_for_test;
     let _ = cudf::testing::interop::trigger_interop_projection_negative_offset_for_test;
     let _ = cudf::testing::join::trigger_merge_reassembly_key_count_error_for_test;
-    let _ = cudf::testing::query::trigger_count_scalar_overflow_for_test;
     let _ = cudf::testing::series::trigger_series_row_range_overflow_error_for_test;
     let _ = cudf::testing::sorting::trigger_sort_key_count_limit_error_for_test;
 }

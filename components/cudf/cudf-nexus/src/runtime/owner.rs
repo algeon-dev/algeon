@@ -452,7 +452,7 @@ impl Runtime {
     pub fn decimal32_raw_scalar(&self, raw: i32, scale: i32) -> Result<Scalar> {
         Scalar::decimal_from_raw_in_domain(
             i128::from(raw),
-            DataType::fixed_point(TypeId::Decimal32, scale),
+            DataType::fixed_point(TypeId::Decimal32, scale)?,
             self.execution_domain(),
         )
     }
@@ -467,7 +467,7 @@ impl Runtime {
     pub fn decimal64_raw_scalar(&self, raw: i64, scale: i32) -> Result<Scalar> {
         Scalar::decimal_from_raw_in_domain(
             i128::from(raw),
-            DataType::fixed_point(TypeId::Decimal64, scale),
+            DataType::fixed_point(TypeId::Decimal64, scale)?,
             self.execution_domain(),
         )
     }
@@ -482,7 +482,7 @@ impl Runtime {
     pub fn decimal128_raw_scalar(&self, raw: i128, scale: i32) -> Result<Scalar> {
         Scalar::decimal_from_raw_in_domain(
             raw,
-            DataType::fixed_point(TypeId::Decimal128, scale),
+            DataType::fixed_point(TypeId::Decimal128, scale)?,
             self.execution_domain(),
         )
     }
@@ -523,17 +523,17 @@ impl Runtime {
 
     /// Create a null Decimal32 device scalar with the requested scale.
     pub fn null_decimal32_raw_scalar(&self, scale: i32) -> Result<Scalar> {
-        self.null_decimal_raw_scalar(DataType::fixed_point(TypeId::Decimal32, scale))
+        self.null_decimal_raw_scalar(DataType::fixed_point(TypeId::Decimal32, scale)?)
     }
 
     /// Create a null Decimal64 device scalar with the requested scale.
     pub fn null_decimal64_raw_scalar(&self, scale: i32) -> Result<Scalar> {
-        self.null_decimal_raw_scalar(DataType::fixed_point(TypeId::Decimal64, scale))
+        self.null_decimal_raw_scalar(DataType::fixed_point(TypeId::Decimal64, scale)?)
     }
 
     /// Create a null Decimal128 device scalar with the requested scale.
     pub fn null_decimal128_raw_scalar(&self, scale: i32) -> Result<Scalar> {
-        self.null_decimal_raw_scalar(DataType::fixed_point(TypeId::Decimal128, scale))
+        self.null_decimal_raw_scalar(DataType::fixed_point(TypeId::Decimal128, scale)?)
     }
 
     /// Create a null decimal device scalar.

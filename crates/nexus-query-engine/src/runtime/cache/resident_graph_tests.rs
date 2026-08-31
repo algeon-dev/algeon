@@ -9,7 +9,9 @@ use arrow::{
     record_batch::RecordBatch,
 };
 use cudf::DataFrame;
-use cugraph::cudf_interop::{SeriesGraphOptions, graph_from_series};
+use cugraph::cudf_interop::{
+    GraphConstructionPolicy as CugraphConstructionPolicy, TableGraphOptions, graph_from_prepared_table_export,
+};
 
 use super::*;
 use crate::{
@@ -92,14 +94,14 @@ fn build_forward_graph(transaction: &GpuResidentGraphInsertTransaction) -> cugra
     let entered = handle.enter("nexus_query_engine.resident_graph_cache_test.build").expect("enter cache runtime");
     let src = runtime.series(&[0_i32, 1, 2]).expect("source series");
     let dst = runtime.series(&[1_i32, 2, 0]).expect("destination series");
-    let graph =
-        graph_from_series::<cugraph::Forward>(&entered, &src, &dst, None, &SeriesGraphOptions::default().renumber())
-            .expect("build graph");
+    let edges = DataFrame::from_series([("src", src), ("dst", dst)]).expect("edge frame");
+    let export = edges.try_prepare_device_table_export().expect("prepared edge export");
+    let options = TableGraphOptions::new(0, 1).renumber().construction_policy(CugraphConstructionPolicy::RawLibcugraph);
+    let graph = graph_from_prepared_table_export::<cugraph::Forward>(&entered, &export, &options).expect("build graph");
     let parked = graph.park(&entered).expect("park graph");
     drop(entered);
     drop(handle);
-    drop(src);
-    drop(dst);
+    drop(edges);
     parked
 }
 

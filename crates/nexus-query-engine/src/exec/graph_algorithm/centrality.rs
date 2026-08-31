@@ -581,14 +581,14 @@ where
     V: cudf::CudfType + cugraph::types::CugraphElement,
     W: cudf::CudfType + cugraph::types::CugraphElement,
 {
-    let vertices = graph_series(personalization_frame, &personalization.vertex, "personalization_vertex")?;
+    let vertices = personalization_series(personalization_frame, &personalization.vertex, "personalization_vertex")?;
     let values = personalization_values_series::<W>(personalization_frame, &personalization.value)?;
     validate_personalization_series(&vertices, "personalization_vertex")?;
     validate_personalization_series(&values, "personalization_value")?;
-    let vertex_slice = graph_device_slice::<V>(&vertices, "personalization_vertex")?;
-    let value_slice = graph_device_slice::<W>(&values, "personalization_value")?;
-    let vertex_view = graph_device_view::<V>(&vertex_slice, "personalization_vertex")?;
-    let value_view = graph_device_view::<W>(&value_slice, "personalization_value")?;
+    let vertex_slice = personalization_device_slice::<V>(&vertices, "personalization_vertex")?;
+    let value_slice = personalization_device_slice::<W>(&values, "personalization_value")?;
+    let vertex_view = personalization_device_view::<V>(&vertex_slice, "personalization_vertex")?;
+    let value_view = personalization_device_view::<W>(&value_slice, "personalization_value")?;
     let personalization = cugraph::centrality::PersonalizationVector { vertices: &vertex_view, values: &value_view };
     let result = graph.personalized_pagerank(entered, params, &personalization).map_err(map_cugraph_error(
         "nexus_query_engine.graph_algorithm.personalized_pagerank",
@@ -610,7 +610,7 @@ where
 
 fn personalization_values_series<W>(frame: &DataFrame, column: &str) -> Result<cudf::Series>
 where W: cudf::CudfType + cugraph::types::CugraphElement {
-    let values = graph_series(frame, column, "personalization_value")?;
+    let values = personalization_series(frame, column, "personalization_value")?;
     let target = match W::data_type() {
         cugraph::types::DataType::Float32 => cudf::TypeId::Float32,
         cugraph::types::DataType::Float64 => cudf::TypeId::Float64,
@@ -646,6 +646,44 @@ where W: cudf::CudfType + cugraph::types::CugraphElement {
         .with_fact("source_dtype", format!("{dtype:?}"))
         .with_fact("target_dtype", format!("{target:?}"))
     })
+}
+
+fn personalization_series(frame: &DataFrame, column: &str, role: &'static str) -> Result<cudf::Series> {
+    frame.series(column).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.personalized_pagerank",
+            "failed to access personalized PageRank input column",
+            error,
+        )
+        .with_fact("role", role)
+        .with_fact("column", column)
+    })
+}
+
+fn personalization_device_slice<'a, T: cudf::CudfType>(
+    series: &'a cudf::Series,
+    role: &'static str,
+) -> Result<cudf::core::DeviceSlice<'a>> {
+    series.as_column().device_slice::<T>().map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.graph_algorithm.personalized_pagerank",
+            "failed to borrow personalized PageRank input device slice",
+            error,
+        )
+        .with_fact("role", role)
+    })
+}
+
+fn personalization_device_view<'a, T: cugraph::types::CugraphElement>(
+    slice: &'a cudf::core::DeviceSlice<'a>,
+    role: &'static str,
+) -> Result<cugraph::DeviceArrayView<'a, T>> {
+    cugraph::cudf_interop::device_array_view_from_slice::<T>(slice)
+        .map_err(map_cugraph_error(
+            "nexus_query_engine.graph_algorithm.personalized_pagerank",
+            "failed to wrap personalized PageRank input as a cuGraph device-array view",
+        ))
+        .map_err(|error| error.with_fact("role", role))
 }
 
 fn validate_personalization_series(series: &cudf::Series, role: &'static str) -> Result<()> {

@@ -5,12 +5,8 @@ readonly repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 readonly package_target="${repo_root}/target/component-package-check"
 readonly packages=(
   rapids-interop
-  cudf-nexus-sys
-  cudf-nexus
   cuvs-nexus-sys
   cuvs-nexus
-  cugraph-nexus-sys
-  cugraph-nexus
 )
 cd "${repo_root}"
 mkdir -p "${package_target}"
@@ -26,20 +22,10 @@ add_patch() {
 package_patches() {
   patch_args=()
   case "$1" in
-    cudf-nexus)
-      add_patch cudf-nexus-sys components/cudf/cudf-nexus-sys
-      add_patch rapids-interop components/cudf/rapids-interop
-      ;;
     cuvs-nexus)
       add_patch cudf-nexus components/cudf/cudf-nexus
       add_patch cudf-nexus-sys components/cudf/cudf-nexus-sys
       add_patch cuvs-nexus-sys components/cuvs/cuvs-nexus-sys
-      add_patch rapids-interop components/cudf/rapids-interop
-      ;;
-    cugraph-nexus)
-      add_patch cudf-nexus components/cudf/cudf-nexus
-      add_patch cudf-nexus-sys components/cudf/cudf-nexus-sys
-      add_patch cugraph-nexus-sys components/cugraph/cugraph-nexus-sys
       add_patch rapids-interop components/cudf/rapids-interop
       ;;
   esac
@@ -53,8 +39,8 @@ for package in "${packages[@]}"; do
   }
 
   package_patches "${package}"
-  # This lane validates publishable archives; workspace clippy/nextest and the
-  # separate native-free phase own compilation.
+  # Only components with an archive contract belong in this lane; workspace
+  # clippy/nextest and the separate native-free phase own compilation.
   cargo package \
     --locked \
     --allow-dirty \

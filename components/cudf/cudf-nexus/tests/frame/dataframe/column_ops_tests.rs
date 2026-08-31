@@ -20,13 +20,13 @@ const DATAFRAME_EXPRESSION_TEMPORARY_WORKSPACE_AND_RELOCATION_CONTRACT_GAP: &str
 fn decimal128_scale_zero_frame() -> DataFrame {
     let amount = crate::common::series::<i64>("amount", &[1, -2, 0])
         .unwrap()
-        .astype(DataType::fixed_point(TypeId::Decimal128, 0))
+        .astype(DataType::fixed_point(TypeId::Decimal128, 0).unwrap())
         .unwrap();
     DataFrame::from_series([("amount", amount)]).unwrap()
 }
 
 fn assert_amount_decimal128_scale_8(df: &DataFrame) {
-    let target = DataType::fixed_point(TypeId::Decimal128, -8);
+    let target = DataType::fixed_point(TypeId::Decimal128, -8).unwrap();
     let amount = df.series("amount").unwrap();
     assert_eq!(amount.dtype().unwrap(), target);
 
@@ -430,7 +430,7 @@ fn test_cast_column_with_budget_reports_output_and_routes_allocator() {
 fn test_cast_column_decimal128_scale_to_scale_preserves_requested_scale() {
     let df = decimal128_scale_zero_frame();
 
-    let result = df.cast_column("amount", DataType::fixed_point(TypeId::Decimal128, -8)).unwrap();
+    let result = df.cast_column("amount", DataType::fixed_point(TypeId::Decimal128, -8).unwrap()).unwrap();
 
     assert_amount_decimal128_scale_8(&result);
 }
@@ -446,7 +446,8 @@ fn test_cast_column_with_budget_decimal128_scale_to_scale_reports_output_and_rou
 
     let _event_observation = lock_event_observation();
     reset_exec_observation();
-    let outcome = df.cast_column_with_budget("amount", DataType::fixed_point(TypeId::Decimal128, -8), &token).unwrap();
+    let outcome =
+        df.cast_column_with_budget("amount", DataType::fixed_point(TypeId::Decimal128, -8).unwrap(), &token).unwrap();
     let result = outcome.value();
     let report = outcome.report();
     let output_bytes = dataframe_device_allocated_size_bytes(result);
@@ -528,7 +529,7 @@ fn test_cast_column_with_budget_decimal128_scale_to_scale_exceeded_budget_report
     });
 
     let err = expect_cudf_err(
-        df.cast_column_with_budget("amount", DataType::fixed_point(TypeId::Decimal128, -8), &token),
+        df.cast_column_with_budget("amount", DataType::fixed_point(TypeId::Decimal128, -8).unwrap(), &token),
         "one-byte budget should not cover Decimal128 scale-to-scale cast allocations",
     );
 

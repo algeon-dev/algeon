@@ -47,7 +47,7 @@ fn owned_transfer_zero_copy_import_preserves_device_buffers_and_bfs_semantics() 
     assert_eq!(i32_series_device_ptr(&imported_df.series("dst").expect("dst series")), dst_ptr);
     assert_eq!(f32_series_device_ptr(&imported_df.series("weight").expect("weight series")), wgt_ptr);
 
-    let mut graph = build_directed_named_dataframe_graph(&handle, &imported_df).expect("graph_from_dataframe");
+    let mut graph = build_directed_named_dataframe_graph(&handle, &imported_df).expect("prepared graph");
     let dist_map = bfs_distance_map(&handle, &mut graph, 0);
 
     assert_eq!(dist_map[&0], 0);
@@ -70,7 +70,7 @@ fn owned_transfer_with_release_import_invalidates_releaser() {
         cudf::DataFrame::try_import_from_owned_device_table_transfer_into_runtime(transfer, None, &runtime)
             .expect("owned-transfer import");
 
-    let mut graph = build_directed_named_dataframe_graph(&handle, &imported_df).expect("graph_from_dataframe");
+    let mut graph = build_directed_named_dataframe_graph(&handle, &imported_df).expect("prepared graph");
     let dist_map = bfs_distance_map(&handle, &mut graph, 0);
     assert!(!dist_map.is_empty(), "imported owned-transfer graph should produce bfs results");
 

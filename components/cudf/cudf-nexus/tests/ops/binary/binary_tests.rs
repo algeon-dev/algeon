@@ -467,7 +467,7 @@ fn test_is_comparison_false_for_arithmetic_ops() {
 // ---------------------------------------------------------------------------
 
 fn decimal64(scale: i32) -> DataType {
-    DataType::fixed_point(TypeId::Decimal64, scale)
+    DataType::fixed_point(TypeId::Decimal64, scale).unwrap()
 }
 
 fn infer_dtype(lhs: DataType, rhs: DataType, op: BinaryOperator) -> DataType {

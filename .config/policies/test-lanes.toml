@@ -479,18 +479,6 @@ resource_class = "shared"
 reason = "cuDF egress tests execute graph algorithms and export device-backed results on explicit runtime handles."
 
 [[binary]]
-id = "cugraph-nexus::cudf_ingress"
-lane = "gpu"
-resource_class = "shared"
-reason = "cuDF ingress tests construct device-backed graph inputs and execute bounded native algorithms."
-
-[[binary]]
-id = "cugraph-nexus::cudf_interop_roundtrip"
-lane = "gpu"
-resource_class = "shared"
-reason = "cuDF interop round-trip tests allocate device columns and run graph algorithms through runtime-bound handles."
-
-[[binary]]
 id = "cugraph-nexus::cudf_ownership"
 lane = "gpu"
 resource_class = "shared"
@@ -501,12 +489,6 @@ id = "cugraph-nexus::cudf_prepared"
 lane = "gpu"
 resource_class = "shared"
 reason = "Prepared cuDF tests create device arrays and execute graph operations through explicit runtime contexts."
-
-[[binary]]
-id = "cugraph-nexus::cudf_provenance"
-lane = "gpu"
-resource_class = "shared"
-reason = "Provenance tests execute device-backed graph operations and validate stream/resource ownership across runtimes."
 
 [[binary]]
 id = "cugraph-nexus::dtype_contracts"

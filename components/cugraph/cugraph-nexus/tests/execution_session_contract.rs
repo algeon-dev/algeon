@@ -4,10 +4,7 @@ use cugraph::{
     DeviceArray, EnteredContext, Forward, Graph, GraphBuilder, ResourceHandle, Transposed,
     centrality::{PageRankParams, PageRankResult},
     community::{LouvainParams, LouvainResult},
-    cudf_interop::{
-        DataFrameGraphOptions, LoadedGraph, ParquetGraphOptions, SeriesGraphOptions, graph_from_dataframe,
-        graph_from_parquet, graph_from_series,
-    },
+    cudf_interop::{TableGraphOptions, graph_from_prepared_table_export},
     error::Result,
     layout::{ForceAtlas2Params, LayoutResult},
     random::RngState,
@@ -33,16 +30,11 @@ type LouvainEntryPoint = fn(&mut Graph<Forward>, &EnteredContext<'_>, &LouvainPa
 type ForceAtlas2EntryPoint =
     fn(&mut Graph<Forward>, &EnteredContext<'_>, &mut RngState, &ForceAtlas2Params) -> Result<LayoutResult>;
 type RngStateNew = fn(&EnteredContext<'_>, u64) -> Result<RngState>;
-type GraphFromDataFrameForward =
-    fn(&EnteredContext<'_>, &cudf::DataFrame, &DataFrameGraphOptions<'_>) -> Result<Graph<Forward>>;
-type GraphFromSeriesForward = fn(
+type GraphFromPreparedTableForward = for<'export, 'buffers> fn(
     &EnteredContext<'_>,
-    &cudf::Series,
-    &cudf::Series,
-    Option<&cudf::Series>,
-    &SeriesGraphOptions,
+    &'export rapids_interop::PreparedTableExport<'buffers>,
+    &TableGraphOptions,
 ) -> Result<Graph<Forward>>;
-type GraphFromParquetForward = fn(&EnteredContext<'_>, &ParquetGraphOptions<'_>) -> Result<LoadedGraph<Forward>>;
 
 #[test]
 fn resource_handle_and_entered_context_are_not_send_or_sync() {
@@ -66,10 +58,8 @@ fn gpu_entry_points_require_entered_context() {
 }
 
 #[test]
-fn cudf_graph_ingress_entry_points_require_entered_context() {
-    let _: GraphFromDataFrameForward = graph_from_dataframe::<Forward>;
-    let _: GraphFromSeriesForward = graph_from_series::<Forward>;
-    let _: GraphFromParquetForward = graph_from_parquet::<Forward>;
+fn canonical_cudf_graph_ingress_requires_entered_context() {
+    let _: GraphFromPreparedTableForward = graph_from_prepared_table_export::<Forward>;
 }
 
 #[test]

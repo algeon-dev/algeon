@@ -7,7 +7,7 @@ use cudf::{
     AggSpec, DataFrame, DataType, DeviceId, ErrorCode, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
     ExecutionBudgetStatus, ExecutionOverrides, GroupByAgg, MergeOptions, Runtime, Series, SortOptions, TypeId,
     core::memory::DeviceMemoryResource,
-    frame::dataframe::{CsvReadOptions, CsvWriteOptions, JsonWriteOptions, ParquetReadOptions, ParquetWriteOptions},
+    frame::dataframe::{JsonWriteOptions, ParquetReadOptions, ParquetWriteOptions},
     ops::expr::{col, when},
     runtime::CudaStream,
     testing::prelude::*,
@@ -424,25 +424,6 @@ fn explicit_runtime_operations_use_explicit_domain_only() {
     assert_eq!(sorted.testing_execution_domain_kind(), "explicit");
     assert_eq!(sorted.testing_execution_domain_id(), df.testing_execution_domain_id());
     assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
-
-    let dir = TempDir::new().unwrap();
-    let csv_path = dir.path().join("strict_runtime_seed.csv");
-    std::fs::write(
-        &csv_path,
-        "id,value
-1,10
-2,20
-3,30
-",
-    )
-    .unwrap();
-
-    let read =
-        DataFrame::read_csv_with_options(CsvReadOptions::builder().filepath(&csv_path).with_runtime(&rt).build())
-            .unwrap();
-    assert_eq!(read.testing_execution_domain_kind(), "explicit");
-    assert_eq!(read.testing_execution_domain_id(), rt.testing_execution_domain_id());
-    assert_eq!(read.series("id").unwrap().to_vec_strict::<i64>().unwrap(), vec![1, 2, 3]);
 }
 
 #[test]
@@ -459,17 +440,6 @@ fn runtime_seeded_readers_use_runtime_stream() {
     .write_parquet(&parquet_path)
     .unwrap();
 
-    let csv_path = dir.path().join("runtime_seed.csv");
-    std::fs::write(
-        &csv_path,
-        "id,value
-1,10
-2,20
-3,30
-",
-    )
-    .unwrap();
-
     let rt = sample_runtime();
     let expected_stream = rt.stream().testing_raw_handle_value();
 
@@ -481,21 +451,12 @@ fn runtime_seeded_readers_use_runtime_stream() {
     assert_eq!(last_exec_stream_value(), expected_stream);
     assert_eq!(parquet_df.testing_execution_domain_stream_value(), expected_stream);
     assert_eq!(parquet_df.column_names(), vec!["id", "value"]);
-
-    reset_exec_observation();
-    let csv_df =
-        DataFrame::read_csv_with_options(CsvReadOptions::builder().filepath(&csv_path).with_runtime(&rt).build())
-            .unwrap();
-    assert_eq!(last_exec_stream_value(), expected_stream);
-    assert_eq!(csv_df.testing_execution_domain_stream_value(), expected_stream);
-    assert_eq!(csv_df.column_names(), vec!["id", "value"]);
 }
 
 #[test]
 fn write_options_and_runtime_overrides_use_expected_runtime() {
     let dir = TempDir::new().unwrap();
     let parquet_path = dir.path().join("runtime_write.parquet");
-    let csv_path = dir.path().join("runtime_write.csv");
     let json_path = dir.path().join("runtime_write.jsonl");
 
     let data_rt = sample_runtime();
@@ -509,13 +470,6 @@ fn write_options_and_runtime_overrides_use_expected_runtime() {
     reset_exec_observation();
     df.write_parquet_with_options(ParquetWriteOptions::builder().filepath(&parquet_path).build()).unwrap();
     assert_eq!(last_exec_stream_value(), data_rt.stream().testing_raw_handle_value());
-
-    reset_sync_observation();
-    reset_exec_observation();
-    df.write_csv_with_options(CsvWriteOptions::builder().filepath(&csv_path).with_runtime(&target_rt).build()).unwrap();
-    assert_eq!(last_exec_stream_value(), target_rt.stream().testing_raw_handle_value());
-    assert_eq!(last_exec_mr_value(), target_rt.memory_resource().testing_raw_handle_value());
-    assert_eq!(last_sync_stream_value(), target_rt.stream().testing_raw_handle_value());
 
     reset_sync_observation();
     reset_exec_observation();
@@ -809,7 +763,7 @@ fn runtime_nulls_with_budget_decimal_scale_reports_budgeted_cast_contract_gap() 
     let token = runtime
         .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("decimal_null_series"))
         .unwrap();
-    let dtype = DataType::fixed_point(TypeId::Decimal64, -2);
+    let dtype = DataType::fixed_point(TypeId::Decimal64, -2).unwrap();
 
     let _event_observation = lock_event_observation();
     reset_exec_observation();

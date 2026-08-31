@@ -282,26 +282,15 @@ pub(super) fn execute_bfs(
             cache_scope_peak_bytes: None,
         })
     };
-    if spec.edge_columns.edge_id.is_some() {
-        run_with_cugraph_graph_edge_ids::<cugraph::Forward, _>(
-            context,
-            graph_memory_limit_bytes,
-            &edges,
-            spec,
-            "datafusion_nexus_cugraph_bfs",
-            run_bfs,
-        )
-    } else {
-        run_with_accounted_resident_cugraph_graph::<cugraph::Forward, _>(
-            context,
-            graph_memory_limit_bytes,
-            edges,
-            options,
-            resident_key,
-            "datafusion_nexus_cugraph_bfs",
-            run_bfs,
-        )
-    }
+    run_with_accounted_resident_cugraph_graph::<cugraph::Forward, _>(
+        context,
+        graph_memory_limit_bytes,
+        edges,
+        options,
+        resident_key,
+        "datafusion_nexus_cugraph_bfs",
+        run_bfs,
+    )
 }
 
 #[allow(clippy::too_many_arguments)]

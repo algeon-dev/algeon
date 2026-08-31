@@ -7,43 +7,6 @@
 //! The algorithm supports an optional initial position for refinement passes
 //! (the Python workload calls FA2 twice: first with random positions, then
 //! with the previous result as `pos_list`).
-//!
-//! # Example
-//!
-//! ```no_run
-//! use cugraph::{
-//!     Forward, ResourceHandle,
-//!     cudf_interop::{DataFrameGraphOptions, graph_from_dataframe},
-//!     layout::ForceAtlas2Params,
-//!     params::IterationCount,
-//!     random::RngState,
-//! };
-//!
-//! let runtime = std::sync::Arc::new(cudf::Runtime::new().unwrap());
-//! let handle =
-//!     ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).unwrap();
-//! let entered = handle.enter("force_atlas2 docs").unwrap();
-//! let layout_seed = 42_u64;
-//! let mut rng = RngState::new(&entered, layout_seed).unwrap();
-//!
-//! let src = runtime.series(&[0i32, 1, 2]).unwrap();
-//! let dst = runtime.series(&[1i32, 2, 0]).unwrap();
-//! let edges =
-//!     cudf::DataFrame::from_series([("src", src), ("dst", dst)]).unwrap();
-//! let opts = DataFrameGraphOptions::new("src", "dst").renumber();
-//! let mut graph =
-//!     graph_from_dataframe::<Forward>(&entered, &edges, &opts).unwrap();
-//!
-//! let params = ForceAtlas2Params {
-//!     max_iter: IterationCount::new(100).unwrap(),
-//!     ..Default::default()
-//! };
-//! let result = graph.force_atlas2(&entered, &mut rng, &params).unwrap();
-//!
-//! assert_eq!(result.vertex_ids().unwrap().len(), 3);
-//! assert_eq!(result.x().unwrap().len(), 3);
-//! assert_eq!(result.y().unwrap().len(), 3);
-//! ```
 
 use std::{marker::PhantomData, ptr};
 

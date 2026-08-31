@@ -457,7 +457,7 @@ assert_phase_contains "${tmp_dir}/default.output" gpu-exclusive-tests "gpu-exclu
 assert_phase_contains "${tmp_dir}/default.output" gpu-exclusive-tests "0.100s | PASS | run=1 passed=1 failed=0 skipped=7 | 1 | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/gpu-exclusive-tests.log | n/a"
 assert_phase_contains "${tmp_dir}/default.output" doctests "0.100s | PASS | harnesses=1 executed=0 passed=0 failed=0 ignored=0 measured=0 filtered=0 | - | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/doctests.log | n/a"
 assert_phase_contains "${tmp_dir}/default.output" public-api-surface "public-api-surface | bash scripts/ci/check_public_api_surface.sh check --all-features | 0.100s"
-assert_phase_contains "${tmp_dir}/default.output" public-api-surface "0.100s | PASS | crates=4 | - | - | all | ${tmp_dir}/phase-logs/public-api-surface.log | MISS"
+assert_phase_contains "${tmp_dir}/default.output" public-api-surface "0.100s | PASS | crates=6 | - | - | all | ${tmp_dir}/phase-logs/public-api-surface.log | MISS"
 for phase_log in policy-selftests native-sources checked-bindings component-packages cuvs-native-free msrv-check feature-isolation-check cpu-tests gpu-shared-tests gpu-exclusive-tests doctests rustdoc public-api-surface clippy; do
   [[ -f "${tmp_dir}/phase-logs/${phase_log}.log" ]] || {
     echo "FAIL: expected persistent phase log ${phase_log}.log" >&2

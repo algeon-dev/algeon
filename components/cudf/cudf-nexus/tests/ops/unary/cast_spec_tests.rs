@@ -96,7 +96,7 @@ fn test_cast_decimal128_to_f64_uses_decimal_scale_and_preserves_nulls() {
 #[test]
 fn test_cast_decimal64_to_f64_uses_decimal_scale() {
     let amount = decimal128_series_from_arrow(vec![Some(12345), Some(-678)], 20, 2)
-        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
         .unwrap();
 
     let result = amount.astype(TypeId::Float64).unwrap();
@@ -109,9 +109,9 @@ fn test_cast_decimal64_to_f64_uses_decimal_scale() {
 fn test_cast_f64_to_decimal128_uses_target_scale_and_preserves_nulls() {
     let s = crate::common::nullable_series::<f64>("x", &[123.45, 0.0, -6.78], &[true, false, true]).unwrap();
 
-    let result = s.astype(DataType::fixed_point(TypeId::Decimal128, -2)).unwrap();
+    let result = s.astype(DataType::fixed_point(TypeId::Decimal128, -2).unwrap()).unwrap();
 
-    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal128, -2));
+    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal128, -2).unwrap());
     assert_eq!(result.null_count(), 1);
     let batch = DataFrame::from_series([("x", result)]).unwrap().to_record_batch().unwrap();
     let values = batch.column(0).as_any().downcast_ref::<Decimal128Array>().unwrap();
@@ -233,8 +233,8 @@ fn test_cast_display_omits_input_name() {
 
 #[test]
 fn decimal_rescale_workspace_contract_is_scale_sensitive() {
-    let scale_zero = DataType::fixed_point(TypeId::Decimal128, 0);
-    let scale_two = DataType::fixed_point(TypeId::Decimal128, -2);
+    let scale_zero = DataType::fixed_point(TypeId::Decimal128, 0).unwrap();
+    let scale_two = DataType::fixed_point(TypeId::Decimal128, -2).unwrap();
 
     assert_eq!(
         cudf::ops::unary::decimal_rescale_temporary_workspace_reservation_bytes(&scale_zero, &scale_zero),
@@ -246,7 +246,7 @@ fn decimal_rescale_workspace_contract_is_scale_sensitive() {
     );
     assert_eq!(
         cudf::ops::unary::decimal_rescale_temporary_workspace_reservation_bytes(
-            &DataType::fixed_point(TypeId::Decimal64, 0),
+            &DataType::fixed_point(TypeId::Decimal64, 0).unwrap(),
             &scale_two,
         ),
         None
@@ -263,14 +263,16 @@ fn test_is_supported_cast_numeric_to_float() {
 #[test]
 fn test_is_supported_cast_decimal_to_float() {
     let to = DataType::new(TypeId::Float64);
-    assert!(cudf::ops::unary::is_supported_cast(&DataType::fixed_point(TypeId::Decimal64, -2), &to).unwrap());
-    assert!(cudf::ops::unary::is_supported_cast(&DataType::fixed_point(TypeId::Decimal128, -2), &to).unwrap());
+    assert!(cudf::ops::unary::is_supported_cast(&DataType::fixed_point(TypeId::Decimal64, -2).unwrap(), &to).unwrap());
+    assert!(cudf::ops::unary::is_supported_cast(&DataType::fixed_point(TypeId::Decimal128, -2).unwrap(), &to).unwrap());
 }
 
 #[test]
 fn test_is_supported_cast_float_to_decimal() {
     let from = DataType::new(TypeId::Float64);
-    assert!(cudf::ops::unary::is_supported_cast(&from, &DataType::fixed_point(TypeId::Decimal128, -2)).unwrap());
+    assert!(
+        cudf::ops::unary::is_supported_cast(&from, &DataType::fixed_point(TypeId::Decimal128, -2).unwrap()).unwrap()
+    );
 }
 
 #[test]

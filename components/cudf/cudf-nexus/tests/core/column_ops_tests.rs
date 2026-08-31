@@ -130,17 +130,17 @@ fn test_column_add_mixed_types() {
 fn test_column_add_decimal64_same_scale_preserves_scale() {
     let a = crate::common::series("a", &[12_345i64, 20_000])
         .unwrap()
-        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
         .unwrap();
     let b = crate::common::series("b", &[100i64, -500])
         .unwrap()
-        .astype(DataType::fixed_point(TypeId::Decimal64, -2))
+        .astype(DataType::fixed_point(TypeId::Decimal64, -2).unwrap())
         .unwrap();
 
     let result = a.as_column().add(b.as_column()).unwrap();
     let result = Series::from_column(result).unwrap();
 
-    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2));
+    assert_eq!(result.dtype().unwrap(), DataType::fixed_point(TypeId::Decimal64, -2).unwrap());
     assert_eq!(host_export_i64_values(&result), vec![1_244_500, 1_950_000]);
 }
 
@@ -165,7 +165,7 @@ fn test_column_decimal128_div_binary_op_with_type_preserves_fractional_arrow_out
         38,
         8,
     );
-    let output_type = DataType::fixed_point(TypeId::Decimal128, -8);
+    let output_type = DataType::fixed_point(TypeId::Decimal128, -8).unwrap();
 
     let result = df
         .series("numerator")
@@ -191,7 +191,7 @@ fn test_column_decimal128_div_scalar_binary_op_with_type_preserves_fractional_ar
         8,
     );
     let scalar = Runtime::builder().build().unwrap().decimal128_raw_scalar(400_000_000, -8).unwrap();
-    let output_type = DataType::fixed_point(TypeId::Decimal128, -8);
+    let output_type = DataType::fixed_point(TypeId::Decimal128, -8).unwrap();
 
     let result = df
         .series("numerator")
@@ -217,7 +217,7 @@ fn test_scalar_decimal128_div_column_binary_operation_with_type_preserves_fracti
         8,
     );
     let scalar = Runtime::builder().build().unwrap().decimal128_raw_scalar(100_000_000, -8).unwrap();
-    let output_type = DataType::fixed_point(TypeId::Decimal128, -8);
+    let output_type = DataType::fixed_point(TypeId::Decimal128, -8).unwrap();
     let denominator = df.series("denominator").unwrap();
     let denominator = denominator.as_column().testing_view().unwrap();
 

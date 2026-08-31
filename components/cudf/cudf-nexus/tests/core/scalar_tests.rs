@@ -79,7 +79,7 @@ fn test_string_scalar_data_type() {
 #[test]
 fn test_decimal32_raw_scalar_round_trip_dtype_scale_validity_and_value() {
     let s = crate::common::decimal32_raw_scalar(12345, -2).unwrap();
-    assert_eq!(s.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal32, -2));
+    assert_eq!(s.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal32, -2).unwrap());
     assert!(s.is_valid().unwrap());
     assert_eq!(s.decimal32_raw_value().unwrap(), 12345);
 }
@@ -87,7 +87,7 @@ fn test_decimal32_raw_scalar_round_trip_dtype_scale_validity_and_value() {
 #[test]
 fn test_decimal64_raw_scalar_round_trip_dtype_scale_validity_and_value() {
     let s = crate::common::decimal64_raw_scalar(-987654321, -4).unwrap();
-    assert_eq!(s.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4));
+    assert_eq!(s.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4).unwrap());
     assert!(s.is_valid().unwrap());
     assert_eq!(s.decimal64_raw_value().unwrap(), -987654321);
 }
@@ -96,7 +96,7 @@ fn test_decimal64_raw_scalar_round_trip_dtype_scale_validity_and_value() {
 fn test_decimal128_raw_scalar_round_trip_dtype_scale_validity_and_value() {
     let raw = 123456789012345678901234567890i128;
     let s = crate::common::decimal128_raw_scalar(raw, -9).unwrap();
-    assert_eq!(s.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal128, -9));
+    assert_eq!(s.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal128, -9).unwrap());
     assert!(s.is_valid().unwrap());
     assert_eq!(s.decimal128_raw_value().unwrap(), raw);
 }
@@ -137,15 +137,15 @@ fn test_duration_days_raw_scalar_round_trip_sign_extends_i32_value() {
 fn test_null_raw_decimal_timestamp_and_duration_scalars_are_not_valid() {
     crate::common::with_test_runtime(|rt| {
         let decimal32 = rt.null_decimal32_raw_scalar(-2).unwrap();
-        assert_eq!(decimal32.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal32, -2));
+        assert_eq!(decimal32.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal32, -2).unwrap());
         assert!(!decimal32.is_valid().unwrap());
 
         let decimal64 = rt.null_decimal64_raw_scalar(-4).unwrap();
-        assert_eq!(decimal64.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4));
+        assert_eq!(decimal64.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal64, -4).unwrap());
         assert!(!decimal64.is_valid().unwrap());
 
         let decimal128 = rt.null_decimal128_raw_scalar(-5).unwrap();
-        assert_eq!(decimal128.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal128, -5));
+        assert_eq!(decimal128.data_type().unwrap(), DataType::fixed_point(TypeId::Decimal128, -5).unwrap());
         assert!(!decimal128.is_valid().unwrap());
 
         let timestamp = rt.null_timestamp_raw_scalar(TimestampResolution::Nanoseconds).unwrap();
@@ -174,8 +174,9 @@ fn test_raw_scalar_constructors_validate_type_families_before_ffi() {
 #[test]
 fn test_decimal_raw_constructor_validates_physical_range_before_ffi() {
     crate::common::with_test_runtime(|rt| {
-        let err =
-            rt.decimal_raw_scalar(i128::from(i32::MAX) + 1, DataType::fixed_point(TypeId::Decimal32, -2)).unwrap_err();
+        let err = rt
+            .decimal_raw_scalar(i128::from(i32::MAX) + 1, DataType::fixed_point(TypeId::Decimal32, -2).unwrap())
+            .unwrap_err();
         assert_eq!(err.kind(), ErrorKind::Unsupported);
         assert_eq!(err.code(), ErrorCode::UnsupportedOperation);
         assert_eq!(err.operation(), "scalar::decimal_from_raw_in_domain");

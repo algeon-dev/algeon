@@ -41,11 +41,14 @@ pub fn cudf_dtype_from_arrow_type(data_type: &ArrowDataType) -> Option<CudfDataT
             Some(CudfDataType::new(TypeId::String))
         },
         ArrowDataType::Decimal128(precision, scale) => is_supported_decimal128(*precision, *scale)
-            .then(|| CudfDataType::fixed_point(TypeId::Decimal128, arrow_decimal_scale_to_cudf_scale(*scale))),
+            .then(|| CudfDataType::fixed_point(TypeId::Decimal128, arrow_decimal_scale_to_cudf_scale(*scale)).ok())
+            .flatten(),
         ArrowDataType::Decimal32(precision, scale) => is_supported_decimal32(*precision, *scale)
-            .then(|| CudfDataType::fixed_point(TypeId::Decimal32, arrow_decimal_scale_to_cudf_scale(*scale))),
+            .then(|| CudfDataType::fixed_point(TypeId::Decimal32, arrow_decimal_scale_to_cudf_scale(*scale)).ok())
+            .flatten(),
         ArrowDataType::Decimal64(precision, scale) => is_supported_decimal64(*precision, *scale)
-            .then(|| CudfDataType::fixed_point(TypeId::Decimal64, arrow_decimal_scale_to_cudf_scale(*scale))),
+            .then(|| CudfDataType::fixed_point(TypeId::Decimal64, arrow_decimal_scale_to_cudf_scale(*scale)).ok())
+            .flatten(),
         ArrowDataType::Date32 => Some(CudfDataType::new(TypeId::TimestampDays)),
         ArrowDataType::Date64 => Some(CudfDataType::new(TypeId::TimestampMilliseconds)),
         ArrowDataType::Time32(unit) | ArrowDataType::Time64(unit) => {

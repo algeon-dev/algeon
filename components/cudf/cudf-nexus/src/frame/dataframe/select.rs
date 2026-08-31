@@ -110,35 +110,6 @@ impl DataFrame {
         series.factorize().map_err(|e| e.reanchor("dataframe::factorize").with_column(column.to_string()))
     }
 
-    pub fn with_lookup(
-        &self,
-        output_name: &str,
-        input_column: &str,
-        lookup_keys: &Series,
-        lookup_values: &Series,
-    ) -> Result<Self> {
-        let looked_up = self
-            .series(input_column)
-            .map_err(|e| e.reanchor("dataframe::with_lookup"))?
-            .lookup(lookup_keys, lookup_values)
-            .map_err(|e| e.reanchor("dataframe::with_lookup").with_column(input_column.to_string()))?;
-        self.with_column(output_name, looked_up).map_err(|e| e.reanchor("dataframe::with_lookup"))
-    }
-
-    pub fn with_lookup_from(
-        &self,
-        output_name: &str,
-        input_column: &str,
-        lookup_df: &DataFrame,
-        key_column: &str,
-        value_column: &str,
-    ) -> Result<Self> {
-        let lookup_keys = lookup_df.series(key_column).map_err(|e| e.reanchor("dataframe::with_lookup_from"))?;
-        let lookup_values = lookup_df.series(value_column).map_err(|e| e.reanchor("dataframe::with_lookup_from"))?;
-        self.with_lookup(output_name, input_column, &lookup_keys, &lookup_values)
-            .map_err(|e| e.reanchor("dataframe::with_lookup_from"))
-    }
-
     pub fn with_encoded_column(&self, output_name: &str, input_column: &str, codebook: &Codebook) -> Result<Self> {
         let encoded = codebook
             .encode(&self.series(input_column).map_err(|e| e.reanchor("dataframe::with_encoded_column"))?)

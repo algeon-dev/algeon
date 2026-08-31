@@ -1,6 +1,5 @@
-//! Tests for Parquet and CSV I/O.
+//! Tests for Parquet I/O.
 use std::{
-    os::unix::ffi::OsStringExt,
     process::Command,
     sync::{Arc, Barrier},
     thread,
@@ -12,7 +11,7 @@ use cudf::{
         Table,
         error::{FactKeyName, FactValue},
     },
-    io::{csv, parquet},
+    io::parquet,
     testing::prelude::*,
 };
 use tempfile::TempDir;
@@ -247,57 +246,6 @@ fn test_parquet_skip_rows_and_row_limits() {
     assert_eq!(read_view.num_rows().unwrap(), 4);
     let col = read_view.column(0).unwrap();
     assert_eq!(col.to_vec::<i32>().unwrap(), vec![5, 6, 7, 8]);
-}
-
-#[test]
-fn test_csv_roundtrip() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("test.csv");
-    let rt = sample_runtime();
-
-    // Write
-    let c1 = column_from_slice(&[1i64, 2, 3]).unwrap();
-    let c2 = column_from_slice(&[10.0f64, 20.0, 30.0]).unwrap();
-    let table = Table::from_columns(vec![c1, c2]).unwrap();
-
-    let write_opts = csv::CsvTableWriteOptions::builder()
-        .filepath(&path)
-        .column_names(&["ids", "values"])
-        .include_header(true)
-        .build();
-    csv::write_csv(&table, &write_opts).unwrap();
-
-    // Read back
-    let read_opts = csv::CsvTableReadOptions::builder().filepath(&path).has_header(true).with_runtime(&rt).build();
-    let result = csv::read_csv(&read_opts).unwrap();
-    let read_view = result.table.testing_view().unwrap();
-
-    assert_eq!(read_view.num_columns().unwrap(), 2);
-    assert_eq!(read_view.num_rows().unwrap(), 3);
-    assert_eq!(result.column_names, Some(vec!["ids".to_string(), "values".to_string()]));
-    assert_eq!(result.table.testing_execution_domain_id(), rt.testing_execution_domain_id());
-    assert_eq!(result.table.testing_execution_domain_stream_value(), rt.stream().testing_raw_handle_value());
-}
-
-#[test]
-fn test_csv_read_without_header_returns_no_schema_metadata() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("test_no_header.csv");
-    let rt = sample_runtime();
-
-    std::fs::write(
-        &path,
-        "1,10
-2,20
-",
-    )
-    .unwrap();
-
-    let read_opts = csv::CsvTableReadOptions::builder().filepath(&path).has_header(false).with_runtime(&rt).build();
-    let result = csv::read_csv(&read_opts).unwrap();
-
-    assert_eq!(result.column_names, None);
-    assert_eq!(result.table.testing_view().unwrap().num_rows().unwrap(), 2);
 }
 
 #[test]
@@ -538,23 +486,6 @@ fn test_parquet_row_groups_with_num_rows_errors() {
 }
 
 #[test]
-fn test_csv_write_rejects_column_name_with_nul_byte_using_stable_contract() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("bad_header.csv");
-    let table = Table::from_columns(vec![column_from_slice(&[1i32]).unwrap()]).unwrap();
-
-    let write_opts = csv::CsvTableWriteOptions::builder().filepath(&path).column_names(&["bad\0name"]).build();
-    let err = csv::write_csv(&table, &write_opts).expect_err("column names containing NUL should fail before FFI");
-
-    assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(err.code(), ErrorCode::NullUnexpected);
-    assert_eq!(err.operation(), "io::csv::write_csv");
-    assert_eq!(error_context_value(&err, "column_name").as_deref(), Some("bad\0name"));
-    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_name"));
-    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("interior_null_byte"));
-}
-
-#[test]
 fn test_parquet_write_rejects_column_name_with_nul_byte_using_stable_contract() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("bad_header.parquet");
@@ -649,30 +580,6 @@ fn test_parquet_num_rows_exceeding_i64_max_uses_stable_overflow_contract() {
 }
 
 #[test]
-fn test_csv_write_rejects_column_name_count_with_stable_contract() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("bad_names.csv");
-    let table = Table::from_columns(vec![column_from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
-
-    let write_opts = csv::CsvTableWriteOptions::builder().filepath(&path).column_names(&["only", "extra"]).build();
-    let err = csv::write_csv(&table, &write_opts).expect_err("column name count mismatch should fail before FFI");
-
-    assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(err.code(), ErrorCode::ColumnLengthMismatch);
-    assert_eq!(err.operation(), "io::csv::write_csv");
-    assert_eq!(err.fact_value(FactKeyName::ActualCount), Some(&FactValue::Usize(2)));
-    assert_eq!(err.fact_value(FactKeyName::TableColumnCount), Some(&FactValue::Usize(1)));
-    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("2"));
-    assert_eq!(error_context_value(&err, "table_column_count").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("column_name_count"));
-    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("mismatch_with_table_column_count"));
-    assert_eq!(
-        error_context_value(&err, "remedy").as_deref(),
-        Some("ensure column_name_count matches table_column_count")
-    );
-}
-
-#[test]
 fn test_parquet_write_rejects_column_name_count_with_stable_contract() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("bad_names.parquet");
@@ -710,19 +617,6 @@ fn test_parquet_write_io_failure_uses_canonical_column_name_count_context() {
     assert_eq!(err.operation(), "io::parquet::write_parquet");
     assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("1"));
     assert_eq!(error_context_value(&err, "output_column_name_count").as_deref(), None);
-}
-
-#[test]
-fn test_csv_write_io_failure_uses_canonical_column_name_count_context() {
-    let path = std::env::temp_dir().join("cudf_rs_missing_parent_dir_for_csv_write_12345").join("write_failure.csv");
-    let table = Table::from_columns(vec![column_from_slice(&[1i32, 2, 3]).unwrap()]).unwrap();
-
-    let write_opts = csv::CsvTableWriteOptions::builder().filepath(&path).column_names(&["x"]).build();
-    let err = csv::write_csv(&table, &write_opts).expect_err("missing parent directory should fail in FFI");
-
-    assert_eq!(err.operation(), "io::csv::write_csv");
-    assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("1"));
-    assert_eq!(error_context_value(&err, "num_column_names").as_deref(), None);
 }
 
 #[test]
@@ -865,24 +759,6 @@ fn test_parquet_read_options_can_be_reused_across_calls() {
 }
 
 #[test]
-fn test_csv_read_nonexistent_file_reports_not_found() {
-    let rt = sample_runtime();
-    let read_opts = csv::CsvTableReadOptions::builder()
-        .filepath("/tmp/nonexistent_cudf_test_file_12345.csv")
-        .with_runtime(&rt)
-        .build();
-    let err = match csv::read_csv(&read_opts) {
-        Ok(_) => panic!("missing CSV file should fail"),
-        Err(err) => err,
-    };
-
-    // Local filesystem IO now classifies as the domestic `IoFailure` leaf;
-    // the coarse `DependencyFailure` kind is the policy bucket.
-    assert_eq!(err.code(), ErrorCode::IoFailure);
-    assert_eq!(err.kind(), ErrorKind::DependencyFailure);
-}
-
-#[test]
 fn test_parquet_read_nonexistent_file_reports_not_found() {
     let rt = sample_runtime();
     let read_opts = parquet::ParquetTableReadOptions::builder()
@@ -896,60 +772,4 @@ fn test_parquet_read_nonexistent_file_reports_not_found() {
 
     assert_eq!(err.code(), ErrorCode::IoFailure);
     assert_eq!(err.kind(), ErrorKind::DependencyFailure);
-}
-
-#[test]
-fn test_csv_read_rejects_non_utf8_path_using_stable_contract() {
-    let rt = sample_runtime();
-    let path = std::ffi::OsString::from_vec(vec![0x66, 0x6f, 0x80, 0x6f]);
-    let read_opts =
-        csv::CsvTableReadOptions::builder().filepath(std::path::PathBuf::from(path)).with_runtime(&rt).build();
-    let err = match csv::read_csv(&read_opts) {
-        Ok(_) => panic!("non-UTF8 paths should fail before filesystem access"),
-        Err(err) => err,
-    };
-
-    // Non-UTF-8 path is a local-IO precondition failure; classified as the
-    // domestic `IoFailure` leaf (the kind projection is `DependencyFailure`).
-    assert_eq!(err.code(), ErrorCode::IoFailure);
-    assert_eq!(err.kind(), ErrorKind::DependencyFailure);
-    assert_eq!(err.operation(), "io::csv::read_csv");
-    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("path"));
-    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("invalid_utf8"));
-    assert_eq!(error_context_value(&err, "path").as_deref(), None);
-}
-
-#[test]
-fn test_csv_read_rejects_path_with_interior_nul_byte_using_stable_contract() {
-    let rt = sample_runtime();
-    let read_opts = csv::CsvTableReadOptions::builder().filepath("bad\0path.csv").with_runtime(&rt).build();
-    let err = match csv::read_csv(&read_opts) {
-        Ok(_) => panic!("paths containing NUL should fail before filesystem access"),
-        Err(err) => err,
-    };
-
-    assert_eq!(err.code(), ErrorCode::NullUnexpected);
-    assert_eq!(err.kind(), ErrorKind::InvalidInput);
-    assert_eq!(err.operation(), "io::csv::read_csv");
-    assert_eq!(error_context_value(&err, "resource").as_deref(), Some("path"));
-    assert_eq!(error_context_value(&err, "reason").as_deref(), Some("interior_null_byte"));
-    assert_eq!(error_context_value(&err, "path").as_deref(), Some("bad\0path.csv"));
-}
-
-#[test]
-fn test_csv_custom_delimiter() {
-    let dir = TempDir::new().unwrap();
-    let path = dir.path().join("test_tab.csv");
-    let rt = sample_runtime();
-
-    let c1 = column_from_slice(&[1i32, 2]).unwrap();
-    let table = Table::from_columns(vec![c1]).unwrap();
-
-    let write_opts = csv::CsvTableWriteOptions::builder().filepath(&path).column_names(&["x"]).delimiter(b'\t').build();
-    csv::write_csv(&table, &write_opts).unwrap();
-
-    let read_opts = csv::CsvTableReadOptions::builder().filepath(&path).delimiter(b'\t').with_runtime(&rt).build();
-    let result = csv::read_csv(&read_opts).unwrap();
-    assert_eq!(result.column_names, Some(vec!["x".to_string()]));
-    assert_eq!(result.table.testing_view().unwrap().num_rows().unwrap(), 2);
 }

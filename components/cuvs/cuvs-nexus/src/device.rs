@@ -584,7 +584,7 @@ pub struct DeviceTensor<'a, T: DeviceElement> {
     _borrow: PhantomData<&'a T>,
 }
 
-impl<'a, T: DeviceElement> DeviceTensor<'a, T> {
+impl<T: DeviceElement> DeviceTensor<'_, T> {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_parts(
         data: *mut c_void,
@@ -753,7 +753,7 @@ pub struct DeviceTensorMut<'a, T: DeviceElement> {
     _exclusive: PhantomData<&'a mut T>,
 }
 
-impl<'a, T: DeviceElement> DeviceTensorMut<'a, T> {
+impl<T: DeviceElement> DeviceTensorMut<'_, T> {
     #[allow(clippy::too_many_arguments)]
     fn from_parts(
         data: *mut c_void,

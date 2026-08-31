@@ -910,15 +910,15 @@ fn cudf_dtype_from_arrow_type_in(dt: &ArrowDataType, operation: &'static str) ->
         ArrowDataType::Duration(TimeUnit::Microsecond) => DataType::new(TypeId::DurationMicroseconds),
         ArrowDataType::Duration(TimeUnit::Nanosecond) => DataType::new(TypeId::DurationNanoseconds),
         ArrowDataType::Decimal128(_, scale) => {
-            DataType::fixed_point(TypeId::Decimal128, arrow_decimal_scale_to_cudf_scale(*scale))
+            DataType::fixed_point(TypeId::Decimal128, arrow_decimal_scale_to_cudf_scale(*scale))?
         },
         ArrowDataType::Decimal32(precision, scale) => {
             validate_arrow_decimal::<Decimal32Type>(*precision, *scale, operation)?;
-            DataType::fixed_point(TypeId::Decimal32, arrow_decimal_scale_to_cudf_scale(*scale))
+            DataType::fixed_point(TypeId::Decimal32, arrow_decimal_scale_to_cudf_scale(*scale))?
         },
         ArrowDataType::Decimal64(precision, scale) => {
             validate_arrow_decimal::<Decimal64Type>(*precision, *scale, operation)?;
-            DataType::fixed_point(TypeId::Decimal64, arrow_decimal_scale_to_cudf_scale(*scale))
+            DataType::fixed_point(TypeId::Decimal64, arrow_decimal_scale_to_cudf_scale(*scale))?
         },
         ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View => DataType::new(TypeId::String),
         ArrowDataType::List(field) | ArrowDataType::LargeList(field) if list_child_is_supported(field) => {
@@ -2055,18 +2055,18 @@ fn arrow_array_to_column(runtime: &Runtime, arr: &dyn Array, field_name: &str) -
             runtime, arr, DataType::new(TypeId::DurationNanoseconds)
         ),
         ArrowDataType::Decimal128(_, scale) => {
-            let dtype = DataType::fixed_point(TypeId::Decimal128, arrow_decimal_scale_to_cudf_scale(*scale));
+            let dtype = DataType::fixed_point(TypeId::Decimal128, arrow_decimal_scale_to_cudf_scale(*scale))?;
             decimal128_array_to_column(runtime, arr, dtype)
         },
         ArrowDataType::Decimal32(_, scale) => primitive_arrow_to_fixed_width_column::<Decimal32Type>(
             runtime,
             arr,
-            DataType::fixed_point(TypeId::Decimal32, arrow_decimal_scale_to_cudf_scale(*scale)),
+            DataType::fixed_point(TypeId::Decimal32, arrow_decimal_scale_to_cudf_scale(*scale))?,
         ),
         ArrowDataType::Decimal64(_, scale) => primitive_arrow_to_fixed_width_column::<Decimal64Type>(
             runtime,
             arr,
-            DataType::fixed_point(TypeId::Decimal64, arrow_decimal_scale_to_cudf_scale(*scale)),
+            DataType::fixed_point(TypeId::Decimal64, arrow_decimal_scale_to_cudf_scale(*scale))?,
         ),
         ArrowDataType::List(field) if list_child_is_supported(field) => {
             let list = arr.as_any().downcast_ref::<ListArray>().ok_or_else(|| {

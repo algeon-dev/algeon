@@ -1129,6 +1129,12 @@ impl<'a> GraphBuilder<'a> {
         Ok(self)
     }
 
+    /// Set edge IDs from a raw view. Used by cudf prepared interop.
+    pub(crate) fn edge_ids_raw(mut self, raw: &'a RawDeviceArrayView<'a>) -> Result<Self> {
+        self.edge_ids = Some((raw.as_ptr(), raw.len()));
+        Ok(self)
+    }
+
     /// Set renumber from a bool. Used by cudf_interop where the flag comes
     /// from a function parameter rather than a builder toggle.
     pub(crate) fn renumber_flag(mut self, renumber: bool) -> Self {
@@ -1336,28 +1342,6 @@ impl Graph<Transposed> {
     /// dtype. For advanced features (precomputed weights, initial guess), use
     /// [`pagerank_with`](Self::pagerank_with) and ensure those typed inputs
     /// match the graph's runtime dtypes.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use cugraph::{
-    /// #     ResourceHandle, Transposed,
-    /// #     centrality::PageRankParams,
-    /// #     cudf_interop::{DataFrameGraphOptions, graph_from_dataframe},
-    /// # };
-    /// # let runtime = std::sync::Arc::new(cudf::Runtime::new().unwrap());
-    /// # let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).unwrap();
-    /// # let entered = handle.enter("Graph::pagerank docs").unwrap();
-    /// # let src = runtime.series(&[0i32, 1, 2]).unwrap();
-    /// # let dst = runtime.series(&[1i32, 2, 0]).unwrap();
-    /// # let edges = cudf::DataFrame::from_series([("src", src), ("dst", dst)]).unwrap();
-    /// # let opts = DataFrameGraphOptions::new("src", "dst").renumber();
-    /// # let mut graph = graph_from_dataframe::<Transposed>(&entered, &edges, &opts).unwrap();
-    /// let result = graph
-    ///     .pagerank(&entered, &PageRankParams::default())
-    ///     .unwrap();
-    /// let scores = result.scores().unwrap();
-    /// ```
     pub fn pagerank(
         &mut self,
         handle: &EnteredContext<'_>,
@@ -1544,31 +1528,6 @@ impl Graph<Forward> {
     ///
     /// Returns [`ErrorKind::UnsupportedType`] if `sources` uses a vertex
     /// dtype that does not match the graph.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use cugraph::{
-    /// #     Forward, ResourceHandle,
-    /// #     cudf_interop::{DataFrameGraphOptions, device_array_view_from_slice, graph_from_dataframe},
-    /// #     traversal::BfsParams,
-    /// # };
-    /// # let runtime = std::sync::Arc::new(cudf::Runtime::new().unwrap());
-    /// # let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).unwrap();
-    /// # let entered = handle.enter("Graph::bfs docs").unwrap();
-    /// # let src = runtime.series(&[0i32, 1, 2]).unwrap();
-    /// # let dst = runtime.series(&[1i32, 2, 0]).unwrap();
-    /// # let edges = cudf::DataFrame::from_series([("src", src), ("dst", dst)]).unwrap();
-    /// # let opts = DataFrameGraphOptions::new("src", "dst").renumber();
-    /// # let mut graph = graph_from_dataframe::<Forward>(&entered, &edges, &opts).unwrap();
-    /// let sources = runtime.series(&[0i32]).unwrap();
-    /// let source_column = sources.as_column();
-    /// let source_slice = source_column.device_slice::<i32>().unwrap();
-    /// let sources_view = device_array_view_from_slice::<i32>(&source_slice).unwrap();
-    /// let result =
-    ///     graph.bfs(&entered, &sources_view, &BfsParams::default()).unwrap();
-    /// let distances = result.distances().unwrap();
-    /// ```
     pub fn bfs<'a, V: CugraphElement + 'a>(
         &mut self,
         handle: &EnteredContext<'_>,
@@ -1759,33 +1718,6 @@ impl Graph<Forward> {
     ///
     /// Returns a [`LouvainResult`](crate::community::LouvainResult)
     /// containing vertex ids, per-vertex partitions, and modularity.
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use cugraph::{
-    /// #     Forward, ResourceHandle,
-    /// #     community::LouvainParams,
-    /// #     cudf_interop::{DataFrameGraphOptions, graph_from_dataframe},
-    /// #     types::GraphProperties,
-    /// # };
-    /// # let runtime = std::sync::Arc::new(cudf::Runtime::new().unwrap());
-    /// # let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).unwrap();
-    /// # let entered = handle.enter("Graph::louvain docs").unwrap();
-    /// # let src = runtime.series(&[0i32, 1, 1, 2]).unwrap();
-    /// # let dst = runtime.series(&[1i32, 0, 2, 1]).unwrap();
-    /// # let weight = runtime.series(&[1.0f32, 1.0, 1.0, 1.0]).unwrap();
-    /// # let edges = cudf::DataFrame::from_series([("src", src), ("dst", dst), ("weight", weight)]).unwrap();
-    /// let opts = DataFrameGraphOptions::new("src", "dst")
-    ///     .weight_col("weight")
-    ///     .properties(GraphProperties::undirected())
-    ///     .renumber();
-    /// let mut graph = graph_from_dataframe::<Forward>(&entered, &edges, &opts).unwrap();
-    ///
-    /// let result = graph.louvain(&entered, &LouvainParams::default()).unwrap();
-    /// let modularity = result.modularity();
-    /// # let _ = modularity;
-    /// ```
     pub fn louvain(
         &mut self,
         handle: &EnteredContext<'_>,
@@ -2142,29 +2074,6 @@ impl<T: Transposition> Graph<T> {
     ///
     /// For advanced features (per-vertex mass/radius, initial positions for
     /// refinement passes), use [`force_atlas2_with`](Self::force_atlas2_with).
-    ///
-    /// # Example
-    ///
-    /// ```no_run
-    /// # use cugraph::{
-    /// #     Forward, ResourceHandle,
-    /// #     cudf_interop::{DataFrameGraphOptions, graph_from_dataframe},
-    /// #     layout::ForceAtlas2Params,
-    /// #     random::RngState,
-    /// # };
-    /// # let runtime = std::sync::Arc::new(cudf::Runtime::new().unwrap());
-    /// # let handle = ResourceHandle::for_runtime(std::sync::Arc::clone(&runtime)).unwrap();
-    /// # let entered = handle.enter("Graph::force_atlas2 docs").unwrap();
-    /// # let mut rng = RngState::new(&entered, 42).unwrap();
-    /// # let src = runtime.series(&[0i32, 1, 2]).unwrap();
-    /// # let dst = runtime.series(&[1i32, 2, 0]).unwrap();
-    /// # let edges = cudf::DataFrame::from_series([("src", src), ("dst", dst)]).unwrap();
-    /// # let opts = DataFrameGraphOptions::new("src", "dst").renumber();
-    /// # let mut graph = graph_from_dataframe::<Forward>(&entered, &edges, &opts).unwrap();
-    /// let params = ForceAtlas2Params::default();
-    /// let result = graph.force_atlas2(&entered, &mut rng, &params)?;
-    /// # Ok::<(), cugraph::Error>(())
-    /// ```
     pub fn force_atlas2(
         &mut self,
         handle: &EnteredContext<'_>,

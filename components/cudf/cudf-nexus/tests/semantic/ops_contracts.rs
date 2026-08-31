@@ -52,14 +52,10 @@ mod hashing_tests;
 mod high_level_groupby_tests;
 #[path = "../ops/join/join_tests.rs"]
 mod join_tests;
-#[path = "../ops/misc/lookup_tests.rs"]
-mod lookup_tests;
 #[path = "../ops/join/mixed_join_tests.rs"]
 mod mixed_join_tests;
 #[path = "../ops/misc/partitioning_tests.rs"]
 mod partitioning_tests;
-#[path = "../ops/misc/query_tests.rs"]
-mod query_tests;
 #[path = "../ops/reduction/reduction_tests.rs"]
 mod reduction_tests;
 #[path = "../ops/misc/replace_tests.rs"]

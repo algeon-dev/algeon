@@ -588,6 +588,26 @@ mod tests {
     }
 
     #[test]
+    fn edge_id_and_plain_construction_use_the_same_owner_preflight() {
+        let input = |has_edge_ids| {
+            GraphConstructionPreflightInput::new(
+                DataType::Int64,
+                DataType::Int64,
+                Some(DataType::Float64),
+                has_edge_ids,
+                false,
+                true,
+                47,
+                11,
+            )
+            .expect("valid graph shape")
+        };
+        let plain = graph_construction_workspace_preflight(&input(false)).expect("plain preflight");
+        let edge_ids = graph_construction_workspace_preflight(&input(true)).expect("edge-ID preflight");
+        assert_eq!(edge_ids, plain);
+    }
+
+    #[test]
     fn bfs_side_input_preflight_reports_owner_copy_and_bitmap_peak() {
         let input = BfsSideInputPreflightInput::new(
             DataType::Int32,

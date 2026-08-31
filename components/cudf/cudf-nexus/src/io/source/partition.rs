@@ -1,5 +1,12 @@
 use super::*;
 
+fn decimal128_dtype(scale: i32) -> DataType {
+    match DataType::fixed_point(TypeId::Decimal128, scale) {
+        Ok(dtype) => dtype,
+        Err(_) => unreachable!("Decimal128 partition values pass a decimal type"),
+    }
+}
+
 /// An explicit partition column to be materialized after reading a file/chunk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PartitionColumn {
@@ -91,7 +98,7 @@ impl PartitionValue {
             Self::UInt64(_) => DataType::new(TypeId::UInt64),
             Self::Float32(_) => DataType::new(TypeId::Float32),
             Self::Float64(_) => DataType::new(TypeId::Float64),
-            Self::Decimal128 { scale, .. } => DataType::fixed_point(TypeId::Decimal128, *scale),
+            Self::Decimal128 { scale, .. } => decimal128_dtype(*scale),
             Self::Date32(_) => DataType::new(TypeId::TimestampDays),
             Self::Timestamp { resolution, .. } => DataType::new(resolution.type_id()),
             Self::Duration { resolution, .. } => DataType::new(resolution.duration_type_id()),

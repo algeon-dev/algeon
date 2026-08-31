@@ -1,6 +1,6 @@
 [package]
 name = "cudf-nexus"
-description = "Linux-only safe Rust bindings to libcudf — GPU-accelerated DataFrames"
+description = "Workspace-internal safe libcudf execution component for DataFusion Nexus"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,8 +8,8 @@ license-file = "../../../LICENSE"
 repository.workspace = true
 homepage.workspace = true
 readme = "../README.md"
+publish = false
 keywords = ["cuda", "cudf", "dataframe", "gpu", "rapids"]
-categories = ["api-bindings", "science"]
 autoexamples = false
 
 [lints]

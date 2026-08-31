@@ -1,14 +1,15 @@
-//! Safe Rust bindings for cuDF — GPU-accelerated DataFrames.
+//! Workspace-internal safe libcudf execution component for DataFusion Nexus.
 //!
-//! Start with [`DataFrame`], [`Series`], and [`Runtime`]. They provide a
-//! cuDF-Python-like experience with immutable-value semantics, `Arc`-shared
-//! columns, and explicit runtime ownership for GPU execution resources. Use
-//! [`core::Column`]/[`core::Table`] only when you need fine-grained GPU
-//! memory control.
+//! Nexus integrations start with [`Runtime`] execution provenance and the
+//! prepared contracts in [`interop`]. Operations retain device, stream,
+//! memory-resource, and owner identity; allocation-capable paths expose local
+//! preflight facts; failures cross the component boundary as structured
+//! [`Error`] values. [`DataFrame`] and [`Series`] are the physical GPU frame
+//! owners used by the query engine.
 //!
-//! The crate root is intentionally narrow. DataFrame-specific option and
-//! result types live under [`frame::dataframe`]; factorization-specific types
-//! live under [`frame::factorization`].
+//! The package name `cudf-nexus` and Rust import name `cudf` are workspace
+//! contracts. This crate is not published as a general-purpose cuDF SDK and
+//! does not make an external semantic-versioning promise.
 //!
 //! # Quick Start
 //!
@@ -53,18 +54,13 @@
 //! - [`SortOptions`] / [`DataFrame::sort_values`] — GPU-accelerated sorting.
 //! - [`MergeOptions`] / [`DataFrame::merge`] — GPU-accelerated joins.
 //! - [`GroupBy`] / [`DataFrame::groupby`] — GPU-accelerated groupby aggregation.
-//! - [`LookupTable`] / [`Series::lookup`] / [`DataFrame::with_lookup`] —
-//!   row-aligned lookup operators and reusable mappings.
-//! - [`query`] — query-engine request contracts for named expressions,
-//!   aggregate requests, and expression sort keys.
 //! - [`Series::sum_value`], [`Series::mean_value`], [`Series::minmax_values`]
 //!   — high-level reductions that return host values directly.
 //!
 //! # Specialized High-Level Types
 //!
 //! - [`frame::dataframe`] — DataFrame-specific builders and result snapshots
-//!   such as [`frame::dataframe::MeltOptions`],
-//!   [`frame::dataframe::DropNaOptions`], and
+//!   such as [`frame::dataframe::DropNaOptions`] and
 //!   [`frame::dataframe::InfoDetail`].
 //! - [`frame::factorization`] — typed categorical encoding results and
 //!   reusable mappings such as [`frame::factorization::Factorized`],
@@ -224,7 +220,6 @@ pub mod interop;
 pub(crate) mod internal;
 pub mod io;
 pub mod ops;
-pub mod query;
 pub mod runtime;
 #[doc(hidden)]
 pub mod testing;
@@ -263,8 +258,8 @@ pub use frame::{
         DataFramePreparedSort, DataFrameProjectedCrossJoinPlan, FrameMemoryEffect, ParquetSourceReadPreflight,
     },
     series::{
-        HostColumnData, IntoSeries, ScalarReductionDistinctWorkspacePreflight, ScalarReductionOutput,
-        ScalarReductionOutputShape, Series, SeriesPreparedScalarReduction,
+        IntoSeries, ScalarReductionDistinctWorkspacePreflight, ScalarReductionOutput, ScalarReductionOutputShape,
+        Series, SeriesPreparedScalarReduction,
     },
 };
 // — High-level operations —
@@ -275,7 +270,6 @@ pub use ops::{
         ShiftSpec,
     },
     join::{JoinType, MergeOptions},
-    lookup::LookupTable,
     reduction::ReduceAgg,
     replace::FillPolicy,
     sorting::{SORTED_ORDER_RADIX_PREFLIGHT_CONTRACT, SortOptions, SortedOrderRadixPreflight},

@@ -28,11 +28,16 @@ pub(in crate::exec::source) fn cudf_reader_decimal_type(
         crate::source::ParquetReaderDecimalTypeId::Decimal64 => cudf::TypeId::Decimal64,
         crate::source::ParquetReaderDecimalTypeId::Decimal128 => cudf::TypeId::Decimal128,
     };
-    cudf::io::source::ParquetReaderDecimalType::new(
-        reader_type.column_name.as_str(),
-        cudf::DataType::fixed_point(type_id, reader_type.cudf_scale),
-    )
-    .map_err(|error| {
+    let dtype = cudf::DataType::fixed_point(type_id, reader_type.cudf_scale).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.local_parquet_source.reader_decimal_type_cudf",
+            "failed to convert native reader decimal dtype into cudf source contract",
+            error,
+        )
+        .with_fact("column", reader_type.column_name.as_str())
+        .with_fact("reader_type", reader_type.type_id.as_str())
+    })?;
+    cudf::io::source::ParquetReaderDecimalType::new(reader_type.column_name.as_str(), dtype).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.local_parquet_source.reader_decimal_type_cudf",
             "failed to convert native reader decimal type into cudf source contract",

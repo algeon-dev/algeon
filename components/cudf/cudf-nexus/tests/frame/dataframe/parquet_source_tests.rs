@@ -122,7 +122,7 @@ fn write_parquet_df(path: &std::path::Path, column_names: &[&str], columns: Vec<
 
 fn write_decimal_parquet_df(path: &std::path::Path, storage_type: TypeId) {
     let rt = sample_runtime();
-    let dtype = DataType::fixed_point(storage_type, -2);
+    let dtype = DataType::fixed_point(storage_type, -2).unwrap();
     let amount = rt.series(&[-5i64, 0, 1, 2]).unwrap().astype(dtype).unwrap();
     DataFrame::from_series([("amount", amount)]).unwrap().write_parquet(path).unwrap();
 }
@@ -132,7 +132,7 @@ fn decimal_source(path: &std::path::Path) -> LocalParquetSource {
 }
 
 fn decimal_source_from_paths<'a>(paths: impl IntoIterator<Item = &'a std::path::Path>) -> LocalParquetSource {
-    let decimal128 = DataType::fixed_point(TypeId::Decimal128, -2);
+    let decimal128 = DataType::fixed_point(TypeId::Decimal128, -2).unwrap();
     LocalParquetSource::data(
         paths
             .into_iter()
@@ -947,7 +947,7 @@ fn decimal_reader_predicate_rejects_source_schema_scale_mismatch_before_executio
     let rt = sample_runtime();
 
     write_decimal_parquet_df(&path, TypeId::Decimal32);
-    let decimal128_scale_three = DataType::fixed_point(TypeId::Decimal128, -3);
+    let decimal128_scale_three = DataType::fixed_point(TypeId::Decimal128, -3).unwrap();
     let source = LocalParquetSource::data(
         [LocalParquetFile::new(&path, "decimal", []).unwrap()],
         SourceSchema::new([SourceColumn::new("amount", decimal128_scale_three, false).unwrap()]).unwrap(),
@@ -1710,7 +1710,7 @@ fn read_parquet_source_chunk_with_budget_materializes_extended_partition_values(
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("extended_partitions.parquet");
     let rt = sample_runtime();
-    let decimal_dtype = DataType::fixed_point(TypeId::Decimal128, -2);
+    let decimal_dtype = DataType::fixed_point(TypeId::Decimal128, -2).unwrap();
 
     write_parquet_df(&path, &["id"], vec![column_from_slice(&[1i32, 2]).unwrap()], 0);
 

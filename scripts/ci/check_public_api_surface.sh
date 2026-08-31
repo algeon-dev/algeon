@@ -52,6 +52,8 @@ CRATES=(
   "nexus-query-engine"
   "nexus-bench"
   "nexus-server"
+  "cudf-nexus"
+  "cugraph-nexus"
 )
 
 current_toolchain_identity() {
@@ -180,6 +182,12 @@ for crate in "${CRATES[@]}"; do
     status=1
   fi
 done
+
+if [[ "${PUBLIC_API_SKIP_NATIVE_COMPONENT_POLICY:-0}" != "1" ]]; then
+  if ! python3 scripts/ci/check_native_component_architecture.py "${SNAPSHOT_DIR}"; then
+    status=1
+  fi
+fi
 
 if [[ "${PUBLIC_API_SKIP_FACADE_POLICY:-0}" != "1" ]]; then
   ledger="${SNAPSHOT_DIR}/datafusion-nexus-engine-types.tsv"

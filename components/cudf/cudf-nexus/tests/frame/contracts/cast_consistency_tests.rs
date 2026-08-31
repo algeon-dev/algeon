@@ -12,7 +12,7 @@ use cudf::{DataFrame, DataType, TypeId, ops::expr::col};
 #[test]
 fn series_astype_accepts_datatype() {
     let s = crate::common::series::<i32>("x", &[100, 200, 300]).unwrap();
-    let dt = DataType::fixed_point(TypeId::Decimal128, -2);
+    let dt = DataType::fixed_point(TypeId::Decimal128, -2).unwrap();
     let result = s.astype(dt).unwrap();
     assert_eq!(result.dtype().unwrap(), dt);
 }
@@ -31,7 +31,7 @@ fn series_astype_accepts_typeid() {
 
 #[test]
 fn expr_cast_accepts_datatype() {
-    let dt = DataType::fixed_point(TypeId::Decimal128, -2);
+    let dt = DataType::fixed_point(TypeId::Decimal128, -2).unwrap();
     let expr = col("x").cast(dt).alias("x");
     let s = crate::common::series::<i32>("x", &[100, 200, 300]).unwrap();
     let df = DataFrame::from_series([("x", s)]).unwrap();

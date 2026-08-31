@@ -15,7 +15,6 @@ const GROUPBY_AGG_RS: &str = include_str!("../../src/ops/groupby/agg.rs");
 const GROUPBY_SHIFT_RS: &str = include_str!("../../src/ops/groupby/shift.rs");
 const HASHING_RS: &str = include_str!("../../src/ops/hashing.rs");
 const IO_MOD_RS: &str = include_str!("../../src/io/mod.rs");
-const IO_CSV_RS: &str = include_str!("../../src/io/csv.rs");
 const IO_JSON_RS: &str = include_str!("../../src/io/json.rs");
 const IO_PARQUET_RS: &str = include_str!("../../src/io/parquet.rs");
 const IO_SOURCE_MOD_RS: &str = include_str!("../../src/io/source/mod.rs");
@@ -1042,7 +1041,6 @@ fn sorting_is_sorted_uses_explicit_retained_execution_options() {
 #[test]
 fn io_write_helpers_require_explicit_execution_options() {
     for (source, function, ex_call, ambient_call) in [
-        (IO_CSV_RS, "write_csv_with_exec", "cudf_sys::cudf_io_write_csv_ex", "cudf_sys::cudf_io_write_csv("),
         (IO_JSON_RS, "write_json_with_exec", "cudf_sys::cudf_io_write_json_ex", "cudf_sys::cudf_io_write_json("),
         (
             IO_PARQUET_RS,
@@ -1068,7 +1066,6 @@ fn safe_io_layer_contains_no_process_global_libcudf_lock() {
     let mut violations = Vec::new();
     let scanned_sources = [
         ("io/mod.rs", IO_MOD_RS),
-        ("io/csv.rs", IO_CSV_RS),
         ("io/json.rs", IO_JSON_RS),
         ("io/parquet.rs", IO_PARQUET_RS),
         ("io/source/mod.rs", IO_SOURCE_MOD_RS),

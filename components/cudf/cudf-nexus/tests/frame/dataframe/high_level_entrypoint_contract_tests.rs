@@ -5,7 +5,6 @@
 //! through `view()` plus `cudf::ops::*`.
 use cudf::{
     DataFrame, ExecutionOverrides, TypeId,
-    core::error::{FactKeyName, FactValue},
     ops::{copying, filter as low_level_filter, search},
     testing::prelude::*,
 };
@@ -185,71 +184,6 @@ fn test_factorize_returns_typed_result() {
     let factorized = df.factorize("id").unwrap();
     assert_eq!(factorized.row_codes().len(), 5);
     assert_eq!(factorized.codebook().len(), 5); // all values are unique
-}
-
-#[test]
-fn test_with_lookup_from_round_trip_against_narrow_lookup_dataframe() {
-    let df = DataFrame::from_series([("vertex", crate::common::unnamed_series(&["u2", "u9", "u1"]).unwrap())]).unwrap();
-    let lookup_df = DataFrame::from_series([
-        ("id", crate::common::unnamed_series(&["u1", "u2"]).unwrap()),
-        ("label", crate::common::unnamed_series(&["alice", "bob"]).unwrap()),
-    ])
-    .unwrap();
-
-    let looked_up = df.with_lookup_from("owner", "vertex", &lookup_df, "id", "label").unwrap();
-
-    assert_eq!(
-        looked_up.series("owner").unwrap().to_optional_strings().unwrap(),
-        vec![Some("bob".to_string()), None, Some("alice".to_string())]
-    );
-}
-
-#[test]
-fn test_with_lookup_rejects_mapping_length_mismatch_with_dataframe_operation() {
-    let df = DataFrame::from_series([("vertex", crate::common::unnamed_series(&["u2", "u1"]).unwrap())]).unwrap();
-    let keys = crate::common::unnamed_series(&["u1", "u2"]).unwrap();
-    let values = crate::common::unnamed_series(&["alice"]).unwrap();
-
-    let err = df.with_lookup("owner", "vertex", &keys, &values).unwrap_err();
-
-    assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
-    assert_eq!(err.code(), cudf::ErrorCode::ColumnLengthMismatch);
-    assert_eq!(err.operation(), "dataframe::with_lookup");
-    assert_eq!(crate::common::error_context_value(&err, "column_name").as_deref(), Some("vertex"));
-    assert_eq!(err.detail_value("column_name"), None);
-    assert_eq!(crate::common::error_context_value(&err, "input_column").as_deref(), None);
-    assert_eq!(err.fact_value(FactKeyName::RightTypeId), Some(&FactValue::TypeId(TypeId::String)));
-    assert_eq!(err.fact_value(FactKeyName::TypeId), Some(&FactValue::TypeId(TypeId::String)));
-    assert_eq!(err.fact_value(FactKeyName::KeysCount), Some(&FactValue::Usize(2)));
-    assert_eq!(err.detail_value("values_count"), Some("1"));
-    assert_eq!(err.detail_value("keys_count"), None);
-    assert_eq!(crate::common::error_context_value(&err, "keys_type_id").as_deref(), None);
-    assert_eq!(crate::common::error_context_value(&err, "output_type_id").as_deref(), None);
-}
-
-#[test]
-fn test_with_lookup_from_rejects_missing_lookup_key_column_with_canonical_context() {
-    let df = DataFrame::from_series([("vertex", crate::common::unnamed_series(&["u2", "u1"]).unwrap())]).unwrap();
-    let lookup_df =
-        DataFrame::from_series([("label", crate::common::unnamed_series(&["alice", "bob"]).unwrap())]).unwrap();
-
-    let err = df.with_lookup_from("owner", "vertex", &lookup_df, "id", "label").unwrap_err();
-
-    crate::common::assert_missing_column_error(&err, "id");
-    assert_eq!(err.operation(), "dataframe::with_lookup_from");
-    assert_eq!(crate::common::error_context_value(&err, "key_column").as_deref(), None);
-}
-
-#[test]
-fn test_with_lookup_from_rejects_missing_lookup_value_column_with_canonical_context() {
-    let df = DataFrame::from_series([("vertex", crate::common::unnamed_series(&["u2", "u1"]).unwrap())]).unwrap();
-    let lookup_df = DataFrame::from_series([("id", crate::common::unnamed_series(&["u1", "u2"]).unwrap())]).unwrap();
-
-    let err = df.with_lookup_from("owner", "vertex", &lookup_df, "id", "label").unwrap_err();
-
-    crate::common::assert_missing_column_error(&err, "label");
-    assert_eq!(err.operation(), "dataframe::with_lookup_from");
-    assert_eq!(crate::common::error_context_value(&err, "value_column").as_deref(), None);
 }
 
 #[test]

@@ -18,7 +18,6 @@ mod join;
 mod names;
 mod owned;
 mod partition_ops;
-mod reshape;
 mod row_ops;
 mod row_predicate;
 mod select;
@@ -43,8 +42,8 @@ pub use info::{
     InfoDetail,
 };
 pub use io::{
-    CsvReadOptions, CsvWriteOptions, JsonReadOptions, JsonWriteOptions, MultiParquetReadOptions, ParquetReadOptions,
-    ParquetSourceChunkReadOutput, ParquetSourceReadPreflight, ParquetWriteOptions,
+    JsonReadOptions, JsonWriteOptions, MultiParquetReadOptions, ParquetReadOptions, ParquetSourceChunkReadOutput,
+    ParquetSourceReadPreflight, ParquetWriteOptions,
 };
 pub use join::{
     DataFrameConditionalFullJoinSizeData, DataFrameCrossJoinOptions, DataFrameFilteredJoin,
@@ -56,7 +55,6 @@ pub use join::{
 pub use owned::{DataFrame, DataFrameJoinSides};
 pub(crate) use owned::{derive_frame_domain_from_columns, resolve_frame_domain_from_authoritative_source};
 pub use partition_ops::HashPartitionedDataFrame;
-pub use reshape::MeltOptions;
 pub(crate) use row_ops::{
     trigger_dataframe_row_range_end_limit_error_for_test, trigger_dataframe_row_range_overflow_error_for_test,
     trigger_dataframe_row_range_start_limit_error_for_test,

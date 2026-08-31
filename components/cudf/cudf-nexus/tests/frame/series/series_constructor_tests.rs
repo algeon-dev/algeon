@@ -176,7 +176,7 @@ fn test_nulls_zero_length() {
 
 #[test]
 fn test_nulls_decimal_preserve_scale() {
-    let dtype = DataType::fixed_point(TypeId::Decimal64, -2);
+    let dtype = DataType::fixed_point(TypeId::Decimal64, -2).unwrap();
     let s = crate::common::null_series("amount", dtype, 3).unwrap();
 
     assert_eq!(s.dtype().unwrap(), dtype);
@@ -298,7 +298,7 @@ fn test_empty_bool8() {
 
 #[test]
 fn test_empty_decimal_preserve_scale() {
-    let dtype = DataType::fixed_point(TypeId::Decimal64, -2);
+    let dtype = DataType::fixed_point(TypeId::Decimal64, -2).unwrap();
     let s = crate::common::empty_series("amount", dtype).unwrap();
 
     assert_eq!(s.dtype().unwrap(), dtype);
