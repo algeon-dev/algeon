@@ -199,6 +199,7 @@ impl NormalizedNativeLiteralSource<'_> {
 pub(in crate::native) struct NormalizedNativeGpuResidentSource<'a> {
     pub(in crate::native) source_exec: &'a dyn ExecutionPlan,
     pub(in crate::native) input_name: String,
+    pub(in crate::native) row_count_upper_bound: Option<u64>,
     pub(in crate::native) unique_output_key: Option<BTreeSet<String>>,
 }
 

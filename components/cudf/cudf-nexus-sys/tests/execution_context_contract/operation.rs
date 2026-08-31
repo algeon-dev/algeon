@@ -931,6 +931,20 @@ fn sorted_order_radix_preflight_preserves_owner_and_runtime_dispatch_contract() 
 }
 
 #[test]
+fn sorted_order_lexicographic_preflight_shares_the_runtime_primitive() {
+    assert!(contains_normalized(
+        VENDORED_SORT_IMPL_CUH,
+        "sorted_order_lexicographic_temp_storage_bytes<method>(input.num_rows(), queryable, stream)",
+    ));
+    assert!(VENDORED_SORT_IMPL_CUH.contains("cub::DeviceMergeSort::SortKeysCopy"));
+    assert!(VENDORED_SORT_IMPL_CUH.contains("cub::DeviceMergeSort::StableSortKeysCopy"));
+    assert!(VENDORED_SORTING_HPP.contains("sorted_order_lexicographic_preflight_result"));
+    assert!(SORTING_H.contains("cudf_sorted_order_lexicographic_preflight_result_t"));
+    assert!(SORTING_CPP.contains("cudf::sorted_order_lexicographic_preflight("));
+    assert!(SORTING_FFI_RS.contains("pub fn cudf_sorted_order_lexicographic_preflight("));
+}
+
+#[test]
 fn stream_compaction_ex_entries_use_required_exec_options() {
     for (function, end_marker) in
         [("cudf_drop_nulls_ex", "cudf_status_t cudf_distinct_ex"), ("cudf_distinct_ex", "}  // extern \"C\"")]

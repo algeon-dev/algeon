@@ -573,6 +573,14 @@ pub struct cudf_sorted_order_radix_preflight_result_t {
 }
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
+pub struct cudf_sorted_order_lexicographic_preflight_result_t {
+    pub comparator_state_bytes: u64,
+    pub temporary_workspace_bytes: u64,
+    pub retained_order_bytes: u64,
+    pub active_phase_peak_bytes: u64,
+}
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
 pub struct cudf_prepared_replace_with_backrefs_handle_state {
     _unused: [u8; 0],
 }
@@ -3001,6 +3009,17 @@ unsafe extern "C" {
         key_order: cudf_order_t,
         device: i32,
         out: *mut cudf_sorted_order_radix_preflight_result_t,
+    ) -> cudf_status_t;
+    pub fn cudf_sorted_order_lexicographic_preflight(
+        num_rows: i64,
+        key_types: *const cudf_type_id_t,
+        null_counts: *const i64,
+        key_orders: *const cudf_order_t,
+        null_precedence: *const cudf_null_order_t,
+        key_count: i32,
+        stable: i32,
+        device: i32,
+        out: *mut cudf_sorted_order_lexicographic_preflight_result_t,
     ) -> cudf_status_t;
     #[doc = " Sort with explicit execution context.\n\n `column_order` and `null_precedence` are arrays of size `num_keys`\n (i.e., the number of columns in `input`). Pass NULL for defaults\n (all ASCENDING, nulls AFTER).\n `options` must be non-NULL and carry an explicit device, stream, and memory\n resource. `options->mr` must outlive the returned table."]
     pub fn cudf_sort_ex(

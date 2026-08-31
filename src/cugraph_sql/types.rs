@@ -325,8 +325,8 @@ impl CugraphOperationDefinition {
         self.logical_string_contract().is_some()
     }
 
-    pub(crate) const fn logical_string_contract(&self) -> Option<CugraphLogicalStringContract> {
-        let output_columns = match self.algorithm {
+    pub(crate) const fn vertex_output_columns(&self) -> &'static [CugraphLogicalOutputColumn] {
+        match self.algorithm {
             CugraphAlgorithm::Bfs | CugraphAlgorithm::Sssp => BFS_LOGICAL_OUTPUTS,
             CugraphAlgorithm::PageRank
             | CugraphAlgorithm::PersonalizedPageRank
@@ -344,15 +344,25 @@ impl CugraphOperationDefinition {
             | CugraphAlgorithm::CoreNumber
             | CugraphAlgorithm::Leiden
             | CugraphAlgorithm::Ecg
+            | CugraphAlgorithm::SpectralModularityMaximization
             | CugraphAlgorithm::ForceAtlas2 => ONE_VERTEX_LOGICAL_OUTPUT,
-            CugraphAlgorithm::KCore => EDGE_LOGICAL_OUTPUTS,
+            CugraphAlgorithm::KCore | CugraphAlgorithm::MinimumSpanningTree => EDGE_LOGICAL_OUTPUTS,
             CugraphAlgorithm::EdgeBetweennessCentrality => EDGE_BETWEENNESS_LOGICAL_OUTPUTS,
             CugraphAlgorithm::Jaccard
             | CugraphAlgorithm::Sorensen
             | CugraphAlgorithm::Overlap
             | CugraphAlgorithm::Cosine => PAIR_LOGICAL_OUTPUTS,
-            _ => return None,
-        };
+        }
+    }
+
+    pub(crate) const fn logical_string_contract(&self) -> Option<CugraphLogicalStringContract> {
+        if matches!(
+            self.algorithm,
+            CugraphAlgorithm::MinimumSpanningTree | CugraphAlgorithm::SpectralModularityMaximization
+        ) {
+            return None;
+        }
+        let output_columns = self.vertex_output_columns();
         Some(CugraphLogicalStringContract { native_id_type: CugraphLogicalNativeIdType::Int64, output_columns })
     }
 }
@@ -1167,6 +1177,14 @@ impl CugraphVertexIdDomain {
             Self::StringLogical => "Arrow string",
         }
     }
+
+    pub(crate) fn output_data_type(&self) -> DataType {
+        match self {
+            Self::Int32 => DataType::Int32,
+            Self::Int64 => DataType::Int64,
+            Self::StringLogical => DataType::Utf8,
+        }
+    }
 }
 
 pub(crate) fn vertex_id_domain_for_call(
@@ -1814,21 +1832,17 @@ pub(crate) fn bfs_result_schema_for_vertex_domain(
     params: &CugraphBfsParams,
     domain: &CugraphVertexIdDomain,
 ) -> SchemaRef {
-    let vertex_type = if domain.is_string_logical() { DataType::Utf8 } else { DataType::Int64 };
-    bfs_result_schema_with_vertex_type(params, vertex_type)
+    bfs_result_schema_with_vertex_type(params, domain.output_data_type())
 }
 
 fn bfs_result_schema_with_vertex_type(params: &CugraphBfsParams, vertex_type: DataType) -> SchemaRef {
     let predecessor_type = vertex_type.clone();
     let mut fields = match params.output.mode {
-        CugraphBfsOutputMode::Raw if matches!(vertex_type, DataType::Utf8) => vec![
+        CugraphBfsOutputMode::Raw => vec![
             Field::new("vertex", vertex_type.clone(), false),
             Field::new("distance", DataType::Int64, false),
             Field::new("predecessor", predecessor_type, true),
         ],
-        CugraphBfsOutputMode::Raw => {
-            stable_result_schema(CugraphAlgorithm::Bfs).fields().iter().map(|field| field.as_ref().clone()).collect()
-        },
         CugraphBfsOutputMode::Normalized => vec![
             Field::new("vertex", vertex_type, false),
             Field::new("distance", DataType::Int64, true),
@@ -1863,12 +1877,9 @@ pub(crate) fn result_schema_for_vertex_domain(
         (CugraphAlgorithm::Bfs, CugraphAlgorithmParams::Bfs(params)) => {
             bfs_result_schema_for_vertex_domain(params, domain)
         },
-        _ if domain.is_string_logical() => {
-            let contract = algorithm
-                .definition()
-                .logical_string_contract()
-                .expect("string vertex domain requires a logical string contract");
-            let output_columns = contract.output_columns;
+        _ => {
+            let output_columns = algorithm.definition().vertex_output_columns();
+            let output_type = domain.output_data_type();
             Arc::new(Schema::new(
                 result_schema_for_params(algorithm, params)
                     .fields()
@@ -1876,13 +1887,12 @@ pub(crate) fn result_schema_for_vertex_domain(
                     .map(|field| {
                         output_columns.iter().find(|column| column.name == field.name()).map_or_else(
                             || field.as_ref().clone(),
-                            |column| Field::new(column.name, DataType::Utf8, column.nullable),
+                            |column| Field::new(column.name, output_type.clone(), column.nullable),
                         )
                     })
                     .collect::<Vec<_>>(),
             ))
         },
-        _ => result_schema_for_params(algorithm, params),
     }
 }
 

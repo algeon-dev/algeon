@@ -11,28 +11,22 @@ use crate::{
     observability::CapturedError,
 };
 
-/// Flight SQL response metadata key containing the stable adapter error code.
+/// Flight SQL response metadata keys
 pub const ERROR_CODE_METADATA_KEY: &str = "x-datafusion-nexus-error-code";
-/// Flight SQL response metadata key containing the stable adapter error kind.
 pub const ERROR_KIND_METADATA_KEY: &str = "x-datafusion-nexus-error-kind";
-/// Flight SQL response metadata key containing the retry/status classification.
 pub const ERROR_STATUS_METADATA_KEY: &str = "x-datafusion-nexus-error-status";
-/// Flight SQL response metadata key containing the stable adapter operation id.
 pub const ERROR_OPERATION_METADATA_KEY: &str = "x-datafusion-nexus-error-operation";
-/// Flight SQL response metadata key containing the first unsupported column name, when known.
 pub const UNSUPPORTED_COLUMN_METADATA_KEY: &str = "x-datafusion-nexus-unsupported-column";
-/// Flight SQL response metadata key containing the first unsupported column Arrow type, when known.
 pub const UNSUPPORTED_COLUMN_TYPE_METADATA_KEY: &str = "x-datafusion-nexus-unsupported-column-type";
-/// Flight SQL response metadata key containing the first unsupported column role, when known.
 pub const UNSUPPORTED_COLUMN_ROLE_METADATA_KEY: &str = "x-datafusion-nexus-unsupported-column-role";
-/// Flight SQL response metadata key containing the graph predicate role, when known.
 pub const PREDICATE_ROLE_METADATA_KEY: &str = "x-datafusion-nexus-predicate-role";
-/// Flight SQL response metadata key containing the graph validation reason, when known.
 pub const REASON_METADATA_KEY: &str = "x-datafusion-nexus-reason";
-/// Flight SQL response metadata key containing the required graph option, when known.
 pub const REQUIRED_OPTION_METADATA_KEY: &str = "x-datafusion-nexus-required-option";
-/// Flight SQL response metadata key containing the native diagnostic message, when known.
 pub const NATIVE_MESSAGE_METADATA_KEY: &str = "x-datafusion-nexus-native-message";
+pub const ALGORITHM_METADATA_KEY: &str = "x-datafusion-nexus-algorithm";
+pub const ITERATIONS_METADATA_KEY: &str = "x-datafusion-nexus-iterations";
+pub const MAX_ITERATIONS_METADATA_KEY: &str = "x-datafusion-nexus-max-iterations";
+pub const EPSILON_METADATA_KEY: &str = "x-datafusion-nexus-epsilon";
 const DATAFUSION_ERROR_FALLBACK_OPERATION: &str = "datafusion_nexus.server.datafusion_error";
 
 pub type Result<T> = std::result::Result<T, ServerError>;
@@ -377,18 +371,22 @@ pub(crate) fn adapter_error_to_status(error: &Error) -> Status {
         AdapterStatusLogLevel::Warn => log_status_conversion!(tracing::Level::WARN),
         AdapterStatusLogLevel::Error => log_status_conversion!(tracing::Level::ERROR),
     }
-    let status = match error.kind() {
-        ErrorKind::Cancelled => Status::cancelled(message),
-        ErrorKind::NotFound => Status::not_found(message),
-        ErrorKind::PermissionDenied => Status::permission_denied(message),
-        ErrorKind::Unauthenticated => Status::unauthenticated(message),
-        ErrorKind::InvalidInput | ErrorKind::Planning => Status::invalid_argument(message),
-        ErrorKind::Unsupported => Status::unimplemented(message),
-        ErrorKind::ResourceExhausted => Status::resource_exhausted(message),
-        ErrorKind::Execution | ErrorKind::DependencyFailure | ErrorKind::InvariantViolation | ErrorKind::Internal => {
-            Status::internal(message)
+    let status = match error.code() {
+        ErrorCode::AlgorithmDidNotConverge => Status::failed_precondition(message),
+        _ => match error.kind() {
+            ErrorKind::Cancelled => Status::cancelled(message),
+            ErrorKind::NotFound => Status::not_found(message),
+            ErrorKind::PermissionDenied => Status::permission_denied(message),
+            ErrorKind::Unauthenticated => Status::unauthenticated(message),
+            ErrorKind::InvalidInput | ErrorKind::Planning => Status::invalid_argument(message),
+            ErrorKind::Unsupported => Status::unimplemented(message),
+            ErrorKind::ResourceExhausted => Status::resource_exhausted(message),
+            ErrorKind::Execution
+            | ErrorKind::DependencyFailure
+            | ErrorKind::InvariantViolation
+            | ErrorKind::Internal => Status::internal(message),
+            _ => Status::internal(message),
         },
-        _ => Status::internal(message),
     };
     status_with_error_metadata(status, error)
 }
@@ -458,6 +456,13 @@ pub(super) fn status_source_diagnostics(status: &Status) -> (Option<String>, Opt
 
 fn client_status_message(error: &Error) -> String {
     match error.code() {
+        ErrorCode::AlgorithmDidNotConverge => format!(
+            "{} did not converge after {} iterations (max_iterations={}, epsilon={}); change the convergence parameters and retry",
+            error.fact_value("algorithm").unwrap_or("native algorithm"),
+            error.fact_value("iterations").unwrap_or("unknown"),
+            error.fact_value("max_iterations").unwrap_or("unknown"),
+            error.fact_value("epsilon").unwrap_or("unknown"),
+        ),
         ErrorCode::SqlParse | ErrorCode::FieldNotFound | ErrorCode::ObjectNotFound | ErrorCode::DataFusionPlanning => {
             error.message().to_string()
         },
@@ -505,6 +510,10 @@ fn status_with_error_metadata(mut status: Status, error: &Error) -> Status {
     insert_fact_metadata(status.metadata_mut(), REASON_METADATA_KEY, error, "reason");
     insert_fact_metadata(status.metadata_mut(), REQUIRED_OPTION_METADATA_KEY, error, "required_option");
     insert_fact_metadata(status.metadata_mut(), NATIVE_MESSAGE_METADATA_KEY, error, "native_message");
+    insert_fact_metadata(status.metadata_mut(), ALGORITHM_METADATA_KEY, error, "algorithm");
+    insert_fact_metadata(status.metadata_mut(), ITERATIONS_METADATA_KEY, error, "iterations");
+    insert_fact_metadata(status.metadata_mut(), MAX_ITERATIONS_METADATA_KEY, error, "max_iterations");
+    insert_fact_metadata(status.metadata_mut(), EPSILON_METADATA_KEY, error, "epsilon");
     status
 }
 
@@ -874,6 +883,7 @@ mod tests {
             (ErrorCode::SizeOverflow, Code::ResourceExhausted),
             (ErrorCode::HostMaterializationLimitExceeded, Code::ResourceExhausted),
             (ErrorCode::HostStagingLimitExceeded, Code::ResourceExhausted),
+            (ErrorCode::AlgorithmDidNotConverge, Code::FailedPrecondition),
             (ErrorCode::CudfDependencyFailure, Code::Internal),
             (ErrorCode::CudfInvariantViolation, Code::Internal),
             (ErrorCode::Internal, Code::Internal),
@@ -883,6 +893,33 @@ mod tests {
             let error = Error::new(error_code, TEST_OPERATION, "Flight mapping contract");
             assert_eq!(adapter_error_to_status(&error).code(), expected_flight_code, "{error_code}");
         }
+    }
+
+    #[test]
+    fn algorithm_nonconvergence_is_actionable_and_projects_allowlisted_metadata() {
+        let error = Error::new(
+            ErrorCode::AlgorithmDidNotConverge,
+            "datafusion_nexus.cugraph.eigenvector_centrality",
+            "native graph algorithm failed",
+        )
+        .with_fact("algorithm", "eigenvector_centrality")
+        .with_fact("iterations", "200")
+        .with_fact("max_iterations", "200")
+        .with_fact("epsilon", "0.00000001")
+        .with_fact("native_secret", "must-not-cross-flight-boundary");
+
+        let status = adapter_error_to_status(&error);
+
+        assert_eq!(status.code(), Code::FailedPrecondition);
+        assert_eq!(
+            status.message(),
+            "eigenvector_centrality did not converge after 200 iterations (max_iterations=200, epsilon=0.00000001); change the convergence parameters and retry"
+        );
+        assert_metadata_value(&status, ALGORITHM_METADATA_KEY, "eigenvector_centrality");
+        assert_metadata_value(&status, ITERATIONS_METADATA_KEY, "200");
+        assert_metadata_value(&status, MAX_ITERATIONS_METADATA_KEY, "200");
+        assert_metadata_value(&status, EPSILON_METADATA_KEY, "0.00000001");
+        assert!(status.metadata().get("x-datafusion-nexus-native-secret").is_none());
     }
 
     #[test]

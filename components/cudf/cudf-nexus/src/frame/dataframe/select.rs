@@ -17,7 +17,8 @@ use crate::{
 };
 
 struct ResolvedSelectColumn {
-    name: String,
+    input_name: String,
+    output_name: String,
     input_position: usize,
     column: Arc<Column>,
 }
@@ -167,10 +168,27 @@ impl DataFrame {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let resolved = self.resolve_select_columns(columns, "dataframe::select")?;
+        let mappings = columns.into_iter().map(|name| {
+            let name = name.as_ref().to_string();
+            (name.clone(), name)
+        });
+        self.select_as(mappings)
+    }
+
+    /// Return a schema-only projection with explicit source and output names.
+    ///
+    /// Multiple outputs may alias one source column. Output names remain
+    /// unique, and every output shares the original column owner.
+    pub fn select_as<I, S, T>(&self, mappings: I) -> Result<Self>
+    where
+        I: IntoIterator<Item = (S, T)>,
+        S: AsRef<str>,
+        T: AsRef<str>,
+    {
+        let resolved = self.resolve_select_mappings(mappings, "dataframe::select_as")?;
         let mut new_columns = fast_index_map_with_capacity(resolved.len());
         for column in resolved {
-            new_columns.insert(column.name, column.column);
+            new_columns.insert(column.output_name, column.column);
         }
 
         Ok(Self { columns: new_columns, row_count: self.row_count, domain: Arc::clone(&self.domain) })
@@ -186,7 +204,21 @@ impl DataFrame {
         I: IntoIterator<Item = S>,
         S: AsRef<str>,
     {
-        let resolved = self.resolve_select_columns(columns, "dataframe::select_memory_effect")?;
+        let mappings = columns.into_iter().map(|name| {
+            let name = name.as_ref().to_string();
+            (name.clone(), name)
+        });
+        self.select_as_memory_effect(mappings)
+    }
+
+    /// Return the ownership proof for [`select_as`](Self::select_as).
+    pub fn select_as_memory_effect<I, S, T>(&self, mappings: I) -> Result<FrameMemoryEffect>
+    where
+        I: IntoIterator<Item = (S, T)>,
+        S: AsRef<str>,
+        T: AsRef<str>,
+    {
+        let resolved = self.resolve_select_mappings(mappings, "dataframe::select_as_memory_effect")?;
         let output_columns = resolved
             .into_iter()
             .enumerate()
@@ -194,9 +226,9 @@ impl DataFrame {
                 let identity = ColumnMemoryIdentity::from_column_arc(&column.column);
                 FrameColumnMemoryAlias {
                     input_position: column.input_position,
-                    input_name: column.name.clone(),
+                    input_name: column.input_name,
                     output_position,
-                    output_name: column.name,
+                    output_name: column.output_name,
                     identity,
                 }
             })
@@ -204,32 +236,41 @@ impl DataFrame {
         Ok(FrameMemoryEffect::AliasOfInput { input: self.memory_identity(), output_columns })
     }
 
-    fn resolve_select_columns<I, S>(&self, columns: I, operation: &'static str) -> Result<Vec<ResolvedSelectColumn>>
+    fn resolve_select_mappings<I, S, T>(
+        &self,
+        mappings: I,
+        operation: &'static str,
+    ) -> Result<Vec<ResolvedSelectColumn>>
     where
-        I: IntoIterator<Item = S>,
+        I: IntoIterator<Item = (S, T)>,
         S: AsRef<str>,
+        T: AsRef<str>,
     {
-        let columns: Vec<String> = columns.into_iter().map(|name| name.as_ref().to_string()).collect();
+        let mappings = mappings
+            .into_iter()
+            .map(|(input, output)| (input.as_ref().to_string(), output.as_ref().to_string()))
+            .collect::<Vec<_>>();
 
-        // Reject duplicates to keep schema (name -> index) consistent.
-        let mut seen: FastHashSet<&str> = fast_hash_set_with_capacity(columns.len());
-        for name in &columns {
-            if !seen.insert(name.as_str()) {
+        let mut seen: FastHashSet<&str> = fast_hash_set_with_capacity(mappings.len());
+        for (_, output_name) in &mappings {
+            if !seen.insert(output_name.as_str()) {
                 return Err(duplicate_column_name_error(
                     operation,
-                    name.clone(),
-                    columns.len(),
-                    "selected columns must be unique",
+                    output_name.clone(),
+                    mappings.len(),
+                    "selected output columns must be unique",
                 ));
             }
         }
 
-        let mut resolved = Vec::with_capacity(columns.len());
-        for name in columns {
-            let (input_position, _, column) =
-                self.columns.get_full(name.as_str()).ok_or_else(|| missing_column_error(operation, &name))?;
+        let mut resolved = Vec::with_capacity(mappings.len());
+        for (input_name, output_name) in mappings {
+            let (input_position, _, column) = self
+                .columns
+                .get_full(input_name.as_str())
+                .ok_or_else(|| missing_column_error(operation, &input_name))?;
             let column = Arc::clone(column);
-            resolved.push(ResolvedSelectColumn { name, input_position, column });
+            resolved.push(ResolvedSelectColumn { input_name, output_name, input_position, column });
         }
         Ok(resolved)
     }

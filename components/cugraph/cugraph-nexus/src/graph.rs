@@ -1619,7 +1619,9 @@ impl Graph<Forward> {
         V: CugraphElement + TryInto<usize> + Copy + std::fmt::Debug,
     {
         self.validate_vertex_input_dtype(V::data_type(), "Graph::sssp", "source")?;
+        let weight_mode = if self.has_weights { "weighted" } else { "unit_weight" };
         crate::traversal::sssp::sssp(handle, self, source, params)
+            .map_err(|error| error.with_context("weight_mode", weight_mode))
     }
 
     /// Compute uniform random walks from explicit start vertices.

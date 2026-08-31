@@ -26,6 +26,7 @@ pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_composed_con
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan_with_resident_inputs<'a>(&nexus_query_engine::plan::QueryPlan, impl core::iter::traits::collect::IntoIterator<Item = (&'a str, &'a nexus_query_engine::plan::QueryPlan)>) -> nexus_query_engine::error::Result<core::option::Option<Self>>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_input_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
+pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_materialized_input_producer_plan(&nexus_query_engine::plan::QueryPlan) -> nexus_query_engine::error::Result<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_query_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_query_plan_preflighted(&nexus_query_engine::plan::QueryPlan) -> nexus_query_engine::error::Result<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::required_capabilities(&self) -> &[nexus_query_engine::capability::ReservationRequirement]
@@ -34,6 +35,7 @@ pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::requirement_for_
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::resolve_composed_graph_attempt(&nexus_query_engine::plan::QueryPlan, Self, impl core::iter::traits::collect::IntoIterator<Item = nexus_query_engine::admission::ComposedGraphProducerCandidate>) -> nexus_query_engine::error::Result<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::soft_working_set_hint_bytes(&self) -> core::option::Option<u64>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt<'a>(&nexus_query_engine::plan::QueryPlan, Self, &str, &nexus_query_engine::plan::QueryPlan, impl core::iter::traits::collect::IntoIterator<Item = (alloc::string::String, &'a nexus_query_engine::plan::QueryPlan)>) -> nexus_query_engine::error::Result<core::option::Option<Self>>
+pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt_with_proofs(&nexus_query_engine::plan::QueryPlan, Self, &str, &nexus_query_engine::plan::QueryPlan, impl core::iter::traits::collect::IntoIterator<Item = (alloc::string::String, Self)>) -> nexus_query_engine::error::Result<core::option::Option<Self>>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::try_for_attested_graph_result_bounded_consumer_plan(&nexus_query_engine::plan::QueryPlan, &str) -> nexus_query_engine::error::Result<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&nexus_query_engine::plan::QueryPlan) -> nexus_query_engine::error::Result<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::with_graph_memory_admission_evidence(self, &nexus_query_engine::graph_memory::GraphMemoryAdmissionEvidence) -> nexus_query_engine::error::Result<Self>
@@ -936,6 +938,7 @@ pub nexus_query_engine::error::CugraphAllocationSource::Unknown
 impl nexus_query_engine::error::CugraphAllocationSource
 pub const fn nexus_query_engine::error::CugraphAllocationSource::as_str(self) -> &'static str
 pub enum nexus_query_engine::error::QueryErrorCode
+pub nexus_query_engine::error::QueryErrorCode::AlgorithmDidNotConverge
 pub nexus_query_engine::error::QueryErrorCode::Cancelled
 pub nexus_query_engine::error::QueryErrorCode::CudfDependencyFailure
 pub nexus_query_engine::error::QueryErrorCode::CudfInvalidInput
@@ -2420,6 +2423,7 @@ pub nexus_query_engine::observability::AttemptEvidenceProvenance::DeviceSnapshot
 pub nexus_query_engine::observability::AttemptEvidenceProvenance::SampledAfterFailure
 pub nexus_query_engine::observability::AttemptEvidenceProvenance::Unavailable
 pub enum nexus_query_engine::observability::AttemptFailureCode
+pub nexus_query_engine::observability::AttemptFailureCode::AlgorithmDidNotConverge
 pub nexus_query_engine::observability::AttemptFailureCode::BackendClosing
 pub nexus_query_engine::observability::AttemptFailureCode::Cancelled
 pub nexus_query_engine::observability::AttemptFailureCode::CleanupCallbackAbandoned
@@ -5060,6 +5064,7 @@ pub const fn nexus_query_engine::plan::GraphOperationDefinition::required_graph_
 pub fn nexus_query_engine::plan::GraphOperationDefinition::result_schema_for_params(&self, &nexus_query_engine::plan::GraphAlgorithmParams) -> arrow_schema::schema::SchemaRef
 pub const fn nexus_query_engine::plan::GraphOperationDefinition::source_vertex_requirement(&self) -> nexus_query_engine::plan::GraphSourceVertexRequirement
 pub const fn nexus_query_engine::plan::GraphOperationDefinition::vertex_id_type_support(&self) -> nexus_query_engine::plan::GraphVertexIdTypeSupport
+pub const fn nexus_query_engine::plan::GraphOperationDefinition::vertex_output_columns(&self) -> &'static [&'static str]
 pub const fn nexus_query_engine::plan::GraphOperationDefinition::weight_policy(&self) -> nexus_query_engine::plan::GraphWeightPolicy
 pub struct nexus_query_engine::plan::GraphOutDegreesAllParams
 pub struct nexus_query_engine::plan::GraphPageRankParams
@@ -5379,6 +5384,7 @@ pub fn nexus_query_engine::plan::edge_plan_has_simple_directed_edge_topology(&ne
 pub fn nexus_query_engine::plan::graph_residency_descriptor_for_edge_plan(&nexus_query_engine::plan::QueryPlan, &nexus_query_engine::plan::GraphAlgorithmSpec) -> nexus_query_engine::plan::GraphResidencyPlanAnalysis
 pub fn nexus_query_engine::plan::graph_residency_descriptor_for_local_parquet_source(&nexus_query_engine::source::LocalParquetSource, &nexus_query_engine::plan::GraphAlgorithmSpec) -> nexus_query_engine::plan::GraphResidencyPlanAnalysis
 pub fn nexus_query_engine::plan::graph_result_schema_for_params(nexus_query_engine::plan::GraphAlgorithm, &nexus_query_engine::plan::GraphAlgorithmParams) -> arrow_schema::schema::SchemaRef
+pub fn nexus_query_engine::plan::graph_result_schema_for_vertex_type(nexus_query_engine::plan::GraphAlgorithm, &nexus_query_engine::plan::GraphAlgorithmParams, &arrow_schema::datatype::DataType) -> arrow_schema::schema::SchemaRef
 pub fn nexus_query_engine::plan::native_plan_cost_decision(&nexus_query_engine::plan::QueryPlan, &nexus_query_engine::plan::NativePlanCostOptions) -> nexus_query_engine::plan::NativePlanCostDecision
 pub fn nexus_query_engine::plan::planned_resident_graph_key(&nexus_query_engine::plan::GraphResidencyDescriptor, &nexus_query_engine::plan::GraphAlgorithmSpec) -> core::option::Option<nexus_query_engine::plan::ResidentGraphKey>
 pub fn nexus_query_engine::plan::stable_graph_result_schema(nexus_query_engine::plan::GraphAlgorithm) -> arrow_schema::schema::SchemaRef

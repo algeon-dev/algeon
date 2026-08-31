@@ -26,6 +26,8 @@ include!("tests/release_commit.rs");
 include!("tests/placement.rs");
 #[cfg(feature = "cugraph")]
 include!("tests/cross_attempt_gpu_resident.rs");
+#[cfg(feature = "cugraph")]
+include!("tests/deferred_resident.rs");
 
 // This exercises registry-backed admission as a child of the private service
 // module. Keeping the state-machine coverage here prevents the integration

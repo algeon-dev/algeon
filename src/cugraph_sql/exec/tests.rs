@@ -685,6 +685,27 @@ fn logical_string_spec(algorithm: CugraphAlgorithm) -> CugraphAlgorithmSpec {
     }
 }
 
+#[test]
+fn numeric_graph_results_preserve_the_input_vertex_domain_for_every_vertex_column() {
+    for algorithm in CugraphAlgorithm::all() {
+        let params = CugraphAlgorithmParams::from_native_defaults(algorithm, None);
+        let schema = crate::cugraph_sql::result_schema_for_vertex_domain(
+            algorithm,
+            &params,
+            Some(&crate::cugraph_sql::CugraphVertexIdDomain::Int32),
+        );
+        for output in algorithm.definition().vertex_output_columns() {
+            assert_eq!(
+                schema.field_with_name(output.name).unwrap().data_type(),
+                &DataType::Int32,
+                "{} output column {}",
+                algorithm.function_name(),
+                output.name,
+            );
+        }
+    }
+}
+
 fn bfs_spec() -> CugraphAlgorithmSpec {
     let params = CugraphAlgorithmParams::Bfs(Box::new(CugraphBfsParams {
         source: CugraphBfsSource::scalar_i64(0),
@@ -828,6 +849,7 @@ fn graph_producer_unique_key_contract_is_limited_to_vertex_row_results() {
         NexusNativeExecutionConfig::bounded_default(),
     )
     .expect("path BFS producer should build");
+    assert!(crate::native_exec::producer::gpu_resident_producer(&path_bfs).is_some());
     assert_eq!(gpu_resident_producer_unique_output_key(&path_bfs), None);
 
     let non_unique_algorithm = CugraphAlgoExec::try_new(
@@ -1303,16 +1325,35 @@ fn string_jaccard_70_by_70_retires_shared_mapping_intermediates_before_the_final
     let pair = lifetime(graph_node.inputs[1], "consumer_output");
     let graph_output = lifetime(graph.id, "retained_output");
     let graph_execution = lifetime(graph.id, "execution_workspace");
-    let codebook = lifetime(codebook.id, "consumer_output");
+    let codebook_values = lifetime(
+        match &codebook.kind {
+            PlanNode::Window(window) => window.input,
+            _ => unreachable!("the selected node is the codebook row-number window"),
+        },
+        "consumer_output",
+    );
+    let codebook_row_ids = lifetime(codebook.id, "consumer_output");
     let decoded = lifetime(sort.input, "consumer_output");
     let final_sort = lifetime(final_sort.id, "consumer_workspace");
     assert_eq!(pair.last_group, graph_execution.first_group, "encoded pairs live through graph execution");
     assert_eq!(pair.last_group, graph_output.first_group);
-    assert_eq!(codebook.last_group, decoded.first_group, "the shared codebook lives through the final decode join");
-    assert!(codebook.last_group < final_sort.first_group, "the codebook must retire before the final sort workspace");
+    assert_eq!(
+        codebook_values.last_group, decoded.first_group,
+        "the shared codebook values live through the final decode join",
+    );
+    assert_eq!(codebook_row_ids.last_group, decoded.first_group);
+    assert!(
+        codebook_values.last_group < final_sort.first_group,
+        "the codebook must retire before the final sort workspace",
+    );
     assert_eq!(decoded.last_group, final_sort.first_group);
     assert_eq!((pair.bytes, pair.first_group, pair.last_group), (1_760, 9, 11));
-    assert_eq!((codebook.bytes, codebook.first_group, codebook.last_group), (9_006_642_739, 5, 15));
+    assert_eq!(
+        (codebook_values.bytes, codebook_values.first_group, codebook_values.last_group),
+        (9_006_640_179, 4, 15)
+    );
+    assert_eq!((codebook_row_ids.bytes, codebook_row_ids.first_group, codebook_row_ids.last_group), (2_560, 5, 15));
+    assert_eq!(codebook_values.bytes + codebook_row_ids.bytes, 9_006_642_739);
     assert_eq!((decoded.bytes, decoded.first_group, decoded.last_group), (18_013_277_878, 15, 16));
     assert_eq!((final_sort.bytes, final_sort.first_group, final_sort.last_group), (36_026_555_756, 16, 16));
     let (required_floor, dominant_owner, owner_term_count) = production_required_floor_bytes(proof);
@@ -1441,7 +1482,7 @@ fn string_bfs_maps_edge_relation_predicates_and_both_result_vertices() {
 }
 
 #[test]
-fn string_pagerank_and_bfs_are_gpu_producers_while_bfs_path_remains_host_owned() {
+fn string_pagerank_bfs_and_bfs_path_are_gpu_producers_with_unique_key_contracts() {
     let pagerank = CugraphAlgoExec::try_new(
         pagerank_utf8_spec(),
         memory_string_edge_source(),
@@ -1472,8 +1513,9 @@ fn string_pagerank_and_bfs_are_gpu_producers_while_bfs_path_remains_host_owned()
         None,
         NexusNativeExecutionConfig::bounded_default(),
     )
-    .expect("logical BFS path should build as a host-root graph execution");
-    assert!(crate::native_exec::producer::gpu_resident_producer(&numeric_path).is_none());
+    .expect("logical BFS path should build as a GPU-resident graph execution");
+    assert!(crate::native_exec::producer::gpu_resident_producer(&numeric_path).is_some());
+    assert_eq!(gpu_resident_producer_unique_output_key(&numeric_path), None);
 }
 
 #[test]

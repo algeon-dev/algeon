@@ -45,6 +45,7 @@ pub(crate) enum OwnerTermRole {
     GraphPersistent,
     ConstructionTransient,
     ExecutionWorkspace,
+    SsspUnitWeights,
     GraphLiveReservationFloorTopUp,
     SideInputWorkspace,
     AggregatePartialState,
@@ -67,6 +68,7 @@ pub(crate) enum OwnerTermRole {
     SortKeyInput,
     SortKeyOutput,
     SortSequence,
+    SortComparatorState,
     SortTemporaryWorkspace,
     SortRetainedOrder,
     SortOutputFrame,
@@ -80,6 +82,7 @@ impl OwnerTermRole {
             Self::GraphPersistent => "graph_persistent",
             Self::ConstructionTransient => "construction_transient",
             Self::ExecutionWorkspace => "execution_workspace",
+            Self::SsspUnitWeights => "sssp_unit_weights",
             Self::GraphLiveReservationFloorTopUp => "graph_live_reservation_floor_top_up",
             Self::SideInputWorkspace => "side_input_workspace",
             Self::AggregatePartialState => "aggregate_partial_state",
@@ -102,6 +105,7 @@ impl OwnerTermRole {
             Self::SortKeyInput => "sort_key_input",
             Self::SortKeyOutput => "sort_key_output",
             Self::SortSequence => "sort_sequence",
+            Self::SortComparatorState => "sort_comparator_state",
             Self::SortTemporaryWorkspace => "sort_temporary_workspace",
             Self::SortRetainedOrder => "sort_retained_order",
             Self::SortOutputFrame => "sort_output_frame",
@@ -132,7 +136,6 @@ pub(crate) enum OwnerTermConstructionPolicy {
     Generic,
     AllowLiteralBatch,
     PriceLiteralBatch,
-    AllowMixedSourceComposition,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -146,6 +149,13 @@ impl OccurrenceId {
         match self {
             Self::PlanLocal(node_id) => format!("plan_local:{node_id}"),
             Self::Composed(occurrence_id) => format!("composed:{occurrence_id}"),
+        }
+    }
+
+    fn rebind_composed(&self, occurrence_id: &str) -> Self {
+        match self {
+            Self::PlanLocal(_) => Self::Composed(occurrence_id.to_owned()),
+            Self::Composed(inner) => Self::Composed(format!("nested:{}:{occurrence_id}{inner}", occurrence_id.len())),
         }
     }
 }
@@ -175,6 +185,15 @@ impl OwnerTermId {
         matches!(self.occurrence, OccurrenceId::Composed(_))
     }
 
+    pub(crate) fn rebind_composed_occurrence(&self, occurrence_id: &str) -> Self {
+        Self {
+            owner: self.owner.clone(),
+            role: self.role,
+            occurrence: self.occurrence.rebind_composed(occurrence_id),
+            execution_scope_fingerprint: self.execution_scope_fingerprint.clone(),
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn synthetic_for_test(occurrence_id: &str, execution_scope_fingerprint: &str) -> Self {
         Self {
@@ -195,10 +214,11 @@ pub(crate) enum AttemptBoundDerivation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SortRadixPreflight {
+pub(crate) struct SortPreflight {
     pub(crate) key_input_bytes: u64,
     pub(crate) key_output_bytes: u64,
     pub(crate) sequence_bytes: u64,
+    pub(crate) comparator_state_bytes: u64,
     pub(crate) temporary_workspace_bytes: u64,
     pub(crate) retained_order_bytes: u64,
     pub(crate) active_phase_peak_bytes: u64,
@@ -263,7 +283,7 @@ impl LimitRangeGatherPreflight {
     }
 }
 
-impl SortRadixPreflight {
+impl SortPreflight {
     pub(crate) fn checked_from_cudf(preflight: cudf::ops::sorting::SortedOrderRadixPreflight) -> Result<Self> {
         let key_input_bytes = u64::try_from(preflight.key_input_bytes())
             .map_err(|_| sort_owner_error("native_byte_count_exceeds_u64", "key_input_bytes"))?;
@@ -293,6 +313,36 @@ impl SortRadixPreflight {
             key_input_bytes,
             key_output_bytes,
             sequence_bytes,
+            comparator_state_bytes: 0,
+            temporary_workspace_bytes,
+            retained_order_bytes,
+            active_phase_peak_bytes,
+        })
+    }
+
+    pub(crate) fn checked_from_lexicographic_cudf(
+        preflight: cudf::ops::sorting::SortedOrderLexicographicPreflight,
+    ) -> Result<Self> {
+        let comparator_state_bytes = u64::try_from(preflight.comparator_state_bytes())
+            .map_err(|_| sort_owner_error("native_byte_count_exceeds_u64", "comparator_state_bytes"))?;
+        let temporary_workspace_bytes = u64::try_from(preflight.temporary_workspace_bytes())
+            .map_err(|_| sort_owner_error("native_byte_count_exceeds_u64", "temporary_workspace_bytes"))?;
+        let retained_order_bytes = u64::try_from(preflight.retained_order_bytes())
+            .map_err(|_| sort_owner_error("native_byte_count_exceeds_u64", "retained_order_bytes"))?;
+        let active_phase_peak_bytes = u64::try_from(preflight.active_phase_peak_bytes())
+            .map_err(|_| sort_owner_error("native_byte_count_exceeds_u64", "active_phase_peak_bytes"))?;
+        let expected_peak = comparator_state_bytes
+            .checked_add(temporary_workspace_bytes)
+            .and_then(|value| value.checked_add(retained_order_bytes))
+            .ok_or_else(|| sort_owner_error("component_sum_overflow", "active_phase_peak_bytes"))?;
+        if expected_peak != active_phase_peak_bytes {
+            return Err(sort_owner_error("active_phase_peak_component_sum_mismatch", "active_phase_peak_bytes"));
+        }
+        Ok(Self {
+            key_input_bytes: 0,
+            key_output_bytes: 0,
+            sequence_bytes: 0,
+            comparator_state_bytes,
             temporary_workspace_bytes,
             retained_order_bytes,
             active_phase_peak_bytes,
@@ -327,6 +377,7 @@ impl SortRadixPreflight {
             key_input_bytes,
             key_output_bytes,
             sequence_bytes,
+            comparator_state_bytes: 0,
             temporary_workspace_bytes,
             retained_order_bytes,
             active_phase_peak_bytes: key_input_bytes
@@ -337,9 +388,29 @@ impl SortRadixPreflight {
                 .expect("test preflight components fit"),
         }
     }
+
+    #[cfg(test)]
+    pub(crate) fn new_lexicographic_for_test(
+        comparator_state_bytes: u64,
+        temporary_workspace_bytes: u64,
+        retained_order_bytes: u64,
+    ) -> Self {
+        Self {
+            key_input_bytes: 0,
+            key_output_bytes: 0,
+            sequence_bytes: 0,
+            comparator_state_bytes,
+            temporary_workspace_bytes,
+            retained_order_bytes,
+            active_phase_peak_bytes: comparator_state_bytes
+                .checked_add(temporary_workspace_bytes)
+                .and_then(|value| value.checked_add(retained_order_bytes))
+                .expect("test lexicographic preflight components fit"),
+        }
+    }
 }
 
-/// Device-independent metadata for the one supported sorted-order radix path.
+/// Device-independent metadata for an owner-preflighted sorted-order path.
 ///
 /// The device-dependent CUB workspace query is intentionally deferred until a
 /// candidate ordinal is selected.  No ambient device participates in this
@@ -349,13 +420,19 @@ pub(crate) struct SortMetadataDescriptor {
     pub(crate) node_id: NodeId,
     pub(crate) execution_scope_fingerprint: String,
     pub(crate) num_rows: usize,
-    pub(crate) key_type: cudf::DataType,
-    pub(crate) null_count: usize,
+    pub(crate) keys: Vec<SortKeyMetadataDescriptor>,
     pub(crate) stable: bool,
-    pub(crate) key_order: cudf::ops::sorting::Order,
     pub(crate) output_frame_bytes: u64,
     pub(crate) output_null_mask_bytes: u64,
     pub(crate) limit: Option<LimitMetadataDescriptor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SortKeyMetadataDescriptor {
+    pub(crate) key_type: cudf::DataType,
+    pub(crate) null_count: usize,
+    pub(crate) key_order: cudf::ops::sorting::Order,
+    pub(crate) null_precedence: cudf::ops::sorting::NullOrder,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -393,6 +470,7 @@ pub(crate) fn owner_term_shape_is_valid(owner: &OwnerId, role: OwnerTermRole, cl
             OwnerTermRole::GraphPersistent
             | OwnerTermRole::ConstructionTransient
             | OwnerTermRole::ExecutionWorkspace
+            | OwnerTermRole::SsspUnitWeights
             | OwnerTermRole::GraphLiveReservationFloorTopUp
             | OwnerTermRole::SideInputWorkspace => class == AllocationClass::ActivePhase,
             OwnerTermRole::RetainedOutput => class == AllocationClass::AttemptRetained,
@@ -425,6 +503,7 @@ pub(crate) fn owner_term_shape_is_valid(owner: &OwnerId, role: OwnerTermRole, cl
             OwnerTermRole::SortKeyInput
             | OwnerTermRole::SortKeyOutput
             | OwnerTermRole::SortSequence
+            | OwnerTermRole::SortComparatorState
             | OwnerTermRole::SortTemporaryWorkspace => class == AllocationClass::ActivePhase,
             OwnerTermRole::SortRetainedOrder | OwnerTermRole::SortOutputFrame | OwnerTermRole::SortOutputNullMask => {
                 class == AllocationClass::AttemptRetained
@@ -511,16 +590,30 @@ impl AllocationOwnerTerm {
     }
 
     pub(crate) fn rebind_composed_occurrence(&self, occurrence_id: &str) -> Result<Self> {
-        let occurrence = match &self.id.occurrence {
-            OccurrenceId::PlanLocal(_) => occurrence_id.to_owned(),
-            OccurrenceId::Composed(inner) => {
-                format!("nested:{}:{occurrence_id}{inner}", occurrence_id.len())
-            },
-        };
+        let id = self.id.rebind_composed_occurrence(occurrence_id);
+        Self::new(
+            id.owner,
+            id.role,
+            id.occurrence,
+            id.execution_scope_fingerprint,
+            self.class,
+            self.bytes.get(),
+            self.retained_row_count_upper_bound,
+        )
+    }
+
+    pub(crate) fn rebind_exported_composed_occurrence(&self, occurrence_id: &str) -> Result<Self> {
+        if !self.is_retained_output() {
+            return Err(owner_term_error(
+                "exported_occurrence_not_retained_output",
+                Some(self.id.role),
+                Some(self.class),
+            ));
+        }
         Self::new(
             self.id.owner.clone(),
             self.id.role,
-            OccurrenceId::Composed(occurrence),
+            OccurrenceId::Composed(occurrence_id.to_owned()),
             self.id.execution_scope_fingerprint.clone(),
             self.class,
             self.bytes.get(),
@@ -570,6 +663,7 @@ impl AllocationOwnerTerm {
                 OwnerTermRole::GraphPersistent
                     | OwnerTermRole::ConstructionTransient
                     | OwnerTermRole::ExecutionWorkspace
+                    | OwnerTermRole::SsspUnitWeights
                     | OwnerTermRole::GraphLiveReservationFloorTopUp
                     | OwnerTermRole::SideInputWorkspace
             )
@@ -609,6 +703,7 @@ impl AllocationOwnerTerm {
                         OwnerTermRole::GraphPersistent
                             | OwnerTermRole::ConstructionTransient
                             | OwnerTermRole::ExecutionWorkspace
+                            | OwnerTermRole::SsspUnitWeights
                             | OwnerTermRole::GraphLiveReservationFloorTopUp
                             | OwnerTermRole::SideInputWorkspace
                             | OwnerTermRole::RetainedOutput
@@ -649,6 +744,7 @@ impl AllocationOwnerTerm {
                         OwnerTermRole::SortKeyInput
                             | OwnerTermRole::SortKeyOutput
                             | OwnerTermRole::SortSequence
+                            | OwnerTermRole::SortComparatorState
                             | OwnerTermRole::SortTemporaryWorkspace
                             | OwnerTermRole::SortRetainedOrder
                             | OwnerTermRole::SortOutputFrame
@@ -683,6 +779,7 @@ impl AllocationOwnerTerm {
             self.id.role,
             OwnerTermRole::GraphPersistent
                 | OwnerTermRole::ExecutionWorkspace
+                | OwnerTermRole::SsspUnitWeights
                 | OwnerTermRole::GraphLiveReservationFloorTopUp
                 | OwnerTermRole::SideInputWorkspace
         )
@@ -757,6 +854,7 @@ pub(crate) fn graph_owner_term_from_fact(fact: &GraphMemoryOwnerTermFact) -> Res
         GraphMemoryOwnerTermRole::ExecutionWorkspace => {
             (OwnerTermRole::ExecutionWorkspace, AllocationClass::ActivePhase)
         },
+        GraphMemoryOwnerTermRole::SsspUnitWeights => (OwnerTermRole::SsspUnitWeights, AllocationClass::ActivePhase),
         GraphMemoryOwnerTermRole::GraphLiveReservationFloorTopUp => {
             (OwnerTermRole::GraphLiveReservationFloorTopUp, AllocationClass::ActivePhase)
         },

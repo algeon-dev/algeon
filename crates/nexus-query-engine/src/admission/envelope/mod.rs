@@ -12,7 +12,8 @@ use arrow::datatypes::DataType;
 
 use crate::{
     admission::requirement::{
-        AllocationOwnerTerm, AttemptBoundDerivation, OwnerTermId, checked_owner_sum, owner_inventory_covers_scopes,
+        AllocationOwnerTerm, AttemptBoundDerivation, OccurrenceId, OwnerId, OwnerTermId, OwnerTermRole,
+        checked_owner_sum, owner_inventory_covers_scopes,
     },
     chunk::SourceChunkPlanningOptions,
     error::{QueryError, QueryErrorCode, Result},
@@ -192,6 +193,7 @@ impl AttemptReservationProducerPhase {
 pub(crate) enum AttemptReservationConsumerState {
     Passthrough,
     Bounded,
+    DeferredUntilResidentEvidence,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,6 +212,24 @@ pub(crate) struct AttemptReservationSchedule {
 pub(crate) type NestedProducerPeakTerms = (Vec<Vec<OwnerTermId>>, Vec<OwnerTermId>, Vec<OwnerTermId>);
 
 impl AttemptReservationSchedule {
+    pub(crate) fn resolve_deferred_consumer(
+        &mut self,
+        consumer_state: AttemptReservationConsumerState,
+        consumer_peak_term_groups: Vec<Vec<OwnerTermId>>,
+        consumer_dominated_term_ids: Vec<OwnerTermId>,
+    ) -> Result<()> {
+        if self.consumer_state != AttemptReservationConsumerState::DeferredUntilResidentEvidence {
+            return Err(graph_schedule_error("consumer_phase_not_deferred", None, Some("consumer_peak")));
+        }
+        if consumer_state == AttemptReservationConsumerState::DeferredUntilResidentEvidence {
+            return Err(graph_schedule_error("consumer_phase_remains_deferred", None, Some("consumer_peak")));
+        }
+        self.consumer_state = consumer_state;
+        self.consumer_peak_term_groups = consumer_peak_term_groups;
+        self.consumer_dominated_term_ids = consumer_dominated_term_ids;
+        Ok(())
+    }
+
     #[cfg(test)]
     pub(crate) fn from_phase_term_ids(
         attempt_wide_fixed_term_ids: Vec<OwnerTermId>,
@@ -308,7 +328,6 @@ impl AttemptReservationSchedule {
         &self.attempt_wide_fixed_term_ids
     }
 
-    #[cfg(test)]
     pub(crate) fn consumer_state(&self) -> AttemptReservationConsumerState {
         self.consumer_state
     }
@@ -381,6 +400,7 @@ impl AttemptReservationSchedule {
 
         match self.consumer_state {
             AttemptReservationConsumerState::Passthrough => groups.push(retained_prior),
+            AttemptReservationConsumerState::DeferredUntilResidentEvidence => groups.push(retained_prior),
             AttemptReservationConsumerState::Bounded => {
                 if self.consumer_peak_term_groups.is_empty() {
                     return Err(graph_schedule_error("missing_consumer_peak_terms", None, Some("nested_schedule")));
@@ -657,6 +677,16 @@ impl AttemptReservationSchedule {
                 if self.test_consumer_additional_peak_bytes.is_some_and(|bytes| bytes != 0) {
                     return Err(graph_schedule_error(
                         "passthrough_consumer_has_nonzero_peak",
+                        None,
+                        Some("consumer_peak"),
+                    ));
+                }
+                Ok(0)
+            },
+            AttemptReservationConsumerState::DeferredUntilResidentEvidence => {
+                if !self.consumer_peak_term_groups.is_empty() || !self.consumer_dominated_term_ids.is_empty() {
+                    return Err(graph_schedule_error(
+                        "deferred_consumer_has_static_peak_terms",
                         None,
                         Some("consumer_peak"),
                     ));

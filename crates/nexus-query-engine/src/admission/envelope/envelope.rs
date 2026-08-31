@@ -9,6 +9,22 @@ pub(crate) struct AttemptReservationEnvelope {
     bound_derivation: Option<AttemptBoundDerivation>,
     owner_terms: Vec<AllocationOwnerTerm>,
 }
+
+fn validate_nested_runtime_occurrences(scheduled: &[String], runtime: &[String]) -> Result<()> {
+    if scheduled.len() != runtime.len() {
+        return Err(graph_schedule_error("runtime_occurrence_count_mismatch", None, Some("runtime"))
+            .with_fact("scheduled_occurrence_count", scheduled.len())
+            .with_fact("runtime_occurrence_count", runtime.len()));
+    }
+    for (scheduled, runtime) in scheduled.iter().zip(runtime) {
+        if scheduled != runtime {
+            return Err(graph_schedule_error("runtime_occurrence_order_mismatch", Some(runtime), Some("runtime"))
+                .with_fact("scheduled_occurrence_id", scheduled));
+        }
+    }
+    Ok(())
+}
+
 impl AttemptReservationEnvelope {
     #[cfg(test)]
     pub(crate) fn resolve(
@@ -234,12 +250,37 @@ impl AttemptReservationEnvelope {
         immutable_grant_bytes: u64,
     ) -> Result<()> {
         if self.ordered_schedule.is_none() {
+            let nested_matches = self
+                .scopes
+                .iter()
+                .filter(|scope| scope.nested_consumer_occurrence_ids().is_some() && scope.matches(consumer_plan))
+                .collect::<Vec<_>>();
+            if let [nested] = nested_matches.as_slice() {
+                validate_nested_runtime_occurrences(
+                    nested
+                        .nested_consumer_occurrence_ids()
+                        .expect("nested match retains its occurrence identities"),
+                    occurrence_ids,
+                )?;
+                let required_peak = self.required_grant_bound_bytes()?;
+                if immutable_grant_bytes < required_peak {
+                    return Err(graph_schedule_error("immutable_grant_below_schedule_peak", None, Some("runtime"))
+                        .with_fact("immutable_grant_bytes", immutable_grant_bytes)
+                        .with_fact("complete_phase_peak_bytes", required_peak));
+                }
+                return Ok(());
+            }
             let deferred_passthroughs = self
                 .scopes
                 .iter()
                 .filter(|scope| scope.is_deferred_graph_result_passthrough_scope() && scope.matches(consumer_plan))
                 .count();
-            if deferred_passthroughs == 1 {
+            let attested_passthroughs = self
+                .scopes
+                .iter()
+                .filter(|scope| scope.is_attested_graph_result_passthrough_scope() && scope.matches(consumer_plan))
+                .count();
+            if deferred_passthroughs == 1 || attested_passthroughs == 1 {
                 let expected_occurrence = consumer_plan
                     .node(consumer_plan.root_id())
                     .and_then(|node| match &node.kind {
@@ -285,8 +326,20 @@ impl AttemptReservationEnvelope {
                 .iter()
                 .filter(|scope| scope.is_attested_graph_result_passthrough_scope() && scope.matches(consumer_plan))
                 .count();
+            let nested_matches = self
+                .scopes
+                .iter()
+                .filter(|scope| scope.nested_consumer_occurrence_ids().is_some() && scope.matches(consumer_plan))
+                .collect::<Vec<_>>();
             if is_manifest_consumer {
                 schedule.validate_runtime(manifest, consumer_plan, occurrence_ids)?;
+            } else if let [nested] = nested_matches.as_slice() {
+                validate_nested_runtime_occurrences(
+                    nested
+                        .nested_consumer_occurrence_ids()
+                        .expect("nested match retains its occurrence identities"),
+                    occurrence_ids,
+                )?;
             } else if passthrough_matches != 1 {
                 return Err(graph_schedule_error("runtime_consumer_scope_mismatch", None, Some("runtime")));
             }

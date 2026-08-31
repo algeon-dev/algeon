@@ -13,7 +13,25 @@ fn similarity_spec_for_pair_columns(
     first_column: &str,
     second_column: &str,
 ) -> GraphAlgorithmSpec {
-    GraphAlgorithmSpec::with_stable_schema(
+    similarity_spec_for_pair_columns_and_vertex_type(
+        algorithm,
+        &DataType::Int32,
+        pair_input,
+        with_weight,
+        first_column,
+        second_column,
+    )
+}
+
+fn similarity_spec_for_pair_columns_and_vertex_type(
+    algorithm: GraphAlgorithm,
+    vertex_type: &DataType,
+    pair_input: nexus_query_engine::plan::NodeId,
+    with_weight: bool,
+    first_column: &str,
+    second_column: &str,
+) -> GraphAlgorithmSpec {
+    graph_spec_for_vertex_type(
         algorithm,
         GraphEdgeColumnBindings::new("src", "dst", with_weight.then_some("weight")),
         GraphConstructionOptions { directed: false, renumber: true, policy: GraphConstructionPolicy::PythonCugraph },
@@ -22,6 +40,7 @@ fn similarity_spec_for_pair_columns(
             first_column,
             second_column,
         ))),
+        vertex_type,
     )
 }
 
@@ -45,6 +64,7 @@ fn similarity_plan(
     pair_row_count_upper_bound: usize,
     with_weight: bool,
 ) -> nexus_query_engine::plan::QueryPlan {
+    let vertex_type = edge_schema.field_with_name("src").expect("similarity edge schema has src").data_type().clone();
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(SourceNode::GpuResident(
         GpuResidentSource::new("edges", edge_schema).with_row_count_upper_bound(
@@ -56,8 +76,18 @@ fn similarity_plan(
             u64::try_from(pair_row_count_upper_bound).expect("test pair cardinality must fit u64"),
         ),
     ));
-    let graph = builder.add_graph_algorithm(edges, similarity_spec(algorithm, pairs, with_weight));
-    builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(algorithm))
+    let graph = builder.add_graph_algorithm(
+        edges,
+        similarity_spec_for_pair_columns_and_vertex_type(
+            algorithm,
+            &vertex_type,
+            pairs,
+            with_weight,
+            "first",
+            "second",
+        ),
+    );
+    builder.finish_with_host_sink_schema(graph, stable_graph_result_schema_for_vertex_type(algorithm, &vertex_type))
 }
 
 fn execute_similarity_plan(
@@ -88,12 +118,19 @@ fn symmetric_similarity_edges_i32(with_weight: bool) -> (Arc<Schema>, RecordBatc
     (schema, batch)
 }
 
-fn assert_similarity_stable_output(batch: &RecordBatch, expected_pairs: &[(i64, i64)]) {
-    assert_eq!(batch.schema().as_ref(), stable_graph_result_schema(GraphAlgorithm::Jaccard).as_ref());
+fn assert_similarity_stable_output(
+    batch: &RecordBatch,
+    expected_vertex_type: &DataType,
+    expected_pairs: &[(i64, i64)],
+) {
+    assert_eq!(
+        batch.schema().as_ref(),
+        stable_graph_result_schema_for_vertex_type(GraphAlgorithm::Jaccard, expected_vertex_type).as_ref(),
+    );
     assert_eq!(batch.num_columns(), 3);
     assert_eq!(batch.num_rows(), expected_pairs.len());
     let mut actual_pairs = (0..batch.num_rows())
-        .map(|row| (int64_array(batch, 0).value(row), int64_array(batch, 1).value(row)))
+        .map(|row| (graph_vertex_values(batch, 0).value(row), graph_vertex_values(batch, 1).value(row)))
         .collect::<Vec<_>>();
     let mut expected_pairs = expected_pairs.to_vec();
     actual_pairs.sort_unstable();
@@ -105,7 +142,7 @@ fn assert_similarity_stable_output(batch: &RecordBatch, expected_pairs: &[(i64, 
 fn similarity_score(batch: &RecordBatch, first: i64, second: i64) -> f64 {
     (0..batch.num_rows())
         .find_map(|row| {
-            (int64_array(batch, 0).value(row) == first && int64_array(batch, 1).value(row) == second)
+            (graph_vertex_values(batch, 0).value(row) == first && graph_vertex_values(batch, 1).value(row) == second)
                 .then(|| float64_array(batch, 2).value(row))
         })
         .unwrap_or_else(|| panic!("missing similarity output pair ({first}, {second})"))
@@ -128,7 +165,7 @@ fn assert_bounded_similarity_pair_input_is_admitted() {
             .with_row_count_upper_bound(u64::try_from(pair_rows).expect("test pair cardinality must fit u64")),
     ));
     let graph = builder.add_graph_algorithm(edges, similarity_spec(GraphAlgorithm::Jaccard, pairs, false));
-    let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Jaccard));
+    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Jaccard));
 
     let context_with_budget = |device_budget_bytes| backend_context_with_grant(device_budget_bytes);
     let gpu_inputs_for = |context: &AdmittedPlanContext, runtime: &Arc<cudf::Runtime>| {
@@ -235,7 +272,7 @@ fn pairwise_similarity_executes_all_metrics_with_stable_schema_and_multiset_pair
             let QueryOutput::HostArrow(batch) = result.output() else {
                 panic!("similarity plan must materialize a host Arrow result")
             };
-            assert_similarity_stable_output(batch, &expected_pairs);
+            assert_similarity_stable_output(batch, &DataType::Int32, &expected_pairs);
             assert!((similarity_score(batch, 0, 1) - similarity_score(batch, 1, 0)).abs() <= 1.0e-12);
             assert!(similarity_score(batch, 0, 0) >= 0.0);
             assert_eq!(result.metrics().graph_algorithm_runtime_rows.len(), 1);
@@ -279,7 +316,7 @@ fn pairwise_similarity_weighted_jaccard_uses_the_graph_weight_binding() {
         )
         .unwrap();
         let QueryOutput::HostArrow(batch) = result.output() else { panic!("host result expected") };
-        assert_similarity_stable_output(batch, &[(0, 1)]);
+        assert_similarity_stable_output(batch, &DataType::Int32, &[(0, 1)]);
         assert!(
             (similarity_score(batch, 0, 1) - 0.4).abs() <= 1.0e-6,
             "weighted Jaccard must not fall back to unit weights"
@@ -310,7 +347,7 @@ fn pairwise_similarity_allows_one_pair_column_to_supply_both_self_pair_endpoints
         edges,
         similarity_spec_for_pair_columns(GraphAlgorithm::Jaccard, pairs, false, "vertex", "vertex"),
     );
-    let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Jaccard));
+    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Jaccard));
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
 
@@ -326,7 +363,7 @@ fn pairwise_similarity_allows_one_pair_column_to_supply_both_self_pair_endpoints
         )
         .unwrap_or_else(|error| panic!("same-column self-pair relation should execute: {error:#?}"));
         let QueryOutput::HostArrow(batch) = result.output() else { panic!("host result expected") };
-        assert_similarity_stable_output(batch, &[(0, 0), (1, 1), (0, 0)]);
+        assert_similarity_stable_output(batch, &DataType::Int32, &[(0, 0), (1, 1), (0, 0)]);
     }
     drop(runtime);
     admitted.finish();
@@ -370,7 +407,7 @@ fn pairwise_similarity_accepts_int64_pairs_and_short_circuits_empty_pairs() {
         )
         .unwrap();
         let QueryOutput::HostArrow(batch) = nonempty.output() else { panic!("host result expected") };
-        assert_similarity_stable_output(batch, &[(0, 1)]);
+        assert_similarity_stable_output(batch, &DataType::Int64, &[(0, 1)]);
     }
 
     let empty_pairs = RecordBatch::try_new(
@@ -390,7 +427,10 @@ fn pairwise_similarity_accepts_int64_pairs_and_short_circuits_empty_pairs() {
         )
         .unwrap();
         let QueryOutput::HostArrow(batch) = empty.output() else { panic!("host result expected") };
-        assert_eq!(batch.schema().as_ref(), stable_graph_result_schema(GraphAlgorithm::Jaccard).as_ref());
+        assert_eq!(
+            batch.schema().as_ref(),
+            stable_graph_result_schema_for_vertex_type(GraphAlgorithm::Jaccard, &DataType::Int64).as_ref(),
+        );
         assert_eq!(batch.num_rows(), 0);
         assert!(empty.metrics().graph_algorithm_runtime_rows[0].algorithm_metadata.contains("vertex_pairs_empty"));
     }

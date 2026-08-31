@@ -282,7 +282,7 @@ async fn cugraph_similarity_sql_resolves_the_pair_relation_as_an_explicit_second
             "SELECT * FROM {function}('similarity_edges', 'src', 'dst', NULL, \
              '{{\"vertex_pairs_table\":\"candidate_pairs\",\"first_vertex_col\":\"first\",\"second_vertex_col\":\"second\"}}')"
         );
-        assert_sql_schema(&ctx, &sql, algorithm).await;
+        assert_sql_schema_with_vertex_type(&ctx, &sql, algorithm, &DataType::Int32, &["first", "second"]).await;
         let plan = ctx.sql(&sql).await.unwrap().create_physical_plan().await.unwrap();
         let cugraph =
             find_cugraph_algo_exec(plan.as_ref()).expect("similarity must plan as an explicit cuGraph island");

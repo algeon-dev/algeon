@@ -243,8 +243,14 @@ pub(super) fn cugraph_schema_query_plan(
     };
     let bfs_path_output_rows =
         bfs_path_output_row_bound(&execution_spec, edge_vertex_upper_bound, edge_row_upper_bound)?;
-    let graph_spec =
-        native_graph_spec(&execution_spec, edge_normalize_inserted, &graph_predicates, bfs_path_output_rows);
+    let native_vertex_type = graph_edge_schema.field_with_name(&execution_spec.src_col)?.data_type();
+    let graph_spec = native_graph_spec(
+        &execution_spec,
+        edge_normalize_inserted,
+        &graph_predicates,
+        bfs_path_output_rows,
+        native_vertex_type,
+    );
     let mut root_schema = Arc::clone(&graph_spec.output_schema);
     let mut root = builder.try_add_graph_algorithm(graph_input, graph_spec).map_err(|error| {
         DataFusionError::from(Error::from_native(
@@ -400,6 +406,7 @@ pub(super) fn native_graph_spec(
     edge_normalize_inserted: bool,
     predicate_nodes: &[nexus_query_engine::plan::NodeId],
     bfs_path_output_rows: Option<u64>,
+    vertex_type: &DataType,
 ) -> GraphAlgorithmSpec {
     let mut edge_columns =
         GraphEdgeColumnBindings::new(spec.src_col.clone(), spec.dst_col.clone(), spec.weight_col.clone());
@@ -408,7 +415,7 @@ pub(super) fn native_graph_spec(
     }
     let algorithm = native_algorithm(spec.algorithm);
     let params = native_algorithm_params(&spec.params, predicate_nodes, bfs_path_output_rows);
-    let output_schema = algorithm.definition().result_schema_for_params(&params);
+    let output_schema = nexus_query_engine::plan::graph_result_schema_for_vertex_type(algorithm, &params, vertex_type);
     GraphAlgorithmSpec::new(
         algorithm,
         edge_columns,
@@ -434,7 +441,8 @@ pub(super) fn native_graph_spec_for_placement_hint(
     spec: &CugraphAlgorithmSpec,
     edge_normalize_inserted: bool,
     predicate_sources: &[Arc<dyn ExecutionPlan>],
-) -> GraphAlgorithmSpec {
+    edge_schema: &SchemaRef,
+) -> Option<GraphAlgorithmSpec> {
     let mut builder = QueryPlanBuilder::new();
     let predicate_nodes = predicate_sources
         .iter()
@@ -446,7 +454,9 @@ pub(super) fn native_graph_spec_for_placement_hint(
             )))
         })
         .collect::<Vec<_>>();
-    native_graph_spec(spec, edge_normalize_inserted, &predicate_nodes, None)
+    let vertex_type = edge_schema.field_with_name(&spec.src_col).ok()?.data_type();
+    matches!(vertex_type, DataType::Int32 | DataType::Int64)
+        .then(|| native_graph_spec(spec, edge_normalize_inserted, &predicate_nodes, None, vertex_type))
 }
 
 fn bfs_path_output_row_bound(
@@ -483,16 +493,19 @@ pub(super) fn bfs_normalized_output_projection(
     }
 
     let unreachable_sentinel = bfs_unreachable_distance_sentinel(spec, edge_schema)?;
+    let predecessor_type = spec.output_schema.field_with_name("predecessor")?.data_type().clone();
+    let predecessor_absent = match &predecessor_type {
+        DataType::Int32 => LiteralValue::Int32(-1),
+        DataType::Int64 => LiteralValue::Int64(-1),
+        ref other => return Err(plan_error(format!("cuGraph BFS predecessor has unsupported type {other:?}"))),
+    };
     let distance_is_unreachable = NativeExpr::binary(
         NativeExpr::column("distance"),
         BinaryOp::Eq,
         NativeExpr::literal(LiteralValue::Int64(unreachable_sentinel)),
     );
-    let predecessor_is_absent = NativeExpr::binary(
-        NativeExpr::column("predecessor"),
-        BinaryOp::Eq,
-        NativeExpr::literal(LiteralValue::Int64(-1)),
-    );
+    let predecessor_is_absent =
+        NativeExpr::binary(NativeExpr::column("predecessor"), BinaryOp::Eq, NativeExpr::literal(predecessor_absent));
 
     let fields = spec.output_schema.fields();
     let mut outputs = vec![
@@ -509,7 +522,7 @@ pub(super) fn bfs_normalized_output_projection(
         ),
         ProjectionOutput::new(
             NativeExpr::case(
-                vec![CaseWhen::new(predecessor_is_absent, NativeExpr::literal(LiteralValue::Null(DataType::Int64)))],
+                vec![CaseWhen::new(predecessor_is_absent, NativeExpr::literal(LiteralValue::Null(predecessor_type)))],
                 NativeExpr::column("predecessor"),
             ),
             fields[2].as_ref().clone(),

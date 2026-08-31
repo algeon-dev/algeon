@@ -723,6 +723,34 @@ fn execute_row_number_window(
     let overrides_lease = execution_overrides(context)?;
     let overrides = overrides_lease.overrides();
     let timer = Instant::now();
+    if node.spec.partition_by.is_empty() {
+        let output = match output_type {
+            ArrowDataType::UInt64 => frame.with_execution(&overrides).with_sequence_column(alias, 1_u64, 1_u64),
+            ArrowDataType::Int64 => {
+                let max_rows = usize::try_from(i64::MAX).unwrap_or(usize::MAX);
+                if frame.num_rows() > max_rows {
+                    return Err(QueryError::new(
+                        QueryErrorCode::SizeOverflow,
+                        "nexus_query_engine.window.row_number.output",
+                        "row_number Int64 output cannot represent the input row count",
+                    )
+                    .with_fact("input_rows", frame.num_rows())
+                    .with_fact("max_rows", max_rows));
+                }
+                frame.with_execution(&overrides).with_sequence_column(alias, 1_i64, 1_i64)
+            },
+            _ => unreachable!("row_number output type validated before execution"),
+        }
+        .map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.window.row_number.output",
+                "failed to append global row_number output column",
+                error,
+            )
+        })?;
+        metrics.operator_time += timer.elapsed();
+        return Ok(output);
+    }
     let mut output = frame;
     let mut temp_columns = Vec::new();
     let (with_partition_key, partition_keys) =

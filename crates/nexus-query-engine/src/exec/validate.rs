@@ -443,20 +443,24 @@ fn validate_graph_algorithm_node(
         .with_fact("directed", graph.spec.graph_options.directed)
         .with_fact("required_directed", required));
     }
-    if output_schema.as_ref()
-        != crate::plan::graph_result_schema_for_params(graph.spec.algorithm, &graph.spec.params).as_ref()
-    {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.graph_algorithm.validate",
-            "graph algorithm output schema must match the algorithm result schema",
-        )
-        .with_fact("algorithm", graph.spec.algorithm.as_str())
-        .with_fact("output_fields", output_schema.fields().len()));
-    }
     validate_graph_vertex_column("source", &graph.spec.edge_columns.source, input_schema, input_available)?;
     validate_graph_vertex_column("destination", &graph.spec.edge_columns.destination, input_schema, input_available)?;
     let source_field = graph_edge_field("source", &graph.spec.edge_columns.source, input_schema, input_available)?;
+    let expected_output = crate::plan::graph_result_schema_for_vertex_type(
+        graph.spec.algorithm,
+        &graph.spec.params,
+        source_field.data_type(),
+    );
+    if output_schema.as_ref() != expected_output.as_ref() {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.graph_algorithm.validate",
+            "graph algorithm output schema must match the input vertex-id domain",
+        )
+        .with_fact("algorithm", graph.spec.algorithm.as_str())
+        .with_fact("vertex_type", source_field.data_type())
+        .with_fact("output_fields", output_schema.fields().len()));
+    }
     validate_graph_algorithm_vertex_id_support(
         graph.spec.algorithm,
         "source",
@@ -1332,15 +1336,18 @@ mod tests {
         params: GraphAlgorithmParams,
         schema: Arc<Schema>,
     ) -> QueryPlan {
+        let vertex_type = schema.field_with_name("src").unwrap().data_type().clone();
         let mut builder = QueryPlanBuilder::new();
         let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::empty(schema)));
-        let spec = GraphAlgorithmSpec::with_stable_schema(
+        let output_schema = crate::plan::graph_result_schema_for_vertex_type(algorithm, &params, &vertex_type);
+        let spec = GraphAlgorithmSpec::new(
             algorithm,
             GraphEdgeColumnBindings::new("src", "dst", Some("weight")),
             algorithm.definition().default_graph_options(&GraphConstructionOptions::default()),
-            params,
+            params.clone(),
+            Arc::clone(&output_schema),
         );
         let graph = builder.add_graph_algorithm(source, spec);
-        builder.finish_with_host_sink(graph)
+        builder.finish_with_host_sink_schema(graph, output_schema)
     }
 }

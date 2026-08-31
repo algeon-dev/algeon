@@ -280,6 +280,9 @@ fn lower_gpu_resident_source_input(
         })
         .transpose()?;
     let mut resident_source = NativeGpuResidentSource::new(source.input_name.as_str(), Arc::clone(&source_schema));
+    if let Some(row_count_upper_bound) = source.row_count_upper_bound {
+        resident_source = resident_source.with_row_count_upper_bound(row_count_upper_bound);
+    }
     if let Some(unique_key_columns) = unique_key_columns {
         resident_source = resident_source.with_unique_key_columns(unique_key_columns);
     }

@@ -14,13 +14,13 @@ extern "C" {
 
 /// Column sort order.
 typedef enum {
-  CUDF_ORDER_ASCENDING  = 0,
+  CUDF_ORDER_ASCENDING = 0,
   CUDF_ORDER_DESCENDING = 1,
 } cudf_order_t;
 
 /// Null ordering within sorted output.
 typedef enum {
-  CUDF_NULL_ORDER_AFTER  = 0,
+  CUDF_NULL_ORDER_AFTER = 0,
   CUDF_NULL_ORDER_BEFORE = 1,
 } cudf_null_order_t;
 
@@ -39,20 +39,34 @@ typedef struct cudf_sorted_order_radix_preflight_result_t {
   uint64_t active_phase_peak_bytes;
 } cudf_sorted_order_radix_preflight_result_t;
 
+typedef struct cudf_sorted_order_lexicographic_preflight_result_t {
+  uint64_t comparator_state_bytes;
+  uint64_t temporary_workspace_bytes;
+  uint64_t retained_order_bytes;
+  uint64_t active_phase_peak_bytes;
+} cudf_sorted_order_lexicographic_preflight_result_t;
+
+/// Metadata-only owner preflight for unstable lexicographic sorted order.
+///
+/// Every metadata array has `key_count` entries. The function supports two or
+/// more non-nested relational keys and performs no device allocation.
+
 /// Metadata-only preflight for the unstable one-key radix sorted-order path.
 ///
 /// `key_type` uses the `cudf_type_id_t` discriminants. The selected candidate
 /// device is activated only for the CUB temporary-storage query and restored
 /// before return. No stream, memory resource, column, or device allocation is
 /// required.
-cudf_status_t cudf_sorted_order_radix_preflight(int64_t num_rows,
-                                                cudf_type_id_t key_type,
-                                                int64_t null_count,
-                                                int32_t key_count,
-                                                int32_t stable,
-                                                cudf_order_t key_order,
-                                                int32_t device,
-                                                cudf_sorted_order_radix_preflight_result_t* out);
+cudf_status_t cudf_sorted_order_radix_preflight(
+    int64_t num_rows, cudf_type_id_t key_type, int64_t null_count,
+    int32_t key_count, int32_t stable, cudf_order_t key_order, int32_t device,
+    cudf_sorted_order_radix_preflight_result_t *out);
+
+cudf_status_t cudf_sorted_order_lexicographic_preflight(
+    int64_t num_rows, cudf_type_id_t const *key_types,
+    int64_t const *null_counts, cudf_order_t const *key_orders,
+    cudf_null_order_t const *null_precedence, int32_t key_count, int32_t stable,
+    int32_t device, cudf_sorted_order_lexicographic_preflight_result_t *out);
 
 /// Sort with explicit execution context.
 ///
@@ -62,43 +76,39 @@ cudf_status_t cudf_sorted_order_radix_preflight(int64_t num_rows,
 /// `options` must be non-NULL and carry an explicit device, stream, and memory
 /// resource. `options->mr` must outlive the returned table.
 cudf_status_t cudf_sort_ex(cudf_table_view_handle input,
-                           cudf_order_t const* column_order,
-                           cudf_null_order_t const* null_precedence,
-                           int32_t num_keys,
-                           cudf_table_handle* out,
-                           cudf_exec_options_t const* options);
+                           cudf_order_t const *column_order,
+                           cudf_null_order_t const *null_precedence,
+                           int32_t num_keys, cudf_table_handle *out,
+                           cudf_exec_options_t const *options);
 
 /// Stable sort with explicit execution context.
 /// `options` must be non-NULL and carry an explicit device, stream, and memory
 /// resource. `options->mr` must outlive the returned table.
 cudf_status_t cudf_stable_sort_ex(cudf_table_view_handle input,
-                                  cudf_order_t const* column_order,
-                                  cudf_null_order_t const* null_precedence,
-                                  int32_t num_keys,
-                                  cudf_table_handle* out,
-                                  cudf_exec_options_t const* options);
+                                  cudf_order_t const *column_order,
+                                  cudf_null_order_t const *null_precedence,
+                                  int32_t num_keys, cudf_table_handle *out,
+                                  cudf_exec_options_t const *options);
 
 /// Sort by key with explicit execution context.
 /// `options` must be non-NULL and carry an explicit device, stream, and memory
 /// resource. `options->mr` must outlive the returned table.
 cudf_status_t cudf_sort_by_key_ex(cudf_table_view_handle values,
                                   cudf_table_view_handle keys,
-                                  cudf_order_t const* column_order,
-                                  cudf_null_order_t const* null_precedence,
+                                  cudf_order_t const *column_order,
+                                  cudf_null_order_t const *null_precedence,
                                   int32_t num_key_columns,
-                                  cudf_table_handle* out,
-                                  cudf_exec_options_t const* options);
+                                  cudf_table_handle *out,
+                                  cudf_exec_options_t const *options);
 
 /// Stable sort by key with explicit execution context.
 /// `options` must be non-NULL and carry an explicit device, stream, and memory
 /// resource. `options->mr` must outlive the returned table.
-cudf_status_t cudf_stable_sort_by_key_ex(cudf_table_view_handle values,
-                                         cudf_table_view_handle keys,
-                                         cudf_order_t const* column_order,
-                                         cudf_null_order_t const* null_precedence,
-                                         int32_t num_key_columns,
-                                         cudf_table_handle* out,
-                                         cudf_exec_options_t const* options);
+cudf_status_t cudf_stable_sort_by_key_ex(
+    cudf_table_view_handle values, cudf_table_view_handle keys,
+    cudf_order_t const *column_order, cudf_null_order_t const *null_precedence,
+    int32_t num_key_columns, cudf_table_handle *out,
+    cudf_exec_options_t const *options);
 
 /// Sorted order with explicit execution context.
 ///
@@ -106,25 +116,23 @@ cudf_status_t cudf_stable_sort_by_key_ex(cudf_table_view_handle values,
 /// `options` must be non-NULL and carry an explicit device, stream, and memory
 /// resource. `options->mr` must outlive the returned column.
 cudf_status_t cudf_sorted_order_ex(cudf_table_view_handle input,
-                                   cudf_order_t const* column_order,
-                                   cudf_null_order_t const* null_precedence,
-                                   int32_t num_keys,
-                                   cudf_column_handle* out,
-                                   cudf_exec_options_t const* options);
+                                   cudf_order_t const *column_order,
+                                   cudf_null_order_t const *null_precedence,
+                                   int32_t num_keys, cudf_column_handle *out,
+                                   cudf_exec_options_t const *options);
 
 /// Check whether the table is already sorted with explicit execution context.
 ///
 /// `options` must be non-NULL and carry an explicit device, stream, and memory
 /// resource.
 cudf_status_t cudf_is_sorted_ex(cudf_table_view_handle input,
-                                cudf_order_t const* column_order,
-                                cudf_null_order_t const* null_precedence,
-                                int32_t num_keys,
-                                int32_t* out,
-                                cudf_exec_options_t const* options);
+                                cudf_order_t const *column_order,
+                                cudf_null_order_t const *null_precedence,
+                                int32_t num_keys, int32_t *out,
+                                cudf_exec_options_t const *options);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif  // CUDF_RUST_SORTING_H
+#endif // CUDF_RUST_SORTING_H

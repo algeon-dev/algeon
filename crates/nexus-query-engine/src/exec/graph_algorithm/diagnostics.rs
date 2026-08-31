@@ -238,6 +238,13 @@ pub(super) fn map_cugraph_error(
             .with_fact("cugraph_kind", error.kind())
             .with_fact("cugraph_status", error.status())
             .with_fact("cugraph_operation", error.operation());
+        let query_error = ["algorithm", "iterations", "max_iterations", "epsilon"].into_iter().fold(
+            query_error,
+            |query_error, key| match error.context_value(key) {
+                Some(value) => query_error.with_fact(key, value),
+                None => query_error,
+            },
+        );
         let query_error = if error.kind() == cugraph::ErrorKind::OutOfMemory {
             let source = match error.allocation_source() {
                 cugraph::AllocationSource::Unknown => crate::error::CugraphAllocationSource::Unknown,
@@ -260,6 +267,7 @@ fn code_for_cugraph_error(error: &cugraph::Error) -> QueryErrorCode {
         cugraph::ErrorKind::InvalidInput | cugraph::ErrorKind::InvalidHandle => QueryErrorCode::CudfInvalidInput,
         cugraph::ErrorKind::UnsupportedType | cugraph::ErrorKind::NotImplemented => QueryErrorCode::CudfUnsupported,
         cugraph::ErrorKind::InvalidState => QueryErrorCode::CudfInvariantViolation,
+        cugraph::ErrorKind::NonConvergence => QueryErrorCode::AlgorithmDidNotConverge,
         cugraph::ErrorKind::IoError | cugraph::ErrorKind::Unexpected => match error.status() {
             cugraph::ErrorStatus::Temporary => QueryErrorCode::CudfTemporaryFailure,
             cugraph::ErrorStatus::Persistent => QueryErrorCode::CudfPersistentFailure,
@@ -290,5 +298,26 @@ mod tests {
 
         assert_eq!(dependency_error.fact_value("cugraph_allocation_source"), None);
         assert_eq!(dependency_error.cugraph_allocation_source(), None);
+    }
+
+    #[test]
+    fn cugraph_nonconvergence_mapping_preserves_actionable_facts() {
+        let source = cugraph::Error::new(cugraph::ErrorKind::NonConvergence, "eigenvector_centrality")
+            .with_context("algorithm", "eigenvector_centrality")
+            .with_context("iterations", "200")
+            .with_context("max_iterations", "200")
+            .with_context("epsilon", "0.00000001");
+
+        let error = map_cugraph_error(
+            "nexus_query_engine.graph_algorithm.eigenvector_centrality",
+            "cuGraph eigenvector centrality failed",
+        )(source);
+
+        assert_eq!(error.code(), QueryErrorCode::AlgorithmDidNotConverge);
+        assert_eq!(error.fact_value("algorithm"), Some("eigenvector_centrality"));
+        assert_eq!(error.fact_value("iterations"), Some("200"));
+        assert_eq!(error.fact_value("max_iterations"), Some("200"));
+        assert_eq!(error.fact_value("epsilon"), Some("0.00000001"));
+        assert_eq!(error.fact_value("cugraph_status"), Some("permanent"));
     }
 }

@@ -62,6 +62,8 @@ const VENDORED_SORTING_HPP: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../cudf/cpp/include/cudf/sorting.hpp"));
 const VENDORED_SORTED_ORDER_RADIX_CU: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../cudf/cpp/src/sort/sorted_order_radix.cu"));
+const VENDORED_SORT_IMPL_CUH: &str =
+    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../cudf/cpp/src/sort/sort_impl.cuh"));
 const VENDORED_DISTINCT_COUNT_HPP: &str =
     include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../cudf/cpp/include/cudf/reduction/distinct_count.hpp"));
 const VENDORED_DISTINCT_COUNT_CU: &str =

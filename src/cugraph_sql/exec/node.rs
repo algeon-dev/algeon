@@ -340,9 +340,13 @@ impl CugraphAlgoExec {
         let source_vertex = params.source.as_i64()?;
         let descriptor = self.graph_residency.as_ref()?;
         let edge_normalize_inserted = self.edge_normalize_inserted();
-        let native_spec =
-            native_graph_spec_for_placement_hint(&self.spec, edge_normalize_inserted, &self.predicate_sources)
-                .with_edge_normalize_inserted(edge_normalize_inserted);
+        let native_spec = native_graph_spec_for_placement_hint(
+            &self.spec,
+            edge_normalize_inserted,
+            &self.predicate_sources,
+            &self.edge_source.schema(),
+        )?
+        .with_edge_normalize_inserted(edge_normalize_inserted);
         let resident_graph_key = planned_resident_graph_key(descriptor, &native_spec)?;
         Some(GraphBfsSingleflightKey {
             device_ordinal,
@@ -803,16 +807,6 @@ impl CugraphAlgoExec {
         let mut graph_metrics =
             GraphExecutionMetrics::new(&metrics, self.native_execution_config.runtime_observation_config());
         let result = async {
-            if is_bfs_path_output(&self.spec) {
-                return Err(Error::new(
-                    ErrorCode::RequiredGpuOperationUnsupported,
-                    "datafusion_nexus.cugraph_sql.execute_gpu",
-                    "BFS path results are host-owned and cannot be GPU-resident producers",
-                )
-                .with_fact("reason", "bfs_path_gpu_result_unsupported")
-                .with_fact("output_boundary", "gpu_resident")
-                .into());
-            }
             let UploadedCugraphInputs {
                 edge_schema,
                 edge_frame,
@@ -846,6 +840,22 @@ impl CugraphAlgoExec {
 impl GpuResidentProducer for CugraphAlgoExec {
     fn gpu_result_input_name(&self) -> &str {
         &self.gpu_result_input_name
+    }
+
+    fn hard_output_row_upper_bound(&self) -> Option<u64> {
+        cugraph_schema_query_plan(
+            &self.spec,
+            self.edge_source.schema(),
+            self.predicate_sources.iter().map(|source| source.schema()).collect(),
+            self.input_row_bounds.predicate_row_upper_bounds(),
+            &self.result_options,
+            self.edge_normalize_inserted(),
+            self.input_row_bounds.edge_row_upper_bound(),
+            edge_source_graph_vertex_estimate(self.edge_source.as_ref()).map(|estimate| estimate.count),
+        )
+        .ok()
+        .as_ref()
+        .and_then(nexus_query_engine::graph_memory::query_plan_hard_row_upper_bound)
     }
 
     fn unique_output_key_columns(&self) -> Option<&'static [&'static str]> {
@@ -969,9 +979,7 @@ pub(super) fn pushed_logical_consumer_options(
 pub(super) fn cugraph_gpu_resident_producer(plan: &dyn ExecutionPlan) -> Option<&dyn GpuResidentProducer> {
     let producer = plan.downcast_ref::<CugraphAlgoExec>()?;
     let logical_mapping = graph_uses_logical_mapping(&producer.spec, &producer.edge_source.schema()).ok()?;
-    if crate::cugraph_sql::validate_logical_edge_id_capability(&producer.spec, logical_mapping).is_err()
-        || is_bfs_path_output(&producer.spec)
-    {
+    if crate::cugraph_sql::validate_logical_edge_id_capability(&producer.spec, logical_mapping).is_err() {
         return None;
     }
     Some(producer as &dyn GpuResidentProducer)
@@ -1022,19 +1030,7 @@ impl GraphExecutionPlan for CugraphAlgoExec {
         if let Err(error) = crate::cugraph_sql::validate_logical_edge_id_capability(&self.spec, logical_mapping) {
             return Some(error);
         }
-        if !is_bfs_path_output(&self.spec) {
-            return None;
-        }
-        Some(
-            Error::new(
-                ErrorCode::RequiredGpuOperationUnsupported,
-                "datafusion_nexus.cugraph_sql.gpu_result_producer",
-                "BFS path results are host-owned and cannot be GPU-resident producers",
-            )
-            .with_fact("reason", "bfs_path_gpu_result_unsupported")
-            .with_fact("output_boundary", "gpu_resident")
-            .into(),
-        )
+        None
     }
 }
 

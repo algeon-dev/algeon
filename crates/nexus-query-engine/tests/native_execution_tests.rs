@@ -78,7 +78,7 @@ use nexus_query_engine::{
     plan::GraphEdgePredicateInput, plan::GraphPageRankParams, plan::GraphPageRankPersonalizationInput,
     plan::GraphPersonalizedPageRankParams, plan::GraphPredicateInput, plan::GraphResidencyPlanAnalysis,
     plan::GraphSimilarityParams, plan::GraphTriangleCountAllParams, plan::GraphVertexPairInput,
-    plan::graph_residency_descriptor_for_edge_plan, plan::stable_graph_result_schema,
+    plan::graph_residency_descriptor_for_edge_plan,
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 

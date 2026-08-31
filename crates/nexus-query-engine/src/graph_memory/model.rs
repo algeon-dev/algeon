@@ -187,7 +187,10 @@ impl GraphMemoryModel {
             .unwrap_or((endpoint_bound, GraphVertexEstimateSource::EdgeEndpointUpperBound));
         let vertex_estimate = project_model_bytes(vertex_estimate_model, "vertex_estimate", diagnostic_projection)?;
         let derived = derive_graph_terms(spec, input, vertex_estimate, pair_rows, pair_vertex_width_bytes)?;
-        let execution_components = derived.execution_workspace.add(derived.output, "execution_output_workspace")?;
+        let execution_components = derived
+            .execution_workspace
+            .add(derived.output, "execution_output_workspace")?
+            .add(derived.sssp_unit_weights.unwrap_or(ModelBytes(0)), "execution_sssp_unit_weights")?;
         if execution_components != derived.execution {
             return Err(QueryError::new(
                 QueryErrorCode::InvalidPlan,
@@ -242,6 +245,10 @@ impl GraphMemoryModel {
             data_dependent: class.is_data_dependent(),
             construction_bytes: project_model_bytes(derived.construction, "construction_bytes", diagnostic_projection)?,
             execution_bytes: project_model_bytes(derived.execution, "execution_bytes", diagnostic_projection)?,
+            sssp_unit_weight_bytes: derived
+                .sssp_unit_weights
+                .map(|bytes| project_model_bytes(bytes, "sssp_unit_weight_bytes", diagnostic_projection))
+                .transpose()?,
             retained_output_bytes,
             requested_bytes: project_model_bytes(derived.requested, "requested_bytes", diagnostic_projection)?,
             owner_components,
@@ -447,6 +454,7 @@ pub(super) struct GraphDerivedTerms {
     pub(super) construction_transient: ModelBytes,
     pub(super) output: ModelBytes,
     pub(super) execution_workspace: ModelBytes,
+    pub(super) sssp_unit_weights: Option<ModelBytes>,
     pub(super) execution: ModelBytes,
     pub(super) requested: ModelBytes,
     pub(super) output_rows: u64,
@@ -560,7 +568,15 @@ fn derive_graph_terms(
             "bfs_path_extraction_peak",
         )?;
     }
-    let execution = output.add(workspace, "execution_output_workspace")?;
+    let sssp_unit_weights = if spec.algorithm == GraphAlgorithm::Sssp {
+        let bytes = sssp_unit_weight_workspace_model(input)?;
+        (bytes != ModelBytes(0)).then_some(bytes)
+    } else {
+        None
+    };
+    let execution = output
+        .add(workspace, "execution_output_workspace")?
+        .add(sssp_unit_weights.unwrap_or(ModelBytes(0)), "execution_sssp_unit_weights")?;
     let requested = match spec.algorithm {
         GraphAlgorithm::ForceAtlas2 => {
             force_atlas2_phase_peak_model(input, vertex_estimate, &spec.params, construction, output)?
@@ -587,10 +603,63 @@ fn derive_graph_terms(
         construction_transient,
         output,
         execution_workspace: workspace,
+        sssp_unit_weights,
         execution,
         requested,
-        output_rows: output_row_count_upper_bound_for_algorithm(spec, input, vertex_estimate, pair_rows),
+        output_rows: output_row_count_upper_bound_for_algorithm(spec, input.input_edges, vertex_estimate, pair_rows),
     })
+}
+
+#[cfg(feature = "cugraph")]
+fn sssp_unit_weight_workspace_model(input: GraphMemoryModelInput) -> Result<ModelBytes> {
+    let (weight_type, has_edge_weights) = match input.weight_width_bytes {
+        None => (cugraph::types::DataType::Float32, false),
+        Some(4) => (cugraph::types::DataType::Float32, true),
+        Some(8) => (cugraph::types::DataType::Float64, true),
+        Some(width) => {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "nexus_query_engine.graph_memory.sssp_preflight",
+                "SSSP requires Float32 or Float64 graph weights",
+            )
+            .with_fact("weight_width_bytes", width));
+        },
+    };
+    let edge_count = usize::try_from(input.input_edges)
+        .map_err(|_| graph_memory_arithmetic_error("sssp_unit_weight_edge_count", "conversion"))?;
+    let preflight = cugraph::traversal::sssp_workspace_preflight(
+        &cugraph::traversal::SsspWorkspacePreflightInput::new(edge_count, weight_type, has_edge_weights).map_err(
+            |error| {
+                QueryError::new(
+                    QueryErrorCode::UnsupportedPlanShape,
+                    "nexus_query_engine.graph_memory.sssp_preflight",
+                    "native SSSP allocation preflight rejected the bounded graph shape",
+                )
+                .with_fact("reason", "sssp_owner_preflight_unavailable")
+                .with_source(error)
+            },
+        )?,
+    )
+    .map_err(|error| {
+        QueryError::new(
+            QueryErrorCode::UnsupportedPlanShape,
+            "nexus_query_engine.graph_memory.sssp_preflight",
+            "native SSSP allocation preflight failed",
+        )
+        .with_fact("reason", "sssp_owner_preflight_unavailable")
+        .with_source(error)
+    })?;
+    Ok(ModelBytes::from_u64(preflight.unit_weight_bytes()))
+}
+
+#[cfg(not(feature = "cugraph"))]
+fn sssp_unit_weight_workspace_model(_input: GraphMemoryModelInput) -> Result<ModelBytes> {
+    Err(QueryError::new(
+        QueryErrorCode::UnsupportedPlanShape,
+        "nexus_query_engine.graph_memory.sssp_preflight",
+        "native SSSP allocation preflight is unavailable without cuGraph",
+    )
+    .with_fact("reason", "sssp_owner_preflight_unavailable"))
 }
 
 fn semantic_edge_row_width_model(input: GraphMemoryModelInput) -> Result<ModelBytes> {
@@ -1199,7 +1268,7 @@ fn edge_betweenness_state_width_model(input: GraphMemoryModelInput) -> Result<u6
 /// downstream output bound without asking an adapter to guess bytes or rows.
 fn output_row_count_upper_bound_for_algorithm(
     spec: &GraphAlgorithmSpec,
-    input: GraphMemoryModelInput,
+    input_edges: u64,
     vertex_estimate: u64,
     pair_rows: Option<u64>,
 ) -> u64 {
@@ -1213,7 +1282,7 @@ fn output_row_count_upper_bound_for_algorithm(
             pair_rows.unwrap_or(0)
         },
         GraphAlgorithm::EdgeBetweennessCentrality | GraphAlgorithm::KCore | GraphAlgorithm::MinimumSpanningTree => {
-            input.input_edges
+            input_edges
         },
         GraphAlgorithm::Hits | GraphAlgorithm::DegreesAll | GraphAlgorithm::Bfs | GraphAlgorithm::Sssp => {
             vertex_estimate
@@ -1882,7 +1951,29 @@ fn hard_row_upper_bound_with_resident_rows(
             }?;
             Some((rows, GraphPairCardinalitySource::PlanHardUpperBound))
         },
-        PlanNode::EdgeNormalize(_) | PlanNode::GraphAlgorithm(_) | PlanNode::VectorAlgorithm(_) => None,
+        PlanNode::GraphAlgorithm(graph) => {
+            let edge_counts = graph_plan_edge_counts(plan, graph.input, None, resident_rows).ok().flatten()?;
+            let vertex_upper_bound =
+                edge_counts.graph_vertex_upper_bound.or_else(|| edge_counts.input_edges.checked_mul(2))?;
+            let pair_rows = if graph.spec.algorithm.is_similarity() {
+                let GraphAlgorithmParams::Similarity(params) = &graph.spec.params else {
+                    return None;
+                };
+                Some(input_bound(params.vertex_pairs.input)?.0)
+            } else {
+                None
+            };
+            Some((
+                output_row_count_upper_bound_for_algorithm(
+                    &graph.spec,
+                    edge_counts.input_edges,
+                    vertex_upper_bound,
+                    pair_rows,
+                ),
+                GraphPairCardinalitySource::PlanHardUpperBound,
+            ))
+        },
+        PlanNode::EdgeNormalize(_) | PlanNode::VectorAlgorithm(_) => None,
     }
 }
 

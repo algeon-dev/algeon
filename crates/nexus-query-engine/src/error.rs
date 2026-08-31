@@ -72,6 +72,8 @@ pub enum QueryErrorCode {
     CudfPersistentFailure,
     /// cuDF reported a permanent dependency failure.
     CudfDependencyFailure,
+    /// An iterative native algorithm reached its configured iteration bound.
+    AlgorithmDidNotConverge,
     /// Source object storage denied access to the requested object or metadata.
     SourceAccessDenied,
     /// Source object storage lacked valid authentication credentials.
@@ -116,6 +118,7 @@ impl QueryErrorCode {
         Self::CudfTemporaryFailure,
         Self::CudfPersistentFailure,
         Self::CudfDependencyFailure,
+        Self::AlgorithmDidNotConverge,
         Self::SourceAccessDenied,
         Self::SourceUnauthenticated,
         Self::SourceObjectNotFound,
@@ -145,6 +148,7 @@ impl QueryErrorCode {
             Self::CudfTemporaryFailure => "cudf_temporary_failure",
             Self::CudfPersistentFailure => "cudf_persistent_failure",
             Self::CudfDependencyFailure => "cudf_dependency_failure",
+            Self::AlgorithmDidNotConverge => "algorithm_did_not_converge",
             Self::SourceAccessDenied => "source_access_denied",
             Self::SourceUnauthenticated => "source_unauthenticated",
             Self::SourceObjectNotFound => "source_object_not_found",
@@ -279,6 +283,7 @@ pub const fn kind_for_code(code: QueryErrorCode) -> QueryErrorKind {
         QueryErrorCode::CudfTemporaryFailure
         | QueryErrorCode::CudfPersistentFailure
         | QueryErrorCode::CudfDependencyFailure
+        | QueryErrorCode::AlgorithmDidNotConverge
         | QueryErrorCode::SourceAccessDenied
         | QueryErrorCode::SourceUnauthenticated
         | QueryErrorCode::SourceObjectNotFound
@@ -316,6 +321,7 @@ pub const fn status_for_code(code: QueryErrorCode) -> QueryErrorStatus {
         | QueryErrorCode::SizeOverflow
         | QueryErrorCode::HostMaterializationLimitExceeded
         | QueryErrorCode::CudfDependencyFailure
+        | QueryErrorCode::AlgorithmDidNotConverge
         | QueryErrorCode::SourceAccessDenied
         | QueryErrorCode::SourceUnauthenticated
         | QueryErrorCode::SourceObjectNotFound
@@ -341,7 +347,8 @@ pub(crate) const fn triage_code_for_query_error(code: QueryErrorCode) -> crate::
         | QueryErrorCode::HostMaterializationLimitExceeded => crate::triage::TriageCode::ResourceExhausted,
         QueryErrorCode::CudfTemporaryFailure
         | QueryErrorCode::CudfPersistentFailure
-        | QueryErrorCode::CudfDependencyFailure => crate::triage::TriageCode::DependencyFailure,
+        | QueryErrorCode::CudfDependencyFailure
+        | QueryErrorCode::AlgorithmDidNotConverge => crate::triage::TriageCode::DependencyFailure,
         QueryErrorCode::CudfInvariantViolation => crate::triage::TriageCode::InvariantViolation,
         QueryErrorCode::ServiceOverloaded => crate::triage::TriageCode::ServiceOverloaded,
         QueryErrorCode::Internal => crate::triage::TriageCode::Internal,
@@ -374,6 +381,7 @@ pub(crate) const fn attempt_failure_code_for_query_error(
         QueryErrorCode::CudfTemporaryFailure => AttemptFailureCode::CudfTemporaryFailure,
         QueryErrorCode::CudfPersistentFailure => AttemptFailureCode::CudfPersistentFailure,
         QueryErrorCode::CudfDependencyFailure => AttemptFailureCode::CudfDependencyFailure,
+        QueryErrorCode::AlgorithmDidNotConverge => AttemptFailureCode::AlgorithmDidNotConverge,
         QueryErrorCode::SourceAccessDenied => AttemptFailureCode::SourceAccessDenied,
         QueryErrorCode::SourceUnauthenticated => AttemptFailureCode::SourceUnauthenticated,
         QueryErrorCode::SourceObjectNotFound => AttemptFailureCode::SourceObjectNotFound,

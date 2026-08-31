@@ -55,6 +55,8 @@ pub enum ErrorKind {
     NotImplemented,
     /// The combination of types is not supported (`CUGRAPH_UNSUPPORTED_TYPE_COMBINATION`).
     UnsupportedType,
+    /// An iterative algorithm reached its configured iteration bound.
+    NonConvergence,
 }
 
 impl ErrorKind {
@@ -96,6 +98,7 @@ impl fmt::Display for ErrorKind {
             ErrorKind::InvalidState => write!(f, "InvalidState"),
             ErrorKind::NotImplemented => write!(f, "NotImplemented"),
             ErrorKind::UnsupportedType => write!(f, "UnsupportedType"),
+            ErrorKind::NonConvergence => write!(f, "NonConvergence"),
         }
     }
 }
@@ -329,6 +332,11 @@ impl Error {
     /// The human-readable error message, if any.
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    /// Returns one structured context value by key.
+    pub fn context_value(&self, key: &str) -> Option<&str> {
+        self.context.iter().rev().find(|(candidate, _)| *candidate == key).map(|(_, value)| value.as_str())
     }
 }
 

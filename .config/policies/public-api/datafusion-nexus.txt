@@ -648,6 +648,7 @@ pub fn datafusion_nexus::cuvs_sql::cuvs_options_json_schema(nexus_query_engine::
 pub fn datafusion_nexus::cuvs_sql::cuvs_relation_planner() -> alloc::sync::Arc<dyn datafusion_expr::planner::RelationPlanner>
 pub mod datafusion_nexus::error
 #[non_exhaustive] pub enum datafusion_nexus::error::ErrorCode
+pub datafusion_nexus::error::ErrorCode::AlgorithmDidNotConverge
 pub datafusion_nexus::error::ErrorCode::Cancelled
 pub datafusion_nexus::error::ErrorCode::CudfDependencyFailure
 pub datafusion_nexus::error::ErrorCode::CudfInvalidInput

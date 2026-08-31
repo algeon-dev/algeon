@@ -237,6 +237,10 @@ async fn stage_cugraph_source(
     staged_bytes: &mut usize,
     reservation: &mut MemoryReservation,
 ) -> Result<StagedCugraphSource> {
+    if native_gpu_resident_producer(plan.as_ref()).is_some() {
+        let plan = prepare_gpu_resident_producer_for_execution(plan, Arc::clone(&task_context)).await?;
+        return Ok(StagedCugraphSource::Native { schema: plan.schema(), plan });
+    }
     let schema = plan.schema();
     if as_nexus_native_exec(plan.as_ref()).is_some() || as_nexus_native_composed_exec(plan.as_ref()).is_some() {
         return Ok(StagedCugraphSource::Native { schema, plan });
@@ -727,6 +731,11 @@ pub(super) async fn execute_edge_source_to_gpu(
     task_context: Arc<TaskContext>,
     admitted_composed_plan: Option<nexus_query_engine::plan::QueryPlan>,
 ) -> Result<GpuDataFrame> {
+    if native_gpu_resident_producer(plan.as_ref()).is_some() {
+        let (_, handle) =
+            execute_gpu_resident_producer_with_context(plan.as_ref(), context, 0, Arc::clone(&task_context)).await?;
+        return Ok(handle.into_gpu_frame());
+    }
     if let Some(native) = as_nexus_native_exec(plan.as_ref()) {
         let native_plan = crate::native_exec::lakehouse::resolve_query_plan(
             native.execution_config(),

@@ -362,6 +362,44 @@ fn pairwise_jaccard_consumes_weights_and_rejects_weighted_calls_without_a_weight
 }
 
 #[test]
+fn weighted_cosine_returns_zero_for_disjoint_nonempty_neighborhoods() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("weighted_cosine_returns_zero_for_disjoint_nonempty_neighborhoods").expect("entered");
+    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 4, 4]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[2i32, 3, 2, 3]).expect("dst");
+    let weights = DeviceArray::from_slice(&entered, &[2.0f32, 3.0, 5.0, 7.0]).expect("weights");
+    let src_view = src.view().expect("src view");
+    let dst_view = dst.view().expect("dst view");
+    let weights_view = weights.view().expect("weights view");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view)
+        .weights(&weights_view)
+        .properties(GraphProperties::undirected())
+        .renumber()
+        .build::<Forward>(&entered)
+        .expect("graph");
+    let first = [0i32, 0];
+    let second = [1i32, 4];
+    let pairs =
+        graph.vertex_pairs(&entered, first.as_slice(), second.as_slice()).expect("disjoint and shared-neighbor pairs");
+
+    let scores = graph
+        .cosine_similarity_coefficients(
+            &entered,
+            pairs,
+            &SimilarityParams { use_weight: true, do_expensive_check: true },
+        )
+        .expect("weighted cosine")
+        .scores()
+        .expect("scores")
+        .to_vec_f32(&entered)
+        .expect("score copy");
+
+    assert_eq!(scores[0], 0.0);
+    assert!(scores[1].is_finite() && scores[1] > 0.0);
+}
+
+#[test]
 fn all_pairs_jaccard_returns_generated_vertex_pairs() {
     let _guard = common::cudf::cuda_test_serial_guard();
     let handle = test_handle();
@@ -792,6 +830,30 @@ fn sssp_weighted_graph_returns_float_distances_and_predecessors() {
     assert_eq!(predecessor_map[&3], 1);
     assert_eq!(predecessor_map[&4], 1);
     assert_eq!(predecessor_map[&5], 4);
+}
+
+#[test]
+fn sssp_unweighted_graph_uses_unit_edge_costs() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("sssp_unweighted_graph_uses_unit_edge_costs").expect("entered");
+    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 2]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[1i32, 2, 3]).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Forward>(&entered).expect("graph");
+
+    let result = graph
+        .sssp(&entered, 0i32, &SsspParams::default().with_predecessors())
+        .expect("unweighted SSSP must remain process-safe");
+    let vertices = result.vertex_ids().expect("vertices").to_vec_i32(&entered).expect("vertices");
+    let distances = result.distances().expect("distances").to_vec_f32(&entered).expect("distances");
+    let distance_map = vertices.into_iter().zip(distances).collect::<HashMap<_, _>>();
+
+    assert_eq!(distance_map[&0], 0.0);
+    assert_eq!(distance_map[&1], 1.0);
+    assert_eq!(distance_map[&2], 2.0);
+    assert_eq!(distance_map[&3], 3.0);
 }
 
 #[test]
@@ -1586,6 +1648,34 @@ fn vertex_centrality_expansion_algorithms_return_vertex_scores() {
     let katz = katz_graph.katz_centrality(&entered, &KatzCentralityParams::default()).expect("katz");
     assert_eq!(katz.vertex_ids().expect("katz vertices").len(), 3);
     assert_eq!(katz.scores().expect("katz scores").len(), 3);
+}
+
+#[test]
+fn eigenvector_nonconvergence_is_typed_and_permanent() {
+    let _guard = common::cudf::cuda_test_serial_guard();
+    let handle = test_handle();
+    let entered = handle.enter("eigenvector_nonconvergence_is_typed_and_permanent").expect("entered");
+    let src = DeviceArray::from_slice(&entered, &[0i32, 1, 1, 2, 2, 2, 3, 4, 1, 3, 4, 0, 1, 3, 5, 5]).expect("src");
+    let dst = DeviceArray::from_slice(&entered, &[1i32, 3, 4, 0, 1, 3, 5, 5, 0, 1, 1, 2, 2, 2, 3, 4]).expect("dst");
+    let src_view = src.view().expect("src_view");
+    let dst_view = dst.view().expect("dst_view");
+    let mut graph = GraphBuilder::new(&src_view, &dst_view).renumber().build::<Transposed>(&entered).expect("graph");
+    let params = EigenvectorCentralityParams {
+        epsilon: NonNegativeF64::new(1e-20).unwrap(),
+        max_iterations: IterationCount::new(1).unwrap(),
+        ..EigenvectorCentralityParams::default()
+    };
+
+    let error = graph
+        .eigenvector_centrality(&entered, &params)
+        .expect_err("one power iteration must return typed nonconvergence");
+    assert_eq!(error.kind(), cugraph::ErrorKind::NonConvergence);
+    assert!(error.is_permanent());
+    assert_eq!(error.operation(), "eigenvector_centrality");
+    assert_eq!(error.context_value("algorithm"), Some("eigenvector_centrality"));
+    assert_eq!(error.context_value("iterations"), Some("1"));
+    assert_eq!(error.context_value("max_iterations"), Some("1"));
+    assert_eq!(error.context_value("epsilon"), Some("0.00000000000000000001"));
 }
 
 #[test]

@@ -571,47 +571,30 @@ fn try_execute_column_only_projection(
     token: Option<&ExecutionBudgetToken>,
     metrics: &mut QueryMetrics,
 ) -> Result<Option<DataFrame>> {
-    let mut selected_columns = Vec::with_capacity(node.outputs.len());
-    let mut renames = Vec::new();
+    let mut mappings = Vec::with_capacity(node.outputs.len());
     for output in &node.outputs {
         let Some(column) = alias_wrapped_column(&output.expr) else {
             return Ok(None);
         };
         let source_name = column.name().to_string();
-        if selected_columns.iter().any(|selected| selected == &source_name) {
-            return Ok(None);
-        }
         let output_name = output.field.name().to_string();
-        if source_name != output_name {
-            renames.push((source_name.clone(), output_name));
-        }
-        selected_columns.push(source_name);
+        mappings.push((source_name, output_name));
     }
     for order_column in datafusion_order_columns(&frame) {
         let order_column = order_column.to_string();
-        if selected_columns.iter().any(|selected| selected == &order_column) {
+        if mappings.iter().any(|(_, output)| output == &order_column) {
             return Ok(None);
         }
-        selected_columns.push(order_column);
+        mappings.push((order_column.clone(), order_column));
     }
-    let selected_refs = selected_columns.iter().map(String::as_str).collect::<Vec<_>>();
-    let mut output = frame.select(selected_refs).map_err(|error| {
+    let mapping_refs = mappings.iter().map(|(source, output)| (source.as_str(), output.as_str())).collect::<Vec<_>>();
+    let output = frame.select_as(mapping_refs).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.projection.select",
             "failed to select native column-only projection",
             error,
         )
     })?;
-    if !renames.is_empty() {
-        let rename_refs = renames.iter().map(|(old, new)| (old.as_str(), new.as_str())).collect::<Vec<_>>();
-        output = output.rename_columns(rename_refs).map_err(|error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.projection.rename",
-                "failed to rename native column-only projection",
-                error,
-            )
-        })?;
-    }
     coerce_projection_output_schema(output, node, token, metrics).map(Some)
 }
 

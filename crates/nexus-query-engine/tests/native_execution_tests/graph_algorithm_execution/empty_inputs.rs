@@ -32,14 +32,14 @@ fn pagerank_empty_edges_returns_a_schema_correct_empty_result_after_null_sanitiz
 
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
-    let spec = GraphAlgorithmSpec::with_stable_schema(
+    let spec = int32_graph_spec(
         GraphAlgorithm::PageRank,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { policy: GraphConstructionPolicy::RawLibcugraph, ..Default::default() },
         GraphAlgorithmParams::PageRank(GraphPageRankParams::default()),
     );
     let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::PageRank));
+    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::PageRank));
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();
@@ -48,7 +48,7 @@ fn pagerank_empty_edges_returns_a_schema_correct_empty_result_after_null_sanitiz
 
     let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else { panic!("graph result must materialize to host Arrow") };
-    assert_eq!(batch.schema().as_ref(), stable_graph_result_schema(GraphAlgorithm::PageRank).as_ref());
+    assert_eq!(batch.schema().as_ref(), int32_stable_graph_result_schema(GraphAlgorithm::PageRank).as_ref());
     assert_eq!(batch.num_rows(), 0);
     assert_eq!(result.metrics().graph_algorithm_runtime_rows.len(), 1);
     let runtime_row = &result.metrics().graph_algorithm_runtime_rows[0];
@@ -70,14 +70,14 @@ fn bfs_strict_rejects_empty_edges_as_a_permanent_graph_input_error() {
 
     let mut builder = QueryPlanBuilder::new();
     let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
-    let spec = GraphAlgorithmSpec::with_stable_schema(
+    let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { policy: GraphConstructionPolicy::RawLibcugraph, ..Default::default() },
         GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, None))),
     );
     let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs));
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();
@@ -123,7 +123,7 @@ fn assert_personalized_pagerank_rejects_empty_required_side_input(context: &Back
         Arc::clone(&side_schema),
         &side_batch,
     )));
-    let spec = GraphAlgorithmSpec::with_stable_schema(
+    let spec = int32_graph_spec(
         GraphAlgorithm::PersonalizedPageRank,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { policy: GraphConstructionPolicy::RawLibcugraph, ..Default::default() },
@@ -134,7 +134,7 @@ fn assert_personalized_pagerank_rejects_empty_required_side_input(context: &Back
     );
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan =
-        builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::PersonalizedPageRank));
+        builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::PersonalizedPageRank));
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();
@@ -192,14 +192,14 @@ fn bfs_empty_edges_with_nonempty_vertex_predicate_is_a_graph_input_error() {
     )));
     let mut params = GraphBfsParams::new(0, None);
     params.predicates.include_vertices = Some(GraphPredicateInput::new(predicate, "vertex"));
-    let spec = GraphAlgorithmSpec::with_stable_schema(
+    let spec = int32_graph_spec(
         GraphAlgorithm::Bfs,
         GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         GraphConstructionOptions { policy: GraphConstructionPolicy::RawLibcugraph, ..Default::default() },
         GraphAlgorithmParams::Bfs(Box::new(params)),
     );
     let graph = builder.add_graph_algorithm(edges, spec);
-    let plan = builder.finish_with_host_sink_schema(graph, stable_graph_result_schema(GraphAlgorithm::Bfs));
+    let plan = builder.finish_with_host_sink_schema(graph, int32_stable_graph_result_schema(GraphAlgorithm::Bfs));
     let admitted = context.admit_plan(&plan).unwrap();
     let runtime = Arc::new(admitted.runtime().unwrap());
     let mut gpu_inputs = GpuResidentInputMap::new();

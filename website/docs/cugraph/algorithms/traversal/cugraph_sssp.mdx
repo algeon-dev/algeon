@@ -1,7 +1,7 @@
 ---
 title: SSSP
 sidebar_label: SSSP
-description: "Compute minimum weighted-path distances and predecessors from one source vertex to every reachable vertex."
+description: "Compute minimum path distances and predecessors from one source vertex, using bound edge weights or unit cost 1 when weight_col is omitted."
 ---
 
 {/* GENERATED FROM the unified GPU function catalog by website/scripts/gen-cugraph-docs.mjs. Do not edit by hand. */}
@@ -12,7 +12,7 @@ SQL function: `cugraph_sssp`
 
 Official cuGraph reference: [C API](https://docs.rapids.ai/api/cugraph/stable/api_docs/cugraph_c/traversal/#single-source-shortest-path-sssp)
 
-Compute minimum weighted-path distances and predecessors from one source vertex to every reachable vertex.
+Compute minimum path distances and predecessors from one source vertex, using bound edge weights or unit cost 1 when weight_col is omitted.
 
 ## Signature
 
@@ -78,7 +78,7 @@ import Examples from '../../_examples/cugraph_sssp.mdx';
 
 ## Limitations & lifecycle
 
-_No algorithm-specific limitations._
+- omitting weight_col assigns unit cost 1 to every edge
 
 ## Validate before running
 

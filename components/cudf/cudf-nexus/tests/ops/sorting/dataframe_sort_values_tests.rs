@@ -111,6 +111,26 @@ fn assert_sorted_order_radix_preflight_facts(
     );
 }
 
+fn assert_sorted_order_lexicographic_preflight_facts(
+    report: &cudf::ExecutionBudgetReport,
+    preflight: sorting::SortedOrderLexicographicPreflight,
+) {
+    assert_eq!(report.unresolved_contract(), None);
+    assert_eq!(report.context_facts().get("sorted_order_preflight_status").map(String::as_str), Some("supported"));
+    assert_eq!(
+        report.context_facts().get("sorted_order_preflight_contract").map(String::as_str),
+        Some(sorting::SORTED_ORDER_LEXICOGRAPHIC_PREFLIGHT_CONTRACT),
+    );
+    for (name, expected) in [
+        ("sorted_order_lexicographic_comparator_state_bytes", preflight.comparator_state_bytes()),
+        ("sorted_order_lexicographic_temporary_workspace_bytes", preflight.temporary_workspace_bytes()),
+        ("sorted_order_lexicographic_retained_order_bytes", preflight.retained_order_bytes()),
+        ("sorted_order_lexicographic_active_phase_peak_bytes", preflight.active_phase_peak_bytes()),
+    ] {
+        assert_eq!(report.context_facts().get(name), Some(&expected.to_string()));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // SortOptions defaults
 // ---------------------------------------------------------------------------
@@ -646,7 +666,7 @@ fn test_prepare_sort_values_with_budget_descending_reports_owner_preflight() {
 }
 
 #[test]
-fn test_prepare_sort_values_with_budget_multi_key_retains_unresolved_owner_contract() {
+fn test_prepare_sort_values_with_budget_multi_key_uses_lexicographic_owner_contract() {
     let df = sample_df();
     let token = with_test_runtime(|runtime| {
         runtime
@@ -658,12 +678,69 @@ fn test_prepare_sort_values_with_budget_multi_key_retains_unresolved_owner_contr
         .prepare_sort_values_with_budget(["id", "score"], SortOptions::new().with_descending(vec![false, true]), &token)
         .unwrap();
 
+    let preflight = outcome
+        .value()
+        .sorted_order_lexicographic_preflight()
+        .expect("multi-key unstable sort must retain its lexicographic owner preflight");
     assert!(outcome.value().sorted_order_radix_preflight().is_none());
-    assert_eq!(outcome.report().unresolved_contract(), Some("libcudf_sort_temporary_workspace_preflight_unavailable"),);
-    assert_eq!(
-        outcome.report().context_facts().get("sorted_order_radix_preflight_status").map(String::as_str),
-        Some("unresolved_unsupported_shape"),
-    );
+    assert!(preflight.comparator_state_bytes() > 0);
+    assert!(preflight.temporary_workspace_bytes() > 0);
+    assert_eq!(preflight.retained_order_bytes(), outcome.value().output_rows() * std::mem::size_of::<i32>());
+    assert_eq!(token.reservation_usage().unwrap().peak_bytes as usize, preflight.active_phase_peak_bytes(),);
+    assert_sorted_order_lexicographic_preflight_facts(outcome.report(), preflight);
+}
+
+#[test]
+fn test_lexicographic_owner_contract_covers_nullable_string_keys_and_exact_budget_rejection() {
+    let names = cudf::Series::from_column(
+        crate::common::column_from_strs_nullable(&["beta", "", "alpha", "beta"], &[true, false, true, true]).unwrap(),
+    )
+    .unwrap();
+    let ranks = crate::common::series::<i32>("rank", &[1, 9, 2, 3]).unwrap();
+    let df = DataFrame::from_series([("name", names), ("rank", ranks)]).unwrap();
+    let options = SortOptions::new().with_descending(vec![false, true]).with_nulls_first(vec![true, false]);
+    let token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("string_key_sort"))
+            .unwrap()
+    });
+    let outcome = df.prepare_sort_values_with_budget(["name", "rank"], options.clone(), &token).unwrap();
+    let preflight = outcome.value().sorted_order_lexicographic_preflight().unwrap();
+    assert_eq!(token.reservation_usage().unwrap().peak_bytes as usize, preflight.active_phase_peak_bytes());
+    assert_sorted_order_lexicographic_preflight_facts(outcome.report(), preflight);
+    drop(outcome);
+    drop(token);
+
+    let insufficient = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(
+                ExecutionBudgetRequest::new(preflight.active_phase_peak_bytes() - 1)
+                    .with_boundary("string_key_sort_insufficient"),
+            )
+            .unwrap()
+    });
+    let error = df
+        .prepare_sort_values_with_budget(["name", "rank"], options, &insufficient)
+        .expect_err("one byte below the owner peak must reject before publishing an order");
+    assert_eq!(error.kind(), ErrorKind::ResourceExhausted);
+}
+
+#[test]
+fn test_lexicographic_metadata_preflight_zero_rows_has_no_allocation_terms() {
+    let preflight = DataFramePreparedSort::sorted_order_lexicographic_preflight_for_metadata(
+        0,
+        &[DataType::new(TypeId::String), DataType::new(TypeId::Int32)],
+        &[0, 0],
+        false,
+        &[sorting::Order::Ascending, sorting::Order::Descending],
+        &[sorting::NullOrder::Before, sorting::NullOrder::After],
+        DeviceId::new(0).expect("test device ordinal must be valid"),
+    )
+    .unwrap();
+    assert_eq!(preflight.comparator_state_bytes(), 0);
+    assert_eq!(preflight.temporary_workspace_bytes(), 0);
+    assert_eq!(preflight.retained_order_bytes(), 0);
+    assert_eq!(preflight.active_phase_peak_bytes(), 0);
 }
 
 #[test]

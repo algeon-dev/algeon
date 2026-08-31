@@ -3,12 +3,13 @@
 use std::ptr;
 
 use cugraph_sys::{
-    cugraph_centrality_result_t, cugraph_eigenvector_centrality, cugraph_error_t, cugraph_katz_centrality,
+    cugraph_centrality_result_t, cugraph_eigenvector_centrality_allow_nonconvergence, cugraph_error_t,
+    cugraph_katz_centrality,
 };
 
 use super::{EigenvectorCentralityResult, KatzCentralityResult};
 use crate::{
-    error::{Result, check_error, require_non_null},
+    error::{Error, ErrorKind, Result, check_error, require_non_null},
     graph::{Graph, Transposed},
     handle::EnteredContext,
     params::{IterationCount, NonNegativeF64},
@@ -78,7 +79,7 @@ pub(crate) fn eigenvector_centrality(
     // SAFETY: `graph` is a live cuGraph handle and `result`/`error` are valid
     // out-pointers.
     unsafe {
-        let code = cugraph_eigenvector_centrality(
+        let code = cugraph_eigenvector_centrality_allow_nonconvergence(
             handle.handle_ptr(),
             graph_ptr,
             params.epsilon.get(),
@@ -92,7 +93,20 @@ pub(crate) fn eigenvector_centrality(
 
     let result = require_non_null(result, "eigenvector_centrality", "centrality_result")?;
     // SAFETY: on success, cuGraph returns ownership of `result` to the caller.
-    unsafe { EigenvectorCentralityResult::from_raw(result, handle.device(), handle.runtime_bound_lease()) }
+    let result =
+        unsafe { EigenvectorCentralityResult::from_raw(result, handle.device(), handle.runtime_bound_lease())? };
+    if !result.converged()? {
+        return Err(Error::new(ErrorKind::NonConvergence, "eigenvector_centrality")
+            .with_message(format!(
+                "eigenvector centrality did not converge within {} iterations",
+                result.num_iterations()
+            ))
+            .with_context("algorithm", "eigenvector_centrality")
+            .with_context("iterations", result.num_iterations().to_string())
+            .with_context("max_iterations", usize::from(params.max_iterations).to_string())
+            .with_context("epsilon", params.epsilon.get().to_string()));
+    }
+    Ok(result)
 }
 
 pub(crate) fn katz_centrality(

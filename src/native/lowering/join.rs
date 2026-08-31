@@ -883,6 +883,7 @@ mod tests {
             input: Box::new(NormalizedNativeInput::GpuResidentSource(NormalizedNativeGpuResidentSource {
                 source_exec: source.as_ref(),
                 input_name: "pagerank-result".to_string(),
+                row_count_upper_bound: None,
                 unique_output_key: Some(BTreeSet::from(["vertexId".to_string()])),
             })),
         });

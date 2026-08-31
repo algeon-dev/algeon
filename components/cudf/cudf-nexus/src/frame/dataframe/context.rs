@@ -8,8 +8,8 @@ use super::{
     DataFramePreparedSort, DropDuplicatesOptions, DropNaOptions, HashPartitionedDataFrame, WithColumnExpr,
 };
 use crate::{
-    Expr, JoinType, Result,
-    core::column::position_sequence_in_domain,
+    CudfType, Expr, JoinType, Result,
+    core::column::{Column, position_sequence_in_domain},
     frame::{factorization::Codebook, series::Series},
     ops::{
         ast::AstExpression,
@@ -75,6 +75,23 @@ impl DataFrameExecutionScope<'_, '_, '_> {
         let row_ids = Series::from_column(position_sequence_in_domain(self.df.num_rows(), &output_domain, operation)?)
             .map_err(|e| e.reanchor(operation).with_column(output_name.to_string()))?;
         self.df.with_column_in_domain(output_name, row_ids, output_domain, operation).map_err(|e| e.reanchor(operation))
+    }
+
+    /// Add a fixed-width arithmetic sequence column using the borrowed execution override.
+    pub fn with_sequence_column<T: CudfType>(&self, output_name: &str, start: T, step: T) -> Result<DataFrame> {
+        let operation = "dataframe::with_execution::with_sequence_column";
+        let output_domain = self.ctx.resolve_output_domain(self.df.execution_domain())?;
+        let values = Series::from_column(Column::from_sequence_in_domain(
+            start,
+            step,
+            self.df.num_rows(),
+            Arc::clone(&output_domain),
+            operation,
+        )?)
+        .map_err(|error| error.reanchor(operation).with_column(output_name.to_string()))?;
+        self.df
+            .with_column_in_domain(output_name, values, output_domain, operation)
+            .map_err(|error| error.reanchor(operation))
     }
 
     /// Add an encoded integer-code column using a reusable codebook and the borrowed execution override.

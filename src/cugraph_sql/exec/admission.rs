@@ -194,6 +194,45 @@ pub(super) fn cugraph_execution_config_with_graph_aware_ticket(
     let scheduled_graph_proof = match (deferred_graph_proof, exact_edge_source_gpu_plan, graph_model_ask.as_ref()) {
         (Some(deferred), _, _) => Some(deferred),
         (None, Some(edge_plan), Some(model_ask))
+            if as_nexus_native_composed_exec(edge_source).is_some() && predicate_sources.is_empty() =>
+        {
+            let graph_with_evidence = graph_execution_proof
+                .clone()
+                .with_graph_memory_admission_evidence(model_ask.cold_model_evidence())
+                .map_err(|error| {
+                    Error::from_native(
+                        "datafusion_nexus.cugraph_sql.graph_ticket_ask",
+                        "failed to attach cuGraph memory evidence before composing its graph-producing edge input",
+                        error,
+                    )
+                })?;
+            let composed =
+                as_nexus_native_composed_exec(edge_source).expect("match guard requires a composed native edge source");
+            let edge_proof =
+                composed_admission_capability_proof(edge_plan, composed.gpu_inputs()).map_err(|error| {
+                    Error::new(
+                        ErrorCode::InvalidExecutionPlan,
+                        "datafusion_nexus.cugraph_sql.graph_ticket_ask",
+                        "failed to derive the graph-producing edge-source admission proof",
+                    )
+                    .with_source(error)
+                })?;
+            Some(
+                QueryPlanCapabilityProof::combine_composed_graph_attempt(
+                    &graph_execution_plan,
+                    graph_with_evidence,
+                    [(CUGRAPH_EDGE_INPUT_NAME.to_owned(), edge_proof)],
+                )
+                .map_err(|error| {
+                    Error::from_native(
+                        "datafusion_nexus.cugraph_sql.graph_ticket_ask",
+                        "failed to derive the ordered graph-to-graph admission schedule",
+                        error,
+                    )
+                })?,
+            )
+        },
+        (None, Some(edge_plan), Some(model_ask))
             if as_nexus_native_composed_exec(edge_source).is_none() && materialized_side_input_plans.is_some() =>
         {
             let graph_with_evidence = graph_execution_proof
@@ -206,16 +245,41 @@ pub(super) fn cugraph_execution_config_with_graph_aware_ticket(
                         error,
                     )
                 })?;
-            QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt(
+            let side_input_proofs = materialized_side_input_plans
+                .as_ref()
+                .expect("match guard requires materialized side-input plans")
+                .iter()
+                .zip(predicate_sources)
+                .map(|((name, plan), source)| {
+                    let proof = if let Some(composed) = as_nexus_native_composed_exec(source.as_ref()) {
+                        composed_admission_capability_proof(plan, composed.gpu_inputs()).map_err(|error| {
+                            Error::new(
+                                ErrorCode::InvalidExecutionPlan,
+                                "datafusion_nexus.cugraph_sql.graph_ticket_ask",
+                                "failed to derive the complete composed side-input admission proof",
+                            )
+                            .with_source(error)
+                        })?
+                    } else {
+                        QueryPlanCapabilityProof::for_cugraph_materialized_input_producer_plan(plan).map_err(
+                            |error| {
+                                Error::from_native(
+                                    "datafusion_nexus.cugraph_sql.graph_ticket_ask",
+                                    "failed to derive native cuGraph side-input producer evidence",
+                                    error,
+                                )
+                            },
+                        )?
+                    };
+                    Ok((name.clone(), proof))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt_with_proofs(
                 &graph_execution_plan,
                 graph_with_evidence,
                 CUGRAPH_EDGE_INPUT_NAME,
                 edge_plan,
-                materialized_side_input_plans
-                    .as_ref()
-                    .expect("match guard requires materialized side-input plans")
-                    .iter()
-                    .map(|(name, plan)| (name.clone(), plan)),
+                side_input_proofs,
             )
             .map_err(|error| {
                 Error::from_native(
@@ -412,6 +476,9 @@ pub(super) fn edge_source_output_rows(edge_source: &dyn ExecutionPlan) -> Result
     {
         return Ok(Some(rows));
     }
+    if let Some(rows) = gpu_resident_producer_hard_output_row_upper_bound(edge_source) {
+        return Ok(Some(rows));
+    }
     if let Some(rows) = native_edge_source_output_rows(edge_source) {
         return Ok(Some(rows));
     }
@@ -538,24 +605,25 @@ pub(super) fn as_nexus_native_exec(plan: &dyn ExecutionPlan) -> Option<&NexusNat
     if let Some(native) = plan.downcast_ref::<NexusNativeExec>() {
         return Some(native);
     }
-    let children = cooperative_exec_children(plan)?;
-    let [child] = children.as_slice() else {
-        return None;
-    };
-    child.downcast_ref::<NexusNativeExec>()
+    graph_input_scheduling_child(plan).and_then(as_nexus_native_exec)
 }
 
 pub(super) fn as_nexus_native_composed_exec(plan: &dyn ExecutionPlan) -> Option<&NexusNativeComposedExec> {
     if let Some(native) = plan.downcast_ref::<NexusNativeComposedExec>() {
         return Some(native);
     }
-    let children = cooperative_exec_children(plan)?;
-    let [child] = children.as_slice() else {
-        return None;
-    };
-    child.downcast_ref::<NexusNativeComposedExec>()
+    graph_input_scheduling_child(plan).and_then(as_nexus_native_composed_exec)
 }
 
-pub(super) fn cooperative_exec_children(plan: &dyn ExecutionPlan) -> Option<Vec<&Arc<dyn ExecutionPlan>>> {
-    (plan.name() == "CooperativeExec").then(|| plan.children())
+fn graph_input_scheduling_child(plan: &dyn ExecutionPlan) -> Option<&dyn ExecutionPlan> {
+    if let Some(cooperative) = plan.downcast_ref::<CooperativeExec>() {
+        return Some(cooperative.input().as_ref());
+    }
+    plan.downcast_ref::<RepartitionExec>().map(|repartition| repartition.input().as_ref())
+}
+
+pub(crate) fn native_graph_input_execution_plan(plan: &dyn ExecutionPlan) -> Option<&dyn ExecutionPlan> {
+    as_nexus_native_exec(plan)
+        .map(|native| native as &dyn ExecutionPlan)
+        .or_else(|| as_nexus_native_composed_exec(plan).map(|native| native as &dyn ExecutionPlan))
 }

@@ -1,10 +1,14 @@
 fn pagerank_plan(edge_schema: std::sync::Arc<arrow::datatypes::Schema>) -> crate::plan::QueryPlan {
+    let params = crate::plan::GraphAlgorithmParams::PageRank(crate::plan::GraphPageRankParams::default());
+    let vertex_type = edge_schema.field_with_name("src").unwrap().data_type().clone();
     let mut builder = crate::plan::QueryPlanBuilder::new();
     let edges = builder.add_source(crate::source::SourceNode::GpuResident(crate::source::GpuResidentSource::new(
         "edges",
         std::sync::Arc::clone(&edge_schema),
     )));
-    let spec = crate::plan::GraphAlgorithmSpec::with_stable_schema(
+    let output_schema =
+        crate::plan::graph_result_schema_for_vertex_type(crate::plan::GraphAlgorithm::PageRank, &params, &vertex_type);
+    let spec = crate::plan::GraphAlgorithmSpec::new(
         crate::plan::GraphAlgorithm::PageRank,
         crate::plan::GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
         crate::plan::GraphConstructionOptions {
@@ -12,13 +16,11 @@ fn pagerank_plan(edge_schema: std::sync::Arc<arrow::datatypes::Schema>) -> crate
             renumber: true,
             policy: crate::plan::GraphConstructionPolicy::RawLibcugraph,
         },
-        crate::plan::GraphAlgorithmParams::PageRank(crate::plan::GraphPageRankParams::default()),
+        params.clone(),
+        std::sync::Arc::clone(&output_schema),
     );
     let graph = builder.add_graph_algorithm(edges, spec);
-    builder.finish_with_host_sink_schema(
-        graph,
-        crate::plan::stable_graph_result_schema(crate::plan::GraphAlgorithm::PageRank),
-    )
+    builder.finish_with_host_sink_schema(graph, output_schema)
 }
 
 #[test]

@@ -628,13 +628,13 @@ mod cugraph {
     }
 
     #[test]
-    fn final_observation_matches_runtime_one_level_cooperative_unwrap() {
+    fn final_observation_recursively_unwraps_cooperative_native_inputs() {
         let single_wrapped: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(native_edge_exec()));
         assert_eq!(classify_final_plan(cugraph_exec(single_wrapped).as_ref()), FinalPlanDisposition::Native);
 
         let inner_wrapped: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(native_edge_exec()));
         let nested_wrapped: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(inner_wrapped));
-        assert_eq!(classify_final_plan(cugraph_exec(nested_wrapped).as_ref()), FinalPlanDisposition::Mixed);
+        assert_eq!(classify_final_plan(cugraph_exec(nested_wrapped).as_ref()), FinalPlanDisposition::Native);
     }
 
     #[test]
@@ -643,11 +643,16 @@ mod cugraph {
     }
 
     #[test]
-    fn no_datafusion_cpu_requirement_rejects_nested_cooperative_cugraph_input() {
+    fn no_datafusion_cpu_requirement_accepts_nested_cooperative_cugraph_input() {
         let inner: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(native_edge_exec()));
         let nested: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(inner));
-
-        assert_no_datafusion_cpu_requirement_rejects_mixed_plan(composed_cugraph_plan(nested));
+        let plan = composed_cugraph_plan(nested);
+        assert_eq!(classify_final_plan(plan.as_ref()), FinalPlanDisposition::Native);
+        let rule = NexusFinalPlanRequirementRule::new(
+            NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement(),
+        );
+        rule.optimize(plan, &ConfigOptions::default())
+            .expect("the requirement must accept a recursively native graph input");
     }
 
     #[test]

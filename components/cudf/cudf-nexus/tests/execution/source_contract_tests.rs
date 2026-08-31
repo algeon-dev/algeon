@@ -226,6 +226,10 @@ const SAFE_LAYER_NON_EXECUTION_FFI_ALLOWLIST: &[(&str, &str)] = &[
         "cudf_sorted_order_radix_preflight",
         "allocation-free owner preflight with explicit device and no stream or allocator inputs",
     ),
+    (
+        "cudf_sorted_order_lexicographic_preflight",
+        "allocation-free owner preflight with explicit device and no stream or allocator inputs",
+    ),
     ("cudf_stream_create", "runtime stream lifecycle"),
     ("cudf_stream_destroy", "runtime stream lifecycle"),
     ("cudf_stream_is_ready", "runtime stream state query with explicit stream handle"),

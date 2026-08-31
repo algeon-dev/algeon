@@ -233,6 +233,9 @@ pub(super) fn limitations_json(algorithm: CugraphAlgorithm) -> String {
             "providing weight_col selects weighted similarity; omitting it selects unit-weight similarity",
         ]);
     }
+    if algorithm == CugraphAlgorithm::Sssp {
+        limitations.push("omitting weight_col assigns unit cost 1 to every edge");
+    }
     if matches!(
         algorithm.native_algorithm().vertex_id_type_support(),
         nexus_query_engine::plan::GraphVertexIdTypeSupport::Int32OnlyLegacyEdgeType
@@ -275,7 +278,7 @@ pub(super) fn summary(algorithm: CugraphAlgorithm) -> &'static str {
             "Measure how often each edge lies on shortest paths between vertex pairs, exactly or from an explicit sample of source vertices."
         },
         CugraphAlgorithm::Sssp => {
-            "Compute minimum weighted-path distances and predecessors from one source vertex to every reachable vertex."
+            "Compute minimum path distances and predecessors from one source vertex, using bound edge weights or unit cost 1 when weight_col is omitted."
         },
         CugraphAlgorithm::DegreesAll => "Count both incoming and outgoing edges for every vertex in the graph.",
         CugraphAlgorithm::InDegreesAll => "Count incoming edges for every vertex in the graph.",

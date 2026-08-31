@@ -29,6 +29,7 @@ use datafusion::{
         ChildrenPropertiesMode, DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, RecordBatchStream,
         ReplaceChildrenOptions, SendableRecordBatchStream, StatisticsArgs, StatisticsContext,
         aggregates::{AggregateExec, AggregateMode},
+        coop::CooperativeExec,
         execution_plan::{Boundedness, EmissionType},
         metrics::{ExecutionPlanMetricsSet, MetricsSet, RecordOutput},
         projection::ProjectionExec,
@@ -91,8 +92,10 @@ use crate::{
             register_graph_execution_plan_discovery,
         },
         producer::{
-            GpuResidentProducer, gpu_resident_producer as native_gpu_resident_producer,
-            gpu_resident_producer_input_name, register_gpu_resident_producer_discovery,
+            GpuResidentProducer, execute_gpu_resident_producer_with_context,
+            gpu_resident_producer as native_gpu_resident_producer, gpu_resident_producer_hard_output_row_upper_bound,
+            gpu_resident_producer_input_name, prepare_gpu_resident_producer_for_execution,
+            register_gpu_resident_producer_discovery,
         },
         run_gpu_execution_task,
     },
@@ -132,6 +135,7 @@ mod residency;
 #[cfg(test)]
 mod tests;
 
+pub(crate) use admission::native_graph_input_execution_plan;
 use admission::*;
 use edge_analysis::*;
 use input::*;

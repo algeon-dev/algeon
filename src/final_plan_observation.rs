@@ -157,8 +157,12 @@ fn observe_with_output_boundary(plan: &dyn ExecutionPlan, materializes_host: boo
             host_materialization_count: usize::from(materializes_host),
         };
         for child_plan in plan.children() {
-            let child_uses_native_gpu_input = graph_child_uses_native_gpu_input(child_plan.as_ref());
-            let child = if child_uses_native_gpu_input {
+            let native_input = crate::cugraph_sql::native_graph_input_execution_plan(child_plan.as_ref());
+            let child_uses_native_gpu_input = native_input.is_some()
+                || crate::native_exec::producer::gpu_resident_producer(child_plan.as_ref()).is_some();
+            let child = if let Some(native_input) = native_input {
+                observe_with_output_boundary(native_input, false)
+            } else if child_uses_native_gpu_input {
                 observe_with_output_boundary(child_plan.as_ref(), false)
             } else {
                 observe_with_output_boundary(child_plan.as_ref(), true)
@@ -197,21 +201,6 @@ fn observe_with_output_boundary(plan: &dyn ExecutionPlan, materializes_host: boo
 
 fn observe_as_gpu_producer(plan: &dyn ExecutionPlan) -> FinalPlanObservation {
     observe_with_output_boundary(plan, false)
-}
-
-#[cfg(feature = "cugraph")]
-fn graph_child_uses_native_gpu_input(plan: &dyn ExecutionPlan) -> bool {
-    if plan.downcast_ref::<NexusNativeExec>().is_some() || plan.downcast_ref::<NexusNativeComposedExec>().is_some() {
-        return true;
-    }
-    if plan.name() != "CooperativeExec" {
-        return false;
-    }
-    let children = plan.children();
-    let [child] = children.as_slice() else {
-        return false;
-    };
-    child.downcast_ref::<NexusNativeExec>().is_some() || child.downcast_ref::<NexusNativeComposedExec>().is_some()
 }
 
 fn merge(target: &mut FinalPlanObservation, child: FinalPlanObservation) {

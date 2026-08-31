@@ -18,9 +18,9 @@ use crate::{
     graph_memory::{GraphMemoryCalibrationOverride, graph_memory_bounded_admission_evidence_for_plan},
     plan::{
         GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
-        GraphConstructionPolicy, GraphEdgeColumnBindings, GraphForceAtlas2Params, GraphPageRankParams, JoinKey,
-        JoinOutputColumn, JoinSide, JoinSpec, JoinType, ProjectionOutput, QueryPlan, QueryPlanBuilder,
-        graph_result_schema_for_params,
+        GraphConstructionPolicy, GraphEdgeColumnBindings, GraphForceAtlas2Params, GraphPageRankParams,
+        GraphPageRankPersonalizationInput, GraphPersonalizedPageRankParams, JoinKey, JoinOutputColumn, JoinSide,
+        JoinSpec, JoinType, ProjectionOutput, QueryPlan, QueryPlanBuilder, graph_result_schema_for_params,
     },
     runtime::{ReservationKind, SourceChunkPlanningMode, SourceSchedulerPolicy},
     source::{GpuResidentSource, LiteralBatchSource, LocalParquetFile, LocalParquetSource, SourceNode},
@@ -190,7 +190,7 @@ fn filtered_edge_producer_defers_only_the_graph_phase_under_one_attempt_proof() 
     .expect("Source-Filter-GPU sink is the supported deferred topology");
     let descriptor = combined
         .as_requirement()
-        .deferred_graph_phase_for_plan(&graph_plan)
+        .deferred_resident_phase_for_plan(&graph_plan)
         .expect("descriptor lookup must remain unambiguous")
         .expect("the exact graph scope retains its deferred descriptor");
     assert_eq!(descriptor.input_name(), "edges");
@@ -203,6 +203,10 @@ fn filtered_edge_producer_defers_only_the_graph_phase_under_one_attempt_proof() 
     assert_eq!(combined.soft_working_set_hint_bytes(), None);
     let envelope = combined.resolve_reservation_envelope(reservation_policy()).expect("producer phase must resolve");
     assert!(envelope.complete_phase_peak_bytes().is_some());
+    let requirement = combined.as_requirement().clone().with_reservation_envelope(&envelope);
+    assert_eq!(requirement.required_phase_floor_bytes, envelope.required_phase_floor_bytes());
+    assert_eq!(requirement.soft_working_set_hint_bytes, None);
+    assert_eq!(requirement.estimate_quality, EstimateQuality::Unknown);
 
     let mut consumer_builder = QueryPlanBuilder::new();
     let graph_result = consumer_builder.add_source(SourceNode::GpuResident(GpuResidentSource::new(
@@ -1116,7 +1120,7 @@ fn composed_filter_sort_preserves_alternative_filter_peak_group() {
     )
     .unwrap();
     let resolved = combined
-        .requirement_for_device_with_preflight(0, |_, _| Ok(SortRadixPreflight::new_for_test(64, 128, 256, 128)))
+        .requirement_for_device_with_preflight(0, |_, _| Ok(SortPreflight::new_for_test(64, 128, 256, 128)))
         .unwrap();
     let schedule = resolved
         .as_requirement()
@@ -1198,7 +1202,7 @@ fn composed_union_rejects_unknown_local_rows_or_bytes_before_placement() {
 }
 
 #[test]
-fn composed_consumer_rejects_literal_source_mixed_with_gpu_producer() {
+fn composed_consumer_prices_literal_source_stage_mixed_with_local_source() {
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
     let mut builder = QueryPlanBuilder::new();
     let local = builder.add_source(SourceNode::LocalParquet(mixed_local_graph_union_source(Some(3), Some(64))));
@@ -1214,8 +1218,30 @@ fn composed_consumer_rejects_literal_source_mixed_with_gpu_producer() {
     let root = builder.add_union(vec![local, literal], schema);
     let plan = builder.finish_with_host_sink(root);
     let proof = QueryPlanCapabilityProof::for_composed_consumer_plan(&plan).unwrap();
-    let error = proof.resolve_reservation_envelope(reservation_policy()).unwrap_err();
-    assert_eq!(error.fact_value("reason"), Some("attempt_owner_term_literal_source_bytes_unavailable"));
+    let source_terms = proof
+        .as_requirement()
+        .owner_terms
+        .iter()
+        .filter(|term| term.id.role == OwnerTermRole::SourceStage)
+        .collect::<Vec<_>>();
+    assert_eq!(source_terms.len(), 2);
+
+    let literal_term = source_terms
+        .iter()
+        .find(|term| term.id.owner == OwnerId::Source(literal))
+        .expect("the composed proof must price the literal source as a SourceStage owner");
+    assert_eq!(literal_term.bytes(), 328);
+    assert_eq!(literal_term.class, AllocationClass::ActivePhase);
+    assert_eq!(literal_term.id.occurrence, OccurrenceId::PlanLocal(literal));
+
+    let local_term = source_terms
+        .iter()
+        .find(|term| term.id.owner == OwnerId::Source(local))
+        .expect("the existing local source owner must remain in the composed inventory");
+    assert_eq!(local_term.bytes(), 64);
+    proof
+        .resolve_reservation_envelope(reservation_policy())
+        .expect("exact local and literal SourceStage owners must resolve together");
 }
 
 #[test]
@@ -3194,6 +3220,57 @@ fn composed_consumer_alias_column_projection_reuses_its_input_allocation() {
 }
 
 #[test]
+fn composed_consumer_duplicate_source_aliases_share_one_input_owner() {
+    let input_schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("only", input_schema)));
+    let projection = builder.add_projection(
+        source,
+        vec![
+            ProjectionOutput::new(Expr::column("value"), Field::new("sum_value", DataType::Int64, false)),
+            ProjectionOutput::new(Expr::column("value"), Field::new("min_value", DataType::Int64, false)),
+        ],
+    );
+    let plan = builder.finish_with_host_sink(projection);
+    let output = ComposedGraphProducerOutputEvidence {
+        occurrence_id: "only".to_owned(),
+        row_count_upper_bound: 128,
+        column_evidence: PlanColumnEvidence::default(),
+    };
+    let (bytes, owner_terms) = composed_consumer_additional_peak_bytes_for_plan(&plan, &[output])
+        .expect("multiple output aliases may share one retained input column owner");
+    assert_eq!(bytes, 0);
+    assert!(owner_terms.is_empty());
+}
+
+#[test]
+fn composed_consumer_prices_multibyte_utf8_literal_projection() {
+    let input_schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("only", input_schema)));
+    let projection = builder.add_projection(
+        source,
+        vec![
+            ProjectionOutput::new(Expr::column("value"), Field::new("value", DataType::Int64, false)),
+            ProjectionOutput::new(
+                Expr::literal(LiteralValue::Utf8("來源".to_owned())),
+                Field::new("provenance", DataType::Utf8, false),
+            ),
+        ],
+    );
+    let plan = builder.finish_with_host_sink(projection);
+    let output = ComposedGraphProducerOutputEvidence {
+        occurrence_id: "only".to_owned(),
+        row_count_upper_bound: 3,
+        column_evidence: PlanColumnEvidence::default(),
+    };
+    let (bytes, owner_terms) = composed_consumer_additional_peak_bytes_for_plan(&plan, &[output])
+        .expect("a UTF-8 literal projection has exact offsets and payload evidence");
+    assert!(bytes > 0);
+    assert_eq!(owner_terms.len(), 1);
+}
+
+#[test]
 fn composed_consumer_rejects_projected_type_changes_and_missing_string_payload_evidence() {
     let output = [ComposedGraphProducerOutputEvidence {
         occurrence_id: "only".to_owned(),
@@ -3874,6 +3951,65 @@ fn graph_result_sort_limit_plan(row_bound: u64, skip: usize, fetch: usize) -> Qu
     builder.finish_with_host_sink(limit)
 }
 
+fn pagerank_result_sort_limit_plan(input_name: &str, row_bound: u64, fetch: usize) -> QueryPlan {
+    let params = GraphAlgorithmParams::PageRank(GraphPageRankParams::default());
+    let schema = graph_result_schema_for_params(GraphAlgorithm::PageRank, &params);
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new(input_name, Arc::clone(&schema)).with_row_count_upper_bound(row_bound),
+    ));
+    let sort = builder.add_sort(
+        source,
+        SortSpec::new(vec![
+            SortExpr::new(Expr::column("value"), true, true),
+            SortExpr::new(Expr::column("vertex"), false, false),
+        ]),
+        Arc::clone(&schema),
+    );
+    let limit = builder.add_limit(sort, LimitSpec::fetch(fetch), schema);
+    builder.finish_gpu_resident(limit)
+}
+
+fn literal_edge_plan_for_personalized_pagerank() -> QueryPlan {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int64, false),
+        Field::new("dst", DataType::Int64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int64Array::from(vec![0, 1])) as ArrayRef, Arc::new(Int64Array::from(vec![1, 0])) as ArrayRef],
+    )
+    .unwrap();
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(schema, vec![batch])));
+    builder.finish_gpu_resident(source)
+}
+
+fn personalized_pagerank_plan(edge_plan: &QueryPlan, side_plan: &QueryPlan) -> QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("edges", Arc::clone(edge_plan.output_schema()))
+            .with_row_count_upper_bound(2)
+            .with_graph_vertex_upper_bound(2),
+    ));
+    let side = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("personalization", Arc::clone(side_plan.output_schema())).with_row_count_upper_bound(2),
+    ));
+    let graph = builder.add_graph_algorithm(
+        edges,
+        GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::PersonalizedPageRank,
+            GraphEdgeColumnBindings::new("src", "dst", None::<String>),
+            GraphConstructionOptions::default(),
+            GraphAlgorithmParams::PersonalizedPageRank(GraphPersonalizedPageRankParams {
+                pagerank: GraphPageRankParams::default(),
+                personalization: GraphPageRankPersonalizationInput::new(side, "vertex", "value"),
+            }),
+        ),
+    );
+    builder.finish_gpu_resident(graph)
+}
+
 fn graph_result_filter_sort_plan(row_bound: Option<u64>) -> QueryPlan {
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
     let mut builder = QueryPlanBuilder::new();
@@ -3897,7 +4033,7 @@ fn supported_graph_result_sort_resolves_exact_owner_components_per_device() {
         .requirement_for_device_with_preflight(7, |descriptor, ordinal| {
             assert_eq!(ordinal, 7);
             assert_eq!(descriptor.num_rows, 128);
-            Ok(SortRadixPreflight::new_for_test(128, 512, 1_024, 512))
+            Ok(SortPreflight::new_for_test(128, 512, 1_024, 512))
         })
         .expect("fake owner preflight resolves without CUDA");
     let terms = resolved
@@ -3906,7 +4042,7 @@ fn supported_graph_result_sort_resolves_exact_owner_components_per_device() {
         .iter()
         .filter(|term| matches!(term.id.owner, OwnerId::Sort(_)))
         .collect::<Vec<_>>();
-    assert_eq!(terms.len(), 7);
+    assert_eq!(terms.len(), 8);
     assert_eq!(
         terms
             .iter()
@@ -3918,7 +4054,14 @@ fn supported_graph_result_sort_resolves_exact_owner_components_per_device() {
     assert!(
         terms
             .iter()
-            .filter(|term| { !matches!(term.id.role, OwnerTermRole::SortKeyInput | OwnerTermRole::SortOutputNullMask) })
+            .filter(|term| {
+                !matches!(
+                    term.id.role,
+                    OwnerTermRole::SortKeyInput
+                        | OwnerTermRole::SortComparatorState
+                        | OwnerTermRole::SortOutputNullMask
+                )
+            })
             .all(|term| term.bytes() > 0)
     );
     assert_eq!(
@@ -3948,7 +4091,7 @@ fn graph_result_string_sort_uses_producer_payload_evidence() {
             assert_eq!(descriptor.num_rows, 6);
             assert_eq!(descriptor.output_frame_bytes, 970);
             assert_eq!(descriptor.output_null_mask_bytes, 0);
-            Ok(SortRadixPreflight::new_for_test_with_key_input(48, 24, 24, 64, 24))
+            Ok(SortPreflight::new_for_test_with_key_input(48, 24, 24, 64, 24))
         })
         .expect("the six-row string-output sort must resolve through the native owner seam");
     let terms = resolved
@@ -3957,7 +4100,7 @@ fn graph_result_string_sort_uses_producer_payload_evidence() {
         .iter()
         .filter(|term| matches!(term.id.owner, OwnerId::Sort(_)))
         .collect::<Vec<_>>();
-    assert_eq!(terms.len(), 7);
+    assert_eq!(terms.len(), 8);
     assert_eq!(
         terms
             .iter()
@@ -3989,7 +4132,7 @@ fn floating_sort_keys_issue_key_input_owner_terms() {
                 .expect("floating radix sort metadata must be accepted");
         let resolved = proof
             .requirement_for_device_with_preflight(0, |_, _| {
-                Ok(SortRadixPreflight::new_for_test_with_key_input(512, 128, 256, 512, 256))
+                Ok(SortPreflight::new_for_test_with_key_input(512, 128, 256, 512, 256))
             })
             .expect("floating sort owner preflight must resolve");
         let key_input = resolved
@@ -4003,14 +4146,52 @@ fn floating_sort_keys_issue_key_input_owner_terms() {
 }
 
 #[test]
+fn multi_key_graph_result_sort_uses_lexicographic_owner_terms() {
+    let plan = graph_result_sort_plan(DataType::Int32, false, Some(128), 3);
+    let proof = QueryPlanCapabilityProof::try_for_attested_graph_result_bounded_consumer_plan(&plan, "graph_result")
+        .expect("three non-null relational keys must issue a typed sort proof");
+    let resolved = proof
+        .requirement_for_device_with_preflight(5, |descriptor, ordinal| {
+            assert_eq!(ordinal, 5);
+            assert_eq!(descriptor.keys.len(), 3);
+            assert!(descriptor.keys.iter().all(|key| key.key_type.id() == cudf::TypeId::Int32));
+            Ok(SortPreflight::new_lexicographic_for_test(384, 1_024, 512))
+        })
+        .expect("the lexicographic owner preflight must resolve one sort schedule");
+    let terms = resolved
+        .as_requirement()
+        .owner_terms
+        .iter()
+        .filter(|term| matches!(term.id.owner, OwnerId::Sort(_)))
+        .collect::<Vec<_>>();
+    assert_eq!(terms.len(), 8);
+    assert_eq!(
+        terms
+            .iter()
+            .find(|term| term.id.role == OwnerTermRole::SortComparatorState)
+            .expect("lexicographic comparator state must remain an explicit owner")
+            .bytes(),
+        384
+    );
+    assert_eq!(
+        terms
+            .iter()
+            .find(|term| term.id.role == OwnerTermRole::SortRetainedOrder)
+            .expect("lexicographic retained order must remain an explicit owner")
+            .bytes(),
+        512
+    );
+}
+
+#[test]
 fn graph_result_sort_limit_uses_alternative_consumer_peak_groups() {
     let cases = [
         (
-            SortRadixPreflight::new_for_test_with_key_input(1_000, 1_000, 1_000, 1_000, 1_000),
+            SortPreflight::new_for_test_with_key_input(1_000, 1_000, 1_000, 1_000, 1_000),
             LimitRangeGatherPreflight::new_for_test(1, 1, 1, 1),
         ),
         (
-            SortRadixPreflight::new_for_test_with_key_input(1, 1, 1, 1, 1),
+            SortPreflight::new_for_test_with_key_input(1, 1, 1, 1, 1),
             LimitRangeGatherPreflight::new_for_test(1_000, 1_000, 1_000, 1_000),
         ),
     ];
@@ -4115,6 +4296,101 @@ fn graph_result_sort_limit_uses_alternative_consumer_peak_groups() {
 }
 
 #[test]
+fn nested_top_k_graph_side_input_resolves_deferred_owner_terms_on_the_candidate_device() {
+    let inner_sort_plan = pagerank_result_sort_limit_plan("inner_graph", 2, 2);
+    let inner_graph = production_graph_proof(GraphAlgorithm::PageRank);
+    let inner_sort = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
+        &inner_sort_plan,
+        "inner_graph",
+        &inner_graph,
+    )
+    .expect("the bounded two-key Top-K must retain device-deferred owner metadata");
+    let inner_composed = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+        &inner_sort_plan,
+        inner_sort,
+        [("inner_graph".to_owned(), inner_graph)],
+    )
+    .expect("the inner graph and Top-K schedule must compose before a device is selected");
+
+    let edge_plan = literal_edge_plan_for_personalized_pagerank();
+    let edge_proof = QueryPlanCapabilityProof::for_cugraph_materialized_input_producer_plan(&edge_plan)
+        .expect("the exact literal edge batch must issue producer evidence");
+    let outer_graph_plan = personalized_pagerank_plan(&edge_plan, &inner_sort_plan);
+    let outer_graph_evidence = graph_memory_bounded_admission_evidence_for_plan(
+        &outer_graph_plan,
+        GraphMemoryCalibrationOverride::none(),
+        None,
+    )
+    .expect("personalized PageRank must issue finite graph evidence");
+    let outer_graph = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan_with_resident_inputs(
+        &outer_graph_plan,
+        [("edges", &edge_plan), ("personalization", &inner_sort_plan)],
+    )
+    .expect("the outer graph inputs must bind to exact native plans")
+    .expect("personalized PageRank must issue its execution proof")
+    .with_graph_memory_admission_evidence(&outer_graph_evidence)
+    .expect("the outer graph evidence must bind to its exact scope");
+    let outer_graph = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+        &outer_graph_plan,
+        outer_graph,
+        [("edges".to_owned(), edge_proof), ("personalization".to_owned(), inner_composed)],
+    )
+    .expect("the outer graph must preserve the nested Top-K schedule and its deferred owner IDs");
+
+    let outer_sort_plan = pagerank_result_sort_limit_plan("outer_graph", 2, 1);
+    let outer_sort = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
+        &outer_sort_plan,
+        "outer_graph",
+        &outer_graph,
+    )
+    .expect("the outer graph output evidence must accept its exact deferred side-input owner");
+    let composed = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+        &outer_sort_plan,
+        outer_sort,
+        [("outer_graph".to_owned(), outer_graph)],
+    )
+    .expect("the outer Top-K must compose without resolving native workspace on an ambient device");
+
+    let resolved = composed
+        .requirement_for_device_with_preflight_and_limit(
+            7,
+            |descriptor, ordinal| {
+                assert_eq!(ordinal, 7);
+                assert_eq!(descriptor.keys.len(), 2);
+                Ok(SortPreflight::new_lexicographic_for_test(64, 128, 64))
+            },
+            |descriptor, ordinal| {
+                assert_eq!(ordinal, 7);
+                Ok(LimitRangeGatherPreflight::new_for_test(
+                    16,
+                    32,
+                    u64::try_from(descriptor.output_rows).unwrap() * 12,
+                    0,
+                ))
+            },
+        )
+        .expect("the query-service candidate must hydrate every nested sort and limit owner term");
+    assert!(
+        resolved
+            .as_requirement()
+            .owner_terms
+            .iter()
+            .any(|term| { term.id.role == OwnerTermRole::SortComparatorState && term.id.is_composed_occurrence() })
+    );
+    assert!(
+        resolved
+            .as_requirement()
+            .owner_terms
+            .iter()
+            .any(|term| { term.id.role == OwnerTermRole::LimitOutputFrame && term.id.is_composed_occurrence() })
+    );
+    let envelope = resolved
+        .resolve_reservation_envelope(reservation_policy())
+        .expect("the hydrated nested schedule must resolve one finite immutable grant");
+    assert!(envelope.bound_derivation().is_some());
+}
+
+#[test]
 fn composed_graph_result_sort_resolves_through_the_production_schedule_seam() {
     let consumer_plan = graph_result_sort_plan(DataType::Int32, false, None, 1);
     let consumer = QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
@@ -4136,12 +4412,12 @@ fn composed_graph_result_sort_resolves_through_the_production_schedule_seam() {
     let resolved = composed
         .requirement_for_device_with_preflight(0, |descriptor, _| {
             assert!(descriptor.num_rows > 0);
-            Ok(SortRadixPreflight::new_for_test(128, 256, 512, 256))
+            Ok(SortPreflight::new_for_test(128, 256, 512, 256))
         })
         .expect("the candidate device preflight must hydrate sort owner terms");
     let sort_owner_terms =
         resolved.as_requirement().owner_terms.iter().filter(|term| matches!(term.id.owner, OwnerId::Sort(_))).count();
-    assert_eq!(sort_owner_terms, 7);
+    assert_eq!(sort_owner_terms, 8);
     let envelope = resolved
         .resolve_reservation_envelope(reservation_policy())
         .expect("the composed sort proof must resolve a finite ordered envelope");
@@ -4168,7 +4444,7 @@ fn composed_filter_then_sort_references_filter_and_sort_owner_terms() {
     let resolved = composed
         .requirement_for_device_with_preflight(0, |descriptor, _| {
             assert!(descriptor.num_rows > 0);
-            Ok(SortRadixPreflight::new_for_test(64, 128, 256, 128))
+            Ok(SortPreflight::new_for_test(64, 128, 256, 128))
         })
         .expect("the existing cuDF sort owner preflight resolves the consumer terms");
     assert!(resolved.as_requirement().owner_terms.iter().any(|term| {
@@ -4202,7 +4478,7 @@ fn graph_result_sort_uses_the_producer_owned_row_bound_when_consumer_source_is_u
         .requirement_for_device_with_preflight(3, |descriptor, ordinal| {
             assert_eq!(ordinal, 3);
             assert_eq!(descriptor.num_rows, expected_rows);
-            Ok(SortRadixPreflight::new_for_test(64, 128, 256, 128))
+            Ok(SortPreflight::new_for_test(64, 128, 256, 128))
         })
         .expect("producer-owned row bound must reach candidate preflight");
     assert!(
@@ -4294,7 +4570,6 @@ fn unsupported_graph_result_sort_shapes_reject_before_preflight() {
     for (plan, reason) in [
         (graph_result_sort_plan(DataType::Utf8, false, Some(8), 1), "sort_owner_key_type_not_radix_dispatchable"),
         (graph_result_sort_plan(DataType::Int32, true, Some(8), 1), "sort_owner_nullable_key_unsupported"),
-        (graph_result_sort_plan(DataType::Int32, false, Some(8), 2), "sort_owner_sort_requires_exactly_one_key"),
         (graph_result_sort_plan(DataType::Int32, false, None, 1), "sort_owner_row_bound_missing"),
     ] {
         let error =

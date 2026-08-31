@@ -92,6 +92,8 @@ pub(crate) struct AttemptReservationShape {
     sort_rejection_reason: Option<String>,
     owner_term_rejection_reason: Option<String>,
     producer_occurrences: Vec<AttemptReservationProducerOccurrence>,
+    nested_consumer_occurrence_ids: Option<Vec<String>>,
+    deferred_owner_term_occurrence: Option<String>,
     ordered_schedule: Option<AttemptReservationSchedule>,
 }
 
@@ -118,6 +120,8 @@ impl AttemptReservationShape {
             sort_rejection_reason: None,
             owner_term_rejection_reason: None,
             producer_occurrences: Vec::new(),
+            nested_consumer_occurrence_ids: None,
+            deferred_owner_term_occurrence: None,
             ordered_schedule: None,
         }
     }
@@ -145,6 +149,18 @@ impl AttemptReservationShape {
         &self.output_column_evidence_input_scopes
     }
 
+    pub(crate) fn bind_output_column_evidence_to_producers(
+        &mut self,
+        producer_scopes: &std::collections::HashMap<String, String>,
+    ) -> Result<()> {
+        for (input_name, input_scope) in &mut self.output_column_evidence_input_scopes {
+            *input_scope = producer_scopes.get(input_name).cloned().ok_or_else(|| {
+                graph_schedule_error("output_evidence_producer_binding_missing", Some(input_name), Some("manifest"))
+            })?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn attach_ordered_schedule(&mut self, schedule: AttemptReservationSchedule) -> Result<()> {
         if self.ordered_schedule.is_some() {
             return Err(graph_schedule_error("duplicate_schedule_evidence", None, Some("schedule")));
@@ -163,11 +179,72 @@ impl AttemptReservationShape {
         self.ordered_schedule.as_ref()
     }
 
+    pub(crate) fn resolve_deferred_consumer_schedule(
+        &mut self,
+        consumer_state: AttemptReservationConsumerState,
+        consumer_peak_term_groups: Vec<Vec<OwnerTermId>>,
+        consumer_dominated_term_ids: Vec<OwnerTermId>,
+    ) -> Result<()> {
+        self.ordered_schedule
+            .as_mut()
+            .ok_or_else(|| graph_schedule_error("missing_ordered_schedule", None, Some("consumer_peak")))?
+            .resolve_deferred_consumer(
+                consumer_state,
+                consumer_peak_term_groups,
+                consumer_dominated_term_ids,
+            )
+    }
+
     pub(crate) fn take_ordered_schedule_for_nesting(
         &mut self,
     ) -> Option<(AttemptReservationSchedule, Vec<AttemptReservationProducerOccurrence>)> {
         let schedule = self.ordered_schedule.take()?;
+        self.nested_consumer_occurrence_ids = Some(
+            self.producer_occurrences
+                .iter()
+                .map(|occurrence| occurrence.occurrence_id().to_owned())
+                .collect(),
+        );
         Some((schedule, std::mem::take(&mut self.producer_occurrences)))
+    }
+
+    pub(crate) fn nested_consumer_occurrence_ids(&self) -> Option<&[String]> {
+        self.nested_consumer_occurrence_ids.as_deref()
+    }
+
+    pub(crate) fn rebind_deferred_owner_terms(&mut self, occurrence_id: &str) {
+        if self.sort_metadata.is_none() {
+            return;
+        }
+        self.deferred_owner_term_occurrence = Some(match self.deferred_owner_term_occurrence.take() {
+            Some(inner) => format!("nested:{}:{occurrence_id}{inner}", occurrence_id.len()),
+            None => occurrence_id.to_owned(),
+        });
+    }
+
+    pub(crate) fn deferred_owner_term_occurrence(&self) -> Option<&str> {
+        self.deferred_owner_term_occurrence.as_deref()
+    }
+
+    pub(crate) fn declares_deferred_retained_output_term(&self, term_id: &OwnerTermId) -> bool {
+        let (Some(metadata), Some(occurrence_id)) =
+            (self.sort_metadata.as_ref(), self.deferred_owner_term_occurrence.as_ref())
+        else {
+            return false;
+        };
+        if term_id.occurrence != OccurrenceId::Composed(occurrence_id.clone()) {
+            return false;
+        }
+        if let Some(limit) = &metadata.limit
+            && term_id.owner == OwnerId::Limit(limit.node_id)
+            && term_id.role == OwnerTermRole::LimitOutputFrame
+            && term_id.execution_scope_fingerprint == limit.execution_scope_fingerprint
+        {
+            return true;
+        }
+        term_id.owner == OwnerId::Sort(metadata.node_id)
+            && term_id.role == OwnerTermRole::SortOutputFrame
+            && term_id.execution_scope_fingerprint == metadata.execution_scope_fingerprint
     }
 
     pub(crate) fn owner_term_rejection_reason(&self) -> Option<&str> {

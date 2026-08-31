@@ -19,6 +19,7 @@ pub(crate) struct NormalizedComposedProducer {
     pub(crate) concurrent_side_input_term_ids: Vec<OwnerTermId>,
     pub(crate) dominated_term_ids: Vec<OwnerTermId>,
     pub(crate) nested_schedule: bool,
+    pub(crate) runtime_refinable: bool,
     pub(crate) proof: QueryPlanCapabilityProof,
 }
 
@@ -107,6 +108,9 @@ pub(crate) fn composed_consumer_bound_with_peak_terms(
     root_bound.owner_terms.retain(|term| seen_owner_terms.insert(term.id.clone()));
     root_bound.owner_terms.retain(|term| !owner_terms.contains(term));
     match root_bound.allocation_state {
+        AttemptReservationConsumerState::DeferredUntilResidentEvidence => {
+            return Err(composed_schedule_error("consumer_deferred_state_cannot_be_derived_statically", None));
+        },
         AttemptReservationConsumerState::Passthrough => {
             if root_bound.additional_peak_bytes != 0
                 || !root_bound.peak_owner_term_groups.is_empty()
@@ -762,12 +766,12 @@ pub(crate) fn composed_consumer_global_row_number_peak_bytes(
     column_evidence: &PlanColumnEvidenceAnalysis,
     memo: &mut HashMap<NodeId, ComposedConsumerBranchBound>,
 ) -> Result<ComposedConsumerBranchBound> {
+    let Some(crate::plan::WindowFunction::RowNumber { alias, output_type }) = window.spec.functions.first() else {
+        return Err(composed_schedule_error("consumer_window_topology_unmodeled", None));
+    };
     if !window.spec.partition_by.is_empty()
         || window.spec.functions.len() != 1
-        || !matches!(
-            window.spec.functions.first(),
-            Some(crate::plan::WindowFunction::RowNumber { output_type: DataType::Int64, .. })
-        )
+        || !matches!(output_type, DataType::Int64 | DataType::UInt64)
     {
         return Err(composed_schedule_error("consumer_window_topology_unmodeled", None));
     }
@@ -781,13 +785,21 @@ pub(crate) fn composed_consumer_global_row_number_peak_bytes(
         memo,
     )?;
     let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
+    let output_field = node.output_schema().field_with_name(alias).map_err(|_| {
+        composed_schedule_error("consumer_window_output_field_missing", None).with_fact("column", alias)
+    })?;
+    let output_schema = Arc::new(Schema::new(vec![output_field.clone()]));
     let output_bytes =
-        bounded_consumer_frame_bytes_with_evidence(input.rows, node.output_schema(), &column_evidence.node(node_id))?;
+        bounded_consumer_frame_bytes_with_evidence(input.rows, &output_schema, &PlanColumnEvidence::default())?;
     let output_term =
         consumer_owner_term(node_id, OwnerTermRole::ConsumerOutput, AllocationClass::ActivePhase, output_bytes, plan)?;
     let output_term_id = output_term.id.clone();
     let peak_owner_term_groups = consumer_unary_peak_groups(&input, [output_term_id.clone()]);
     let peak_owner_term_ids = flatten_consumer_peak_groups(&peak_owner_term_groups);
+    let final_owned_bytes =
+        checked_consumer_add(input.final_owned_bytes, output_bytes, "consumer_window_final_owned_overflow")?;
+    let final_owned_term_ids =
+        input.final_owned_term_ids.iter().cloned().chain(std::iter::once(output_term_id.clone())).collect();
     let mut terms = input.owner_terms;
     terms.push(output_term);
     let mut inventory = owner_terms.to_vec();
@@ -796,13 +808,13 @@ pub(crate) fn composed_consumer_global_row_number_peak_bytes(
     Ok(ComposedConsumerBranchBound {
         rows: input.rows,
         schema: node.output_schema().clone(),
-        final_owned_bytes: output_bytes,
+        final_owned_bytes,
         additional_peak_bytes,
         owner_terms: terms,
         peak_owner_term_groups,
         peak_owner_term_ids,
         dominated_owner_term_ids: input.dominated_owner_term_ids,
-        final_owned_term_ids: vec![output_term_id],
+        final_owned_term_ids,
         allocation_state: AttemptReservationConsumerState::Bounded,
         consumed_occurrences: Vec::new(),
     })
@@ -915,15 +927,10 @@ pub(crate) fn composed_consumer_literal_projection_bound(
     input: ComposedConsumerBranchBound,
     owner_terms: &[AllocationOwnerTerm],
 ) -> Result<ComposedConsumerBranchBound> {
-    let mut selected_columns = HashSet::with_capacity(projection.outputs.len());
     let mut retains_input = false;
     let mut literal_fields = Vec::new();
     for output in &projection.outputs {
         if let Some(column) = alias_wrapped_column(&output.expr) {
-            if !selected_columns.insert(column.name()) {
-                return Err(composed_schedule_error("consumer_projection_source_column_reused", None)
-                    .with_fact("column", column.name()));
-            }
             let source = input.schema.field_with_name(column.name()).map_err(|_| {
                 composed_schedule_error("consumer_projection_source_column_missing", None)
                     .with_fact("column", column.name())
@@ -941,9 +948,11 @@ pub(crate) fn composed_consumer_literal_projection_bound(
             return Err(composed_schedule_error("consumer_projection_expression_workspace_unmodeled", None)
                 .with_fact("expression", output.expr.clone()));
         };
+        let string_output =
+            matches!(output.field.data_type(), DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View);
         if literal.data_type() != *output.field.data_type()
             || matches!(literal, LiteralValue::Null(_)) && !output.field.is_nullable()
-            || fixed_width_consumer_output_column(output.field.data_type()).is_none()
+            || fixed_width_consumer_output_column(output.field.data_type()).is_none() && !string_output
         {
             return Err(composed_schedule_error("consumer_projection_literal_output_unmodeled", None)
                 .with_fact("expression", output.expr.clone())
@@ -955,8 +964,8 @@ pub(crate) fn composed_consumer_literal_projection_bound(
         return Err(composed_schedule_error("consumer_projection_expression_workspace_unmodeled", None));
     }
     let literal_schema = Arc::new(Schema::new(literal_fields));
-    let literal_bytes =
-        bounded_consumer_frame_bytes_with_evidence(input.rows, &literal_schema, &PlanColumnEvidence::default())?;
+    let literal_evidence = PlanColumnEvidenceAnalysis::for_plan(plan, &HashMap::new())?.node(node_id);
+    let literal_bytes = bounded_consumer_frame_bytes_with_evidence(input.rows, &literal_schema, &literal_evidence)?;
     let literal_term =
         consumer_owner_term(node_id, OwnerTermRole::ConsumerOutput, AllocationClass::ActivePhase, literal_bytes, plan)?;
     let literal_term_id = literal_term.id.clone();
@@ -1409,6 +1418,7 @@ pub(crate) fn composed_consumer_sort_peak_bytes(
             OwnerTermRole::SortKeyInput,
             OwnerTermRole::SortKeyOutput,
             OwnerTermRole::SortSequence,
+            OwnerTermRole::SortComparatorState,
             OwnerTermRole::SortTemporaryWorkspace,
             OwnerTermRole::SortRetainedOrder,
             OwnerTermRole::SortOutputFrame,
@@ -2076,7 +2086,7 @@ pub(crate) fn composed_schedule_error(schedule_reason: &'static str, occurrence_
 
 pub(crate) fn sort_owner_terms(
     descriptor: &SortMetadataDescriptor,
-    components: SortRadixPreflight,
+    components: SortPreflight,
 ) -> Result<Vec<AllocationOwnerTerm>> {
     let scope = descriptor.execution_scope_fingerprint.clone();
     let owner = OwnerId::Sort(descriptor.node_id);
@@ -2084,6 +2094,7 @@ pub(crate) fn sort_owner_terms(
         (OwnerTermRole::SortKeyInput, AllocationClass::ActivePhase, components.key_input_bytes),
         (OwnerTermRole::SortKeyOutput, AllocationClass::ActivePhase, components.key_output_bytes),
         (OwnerTermRole::SortSequence, AllocationClass::ActivePhase, components.sequence_bytes),
+        (OwnerTermRole::SortComparatorState, AllocationClass::ActivePhase, components.comparator_state_bytes),
         (OwnerTermRole::SortTemporaryWorkspace, AllocationClass::ActivePhase, components.temporary_workspace_bytes),
         (OwnerTermRole::SortRetainedOrder, AllocationClass::AttemptRetained, components.retained_order_bytes),
         (OwnerTermRole::SortOutputFrame, AllocationClass::AttemptRetained, descriptor.output_frame_bytes),
@@ -2138,18 +2149,7 @@ pub(crate) fn validate_sort_metadata_descriptor(descriptor: &SortMetadataDescrip
     if descriptor.stable {
         return Err(sort_owner_error("stable_sort_unsupported", "sort_dispatch"));
     }
-    if descriptor.null_count != 0 {
-        return Err(sort_owner_error("nullable_key_unsupported", "sort_key"));
-    }
-    let key_type = descriptor.key_type.id();
-    if !(key_type.is_signed_int()
-        || key_type.is_unsigned_int()
-        || key_type.is_timestamp()
-        || key_type.is_duration()
-        || key_type.is_float())
-    {
-        return Err(sort_owner_error("key_type_not_radix_dispatchable", "sort_key"));
-    }
+    validate_sort_key_metadata(&descriptor.keys)?;
     if descriptor.num_rows > i32::MAX as usize {
         return Err(sort_owner_error("row_count_exceeds_cudf_size_type", "sort_input"));
     }
@@ -2166,6 +2166,31 @@ pub(crate) fn validate_sort_metadata_descriptor(descriptor: &SortMetadataDescrip
         }
         if limit.output_columns.is_empty() {
             return Err(limit_owner_error("output_schema_empty", "limit_output"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_sort_key_metadata(keys: &[SortKeyMetadataDescriptor]) -> Result<()> {
+    if keys.is_empty() {
+        return Err(sort_owner_error("sort_key_missing", "sort_key"));
+    }
+    for key in keys {
+        if key.null_count != 0 {
+            return Err(sort_owner_error("nullable_key_unsupported", "sort_key"));
+        }
+        let key_type = key.key_type.id();
+        let radix = key_type.is_signed_int()
+            || key_type.is_unsigned_int()
+            || key_type.is_timestamp()
+            || key_type.is_duration()
+            || key_type.is_float();
+        let lexicographic = radix || key_type.is_boolean() || key_type.is_decimal() || key_type == cudf::TypeId::String;
+        if keys.len() == 1 && !radix {
+            return Err(sort_owner_error("key_type_not_radix_dispatchable", "sort_key"));
+        }
+        if keys.len() > 1 && !lexicographic {
+            return Err(sort_owner_error("key_type_not_lexicographic_dispatchable", "sort_key"));
         }
     }
     Ok(())
@@ -2232,32 +2257,43 @@ pub(crate) fn sort_metadata_for_attested_graph_result(
     {
         return Err(sort_owner_error("sort_input_topology_unmodeled", "sort_plan"));
     }
-    let [sort_expr] = sort_node.spec.expressions.as_slice() else {
-        return Err(sort_owner_error("sort_requires_exactly_one_key", "sort_key"));
-    };
-    let Some(key_column) = alias_wrapped_column(&sort_expr.expr) else {
-        return Err(sort_owner_error("sort_key_expression_unmodeled", "sort_key"));
-    };
-    let field = source_node
-        .schema
-        .field_with_name(key_column.name())
-        .map_err(|_| sort_owner_error("sort_key_column_missing", "sort_key").with_fact("column", key_column.name()))?;
-    if field.is_nullable() {
-        return Err(sort_owner_error("nullable_key_unsupported", "sort_key"));
+    if sort_node.spec.expressions.is_empty() {
+        return Err(sort_owner_error("sort_key_missing", "sort_key"));
     }
-    let key_type = cudf_dtype_from_arrow_type(field.data_type())
-        .ok_or_else(|| sort_owner_error("key_type_unavailable", "sort_key"))?;
-    let key_type_id = key_type.id();
-    if !(key_type_id.is_signed_int()
-        || key_type_id.is_unsigned_int()
-        || key_type_id.is_timestamp()
-        || key_type_id.is_duration()
-        || key_type_id.is_float())
-    {
-        return Err(
-            sort_owner_error("key_type_not_radix_dispatchable", "sort_key").with_fact("key_type", key_type_id.name())
-        );
-    }
+    let keys = sort_node
+        .spec
+        .expressions
+        .iter()
+        .map(|sort_expr| {
+            let key_column = alias_wrapped_column(&sort_expr.expr)
+                .ok_or_else(|| sort_owner_error("sort_key_expression_unmodeled", "sort_key"))?;
+            let field = source_node.schema.field_with_name(key_column.name()).map_err(|_| {
+                sort_owner_error("sort_key_column_missing", "sort_key").with_fact("column", key_column.name())
+            })?;
+            if field.is_nullable() {
+                return Err(
+                    sort_owner_error("nullable_key_unsupported", "sort_key").with_fact("column", key_column.name())
+                );
+            }
+            let key_type = cudf_dtype_from_arrow_type(field.data_type())
+                .ok_or_else(|| sort_owner_error("key_type_unavailable", "sort_key"))?;
+            Ok(SortKeyMetadataDescriptor {
+                key_type,
+                null_count: 0,
+                key_order: if sort_expr.descending {
+                    cudf::ops::sorting::Order::Descending
+                } else {
+                    cudf::ops::sorting::Order::Ascending
+                },
+                null_precedence: if sort_expr.nulls_first {
+                    cudf::ops::sorting::NullOrder::Before
+                } else {
+                    cudf::ops::sorting::NullOrder::After
+                },
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    validate_sort_key_metadata(&keys)?;
     if let (Some(consumer_row_count_upper_bound), Some(producer_row_count_upper_bound)) =
         (source_node.row_count_upper_bound, producer_row_count_upper_bound)
         && consumer_row_count_upper_bound != producer_row_count_upper_bound
@@ -2319,14 +2355,8 @@ pub(crate) fn sort_metadata_for_attested_graph_result(
         node_id: sort_node_id,
         execution_scope_fingerprint: canonical_execution_scope_fingerprint(plan),
         num_rows,
-        key_type,
-        null_count: 0,
+        keys,
         stable: false,
-        key_order: if sort_expr.descending {
-            cudf::ops::sorting::Order::Descending
-        } else {
-            cudf::ops::sorting::Order::Ascending
-        },
         output_frame_bytes,
         output_null_mask_bytes,
         limit,
