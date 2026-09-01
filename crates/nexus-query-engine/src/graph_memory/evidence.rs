@@ -1,12 +1,10 @@
-#[cfg(any(feature = "cugraph", test))]
-use super::model::semantic_edge_row_width_bytes;
 use super::{
     GRAPH_MEMORY_BUDGET_TRACKING_MIN_LIMIT_BYTES, GRAPH_MEMORY_ESTIMATE_EXCEEDS_BUDGET_REASON, GraphCalibrationSource,
     GraphMemoryClass, GraphPairCardinalityAdmissionMode, GraphPairCardinalitySource, GraphReservationOutcome,
     GraphSeedMode, GraphStatistics, GraphVertexEstimateSource,
     model::{
         GraphDerivedTerms, graph_live_reservation_floor_top_up_bytes, graph_memory_arithmetic_error,
-        project_model_bytes,
+        project_model_bytes, semantic_edge_row_width_bytes,
     },
     side_input::graph_side_input_workspace_peak_bytes,
 };
@@ -234,6 +232,7 @@ pub struct GraphMemoryAdmissionEvidence {
     retained_output_bytes: GraphMemoryRetainedOutputContribution,
     pub(super) owner_terms: Vec<GraphMemoryOwnerTermFact>,
     source_stage_lifetime: GraphSourceStageLifetime,
+    retained_normalization_source_model_bytes: u64,
 }
 
 impl GraphMemoryAdmissionEvidence {
@@ -274,6 +273,21 @@ impl GraphMemoryAdmissionEvidence {
                 GraphSourceStageLifetime::SeparateNormalizedInput
             } else {
                 GraphSourceStageLifetime::SharedPreparedEdgeFrame
+            },
+            retained_normalization_source_model_bytes: if estimate.edge_normalize_inserted {
+                estimate
+                    .raw_input_edges
+                    .unwrap_or(estimate.input_edges)
+                    .checked_mul(semantic_edge_row_width_bytes(
+                        estimate.vertex_width_bytes,
+                        estimate.weight_width_bytes,
+                        estimate.has_edge_id,
+                    ))
+                    .ok_or_else(|| {
+                        graph_memory_arithmetic_error("retained_normalization_source_bytes", "multiplication")
+                    })?
+            } else {
+                0
             },
         })
     }
@@ -326,6 +340,10 @@ impl GraphMemoryAdmissionEvidence {
 
     pub(crate) const fn source_stage_lifetime(&self) -> GraphSourceStageLifetime {
         self.source_stage_lifetime
+    }
+
+    pub(crate) const fn retained_normalization_source_model_bytes(&self) -> u64 {
+        self.retained_normalization_source_model_bytes
     }
 
     /// Composes the model's cold graph peak with the exact source-stage hint
@@ -711,6 +729,7 @@ impl GraphReservationReport {
         already_accounted_normalized_frame_bytes: u64,
         exact_normalized_frame_charge_bytes: Option<u64>,
         retained_normalization_source_bytes: u64,
+        retained_normalization_source_credit_cap_bytes: Option<u64>,
     ) -> Self {
         let Some(budget_bytes) = self.budget_bytes else {
             return self;
@@ -720,8 +739,12 @@ impl GraphReservationReport {
         let normalized_frame_credit_bytes =
             credit_cap_bytes.min(already_accounted_normalized_frame_bytes).min(self.requested_bytes);
         self.requested_bytes -= normalized_frame_credit_bytes;
-        let source_credit_cap_bytes =
-            if self.edge_normalize_inserted { self.modeled_live_graph_input_frame_bytes() } else { 0 };
+        let source_credit_cap_bytes = if self.edge_normalize_inserted {
+            retained_normalization_source_credit_cap_bytes
+                .unwrap_or_else(|| self.modeled_retained_normalization_source_bytes())
+        } else {
+            0
+        };
         let retained_source_credit_bytes =
             source_credit_cap_bytes.min(retained_normalization_source_bytes).min(self.requested_bytes);
         self.requested_bytes -= retained_source_credit_bytes;
@@ -736,6 +759,13 @@ impl GraphReservationReport {
         let semantic_edge_row_width =
             semantic_edge_row_width_bytes(self.vertex_width_bytes, self.weight_width_bytes, self.has_edge_id);
         self.input_edges.saturating_mul(semantic_edge_row_width)
+    }
+
+    #[cfg(any(feature = "cugraph", test))]
+    fn modeled_retained_normalization_source_bytes(&self) -> u64 {
+        let semantic_edge_row_width =
+            semantic_edge_row_width_bytes(self.vertex_width_bytes, self.weight_width_bytes, self.has_edge_id);
+        self.raw_input_edges.unwrap_or(self.input_edges).saturating_mul(semantic_edge_row_width)
     }
 
     /// Converts an isolated similarity model price into the incremental

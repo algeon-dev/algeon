@@ -68,6 +68,7 @@ pub(super) fn admit_graph_memory(
         already_accounted_normalized_graph_input_bytes: 0,
         exact_normalized_graph_input_charge_bytes: None,
         retained_normalization_source_bytes: 0,
+        retained_normalization_source_credit_cap_bytes: None,
         already_accounted_similarity_pair_input_bytes: 0,
     })?;
     // Every non-empty graph executor gets an I11 calibration row, including
@@ -187,6 +188,7 @@ pub(in crate::exec) struct GraphMemoryReservationRequest<'a> {
     /// safely credit its full physical charge against the whole-peak model.
     pub(in crate::exec) exact_normalized_graph_input_charge_bytes: Option<u64>,
     pub(in crate::exec) retained_normalization_source_bytes: u64,
+    pub(in crate::exec) retained_normalization_source_credit_cap_bytes: Option<u64>,
     pub(in crate::exec) already_accounted_similarity_pair_input_bytes: u64,
 }
 
@@ -211,6 +213,7 @@ pub(in crate::exec) fn graph_memory_reservation_report(
         already_accounted_normalized_graph_input_bytes,
         exact_normalized_graph_input_charge_bytes,
         retained_normalization_source_bytes,
+        retained_normalization_source_credit_cap_bytes,
         already_accounted_similarity_pair_input_bytes,
     } = request;
     let mut model_input = graph_memory_model_input_for_frame(input, spec, input_edges, allow_nulls)?;
@@ -249,6 +252,7 @@ pub(in crate::exec) fn graph_memory_reservation_report(
             already_accounted_normalized_graph_input_bytes,
             exact_normalized_graph_input_charge_bytes,
             retained_normalization_source_bytes,
+            retained_normalization_source_credit_cap_bytes,
         )
         .credit_live_similarity_pair_input(already_accounted_similarity_pair_input_bytes);
     Ok(match statistics {

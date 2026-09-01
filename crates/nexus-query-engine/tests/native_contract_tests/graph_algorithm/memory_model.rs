@@ -611,7 +611,7 @@ fn graph_memory_model_prices_triangle_count_from_runtime_statistics_formula() {
 
     let estimate = GraphMemoryModel.estimate(&spec, input).unwrap();
 
-    assert_eq!(estimate.requested_bytes, 16_000);
+    assert_eq!(estimate.requested_bytes, 14_400);
 }
 
 #[test]
@@ -647,7 +647,7 @@ fn graph_memory_model_prices_dblp_triangle_from_runtime_statistics_above_measure
 
     let estimate = GraphMemoryModel.estimate(&spec, input).unwrap();
 
-    assert_eq!(estimate.requested_bytes, 8_752_186_400);
+    assert_eq!(estimate.requested_bytes, 8_023_160_016);
     assert!(
         estimate.requested_bytes >= 6_617_470_861,
         "runtime-statistics DBLP triangle ask must cover the measured CUDA async-pool peak"
@@ -685,7 +685,7 @@ fn graph_memory_model_keeps_triangle_plan_time_fallback_below_whole_device_ticke
     let estimate = GraphMemoryModel.estimate(&spec, input).unwrap();
 
     assert_eq!(estimate.vertex_estimate, 182_256_596);
-    assert_eq!(estimate.requested_bytes, 32_077_160_896);
+    assert_eq!(estimate.requested_bytes, 31_348_134_512);
     assert!(
         estimate.requested_bytes < 101_449_662_464 / 2,
         "plan-time triangle fallback should remain a packing hint, not become a caller-selected grant target"

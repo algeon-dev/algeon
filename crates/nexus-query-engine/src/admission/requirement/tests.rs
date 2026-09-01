@@ -175,6 +175,62 @@ fn scheduled_materializing_pagerank_proof() -> QueryPlanCapabilityProof {
 }
 
 #[test]
+fn graph_proof_prices_string_resident_input_after_post_graph_projection() {
+    let edge_schema =
+        Arc::new(Schema::new(vec![Field::new("src", DataType::Utf8, false), Field::new("dst", DataType::Utf8, false)]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![
+            Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef,
+            Arc::new(StringArray::from(vec!["b", "c"])) as ArrayRef,
+        ],
+    )
+    .unwrap();
+    let mut producer_builder = QueryPlanBuilder::new();
+    let producer_source = producer_builder
+        .add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&edge_schema), vec![batch])));
+    let producer_plan = producer_builder.finish_gpu_resident(producer_source);
+
+    let params = GraphAlgorithmParams::PageRank(GraphPageRankParams::default());
+    let graph_schema = graph_result_schema_for_params(GraphAlgorithm::PageRank, &params);
+    let mut graph_builder = QueryPlanBuilder::new();
+    let resident = graph_builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("edges", edge_schema).with_row_count_upper_bound(2).with_graph_vertex_upper_bound(3),
+    ));
+    let graph = graph_builder.add_graph_algorithm(
+        resident,
+        GraphAlgorithmSpec::with_stable_schema(
+            GraphAlgorithm::PageRank,
+            GraphEdgeColumnBindings::new("src", "dst", None::<String>),
+            GraphConstructionOptions::default(),
+            params,
+        ),
+    );
+    let projected = graph_builder.add_projection(
+        graph,
+        graph_schema
+            .fields()
+            .iter()
+            .map(|field| ProjectionOutput::new(Expr::column(field.name()), field.as_ref().clone()))
+            .collect(),
+    );
+    let graph_plan = graph_builder.finish_gpu_resident(projected);
+    let proof = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan_with_resident_inputs(
+        &graph_plan,
+        [("edges", &producer_plan)],
+    )
+    .expect("exact resident string evidence must bind to the graph input")
+    .expect("the projected PageRank graph must issue a capability proof");
+    let shape = proof
+        .as_requirement()
+        .reservation_shapes
+        .iter()
+        .find(|shape| shape.matches(&graph_plan))
+        .expect("the graph execution scope must remain in the proof");
+    assert_eq!(shape.owner_term_rejection_reason(), None);
+}
+
+#[test]
 fn filtered_edge_producer_defers_only_the_graph_phase_under_one_attempt_proof() {
     let (graph_plan, producer_plan) = filtered_pagerank_plan_and_producer(false);
     let graph = QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&graph_plan)
@@ -517,6 +573,19 @@ fn graph_output_union_consumer(input_names: &[&str]) -> QueryPlan {
     builder.finish_with_host_sink(root)
 }
 
+fn shared_graph_output_union_consumer() -> QueryPlan {
+    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
+    let mut builder = QueryPlanBuilder::new();
+    let first = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("graph", Arc::clone(&schema)).with_row_count_upper_bound(8),
+    ));
+    let second = builder.add_source(SourceNode::GpuResident(
+        GpuResidentSource::new("graph", Arc::clone(&schema)).with_row_count_upper_bound(9),
+    ));
+    let root = builder.add_union(vec![first, second], Arc::clone(&schema));
+    builder.finish_with_host_sink(root)
+}
+
 fn mixed_local_graph_union_consumer(source: LocalParquetSource) -> QueryPlan {
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
     let mut builder = QueryPlanBuilder::new();
@@ -635,6 +704,43 @@ fn graph_output_global_aggregate_consumer() -> QueryPlan {
         ],
     );
     builder.finish_with_host_sink(projection)
+}
+
+fn graph_output_string_filter_global_aggregate_consumer() -> QueryPlan {
+    let input_schema = Arc::new(Schema::new(vec![
+        Field::new("vertex", DataType::Utf8, false),
+        Field::new("value", DataType::Float64, false),
+    ]));
+    let mut builder = QueryPlanBuilder::new();
+    let source = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("only", Arc::clone(&input_schema))));
+    let filtered = builder.add_filter(
+        source,
+        Expr::binary(Expr::column("value"), BinaryOp::Gt, Expr::literal(LiteralValue::Float64(0.0))),
+        input_schema,
+    );
+    let aggregate_input_schema =
+        Arc::new(Schema::new(vec![Field::new("__nexus_native_aggregate_arg_0", DataType::Int64, false)]));
+    let aggregate_input = builder.add_projection(
+        filtered,
+        vec![ProjectionOutput::new(
+            Expr::literal(LiteralValue::Int64(1)).alias("__nexus_native_aggregate_arg_0"),
+            aggregate_input_schema.field(0).as_ref().clone(),
+        )],
+    );
+    let output_schema = Arc::new(Schema::new(vec![Field::new("vertices", DataType::Int64, false)]));
+    let aggregate = builder.add_aggregate(
+        aggregate_input,
+        AggregateSpec::new(
+            Vec::new(),
+            vec![AggregateExpr::new(
+                AggregateFunction::Count,
+                Expr::column("__nexus_native_aggregate_arg_0"),
+                "vertices",
+            )],
+        ),
+        Arc::clone(&output_schema),
+    );
+    builder.finish_with_host_sink(aggregate)
 }
 
 fn graph_output_global_nunique_consumer(input_type: DataType, nullable: bool, grouped: bool) -> QueryPlan {
@@ -770,12 +876,12 @@ fn graph_output_inner_join_sort_limit_consumer() -> QueryPlan {
 
 fn graph_output_shared_topk_semi_and_left_join_consumer() -> QueryPlan {
     let ranked_schema = Arc::new(Schema::new(vec![
-        Field::new("vertex", DataType::Int64, false),
+        Field::new("vertex", DataType::Utf8, false),
         Field::new("value", DataType::Float64, false),
     ]));
     let metadata_schema = Arc::new(Schema::new(vec![
-        Field::new("vertex_id", DataType::Int64, false),
-        Field::new("vertex_name", DataType::Int64, false),
+        Field::new("vertex_id", DataType::Utf8View, false),
+        Field::new("vertex_name", DataType::Utf8View, false),
     ]));
     let mut builder = QueryPlanBuilder::new();
     let graph = builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("only", Arc::clone(&ranked_schema))));
@@ -785,13 +891,49 @@ fn graph_output_shared_topk_semi_and_left_join_consumer() -> QueryPlan {
         Arc::clone(&ranked_schema),
     );
     let ranked = builder.add_limit(sorted, LimitSpec::fetch(5), Arc::clone(&ranked_schema));
+    let ranked_join_schema = Arc::new(Schema::new(vec![
+        Field::new("vertex_view", DataType::Utf8View, false),
+        Field::new("vertex", DataType::Utf8, false),
+        Field::new("value", DataType::Float64, false),
+    ]));
+    let ranked = builder.add_projection(
+        ranked,
+        vec![
+            ProjectionOutput::new(
+                Expr::cast(Expr::column("vertex"), DataType::Utf8View),
+                ranked_join_schema.field(0).as_ref().clone(),
+            ),
+            ProjectionOutput::new(Expr::column("vertex"), ranked_join_schema.field(1).as_ref().clone()),
+            ProjectionOutput::new(Expr::column("value"), ranked_join_schema.field(2).as_ref().clone()),
+        ],
+    );
     let metadata = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
         vec![
             LocalParquetFile::new("/tmp/shared-topk-metadata.parquet")
                 .with_row_groups(vec![0])
-                .with_row_group_rows(vec![4])
-                .with_row_group_bytes(vec![128])
-                .with_projected_row_group_bytes(vec![128], vec![128]),
+                .with_row_group_rows(vec![10_408_932])
+                .with_row_group_bytes(vec![1_800_333_005])
+                .with_projected_row_group_bytes(vec![749_163_431], vec![749_163_431])
+                .with_variable_width_payload_evidence(std::collections::BTreeMap::from([
+                    (
+                        0,
+                        crate::parquet_stats::ParquetVariableWidthPayloadEvidence::new(
+                            0,
+                            vec![0],
+                            416_357_280,
+                            crate::parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary,
+                        ),
+                    ),
+                    (
+                        1,
+                        crate::parquet_stats::ParquetVariableWidthPayloadEvidence::new(
+                            1,
+                            vec![0],
+                            666_171_648,
+                            crate::parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary,
+                        ),
+                    ),
+                ])),
         ],
         Arc::clone(&metadata_schema),
         vec!["vertex_id".to_owned(), "vertex_name".to_owned()],
@@ -803,7 +945,7 @@ fn graph_output_shared_topk_semi_and_left_join_consumer() -> QueryPlan {
             JoinType::LeftSemi,
             vec![JoinKey::new(
                 crate::expr::ColumnRef::input(0, "vertex_id", "vertex_id"),
-                crate::expr::ColumnRef::input(1, "vertex", "vertex"),
+                crate::expr::ColumnRef::input(1, "vertex_view", "vertex_view"),
             )],
         )
         .with_build_side(JoinSide::Right)
@@ -814,9 +956,9 @@ fn graph_output_shared_topk_semi_and_left_join_consumer() -> QueryPlan {
         Arc::clone(&metadata_schema),
     );
     let output_schema = Arc::new(Schema::new(vec![
-        Field::new("vertex", DataType::Int64, false),
+        Field::new("vertex", DataType::Utf8, false),
         Field::new("value", DataType::Float64, false),
-        Field::new("vertex_name", DataType::Int64, true),
+        Field::new("vertex_name", DataType::Utf8View, true),
     ]));
     let enriched = builder.add_join(
         ranked,
@@ -824,7 +966,7 @@ fn graph_output_shared_topk_semi_and_left_join_consumer() -> QueryPlan {
         JoinSpec::new(
             JoinType::Left,
             vec![JoinKey::new(
-                crate::expr::ColumnRef::input(0, "vertex", "vertex"),
+                crate::expr::ColumnRef::input(0, "vertex_view", "vertex_view"),
                 crate::expr::ColumnRef::input(1, "vertex_id", "vertex_id"),
             )],
         )
@@ -1140,6 +1282,34 @@ fn composed_union_reuses_exact_local_source_stage_alongside_gpu_producer() {
         .resolve_reservation_envelope(reservation_policy())
         .expect("mixed local/GPU composition has one finite owner inventory");
     assert!(envelope.complete_phase_peak_bytes().is_some());
+}
+
+#[test]
+fn composed_union_allows_one_retained_producer_to_fan_out() {
+    let consumer_plan = shared_graph_output_union_consumer();
+    let combined = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+        &consumer_plan,
+        QueryPlanCapabilityProof::for_composed_consumer_plan(&consumer_plan)
+            .expect("the shared-result consumer must issue a composed proof"),
+        [("graph".to_owned(), relational_gpu_producer_proof())],
+    )
+    .expect("one immutable retained graph result may feed multiple consumer branches");
+
+    let consumer_shape = combined
+        .as_requirement()
+        .reservation_shapes
+        .iter()
+        .find(|shape| shape.matches(&consumer_plan))
+        .expect("the consumer scope is retained");
+    assert_eq!(consumer_shape.producer_occurrences().len(), 1);
+    assert_eq!(consumer_shape.producer_occurrences()[0].occurrence_id(), "graph");
+    let schedule = consumer_shape.ordered_schedule().expect("the shared-result consumer keeps an ordered schedule");
+    assert_eq!(schedule.consumer_state(), AttemptReservationConsumerState::Bounded);
+    assert!(!schedule.consumer_peak_term_groups().is_empty());
+    let envelope = combined
+        .resolve_reservation_envelope(reservation_policy())
+        .expect("shared producer fan-out must retain a complete ordered inventory");
+    assert_eq!(envelope.bound_derivation(), Some(AttemptBoundDerivation::OrderedTimeline));
 }
 
 #[test]
@@ -3165,6 +3335,28 @@ fn graph_result_global_aggregate_supports_ordered_and_conservative_owner_bounds(
 }
 
 #[test]
+fn graph_result_string_filter_aggregate_uses_producer_payload_evidence() {
+    let consumer_plan = graph_output_string_filter_global_aggregate_consumer();
+    let combined = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
+        &consumer_plan,
+        QueryPlanCapabilityProof::for_composed_consumer_plan(&consumer_plan)
+            .expect("the string graph aggregate consumer must issue a composed proof"),
+        [ComposedGraphProducerCandidate::new(
+            Some("only".to_owned()),
+            Some("only".to_owned()),
+            Some(pagerank_like_string_producer()),
+        )],
+    )
+    .expect("exact producer payload evidence must price the filtered string graph frame");
+    assert!(combined.as_requirement().owner_terms.iter().any(|term| {
+        matches!(term.id.owner, OwnerId::Aggregate(_)) && term.id.role == OwnerTermRole::AggregatePartialState
+    }));
+    combined
+        .resolve_reservation_envelope(reservation_policy())
+        .expect("the string graph aggregate owner schedule must resolve before placement");
+}
+
+#[test]
 fn graph_result_global_count_and_nunique_use_the_native_distinct_workspace_owner() {
     let consumer_plan = graph_output_global_nunique_consumer(DataType::Int64, false, false);
     let producer = graph_bfs_proof_with_typed_output_and_rows(0, 64);
@@ -3208,22 +3400,35 @@ fn graph_result_global_count_and_nunique_use_the_native_distinct_workspace_owner
 }
 
 #[test]
-fn graph_result_nunique_keeps_grouped_nullable_and_variable_width_shapes_unmodeled() {
-    for (data_type, nullable, grouped, expected_reason) in [
-        (DataType::Int64, false, true, "consumer_aggregate_state_unmodeled"),
-        (DataType::Int64, true, false, "consumer_aggregate_nunique_owner_preflight_unavailable"),
-        (DataType::Utf8, false, false, "consumer_aggregate_nunique_owner_preflight_unavailable"),
-    ] {
+fn graph_result_nunique_supports_grouped_and_nullable_fixed_width_arguments() {
+    for (data_type, nullable, grouped) in [(DataType::Int64, false, true), (DataType::Int64, true, false)] {
         let consumer_plan = graph_output_global_nunique_consumer(data_type, nullable, grouped);
-        let error = QueryPlanCapabilityProof::combine_composed_graph_attempt(
+        let (_, owner_terms) = composed_consumer_additional_peak_bytes_for_plan(
             &consumer_plan,
-            QueryPlanCapabilityProof::for_composed_consumer_plan(&consumer_plan)
-                .expect("the consumer proof stays incomplete until its producer is bound"),
-            [("only".to_owned(), graph_bfs_proof_with_typed_output_and_rows(0, 64))],
+            &[ComposedGraphProducerOutputEvidence {
+                occurrence_id: "only".to_owned(),
+                row_count_upper_bound: 64,
+                column_evidence: PlanColumnEvidence::default(),
+            }],
         )
-        .expect_err("the unsupported NUnique owner shape must fail closed");
-        assert_eq!(error.fact_value("schedule_reason"), Some(expected_reason));
+        .expect("the grouped NUnique owner preflight must bound its additional workspace");
+        assert!(owner_terms.iter().any(|term| term.id.role == OwnerTermRole::AggregateDistinctWorkspace));
     }
+}
+
+#[test]
+fn graph_result_nunique_rejects_variable_width_arguments_without_payload_evidence() {
+    let consumer_plan = graph_output_global_nunique_consumer(DataType::Utf8, false, false);
+    let error = composed_consumer_additional_peak_bytes_for_plan(
+        &consumer_plan,
+        &[ComposedGraphProducerOutputEvidence {
+            occurrence_id: "only".to_owned(),
+            row_count_upper_bound: 64,
+            column_evidence: PlanColumnEvidence::default(),
+        }],
+    )
+    .expect_err("variable-width NUnique without payload evidence must fail closed");
+    assert_eq!(error.fact_value("schedule_reason"), Some("consumer_aggregate_nunique_owner_preflight_unavailable"));
 }
 
 #[test]
@@ -3406,10 +3611,11 @@ fn composed_consumer_rejects_projected_type_changes_and_missing_string_payload_e
         Expr::cast(Expr::column("value"), DataType::Utf8View),
         DataType::Utf8View,
     );
-    let error = composed_consumer_additional_peak_bytes_for_plan(&representation_cast, &output)
-        .expect_err("a string representation cast without source-coupled payload evidence must fail closed");
-    assert_eq!(error.fact_value("schedule_reason"), Some("consumer_string_payload_evidence_missing"));
-    assert_eq!(error.fact_value("column"), Some("projected"));
+    let (additional_peak_bytes, owner_terms) =
+        composed_consumer_additional_peak_bytes_for_plan(&representation_cast, &output)
+            .expect("a string representation cast reuses the same native string column");
+    assert_eq!(additional_peak_bytes, 0);
+    assert!(owner_terms.is_empty());
 
     let consumer_plan =
         graph_output_projection_consumer(Expr::cast(Expr::column("value"), DataType::Float64), DataType::Int64);
@@ -3503,15 +3709,11 @@ fn composed_graph_schedule_prices_nullable_keys_and_rejects_missing_string_paylo
 #[test]
 fn composed_graph_schedule_prices_one_shared_topk_across_semi_and_left_joins() {
     let plan = graph_output_shared_topk_semi_and_left_join_consumer();
-    let combined = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
+    let combined = QueryPlanCapabilityProof::combine_composed_graph_attempt(
         &plan,
         QueryPlanCapabilityProof::for_composed_consumer_plan(&plan)
             .expect("the shared Top-K consumer must issue its local-source owner proof"),
-        [ComposedGraphProducerCandidate::new(
-            Some("only".to_owned()),
-            Some("only".to_owned()),
-            Some(production_graph_proof(GraphAlgorithm::PageRank)),
-        )],
+        [("only".to_owned(), pagerank_like_string_producer())],
     )
     .expect("one ranked Top-K shared by metadata filtering and enrichment must have one complete owner schedule");
     let owner_terms = &combined.as_requirement().owner_terms;
@@ -3521,6 +3723,25 @@ fn composed_graph_schedule_prices_one_shared_topk_across_semi_and_left_joins() {
         owner_terms.iter().map(|term| term.id()).collect::<HashSet<_>>().len(),
         owner_terms.len(),
         "shared owner terms must be carried for pricing and emitted once"
+    );
+    let managed_capacity_baseline_bytes = 101_492_260_864_u64;
+    let root_output = owner_terms
+        .iter()
+        .find(|term| {
+            term.id().owner == OwnerId::Consumer(plan.root_id()) && term.id().role == OwnerTermRole::ConsumerOutput
+        })
+        .expect("the catalog enrichment root must own its output frame");
+    assert!(
+        root_output.bytes() < managed_capacity_baseline_bytes,
+        "a unique five-row graph key and LeftSemi-filtered catalog must not multiply whole-column payload by catalog rows"
+    );
+    let envelope = combined
+        .resolve_reservation_envelope(reservation_policy())
+        .expect("the production-scale catalog enrichment must retain a complete ordered envelope");
+    assert!(
+        envelope.complete_phase_peak_bytes().expect("ordered envelope must expose a complete peak")
+            < managed_capacity_baseline_bytes,
+        "the production-scale shared Top-K catalog enrichment must fit below the managed capacity baseline"
     );
 }
 
@@ -3549,6 +3770,7 @@ fn production_shaped_string_lookup_caps_payload_without_row_multiplication() {
             },
         )]),
         unique_keys: vec![BTreeSet::from(["vertex".to_owned()])],
+        ..PlanColumnEvidence::default()
     };
     let producer_outputs = [
         ComposedGraphProducerOutputEvidence {
@@ -3578,15 +3800,15 @@ fn pagerank_like_string_producer() -> QueryPlanCapabilityProof {
     ]));
     let file = LocalParquetFile::new("/tmp/pagerank-like-string-output.parquet")
         .with_row_groups(vec![0])
-        .with_row_group_rows(vec![64])
-        .with_row_group_bytes(vec![4_096])
-        .with_projected_row_group_bytes(vec![4_096], vec![4_096])
+        .with_row_group_rows(vec![109_914_910])
+        .with_row_group_bytes(vec![8_792_428_800])
+        .with_projected_row_group_bytes(vec![8_792_428_800], vec![8_792_428_800])
         .with_variable_width_payload_evidence(std::collections::BTreeMap::from([(
             0,
             crate::parquet_stats::ParquetVariableWidthPayloadEvidence::new(
                 0,
                 vec![0],
-                1_024,
+                4_706_637_611,
                 crate::parquet_stats::ParquetVariableWidthEncodingProof::PlainAndDictionary,
             ),
         )]));
@@ -3939,6 +4161,10 @@ fn graph_to_metadata_planning_defers_footer_dependent_admission_until_hydration(
     let planning = graph_metadata_join_consumer(JoinType::Inner, Some(JoinSide::Right), false, false);
     let structural = QueryPlanCapabilityProof::for_composed_consumer_plan(&planning)
         .expect("planning must accept the supported mixed graph/metadata topology without footer I/O");
+    assert!(
+        structural.requires_composed_producer_binding(),
+        "mixed graph/metadata admission must remain deferred until exact producer binding"
+    );
     let error = QueryPlanCapabilityProof::combine_composed_graph_attempt(
         &planning,
         structural,

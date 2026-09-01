@@ -1,5 +1,8 @@
 use super::*;
-use crate::expr::alias_wrapped_column;
+use crate::{
+    expr::{alias_wrapped_column, representation_cast_column},
+    plan::ProjectionOutput,
+};
 
 pub(in crate::exec) fn validate_projection_capability(
     node: &ProjectionNode,
@@ -573,7 +576,14 @@ fn try_execute_column_only_projection(
 ) -> Result<Option<DataFrame>> {
     let mut mappings = Vec::with_capacity(node.outputs.len());
     for output in &node.outputs {
-        let Some(column) = alias_wrapped_column(&output.expr) else {
+        let column = if let Some(column) = alias_wrapped_column(&output.expr) {
+            column
+        } else if let Some((column, _)) = representation_cast_column(&output.expr)
+            && frame_column_cudf_data_type(&frame, column.name(), "nexus_query_engine.projection.select")
+                .is_ok_and(|source| representation_cast_is_native_noop(output, source))
+        {
+            column
+        } else {
             return Ok(None);
         };
         let source_name = column.name().to_string();
@@ -596,6 +606,13 @@ fn try_execute_column_only_projection(
         )
     })?;
     coerce_projection_output_schema(output, node, token, metrics).map(Some)
+}
+
+fn representation_cast_is_native_noop(output: &ProjectionOutput, source_type: cudf::DataType) -> bool {
+    representation_cast_column(&output.expr).is_some_and(|(_, target_type)| {
+        target_type == output.field.data_type()
+            && cudf_dtype_from_arrow_type(target_type).is_some_and(|target| source_type == target)
+    })
 }
 
 fn coerce_projection_output_schema(
@@ -720,4 +737,22 @@ pub(in crate::exec) fn projection_schema_mismatch_error(
     .with_fact("field_index", field_index)
     .with_fact("actual_type", format!("{actual_type:?}"))
     .with_fact("expected_type", format!("{expected_type:?}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow::datatypes::{DataType, Field};
+
+    use super::*;
+
+    #[test]
+    fn string_representation_cast_is_native_noop() {
+        let output = ProjectionOutput::new(
+            Expr::cast(Expr::column("value"), DataType::Utf8View),
+            Field::new("value", DataType::Utf8View, false),
+        );
+
+        assert!(representation_cast_is_native_noop(&output, cudf::DataType::new(cudf::TypeId::String)));
+        assert!(!representation_cast_is_native_noop(&output, cudf::DataType::new(cudf::TypeId::Int64)));
+    }
 }

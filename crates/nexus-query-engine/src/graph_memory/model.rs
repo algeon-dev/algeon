@@ -490,7 +490,11 @@ fn derive_graph_terms(
         "construction_base",
     )?;
     let normalization = if input.edge_normalize_inserted { normalized_edge } else { ModelBytes(0) };
-    let retained_normalization_source = normalization;
+    let retained_normalization_source = if input.edge_normalize_inserted {
+        ModelBytes::from_u64(input.raw_edge_count()).mul(edge_row_width, "retained_normalization_source_bytes")?
+    } else {
+        ModelBytes(0)
+    };
     let live_graph_inputs = normalization.add(retained_normalization_source, "live_graph_inputs")?;
     let construction_transient = if spec.graph_options.policy == GraphConstructionPolicy::RawLibcugraph {
         let unnormalized_input_copy = if input.edge_normalize_inserted { ModelBytes(0) } else { normalized_edge };
@@ -1291,7 +1295,6 @@ fn output_row_count_upper_bound_for_algorithm(
     }
 }
 
-#[cfg(any(feature = "cugraph", test))]
 pub(crate) fn semantic_edge_row_width_bytes(
     vertex_width_bytes: u64,
     weight_width_bytes: Option<u64>,

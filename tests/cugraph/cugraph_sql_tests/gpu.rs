@@ -872,7 +872,7 @@ async fn cugraph_sql_gpu_filtered_local_parquet_rejects_an_oversized_materialize
 async fn cugraph_sql_gpu_betweenness_reservation_reports_request_calibration_and_seed_mode() {
     let (_backend, ctx) = default_backend_cugraph_sql_context();
     register_directed_bfs_edges(&ctx, "raw_edges");
-    ctx.sql("SET datafusion_nexus.request.graph_raw_input_edges = '45564149'").await.unwrap().collect().await.unwrap();
+    ctx.sql("SET datafusion_nexus.request.graph_raw_input_edges = '4'").await.unwrap().collect().await.unwrap();
 
     let df = ctx
         .sql(
@@ -892,9 +892,31 @@ async fn cugraph_sql_gpu_betweenness_reservation_reports_request_calibration_and
     let row = &graph_reservations[0];
     assert_eq!(row.algorithm, "betweenness_centrality");
     assert_eq!(row.outcome, "admitted");
-    assert_eq!(row.raw_input_edges, Some(45_564_149));
+    assert_eq!(row.raw_input_edges, Some(4));
     assert_eq!(row.seed_count, Some(2));
     assert_eq!(row.seed_mode, "runtime_k_selection");
+}
+
+#[tokio::test]
+async fn cugraph_sql_gpu_raw_edge_calibration_cannot_overcredit_a_smaller_live_source() {
+    let (_backend, ctx) = default_backend_cugraph_sql_context();
+    register_directed_bfs_edges(&ctx, "raw_edges");
+    ctx.sql("SET datafusion_nexus.request.graph_raw_input_edges = '45564149'").await.unwrap().collect().await.unwrap();
+
+    let error = ctx
+        .sql(
+            "SELECT vertex, value \
+             FROM cugraph_betweenness_centrality('raw_edges', 'src', 'dst', NULL, '{\"k\": 2}') \
+             ORDER BY vertex",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .expect_err("modeled source bytes absent from the live owner cannot credit the graph reservation");
+    let nexus = typed_nexus_error(&error);
+    assert_eq!(nexus.code(), ErrorCode::MemoryReservationFailed);
+    assert!(nexus.message().contains("reason=graph_memory_estimate_exceeds_budget"));
 }
 
 /// Runs the provisioned Python-cuGraph PageRank acceptance check.

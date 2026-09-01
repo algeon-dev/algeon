@@ -43,6 +43,7 @@ impl DataFrameExpressionInputColumn {
 pub struct DataFrameExpressionPeakGroup {
     referenced_input_relocation_bytes: usize,
     boolean_equality_output_bytes: usize,
+    fixed_width_arithmetic_output_bytes: usize,
     null_float64_literal_bytes: usize,
     copy_if_else_output_bytes: usize,
     unchanged_column_relocation_bytes: usize,
@@ -56,6 +57,10 @@ impl DataFrameExpressionPeakGroup {
 
     pub fn boolean_equality_output_bytes(self) -> usize {
         self.boolean_equality_output_bytes
+    }
+
+    pub fn fixed_width_arithmetic_output_bytes(self) -> usize {
+        self.fixed_width_arithmetic_output_bytes
     }
 
     pub fn null_float64_literal_bytes(self) -> usize {
@@ -78,6 +83,7 @@ impl DataFrameExpressionPeakGroup {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataFrameExpressionAllocationPreflight {
     boolean_equality_output_bytes: usize,
+    fixed_width_arithmetic_output_bytes: usize,
     null_float64_literal_bytes: usize,
     copy_if_else_output_bytes: usize,
     output_dataframe_retained_bytes: usize,
@@ -90,6 +96,10 @@ pub struct DataFrameExpressionAllocationPreflight {
 impl DataFrameExpressionAllocationPreflight {
     pub fn boolean_equality_output_bytes(&self) -> usize {
         self.boolean_equality_output_bytes
+    }
+
+    pub fn fixed_width_arithmetic_output_bytes(&self) -> usize {
+        self.fixed_width_arithmetic_output_bytes
     }
 
     pub fn null_float64_literal_bytes(&self) -> usize {
@@ -139,6 +149,7 @@ struct OutputAnalysis<'a> {
 struct ExpressionComponents<'a> {
     referenced_columns: BTreeSet<&'a str>,
     boolean_equality_output_bytes: usize,
+    fixed_width_arithmetic_output_bytes: usize,
     null_float64_literal_bytes: usize,
     copy_if_else_output_bytes: usize,
 }
@@ -298,6 +309,39 @@ fn fixed_width_comparison<'a>(
     })
 }
 
+fn fixed_width_addition<'a>(
+    expr: &Expr,
+    rows: usize,
+    inputs: &'a BTreeMap<&str, &'a DataFrameExpressionInputColumn>,
+    components: &mut ExpressionComponents<'a>,
+) -> Result<OutputAnalysis<'a>> {
+    let Expr::BinaryOp { lhs, op: BinaryOperator::Add, rhs } = unwrap_alias(expr) else {
+        return Err(preflight_error(
+            "fixed_width_addition_required",
+            "supported arithmetic preflight requires fixed-width addition",
+        ));
+    };
+    let lhs = comparison_operand(lhs, rows, inputs, components)?;
+    let rhs = comparison_operand(rhs, rows, inputs, components)?;
+    let dtype = crate::ops::binary::infer_binary_output_dtype(lhs.dtype, rhs.dtype, BinaryOperator::Add)
+        .map_err(|error| error.reanchor_if_needed("expr::dataframe_expression_allocation_preflight"))?;
+    let nullable = lhs.nullable || rhs.nullable;
+    let retained_bytes = fixed_width_column_bytes(rows, dtype, nullable)?;
+    components.fixed_width_arithmetic_output_bytes = checked_add(
+        components.fixed_width_arithmetic_output_bytes,
+        retained_bytes,
+        "fixed_width_arithmetic_output_bytes",
+    )?;
+    let temporary_workspace_peak_bytes =
+        [lhs, rhs].into_iter().filter(|value| value.source.is_none()).try_fold(0usize, |bytes, value| {
+            checked_add(bytes, value.retained_bytes, "arithmetic_temporary_workspace_peak_bytes")
+        })?;
+    Ok(OutputAnalysis {
+        value: ExpressionValue { dtype, nullable, retained_bytes, source: None },
+        temporary_workspace_peak_bytes,
+    })
+}
+
 fn null_check<'a>(
     input: &Expr,
     rows: usize,
@@ -340,6 +384,7 @@ fn supported_output<'a>(
                 temporary_workspace_peak_bytes: 0,
             })
         },
+        Expr::BinaryOp { op: BinaryOperator::Add, .. } => fixed_width_addition(expr, rows, inputs, components),
         Expr::BinaryOp { .. } => fixed_width_comparison(expr, rows, inputs, components),
         Expr::IsNull(input) | Expr::IsNotNull(input) => null_check(input, rows, inputs, components),
         Expr::IfElse { condition, true_val, false_val } => {
@@ -441,6 +486,7 @@ pub fn dataframe_expression_allocation_preflight_for_metadata(
     let evaluation_peak_bytes = [
         referenced_input_relocation_bytes,
         components.boolean_equality_output_bytes,
+        components.fixed_width_arithmetic_output_bytes,
         components.null_float64_literal_bytes,
         components.copy_if_else_output_bytes,
     ]
@@ -453,6 +499,7 @@ pub fn dataframe_expression_allocation_preflight_for_metadata(
     let evaluation_peak_group = DataFrameExpressionPeakGroup {
         referenced_input_relocation_bytes,
         boolean_equality_output_bytes: components.boolean_equality_output_bytes,
+        fixed_width_arithmetic_output_bytes: components.fixed_width_arithmetic_output_bytes,
         null_float64_literal_bytes: components.null_float64_literal_bytes,
         copy_if_else_output_bytes: components.copy_if_else_output_bytes,
         unchanged_column_relocation_bytes: 0,
@@ -461,6 +508,7 @@ pub fn dataframe_expression_allocation_preflight_for_metadata(
     let assembly_peak_group = DataFrameExpressionPeakGroup {
         referenced_input_relocation_bytes,
         boolean_equality_output_bytes: 0,
+        fixed_width_arithmetic_output_bytes: 0,
         null_float64_literal_bytes: 0,
         copy_if_else_output_bytes: 0,
         unchanged_column_relocation_bytes,
@@ -469,6 +517,7 @@ pub fn dataframe_expression_allocation_preflight_for_metadata(
 
     Ok(DataFrameExpressionAllocationPreflight {
         boolean_equality_output_bytes: components.boolean_equality_output_bytes,
+        fixed_width_arithmetic_output_bytes: components.fixed_width_arithmetic_output_bytes,
         null_float64_literal_bytes: components.null_float64_literal_bytes,
         copy_if_else_output_bytes: components.copy_if_else_output_bytes,
         output_dataframe_retained_bytes,
@@ -541,16 +590,22 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_arithmetic_fails_closed() {
-        let inputs = [DataFrameExpressionInputColumn::new("score", DataType::new(TypeId::Float64), false, 8)];
-        let error = dataframe_expression_allocation_preflight_for_metadata(
-            1,
+    fn fixed_width_addition_reports_output_and_literal_workspace() {
+        let rows = 1_000;
+        let int64_bytes = fixed_width_column_bytes(rows, DataType::new(TypeId::Int64), false).unwrap();
+        let inputs =
+            [DataFrameExpressionInputColumn::new("path_index", DataType::new(TypeId::Int64), false, int64_bytes)];
+        let preflight = dataframe_expression_allocation_preflight_for_metadata(
+            rows,
             &inputs,
-            &[("derived_score".to_string(), col("score") + col("score"))],
+            &[("next_path_index".to_string(), col("path_index") + lit(1_i64))],
             false,
         )
-        .expect_err("unsupported arithmetic must remain unresolved");
-        assert_eq!(error.detail_value("reason"), Some("comparison_operator_unsupported"));
+        .expect("direct fixed-width addition must have a finite allocation preflight");
+        assert_eq!(preflight.fixed_width_arithmetic_output_bytes(), int64_bytes);
+        assert_eq!(preflight.temporary_workspace_peak_bytes(), int64_bytes);
+        assert_eq!(preflight.output_dataframe_retained_bytes(), int64_bytes * 2);
+        assert_eq!(preflight.peak_groups()[0].fixed_width_arithmetic_output_bytes(), int64_bytes);
     }
 
     #[test]

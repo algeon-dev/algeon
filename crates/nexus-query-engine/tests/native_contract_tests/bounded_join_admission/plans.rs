@@ -500,6 +500,130 @@ pub(crate) fn sort_between_two_joins_plan() -> nexus_query_engine::plan::QueryPl
     builder.finish_with_host_sink(second_join)
 }
 
+pub(crate) fn global_row_number_between_two_joins_plan() -> nexus_query_engine::plan::QueryPlan {
+    let schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+    let window_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("row_number", DataType::Int64, false),
+    ]));
+    let mut builder = QueryPlanBuilder::new();
+    let sources = ["left", "middle", "right"].map(|name| {
+        builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+            format!("/tmp/windowed-multi-join-{name}.parquet"),
+            Arc::clone(&schema),
+            vec!["key".to_string()],
+        )))
+    });
+    let first_join = builder.add_join(
+        sources[0],
+        sources[1],
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "key", "key"), ColumnRef::input(1, "key", "key"))],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key")]),
+        Arc::clone(&schema),
+    );
+    let sorted = builder.add_sort(
+        first_join,
+        SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]),
+        Arc::clone(&schema),
+    );
+    let numbered = builder.add_window(
+        sorted,
+        WindowSpec::new(
+            Vec::new(),
+            vec![SortExpr::new(Expr::column("key"), false, false)],
+            vec![WindowFunction::row_number_i64("row_number")],
+        ),
+        Arc::clone(&window_schema),
+    );
+    let numbered = builder.add_projection(numbered, projection_outputs(vec![Expr::column("key")], Arc::clone(&schema)));
+    let second_join = builder.add_join(
+        numbered,
+        sources[2],
+        JoinSpec::new(
+            JoinType::Left,
+            vec![JoinKey::new(ColumnRef::input(0, "key", "key"), ColumnRef::input(1, "key", "key"))],
+        )
+        .with_output_projection(vec![JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key")]),
+        schema,
+    );
+    builder.finish_with_host_sink(second_join)
+}
+
+pub(crate) fn distinct_aggregate_after_two_joins_plan() -> nexus_query_engine::plan::QueryPlan {
+    let fact_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("relationship_id", DataType::Int32, false),
+    ]));
+    let key_schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("relationship_ids", DataType::Int64, false),
+    ]));
+    let mut builder = QueryPlanBuilder::new();
+    let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/distinct-multi-join-fact.parquet",
+        Arc::clone(&fact_schema),
+        vec!["key".to_string(), "relationship_id".to_string()],
+    )));
+    let dimension = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
+        "/tmp/distinct-multi-join-dimension.parquet",
+        Arc::clone(&key_schema),
+        vec!["key".to_string()],
+    )));
+    let shared_dimension =
+        builder.add_projection(dimension, projection_outputs(vec![Expr::column("key")], Arc::clone(&key_schema)));
+    let first_join = builder.add_join(
+        fact,
+        shared_dimension,
+        JoinSpec::new(
+            JoinType::LeftSemi,
+            vec![JoinKey::new(ColumnRef::input(0, "key", "key"), ColumnRef::input(1, "key", "key"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "relationship_id", "relationship_id"), "relationship_id"),
+        ]),
+        Arc::clone(&fact_schema),
+    );
+    let second_join = builder.add_join(
+        first_join,
+        shared_dimension,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(ColumnRef::input(0, "key", "key"), ColumnRef::input(1, "key", "key"))],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "key", "key"), "key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "relationship_id", "relationship_id"), "relationship_id"),
+        ]),
+        fact_schema,
+    );
+    let aggregate = builder.add_aggregate(
+        second_join,
+        AggregateSpec::new(
+            vec![Expr::column("key")],
+            vec![
+                AggregateExpr::new(AggregateFunction::Count, Expr::column("relationship_id"), "relationship_ids")
+                    .with_distinct(true),
+            ],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let sorted = builder.add_sort(
+        aggregate,
+        SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]),
+        Arc::clone(&aggregate_schema),
+    );
+    let projection = builder.add_projection(
+        sorted,
+        projection_outputs(vec![Expr::column("key"), Expr::column("relationship_ids")], Arc::clone(&aggregate_schema)),
+    );
+    builder.finish_with_host_sink(projection)
+}
+
 pub(crate) fn shared_topk_multi_join_final_sort_plan() -> nexus_query_engine::plan::QueryPlan {
     let ranked_schema = Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, false)]));
     let metadata_schema = Arc::new(Schema::new(vec![

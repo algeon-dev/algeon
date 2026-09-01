@@ -311,6 +311,10 @@ impl DataFrame {
                         ops::expr::DATAFRAME_EXPRESSION_ALLOCATION_PREFLIGHT_CONTRACT.to_string(),
                     ),
                     ("expression_boolean_equality_output_bytes", preflight.boolean_equality_output_bytes().to_string()),
+                    (
+                        "expression_fixed_width_arithmetic_output_bytes",
+                        preflight.fixed_width_arithmetic_output_bytes().to_string(),
+                    ),
                     ("expression_null_float64_literal_bytes", preflight.null_float64_literal_bytes().to_string()),
                     ("expression_copy_if_else_output_bytes", preflight.copy_if_else_output_bytes().to_string()),
                     (

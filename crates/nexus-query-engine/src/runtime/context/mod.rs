@@ -1873,7 +1873,7 @@ impl ExecutionContext {
             let capability_proof =
                 proof.submitted_capability_evidence().resolve_deferred_resident_consumer(plan, gpu_inputs)?;
             let (reservation_envelope, phase_grant) =
-                self.resolve_deferred_phase_envelope(plan, &capability_proof, &immutable_grant)?;
+                self.resolve_deferred_phase_envelope(plan, &capability_proof, &immutable_grant, None)?;
             let inputs = descriptor
                 .inputs()
                 .iter()
@@ -1971,8 +1971,14 @@ impl ExecutionContext {
                 .with_fact("reason", "deferred_graph_capability_missing")
             })?
             .with_graph_memory_admission_evidence(&evidence)?;
-        let (reservation_envelope, phase_grant) =
-            self.resolve_deferred_phase_envelope(plan, &capability_proof, &immutable_grant)?;
+        let exact_input_owner_bytes =
+            input.retained_reservation_identity_for(&immutable_grant).map(|(_, bytes)| bytes).unwrap_or_default();
+        let (reservation_envelope, phase_grant) = self.resolve_deferred_phase_envelope(
+            plan,
+            &capability_proof,
+            &immutable_grant,
+            Some((&evidence, exact_input_owner_bytes)),
+        )?;
         let activated = ActivatedDeferredResidentPhase {
             consumer_execution_scope_fingerprint: crate::admission::canonical_execution_scope_fingerprint(plan),
             inputs: vec![ActivatedDeferredResidentInput {
@@ -1998,6 +2004,7 @@ impl ExecutionContext {
         plan: &QueryPlan,
         capability_proof: &QueryPlanCapabilityProof,
         immutable_grant: &MemoryGrant,
+        retained_graph_input_owner: Option<(&crate::graph_memory::GraphMemoryAdmissionEvidence, u64)>,
     ) -> Result<(AttemptReservationEnvelope, MemoryGrantPhase)> {
         let MemoryControlPolicy::Bounded {
             max_source_chunk_bytes,
@@ -2014,7 +2021,7 @@ impl ExecutionContext {
             )
             .with_fact("reason", "deferred_resident_unbounded_context"));
         };
-        let reservation_envelope = capability_proof.resolve_reservation_envelope(AttemptReservationPolicy::new(
+        let mut reservation_envelope = capability_proof.resolve_reservation_envelope(AttemptReservationPolicy::new(
             max_source_chunk_bytes,
             max_row_groups_per_chunk,
             max_retry_attempts,
@@ -2023,6 +2030,9 @@ impl ExecutionContext {
             self.source_chunk_planning_mode,
             self.source_chunk_planning_options,
         ))?;
+        if let Some((evidence, exact_owner_bytes)) = retained_graph_input_owner {
+            reservation_envelope = reservation_envelope.with_retained_graph_input_owner(evidence, exact_owner_bytes)?;
+        }
         reservation_envelope.validate_execution_with_grant(
             plan,
             self.memory_control_policy(),
@@ -2041,6 +2051,14 @@ impl ExecutionContext {
         })?;
         let phase_grant = immutable_grant.activate_phase(phase_peak_bytes)?;
         Ok((reservation_envelope, phase_grant))
+    }
+
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn activated_retained_normalization_source_model_bytes(&self, plan: &QueryPlan) -> Result<Option<u64>> {
+        let Some(activated) = &self.activated_deferred_resident_phase else {
+            return Ok(None);
+        };
+        activated.capability_proof.retained_normalization_source_model_bytes_for_plan(plan)
     }
 
     pub(crate) fn validate_admitted_plan_capabilities_with_gpu_inputs(

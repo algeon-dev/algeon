@@ -226,6 +226,32 @@ impl AttemptReservationEnvelope {
         self.complete_phase_peak_bytes
     }
 
+    pub(crate) fn with_retained_graph_input_owner(
+        mut self,
+        evidence: &GraphMemoryAdmissionEvidence,
+        exact_owner_bytes: u64,
+    ) -> Result<Self> {
+        let excess_bytes = exact_owner_bytes.saturating_sub(evidence.retained_normalization_source_model_bytes());
+        if excess_bytes == 0 {
+            return Ok(self);
+        }
+        if self.bound_derivation == Some(AttemptBoundDerivation::OrderedTimeline) {
+            return Err(graph_schedule_error(
+                "retained_graph_input_owner_requires_unscheduled_phase",
+                None,
+                Some("resident_owner"),
+            ));
+        }
+        let complete_peak = self
+            .complete_phase_peak_bytes
+            .ok_or_else(|| graph_schedule_error("resident_owner_phase_peak_missing", None, Some("resident_owner")))?
+            .checked_add(excess_bytes)
+            .ok_or_else(|| graph_schedule_error("resident_owner_phase_peak_overflow", None, Some("resident_owner")))?;
+        self.complete_phase_peak_bytes = Some(complete_peak);
+        self.required_phase_floor_bytes = self.required_phase_floor_bytes.max(complete_peak);
+        Ok(self)
+    }
+
     pub(crate) fn bound_derivation(&self) -> Option<AttemptBoundDerivation> {
         self.bound_derivation
     }

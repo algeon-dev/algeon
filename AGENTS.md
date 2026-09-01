@@ -58,19 +58,18 @@ execution belong in `crates/nexus-query-engine`.
   Bench, tools, and examples are explicit non-default members.
 - Linux only. MSRV is Rust 1.94; formatting requires nightly.
 
-## Architecture contracts
+## Native GPU engine core
 
-- `NexusNativePhysicalOptimizerRule` lowers supported plans to
-  `nexus_query_engine::QueryPlan` and emits structured `PlanningReport`s. Assert
-  reports, not printed plans.
-- Admission is capability-first: reject locally with structured reasons.
-- There is one bounded admission contract: the per-device ledger, immutable
-  grants, and transactional envelopes. Every wire projection is produced by
-  that one contract.
-- The reservation ledger is integer accounting, not a residency oracle; dropping
-  a frame earlier does not change what it reports.
-- Model aggregate partial/final state explicitly. AVG is SUM + COUNT followed by
-  final SUM/SUM, never average-of-averages.
+- Support requires owner-proved allocation bounds, lifetimes, and output facts; incomplete proof is structured unsupported.
+- Native allocation owners expose hard preflights; `nexus-query-engine` composes them and never invents surrogate bounds.
+- Use one compiled schedule, per-device ledger, and immutable grant; deferred refinement stays inside that grant.
+- Admit by operator capability, never customer, SQL text, names, one-off algorithm allowlists, or plan-shape matching.
+- Keep one proof path and one truth source; consolidate and delete special constructors, flags, matchers, or ledgers.
+- Output and resident facts carry scope, occurrence, schema, row/payload bounds, and provenance; estimates are not proof.
+- `PlanningReport` distinguishes accepted, deferred, and rejected candidates with structured reasons.
+- Keep backend memory models in component owners and IR, facts, schedules, and admission backend neutral.
+- Before adding an operator, identify its allocation, facts, lifetime, diagnostics, and test owners; otherwise stop.
+- The ledger is integer accounting, not a residency oracle; model aggregate partial/final state explicitly.
 
 ## Build and test
 

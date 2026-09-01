@@ -352,10 +352,7 @@ fn test_with_columns_with_budget_reports_output_and_routes_allocator() {
     assert_eq!(report.retained_bytes(), Some(output_bytes));
     assert_eq!(report.output_bytes(), Some(output_bytes));
     assert_eq!(report.output_rows(), Some(3));
-    assert_eq!(
-        report.unresolved_contract(),
-        Some(DATAFRAME_EXPRESSION_TEMPORARY_WORKSPACE_AND_RELOCATION_CONTRACT_GAP)
-    );
+    assert_eq!(report.unresolved_contract(), None);
     assert_eq!(result.testing_execution_domain_mr_value(), token.memory_resource().testing_raw_handle_value());
     assert_all_observed_exec_mrs_are_manager_mr(&token);
 }
