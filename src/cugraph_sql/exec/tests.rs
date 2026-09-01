@@ -782,7 +782,7 @@ fn logical_bfs_edge_id_capability_is_rejected_during_exec_construction() {
 }
 
 #[test]
-fn graph_producer_unique_key_contract_is_limited_to_vertex_row_results() {
+fn graph_producer_unique_key_contract_comes_from_the_parameterized_graph_output() {
     let edge_source = memory_edge_source(3);
     let pagerank = CugraphAlgoExec::try_new(
         pagerank_spec(),
@@ -851,9 +851,12 @@ fn graph_producer_unique_key_contract_is_limited_to_vertex_row_results() {
     )
     .expect("path BFS producer should build");
     assert!(crate::native_exec::producer::gpu_resident_producer(&path_bfs).is_some());
-    assert_eq!(gpu_resident_producer_unique_output_key(&path_bfs), None);
+    assert_eq!(
+        gpu_resident_producer_unique_output_key(&path_bfs),
+        Some(std::collections::BTreeSet::from(["path_index".to_string()])),
+    );
 
-    let non_unique_algorithm = CugraphAlgoExec::try_new(
+    let triangle_count = CugraphAlgoExec::try_new(
         triangle_spec(),
         edge_source,
         Vec::new(),
@@ -862,7 +865,10 @@ fn graph_producer_unique_key_contract_is_limited_to_vertex_row_results() {
         NexusNativeExecutionConfig::bounded_default(),
     )
     .expect("triangle-count producer should build");
-    assert_eq!(gpu_resident_producer_unique_output_key(&non_unique_algorithm), None);
+    assert_eq!(
+        gpu_resident_producer_unique_output_key(&triangle_count),
+        Some(std::collections::BTreeSet::from(["vertex".to_string()])),
+    );
 }
 
 #[test]
@@ -1313,7 +1319,11 @@ fn string_jaccard_70_by_70_retires_shared_mapping_intermediates_before_the_final
         &[2_100_000_000, 2_200_000_000],
     );
     let proof = production_string_logical_proof(&plan, &edge_plan, &[pair_plan]);
-    let lifetimes = proof
+    let resolved_proof = proof
+        .clone()
+        .requirement_for_device(0)
+        .expect("the device owner preflights must resolve the string mapping schedule");
+    let lifetimes = resolved_proof
         .composed_consumer_owner_lifetimes_for_test(&plan)
         .expect("the exact logical mapping scope must expose its structured schedule");
     let lifetime =
@@ -1331,11 +1341,16 @@ fn string_jaccard_70_by_70_retires_shared_mapping_intermediates_before_the_final
             PlanNode::Window(window) => window.input,
             _ => unreachable!("the selected node is the codebook row-number window"),
         },
-        "consumer_output",
+        "sort_output_frame",
     );
     let codebook_row_ids = lifetime(codebook.id, "consumer_output");
     let decoded = lifetime(sort.input, "consumer_output");
-    let final_sort = lifetime(final_sort.id, "consumer_workspace");
+    let final_output = lifetime(final_sort.id, "retained_output");
+    let final_sort_peak = lifetimes
+        .iter()
+        .filter(|entry| entry.first_group <= final_output.first_group && final_output.first_group <= entry.last_group)
+        .map(|entry| entry.bytes)
+        .sum::<u64>();
     assert_eq!(pair.last_group, graph_execution.first_group, "encoded pairs live through graph execution");
     assert_eq!(pair.last_group, graph_output.first_group);
     assert_eq!(
@@ -1344,28 +1359,29 @@ fn string_jaccard_70_by_70_retires_shared_mapping_intermediates_before_the_final
     );
     assert_eq!(codebook_row_ids.last_group, decoded.first_group);
     assert!(
-        codebook_values.last_group < final_sort.first_group,
+        codebook_values.last_group < final_output.first_group,
         "the codebook must retire before the final sort workspace",
     );
-    assert_eq!(decoded.last_group, final_sort.first_group);
-    assert_eq!((pair.bytes, pair.first_group, pair.last_group), (1_760, 9, 11));
+    assert_eq!(decoded.last_group, final_output.first_group);
+    assert_eq!((pair.bytes, pair.first_group, pair.last_group), (1_760, 11, 13));
     assert_eq!(
         (codebook_values.bytes, codebook_values.first_group, codebook_values.last_group),
-        (9_006_640_179, 4, 15)
+        (9_006_639_859, 6, 17)
     );
-    assert_eq!((codebook_row_ids.bytes, codebook_row_ids.first_group, codebook_row_ids.last_group), (2_560, 5, 15));
-    assert_eq!(codebook_values.bytes + codebook_row_ids.bytes, 9_006_642_739);
-    assert_eq!((decoded.bytes, decoded.first_group, decoded.last_group), (18_013_277_878, 15, 16));
-    assert_eq!((final_sort.bytes, final_sort.first_group, final_sort.last_group), (36_026_555_756, 16, 16));
-    let (required_floor, dominant_owner, owner_term_count) = production_required_floor_bytes(proof);
+    assert_eq!((codebook_row_ids.bytes, codebook_row_ids.first_group, codebook_row_ids.last_group), (2_560, 7, 17));
+    assert_eq!(codebook_values.bytes + codebook_row_ids.bytes, 9_006_642_419);
+    assert_eq!((decoded.bytes, decoded.first_group, decoded.last_group), (18_013_277_878, 17, 18));
+    assert_eq!((final_output.bytes, final_output.first_group, final_output.last_group), (18_013_276_918, 18, 18));
+    assert_eq!(final_sort_peak, 36_026_557_597);
+    let (required_floor, dominant_owner, _) = production_required_floor_bytes(proof);
 
-    assert_eq!(owner_term_count, 40, "the semantic fixture includes both pair encodes and both result sorts");
-    assert_eq!(dominant_owner, final_sort.bytes);
+    assert_eq!(dominant_owner, 18_013_280_358);
     assert!(
         required_floor < 101_492_260_864,
         "last-use retirement must keep the 70/70 floor below the production managed capacity: {required_floor}",
     );
-    assert!(dominant_owner < required_floor);
+    assert_eq!(required_floor, 45_033_205_862);
+    assert_eq!(required_floor - final_sort_peak, 9_006_648_265);
 }
 
 #[test]
@@ -1516,7 +1532,10 @@ fn string_pagerank_bfs_and_bfs_path_are_gpu_producers_with_unique_key_contracts(
     )
     .expect("logical BFS path should build as a GPU-resident graph execution");
     assert!(crate::native_exec::producer::gpu_resident_producer(&numeric_path).is_some());
-    assert_eq!(gpu_resident_producer_unique_output_key(&numeric_path), None);
+    assert_eq!(
+        gpu_resident_producer_unique_output_key(&numeric_path),
+        Some(std::collections::BTreeSet::from(["path_index".to_string()])),
+    );
 }
 
 #[test]

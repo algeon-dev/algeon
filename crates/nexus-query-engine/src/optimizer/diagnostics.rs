@@ -110,6 +110,17 @@ impl NativeOptimizerDiagnostics {
                 format_candidates(&materialization.candidates, format_shared_subplan_materialization_candidate)
             ));
         }
+        if !self.shared_resident_extraction.is_empty() {
+            let extraction = &self.shared_resident_extraction;
+            rows.push(format!(
+                "rule={},considered_count={},extracted_count={},rejected_count={},candidates={}",
+                SHARED_RESIDENT_EXTRACTION_RULE_NAME,
+                extraction.considered_count,
+                extraction.extracted_count,
+                extraction.rejected_count,
+                format_candidates(&extraction.candidates, format_shared_resident_extraction_candidate)
+            ));
+        }
         if !self.dynamic_filter_route_discovery.is_empty() {
             let discovery = &self.dynamic_filter_route_discovery;
             rows.push(format!(
@@ -133,6 +144,23 @@ impl NativeOptimizerDiagnostics {
 
         rows
     }
+}
+
+fn format_shared_resident_extraction_candidate(candidate: &SharedResidentExtractionCandidateDiagnostics) -> String {
+    let consumers = if candidate.consumer_occurrences.is_empty() {
+        "none".to_string()
+    } else {
+        candidate.consumer_occurrences.iter().map(ToString::to_string).collect::<Vec<_>>().join("+")
+    };
+    format!(
+        "node_id={},subplan_fingerprint={},consumer_occurrences={},decision={:?},reason={:?},resident_input_name={}",
+        candidate.node_id,
+        candidate.subplan_fingerprint,
+        consumers,
+        candidate.decision,
+        candidate.reason,
+        candidate.resident_input_name.as_deref().unwrap_or("none"),
+    )
 }
 
 fn format_candidates<T>(candidates: &[T], format: fn(&T) -> String) -> String {

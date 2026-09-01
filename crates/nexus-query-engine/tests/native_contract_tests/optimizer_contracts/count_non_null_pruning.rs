@@ -46,6 +46,7 @@ fn count_non_null_pruning_rewrites_footer_proven_count_column_to_retained_carrie
     assert_eq!(source.read_columns, vec!["o_custkey", "o_orderstatus"]);
     assert_eq!(source.read_column_file_indices, vec![0, 2]);
     assert_eq!(source.projected_output_columns, vec!["o_custkey", "o_orderstatus"]);
+    assert_eq!(source.unique_key_columns, vec![BTreeSet::from(["o_custkey".to_string()])]);
     assert!(
         !source.read_columns.iter().any(|column| column == "o_orderkey"),
         "count-only column should not be read after COUNT(column) becomes COUNT(1)"
@@ -215,11 +216,17 @@ fn count_non_null_pruning_source_adjacent_plan(
     }
 
     let mut builder = QueryPlanBuilder::new();
-    let source = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
-        vec![file],
-        Arc::clone(&source_schema),
-        vec!["o_custkey".to_string(), "o_orderkey".to_string(), "o_orderstatus".to_string()],
-    )));
+    let source = builder.add_source(SourceNode::LocalParquet(
+        LocalParquetSource::from_files(
+            vec![file],
+            Arc::clone(&source_schema),
+            vec!["o_custkey".to_string(), "o_orderkey".to_string(), "o_orderstatus".to_string()],
+        )
+        .with_unique_key_columns(vec![
+            BTreeSet::from(["o_custkey".to_string()]),
+            BTreeSet::from(["o_orderkey".to_string()]),
+        ]),
+    ));
     let filtered = builder.add_filter(
         source,
         Expr::binary(Expr::column("o_orderstatus"), BinaryOp::Eq, Expr::literal(LiteralValue::Int32(1))),

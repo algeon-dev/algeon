@@ -248,7 +248,8 @@ fn local_source_materialization_signature(source: &LocalParquetSource) -> LocalS
         source.max_rows.map_or_else(|| "none".to_string(), |rows| rows.to_string())
     );
     let common = format!(
-        "{rowset_common};read={read_columns};projected={projected_output_columns};pure_filter={pure_filter_columns}"
+        "{rowset_common};read={read_columns};projected={projected_output_columns};pure_filter={pure_filter_columns};unique_keys={:?}",
+        source.unique_key_columns,
     );
     let predicate = source.reader_predicate.as_ref().map_or_else(|| "none".to_string(), ToString::to_string);
     let selected_source_bytes =

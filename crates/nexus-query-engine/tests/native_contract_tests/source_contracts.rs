@@ -950,6 +950,37 @@ fn local_parquet_source_validation_rejects_invalid_reader_contracts() {
 }
 
 #[test]
+fn local_parquet_source_validation_rejects_unusable_unique_key_facts() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::UInt32, false),
+        Field::new("nullable_key", DataType::UInt32, true),
+    ]));
+    let source = LocalParquetSource::new(
+        "/tmp/source-unique-key-contract.parquet",
+        schema,
+        vec!["key".to_string(), "nullable_key".to_string()],
+    );
+
+    let valid = source.clone().with_unique_key_columns(vec![BTreeSet::from(["key".to_string()])]);
+    validate_local_parquet_source(&valid).unwrap();
+
+    for (key, expected_reason) in [
+        (BTreeSet::new(), "empty_unique_key"),
+        (BTreeSet::from(["missing".to_string()]), "unique_key_column_absent"),
+        (BTreeSet::from(["nullable_key".to_string()]), "unique_key_column_nullable"),
+    ] {
+        let error = validate_local_parquet_source(&source.clone().with_unique_key_columns(vec![key])).unwrap_err();
+        assert_eq!(error.code(), QueryErrorCode::InvalidPlan);
+        assert_eq!(error.fact_value("reason"), Some(expected_reason));
+    }
+
+    let duplicate =
+        source.with_unique_key_columns(vec![BTreeSet::from(["key".to_string()]), BTreeSet::from(["key".to_string()])]);
+    let error = validate_local_parquet_source(&duplicate).unwrap_err();
+    assert_eq!(error.fact_value("reason"), Some("duplicate_unique_key"));
+}
+
+#[test]
 fn zero_column_count_source_contract_is_represented_without_data_columns() {
     let source = LocalParquetSource::zero_column_count(vec![
         LocalParquetFile::new("/tmp/source-contract.parquet")

@@ -81,22 +81,24 @@ pub(crate) struct AttemptReservationShape {
     source_stage_bytes: Option<u64>,
     complete_zero_column_global_aggregate: Option<ZeroColumnGlobalAggregateShape>,
     complete_graph_memory_phase: Option<GraphMemoryAdmissionEvidence>,
-    complete_cugraph_side_input_phase_bytes: Option<u64>,
-    accounted_by_graph_phase: bool,
-    is_cugraph_graph_input_scope: bool,
-    is_cugraph_side_input_scope: bool,
-    is_attested_graph_result_passthrough_scope: bool,
-    is_deferred_graph_result_passthrough_scope: bool,
-    is_attested_graph_result_bounded_consumer_scope: bool,
-    sort_phase_peak_bytes: Option<u64>,
-    limit_phase_peak_bytes: Option<u64>,
-    sort_metadata: Option<crate::admission::requirement::SortMetadataDescriptor>,
+    scope_role: AttemptReservationScopeRole,
+    sort_metadata: Vec<crate::admission::requirement::SortMetadataDescriptor>,
     sort_rejection_reason: Option<String>,
     owner_term_rejection_reason: Option<String>,
     producer_occurrences: Vec<AttemptReservationProducerOccurrence>,
     nested_consumer_occurrence_ids: Option<Vec<String>>,
     deferred_owner_term_occurrence: Option<String>,
     ordered_schedule: Option<AttemptReservationSchedule>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum AttemptReservationScopeRole {
+    #[default]
+    Ordinary,
+    ResidentProducerInput,
+    ResidentSideInput,
+    AccountedByProducer,
+    AccountedResidentProducerInput,
 }
 
 impl AttemptReservationShape {
@@ -111,16 +113,8 @@ impl AttemptReservationShape {
             source_stage_bytes: estimated_reachable_local_parquet_source_bytes(plan),
             complete_zero_column_global_aggregate: zero_column_global_aggregate_shape(plan),
             complete_graph_memory_phase: None,
-            complete_cugraph_side_input_phase_bytes: None,
-            accounted_by_graph_phase: false,
-            is_cugraph_graph_input_scope: false,
-            is_cugraph_side_input_scope: false,
-            is_attested_graph_result_passthrough_scope: false,
-            is_deferred_graph_result_passthrough_scope: false,
-            is_attested_graph_result_bounded_consumer_scope: false,
-            sort_phase_peak_bytes: None,
-            limit_phase_peak_bytes: None,
-            sort_metadata: None,
+            scope_role: AttemptReservationScopeRole::Ordinary,
+            sort_metadata: Vec::new(),
             sort_rejection_reason: None,
             owner_term_rejection_reason: None,
             producer_occurrences: Vec::new(),
@@ -217,7 +211,7 @@ impl AttemptReservationShape {
     }
 
     pub(crate) fn rebind_deferred_owner_terms(&mut self, occurrence_id: &str) {
-        if self.sort_metadata.is_none() {
+        if self.sort_metadata.is_empty() {
             return;
         }
         self.deferred_owner_term_occurrence = Some(match self.deferred_owner_term_occurrence.take() {
@@ -230,25 +224,26 @@ impl AttemptReservationShape {
         self.deferred_owner_term_occurrence.as_deref()
     }
 
+    #[cfg(test)]
     pub(crate) fn declares_deferred_retained_output_term(&self, term_id: &OwnerTermId) -> bool {
-        let (Some(metadata), Some(occurrence_id)) =
-            (self.sort_metadata.as_ref(), self.deferred_owner_term_occurrence.as_ref())
-        else {
+        let Some(occurrence_id) = self.deferred_owner_term_occurrence.as_ref() else {
             return false;
         };
-        if term_id.occurrence != OccurrenceId::Composed(occurrence_id.clone()) {
+        if term_id.occurrence != crate::admission::requirement::OccurrenceId::Composed(occurrence_id.clone()) {
             return false;
         }
-        if let Some(limit) = &metadata.limit
-            && term_id.owner == OwnerId::Limit(limit.node_id)
-            && term_id.role == OwnerTermRole::LimitOutputFrame
-            && term_id.execution_scope_fingerprint == limit.execution_scope_fingerprint
-        {
-            return true;
-        }
-        term_id.owner == OwnerId::Sort(metadata.node_id)
-            && term_id.role == OwnerTermRole::SortOutputFrame
-            && term_id.execution_scope_fingerprint == metadata.execution_scope_fingerprint
+        self.sort_metadata.iter().filter(|metadata| metadata.retained_output).any(|metadata| {
+            if let Some(limit) = &metadata.limit
+                && term_id.owner == OwnerId::Limit(limit.node_id)
+                && term_id.role == OwnerTermRole::LimitOutputFrame
+                && term_id.execution_scope_fingerprint == limit.execution_scope_fingerprint
+            {
+                return true;
+            }
+            term_id.owner == OwnerId::Sort(metadata.node_id)
+                && term_id.role == OwnerTermRole::SortOutputFrame
+                && term_id.execution_scope_fingerprint == metadata.execution_scope_fingerprint
+        })
     }
 
     pub(crate) fn owner_term_rejection_reason(&self) -> Option<&str> {
@@ -330,50 +325,37 @@ impl AttemptReservationShape {
         }
     }
 
-    pub(crate) fn account_for_by_graph_phase(&mut self) {
-        self.accounted_by_graph_phase = true;
+    pub(crate) fn account_for_by_producer_phase(&mut self) {
+        self.scope_role = match self.scope_role {
+            AttemptReservationScopeRole::ResidentProducerInput => {
+                AttemptReservationScopeRole::AccountedResidentProducerInput
+            },
+            _ => AttemptReservationScopeRole::AccountedByProducer,
+        };
     }
 
-    pub(crate) fn is_accounted_by_graph_phase(&self) -> bool {
-        self.accounted_by_graph_phase
+    pub(crate) fn is_accounted_by_producer_phase(&self) -> bool {
+        matches!(
+            self.scope_role,
+            AttemptReservationScopeRole::AccountedByProducer
+                | AttemptReservationScopeRole::AccountedResidentProducerInput
+        ) || self.is_passthrough_scope()
     }
 
-    pub(crate) fn mark_cugraph_graph_input_scope(&mut self) {
-        self.is_cugraph_graph_input_scope = true;
+    pub(crate) fn mark_resident_producer_input_scope(&mut self) {
+        self.scope_role = match self.scope_role {
+            AttemptReservationScopeRole::AccountedByProducer => {
+                AttemptReservationScopeRole::AccountedResidentProducerInput
+            },
+            _ => AttemptReservationScopeRole::ResidentProducerInput,
+        };
     }
 
-    pub(crate) fn set_cugraph_side_input_phase_bytes(&mut self, frame_bytes: u64) -> Result<()> {
-        if self.complete_cugraph_side_input_phase_bytes.replace(frame_bytes).is_some() {
+    pub(crate) fn mark_resident_side_input_scope(&mut self) -> Result<()> {
+        if self.scope_role == AttemptReservationScopeRole::ResidentSideInput {
             return Err(graph_schedule_error("duplicate_side_input_frame_evidence", None, Some("side_input_frame")));
         }
-        self.is_cugraph_side_input_scope = true;
-        Ok(())
-    }
-
-    pub(crate) fn mark_attested_graph_result_passthrough_scope(&mut self) {
-        self.is_attested_graph_result_passthrough_scope = true;
-    }
-
-    pub(crate) fn mark_deferred_graph_result_passthrough_scope(&mut self) {
-        self.is_deferred_graph_result_passthrough_scope = true;
-        self.account_for_by_graph_phase();
-    }
-
-    pub(crate) fn mark_attested_graph_result_bounded_consumer_scope(&mut self) {
-        self.is_attested_graph_result_bounded_consumer_scope = true;
-    }
-
-    pub(crate) fn set_sort_phase_peak_bytes(&mut self, peak_bytes: u64) -> Result<()> {
-        if self.sort_phase_peak_bytes.replace(peak_bytes).is_some() {
-            return Err(graph_schedule_error("duplicate_sort_phase_evidence", None, Some("sort")));
-        }
-        Ok(())
-    }
-
-    pub(crate) fn set_limit_phase_peak_bytes(&mut self, peak_bytes: u64) -> Result<()> {
-        if self.limit_phase_peak_bytes.replace(peak_bytes).is_some() {
-            return Err(graph_schedule_error("duplicate_limit_phase_evidence", None, Some("limit")));
-        }
+        self.scope_role = AttemptReservationScopeRole::ResidentSideInput;
         Ok(())
     }
 
@@ -381,9 +363,10 @@ impl AttemptReservationShape {
         &mut self,
         metadata: crate::admission::requirement::SortMetadataDescriptor,
     ) -> Result<()> {
-        if self.sort_metadata.replace(metadata).is_some() {
+        if self.sort_metadata.iter().any(|existing| existing.node_id == metadata.node_id) {
             return Err(graph_schedule_error("duplicate_sort_metadata", None, Some("sort")));
         }
+        self.sort_metadata.push(metadata);
         Ok(())
     }
 
@@ -409,13 +392,13 @@ impl AttemptReservationShape {
         }
     }
 
-    pub(crate) fn sort_metadata(&self) -> Option<&crate::admission::requirement::SortMetadataDescriptor> {
-        self.sort_metadata.as_ref()
+    pub(crate) fn sort_metadata(&self) -> &[crate::admission::requirement::SortMetadataDescriptor] {
+        &self.sort_metadata
     }
 
     #[cfg(test)]
     pub(crate) fn set_sort_stable_for_test(&mut self, stable: bool) {
-        if let Some(metadata) = self.sort_metadata.as_mut() {
+        for metadata in &mut self.sort_metadata {
             metadata.stable = stable;
         }
     }
@@ -432,20 +415,22 @@ impl AttemptReservationShape {
         self.complete_literal_source
     }
 
-    pub(crate) fn is_cugraph_graph_input_scope(&self) -> bool {
-        self.is_cugraph_graph_input_scope
+    pub(crate) fn is_resident_producer_input_scope(&self) -> bool {
+        matches!(
+            self.scope_role,
+            AttemptReservationScopeRole::ResidentProducerInput
+                | AttemptReservationScopeRole::AccountedResidentProducerInput
+        )
     }
 
-    pub(crate) fn is_cugraph_side_input_scope(&self) -> bool {
-        self.is_cugraph_side_input_scope
+    pub(crate) fn is_resident_side_input_scope(&self) -> bool {
+        self.scope_role == AttemptReservationScopeRole::ResidentSideInput
     }
 
-    pub(crate) fn is_attested_graph_result_passthrough_scope(&self) -> bool {
-        self.is_attested_graph_result_passthrough_scope
-    }
-
-    pub(crate) fn is_deferred_graph_result_passthrough_scope(&self) -> bool {
-        self.is_deferred_graph_result_passthrough_scope
+    pub(crate) fn is_passthrough_scope(&self) -> bool {
+        self.ordered_schedule
+            .as_ref()
+            .is_some_and(|schedule| schedule.consumer_state() == AttemptReservationConsumerState::Passthrough)
     }
 
     pub(crate) fn has_graph_memory_phase(&self) -> bool {
@@ -456,7 +441,11 @@ impl AttemptReservationShape {
         self.complete_graph_memory_phase.as_ref()
     }
 
-    fn resolve(&self, policy: AttemptReservationPolicy) -> Result<ResolvedReservationShape> {
+    fn resolve(
+        &self,
+        policy: AttemptReservationPolicy,
+        owner_terms: Option<&[AllocationOwnerTerm]>,
+    ) -> Result<ResolvedReservationShape> {
         if let Some(reason) = &self.owner_term_rejection_reason {
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedPlanShape,
@@ -465,7 +454,10 @@ impl AttemptReservationShape {
             )
             .with_fact("reason", reason.as_str()));
         }
-        if self.accounted_by_graph_phase {
+        if self.scope_role == AttemptReservationScopeRole::AccountedByProducer
+            || self.scope_role == AttemptReservationScopeRole::AccountedResidentProducerInput
+            || self.is_passthrough_scope()
+        {
             return Ok(ResolvedReservationShape { required_phase_floor_bytes: 0, complete_phase_peak_bytes: Some(0) });
         }
         if self.complete_literal_source && self.owner_term_rejection_reason.is_none() {
@@ -487,39 +479,75 @@ impl AttemptReservationShape {
             });
         }
 
-        if let Some(frame_bytes) = self.complete_cugraph_side_input_phase_bytes {
-            return Ok(ResolvedReservationShape {
-                required_phase_floor_bytes: frame_bytes,
-                complete_phase_peak_bytes: Some(frame_bytes),
-            });
-        }
-
-        if self.is_attested_graph_result_bounded_consumer_scope {
+        if !self.sort_metadata.is_empty() || self.sort_rejection_reason.is_some() {
             if let Some(reason) = &self.sort_rejection_reason {
                 return Err(graph_schedule_error("sort_metadata_rejected", None, Some("sort"))
                     .with_fact("sort_rejection_reason", reason.as_str()));
             }
-            let limit_expected = self.sort_metadata.as_ref().is_some_and(|metadata| metadata.limit.is_some());
-            match (limit_expected, self.limit_phase_peak_bytes.is_some()) {
-                (true, false) => {
-                    return Err(graph_schedule_error("limit_preflight_unresolved", None, Some("limit")));
-                },
-                (false, true) => {
-                    return Err(graph_schedule_error("unexpected_limit_phase_evidence", None, Some("limit")));
-                },
-                _ => {},
-            }
-            let sort_peak = self.sort_phase_peak_bytes;
-            let limit_peak = self.limit_phase_peak_bytes;
-            let peak = sort_peak
-                .into_iter()
-                .chain(limit_peak)
-                .max()
+            let owner_terms = owner_terms
                 .ok_or_else(|| graph_schedule_error("sort_preflight_unresolved", None, Some("sort")))?;
-            return Ok(ResolvedReservationShape {
-                required_phase_floor_bytes: peak,
-                complete_phase_peak_bytes: Some(peak),
-            });
+            let sort_roles = [
+                OwnerTermRole::SortKeyInput,
+                OwnerTermRole::SortKeyOutput,
+                OwnerTermRole::SortSequence,
+                OwnerTermRole::SortComparatorState,
+                OwnerTermRole::SortTemporaryWorkspace,
+                OwnerTermRole::SortRetainedOrder,
+                OwnerTermRole::SortOutputFrame,
+                OwnerTermRole::SortOutputNullMask,
+            ];
+            for metadata in &self.sort_metadata {
+                let final_output_node_id = metadata.limit.as_ref().map_or(metadata.node_id, |limit| limit.node_id);
+                let output_transferred = metadata.retained_output
+                    && owner_terms.iter().any(|term| {
+                        term.id().owner == OwnerId::Producer(final_output_node_id)
+                            && term.id().role == OwnerTermRole::RetainedOutput
+                            && term.execution_scope_fingerprint() == metadata.execution_scope_fingerprint
+                    });
+                let sort_output_transferred = output_transferred && metadata.limit.is_none();
+                if sort_roles
+                    .iter()
+                    .filter(|role| {
+                        !(sort_output_transferred
+                            && matches!(role, OwnerTermRole::SortOutputFrame | OwnerTermRole::SortOutputNullMask))
+                    })
+                    .any(|role| {
+                    !owner_terms.iter().any(|term| {
+                        term.id().owner == OwnerId::Sort(metadata.node_id)
+                            && term.id().role == *role
+                            && term.execution_scope_fingerprint() == metadata.execution_scope_fingerprint
+                    })
+                    })
+                {
+                    return Err(graph_schedule_error("sort_preflight_unresolved", None, Some("sort")));
+                }
+                let Some(limit) = &metadata.limit else {
+                    continue;
+                };
+                let limit_roles = [
+                    OwnerTermRole::LimitGatherMap,
+                    OwnerTermRole::LimitNativeWorkspace,
+                    OwnerTermRole::LimitOutputFrame,
+                    OwnerTermRole::LimitOutputNullMask,
+                ];
+                if limit_roles
+                    .iter()
+                    .filter(|role| {
+                        !(output_transferred
+                            && matches!(role, OwnerTermRole::LimitOutputFrame | OwnerTermRole::LimitOutputNullMask))
+                    })
+                    .any(|role| {
+                        !owner_terms.iter().any(|term| {
+                            term.id().owner == OwnerId::Limit(limit.node_id)
+                                && term.id().role == *role
+                                && term.execution_scope_fingerprint() == limit.execution_scope_fingerprint
+                        })
+                    })
+                {
+                    return Err(graph_schedule_error("limit_preflight_unresolved", None, Some("limit")));
+                }
+            }
+            return Ok(ResolvedReservationShape { required_phase_floor_bytes: 0, complete_phase_peak_bytes: Some(0) });
         }
 
         let minimum_source_read_bytes =

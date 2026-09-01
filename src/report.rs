@@ -4,6 +4,7 @@
 //! rather than parsing printed physical plans.
 
 pub use nexus_query_engine::{
+    admission::ComposedProducerBindingDiagnostics,
     metrics::{PlanNodeId, QueryId, TraceId},
     plan::NativePlanCostReason,
     triage::{TriageCode, TriageSummary, TriageVerdict},
@@ -68,11 +69,94 @@ impl GpuCandidate {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use arrow::datatypes::{DataType, Field, Schema};
+    use nexus_query_engine::{
+        admission::QueryPlanCapabilityProof,
+        expr::ColumnRef,
+        plan::{JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, QueryPlanBuilder},
+        source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
+    };
+
+    use super::*;
+
+    #[test]
+    fn planning_report_projects_deferred_producer_binding_facts() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let file = LocalParquetFile::new("/tmp/planning-report-deferred-not-read.parquet")
+            .with_file_size_bytes(8)
+            .with_row_group_bytes(vec![8])
+            .with_projected_row_group_bytes(vec![8], vec![8])
+            .with_row_group_rows(vec![1]);
+        let mut builder = QueryPlanBuilder::new();
+        let local = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+            vec![file],
+            Arc::clone(&schema),
+            vec!["id".to_string()],
+        )));
+        let resident = builder.add_source(SourceNode::GpuResident(
+            GpuResidentSource::new("producer", Arc::clone(&schema)).with_row_count_upper_bound(1),
+        ));
+        let join = builder.add_join(
+            local,
+            resident,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::unqualified("id"), ColumnRef::unqualified("id"))],
+            )
+            .with_output_projection(vec![JoinOutputColumn::new(
+                JoinSide::Left,
+                ColumnRef::unqualified("id"),
+                "id",
+            )]),
+            Arc::clone(&schema),
+        );
+        let plan = builder.finish_with_host_sink_schema(join, schema);
+        let binding = QueryPlanCapabilityProof::for_composed_consumer_plan(&plan)
+            .expect("the mixed consumer must issue a structural proof")
+            .composed_producer_binding_diagnostics(&plan)
+            .expect("the unbound resident occurrence must defer");
+        let candidate = GpuCandidate::new("mixed_join", 1);
+        let mut report = PlanningReport::new();
+        report.push_selected(candidate.clone());
+        assert!(report.mark_selected_deferred(&candidate, "physical_optimizer".to_string(), binding));
+
+        let json = report.to_json();
+        assert_eq!(json["selected_count"], 1);
+        assert_eq!(json["deferred_count"], 1);
+        assert_eq!(json["outcomes"][0]["outcome"], "deferred");
+        assert_eq!(json["outcomes"][0]["planning_stage"], "physical_optimizer");
+        assert_eq!(json["outcomes"][0]["missing_producer_occurrences"], json!(["producer"]));
+        assert_eq!(json["outcomes"][0]["missing_fact_kind"], "producer_output_evidence");
+        assert_eq!(json["outcomes"][0]["responsible_owner"], "gpu_resident_producer");
+        assert_eq!(json["outcomes"][0]["reason_code"], "consumer_producer_binding_required");
+        assert!(
+            json["outcomes"][0]["consumer_execution_scope_fingerprint"].as_str().is_some_and(|scope| !scope.is_empty())
+        );
+        assert!(json["outcomes"][0]["proven_owner_terms"].as_array().is_some_and(|terms| !terms.is_empty()));
+        assert_eq!(
+            json["outcomes"][0]["unresolved_owner_terms"],
+            json!(["owner=producer:producer,role=retained_output"]),
+        );
+    }
+}
+
 /// Planning outcome for one native GPU candidate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CandidateOutcome {
     /// Candidate was selected for native execution.
     Selected { candidate: GpuCandidate },
+    /// Candidate was selected, but its composed proof awaits resident producer evidence.
+    Deferred {
+        candidate: GpuCandidate,
+        /// Planning stage that emitted the deferred decision.
+        planning_stage: String,
+        /// Missing producer facts and unresolved owner terms.
+        producer_binding: ComposedProducerBindingDiagnostics,
+    },
     /// Candidate cannot execute under the native capability contract.
     NotSupported {
         candidate: GpuCandidate,
@@ -230,16 +314,22 @@ impl PlanningReport {
     pub(crate) fn anchor_selected_candidates_to_plan_node(&mut self, plan_node_id: impl Into<PlanNodeId>) {
         let plan_node_id = plan_node_id.into();
         for outcome in &mut self.outcomes {
-            if let CandidateOutcome::Selected { candidate } = outcome {
-                candidate.plan_node_id = Some(plan_node_id.clone());
+            match outcome {
+                CandidateOutcome::Selected { candidate } | CandidateOutcome::Deferred { candidate, .. } => {
+                    candidate.plan_node_id = Some(plan_node_id.clone());
+                },
+                CandidateOutcome::NotSupported { .. } | CandidateOutcome::NotSelectedByCost { .. } => {},
             }
         }
     }
 
     pub(crate) fn wrap_selected_candidates_with_outer_operator(&mut self, operator: &str) {
         for outcome in &mut self.outcomes {
-            if let CandidateOutcome::Selected { candidate } = outcome {
-                *candidate = candidate.clone().with_outer_operator(operator);
+            match outcome {
+                CandidateOutcome::Selected { candidate } | CandidateOutcome::Deferred { candidate, .. } => {
+                    *candidate = candidate.clone().with_outer_operator(operator);
+                },
+                CandidateOutcome::NotSupported { .. } | CandidateOutcome::NotSelectedByCost { .. } => {},
             }
         }
     }
@@ -247,6 +337,21 @@ impl PlanningReport {
     pub fn push_selected(&mut self, candidate: GpuCandidate) {
         self.outcomes.push(CandidateOutcome::Selected { candidate });
         self.unsupported_columns.push(None);
+    }
+
+    pub(crate) fn mark_selected_deferred(
+        &mut self,
+        candidate: &GpuCandidate,
+        planning_stage: String,
+        producer_binding: ComposedProducerBindingDiagnostics,
+    ) -> bool {
+        let Some(outcome) = self.outcomes.iter_mut().find(
+            |outcome| matches!(outcome, CandidateOutcome::Selected { candidate: selected } if selected == candidate),
+        ) else {
+            return false;
+        };
+        *outcome = CandidateOutcome::Deferred { candidate: candidate.clone(), planning_stage, producer_binding };
+        true
     }
 
     pub fn push_not_supported(&mut self, candidate: GpuCandidate, capability_reason: CapabilityReason) {
@@ -291,12 +396,19 @@ impl PlanningReport {
     }
 
     pub fn selected_count(&self) -> usize {
-        self.outcomes.iter().filter(|outcome| matches!(outcome, CandidateOutcome::Selected { .. })).count()
+        self.outcomes
+            .iter()
+            .filter(|outcome| matches!(outcome, CandidateOutcome::Selected { .. } | CandidateOutcome::Deferred { .. }))
+            .count()
+    }
+
+    pub fn deferred_count(&self) -> usize {
+        self.outcomes.iter().filter(|outcome| matches!(outcome, CandidateOutcome::Deferred { .. })).count()
     }
 
     pub fn single_selected_candidate(&self) -> Option<&GpuCandidate> {
         let mut rewritten = self.outcomes.iter().filter_map(|outcome| match outcome {
-            CandidateOutcome::Selected { candidate } => Some(candidate),
+            CandidateOutcome::Selected { candidate } | CandidateOutcome::Deferred { candidate, .. } => Some(candidate),
             CandidateOutcome::NotSupported { .. } | CandidateOutcome::NotSelectedByCost { .. } => None,
         });
         let candidate = rewritten.next()?;
@@ -339,6 +451,7 @@ impl PlanningReport {
             "triage": self.triage_summary().to_json(),
             "headline_facts": self.headline_facts_to_json(),
             "selected_count": self.selected_count(),
+            "deferred_count": self.deferred_count(),
             "not_supported_count": self.not_supported_count(),
             "not_selected_by_cost_count": self.not_selected_by_cost_count(),
             "not_selected_count": self.not_selected_count(),
@@ -368,7 +481,7 @@ impl PlanningReport {
             .iter()
             .enumerate()
             .filter_map(|(index, outcome)| match outcome {
-                CandidateOutcome::Selected { .. } => None,
+                CandidateOutcome::Selected { .. } | CandidateOutcome::Deferred { .. } => None,
                 CandidateOutcome::NotSupported { candidate, capability_reason } => {
                     let mut evidence = TriageEvidenceRef::new("planning_report.outcomes").with_row_index(index);
                     if let Some(query_id) = self.query_id.clone() {
@@ -431,6 +544,21 @@ impl CandidateOutcome {
             Self::Selected { candidate } => json!({
                 "outcome": "selected",
                 "candidate": candidate.to_json(),
+                "capability_reason_code": null,
+                "cost_reason_code": null,
+                "cost_evidence": null,
+            }),
+            Self::Deferred { candidate, planning_stage, producer_binding } => json!({
+                "outcome": "deferred",
+                "candidate": candidate.to_json(),
+                "planning_stage": planning_stage,
+                "consumer_execution_scope_fingerprint": producer_binding.consumer_execution_scope_fingerprint(),
+                "missing_producer_occurrences": producer_binding.missing_producer_occurrences(),
+                "missing_fact_kind": producer_binding.missing_fact_kind(),
+                "proven_owner_terms": producer_binding.proven_owner_terms(),
+                "unresolved_owner_terms": producer_binding.unresolved_owner_terms(),
+                "responsible_owner": producer_binding.responsible_owner(),
+                "reason_code": producer_binding.reason_code(),
                 "capability_reason_code": null,
                 "cost_reason_code": null,
                 "cost_evidence": null,

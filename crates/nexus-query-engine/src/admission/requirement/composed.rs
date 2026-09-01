@@ -32,8 +32,6 @@ pub(crate) struct ComposedConsumerBranchBound {
     /// Producer result handles are intentionally excluded: the schedule fold
     /// retains them outside the consumer phase.
     pub(crate) final_owned_bytes: u64,
-    /// Maximum additional bytes owned while this branch is materialized.
-    pub(crate) additional_peak_bytes: u64,
     pub(crate) owner_terms: Vec<AllocationOwnerTerm>,
     /// Alternative consumer lifetime peaks; each group is summed and the
     /// schedule takes the maximum across groups.
@@ -52,7 +50,8 @@ pub(crate) fn composed_consumer_additional_peak_bytes_for_plan(
     producer_outputs: &[ComposedGraphProducerOutputEvidence],
 ) -> Result<(u64, Vec<AllocationOwnerTerm>)> {
     let bound = composed_consumer_bound_with_peak_terms(consumer_plan, producer_outputs, &[])?;
-    Ok((bound.additional_peak_bytes, bound.owner_terms))
+    let additional_peak_bytes = consumer_peak_groups_bytes(&bound.peak_owner_term_groups, &bound.owner_terms)?;
+    Ok((additional_peak_bytes, bound.owner_terms))
 }
 
 pub(crate) fn composed_consumer_bound_with_peak_terms(
@@ -99,7 +98,6 @@ pub(crate) fn composed_consumer_bound_with_peak_terms(
         inventory.extend(root_bound.owner_terms.iter().cloned());
         root_bound.peak_owner_term_groups = memoized_graph_consumer_peak_groups(consumer_plan, &memo, &inventory)?;
         root_bound.peak_owner_term_ids = flatten_consumer_peak_groups(&root_bound.peak_owner_term_groups);
-        root_bound.additional_peak_bytes = consumer_peak_groups_bytes(&root_bound.peak_owner_term_groups, &inventory)?;
     }
     for group in &mut root_bound.peak_owner_term_groups {
         let mut seen = HashSet::with_capacity(group.len());
@@ -113,8 +111,7 @@ pub(crate) fn composed_consumer_bound_with_peak_terms(
             return Err(composed_schedule_error("consumer_deferred_state_cannot_be_derived_statically", None));
         },
         AttemptReservationConsumerState::Passthrough => {
-            if root_bound.additional_peak_bytes != 0
-                || !root_bound.peak_owner_term_groups.is_empty()
+            if !root_bound.peak_owner_term_groups.is_empty()
                 || !root_bound.peak_owner_term_ids.is_empty()
                 || !root_bound.dominated_owner_term_ids.is_empty()
                 || !root_bound.final_owned_term_ids.is_empty()
@@ -144,24 +141,27 @@ fn transfer_gpu_sink_consumer_output(plan: &QueryPlan, bound: &mut ComposedConsu
     let ResultSink::GpuResident { input } = plan.sink() else {
         return Ok(());
     };
-    let transferable = bound
-        .final_owned_term_ids
-        .iter()
-        .filter_map(|term_id| {
-            bound.owner_terms.iter().find(|term| term.id() == term_id && term.id.role == OwnerTermRole::ConsumerOutput)
-        })
-        .collect::<Vec<_>>();
-    let [output] = transferable.as_slice() else {
+    let transferable = bound.final_owned_term_ids.iter().all(|term_id| {
+        matches!(
+            term_id.role,
+            OwnerTermRole::ConsumerOutput
+                | OwnerTermRole::SortOutputFrame
+                | OwnerTermRole::SortOutputNullMask
+                | OwnerTermRole::LimitOutputFrame
+                | OwnerTermRole::LimitOutputNullMask
+        )
+    });
+    if bound.final_owned_term_ids.is_empty() || !transferable {
         return Ok(());
-    };
-    let old_id = output.id().clone();
+    }
+    let transferred_ids = bound.final_owned_term_ids.iter().cloned().collect::<HashSet<_>>();
     let retained = AllocationOwnerTerm::new(
         OwnerId::Producer(*input),
         OwnerTermRole::RetainedOutput,
         OccurrenceId::PlanLocal(*input),
         canonical_execution_scope_fingerprint(plan),
         AllocationClass::AttemptRetained,
-        output.bytes(),
+        bound.final_owned_bytes,
         Some(bound.rows),
     )?;
     let new_id = retained.id().clone();
@@ -173,11 +173,21 @@ fn transfer_gpu_sink_consumer_output(plan: &QueryPlan, bound: &mut ComposedConsu
         .chain(bound.dominated_owner_term_ids.iter_mut())
         .chain(bound.final_owned_term_ids.iter_mut())
     {
-        if *term_id == old_id {
+        if transferred_ids.contains(term_id) {
             *term_id = new_id.clone();
         }
     }
-    bound.owner_terms.retain(|term| term.id() != &old_id);
+    for group in &mut bound.peak_owner_term_groups {
+        let mut seen = HashSet::with_capacity(group.len());
+        group.retain(|term_id| seen.insert(term_id.clone()));
+    }
+    bound.peak_owner_term_ids.sort();
+    bound.peak_owner_term_ids.dedup();
+    bound.dominated_owner_term_ids.sort();
+    bound.dominated_owner_term_ids.dedup();
+    bound.final_owned_term_ids.sort();
+    bound.final_owned_term_ids.dedup();
+    bound.owner_terms.retain(|term| !transferred_ids.contains(term.id()));
     bound.owner_terms.push(retained);
     Ok(())
 }
@@ -242,6 +252,28 @@ pub(crate) fn memoized_graph_consumer_peak_groups(
                     }
             })
             .collect::<Vec<_>>();
+        let mut node_term_ids = node_terms.iter().map(|term| term.id.clone()).collect::<Vec<_>>();
+        node_term_ids.extend(
+            bound
+                .peak_owner_term_groups
+                .iter()
+                .flatten()
+                .filter(|term_id| {
+                    term_id.execution_scope_fingerprint() == scope
+                        && match term_id.owner {
+                            OwnerId::Graph(id)
+                            | OwnerId::Aggregate(id)
+                            | OwnerId::Source(id)
+                            | OwnerId::Consumer(id)
+                            | OwnerId::Sort(id)
+                            | OwnerId::Limit(id) => id == node_id,
+                            _ => false,
+                        }
+                })
+                .cloned(),
+        );
+        node_term_ids.sort();
+        node_term_ids.dedup();
         if matches!(plan.node(node_id).map(|node| &node.kind), Some(PlanNode::GraphAlgorithm(_))) {
             let graph_input = match &plan
                 .node(node_id)
@@ -275,9 +307,9 @@ pub(crate) fn memoized_graph_consumer_peak_groups(
                 group.extend(phase_terms);
                 groups.push(group);
             }
-        } else if !node_terms.is_empty() {
+        } else if !node_term_ids.is_empty() {
             let mut group = live.clone();
-            group.extend(node_terms.iter().map(|term| term.id.clone()));
+            group.extend(node_term_ids);
             groups.push(group);
         }
         let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
@@ -342,7 +374,6 @@ pub(crate) fn composed_consumer_branch_bound(
             rows: cached.rows,
             schema: Arc::clone(&cached.schema),
             final_owned_bytes: cached.final_owned_bytes,
-            additional_peak_bytes: 0,
             owner_terms: cached.owner_terms.clone(),
             peak_owner_term_groups: Vec::new(),
             peak_owner_term_ids: Vec::new(),
@@ -386,21 +417,13 @@ pub(crate) fn composed_consumer_branch_bound_uncached(
                         ));
                     };
                     used_occurrences.insert(source.input_name.clone());
-                    if let Some(consumer_row_count_upper_bound) = source.row_count_upper_bound
-                        && consumer_row_count_upper_bound < output.row_count_upper_bound
-                    {
-                        return Err(composed_schedule_error(
-                            "consumer_source_row_bound_mismatch",
-                            Some(&source.input_name),
-                        )
-                        .with_fact("producer_row_count_upper_bound", output.row_count_upper_bound)
-                        .with_fact("consumer_row_count_upper_bound", consumer_row_count_upper_bound));
-                    }
+                    let rows = source
+                        .row_count_upper_bound
+                        .map_or(output.row_count_upper_bound, |rows| rows.min(output.row_count_upper_bound));
                     Ok(ComposedConsumerBranchBound {
-                        rows: output.row_count_upper_bound,
+                        rows,
                         schema: source.schema.clone(),
                         final_owned_bytes: 0,
-                        additional_peak_bytes: 0,
                         owner_terms: Vec::new(),
                         peak_owner_term_groups: Vec::new(),
                         peak_owner_term_ids: Vec::new(),
@@ -436,7 +459,6 @@ pub(crate) fn composed_consumer_branch_bound_uncached(
                         rows,
                         schema: source.output_schema().clone(),
                         final_owned_bytes: source_term.bytes.get(),
-                        additional_peak_bytes: source_term.bytes.get(),
                         owner_terms: Vec::new(),
                         peak_owner_term_groups: vec![vec![source_term.id.clone()]],
                         peak_owner_term_ids: vec![source_term.id.clone()],
@@ -465,7 +487,6 @@ pub(crate) fn composed_consumer_branch_bound_uncached(
                         rows,
                         schema: source.schema.clone(),
                         final_owned_bytes: bytes,
-                        additional_peak_bytes: bytes,
                         owner_terms: Vec::new(),
                         peak_owner_term_groups: vec![vec![source_term_id.clone()]],
                         peak_owner_term_ids: vec![source_term_id.clone()],
@@ -515,14 +536,10 @@ pub(crate) fn composed_consumer_branch_bound_uncached(
             let mut consumer_owner_terms = input.owner_terms;
             consumer_owner_terms.push(output_term);
             consumer_owner_terms.push(predicate_term);
-            let mut inventory = owner_terms.to_vec();
-            inventory.extend(consumer_owner_terms.iter().cloned());
-            let additional_peak_bytes = consumer_peak_groups_bytes(&peak_owner_term_groups, &inventory)?;
             Ok(ComposedConsumerBranchBound {
                 rows: input.rows,
                 schema: node.output_schema().clone(),
                 final_owned_bytes: output_bytes,
-                additional_peak_bytes,
                 owner_terms: consumer_owner_terms,
                 peak_owner_term_groups,
                 peak_owner_term_ids,
@@ -555,14 +572,7 @@ pub(crate) fn composed_consumer_branch_bound_uncached(
                     }
                     (column, true)
                 } else if projection.outputs.iter().any(|output| alias_wrapped_literal(&output.expr).is_some()) {
-                    return composed_consumer_literal_projection_bound(
-                        plan,
-                        node_id,
-                        node,
-                        projection,
-                        input,
-                        owner_terms,
-                    );
+                    return composed_consumer_literal_projection_bound(plan, node_id, node, projection, input);
                 } else {
                     return composed_consumer_expression_projection_bound(
                         plan,
@@ -570,7 +580,6 @@ pub(crate) fn composed_consumer_branch_bound_uncached(
                         node,
                         projection,
                         input,
-                        owner_terms,
                         column_evidence,
                     );
                 };
@@ -597,7 +606,6 @@ pub(crate) fn composed_consumer_branch_bound_uncached(
                 rows: input.rows,
                 schema: node.output_schema().clone(),
                 final_owned_bytes: input.final_owned_bytes,
-                additional_peak_bytes: input.additional_peak_bytes,
                 owner_terms: input.owner_terms,
                 peak_owner_term_groups: input.peak_owner_term_groups,
                 peak_owner_term_ids: input.peak_owner_term_ids,
@@ -739,14 +747,10 @@ pub(crate) fn composed_consumer_edge_normalize_peak_bytes(
     let peak_owner_term_ids = flatten_consumer_peak_groups(&peak_owner_term_groups);
     let mut terms = input.owner_terms;
     terms.extend([output_term, workspace_term]);
-    let mut inventory = owner_terms.to_vec();
-    inventory.extend(terms.iter().cloned());
-    let additional_peak_bytes = consumer_peak_groups_bytes(&peak_owner_term_groups, &inventory)?;
     Ok(ComposedConsumerBranchBound {
         rows: output_rows,
         schema: node.output_schema().clone(),
         final_owned_bytes: output_bytes,
-        additional_peak_bytes,
         owner_terms: terms,
         peak_owner_term_groups,
         peak_owner_term_ids,
@@ -803,14 +807,10 @@ pub(crate) fn composed_consumer_global_row_number_peak_bytes(
         input.final_owned_term_ids.iter().cloned().chain(std::iter::once(output_term_id.clone())).collect();
     let mut terms = input.owner_terms;
     terms.push(output_term);
-    let mut inventory = owner_terms.to_vec();
-    inventory.extend(terms.iter().cloned());
-    let additional_peak_bytes = consumer_peak_groups_bytes(&peak_owner_term_groups, &inventory)?;
     Ok(ComposedConsumerBranchBound {
         rows: input.rows,
         schema: node.output_schema().clone(),
         final_owned_bytes,
-        additional_peak_bytes,
         owner_terms: terms,
         peak_owner_term_groups,
         peak_owner_term_ids,
@@ -890,9 +890,6 @@ pub(crate) fn composed_consumer_graph_peak_bytes(
         peak_owner_term_groups.push(group);
     }
     let peak_owner_term_ids = flatten_consumer_peak_groups(&peak_owner_term_groups);
-    let mut inventory = owner_terms.to_vec();
-    inventory.extend(input.owner_terms.iter().cloned());
-    let additional_peak_bytes = consumer_peak_groups_bytes(&peak_owner_term_groups, &inventory)?;
     let rows = output
         .retained_row_count_upper_bound()
         .or_else(|| query_plan_node_hard_row_upper_bound(plan, node_id))
@@ -905,7 +902,6 @@ pub(crate) fn composed_consumer_graph_peak_bytes(
             .output_schema()
             .clone(),
         final_owned_bytes: output.bytes(),
-        additional_peak_bytes,
         owner_terms: input.owner_terms,
         peak_owner_term_groups,
         peak_owner_term_ids,
@@ -930,7 +926,6 @@ pub(crate) fn composed_consumer_literal_projection_bound(
     node: &crate::plan::QueryNode,
     projection: &crate::plan::ProjectionNode,
     input: ComposedConsumerBranchBound,
-    owner_terms: &[AllocationOwnerTerm],
 ) -> Result<ComposedConsumerBranchBound> {
     let mut retains_input = false;
     let mut literal_fields = Vec::new();
@@ -992,14 +987,10 @@ pub(crate) fn composed_consumer_literal_projection_bound(
     };
     let mut consumer_owner_terms = input.owner_terms;
     consumer_owner_terms.push(literal_term);
-    let mut inventory = owner_terms.to_vec();
-    inventory.extend(consumer_owner_terms.iter().cloned());
-    let additional_peak_bytes = consumer_peak_groups_bytes(&peak_owner_term_groups, &inventory)?;
     Ok(ComposedConsumerBranchBound {
         rows: input.rows,
         schema: node.output_schema().clone(),
         final_owned_bytes,
-        additional_peak_bytes,
         owner_terms: consumer_owner_terms,
         peak_owner_term_groups,
         peak_owner_term_ids,
@@ -1016,7 +1007,6 @@ pub(crate) fn composed_consumer_expression_projection_bound(
     node: &crate::plan::QueryNode,
     projection: &crate::plan::ProjectionNode,
     input: ComposedConsumerBranchBound,
-    owner_terms: &[AllocationOwnerTerm],
     column_evidence: &PlanColumnEvidenceAnalysis,
 ) -> Result<ComposedConsumerBranchBound> {
     let rows = usize::try_from(input.rows)
@@ -1093,14 +1083,10 @@ pub(crate) fn composed_consumer_expression_projection_bound(
     if let Some(workspace_term) = workspace_term {
         consumer_owner_terms.push(workspace_term);
     }
-    let mut inventory = owner_terms.to_vec();
-    inventory.extend(consumer_owner_terms.iter().cloned());
-    let additional_peak_bytes = consumer_peak_groups_bytes(&peak_owner_term_groups, &inventory)?;
     Ok(ComposedConsumerBranchBound {
         rows: input.rows,
         schema: node.output_schema().clone(),
         final_owned_bytes: output_bytes,
-        additional_peak_bytes,
         owner_terms: consumer_owner_terms,
         peak_owner_term_groups,
         peak_owner_term_ids,
@@ -1111,6 +1097,7 @@ pub(crate) fn composed_consumer_expression_projection_bound(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn consumer_peak_group_bytes(group: &[OwnerTermId], owner_terms: &[AllocationOwnerTerm]) -> Result<u64> {
     let mut seen = HashSet::with_capacity(group.len());
     group.iter().try_fold(0_u64, |total, term_id| {
@@ -1126,6 +1113,7 @@ pub(crate) fn consumer_peak_group_bytes(group: &[OwnerTermId], owner_terms: &[Al
     })
 }
 
+#[cfg(test)]
 pub(crate) fn consumer_peak_groups_bytes(
     groups: &[Vec<OwnerTermId>],
     owner_terms: &[AllocationOwnerTerm],
@@ -1196,14 +1184,10 @@ pub(crate) fn composed_consumer_union_peak_bytes(
     peak_owner_term_groups.push(final_peak_group);
     let peak_owner_term_ids = flatten_consumer_peak_groups(&peak_owner_term_groups);
     let final_owned_term_ids = vec![union_output_term_id];
-    let mut inventory = owner_terms.to_vec();
-    inventory.extend(branch_terms.iter().cloned());
-    let additional_peak_bytes = consumer_peak_groups_bytes(&peak_owner_term_groups, &inventory)?;
     Ok(ComposedConsumerBranchBound {
         rows: total_rows,
         schema: node.output_schema().clone(),
         final_owned_bytes: union_output,
-        additional_peak_bytes,
         owner_terms: branch_terms,
         peak_owner_term_groups,
         peak_owner_term_ids,
@@ -1233,8 +1217,7 @@ pub(crate) fn composed_consumer_aggregate_peak_bytes(
         column_evidence,
         memo,
     )?;
-    let distinct_workspace_bytes =
-        composed_nunique_workspace_bytes(aggregate, &input.schema, input.rows, &column_evidence.node(aggregate.input))?;
+    let distinct_workspace_bytes = composed_global_nunique_workspace_bytes(aggregate, &input.schema, input.rows)?;
     if distinct_workspace_bytes.is_none() && !aggregate_owner_state_is_supported(aggregate) {
         return Err(composed_schedule_error("consumer_aggregate_state_unmodeled", None));
     }
@@ -1285,14 +1268,10 @@ pub(crate) fn composed_consumer_aggregate_peak_bytes(
         terms.push(workspace);
     }
     let peak_owner_term_ids = flatten_consumer_peak_groups(&peak_owner_term_groups);
-    let mut inventory = owner_terms.to_vec();
-    inventory.extend(terms.iter().cloned());
-    let additional_peak_bytes = consumer_peak_groups_bytes(&peak_owner_term_groups, &inventory)?;
     Ok(ComposedConsumerBranchBound {
         rows: output_rows,
         schema: output_schema.clone(),
         final_owned_bytes: output_bytes,
-        additional_peak_bytes,
         owner_terms: terms,
         peak_owner_term_groups,
         peak_owner_term_ids,
@@ -1303,13 +1282,12 @@ pub(crate) fn composed_consumer_aggregate_peak_bytes(
     })
 }
 
-fn composed_nunique_workspace_bytes(
+fn composed_global_nunique_workspace_bytes(
     aggregate: &AggregateNode,
     input_schema: &SchemaRef,
     input_rows: u64,
-    input_evidence: &PlanColumnEvidence,
 ) -> Result<Option<u64>> {
-    if aggregate.spec.grouping_sets.is_some() {
+    if aggregate.spec.grouping_sets.is_some() || !aggregate.spec.group_exprs.is_empty() {
         return Ok(None);
     }
     let mut distincts = aggregate.spec.aggr_exprs.iter().filter(|expr| {
@@ -1320,23 +1298,18 @@ fn composed_nunique_workspace_bytes(
     };
     if distincts.next().is_some() {
         return Err(composed_schedule_error("consumer_aggregate_state_unmodeled", None)
-            .with_fact("aggregate_contract", "single_nunique"));
+            .with_fact("aggregate_contract", "global_single_fixed_width_nunique"));
     }
     for expr in &aggregate.spec.aggr_exprs {
         if expr.filter.is_some() {
             return Err(composed_schedule_error("consumer_aggregate_state_unmodeled", None)
-                .with_fact("aggregate_contract", "single_nunique"));
+                .with_fact("aggregate_contract", "global_single_fixed_width_nunique"));
         }
         if expr.function == AggregateFunction::NUnique || expr.distinct && expr.function == AggregateFunction::Count {
             continue;
-        } else if expr.distinct
-            || !matches!(
-                expr.function,
-                AggregateFunction::Count | AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max
-            )
-        {
+        } else if expr.function != AggregateFunction::Count || expr.distinct {
             return Err(composed_schedule_error("consumer_aggregate_state_unmodeled", None)
-                .with_fact("aggregate_contract", "single_nunique"));
+                .with_fact("aggregate_contract", "global_single_fixed_width_nunique"));
         }
     }
     let Expr::Column(column) = &distinct.expr else {
@@ -1348,38 +1321,36 @@ fn composed_nunique_workspace_bytes(
             .with_fact("aggregate_owner_reason", "nunique_input_column_missing")
             .with_fact("column", column.name())
     })?;
-    let argument_schema = Arc::new(Schema::new(vec![field.as_ref().clone()]));
-    let argument_retained_bytes =
-        bounded_consumer_frame_bytes_with_evidence(input_rows, &argument_schema, input_evidence).map_err(|error| {
-            composed_schedule_error("consumer_aggregate_nunique_owner_preflight_unavailable", None)
-                .with_fact(
-                    "aggregate_owner_reason",
-                    error.fact_value("schedule_reason").unwrap_or("nunique_argument_retained_bytes_unavailable"),
-                )
-                .with_fact("column", field.name())
-                .with_fact("data_type", format!("{:?}", field.data_type()))
-        })?;
+    if field.is_nullable() {
+        return Err(composed_schedule_error("consumer_aggregate_nunique_owner_preflight_unavailable", None)
+            .with_fact("aggregate_owner_reason", "nunique_nullable_input_unmodeled")
+            .with_fact("column", field.name())
+            .with_fact("data_type", format!("{:?}", field.data_type())));
+    }
+    let type_id = arrow_fixed_width_cudf_type_id(field.data_type()).ok_or_else(|| {
+        composed_schedule_error("consumer_aggregate_nunique_owner_preflight_unavailable", None)
+            .with_fact("aggregate_owner_reason", "nunique_variable_width_input_unmodeled")
+            .with_fact("column", field.name())
+            .with_fact("data_type", format!("{:?}", field.data_type()))
+    })?;
     let rows = usize::try_from(input_rows).map_err(|_| {
         composed_schedule_error("consumer_aggregate_nunique_owner_preflight_unavailable", None)
             .with_fact("aggregate_owner_reason", "nunique_input_rows_exceed_usize")
             .with_fact("input_rows", input_rows)
     })?;
-    let argument_retained_bytes = usize::try_from(argument_retained_bytes).map_err(|_| {
-        composed_schedule_error("consumer_aggregate_nunique_owner_preflight_unavailable", None)
-            .with_fact("aggregate_owner_reason", "nunique_argument_bytes_exceed_usize")
-            .with_fact("input_rows", input_rows)
-    })?;
     let preflight =
-        cudf::GroupedNuniqueWorkspacePreflight::for_metadata(rows, argument_retained_bytes).map_err(|error| {
-            composed_schedule_error("consumer_aggregate_nunique_owner_preflight_unavailable", None)
-                .with_fact(
-                    "aggregate_owner_reason",
-                    error.detail_value("reason").unwrap_or("libcudf_grouped_nunique_workspace_preflight_failed"),
-                )
-                .with_fact("column", field.name())
-                .with_fact("data_type", format!("{:?}", field.data_type()))
-                .with_fact("input_rows", input_rows)
-        })?;
+        cudf::ScalarReductionDistinctWorkspacePreflight::for_metadata(rows, cudf::DataType::new(type_id), 0).map_err(
+            |error| {
+                composed_schedule_error("consumer_aggregate_nunique_owner_preflight_unavailable", None)
+                    .with_fact(
+                        "aggregate_owner_reason",
+                        error.detail_value("reason").unwrap_or("libcudf_nunique_workspace_preflight_failed"),
+                    )
+                    .with_fact("column", field.name())
+                    .with_fact("data_type", format!("{:?}", field.data_type()))
+                    .with_fact("input_rows", input_rows)
+            },
+        )?;
     u64::try_from(preflight.active_workspace_peak_bytes()).map(Some).map_err(|_| {
         composed_schedule_error("consumer_aggregate_nunique_owner_preflight_unavailable", None)
             .with_fact("aggregate_owner_reason", "nunique_workspace_exceeds_u64")
@@ -1387,14 +1358,9 @@ fn composed_nunique_workspace_bytes(
     })
 }
 
-pub(crate) fn is_attested_sort_scope(plan: &QueryPlan) -> bool {
-    plan.nodes().iter().any(|node| match &node.kind {
-        PlanNode::Source(source) => match source.as_ref() {
-            SourceNode::GpuResident(gpu) => is_attested_graph_result_bounded_consumer_plan(plan, &gpu.input_name),
-            _ => false,
-        },
-        _ => false,
-    })
+pub(crate) fn has_reachable_sort(plan: &QueryPlan) -> bool {
+    let unreachable = plan.unreachable_node_ids();
+    plan.nodes().iter().any(|node| !unreachable.contains(&node.id) && matches!(node.kind, PlanNode::Sort(_)))
 }
 
 pub(crate) fn composed_consumer_sort_peak_bytes(
@@ -1418,81 +1384,46 @@ pub(crate) fn composed_consumer_sort_peak_bytes(
     )?;
     let node = plan.node(node_id).ok_or_else(|| composed_schedule_error("consumer_missing_plan_node", None))?;
     let output_schema = node.output_schema().clone();
-    if is_attested_sort_scope(plan) {
-        let scope = canonical_execution_scope_fingerprint(plan);
-        let sort_terms = [
-            OwnerTermRole::SortKeyInput,
-            OwnerTermRole::SortKeyOutput,
-            OwnerTermRole::SortSequence,
-            OwnerTermRole::SortComparatorState,
-            OwnerTermRole::SortTemporaryWorkspace,
-            OwnerTermRole::SortRetainedOrder,
-            OwnerTermRole::SortOutputFrame,
-            OwnerTermRole::SortOutputNullMask,
-        ]
-        .into_iter()
-        .map(|role| OwnerTermId {
-            owner: OwnerId::Sort(node_id),
-            role,
-            occurrence: OccurrenceId::PlanLocal(node_id),
-            execution_scope_fingerprint: scope.clone(),
-        })
-        .collect::<Vec<_>>();
-        let final_owned_term_ids = sort_terms
-            .iter()
-            .filter(|term_id| {
-                matches!(term_id.role, OwnerTermRole::SortOutputFrame | OwnerTermRole::SortOutputNullMask)
-            })
-            .cloned()
-            .collect();
-        let peak_owner_term_groups = consumer_unary_peak_groups(&input, sort_terms.clone());
-        let peak_owner_term_ids = flatten_consumer_peak_groups(&peak_owner_term_groups);
-        return Ok(ComposedConsumerBranchBound {
-            rows: input.rows,
-            schema: output_schema,
-            final_owned_bytes: 0,
-            additional_peak_bytes: 0,
-            owner_terms: input.owner_terms,
-            peak_owner_term_groups,
-            peak_owner_term_ids,
-            dominated_owner_term_ids: input.dominated_owner_term_ids,
-            final_owned_term_ids,
-            allocation_state: AttemptReservationConsumerState::Bounded,
-            consumed_occurrences: Vec::new(),
-        });
-    }
-
-    let output_bytes =
-        bounded_consumer_frame_bytes_with_evidence(input.rows, &output_schema, &column_evidence.node(node_id))?;
-    let workspace_bytes = output_bytes.saturating_mul(2);
-    let output_term =
-        consumer_owner_term(node_id, OwnerTermRole::ConsumerOutput, AllocationClass::ActivePhase, output_bytes, plan)?;
-    let workspace_term = consumer_owner_term(
-        node_id,
-        OwnerTermRole::ConsumerWorkspace,
-        AllocationClass::ActivePhase,
-        workspace_bytes,
-        plan,
-    )?;
-    let output_term_id = output_term.id.clone();
-    let workspace_term_id = workspace_term.id.clone();
-    let peak_owner_term_groups = consumer_unary_peak_groups(&input, [output_term_id.clone(), workspace_term_id]);
+    let scope = canonical_execution_scope_fingerprint(plan);
+    let sort_terms = [
+        OwnerTermRole::SortKeyInput,
+        OwnerTermRole::SortKeyOutput,
+        OwnerTermRole::SortSequence,
+        OwnerTermRole::SortComparatorState,
+        OwnerTermRole::SortTemporaryWorkspace,
+        OwnerTermRole::SortRetainedOrder,
+        OwnerTermRole::SortOutputFrame,
+        OwnerTermRole::SortOutputNullMask,
+    ]
+    .into_iter()
+    .map(|role| OwnerTermId {
+        owner: OwnerId::Sort(node_id),
+        role,
+        occurrence: OccurrenceId::PlanLocal(node_id),
+        execution_scope_fingerprint: scope.clone(),
+    })
+    .collect::<Vec<_>>();
+    let final_owned_term_ids = sort_terms
+        .iter()
+        .filter(|term_id| matches!(term_id.role, OwnerTermRole::SortOutputFrame | OwnerTermRole::SortOutputNullMask))
+        .cloned()
+        .collect();
+    let (output_frame_bytes, output_null_mask_bytes) =
+        bounded_consumer_frame_components(input.rows, &output_schema, Some(&column_evidence.node(node_id)))?;
+    let final_owned_bytes = output_frame_bytes
+        .checked_add(output_null_mask_bytes)
+        .ok_or_else(|| composed_schedule_error("consumer_sort_output_bytes_overflow", None))?;
+    let peak_owner_term_groups = consumer_unary_peak_groups(&input, sort_terms.clone());
     let peak_owner_term_ids = flatten_consumer_peak_groups(&peak_owner_term_groups);
-    let mut terms = input.owner_terms;
-    terms.extend([output_term, workspace_term]);
-    let mut inventory = owner_terms.to_vec();
-    inventory.extend(terms.iter().cloned());
-    let additional_peak_bytes = consumer_peak_groups_bytes(&peak_owner_term_groups, &inventory)?;
     Ok(ComposedConsumerBranchBound {
         rows: input.rows,
         schema: output_schema,
-        final_owned_bytes: output_bytes,
-        additional_peak_bytes,
-        owner_terms: terms,
+        final_owned_bytes,
+        owner_terms: input.owner_terms,
         peak_owner_term_groups,
         peak_owner_term_ids,
         dominated_owner_term_ids: input.dominated_owner_term_ids,
-        final_owned_term_ids: vec![output_term_id],
+        final_owned_term_ids,
         allocation_state: AttemptReservationConsumerState::Bounded,
         consumed_occurrences: Vec::new(),
     })
@@ -1532,7 +1463,7 @@ pub(crate) fn composed_consumer_limit_peak_bytes(
         .ok_or_else(|| composed_schedule_error("consumer_limit_skip_fetch_overflow", None))?;
     let output_rows = input.rows.saturating_sub(skip).min(fetch);
 
-    if is_attested_sort_scope(plan) {
+    if matches!(plan.node(limit.input).map(|node| &node.kind), Some(PlanNode::Sort(_))) {
         let scope = canonical_execution_scope_fingerprint(plan);
         let limit_terms = [
             OwnerTermRole::LimitGatherMap,
@@ -1555,13 +1486,17 @@ pub(crate) fn composed_consumer_limit_peak_bytes(
             })
             .cloned()
             .collect::<Vec<_>>();
+        let (output_frame_bytes, output_null_mask_bytes) =
+            bounded_consumer_frame_components(output_rows, &output_schema, Some(&column_evidence.node(node_id)))?;
+        let final_owned_bytes = output_frame_bytes
+            .checked_add(output_null_mask_bytes)
+            .ok_or_else(|| composed_schedule_error("consumer_limit_output_bytes_overflow", None))?;
         let peak_owner_term_groups = consumer_unary_peak_groups(&input, limit_terms.clone());
         let peak_owner_term_ids = flatten_consumer_peak_groups(&peak_owner_term_groups);
         return Ok(ComposedConsumerBranchBound {
             rows: output_rows,
             schema: output_schema,
-            final_owned_bytes: 0,
-            additional_peak_bytes: 0,
+            final_owned_bytes,
             owner_terms: input.owner_terms,
             peak_owner_term_groups,
             peak_owner_term_ids,
@@ -1581,14 +1516,10 @@ pub(crate) fn composed_consumer_limit_peak_bytes(
     let peak_owner_term_ids = flatten_consumer_peak_groups(&peak_owner_term_groups);
     let mut terms = input.owner_terms;
     terms.push(limit_term);
-    let mut inventory = owner_terms.to_vec();
-    inventory.extend(terms.iter().cloned());
-    let additional_peak_bytes = consumer_peak_groups_bytes(&peak_owner_term_groups, &inventory)?;
     Ok(ComposedConsumerBranchBound {
         rows: output_rows,
         schema: output_schema,
         final_owned_bytes: output_bytes,
-        additional_peak_bytes,
         owner_terms: terms,
         peak_owner_term_groups,
         peak_owner_term_ids,
@@ -1833,9 +1764,6 @@ pub(crate) fn composed_consumer_join_peak_bytes(
     let mut consumer_owner_terms = left.owner_terms;
     consumer_owner_terms.extend(right.owner_terms);
     consumer_owner_terms.extend(current_terms);
-    let mut inventory = owner_terms.to_vec();
-    inventory.extend(consumer_owner_terms.iter().cloned());
-    let additional_peak_bytes = consumer_peak_groups_bytes(&peak_owner_term_groups, &inventory)?;
     let peak_owner_term_ids = flatten_consumer_peak_groups(&peak_owner_term_groups);
     let mut dominated_owner_term_ids = left.dominated_owner_term_ids;
     dominated_owner_term_ids.extend(right.dominated_owner_term_ids);
@@ -1843,7 +1771,6 @@ pub(crate) fn composed_consumer_join_peak_bytes(
         rows: output_rows,
         schema: node.output_schema().clone(),
         final_owned_bytes: output_bytes,
-        additional_peak_bytes,
         owner_terms: consumer_owner_terms,
         peak_owner_term_groups,
         peak_owner_term_ids,
@@ -2059,7 +1986,7 @@ pub(crate) fn consumer_output_column_with_evidence(
         .with_fact("data_type", field.data_type()))
 }
 
-pub(crate) fn cugraph_side_input_frame_upper_bound_bytes(plan: &QueryPlan) -> Result<u64> {
+pub(crate) fn resident_side_input_frame_upper_bound_bytes(plan: &QueryPlan) -> Result<u64> {
     let rows = query_plan_hard_row_upper_bound(plan).ok_or_else(|| {
         composed_schedule_error("side_input_row_bound_unavailable", None)
             .with_fact("phase", "side_input_frame")
@@ -2068,7 +1995,7 @@ pub(crate) fn cugraph_side_input_frame_upper_bound_bytes(plan: &QueryPlan) -> Re
     if plan.output_schema().fields().is_empty() {
         return Err(composed_schedule_error("side_input_schema_empty", None).with_fact("phase", "side_input_frame"));
     }
-    let columns = cugraph_side_input_columns(plan)?;
+    let columns = resident_side_input_columns(plan)?;
     let bytes = crate::exec::join_output_upper_bound_bytes(rows, &columns).map_err(|error| {
         composed_schedule_error("side_input_frame_bound_unavailable", None)
             .with_fact("phase", "side_input_frame")
@@ -2082,7 +2009,7 @@ pub(crate) fn cugraph_side_input_frame_upper_bound_bytes(plan: &QueryPlan) -> Re
     Ok(bytes)
 }
 
-pub(crate) fn cugraph_side_input_columns(
+pub(crate) fn resident_side_input_columns(
     plan: &QueryPlan,
 ) -> Result<Vec<crate::exec::JoinOutputColumnUpperBoundInput>> {
     let evidence = PlanColumnEvidenceAnalysis::for_plan(plan, &HashMap::new())?.root(plan);
@@ -2267,181 +2194,173 @@ fn validate_sort_key_metadata(keys: &[SortKeyMetadataDescriptor]) -> Result<()> 
             || key_type.is_duration()
             || key_type.is_float();
         let lexicographic = radix || key_type.is_boolean() || key_type.is_decimal() || key_type == cudf::TypeId::String;
-        if keys.len() == 1 && !radix {
-            return Err(sort_owner_error("key_type_not_radix_dispatchable", "sort_key"));
-        }
-        if keys.len() > 1 && !lexicographic {
+        if !radix && !lexicographic {
             return Err(sort_owner_error("key_type_not_lexicographic_dispatchable", "sort_key"));
         }
     }
     Ok(())
 }
 
-pub(crate) fn sort_metadata_for_attested_graph_result(
+pub(crate) fn sort_metadata_for_composed_consumer(
     plan: &QueryPlan,
-    graph_result_input_name: &str,
-    producer_row_count_upper_bound: Option<u64>,
-    producer_column_evidence: Option<&PlanColumnEvidence>,
-) -> Result<SortMetadataDescriptor> {
-    if !is_attested_graph_result_bounded_consumer_plan(plan, graph_result_input_name) {
-        return Err(sort_owner_error("consumer_topology_unmodeled", "sort_plan"));
-    }
+    producer_outputs: &[ComposedGraphProducerOutputEvidence],
+) -> Result<Vec<SortMetadataDescriptor>> {
     let unreachable = plan.unreachable_node_ids().into_iter().collect::<HashSet<_>>();
-    let mut source = None;
-    let mut sort = None;
-    let mut limit = None;
-    let mut filter_count = 0_usize;
-    for node in plan.nodes() {
-        if unreachable.contains(&node.id) {
-            continue;
-        }
-        match &node.kind {
-            PlanNode::Source(source_node) if matches!(source_node.as_ref(), SourceNode::GpuResident(source) if source.input_name == graph_result_input_name) => {
-                if source.replace((node.id, source_node.as_ref())).is_some() {
-                    return Err(sort_owner_error("duplicate_graph_result_source", "sort_input"));
-                }
-            },
-            PlanNode::Sort(sort_node) => {
-                if sort.replace((node.id, sort_node)).is_some() {
-                    return Err(sort_owner_error("multiple_sort_nodes", "sort_plan"));
-                }
-            },
-            PlanNode::Limit(limit_node) => {
-                if limit.replace((node.id, limit_node)).is_some() {
-                    return Err(sort_owner_error("multiple_limit_nodes", "limit_plan"));
-                }
-            },
-            PlanNode::Filter(_) => {
-                filter_count = filter_count
-                    .checked_add(1)
-                    .ok_or_else(|| sort_owner_error("filter_node_count_overflow", "sort_plan"))?;
-                if filter_count > 1 {
-                    return Err(sort_owner_error("multiple_filter_nodes", "sort_plan"));
-                }
-            },
-            _ => return Err(sort_owner_error("sort_plan_contains_unmodeled_node", "sort_plan")),
-        }
-    }
-    let Some((source_node_id, source_node)) = source else {
-        return Err(sort_owner_error("graph_result_source_missing", "sort_input"));
-    };
-    let SourceNode::GpuResident(source_node) = source_node else {
-        return Err(sort_owner_error("graph_result_source_not_gpu_resident", "sort_input"));
-    };
-    let Some((sort_node_id, sort_node)) = sort else {
-        return Err(sort_owner_error("sort_node_missing", "sort_plan"));
-    };
-    if sort_node.input != source_node_id
-        && !plan
-            .node(sort_node.input)
-            .is_some_and(|node| matches!(&node.kind, PlanNode::Filter(filter) if filter.input == source_node_id))
-    {
-        return Err(sort_owner_error("sort_input_topology_unmodeled", "sort_plan"));
-    }
-    if sort_node.spec.expressions.is_empty() {
-        return Err(sort_owner_error("sort_key_missing", "sort_key"));
-    }
-    let keys = sort_node
-        .spec
-        .expressions
+    let sorts = plan
+        .nodes()
         .iter()
-        .map(|sort_expr| {
-            let key_column = alias_wrapped_column(&sort_expr.expr)
-                .ok_or_else(|| sort_owner_error("sort_key_expression_unmodeled", "sort_key"))?;
-            let field = source_node.schema.field_with_name(key_column.name()).map_err(|_| {
-                sort_owner_error("sort_key_column_missing", "sort_key").with_fact("column", key_column.name())
-            })?;
-            if field.is_nullable() {
-                return Err(
-                    sort_owner_error("nullable_key_unsupported", "sort_key").with_fact("column", key_column.name())
-                );
-            }
-            let key_type = cudf_dtype_from_arrow_type(field.data_type())
-                .ok_or_else(|| sort_owner_error("key_type_unavailable", "sort_key"))?;
-            Ok(SortKeyMetadataDescriptor {
-                key_type,
-                null_count: 0,
-                key_order: if sort_expr.descending {
-                    cudf::ops::sorting::Order::Descending
-                } else {
-                    cudf::ops::sorting::Order::Ascending
-                },
-                null_precedence: if sort_expr.nulls_first {
-                    cudf::ops::sorting::NullOrder::Before
-                } else {
-                    cudf::ops::sorting::NullOrder::After
-                },
-            })
+        .filter(|node| !unreachable.contains(&node.id))
+        .filter_map(|node| match &node.kind {
+            PlanNode::Sort(sort) => Some((node.id, sort)),
+            _ => None,
         })
-        .collect::<Result<Vec<_>>>()?;
-    validate_sort_key_metadata(&keys)?;
-    if let (Some(consumer_row_count_upper_bound), Some(producer_row_count_upper_bound)) =
-        (source_node.row_count_upper_bound, producer_row_count_upper_bound)
-        && consumer_row_count_upper_bound < producer_row_count_upper_bound
-    {
-        return Err(sort_owner_error("graph_result_row_bound_mismatch", "sort_input")
-            .with_fact("producer_row_count_upper_bound", producer_row_count_upper_bound)
-            .with_fact("consumer_row_count_upper_bound", consumer_row_count_upper_bound));
+        .collect::<Vec<_>>();
+    if sorts.is_empty() {
+        return Err(sort_owner_error("sort_node_missing", "sort_plan"));
     }
-    let row_count = producer_row_count_upper_bound
-        .or(source_node.row_count_upper_bound)
-        .ok_or_else(|| sort_owner_error("row_bound_missing", "sort_input"))?;
-    let num_rows = usize::try_from(row_count).map_err(|_| sort_owner_error("row_bound_exceeds_usize", "sort_input"))?;
-    let sort_output_schema =
-        plan.node(sort_node_id).ok_or_else(|| sort_owner_error("sort_node_missing", "sort_plan"))?.output_schema();
-    let (output_frame_bytes, output_null_mask_bytes) =
-        bounded_consumer_frame_components(row_count, sort_output_schema, producer_column_evidence)?;
-    let limit = limit
-        .map(|(limit_node_id, limit_node)| {
-            if limit_node.input != sort_node_id || plan.root_id() != limit_node_id || sort_node.input != source_node_id
-            {
-                return Err(sort_owner_error("limit_input_topology_unmodeled", "limit_plan"));
+    let resident_rows = producer_outputs
+        .iter()
+        .map(|output| (output.occurrence_id.clone(), output.row_count_upper_bound))
+        .collect::<HashMap<_, _>>();
+    let resident_evidence = producer_outputs
+        .iter()
+        .map(|output| (output.occurrence_id.clone(), output.column_evidence.clone()))
+        .collect::<HashMap<_, _>>();
+    let column_evidence =
+        PlanColumnEvidenceAnalysis::for_plan_with_resident_rows(plan, &resident_evidence, &resident_rows)?;
+    let scope = canonical_execution_scope_fingerprint(plan);
+    sorts
+        .into_iter()
+        .map(|(sort_node_id, sort_node)| {
+            if sort_node.spec.expressions.is_empty() {
+                return Err(sort_owner_error("sort_key_missing", "sort_key"));
             }
-            let fetch = limit_node.spec.fetch.ok_or_else(|| limit_owner_error("fetch_unbounded", "limit_rows"))?;
-            let _ = limit_node
+            let input_schema = plan
+                .node(sort_node.input)
+                .ok_or_else(|| sort_owner_error("sort_input_missing", "sort_input"))?
+                .output_schema();
+            let keys = sort_node
                 .spec
-                .skip
-                .checked_add(fetch)
-                .ok_or_else(|| limit_owner_error("skip_fetch_overflow", "limit_rows"))?;
-            let skip =
-                u64::try_from(limit_node.spec.skip).map_err(|_| limit_owner_error("skip_exceeds_u64", "limit_rows"))?;
-            let fetch = u64::try_from(fetch).map_err(|_| limit_owner_error("fetch_exceeds_u64", "limit_rows"))?;
-            let output_rows_u64 = row_count.saturating_sub(skip).min(fetch);
-            let output_rows = usize::try_from(output_rows_u64)
-                .map_err(|_| limit_owner_error("output_rows_exceed_usize", "limit_rows"))?;
-            let output_columns = plan
-                .root_node()
-                .output_schema()
-                .fields()
+                .expressions
                 .iter()
-                .map(|field| {
-                    let data_type = cudf_dtype_from_arrow_type(field.data_type()).ok_or_else(|| {
-                        limit_owner_error("output_dtype_unmodeled", "limit_output")
-                            .with_fact("column", field.name())
-                            .with_fact("data_type", format!("{:?}", field.data_type()))
+                .map(|sort_expr| {
+                    let key_column = alias_wrapped_column(&sort_expr.expr)
+                        .ok_or_else(|| sort_owner_error("sort_key_expression_unmodeled", "sort_key"))?;
+                    let field = input_schema.field_with_name(key_column.name()).map_err(|_| {
+                        sort_owner_error("sort_key_column_missing", "sort_key").with_fact("column", key_column.name())
                     })?;
-                    Ok((data_type, field.is_nullable()))
+                    if field.is_nullable() {
+                        return Err(sort_owner_error("nullable_key_unsupported", "sort_key")
+                            .with_fact("column", key_column.name()));
+                    }
+                    let key_type = cudf_dtype_from_arrow_type(field.data_type())
+                        .ok_or_else(|| sort_owner_error("key_type_unavailable", "sort_key"))?;
+                    Ok(SortKeyMetadataDescriptor {
+                        key_type,
+                        null_count: 0,
+                        key_order: if sort_expr.descending {
+                            cudf::ops::sorting::Order::Descending
+                        } else {
+                            cudf::ops::sorting::Order::Ascending
+                        },
+                        null_precedence: if sort_expr.nulls_first {
+                            cudf::ops::sorting::NullOrder::Before
+                        } else {
+                            cudf::ops::sorting::NullOrder::After
+                        },
+                    })
                 })
                 .collect::<Result<Vec<_>>>()?;
-            Ok(LimitMetadataDescriptor {
-                node_id: limit_node_id,
-                execution_scope_fingerprint: canonical_execution_scope_fingerprint(plan),
-                input_rows: row_count,
-                output_rows,
-                output_columns,
+            validate_sort_key_metadata(&keys)?;
+            let row_count = crate::graph_memory::query_plan_node_hard_row_upper_bound_with_resident_rows(
+                plan,
+                sort_node.input,
+                &resident_rows,
+            )
+            .ok_or_else(|| sort_owner_error("sort_input_row_bound_unavailable", "sort_input"))?;
+            let num_rows =
+                usize::try_from(row_count).map_err(|_| sort_owner_error("row_bound_exceeds_usize", "sort_input"))?;
+            let sort_output_schema = plan
+                .node(sort_node_id)
+                .ok_or_else(|| sort_owner_error("sort_node_missing", "sort_plan"))?
+                .output_schema();
+            let (output_frame_bytes, output_null_mask_bytes) = bounded_consumer_frame_components(
+                row_count,
+                sort_output_schema,
+                Some(&column_evidence.node(sort_node_id)),
+            )?;
+            let mut limits = plan.nodes().iter().filter_map(|node| match &node.kind {
+                PlanNode::Limit(limit) if limit.input == sort_node_id && !unreachable.contains(&node.id) => {
+                    Some((node.id, limit))
+                },
+                _ => None,
+            });
+            let limit = limits.next();
+            if limits.next().is_some() {
+                return Err(sort_owner_error("multiple_limit_consumers", "limit_plan"));
+            }
+            let limit = limit
+                .map(|(limit_node_id, limit_node)| {
+                    let fetch =
+                        limit_node.spec.fetch.ok_or_else(|| limit_owner_error("fetch_unbounded", "limit_rows"))?;
+                    let _ = limit_node
+                        .spec
+                        .skip
+                        .checked_add(fetch)
+                        .ok_or_else(|| limit_owner_error("skip_fetch_overflow", "limit_rows"))?;
+                    let skip = u64::try_from(limit_node.spec.skip)
+                        .map_err(|_| limit_owner_error("skip_exceeds_u64", "limit_rows"))?;
+                    let fetch =
+                        u64::try_from(fetch).map_err(|_| limit_owner_error("fetch_exceeds_u64", "limit_rows"))?;
+                    let output_rows_u64 = row_count.saturating_sub(skip).min(fetch);
+                    let output_rows = usize::try_from(output_rows_u64)
+                        .map_err(|_| limit_owner_error("output_rows_exceed_usize", "limit_rows"))?;
+                    let output_schema = plan
+                        .node(limit_node_id)
+                        .ok_or_else(|| limit_owner_error("limit_node_missing", "limit_output"))?
+                        .output_schema();
+                    let output_columns = output_schema
+                        .fields()
+                        .iter()
+                        .map(|field| {
+                            let data_type = cudf_dtype_from_arrow_type(field.data_type()).ok_or_else(|| {
+                                limit_owner_error("output_dtype_unmodeled", "limit_output")
+                                    .with_fact("column", field.name())
+                                    .with_fact("data_type", format!("{:?}", field.data_type()))
+                            })?;
+                            Ok((data_type, field.is_nullable()))
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    let (output_frame_bytes, output_null_mask_bytes) = bounded_consumer_frame_components(
+                        output_rows_u64,
+                        output_schema,
+                        Some(&column_evidence.node(limit_node_id)),
+                    )?;
+                    Ok(LimitMetadataDescriptor {
+                        node_id: limit_node_id,
+                        execution_scope_fingerprint: scope.clone(),
+                        input_rows: row_count,
+                        output_rows,
+                        output_columns,
+                        output_frame_bytes,
+                        output_null_mask_bytes,
+                    })
+                })
+                .transpose()?;
+            let retained_node_id = limit.as_ref().map_or(sort_node_id, |limit| limit.node_id);
+            Ok(SortMetadataDescriptor {
+                node_id: sort_node_id,
+                execution_scope_fingerprint: scope.clone(),
+                num_rows,
+                keys,
+                stable: false,
+                output_frame_bytes,
+                output_null_mask_bytes,
+                limit,
+                retained_output: graph_output_is_final(plan, retained_node_id),
             })
         })
-        .transpose()?;
-    Ok(SortMetadataDescriptor {
-        node_id: sort_node_id,
-        execution_scope_fingerprint: canonical_execution_scope_fingerprint(plan),
-        num_rows,
-        keys,
-        stable: false,
-        output_frame_bytes,
-        output_null_mask_bytes,
-        limit,
-    })
+        .collect()
 }
 
 pub(crate) fn bounded_consumer_frame_components(
@@ -2487,10 +2406,7 @@ pub(crate) fn bounded_consumer_frame_components(
                 .ok_or_else(|| sort_owner_error("sort_output_dtype_unmodeled", "sort_output"))?;
             rows.checked_mul(width).ok_or_else(|| sort_owner_error("sort_output_bytes_overflow", "sort_output"))?
         };
-        frame = frame
-            .checked_add(data)
-            .and_then(|value| value.checked_add(crate::exec::PER_COLUMN_ALIGNMENT_PADDING_BYTES))
-            .ok_or_else(|| sort_owner_error("sort_output_bytes_overflow", "sort_output"))?;
+        frame = frame.checked_add(data).ok_or_else(|| sort_owner_error("sort_output_bytes_overflow", "sort_output"))?;
         let mask = if rows == 0 || !field.is_nullable() {
             0
         } else {
@@ -2524,77 +2440,4 @@ pub(crate) fn cugraph_graph_execution_capability() -> ReservationRequirement {
 
 pub(crate) fn is_generic_graph_execution_blocker(requirement: &ReservationRequirement) -> bool {
     requirement == &generic_graph_execution_blocker()
-}
-
-pub(crate) fn is_attested_graph_result_passthrough_plan(plan: &QueryPlan, graph_result_input_name: &str) -> bool {
-    let [node] = plan.nodes() else {
-        return false;
-    };
-    if !plan.unreachable_node_ids().is_empty() || plan.root_id() != node.id {
-        return false;
-    }
-    matches!(
-        &node.kind,
-        PlanNode::Source(source)
-            if matches!(source.as_ref(), SourceNode::GpuResident(source) if source.input_name == graph_result_input_name)
-    )
-}
-
-pub(crate) fn is_attested_graph_result_bounded_consumer_plan(plan: &QueryPlan, graph_result_input_name: &str) -> bool {
-    let mut graph_result_source_count = 0_usize;
-    let mut graph_result_source_id = None;
-    let mut sort_count = 0_usize;
-    let mut sort_id = None;
-    let mut filter_count = 0_usize;
-    let mut limit_count = 0_usize;
-    let mut limit_id = None;
-    let mut limit_input = None;
-    let mut sort_input = None;
-    for node in plan.nodes() {
-        if plan.unreachable_node_ids().contains(&node.id) {
-            continue;
-        }
-        match &node.kind {
-            PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::GpuResident(source) if source.input_name == graph_result_input_name) =>
-            {
-                graph_result_source_count += 1;
-                graph_result_source_id = Some(node.id);
-            },
-            PlanNode::Sort(sort) => {
-                sort_count += 1;
-                sort_id = Some(node.id);
-                sort_input = Some(sort.input);
-            },
-            PlanNode::Filter(_) => {
-                filter_count += 1;
-            },
-            PlanNode::Limit(limit) => {
-                limit_count += 1;
-                limit_id = Some(node.id);
-                limit_input = Some(limit.input);
-            },
-            _ => return false,
-        }
-    }
-    if graph_result_source_count != 1 || sort_count != 1 {
-        return false;
-    }
-    match (limit_count, limit_id, limit_input, sort_id, graph_result_source_id, sort_input) {
-        (1, Some(limit_id), Some(limit_input), Some(sort_id), Some(source_id), Some(sort_input)) => {
-            filter_count == 0 && plan.root_id() == limit_id && limit_input == sort_id && sort_input == source_id
-        },
-        (0, None, None, Some(sort_id), Some(source_id), Some(sort_input)) => {
-            if plan.root_id() != sort_id || filter_count > 1 {
-                return false;
-            }
-            if sort_input == source_id {
-                return true;
-            }
-            filter_count == 1
-                && plan
-                    .node(sort_input)
-                    .is_some_and(|node| matches!(&node.kind, PlanNode::Filter(filter) if filter.input == source_id))
-        },
-        _ => false,
-    }
 }

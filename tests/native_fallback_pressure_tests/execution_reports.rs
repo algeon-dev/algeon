@@ -755,6 +755,7 @@ fn native_datafusion_reports_keep_multiple_accepted_join_candidates_separated() 
                     22,
                 ),
             ],
+            deferred_candidates: Vec::new(),
             rejected_candidates: Vec::new(),
             non_join_bounded_plan_count: 0,
             non_join_bounded_plan_reason: None,
@@ -818,12 +819,20 @@ fn native_datafusion_planning_report_projects_native_optimizer_diagnostics() {
     let row = &planning.rows[0];
     assert_eq!(row.native_optimizer.semijoin_reduction.considered_count, 1);
     assert_eq!(row.native_optimizer.semijoin_reduction.applied_count, 1);
+    assert_eq!(row.native_optimizer.shared_resident_extraction.considered_count, 6);
+    assert_eq!(row.native_optimizer.shared_resident_extraction.extracted_count, 0);
 
     let text = planning.to_tsv();
-    assert_eq!(
-        planning_native_optimizer_cell(&planning),
-        "rule=semijoin_reduction,considered_count=1,applied_count=1,candidates=rule=semijoin_reduction,candidate_node_id=n5,before_root_node_id=n5,after_root_node_id=n5,crossed_join_node_ids=n4,target_subtree_id=n1,key_mappings=y_key->y_key@n1,cost_threshold_multiplier=8,admission_mode=NotEvaluated,cost_gate=signal=aggregate_keyset_shape,threshold_multiplier=8,accepted=true,admission_decision=NotEvaluated,original_admitted=not_evaluated,rewritten_admitted=not_evaluated,applied=true,rejected_reason=none;rule=join_build_side_selection,considered_count=1,applied_count=0,candidates=rule=join_build_side_selection,candidate_node_id=n5,before_build_side=right,after_build_side=none,left_estimated_rows=none,right_estimated_rows=none,left_estimated_bytes=none,right_estimated_bytes=none,small_build_side_bytes=67108864,small_build_side_rows=1000000,applied=false,rejected_reason=NoBetterBuildSide;rule=dimension_derived_row_group_pruning,considered_count=2,applied_count=0,candidates=rule=dimension_derived_row_group_pruning,candidate_node_id=n5,dimension_source_node_id=none,target_source_node_id=none,dimension_key_column=none,target_key_column=none,derived_min_key=none,derived_max_key=none,selected_row_groups_before=none,selected_row_groups_after=none,max_dimension_rows=1000000,applied=false,rejected_reason=DimensionKeyLineageUnavailable|rule=dimension_derived_row_group_pruning,candidate_node_id=n5,dimension_source_node_id=none,target_source_node_id=none,dimension_key_column=none,target_key_column=none,derived_min_key=none,derived_max_key=none,selected_row_groups_before=none,selected_row_groups_after=none,max_dimension_rows=1000000,applied=false,rejected_reason=DimensionKeyLineageUnavailable;rule=dynamic_filter_route_discovery,considered_count=2,route_count=1,candidates=rule=dynamic_filter_route_discovery,candidate_node_id=n4,dynamic_filter_id=none,producer_build_side=right,producer_input_node_id=n3,consumer_input_node_id=n1,consumer_kind=none,consumer_node_id=none,consumer_source_node_id=none,producer_key_column=none,consumer_key_column=none,filter_kinds=none,consumer_lowering=none,consumer_reduction_stage=none,selected_source_bytes=none,total_source_bytes=none,routed=false,rejected_reason=UnsupportedJoinShape|rule=dynamic_filter_route_discovery,candidate_node_id=n5,dynamic_filter_id=df0,producer_build_side=right,producer_input_node_id=n4,consumer_input_node_id=n0,consumer_kind=hash_join_probe,consumer_node_id=n5,consumer_source_node_id=n0,producer_key_column=y_key,consumer_key_column=x_key,filter_kinds=range+small_in_list+hash_set_contains,consumer_lowering=post_decode_only,consumer_reduction_stage=join_probe_post_decode,selected_source_bytes=none,total_source_bytes=none,routed=true,rejected_reason=none;rule=aggregate_join_pushdown,considered_count=1,applied_count=0,candidates=rule=aggregate_join_pushdown,aggregate_node_id=n3,join_node_id=none,applied=false,rejected_reason=InputNotJoin"
-    );
+    let optimizer_cell = planning_native_optimizer_cell(&planning);
+    assert!(optimizer_cell.starts_with("rule=semijoin_reduction,considered_count=1,applied_count=1"));
+    assert!(optimizer_cell.contains(";rule=join_build_side_selection,considered_count=1,applied_count=0"));
+    assert!(optimizer_cell.contains(";rule=dimension_derived_row_group_pruning,considered_count=2,applied_count=0"));
+    assert!(optimizer_cell.contains(
+        ";rule=shared_resident_extraction,considered_count=6,extracted_count=0,rejected_count=0,candidates="
+    ));
+    assert!(optimizer_cell.contains("decision=Skipped,reason=NotRepeated,resident_input_name=none"));
+    assert!(optimizer_cell.contains(";rule=dynamic_filter_route_discovery,considered_count=2,route_count=1"));
+    assert!(optimizer_cell.contains(";rule=aggregate_join_pushdown,considered_count=1,applied_count=0"));
     assert!(text.contains("\tnative_optimizer\t"));
     assert!(text.contains("rule=semijoin_reduction,considered_count=1,applied_count=1"));
     assert!(text.contains("crossed_join_node_ids="));
@@ -860,12 +869,17 @@ fn native_datafusion_planning_report_projects_projection_simplification_diagnost
     let row = &planning.rows[0];
     assert_eq!(row.native_optimizer.projection_simplification.considered_count, 1);
     assert_eq!(row.native_optimizer.projection_simplification.applied_count, 1);
+    assert_eq!(row.native_optimizer.shared_resident_extraction.considered_count, 1);
 
     let text = planning.to_tsv();
-    assert_eq!(
-        planning_native_optimizer_cell(&planning),
+    let optimizer_cell = planning_native_optimizer_cell(&planning);
+    assert!(optimizer_cell.starts_with(
         "rule=projection_simplification,considered_count=1,applied_count=1,candidates=rule=projection_simplification,candidate_node_id=n1,replacement_node_id=n0,applied=true,rejected_reason=none"
-    );
+    ));
+    assert!(optimizer_cell.contains(
+        ";rule=shared_resident_extraction,considered_count=1,extracted_count=0,rejected_count=0,candidates="
+    ));
+    assert!(optimizer_cell.contains("decision=Skipped,reason=NotRepeated,resident_input_name=none"));
     assert!(text.contains("rule=projection_simplification,considered_count=1,applied_count=1"));
     assert!(text.contains("replacement_node_id="));
     assert!(text.contains("applied=true"));

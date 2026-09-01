@@ -23,7 +23,7 @@ use parquet::{arrow::PARQUET_FIELD_ID_META_KEY, file::reader::FileReader};
 use super::{
     SourceReaderPushdownPredicate, SourceUnprojectedFilterOutput, combine_scan_limits,
     lower_source_filter_and_projection, project_scan_output_columns, required_source_scan_output_indices,
-    source_bindings_for_schema, supported_reader_pushdown_predicate,
+    source_bindings_for_schema, source_unique_key_columns, supported_reader_pushdown_predicate,
 };
 use crate::{
     capability::CapabilityReason,
@@ -97,6 +97,8 @@ pub(super) fn lower_table_format_source_input(
     }
     let source_output_schema = table_format_source_output_schema(scan_plan, &requirements, &file_schema)?;
     validate_schema(Arc::clone(&source_output_schema))?;
+    let scan_output_bindings = source_bindings_for_schema(&source_output_schema, scan_exec.schema());
+    let unique_key_columns = source_unique_key_columns(scan_exec, &scan_output_bindings);
     let read_groups = table_format_source_read_groups(scan_plan, &requirements, Arc::clone(&source_output_schema))?;
     let effective_scan_limit =
         if filter.is_none() { combine_scan_limits(scan_plan.scan_limit, pushed_scan_limit) } else { None };
@@ -112,9 +114,9 @@ pub(super) fn lower_table_format_source_input(
             &file_schema,
             scan_exec.schema(),
             source_scan_limit,
+            &unique_key_columns,
         )?;
         let source_node = builder.add_source(NativeSourceNode::LocalParquet(native_source));
-        let scan_output_bindings = source_bindings_for_schema(&source_output_schema, scan_exec.schema());
         (
             LoweredNativeInput::with_bindings(source_node, Arc::clone(&source_output_schema), scan_output_bindings),
             reader_pushdown_covers_filter,
@@ -130,12 +132,12 @@ pub(super) fn lower_table_format_source_input(
                     &file_schema,
                     scan_exec.schema(),
                     source_scan_limit,
+                    &unique_key_columns,
                 )
                 .map(|(source, _pushdown)| builder.add_source(NativeSourceNode::LocalParquet(source)))
             })
             .collect::<Result<Vec<_>, _>>()?;
         let union_node = builder.add_union(inputs, Arc::clone(&source_output_schema));
-        let scan_output_bindings = source_bindings_for_schema(&source_output_schema, scan_exec.schema());
         (LoweredNativeInput::with_bindings(union_node, Arc::clone(&source_output_schema), scan_output_bindings), false)
     };
     if let Some(filter) = filter {
@@ -176,6 +178,7 @@ fn table_format_native_source_for_group(
     file_schema: &SchemaRef,
     frontend_schema: SchemaRef,
     source_scan_limit: Option<usize>,
+    unique_key_columns: &[BTreeSet<String>],
 ) -> Result<(NativeLocalParquetSource, bool), CapabilityReason> {
     let native_files = table_format_local_parquet_files_for_group(scan_plan, group)?;
     let mut native_source = NativeLocalParquetSource::from_files(
@@ -196,6 +199,7 @@ fn table_format_native_source_for_group(
     .with_file_column_count(file_schema.fields().len())
     .with_partition_columns(group.requirements.partition_columns.clone())
     .with_missing_columns(group.requirements.missing_columns.clone())
+    .with_unique_key_columns(unique_key_columns.to_vec())
     .with_scan_limit(source_scan_limit);
 
     let mut reader_pushdown_covers_filter = false;

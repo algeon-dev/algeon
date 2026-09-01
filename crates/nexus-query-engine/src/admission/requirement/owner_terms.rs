@@ -37,6 +37,20 @@ impl OwnerId {
             Self::CacheLedger => "cache_ledger",
         }
     }
+
+    pub(crate) fn diagnostic_label(&self) -> String {
+        match self {
+            Self::Attempt | Self::CacheLedger => self.as_str().to_owned(),
+            Self::Graph(node)
+            | Self::Producer(node)
+            | Self::Aggregate(node)
+            | Self::Source(node)
+            | Self::Consumer(node)
+            | Self::SideInput(node)
+            | Self::Sort(node)
+            | Self::Limit(node) => format!("{}:{node}", self.as_str()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -420,6 +434,7 @@ pub(crate) struct SortMetadataDescriptor {
     pub(crate) output_frame_bytes: u64,
     pub(crate) output_null_mask_bytes: u64,
     pub(crate) limit: Option<LimitMetadataDescriptor>,
+    pub(crate) retained_output: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -437,6 +452,8 @@ pub(crate) struct LimitMetadataDescriptor {
     pub(crate) input_rows: u64,
     pub(crate) output_rows: usize,
     pub(crate) output_columns: Vec<(cudf::DataType, bool)>,
+    pub(crate) output_frame_bytes: u64,
+    pub(crate) output_null_mask_bytes: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1116,7 +1133,7 @@ pub(crate) fn generic_gpu_resident_owner_terms(
     let rows = query_plan_hard_row_upper_bound(plan).ok_or_else(|| {
         owner_term_error("gpu_resident_row_bound_unavailable", Some(OwnerTermRole::RetainedOutput), None)
     })?;
-    let output_evidence = PlanColumnEvidenceAnalysis::for_plan(plan, &HashMap::new())?.root(plan);
+    let output_evidence = PlanColumnEvidenceAnalysis::for_plan(plan, resident_outputs)?.root(plan);
     let output_bytes = bounded_consumer_frame_bytes_with_evidence(rows, plan.output_schema(), &output_evidence)
         .map_err(|error| {
             owner_term_error("gpu_resident_output_bytes_unavailable", Some(OwnerTermRole::RetainedOutput), None)

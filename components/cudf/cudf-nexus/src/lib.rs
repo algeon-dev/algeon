@@ -258,8 +258,8 @@ pub use frame::{
         DataFramePreparedSort, DataFrameProjectedCrossJoinPlan, FrameMemoryEffect, ParquetSourceReadPreflight,
     },
     series::{
-        GroupedNuniqueWorkspacePreflight, IntoSeries, ScalarReductionDistinctWorkspacePreflight, ScalarReductionOutput,
-        ScalarReductionOutputShape, Series, SeriesPreparedScalarReduction,
+        IntoSeries, ScalarReductionDistinctWorkspacePreflight, ScalarReductionOutput, ScalarReductionOutputShape,
+        Series, SeriesPreparedScalarReduction,
     },
 };
 // — High-level operations —

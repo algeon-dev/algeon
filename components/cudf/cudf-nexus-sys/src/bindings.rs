@@ -1510,9 +1510,10 @@ unsafe extern "C" {
         options: *const cudf_exec_options_t,
         out: *mut cudf_table_handle,
     ) -> cudf_status_t;
-    #[doc = " Query flat fixed-width DONT_CHECK gather allocation components from metadata.\n\n No stream, memory resource, column, or device allocation is required.\n `columns` may be NULL only when `num_columns == 0`; each `nullable` value\n must be 0 or 1, and each `num_children` must be non-negative."]
+    #[doc = " Query flat fixed-width or bounded-string DONT_CHECK gather allocations.\n\n No stream, memory resource, column, or device allocation is required.\n `columns` may be NULL only when `num_columns == 0`; each `nullable` value\n must be 0 or 1, and each `num_children` must be non-negative. String data\n requires a hard `output_data_bytes_upper_bound`."]
     pub fn cudf_gather_fixed_width_dont_check_preflight(
         output_rows: i64,
+        output_data_bytes_upper_bound: u64,
         columns: *const cudf_gather_fixed_width_column_metadata_t,
         num_columns: i32,
         device: i32,

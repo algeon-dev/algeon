@@ -157,7 +157,8 @@ fn table_format_local_footer_missing_field_id_uses_name_mapping_alias() {
     assert_eq!(groups[0].field_id_bindings[0][0].logical_name, "status");
     assert_eq!(groups[0].field_id_bindings[0][0].physical_name, "old_status");
     let (native_source, _) =
-        table_format_native_source_for_group(&scan_plan, &groups[0], None, &file_schema, scan_schema, None).unwrap();
+        table_format_native_source_for_group(&scan_plan, &groups[0], None, &file_schema, scan_schema, None, &[])
+            .unwrap();
     assert_eq!(native_source.read_columns, vec!["old_status"]);
     assert_eq!(native_source.projected_output_columns, vec!["status"]);
     assert_eq!(native_source.files[0].field_id_read_bindings[0].physical_name, "old_status");
@@ -422,7 +423,8 @@ fn table_format_timestamp_partition_source_contract_keeps_logical_timezone() {
 
     let groups = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap();
     let (native_source, _) =
-        table_format_native_source_for_group(&scan_plan, &groups[0], None, &file_schema, scan_schema, None).unwrap();
+        table_format_native_source_for_group(&scan_plan, &groups[0], None, &file_schema, scan_schema, None, &[])
+            .unwrap();
 
     assert_eq!(groups[0].source_schema.field_with_name("event_ts").unwrap().data_type(), &timestamp_type);
     source::validate_local_parquet_source(&native_source).unwrap();
@@ -469,7 +471,8 @@ fn table_format_timestamp_missing_source_contract_keeps_logical_timezone() {
 
     let groups = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap();
     let (native_source, _) =
-        table_format_native_source_for_group(&scan_plan, &groups[0], None, &file_schema, scan_schema, None).unwrap();
+        table_format_native_source_for_group(&scan_plan, &groups[0], None, &file_schema, scan_schema, None, &[])
+            .unwrap();
 
     assert_eq!(groups[0].source_schema.field_with_name("event_ts").unwrap().data_type(), &timestamp_type);
     source::validate_local_parquet_source(&native_source).unwrap();
@@ -589,6 +592,7 @@ fn table_format_attached_remote_footer_same_name_signed_integer_widening_admits(
         &file_schema,
         Arc::clone(&scan_schema),
         None,
+        &[],
     )
     .unwrap();
 
@@ -739,6 +743,7 @@ fn table_format_filter_only_same_name_signed_integer_widening_admits() {
         &file_schema,
         filter.schema(),
         None,
+        &[],
     )
     .unwrap();
 
@@ -817,6 +822,7 @@ fn table_format_bare_boolean_filter_stays_post_decode() {
         &file_schema,
         filter.schema(),
         None,
+        &[],
     )
     .unwrap();
 
@@ -1849,7 +1855,8 @@ fn table_format_empty_required_fields_uses_field_id_carrier_without_projecting_i
     let output_schema = table_format_source_output_schema(&scan_plan, &requirements, &file_schema).unwrap();
     let groups = table_format_source_read_groups(&scan_plan, &requirements, output_schema).unwrap();
     let (native_source, _) =
-        table_format_native_source_for_group(&scan_plan, &groups[0], None, &file_schema, scan_schema, None).unwrap();
+        table_format_native_source_for_group(&scan_plan, &groups[0], None, &file_schema, scan_schema, None, &[])
+            .unwrap();
 
     assert_eq!(groups[0].requirements.read_columns, vec!["old_status"]);
     assert!(groups[0].requirements.projected_output_columns.is_empty());

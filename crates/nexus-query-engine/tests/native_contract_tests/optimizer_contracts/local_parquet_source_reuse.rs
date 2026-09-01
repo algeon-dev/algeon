@@ -16,6 +16,7 @@ fn native_optimizer_reuses_compatible_small_local_parquet_source_variants() {
     validate_local_parquet_source(sources[0]).expect("shared source must retain a valid schema mapping contract");
     assert_eq!(sources[0].diagnostics.schema_mapping_disposition, SchemaMappingDisposition::DirectByName);
     assert!(sources[0].diagnostics.rejected_features.is_empty());
+    assert!(sources[0].unique_key_columns.is_empty(), "source reuse must not leak branch-local proof");
     assert_eq!(sources[0].projected_output_columns.len(), sources[0].projected_output_column_source_refs.len());
     assert_eq!(sources[0].pure_filter_columns.len(), sources[0].pure_filter_column_source_refs.len());
     assert!(
@@ -454,7 +455,12 @@ fn native_optimizer_reuses_large_filtered_existing_superset_outside_source_adjac
 
 fn compatible_small_local_parquet_source_variants_plan() -> nexus_query_engine::plan::QueryPlan {
     let mut builder = QueryPlanBuilder::new();
-    let full = builder.add_source(customer_address_source(&["id", "state"], &[0, 1], None));
+    let SourceNode::LocalParquet(full_source) = customer_address_source(&["id", "state"], &[0, 1], None) else {
+        unreachable!("customer address source helper always builds local Parquet")
+    };
+    let full = builder.add_source(SourceNode::LocalParquet(
+        full_source.with_unique_key_columns(vec![BTreeSet::from(["id".to_string()])]),
+    ));
     let filtered = builder.add_source(customer_address_source(
         &["id", "zip"],
         &[0, 2],

@@ -517,6 +517,10 @@ fn prune_local_parquet_source(source: &LocalParquetSource, required: &RequiredCo
     pruned.pure_filter_column_source_refs = pure_filter_column_source_refs;
     pruned.partition_columns = partition_columns;
     pruned.missing_columns = missing_columns;
+    let output_schema = pruned.output_schema().clone();
+    pruned.unique_key_columns.retain(|key| {
+        key.iter().all(|column| output_schema.field_with_name(column).is_ok_and(|field| !field.is_nullable()))
+    });
     pruned.refresh_diagnostics();
     pruned
 }

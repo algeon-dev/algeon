@@ -12,8 +12,8 @@ use arrow::datatypes::DataType;
 
 use crate::{
     admission::requirement::{
-        AllocationOwnerTerm, AttemptBoundDerivation, OccurrenceId, OwnerId, OwnerTermId, OwnerTermRole,
-        checked_owner_sum, owner_inventory_covers_scopes,
+        AllocationOwnerTerm, AttemptBoundDerivation, OwnerId, OwnerTermId, OwnerTermRole, checked_owner_sum,
+        owner_inventory_covers_scopes,
     },
     chunk::SourceChunkPlanningOptions,
     error::{QueryError, QueryErrorCode, Result},
@@ -1087,7 +1087,7 @@ impl AttemptReservationSchedule {
             scheduled_scopes.extend(
                 scopes
                     .iter()
-                    .filter(|scope| scope.is_cugraph_side_input_scope())
+                    .filter(|scope| scope.is_resident_side_input_scope())
                     .map(AttemptReservationShape::execution_scope_fingerprint),
             );
             scheduled_scopes.extend(
@@ -1134,7 +1134,7 @@ impl AttemptReservationSchedule {
             .with_fact("actual_occurrence", term.id().occurrence_label()));
         }
         if !scopes.iter().any(|scope| {
-            scope.is_cugraph_side_input_scope()
+            scope.is_resident_side_input_scope()
                 && scope.execution_scope_fingerprint() == term.execution_scope_fingerprint()
         }) {
             return Err(graph_schedule_error(

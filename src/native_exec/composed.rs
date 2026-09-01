@@ -306,44 +306,8 @@ fn prepared_producer_capability_proof(
     }
 }
 
-fn composed_consumer_capability_proof(
-    consumer_plan: &QueryPlan,
-    prepared_gpu_inputs: &[Arc<dyn ExecutionPlan>],
-    producer_proofs: &[(Option<String>, QueryPlanCapabilityProof)],
-) -> Option<QueryPlanCapabilityProof> {
-    let graph_result_input_names = prepared_gpu_inputs
-        .iter()
-        .filter_map(|input| graph_execution_plan(input.as_ref()).map(|graph| graph.graph_result_input_name()))
-        .collect::<Vec<_>>();
-    let attested = match graph_result_input_names.as_slice() {
-        [graph_result_input_name] => {
-            let passthrough = QueryPlanCapabilityProof::for_attested_graph_result_passthrough_plan(
-                consumer_plan,
-                graph_result_input_name,
-            );
-            let matching_producer = producer_proofs
-                .iter()
-                .filter(|(producer_graph_result_name, _)| {
-                    producer_graph_result_name.as_deref() == Some(*graph_result_input_name)
-                })
-                .map(|(_, proof)| proof)
-                .collect::<Vec<_>>();
-            let bounded = match matching_producer.as_slice() {
-                [producer] => QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
-                    consumer_plan,
-                    graph_result_input_name,
-                    producer,
-                ),
-                _ => QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan(
-                    consumer_plan,
-                    graph_result_input_name,
-                ),
-            };
-            passthrough.or(bounded)
-        },
-        _ => None,
-    };
-    attested.or_else(|| QueryPlanCapabilityProof::for_composed_consumer_plan(consumer_plan))
+fn composed_consumer_capability_proof(consumer_plan: &QueryPlan) -> Option<QueryPlanCapabilityProof> {
+    QueryPlanCapabilityProof::for_composed_consumer_plan(consumer_plan)
 }
 
 /// Issues the one engine-owned proof for a prepared composed GPU island.
@@ -352,47 +316,64 @@ fn composed_consumer_capability_proof(
 /// top-level producer occurrences in execution order. Nested producer
 /// fragments stay behind each top-level proof; they are not flattened into a
 /// second occurrence manifest.
+#[cfg(feature = "cugraph")]
 pub(crate) fn composed_admission_capability_proof(
     consumer_plan: &QueryPlan,
     prepared_gpu_inputs: &[Arc<dyn ExecutionPlan>],
 ) -> DataFusionResult<QueryPlanCapabilityProof> {
+    resolve_composed_admission_capability_proof(consumer_plan, prepared_gpu_inputs)
+        .map_err(|error| prepared_composed_admission_error(error, consumer_plan, None))
+}
+
+fn resolve_composed_admission_capability_proof(
+    consumer_plan: &QueryPlan,
+    prepared_gpu_inputs: &[Arc<dyn ExecutionPlan>],
+) -> nexus_query_engine::error::Result<QueryPlanCapabilityProof> {
     let mut candidates = Vec::with_capacity(prepared_gpu_inputs.len());
-    let mut producer_proofs = Vec::with_capacity(prepared_gpu_inputs.len());
     for input in prepared_gpu_inputs {
         let tickets = prepared_gpu_resident_producer_admission_tickets(input.as_ref());
         let capability_proof = prepared_producer_capability_proof(input.as_ref(), &tickets);
-        if let Some(proof) = capability_proof.clone() {
-            producer_proofs.push((
-                graph_execution_plan(input.as_ref()).map(|graph| graph.graph_result_input_name().to_owned()),
-                proof,
-            ));
-        }
         candidates.push(ComposedGraphProducerCandidate::new(
             gpu_resident_producer_input_name(input.as_ref()),
             graph_execution_plan(input.as_ref()).map(|graph| graph.graph_result_input_name().to_owned()),
             capability_proof,
         ));
     }
-    let consumer_proof = composed_consumer_capability_proof(consumer_plan, prepared_gpu_inputs, &producer_proofs)
-        .ok_or_else(|| {
-            DataFusionError::from(
-                Error::new(
-                    ErrorCode::InvalidExecutionPlan,
-                    "datafusion_nexus.native_composed.admission_proof",
-                    "the native composed consumer did not issue an exact capability proof",
-                )
-                .with_fact("reason", "consumer_admission_proof_missing"),
-            )
-        })?;
-    QueryPlanCapabilityProof::resolve_composed_graph_attempt(consumer_plan, consumer_proof, candidates).map_err(
-        |error| {
-            DataFusionError::from(Error::from_native_with_blocking_diagnostics(
-                "datafusion_nexus.native_composed.admission_proof",
-                "failed to derive the complete engine-owned composed admission bound",
-                error.with_fact("stage", "prepared_composed_admission"),
-            ))
-        },
-    )
+    let consumer_proof = composed_consumer_capability_proof(consumer_plan).ok_or_else(|| {
+        nexus_query_engine::error::QueryError::new(
+            nexus_query_engine::error::QueryErrorCode::UnsupportedPlanShape,
+            "datafusion_nexus.native_composed.admission_proof",
+            "the native composed consumer did not issue an exact capability proof",
+        )
+        .with_fact("reason", "consumer_admission_proof_missing")
+    })?;
+    QueryPlanCapabilityProof::resolve_composed_graph_attempt(consumer_plan, consumer_proof, candidates)
+}
+
+fn prepared_composed_admission_error(
+    mut error: nexus_query_engine::error::QueryError,
+    consumer_plan: &QueryPlan,
+    execution_config: Option<&NexusNativeExecutionConfig>,
+) -> DataFusionError {
+    error = error
+        .with_fact("stage", "prepared_composed_admission")
+        .with_fact("candidate_plan_node_id", consumer_plan.root_id());
+    if let Some(execution_config) = execution_config {
+        if let Some(shape) = execution_config.plan_task_mapping_datafusion_shape() {
+            error = error.with_fact("candidate_shape", shape);
+        }
+        if let Some(query_id) = execution_config.query_id() {
+            error = error.with_query_id(query_id.clone());
+        }
+        if let Some(trace_id) = execution_config.trace_id() {
+            error = error.with_trace_id(trace_id.clone());
+        }
+    }
+    DataFusionError::from(Error::from_native_with_blocking_diagnostics(
+        "datafusion_nexus.native_composed.admission_proof",
+        "failed to derive the complete engine-owned composed admission bound",
+        error,
+    ))
 }
 
 /// Replaces provisional producer tickets with the one proof for the complete
@@ -414,7 +395,8 @@ fn complete_composed_admission_proof(
         }
     }
 
-    let complete_proof = composed_admission_capability_proof(consumer_plan, prepared_gpu_inputs)?;
+    let complete_proof = resolve_composed_admission_capability_proof(consumer_plan, prepared_gpu_inputs)
+        .map_err(|error| prepared_composed_admission_error(error, consumer_plan, Some(&execution_config)))?;
     let canonical_ticket =
         query_admission_ticket_from_task_context(task_context).or_else(|| execution_config.query_admission_ticket());
     let source = execution_config

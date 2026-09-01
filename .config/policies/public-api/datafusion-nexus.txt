@@ -789,6 +789,7 @@ pub datafusion_nexus::gpu_coverage::QueryGpuCandidateReasonKind::Source
 impl datafusion_nexus::gpu_coverage::QueryGpuCandidateReasonKind
 pub const fn datafusion_nexus::gpu_coverage::QueryGpuCandidateReasonKind::as_str(self) -> &'static str
 pub enum datafusion_nexus::gpu_coverage::QueryGpuCandidateSelectionOutcome
+pub datafusion_nexus::gpu_coverage::QueryGpuCandidateSelectionOutcome::Deferred
 pub datafusion_nexus::gpu_coverage::QueryGpuCandidateSelectionOutcome::NotSelectedByCost
 pub datafusion_nexus::gpu_coverage::QueryGpuCandidateSelectionOutcome::NotSupported
 pub datafusion_nexus::gpu_coverage::QueryGpuCandidateSelectionOutcome::Selected
@@ -1082,6 +1083,7 @@ pub datafusion_nexus::native_report::NativeDataFusionExecutionWorkloadInput::Pla
 pub datafusion_nexus::native_report::NativeDataFusionExecutionWorkloadInput::Planned::runtime: datafusion_nexus::native_report::NativeDataFusionRuntime
 pub datafusion_nexus::native_report::NativeDataFusionExecutionWorkloadInput::PlanningFailure(datafusion_nexus::native_report::NativePlanningFailure)
 pub enum datafusion_nexus::native_report::NativeDataFusionPlanningOutcome
+pub datafusion_nexus::native_report::NativeDataFusionPlanningOutcome::Deferred
 pub datafusion_nexus::native_report::NativeDataFusionPlanningOutcome::NotSelectedByCost
 pub datafusion_nexus::native_report::NativeDataFusionPlanningOutcome::NotSupported
 pub datafusion_nexus::native_report::NativeDataFusionPlanningOutcome::Selected
@@ -1881,12 +1883,18 @@ pub datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics::sink_ki
 pub datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics::task_count: usize
 pub struct datafusion_nexus::planner::NativeCapabilityContractDiagnostics
 pub datafusion_nexus::planner::NativeCapabilityContractDiagnostics::accepted_candidates: alloc::vec::Vec<datafusion_nexus::planner::NativeCapabilityAcceptedCandidateDiagnostics>
+pub datafusion_nexus::planner::NativeCapabilityContractDiagnostics::deferred_candidates: alloc::vec::Vec<datafusion_nexus::planner::NativeCapabilityDeferredCandidateDiagnostics>
 pub datafusion_nexus::planner::NativeCapabilityContractDiagnostics::non_join_bounded_plan_count: usize
 pub datafusion_nexus::planner::NativeCapabilityContractDiagnostics::non_join_bounded_plan_reason: core::option::Option<alloc::string::String>
 pub datafusion_nexus::planner::NativeCapabilityContractDiagnostics::rejected_candidates: alloc::vec::Vec<datafusion_nexus::planner::NativeCapabilityRejectedCandidateDiagnostics>
 impl datafusion_nexus::planner::NativeCapabilityContractDiagnostics
 pub fn datafusion_nexus::planner::NativeCapabilityContractDiagnostics::is_empty(&self) -> bool
 pub fn datafusion_nexus::planner::NativeCapabilityContractDiagnostics::merge(&mut self, Self)
+pub struct datafusion_nexus::planner::NativeCapabilityDeferredCandidateDiagnostics
+pub datafusion_nexus::planner::NativeCapabilityDeferredCandidateDiagnostics::binding: nexus_query_engine::admission::requirement::capability::ComposedProducerBindingDiagnostics
+pub datafusion_nexus::planner::NativeCapabilityDeferredCandidateDiagnostics::candidate: datafusion_nexus::report::GpuCandidate
+pub datafusion_nexus::planner::NativeCapabilityDeferredCandidateDiagnostics::planning_stage: alloc::string::String
+pub datafusion_nexus::planner::NativeCapabilityDeferredCandidateDiagnostics::report: nexus_query_engine::contract_report::CapabilityContractReport
 pub struct datafusion_nexus::planner::NativeCapabilityRejectedCandidateDiagnostics
 pub datafusion_nexus::planner::NativeCapabilityRejectedCandidateDiagnostics::blocking_contract: nexus_query_engine::contract_report::CapabilityContractGateRow
 pub datafusion_nexus::planner::NativeCapabilityRejectedCandidateDiagnostics::candidate: datafusion_nexus::report::GpuCandidate
@@ -1936,6 +1944,7 @@ pub const datafusion_nexus::planner::CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_RE
 pub const datafusion_nexus::planner::NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME: &str
 pub fn datafusion_nexus::planner::classify_final_plan(&dyn datafusion_physical_plan::execution_plan::ExecutionPlan) -> datafusion_nexus::planner::FinalPlanDisposition
 pub mod datafusion_nexus::report
+pub use datafusion_nexus::report::ComposedProducerBindingDiagnostics
 pub use datafusion_nexus::report::NativePlanCostReason
 pub use datafusion_nexus::report::PlanNodeId
 pub use datafusion_nexus::report::QueryId
@@ -1944,6 +1953,10 @@ pub use datafusion_nexus::report::TriageCode
 pub use datafusion_nexus::report::TriageSummary
 pub use datafusion_nexus::report::TriageVerdict
 pub enum datafusion_nexus::report::CandidateOutcome
+pub datafusion_nexus::report::CandidateOutcome::Deferred
+pub datafusion_nexus::report::CandidateOutcome::Deferred::candidate: datafusion_nexus::report::GpuCandidate
+pub datafusion_nexus::report::CandidateOutcome::Deferred::planning_stage: alloc::string::String
+pub datafusion_nexus::report::CandidateOutcome::Deferred::producer_binding: nexus_query_engine::admission::requirement::capability::ComposedProducerBindingDiagnostics
 pub datafusion_nexus::report::CandidateOutcome::NotSelectedByCost
 pub datafusion_nexus::report::CandidateOutcome::NotSelectedByCost::candidate: datafusion_nexus::report::GpuCandidate
 pub datafusion_nexus::report::CandidateOutcome::NotSelectedByCost::cost_reason: nexus_query_engine::plan::preference::NativePlanCostReason
@@ -1990,6 +2003,7 @@ pub datafusion_nexus::report::NativeCandidateCostEvidence::source_count: usize
 pub struct datafusion_nexus::report::PlanningReport
 impl datafusion_nexus::report::PlanningReport
 pub fn datafusion_nexus::report::PlanningReport::data_layout_fixable_not_supported(&self) -> core::option::Option<datafusion_nexus::report::DataLayoutFixableNotSupported<'_>>
+pub fn datafusion_nexus::report::PlanningReport::deferred_count(&self) -> usize
 pub fn datafusion_nexus::report::PlanningReport::from_outcomes(impl core::iter::traits::collect::IntoIterator<Item = datafusion_nexus::report::CandidateOutcome>) -> Self
 pub fn datafusion_nexus::report::PlanningReport::new() -> Self
 pub fn datafusion_nexus::report::PlanningReport::not_selected_by_cost_count(&self) -> usize

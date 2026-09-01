@@ -281,6 +281,7 @@ impl QueryGpuCoverageDomains {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QueryGpuCandidateSelectionOutcome {
     Selected,
+    Deferred,
     NotSupported,
     NotSelectedByCost,
 }
@@ -289,6 +290,7 @@ impl QueryGpuCandidateSelectionOutcome {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Selected => "selected",
+            Self::Deferred => "deferred",
             Self::NotSupported => "not_supported",
             Self::NotSelectedByCost => "not_selected_by_cost",
         }

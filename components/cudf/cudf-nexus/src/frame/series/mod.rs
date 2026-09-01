@@ -23,6 +23,6 @@ pub(crate) use context::{
 pub use host_column_data::HostColumnData;
 pub use owned::{IntoSeries, Series};
 pub use reduction::{
-    GroupedNuniqueWorkspacePreflight, ScalarReductionDistinctWorkspacePreflight, ScalarReductionOutput,
-    ScalarReductionOutputShape, SeriesPreparedScalarReduction,
+    ScalarReductionDistinctWorkspacePreflight, ScalarReductionOutput, ScalarReductionOutputShape,
+    SeriesPreparedScalarReduction,
 };

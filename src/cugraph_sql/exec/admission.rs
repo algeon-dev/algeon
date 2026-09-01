@@ -262,12 +262,20 @@ fn compile_cugraph_admission_ticket(
                 fragment_proofs.push(edge_proof);
             }
         } else {
-            collect_native_fragment_capability_proofs(edge_source, &mut fragment_proofs, true, false)?;
+            collect_native_fragment_capability_proofs(
+                edge_source,
+                &mut fragment_proofs,
+                NativeFragmentRole::GraphInput,
+            )?;
         }
     }
     if !materialized_edge_input_scheduled {
         for predicate_source in predicate_sources {
-            collect_native_fragment_capability_proofs(predicate_source.as_ref(), &mut fragment_proofs, false, true)?;
+            collect_native_fragment_capability_proofs(
+                predicate_source.as_ref(),
+                &mut fragment_proofs,
+                NativeFragmentRole::ResidentSideInput,
+            )?;
         }
     }
     let execution_config = execution_config
@@ -309,11 +317,17 @@ pub(super) fn validate_cugraph_graph_owner_preflight(
     Ok(())
 }
 
+#[derive(Clone, Copy)]
+enum NativeFragmentRole {
+    Ordinary,
+    GraphInput,
+    ResidentSideInput,
+}
+
 fn collect_native_fragment_capability_proofs(
     plan: &dyn ExecutionPlan,
     proofs: &mut Vec<QueryPlanCapabilityProof>,
-    is_graph_input_fragment: bool,
-    is_cugraph_side_input_fragment: bool,
+    role: NativeFragmentRole,
 ) -> Result<()> {
     let native_plan = lowered_native_edge_plan(plan);
 
@@ -325,7 +339,7 @@ fn collect_native_fragment_capability_proofs(
     // distinct fragments themselves.
     if !(plan.name() == "CooperativeExec" && native_plan.is_some()) {
         for child in plan.children() {
-            collect_native_fragment_capability_proofs(child.as_ref(), proofs, false, false)?;
+            collect_native_fragment_capability_proofs(child.as_ref(), proofs, NativeFragmentRole::Ordinary)?;
         }
     }
 
@@ -335,18 +349,18 @@ fn collect_native_fragment_capability_proofs(
     // broad enough to authorize the additional GPU-output contract.
     if let Some(native_plan) = native_plan {
         let native_plan = native_plan.clone_with_gpu_resident_sink();
-        let proof = if is_graph_input_fragment {
-            QueryPlanCapabilityProof::for_cugraph_graph_input_plan(&native_plan)
-        } else if is_cugraph_side_input_fragment {
-            Some(QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&native_plan).map_err(|error| {
-                DataFusionError::from(Error::from_native(
-                    "datafusion_nexus.cugraph_sql.graph_ticket_ask",
-                    "failed to derive native cuGraph side-input admission evidence",
-                    error,
-                ))
-            })?)
-        } else {
-            QueryPlanCapabilityProof::for_query_plan(&native_plan)
+        let proof = match role {
+            NativeFragmentRole::GraphInput => QueryPlanCapabilityProof::for_cugraph_graph_input_plan(&native_plan),
+            NativeFragmentRole::ResidentSideInput => {
+                Some(QueryPlanCapabilityProof::try_for_resident_side_input_plan(&native_plan).map_err(|error| {
+                    DataFusionError::from(Error::from_native(
+                        "datafusion_nexus.cugraph_sql.graph_ticket_ask",
+                        "failed to derive native cuGraph side-input admission evidence",
+                        error,
+                    ))
+                })?)
+            },
+            NativeFragmentRole::Ordinary => QueryPlanCapabilityProof::for_query_plan(&native_plan),
         };
         if let Some(proof) = proof {
             proofs.push(proof);

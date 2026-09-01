@@ -32,64 +32,6 @@ pub struct ScalarReductionDistinctWorkspacePreflight {
     active_workspace_peak_bytes: usize,
 }
 
-/// Allocation-free hard bound for the additional workspace owned by one grouped NUnique value column.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GroupedNuniqueWorkspacePreflight {
-    argument_sanitation_bytes: usize,
-    distinct_state_bytes: usize,
-    active_workspace_peak_bytes: usize,
-}
-
-impl GroupedNuniqueWorkspacePreflight {
-    /// Resolve the grouped NUnique workspace bound from row and retained-column metadata.
-    pub fn for_metadata(num_rows: usize, argument_retained_bytes: usize) -> Result<Self> {
-        let operation = "groupby::nunique_workspace_preflight";
-        let distinct =
-            ScalarReductionDistinctWorkspacePreflight::for_metadata(num_rows, DataType::new(TypeId::Int64), 0)
-                .map_err(|error| error.reanchor_if_needed(operation))?;
-        let row_flags_bytes = num_rows.checked_mul(std::mem::size_of::<i32>()).ok_or_else(|| {
-            Error::new_with(ErrorCode::SizeOverflow, operation, "grouped NUnique row flags overflow usize")
-                .with_detail("reason", "row_flags_overflowed_usize")
-        })?;
-        if distinct.static_set_storage_bytes() < row_flags_bytes {
-            return Err(Error::new_with(
-                ErrorCode::ForeignInvariantViolation,
-                operation,
-                "distinct-set storage does not dominate grouped NUnique row flags",
-            )
-            .with_detail("reason", "distinct_state_does_not_dominate_row_flags")
-            .with_detail("distinct_state_bytes", distinct.static_set_storage_bytes().to_string())
-            .with_detail("row_flags_bytes", row_flags_bytes.to_string()));
-        }
-        let distinct_state_bytes = distinct.active_workspace_peak_bytes();
-        let active_workspace_peak_bytes =
-            argument_retained_bytes.checked_add(distinct_state_bytes).ok_or_else(|| {
-                Error::new_with(ErrorCode::SizeOverflow, operation, "grouped NUnique workspace overflows usize")
-                    .with_detail("reason", "workspace_sum_overflowed_usize")
-            })?;
-        Ok(Self {
-            argument_sanitation_bytes: argument_retained_bytes,
-            distinct_state_bytes,
-            active_workspace_peak_bytes,
-        })
-    }
-
-    /// Bytes reserved for worst-case nullable or variable-width argument sanitation.
-    pub fn argument_sanitation_bytes(self) -> usize {
-        self.argument_sanitation_bytes
-    }
-
-    /// Native distinct-state bound that dominates the per-row NUnique flag vector.
-    pub fn distinct_state_bytes(self) -> usize {
-        self.distinct_state_bytes
-    }
-
-    /// Checked sum of simultaneously live grouped NUnique workspace components.
-    pub fn active_workspace_peak_bytes(self) -> usize {
-        self.active_workspace_peak_bytes
-    }
-}
-
 impl ScalarReductionDistinctWorkspacePreflight {
     /// Resolve the libcudf-owned workspace contract from input metadata.
     pub fn for_metadata(num_rows: usize, key_type: DataType, null_count: usize) -> Result<Self> {

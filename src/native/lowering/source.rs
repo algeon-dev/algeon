@@ -2,6 +2,7 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::{
+    common::Constraint,
     physical_expr::{PhysicalExpr, expressions::Column, projection::ProjectionExprs},
     physical_plan::ExecutionPlan,
 };
@@ -164,6 +165,40 @@ pub(super) fn source_bindings_for_schema(schema: &SchemaRef, frontend_schema: Sc
                 frontend_name: field.name().clone(),
                 native_name: field.name().clone(),
             })
+        })
+        .collect()
+}
+
+pub(super) fn source_unique_key_columns(
+    source: &dyn ExecutionPlan,
+    bindings: &[super::FieldBinding],
+) -> Vec<BTreeSet<String>> {
+    let schema = source.schema();
+    source
+        .properties()
+        .equivalence_properties()
+        .constraints()
+        .iter()
+        .filter_map(|constraint| {
+            let indices = match constraint {
+                Constraint::PrimaryKey(indices) | Constraint::Unique(indices) => indices,
+            };
+            if indices.is_empty() || indices.iter().copied().collect::<BTreeSet<_>>().len() != indices.len() {
+                return None;
+            }
+            let fields = indices.iter().map(|index| schema.fields().get(*index)).collect::<Option<Vec<_>>>()?;
+            if fields.iter().any(|field| field.is_nullable()) {
+                return None;
+            }
+            indices
+                .iter()
+                .map(|index| {
+                    bindings
+                        .iter()
+                        .find(|binding| binding.frontend_index == *index)
+                        .map(|binding| binding.native_name.clone())
+                })
+                .collect::<Option<BTreeSet<_>>>()
         })
         .collect()
 }

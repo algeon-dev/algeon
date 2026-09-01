@@ -112,6 +112,8 @@ impl StatisticalAggregateToleranceContract {
 pub enum CapabilityEnvelopeStatus {
     /// Every reported gate is modeled for bounded execution.
     Admitted,
+    /// Structural support is known, but a prerequisite owner fact is not yet bound.
+    Deferred,
     /// At least one gate or capability proof blocks bounded execution.
     Rejected,
 }
@@ -121,6 +123,7 @@ impl CapabilityEnvelopeStatus {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Admitted => "bounded",
+            Self::Deferred => "deferred_bounded",
             Self::Rejected => "unsupported_bounded",
         }
     }

@@ -382,9 +382,8 @@ fn complete_composed_admission_proof_rebinds_fake_producer_with_full_cpu_only_pr
     let source = admission_source(&backend);
     let (schema, producer_proof) = typed_graph_producer_proof();
     let consumer_plan = consumer_plan(Arc::clone(&schema));
-    let consumer_proof =
-        QueryPlanCapabilityProof::for_attested_graph_result_passthrough_plan(&consumer_plan, "fake_input")
-            .expect("consumer has an attested passthrough proof");
+    let consumer_proof = QueryPlanCapabilityProof::for_composed_consumer_plan(&consumer_plan)
+        .expect("consumer has a composed passthrough proof");
     let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof.clone()));
     let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
         input_name: "fake_input".to_string(),
@@ -524,13 +523,8 @@ fn complete_composed_admission_proof_preserves_bounded_single_graph_consumer_pat
     })];
     let config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
 
-    let standalone_consumer_proof =
-        QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(
-            &consumer_plan,
-            "fake_input",
-            &producer_proof,
-        )
-        .expect("the native full sort remains an attested standalone graph consumer");
+    let standalone_consumer_proof = QueryPlanCapabilityProof::for_composed_consumer_plan(&consumer_plan)
+        .expect("the native full sort has a composed consumer proof");
     let expected_proof = QueryPlanCapabilityProof::resolve_composed_graph_attempt(
         &consumer_plan,
         standalone_consumer_proof,
@@ -572,7 +566,7 @@ fn complete_composed_admission_proof_rejects_invalid_graph_result_sorts_at_admis
             Arc::new(Schema::new(vec![Field::new("vertex", DataType::Utf8, false)])),
             1,
             None,
-            "sort_owner_key_type_not_radix_dispatchable",
+            "sort_owner_sort_output_string_payload_evidence_missing",
         ),
     ];
 

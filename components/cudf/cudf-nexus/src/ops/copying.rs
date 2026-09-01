@@ -92,14 +92,15 @@ fn gather_fixed_width_dtype_supported(type_id: TypeId) -> bool {
         || type_id.is_boolean()
         || type_id.is_timestamp()
         || type_id.is_duration()
-        || type_id.is_decimal()
+        || type_id == TypeId::String
 }
 
-/// Query the libcudf-owned flat fixed-width DONT_CHECK gather allocation
-/// contract from schema metadata without allocating or launching GPU work.
+/// Query the libcudf-owned flat DONT_CHECK gather allocation contract from
+/// schema metadata and a hard output-data bound without launching GPU work.
 pub fn gather_fixed_width_dont_check_preflight_for_metadata(
     columns: &[(crate::core::types::DataType, bool)],
     output_rows: usize,
+    output_data_bytes_upper_bound: usize,
     device: DeviceId,
 ) -> Result<GatherFixedWidthDontCheckPreflight> {
     let operation = "copying::gather_fixed_width_dont_check_preflight";
@@ -124,7 +125,7 @@ pub fn gather_fixed_width_dont_check_preflight_for_metadata(
             .with_fact(crate::core::error::FACT_TYPE_ID, dtype.id())
             .with_detail("resource", "source_column")
             .with_detail("reason", "dtype_not_fixed_width_gather_dispatchable")
-            .with_detail("remedy", "use a flat numeric, chrono, boolean, or decimal column"));
+            .with_detail("remedy", "use a flat numeric, chrono, boolean, or string column"));
         }
     }
 
@@ -154,6 +155,11 @@ pub fn gather_fixed_width_dont_check_preflight_for_metadata(
     let status = unsafe {
         cudf_sys::cudf_gather_fixed_width_dont_check_preflight(
             output_rows,
+            u64::try_from(output_data_bytes_upper_bound).map_err(|_| {
+                Error::new_with(ErrorCode::SizeOverflow, operation, "output data byte bound exceeds native range")
+                    .with_detail("resource", "output_data_bytes_upper_bound")
+                    .with_detail("reason", "output_data_bytes_upper_bound_exceeds_u64")
+            })?,
             metadata.as_ptr(),
             i32::try_from(metadata.len()).map_err(|_| {
                 Error::new_with(ErrorCode::SizeOverflow, operation, "column count exceeds native range")

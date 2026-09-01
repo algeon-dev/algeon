@@ -15,13 +15,20 @@ pub fn nexus_query_engine::admission::BoundedPipelineAdmission::pipeline(&self) 
 pub struct nexus_query_engine::admission::ComposedGraphProducerCandidate
 impl nexus_query_engine::admission::ComposedGraphProducerCandidate
 pub fn nexus_query_engine::admission::ComposedGraphProducerCandidate::new(core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>, core::option::Option<nexus_query_engine::admission::QueryPlanCapabilityProof>) -> Self
+pub struct nexus_query_engine::admission::ComposedProducerBindingDiagnostics
+impl nexus_query_engine::admission::ComposedProducerBindingDiagnostics
+pub fn nexus_query_engine::admission::ComposedProducerBindingDiagnostics::consumer_execution_scope_fingerprint(&self) -> &str
+pub const fn nexus_query_engine::admission::ComposedProducerBindingDiagnostics::missing_fact_kind(&self) -> &'static str
+pub fn nexus_query_engine::admission::ComposedProducerBindingDiagnostics::missing_producer_occurrences(&self) -> &[alloc::string::String]
+pub fn nexus_query_engine::admission::ComposedProducerBindingDiagnostics::proven_owner_terms(&self) -> &[alloc::string::String]
+pub const fn nexus_query_engine::admission::ComposedProducerBindingDiagnostics::reason_code(&self) -> &'static str
+pub const fn nexus_query_engine::admission::ComposedProducerBindingDiagnostics::responsible_owner(&self) -> &'static str
+pub fn nexus_query_engine::admission::ComposedProducerBindingDiagnostics::unresolved_owner_terms(&self) -> &[alloc::string::String]
 pub struct nexus_query_engine::admission::QueryPlanCapabilityProof
 impl nexus_query_engine::admission::QueryPlanCapabilityProof
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::combine(Self, impl core::iter::traits::collect::IntoIterator<Item = Self>) -> nexus_query_engine::error::Result<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::combine_composed_graph_attempt(&nexus_query_engine::plan::QueryPlan, Self, impl core::iter::traits::collect::IntoIterator<Item = (alloc::string::String, Self)>) -> nexus_query_engine::error::Result<Self>
-pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan(&nexus_query_engine::plan::QueryPlan, &str) -> core::option::Option<Self>
-pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_attested_graph_result_bounded_consumer_plan_with_producer(&nexus_query_engine::plan::QueryPlan, &str, &Self) -> core::option::Option<Self>
-pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_attested_graph_result_passthrough_plan(&nexus_query_engine::plan::QueryPlan, &str) -> core::option::Option<Self>
+pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::composed_producer_binding_diagnostics(&self, &nexus_query_engine::plan::QueryPlan) -> core::option::Option<nexus_query_engine::admission::ComposedProducerBindingDiagnostics>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_composed_consumer_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan(&nexus_query_engine::plan::QueryPlan) -> core::option::Option<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::for_cugraph_graph_execution_plan_with_resident_inputs<'a>(&nexus_query_engine::plan::QueryPlan, impl core::iter::traits::collect::IntoIterator<Item = (&'a str, &'a nexus_query_engine::plan::QueryPlan)>) -> nexus_query_engine::error::Result<core::option::Option<Self>>
@@ -37,8 +44,7 @@ pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::resolve_composed
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::soft_working_set_hint_bytes(&self) -> core::option::Option<u64>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt<'a>(&nexus_query_engine::plan::QueryPlan, Self, &str, &nexus_query_engine::plan::QueryPlan, impl core::iter::traits::collect::IntoIterator<Item = (alloc::string::String, &'a nexus_query_engine::plan::QueryPlan)>) -> nexus_query_engine::error::Result<core::option::Option<Self>>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::try_combine_cugraph_materializing_input_attempt_with_proofs(&nexus_query_engine::plan::QueryPlan, Self, &str, &nexus_query_engine::plan::QueryPlan, impl core::iter::traits::collect::IntoIterator<Item = (alloc::string::String, Self)>) -> nexus_query_engine::error::Result<core::option::Option<Self>>
-pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::try_for_attested_graph_result_bounded_consumer_plan(&nexus_query_engine::plan::QueryPlan, &str) -> nexus_query_engine::error::Result<Self>
-pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::try_for_cugraph_side_input_plan(&nexus_query_engine::plan::QueryPlan) -> nexus_query_engine::error::Result<Self>
+pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::try_for_resident_side_input_plan(&nexus_query_engine::plan::QueryPlan) -> nexus_query_engine::error::Result<Self>
 pub fn nexus_query_engine::admission::QueryPlanCapabilityProof::with_graph_memory_admission_evidence(self, &nexus_query_engine::graph_memory::GraphMemoryAdmissionEvidence) -> nexus_query_engine::error::Result<Self>
 pub fn nexus_query_engine::admission::bounded_join_modeled_facts(&nexus_query_engine::plan::QueryPlan, nexus_query_engine::runtime::ExecutionBoundaryPolicy) -> core::option::Option<alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>>
 pub fn nexus_query_engine::admission::bounded_join_unsupported_shape_facts(&nexus_query_engine::plan::QueryPlan, nexus_query_engine::runtime::ExecutionBoundaryPolicy) -> core::option::Option<alloc::collections::btree::map::BTreeMap<&'static str, alloc::string::String>>
@@ -738,6 +744,7 @@ impl core::fmt::Display for nexus_query_engine::contract_report::CapabilityContr
 pub fn nexus_query_engine::contract_report::CapabilityContractOwner::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum nexus_query_engine::contract_report::CapabilityEnvelopeStatus
 pub nexus_query_engine::contract_report::CapabilityEnvelopeStatus::Admitted
+pub nexus_query_engine::contract_report::CapabilityEnvelopeStatus::Deferred
 pub nexus_query_engine::contract_report::CapabilityEnvelopeStatus::Rejected
 impl nexus_query_engine::mode::CapabilityEnvelopeStatus
 pub const fn nexus_query_engine::mode::CapabilityEnvelopeStatus::as_str(self) -> &'static str
@@ -756,6 +763,7 @@ pub nexus_query_engine::contract_report::CapabilityContractGateRow::reservation_
 pub nexus_query_engine::contract_report::CapabilityContractGateRow::unresolved_preflight_gap: core::option::Option<&'static str>
 impl nexus_query_engine::contract_report::CapabilityContractGateRow
 pub fn nexus_query_engine::contract_report::CapabilityContractGateRow::from_capability_rejection_projection(nexus_query_engine::mode::CapabilityEnvelopeStatus, usize, &nexus_query_engine::capability::CapabilityRejectionProjection) -> nexus_query_engine::error::Result<Self>
+pub fn nexus_query_engine::contract_report::CapabilityContractGateRow::from_deferred_composed_producer_binding(usize) -> nexus_query_engine::error::Result<Self>
 pub fn nexus_query_engine::contract_report::CapabilityContractGateRow::to_json(&self) -> serde_json::value::Value
 pub fn nexus_query_engine::contract_report::CapabilityContractGateRow::to_stable_kv_row(&self) -> alloc::string::String
 impl core::fmt::Display for nexus_query_engine::contract_report::CapabilityContractGateRow
@@ -2349,6 +2357,7 @@ pub fn nexus_query_engine::metrics::project_backend_duration_histogram(&nexus_qu
 pub mod nexus_query_engine::mode
 pub enum nexus_query_engine::mode::CapabilityEnvelopeStatus
 pub nexus_query_engine::mode::CapabilityEnvelopeStatus::Admitted
+pub nexus_query_engine::mode::CapabilityEnvelopeStatus::Deferred
 pub nexus_query_engine::mode::CapabilityEnvelopeStatus::Rejected
 impl nexus_query_engine::mode::CapabilityEnvelopeStatus
 pub const fn nexus_query_engine::mode::CapabilityEnvelopeStatus::as_str(self) -> &'static str
@@ -4034,6 +4043,7 @@ pub nexus_query_engine::optimizer::NativeOptimizerDiagnostics::local_parquet_sou
 pub nexus_query_engine::optimizer::NativeOptimizerDiagnostics::outer_join_null_rejection: nexus_query_engine::optimizer::OuterJoinNullRejectionDiagnostics
 pub nexus_query_engine::optimizer::NativeOptimizerDiagnostics::projection_simplification: nexus_query_engine::optimizer::ProjectionSimplificationDiagnostics
 pub nexus_query_engine::optimizer::NativeOptimizerDiagnostics::semijoin_reduction: nexus_query_engine::optimizer::SemijoinReductionDiagnostics
+pub nexus_query_engine::optimizer::NativeOptimizerDiagnostics::shared_resident_extraction: nexus_query_engine::optimizer::shared_resident_extraction::SharedResidentExtractionDiagnostics
 pub nexus_query_engine::optimizer::NativeOptimizerDiagnostics::shared_subplan_materialization: nexus_query_engine::optimizer::SharedSubplanMaterializationDiagnostics
 pub nexus_query_engine::optimizer::NativeOptimizerDiagnostics::stream_fanout_replay: nexus_query_engine::optimizer::StreamFanoutReplayDiagnostics
 impl nexus_query_engine::optimizer::NativeOptimizerDiagnostics
@@ -4912,6 +4922,7 @@ pub nexus_query_engine::plan::GraphAlgorithmSpec::output_schema: arrow_schema::s
 pub nexus_query_engine::plan::GraphAlgorithmSpec::params: nexus_query_engine::plan::GraphAlgorithmParams
 impl nexus_query_engine::plan::GraphAlgorithmSpec
 pub fn nexus_query_engine::plan::GraphAlgorithmSpec::new(nexus_query_engine::plan::GraphAlgorithm, nexus_query_engine::plan::GraphEdgeColumnBindings, nexus_query_engine::plan::GraphConstructionOptions, nexus_query_engine::plan::GraphAlgorithmParams, arrow_schema::schema::SchemaRef) -> Self
+pub fn nexus_query_engine::plan::GraphAlgorithmSpec::unique_output_key_columns(&self) -> &'static [&'static str]
 pub fn nexus_query_engine::plan::GraphAlgorithmSpec::with_edge_normalize_inserted(self, bool) -> Self
 pub fn nexus_query_engine::plan::GraphAlgorithmSpec::with_stable_schema(nexus_query_engine::plan::GraphAlgorithm, nexus_query_engine::plan::GraphEdgeColumnBindings, nexus_query_engine::plan::GraphConstructionOptions, nexus_query_engine::plan::GraphAlgorithmParams) -> Self
 pub struct nexus_query_engine::plan::GraphBetweennessCentralityParams
@@ -5292,6 +5303,7 @@ pub fn nexus_query_engine::plan::QueryPlanBuilder::finish_gpu_resident(self, nex
 pub fn nexus_query_engine::plan::QueryPlanBuilder::finish_with_host_sink(self, nexus_query_engine::plan::NodeId) -> nexus_query_engine::plan::QueryPlan
 pub fn nexus_query_engine::plan::QueryPlanBuilder::finish_with_host_sink_schema(self, nexus_query_engine::plan::NodeId, arrow_schema::schema::SchemaRef) -> nexus_query_engine::plan::QueryPlan
 pub fn nexus_query_engine::plan::QueryPlanBuilder::new() -> Self
+pub fn nexus_query_engine::plan::QueryPlanBuilder::output_is_unique_on(&self, nexus_query_engine::plan::NodeId, &alloc::collections::btree::set::BTreeSet<alloc::string::String>) -> nexus_query_engine::error::Result<bool>
 pub fn nexus_query_engine::plan::QueryPlanBuilder::try_add_graph_algorithm(&mut self, nexus_query_engine::plan::NodeId, nexus_query_engine::plan::GraphAlgorithmSpec) -> nexus_query_engine::error::Result<nexus_query_engine::plan::NodeId>
 pub fn nexus_query_engine::plan::QueryPlanBuilder::try_add_vector_algorithm(&mut self, nexus_query_engine::plan::VectorAlgorithmSpec) -> nexus_query_engine::error::Result<nexus_query_engine::plan::NodeId>
 pub struct nexus_query_engine::plan::ResidentGraphKey
@@ -6756,6 +6768,7 @@ pub nexus_query_engine::source::LocalParquetSource::read_columns: alloc::vec::Ve
 pub nexus_query_engine::source::LocalParquetSource::reader_predicate: core::option::Option<nexus_query_engine::expr::Expr>
 pub nexus_query_engine::source::LocalParquetSource::scan_limit: core::option::Option<usize>
 pub nexus_query_engine::source::LocalParquetSource::schema: arrow_schema::schema::SchemaRef
+pub nexus_query_engine::source::LocalParquetSource::unique_key_columns: alloc::vec::Vec<alloc::collections::btree::set::BTreeSet<alloc::string::String>>
 impl nexus_query_engine::source::LocalParquetSource
 pub fn nexus_query_engine::source::LocalParquetSource::count_star_probe(alloc::vec::Vec<nexus_query_engine::source::LocalParquetFile>, arrow_schema::schema::SchemaRef, alloc::vec::Vec<alloc::string::String>) -> Self
 pub fn nexus_query_engine::source::LocalParquetSource::exact_selected_row_count(&self) -> core::option::Option<u64>
@@ -6795,6 +6808,7 @@ pub fn nexus_query_engine::source::LocalParquetSource::with_output_schema_overri
 pub fn nexus_query_engine::source::LocalParquetSource::with_partition_columns(self, alloc::vec::Vec<nexus_query_engine::source::PartitionColumn>) -> Self
 pub fn nexus_query_engine::source::LocalParquetSource::with_reader_predicate(self, nexus_query_engine::expr::Expr) -> Self
 pub fn nexus_query_engine::source::LocalParquetSource::with_scan_limit(self, core::option::Option<usize>) -> Self
+pub fn nexus_query_engine::source::LocalParquetSource::with_unique_key_columns(self, alloc::vec::Vec<alloc::collections::btree::set::BTreeSet<alloc::string::String>>) -> Self
 pub fn nexus_query_engine::source::LocalParquetSource::zero_column_count(alloc::vec::Vec<nexus_query_engine::source::LocalParquetFile>) -> Self
 pub struct nexus_query_engine::source::MissingColumn
 pub nexus_query_engine::source::MissingColumn::data_type: arrow_schema::datatype::DataType

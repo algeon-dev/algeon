@@ -1,5 +1,6 @@
 use super::*;
 use crate::{
+    admission::plan_node_is_unique_on,
     dynamic_filter::{DynamicFilterConsumer, DynamicFilterConsumerReductionStage},
     plan::{WindowFrame, WindowNode},
     source::{LocalParquetSource, PredicateDisposition},
@@ -457,15 +458,26 @@ fn root_topk_join_has_aggregate_fan_in_left_context(
     }) {
         return Ok(false);
     }
-    let Some(right_unique_keys) = grouped_aggregate_key_output_names_for_input(plan, join.inputs[1])? else {
-        return Ok(false);
+    let Some((right_producer_id, _chain_ids)) = peel_resident_unary_chain_for_capability(plan, join.inputs[1]) else {
+        return Err(CapabilityDecision::rejected(
+            "root_topk_join_aggregate_output_facts_unavailable",
+            [("node_id", join.inputs[1].to_string()), ("role", "aggregate_fan_in_input".to_string())],
+        ));
     };
-    if right_unique_keys.len() != join.spec.keys.len() {
+    if !matches!(
+        plan.node(right_producer_id).map(|node| &node.kind),
+        Some(PlanNode::Aggregate(aggregate))
+            if !aggregate.spec.group_exprs.is_empty() && aggregate.spec.grouping_sets.is_none()
+    ) {
         return Ok(false);
     }
-    Ok(join.spec.keys.iter().all(|key| {
-        right_unique_keys.contains(key.right.name()) || right_unique_keys.contains(key.right.display_name())
-    }))
+    let right_join_keys = join.spec.keys.iter().map(|key| key.right.name().to_owned()).collect::<BTreeSet<_>>();
+    plan_node_is_unique_on(plan, join.inputs[1], &right_join_keys).map_err(|_| {
+        CapabilityDecision::rejected(
+            "root_topk_join_aggregate_output_facts_unavailable",
+            [("node_id", join.inputs[1].to_string()), ("role", "aggregate_fan_in_input".to_string())],
+        )
+    })
 }
 
 fn root_topk_join_feeds_grouped_aggregate(
@@ -485,58 +497,6 @@ fn root_topk_join_feeds_grouped_aggregate(
         }
     }
     Ok(false)
-}
-
-fn grouped_aggregate_key_output_names_for_input(
-    plan: &QueryPlan,
-    input: NodeId,
-) -> Result<Option<BTreeSet<String>>, CapabilityDecision> {
-    let Some((producer_id, chain_ids)) = peel_resident_unary_chain_for_capability(plan, input) else {
-        return Err(CapabilityDecision::rejected(
-            "root_topk_join_aggregate_missing_node",
-            [("node_id", input.to_string()), ("role", "aggregate_fan_in_input".to_string())],
-        ));
-    };
-    let Some(PlanNode::Aggregate(aggregate)) = plan.node(producer_id).map(|node| &node.kind) else {
-        return Ok(None);
-    };
-    if aggregate.spec.group_exprs.is_empty() || aggregate.spec.grouping_sets.is_some() {
-        return Ok(None);
-    }
-    let mut key_names = aggregate
-        .spec
-        .group_exprs
-        .iter()
-        .filter_map(expr_output_column_name)
-        .map(str::to_string)
-        .collect::<BTreeSet<_>>();
-    if key_names.len() != aggregate.spec.group_exprs.len() {
-        return Ok(None);
-    }
-    for chain_id in chain_ids.iter().rev() {
-        let Some(PlanNode::Projection(projection)) = plan.node(*chain_id).map(|node| &node.kind) else {
-            continue;
-        };
-        let mut projected_names = BTreeSet::new();
-        for output in &projection.outputs {
-            if expr_output_column_name(&output.expr).is_some_and(|name| key_names.contains(name)) {
-                projected_names.insert(output.field.name().to_string());
-            }
-        }
-        key_names = projected_names;
-        if key_names.is_empty() {
-            return Ok(None);
-        }
-    }
-    Ok(Some(key_names))
-}
-
-fn expr_output_column_name(expr: &Expr) -> Option<&str> {
-    match expr {
-        Expr::Column(column) => Some(column.display_name()),
-        Expr::Alias { expr, .. } => expr_output_column_name(expr),
-        _ => None,
-    }
 }
 
 fn root_topk_join_input_peels_to_window(

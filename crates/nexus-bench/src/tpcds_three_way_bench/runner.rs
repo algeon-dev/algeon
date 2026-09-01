@@ -457,6 +457,7 @@ fn planning_summary(optimizer: Option<&NexusNativePhysicalOptimizerRule>) -> Pla
                 .filter_map(|outcome| match outcome {
                     CandidateOutcome::NotSupported { capability_reason, .. } => Some(capability_reason.code()),
                     CandidateOutcome::NotSelectedByCost { cost_reason, .. } => Some(cost_reason.code()),
+                    CandidateOutcome::Deferred { producer_binding, .. } => Some(producer_binding.reason_code()),
                     CandidateOutcome::Selected { .. } => None,
                 })
                 .collect::<Vec<_>>();

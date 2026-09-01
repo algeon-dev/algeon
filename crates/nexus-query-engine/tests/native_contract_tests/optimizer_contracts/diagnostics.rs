@@ -21,6 +21,10 @@ fn native_optimizer_stable_rule_rows_cover_every_diagnostic_field() {
             considered_count: 1,
             ..Default::default()
         },
+        shared_resident_extraction: SharedResidentExtractionDiagnostics {
+            considered_count: 1,
+            ..Default::default()
+        },
         dynamic_filter_route_discovery: DynamicFilterRouteDiscoveryDiagnostics {
             considered_count: 1,
             ..Default::default()
@@ -28,7 +32,7 @@ fn native_optimizer_stable_rule_rows_cover_every_diagnostic_field() {
     };
 
     let rows = diagnostics.stable_rule_rows();
-    assert_eq!(rows.len(), 12);
+    assert_eq!(rows.len(), 13);
     let rendered = rows.join(";");
     for rule_name in [
         PROJECTION_SIMPLIFICATION_RULE_NAME,
@@ -41,6 +45,7 @@ fn native_optimizer_stable_rule_rows_cover_every_diagnostic_field() {
         STREAM_FANOUT_REPLAY_RULE_NAME,
         LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME,
         SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME,
+        SHARED_RESIDENT_EXTRACTION_RULE_NAME,
         DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME,
         AGGREGATE_JOIN_PUSHDOWN_RULE_NAME,
     ] {
@@ -49,6 +54,23 @@ fn native_optimizer_stable_rule_rows_cover_every_diagnostic_field() {
             "missing stable optimizer diagnostic row for {rule_name}: {rendered}"
         );
     }
+}
+
+#[test]
+fn native_optimizer_diagnostics_preserve_shared_resident_stage_evidence() {
+    let mut diagnostics = NativeOptimizerDiagnostics::default();
+    diagnostics.merge(NativeOptimizerDiagnostics {
+        shared_resident_extraction: SharedResidentExtractionDiagnostics {
+            considered_count: 2,
+            extracted_count: 1,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+
+    assert!(!diagnostics.is_empty());
+    assert_eq!(diagnostics.shared_resident_extraction.considered_count, 2);
+    assert_eq!(diagnostics.shared_resident_extraction.extracted_count, 1);
 }
 
 #[test]

@@ -36,7 +36,7 @@ use attempt::{
 pub use capability_envelope::{
     CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, NativeCapabilityAcceptedCandidateDiagnostics,
     NativeCapabilityCompiledGraphDiagnostics, NativeCapabilityContractDiagnostics,
-    NativeCapabilityRejectedCandidateDiagnostics,
+    NativeCapabilityDeferredCandidateDiagnostics, NativeCapabilityRejectedCandidateDiagnostics,
 };
 use mixed::is_certified_mixed_execution_plan;
 
@@ -162,7 +162,9 @@ fn first_native_not_supported(
         CandidateOutcome::NotSupported { candidate, capability_reason } => {
             Some((candidate, *capability_reason, report.unsupported_column(index)))
         },
-        CandidateOutcome::Selected { .. } | CandidateOutcome::NotSelectedByCost { .. } => None,
+        CandidateOutcome::Selected { .. }
+        | CandidateOutcome::Deferred { .. }
+        | CandidateOutcome::NotSelectedByCost { .. } => None,
     })
 }
 

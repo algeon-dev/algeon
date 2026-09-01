@@ -80,7 +80,7 @@ impl AttemptReservationEnvelope {
             })
             .transpose()?;
         for scope in &scopes {
-            let resolved = scope.resolve(policy)?;
+            let resolved = scope.resolve(policy, owner_terms)?;
             let is_scheduled_scope = scheduled_scope_counts.as_mut().is_some_and(|counts| {
                 let Some(remaining) = counts.get_mut(scope.execution_scope_fingerprint()) else {
                     return false;
@@ -302,27 +302,21 @@ impl AttemptReservationEnvelope {
                 }
                 return Ok(());
             }
-            let deferred_passthroughs = self
+            let passthroughs = self
                 .scopes
                 .iter()
-                .filter(|scope| scope.is_deferred_graph_result_passthrough_scope() && scope.matches(consumer_plan))
+                .filter(|scope| scope.is_accounted_by_producer_phase() && scope.matches(consumer_plan))
                 .count();
-            let attested_passthroughs = self
-                .scopes
-                .iter()
-                .filter(|scope| scope.is_attested_graph_result_passthrough_scope() && scope.matches(consumer_plan))
-                .count();
-            if deferred_passthroughs == 1 || attested_passthroughs == 1 {
-                let expected_occurrence = consumer_plan
-                    .node(consumer_plan.root_id())
-                    .and_then(|node| match &node.kind {
-                        PlanNode::Source(source) => match source.as_ref() {
-                            SourceNode::GpuResident(source) => Some(source.input_name.as_str()),
-                            _ => None,
-                        },
-                        _ => None,
-                    })
-                    .ok_or_else(|| graph_schedule_error("deferred_passthrough_source_missing", None, Some("runtime")))?;
+            if passthroughs == 1 {
+                let manifest = admitted_manifest_shape(&self.scopes, None)?;
+                let [occurrence] = manifest.producer_occurrences() else {
+                    return Err(graph_schedule_error(
+                        "deferred_passthrough_occurrence_missing_or_ambiguous",
+                        None,
+                        Some("runtime"),
+                    ));
+                };
+                let expected_occurrence = occurrence.occurrence_id();
                 let [runtime_occurrence] = occurrence_ids else {
                     return Err(graph_schedule_error(
                         "runtime_occurrence_count_mismatch",
@@ -356,7 +350,7 @@ impl AttemptReservationEnvelope {
             let passthrough_matches = self
                 .scopes
                 .iter()
-                .filter(|scope| scope.is_attested_graph_result_passthrough_scope() && scope.matches(consumer_plan))
+                .filter(|scope| scope.is_accounted_by_producer_phase() && scope.matches(consumer_plan))
                 .count();
             let nested_matches = self
                 .scopes

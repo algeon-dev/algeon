@@ -691,6 +691,29 @@ fn test_prepare_sort_values_with_budget_multi_key_uses_lexicographic_owner_contr
 }
 
 #[test]
+fn test_prepare_sort_values_with_budget_single_string_key_uses_lexicographic_owner_contract() {
+    let names = cudf::Series::from_column(
+        crate::common::column_from_strs_nullable(&["beta", "", "alpha"], &[true, false, true]).unwrap(),
+    )
+    .unwrap();
+    let df = DataFrame::from_series([("name", names)]).unwrap();
+    let token = with_test_runtime(|runtime| {
+        runtime
+            .execution_budget_token(ExecutionBudgetRequest::new(64 * 1024 * 1024).with_boundary("string_sort"))
+            .unwrap()
+    });
+
+    let outcome = df.prepare_sort_values_with_budget(["name"], SortOptions::new(), &token).unwrap();
+    let preflight = outcome
+        .value()
+        .sorted_order_lexicographic_preflight()
+        .expect("single non-radix key must retain its lexicographic owner preflight");
+    assert!(outcome.value().sorted_order_radix_preflight().is_none());
+    assert!(token.reservation_usage().unwrap().peak_bytes as usize <= preflight.active_phase_peak_bytes());
+    assert_sorted_order_lexicographic_preflight_facts(outcome.report(), preflight);
+}
+
+#[test]
 fn test_lexicographic_owner_contract_covers_nullable_string_keys_and_exact_budget_rejection() {
     let names = cudf::Series::from_column(
         crate::common::column_from_strs_nullable(&["beta", "", "alpha", "beta"], &[true, false, true, true]).unwrap(),

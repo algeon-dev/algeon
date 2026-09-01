@@ -2,7 +2,12 @@
 
 #[cfg(test)]
 use std::path::Path;
-use std::{collections::BTreeMap, fmt, path::PathBuf, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    path::PathBuf,
+    sync::Arc,
+};
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 
@@ -270,6 +275,8 @@ pub struct LocalParquetSource {
     /// Trusted source cardinality upper bound after source-level scan limit and
     /// reader predicate have been applied.
     pub max_rows: Option<usize>,
+    /// Source-owner unique keys expressed in emitted physical column names.
+    pub unique_key_columns: Vec<BTreeSet<String>>,
     /// Source capability and rejection details captured during lowering.
     pub diagnostics: SourceDiagnostics,
     /// Read one physical row-presence column, then emit row-count weights.
@@ -322,6 +329,7 @@ impl LocalParquetSource {
             scan_limit: None,
             reader_predicate: None,
             max_rows: None,
+            unique_key_columns: Vec::new(),
             diagnostics,
             count_star_probe: false,
         }
@@ -329,6 +337,11 @@ impl LocalParquetSource {
 
     pub fn new(path: impl Into<PathBuf>, schema: SchemaRef, read_columns: Vec<String>) -> Self {
         Self::from_files(vec![LocalParquetFile::new(path)], schema, read_columns)
+    }
+
+    pub fn with_unique_key_columns(mut self, unique_key_columns: Vec<BTreeSet<String>>) -> Self {
+        self.unique_key_columns = unique_key_columns;
+        self
     }
 
     /// Builds the metadata-only representation for count-only Parquet scans.

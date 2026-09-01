@@ -709,11 +709,30 @@ fn planning_outcome_diagnostics(
     accepted: bool,
 ) -> (Option<NativeDataFusionPlanningOutcome>, Option<String>, Option<String>) {
     if accepted {
+        if let Some(crate::report::CandidateOutcome::Deferred { producer_binding, .. }) = diagnostics
+            .report
+            .outcomes()
+            .iter()
+            .find(|outcome| matches!(outcome, crate::report::CandidateOutcome::Deferred { .. }))
+        {
+            return (
+                Some(NativeDataFusionPlanningOutcome::Deferred),
+                Some(producer_binding.reason_code().to_string()),
+                None,
+            );
+        }
         return (Some(NativeDataFusionPlanningOutcome::Selected), None, None);
     }
     for outcome in diagnostics.report.outcomes() {
         match outcome {
             crate::report::CandidateOutcome::Selected { .. } => {},
+            crate::report::CandidateOutcome::Deferred { producer_binding, .. } => {
+                return (
+                    Some(NativeDataFusionPlanningOutcome::Deferred),
+                    Some(producer_binding.reason_code().to_string()),
+                    None,
+                );
+            },
             crate::report::CandidateOutcome::NotSupported { candidate, capability_reason } => {
                 return (
                     Some(NativeDataFusionPlanningOutcome::NotSupported),
@@ -765,7 +784,7 @@ fn derive_parity_outcome(
         | None => {
             return (ParityStatus::NativeRejected, ParityComparisonMode::NotApplicable, None, None, None);
         },
-        Some(NativeDataFusionPlanningOutcome::Selected) => {},
+        Some(NativeDataFusionPlanningOutcome::Selected | NativeDataFusionPlanningOutcome::Deferred) => {},
     }
     if !inputs.native_runtime_started {
         return (ParityStatus::NativeRejected, ParityComparisonMode::NotApplicable, None, None, None);
