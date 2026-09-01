@@ -45,15 +45,18 @@ use generic::{
 };
 pub(in crate::exec::bounded) use join::{
     BoundedCompiledJoinBuildState, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,
-    BoundedJoinLeafLocalParquetSourcePrefetch, BoundedJoinLeafLocalParquetSourceStream,
-    execute_bounded_compiled_join_build_from_frame, execute_bounded_compiled_join_build_from_resident_frame,
-    execute_bounded_compiled_join_materialize, execute_bounded_compiled_join_materialize_preserving_stream,
-    execute_bounded_compiled_join_probe_from_frame, execute_bounded_compiled_join_probe_from_frame_stream,
-    execute_bounded_compiled_join_probe_from_resident_frame, execute_bounded_compiled_join_probe_from_stream,
-    execute_bounded_join_leaf_source, materialize_bounded_join_leaf_local_parquet_source_stream,
+    BoundedJoinBuildInputStream, BoundedJoinBuildStreamObservation, BoundedJoinBuildStreamOutcome,
+    BoundedJoinLeafLocalParquetSourcePrefetch, BoundedJoinLeafLocalParquetSourceStream, PartitionedJoinBuildCommitment,
+    consume_bounded_join_build_input_stream, execute_bounded_compiled_join_build_from_frame,
+    execute_bounded_compiled_join_build_from_resident_frame, execute_bounded_compiled_join_materialize,
+    execute_bounded_compiled_join_materialize_preserving_stream, execute_bounded_compiled_join_probe_from_frame,
+    execute_bounded_compiled_join_probe_from_frame_stream, execute_bounded_compiled_join_probe_from_resident_frame,
+    execute_bounded_compiled_join_probe_from_stream, execute_bounded_join_leaf_source,
+    materialize_bounded_join_leaf_local_parquet_source_stream, partitioned_join_build_commitment,
     plan_bounded_aggregate_input_local_parquet_source_stream, plan_bounded_join_leaf_local_parquet_source_stream,
     plan_bounded_shared_join_aggregate_local_parquet_source_stream, release_bounded_compiled_join_probe_state,
-    stream_bounded_join_leaf_local_parquet_source_chunks, try_start_bounded_join_leaf_local_parquet_source_prefetch,
+    stateless_streaming_probe_supported, stream_bounded_join_leaf_local_parquet_source_chunks,
+    try_start_bounded_join_leaf_local_parquet_source_prefetch,
 };
 pub(in crate::exec::bounded) use partition_row_policy::BoundedPartitionRowPolicy;
 pub(in crate::exec::bounded) use partition_target_policy::BoundedPartitionTargetPolicy;

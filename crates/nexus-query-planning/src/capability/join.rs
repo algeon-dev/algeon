@@ -491,10 +491,7 @@ pub fn keyed_hash_join_strategy_decision_with_options(
         };
     }
 
-    let large_build =
-        input.observed_build_rows.is_some_and(|rows| rows >= options.large_keyed_hash_build_row_threshold)
-            || input.estimated_build_rows.is_some_and(|rows| rows >= options.large_keyed_hash_build_row_threshold)
-            || input.build_side_bytes.is_some_and(|bytes| bytes >= options.large_keyed_hash_build_bytes_threshold);
+    let large_build = keyed_hash_join_build_is_large(&input, options);
     let small_build = !large_build
         && (input.observed_build_rows.is_some_and(|rows| rows <= options.small_reusable_hash_build_row_threshold)
             || input.estimated_build_rows.is_some_and(|rows| rows <= options.small_reusable_hash_build_row_threshold)
@@ -652,10 +649,7 @@ fn partitioned_mixed_keyed_residual_strategy_decision(
     if !partitioned_keyed_residual_join_supported(join) || join_residual_requires_post_join_filter(join) {
         return None;
     }
-    let large_build =
-        input.observed_build_rows.is_some_and(|rows| rows >= options.large_keyed_hash_build_row_threshold)
-            || input.estimated_build_rows.is_some_and(|rows| rows >= options.large_keyed_hash_build_row_threshold)
-            || input.build_side_bytes.is_some_and(|bytes| bytes >= options.large_keyed_hash_build_bytes_threshold);
+    let large_build = keyed_hash_join_build_is_large(&input, options);
     let large_probe =
         input.probe_side_bytes.is_some_and(|bytes| bytes >= options.large_keyed_hash_probe_bytes_threshold);
     let small_build = !large_build
@@ -688,6 +682,21 @@ fn partitioned_mixed_keyed_residual_strategy_decision(
             None,
         ),
     })
+}
+
+/// Whether the build side already exceeds the large-build thresholds.
+///
+/// Large-build evidence is monotone in observed rows and bytes: once a build
+/// is large under partial observation it stays large, so callers may commit to
+/// partition-wise consumption before the whole build side is materialized.
+#[doc(hidden)]
+pub fn keyed_hash_join_build_is_large(
+    input: &KeyedHashJoinStrategyInputFacts,
+    options: &KeyedHashJoinStrategyOptions,
+) -> bool {
+    input.observed_build_rows.is_some_and(|rows| rows >= options.large_keyed_hash_build_row_threshold)
+        || input.estimated_build_rows.is_some_and(|rows| rows >= options.large_keyed_hash_build_row_threshold)
+        || input.build_side_bytes.is_some_and(|bytes| bytes >= options.large_keyed_hash_build_bytes_threshold)
 }
 
 #[cfg(test)]

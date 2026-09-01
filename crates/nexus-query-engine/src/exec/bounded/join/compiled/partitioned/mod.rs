@@ -1,31 +1,39 @@
 use super::{
     BTreeMap, BoundedCompiledJoinMaterializeOutput, BoundedCompiledJoinProbeState,
-    BoundedCompiledPreparedJoinBuildState, BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream,
-    BoundedJoinSideFrame, BoundedPartitionRowPolicy, BoundedPartitionTargetPolicy,
-    CompiledEqualityJoinPreflightIndices, CompiledJoinExecutionStrategy, CompiledMixedSizeData, ExecutionContext,
-    ExecutionOverrides, GpuDataFrame, Instant, JoinMaterializationTxn, JoinNode, JoinSide, JoinType,
-    KeyedHashJoinStrategyOptions, MemoryControlPolicy, NodeId, PartitionedHashEquiJoinFrameStreamProbeState,
-    PartitionedJoinPartitionOutput, PartitionedJoinSide, QueryError, QueryMetrics, ResidentFrameStreamPayload,
-    ResidentGpuFrame, Result, RetryFacts, StreamedPartitionedJoinSummary, VecDeque, compiled_join_input_columns,
-    concatenate_streamed_hash_join_outputs, dataframe_mixed_join_options, execution_overrides, join_index_error,
-    join_side_output_upper_bound_bytes, lower_join_residual_predicate,
+    BoundedCompiledPartitionedJoinBuildState, BoundedCompiledPreparedJoinBuildState, BoundedExecutionAttempt,
+    BoundedJoinLeafLocalParquetSourceStream, BoundedJoinSideFrame, BoundedPartitionRowPolicy,
+    BoundedPartitionTargetPolicy, CompiledEqualityJoinPreflightIndices, CompiledJoinExecutionStrategy,
+    CompiledMixedSizeData, DataFrame, ExecutionContext, ExecutionOverrides, GpuDataFrame, Instant,
+    JoinMaterializationTxn, JoinNode, JoinSide, JoinType, KeyedHashJoinStrategyOptions, MemoryControlPolicy, NodeId,
+    PartitionedHashEquiJoinFrameStreamProbeState, PartitionedJoinPartitionOutput, PartitionedJoinSide, QueryError,
+    QueryErrorCode, QueryMetrics, ResidentFrameStreamPayload, ResidentGpuFrame, Result, RetryFacts,
+    StreamedPartitionedJoinSummary, VecDeque, compiled_join_input_columns, concatenate_streamed_hash_join_outputs,
+    dataframe_mixed_join_options, execution_overrides, join_index_error, join_side_output_upper_bound_bytes,
+    lower_join_residual_predicate, materialize_bounded_join_leaf_local_parquet_source_stream,
     materialize_compiled_keyed_equality_join_indices_with_preflight, observe_device_memory_bytes,
     prepare_bounded_join_side_input_from_resident_frame, probe_side, projected_output_columns_for_retained_sizing,
     record_streamed_partitioned_hash_join_metrics, release_bounded_join_side_frame,
     release_streamed_join_outputs_reverse, residual_input_columns, side_metric,
-    stream_bounded_join_leaf_local_parquet_source_serial, unsupported_bounded_shape, validate_executable_join_subset,
+    stream_bounded_join_leaf_local_parquet_source, stream_bounded_join_leaf_local_parquet_source_serial,
+    unsupported_bounded_shape, validate_executable_join_subset,
 };
 use crate::exec::bounded::compiled::ResidentFrameStreamSource;
 
+mod build;
 mod driver;
 mod hash_equi;
 mod mixed_keyed;
 
+pub(in crate::exec::bounded) use build::{
+    BoundedJoinBuildInputStream, BoundedJoinBuildStreamObservation, BoundedJoinBuildStreamOutcome,
+    PartitionedJoinBuildCommitment, consume_bounded_join_build_input_stream, partitioned_join_build_commitment,
+};
 use driver::*;
 pub(super) use hash_equi::{
     execute_compiled_partitioned_hash_equi_join_materialize,
     execute_compiled_partitioned_hash_equi_join_materialize_preserving_stream,
     execute_compiled_partitioned_hash_equi_join_probe_from_frame_stream,
+    execute_compiled_partitioned_hash_equi_join_probe_from_split_build_frame_stream,
     execute_compiled_partitioned_hash_equi_join_probe_from_stream,
     partitioned_hash_equi_join_frame_stream_probe_to_payload,
 };
@@ -181,7 +189,7 @@ pub(super) fn hash_partition_join_side(
             return Err(error);
         },
     };
-    Ok(PartitionedJoinSide { frame: partitioned, device_bytes: partitioned_bytes, offsets })
+    Ok(PartitionedJoinSide::Contiguous { frame: partitioned, device_bytes: partitioned_bytes, offsets })
 }
 
 pub(super) fn release_partitioned_join_side(side: PartitionedJoinSide) {
@@ -197,7 +205,7 @@ pub(super) fn slice_partition_join_side_range(
     partition: usize,
     range: PartitionedJoinRowRange,
 ) -> Result<BoundedJoinSideFrame> {
-    let (partition_start, partition_len) = partition_bounds(input, partition)?;
+    let (partition_frame, partition_start, partition_len) = partition_bounds(input, partition)?;
     if range.offset > partition_len || range.len > partition_len.saturating_sub(range.offset) {
         return Err(unsupported_bounded_shape(
             "partitioned join retry range exceeds partition bounds",
@@ -208,11 +216,19 @@ pub(super) fn slice_partition_join_side_range(
         .with_fact("range_offset", range.offset)
         .with_fact("range_rows", range.len));
     }
+    let _ = build_side;
+    if matches!(input, PartitionedJoinSide::Split { .. }) && range.offset == 0 && range.len == partition_len {
+        // A split partition already is the whole join input for this partition;
+        // sharing its columns avoids one partition-sized copy per probe chunk.
+        let frame = partition_frame.clone();
+        let bytes = observe_device_memory_bytes(&GpuDataFrame::new(frame.clone()), execution.metrics_mut())?;
+        return Ok(BoundedJoinSideFrame { frame, rows: partition_len as u64, bytes });
+    }
     let start = partition_start.saturating_add(range.offset);
     let len = range.len;
     let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
-    let frame = input.frame.with_execution(&overrides).slice(start, len).map_err(|error| {
+    let frame = partition_frame.with_execution(&overrides).slice(start, len).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.bounded.join.hash_partition_slice",
             "failed to slice compiled bounded hash-partitioned join input",
@@ -224,26 +240,41 @@ pub(super) fn slice_partition_join_side_range(
     })?;
     let gpu = GpuDataFrame::new(frame.clone());
     let bytes = observe_device_memory_bytes(&gpu, execution.metrics_mut())?;
-    let _ = build_side;
     Ok(BoundedJoinSideFrame { frame, rows: len as u64, bytes })
 }
 
 pub(super) fn partition_row_range(input: &PartitionedJoinSide, partition: usize) -> Result<PartitionedJoinRowRange> {
-    let (_, len) = partition_bounds(input, partition)?;
+    let (_, _, len) = partition_bounds(input, partition)?;
     Ok(PartitionedJoinRowRange { offset: 0, len })
 }
 
-fn partition_bounds(input: &PartitionedJoinSide, partition: usize) -> Result<(usize, usize)> {
-    let start = *input.offsets.get(partition).ok_or_else(|| {
-        unsupported_bounded_shape(
-            "partitioned join side is missing a partition start offset",
-            "partition_offset_missing",
-        )
-    })?;
-    let end = *input.offsets.get(partition + 1).ok_or_else(|| {
-        unsupported_bounded_shape("partitioned join side is missing a partition end offset", "partition_offset_missing")
-    })?;
-    Ok((start, end.saturating_sub(start)))
+fn partition_bounds(input: &PartitionedJoinSide, partition: usize) -> Result<(&DataFrame, usize, usize)> {
+    match input {
+        PartitionedJoinSide::Contiguous { frame, offsets, .. } => {
+            let start = *offsets.get(partition).ok_or_else(|| {
+                unsupported_bounded_shape(
+                    "partitioned join side is missing a partition start offset",
+                    "partition_offset_missing",
+                )
+            })?;
+            let end = *offsets.get(partition + 1).ok_or_else(|| {
+                unsupported_bounded_shape(
+                    "partitioned join side is missing a partition end offset",
+                    "partition_offset_missing",
+                )
+            })?;
+            Ok((frame, start, end.saturating_sub(start)))
+        },
+        PartitionedJoinSide::Split { partitions, .. } => {
+            let frame = partitions.get(partition).ok_or_else(|| {
+                unsupported_bounded_shape(
+                    "partitioned join side is missing a partition frame",
+                    "partition_offset_missing",
+                )
+            })?;
+            Ok((frame, 0, frame.num_rows()))
+        },
+    }
 }
 
 pub(super) fn partitioned_streaming_probe_supported(node: &JoinNode) -> bool {

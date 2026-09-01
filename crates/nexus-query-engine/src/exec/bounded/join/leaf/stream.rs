@@ -6,8 +6,69 @@ use super::{
     attach_join_source_read_resource_facts, chunk_retry_facts, fill_optional_join_leaf_reads, is_retryable_chunk_error,
     join_leaf_source_chunk_batches_for_execution, observe_device_memory_bytes, read_join_leaf_source_batch_attempt,
     read_join_leaf_source_chunk_attempt, record_chunk_retry_error, record_dynamic_filter_reader_predicate_rows,
-    source_chunk_batch_target_bytes, split_retryable_chunk, start_next_required_join_leaf_read,
+    source_chunk_batch_target_bytes, source_chunk_batches, split_retryable_chunk, start_next_required_join_leaf_read,
 };
+use crate::exec::bounded::compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource};
+
+/// Exposes a deferred Parquet leaf as a pull-based resident frame stream.
+///
+/// Each pull reads one planned source batch (with the same split retry as the
+/// serial push path) and yields its frames, so a consumer that streams its own
+/// output holds at most one leaf batch. Consumer failures cannot split the
+/// batch they were handed; consumers with their own retry shape (partitioned
+/// probes, gather-map slices) recover on their side.
+pub(in crate::exec::bounded) fn bounded_join_leaf_local_parquet_source_frame_stream(
+    execution: &BoundedExecutionAttempt<'_>,
+    stream: BoundedJoinLeafLocalParquetSourceStream,
+) -> ResidentFrameStreamPayload {
+    // Batches follow the planned chunk cap, like the push path's batching
+    // decision, so a pull never reads more than one planned batch at a time.
+    let batches = source_chunk_batches(execution.context(), &stream);
+    let max_per_frame_reservation_bytes =
+        batches.iter().filter_map(|batch| batch.estimated_source_read_bytes).max().unwrap_or(0);
+    let aggregate_reservation_bytes = stream.estimated_source_read_bytes().unwrap_or(0);
+    let aggregate_num_rows = stream.estimated_source_rows().unwrap_or(0);
+    let num_columns = stream.output_column_count();
+    ResidentFrameStreamPayload::from_producer(
+        max_per_frame_reservation_bytes,
+        aggregate_reservation_bytes,
+        aggregate_num_rows,
+        num_columns,
+        Box::new(JoinLeafSourceFrameStreamSource { stream, batches: batches.into(), pending: VecDeque::new() }),
+    )
+}
+
+struct JoinLeafSourceFrameStreamSource {
+    stream: BoundedJoinLeafLocalParquetSourceStream,
+    batches: VecDeque<SourceChunkBatch>,
+    pending: VecDeque<ResidentGpuFrame>,
+}
+
+impl ResidentFrameStreamSource for JoinLeafSourceFrameStreamSource {
+    fn next_frame(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Option<Result<ResidentGpuFrame>> {
+        loop {
+            if let Some(frame) = self.pending.pop_front() {
+                return Some(Ok(frame));
+            }
+            let batch = self.batches.pop_front()?;
+            let pending = &mut self.pending;
+            if let Err(error) =
+                stream_join_leaf_source_batch_or_split_with_consumer(execution, &self.stream, batch, &mut |frame, _| {
+                    pending.push_back(frame);
+                    Ok(())
+                })
+            {
+                self.batches.clear();
+                return Some(Err(error));
+            }
+        }
+    }
+
+    fn release(&mut self, _execution: &mut BoundedExecutionAttempt<'_>) {
+        self.pending.clear();
+        self.batches.clear();
+    }
+}
 
 pub(super) fn stream_join_leaf_source_chunks_serial<F>(
     execution: &mut BoundedExecutionAttempt<'_>,

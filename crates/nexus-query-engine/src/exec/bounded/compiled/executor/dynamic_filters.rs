@@ -1,6 +1,7 @@
 use std::{collections::BTreeSet, time::Instant};
 
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
+use cudf::DataFrame;
 
 use super::{
     super::{ResidentFrameStreamPayload, frame_stream::map_dynamic_filter_resident_frame_stream, helpers::invalid},
@@ -27,11 +28,13 @@ use crate::{
 };
 
 impl CompiledGpuTaskExecutor<'_> {
+    // `build_frames` is the complete build side, either one frame or every
+    // partition of a streamed build; a filter is published only over all of it.
     pub(super) fn produce_hash_join_build_dynamic_filters(
         &mut self,
         join_node_id: NodeId,
         join: &JoinNode,
-        build_frame: &GpuDataFrame,
+        build_frames: &[&DataFrame],
     ) -> Result<()> {
         let routes = self
             .plan
@@ -86,7 +89,12 @@ impl CompiledGpuTaskExecutor<'_> {
             return Ok(());
         };
 
-        self.produce_dynamic_filters_from_frame(&routes, &build_schema, build_frame, "producer_key_not_in_build_input")
+        self.produce_dynamic_filters_from_frames(
+            &routes,
+            &build_schema,
+            build_frames,
+            "producer_key_not_in_build_input",
+        )
     }
 
     pub(super) fn produce_aggregate_group_key_dynamic_filters(
@@ -109,19 +117,19 @@ impl CompiledGpuTaskExecutor<'_> {
             })
             .cloned()
             .collect::<Vec<_>>();
-        self.produce_dynamic_filters_from_frame(
+        self.produce_dynamic_filters_from_frames(
             &routes,
             aggregate_schema,
-            aggregate_frame,
+            &[aggregate_frame.frame()],
             "producer_key_not_in_aggregate_output",
         )
     }
 
-    fn produce_dynamic_filters_from_frame(
+    fn produce_dynamic_filters_from_frames(
         &mut self,
         routes: &[crate::dynamic_filter::DynamicFilterRoute],
         producer_schema: &ArrowSchemaRef,
-        producer_frame: &GpuDataFrame,
+        producer_frames: &[&DataFrame],
         missing_key_reason: &'static str,
     ) -> Result<()> {
         if routes.is_empty() {
@@ -129,7 +137,8 @@ impl CompiledGpuTaskExecutor<'_> {
         }
 
         let options = self.plan.dynamic_filter_execution_options();
-        if producer_frame.num_rows() > options.max_build_rows {
+        let producer_rows = producer_frames.iter().map(|frame| frame.num_rows()).sum::<usize>();
+        if producer_rows > options.max_build_rows {
             for route in routes {
                 self.dynamic_filters.insert_skipped(route.id, "producer_key_row_count_exceeds_runtime_limit");
                 self.execution
@@ -138,10 +147,13 @@ impl CompiledGpuTaskExecutor<'_> {
             }
             return Ok(());
         }
-        if producer_frame.num_rows() > options.large_local_parquet_range_producer_rows
+        if producer_rows > options.large_local_parquet_range_producer_rows
             && routes.iter().all(route_targets_reader_lowered_local_parquet_source)
         {
-            let producer_frame_bytes = producer_frame.device_allocated_size_bytes().ok();
+            let producer_frame_bytes = producer_frames
+                .iter()
+                .map(|frame| GpuDataFrame::new((*frame).clone()).device_allocated_size_bytes().ok())
+                .try_fold(0u64, |total, bytes| bytes.map(|bytes| total.saturating_add(bytes)));
             let range_routes = routes
                 .iter()
                 .filter_map(|route| {
@@ -162,7 +174,8 @@ impl CompiledGpuTaskExecutor<'_> {
                 self.produce_large_local_parquet_range_dynamic_filters(
                     &range_routes,
                     producer_schema,
-                    producer_frame,
+                    producer_frames,
+                    producer_rows,
                     missing_key_reason,
                 )?;
             }
@@ -205,24 +218,31 @@ impl CompiledGpuTaskExecutor<'_> {
             })
             .collect::<Result<Vec<_>>>()?;
         let selected_schema = std::sync::Arc::new(arrow::datatypes::Schema::new(selected_fields));
-        let selected_frame = producer_frame.clone().into_frame().select(&selected_columns).map_err(|error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.dynamic_filter.producer_projection",
-                "failed to select dynamic-filter producer key columns",
-                error,
-            )
-            .with_fact("producer_columns", selected_columns.join(","))
-        })?;
+        let mut batches = Vec::with_capacity(producer_frames.len());
+        for producer_frame in producer_frames {
+            let selected_frame = producer_frame.select(&selected_columns).map_err(|error| {
+                QueryError::from_cudf(
+                    "nexus_query_engine.dynamic_filter.producer_projection",
+                    "failed to select dynamic-filter producer key columns",
+                    error,
+                )
+                .with_fact("producer_columns", selected_columns.join(","))
+            })?;
 
-        let timer = Instant::now();
-        let handle =
-            GpuResultHandle::new(self.execution.context(), GpuDataFrame::new(selected_frame), selected_schema.clone())?;
-        let batch = handle.to_host_record_batch()?;
-        self.execution.metrics_mut().materialization_time += timer.elapsed();
-        self.execution.metrics_mut().boundary.record_device_to_host_materialization(
-            batch.num_rows() as u64,
-            crate::exec::util::record_batch_memory_size(&batch) as u64,
-        );
+            let timer = Instant::now();
+            let handle = GpuResultHandle::new(
+                self.execution.context(),
+                GpuDataFrame::new(selected_frame),
+                selected_schema.clone(),
+            )?;
+            let batch = handle.to_host_record_batch()?;
+            self.execution.metrics_mut().materialization_time += timer.elapsed();
+            self.execution.metrics_mut().boundary.record_device_to_host_materialization(
+                batch.num_rows() as u64,
+                crate::exec::util::record_batch_memory_size(&batch) as u64,
+            );
+            batches.push(batch);
+        }
 
         for route in routes {
             let Some(producer_column) = route.producer_columns.first() else {
@@ -235,18 +255,25 @@ impl CompiledGpuTaskExecutor<'_> {
                 self.execution.metrics_mut().record_dynamic_filter_skipped(route, missing_key_reason);
                 continue;
             };
-            let Some(values) = dynamic_filter_i64_values(batch.column(key_index).as_ref()) else {
+            let mut values = Vec::with_capacity(producer_rows);
+            let mut unsupported = false;
+            for batch in &batches {
+                match dynamic_filter_i64_values(batch.column(key_index).as_ref()) {
+                    Some(batch_values) => values.extend(batch_values),
+                    None => {
+                        unsupported = true;
+                        break;
+                    },
+                }
+            }
+            if unsupported {
                 self.dynamic_filters.insert_skipped(route.id, "unsupported_producer_key_type");
                 self.execution.metrics_mut().record_dynamic_filter_skipped(route, "unsupported_producer_key_type");
                 continue;
-            };
+            }
             let filter = DynamicFilter::from_i64_values(values, options.small_in_list_limit);
             self.dynamic_filters.insert(route.id, filter.clone());
-            self.execution.metrics_mut().record_dynamic_filter_produced(
-                route,
-                &filter,
-                producer_frame.num_rows() as u64,
-            );
+            self.execution.metrics_mut().record_dynamic_filter_produced(route, &filter, producer_rows as u64);
         }
         Ok(())
     }
@@ -255,7 +282,8 @@ impl CompiledGpuTaskExecutor<'_> {
         &mut self,
         routes: &[DynamicFilterRoute],
         producer_schema: &ArrowSchemaRef,
-        producer_frame: &GpuDataFrame,
+        producer_frames: &[&DataFrame],
+        producer_rows: usize,
         missing_key_reason: &'static str,
     ) -> Result<()> {
         for route in routes {
@@ -269,25 +297,30 @@ impl CompiledGpuTaskExecutor<'_> {
                 self.execution.metrics_mut().record_dynamic_filter_skipped(route, missing_key_reason);
                 continue;
             };
-            let series = producer_frame.frame().series(producer_column).map_err(|error| {
-                QueryError::from_cudf(
-                    "nexus_query_engine.dynamic_filter.producer_range",
-                    "failed to access dynamic-filter producer key column for range payload",
-                    error,
-                )
-                .with_fact("producer_column", producer_column.as_str())
-            })?;
-            let Some(filter) = dynamic_filter_i64_range_from_series(&series, producer_field.data_type())? else {
+            let mut filter = Some(DynamicFilter::Empty);
+            for producer_frame in producer_frames {
+                let series = producer_frame.series(producer_column).map_err(|error| {
+                    QueryError::from_cudf(
+                        "nexus_query_engine.dynamic_filter.producer_range",
+                        "failed to access dynamic-filter producer key column for range payload",
+                        error,
+                    )
+                    .with_fact("producer_column", producer_column.as_str())
+                })?;
+                let Some(frame_filter) = dynamic_filter_i64_range_from_series(&series, producer_field.data_type())?
+                else {
+                    filter = None;
+                    break;
+                };
+                filter = filter.map(|filter| merge_dynamic_filter_ranges(filter, frame_filter));
+            }
+            let Some(filter) = filter else {
                 self.dynamic_filters.insert_skipped(route.id, "unsupported_producer_key_type");
                 self.execution.metrics_mut().record_dynamic_filter_skipped(route, "unsupported_producer_key_type");
                 continue;
             };
             self.dynamic_filters.insert(route.id, filter.clone());
-            self.execution.metrics_mut().record_dynamic_filter_produced(
-                route,
-                &filter,
-                producer_frame.num_rows() as u64,
-            );
+            self.execution.metrics_mut().record_dynamic_filter_produced(route, &filter, producer_rows as u64);
         }
         Ok(())
     }
@@ -954,6 +987,19 @@ fn route_targets_reader_lowered_local_parquet_source(route: &DynamicFilterRoute)
             route.consumer_lowering,
             DynamicFilterConsumerLowering::ReaderPredicate | DynamicFilterConsumerLowering::MergedReaderPredicate
         )
+}
+
+// Ranges over partitions of one producer combine to the range over the whole
+// producer; an empty partition contributes nothing.
+fn merge_dynamic_filter_ranges(left: DynamicFilter, right: DynamicFilter) -> DynamicFilter {
+    match (left, right) {
+        (DynamicFilter::Empty, other) | (other, DynamicFilter::Empty) => other,
+        (
+            DynamicFilter::RangeI64 { min: left_min, max: left_max },
+            DynamicFilter::RangeI64 { min: right_min, max: right_max },
+        ) => DynamicFilter::RangeI64 { min: left_min.min(right_min), max: left_max.max(right_max) },
+        (left, _) => left,
+    }
 }
 
 fn dynamic_filter_i64_range_from_series(

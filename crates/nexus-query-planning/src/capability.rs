@@ -45,9 +45,9 @@ pub use join::KeyedHashJoinStrategyOptions;
 pub use join::{
     JoinExecutionCapability, KeyedHashJoinStrategy, KeyedHashJoinStrategyDecision, KeyedHashJoinStrategyInputFacts,
     KeylessConditionalJoinKind, join_node_execution_capability, join_residual_requires_post_join_filter,
-    keyed_filtered_semi_anti_join_capable, keyed_hash_join_capable, keyed_hash_join_strategy_decision_for_plan,
-    keyed_hash_join_strategy_decision_for_plan_with_options, keyed_hash_join_strategy_decision_with_options,
-    keyed_hash_join_strategy_input_facts_for_plan,
+    keyed_filtered_semi_anti_join_capable, keyed_hash_join_build_is_large, keyed_hash_join_capable,
+    keyed_hash_join_strategy_decision_for_plan, keyed_hash_join_strategy_decision_for_plan_with_options,
+    keyed_hash_join_strategy_decision_with_options, keyed_hash_join_strategy_input_facts_for_plan,
     keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness_with_options,
     keyed_residual_mixed_join_capable, keyless_outer_cross_join_capable, multi_join_keyed_residual_mixed_join_capable,
     multi_join_subtree_join_execution_capability, one_shot_equi_join_supported, partitioned_equi_join_supported,

@@ -34,6 +34,10 @@ use keyless::*;
 use mixed::*;
 use one_shot::*;
 use partitioned::*;
+pub(in crate::exec::bounded) use partitioned::{
+    BoundedJoinBuildInputStream, BoundedJoinBuildStreamObservation, BoundedJoinBuildStreamOutcome,
+    PartitionedJoinBuildCommitment, consume_bounded_join_build_input_stream, partitioned_join_build_commitment,
+};
 use prepared::*;
 use residual::*;
 use streamed::*;
@@ -43,6 +47,31 @@ pub(in crate::exec::bounded) enum BoundedCompiledJoinBuildState {
     Hash(BoundedRootHashJoinBuildState),
     Filtered(BoundedCompiledFilteredJoinBuildState),
     Prepared(BoundedCompiledPreparedJoinBuildState),
+    Partitioned(BoundedCompiledPartitionedJoinBuildState),
+}
+
+// Build side already hash-partitioned while its input streamed in; every
+// probe chunk pairs partition by partition with these frames.
+pub(in crate::exec::bounded) struct BoundedCompiledPartitionedJoinBuildState {
+    pub(in crate::exec::bounded::join::compiled) strategy_options: KeyedHashJoinStrategyOptions,
+    pub(in crate::exec::bounded::join::compiled) side: JoinSide,
+    pub(in crate::exec::bounded::join::compiled) rows: u64,
+    pub(in crate::exec::bounded::join::compiled) bytes: u64,
+    pub(in crate::exec::bounded::join::compiled) partition_count: usize,
+    pub(in crate::exec::bounded::join::compiled) partition_target_bytes: u64,
+    pub(in crate::exec::bounded::join::compiled) partitioned: PartitionedJoinSide,
+    pub(in crate::exec::bounded::join::compiled) input_chunks: usize,
+}
+
+impl BoundedCompiledPartitionedJoinBuildState {
+    pub(in crate::exec::bounded) fn partitions(&self) -> &[DataFrame] {
+        match &self.partitioned {
+            PartitionedJoinSide::Split { partitions, .. } => partitions,
+            PartitionedJoinSide::Contiguous { .. } => {
+                unreachable!("streamed build partitions are stored as split partitions")
+            },
+        }
+    }
 }
 
 pub(in crate::exec::bounded) enum BoundedCompiledJoinProbeState {
@@ -97,7 +126,7 @@ pub(in crate::exec::bounded) struct RootHashJoinFrameStreamProbeState {
     inputs: ResidentFrameStreamPayload,
 }
 
-fn stateless_streaming_probe_supported(node: &JoinNode) -> bool {
+pub(in crate::exec::bounded) fn stateless_streaming_probe_supported(node: &JoinNode) -> bool {
     matches!(node.spec.join_type, JoinType::Inner)
         || (node.spec.join_type == JoinType::Left && node.spec.build_side == JoinSide::Right)
 }
@@ -157,15 +186,20 @@ pub(in crate::exec::bounded) struct StreamedPartitionedJoinSummary {
     output_bytes: u64,
 }
 
-struct PartitionedJoinSide {
-    frame: DataFrame,
-    device_bytes: u64,
-    offsets: Vec<usize>,
+// Hash-partitioned join input. `Contiguous` is one partitioned frame with
+// partition offsets (the shape `hash_partition_by` returns); `Split` keeps one
+// frame per partition so a build side consumed chunk by chunk never needs a
+// whole-side concat.
+enum PartitionedJoinSide {
+    Contiguous { frame: DataFrame, device_bytes: u64, offsets: Vec<usize> },
+    Split { partitions: Vec<DataFrame>, device_bytes: u64 },
 }
 
 impl PartitionedJoinSide {
     fn device_bytes(&self) -> u64 {
-        self.device_bytes
+        match self {
+            Self::Contiguous { device_bytes, .. } | Self::Split { device_bytes, .. } => *device_bytes,
+        }
     }
 }
 
@@ -458,6 +492,22 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame(
                 right,
             }))
         },
+        BoundedCompiledJoinBuildState::Partitioned(build) => {
+            let bytes = match observe_device_memory_bytes(&input, execution.metrics_mut()) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    release_partitioned_join_side(build.partitioned);
+                    return Err(error);
+                },
+            };
+            execute_bounded_compiled_join_probe_from_frame_stream(
+                execution,
+                node_id,
+                node,
+                BoundedCompiledJoinBuildState::Partitioned(build),
+                ResidentFrameStreamPayload::new(vec![ResidentGpuFrame::with_device_bytes(input, bytes)]),
+            )
+        },
     }
 }
 
@@ -489,19 +539,53 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_residen
                 right,
             }))
         },
+        build @ BoundedCompiledJoinBuildState::Partitioned(_) => execute_bounded_compiled_join_probe_from_frame_stream(
+            execution,
+            node_id,
+            node,
+            build,
+            ResidentFrameStreamPayload::new(vec![input]),
+        ),
     }
 }
 
+/// Runs the probe stage over a deferred Parquet leaf.
+///
+/// `lazy_output` says the join output is consumed as a stream, so stateless
+/// probes pull leaf chunks on demand and yield outputs one by one instead of
+/// collecting every output chunk before the materialize task runs. Partitioned
+/// build sides always probe lazily: their partition outputs are already
+/// bounded per probe chunk.
 pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
     build: BoundedCompiledJoinBuildState,
     stream: BoundedJoinLeafLocalParquetSourceStream,
+    lazy_output: bool,
 ) -> Result<BoundedCompiledJoinProbeState> {
     if stream.chunk_count() == 0 {
         let input = materialize_bounded_join_leaf_local_parquet_source_stream(execution, stream)?;
         return execute_bounded_compiled_join_probe_from_resident_frame(execution, node_id, node, build, input);
+    }
+
+    let lazy_probe_supported = match &build {
+        BoundedCompiledJoinBuildState::Hash(_) => lazy_output && stateless_streaming_probe_supported(node),
+        BoundedCompiledJoinBuildState::Prepared(build) => {
+            lazy_output
+                && stateless_streaming_probe_supported(node)
+                && matches!(
+                    build.strategy,
+                    CompiledJoinExecutionStrategy::OneShotEqui | CompiledJoinExecutionStrategy::PartitionedHashEqui
+                )
+                && node.spec.residual_predicate.is_none()
+        },
+        BoundedCompiledJoinBuildState::Partitioned(_) => true,
+        BoundedCompiledJoinBuildState::Filtered(_) => false,
+    };
+    if lazy_probe_supported {
+        let inputs = bounded_join_leaf_local_parquet_source_frame_stream(execution, stream);
+        return execute_bounded_compiled_join_probe_from_frame_stream(execution, node_id, node, build, inputs);
     }
 
     match build {
@@ -612,6 +696,11 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame_s
                 && stateless_streaming_probe_supported(node) =>
         {
             execute_compiled_partitioned_hash_equi_join_probe_from_frame_stream(execution, node_id, node, build, inputs)
+        },
+        BoundedCompiledJoinBuildState::Partitioned(build) => {
+            execute_compiled_partitioned_hash_equi_join_probe_from_split_build_frame_stream(
+                execution, node_id, node, build, inputs,
+            )
         },
         other => {
             let inputs = match inputs.into_remaining_frames_owned(execution) {
@@ -810,6 +899,9 @@ pub(in crate::exec::bounded) fn release_bounded_compiled_join_build_state(build:
         BoundedCompiledJoinBuildState::Prepared(build) => {
             let BoundedCompiledPreparedJoinBuildState { input, .. } = build;
             release_bounded_join_side_frame(input);
+        },
+        BoundedCompiledJoinBuildState::Partitioned(build) => {
+            release_partitioned_join_side(build.partitioned);
         },
     }
 }
