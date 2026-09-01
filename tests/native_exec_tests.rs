@@ -14,6 +14,7 @@ use arrow::{
 };
 use datafusion::{
     common::{DataFusionError, ScalarValue, config::ConfigOptions},
+    datasource::{memory::MemorySourceConfig, source::DataSourceExec},
     execution::{SessionStateBuilder, context::TaskContext, object_store::ObjectStoreUrl},
     logical_expr::Operator,
     physical_expr::{
@@ -1446,6 +1447,32 @@ fn no_datafusion_cpu_count_only_probe_retains_its_native_rewrite() {
     assert!(after_final.downcast_ref::<NexusNativeExec>().is_some());
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn no_datafusion_cpu_count_only_probe_rewrites_materialized_memory_table() {
+    let schema = Arc::new(Schema::new(vec![Field::new("src", DataType::Int32, false)]));
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from_iter_values(0..65))])
+        .expect("materialized workspace batch");
+    let source =
+        MemorySourceConfig::try_new(&[vec![batch]], Arc::clone(&schema), None).expect("materialized workspace source");
+    let scan = DataSourceExec::from_data_source(source) as Arc<dyn ExecutionPlan>;
+    let plan = count_only_plan(scan);
+    let rules = installed_physical_optimizer_rules(
+        NexusNativeOptimizerConfig::default()
+            .with_no_datafusion_cpu_requirement()
+            .with_native_execution_config(bounded_config()),
+    );
+    let count_only_probe = rules
+        .iter()
+        .find(|rule| rule.name() == "datafusion_nexus_native_count_only")
+        .expect("native optimizer rules should contain the count-only probe");
+
+    let optimized = count_only_probe
+        .optimize(plan, &ConfigOptions::default())
+        .expect("materialized workspace COUNT(*) must remain GPU-only");
+
+    assert!(optimized.downcast_ref::<NexusNativeExec>().is_some());
 }
 
 #[test]

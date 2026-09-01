@@ -318,8 +318,44 @@ impl QueryPlanCapabilityProof {
             )?;
             requirement.owner_terms.push(retained);
         }
-        requirement.mark_resident_producer_input_scope();
-        Ok(Self { requirement })
+        let mut proof = Self { requirement };
+        let unreachable = plan.unreachable_node_ids();
+        if plan
+            .nodes()
+            .iter()
+            .any(|node| !unreachable.contains(&node.id) && matches!(node.kind, PlanNode::Aggregate(_)))
+        {
+            proof.bind_composed_sort_owner(plan, &[])?;
+            proof.requirement.remove_generic_gpu_resident_retained_output_terms();
+            let ComposedConsumerBranchBound {
+                owner_terms,
+                peak_owner_term_groups,
+                dominated_owner_term_ids,
+                allocation_state,
+                ..
+            } = composed_consumer_bound_with_peak_terms(plan, &[], &proof.requirement.owner_terms)?;
+            proof.requirement.owner_terms = merge_owner_terms(&proof.requirement.owner_terms, owner_terms)?;
+            let attempt_wide_fixed_term_ids = proof
+                .requirement
+                .owner_terms
+                .iter()
+                .filter(|term| term.is_attempt_wide_fixed())
+                .map(|term| term.id().clone())
+                .collect();
+            let schedule = AttemptReservationSchedule::from_phase_term_groups_with_dominated(
+                attempt_wide_fixed_term_ids,
+                Vec::new(),
+                allocation_state,
+                peak_owner_term_groups,
+                dominated_owner_term_ids,
+            );
+            let [shape] = proof.requirement.reservation_shapes.as_mut_slice() else {
+                return Err(composed_schedule_error("producer_scope_coverage_mismatch", None));
+            };
+            shape.attach_ordered_schedule(schedule)?;
+        }
+        proof.requirement.mark_resident_producer_input_scope();
+        Ok(proof)
     }
 
     /// Issues a proof for one exact native fragment staged as a resident side
@@ -2531,6 +2567,7 @@ impl AttemptCapabilityEvidence {
             device_ordinal,
             |descriptor, _| {
                 if let [key] = descriptor.keys.as_slice()
+                    && key.null_count == 0
                     && cudf::ops::sorting::sorted_order_radix_key_supported(key.key_type.id())
                 {
                     let preflight = cudf::DataFramePreparedSort::sorted_order_radix_preflight_for_metadata(

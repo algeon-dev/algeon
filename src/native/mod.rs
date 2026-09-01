@@ -35,7 +35,10 @@ use nexus_query_engine::{
     plan::{NodeId as NativeNodeId, PlanNode as NativePlanNode, QueryPlan as NativeQueryPlan},
     source::{SourceDiagnostics as NativeSourceDiagnostics, SourceNode as NativeSourceNode},
 };
-use normalize::{NormalizedNativeInput, make_declared_ordered_hash_join_fetch_explicit, normalize_native_plan};
+use normalize::{
+    NormalizedNativeInput, NormalizedNativeLiteralSource, make_declared_ordered_hash_join_fetch_explicit,
+    normalize_native_plan,
+};
 pub(crate) use pruning::scan_predicate_exactly_matches_filter;
 pub(crate) use source::native_parquet_file_reader_factory_is_supported;
 use source::source_diagnostics_for_normalized_plan;
@@ -129,14 +132,16 @@ fn lower_physical_plan_to_native_with_mode(
     match normalized {
         Ok(normalized)
             if mode == NativeLoweringMode::CountOnly
-                && !normalized.aggregate_root().is_some_and(|root| {
-                    normalized.single_source_input().is_some_and(|source| {
-                        native_zero_column_count_source_is_safe(
-                            source.filter,
-                            root.pre_aggregate_projection,
-                            root.aggregate,
-                        )
-                    })
+                && !normalized.aggregate_root().is_some_and(|root| match &root.input {
+                    NormalizedNativeInput::Source(source) => native_zero_column_count_source_is_safe(
+                        source.filter,
+                        root.pre_aggregate_projection,
+                        root.aggregate,
+                    ),
+                    NormalizedNativeInput::LiteralSource(NormalizedNativeLiteralSource::Memory(_)) => {
+                        native_zero_column_count_source_is_safe(None, root.pre_aggregate_projection, root.aggregate)
+                    },
+                    _ => false,
                 }) =>
         {
             let mut report = PlanningReport::new();
