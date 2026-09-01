@@ -5,7 +5,7 @@
 //! optimizers and executors do not infer one contract from another.
 use std::fmt;
 
-use super::{ColumnRef, Expr, NodeId};
+use super::{AdvisoryOutputStatistics, ColumnRef, Expr, NodeId};
 
 /// Binary join operation.
 ///
@@ -82,6 +82,13 @@ pub struct JoinSpec {
     /// exceed the selected input column's total string payload bound.
     #[doc(hidden)]
     pub total_payload_bound_preserving_outputs: Vec<String>,
+    /// Frontend estimate of this join's whole output.
+    ///
+    /// Advisory only: optimizer passes may consult it where the conservative
+    /// estimates are unknown, but it is never a proof, a capability input, or
+    /// an admission requirement. Absent when the frontend had no estimate.
+    #[doc(hidden)]
+    pub advisory_output_statistics: Option<AdvisoryOutputStatistics>,
 }
 
 /// Cardinality contract for a join whose lookup side has at most one match.
@@ -113,6 +120,7 @@ impl JoinSpec {
             mark_column_name: None,
             cardinality_contract: None,
             total_payload_bound_preserving_outputs: Vec::new(),
+            advisory_output_statistics: None,
         }
     }
 
@@ -164,6 +172,13 @@ impl JoinSpec {
     /// Marks this join as having at most one match per row on `bounded_side`.
     pub fn with_at_most_one_match_per_bounded_row(mut self, bounded_side: JoinSide) -> Self {
         self.cardinality_contract = Some(JoinCardinalityContract::AtMostOneMatchPerBoundedRow { bounded_side });
+        self
+    }
+
+    /// Attaches the frontend's advisory estimate of this join's output.
+    #[doc(hidden)]
+    pub fn with_advisory_output_statistics(mut self, statistics: AdvisoryOutputStatistics) -> Self {
+        self.advisory_output_statistics = Some(statistics);
         self
     }
 

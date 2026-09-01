@@ -4,6 +4,12 @@
 //! be treated as exact runtime cardinalities. Unknown estimates return
 //! `None` rather than zero so callers can distinguish "missing evidence"
 //! from "empty".
+//!
+//! The `advisory_*` functions expose a frontend's own output estimates
+//! (see [`super::AdvisoryOutputStatistics`]). They are kept apart from the
+//! conservative estimates so a caller never mistakes a frontend guess for a
+//! bound: the conservative functions stay unknown for joins, and the advisory
+//! functions never read source facts.
 
 use std::collections::HashSet;
 
@@ -156,6 +162,55 @@ pub fn estimated_reachable_local_parquet_source_bytes(plan: &QueryPlan) -> Optio
     }
 
     (source_count != 0).then_some(total_bytes)
+}
+
+/// Returns the frontend's advisory row estimate for a node output.
+///
+/// Advisory statistics live on join nodes; order-preserving and row-preserving
+/// operators above a join carry its estimate upward the same way the
+/// conservative walkers do. Every other node has no advisory value.
+#[doc(hidden)]
+pub fn advisory_output_rows(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
+    match &plan.node(node_id)?.kind {
+        PlanNode::Join(join) => join.spec.advisory_output_statistics?.rows.value(),
+        PlanNode::Projection(projection) => advisory_output_rows(plan, projection.input),
+        PlanNode::Filter(filter) => advisory_output_rows(plan, filter.input),
+        PlanNode::Window(window) => advisory_output_rows(plan, window.input),
+        PlanNode::Sort(sort) => advisory_output_rows(plan, sort.input),
+        PlanNode::Limit(limit) => advisory_output_rows(plan, limit.input).map(|rows| {
+            limit.spec.fetch.map_or(rows.saturating_sub(limit.spec.skip as u64), |fetch| {
+                rows.min(limit.spec.skip.saturating_add(fetch) as u64).saturating_sub(limit.spec.skip as u64)
+            })
+        }),
+        PlanNode::Source(_)
+        | PlanNode::Union(_)
+        | PlanNode::Aggregate(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => None,
+    }
+}
+
+/// Returns the frontend's advisory byte estimate for a node output.
+///
+/// Follows the same node walk as [`advisory_output_rows`] except that
+/// limit and window outputs have no advisory byte estimate.
+#[doc(hidden)]
+pub fn advisory_output_bytes(plan: &QueryPlan, node_id: NodeId) -> Option<u64> {
+    match &plan.node(node_id)?.kind {
+        PlanNode::Join(join) => join.spec.advisory_output_statistics?.bytes.value(),
+        PlanNode::Projection(projection) => advisory_output_bytes(plan, projection.input),
+        PlanNode::Filter(filter) => advisory_output_bytes(plan, filter.input),
+        PlanNode::Sort(sort) => advisory_output_bytes(plan, sort.input),
+        PlanNode::Source(_)
+        | PlanNode::Window(_)
+        | PlanNode::Limit(_)
+        | PlanNode::Union(_)
+        | PlanNode::Aggregate(_)
+        | PlanNode::EdgeNormalize(_)
+        | PlanNode::GraphAlgorithm(_)
+        | PlanNode::VectorAlgorithm(_) => None,
+    }
 }
 
 fn left_output_columns_are_unique(join: &JoinNode) -> bool {

@@ -2,7 +2,10 @@ use super::rewrite;
 use crate::{
     error::{QueryError, QueryErrorCode},
     expr::{ColumnRef, Expr},
-    plan::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, estimated_output_bytes, estimated_output_rows},
+    plan::{
+        JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, advisory_output_bytes, advisory_output_rows,
+        estimated_output_bytes, estimated_output_rows,
+    },
 };
 
 /// Stable rule name used in optimizer diagnostics.
@@ -110,14 +113,58 @@ pub struct JoinBuildSideSelectionCandidateDiagnostics {
     pub left_estimated_bytes: Option<u64>,
     /// Estimated bytes on the right input, if known.
     pub right_estimated_bytes: Option<u64>,
+    /// Frontend advisory rows on the left input, if the frontend estimated them.
+    pub left_advisory_rows: Option<u64>,
+    /// Frontend advisory rows on the right input, if the frontend estimated them.
+    pub right_advisory_rows: Option<u64>,
+    /// Frontend advisory bytes on the left input, if the frontend estimated them.
+    pub left_advisory_bytes: Option<u64>,
+    /// Frontend advisory bytes on the right input, if the frontend estimated them.
+    pub right_advisory_bytes: Option<u64>,
     /// Configured byte threshold under which a side is treated as a small build candidate.
     pub small_build_side_bytes: u64,
     /// Configured row threshold under which a side is treated as a small build candidate.
     pub small_build_side_rows: u64,
+    /// Evidence that decided the selected side, when a side was selected.
+    pub selection_basis: Option<JoinBuildSideSelectionBasis>,
     /// True when the returned plan uses the selected build side.
     pub applied: bool,
     /// Rejection reason when no change was applied.
     pub rejected_reason: Option<JoinBuildSideSelectionRejectedReason>,
+}
+
+/// Evidence class that decided a build side, in the order the pass consults it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinBuildSideSelectionBasis {
+    /// Both sides had conservative byte estimates and one was smaller.
+    ConservativeBytes,
+    /// Both sides had conservative row estimates and one was smaller.
+    ConservativeRows,
+    /// The current build side is conservatively small.
+    SmallCurrentSide,
+    /// The other side is conservatively small.
+    SmallOtherSide,
+    /// A frontend advisory byte estimate stood in for an unknown side.
+    AdvisoryBytes,
+    /// A frontend advisory row estimate stood in for an unknown side.
+    AdvisoryRows,
+    /// Exactly one side is keyed on a grouped-aggregate key set.
+    GroupedAggregateKeyset,
+}
+
+impl JoinBuildSideSelectionBasis {
+    /// Stable diagnostic string for this basis.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ConservativeBytes => "conservative_bytes",
+            Self::ConservativeRows => "conservative_rows",
+            Self::SmallCurrentSide => "small_current_side",
+            Self::SmallOtherSide => "small_other_side",
+            Self::AdvisoryBytes => "advisory_bytes",
+            Self::AdvisoryRows => "advisory_rows",
+            Self::GroupedAggregateKeyset => "grouped_aggregate_keyset",
+        }
+    }
 }
 
 /// Reasons a build-side candidate was not changed.
@@ -177,13 +224,18 @@ pub fn optimize_join_build_side_selection(
             right_estimated_rows: right.rows,
             left_estimated_bytes: left.bytes,
             right_estimated_bytes: right.bytes,
+            left_advisory_rows: left.advisory_rows,
+            right_advisory_rows: right.advisory_rows,
+            left_advisory_bytes: left.advisory_bytes,
+            right_advisory_bytes: right.advisory_bytes,
             small_build_side_bytes: options.small_build_side_bytes,
             small_build_side_rows: options.small_build_side_rows,
+            selection_basis: selected.map(|(_, basis)| basis),
             applied: false,
             rejected_reason: Some(JoinBuildSideSelectionRejectedReason::NoBetterBuildSide),
         };
 
-        let Some(after) = selected else {
+        let Some((after, _)) = selected else {
             diagnostics.candidates.push(candidate);
             continue;
         };
@@ -227,19 +279,19 @@ fn select_build_side(
     left: SideEstimate,
     right: SideEstimate,
     options: &JoinBuildSideSelectionOptions,
-) -> Option<JoinSide> {
+) -> Option<(JoinSide, JoinBuildSideSelectionBasis)> {
     if let Some(side) = smaller_known_side(left.bytes, right.bytes) {
-        return Some(side);
+        return Some((side, JoinBuildSideSelectionBasis::ConservativeBytes));
     }
     if let Some(side) = smaller_known_side(left.rows, right.rows) {
-        return Some(side);
+        return Some((side, JoinBuildSideSelectionBasis::ConservativeRows));
     }
     let current_estimate = match current {
         JoinSide::Left => left,
         JoinSide::Right => right,
     };
     if current_estimate.is_small(options) {
-        return Some(current);
+        return Some((current, JoinBuildSideSelectionBasis::SmallCurrentSide));
     }
     let other = opposite_side(current);
     let other_estimate = match other {
@@ -247,10 +299,21 @@ fn select_build_side(
         JoinSide::Right => right,
     };
     if other_estimate.is_small(options) {
-        return Some(other);
+        return Some((other, JoinBuildSideSelectionBasis::SmallOtherSide));
+    }
+    // Conservative evidence could not order the sides and neither side is
+    // certainly small. A frontend advisory estimate now stands in for each
+    // side that has no conservative estimate; a conservative estimate is never
+    // replaced by an advisory one, so a wrong advisory can only lose to a
+    // known bound, never override it.
+    if let Some(side) = smaller_known_side(left.bytes.or(left.advisory_bytes), right.bytes.or(right.advisory_bytes)) {
+        return Some((side, JoinBuildSideSelectionBasis::AdvisoryBytes));
+    }
+    if let Some(side) = smaller_known_side(left.rows.or(left.advisory_rows), right.rows.or(right.advisory_rows)) {
+        return Some((side, JoinBuildSideSelectionBasis::AdvisoryRows));
     }
     if let Some(side) = grouped_aggregate_keyset_side(left, right) {
-        return Some(side);
+        return Some((side, JoinBuildSideSelectionBasis::GroupedAggregateKeyset));
     }
 
     None
@@ -283,6 +346,8 @@ fn opposite_side(side: JoinSide) -> JoinSide {
 struct SideEstimate {
     rows: Option<u64>,
     bytes: Option<u64>,
+    advisory_rows: Option<u64>,
+    advisory_bytes: Option<u64>,
     has_grouped_aggregate_keyset: bool,
 }
 
@@ -292,6 +357,8 @@ impl SideEstimate {
         Self {
             rows: estimated_output_rows(plan, node_id).or_else(|| bounded_left_semijoin_rows(plan, node_id)),
             bytes: estimated_output_bytes(plan, node_id).or_else(|| bounded_left_semijoin_bytes(plan, node_id)),
+            advisory_rows: advisory_output_rows(plan, node_id),
+            advisory_bytes: advisory_output_bytes(plan, node_id),
             has_grouped_aggregate_keyset: join_side_keys_are_grouped_aggregate_keyset(plan, join, side),
         }
     }

@@ -1,5 +1,15 @@
 use std::sync::Arc;
 
+use arrow::array::{Int32Array, Int64Array};
+use datafusion::prelude::{ParquetReadOptions, SessionContext};
+use nexus_query_engine::{
+    optimizer::{
+        JoinBuildSideSelectionBasis, JoinBuildSideSelectionCandidateDiagnostics, JoinBuildSideSelectionOptions,
+        JoinBuildSideSelectionRejectedReason, NativeOptimizerOptions,
+    },
+    plan::JoinSide,
+};
+
 use super::*;
 
 #[test]
@@ -136,6 +146,185 @@ fn native_optimizer_rule_rewrites_and_executes_bounded_root_hash_join() {
     assert_eq!(rows, vec![(1, 100, 1), (1, 300, 1), (2, 200, 2)]);
 
     fs::remove_dir_all(dir).unwrap();
+}
+
+/// `dim ⋈ mid ⋈ fact` where DataFusion keeps the join-fed side as its own
+/// build side while native lowering defaults to building the parquet leaf.
+/// Only DataFusion's advisory output estimate can tell the optimizer that the
+/// join-fed side is the smaller build; the leaf side keeps its conservative
+/// footer estimate.
+#[test]
+fn native_optimizer_rule_builds_join_fed_side_from_advisory_statistics_and_matches_cpu_results() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-advisory-build-side");
+    write_advisory_build_side_fixture(&dir, false);
+
+    let (candidate, native_rows, cpu_rows) = run_advisory_build_side_query(&dir, true);
+
+    assert_eq!(candidate.before_build_side, JoinSide::Right);
+    assert_eq!(candidate.after_build_side, Some(JoinSide::Left));
+    assert!(candidate.applied);
+    assert_eq!(candidate.selection_basis, Some(JoinBuildSideSelectionBasis::AdvisoryRows));
+    assert_eq!(candidate.left_estimated_rows, None);
+    assert_eq!(candidate.right_estimated_rows, Some(2_000));
+    let advised_rows = candidate.left_advisory_rows.expect("DataFusion should estimate the join-fed side");
+    assert!(advised_rows < 2_000, "advisory rows {advised_rows} should undercut the leaf estimate");
+    assert_eq!(native_rows, cpu_rows);
+    assert_eq!(native_rows.len(), 100);
+
+    // Without frontend statistics there is no advisory signal: the pass keeps
+    // the lowering default, the plan stays selected, and results still match.
+    let (candidate, native_rows, cpu_rows) = run_advisory_build_side_query(&dir, false);
+
+    assert_eq!(candidate.before_build_side, JoinSide::Right);
+    assert_eq!(candidate.after_build_side, None);
+    assert!(!candidate.applied);
+    assert_eq!(candidate.selection_basis, None);
+    assert_eq!(candidate.left_advisory_rows, None);
+    assert_eq!(candidate.rejected_reason, Some(JoinBuildSideSelectionRejectedReason::NoBetterBuildSide));
+    assert_eq!(native_rows, cpu_rows);
+    assert_eq!(native_rows.len(), 100);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// Same shape with skewed keys: DataFusion's estimate for `dim ⋈ mid` is far
+/// below its true size, so the advisory-selected build side is actually the
+/// larger input. The orientation is only a strategy choice; results must
+/// still match.
+#[test]
+fn native_optimizer_rule_keeps_results_correct_when_advisory_build_side_is_misestimated() {
+    let dir = unique_temp_dir("datafusion-nexus-native-exec-advisory-build-side-misestimate");
+    write_advisory_build_side_fixture(&dir, true);
+
+    let (candidate, native_rows, cpu_rows) = run_advisory_build_side_query(&dir, true);
+
+    assert_eq!(candidate.after_build_side, Some(JoinSide::Left));
+    assert_eq!(candidate.selection_basis, Some(JoinBuildSideSelectionBasis::AdvisoryRows));
+    let advised_rows = candidate.left_advisory_rows.expect("DataFusion should estimate the join-fed side");
+    // dim keeps 50 copies of key 1 and mid keys are all 1, so the true join
+    // output is 5,000 rows while the range-based NDV estimate stays near 200.
+    assert!(advised_rows < 2_000, "advisory rows {advised_rows} should undercut the leaf estimate");
+    assert_eq!(native_rows, cpu_rows);
+    assert_eq!(native_rows.len(), 100);
+    let total: i64 = native_rows.iter().map(|(_, total)| *total).sum();
+    let fact_total: i64 = (0..2_000_i64).sum();
+    assert_eq!(total, fact_total * 50);
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+const ADVISORY_BUILD_SIDE_SQL: &str = "
+SELECT m.m_id, SUM(f.f_val) AS total
+FROM dim d
+JOIN mid m ON d.d_key = m.m_dkey
+JOIN fact f ON m.m_id = f.f_mid
+GROUP BY m.m_id
+ORDER BY m.m_id
+LIMIT 1000
+";
+
+fn write_advisory_build_side_fixture(dir: &std::path::Path, skewed_dim_keys: bool) {
+    let dim_keys = if skewed_dim_keys {
+        std::iter::repeat_n(1, 50).chain(2..=51).collect::<Vec<i32>>()
+    } else {
+        (1..=100).collect::<Vec<i32>>()
+    };
+    let dim_schema = Arc::new(Schema::new(vec![
+        Field::new("d_key", DataType::Int32, false),
+        Field::new("d_pad", DataType::Int64, false),
+    ]));
+    let dim = RecordBatch::try_new(
+        Arc::clone(&dim_schema),
+        vec![
+            Arc::new(Int32Array::from(dim_keys.clone())),
+            Arc::new(Int64Array::from(dim_keys.iter().map(|key| i64::from(*key) * 10).collect::<Vec<_>>())),
+        ],
+    )
+    .unwrap();
+    write_batch(&dir.join("dim.parquet"), dim_schema, dim);
+
+    let mid_schema = Arc::new(Schema::new(vec![
+        Field::new("m_id", DataType::Int32, false),
+        Field::new("m_dkey", DataType::Int32, false),
+    ]));
+    let mid = RecordBatch::try_new(
+        Arc::clone(&mid_schema),
+        vec![Arc::new(Int32Array::from((1..=100).collect::<Vec<i32>>())), Arc::new(Int32Array::from(vec![1; 100]))],
+    )
+    .unwrap();
+    write_batch(&dir.join("mid.parquet"), mid_schema, mid);
+
+    let fact_schema = Arc::new(Schema::new(vec![
+        Field::new("f_mid", DataType::Int32, false),
+        Field::new("f_val", DataType::Int64, false),
+    ]));
+    let fact = RecordBatch::try_new(
+        Arc::clone(&fact_schema),
+        vec![
+            Arc::new(Int32Array::from((0..2_000).map(|row| row % 100 + 1).collect::<Vec<i32>>())),
+            Arc::new(Int64Array::from((0..2_000_i64).collect::<Vec<_>>())),
+        ],
+    )
+    .unwrap();
+    write_batch(&dir.join("fact.parquet"), fact_schema, fact);
+}
+
+/// Outer-join build-side candidate plus the native and CPU `(m_id, total)` rows.
+type AdvisoryBuildSideRun = (JoinBuildSideSelectionCandidateDiagnostics, Vec<(i32, i64)>, Vec<(i32, i64)>);
+
+fn run_advisory_build_side_query(dir: &std::path::Path, collect_statistics: bool) -> AdvisoryBuildSideRun {
+    let mut config = crate::tpch_session::tpch_report_session_config();
+    config.options_mut().execution.collect_statistics = collect_statistics;
+    let ctx = SessionContext::new_with_config(config);
+    for table in ["dim", "mid", "fact"] {
+        let path = dir.join(format!("{table}.parquet"));
+        futures::executor::block_on(ctx.register_parquet(table, path.to_str().unwrap(), ParquetReadOptions::default()))
+            .unwrap();
+    }
+    let plan = |sql: &str| {
+        let df = futures::executor::block_on(ctx.sql(sql)).unwrap();
+        futures::executor::block_on(df.create_physical_plan()).unwrap()
+    };
+    let cpu =
+        futures::executor::block_on(collect(plan(ADVISORY_BUILD_SIDE_SQL), Arc::new(TaskContext::default()))).unwrap();
+
+    // The fixture is tiny, so lower the small-build thresholds below the
+    // leaf's footer estimate; otherwise the pass stops at "current side is
+    // small" before any advisory evidence is consulted.
+    let config = native_optimizer_config();
+    let optimizer_options = NativeOptimizerOptions {
+        join_build_side_selection: JoinBuildSideSelectionOptions {
+            small_build_side_bytes: 1024,
+            small_build_side_rows: 100,
+            ..config.native_optimizer_options().join_build_side_selection.clone()
+        },
+        ..config.native_optimizer_options().clone()
+    };
+    let rule = NexusNativePhysicalOptimizerRule::new(config.with_native_optimizer_options(optimizer_options));
+    let optimized = rule.optimize(plan(ADVISORY_BUILD_SIDE_SQL), &ConfigOptions::default()).unwrap();
+    let report = rule.last_report().expect("native optimizer should record a planning report");
+    assert_eq!(report.selected_count(), 1, "outcomes={:?}", report.outcomes());
+    let diagnostics = rule.last_planning_diagnostics().expect("native optimizer should retain planning diagnostics");
+    let candidate = diagnostics
+        .native_optimizer
+        .join_build_side_selection
+        .candidates
+        .iter()
+        .find(|candidate| candidate.left_estimated_rows.is_none() && candidate.right_estimated_rows.is_some())
+        .cloned()
+        .expect("the join-fed outer join should be a build-side candidate");
+    let native = futures::executor::block_on(collect(optimized, Arc::new(TaskContext::default()))).unwrap();
+
+    (candidate, grouped_total_rows(&native), grouped_total_rows(&cpu))
+}
+
+fn grouped_total_rows(batches: &[RecordBatch]) -> Vec<(i32, i64)> {
+    batches
+        .iter()
+        .flat_map(|batch| {
+            (0..batch.num_rows()).map(|row| (int32_array(batch, 0).value(row), int64_array(batch, 1).value(row)))
+        })
+        .collect()
 }
 
 #[test]

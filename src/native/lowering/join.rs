@@ -2,11 +2,11 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::{
-    common::{JoinSide as DataFusionJoinSide, NullEquality},
+    common::{JoinSide as DataFusionJoinSide, NullEquality, stats::Precision},
     logical_expr::JoinType,
     physical_expr::{PhysicalExpr, expressions::Column},
     physical_plan::{
-        ExecutionPlan,
+        ExecutionPlan, StatisticsArgs, StatisticsContext,
         joins::{NestedLoopJoinExec, PartitionMode},
     },
 };
@@ -14,8 +14,9 @@ use nexus_query_engine::{
     datatypes::{is_supported_list_carry_type, is_timestamp_with_timezone},
     expr::{ColumnRef as NativeColumnRef, Expr as NativeExpr},
     plan::{
-        JoinKey as NativeJoinKey, JoinNullEquality as NativeJoinNullEquality, JoinSide as NativeJoinSide,
-        JoinSpec as NativeJoinSpec, JoinType as NativeJoinType, QueryPlanBuilder as NativeQueryPlanBuilder,
+        AdvisoryOutputStatistics, AdvisoryStatistic, AdvisoryStatisticsProvenance, JoinKey as NativeJoinKey,
+        JoinNullEquality as NativeJoinNullEquality, JoinSide as NativeJoinSide, JoinSpec as NativeJoinSpec,
+        JoinType as NativeJoinType, QueryPlanBuilder as NativeQueryPlanBuilder,
     },
 };
 
@@ -453,6 +454,9 @@ pub(super) fn lower_hash_join_input(
         .with_null_equality(lower_join_null_equality(join.join.null_equality()))
         .with_build_side(build_side)
         .with_datafusion_order_preserved_side(datafusion_order_preserved_side);
+    if let Some(statistics) = datafusion_join_advisory_output_statistics(join.join) {
+        spec = spec.with_advisory_output_statistics(statistics);
+    }
     if let Some(residual) = residual {
         spec = spec.with_residual_predicate(residual.predicate);
     }
@@ -567,6 +571,9 @@ pub(super) fn lower_nested_loop_join_input(
     let mut spec = NativeJoinSpec::new(canonical.join_type, Vec::new())
         .with_output_projection(output_columns.projection)
         .with_build_side(build_side);
+    if let Some(statistics) = datafusion_join_advisory_output_statistics(join.join) {
+        spec = spec.with_advisory_output_statistics(statistics);
+    }
     if let Some(residual) = residual {
         spec = spec.with_residual_predicate(residual.predicate);
     }
@@ -603,11 +610,40 @@ pub(super) fn lower_cross_join_input(
         &RequiredFields::only_with_predicates(right_required, right_predicate_required),
     )?;
     let output_columns = output_requests.lower(&left, &right, canonical)?;
-    let spec = NativeJoinSpec::new(NativeJoinType::Cross, Vec::new())
+    let mut spec = NativeJoinSpec::new(NativeJoinType::Cross, Vec::new())
         .with_output_projection(output_columns.projection)
         .with_build_side(NativeJoinSide::Left);
+    if let Some(statistics) = datafusion_join_advisory_output_statistics(join.join) {
+        spec = spec.with_advisory_output_statistics(statistics);
+    }
     let node = builder.add_join(left.node, right.node, spec, Arc::clone(&output_columns.schema));
     Ok(LoweredNativeInput::with_bindings(node, output_columns.schema, output_columns.bindings))
+}
+
+/// Lowers DataFusion's own whole-output statistics for a join into the
+/// backend-neutral advisory signal.
+///
+/// DataFusion's join estimate is inexact by construction (NDV from min/max
+/// ranges, no skew or correlation model) and can be absent when a child scan
+/// carries no statistics. Both cases map faithfully; an error while computing
+/// statistics is the same as no estimate because the signal is advisory and
+/// must never gate lowering.
+fn datafusion_join_advisory_output_statistics(join: &dyn ExecutionPlan) -> Option<AdvisoryOutputStatistics> {
+    let statistics = StatisticsContext::new().compute(join, &StatisticsArgs::new()).ok()?;
+    let statistics = AdvisoryOutputStatistics {
+        rows: lower_advisory_statistic(statistics.num_rows),
+        bytes: lower_advisory_statistic(statistics.total_byte_size),
+        provenance: AdvisoryStatisticsProvenance::FrontendPlannerEstimate,
+    };
+    (!statistics.is_absent()).then_some(statistics)
+}
+
+fn lower_advisory_statistic(precision: Precision<usize>) -> AdvisoryStatistic {
+    match precision {
+        Precision::Exact(value) => AdvisoryStatistic::Exact(value as u64),
+        Precision::Inexact(value) => AdvisoryStatistic::Inexact(value as u64),
+        Precision::Absent => AdvisoryStatistic::Absent,
+    }
 }
 
 fn native_join_build_side(canonical: CanonicalJoin, key_count: usize, has_residual: bool) -> NativeJoinSide {
