@@ -349,6 +349,10 @@ impl CompiledGpuTaskExecutor<'_> {
             || self.task_feeds_join_input_through_unary_chain(task, PipelineEdgeKind::JoinProbeInput).is_some()
     }
 
+    // A chain that ends in a resource shared by several join inputs still
+    // feeds joins: every consumer re-streams the leaf with the chain's stages
+    // (the scheduler never hands a multi-consumer resource to one owner), so
+    // no frame carrying the whole staged leaf has to stay resident for them.
     pub(super) fn task_feeds_join_input_through_unary_chain(
         &self,
         task: PipelineTaskId,
@@ -362,6 +366,23 @@ impl CompiledGpuTaskExecutor<'_> {
                 return None;
             };
             let resource = self.pipeline.resources().iter().find(|resource| resource.id() == *output_resource)?;
+            if resource.consumers().len() > 1 {
+                if !saw_unary {
+                    return None;
+                }
+                let mut matched = None;
+                for consumer in resource.consumers() {
+                    let edge =
+                        self.pipeline.edges().iter().find(|edge| edge.from() == current && edge.to() == *consumer)?;
+                    if !matches!(edge.kind(), PipelineEdgeKind::JoinBuildInput | PipelineEdgeKind::JoinProbeInput) {
+                        return None;
+                    }
+                    if edge.kind() == target_kind {
+                        matched.get_or_insert(*consumer);
+                    }
+                }
+                return matched;
+            }
             let [consumer] = resource.consumers() else {
                 return None;
             };
