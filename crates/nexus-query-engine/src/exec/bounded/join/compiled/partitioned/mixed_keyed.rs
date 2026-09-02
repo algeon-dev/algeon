@@ -265,25 +265,7 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
             return Err(error);
         },
     };
-    super::super::common::trace_preflight_entry(
-        "partitioned_mixed_partition",
-        "partitioned_mixed",
-        node_id,
-        reservations,
-        index_bytes,
-        output_rows,
-        left.rows,
-        left.bytes,
-        right.rows,
-        right.bytes,
-    );
     let output_reservation_bytes = forecast_output_reservation_bytes;
-    super::super::common::trace_preflight_success(
-        "partitioned_mixed_partition",
-        node_id,
-        reservations,
-        output_reservation_bytes,
-    );
     let output_reservation = match reservations.try_reserve(
         bounded_join_request(
             ReservationKind::JoinOutput,

@@ -1,35 +1,6 @@
 use super::*;
 use crate::datatypes::is_supported_list_carry_type;
 
-pub(in crate::exec) fn local_parquet_execution_frame_schema(source: &LocalParquetSource) -> Result<Arc<Schema>> {
-    if source.is_zero_column_count_source() {
-        return Ok(Arc::clone(&source.schema));
-    }
-    if source.is_count_star_probe_source() {
-        return Ok(Arc::clone(source.output_schema()));
-    }
-
-    let mut fields = Vec::with_capacity(source.projected_output_columns.len() + source.pure_filter_columns.len());
-    let mut seen = std::collections::HashSet::with_capacity(fields.capacity());
-    for column in source.projected_output_columns.iter().chain(&source.pure_filter_columns) {
-        if !seen.insert(column.as_str()) {
-            continue;
-        }
-        let field = source.schema.field_with_name(column).map_err(|_error| {
-            QueryError::new(
-                QueryErrorCode::InvalidPlan,
-                "nexus_query_engine.local_parquet_source.execution_frame_schema",
-                "local parquet execution frame column is missing from the source schema",
-            )
-            .with_fact("column", column.as_str())
-            .with_fact("source_fields", source.schema.fields().len())
-        })?;
-        fields.push(field.clone());
-    }
-
-    Ok(Arc::new(Schema::new(fields)))
-}
-
 pub(super) fn materialize_missing_columns(
     context: &ExecutionContext,
     source: &LocalParquetSource,

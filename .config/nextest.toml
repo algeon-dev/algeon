@@ -64,6 +64,8 @@ filter = '''
 | (package(nexus-query-engine) & kind(test) & binary(gpu_backend_shared_tests))
 | (package(nexus-query-engine) & kind(test) & binary(native_execution_tests))
 | (package(nexus-query-engine) & kind(test) & binary(native_pipeline_execution_tests))
+| (package(nexus-query-engine) & kind(test) & binary(runtime_execution_integration_tests))
+| (package(nexus-query-runtime) & kind(lib))
 | (package(nexus-server) & kind(lib))
 | (package(nexus-server) & kind(test) & binary(server_cugraph_tests))
 | (package(nexus-server) & kind(test) & binary(server_cuvs_tests))

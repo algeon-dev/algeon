@@ -166,6 +166,23 @@ lane = "cpu"
 reason = "Proves the two supported GPU-resource construction paths still compile and compose; forbidden-item coverage moved to scripts/ci/check_public_api_surface.sh. Neither remaining case constructs a CUDA runtime."
 
 [[binary]]
+id = "nexus-query-engine::runtime_execution_integration_tests"
+lane = "gpu"
+resource_class = "shared"
+reason = "Runtime-to-execution integration tests create CUDA runtimes and execute or relocate GPU-resident inputs."
+
+[[binary]]
+id = "nexus-query-planning"
+lane = "cpu"
+reason = "Planning library tests cover DataFusion-free IR, capability, admission, and proof composition without runtime GPU resources."
+
+[[binary]]
+id = "nexus-query-runtime"
+lane = "gpu"
+resource_class = "shared"
+reason = "Runtime library tests include GPU backend, allocator, resident-cache, and multi-device lifecycle coverage."
+
+[[binary]]
 id = "nexus-query-engine::gpu_backend_shared_tests"
 lane = "gpu"
 resource_class = "shared"

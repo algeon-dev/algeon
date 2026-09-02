@@ -14,7 +14,6 @@ mod topk_level;
 use limit::*;
 use reservation::*;
 use retry::*;
-pub(in crate::exec) use sizing::topk_candidate_rows;
 use sizing::{
     estimate_rows_bytes, estimated_bytes_per_row, estimated_limited_output_bytes, final_sort_retained_bytes,
     final_sort_rows_per_chunk,

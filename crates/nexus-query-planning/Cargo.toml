@@ -1,0 +1,26 @@
+[package]
+name = "nexus-query-planning"
+description = "DataFusion-free native query planning, proof, and admission contracts."
+version = { workspace = true }
+edition = "2024"
+rust-version = { workspace = true }
+publish = false
+
+[features]
+default = []
+cugraph = ["dep:cugraph"]
+cuvs = ["dep:cuvs"]
+test-hooks = []
+
+[lints]
+workspace = true
+
+[dependencies]
+arrow = { workspace = true }
+blake3 = { workspace = true }
+cudf = { workspace = true }
+cugraph = { workspace = true, optional = true }
+cuvs = { workspace = true, optional = true }
+parquet = { workspace = true, features = ["arrow"] }
+serde = { workspace = true }
+serde_json = { workspace = true }

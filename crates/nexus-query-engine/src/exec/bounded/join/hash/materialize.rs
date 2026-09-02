@@ -86,18 +86,6 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
     };
     let left_projection = projected_output_columns_for_retained_sizing(&node.spec.output_projection, JoinSide::Left);
     let right_projection = projected_output_columns_for_retained_sizing(&node.spec.output_projection, JoinSide::Right);
-    super::common::trace_preflight_entry(
-        "execute_bounded_root_hash_join_materialize",
-        "root_hash_join",
-        node_id,
-        reservations,
-        0,
-        indices.build().len() as u64,
-        left.rows,
-        left.bytes,
-        right.rows,
-        right.bytes,
-    );
     let expected_output_rows = indices.build().len() as u64;
     let left_output_bytes = match join_side_output_upper_bound_bytes(
         context,
@@ -111,12 +99,6 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
     ) {
         Ok(bytes) => bytes,
         Err(error) => {
-            super::common::trace_preflight_failed(
-                "execute_bounded_root_hash_join_materialize:left",
-                node_id,
-                reservations,
-                &error,
-            );
             reservations.release(gather_map_reservation, metrics);
             return Err(error);
         },
@@ -133,22 +115,10 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
     ) {
         Ok(bytes) => bytes,
         Err(error) => {
-            super::common::trace_preflight_failed(
-                "execute_bounded_root_hash_join_materialize:right",
-                node_id,
-                reservations,
-                &error,
-            );
             reservations.release(gather_map_reservation, metrics);
             return Err(error);
         },
     };
-    super::common::trace_preflight_success(
-        "execute_bounded_root_hash_join_materialize",
-        node_id,
-        reservations,
-        left_output_bytes.saturating_add(right_output_bytes),
-    );
     let output_reservation_bytes = left_output_bytes.saturating_add(right_output_bytes);
     let mut output_reservation = match reservations.try_reserve(
         bounded_join_request(

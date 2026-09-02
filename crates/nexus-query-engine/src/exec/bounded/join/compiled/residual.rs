@@ -35,18 +35,6 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     };
     debug_assert_eq!(gather_map_bytes, index_bytes);
     let (left, right) = txn.sides();
-    super::super::common::trace_preflight_entry(
-        "materialize_compiled_one_shot_residual_output",
-        "one_shot_residual",
-        node_id,
-        reservations,
-        gather_map_bytes,
-        candidate_rows,
-        left.rows,
-        left.bytes,
-        right.rows,
-        right.bytes,
-    );
     let candidate_reservation_bytes = match txn.indices().output_upper_bound_size_bytes(
         context,
         node_id,
@@ -57,22 +45,8 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
         reservations,
         metrics,
     ) {
-        Ok(bytes) => {
-            super::super::common::trace_preflight_success(
-                "materialize_compiled_one_shot_residual_output",
-                node_id,
-                reservations,
-                bytes,
-            );
-            bytes
-        },
+        Ok(bytes) => bytes,
         Err(error) => {
-            super::super::common::trace_preflight_failed(
-                "materialize_compiled_one_shot_residual_output",
-                node_id,
-                reservations,
-                &error,
-            );
             txn.rollback(reservations, metrics);
             return Err(error);
         },

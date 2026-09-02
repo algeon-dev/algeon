@@ -1,0 +1,327 @@
+use std::collections::BTreeMap;
+
+use crate::{
+    admission::requirement::QueryPlanCapabilityProof,
+    capability::{
+        CapabilityAnalysis, CapabilityRejectionOwner, CapabilityRejectionProjection, ContractStatus,
+        ReservationRequirement,
+    },
+    error::QueryError,
+    execution_contracts::{BoundedJoinReservationContract, ExecutionBoundaryPolicy},
+    plan::QueryPlan,
+};
+
+#[doc(hidden)]
+pub fn query_plan_capability_proof_audit_lines(proof: &QueryPlanCapabilityProof) -> Vec<String> {
+    let requirement = &proof.requirement;
+    let mut lines = vec![format!(
+        "proof,configured_floor_bytes={},capability_floor_raise_bytes={},required_phase_floor_bytes={},source_stage_bytes={},soft_working_set_hint_bytes={},bound_derivation={}",
+        requirement.configured_floor_bytes,
+        requirement.capability_floor_raise_bytes,
+        requirement.required_phase_floor_bytes,
+        requirement.source_stage_bytes.map_or_else(|| "none".to_owned(), |bytes| bytes.to_string()),
+        requirement.soft_working_set_hint_bytes.map_or_else(|| "none".to_owned(), |bytes| bytes.to_string()),
+        requirement.bound_derivation.map_or("none", |derivation| derivation.as_str()),
+    )];
+
+    let mut owner_lines = requirement.owner_terms.iter().map(|term| term.audit_line()).collect::<Vec<_>>();
+    owner_lines.sort();
+    lines.extend(owner_lines.into_iter().map(|line| format!("owner_term,{line}")));
+
+    for (shape_index, shape) in requirement.reservation_shapes.iter().enumerate() {
+        lines.push(format!(
+            "scope,index={shape_index},role={},scope={},output_schema={}",
+            shape.scope_role_label(),
+            crate::admission::log_safe_fingerprint(shape.execution_scope_fingerprint()),
+            shape.output_schema_fingerprint(),
+        ));
+        lines.extend(
+            shape
+                .output_column_evidence()
+                .audit_lines()
+                .into_iter()
+                .map(|line| format!("scope_evidence,index={shape_index},{line}")),
+        );
+        if let Some(reason) = shape.owner_term_rejection_reason() {
+            lines.push(format!("scope_rejection,index={shape_index},reason={reason}"));
+        }
+        if let Some(schedule) = shape.ordered_schedule() {
+            match schedule.fold_audit_with_inventory(&requirement.reservation_shapes, &requirement.owner_terms) {
+                Ok(audit) => {
+                    lines.extend(audit.lines().into_iter().map(|line| format!("schedule,index={shape_index},{line}")))
+                },
+                Err(error) => {
+                    let facts =
+                        error.facts().iter().map(|(key, value)| format!("{key}={value}")).collect::<Vec<_>>().join(",");
+                    lines.push(format!(
+                        "schedule_rejection,index={shape_index},code={},operation={},facts={facts}",
+                        error.code(),
+                        error.operation(),
+                    ));
+                },
+            }
+        }
+    }
+    lines
+}
+
+/// Returns diagnostic facts for join plans rejected by bounded admission.
+///
+/// These facts are explanatory planning/execution diagnostics. They do not
+/// toggle executor behavior and should not be treated as optimizer hints.
+pub fn bounded_join_unsupported_shape_facts(
+    plan: &QueryPlan,
+    boundary_policy: ExecutionBoundaryPolicy,
+) -> Option<BTreeMap<&'static str, String>> {
+    if !plan.contains_join() {
+        return None;
+    }
+
+    match super::bounded_pipeline_rejection_projection(plan) {
+        Ok(Some(projection)) => {
+            Some(bounded_join_unsupported_shape_facts_with_projection(plan, boundary_policy, Some(&projection)))
+        },
+        Ok(None) => None,
+        Err(error) => {
+            let mut facts = bounded_join_unsupported_shape_facts_with_projection(plan, boundary_policy, None);
+            insert_bounded_join_rejection_projection_error_facts(&mut facts, &error);
+            Some(facts)
+        },
+    }
+}
+
+/// Returns modeled bounded-join facts for plans accepted by bounded admission.
+pub fn bounded_join_modeled_facts(
+    plan: &QueryPlan,
+    boundary_policy: ExecutionBoundaryPolicy,
+) -> Option<BTreeMap<&'static str, String>> {
+    if !plan.contains_join() {
+        return None;
+    }
+    matches!(super::bounded_pipeline_rejection_projection(plan), Ok(None))
+        .then(|| bounded_join_modeled_facts_unchecked(plan, boundary_policy))
+}
+
+#[doc(hidden)]
+pub fn bounded_join_unsupported_shape_facts_with_projection(
+    plan: &QueryPlan,
+    boundary_policy: ExecutionBoundaryPolicy,
+    rejection_projection: Option<&CapabilityRejectionProjection>,
+) -> BTreeMap<&'static str, String> {
+    let mut facts = BoundedJoinReservationContract.unsupported_shape_facts(boundary_policy);
+    let analysis = plan.capability_analysis();
+    insert_capability_reservation_facts(&mut facts, &analysis);
+    insert_join_strategy_facts(&mut facts, plan);
+    insert_local_rejection_facts(&mut facts, &analysis, rejection_projection);
+    facts
+}
+
+fn bounded_join_modeled_facts_unchecked(
+    plan: &QueryPlan,
+    boundary_policy: ExecutionBoundaryPolicy,
+) -> BTreeMap<&'static str, String> {
+    let mut facts = BoundedJoinReservationContract.facts(boundary_policy);
+    let analysis = plan.capability_analysis();
+    insert_capability_reservation_facts(&mut facts, &analysis);
+    insert_join_strategy_facts(&mut facts, plan);
+    facts
+}
+
+#[doc(hidden)]
+pub fn insert_bounded_join_rejection_projection_error_facts(
+    facts: &mut BTreeMap<&'static str, String>,
+    error: &QueryError,
+) {
+    facts.insert("bounded_join_rejection_projection_error_code", error.code().to_string());
+    facts.insert("bounded_join_rejection_projection_error_operation", error.operation().to_string());
+    facts.insert("bounded_join_rejection_projection_error_message", error.message().to_string());
+}
+
+fn insert_join_strategy_facts(facts: &mut BTreeMap<&'static str, String>, plan: &QueryPlan) {
+    let mut join_strategy = Vec::new();
+    let mut reusable_rejections = Vec::new();
+    let mut partitioned_rejections = Vec::new();
+    let mut estimated_build_rows = Vec::new();
+    let mut observed_build_rows = Vec::new();
+    let mut build_side_bytes = Vec::new();
+    let mut probe_side_bytes = Vec::new();
+    let mut probe_reuse_count = Vec::new();
+    let mut reusable_prebuild_supported = Vec::new();
+    let mut partition_counts = Vec::new();
+    let mut partition_target_bytes = Vec::new();
+
+    for node in plan.nodes() {
+        let crate::plan::PlanNode::Join(join) = &node.kind else {
+            continue;
+        };
+        let Some(decision) = crate::capability::keyed_hash_join_strategy_decision_for_plan(plan, node.id, join) else {
+            continue;
+        };
+        let node_label = node.id.to_string();
+        let decision_facts = decision.facts();
+        if let Some(value) = decision_facts.get("join_strategy") {
+            join_strategy.push(format!("{node_label}:{value}"));
+        }
+        if let Some(value) = decision_facts.get("reusable_hash_join_rejected_reason") {
+            reusable_rejections.push(format!("{node_label}:{value}"));
+        }
+        if let Some(value) = decision_facts.get("partitioned_hash_join_rejected_reason") {
+            partitioned_rejections.push(format!("{node_label}:{value}"));
+        }
+        if let Some(value) = decision_facts.get("estimated_build_rows") {
+            estimated_build_rows.push(format!("{node_label}:{value}"));
+        }
+        if let Some(value) = decision_facts.get("observed_build_rows") {
+            observed_build_rows.push(format!("{node_label}:{value}"));
+        }
+        if let Some(value) = decision_facts.get("build_side_bytes") {
+            build_side_bytes.push(format!("{node_label}:{value}"));
+        }
+        if let Some(value) = decision_facts.get("probe_side_bytes") {
+            probe_side_bytes.push(format!("{node_label}:{value}"));
+        }
+        if let Some(value) = decision_facts.get("probe_reuse_count") {
+            probe_reuse_count.push(format!("{node_label}:{value}"));
+        }
+        if let Some(value) = decision_facts.get("reusable_prebuild_supported") {
+            reusable_prebuild_supported.push(format!("{node_label}:{value}"));
+        }
+        if let Some(value) = decision_facts.get("partition_count") {
+            partition_counts.push(format!("{node_label}:{value}"));
+        }
+        if let Some(value) = decision_facts.get("partition_target_bytes") {
+            partition_target_bytes.push(format!("{node_label}:{value}"));
+        }
+    }
+
+    insert_csv_fact(facts, "join_strategy", join_strategy);
+    insert_csv_fact(facts, "reusable_hash_join_rejected_reason", reusable_rejections);
+    insert_csv_fact(facts, "partitioned_hash_join_rejected_reason", partitioned_rejections);
+    insert_csv_fact(facts, "estimated_build_rows", estimated_build_rows);
+    insert_csv_fact(facts, "observed_build_rows", observed_build_rows);
+    insert_csv_fact(facts, "build_side_bytes", build_side_bytes);
+    insert_csv_fact(facts, "probe_side_bytes", probe_side_bytes);
+    insert_csv_fact(facts, "probe_reuse_count", probe_reuse_count);
+    insert_csv_fact(facts, "reusable_prebuild_supported", reusable_prebuild_supported);
+    insert_csv_fact(facts, "partition_count", partition_counts);
+    insert_csv_fact(facts, "partition_target_bytes", partition_target_bytes);
+}
+
+fn insert_csv_fact(facts: &mut BTreeMap<&'static str, String>, key: &'static str, values: Vec<String>) {
+    if !values.is_empty() {
+        facts.insert(key, csv_join(values));
+    }
+}
+
+fn insert_local_rejection_facts(
+    facts: &mut BTreeMap<&'static str, String>,
+    analysis: &CapabilityAnalysis,
+    rejection_projection: Option<&CapabilityRejectionProjection>,
+) {
+    let analysis_projection = analysis.first_rejection_projection();
+    if let Some(rejection) = rejection_projection.or(analysis_projection.as_ref()) {
+        facts.insert("bounded_join_rejection_scope", rejection.contract_scope.as_str().to_string());
+        facts.insert("bounded_join_rejection_owner", rejection_owner_fact(&rejection.owner));
+        facts.insert("bounded_join_rejection_boundary", rejection.memory_boundary.to_string());
+        facts.insert("bounded_join_rejection_category", rejection.category.as_str().to_string());
+        facts.insert("bounded_join_rejection_reason", rejection.reason.to_string());
+        facts.insert("bounded_join_rejection_facts", capability_rejection_facts_csv(&rejection.facts));
+        return;
+    }
+
+    facts.insert("bounded_join_rejection_scope", "subgraph".to_string());
+    facts.insert("bounded_join_rejection_owner", "capability_envelope_admission".to_string());
+    facts.insert("bounded_join_rejection_boundary", "capability_envelope_admission".to_string());
+    facts.insert("bounded_join_rejection_category", "missing_subgraph_invariant".to_string());
+    facts.insert("bounded_join_rejection_reason", "capability_envelope_not_satisfied".to_string());
+    facts.insert("bounded_join_rejection_facts", "capability_envelope_admission=false".to_string());
+}
+
+fn rejection_owner_fact(owner: &CapabilityRejectionOwner) -> String {
+    match owner {
+        CapabilityRejectionOwner::Node(node_id) => format!("node:{node_id}"),
+        CapabilityRejectionOwner::Edge { producer, consumer } => format!("edge:{producer}->{consumer:?}"),
+        CapabilityRejectionOwner::Invariant(invariant_id) => format!("invariant:i{}", invariant_id.index()),
+        CapabilityRejectionOwner::Admission(admission) => format!("admission:{admission}"),
+    }
+}
+
+fn insert_capability_reservation_facts(facts: &mut BTreeMap<&'static str, String>, analysis: &CapabilityAnalysis) {
+    let requirements = &analysis.requirements;
+    if requirements.is_empty() {
+        return;
+    }
+    facts.insert("bounded_join_reservation_kinds", capability_reservation_kinds_csv(requirements));
+    facts.insert("bounded_join_reservation_statuses", capability_reservation_statuses_csv(requirements));
+    facts.insert("bounded_join_reservation_requirements", capability_reservation_requirements_csv(requirements));
+    facts.insert("modeled_reservations", capability_modeled_reservations_csv(requirements));
+    facts.insert("blocked_reservations", capability_blocked_reservations_csv(requirements));
+    facts.insert("missing_reservations", capability_blocked_reservations_csv(requirements));
+    facts.insert("bounded_join_lower_level_blockers", capability_lower_level_blockers_csv(requirements));
+}
+
+fn capability_reservation_kinds_csv(requirements: &[ReservationRequirement]) -> String {
+    csv_join(requirements.iter().map(|requirement| requirement.kind.as_str()))
+}
+
+fn capability_reservation_statuses_csv(requirements: &[ReservationRequirement]) -> String {
+    csv_join(
+        requirements.iter().map(|requirement| format!("{}:{}", requirement.kind.as_str(), requirement.status.as_str())),
+    )
+}
+
+fn capability_reservation_requirements_csv(requirements: &[ReservationRequirement]) -> String {
+    csv_join(requirements.iter().map(|requirement| {
+        format!("{}:{}:{}", requirement.kind.as_str(), requirement.required_contract, requirement.quality.as_str())
+    }))
+}
+
+fn capability_modeled_reservations_csv(requirements: &[ReservationRequirement]) -> String {
+    csv_join(
+        requirements.iter().filter_map(|requirement| {
+            (requirement.status == ContractStatus::Modeled).then_some(requirement.kind.as_str())
+        }),
+    )
+}
+
+fn capability_blocked_reservations_csv(requirements: &[ReservationRequirement]) -> String {
+    csv_join(
+        requirements.iter().filter_map(|requirement| {
+            (requirement.status != ContractStatus::Modeled).then_some(requirement.kind.as_str())
+        }),
+    )
+}
+
+fn capability_lower_level_blockers_csv(requirements: &[ReservationRequirement]) -> String {
+    csv_join(requirements.iter().filter_map(|requirement| {
+        (requirement.status == ContractStatus::BlockedByLowerLevel).then_some(requirement.required_contract)
+    }))
+}
+
+fn capability_rejection_facts_csv(facts: &BTreeMap<&'static str, String>) -> String {
+    let mut output = String::new();
+    for (key, value) in facts {
+        if !output.is_empty() {
+            output.push(',');
+        }
+        output.push_str(key);
+        output.push('=');
+        output.push_str(value);
+    }
+    output
+}
+
+fn csv_join<I, T>(values: I) -> String
+where
+    I: IntoIterator<Item = T>,
+    T: ToString,
+{
+    let mut output = String::new();
+    for value in values {
+        if !output.is_empty() {
+            output.push(',');
+        }
+        output.push_str(&value.to_string());
+    }
+    output
+}

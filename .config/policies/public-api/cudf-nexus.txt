@@ -2039,6 +2039,7 @@ pub fn cudf::DataFrameHashJoinPairIndices::is_empty(&self) -> bool
 pub fn cudf::DataFrameHashJoinPairIndices::len(&self) -> usize
 pub fn cudf::DataFrameHashJoinPairIndices::probe(&self) -> &cudf::DataFrameJoinIndices
 pub fn cudf::DataFrameHashJoinPairIndices::reservation_size_bytes_for_len(usize) -> cudf::core::error::Result<usize>
+pub fn cudf::DataFrameHashJoinPairIndices::reservation_upper_bound_bytes_for_row_bound(usize) -> usize
 pub struct cudf::frame::dataframe::DataFrameInfo
 pub cudf::frame::dataframe::DataFrameInfo::column_count: usize
 pub cudf::frame::dataframe::DataFrameInfo::columns: core::option::Option<alloc::vec::Vec<cudf::frame::dataframe::DataFrameColumnInfo>>
@@ -6008,6 +6009,20 @@ pub fn cudf::ops::join::mixed_left_join_indices_in(&cudf::core::table::TableView
 pub fn cudf::ops::join::mixed_left_semi_join_indices(&cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, &cudf::ops::ast::AstExpression, cudf::core::types::NullEquality) -> cudf::core::error::Result<cudf::ops::join::SingleSideJoinIndices>
 pub fn cudf::ops::join::mixed_left_semi_join_indices_in(&cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, &cudf::core::table::TableView<'_>, &cudf::ops::ast::AstExpression, cudf::core::types::NullEquality, &cudf::runtime::execution_context::ExecutionOverrides<'_>) -> cudf::core::error::Result<cudf::ops::join::SingleSideJoinIndices>
 pub mod cudf::ops::lookup
+pub mod cudf::ops::materialization
+pub struct cudf::ops::materialization::MaterializedColumnUpperBoundInput
+pub cudf::ops::materialization::MaterializedColumnUpperBoundInput::data_type: cudf::core::types::DataType
+pub cudf::ops::materialization::MaterializedColumnUpperBoundInput::input_max_string_length_bytes: core::option::Option<usize>
+pub cudf::ops::materialization::MaterializedColumnUpperBoundInput::input_total_string_bytes: core::option::Option<usize>
+pub struct cudf::ops::materialization::MaterializedTableUpperBoundPreflight
+impl cudf::ops::materialization::MaterializedTableUpperBoundPreflight
+pub fn cudf::ops::materialization::MaterializedTableUpperBoundPreflight::checked_peak_bytes(&self) -> usize
+pub fn cudf::ops::materialization::MaterializedTableUpperBoundPreflight::column_bytes(&self) -> &[usize]
+pub const fn cudf::ops::materialization::MaterializedTableUpperBoundPreflight::component_owner_operation(&self) -> &'static str
+pub const cudf::ops::materialization::PER_COLUMN_ALIGNMENT_PADDING_BYTES: usize
+pub const cudf::ops::materialization::STRING_OFFSET_BYTES_CONSERVATIVE: usize
+pub const cudf::ops::materialization::TABLE_UPPER_BOUND_PREFLIGHT_OPERATION: &str
+pub fn cudf::ops::materialization::table_upper_bound_preflight(usize, &[cudf::ops::materialization::MaterializedColumnUpperBoundInput]) -> cudf::core::error::Result<cudf::ops::materialization::MaterializedTableUpperBoundPreflight>
 pub mod cudf::ops::partitioning
 pub struct cudf::ops::partitioning::HashPartitionedTable
 impl cudf::ops::partitioning::HashPartitionedTable
@@ -7968,6 +7983,7 @@ pub fn cudf::DataFrameHashJoinPairIndices::is_empty(&self) -> bool
 pub fn cudf::DataFrameHashJoinPairIndices::len(&self) -> usize
 pub fn cudf::DataFrameHashJoinPairIndices::probe(&self) -> &cudf::DataFrameJoinIndices
 pub fn cudf::DataFrameHashJoinPairIndices::reservation_size_bytes_for_len(usize) -> cudf::core::error::Result<usize>
+pub fn cudf::DataFrameHashJoinPairIndices::reservation_upper_bound_bytes_for_row_bound(usize) -> usize
 pub struct cudf::DataFrameJoinIndices
 impl cudf::DataFrameJoinIndices
 pub fn cudf::DataFrameJoinIndices::device_allocated_size_bytes(&self) -> cudf::core::error::Result<usize>

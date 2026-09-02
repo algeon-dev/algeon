@@ -29,46 +29,37 @@ extern crate self as nexus_query_engine;
 #[path = "../tests/native_contract_tests/reservation_tracker_contracts.rs"]
 mod reservation_tracker_contracts;
 #[cfg(test)]
+#[path = "execution_integration_tests/runtime_observability.rs"]
+mod runtime_observability_integration_tests;
+#[cfg(test)]
 #[path = "../tests/native_contract_tests/yielded_frame.rs"]
 mod yielded_frame;
 
-pub mod admission;
-/// Execution-attempt ownership, cancellation, lifecycle, and completion delivery.
-pub mod attempt;
+pub use nexus_query_planning::admission;
 /// Capability-analysis model and admission helpers for native execution.
-pub mod capability;
+pub use nexus_query_planning::capability;
+pub use nexus_query_runtime::attempt;
 pub mod chunk;
-pub mod contract_report;
-mod correlation;
 /// Arrow-to-cuDF datatype support and cast policy helpers.
-pub mod datatypes;
+pub use nexus_query_planning::datatypes;
 /// DataFusion-free dynamic-filter producer/consumer route IR.
-pub mod dynamic_filter;
-pub mod error;
+pub use nexus_query_planning::dynamic_filter;
+pub use nexus_query_planning::{contract_report, error};
 pub mod exec;
-mod execution_contracts;
 /// DataFusion-free expression IR used by native query plans.
-pub mod expr;
+pub use nexus_query_planning::expr;
 /// Approximate cuGraph memory pricing outside bounded admission.
-pub mod graph_memory;
+pub use nexus_query_planning::graph_memory;
+pub(crate) use nexus_query_planning::{execution_contracts, expression_lowering_policy};
 /// Stable helper primitives shared by report and benchmark harnesses.
 pub mod harness;
-/// Runtime metrics, counters, and memory-reservation event records.
-pub mod metrics;
-pub mod mode;
 /// Stable name-generation helpers shared across native planning code.
-pub mod naming;
-/// DataFusion-free runtime observation records, bounded capture, and JSONL export.
-pub mod observability;
-pub mod optimizer;
-pub(crate) mod parquet_metadata;
+pub use nexus_query_planning::naming;
 /// Shared Parquet footer/statistics helpers for native pruning and sizing.
-pub mod parquet_stats;
-pub mod pipeline;
+pub use nexus_query_planning::parquet_stats;
 /// DataFusion-free query plan IR and graph operators.
-pub mod plan;
-pub mod runtime;
-pub mod source;
-pub mod triage;
-pub(crate) mod util;
-pub(crate) mod vector_validation;
+pub use nexus_query_planning::plan;
+pub(crate) use nexus_query_planning::{materialization_sizing, prepared, util, validation};
+pub use nexus_query_planning::{mode, optimizer, pipeline, source, triage};
+pub(crate) use nexus_query_runtime::parquet_metadata;
+pub use nexus_query_runtime::{metrics, observability, runtime};

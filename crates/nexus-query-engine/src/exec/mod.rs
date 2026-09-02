@@ -39,8 +39,6 @@ mod edge_normalize;
 mod edge_null_filter;
 mod graph_algorithm;
 mod join;
-mod lowering;
-mod lowering_policy;
 mod materialize;
 mod nvtx;
 mod operators;
@@ -50,7 +48,6 @@ pub mod output;
 mod retry;
 mod source;
 mod util;
-pub(crate) mod validate;
 mod vector_algorithm;
 
 #[doc(hidden)]
@@ -64,11 +61,6 @@ pub use bounded::{
     JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, PartialAggregateShape,
     STRING_OFFSET_BYTES_CONSERVATIVE, join_output_upper_bound_bytes, partial_aggregate_upper_bound_bytes,
 };
-pub(crate) fn lower_projection_output_expr_for_admission(
-    output: &crate::plan::ProjectionOutput,
-) -> crate::error::Result<cudf::Expr> {
-    lowering::lower_projection_output_expr(output)
-}
 use edge_normalize::execute_edge_normalize;
 #[cfg(all(any(test, feature = "test-hooks"), feature = "cugraph"))]
 #[doc(hidden)]
@@ -274,13 +266,11 @@ use self::{
     bounded::*,
     graph_algorithm::*,
     join::*,
-    lowering::*,
     materialize::*,
     operators::*,
     order::*,
     output::{QueryExecutionOutcome, QueryExecutionResult as ExecutionResult, QueryOutput as Output},
     util::*,
-    validate::*,
     vector_algorithm::*,
 };
 use crate::{
@@ -291,9 +281,7 @@ use crate::{
     },
     datatypes::{cudf_dtype_from_arrow_type, is_supported_arrow_implicit_cast, timestamp_unit_to_cudf_resolution},
     error::{QueryError, QueryErrorCode, Result},
-    expr::{
-        AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, Expr, LimitSpec, LiteralValue, SortSpec,
-    },
+    expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, Expr, LimitSpec, LiteralValue},
     metrics::{QueryId, QueryMetrics, SourceReadRuntimeMetrics, TraceId},
     mode::StatisticalAggregateExecutionMode,
     observability::{
@@ -305,6 +293,7 @@ use crate::{
         AggregateNode, FilterNode, JoinNode, JoinNullEquality, JoinOutputColumn, JoinSide, JoinType, LimitNode, NodeId,
         PlanNode, ProjectionNode, QueryPlan, ResultSink, SortNode, WindowFrame, WindowNode,
     },
+    prepared::*,
     runtime::{
         BoundedJoinReservationContract, ExecutionBoundaryPolicy, ExecutionContext, MemoryControlPolicy,
         MemoryReservationRequest, ReservationKind, RetryFacts,
@@ -316,6 +305,7 @@ use crate::{
         GpuResidentSource, LocalParquetFile, LocalParquetSource, ZERO_COLUMN_COUNT_COLUMN,
         validate_local_parquet_source,
     },
+    validation::*,
 };
 
 /// Validates a complete native plan without constructing a runtime or touching
@@ -324,7 +314,7 @@ use crate::{
 /// Frontends use this capability-first boundary before host work or native
 /// admission. Execution entrypoints call the same validation internally.
 pub fn preflight_query_plan(plan: &QueryPlan) -> Result<()> {
-    validate::validate_query_plan(plan)
+    crate::validation::validate_query_plan(plan)
 }
 
 /// Validates a native plan and applies the bounded execution shape contract.

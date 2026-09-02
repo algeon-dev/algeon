@@ -72,16 +72,22 @@ Apache DataFusion Physical Plan
 │ - Table providers, Iceberg integration, Parquet scans       │
 │ - NativeExecutionPlan wrappers & DataFusion metric bridges  │
 └──────────────────────────────┬──────────────────────────────┘
-                               │ lowers to
+                               │ uses the compatible facade
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
-│ crates/nexus-query-engine (Native Engine)                   │
-│ - DataFusion-independent QueryPlan IR                       │
-│ - Capability-first admission & structured rejection facts   │
-│ - Per-device reservation ledger & immutable memory grants   │
-│ - Pipeline compilation & DAG execution                      │
+│ crates/nexus-query-engine (Facade + Native Execution)       │
+│ - Public planning/runtime re-exports                        │
+│ - Bounded relational, graph, vector, and source execution   │
+│ - Host/GPU-resident result composition                      │
 └──────────────────────────────┬──────────────────────────────┘
-                               │ executes via
+                               │ depends on
+                               ▼
+┌─────────────────────────────────────────────────────────────┐
+│ nexus-query-runtime -> nexus-query-planning                 │
+│ - Runtime: lifecycle, query service, ledger, grant, cache   │
+│ - Planning: IR, optimizer, capability, proof, pipeline      │
+└──────────────────────────────┬──────────────────────────────┘
+                               │ execution uses
                                ▼
         ┌──────────────────────┴──────────────────────┐
         ▼                                             ▼
@@ -94,9 +100,12 @@ Apache DataFusion Physical Plan
 ### Key Invariants
 
 - **Fix the owning abstraction**: DataFusion-dependent lowering belongs in the
-  root adapter; DataFusion-independent IR, capability admission, and execution
-  belong in `crates/nexus-query-engine`; native cuDF and cuGraph operations
-  belong in their respective component crates. Never paper over an engine or
+  root adapter; IR, optimizer, capability, proof, admission contracts, and
+  pipeline belong in `crates/nexus-query-planning`; lifecycle, query service,
+  ledger, grant, cache, observation, and metrics belong in
+  `crates/nexus-query-runtime`; native execution and public facade compatibility
+  belong in `crates/nexus-query-engine`. Native cuDF and cuGraph operations
+  belong in their respective component crates. Never paper over an owner or
   RAPIDS limitation with an adapter workaround.
 - **One bounded admission contract**: Every native attempt is admitted against
   a single per-device ledger, immutable grants, and transactional envelopes.
@@ -154,8 +163,9 @@ In the PR description, include:
 - The linked issue.
 - A concise summary of the change and its user-facing or technical value.
 - The behavior, API, or contract that changed.
-- The layer that owns the change (root adapter, `nexus-query-engine`,
-  `nexus-server`, `nexus-iceberg`, or a component crate under `components/`).
+- The layer that owns the change (root adapter, `nexus-query-planning`,
+  `nexus-query-runtime`, `nexus-query-engine`, `nexus-server`, `nexus-iceberg`,
+  or a component crate under `components/`).
 - The test environment used: CUDA driver and toolkit setup, GPU model, Rust
   toolchain, host OS, and relevant environment variables.
 - The exact test commands or verification steps executed.
@@ -166,7 +176,8 @@ Do not describe a compile-only check as native or GPU qualification.
 ## Local Setup
 
 DataFusion Nexus is a single recursive checkout. The root workspace owns the
-adapter, engine, server, tests, and all three Rust integration components:
+adapter, planning/runtime/engine stack, server, tests, and all three Rust
+integration components:
 
 ```text
 datafusion-nexus/
@@ -176,7 +187,7 @@ datafusion-nexus/
 │   └── cugraph/                 # pinned cuGraph fork submodule
 ├── components/cuvs/             # cuvs-nexus and cuvs-nexus-sys
 │   └── cuvs/                    # pinned official cuVS submodule
-├── crates/                      # DataFusion-free engine and support crates
+├── crates/                      # Planning, runtime, engine, and support crates
 └── src/                         # DataFusion adapter
 ```
 

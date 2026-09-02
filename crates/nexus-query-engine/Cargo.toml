@@ -11,12 +11,12 @@ autotests = false
 
 [features]
 default = []
-cugraph = ["dep:cugraph", "dep:cugraph-sys"]
-cuvs = ["dep:cuvs", "dep:cuvs-sys"]
+cugraph = ["dep:cugraph", "dep:cugraph-sys", "nexus-query-planning/cugraph", "nexus-query-runtime/cugraph"]
+cuvs = ["dep:cuvs", "dep:cuvs-sys", "nexus-query-planning/cuvs", "nexus-query-runtime/cuvs"]
 # Optional live NVML diagnostics; admission capacity and SM count remain on cudf CUDA/RMM inventory.
-nvml = ["dep:nvml-wrapper"]
+nvml = ["nexus-query-runtime/nvml"]
 # Enables the crate-private seams consumed by the registered GPU execution harness.
-test-hooks = []
+test-hooks = ["nexus-query-planning/test-hooks", "nexus-query-runtime/test-hooks"]
 
 [lints]
 workspace = true
@@ -34,11 +34,10 @@ cugraph-sys = { workspace = true, optional = true }
 cuvs = { workspace = true, optional = true }
 cuvs-sys = { workspace = true, optional = true }
 futures = { workspace = true }
-getrandom = { workspace = true }
-nvml-wrapper = { version = "0.12.1", optional = true }
+nexus-query-planning = { workspace = true }
+nexus-query-runtime = { workspace = true }
 object_store = { workspace = true }
 parquet = { workspace = true, features = ["arrow"] }
-serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 
@@ -67,6 +66,11 @@ required-features = ["test-hooks"]
 [[test]]
 name = "native_pipeline_execution_tests"
 path = "tests/native_pipeline_execution_tests.rs"
+
+[[test]]
+name = "runtime_execution_integration_tests"
+path = "src/execution_integration_tests/gpu_resident.rs"
+required-features = ["cugraph", "test-hooks"]
 
 [[test]]
 name = "public_api_boundary"

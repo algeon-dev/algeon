@@ -18,18 +18,18 @@ pub datafusion_nexus::attempt::GraphClaimCalibrationExecution::NonPhysical(dataf
 pub datafusion_nexus::attempt::GraphClaimCalibrationExecution::Physical
 pub enum datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason
 pub datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower
-pub datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower::leader_attempt_id: core::option::Option<nexus_query_engine::observability::attempt_report::AttemptId>
+pub datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower::leader_attempt_id: core::option::Option<nexus_query_planning::schedule_projection::AttemptId>
 pub datafusion_nexus::attempt::GraphClaimCalibrationNonPhysicalReason::GraphMemoryAdmissionDenied
 pub struct datafusion_nexus::attempt::AttemptOptions
 pub datafusion_nexus::attempt::AttemptOptions::deadline: core::option::Option<std::time::Instant>
-pub datafusion_nexus::attempt::AttemptOptions::observation: nexus_query_engine::observability::recorder::RuntimeObservationConfig
+pub datafusion_nexus::attempt::AttemptOptions::observation: nexus_query_runtime::observability::recorder::RuntimeObservationConfig
 pub datafusion_nexus::attempt::AttemptOptions::query_id: core::option::Option<alloc::string::String>
 pub datafusion_nexus::attempt::AttemptOptions::trace_context: core::option::Option<alloc::string::String>
 impl core::default::Default for datafusion_nexus::attempt::AttemptOptions
 pub fn datafusion_nexus::attempt::AttemptOptions::default() -> Self
 pub struct datafusion_nexus::attempt::AttemptStream
 impl datafusion_nexus::attempt::AttemptStream
-pub fn datafusion_nexus::attempt::AttemptStream::completion(&self) -> nexus_query_engine::attempt::owner::AttemptCompletion
+pub fn datafusion_nexus::attempt::AttemptStream::completion(&self) -> nexus_query_runtime::attempt::owner::AttemptCompletion
 pub fn datafusion_nexus::attempt::AttemptStream::sealed_graph_claim_calibration_snapshot(&self) -> core::option::Option<datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot>
 impl core::fmt::Debug for datafusion_nexus::attempt::AttemptStream
 pub fn datafusion_nexus::attempt::AttemptStream::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -42,11 +42,11 @@ pub type datafusion_nexus::attempt::AttemptStream::Item = core::result::Result<a
 pub fn datafusion_nexus::attempt::AttemptStream::poll_next(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>) -> core::task::poll::Poll<core::option::Option<Self::Item>>
 pub struct datafusion_nexus::attempt::NexusAttempt
 impl datafusion_nexus::attempt::NexusAttempt
-pub fn datafusion_nexus::attempt::NexusAttempt::attempt_id(&self) -> nexus_query_engine::observability::attempt_report::AttemptId
+pub fn datafusion_nexus::attempt::NexusAttempt::attempt_id(&self) -> nexus_query_planning::schedule_projection::AttemptId
 pub fn datafusion_nexus::attempt::NexusAttempt::cancel_before_stream(&self)
-pub fn datafusion_nexus::attempt::NexusAttempt::cancellation(&self) -> nexus_query_engine::attempt::cancellation::AttemptCancellation
+pub fn datafusion_nexus::attempt::NexusAttempt::cancellation(&self) -> nexus_query_runtime::attempt::cancellation::AttemptCancellation
 pub fn datafusion_nexus::attempt::NexusAttempt::complete_without_result_stream(&self)
-pub fn datafusion_nexus::attempt::NexusAttempt::completion(&self) -> nexus_query_engine::attempt::owner::AttemptCompletion
+pub fn datafusion_nexus::attempt::NexusAttempt::completion(&self) -> nexus_query_runtime::attempt::owner::AttemptCompletion
 pub async fn datafusion_nexus::attempt::NexusAttempt::execute_dataframe(&self, datafusion::dataframe::DataFrame) -> datafusion_common::error::Result<datafusion_nexus::attempt::AttemptStream>
 pub fn datafusion_nexus::attempt::NexusAttempt::execute_physical_plan(&self, alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>, &datafusion::execution::context::SessionContext) -> datafusion_common::error::Result<datafusion_nexus::attempt::AttemptStream>
 pub fn datafusion_nexus::attempt::NexusAttempt::physical_planning_finished(&self, &dyn datafusion_physical_plan::execution_plan::ExecutionPlan)
@@ -54,7 +54,7 @@ pub fn datafusion_nexus::attempt::NexusAttempt::plan_sql<'a>(&'a self, &'a dataf
 pub fn datafusion_nexus::attempt::NexusAttempt::planning_context(&self, &datafusion::execution::context::SessionContext) -> datafusion_common::error::Result<datafusion::execution::context::SessionContext>
 pub fn datafusion_nexus::attempt::NexusAttempt::planning_failed(&self, &datafusion_common::error::DataFusionError)
 pub fn datafusion_nexus::attempt::NexusAttempt::planning_failed_adapter(&self, &datafusion_nexus::error::Error)
-pub fn datafusion_nexus::attempt::NexusAttempt::register_sealed_report_observer<F>(&self, F) where F: core::ops::function::Fn(core::option::Option<alloc::sync::Arc<nexus_query_engine::observability::attempt_report::QueryAttemptReport>>, nexus_query_engine::observability::recorder::SealedRuntimeObservationSnapshot) + core::marker::Send + core::marker::Sync + 'static
+pub fn datafusion_nexus::attempt::NexusAttempt::register_sealed_report_observer<F>(&self, F) where F: core::ops::function::Fn(core::option::Option<alloc::sync::Arc<nexus_query_runtime::observability::attempt_report::QueryAttemptReport>>, nexus_query_runtime::observability::recorder::SealedRuntimeObservationSnapshot) + core::marker::Send + core::marker::Sync + 'static
 pub fn datafusion_nexus::attempt::NexusAttempt::sealed_graph_claim_calibration_snapshot(&self) -> core::option::Option<datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot>
 pub fn datafusion_nexus::attempt::NexusAttempt::sealed_native_execution_snapshot(&self) -> core::option::Option<datafusion_nexus::attempt::SealedAttemptNativeExecutionSnapshot>
 pub fn datafusion_nexus::attempt::NexusAttempt::sql<'a>(&'a self, &'a datafusion::execution::context::SessionContext, &'a str) -> impl core::future::future::Future<Output = datafusion_common::error::Result<datafusion_nexus::attempt::AttemptStream>> + core::marker::Send + 'a
@@ -62,13 +62,13 @@ impl core::fmt::Debug for datafusion_nexus::attempt::NexusAttempt
 pub fn datafusion_nexus::attempt::NexusAttempt::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot
 impl datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot
-pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::attempt_id(&self) -> nexus_query_engine::observability::attempt_report::AttemptId
+pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::attempt_id(&self) -> nexus_query_planning::schedule_projection::AttemptId
 pub fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::execution(&self) -> core::option::Option<&datafusion_nexus::attempt::GraphClaimCalibrationExecution>
 pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::execution_complete(&self) -> bool
-pub fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::rows(&self) -> &[nexus_query_engine::graph_memory::evidence::GraphClaimCalibrationRow]
+pub fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::rows(&self) -> &[nexus_query_planning::graph_memory::evidence::GraphClaimCalibrationRow]
 pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::truncated(&self) -> bool
 #[non_exhaustive] pub struct datafusion_nexus::attempt::SealedAttemptNativeExecutionSnapshot
-pub datafusion_nexus::attempt::SealedAttemptNativeExecutionSnapshot::attempt_id: nexus_query_engine::observability::attempt_report::AttemptId
+pub datafusion_nexus::attempt::SealedAttemptNativeExecutionSnapshot::attempt_id: nexus_query_planning::schedule_projection::AttemptId
 pub datafusion_nexus::attempt::SealedAttemptNativeExecutionSnapshot::explicit_gpu_island_count: usize
 pub datafusion_nexus::attempt::SealedAttemptNativeExecutionSnapshot::final_disposition: datafusion_nexus::planner::FinalPlanDisposition
 pub datafusion_nexus::attempt::SealedAttemptNativeExecutionSnapshot::host_datafusion_boundary_count: usize
@@ -82,27 +82,27 @@ pub use datafusion_nexus::backend::GpuDeviceMemoryLimit
 pub use datafusion_nexus::backend::GpuMemoryOwnership
 pub struct datafusion_nexus::backend::NexusGpuBackend
 impl datafusion_nexus::backend::NexusGpuBackend
-pub fn datafusion_nexus::backend::NexusGpuBackend::admission_snapshot(&self) -> datafusion_nexus::error::Result<nexus_query_engine::runtime::query_service::service::api::QueryServiceAdmissionSnapshot>
-pub fn datafusion_nexus::backend::NexusGpuBackend::backend_metrics_snapshot(&self) -> nexus_query_engine::runtime::backend_metrics::BackendMetricsSnapshot
+pub fn datafusion_nexus::backend::NexusGpuBackend::admission_snapshot(&self) -> datafusion_nexus::error::Result<nexus_query_runtime::runtime::query_service::service::api::QueryServiceAdmissionSnapshot>
+pub fn datafusion_nexus::backend::NexusGpuBackend::backend_metrics_snapshot(&self) -> nexus_query_runtime::runtime::backend_metrics::BackendMetricsSnapshot
 pub fn datafusion_nexus::backend::NexusGpuBackend::builder() -> datafusion_nexus::backend::NexusGpuBackendBuilder
 pub fn datafusion_nexus::backend::NexusGpuBackend::close(&self) -> bool
-pub fn datafusion_nexus::backend::NexusGpuBackend::close_and_wait(&self, core::time::Duration) -> datafusion_nexus::error::Result<nexus_query_engine::runtime::backend_close::GpuBackendCloseSnapshot>
-pub fn datafusion_nexus::backend::NexusGpuBackend::close_and_wait_until(&self, std::time::Instant) -> datafusion_nexus::error::Result<nexus_query_engine::runtime::backend_close::GpuBackendCloseSnapshot>
-pub fn datafusion_nexus::backend::NexusGpuBackend::close_snapshot(&self) -> nexus_query_engine::runtime::backend_close::GpuBackendCloseSnapshot
+pub fn datafusion_nexus::backend::NexusGpuBackend::close_and_wait(&self, core::time::Duration) -> datafusion_nexus::error::Result<nexus_query_runtime::runtime::backend_close::GpuBackendCloseSnapshot>
+pub fn datafusion_nexus::backend::NexusGpuBackend::close_and_wait_until(&self, std::time::Instant) -> datafusion_nexus::error::Result<nexus_query_runtime::runtime::backend_close::GpuBackendCloseSnapshot>
+pub fn datafusion_nexus::backend::NexusGpuBackend::close_snapshot(&self) -> nexus_query_runtime::runtime::backend_close::GpuBackendCloseSnapshot
 pub fn datafusion_nexus::backend::NexusGpuBackend::cugraph_bfs_singleflight_snapshot(&self) -> datafusion_nexus::native_exec::GraphBfsSingleflightSnapshot
-pub fn datafusion_nexus::backend::NexusGpuBackend::device_admission_snapshots(&self) -> datafusion_nexus::error::Result<alloc::vec::Vec<nexus_query_engine::runtime::query_service::service::api::QueryServiceDeviceAdmissionSnapshot>>
-pub fn datafusion_nexus::backend::NexusGpuBackend::device_cache_reports(&self) -> datafusion_nexus::error::Result<alloc::vec::Vec<nexus_query_engine::runtime::cache::DeviceCacheReport>>
-pub fn datafusion_nexus::backend::NexusGpuBackend::device_cache_source_event_snapshots(&self) -> datafusion_nexus::error::Result<alloc::vec::Vec<nexus_query_engine::runtime::cache::CacheSourceEventSnapshot>>
-pub fn datafusion_nexus::backend::NexusGpuBackend::device_ledger_reports(&self) -> datafusion_nexus::error::Result<alloc::vec::Vec<nexus_query_engine::runtime::gpu::ledger::DeviceLedgerReport>>
-pub fn datafusion_nexus::backend::NexusGpuBackend::device_memory_failure_reports(&self) -> datafusion_nexus::error::Result<alloc::vec::Vec<nexus_query_engine::runtime::gpu::memory_failure::DeviceMemoryFailureReport>>
-pub fn datafusion_nexus::backend::NexusGpuBackend::device_memory_ownership(&self) -> &[(usize, nexus_query_engine::runtime::backend_core::GpuMemoryOwnership)]
+pub fn datafusion_nexus::backend::NexusGpuBackend::device_admission_snapshots(&self) -> datafusion_nexus::error::Result<alloc::vec::Vec<nexus_query_runtime::runtime::query_service::service::api::QueryServiceDeviceAdmissionSnapshot>>
+pub fn datafusion_nexus::backend::NexusGpuBackend::device_cache_reports(&self) -> datafusion_nexus::error::Result<alloc::vec::Vec<nexus_query_runtime::runtime::cache::DeviceCacheReport>>
+pub fn datafusion_nexus::backend::NexusGpuBackend::device_cache_source_event_snapshots(&self) -> datafusion_nexus::error::Result<alloc::vec::Vec<nexus_query_runtime::runtime::cache::CacheSourceEventSnapshot>>
+pub fn datafusion_nexus::backend::NexusGpuBackend::device_ledger_reports(&self) -> datafusion_nexus::error::Result<alloc::vec::Vec<nexus_query_runtime::runtime::gpu::ledger::DeviceLedgerReport>>
+pub fn datafusion_nexus::backend::NexusGpuBackend::device_memory_failure_reports(&self) -> datafusion_nexus::error::Result<alloc::vec::Vec<nexus_query_runtime::runtime::gpu::memory_failure::DeviceMemoryFailureReport>>
+pub fn datafusion_nexus::backend::NexusGpuBackend::device_memory_ownership(&self) -> &[(usize, nexus_query_runtime::runtime::backend_core::GpuMemoryOwnership)]
 pub fn datafusion_nexus::backend::NexusGpuBackend::device_ordinals(&self) -> &[usize]
 pub fn datafusion_nexus::backend::NexusGpuBackend::device_profiles(&self) -> &[datafusion_nexus::backend::NexusGpuDeviceProfile]
-pub fn datafusion_nexus::backend::NexusGpuBackend::device_startup_records(&self) -> &[nexus_query_engine::runtime::backend_core::GpuBackendDeviceStartupRecord]
-pub fn datafusion_nexus::backend::NexusGpuBackend::device_telemetry_snapshots(&self) -> datafusion_nexus::error::Result<alloc::vec::Vec<nexus_query_engine::runtime::gpu::inventory::DeviceTelemetrySnapshot>>
-pub fn datafusion_nexus::backend::NexusGpuBackend::from_optimizer_config_for_admission(datafusion_nexus::planner::NexusNativeOptimizerConfig, alloc::vec::Vec<datafusion_nexus::backend::NexusGpuDeviceProfile>, alloc::vec::Vec<(usize, nexus_query_engine::runtime::backend_core::GpuMemoryOwnership)>, datafusion_nexus::backend::NexusGpuQueuePolicy) -> datafusion_nexus::error::Result<Self>
-pub fn datafusion_nexus::backend::NexusGpuBackend::gpu_execution_pool_reports(&self) -> datafusion_nexus::error::Result<alloc::vec::Vec<nexus_query_engine::runtime::gpu_execution_pool::GpuExecutionPoolSnapshot>>
-pub fn datafusion_nexus::backend::NexusGpuBackend::gpu_execution_query_report(&self) -> datafusion_nexus::error::Result<nexus_query_engine::runtime::gpu_execution_pool::GpuExecutionQuerySnapshot>
+pub fn datafusion_nexus::backend::NexusGpuBackend::device_startup_records(&self) -> &[nexus_query_runtime::runtime::backend_core::GpuBackendDeviceStartupRecord]
+pub fn datafusion_nexus::backend::NexusGpuBackend::device_telemetry_snapshots(&self) -> datafusion_nexus::error::Result<alloc::vec::Vec<nexus_query_runtime::runtime::gpu::inventory::DeviceTelemetrySnapshot>>
+pub fn datafusion_nexus::backend::NexusGpuBackend::from_optimizer_config_for_admission(datafusion_nexus::planner::NexusNativeOptimizerConfig, alloc::vec::Vec<datafusion_nexus::backend::NexusGpuDeviceProfile>, alloc::vec::Vec<(usize, nexus_query_runtime::runtime::backend_core::GpuMemoryOwnership)>, datafusion_nexus::backend::NexusGpuQueuePolicy) -> datafusion_nexus::error::Result<Self>
+pub fn datafusion_nexus::backend::NexusGpuBackend::gpu_execution_pool_reports(&self) -> datafusion_nexus::error::Result<alloc::vec::Vec<nexus_query_runtime::runtime::gpu_execution_pool::GpuExecutionPoolSnapshot>>
+pub fn datafusion_nexus::backend::NexusGpuBackend::gpu_execution_query_report(&self) -> datafusion_nexus::error::Result<nexus_query_runtime::runtime::gpu_execution_pool::GpuExecutionQuerySnapshot>
 pub fn datafusion_nexus::backend::NexusGpuBackend::install_on(&self, datafusion::execution::session_state::SessionStateBuilder) -> datafusion_nexus::error::Result<datafusion::execution::session_state::SessionStateBuilder>
 pub fn datafusion_nexus::backend::NexusGpuBackend::install_on_with_cugraph_sql(&self, datafusion::execution::session_state::SessionStateBuilder, datafusion_nexus::cugraph_sql::CugraphSqlConfig) -> datafusion_nexus::error::Result<datafusion::execution::session_state::SessionStateBuilder>
 pub fn datafusion_nexus::backend::NexusGpuBackend::is_session_state_bound(&self, &datafusion::execution::session_state::SessionState) -> bool
@@ -111,13 +111,13 @@ pub fn datafusion_nexus::backend::NexusGpuBackend::queue_policy(&self) -> &dataf
 pub fn datafusion_nexus::backend::NexusGpuBackend::same_backend(&self, &Self) -> bool
 pub fn datafusion_nexus::backend::NexusGpuBackend::set_cugraph_bfs_singleflight_enabled(&self, bool)
 impl datafusion_nexus::backend::NexusGpuBackend
-pub fn datafusion_nexus::backend::NexusGpuBackend::attempt_counters_snapshot(&self) -> nexus_query_engine::attempt::queue::AttemptBackendCountersSnapshot
+pub fn datafusion_nexus::backend::NexusGpuBackend::attempt_counters_snapshot(&self) -> nexus_query_runtime::attempt::queue::AttemptBackendCountersSnapshot
 pub fn datafusion_nexus::backend::NexusGpuBackend::begin_attempt(&self, datafusion_nexus::attempt::AttemptOptions) -> datafusion_nexus::error::Result<datafusion_nexus::attempt::NexusAttempt>
-pub fn datafusion_nexus::backend::NexusGpuBackend::take_abandoned_attempt_reports(&self, usize) -> alloc::vec::Vec<alloc::sync::Arc<nexus_query_engine::observability::attempt_report::QueryAttemptReport>>
+pub fn datafusion_nexus::backend::NexusGpuBackend::take_abandoned_attempt_reports(&self, usize) -> alloc::vec::Vec<alloc::sync::Arc<nexus_query_runtime::observability::attempt_report::QueryAttemptReport>>
 pub struct datafusion_nexus::backend::NexusGpuBackendBuilder
 impl datafusion_nexus::backend::NexusGpuBackendBuilder
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::build(self) -> datafusion_nexus::error::Result<datafusion_nexus::backend::NexusGpuBackend>
-pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::device_memory_ownership(self, impl core::iter::traits::collect::IntoIterator<Item = (usize, nexus_query_engine::runtime::backend_core::GpuMemoryOwnership)>) -> Self
+pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::device_memory_ownership(self, impl core::iter::traits::collect::IntoIterator<Item = (usize, nexus_query_runtime::runtime::backend_core::GpuMemoryOwnership)>) -> Self
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::device_profiles(self, impl core::iter::traits::collect::IntoIterator<Item = datafusion_nexus::backend::NexusGpuDeviceProfile>) -> Self
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::queue_policy(self, datafusion_nexus::backend::NexusGpuQueuePolicy) -> Self
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::with_attempt_completion_queue_capacity(self, usize) -> Self
@@ -137,21 +137,21 @@ impl datafusion_nexus::backend::NexusGpuDeviceProfile
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::attempt_floor_bytes(&self) -> core::option::Option<u64>
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::backend_reserve_bytes(&self) -> u64
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::cache_cap_bytes(&self) -> u64
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::device_capabilities(&self) -> &nexus_query_engine::runtime::gpu::profile::DeviceCapabilities
+pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::device_capabilities(&self) -> &nexus_query_runtime::runtime::gpu::profile::DeviceCapabilities
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::device_ordinal(&self) -> usize
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::install_telemetry(&self) -> bool
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::installation_bounds(&self) -> core::option::Option<datafusion_nexus::backend::NexusGpuDeviceInstallationBounds>
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::max_active_attempts(&self) -> usize
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::memory_limit(&self) -> nexus_query_engine::runtime::backend_core::GpuDeviceMemoryLimit
+pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::memory_limit(&self) -> nexus_query_runtime::runtime::backend_core::GpuDeviceMemoryLimit
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::new(usize) -> Self
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::source_work_per_attempt(&self) -> usize
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::with_attempt_floor_bytes(self, core::option::Option<u64>) -> Self
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::with_backend_reserve_bytes(self, u64) -> Self
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::with_cache_cap_bytes(self, u64) -> Self
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::with_device_capabilities(self, nexus_query_engine::runtime::gpu::profile::DeviceCapabilities) -> Self
+pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::with_device_capabilities(self, nexus_query_runtime::runtime::gpu::profile::DeviceCapabilities) -> Self
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::with_installation_bounds(self, usize, usize, usize) -> Self
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::with_max_active_attempts(self, usize) -> Self
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::with_memory_limit(self, nexus_query_engine::runtime::backend_core::GpuDeviceMemoryLimit) -> Self
+pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::with_memory_limit(self, nexus_query_runtime::runtime::backend_core::GpuDeviceMemoryLimit) -> Self
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::with_source_work_per_attempt(self, usize) -> Self
 pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::with_telemetry(self, bool) -> Self
 #[non_exhaustive] pub struct datafusion_nexus::backend::NexusGpuQueuePolicy
@@ -204,7 +204,7 @@ impl datafusion_nexus::capability::CapabilityReason
 pub const fn datafusion_nexus::capability::CapabilityReason::code(self) -> &'static str
 pub const fn datafusion_nexus::capability::CapabilityReason::data_layout_fixable_property(self) -> core::option::Option<&'static str>
 pub const fn datafusion_nexus::capability::CapabilityReason::is_data_layout_fixable(self) -> bool
-pub const fn datafusion_nexus::capability::CapabilityReason::triage_code(self) -> nexus_query_engine::triage::TriageCode
+pub const fn datafusion_nexus::capability::CapabilityReason::triage_code(self) -> nexus_query_planning::triage::TriageCode
 pub mod datafusion_nexus::cugraph_sql
 pub enum datafusion_nexus::cugraph_sql::CugraphAlgorithm
 pub datafusion_nexus::cugraph_sql::CugraphAlgorithm::BetweennessCentrality
@@ -612,7 +612,7 @@ pub use datafusion_nexus::cuvs_sql::CuvsRelationRole
 pub use datafusion_nexus::cuvs_sql::canonicalize_cuvs_options
 pub struct datafusion_nexus::cuvs_sql::CuvsAlgoExec
 impl datafusion_nexus::cuvs_sql::CuvsAlgoExec
-pub fn datafusion_nexus::cuvs_sql::CuvsAlgoExec::operation(&self) -> nexus_query_engine::plan::vector_algorithm::CuvsOperation
+pub fn datafusion_nexus::cuvs_sql::CuvsAlgoExec::operation(&self) -> nexus_query_planning::plan::vector_algorithm::CuvsOperation
 impl datafusion_physical_plan::display::DisplayAs for datafusion_nexus::cuvs_sql::CuvsAlgoExec
 pub fn datafusion_nexus::cuvs_sql::CuvsAlgoExec::fmt_as(&self, datafusion_physical_plan::display::DisplayFormatType, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl datafusion_physical_plan::execution_plan::ExecutionPlan for datafusion_nexus::cuvs_sql::CuvsAlgoExec
@@ -629,9 +629,9 @@ impl datafusion_session::planner::ExtensionPlanner for datafusion_nexus::cuvs_sq
 pub fn datafusion_nexus::cuvs_sql::CuvsExtensionPlanner::plan_extension<'life0, 'life1, 'life2, 'life3, 'life4, 'life5, 'life6, 'life7, 'async_trait>(&'life0 self, &'life1 dyn datafusion_session::planner::PhysicalPlanner, &'life2 dyn datafusion_expr::logical_plan::extension::UserDefinedLogicalNode, &'life3 [&'life4 datafusion_expr::logical_plan::plan::LogicalPlan], &'life5 [alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>], &'life6 dyn datafusion_session::session::Session, &'life7 datafusion_expr::physical_planning_context::PhysicalPlanningContext) -> core::pin::Pin<alloc::boxed::Box<(dyn core::future::future::Future<Output = datafusion_common::error::Result<core::option::Option<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>>> + core::marker::Send + 'async_trait)>> where Self: 'async_trait, 'life0: 'async_trait, 'life1: 'async_trait, 'life2: 'async_trait, 'life3: 'async_trait, 'life4: 'async_trait, 'life5: 'async_trait, 'life6: 'async_trait, 'life7: 'async_trait
 pub struct datafusion_nexus::cuvs_sql::CuvsLogicalNode
 impl datafusion_nexus::cuvs_sql::CuvsLogicalNode
-pub fn datafusion_nexus::cuvs_sql::CuvsLogicalNode::operation(&self) -> nexus_query_engine::plan::vector_algorithm::CuvsOperation
+pub fn datafusion_nexus::cuvs_sql::CuvsLogicalNode::operation(&self) -> nexus_query_planning::plan::vector_algorithm::CuvsOperation
 pub fn datafusion_nexus::cuvs_sql::CuvsLogicalNode::output_schema(&self) -> arrow_schema::schema::SchemaRef
-pub fn datafusion_nexus::cuvs_sql::CuvsLogicalNode::try_new(nexus_query_engine::plan::vector_algorithm::CuvsOperation, alloc::vec::Vec<datafusion_expr::logical_plan::plan::LogicalPlan>, &str) -> datafusion_common::error::Result<Self>
+pub fn datafusion_nexus::cuvs_sql::CuvsLogicalNode::try_new(nexus_query_planning::plan::vector_algorithm::CuvsOperation, alloc::vec::Vec<datafusion_expr::logical_plan::plan::LogicalPlan>, &str) -> datafusion_common::error::Result<Self>
 pub fn datafusion_nexus::cuvs_sql::CuvsLogicalNode::validated_options(&self) -> &datafusion_nexus::cuvs_sql::CuvsValidatedOptions
 impl core::cmp::Eq for datafusion_nexus::cuvs_sql::CuvsLogicalNode
 impl core::cmp::PartialEq for datafusion_nexus::cuvs_sql::CuvsLogicalNode
@@ -670,9 +670,9 @@ pub fn datafusion_nexus::cuvs_sql::CuvsValidatedOptions::pca_components(&self) -
 pub struct datafusion_nexus::cuvs_sql::CuvsVectorRelationBinding
 impl datafusion_nexus::cuvs_sql::CuvsVectorRelationBinding
 pub fn datafusion_nexus::cuvs_sql::CuvsVectorRelationBinding::id(&self) -> &str
-pub fn datafusion_nexus::cuvs_sql::CuvsVectorRelationBinding::relation_role(&self) -> nexus_query_engine::plan::vector_algorithm::CuvsRelationRole
-pub fn datafusion_nexus::cuvs_sql::CuvsVectorRelationBinding::vector(&self) -> &nexus_query_engine::plan::vector_algorithm::CuvsDenseVectorBinding
-pub fn datafusion_nexus::cuvs_sql::cuvs_options_json_schema(nexus_query_engine::plan::vector_algorithm::CuvsOperation) -> serde_json::value::Value
+pub fn datafusion_nexus::cuvs_sql::CuvsVectorRelationBinding::relation_role(&self) -> nexus_query_planning::plan::vector_algorithm::CuvsRelationRole
+pub fn datafusion_nexus::cuvs_sql::CuvsVectorRelationBinding::vector(&self) -> &nexus_query_planning::plan::vector_algorithm::CuvsDenseVectorBinding
+pub fn datafusion_nexus::cuvs_sql::cuvs_options_json_schema(nexus_query_planning::plan::vector_algorithm::CuvsOperation) -> serde_json::value::Value
 pub fn datafusion_nexus::cuvs_sql::cuvs_relation_planner() -> alloc::sync::Arc<dyn datafusion_expr::planner::RelationPlanner>
 pub mod datafusion_nexus::error
 #[non_exhaustive] pub enum datafusion_nexus::error::ErrorCode
@@ -967,7 +967,7 @@ pub datafusion_nexus::native_exec::GraphClaimCalibrationExecution::NonPhysical(d
 pub datafusion_nexus::native_exec::GraphClaimCalibrationExecution::Physical
 pub enum datafusion_nexus::native_exec::GraphClaimCalibrationNonPhysicalReason
 pub datafusion_nexus::native_exec::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower
-pub datafusion_nexus::native_exec::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower::leader_attempt_id: core::option::Option<nexus_query_engine::observability::attempt_report::AttemptId>
+pub datafusion_nexus::native_exec::GraphClaimCalibrationNonPhysicalReason::BfsSingleflightFollower::leader_attempt_id: core::option::Option<nexus_query_planning::schedule_projection::AttemptId>
 pub datafusion_nexus::native_exec::GraphClaimCalibrationNonPhysicalReason::GraphMemoryAdmissionDenied
 pub struct datafusion_nexus::native_exec::GraphBfsSingleflightEventSnapshot
 pub datafusion_nexus::native_exec::GraphBfsSingleflightEventSnapshot::action: &'static str
@@ -1029,40 +1029,40 @@ pub const datafusion_nexus::native_exec::NexusNativeExecutionConfig::DEFAULT_BOU
 pub const datafusion_nexus::native_exec::NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK: usize
 pub const datafusion_nexus::native_exec::NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_SOURCE_CHUNK_BYTES: u64
 pub const datafusion_nexus::native_exec::NexusNativeExecutionConfig::DEFAULT_BOUNDED_MIN_RETRY_CHUNK_ROW_GROUPS: usize
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::aggregate_strategy_execution_options(&self) -> nexus_query_engine::capability::aggregate::AggregateStrategyExecutionOptions
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::boundary_policy(&self) -> nexus_query_engine::execution_contracts::ExecutionBoundaryPolicy
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::aggregate_strategy_execution_options(&self) -> nexus_query_planning::capability::aggregate::AggregateStrategyExecutionOptions
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::boundary_policy(&self) -> nexus_query_planning::execution_contracts::ExecutionBoundaryPolicy
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::bounded(u64, u64, usize, usize, usize) -> Self
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::bounded_default() -> Self
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::dynamic_filter_execution_options(&self) -> nexus_query_engine::dynamic_filter::DynamicFilterExecutionOptions
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::graph_memory_calibration_override(&self) -> nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::dynamic_filter_execution_options(&self) -> nexus_query_planning::dynamic_filter::DynamicFilterExecutionOptions
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::graph_memory_calibration_override(&self) -> nexus_query_planning::graph_memory::GraphMemoryCalibrationOverride
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::host_output_memory_pool_accounting(&self) -> bool
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::keyed_hash_join_strategy_options(&self) -> nexus_query_engine::capability::join::KeyedHashJoinStrategyOptions
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::lakehouse_cache_fill_config(&self) -> &nexus_query_engine::runtime::cache_fill::LakehouseCacheFillConfig
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::memory_control_policy(&self) -> nexus_query_engine::execution_contracts::MemoryControlPolicy
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::query_id(&self) -> core::option::Option<&nexus_query_engine::correlation::QueryId>
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::runtime_observation_config(&self) -> nexus_query_engine::observability::recorder::RuntimeObservationConfig
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::source_chunk_planning_mode(&self) -> nexus_query_engine::execution_contracts::SourceChunkPlanningMode
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::source_chunk_planning_options(&self) -> nexus_query_engine::chunk::policy::SourceChunkPlanningOptions
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::source_scheduler_policy(&self) -> nexus_query_engine::runtime::context::SourceSchedulerPolicy
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::source_storage_profiles(&self) -> &[nexus_query_engine::runtime::object_store::SourceStorageProfile]
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::statistical_aggregate_execution_mode(&self) -> nexus_query_engine::mode::StatisticalAggregateExecutionMode
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::trace_id(&self) -> core::option::Option<&nexus_query_engine::correlation::TraceId>
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_aggregate_strategy_execution_options(self, nexus_query_engine::capability::aggregate::AggregateStrategyExecutionOptions) -> Self
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_boundary_policy(self, nexus_query_engine::execution_contracts::ExecutionBoundaryPolicy) -> Self
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_dynamic_filter_execution_options(self, nexus_query_engine::dynamic_filter::DynamicFilterExecutionOptions) -> Self
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_graph_memory_calibration_override(self, nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride) -> Self
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::keyed_hash_join_strategy_options(&self) -> nexus_query_planning::capability::join::KeyedHashJoinStrategyOptions
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::lakehouse_cache_fill_config(&self) -> &nexus_query_runtime::runtime::cache_fill::LakehouseCacheFillConfig
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::memory_control_policy(&self) -> nexus_query_planning::execution_contracts::MemoryControlPolicy
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::query_id(&self) -> core::option::Option<&nexus_query_planning::correlation::QueryId>
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::runtime_observation_config(&self) -> nexus_query_runtime::observability::recorder::RuntimeObservationConfig
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::source_chunk_planning_mode(&self) -> nexus_query_planning::execution_contracts::SourceChunkPlanningMode
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::source_chunk_planning_options(&self) -> nexus_query_planning::chunk::policy::SourceChunkPlanningOptions
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::source_scheduler_policy(&self) -> nexus_query_planning::execution_contracts::SourceSchedulerPolicy
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::source_storage_profiles(&self) -> &[nexus_query_runtime::runtime::object_store::SourceStorageProfile]
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::statistical_aggregate_execution_mode(&self) -> nexus_query_planning::mode::StatisticalAggregateExecutionMode
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::trace_id(&self) -> core::option::Option<&nexus_query_planning::correlation::TraceId>
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_aggregate_strategy_execution_options(self, nexus_query_planning::capability::aggregate::AggregateStrategyExecutionOptions) -> Self
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_boundary_policy(self, nexus_query_planning::execution_contracts::ExecutionBoundaryPolicy) -> Self
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_dynamic_filter_execution_options(self, nexus_query_planning::dynamic_filter::DynamicFilterExecutionOptions) -> Self
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_graph_memory_calibration_override(self, nexus_query_planning::graph_memory::GraphMemoryCalibrationOverride) -> Self
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_host_output_memory_pool_accounting(self, bool) -> Self
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_keyed_hash_join_strategy_options(self, nexus_query_engine::capability::join::KeyedHashJoinStrategyOptions) -> Self
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_lakehouse_cache_fill_config(self, nexus_query_engine::runtime::cache_fill::LakehouseCacheFillConfig) -> Self
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_memory_control_policy(self, nexus_query_engine::execution_contracts::MemoryControlPolicy) -> Self
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_query_id(self, impl core::convert::Into<nexus_query_engine::correlation::QueryId>) -> Self
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_source_chunk_planning_mode(self, nexus_query_engine::execution_contracts::SourceChunkPlanningMode) -> Self
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_source_chunk_planning_options(self, nexus_query_engine::chunk::policy::SourceChunkPlanningOptions) -> Self
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_source_scheduler_policy(self, nexus_query_engine::runtime::context::SourceSchedulerPolicy) -> Self
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_source_storage_profile(self, nexus_query_engine::runtime::object_store::SourceStorageProfile) -> Self
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_source_storage_profiles(self, impl core::iter::traits::collect::IntoIterator<Item = nexus_query_engine::runtime::object_store::SourceStorageProfile>) -> Self
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_statistical_aggregate_execution_mode(self, nexus_query_engine::mode::StatisticalAggregateExecutionMode) -> Self
-pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_trace_id(self, impl core::convert::Into<nexus_query_engine::correlation::TraceId>) -> Self
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_keyed_hash_join_strategy_options(self, nexus_query_planning::capability::join::KeyedHashJoinStrategyOptions) -> Self
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_lakehouse_cache_fill_config(self, nexus_query_runtime::runtime::cache_fill::LakehouseCacheFillConfig) -> Self
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_memory_control_policy(self, nexus_query_planning::execution_contracts::MemoryControlPolicy) -> Self
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_query_id(self, impl core::convert::Into<nexus_query_planning::correlation::QueryId>) -> Self
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_source_chunk_planning_mode(self, nexus_query_planning::execution_contracts::SourceChunkPlanningMode) -> Self
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_source_chunk_planning_options(self, nexus_query_planning::chunk::policy::SourceChunkPlanningOptions) -> Self
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_source_scheduler_policy(self, nexus_query_planning::execution_contracts::SourceSchedulerPolicy) -> Self
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_source_storage_profile(self, nexus_query_runtime::runtime::object_store::SourceStorageProfile) -> Self
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_source_storage_profiles(self, impl core::iter::traits::collect::IntoIterator<Item = nexus_query_runtime::runtime::object_store::SourceStorageProfile>) -> Self
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_statistical_aggregate_execution_mode(self, nexus_query_planning::mode::StatisticalAggregateExecutionMode) -> Self
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::with_trace_id(self, impl core::convert::Into<nexus_query_planning::correlation::TraceId>) -> Self
 impl datafusion_nexus::native_exec::NexusNativeExecutionConfig
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::has_query_admission_authority(&self) -> bool
 pub struct datafusion_nexus::native_exec::NexusNativeGpuProducerExec
@@ -1080,10 +1080,10 @@ pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::prop
 pub fn datafusion_nexus::native_exec::producer::NexusNativeGpuProducerExec::with_new_children(alloc::sync::Arc<Self>, alloc::vec::Vec<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>) -> datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>
 pub struct datafusion_nexus::native_exec::SealedAttemptGraphClaimCalibrationSnapshot
 impl datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot
-pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::attempt_id(&self) -> nexus_query_engine::observability::attempt_report::AttemptId
+pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::attempt_id(&self) -> nexus_query_planning::schedule_projection::AttemptId
 pub fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::execution(&self) -> core::option::Option<&datafusion_nexus::attempt::GraphClaimCalibrationExecution>
 pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::execution_complete(&self) -> bool
-pub fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::rows(&self) -> &[nexus_query_engine::graph_memory::evidence::GraphClaimCalibrationRow]
+pub fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::rows(&self) -> &[nexus_query_planning::graph_memory::evidence::GraphClaimCalibrationRow]
 pub const fn datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot::truncated(&self) -> bool
 pub const datafusion_nexus::native_exec::NATIVE_NEXUS_DATAFUSION_METRIC_NAMES: &[&str]
 pub const datafusion_nexus::native_exec::SERVER_CAPTURE_LOSS_METRIC_NAME: &str
@@ -1390,18 +1390,18 @@ pub fn datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::from_m
 pub fn datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::merge_from(&mut self, Self)
 pub struct datafusion_nexus::native_report::NativeDataFusionExecutionReport
 pub datafusion_nexus::native_report::NativeDataFusionExecutionReport::rows: alloc::vec::Vec<datafusion_nexus::native_report::NativeDataFusionExecutionRow>
-pub datafusion_nexus::native_report::NativeDataFusionExecutionReport::statistical_aggregate_execution_mode: core::option::Option<nexus_query_engine::mode::StatisticalAggregateExecutionMode>
+pub datafusion_nexus::native_report::NativeDataFusionExecutionReport::statistical_aggregate_execution_mode: core::option::Option<nexus_query_planning::mode::StatisticalAggregateExecutionMode>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionReport::workload_dataset: core::option::Option<datafusion_nexus::native_report::WorkloadDatasetMetadata>
 impl datafusion_nexus::native_report::NativeDataFusionExecutionReport
 pub fn datafusion_nexus::native_report::NativeDataFusionExecutionReport::collect(impl core::iter::traits::collect::IntoIterator<Item = datafusion_nexus::native_report::NativeDataFusionExecutionWorkloadItem>) -> Self
 pub fn datafusion_nexus::native_report::NativeDataFusionExecutionReport::rejected_before_execution_count(&self) -> usize
 pub fn datafusion_nexus::native_report::NativeDataFusionExecutionReport::runtime_started_count(&self) -> usize
 pub fn datafusion_nexus::native_report::NativeDataFusionExecutionReport::to_tsv(&self) -> alloc::string::String
-pub fn datafusion_nexus::native_report::NativeDataFusionExecutionReport::with_statistical_aggregate_execution_mode(self, nexus_query_engine::mode::StatisticalAggregateExecutionMode) -> Self
+pub fn datafusion_nexus::native_report::NativeDataFusionExecutionReport::with_statistical_aggregate_execution_mode(self, nexus_query_planning::mode::StatisticalAggregateExecutionMode) -> Self
 pub fn datafusion_nexus::native_report::NativeDataFusionExecutionReport::with_workload_dataset_metadata(self, datafusion_nexus::native_report::WorkloadDatasetMetadata) -> Self
 pub struct datafusion_nexus::native_report::NativeDataFusionExecutionRow
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::capability_compiled_graphs: alloc::vec::Vec<datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics>
-pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::capability_contract_rows: alloc::vec::Vec<nexus_query_engine::contract_report::CapabilityContractGateRow>
+pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::capability_contract_rows: alloc::vec::Vec<nexus_query_planning::contract_report::CapabilityContractGateRow>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::final_disposition: datafusion_nexus::planner::FinalPlanDisposition
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::host_datafusion_boundary_count: usize
 pub datafusion_nexus::native_report::NativeDataFusionExecutionRow::metrics: datafusion_nexus::native_report::NativeDataFusionExecutionMetrics
@@ -1451,14 +1451,14 @@ pub fn datafusion_nexus::native_report::NativeDataFusionPlanningReport::to_tsv(&
 pub fn datafusion_nexus::native_report::NativeDataFusionPlanningReport::with_workload_dataset_metadata(self, datafusion_nexus::native_report::WorkloadDatasetMetadata) -> Self
 pub struct datafusion_nexus::native_report::NativeDataFusionPlanningRow
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::capability_compiled_graphs: alloc::vec::Vec<datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics>
-pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::capability_contract_rows: alloc::vec::Vec<nexus_query_engine::contract_report::CapabilityContractGateRow>
+pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::capability_contract_rows: alloc::vec::Vec<nexus_query_planning::contract_report::CapabilityContractGateRow>
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::edge_normalize_inserted: bool
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::final_disposition: datafusion_nexus::planner::FinalPlanDisposition
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::host_datafusion_boundary_count: usize
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::join_diagnostics: alloc::vec::Vec<datafusion_nexus::native_report::NativeJoinDiagnosticSummary>
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::native_candidate_shape: core::option::Option<alloc::string::String>
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::native_candidate_shape_family: core::option::Option<alloc::string::String>
-pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::native_optimizer: nexus_query_engine::optimizer::NativeOptimizerDiagnostics
+pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::native_optimizer: nexus_query_planning::optimizer::NativeOptimizerDiagnostics
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::native_plan_fragment_count: usize
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::outcome: core::option::Option<datafusion_nexus::native_report::NativeDataFusionPlanningOutcome>
 pub datafusion_nexus::native_report::NativeDataFusionPlanningRow::physical_root: alloc::string::String
@@ -1812,8 +1812,8 @@ pub fn datafusion_nexus::native_report::format_native_lakehouse_cache_fill_event
 pub fn datafusion_nexus::native_report::format_native_source_read_runtime_metric_rows(&[datafusion_nexus::native_report::NativeSourceReadRuntimeMetricRow]) -> alloc::string::String
 pub fn datafusion_nexus::native_report::format_native_task_operator_metric_rows(&[datafusion_nexus::native_report::NativeTaskOperatorMetricRow]) -> alloc::string::String
 pub fn datafusion_nexus::native_report::format_native_task_runtime_metric_rows(&[datafusion_nexus::native_report::NativeTaskRuntimeMetricRow]) -> alloc::string::String
-pub fn datafusion_nexus::native_report::native_report_metric_descriptor(&str) -> core::option::Option<nexus_query_engine::metrics::descriptor::MetricDescriptor>
-pub fn datafusion_nexus::native_report::native_report_metric_descriptors() -> alloc::vec::Vec<nexus_query_engine::metrics::descriptor::MetricDescriptor>
+pub fn datafusion_nexus::native_report::native_report_metric_descriptor(&str) -> core::option::Option<nexus_query_runtime::metrics::descriptor::MetricDescriptor>
+pub fn datafusion_nexus::native_report::native_report_metric_descriptors() -> alloc::vec::Vec<nexus_query_runtime::metrics::descriptor::MetricDescriptor>
 pub fn datafusion_nexus::native_report::native_report_metric_names() -> alloc::vec::Vec<&'static str>
 pub mod datafusion_nexus::observability
 pub use datafusion_nexus::observability::AdmissionRequestId
@@ -1900,7 +1900,7 @@ pub fn datafusion_nexus::planner::FinalPlanRequirement::fmt(&self, &mut core::fm
 pub struct datafusion_nexus::planner::NativeCapabilityAcceptedCandidateDiagnostics
 pub datafusion_nexus::planner::NativeCapabilityAcceptedCandidateDiagnostics::candidate: datafusion_nexus::report::GpuCandidate
 pub datafusion_nexus::planner::NativeCapabilityAcceptedCandidateDiagnostics::compiled_graph: datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics
-pub datafusion_nexus::planner::NativeCapabilityAcceptedCandidateDiagnostics::report: nexus_query_engine::contract_report::CapabilityContractReport
+pub datafusion_nexus::planner::NativeCapabilityAcceptedCandidateDiagnostics::report: nexus_query_planning::contract_report::CapabilityContractReport
 pub struct datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics
 pub datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics::barrier_count: usize
 pub datafusion_nexus::planner::NativeCapabilityCompiledGraphDiagnostics::edge_count: usize
@@ -1919,21 +1919,21 @@ impl datafusion_nexus::planner::NativeCapabilityContractDiagnostics
 pub fn datafusion_nexus::planner::NativeCapabilityContractDiagnostics::is_empty(&self) -> bool
 pub fn datafusion_nexus::planner::NativeCapabilityContractDiagnostics::merge(&mut self, Self)
 pub struct datafusion_nexus::planner::NativeCapabilityDeferredCandidateDiagnostics
-pub datafusion_nexus::planner::NativeCapabilityDeferredCandidateDiagnostics::binding: nexus_query_engine::admission::requirement::capability::ComposedProducerBindingDiagnostics
+pub datafusion_nexus::planner::NativeCapabilityDeferredCandidateDiagnostics::binding: nexus_query_planning::admission::requirement::capability::ComposedProducerBindingDiagnostics
 pub datafusion_nexus::planner::NativeCapabilityDeferredCandidateDiagnostics::candidate: datafusion_nexus::report::GpuCandidate
 pub datafusion_nexus::planner::NativeCapabilityDeferredCandidateDiagnostics::planning_stage: alloc::string::String
-pub datafusion_nexus::planner::NativeCapabilityDeferredCandidateDiagnostics::report: nexus_query_engine::contract_report::CapabilityContractReport
+pub datafusion_nexus::planner::NativeCapabilityDeferredCandidateDiagnostics::report: nexus_query_planning::contract_report::CapabilityContractReport
 pub struct datafusion_nexus::planner::NativeCapabilityRejectedCandidateDiagnostics
-pub datafusion_nexus::planner::NativeCapabilityRejectedCandidateDiagnostics::blocking_contract: nexus_query_engine::contract_report::CapabilityContractGateRow
+pub datafusion_nexus::planner::NativeCapabilityRejectedCandidateDiagnostics::blocking_contract: nexus_query_planning::contract_report::CapabilityContractGateRow
 pub datafusion_nexus::planner::NativeCapabilityRejectedCandidateDiagnostics::candidate: datafusion_nexus::report::GpuCandidate
 pub struct datafusion_nexus::planner::NativePlanningDiagnostics
 pub datafusion_nexus::planner::NativePlanningDiagnostics::capability_contract: datafusion_nexus::planner::NativeCapabilityContractDiagnostics
 pub datafusion_nexus::planner::NativePlanningDiagnostics::input_join_diagnostics: alloc::vec::Vec<datafusion_nexus::native_report::NativeJoinDiagnosticSummary>
 pub datafusion_nexus::planner::NativePlanningDiagnostics::input_plan_root: alloc::string::String
 pub datafusion_nexus::planner::NativePlanningDiagnostics::input_plan_shape: alloc::string::String
-pub datafusion_nexus::planner::NativePlanningDiagnostics::native_optimizer: nexus_query_engine::optimizer::NativeOptimizerDiagnostics
+pub datafusion_nexus::planner::NativePlanningDiagnostics::native_optimizer: nexus_query_planning::optimizer::NativeOptimizerDiagnostics
 pub datafusion_nexus::planner::NativePlanningDiagnostics::report: datafusion_nexus::report::PlanningReport
-pub datafusion_nexus::planner::NativePlanningDiagnostics::source_diagnostics: alloc::vec::Vec<nexus_query_engine::source::diagnostics::SourceDiagnostics>
+pub datafusion_nexus::planner::NativePlanningDiagnostics::source_diagnostics: alloc::vec::Vec<nexus_query_planning::source::diagnostics::SourceDiagnostics>
 pub struct datafusion_nexus::planner::NexusFinalPlanRequirementRule
 impl datafusion_nexus::planner::NexusFinalPlanRequirementRule
 pub fn datafusion_nexus::planner::NexusFinalPlanRequirementRule::new(datafusion_nexus::planner::NexusNativeOptimizerConfig) -> Self
@@ -1945,16 +1945,16 @@ pub struct datafusion_nexus::planner::NexusNativeOptimizerConfig
 impl datafusion_nexus::planner::NexusNativeOptimizerConfig
 pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::final_plan_requirements(&self) -> &[datafusion_nexus::planner::FinalPlanRequirement]
 pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::native_execution_config(&self) -> &datafusion_nexus::native_exec::NexusNativeExecutionConfig
-pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::native_optimizer_options(&self) -> &nexus_query_engine::optimizer::NativeOptimizerOptions
-pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::native_plan_cost_options(&self) -> &nexus_query_engine::plan::preference::NativePlanCostOptions
-pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::statistical_aggregate_execution_mode(&self) -> nexus_query_engine::mode::StatisticalAggregateExecutionMode
+pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::native_optimizer_options(&self) -> &nexus_query_planning::optimizer::NativeOptimizerOptions
+pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::native_plan_cost_options(&self) -> &nexus_query_planning::plan::preference::NativePlanCostOptions
+pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::statistical_aggregate_execution_mode(&self) -> nexus_query_planning::mode::StatisticalAggregateExecutionMode
 pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::with_datafusion_config_options(&self, &datafusion_common::config::ConfigOptions) -> datafusion_common::error::Result<Self>
 pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::with_final_plan_requirement(self, datafusion_nexus::planner::FinalPlanRequirement) -> Self
 pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::with_native_execution_config(self, datafusion_nexus::native_exec::NexusNativeExecutionConfig) -> Self
-pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::with_native_optimizer_options(self, nexus_query_engine::optimizer::NativeOptimizerOptions) -> Self
-pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::with_native_plan_cost_options(self, nexus_query_engine::plan::preference::NativePlanCostOptions) -> Self
+pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::with_native_optimizer_options(self, nexus_query_planning::optimizer::NativeOptimizerOptions) -> Self
+pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::with_native_plan_cost_options(self, nexus_query_planning::plan::preference::NativePlanCostOptions) -> Self
 pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::with_no_datafusion_cpu_requirement(self) -> Self
-pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::with_statistical_aggregate_execution_mode(self, nexus_query_engine::mode::StatisticalAggregateExecutionMode) -> Self
+pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::with_statistical_aggregate_execution_mode(self, nexus_query_planning::mode::StatisticalAggregateExecutionMode) -> Self
 impl core::default::Default for datafusion_nexus::planner::NexusNativeOptimizerConfig
 pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::default() -> Self
 pub struct datafusion_nexus::planner::NexusNativePhysicalOptimizerRule
@@ -1962,7 +1962,7 @@ impl datafusion_nexus::planner::NexusNativePhysicalOptimizerRule
 pub fn datafusion_nexus::planner::NexusNativePhysicalOptimizerRule::config(&self) -> &datafusion_nexus::planner::NexusNativeOptimizerConfig
 pub fn datafusion_nexus::planner::NexusNativePhysicalOptimizerRule::last_planning_diagnostics(&self) -> core::option::Option<datafusion_nexus::planner::NativePlanningDiagnostics>
 pub fn datafusion_nexus::planner::NexusNativePhysicalOptimizerRule::last_report(&self) -> core::option::Option<datafusion_nexus::report::PlanningReport>
-pub fn datafusion_nexus::planner::NexusNativePhysicalOptimizerRule::last_source_diagnostics(&self) -> alloc::vec::Vec<nexus_query_engine::source::diagnostics::SourceDiagnostics>
+pub fn datafusion_nexus::planner::NexusNativePhysicalOptimizerRule::last_source_diagnostics(&self) -> alloc::vec::Vec<nexus_query_planning::source::diagnostics::SourceDiagnostics>
 pub fn datafusion_nexus::planner::NexusNativePhysicalOptimizerRule::new(datafusion_nexus::planner::NexusNativeOptimizerConfig) -> Self
 impl datafusion_session::physical_optimizer::PhysicalOptimizerRule for datafusion_nexus::planner::NexusNativePhysicalOptimizerRule
 pub fn datafusion_nexus::planner::NexusNativePhysicalOptimizerRule::name(&self) -> &str
@@ -1984,10 +1984,10 @@ pub enum datafusion_nexus::report::CandidateOutcome
 pub datafusion_nexus::report::CandidateOutcome::Deferred
 pub datafusion_nexus::report::CandidateOutcome::Deferred::candidate: datafusion_nexus::report::GpuCandidate
 pub datafusion_nexus::report::CandidateOutcome::Deferred::planning_stage: alloc::string::String
-pub datafusion_nexus::report::CandidateOutcome::Deferred::producer_binding: nexus_query_engine::admission::requirement::capability::ComposedProducerBindingDiagnostics
+pub datafusion_nexus::report::CandidateOutcome::Deferred::producer_binding: nexus_query_planning::admission::requirement::capability::ComposedProducerBindingDiagnostics
 pub datafusion_nexus::report::CandidateOutcome::NotSelectedByCost
 pub datafusion_nexus::report::CandidateOutcome::NotSelectedByCost::candidate: datafusion_nexus::report::GpuCandidate
-pub datafusion_nexus::report::CandidateOutcome::NotSelectedByCost::cost_reason: nexus_query_engine::plan::preference::NativePlanCostReason
+pub datafusion_nexus::report::CandidateOutcome::NotSelectedByCost::cost_reason: nexus_query_planning::plan::preference::NativePlanCostReason
 pub datafusion_nexus::report::CandidateOutcome::NotSelectedByCost::evidence: datafusion_nexus::report::NativeCandidateCostEvidence
 pub datafusion_nexus::report::CandidateOutcome::NotSupported
 pub datafusion_nexus::report::CandidateOutcome::NotSupported::candidate: datafusion_nexus::report::GpuCandidate
@@ -2004,12 +2004,12 @@ pub datafusion_nexus::report::DataLayoutFixableNotSupported::property: &'static 
 pub struct datafusion_nexus::report::GpuCandidate
 pub datafusion_nexus::report::GpuCandidate::operator_count: usize
 pub datafusion_nexus::report::GpuCandidate::output_schema_fields: usize
-pub datafusion_nexus::report::GpuCandidate::plan_node_id: core::option::Option<nexus_query_engine::correlation::PlanNodeId>
+pub datafusion_nexus::report::GpuCandidate::plan_node_id: core::option::Option<nexus_query_planning::correlation::PlanNodeId>
 pub datafusion_nexus::report::GpuCandidate::shape: alloc::string::String
 impl datafusion_nexus::report::GpuCandidate
 pub fn datafusion_nexus::report::GpuCandidate::new(impl core::convert::Into<alloc::string::String>, usize) -> Self
 pub fn datafusion_nexus::report::GpuCandidate::with_operator_count(impl core::convert::Into<alloc::string::String>, usize, usize) -> Self
-pub fn datafusion_nexus::report::GpuCandidate::with_plan_node_id(self, impl core::convert::Into<nexus_query_engine::correlation::PlanNodeId>) -> Self
+pub fn datafusion_nexus::report::GpuCandidate::with_plan_node_id(self, impl core::convert::Into<nexus_query_planning::correlation::PlanNodeId>) -> Self
 impl datafusion_nexus::report::GpuCandidate
 pub fn datafusion_nexus::report::GpuCandidate::to_json(&self) -> serde_json::value::Value
 pub struct datafusion_nexus::report::NativeCandidateCostEvidence
@@ -2038,20 +2038,20 @@ pub fn datafusion_nexus::report::PlanningReport::not_selected_by_cost_count(&sel
 pub fn datafusion_nexus::report::PlanningReport::not_selected_count(&self) -> usize
 pub fn datafusion_nexus::report::PlanningReport::not_supported_count(&self) -> usize
 pub fn datafusion_nexus::report::PlanningReport::outcomes(&self) -> &[datafusion_nexus::report::CandidateOutcome]
-pub fn datafusion_nexus::report::PlanningReport::push_not_selected_by_cost(&mut self, datafusion_nexus::report::GpuCandidate, nexus_query_engine::plan::preference::NativePlanCostReason, datafusion_nexus::report::NativeCandidateCostEvidence)
+pub fn datafusion_nexus::report::PlanningReport::push_not_selected_by_cost(&mut self, datafusion_nexus::report::GpuCandidate, nexus_query_planning::plan::preference::NativePlanCostReason, datafusion_nexus::report::NativeCandidateCostEvidence)
 pub fn datafusion_nexus::report::PlanningReport::push_not_supported(&mut self, datafusion_nexus::report::GpuCandidate, datafusion_nexus::capability::CapabilityReason)
 pub fn datafusion_nexus::report::PlanningReport::push_selected(&mut self, datafusion_nexus::report::GpuCandidate)
-pub fn datafusion_nexus::report::PlanningReport::query_id(&self) -> core::option::Option<&nexus_query_engine::correlation::QueryId>
+pub fn datafusion_nexus::report::PlanningReport::query_id(&self) -> core::option::Option<&nexus_query_planning::correlation::QueryId>
 pub fn datafusion_nexus::report::PlanningReport::selected_count(&self) -> usize
-pub fn datafusion_nexus::report::PlanningReport::set_query_id(&mut self, impl core::convert::Into<nexus_query_engine::correlation::QueryId>)
-pub fn datafusion_nexus::report::PlanningReport::set_trace_id(&mut self, impl core::convert::Into<nexus_query_engine::correlation::TraceId>)
+pub fn datafusion_nexus::report::PlanningReport::set_query_id(&mut self, impl core::convert::Into<nexus_query_planning::correlation::QueryId>)
+pub fn datafusion_nexus::report::PlanningReport::set_trace_id(&mut self, impl core::convert::Into<nexus_query_planning::correlation::TraceId>)
 pub fn datafusion_nexus::report::PlanningReport::single_selected_candidate(&self) -> core::option::Option<&datafusion_nexus::report::GpuCandidate>
 pub fn datafusion_nexus::report::PlanningReport::to_json(&self) -> serde_json::value::Value
-pub fn datafusion_nexus::report::PlanningReport::trace_id(&self) -> core::option::Option<&nexus_query_engine::correlation::TraceId>
-pub fn datafusion_nexus::report::PlanningReport::triage_summary(&self) -> nexus_query_engine::triage::TriageSummary
+pub fn datafusion_nexus::report::PlanningReport::trace_id(&self) -> core::option::Option<&nexus_query_planning::correlation::TraceId>
+pub fn datafusion_nexus::report::PlanningReport::triage_summary(&self) -> nexus_query_planning::triage::TriageSummary
 pub fn datafusion_nexus::report::PlanningReport::with_correlation_from(self, &datafusion_nexus::report::PlanningReport) -> Self
-pub fn datafusion_nexus::report::PlanningReport::with_query_id(self, impl core::convert::Into<nexus_query_engine::correlation::QueryId>) -> Self
-pub fn datafusion_nexus::report::PlanningReport::with_trace_id(self, impl core::convert::Into<nexus_query_engine::correlation::TraceId>) -> Self
+pub fn datafusion_nexus::report::PlanningReport::with_query_id(self, impl core::convert::Into<nexus_query_planning::correlation::QueryId>) -> Self
+pub fn datafusion_nexus::report::PlanningReport::with_trace_id(self, impl core::convert::Into<nexus_query_planning::correlation::TraceId>) -> Self
 pub mod datafusion_nexus::session
 pub const datafusion_nexus::session::NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME: &str
 pub const datafusion_nexus::session::NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME: &str
@@ -2078,8 +2078,8 @@ pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_ma
 pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_max_row_groups_per_chunk(&self) -> usize
 pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_max_source_chunk_bytes(&self) -> u64
 pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_max_source_reads_in_flight(&self) -> usize
-pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_source_chunk_planning_mode(&self) -> nexus_query_engine::execution_contracts::SourceChunkPlanningMode
-pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_statistical_aggregate_execution_mode(&self) -> nexus_query_engine::mode::StatisticalAggregateExecutionMode
+pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_source_chunk_planning_mode(&self) -> nexus_query_planning::execution_contracts::SourceChunkPlanningMode
+pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_statistical_aggregate_execution_mode(&self) -> nexus_query_planning::mode::StatisticalAggregateExecutionMode
 pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::request_graph_raw_input_edges(&self) -> core::option::Option<u64>
 pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::set_request_graph_raw_input_edges(&mut self, core::option::Option<u64>)
 pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::with_request_graph_raw_input_edges(self, core::option::Option<u64>) -> Self
@@ -2175,7 +2175,7 @@ pub async fn datafusion_nexus::table_format::iceberg::catalog::build_scoped_cata
 pub struct datafusion_nexus::table_format::iceberg::IcebergTableFormatPlanner
 impl datafusion_nexus::table_format::IcebergTableFormatPlanner
 pub async fn datafusion_nexus::table_format::IcebergTableFormatPlanner::inspect_table_format_scan(&self, datafusion_nexus::table_format::TableFormatScanRequest, datafusion_nexus::table_format::TableFormatScanPlan) -> datafusion_nexus::error::Result<datafusion_nexus::table_format::TableFormatScanPlan>
-pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::native_source_storage_profile(&self) -> nexus_query_engine::runtime::object_store::SourceStorageProfile
+pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::native_source_storage_profile(&self) -> nexus_query_runtime::runtime::object_store::SourceStorageProfile
 pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::new(nexus_iceberg::resolved::ResolvedIcebergTable) -> Self
 pub async fn datafusion_nexus::table_format::IcebergTableFormatPlanner::resolve_table_format_scan(&self, datafusion_nexus::table_format::TableFormatScanRequest) -> datafusion_nexus::error::Result<datafusion_nexus::table_format::TableFormatScanPlan>
 pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::with_catalog_type(self, impl core::convert::Into<alloc::string::String>) -> Self
@@ -2189,7 +2189,7 @@ pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::resolve_scan_w
 pub struct datafusion_nexus::table_format::iceberg::NexusIcebergTableProvider
 impl datafusion_nexus::table_format::NexusIcebergTableProvider
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::from_cpu_provider_and_native_planner(alloc::sync::Arc<dyn datafusion_session::table::TableProvider>, core::option::Option<i64>, alloc::sync::Arc<(dyn datafusion_nexus::table_format::TableFormatPlanner + core::marker::Send + core::marker::Sync)>) -> Self
-pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::native_source_storage_profile(&self) -> core::option::Option<nexus_query_engine::runtime::object_store::SourceStorageProfile>
+pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::native_source_storage_profile(&self) -> core::option::Option<nexus_query_runtime::runtime::object_store::SourceStorageProfile>
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::try_new_resolved(nexus_iceberg::resolved::ResolvedIcebergTable) -> datafusion_nexus::error::Result<Self>
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::try_new_resolved_with_parquet_read_strategy_config(nexus_iceberg::resolved::ResolvedIcebergTable, datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig) -> datafusion_nexus::error::Result<Self>
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::with_catalog_type(self, impl core::convert::Into<alloc::string::String>) -> Self
@@ -2220,7 +2220,7 @@ pub fn datafusion_nexus::table_format::iceberg::iceberg_file_scan_tasks_to_table
 pub fn datafusion_nexus::table_format::iceberg::iceberg_scan_candidate_to_table_format_scan_plan(nexus_iceberg::scan::IcebergScanCandidate, core::option::Option<&str>) -> datafusion_nexus::error::Result<datafusion_nexus::table_format::TableFormatScanPlan>
 pub fn datafusion_nexus::table_format::iceberg::iceberg_schema_to_datafusion_arrow_schema(&iceberg::spec::schema::Schema) -> datafusion_nexus::error::Result<arrow_schema::schema::SchemaRef>
 pub fn datafusion_nexus::table_format::iceberg::root_error_from_iceberg(nexus_iceberg::error::IcebergError, &'static str, impl core::convert::Into<alloc::string::String>) -> datafusion_nexus::error::Error
-pub fn datafusion_nexus::table_format::iceberg::source_access_policy_to_native_source_storage_profile(&nexus_iceberg::source_access::SourceAccessPolicy) -> nexus_query_engine::runtime::object_store::SourceStorageProfile
+pub fn datafusion_nexus::table_format::iceberg::source_access_policy_to_native_source_storage_profile(&nexus_iceberg::source_access::SourceAccessPolicy) -> nexus_query_runtime::runtime::object_store::SourceStorageProfile
 pub mod datafusion_nexus::table_format::scan
 pub use datafusion_nexus::table_format::scan::CredentialMode
 pub use datafusion_nexus::table_format::scan::LakehouseCacheFillMode
@@ -2398,7 +2398,7 @@ pub datafusion_nexus::table_format::scan::TableFormatDataFile::location: alloc::
 pub datafusion_nexus::table_format::scan::TableFormatDataFile::partition_values: alloc::vec::Vec<datafusion_nexus::table_format::TableFormatPartitionValue>
 pub datafusion_nexus::table_format::scan::TableFormatDataFile::position_delete_files: alloc::vec::Vec<datafusion_nexus::table_format::TableFormatDeleteFile>
 pub datafusion_nexus::table_format::scan::TableFormatDataFile::read_capability: datafusion_nexus::table_format::TableFormatReadCapability
-pub datafusion_nexus::table_format::scan::TableFormatDataFile::resolved_parquet_source: core::option::Option<nexus_query_engine::source::read_policy::ResolvedParquetSource>
+pub datafusion_nexus::table_format::scan::TableFormatDataFile::resolved_parquet_source: core::option::Option<nexus_query_planning::source::read_policy::ResolvedParquetSource>
 pub datafusion_nexus::table_format::scan::TableFormatDataFile::row_count: core::option::Option<u64>
 pub datafusion_nexus::table_format::scan::TableFormatDataFile::row_group_null_counts: alloc::collections::btree::map::BTreeMap<usize, alloc::vec::Vec<core::option::Option<u64>>>
 pub datafusion_nexus::table_format::scan::TableFormatDataFile::row_groups: core::option::Option<alloc::vec::Vec<usize>>
@@ -2418,7 +2418,7 @@ pub fn datafusion_nexus::table_format::TableFormatDataFile::with_equality_delete
 pub fn datafusion_nexus::table_format::TableFormatDataFile::with_footer_schema(self, arrow_schema::schema::SchemaRef) -> Self
 pub fn datafusion_nexus::table_format::TableFormatDataFile::with_partition_values(self, alloc::vec::Vec<datafusion_nexus::table_format::TableFormatPartitionValue>) -> Self
 pub fn datafusion_nexus::table_format::TableFormatDataFile::with_position_delete_files(self, alloc::vec::Vec<datafusion_nexus::table_format::TableFormatDeleteFile>) -> Self
-pub fn datafusion_nexus::table_format::TableFormatDataFile::with_resolved_parquet_source(self, nexus_query_engine::source::read_policy::ResolvedParquetSource) -> Self
+pub fn datafusion_nexus::table_format::TableFormatDataFile::with_resolved_parquet_source(self, nexus_query_planning::source::read_policy::ResolvedParquetSource) -> Self
 pub fn datafusion_nexus::table_format::TableFormatDataFile::with_row_count(self, u64) -> Self
 pub fn datafusion_nexus::table_format::TableFormatDataFile::with_row_group_null_counts(self, alloc::collections::btree::map::BTreeMap<usize, alloc::vec::Vec<core::option::Option<u64>>>) -> Self
 pub fn datafusion_nexus::table_format::TableFormatDataFile::with_row_groups(self, alloc::vec::Vec<usize>) -> Self
@@ -2437,7 +2437,7 @@ pub datafusion_nexus::table_format::scan::TableFormatDeleteFile::position_lower_
 pub datafusion_nexus::table_format::scan::TableFormatDeleteFile::position_upper_bound: core::option::Option<u64>
 pub datafusion_nexus::table_format::scan::TableFormatDeleteFile::read_capability: datafusion_nexus::table_format::TableFormatReadCapability
 pub datafusion_nexus::table_format::scan::TableFormatDeleteFile::referenced_data_file: core::option::Option<alloc::string::String>
-pub datafusion_nexus::table_format::scan::TableFormatDeleteFile::resolved_parquet_source: core::option::Option<nexus_query_engine::source::read_policy::ResolvedParquetSource>
+pub datafusion_nexus::table_format::scan::TableFormatDeleteFile::resolved_parquet_source: core::option::Option<nexus_query_planning::source::read_policy::ResolvedParquetSource>
 pub datafusion_nexus::table_format::scan::TableFormatDeleteFile::row_count: core::option::Option<u64>
 pub datafusion_nexus::table_format::scan::TableFormatDeleteFile::size_bytes: core::option::Option<u64>
 impl datafusion_nexus::table_format::TableFormatDeleteFile
@@ -2450,13 +2450,13 @@ pub fn datafusion_nexus::table_format::TableFormatDeleteFile::with_equality_ids(
 pub fn datafusion_nexus::table_format::TableFormatDeleteFile::with_position_bounds(self, core::option::Option<u64>, core::option::Option<u64>) -> Self
 pub fn datafusion_nexus::table_format::TableFormatDeleteFile::with_read_capability(self, datafusion_nexus::table_format::TableFormatReadCapability) -> Self
 pub fn datafusion_nexus::table_format::TableFormatDeleteFile::with_referenced_data_file(self, impl core::convert::Into<alloc::string::String>) -> Self
-pub fn datafusion_nexus::table_format::TableFormatDeleteFile::with_resolved_parquet_source(self, nexus_query_engine::source::read_policy::ResolvedParquetSource) -> Self
+pub fn datafusion_nexus::table_format::TableFormatDeleteFile::with_resolved_parquet_source(self, nexus_query_planning::source::read_policy::ResolvedParquetSource) -> Self
 pub fn datafusion_nexus::table_format::TableFormatDeleteFile::with_row_count(self, u64) -> Self
 pub fn datafusion_nexus::table_format::TableFormatDeleteFile::with_size_bytes(self, u64) -> Self
 impl core::fmt::Debug for datafusion_nexus::table_format::TableFormatDeleteFile
 pub fn datafusion_nexus::table_format::TableFormatDeleteFile::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct datafusion_nexus::table_format::scan::TableFormatParquetReadStrategyConfig
-pub datafusion_nexus::table_format::scan::TableFormatParquetReadStrategyConfig::credential_mode: nexus_query_engine::source::read_policy::CredentialMode
+pub datafusion_nexus::table_format::scan::TableFormatParquetReadStrategyConfig::credential_mode: nexus_query_planning::source::read_policy::CredentialMode
 pub datafusion_nexus::table_format::scan::TableFormatParquetReadStrategyConfig::lakehouse_cache_max_bytes: core::option::Option<u64>
 pub datafusion_nexus::table_format::scan::TableFormatParquetReadStrategyConfig::lakehouse_cache_policy: datafusion_nexus::table_format::TableFormatLakehouseCachePolicy
 pub datafusion_nexus::table_format::scan::TableFormatParquetReadStrategyConfig::lakehouse_cache_read_policy: datafusion_nexus::table_format::TableFormatLakehouseCacheReadPolicy
@@ -2466,7 +2466,7 @@ pub datafusion_nexus::table_format::scan::TableFormatParquetReadStrategyConfig::
 pub datafusion_nexus::table_format::scan::TableFormatParquetReadStrategyConfig::storage_profile_id: core::option::Option<alloc::string::String>
 impl datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig
 pub fn datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig::from_env() -> Self
-pub fn datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig::with_source_storage_profile_remote_direct_capability(self, &nexus_query_engine::runtime::object_store::SourceStorageProfile) -> Self
+pub fn datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig::with_source_storage_profile_remote_direct_capability(self, &nexus_query_runtime::runtime::object_store::SourceStorageProfile) -> Self
 impl core::default::Default for datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig
 pub fn datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig::default() -> Self
 pub struct datafusion_nexus::table_format::scan::TableFormatParquetSourceMetadata
@@ -2611,8 +2611,8 @@ pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::planning_failu
 pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::resolve_scan(&self, datafusion_nexus::table_format::TableFormatScanRequest) -> futures_core::future::BoxFuture<'_, datafusion_nexus::error::Result<datafusion_nexus::table_format::TableFormatScanPlan>>
 pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::resolve_scan_with_deadline(&self, datafusion_nexus::table_format::TableFormatScanRequest, datafusion_nexus::table_format::TableFormatPlanningDeadline) -> futures_core::future::BoxFuture<'_, datafusion_nexus::error::Result<datafusion_nexus::table_format::TableFormatScanPlan>>
 pub fn datafusion_nexus::table_format::scan::credential_free_endpoint_identity(&str) -> alloc::string::String
-pub fn datafusion_nexus::table_format::scan::resolve_table_format_parquet_source(&str, &datafusion_nexus::table_format::TableFormatReadCapability, &datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig) -> datafusion_nexus::error::Result<nexus_query_engine::source::read_policy::ResolvedParquetSource>
-pub fn datafusion_nexus::table_format::scan::resolve_table_format_parquet_source_with_metadata(&str, &datafusion_nexus::table_format::TableFormatReadCapability, &datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig, &datafusion_nexus::table_format::TableFormatParquetSourceMetadata) -> datafusion_nexus::error::Result<nexus_query_engine::source::read_policy::ResolvedParquetSource>
+pub fn datafusion_nexus::table_format::scan::resolve_table_format_parquet_source(&str, &datafusion_nexus::table_format::TableFormatReadCapability, &datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig) -> datafusion_nexus::error::Result<nexus_query_planning::source::read_policy::ResolvedParquetSource>
+pub fn datafusion_nexus::table_format::scan::resolve_table_format_parquet_source_with_metadata(&str, &datafusion_nexus::table_format::TableFormatReadCapability, &datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig, &datafusion_nexus::table_format::TableFormatParquetSourceMetadata) -> datafusion_nexus::error::Result<nexus_query_planning::source::read_policy::ResolvedParquetSource>
 pub mod datafusion_nexus::table_format::scan_exec
 pub enum datafusion_nexus::table_format::scan_exec::NexusIcebergNativeScanOutcome
 pub datafusion_nexus::table_format::scan_exec::NexusIcebergNativeScanOutcome::Available(datafusion_nexus::table_format::TableFormatScanPlan)
@@ -2786,7 +2786,7 @@ pub const fn datafusion_nexus::table_format::TableFormatUnsupportedFeatureCode::
 pub struct datafusion_nexus::table_format::IcebergTableFormatPlanner
 impl datafusion_nexus::table_format::IcebergTableFormatPlanner
 pub async fn datafusion_nexus::table_format::IcebergTableFormatPlanner::inspect_table_format_scan(&self, datafusion_nexus::table_format::TableFormatScanRequest, datafusion_nexus::table_format::TableFormatScanPlan) -> datafusion_nexus::error::Result<datafusion_nexus::table_format::TableFormatScanPlan>
-pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::native_source_storage_profile(&self) -> nexus_query_engine::runtime::object_store::SourceStorageProfile
+pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::native_source_storage_profile(&self) -> nexus_query_runtime::runtime::object_store::SourceStorageProfile
 pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::new(nexus_iceberg::resolved::ResolvedIcebergTable) -> Self
 pub async fn datafusion_nexus::table_format::IcebergTableFormatPlanner::resolve_table_format_scan(&self, datafusion_nexus::table_format::TableFormatScanRequest) -> datafusion_nexus::error::Result<datafusion_nexus::table_format::TableFormatScanPlan>
 pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::with_catalog_type(self, impl core::convert::Into<alloc::string::String>) -> Self
@@ -2822,7 +2822,7 @@ pub fn datafusion_nexus::table_format::scan_exec::NexusIcebergScanExec::with_new
 pub struct datafusion_nexus::table_format::NexusIcebergTableProvider
 impl datafusion_nexus::table_format::NexusIcebergTableProvider
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::from_cpu_provider_and_native_planner(alloc::sync::Arc<dyn datafusion_session::table::TableProvider>, core::option::Option<i64>, alloc::sync::Arc<(dyn datafusion_nexus::table_format::TableFormatPlanner + core::marker::Send + core::marker::Sync)>) -> Self
-pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::native_source_storage_profile(&self) -> core::option::Option<nexus_query_engine::runtime::object_store::SourceStorageProfile>
+pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::native_source_storage_profile(&self) -> core::option::Option<nexus_query_runtime::runtime::object_store::SourceStorageProfile>
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::try_new_resolved(nexus_iceberg::resolved::ResolvedIcebergTable) -> datafusion_nexus::error::Result<Self>
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::try_new_resolved_with_parquet_read_strategy_config(nexus_iceberg::resolved::ResolvedIcebergTable, datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig) -> datafusion_nexus::error::Result<Self>
 pub fn datafusion_nexus::table_format::NexusIcebergTableProvider::with_catalog_type(self, impl core::convert::Into<alloc::string::String>) -> Self
@@ -2857,7 +2857,7 @@ pub datafusion_nexus::table_format::TableFormatDataFile::location: alloc::string
 pub datafusion_nexus::table_format::TableFormatDataFile::partition_values: alloc::vec::Vec<datafusion_nexus::table_format::TableFormatPartitionValue>
 pub datafusion_nexus::table_format::TableFormatDataFile::position_delete_files: alloc::vec::Vec<datafusion_nexus::table_format::TableFormatDeleteFile>
 pub datafusion_nexus::table_format::TableFormatDataFile::read_capability: datafusion_nexus::table_format::TableFormatReadCapability
-pub datafusion_nexus::table_format::TableFormatDataFile::resolved_parquet_source: core::option::Option<nexus_query_engine::source::read_policy::ResolvedParquetSource>
+pub datafusion_nexus::table_format::TableFormatDataFile::resolved_parquet_source: core::option::Option<nexus_query_planning::source::read_policy::ResolvedParquetSource>
 pub datafusion_nexus::table_format::TableFormatDataFile::row_count: core::option::Option<u64>
 pub datafusion_nexus::table_format::TableFormatDataFile::row_group_null_counts: alloc::collections::btree::map::BTreeMap<usize, alloc::vec::Vec<core::option::Option<u64>>>
 pub datafusion_nexus::table_format::TableFormatDataFile::row_groups: core::option::Option<alloc::vec::Vec<usize>>
@@ -2877,7 +2877,7 @@ pub fn datafusion_nexus::table_format::TableFormatDataFile::with_equality_delete
 pub fn datafusion_nexus::table_format::TableFormatDataFile::with_footer_schema(self, arrow_schema::schema::SchemaRef) -> Self
 pub fn datafusion_nexus::table_format::TableFormatDataFile::with_partition_values(self, alloc::vec::Vec<datafusion_nexus::table_format::TableFormatPartitionValue>) -> Self
 pub fn datafusion_nexus::table_format::TableFormatDataFile::with_position_delete_files(self, alloc::vec::Vec<datafusion_nexus::table_format::TableFormatDeleteFile>) -> Self
-pub fn datafusion_nexus::table_format::TableFormatDataFile::with_resolved_parquet_source(self, nexus_query_engine::source::read_policy::ResolvedParquetSource) -> Self
+pub fn datafusion_nexus::table_format::TableFormatDataFile::with_resolved_parquet_source(self, nexus_query_planning::source::read_policy::ResolvedParquetSource) -> Self
 pub fn datafusion_nexus::table_format::TableFormatDataFile::with_row_count(self, u64) -> Self
 pub fn datafusion_nexus::table_format::TableFormatDataFile::with_row_group_null_counts(self, alloc::collections::btree::map::BTreeMap<usize, alloc::vec::Vec<core::option::Option<u64>>>) -> Self
 pub fn datafusion_nexus::table_format::TableFormatDataFile::with_row_groups(self, alloc::vec::Vec<usize>) -> Self
@@ -2896,7 +2896,7 @@ pub datafusion_nexus::table_format::TableFormatDeleteFile::position_lower_bound:
 pub datafusion_nexus::table_format::TableFormatDeleteFile::position_upper_bound: core::option::Option<u64>
 pub datafusion_nexus::table_format::TableFormatDeleteFile::read_capability: datafusion_nexus::table_format::TableFormatReadCapability
 pub datafusion_nexus::table_format::TableFormatDeleteFile::referenced_data_file: core::option::Option<alloc::string::String>
-pub datafusion_nexus::table_format::TableFormatDeleteFile::resolved_parquet_source: core::option::Option<nexus_query_engine::source::read_policy::ResolvedParquetSource>
+pub datafusion_nexus::table_format::TableFormatDeleteFile::resolved_parquet_source: core::option::Option<nexus_query_planning::source::read_policy::ResolvedParquetSource>
 pub datafusion_nexus::table_format::TableFormatDeleteFile::row_count: core::option::Option<u64>
 pub datafusion_nexus::table_format::TableFormatDeleteFile::size_bytes: core::option::Option<u64>
 impl datafusion_nexus::table_format::TableFormatDeleteFile
@@ -2909,13 +2909,13 @@ pub fn datafusion_nexus::table_format::TableFormatDeleteFile::with_equality_ids(
 pub fn datafusion_nexus::table_format::TableFormatDeleteFile::with_position_bounds(self, core::option::Option<u64>, core::option::Option<u64>) -> Self
 pub fn datafusion_nexus::table_format::TableFormatDeleteFile::with_read_capability(self, datafusion_nexus::table_format::TableFormatReadCapability) -> Self
 pub fn datafusion_nexus::table_format::TableFormatDeleteFile::with_referenced_data_file(self, impl core::convert::Into<alloc::string::String>) -> Self
-pub fn datafusion_nexus::table_format::TableFormatDeleteFile::with_resolved_parquet_source(self, nexus_query_engine::source::read_policy::ResolvedParquetSource) -> Self
+pub fn datafusion_nexus::table_format::TableFormatDeleteFile::with_resolved_parquet_source(self, nexus_query_planning::source::read_policy::ResolvedParquetSource) -> Self
 pub fn datafusion_nexus::table_format::TableFormatDeleteFile::with_row_count(self, u64) -> Self
 pub fn datafusion_nexus::table_format::TableFormatDeleteFile::with_size_bytes(self, u64) -> Self
 impl core::fmt::Debug for datafusion_nexus::table_format::TableFormatDeleteFile
 pub fn datafusion_nexus::table_format::TableFormatDeleteFile::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig
-pub datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig::credential_mode: nexus_query_engine::source::read_policy::CredentialMode
+pub datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig::credential_mode: nexus_query_planning::source::read_policy::CredentialMode
 pub datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig::lakehouse_cache_max_bytes: core::option::Option<u64>
 pub datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig::lakehouse_cache_policy: datafusion_nexus::table_format::TableFormatLakehouseCachePolicy
 pub datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig::lakehouse_cache_read_policy: datafusion_nexus::table_format::TableFormatLakehouseCacheReadPolicy
@@ -2925,7 +2925,7 @@ pub datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig::storag
 pub datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig::storage_profile_id: core::option::Option<alloc::string::String>
 impl datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig
 pub fn datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig::from_env() -> Self
-pub fn datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig::with_source_storage_profile_remote_direct_capability(self, &nexus_query_engine::runtime::object_store::SourceStorageProfile) -> Self
+pub fn datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig::with_source_storage_profile_remote_direct_capability(self, &nexus_query_runtime::runtime::object_store::SourceStorageProfile) -> Self
 impl core::default::Default for datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig
 pub fn datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig::default() -> Self
 pub struct datafusion_nexus::table_format::TableFormatParquetSourceMetadata
@@ -3070,5 +3070,5 @@ pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::resolve_scan(&
 pub fn datafusion_nexus::table_format::IcebergTableFormatPlanner::resolve_scan_with_deadline(&self, datafusion_nexus::table_format::TableFormatScanRequest, datafusion_nexus::table_format::TableFormatPlanningDeadline) -> futures_core::future::BoxFuture<'_, datafusion_nexus::error::Result<datafusion_nexus::table_format::TableFormatScanPlan>>
 pub fn datafusion_nexus::table_format::iceberg_file_scan_tasks_to_table_format_scan_plan(core::option::Option<alloc::string::String>, core::option::Option<alloc::string::String>, impl core::iter::traits::collect::IntoIterator<Item = iceberg::scan::task::FileScanTask>) -> datafusion_nexus::error::Result<datafusion_nexus::table_format::TableFormatScanPlan>
 pub fn datafusion_nexus::table_format::iceberg_schema_to_datafusion_arrow_schema(&iceberg::spec::schema::Schema) -> datafusion_nexus::error::Result<arrow_schema::schema::SchemaRef>
-pub fn datafusion_nexus::table_format::resolve_table_format_parquet_source(&str, &datafusion_nexus::table_format::TableFormatReadCapability, &datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig) -> datafusion_nexus::error::Result<nexus_query_engine::source::read_policy::ResolvedParquetSource>
-pub fn datafusion_nexus::table_format::resolve_table_format_parquet_source_with_metadata(&str, &datafusion_nexus::table_format::TableFormatReadCapability, &datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig, &datafusion_nexus::table_format::TableFormatParquetSourceMetadata) -> datafusion_nexus::error::Result<nexus_query_engine::source::read_policy::ResolvedParquetSource>
+pub fn datafusion_nexus::table_format::resolve_table_format_parquet_source(&str, &datafusion_nexus::table_format::TableFormatReadCapability, &datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig) -> datafusion_nexus::error::Result<nexus_query_planning::source::read_policy::ResolvedParquetSource>
+pub fn datafusion_nexus::table_format::resolve_table_format_parquet_source_with_metadata(&str, &datafusion_nexus::table_format::TableFormatReadCapability, &datafusion_nexus::table_format::TableFormatParquetReadStrategyConfig, &datafusion_nexus::table_format::TableFormatParquetSourceMetadata) -> datafusion_nexus::error::Result<nexus_query_planning::source::read_policy::ResolvedParquetSource>

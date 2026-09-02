@@ -19,7 +19,7 @@ crate = "cudf-nexus"
 namespace = "device"
 decision = "keep"
 basis = "nexus_production"
-caller = "crates/nexus-query-engine/src/runtime"
+caller = "crates/nexus-query-runtime/src/runtime"
 
 [[surface]]
 crate = "cudf-nexus"
@@ -61,7 +61,7 @@ crate = "cudf-nexus"
 namespace = "runtime"
 decision = "keep"
 basis = "nexus_production"
-caller = "crates/nexus-query-engine/src/runtime"
+caller = "crates/nexus-query-runtime/src/runtime"
 
 [[surface]]
 crate = "cugraph-nexus"
@@ -103,7 +103,7 @@ crate = "cugraph-nexus"
 namespace = "error"
 decision = "keep"
 basis = "safety_abi_semantic"
-caller = "crates/nexus-query-engine/src/error.rs"
+caller = "crates/nexus-query-planning/src/error.rs"
 
 [[surface]]
 crate = "cugraph-nexus"

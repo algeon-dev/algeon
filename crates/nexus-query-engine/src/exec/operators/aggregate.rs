@@ -25,7 +25,6 @@ mod partial_strategy;
 mod statistical;
 #[cfg(test)]
 mod tests;
-mod validate;
 
 pub(in crate::exec) use filter_inputs::prepare_filtered_aggregate_frame;
 use filtered_global::{
@@ -42,7 +41,7 @@ pub(in crate::exec) use groupby::{
     execute_groupby_aggregate, execute_groupby_aggregate_with_budget, execute_groupby_aggregate_with_budget_observed,
 };
 use grouping_sets::{execute_grouping_sets_aggregate, execute_grouping_sets_partial_aggregate_with_budget};
-use host_exact::{execute_datafusion_exact_host_aggregate, host_group_expr_output_name};
+use host_exact::execute_datafusion_exact_host_aggregate;
 pub(in crate::exec) use host_exact::{
     execute_datafusion_exact_host_aggregate_batch, materialize_datafusion_exact_host_aggregate_input,
     prepare_datafusion_exact_host_aggregate_input_frame, upload_datafusion_exact_host_aggregate_output,
@@ -73,10 +72,6 @@ pub(in crate::exec) use statistical::{
     execute_gpu_native_statistical_final_merge_with_budget,
     execute_gpu_native_statistical_partial_aggregate_with_budget,
     should_execute_gpu_native_statistical_partial_aggregate,
-};
-pub(in crate::exec) use validate::{
-    validate_aggregate_capability, validate_aggregate_output_names, validate_final_aggregate_capability,
-    validate_global_aggregate_capability,
 };
 
 /// Source/chunk evidence available at a partial aggregate strategy decision.

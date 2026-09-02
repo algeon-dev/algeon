@@ -44,7 +44,7 @@ proof around an unsupported plan. The moving parts, in the order they appear:
 
 | Term | Meaning |
 | --- | --- |
-| `QueryPlanCapabilityProof` | Engine-issued, opaque evidence that one exact `QueryPlan` is executable, carrying its required device capabilities and allocation owners. |
+| `QueryPlanCapabilityProof` | Planning-owned, opaque evidence that one exact `QueryPlan` is executable, carrying its required device capabilities and allocation owners; the engine facade re-exports it. |
 | Attempt | One bounded native execution of one admitted query on one selected device. |
 | `DeviceLedger` | The per-device integer accounting authority for grants, cache charges, protection, and attempt slots. |
 | `MemoryGrant` | The immutable byte budget an attempt receives at commit; it becomes the ceiling of the attempt's allocation domain. |
@@ -53,7 +53,7 @@ proof around an unsupported plan. The moving parts, in the order they appear:
 
 ## From plan proof to admission
 
-Lowering issues an opaque `QueryPlanCapabilityProof` for the exact engine IR.
+Planning issues an opaque `QueryPlanCapabilityProof` for the exact native IR.
 The proof carries required device capabilities, plan scopes, and allocation
 owners. The query service then resolves it against its source scheduling and
 chunk policy and, where needed, candidate-device preflights.
@@ -74,7 +74,7 @@ proof, then uses one ticket, one selected device, and one grant.
 
 Manual `NexusGpuBackend::admit_query()` handles are resource-only; they do not
 authorize a native plan. Exact device-capability profiles require an explicit
-engine-issued proof.
+planning-issued proof exposed through the engine facade.
 
 ## Device profiles and grants
 
@@ -141,7 +141,7 @@ max_new = 80 - 30 - 8 - 2 - 0 - (10 * 2) = 20 GB
 The new attempt is admissible because its 10 GB required floor fits, and it
 receives a grant between 10 and 20 GB.
 
-The required floor comes from the installed profile plus the engine-issued
+The required floor comes from the installed profile plus the planning-issued
 phase and lower-layer capability evidence. A descriptive working-set hint may
 select a grant inside that interval; without a hint, the ledger grants
 `max_new`. Fit is proven only by this arithmetic: working-set estimates and
@@ -220,7 +220,7 @@ Admission has related projections, not a second admission state machine:
   the selected device/grant when available;
 - DataFusion metrics and native TSV rows add adapter-owned admission sequence
   and wait facts; and
-- engine `QueryMetrics` records execution and reservation behavior after
+- runtime `QueryMetrics` records execution and reservation behavior after
   admission.
 
 For current controller state, use `NexusGpuBackend::admission_snapshot()` and
@@ -249,10 +249,10 @@ Profiles own device-local resources; queue policy owns only queue bounds.
 
 | Change | Owning code |
 | --- | --- |
-| Change native capability support | `crates/nexus-query-engine/src/capability/`, `admission/requirement.rs` |
-| Change phase/lifetime memory evidence | `crates/nexus-query-engine/src/admission/envelope.rs`, `crates/nexus-query-engine/src/graph_memory.rs` |
-| Change capacity, grants, cache charges, or device ranking | `crates/nexus-query-engine/src/runtime/gpu/profile.rs`, `ledger.rs`, `placement.rs` |
-| Change queueing, fairness, transactions, or cleanup | `crates/nexus-query-engine/src/runtime/query_service/service/`, `handle.rs` |
+| Change native capability support | `crates/nexus-query-planning/src/capability/`, `crates/nexus-query-planning/src/admission/requirement/` |
+| Change phase/lifetime memory evidence | `crates/nexus-query-planning/src/admission/envelope/`, `crates/nexus-query-planning/src/graph_memory/` |
+| Change capacity, grants, cache charges, or device ranking | `crates/nexus-query-runtime/src/runtime/gpu/profile.rs`, `crates/nexus-query-runtime/src/runtime/gpu/ledger.rs`, `crates/nexus-query-runtime/src/runtime/gpu/placement.rs` |
+| Change queueing, fairness, transactions, or cleanup | `crates/nexus-query-runtime/src/runtime/query_service/service/`, `crates/nexus-query-runtime/src/runtime/query_service/handle.rs` |
 | Change the DataFusion lazy-ticket boundary | `src/native_exec/admission.rs`, `src/native_exec/config/admission.rs` |
 | Change Flight SQL admission configuration | `crates/nexus-server/src/config/admission.rs` |
 

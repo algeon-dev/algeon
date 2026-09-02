@@ -9,17 +9,15 @@ mod state;
 
 pub(in crate::exec) use avg::{
     avg_sum_state_data_type, finalize_avg_output_columns, finalize_avg_output_columns_with_budget,
-    validate_avg_output_fields, validate_avg_state_alias_collisions,
 };
 pub(in crate::exec) use casts::{
     cast_count_output_columns, cast_count_output_columns_with_budget, cast_reduction_output_columns,
     cast_reduction_output_columns_with_budget,
 };
-pub(in crate::exec) use count::{global_count_series, global_count_series_with_budget, global_count_star_expr};
+pub(in crate::exec) use count::{global_count_series, global_count_series_with_budget};
 pub(in crate::exec) use state::{
-    final_global_aggregate_spec, final_global_aggregate_state_output_schema, global_valid_count_state_alias,
-    partial_global_aggregate_output_schema, partial_global_aggregate_spec,
-    validate_global_valid_count_state_alias_collisions,
+    final_global_aggregate_spec, final_global_aggregate_state_output_schema, partial_global_aggregate_output_schema,
+    partial_global_aggregate_spec,
 };
 
 pub(in crate::exec) fn execute_global_aggregate(

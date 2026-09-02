@@ -35,14 +35,16 @@ use read_runtime_metrics::*;
 pub(in crate::exec) use scan_limit::apply_source_scan_limit_to_frame;
 use scan_limit::*;
 pub(in crate::exec) use scheduler::{ScheduledLocalParquetRead, ScheduledLocalParquetReadOutput};
-pub(in crate::exec) use schema::local_parquet_execution_frame_schema;
 use schema::{coerce_local_parquet_source_schema, materialize_missing_columns};
 use zero_column_count::{read_zero_column_count_source, zero_column_count_chunk_frame_with_budget};
 
 pub(in crate::exec) use crate::source::{
     local_parquet_file_row_group_metadata_count, parquet_file_path_fact, parquet_file_stable_id_fact,
 };
-use crate::{metrics::SourceReadParquetEvidenceMetrics, source::validate_local_parquet_source};
+use crate::{
+    metrics::SourceReadParquetEvidenceMetrics,
+    source::{local_parquet_execution_frame_schema, validate_local_parquet_source},
+};
 
 pub(in crate::exec) fn parquet_chunk_path_fact(chunk: &SourceChunk) -> String {
     crate::source::parquet_source_path_fact(&chunk.location, &chunk.path)

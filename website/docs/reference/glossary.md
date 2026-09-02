@@ -23,10 +23,10 @@ defined here.
 - **Lowering** — translating a recognized candidate into the engine's
   `QueryPlan` IR after DataFusion physical planning has already fixed operator
   decisions. See [Native Lowering & Final Plans](../design/native-lowering.mdx).
-- **IR (`QueryPlan`)** — the engine's closed, DataFusion-free intermediate
+- **IR (`QueryPlan`)** — planning's closed, DataFusion-free intermediate
   representation. Unlike DataFusion's open `ExecutionPlan` trait, it is an
-  owned type the engine fully controls. See
-  [Why two crates](../design/index.mdx#why-two-crates-datafusion-nexus--nexus-query-engine).
+  owned type the native stack fully controls and the engine facade re-exports.
+  See [Why the native stack is layered](../design/index.mdx#why-the-native-stack-is-layered).
 - **Scan facts** — the format-neutral description of a source scan (files,
   schema, pruning facts) that lowering hands to the engine in place of
   DataFusion source nodes. See
@@ -59,9 +59,10 @@ defined here.
 - **Attempt** — one bounded native execution of one admitted query on one
   selected device. Its evidence is sealed into a `QueryAttemptReport`. See
   [Admission & Memory Governance](../design/admission.mdx).
-- **Capability proof (`QueryPlanCapabilityProof`)** — engine-issued, opaque
+- **Capability proof (`QueryPlanCapabilityProof`)** — planning-owned, opaque
   evidence that one exact `QueryPlan` is executable, carrying its required
-  device capabilities and allocation owners. Callers cannot construct one. See
+  device capabilities and allocation owners. The engine facade re-exports it;
+  callers cannot construct one. See
   [From plan proof to admission](../design/admission.mdx#from-plan-proof-to-admission).
 - **Admission ticket** — a planner-created, lazy admission request; device and
   grant acquisition wait until the first native stream is polled. See

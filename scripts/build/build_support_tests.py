@@ -339,7 +339,18 @@ def assert_manifest_contract() -> None:
     assert server["dependencies"]["cuvs-sys"]["optional"] is True
 
     engine = load_manifest("crates/nexus-query-engine/Cargo.toml")
-    assert engine["features"]["cuvs"] == ["dep:cuvs", "dep:cuvs-sys"]
+    assert engine["features"]["cugraph"] == [
+        "dep:cugraph",
+        "dep:cugraph-sys",
+        "nexus-query-planning/cugraph",
+        "nexus-query-runtime/cugraph",
+    ]
+    assert engine["features"]["cuvs"] == [
+        "dep:cuvs",
+        "dep:cuvs-sys",
+        "nexus-query-planning/cuvs",
+        "nexus-query-runtime/cuvs",
+    ]
     assert engine["dependencies"]["cuvs"]["optional"] is True
     assert engine["dependencies"]["cuvs-sys"]["optional"] is True
 

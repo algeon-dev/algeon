@@ -14,7 +14,7 @@ The typical native-execution path is:
 
 ~~~text
 cuDF / cuGraph / cuVS
-  -> internal native execution error
+  -> shared native QueryError taxonomy
   -> datafusion_nexus::error::Error
   -> DataFusionError::External
   -> embedded application or Flight SQL status
@@ -30,7 +30,9 @@ runtime failure is an error.
 
 | Layer | Error type | Responsibility |
 | --- | --- | --- |
-| `nexus-query-engine` | `QueryError` | DataFusion-independent IR, admission, execution, GPU resource, and native-library failures. |
+| `nexus-query-planning` | `QueryError` | Canonical DataFusion-independent error taxonomy plus IR, optimizer, capability, proof, and admission failures. |
+| `nexus-query-runtime` | planning's `QueryError` | Attempt lifecycle, query service, device ledger, grant, cache, observation, and metric failures; it does not define another taxonomy. |
+| `nexus-query-engine` | planning's `QueryError` | Native execution failures and the compatible public facade re-export. |
 | Root adapter | `datafusion_nexus::error::Error` | DataFusion planning/execution context and projection of native errors into the public adapter taxonomy. |
 | DataFusion traits | `DataFusionError` | Framework boundary only. Nexus errors cross it as a typed `External` source. |
 | `nexus-server` | `ServerError` / `tonic::Status` | Server lifecycle, client-safe messages, gRPC codes, metadata, and retained diagnostics. |
@@ -101,7 +103,9 @@ policy. There is deliberately no blanket conversion in the other direction.
 
 Create the error where the failed contract is known:
 
-- Use `QueryError` for DataFusion-independent engine behavior.
+- Use the shared `QueryError` for DataFusion-independent planning, runtime, and
+  engine behavior; add its canonical code and mappings in
+  `nexus-query-planning`.
 - Use adapter `Error` for DataFusion-specific planning, wrappers, and public
   integration behavior.
 - Use `Error::from_native` when a `QueryError` reaches the adapter. It maps the
@@ -116,9 +120,10 @@ to a human. Facts carry machine-readable context needed for policy or
 diagnosis, and the source preserves the original cause. Do not create a second
 error taxonomy in a feature module or transport adapter.
 
-Use the result type owned by the current layer: engine `Result<T>` before the
-adapter, adapter `Result<T>` before DataFusion, and DataFusion's result type in
-DataFusion traits. Let `?` perform the single adapter-to-DataFusion conversion.
+Use the result type owned by the current layer: native `Result<T>` across
+planning, runtime, and engine, adapter `Result<T>` before DataFusion, and
+DataFusion's result type in DataFusion traits. Let `?` perform the single
+adapter-to-DataFusion conversion.
 
 Once native GPU execution starts, a failure closes the attempt; Nexus does not
 replay the retained CPU plan. Native-owned failures stay typed, while a
@@ -252,6 +257,6 @@ When adding an error:
    behavior is reverted.
 
 The canonical implementation points are `src/error.rs`, `src/error/code.rs`,
-`crates/nexus-query-engine/src/error.rs`,
-`crates/nexus-query-engine/src/observability/attempt_report.rs`, and
-`crates/nexus-server/src/error.rs`.
+`crates/nexus-query-planning/src/error.rs`,
+`crates/nexus-query-runtime/src/observability/attempt_report.rs`,
+`crates/nexus-query-engine/src/exec/`, and `crates/nexus-server/src/error.rs`.

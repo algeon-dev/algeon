@@ -1,0 +1,36 @@
+[package]
+name = "nexus-query-runtime"
+description = "DataFusion-free native query runtime, lifecycle, ledger, and observation owners."
+version = { workspace = true }
+edition = "2024"
+rust-version = { workspace = true }
+publish = false
+
+[features]
+default = []
+cugraph = ["dep:cugraph", "nexus-query-planning/cugraph"]
+cuvs = ["nexus-query-planning/cuvs"]
+nvml = ["dep:nvml-wrapper"]
+test-hooks = ["nexus-query-planning/test-hooks"]
+
+[lints]
+workspace = true
+
+[dependencies]
+arrow = { workspace = true }
+blake3 = { workspace = true }
+bytes = { workspace = true }
+cudf = { workspace = true }
+cugraph = { workspace = true, optional = true }
+futures = { workspace = true }
+getrandom = { workspace = true }
+nexus-query-planning = { workspace = true }
+nvml-wrapper = { version = "0.12.1", optional = true }
+object_store = { workspace = true }
+parquet = { workspace = true, features = ["arrow"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+[dev-dependencies]
+async-trait = { workspace = true }

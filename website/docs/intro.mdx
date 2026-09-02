@@ -101,7 +101,12 @@ To learn why we built DataFusion Nexus, read
 
 - `datafusion-nexus` — the DataFusion-facing adapter: optimizer rule, table
   functions, Iceberg integration, and reports.
-- `nexus-query-engine` — the DataFusion-free native plan and GPU executor.
+- `nexus-query-planning` — the DataFusion-free native IR, optimizer,
+  capability, proof, admission contracts, and compiled pipeline.
+- `nexus-query-runtime` — attempt lifecycle, query service, device ledger,
+  immutable grants, caches, observation, and metrics.
+- `nexus-query-engine` — native GPU execution and the compatible public facade
+  over planning and runtime.
 - `nexus-workloads` — adapter-neutral TPC-H, TPC-DS, and ClickBench
   catalogs, fixtures, dataset discovery, and DataFusion registration.
 - `nexus-iceberg` — DataFusion-independent Iceberg resolution and

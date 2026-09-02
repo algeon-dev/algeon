@@ -4,38 +4,6 @@ use crate::{
     plan::ProjectionOutput,
 };
 
-pub(in crate::exec) fn validate_projection_capability(
-    node: &ProjectionNode,
-    output_schema: &arrow::datatypes::SchemaRef,
-) -> Result<()> {
-    let output_field_count = node.outputs.len();
-    if output_field_count != output_schema.fields().len() {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.projection.validate",
-            "projection output count must match mirrored output schema field count",
-        )
-        .with_fact("projection_output_count", output_field_count)
-        .with_fact("output_field_count", output_schema.fields().len()));
-    }
-
-    if node.output_schema().as_ref() != output_schema.as_ref() {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.projection.validate",
-            "projection output schema facts must mirror typed projection outputs",
-        )
-        .with_fact("projection_output_schema", format!("{:?}", node.output_schema()))
-        .with_fact("facts_output_schema", format!("{output_schema:?}")));
-    }
-
-    for output in &node.outputs {
-        lower_projection_output_expr(output)?;
-    }
-
-    Ok(())
-}
-
 pub(in crate::exec) fn execute_projection(
     context: &ExecutionContext,
     node: &ProjectionNode,
@@ -719,24 +687,6 @@ fn projection_schema_mismatch_error_with_budget(
         Some(token) => attach_budget_token_failure_facts(error, token),
         None => error,
     }
-}
-
-pub(in crate::exec) fn projection_schema_mismatch_error(
-    field_index: usize,
-    field_name: &str,
-    actual_type: &ArrowDataType,
-    expected_type: &ArrowDataType,
-) -> QueryError {
-    QueryError::new(
-        QueryErrorCode::UnsupportedType,
-        "nexus_query_engine.projection.schema_coerce",
-        "native projection output cannot be coerced to its declared schema type",
-    )
-    .with_fact("reason", "projection_output_schema_mismatch")
-    .with_fact("field_name", field_name)
-    .with_fact("field_index", field_index)
-    .with_fact("actual_type", format!("{actual_type:?}"))
-    .with_fact("expected_type", format!("{expected_type:?}"))
 }
 
 #[cfg(test)]

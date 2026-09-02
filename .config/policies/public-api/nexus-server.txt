@@ -99,7 +99,7 @@ pub nexus_server::ServerConfig::bind_addr: core::net::socket_addr::SocketAddr
 pub nexus_server::ServerConfig::cugraph: core::option::Option<nexus_server::CugraphServerConfig>
 pub nexus_server::ServerConfig::gpu_device_profiles: alloc::vec::Vec<datafusion_nexus::backend::NexusGpuDeviceProfile>
 pub nexus_server::ServerConfig::gpu_devices: alloc::vec::Vec<usize>
-pub nexus_server::ServerConfig::gpu_memory_ownership: alloc::vec::Vec<(usize, nexus_query_engine::runtime::backend_core::GpuMemoryOwnership)>
+pub nexus_server::ServerConfig::gpu_memory_ownership: alloc::vec::Vec<(usize, nexus_query_runtime::runtime::backend_core::GpuMemoryOwnership)>
 pub nexus_server::ServerConfig::iceberg: core::option::Option<nexus_server::IcebergServerConfig>
 pub nexus_server::ServerConfig::native_optimizer_config: datafusion_nexus::planner::NexusNativeOptimizerConfig
 pub nexus_server::ServerConfig::observability: nexus_server::ServerObservabilityConfig
@@ -109,7 +109,7 @@ pub nexus_server::ServerConfig::workspace: core::option::Option<nexus_server::Wo
 impl nexus_server::ServerConfig
 pub fn nexus_server::ServerConfig::from_env() -> nexus_server::Result<Self>
 pub fn nexus_server::ServerConfig::from_env_get(impl core::ops::function::FnMut(&str) -> core::option::Option<alloc::string::String>) -> nexus_server::Result<Self>
-pub fn nexus_server::ServerConfig::with_gpu_memory_ownership(self, impl core::iter::traits::collect::IntoIterator<Item = (usize, nexus_query_engine::runtime::backend_core::GpuMemoryOwnership)>) -> Self
+pub fn nexus_server::ServerConfig::with_gpu_memory_ownership(self, impl core::iter::traits::collect::IntoIterator<Item = (usize, nexus_query_runtime::runtime::backend_core::GpuMemoryOwnership)>) -> Self
 pub struct nexus_server::ServerError
 impl nexus_server::ServerError
 pub fn nexus_server::ServerError::as_adapter_error(&self) -> &datafusion_nexus::error::Error

@@ -385,18 +385,6 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
         JoinSide::Left => (build, &probe),
         JoinSide::Right => (&probe, build),
     };
-    super::super::common::trace_preflight_entry(
-        "materialize_compiled_one_shot_equi_join_probe_chunk",
-        "streamed_one_shot",
-        node_id,
-        reservations,
-        index_bytes,
-        output_rows,
-        left.rows,
-        left.bytes,
-        right.rows,
-        right.bytes,
-    );
     let output_reservation_bytes = match indices.output_upper_bound_size_bytes(
         context,
         node_id,
@@ -407,22 +395,8 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
         reservations,
         metrics,
     ) {
-        Ok(bytes) => {
-            super::super::common::trace_preflight_success(
-                "materialize_compiled_one_shot_equi_join_probe_chunk",
-                node_id,
-                reservations,
-                bytes,
-            );
-            bytes
-        },
+        Ok(bytes) => bytes,
         Err(error) => {
-            super::super::common::trace_preflight_failed(
-                "materialize_compiled_one_shot_equi_join_probe_chunk",
-                node_id,
-                reservations,
-                &error,
-            );
             reservations.release(gather_map_reservation, metrics);
             return Err(error);
         },

@@ -1763,18 +1763,6 @@ fn materialize_compiled_indices_output(
         },
     };
     let (left, right) = txn.sides();
-    super::common::trace_preflight_entry(
-        "materialize_compiled_indices_output",
-        execution_strategy,
-        node_id,
-        reservations,
-        gather_map_bytes,
-        expected_output_rows,
-        left.rows,
-        left.bytes,
-        right.rows,
-        right.bytes,
-    );
     let output_reservation_bytes = match txn.indices().output_upper_bound_size_bytes(
         context,
         node_id,
@@ -1785,12 +1773,8 @@ fn materialize_compiled_indices_output(
         reservations,
         metrics,
     ) {
-        Ok(bytes) => {
-            super::common::trace_preflight_success("materialize_compiled_indices_output", node_id, reservations, bytes);
-            bytes
-        },
+        Ok(bytes) => bytes,
         Err(error) => {
-            super::common::trace_preflight_failed("materialize_compiled_indices_output", node_id, reservations, &error);
             txn.rollback(reservations, metrics);
             return Err(error);
         },
