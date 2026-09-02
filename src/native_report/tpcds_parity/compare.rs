@@ -1,6 +1,9 @@
 use std::collections::BTreeSet;
 
-use super::*;
+use super::{
+    DataType, ParityComparisonMode, ParityFloatTolerance, ParityStatus, RecordBatch, Schema, collect_canonical_rows,
+    compare_canonical_rows, fingerprint_rows, fingerprint_schema_only,
+};
 
 /// Result of comparing CPU and native Arrow outputs.
 #[derive(Debug, Clone)]

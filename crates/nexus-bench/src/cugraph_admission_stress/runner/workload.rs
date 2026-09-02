@@ -1,3 +1,5 @@
+use std::error::Error;
+
 use super::*;
 
 pub(super) fn catalog(seed: i64) -> Vec<QuerySpec> {

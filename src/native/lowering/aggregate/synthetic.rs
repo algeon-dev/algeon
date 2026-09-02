@@ -3,7 +3,10 @@ use std::{collections::HashMap, sync::Arc};
 use arrow::datatypes::Field;
 use datafusion::physical_expr::PhysicalExpr;
 
-use super::*;
+use super::{
+    AggregateExec, CapabilityReason, Column, FieldBinding, LoweredNativeInput, NativeExpr, NativeQueryPlanBuilder,
+    Schema, SchemaRef, alias_if_needed, lower_physical_expr_with_bindings, projection_outputs,
+};
 use crate::native::lowering::{
     expr::physical_expr_field,
     naming::{sanitize_field_name, unique_name_with_suffix},

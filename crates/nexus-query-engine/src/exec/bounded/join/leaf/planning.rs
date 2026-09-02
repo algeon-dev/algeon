@@ -1,4 +1,10 @@
-use super::*;
+use super::{
+    BoundedJoinLeafLocalParquetSourceStream, ExecutionContext, LocalParquetSource, MemoryControlPolicy, NodeId,
+    QueryError, QueryErrorCode, QueryMetrics, Result, SourceAdjacentAggregateChunkCapHints, SourceChunkPlanningPolicy,
+    SourceTaskMemoryModel, annotate_join_leaf_source_chunk_batching_reasons,
+    apply_source_adjacent_aggregate_chunk_caps, plan_local_parquet_source_chunks_with_execution_context,
+    record_bounded_parquet_source_metrics, unsupported_bounded_shape, validate_local_parquet_source,
+};
 
 pub(in crate::exec::bounded) fn plan_bounded_join_leaf_local_parquet_source_stream(
     context: &ExecutionContext,

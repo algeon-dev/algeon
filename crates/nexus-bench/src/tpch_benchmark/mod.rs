@@ -1,9 +1,7 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
     fs,
-    path::{Path, PathBuf},
-    sync::Arc,
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    path::PathBuf,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use arrow::{record_batch::RecordBatch, util::display::array_value_to_string};

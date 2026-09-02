@@ -1,4 +1,6 @@
-use super::*;
+use std::path::PathBuf;
+
+use super::{CredentialMode, SourceStorageProfile, credential_free_endpoint_identity};
 
 pub const DEFAULT_TABLE_FORMAT_S3_SOURCE_STORAGE_PROFILE_ID: &str = "table_format_s3";
 

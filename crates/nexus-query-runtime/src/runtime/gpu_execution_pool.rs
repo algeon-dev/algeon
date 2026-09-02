@@ -23,6 +23,7 @@ use std::{
 };
 
 use futures::FutureExt;
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
 use serde::Serialize;
 use tokio::{
     runtime::Handle,
@@ -31,7 +32,6 @@ use tokio::{
 };
 
 use crate::{
-    error::{QueryError, QueryErrorCode, Result},
     observability::{
         GpuJobLifecycleState, JobDefinitionRow, RuntimeGpuJobObservation, RuntimeJobId, RuntimeObservationHandle,
         RuntimeObservationPayload, RuntimeStreamLeaseScope, RuntimeTopologyRecord, RuntimeWorkerId,

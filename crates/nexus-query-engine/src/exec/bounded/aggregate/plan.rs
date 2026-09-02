@@ -1,6 +1,11 @@
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
-use super::*;
+use super::{
+    AggregateNode, FilterNode, LimitNode, LocalParquetSource, NodeId, PlanNode, ProjectionNode, QueryPlan, Result,
+    SortNode, aggregate_spec_requires_whole_input, invalid_node_reference, lower_expr, lower_sort_spec,
+    topk_candidate_rows, unsupported_bounded_shape, validate_aggregate_capability, validate_final_aggregate_capability,
+    validate_projection_capability,
+};
 
 pub(in crate::exec::bounded) type ProjectionStage<'a> = (&'a ProjectionNode, &'a ArrowSchemaRef);
 

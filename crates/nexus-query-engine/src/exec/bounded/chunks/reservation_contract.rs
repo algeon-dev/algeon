@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    ActiveReservation, BoundedExecutionAttempt, BoundedSourceReservationPolicy, GpuDataFrame, LocalParquetSource,
+    MemoryControlPolicy, MemoryReservationRequest, QueryError, QueryErrorCode, ReservationKind, Result, SourceChunk,
+    SourceChunkBatch, read_local_parquet_chunk, record_chunk_retry_error, source_read_batch_request,
+    source_read_request,
+};
 
 pub(in crate::exec::bounded) fn chunk_requested_bytes(policy: MemoryControlPolicy, chunk: &SourceChunk) -> u64 {
     source_read_reservation_contract(policy, chunk).requested_bytes

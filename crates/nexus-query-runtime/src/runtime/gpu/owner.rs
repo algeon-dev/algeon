@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
 };
 
-use crate::error::{QueryError, QueryErrorCode, Result};
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
 
 const CLAIM_OPERATION: &str = "nexus_query_engine.gpu.owner.claim";
 

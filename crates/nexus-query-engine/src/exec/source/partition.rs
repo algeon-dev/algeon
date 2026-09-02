@@ -1,4 +1,9 @@
-use super::*;
+use std::time::Instant;
+
+use super::{
+    ArrowDataType, DataFrame, ExecutionContext, GpuDataFrame, LiteralValue, LocalParquetSource, QueryError,
+    QueryErrorCode, QueryMetrics, Result, timestamp_unit_to_cudf_resolution,
+};
 
 pub(super) fn inject_partition_columns(
     context: &ExecutionContext,

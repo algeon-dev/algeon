@@ -1,4 +1,7 @@
-use std::os::raw::c_char;
+use std::{
+    os::raw::{c_char, c_void},
+    ptr,
+};
 
 use super::*;
 

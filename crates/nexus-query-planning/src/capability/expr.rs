@@ -2,8 +2,11 @@
 //!
 //! Classifies whether each native [`Expr`] form is supported and, when not,
 //! produces a stable `(reason, expression_family)` rejection for reports.
+use std::collections::BTreeMap;
 
-use super::{model::*, *};
+use super::{
+    AggregateExpr, AggregateFunction, BinaryOp, Expr, LiteralValue, NodeId, QueryError, model::CapabilityDecision,
+};
 use crate::expr::DatePart;
 
 // Stable report facts for an expression capability miss.

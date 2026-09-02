@@ -1,4 +1,18 @@
-use super::*;
+use std::time::Duration;
+
+use super::{
+    ActiveReservation, AggregateExecutionStage, AggregateExecutionStrategy, BoundedExecutionAttempt, BoundedPlan,
+    CommittedPartial, ExecutionBudgetToken, ExecutionContext, GpuDataFrame, Instant, MemoryControlPolicy,
+    MemoryReservationRequest, PartitionedFinalMergeTopK, PartitionedFinalMergeTopKStats, QueryError, QueryErrorCode,
+    QueryMetrics, ReservationKind, Result, RuntimeResourceFacts, aggregate_strategy_capability_decision,
+    apply_partitioned_final_merge_topk, attach_budget_token_failure_facts, concatenate_partitioned_final_merge_outputs,
+    execute_compiled_bounded_aggregate_from_empty_input, execute_final_aggregate, execute_final_aggregate_projection,
+    execution_budget_token_for_boundary, final_merge_retry_facts, legacy_bounded_final_merge_task_id,
+    lower_final_aggregate_spec, observe_device_memory_bytes, partition_final_merge_partial,
+    partitioned_final_merge_partition_count, partitioned_final_merge_task_id, partitioned_final_merge_topk_candidate,
+    record_grouped_aggregate_strategy_decision, reduce_merge_fan_in, release_nested_partials_reverse,
+    release_partials_reverse,
+};
 
 /// Pre-aligned group-key partition partials from the source-adjacent streaming path.
 /// Compatible membership means every item shares the same partition count and key identity.

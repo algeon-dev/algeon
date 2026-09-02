@@ -3,6 +3,7 @@ use std::{
     fs,
     fs::File,
     path::{Path, PathBuf},
+    sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
 

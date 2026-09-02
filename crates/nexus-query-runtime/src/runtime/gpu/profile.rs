@@ -1,10 +1,11 @@
 //! Immutable per-device resource-controller profile.
 
-use crate::{
+use nexus_query_planning::{
     capability::{ContractStatus, ReservationRequirement},
     error::{QueryError, QueryErrorCode, Result},
-    runtime::ReservationKind,
 };
+
+use crate::runtime::ReservationKind;
 
 const OPERATION: &str = "nexus_query_engine.gpu.resource_profile";
 
@@ -286,8 +287,9 @@ fn invalid(device_ordinal: usize, field: &'static str, message: &'static str) ->
 
 #[cfg(test)]
 mod tests {
+    use nexus_query_planning::capability::ContractQuality;
+
     use super::*;
-    use crate::capability::ContractQuality;
 
     #[test]
     fn resolves_heterogeneous_profiles_and_slot_math() {

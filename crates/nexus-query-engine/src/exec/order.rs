@@ -1,9 +1,9 @@
-use std::cell::Cell;
+use std::{cell::Cell, sync::Arc, time::Instant};
 
 use arrow::datatypes::{DataType as ArrowDataType, Field, Schema, SchemaRef};
 use cudf::{DataFrame, SortOptions as CudfSortOptions};
 
-use super::*;
+use super::{QueryMetrics, execution_overrides};
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     naming::{DATAFUSION_ORDER_COLUMN_PREFIX, is_datafusion_order_column_name},

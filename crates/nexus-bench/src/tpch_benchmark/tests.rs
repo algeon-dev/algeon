@@ -1,16 +1,13 @@
+use std::{path::PathBuf, time::Duration};
+
 use nexus_workloads::tpch::TpchTableMetadata;
 
 use super::*;
 
-#[path = "tests/config_dataset.rs"]
 mod config_dataset;
-#[path = "tests/output_fingerprint.rs"]
 mod output_fingerprint;
-#[path = "tests/rejected_rows.rs"]
 mod rejected_rows;
-#[path = "tests/report_rows.rs"]
 mod report_rows;
-#[path = "tests/runtime_failures.rs"]
 mod runtime_failures;
 #[path = "tests/strategy_gate.rs"]
 mod strategy_gate_tests;

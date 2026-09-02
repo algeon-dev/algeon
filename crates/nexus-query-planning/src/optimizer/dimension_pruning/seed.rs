@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    BinaryOp, ColumnRef, Expr, JoinNode, JoinSide, JoinType, LocalParquetSource, NodeId, PlanNode, QueryNode,
+    QueryPlan, SourceColumnRef, SourceNode, mutable_local_parquet_source, predicate_columns, rewrite,
+};
 
 pub(super) fn seed_reader_predicates_from_group_key_filters(plan: QueryPlan) -> (QueryPlan, bool) {
     let mut nodes = plan.nodes().to_vec();

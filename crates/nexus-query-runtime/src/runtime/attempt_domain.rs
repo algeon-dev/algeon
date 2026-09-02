@@ -5,8 +5,9 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
+
 use super::{MemoryGrant, gpu::GrantIdentity, memory_domain::create_grant_memory_domain};
-use crate::error::{QueryError, QueryErrorCode, Result};
 
 /// The authoritative query-memory domain of one immutable ledger grant.
 #[derive(Debug, Clone)]

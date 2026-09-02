@@ -1,3 +1,5 @@
+use std::{fs::File, path::Path, sync::Arc};
+
 use super::*;
 
 pub(crate) fn write_discounted_lineitem_parquet(path: &Path) -> Arc<Schema> {

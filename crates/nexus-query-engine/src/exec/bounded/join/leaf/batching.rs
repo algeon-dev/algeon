@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    BoundedJoinLeafLocalParquetSourceStream, BoundedJoinLeafSourceStreamDynamicFilterStage,
+    BoundedSourceBatchingPolicy, ExecutionContext, LocalParquetFile, LocalParquetSource, MemoryControlPolicy,
+    SourceChunk, SourceChunkBatch, annotate_source_chunk_batching_reasons, plan_source_chunk_batches,
+};
 
 pub(super) fn stream_has_multi_source_batches(
     context: &ExecutionContext,
@@ -131,6 +135,8 @@ mod tests {
 
     use super::*;
     use crate::{
+        chunk::SourceChunkPlanningPolicy,
+        plan::NodeId,
         runtime::SourceChunkPlanningMode,
         source::{CredentialMode, LocalParquetSource, ParquetSourceLocation, ResolvedParquetSource},
     };

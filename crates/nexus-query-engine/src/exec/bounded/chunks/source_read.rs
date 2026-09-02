@@ -1,6 +1,24 @@
+use std::time::Instant;
+
 use parquet::file::reader::FileReader;
 
-use super::*;
+use super::{
+    ActiveReservation, BoundedExecutionAttempt, BoundedSourceBatchingPolicy, ExecutionContext, GpuDataFrame,
+    LocalParquetFile, LocalParquetSource, MemoryControlPolicy, MemoryReservationRequest, NodeId, QueryError,
+    QueryMetrics, ReservationKind, ResidentGpuFrame, Result, ScheduledLocalParquetReadOutput, SourceChunk,
+    apply_source_scan_limit_to_frame, chunk_retry_facts,
+    execution::source_chunk_batch_read_row_groups,
+    execution_overrides, is_retryable_chunk_error, observe_device_memory_bytes, plan_source_chunk_batches,
+    read_local_parquet_chunk, read_local_parquet_chunk_batch, record_chunk_retry_error,
+    reservation_contract::{
+        source_read_batch_reservation_request, try_read_local_parquet_chunk_with_corrected_budget_after_error,
+    },
+    source_adjacent::{
+        grow_source_batch_reservation_to_observed, grow_source_reservation_to_observed,
+        shrink_source_batch_reservation_to_observed_without_grow, shrink_source_reservation_to_observed_without_grow,
+    },
+    source_read_reservation_request, split_retryable_chunk,
+};
 
 pub(in crate::exec::bounded) fn read_local_parquet_chunks_required_only(
     execution: &mut BoundedExecutionAttempt<'_>,
@@ -662,6 +680,7 @@ mod tests {
 
     use super::*;
     use crate::{
+        chunk::SourceChunkBatch,
         expr::{BinaryOp, Expr, LiteralValue},
         runtime::SourceChunkPlanningMode,
         source::{LocalParquetSource, ParquetSourceLocation, ResolvedParquetSource},

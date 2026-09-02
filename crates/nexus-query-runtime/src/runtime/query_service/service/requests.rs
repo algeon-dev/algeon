@@ -1,13 +1,51 @@
 //! Blocking/async admission entrypoints and service close paths.
 
-use super::*;
-use crate::{admission::AttemptReservationPolicy, runtime::AdmittedAttemptProof};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, atomic::Ordering},
+    time::{Duration, Instant},
+};
+
+use nexus_query_planning::{
+    admission::{AttemptRequirement, AttemptReservationEnvelope, AttemptReservationPolicy},
+    error::{QueryError, QueryErrorCode, Result},
+};
+use tokio::time;
+
+use crate::{
+    observability::{AdmissionLifecycleState, AdmissionRequestId, RuntimeObservationHandle},
+    runtime::{
+        AdmittedAttemptProof, ExecutionCancellation,
+        backend_core::{GpuResourcePermit, ObservationCompletionDispatcher},
+        backend_lifecycle::ObservationPermit,
+    },
+};
 
 // `ExecutionCancellation` is intentionally a lightweight shared flag. The
 // blocking queue has no caller-owned wake handle, so bounded waits observe it
 // at this small fixed interval instead of retaining a stale provisional grant
 // until the full queue deadline.
 const ADMISSION_CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(10);
+
+use super::{
+    super::{
+        QueryServiceDrainOutcome, QueryServiceDrainPhase, QueryServiceDrainPhaseOutcome,
+        admission::{
+            AdmissionRequest, AdmissionState, DeviceAdmissionEntries, DeviceAdmissionEntry,
+            PendingPreflightReservation, PlacedQuery, QueryAdmissionWaiter, QueryCompletion, QueuedAdmissionTerminal,
+            admission_cancellation_or_deadline_error, admission_queue_full_error, finish_closed_queued_requests,
+            finish_removed_request_error, service_overloaded_error,
+        },
+        admission_rejection,
+        device_waiters::PendingDeviceSlotNotifications,
+        handle::{QueryHandle, QueryHandleLifetime},
+        record_admission_lifecycle,
+        resources::QueryServiceResources,
+    },
+    QueryService,
+    api::QueryAdmissionRequest,
+};
+use crate::runtime::query_service::service::query_service_shutdown_timeout;
 
 impl QueryService {
     /// Resolves each capability-compatible candidate exactly once before the

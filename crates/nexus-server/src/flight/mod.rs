@@ -1,12 +1,3 @@
-use std::{
-    collections::BTreeSet,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::{Duration, Instant},
-};
-
 use arrow::{
     array::{Array, Int32Array, StringArray, UInt8Array},
     datatypes::{DataType, Field, Schema},

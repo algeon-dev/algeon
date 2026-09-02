@@ -1,4 +1,6 @@
-use super::*;
+use std::collections::BTreeSet;
+
+use super::{Expr, LocalParquetFile, RecordBatch, RowGroupMetaData, array_i64_value, eval_bool, row_group_i64_range};
 
 pub(super) fn selected_or_all_row_groups(file: &LocalParquetFile, row_group_count: usize) -> Vec<usize> {
     if let Some(row_groups) = &file.row_groups

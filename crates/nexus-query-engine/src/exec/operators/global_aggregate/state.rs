@@ -1,6 +1,11 @@
+use std::sync::Arc;
+
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
-use super::*;
+use super::{
+    AggregateExpr, AggregateFunction, AggregateSpec, ArrowDataType, AvgStateAliases, Expr, Field, QueryError,
+    QueryErrorCode, Result, Schema, avg_sum_state_data_type, global_valid_count_state_alias, lower_column_expr,
+};
 
 pub(in crate::exec) fn partial_global_aggregate_spec(spec: &AggregateSpec) -> AggregateSpec {
     AggregateSpec::new(

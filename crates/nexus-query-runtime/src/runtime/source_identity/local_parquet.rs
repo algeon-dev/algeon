@@ -1,10 +1,11 @@
 //! Stable local-Parquet source identities.
 
-use super::fingerprint::*;
-use crate::{
+use nexus_query_planning::{
     chunk::{SourceChunk, SourceChunkBatch},
     source::LocalParquetSource,
 };
+
+use super::fingerprint::*;
 
 /// Stable identity for one GPU-local Parquet source scan or chunk.
 ///
@@ -158,14 +159,14 @@ mod tests {
     use std::{path::PathBuf, sync::Arc};
 
     use arrow::datatypes::{DataType, Field, Schema};
-
-    use super::GpuLocalParquetSourceCacheKey;
-    use crate::{
+    use nexus_query_planning::{
         chunk::SourceChunk,
         execution_contracts::SourceChunkPlanningMode,
         plan::NodeId,
         source::{LocalParquetFile, LocalParquetSource, ParquetSourceLocation, ResolvedParquetSource},
     };
+
+    use super::GpuLocalParquetSourceCacheKey;
 
     #[test]
     fn equivalent_source_contracts_share_an_identity_and_limits_do_not() {

@@ -1,3 +1,5 @@
+use std::{error::Error, path::Path, sync::Arc};
+
 use super::*;
 use crate::report_workload::tpcds::{build_tpcds_gpu_backend, close_tpcds_gpu_backend};
 

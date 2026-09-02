@@ -1,4 +1,4 @@
-use super::*;
+use super::{ExecutionBudgetReport, LimitSpec, QueryError, QueryErrorCode, Result, limit_slice};
 
 pub(super) fn final_sort_retained_bytes(report: &ExecutionBudgetReport) -> Result<u64> {
     let bytes = report.retained_bytes().ok_or_else(|| {

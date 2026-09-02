@@ -8,6 +8,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use nexus_query_planning::error::QueryError;
+
 use super::{
     AttemptBackendCounters, AttemptCancellation, AttemptCompletionQueue, AttemptLifecycle, AttemptLifecycleError,
 };
@@ -18,7 +20,6 @@ use crate::observability::{
     AttemptNativeFaultKind, AttemptNativeStatus, AttemptTeardownHealth,
 };
 use crate::{
-    error::QueryError,
     observability::{
         AttemptAdmissionFact, AttemptAdmissionWaitFact, AttemptCapacityDisposition, AttemptCleanupDisposition,
         AttemptComposedScheduleProjection, AttemptDisposition, AttemptFailureSummary, AttemptId, AttemptQueryId,
@@ -1075,9 +1076,10 @@ impl fmt::Debug for AttemptCompletion {
 
 #[cfg(test)]
 mod tests {
+    use nexus_query_planning::error::{QueryError, QueryErrorCode};
+
     use super::*;
     use crate::{
-        error::{QueryError, QueryErrorCode},
         observability::{
             DeterministicRuntimeObservationClock, RuntimeObservationConfig, RuntimeObservationRecord,
             write_runtime_observation_jsonl,
@@ -1723,7 +1725,7 @@ mod terminalize_race_tests {
         // The admission binding terminalizes the rejection at its source.
         admission_rejection
             .reject(&QueryError::new(
-                crate::error::QueryErrorCode::ServiceOverloaded,
+                nexus_query_planning::error::QueryErrorCode::ServiceOverloaded,
                 "test.admission_rejection",
                 "injected admission rejection",
             ))

@@ -1,6 +1,7 @@
 use std::{
     collections::{BTreeMap, hash_map::Entry},
     sync::Arc,
+    time::Instant,
 };
 
 use arrow::{

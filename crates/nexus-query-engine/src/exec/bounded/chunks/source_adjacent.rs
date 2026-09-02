@@ -1,4 +1,20 @@
-use super::*;
+use std::time::Instant;
+
+use super::{
+    ActiveReservation, BoundedExecutionAttempt, BoundedPlan, BoundedSourceBatchingPolicy,
+    BoundedSourceReservationPolicy, CommittedPartial, ExecutionBudgetToken, ExecutionContext, GpuDataFrame,
+    LocalParquetFile, LocalParquetSource, NodeId, ParquetReadStrategy, PartialAggregateInputEvidence, ProjectionNode,
+    QueryMetrics, ReservationKind, Result, ScheduledLocalParquetReadOutput, SourceChunk, SourceChunkBatch,
+    attach_chunk_resource_facts, attach_source_batch_resource_facts, chunk_reservation_request,
+    execute_filter_with_budget, execute_partial_aggregate_with_budget, execute_projection_with_budget,
+    execute_projection_with_budget_and_prepared,
+    execution::{execute_bounded_chunk_with_retry, release_committed_partials_reverse, sum_optional_u64},
+    execution_budget_token_for_boundary, is_retryable_chunk_error, is_source_adjacent_grouped_aggregate,
+    observe_device_memory_bytes, observed_source_read_reservation_request, partial_aggregate_source_chunk_fingerprint,
+    plan_source_chunk_batches, projection_regexp_replace_prepare,
+    read_local_parquet_chunk_batch_required_only_no_commit, record_chunk_retry_error,
+    reservation_contract::observed_source_read_batch_reservation_request,
+};
 
 pub(in crate::exec::bounded::chunks) fn bounded_source_adjacent_chunk_batching_enabled(
     context: &ExecutionContext,

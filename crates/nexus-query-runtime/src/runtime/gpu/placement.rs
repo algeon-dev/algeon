@@ -7,8 +7,11 @@
 //! boundary before queue maintenance or direct placement begins; this module
 //! only reads the resulting ledger state.
 
-use super::{DeviceLedger, DeviceRegistry, DeviceResourceEnvelope, DeviceResourceProfile};
-use crate::{admission::AttemptRequirement, capability::ReservationRequirement, error::Result};
+use nexus_query_planning::{admission::AttemptRequirement, capability::ReservationRequirement, error::Result};
+
+#[cfg(test)]
+use super::DeviceResourceEnvelope;
+use super::{DeviceLedger, DeviceRegistry, DeviceResourceProfile};
 
 /// Internal placement input derived from planner-owned capability evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,11 +241,10 @@ fn profile_supports_placement_request(
 
 #[cfg(test)]
 mod tests {
+    use nexus_query_planning::capability::{ContractQuality, ReservationRequirement};
+
     use super::*;
-    use crate::{
-        capability::{ContractQuality, ReservationRequirement},
-        runtime::{DeviceCapabilities, DeviceCapability, ReservationKind},
-    };
+    use crate::runtime::{DeviceCapabilities, DeviceCapability, ReservationKind};
 
     fn candidate(
         ordinal: usize,

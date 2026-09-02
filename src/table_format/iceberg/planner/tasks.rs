@@ -1,4 +1,21 @@
-use super::*;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
+
+use super::{
+    DataContentType, DataFileFormat, DataType, Error, ErrorCode, FileIO, FileScanTask, FileScanTaskDeleteFile,
+    IcebergNameMapping, IcebergScanPlanningTimeoutContext, IcebergSchema, Literal, PartitionSpec, PrimitiveLiteral,
+    REMOTE_FOOTER_FIELD_ID_PROOF_CONCURRENCY, Result, StreamExt, TASK_CONVERSION_OPERATION, TableFormat,
+    TableFormatColumnMapping, TableFormatColumnRole, TableFormatColumnSource, TableFormatDataFile,
+    TableFormatDataFileFormat, TableFormatDeleteFile, TableFormatDeleteFileContent,
+    TableFormatParquetReadStrategyConfig, TableFormatParquetSourceMetadata, TableFormatPartitionTransform,
+    TableFormatPartitionValue, TableFormatReadCapability, TableFormatScalarValue, TableFormatScanPlan,
+    TableFormatUnsupportedFeature, TableFormatUnsupportedFeatureCode, Transform, credential_free_endpoint_identity,
+    iceberg_field_to_arrow_data_type, iceberg_schema_to_datafusion_arrow_schema, iceberg_type_to_arrow_data_type,
+    is_supported_arrow_type, remote_iceberg_parquet_footer, remote_iceberg_parquet_footer_row_count,
+    resolve_table_format_parquet_source_with_metadata, scan_plan_needs_field_id_footer_schema,
+};
 
 /// Converts already planned Iceberg file tasks into adapter-owned scan facts.
 ///

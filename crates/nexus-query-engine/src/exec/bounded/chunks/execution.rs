@@ -1,6 +1,22 @@
+use std::time::Instant;
+
 use parquet::file::reader::FileReader;
 
-use super::*;
+use super::{
+    BoundedExecutionAttempt, BoundedPlan, CommittedPartial, LocalParquetSource, MemoryControlPolicy,
+    PartialAggregateInputEvidence, QueryError, QueryMetrics, ReservationKind, Result, ScheduledLocalParquetReadOutput,
+    SourceChunk, SourceChunkBatch, aggregate_spec_has_distinct, attach_chunk_resource_facts,
+    attach_source_batch_resource_facts, chunk_reservation_request, chunk_retry_facts,
+    execute_partial_aggregate_with_budget, execution_budget_token_for_boundary, is_retryable_chunk_error,
+    observe_device_memory_bytes, partial_aggregate_source_chunk_fingerprint, read_local_parquet_chunk,
+    read_local_parquet_chunk_batch_required_only_no_commit, record_chunk_retry_error,
+    reservation_contract::try_read_local_parquet_chunk_with_corrected_budget_after_error,
+    source_adjacent::{
+        execute_source_adjacent_chunk_stages, grow_source_reservation_to_observed,
+        shrink_source_reservation_to_observed_without_grow,
+    },
+    source_read_reservation_request, split_retryable_chunk,
+};
 
 pub(in crate::exec::bounded) struct RawSourceInput {
     pub(in crate::exec::bounded) partial: CommittedPartial,

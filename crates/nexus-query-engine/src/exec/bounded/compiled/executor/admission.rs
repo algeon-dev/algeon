@@ -1,4 +1,25 @@
-use super::*;
+use super::{
+    CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskAdmission,
+    join_build_key_uniqueness_probe_can_fallback, string_floor_max_bytes,
+};
+use crate::{
+    admission::CompiledJoinStrategySelection,
+    error::Result,
+    exec::bounded::{
+        BoundedPartitionTargetPolicy,
+        compiled::{
+            helpers::{
+                invalid, join_strategy, join_strategy_needs_build_key_uniqueness_probe, measure_join_build_key_unique,
+                plan_node,
+            },
+            resource::CompiledGpuResourcePayload,
+        },
+        reusable_hash_join_stream_target_output_bytes,
+    },
+    pipeline::{PipelineTask, PipelineTaskKind},
+    plan::{JoinNode, NodeId},
+    runtime::{MemoryControlPolicy, resident::GpuDataFrame},
+};
 
 impl CompiledGpuTaskExecutor<'_> {
     pub(super) fn select_join_build_strategy(

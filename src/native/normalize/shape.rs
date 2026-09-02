@@ -1,4 +1,6 @@
-use super::*;
+use super::{
+    GpuCandidate, NativeAggregateShapeKind, NativeStackRoot, NormalizedNativeInput, NormalizedNativeScan, wrap_shape,
+};
 
 // Shape strings are diagnostics/report contract values. The grammar is a
 // compact wrapper form: `Operator`, `Operator(child)`, and for binary inputs

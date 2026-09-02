@@ -4,11 +4,11 @@
 //! algorithm parameters, and result schemas without depending on cuVS. The
 //! optional cuVS executor is selected later by the runtime.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, fmt, sync::Arc};
 
 use serde_json::{Value, json};
 
-use super::*;
+use super::{DataType, Field, NodeId, Schema, SchemaRef};
 
 /// Public SQL names for the query-local cuVS operations.
 pub const CUVS_BRUTE_FORCE_KNN_FUNCTION: &str = "cuvs_brute_force_knn";

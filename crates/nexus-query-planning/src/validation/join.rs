@@ -3,13 +3,13 @@ use std::collections::BTreeSet;
 use arrow::datatypes::{DataType as ArrowDataType, SchemaRef};
 
 use super::{
+    Expr, QueryError, QueryErrorCode, Result,
     expressions::{validate_column, validate_literal},
     types::{
         is_decimal_type, is_numeric_type, require_arithmetic_type, require_boolean, require_comparable_types,
         require_compatible_types, require_date_or_timestamp, require_integral_type, require_scalar_operator_value,
         require_string, require_timezone_free_operator_key,
     },
-    *,
 };
 use crate::{
     datatypes::is_supported_arrow_cast,

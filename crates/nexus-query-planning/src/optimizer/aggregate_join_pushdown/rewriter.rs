@@ -1,4 +1,17 @@
-use super::*;
+use std::{collections::BTreeMap, sync::Arc};
+
+use super::{
+    AGGREGATE_JOIN_PUSHDOWN_RULE_NAME, AggregateFunction, AggregateJoinLineage,
+    AggregateJoinPushdownCandidateDiagnostics, AggregateJoinPushdownDiagnostics, AggregateJoinPushdownPolicy,
+    AggregateJoinPushdownRejectedReason, AggregateNode, AggregateSpec, ColumnRef, Expr, JoinNode, JoinOutputColumn,
+    JoinSide, JoinSpec, JoinType, NodeId, PlanFacts, PlanNode, PreAggregateColumn, PreAggregateMeasureState,
+    ProjectionNode, QueryNode, QueryPlan, SchemaBehavior, SchemaRef, arrow_fixed_width_byte_size,
+    coalesce_preagg_projection_outputs, decomposable_union_partial_aggregate_expr,
+    final_aggregate_rewrite_after_preagg, final_aggregate_spec_after_union_preagg, join_key_for_side, join_side_index,
+    join_with_replaced_input, measure_input_projection_outputs, new_join_output_schema, opposite_side,
+    preaggregate_measure_states, preaggregate_schema, preaggregate_spec, preaggregate_state_aliases,
+    push_unique_preagg_group_column, rewrite, rewritten_join_key_after_preagg, unique_measure_input_alias,
+};
 
 pub(in crate::optimizer::aggregate_join_pushdown) struct AggregateJoinPushdownRewriter<'a> {
     pub(in crate::optimizer::aggregate_join_pushdown) original: &'a QueryPlan,

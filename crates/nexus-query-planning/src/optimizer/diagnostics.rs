@@ -1,4 +1,18 @@
-use super::*;
+use super::{
+    AGGREGATE_JOIN_PUSHDOWN_RULE_NAME, AggregateJoinPushdownCandidateDiagnostics,
+    COUNT_NON_NULL_COLUMN_PRUNING_RULE_NAME, CountNonNullColumnPruningCandidateDiagnostics,
+    DIMENSION_DERIVED_ROW_GROUP_PRUNING_RULE_NAME, DYNAMIC_FILTER_ROUTE_DISCOVERY_RULE_NAME,
+    DimensionDerivedRowGroupPruningCandidateDiagnostics, DynamicFilterRouteCandidateDiagnostics,
+    JOIN_BUILD_SIDE_SELECTION_RULE_NAME, JOIN_FILTER_REASSOCIATION_RULE_NAME,
+    JoinBuildSideSelectionCandidateDiagnostics, JoinFilterReassociationCandidateDiagnostics,
+    LOCAL_PARQUET_SOURCE_REUSE_RULE_NAME, LocalParquetSourceReuseCandidateDiagnostics, NativeOptimizerDiagnostics,
+    OUTER_JOIN_NULL_REJECTION_RULE_NAME, OuterJoinNullRejectionCandidateDiagnostics,
+    PROJECTION_SIMPLIFICATION_RULE_NAME, ProjectionSimplificationCandidateDiagnostics, SEMIJOIN_REDUCTION_RULE_NAME,
+    SHARED_RESIDENT_EXTRACTION_RULE_NAME, SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME, STREAM_FANOUT_REPLAY_RULE_NAME,
+    SemijoinReductionCandidateDiagnostics, SemijoinReductionCostGateDiagnostics, SemijoinReductionCostSignal,
+    SemijoinReductionKeyMappingDiagnostics, SharedResidentExtractionCandidateDiagnostics,
+    SharedSubplanMaterializationCandidateDiagnostics, StreamFanoutReplayCandidateDiagnostics,
+};
 
 impl NativeOptimizerDiagnostics {
     /// Projects native optimizer rule diagnostics into stable key/value rows.

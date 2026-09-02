@@ -1,4 +1,15 @@
-use super::*;
+use std::collections::VecDeque;
+
+use super::{
+    ActiveReservation, BoundedExecutionAttempt, BoundedJoinSideFrame, BoundedPartitionTargetPolicy,
+    BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState, ExecutionContext, Instant, JoinNode, JoinSide,
+    NodeId, QueryError, QueryMetrics, ResidentFrameStreamSource, ResidentGpuFrame, Result, execution_overrides,
+    join_side_output_upper_bound_bytes,
+    materialize::{materialize_bounded_root_hash_join_index_slice, release_root_hash_join_stream_outputs},
+    probe::reusable_hash_join_execution_strategy,
+    projected_output_columns_for_retained_sizing, release_bounded_join_side_frame,
+    release_bounded_root_hash_join_build_state, side_metric,
+};
 
 #[expect(
     clippy::too_many_arguments,

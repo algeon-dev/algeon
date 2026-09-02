@@ -12,7 +12,6 @@ mod recursion_guard;
 mod remedy;
 
 #[cfg(test)]
-#[path = "tests.rs"]
 mod tests;
 
 use std::sync::Arc;

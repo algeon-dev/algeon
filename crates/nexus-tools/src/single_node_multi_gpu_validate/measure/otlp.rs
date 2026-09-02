@@ -1,3 +1,8 @@
+use std::{
+    sync::{Arc, Condvar, Mutex},
+    time::Duration,
+};
+
 use super::*;
 
 /// Runtime-only OTLP exporter input. Its full endpoint is deliberately never

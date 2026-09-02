@@ -1,4 +1,14 @@
-use super::*;
+use std::time::Instant;
+
+use super::{
+    BackgroundLakehouseCacheFillEnqueue, DataFrame, ExecutionBudgetRequest, ExecutionContext, GpuDataFrame,
+    LakehouseOptimizedBatchCacheEntry, LocalParquetFile, LocalParquetSource, NodeId, ParquetReadOptions, QueryError,
+    QueryErrorCode, QueryMetrics, Result, SourceChunk, acquire_lakehouse_optimized_batch_read_pin,
+    append_source_order_columns, coerce_local_parquet_source_schema, enqueue_background_lakehouse_cache_chunk_fill,
+    enqueue_background_lakehouse_cache_file_fill, optimized_cache_path_fact,
+    record_background_cache_chunk_fill_enqueue_runtime, record_background_cache_file_fill_enqueue_runtime,
+    record_source_chunk_batch_read_runtime,
+};
 
 pub(super) fn record_background_cache_file_fill_enqueue(
     context: &ExecutionContext,

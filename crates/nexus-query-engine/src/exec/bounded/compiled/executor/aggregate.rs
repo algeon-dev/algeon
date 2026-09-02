@@ -1,4 +1,23 @@
-use super::*;
+use super::{CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskOutput};
+use crate::{
+    error::Result,
+    exec::bounded::{
+        ResidentGpuFrame,
+        compiled::{
+            helpers::{
+                attach_task_facts, invalid, plan_node, single_input_resource, single_output_resource, sort_node,
+            },
+            resource::CompiledGpuResourcePayload,
+        },
+        execute_bounded_generic_unary_from_frame, execute_compiled_bounded_aggregate_from_frame,
+        execute_compiled_bounded_aggregate_from_source_stream, execute_compiled_bounded_aggregate_from_stream,
+        execute_final_sort_node_from_committed_with_retry, execute_final_sort_node_from_frame_with_retry,
+        execute_final_sort_node_from_stream_with_retry,
+    },
+    pipeline::{PipelineTask, PipelineTaskKind, ResidentResourceId},
+    plan::{LimitNode, NodeId, PlanNode, QueryPlan, SortNode},
+    source::SourceNode,
+};
 
 impl CompiledGpuTaskExecutor<'_> {
     pub(super) fn execute_aggregate_task(
@@ -323,11 +342,11 @@ mod tests {
 
     use arrow::datatypes::{DataType, Field, Schema};
 
-    use super::*;
+    use super::final_sort_limit_fusion_allowed;
     use crate::{
         expr::{Expr, LimitSpec, SortExpr, SortSpec},
-        plan::QueryPlanBuilder,
-        source::{GpuResidentSource, LocalParquetSource},
+        plan::{PlanNode, QueryPlanBuilder},
+        source::{GpuResidentSource, LocalParquetSource, SourceNode},
     };
 
     #[test]

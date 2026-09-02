@@ -1,4 +1,12 @@
-use super::*;
+use super::ResidentFrameStreamPayload;
+use crate::{
+    exec::bounded::{
+        ActiveReservation, BoundedJoinLeafLocalParquetSourcePrefetch, BoundedJoinLeafLocalParquetSourceStream,
+        ResidentGpuFrame,
+    },
+    plan::NodeId,
+    runtime::resident::GpuDataFrame,
+};
 
 /// GPU-resident payload stored in the compiled scheduler resource table.
 #[doc(hidden)]

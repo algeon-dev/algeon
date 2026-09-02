@@ -1,6 +1,15 @@
 //! Graph algorithm definitions, registry metadata, and construction contracts.
+use std::{fmt, sync::Arc};
 
-use super::*;
+use super::{
+    Field, GraphAlgorithmParams, GraphBetweennessCentralityParams, GraphBfsParams, GraphCoreNumberParams,
+    GraphDegreesAllParams, GraphEcgParams, GraphEdgeBetweennessCentralityParams, GraphEigenvectorCentralityParams,
+    GraphForceAtlas2Params, GraphHitsParams, GraphInDegreesAllParams, GraphKCoreParams, GraphKatzCentralityParams,
+    GraphLayoutRequirement, GraphLeidenParams, GraphLouvainParams, GraphMstParams, GraphOutDegreesAllParams,
+    GraphPageRankParams, GraphPersonalizedPageRankParams, GraphSccParams, GraphSimilarityParams,
+    GraphSpectralClusteringParams, GraphSsspParams, GraphSsspSource, GraphTriangleCountAllParams, GraphWccParams,
+    Schema, SchemaRef, stable_graph_result_schema,
+};
 
 /// Capability-envelope memory-boundary label for graph algorithm rejection facts.
 pub const GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY: &str = "graph_algorithm";
@@ -856,7 +865,7 @@ pub const GRAPH_OPERATION_REGISTRY: &[GraphOperationDefinition] = &[
 ///
 /// `weight` and `edge_id` are optional. When `weight` is present,
 /// duplicate-edge normalization follows the selected
-/// [`GraphConstructionPolicy`] and [`EdgeWeightCombiner`] so conflicting
+/// [`GraphConstructionPolicy`] and [`crate::plan::EdgeWeightCombiner`] so conflicting
 /// weights are deterministic. When `edge_id` is present, the column is carried
 /// through graph construction as the stable user-visible edge id used by
 /// edge-id predicates.

@@ -1,13 +1,14 @@
 use std::collections::BTreeMap;
 
-use super::{BudgetedExecutionEvent, QueryId, QueryMetrics};
-use crate::{
+use nexus_query_planning::{
     graph_memory::{
         GraphClaimCalibrationRow, GraphClaimExecutionState, GraphMeasuredPeakProvenance, GraphReservationReport,
     },
-    harness::max_option,
     plan::{GraphAlgorithm, NodeId},
 };
+
+use super::{BudgetedExecutionEvent, QueryId, QueryMetrics};
+use crate::harness::max_option;
 
 /// cuGraph algorithm runtime metric row.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -244,11 +245,12 @@ impl QueryMetrics {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{
-        graph_memory::{GraphClaimExecutionState, GraphMeasuredPeakProvenance, GraphModelErrorRatio},
-        metrics::QueryId,
+    use nexus_query_planning::graph_memory::{
+        GraphClaimExecutionState, GraphMeasuredPeakProvenance, GraphModelErrorRatio,
     };
+
+    use super::*;
+    use crate::metrics::QueryId;
 
     fn calibration_row(
         query_id: &str,

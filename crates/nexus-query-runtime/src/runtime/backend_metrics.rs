@@ -6,13 +6,13 @@
 
 use std::sync::{Arc, Mutex};
 
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
 use serde::Serialize;
 
 pub use crate::metrics::BACKEND_ATTEMPT_DURATION_BUCKETS_NS;
 #[cfg(test)]
 use crate::runtime::gpu::LedgerTransitionKind;
 use crate::{
-    error::{QueryError, QueryErrorCode, Result},
     observability::{AttemptDisposition, RuntimeTerminalOutcome, SealedAttemptProjection},
     runtime::gpu::{DeviceAdmissionHealth, DeviceMemoryFailureReport, DeviceTelemetryStatus, LedgerTransition},
 };

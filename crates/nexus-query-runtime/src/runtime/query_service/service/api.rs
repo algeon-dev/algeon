@@ -1,10 +1,9 @@
 //! Public request/snapshot DTOs for query-service admission.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
 use serde::Serialize;
-
-use super::*;
 
 /// Result of a controlled device-quarantine injection.
 ///
@@ -40,9 +39,12 @@ impl DeviceQuarantineInjection {
         self.newly_quarantined
     }
 }
+use nexus_query_planning::admission::{AttemptRequirement, QueryPlanCapabilityProof};
+
 use crate::{
-    admission::{AttemptRequirement, QueryPlanCapabilityProof},
     attempt::{AttemptAdmissionBinding, AttemptFinalizerSlot},
+    observability::{RuntimeObservationHandle, RuntimeObservationOwner},
+    runtime::{ExecutionCancellation, query_service::config::QueueBounds},
 };
 
 #[derive(Debug, Default)]
@@ -538,13 +540,13 @@ mod tests {
     use std::sync::Arc;
 
     use arrow::datatypes::{DataType, Field, Schema};
-
-    use super::*;
-    use crate::{
-        observability::RuntimeObservationConfig,
+    use nexus_query_planning::{
         plan::QueryPlanBuilder,
         source::{GpuResidentSource, SourceNode},
     };
+
+    use super::*;
+    use crate::observability::RuntimeObservationConfig;
 
     fn explicit_sink_capability_proof() -> QueryPlanCapabilityProof {
         let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
@@ -572,13 +574,13 @@ mod tests {
             0,
             0,
             Some(4096),
-            crate::admission::EstimateQuality::Modeled,
+            nexus_query_planning::admission::EstimateQuality::Modeled,
             Vec::new(),
         ));
         let evidence = request.resolved_attempt_requirement().expect("test evidence is retained");
 
         assert_eq!(evidence.soft_working_set_hint_bytes(), Some(4096));
-        assert_eq!(evidence.estimate_quality(), crate::admission::EstimateQuality::Modeled);
+        assert_eq!(evidence.estimate_quality(), nexus_query_planning::admission::EstimateQuality::Modeled);
         assert!(request.submitted_plan_capability_evidence().is_none());
     }
 
@@ -586,8 +588,13 @@ mod tests {
     fn test_placement_overlay_is_independent_of_proof_attachment_order() {
         let proof = explicit_sink_capability_proof();
         let original_proof = proof.clone();
-        let placement =
-            AttemptRequirement::from_parts(0, 0, Some(4096), crate::admission::EstimateQuality::Measured, Vec::new());
+        let placement = AttemptRequirement::from_parts(
+            0,
+            0,
+            Some(4096),
+            nexus_query_planning::admission::EstimateQuality::Measured,
+            Vec::new(),
+        );
 
         let proof_first = QueryAdmissionRequest::new()
             .with_query_plan_capability_proof(proof.clone())
@@ -616,7 +623,7 @@ mod tests {
                 0,
                 0,
                 Some(4096),
-                crate::admission::EstimateQuality::Measured,
+                nexus_query_planning::admission::EstimateQuality::Measured,
                 Vec::new(),
             ));
         assert_eq!(request.planned_capability_proof(), Some(&before));

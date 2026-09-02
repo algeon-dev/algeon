@@ -9,9 +9,7 @@
 //! GPU-resident output handling.
 
 use std::{
-    cell::Cell,
     collections::HashMap,
-    rc::Rc,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -435,7 +433,7 @@ pub fn execute_query_plan_with_gpu_inputs(
     let trace_id = context.trace_id().cloned();
 
     execute_query_plan_with_correlation(context, plan, gpu_inputs, query_id.clone(), trace_id.clone())
-        .map_err(|error| error.with_query_id(query_id).with_optional_trace_id(trace_id.as_ref()))
+        .map_err(|error| with_optional_trace_id(error.with_query_id(query_id), trace_id.as_ref()))
 }
 
 /// Executes a native plan while retaining metrics and sealed observations on
@@ -592,7 +590,7 @@ fn execute_query_plan_with_gpu_inputs_and_runtime_observation_authority(
         .and_then(|observed_context| {
             execute_query_plan_output(&observed_context, plan, gpu_inputs, &mut metrics, Some(&execution_scope))
         })
-        .map_err(|error| error.with_query_id(query_id).with_optional_trace_id(trace_id.as_ref()));
+        .map_err(|error| with_optional_trace_id(error.with_query_id(query_id), trace_id.as_ref()));
     let terminal = match &result {
         Ok(_) => RuntimeTerminalOutcome::Succeeded,
         Err(error) => RuntimeTerminalOutcome::from_query_error(error),
@@ -666,6 +664,13 @@ fn query_metrics(context: &ExecutionContext, query_id: QueryId, trace_id: Option
     }
 }
 
+fn with_optional_trace_id(error: QueryError, trace_id: Option<&TraceId>) -> QueryError {
+    match trace_id {
+        Some(trace_id) => error.with_trace_id(trace_id.clone()),
+        None => error,
+    }
+}
+
 fn execute_query_plan_output(
     context: &ExecutionContext,
     plan: &QueryPlan,
@@ -698,19 +703,6 @@ fn execute_query_plan_output(
         }
     };
     Ok(output)
-}
-
-trait QueryErrorCorrelationExt {
-    fn with_optional_trace_id(self, trace_id: Option<&TraceId>) -> Self;
-}
-
-impl QueryErrorCorrelationExt for QueryError {
-    fn with_optional_trace_id(self, trace_id: Option<&TraceId>) -> Self {
-        match trace_id {
-            Some(trace_id) => self.with_trace_id(trace_id.clone()),
-            None => self,
-        }
-    }
 }
 
 /// Materialize a GPU-resident result handle to host Arrow and record boundary metrics.

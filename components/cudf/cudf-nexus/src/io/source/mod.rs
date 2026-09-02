@@ -20,12 +20,7 @@
 //! downstream instead of silently treating them as ordinary local full-file
 //! reads.
 
-use std::{
-    fmt,
-    fs::File,
-    path::{Path, PathBuf},
-    sync::Arc,
-};
+use std::path::Path;
 
 use arrow::datatypes::DataType as ArrowDataType;
 use parquet::{

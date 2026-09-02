@@ -1,4 +1,9 @@
-use super::*;
+use std::collections::BTreeSet;
+
+use super::{
+    AggregateFunction, CapabilityDecision, JoinType, NodeId, PlanNode, ProjectionScalarSetopKind,
+    ProjectionScalarSetopShape, QueryPlan, collect_reachable_node_ids, node_operator_fact,
+};
 
 pub(in crate::capability) fn projection_scalar_setop_shape_decision(
     plan: &QueryPlan,

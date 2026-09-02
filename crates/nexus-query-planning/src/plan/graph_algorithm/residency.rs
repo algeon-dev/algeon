@@ -1,6 +1,10 @@
 //! Resident graph identity, fingerprinting, and planning analysis.
+use std::fmt;
 
-use super::*;
+use super::{
+    EdgeDedupStrategy, EdgeNormalizeSpec, EdgeWeightCombiner, Expr, Field, GraphAlgorithmSpec, NodeId, PlanNode,
+    ProjectionNode, QueryPlan,
+};
 
 /// Concrete graph orientation used for resident graph cache keys.
 ///

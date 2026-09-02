@@ -1,4 +1,11 @@
-use super::*;
+use std::collections::BTreeSet;
+
+use super::{
+    AggregateNode, AggregateSpec, CapabilityDecision, Expr, FinalRollupWidthClass, JoinNode, JoinSide, JoinType,
+    NodeId, PlanNode, QueryPlan, RollupRankTopKAfterAggregateJoinPushdownShape, SourceNode, WindowFunction,
+    collect_reachable_node_ids_from, join_node_with_missing_reason, node_kind_for_fact, node_operator_fact,
+    peel_projection_chain_ids_for_shape, sort_input_with_missing_reason, validate_bounded_join_subtree_for_capability,
+};
 
 pub(in crate::capability) fn rollup_rank_topk_after_aggregate_join_pushdown_shape_decision(
     plan: &QueryPlan,

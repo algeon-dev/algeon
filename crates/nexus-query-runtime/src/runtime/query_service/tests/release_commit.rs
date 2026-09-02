@@ -688,10 +688,7 @@ fn duplicate_root_cleanup_handoff_marks_backend_unhealthy_before_capacity_releas
     assert!(report.cleanup_failure_count_complete);
     let cleanup_failure = report.first_cleanup_failure.as_ref().expect("abandoned cleanup is retained");
     assert_eq!(cleanup_failure.phase(), crate::observability::CleanupFailurePhase::QueryServiceCallbackAbandoned);
-    assert_eq!(
-        cleanup_failure.failure().code(),
-        crate::observability::AttemptFailureCode::CleanupCallbackAbandoned
-    );
+    assert_eq!(cleanup_failure.failure().code(), crate::observability::AttemptFailureCode::CleanupCallbackAbandoned);
     assert!(cleanup_failure.complete(), "the sole cleanup failure remains a complete representative");
     assert_eq!(report.capacity_disposition, crate::observability::AttemptCapacityDisposition::RetainedQuarantine);
     assert_eq!(report.health_transition, Some(crate::observability::AttemptHealthTransition::BackendUnhealthy));
@@ -878,7 +875,7 @@ fn oom_release_projects_truthful_resource_evidence() {
     };
     assert_eq!(allocation_error.kind(), cudf::ErrorKind::ResourceExhausted);
     drop(context);
-    let terminal_error = crate::error::QueryError::from_cudf(
+    let terminal_error = nexus_query_planning::error::QueryError::from_cudf(
         "nexus_query_engine.query_service.release_commit_test",
         "attempt allocation exceeded its immutable grant limit",
         allocation_error,
@@ -998,12 +995,8 @@ fn disposition_mapping_matches_isolation_rules() {
     cleared_usage.current_allocations = 0;
     cleared_usage.current_bytes = 0;
     cleared_usage.current_aligned_bytes = 0;
-    let (disposition, usage) = decide_capacity_disposition(
-        0,
-        Some(&domain),
-        CleanupEvidence::Completed,
-        Some(cleared_usage),
-    );
+    let (disposition, usage) =
+        decide_capacity_disposition(0, Some(&domain), CleanupEvidence::Completed, Some(cleared_usage));
     assert_eq!(disposition, CapacityCommitDisposition::HealthyReuse);
     let usage = usage.expect("healthy device samples domain usage");
     assert_eq!(usage.domain_id, domain.domain_id());
@@ -1018,12 +1011,8 @@ fn disposition_mapping_matches_isolation_rules() {
     for (field, inject_residual) in residuals {
         let mut residual_usage = cleared_usage;
         inject_residual(&mut residual_usage);
-        let (disposition, observed_usage) = decide_capacity_disposition(
-            0,
-            Some(&domain),
-            CleanupEvidence::Completed,
-            Some(residual_usage),
-        );
+        let (disposition, observed_usage) =
+            decide_capacity_disposition(0, Some(&domain), CleanupEvidence::Completed, Some(residual_usage));
         let reason = match disposition {
             CapacityCommitDisposition::DeviceQuarantine { reason } => reason,
             disposition => panic!("nonzero {field} must quarantine the device, got {disposition:?}"),
@@ -1073,7 +1062,7 @@ fn disposition_mapping_matches_isolation_rules() {
             match cudf::runtime::DeviceFaultNativeStatus::CUDF_FATAL_CUDA {
                 cudf::runtime::DeviceFaultNativeStatus::Cudf(status) => {
                     crate::observability::AttemptNativeStatus::Cudf(status)
-                }
+                },
                 _ => unreachable!(),
             },
         ),
@@ -1086,12 +1075,8 @@ fn disposition_mapping_matches_isolation_rules() {
             "test_native_fault",
             Some(native_status),
         );
-        let native_fault_decision = decide_capacity_commit(
-            0,
-            Some(&domain),
-            CleanupEvidence::Completed,
-            Some(cleared_usage),
-        );
+        let native_fault_decision =
+            decide_capacity_commit(0, Some(&domain), CleanupEvidence::Completed, Some(cleared_usage));
         assert!(
             matches!(native_fault_decision.disposition, CapacityCommitDisposition::DeviceQuarantine { .. }),
             "a native device fault quarantines capacity before report publication"

@@ -10,7 +10,12 @@ use crate::{
     error::{QueryError, QueryErrorCode, Result},
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, Expr, LimitSpec, LiteralValue},
     plan::{AggregateNode, NodeId, PlanNode, ProjectionNode, QueryNode, QueryPlan, ResultSink, UnionNode},
-    prepared::*,
+    prepared::{
+        AvgStateAliases, LoweredAggregate, aggregate_spec_has_avg, aggregate_spec_has_distinct,
+        aggregate_spec_has_floating_statistical_aggregate, lower_aggregate_spec, lower_column_expr, lower_expr,
+        lower_filter_predicate_expr, lower_final_aggregate_spec, lower_named_column_expr, lower_projection_output_expr,
+        lower_sort_spec,
+    },
     source::{local_parquet_execution_frame_schema, validate_literal_batch_source, validate_local_parquet_source},
 };
 
@@ -20,7 +25,12 @@ mod join;
 mod types;
 
 #[doc(hidden)]
-pub use aggregate::*;
+pub use aggregate::{
+    global_count_star_expr, global_valid_count_state_alias, host_group_expr_output_name, validate_aggregate_capability,
+    validate_aggregate_output_names, validate_avg_output_fields, validate_avg_state_alias_collisions,
+    validate_final_aggregate_capability, validate_global_aggregate_capability,
+    validate_global_valid_count_state_alias_collisions,
+};
 use expressions::{comma_separated, validate_expr, validate_projection_output_expr};
 use join::validate_join_capability;
 use types::{require_boolean, require_scalar_operator_value, require_timezone_free_operator_key};

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::*;
 
 fn mixed_join_indices_impl(

@@ -1,3 +1,9 @@
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, atomic::AtomicBool},
+    time::Duration,
+};
+
 use super::*;
 
 /// Runner-local facts captured at the close boundary. The evidence

@@ -1,5 +1,3 @@
-use std::{collections::VecDeque, time::Duration};
-
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{final_merge_policy::BoundedFinalMergePolicy, *};

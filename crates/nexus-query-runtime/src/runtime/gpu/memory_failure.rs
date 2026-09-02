@@ -9,9 +9,8 @@ use std::{
 };
 
 use cudf::{DeviceMemoryFailureAction, DeviceMemoryFailureSource, DeviceMemoryPoolUsage};
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
 use serde::Serialize;
-
-use crate::error::{QueryError, QueryErrorCode, Result};
 
 const TRACKER_LOOKUP_OPERATION: &str = "nexus_query_engine.gpu.memory_failure_tracker.lookup";
 

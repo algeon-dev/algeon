@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, fs::File, path::Path, sync::Arc};
 
 use nexus_query_engine::parquet_stats::{ColumnByteKind, row_group_column_bytes};
 use parquet::file::reader::{FileReader, SerializedFileReader};

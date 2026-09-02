@@ -19,6 +19,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
 use serde::Serialize;
 
 use super::{
@@ -29,10 +30,7 @@ use super::{
     },
     query_service::{QueryService, QueryServiceDrainOutcome, QueryServiceDrainPhaseOutcome},
 };
-use crate::{
-    error::{QueryError, QueryErrorCode, Result},
-    observability::in_runtime_observation_delivery,
-};
+use crate::observability::in_runtime_observation_delivery;
 
 const BUILD_OPERATION: &str = "nexus_query_engine.gpu_backend_core.build";
 const CLOSE_OPERATION: &str = "nexus_query_engine.gpu_backend_core.close";

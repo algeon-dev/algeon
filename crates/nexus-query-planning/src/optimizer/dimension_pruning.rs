@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, fs::File};
+use std::collections::BTreeSet;
 
 use arrow::{
     array::{

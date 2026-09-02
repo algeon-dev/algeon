@@ -7,10 +7,8 @@
 // `(warmups + iterations)` times, printing one TSV row per measured iteration.
 
 use std::{
-    collections::BTreeMap,
     error::Error,
     io::{self, Write},
-    path::Path,
     sync::Arc,
     time::{Duration, Instant},
 };

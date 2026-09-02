@@ -3,8 +3,14 @@
 //! Frontends construct plans through [`QueryPlanBuilder`] so node ids stay
 //! stable and forward references are impossible. Equivalent nodes (same kind
 //! and facts) are interned as a small CSE step.
+use std::sync::Arc;
 
-use super::*;
+use super::{
+    AggregateNode, AggregateSpec, EdgeNormalizeNode, EdgeNormalizeSpec, Expr, Field, FilterNode, GraphAlgorithmNode,
+    GraphAlgorithmSpec, GraphConstructionPolicy, JoinNode, JoinSpec, LimitNode, LimitSpec, NodeId, PlanFacts, PlanNode,
+    ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, ResultSink, Schema, SchemaBehavior, SchemaRef, SortNode,
+    SortSpec, SourceNode, UnionNode, VectorAlgorithmNode, VectorAlgorithmSpec, WindowNode, WindowSpec,
+};
 use crate::error::{QueryError, QueryErrorCode, Result};
 
 /// Builder for native query plans.

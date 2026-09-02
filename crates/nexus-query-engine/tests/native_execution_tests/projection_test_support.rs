@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::*;
 
 pub(super) fn assert_bounded_duplicate_host_sink_schema_restoration() {

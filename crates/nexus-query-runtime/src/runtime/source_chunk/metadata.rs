@@ -5,16 +5,18 @@ use std::{
     time::{Duration, Instant},
 };
 
+use nexus_query_planning::{
+    error::{QueryError, QueryErrorCode, Result},
+    source::{LocalParquetFile, LocalParquetSource, ParquetReadStrategy, ParquetSourceLocation},
+};
 use parquet::file::{
     metadata::ParquetMetaData,
     reader::{FileReader, SerializedFileReader},
 };
 
 use crate::{
-    error::{QueryError, QueryErrorCode, Result},
     parquet_metadata::{fetch_object_store_parquet_metadata, read_parquet_footer_sidecar},
     runtime::{ExecutionContext, S3ObjectStoreKey},
-    source::{LocalParquetFile, LocalParquetSource, ParquetReadStrategy, ParquetSourceLocation},
 };
 
 const OBJECT_STORE_FOOTER_METADATA_FETCH_TIMEOUT: Duration = Duration::from_secs(30);
@@ -555,16 +557,17 @@ pub(super) struct FooterMetadataLoad {
     pub(super) load_count: u64,
 }
 
-use nexus_query_planning::chunk::{
-    decimal::{
-        object_store_decimal_reader_predicate_requires_footer_contract, parquet_reader_decimal_types,
-        reader_decimal_type_metadata_unavailable_error, validate_object_store_reader_decimal_types,
-        validate_supplied_reader_decimal_types_match_footer,
+use nexus_query_planning::{
+    chunk::{
+        decimal::{
+            object_store_decimal_reader_predicate_requires_footer_contract, parquet_reader_decimal_types,
+            reader_decimal_type_metadata_unavailable_error, validate_object_store_reader_decimal_types,
+            validate_supplied_reader_decimal_types_match_footer,
+        },
+        row_group::{RowGroupMetadata, row_group_metadata_from_footer, source_row_group_metadata},
     },
-    row_group::{RowGroupMetadata, row_group_metadata_from_footer, source_row_group_metadata},
+    source::ParquetReaderDecimalType,
 };
-
-use crate::source::ParquetReaderDecimalType;
 
 pub(super) struct SourceMetadataLoad {
     pub(super) metadata: Option<RowGroupMetadata>,

@@ -8,7 +8,7 @@ use std::{
     time::Instant,
 };
 
-use crate::error::{QueryError, QueryErrorCode, Result};
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
 
 const IO_LIFECYCLE_CLOSED: usize = 1usize << (usize::BITS - 1);
 const IO_LIFECYCLE_ACTIVE_MASK: usize = IO_LIFECYCLE_CLOSED - 1;

@@ -1,8 +1,9 @@
-use crate::{
+use nexus_query_planning::{
     admission::{AttemptRequirement, AttemptReservationEnvelope},
     error::{QueryError, QueryErrorCode, Result},
-    runtime::gpu::{GrantIdentity, MemoryGrant},
 };
+
+use crate::runtime::gpu::{GrantIdentity, MemoryGrant};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[doc(hidden)]

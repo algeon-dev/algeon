@@ -1,3 +1,5 @@
+use std::fmt;
+
 use super::*;
 
 /// Derived source diagnostics.

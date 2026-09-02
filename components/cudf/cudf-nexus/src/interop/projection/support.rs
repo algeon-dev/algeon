@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::*;
 
 fn map_type_id(type_id: TypeId) -> InteropTypeId {

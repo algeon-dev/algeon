@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{rc::Rc, sync::Arc};
 
 use arrow::{
     array::Int32Array,
@@ -15,7 +15,10 @@ use crate::{
         RuntimeObservationPayload, RuntimeObservationSession, RuntimeQueryLifecycle, RuntimeReservationAction,
         RuntimeReservationDisposition, RuntimeTerminalOutcome, write_runtime_observation_jsonl,
     },
-    runtime::DeviceLedger,
+    runtime::{
+        DeviceLedger,
+        resident::{GpuResidentInputMap, GpuResultHandle},
+    },
 };
 
 fn test_request(kind: ReservationKind, boundary: &'static str, bytes: u64, budget: u64) -> MemoryReservationRequest {

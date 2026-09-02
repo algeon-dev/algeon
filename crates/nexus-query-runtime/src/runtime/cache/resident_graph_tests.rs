@@ -12,23 +12,23 @@ use cudf::DataFrame;
 use cugraph::cudf_interop::{
     GraphConstructionPolicy as CugraphConstructionPolicy, TableGraphOptions, graph_from_prepared_table_export,
 };
-
-use super::*;
-use crate::{
+use nexus_query_planning::{
     plan::{
         GraphAlgorithm, GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsParams, GraphConstructionOptions,
         GraphConstructionPolicy, GraphEdgeColumnBindings, GraphResidencyDescriptor,
     },
-    runtime::{
-        ExecutionContext,
-        cache::{
-            DeviceCacheAllocationFactory,
-            local_parquet::{GpuLocalParquetSourceCacheKey, GpuLocalParquetSourceCachePromotion},
-        },
-        gpu::{DeviceAdmissionHealth, DeviceCapabilities, DeviceResourceEnvelope, DeviceResourceProfile},
-        resident::{GpuDataFrame, GpuResultHandle},
-    },
     source::LocalParquetSource,
+};
+
+use super::*;
+use crate::runtime::{
+    ExecutionContext,
+    cache::{
+        DeviceCacheAllocationFactory,
+        local_parquet::{GpuLocalParquetSourceCacheKey, GpuLocalParquetSourceCachePromotion},
+    },
+    gpu::{DeviceAdmissionHealth, DeviceCapabilities, DeviceResourceEnvelope, DeviceResourceProfile},
+    resident::{GpuDataFrame, GpuResultHandle},
 };
 
 const CACHE_CAP_BYTES: u64 = 64 * 1024 * 1024;

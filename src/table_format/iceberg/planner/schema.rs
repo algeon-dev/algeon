@@ -1,12 +1,18 @@
-use super::*;
+use std::sync::Arc;
+
+use super::{
+    DataType, Error, ErrorCode, Field, FieldRef, Fields, IcebergSchema, NestedField, Result, Schema, SchemaRef,
+    TASK_CONVERSION_OPERATION, TableFormat, Type, UnionFields,
+};
 
 /// Converts an Iceberg schema into the metadata-free Arrow schema exposed to DataFusion.
 ///
 /// `iceberg-rust` includes Parquet/Iceberg field-id metadata on Arrow fields.
 /// DataFusion logical projections and aliases often drop that metadata, and
 /// its physical/logical schema check treats the metadata difference as a hard
-/// mismatch. Keep Iceberg field ids in [`TableFormatColumnMapping::field_id`]
-/// and expose metadata-free Arrow schemas at DataFusion boundaries.
+/// mismatch. Keep Iceberg field ids in
+/// [`crate::table_format::TableFormatColumnMapping::field_id`] and expose
+/// metadata-free Arrow schemas at DataFusion boundaries.
 pub fn iceberg_schema_to_datafusion_arrow_schema(schema: &IcebergSchema) -> Result<SchemaRef> {
     let arrow_schema = iceberg::arrow::schema_to_arrow_schema(schema).map_err(|error| {
         Error::new(

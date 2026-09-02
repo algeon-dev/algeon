@@ -1,9 +1,18 @@
 use std::{
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
+    rc::Rc,
     sync::{Arc, atomic::AtomicU64},
 };
 
-use super::*;
+use super::{
+    ActiveReservation, ActiveReservationEventContext, ActiveReservationSemantics, CompiledTaskId, ExecutionContext,
+    MemoryGrant, MemoryReservationEvent, MemoryReservationEventAction, MemoryReservationEventOutcome,
+    MemoryReservationRequest, MemorySpaceId, QueryError, QueryErrorCode, QueryId, QueryMetrics,
+    ReservationDiagnosticContext, ReservationDiagnosticScope, ReservationKind, ReservationObservation, Result,
+    RuntimeExecutionObservationScope, RuntimeReservationAction, RuntimeReservationDisposition, RuntimeReservationId,
+    RuntimeSpanId, TaskAttemptId,
+};
 use crate::runtime::resident::{GpuResidentInputMap, RetainedReservationGuard};
 
 pub(in crate::exec) struct ReservationTracker {

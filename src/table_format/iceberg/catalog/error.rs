@@ -1,4 +1,6 @@
-use super::*;
+use std::error::Error as StdError;
+
+use super::{Error, ErrorCode};
 
 pub(super) const CATALOG_BACKEND_OP: &str = "datafusion_nexus.iceberg.catalog_backend";
 

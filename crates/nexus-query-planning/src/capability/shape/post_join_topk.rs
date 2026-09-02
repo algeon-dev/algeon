@@ -1,4 +1,15 @@
-use super::*;
+use super::{
+    CapabilityDecision, HashJoinResidentGroupedAggregateInputPostJoinAggregateTopKShape, JoinSide,
+    MultiJoinAggregateOverJoinSubplanTopKShape, NodeId, PlanNode, QueryPlan, generic_join_node,
+    grouped_aggregate_input, join_node_with_missing_reason, join_side_index, limit_input,
+    limit_input_with_missing_reason, node_kind_for_fact, node_operator_fact, opposite_join_side,
+    output_projection_single_side, peel_projection_chain_ids_for_shape, projection_input_with_missing_reason,
+    projection_or_filter_wrapped_grouped_local_parquet_aggregate_root,
+    projection_wrapped_grouped_aggregate_over_join_subplan_root,
+    require_keyed_inner_hash_join_without_residual_with_nonempty_keys,
+    require_left_semi_keyed_hash_join_with_right_build, sort_input, sort_input_with_missing_reason,
+    validate_bounded_join_subtree_for_capability,
+};
 
 pub(in crate::capability) fn hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_shape_decision(
     plan: &QueryPlan,

@@ -1,4 +1,12 @@
-use super::*;
+use std::collections::{BTreeMap, BTreeSet};
+
+use super::{
+    CapabilityReason, ExecutionPlan, NativeLiteralValue, NativeMissingColumn, NativeParquetColumnRequirements,
+    NativePartitionColumn, NativeSourceColumnRef, NexusIcebergScanExec, NormalizedNativeSource, RequiredFields,
+    SchemaRef, TableFormat, TableFormatColumnMapping, TableFormatColumnSource, TableFormatScanPlan,
+    collect_required_columns, is_supported_native_type, required_source_scan_output_indices,
+    table_format_count_star_fallback_column,
+};
 
 pub(in crate::native::lowering) fn table_format_scan_rejection(
     source: &NormalizedNativeSource<'_>,

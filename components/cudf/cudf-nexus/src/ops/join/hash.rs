@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::*;
 
 pub(crate) fn join_impl(

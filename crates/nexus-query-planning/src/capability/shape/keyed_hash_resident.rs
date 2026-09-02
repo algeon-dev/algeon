@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    AggregateFunction, CapabilityDecision, KeyedHashJoinResidentSubplanShape, OutputLineage, PlanNode, QueryPlan,
+    column_expr_lineage, generic_join_node, join_key_lineage_for_side, join_side_index,
+    keyed_hash_joined_grouped_branch_shape_decision, keyed_hash_scalar_max_branch_shape_decision, node_operator_fact,
+    opposite_join_side, output_projection_single_side, require_keyed_inner_hash_join_without_residual,
+};
 
 pub(in crate::capability) fn keyed_hash_join_resident_subplan_shape_decision(
     plan: &QueryPlan,

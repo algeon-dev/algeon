@@ -1,12 +1,51 @@
+use std::{sync::Arc, time::Instant};
+
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
-use super::*;
+use super::{
+    AggregateExpr, AggregateFunction, AggregateNode, AggregateSpec, ArrowDataType, AvgStateAliases, BinaryOp,
+    BudgetedExecutionOutcome, CaseWhen, CudfAggSpec, CudfScalar, CudfShiftSpec, CudfSortOptions, DataFrame,
+    DropDuplicatesOptions, DuplicateKeepOption, ExecutionBudgetRequest, ExecutionBudgetToken, ExecutionContext,
+    ExecutionOverrides, Expr, Field, FilterNode, GpuDataFrame, GpuResultHandle, GroupByAgg, GroupByOptions, LimitNode,
+    LimitSpec, LiteralValue, LoweredAggregate, NodeId, PER_COLUMN_ALIGNMENT_PADDING_BYTES, ProjectionNode, QueryError,
+    QueryErrorCode, QueryMetrics, RecordBatch, ReduceAgg, Result, STRING_OFFSET_BYTES_CONSERVATIVE, ScanAgg, Schema,
+    SortNode, WindowFrame, WindowNode, aggregate_expr_is_exact_nunique, aggregate_spec_has_avg,
+    aggregate_spec_has_distinct, aggregate_spec_has_filters, aggregate_spec_has_floating_statistical_aggregate, col,
+    cudf_dtype_from_arrow_type, datafusion_order_columns, execution_overrides, global_count_star_expr,
+    global_valid_count_state_alias, is_supported_arrow_implicit_cast, limit_slice, lit, lit_null,
+    lower_aggregate_function, lower_aggregate_spec_keys, lower_column_expr, lower_expr, lower_filter_predicate_expr,
+    lower_final_aggregate_spec, lower_named_column_expr, lower_partial_aggregate_spec, lower_projection_output_expr,
+    lower_single_stage_grouped_aggregate_spec, lower_sort_spec, projection_schema_mismatch_error,
+    schema_with_datafusion_order_columns, sort_by_datafusion_order_if_present, validate_avg_output_fields,
+    validate_global_aggregate_capability, when,
+};
 use crate::expression_lowering_policy::ExpressionLoweringPolicy;
 
 mod aggregate;
 mod global_aggregate;
 mod projection;
-pub(super) use self::{aggregate::*, global_aggregate::*, projection::*};
+pub(super) use aggregate::{
+    PartialAggregateInputEvidence, execute_aggregate, execute_aggregate_with_budget,
+    execute_aggregate_with_budget_for_node, execute_datafusion_exact_host_aggregate_batch,
+    execute_gpu_native_statistical_final_merge_with_budget,
+    execute_gpu_native_statistical_partial_aggregate_with_budget, execute_groupby_aggregate_with_budget_observed,
+    execute_partial_aggregate_with_budget, materialize_datafusion_exact_host_aggregate_input,
+    partial_aggregate_source_chunk_fingerprint, prepare_datafusion_exact_host_aggregate_input_frame,
+    prepare_filtered_aggregate_frame, record_default_grouped_aggregate_strategy_decision,
+    record_grouped_aggregate_strategy_decision, should_execute_datafusion_exact_floating_statistical_aggregate,
+    should_execute_gpu_native_statistical_partial_aggregate, upload_datafusion_exact_host_aggregate_output,
+};
+pub(super) use global_aggregate::{
+    avg_sum_state_data_type, cast_count_output_columns, cast_count_output_columns_with_budget,
+    cast_reduction_output_columns, cast_reduction_output_columns_with_budget, execute_global_aggregate,
+    execute_global_aggregate_with_budget, final_global_aggregate_spec, final_global_aggregate_state_output_schema,
+    finalize_avg_output_columns, finalize_avg_output_columns_with_budget, partial_global_aggregate_output_schema,
+    partial_global_aggregate_spec,
+};
+pub(super) use projection::{
+    execute_projection, execute_projection_with_budget, execute_projection_with_budget_and_prepared,
+    projection_regexp_replace_prepare, projection_regexp_replace_work_reservation_bytes,
+};
 
 pub(super) fn execution_budget_token_for_boundary(
     context: &ExecutionContext,

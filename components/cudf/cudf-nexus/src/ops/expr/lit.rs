@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::*;
 
 type NumericLiteralFactory = dyn Fn(&Arc<ExecutionDomain>) -> Result<Scalar> + Send + Sync + 'static;

@@ -1,6 +1,6 @@
 //! Explicit vertex-pair similarity parameter contracts.
 
-use super::*;
+use super::NodeId;
 
 /// Relation-backed aligned vertex pairs consumed by a similarity algorithm.
 ///
@@ -26,7 +26,7 @@ impl GraphVertexPairInput {
 
 /// Shared parameters for explicit-pair graph similarity algorithms.
 ///
-/// The metric is deliberately represented by [`GraphAlgorithm`], rather than
+/// The metric is deliberately represented by [`crate::plan::GraphAlgorithm`], rather than
 /// by four duplicate parameter payloads.  Whether an execution consumes edge
 /// weights is likewise derived from the edge weight binding; a second boolean
 /// here could contradict the graph construction contract.

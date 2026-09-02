@@ -12,6 +12,19 @@ use std::{
 use ::object_store::ObjectStoreExt;
 #[cfg(any(test, feature = "test-hooks"))]
 use bytes::Bytes;
+use nexus_query_planning::{
+    admission::{
+        AttemptBoundDerivation, AttemptReservationEnvelope, AttemptReservationPolicy, QueryPlanCapabilityProof,
+    },
+    capability::AggregateStrategyExecutionOptions,
+    chunk::SourceChunkPlanningOptions,
+    error::{QueryError, QueryErrorCode, Result},
+    graph_memory::{
+        GraphMemoryCalibrationOverride, graph_memory_bounded_admission_evidence_for_plan_with_resident_rows,
+    },
+    mode::StatisticalAggregateExecutionMode,
+    plan::QueryPlan,
+};
 
 use super::{
     CacheFillByteBudget, CacheFillBytePermit, DeploymentIoCapability, DevicePlacement, ExecutionBoundaryPolicy,
@@ -32,22 +45,11 @@ use super::{
     resident::{GpuResidentInputMap, GpuResultHandle},
 };
 use crate::{
-    admission::{
-        AttemptBoundDerivation, AttemptReservationEnvelope, AttemptReservationPolicy, QueryPlanCapabilityProof,
-    },
-    capability::AggregateStrategyExecutionOptions,
-    chunk::SourceChunkPlanningOptions,
-    error::{QueryError, QueryErrorCode, Result},
-    graph_memory::{
-        GraphMemoryCalibrationOverride, graph_memory_bounded_admission_evidence_for_plan_with_resident_rows,
-    },
     metrics::{QueryId, TraceId},
-    mode::StatisticalAggregateExecutionMode,
     observability::{
         AttemptComposedScheduleProjection, RuntimeObservationHandle, RuntimeObservationSession,
         RuntimeStreamLeaseScope, RuntimeTaskId, RuntimeTraceId, RuntimeWorkerId,
     },
-    plan::QueryPlan,
     runtime::AdmittedAttemptProof,
 };
 
@@ -116,7 +118,7 @@ impl ExecutionCancellation {
     pub fn check(&self, operation: &'static str) -> Result<()> {
         if self.cancellation_requested() {
             return Err(QueryError::new(
-                crate::error::QueryErrorCode::Cancelled,
+                nexus_query_planning::error::QueryErrorCode::Cancelled,
                 operation,
                 "native query execution was cancelled",
             )
@@ -124,7 +126,7 @@ impl ExecutionCancellation {
         }
         if self.is_expired() {
             return Err(QueryError::new(
-                crate::error::QueryErrorCode::Cancelled,
+                nexus_query_planning::error::QueryErrorCode::Cancelled,
                 operation,
                 "native query execution deadline expired",
             )
@@ -1641,7 +1643,7 @@ impl ExecutionContext {
                 "a query-service context requires an immutable post-grant admission proof",
             )
             .with_fact("reason", "admitted_attempt_proof_missing")
-            .with_fact("plan_scope", crate::admission::canonical_execution_scope_fingerprint(plan))
+            .with_fact("plan_scope", nexus_query_planning::admission::canonical_execution_scope_fingerprint(plan))
         })?;
         let runtime_device_ordinal = self.runtime()?.device().ordinal();
         if runtime_device_ordinal != proof.selected_device() {
@@ -1789,7 +1791,7 @@ impl ExecutionContext {
                 .with_fact("reason", "deferred_resident_phase_not_activated")
                 .with_fact("input_name", descriptor.input_name())
             })?;
-            let execution_scope = crate::admission::canonical_execution_scope_fingerprint(plan);
+            let execution_scope = nexus_query_planning::admission::canonical_execution_scope_fingerprint(plan);
             if activated.consumer_execution_scope_fingerprint != execution_scope
                 || activated.grant_identity != immutable_grant.identity()
             {
@@ -1881,7 +1883,7 @@ impl ExecutionContext {
         };
         if let Some(activated) = &self.activated_deferred_resident_phase {
             if activated.consumer_execution_scope_fingerprint
-                != crate::admission::canonical_execution_scope_fingerprint(plan)
+                != nexus_query_planning::admission::canonical_execution_scope_fingerprint(plan)
                 || activated.grant_identity != immutable_grant.identity()
             {
                 return Err(QueryError::new(
@@ -1936,7 +1938,8 @@ impl ExecutionContext {
                 })
                 .collect::<Result<Vec<_>>>()?;
             let activated = ActivatedDeferredResidentPhase {
-                consumer_execution_scope_fingerprint: crate::admission::canonical_execution_scope_fingerprint(plan),
+                consumer_execution_scope_fingerprint:
+                    nexus_query_planning::admission::canonical_execution_scope_fingerprint(plan),
                 inputs,
                 capability_proof,
                 reservation_envelope,
@@ -2009,7 +2012,8 @@ impl ExecutionContext {
             Some((&evidence, exact_input_owner_bytes)),
         )?;
         let activated = ActivatedDeferredResidentPhase {
-            consumer_execution_scope_fingerprint: crate::admission::canonical_execution_scope_fingerprint(plan),
+            consumer_execution_scope_fingerprint:
+                nexus_query_planning::admission::canonical_execution_scope_fingerprint(plan),
             inputs: vec![ActivatedDeferredResidentInput {
                 producer_execution_scope_fingerprint: descriptor.producer_execution_scope_fingerprint().to_owned(),
                 input_name: input_name.to_owned(),
@@ -2033,7 +2037,7 @@ impl ExecutionContext {
         plan: &QueryPlan,
         capability_proof: &QueryPlanCapabilityProof,
         immutable_grant: &MemoryGrant,
-        retained_graph_input_owner: Option<(&crate::graph_memory::GraphMemoryAdmissionEvidence, u64)>,
+        retained_graph_input_owner: Option<(&nexus_query_planning::graph_memory::GraphMemoryAdmissionEvidence, u64)>,
     ) -> Result<(AttemptReservationEnvelope, MemoryGrantPhase)> {
         let MemoryControlPolicy::Bounded {
             max_source_chunk_bytes,
@@ -2100,7 +2104,7 @@ impl ExecutionContext {
         self.validate_admitted_plan_capabilities(plan)?;
         let Some(activated) = self.activated_deferred_resident_phase.as_ref().filter(|activated| {
             activated.consumer_execution_scope_fingerprint
-                == crate::admission::canonical_execution_scope_fingerprint(plan)
+                == nexus_query_planning::admission::canonical_execution_scope_fingerprint(plan)
         }) else {
             return Ok(());
         };
@@ -2571,7 +2575,7 @@ impl ExecutionContext {
         on_result: impl FnOnce(ObjectStoreFetchResult) + Send + 'static,
     ) {
         object_store_control_runtime.spawn(async move {
-            let path_fact = crate::source::redacted_object_store_path_diagnostic(location.as_ref());
+            let path_fact = nexus_query_planning::source::redacted_object_store_path_diagnostic(location.as_ref());
             let bytes = async move {
                 let result = store.get(&location).await?;
                 result.bytes().await

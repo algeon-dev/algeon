@@ -1,4 +1,10 @@
-use super::*;
+use super::{
+    CapabilityDecision, JoinNode, JoinSide, JoinType, MultiJoinResidentGroupedAggregateSubqueryFilterShape, NodeId,
+    PlanNode, QueryPlan, ResidentGroupedAggregateSubqueryFilterStats, join_node_with_missing_reason, join_side_index,
+    multi_join_subtree_join_execution_capability, node_operator_fact, opposite_join_side,
+    output_projection_single_side, projection_or_filter_wrapped_grouped_local_parquet_aggregate_root,
+    sort_input_with_missing_reason, validate_bounded_join_subtree_for_capability,
+};
 
 pub(in crate::capability) fn multi_join_resident_grouped_aggregate_subquery_filter_shape_decision(
     plan: &QueryPlan,

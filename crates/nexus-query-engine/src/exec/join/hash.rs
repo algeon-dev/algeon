@@ -1,4 +1,9 @@
-use super::*;
+use super::{
+    DataFrame, DataFrameHashJoin, DataFrameHashJoinOptions, DataFrameHashJoinPairIndices, EquiJoinIndices,
+    ExecutionContext, ExecutionOverrides, ExecutionScratch, GpuHashJoinBuildHandle, HashJoinCacheKey, JoinIndexInput,
+    JoinIndexResult, JoinNode, JoinSide, JoinType, QueryError, QueryErrorCode, QueryMetrics, Result,
+    join_index_error_base, lower_null_equality,
+};
 
 struct JoinKeyDiagnostics {
     key_pairs: String,

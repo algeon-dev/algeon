@@ -1,4 +1,20 @@
-use super::*;
+use std::{collections::VecDeque, time::Duration};
+
+use super::{
+    ActiveReservation, AggregateExecutionStage, AggregateExecutionStrategy, AggregateNode, Arc, ArrowSchemaRef,
+    BoundedExecutionAttempt, BoundedFinalMergePolicy, CommittedPartial, ExecutionBudgetToken, ExecutionContext,
+    GpuDataFrame, Instant, MemoryControlPolicy, MemoryReservationRequest, NodeId, QueryError, QueryErrorCode,
+    QueryMetrics, ReservationKind, ResidentGpuFrame, Result, aggregate_spec_has_avg,
+    aggregate_spec_has_global_final_state, aggregate_strategy_capability_decision, attach_budget_token_failure_facts,
+    cast_count_output_columns_with_budget, concatenate_partitioned_final_merge_outputs, execute_aggregate_with_budget,
+    execute_compiled_bounded_aggregate_from_empty_input, execute_global_aggregate_with_budget,
+    execute_groupby_aggregate_with_budget_observed, execution_budget_token_for_boundary, execution_overrides,
+    final_global_aggregate_spec, final_global_aggregate_state_output_schema, finalize_avg_output_columns_with_budget,
+    lower_final_aggregate_spec, observe_device_memory_bytes, partition_final_merge_partial,
+    partitioned_final_merge_partition_count, partitioned_final_merge_task_id,
+    record_default_grouped_aggregate_strategy_decision, record_grouped_aggregate_strategy_decision,
+    reduce_merge_fan_in, release_nested_partials_reverse, release_partials_reverse, validate_aggregate_output_names,
+};
 
 pub(in crate::exec::bounded) fn execute_compiled_bounded_final_aggregate_merge(
     execution: &mut BoundedExecutionAttempt<'_>,

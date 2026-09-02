@@ -3,8 +3,12 @@
 //! Node structs carry operator-local contracts. Graph connectivity and id
 //! validity are owned by [`QueryPlan`](super::QueryPlan) and validated by
 //! execution/planning entrypoints.
+use std::sync::Arc;
 
-use super::*;
+use super::{
+    AggregateFunction, AggregateSpec, DataType, EdgeNormalizeSpec, Expr, Field, LimitSpec, LiteralValue, NodeId,
+    Schema, SchemaRef, SortExpr, SortSpec,
+};
 
 /// Boolean filtering operation over one input.
 #[derive(Debug, Clone, PartialEq)]

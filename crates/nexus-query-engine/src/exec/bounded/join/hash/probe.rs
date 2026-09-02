@@ -1,4 +1,13 @@
-use super::*;
+use super::{
+    ActiveReservation, BoundedExecutionAttempt, BoundedJoinSideFrame, BoundedRootHashJoinBuildState,
+    BoundedRootHashJoinProbeState, ExecutionOverrides, GpuDataFrame, Instant, JoinNode, JoinSide, JoinType, NodeId,
+    QueryError, QueryErrorCode, ReservationKind, ResidentGpuFrame, Result, bounded_join_request, execution_overrides,
+    join_index_error, join_side_output_upper_bound_bytes_for_row_counts,
+    prepare_bounded_join_side_input_from_resident_frame, prepare_bounded_join_side_input_from_shared_frame,
+    projected_output_columns_for_retained_sizing, release_bounded_join_side_frame,
+    reserve_full_join_size_preflight_workspace, state::validate_root_hash_join,
+    stream::materialize_bounded_root_hash_join_probe_stream,
+};
 
 pub(in crate::exec::bounded) fn execute_bounded_root_hash_join_probe_from_frame(
     execution: &mut BoundedExecutionAttempt<'_>,

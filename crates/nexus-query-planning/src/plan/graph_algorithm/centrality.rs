@@ -1,6 +1,6 @@
 //! Centrality algorithm parameter contracts.
 
-use super::*;
+use super::{GraphPredicateInput, NodeId};
 
 /// PageRank parameters.
 ///

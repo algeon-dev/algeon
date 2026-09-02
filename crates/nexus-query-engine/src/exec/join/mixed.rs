@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    EquiJoinIndices, ExecutionScratch, JoinIndexInput, JoinIndexResult, JoinNode, JoinType, QueryError, QueryErrorCode,
+    QueryMetrics, Result, dataframe_mixed_join_options, dataframe_predicate_join_options, join_index_error,
+    lower_join_match_predicate, lower_join_residual_predicate,
+};
 
 pub(super) fn execute_mixed_join_indices(
     input: &JoinIndexInput<'_, '_>,

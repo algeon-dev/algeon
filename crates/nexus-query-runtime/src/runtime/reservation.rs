@@ -1,5 +1,5 @@
-use crate::error::QueryError;
-pub use crate::execution_contracts::MemoryReservationRequest;
+use nexus_query_planning::error::QueryError;
+pub use nexus_query_planning::execution_contracts::MemoryReservationRequest;
 
 /// Retry/resume facts attached to bounded retry failures.
 ///

@@ -1,4 +1,9 @@
-use super::*;
+use std::time::Instant;
+
+use super::{
+    DataFrame, ExecutionContext, LocalParquetSource, QueryError, QueryErrorCode, QueryMetrics, Result, SourceChunk,
+    execution_overrides, local_parquet_execution_frame_schema, parquet_chunk_path_fact,
+};
 
 pub(super) fn empty_local_parquet_execution_frame(
     context: &ExecutionContext,

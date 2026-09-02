@@ -1,4 +1,7 @@
-use std::sync::{Barrier, mpsc};
+use std::{
+    sync::{Barrier, mpsc},
+    time::Instant,
+};
 
 use super::*;
 

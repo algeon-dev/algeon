@@ -7,7 +7,7 @@
 
 use std::collections::HashSet;
 
-use super::*;
+use super::{JoinNode, JoinSide, JoinType, NodeId, PlanNode, QueryPlan, SourceNode};
 use crate::source::LocalParquetSource;
 
 /// Returns a conservative row-count estimate for a plan node when available.
@@ -172,7 +172,7 @@ mod tests {
     use super::*;
     use crate::{
         expr::{AggregateExpr, AggregateFunction, AggregateSpec, ColumnRef, Expr},
-        plan::{JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType},
+        plan::{JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, QueryPlanBuilder},
         source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
     };
 

@@ -1,3 +1,5 @@
+use std::io::Write;
+
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

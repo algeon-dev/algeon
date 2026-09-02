@@ -7,7 +7,7 @@
 
 use std::collections::BTreeMap;
 
-use super::*;
+use super::{PlanNode, QueryPlan, SourceNode};
 use crate::source::LocalParquetSource;
 
 /// Stable reason for not selecting a native-capable plan by cost.

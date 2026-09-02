@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use super::*;
 
 pub(super) async fn run_native_tpch_benchmark(

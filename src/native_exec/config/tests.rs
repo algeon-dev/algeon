@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use nexus_query_engine::error::QueryError;
 
 use super::*;

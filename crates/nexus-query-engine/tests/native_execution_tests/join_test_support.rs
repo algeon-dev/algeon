@@ -1,3 +1,5 @@
+use std::{path::Path, sync::Arc};
+
 use super::*;
 
 #[path = "join_test_support/mixed_aggregate.rs"]

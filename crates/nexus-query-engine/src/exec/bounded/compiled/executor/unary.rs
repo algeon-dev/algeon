@@ -1,4 +1,20 @@
-use super::*;
+use super::{
+    super::{
+        frame_stream::{map_filter_resident_frame_stream, map_projection_resident_frame_stream},
+        helpers::{attach_task_facts, invalid, plan_node, single_output_resource},
+        resource::CompiledGpuResourcePayload,
+    },
+    CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskOutput,
+};
+use crate::{
+    error::Result,
+    exec::bounded::{
+        execute_bounded_generic_projection, execute_bounded_generic_projection_from_frame,
+        execute_bounded_generic_unary, execute_bounded_generic_unary_from_frame,
+    },
+    pipeline::PipelineTask,
+    plan::PlanNode,
+};
 
 impl CompiledGpuTaskExecutor<'_> {
     pub(super) fn execute_unary_task(

@@ -1,4 +1,24 @@
-use super::*;
+use super::{
+    super::{
+        helpers::{attach_task_facts, invalid, limit_node, plan_node, single_input_resource, single_output_resource},
+        resource::CompiledGpuResourcePayload,
+    },
+    CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskOutput,
+};
+use crate::{
+    error::Result,
+    exec::{
+        ActiveReservation,
+        bounded::{
+            ResidentGpuFrame, execute_bounded_generic_unary_from_frame_with_reservation_kind,
+            execute_bounded_generic_union, materialize_bounded_frame_to_host,
+            materialize_bounded_join_leaf_local_parquet_source_stream, release_reservations_reverse,
+        },
+    },
+    pipeline::{PipelineTask, ResidentResourceId, SinkBoundaryKind},
+    plan::{NodeId, PlanNode, ResultSink},
+    runtime::{MemoryReservationRequest, ReservationKind},
+};
 
 impl CompiledGpuTaskExecutor<'_> {
     pub(super) fn execute_limit_task(

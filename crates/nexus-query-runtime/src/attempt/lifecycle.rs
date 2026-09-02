@@ -498,8 +498,9 @@ impl AttemptLifecycle {
 
 #[cfg(test)]
 mod tests {
+    use nexus_query_planning::error::{QueryError, QueryErrorCode};
+
     use super::*;
-    use crate::error::{QueryError, QueryErrorCode};
 
     fn fact() -> AttemptAdmissionFact {
         AttemptAdmissionFact { admission_sequence: 7, admission_wait_ns: 3, device_ordinal: 2, grant_bytes: 4096 }

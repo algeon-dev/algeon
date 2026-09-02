@@ -1,3 +1,5 @@
+use std::{collections::HashMap, sync::Arc, time::Instant};
+
 use super::*;
 
 pub(super) async fn run_profile_stress(

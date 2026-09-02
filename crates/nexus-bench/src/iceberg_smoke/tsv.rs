@@ -1,3 +1,5 @@
+use std::{error::Error as StdError, fmt};
+
 use super::*;
 
 pub(crate) fn optional_u64(value: Option<u64>) -> String {

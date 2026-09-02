@@ -63,15 +63,15 @@ DataFusion Nexus maintains strict separation of concerns across workspace
 crates:
 
 ```text
-Apache DataFusion Physical Plan
-       │
-       ▼
-┌─────────────────────────────────────────────────────────────┐
-│ datafusion-nexus (Root Adapter)                             │
+                 Apache DataFusion Physical Plan
+                               │
+                               ▼
+┌──────────────────────────────────────────────────────────────┐
+│ datafusion-nexus (Root Adapter)                              │
 │ - Physical optimizer rules (NexusNativePhysicalOptimizerRule)│
-│ - Table providers, Iceberg integration, Parquet scans       │
-│ - NativeExecutionPlan wrappers & DataFusion metric bridges  │
-└──────────────────────────────┬──────────────────────────────┘
+│ - Table providers, Iceberg integration, Parquet scans        │
+│ - NativeExecutionPlan wrappers & DataFusion metric bridges   │
+└──────────────────────────────┬───────────────────────────────┘
                                │ uses the compatible facade
                                ▼
 ┌─────────────────────────────────────────────────────────────┐
@@ -89,12 +89,12 @@ Apache DataFusion Physical Plan
 └──────────────────────────────┬──────────────────────────────┘
                                │ execution uses
                                ▼
-        ┌──────────────────────┴──────────────────────┐
+        ┌─────────────────────────────────────────────┐
         ▼                                             ▼
-┌──────────────────────────────┐        ┌─────────────────────────────┐
-│ components/cudf              │        │ components/cugraph          │
+┌──────────────────────────────┐        ┌──────────────────────────────┐
+│ components/cudf              │        │ components/cugraph           │
 │ cuDF / RMM / KvikIO          │        │ cuGraph C++ / C API          │
-└──────────────────────────────┘        └─────────────────────────────┘
+└──────────────────────────────┘        └──────────────────────────────┘
 ```
 
 ### Key Invariants

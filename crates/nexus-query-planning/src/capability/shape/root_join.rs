@@ -1,4 +1,9 @@
-use super::*;
+use std::collections::BTreeSet;
+
+use super::{
+    CapabilityDecision, JoinSide, NodeId, PlanNode, PostRootStage, QueryPlan, generic_join_node, join_side_index,
+    node_kind_for_fact, node_operator_fact, reachable_join_count_from_sink,
+};
 
 pub(in crate::capability) fn root_join_with_post_root_stages(
     plan: &QueryPlan,

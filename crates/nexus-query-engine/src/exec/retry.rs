@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use super::*;
+use super::{ExecutionContext, QueryError, QueryErrorCode, QueryMetrics, Result};
 
 const BOUNDED_RETRY_BACKOFF: Duration = Duration::from_millis(50);
 

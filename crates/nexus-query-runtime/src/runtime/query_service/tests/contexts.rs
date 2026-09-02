@@ -73,12 +73,9 @@ fn expired_shutdown_deadline_reports_final_timeout() {
 #[test]
 fn query_service_stream_runtimes_are_distinct_while_both_contexts_are_held() {
     let config = QueryExecutionConfig { ..QueryExecutionConfig::default() };
-    let service = runtime_test_service_with_profiles(
-        config,
-        QueueBounds::default(),
-        vec![runtime_test_device_profile(2)],
-    )
-    .unwrap();
+    let service =
+        runtime_test_service_with_profiles(config, QueueBounds::default(), vec![runtime_test_device_profile(2)])
+            .unwrap();
 
     let first_handle = service.admit_query().unwrap();
     let second_handle = service.admit_query().unwrap();
@@ -125,9 +122,7 @@ fn attempt_bound_context_carries_its_engine_identity_for_gpu_execution_annotatio
     let attempt_handle = attempt_owner.handle();
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
-    attempt_handle
-        .set_disposition(crate::observability::AttemptDisposition::Native)
-        .expect("native disposition");
+    attempt_handle.set_disposition(crate::observability::AttemptDisposition::Native).expect("native disposition");
     attempt_handle.record_admission_requested().expect("admission requested");
     let handle = service
         .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
@@ -166,8 +161,10 @@ fn cache_enabled_context_exposes_source_and_graph_leases_from_one_domain() {
     let service = runtime_test_service_with_profiles(
         QueryExecutionConfig::default(),
         QueueBounds::default(),
-        vec![runtime_test_device_profile_with_limits(0, 64 * 1024 * 1024, 8 * 1024 * 1024, 1, 3, 1, 1)
-            .with_cache_cap_bytes(CACHE_CAP_BYTES)],
+        vec![
+            runtime_test_device_profile_with_limits(0, 64 * 1024 * 1024, 8 * 1024 * 1024, 1, 3, 1, 1)
+                .with_cache_cap_bytes(CACHE_CAP_BYTES),
+        ],
     )
     .expect("cache-enabled runtime service");
     let handle = service.admit_query().expect("admission");
@@ -216,7 +213,7 @@ fn admitted_context_gate_rejects_missing_identity_device_and_scope_proofs() {
     let admitted_fixture = |max_active_attempts_per_device| {
         let service = runtime_test_service(max_active_attempts_per_device, 8);
         let plan = explicit_sink_plan("input");
-        let proof = crate::admission::QueryPlanCapabilityProof::for_query_plan(&plan)
+        let proof = nexus_query_planning::admission::QueryPlanCapabilityProof::for_query_plan(&plan)
             .expect("the test plan must issue an execution capability proof");
         let handle = service
             .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof))
@@ -292,10 +289,9 @@ fn admitted_context_gate_rejects_missing_identity_device_and_scope_proofs() {
             .expect("the acquired context carries the proof")
             .clone();
         let mut wrong_selected_device = admitted.context().clone();
-        wrong_selected_device.replace_admitted_attempt_proof_for_test(Some(Arc::new(proof.with_identity_for_test(
-            proof.selected_device() + 1,
-            proof.grant_identity(),
-        ))));
+        wrong_selected_device.replace_admitted_attempt_proof_for_test(Some(Arc::new(
+            proof.with_identity_for_test(proof.selected_device() + 1, proof.grant_identity()),
+        )));
         let error = wrong_selected_device
             .validate_admitted_plan_capabilities(&plan)
             .expect_err("a proof selected for another device must not pass the context gate");
@@ -313,7 +309,8 @@ fn admitted_context_gate_rejects_missing_identity_device_and_scope_proofs() {
         let second_handle = service.admit_query().expect("second admission");
         let second_context = second_handle.acquire_context().expect("second context");
         let mut wrong_domain = admitted.context().clone();
-        wrong_domain.replace_attempt_allocation_domain_for_test(second_context.context().attempt_allocation_domain_for_test());
+        wrong_domain
+            .replace_attempt_allocation_domain_for_test(second_context.context().attempt_allocation_domain_for_test());
         let error = wrong_domain
             .validate_admitted_plan_capabilities(&plan)
             .expect_err("a domain from another grant must not pass the context gate");

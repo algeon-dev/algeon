@@ -1,4 +1,29 @@
-use super::*;
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    sync::{Arc, Mutex, Weak},
+    time::{Duration, Instant},
+};
+
+use nexus_query_planning::{
+    admission::{AttemptRequirement, AttemptReservationEnvelope},
+    error::{QueryError, QueryErrorCode, Result},
+};
+
+use super::{
+    PendingDeviceSlotNotifications, QueryActivityLease, QueryHandle, QueryService, QueryServiceInner,
+    admission_rejection, record_admission_lifecycle,
+};
+use crate::{
+    observability::{
+        AdmissionLifecycleState, AdmissionRequestId, RuntimeObservationHandle, RuntimeObservationOwner,
+        RuntimeTerminalOutcome,
+    },
+    runtime::{
+        ExecutionCancellation, MemoryGrant,
+        backend_core::{GpuResourcePermit, ObservationCompletionDispatcher},
+        backend_lifecycle::ObservationPermit,
+    },
+};
 
 /// Cancel-safe queued admission request.
 ///
@@ -499,7 +524,7 @@ impl QueryCompletion {
         if let Some(slot) = self.attempt_finalizer_slot.as_ref() {
             let finalizer = slot.take_for_admission().map_err(|error| {
                 QueryError::new(
-                    crate::error::QueryErrorCode::Internal,
+                    nexus_query_planning::error::QueryErrorCode::Internal,
                     "nexus_query_engine.query_service.attempt_finalizer",
                     "attempt finalizer was unavailable while publishing admission",
                 )

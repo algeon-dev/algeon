@@ -1,4 +1,32 @@
-use super::*;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Instant,
+};
+
+use arrow::record_batch::RecordBatch;
+
+use super::{
+    CompiledGpuResource,
+    helpers::{invalid, task_diagnostic_resident_resource},
+    resource::CompiledGpuResourcePayload,
+    scheduler::{CompiledSchedulingCycle, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput},
+    state::CompiledPipelineState,
+};
+use crate::{
+    dynamic_filter::{DynamicFilterId, DynamicFilterSet},
+    error::{QueryError, QueryErrorCode, Result},
+    exec::bounded::{
+        BoundedCompiledJoinBuildState, BoundedCompiledJoinProbeState, BoundedExecutionAttempt, ReservationTracker,
+        ResidentGpuFrame, release_bounded_compiled_join_build_state, release_bounded_compiled_join_probe_state,
+    },
+    metrics::QueryMetrics,
+    pipeline::{CompiledPipeline, PipelineTask, PipelineTaskKind, ResidentResourceId, SinkBoundaryKind},
+    plan::{NodeId, QueryPlan},
+    runtime::{
+        ExecutionContext,
+        resident::{GpuResidentInputMap, GpuResultHandle},
+    },
+};
 
 mod admission;
 mod aggregate;

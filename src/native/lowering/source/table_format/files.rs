@@ -2,7 +2,13 @@ use std::path::PathBuf;
 
 use arrow::datatypes::TimeUnit;
 
-use super::*;
+use super::{
+    CapabilityReason, DataType, NativeLiteralValue, NativeLocalParquetFile, NativeParquetColumnRequirements,
+    NativeParquetEqualityDeleteFile, NativeParquetPositionDeleteFile, TableFormatColumnSource, TableFormatDataFile,
+    TableFormatDataFileFormat, TableFormatFieldIdReadBinding, TableFormatParquetReadStrategyConfig,
+    TableFormatParquetSourceMetadata, TableFormatPartitionTransform, TableFormatScalarValue, TableFormatScanPlan,
+    TableFormatSourceReadGroup, attach_row_group_byte_metadata, resolve_table_format_parquet_source_with_metadata,
+};
 
 pub(super) fn table_format_local_parquet_files(
     scan_plan: &TableFormatScanPlan,

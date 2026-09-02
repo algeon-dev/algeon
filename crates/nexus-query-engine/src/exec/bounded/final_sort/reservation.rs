@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    ActiveReservation, BoundedExecutionAttempt, CommittedPartial, GpuDataFrame, MemoryReservationRequest, NodeId,
+    ReservationKind, Result, final_sort_runtime_facts, observe_device_memory_bytes,
+};
 
 pub(super) fn reserve_final_sort_output_bytes(
     execution: &mut BoundedExecutionAttempt<'_>,

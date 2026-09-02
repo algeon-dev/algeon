@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use cudf::{
     DataType as CudfDataType, TypeId,
     io::source::{
@@ -9,7 +11,10 @@ use cudf::{
     ops::ast::{AstExpression, AstOperator},
 };
 
-use super::*;
+use super::{
+    ArrowDataType, BinaryOp, ExecutionContext, Expr, LiteralValue, LocalParquetSource, QueryError, QueryErrorCode,
+    Result, timestamp_unit_to_cudf_resolution,
+};
 use crate::source::{
     ReaderPredicateDecimalScaleError, SourceColumnRef, reader_predicate_expr_references_decimal_column,
     reader_predicate_integer_literal_as, reader_predicate_integer_literal_as_decimal_raw,

@@ -1,9 +1,7 @@
 #[test]
 fn attempt_requirement_hint_selects_grant_for_one_admission() {
     let service = AdmissionTestController::new_with_ledger(
-        QueryExecutionConfig {
-            ..QueryExecutionConfig::default()
-        },
+        QueryExecutionConfig { ..QueryExecutionConfig::default() },
         QueueBounds::default(),
         test_ledger(4096, 1, Default::default()),
     )
@@ -28,11 +26,15 @@ fn admission_without_observation_mints_one_identity_per_committed_grant() {
     .unwrap();
 
     let first = service
-        .try_admit_query_with_request(QueryAdmissionRequest::new().with_attempt_requirement(requirement(100, Some(100))))
+        .try_admit_query_with_request(
+            QueryAdmissionRequest::new().with_attempt_requirement(requirement(100, Some(100))),
+        )
         .unwrap()
         .expect("first request admits");
     let second = service
-        .try_admit_query_with_request(QueryAdmissionRequest::new().with_attempt_requirement(requirement(100, Some(100))))
+        .try_admit_query_with_request(
+            QueryAdmissionRequest::new().with_attempt_requirement(requirement(100, Some(100))),
+        )
         .unwrap()
         .expect("second request admits");
 
@@ -88,11 +90,8 @@ fn attempt_binding_identity_survives_request_placement_and_handle_commit() {
 
 #[test]
 fn eager_device_entries_share_requirement_envelope_bytes_for_fit_grant_and_execution() {
-    let service = AdmissionTestController::new(
-        QueryExecutionConfig::default(),
-        QueueBounds::default(),
-    )
-    .expect("synthetic admission service");
+    let service = AdmissionTestController::new(QueryExecutionConfig::default(), QueueBounds::default())
+        .expect("synthetic admission service");
     let proof = explicit_sink_capability_proof();
     let policy = service.service.inner.config.attempt_reservation_policy();
     let resolved_proof = proof.requirement_for_device(0).expect("non-sort proof resolves on a synthetic ordinal");
@@ -122,7 +121,8 @@ fn eager_device_entries_share_requirement_envelope_bytes_for_fit_grant_and_execu
         admitted.handle.lifetime.admitted_attempt_proof_for_test().map(|proof| proof.reservation_envelope()),
         Some(&envelope),
     );
-    let proof = admitted.handle.lifetime.admitted_attempt_proof_for_test().expect("submitted admission carries its proof");
+    let proof =
+        admitted.handle.lifetime.admitted_attempt_proof_for_test().expect("submitted admission carries its proof");
     assert_eq!(proof.selected_device(), admitted.handle.device_ordinal());
     assert_eq!(proof.grant_identity(), admitted.handle.grant_identity().expect("grant identity"));
     drop(admitted);
@@ -130,10 +130,7 @@ fn eager_device_entries_share_requirement_envelope_bytes_for_fit_grant_and_execu
 
 #[test]
 fn retry_floor_uses_the_candidate_requirement_projection() {
-    let requirements = BTreeMap::from([
-        (0, requirement(10, Some(10))),
-        (1, requirement(200, Some(200))),
-    ]);
+    let requirements = BTreeMap::from([(0, requirement(10, Some(10))), (1, requirement(200, Some(200)))]);
     let ledger = test_ledger_with_explicit_profile(1, 100, 8, 1, Default::default());
 
     let selected_floor = ledger
@@ -155,9 +152,7 @@ fn retry_floor_uses_the_candidate_requirement_projection() {
 #[test]
 fn impossible_requirement_is_rejected_before_enqueue() {
     let service = AdmissionTestController::new_with_ledger(
-        QueryExecutionConfig {
-            ..QueryExecutionConfig::default()
-        },
+        QueryExecutionConfig { ..QueryExecutionConfig::default() },
         QueueBounds::default(),
         test_ledger(1024, 1, Default::default()),
     )
@@ -181,17 +176,14 @@ fn plan_capability_proof_missing_from_exact_device_profile_is_rejected_before_qu
     use crate::runtime::{DeviceCapabilities, DeviceCapability};
 
     let service = AdmissionTestController::new_with_device_capabilities(
-        QueryExecutionConfig {
-            ..QueryExecutionConfig::default()
-        },
+        QueryExecutionConfig { ..QueryExecutionConfig::default() },
         QueueBounds::default(),
         DeviceCapabilities::only(std::iter::empty::<DeviceCapability>()),
     )
     .unwrap();
     let error = service
         .enqueue_admission_with_request(
-            QueryAdmissionRequest::new()
-                .with_query_plan_capability_proof(explicit_sink_capability_proof()),
+            QueryAdmissionRequest::new().with_query_plan_capability_proof(explicit_sink_capability_proof()),
         )
         .expect_err("an unavailable device capability must reject locally");
 
@@ -208,11 +200,7 @@ fn plan_capability_proof_missing_from_exact_device_profile_is_rejected_before_qu
 
 #[test]
 fn submitted_plan_proof_survives_admission_while_test_placement_requirement_does_not_become_execution_evidence() {
-    let service = AdmissionTestController::new(
-        QueryExecutionConfig::default(),
-        QueueBounds::default(),
-    )
-    .unwrap();
+    let service = AdmissionTestController::new(QueryExecutionConfig::default(), QueueBounds::default()).unwrap();
     let proof = explicit_sink_capability_proof();
     let submitted = service
         .try_admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof.clone()))
@@ -233,17 +221,20 @@ fn submitted_plan_proof_survives_admission_while_test_placement_requirement_does
     assert!(placement_only.handle.lifetime.admitted_attempt_proof_for_test().is_none());
 }
 
-fn explicit_sink_capability_proof() -> crate::admission::QueryPlanCapabilityProof {
+fn explicit_sink_capability_proof() -> nexus_query_planning::admission::QueryPlanCapabilityProof {
     let plan = explicit_sink_plan("input");
-    crate::admission::QueryPlanCapabilityProof::for_query_plan(&plan)
+    nexus_query_planning::admission::QueryPlanCapabilityProof::for_query_plan(&plan)
         .expect("an explicit host sink must expose a capability requirement")
 }
 
-fn explicit_sink_plan(input_name: &str) -> crate::plan::QueryPlan {
+fn explicit_sink_plan(input_name: &str) -> nexus_query_planning::plan::QueryPlan {
     use std::sync::Arc;
 
     use arrow::datatypes::{DataType, Field, Schema};
-    use crate::{plan::QueryPlanBuilder, source::{GpuResidentSource, SourceNode}};
+    use nexus_query_planning::{
+        plan::QueryPlanBuilder,
+        source::{GpuResidentSource, SourceNode},
+    };
 
     let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
     let mut builder = QueryPlanBuilder::new();
@@ -252,16 +243,13 @@ fn explicit_sink_plan(input_name: &str) -> crate::plan::QueryPlan {
 }
 
 fn restricted_capability_service_and_requirement() -> (AdmissionTestController, AttemptRequirement) {
-    use crate::{
-        capability::{ContractQuality, ReservationRequirement},
-        runtime::{DeviceCapabilities, DeviceCapability, ReservationKind},
-    };
+    use nexus_query_planning::capability::{ContractQuality, ReservationRequirement};
+
+    use crate::runtime::{DeviceCapabilities, DeviceCapability, ReservationKind};
 
     let capability = DeviceCapability::new(ReservationKind::OperatorOutput, "test_operator_contract");
     let service = AdmissionTestController::new_with_device_capabilities(
-        QueryExecutionConfig {
-            ..QueryExecutionConfig::default()
-        },
+        QueryExecutionConfig { ..QueryExecutionConfig::default() },
         QueueBounds::default(),
         DeviceCapabilities::only([capability]),
     )
@@ -311,9 +299,7 @@ async fn restricted_capability_profile_rejects_missing_async_requirement() {
 #[test]
 fn raised_requirement_floor_is_preserved_across_admissions() {
     let service = AdmissionTestController::new_with_ledger(
-        QueryExecutionConfig {
-            ..QueryExecutionConfig::default()
-        },
+        QueryExecutionConfig { ..QueryExecutionConfig::default() },
         QueueBounds::default(),
         test_ledger(100, 4, Default::default()),
     )
@@ -331,9 +317,7 @@ fn raised_requirement_floor_is_preserved_across_admissions() {
 #[test]
 fn admission_only_service_never_resolves_cuda_device() {
     let service = admission_test_service_with_profile(
-        QueryExecutionConfig {
-            ..QueryExecutionConfig::default()
-        },
+        QueryExecutionConfig { ..QueryExecutionConfig::default() },
         QueueBounds::default(),
         512,
         1,

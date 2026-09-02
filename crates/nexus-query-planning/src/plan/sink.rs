@@ -3,7 +3,7 @@
 //! Sinks define the final residency contract for a query plan: host Arrow or a
 //! GPU-resident handle. They do not imply intermediate host materialization.
 
-use super::*;
+use super::{NodeId, SchemaRef};
 
 /// Explicit result boundary for a native query plan.
 ///

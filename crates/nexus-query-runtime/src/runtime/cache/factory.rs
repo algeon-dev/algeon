@@ -7,14 +7,13 @@
 
 use std::sync::Arc;
 
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
+
 #[cfg(feature = "cugraph")]
 use super::resident_graph::GpuResidentGraphCache;
-use crate::{
-    error::{QueryError, QueryErrorCode, Result},
-    runtime::{
-        cache::{DeviceCacheReport, local_parquet::GpuLocalParquetSourceCache},
-        gpu::DeviceLedger,
-    },
+use crate::runtime::{
+    cache::{DeviceCacheReport, local_parquet::GpuLocalParquetSourceCache},
+    gpu::DeviceLedger,
 };
 
 /// One per-device cache allocation owner.

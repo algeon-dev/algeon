@@ -14,7 +14,6 @@ pub(crate) use nexus_query_planning::chunk::{
 };
 
 #[cfg(test)]
-#[path = "tests.rs"]
 mod tests;
 
 #[cfg(test)]

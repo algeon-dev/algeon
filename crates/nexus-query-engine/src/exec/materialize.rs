@@ -1,10 +1,16 @@
+use std::{sync::Arc, time::Instant};
+
 use arrow::{
     array::ArrayRef,
     compute::cast,
     datatypes::{Field, SchemaRef},
 };
 
-use super::*;
+use super::{
+    Array, BoundedExecutionAttempt, CommittedPartial, ExecutionContext, GpuDataFrame, GpuResultHandle,
+    MemoryReservationRequest, NodeId, QueryError, QueryErrorCode, QueryMetrics, RecordBatch, ReservationKind, Result,
+    RetryFacts, RuntimeResourceFacts, record_batch_memory_size,
+};
 
 pub(super) fn materialize_to_host(input: GpuResultHandle, metrics: &mut QueryMetrics) -> Result<RecordBatch> {
     let timer = Instant::now();

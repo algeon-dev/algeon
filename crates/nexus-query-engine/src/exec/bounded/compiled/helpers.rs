@@ -1,7 +1,21 @@
+use std::time::Instant;
+
 use cudf::{DuplicateKeepOption, frame::dataframe::DropDuplicatesOptions};
 
-use super::*;
-use crate::exec::{attach_budget_token_failure_facts, execution_budget_token_for_boundary};
+use crate::{
+    admission::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection},
+    capability::{
+        KeyedHashJoinStrategyInputFacts, keyed_hash_join_strategy_input_facts_for_plan,
+        keyed_hash_join_strategy_should_probe_left_one_shot_build_key_uniqueness_with_options,
+    },
+    error::{QueryError, QueryErrorCode, Result},
+    exec::{attach_budget_token_failure_facts, bounded::BoundedExecutionAttempt, execution_budget_token_for_boundary},
+    pipeline::{PipelineTask, ResidentResourceId},
+    plan::{JoinNode, JoinSide, LimitNode, NodeId, PlanNode, QueryPlan, SortNode},
+    runtime::resident::GpuDataFrame,
+};
+
+const OPERATION: &str = "nexus_query_engine.exec.bounded.compiled.tasks";
 
 pub(super) fn plan_node(task: &PipelineTask) -> Result<NodeId> {
     task.plan_node().ok_or_else(|| {

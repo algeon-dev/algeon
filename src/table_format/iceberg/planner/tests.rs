@@ -8,7 +8,19 @@ use iceberg::{
 use nexus_iceberg::S3FileIoConfigVerification;
 
 use super::*;
-use crate::{capability::CapabilityReason, table_format::scan::TableFormatLakehouseCachePolicy};
+use crate::{
+    capability::CapabilityReason,
+    table_format::{
+        iceberg::planner::{
+            predicate::datafusion_filters_to_iceberg_predicate,
+            tasks::{
+                append_delete_file_facts, iceberg_file_scan_tasks_to_table_format_scan_plan_with_config,
+                iceberg_task_content_identity,
+            },
+        },
+        scan::TableFormatLakehouseCachePolicy,
+    },
+};
 
 fn iceberg_schema() -> Arc<IcebergSchema> {
     Arc::new(

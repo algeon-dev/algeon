@@ -1,3 +1,5 @@
+use std::fs;
+
 use super::*;
 
 /// Raw shape of the optional TOML overlay loaded from

@@ -2,14 +2,13 @@
 
 use std::fmt;
 
+use nexus_query_planning::{
+    error::AttemptFailureCode,
+    schedule_projection::{AttemptComposedScheduleProjection, AttemptId},
+};
 use serde::{
     Deserialize, Serialize,
     de::{self, SeqAccess, Visitor},
-};
-
-use crate::{
-    error::AttemptFailureCode,
-    schedule_projection::{AttemptComposedScheduleProjection, AttemptId},
 };
 
 pub const QUERY_ATTEMPT_REPORT_SCHEMA_V1: &str = "nexus_query_engine.query_attempt_report.v1";
@@ -30,11 +29,11 @@ macro_rules! attempt_correlation {
         #[serde(transparent)]
         pub struct $name(String);
         impl $name {
-            pub fn new(value: impl Into<String>) -> crate::error::Result<Self> {
+            pub fn new(value: impl Into<String>) -> nexus_query_planning::error::Result<Self> {
                 let value = value.into();
                 if value.trim().is_empty() || value.len() > $limit {
-                    return Err(crate::error::QueryError::new(
-                        crate::error::QueryErrorCode::InvalidAttemptCorrelation,
+                    return Err(nexus_query_planning::error::QueryError::new(
+                        nexus_query_planning::error::QueryErrorCode::InvalidAttemptCorrelation,
                         "nexus_query_engine.attempt.correlation",
                         "attempt correlation must be non-blank and within its byte limit",
                     )
@@ -134,11 +133,11 @@ pub enum AttemptFailureStatus {
 }
 
 impl AttemptFailureStatus {
-    pub const fn from_query_error_status(status: crate::error::QueryErrorStatus) -> Self {
+    pub const fn from_query_error_status(status: nexus_query_planning::error::QueryErrorStatus) -> Self {
         match status {
-            crate::error::QueryErrorStatus::Permanent => Self::Permanent,
-            crate::error::QueryErrorStatus::Temporary => Self::Temporary,
-            crate::error::QueryErrorStatus::Persistent => Self::Persistent,
+            nexus_query_planning::error::QueryErrorStatus::Permanent => Self::Permanent,
+            nexus_query_planning::error::QueryErrorStatus::Temporary => Self::Temporary,
+            nexus_query_planning::error::QueryErrorStatus::Persistent => Self::Persistent,
         }
     }
 }
@@ -438,9 +437,9 @@ impl AttemptFailureSummary {
     /// The native message is deliberately not copied into the stable report:
     /// it can contain arbitrary application metadata even when it does not
     /// match a known URI, credential, or SQL pattern. The returned
-    /// [`crate::error::QueryError`] keeps that complete source text on its
+    /// [`nexus_query_planning::error::QueryError`] keeps that complete source text on its
     /// ordinary error path.
-    pub fn from_native_error(error: &crate::error::QueryError) -> Self {
+    pub fn from_native_error(error: &nexus_query_planning::error::QueryError) -> Self {
         let mut facts = Vec::with_capacity(2);
         let reason = match error.fact_value("reason") {
             Some("backend_closing") => Some(AttemptFailureFactValue::BackendClosing),
@@ -462,16 +461,16 @@ impl AttemptFailureSummary {
             facts.push(AttemptFailureFact { key: AttemptFailureFactKey::Reason, value });
         }
         let allocation_source = match error.cugraph_allocation_source() {
-            Some(crate::error::CugraphAllocationSource::RmmOutOfMemory) => {
+            Some(nexus_query_planning::error::CugraphAllocationSource::RmmOutOfMemory) => {
                 Some(AttemptFailureFactValue::CugraphRmmOutOfMemory)
             },
-            Some(crate::error::CugraphAllocationSource::RmmBadAlloc) => {
+            Some(nexus_query_planning::error::CugraphAllocationSource::RmmBadAlloc) => {
                 Some(AttemptFailureFactValue::CugraphRmmBadAlloc)
             },
-            Some(crate::error::CugraphAllocationSource::StdBadAlloc) => {
+            Some(nexus_query_planning::error::CugraphAllocationSource::StdBadAlloc) => {
                 Some(AttemptFailureFactValue::CugraphStdBadAlloc)
             },
-            Some(crate::error::CugraphAllocationSource::Unknown) | None => None,
+            Some(nexus_query_planning::error::CugraphAllocationSource::Unknown) | None => None,
         };
         if let Some(value) = allocation_source {
             facts.push(AttemptFailureFact { key: AttemptFailureFactKey::AllocationSource, value });
@@ -575,7 +574,7 @@ pub struct CleanupFailureSummary {
 }
 
 impl CleanupFailureSummary {
-    pub fn from_native_error(phase: CleanupFailurePhase, error: &crate::error::QueryError) -> Self {
+    pub fn from_native_error(phase: CleanupFailurePhase, error: &nexus_query_planning::error::QueryError) -> Self {
         Self { phase, failure: AttemptFailureSummary::from_native_error(error), complete: true }
     }
 
@@ -1655,8 +1654,8 @@ impl RuntimeTerminalOutcome {
     /// Reduces a native error to its closed terminal projection. Attempt
     /// owners must still call the borrowed summary recorder first when they
     /// publish an attempt report.
-    pub fn from_query_error(error: &crate::error::QueryError) -> Self {
-        if error.code() == crate::error::QueryErrorCode::Cancelled {
+    pub fn from_query_error(error: &nexus_query_planning::error::QueryError) -> Self {
+        if error.code() == nexus_query_planning::error::QueryErrorCode::Cancelled {
             Self::Cancelled
         } else {
             Self::failed(&AttemptFailureSummary::from_native_error(error))
@@ -1668,9 +1667,15 @@ impl RuntimeTerminalOutcome {
     /// remains a text-free control outcome, while an expired deadline retains
     /// its stable reason beside the same `Cancelled` terminal outcome.
     #[doc(hidden)]
-    pub fn primary_failure_from_query_error(error: &crate::error::QueryError) -> Option<AttemptFailureSummary> {
+    pub fn primary_failure_from_query_error(
+        error: &nexus_query_planning::error::QueryError,
+    ) -> Option<AttemptFailureSummary> {
         match error.code() {
-            crate::error::QueryErrorCode::Cancelled if error.fact_value("reason") != Some("deadline_expired") => None,
+            nexus_query_planning::error::QueryErrorCode::Cancelled
+                if error.fact_value("reason") != Some("deadline_expired") =>
+            {
+                None
+            },
             _ => Some(AttemptFailureSummary::from_native_error(error)),
         }
     }

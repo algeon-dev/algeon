@@ -1,4 +1,11 @@
-use super::*;
+use std::time::Instant;
+
+use super::{
+    DataFrame, ExecutionBudgetRequest, ExecutionContext, GpuDataFrame, LocalParquetSource, NodeId, QueryError,
+    QueryErrorCode, QueryMetrics, Result, SourceChunkPlanningPolicy, ZERO_COLUMN_COUNT_COLUMN, attach_row_group_facts,
+    parquet_chunk_path_fact, plan_local_parquet_source_chunks_with_execution_context,
+    record_bounded_parquet_source_metrics,
+};
 
 pub(super) fn read_zero_column_count_source(
     context: &ExecutionContext,
@@ -16,15 +23,17 @@ pub(super) fn read_zero_column_count_source(
         .iter()
         .map(|chunk| {
             chunk.known_row_count.ok_or_else(|| {
-                QueryError::new(
-                    QueryErrorCode::InvalidPlan,
-                    "nexus_query_engine.zero_column_count.read",
-                    "zero-column count source requires parquet row-count metadata",
+                attach_row_group_facts(
+                    QueryError::new(
+                        QueryErrorCode::InvalidPlan,
+                        "nexus_query_engine.zero_column_count.read",
+                        "zero-column count source requires parquet row-count metadata",
+                    )
+                    .with_fact("path", parquet_chunk_path_fact(chunk))
+                    .with_fact("chunk_index", chunk.chunk_index)
+                    .with_fact("file_index", chunk.file_index),
+                    chunk,
                 )
-                .with_fact("path", parquet_chunk_path_fact(chunk))
-                .with_fact("chunk_index", chunk.chunk_index)
-                .with_fact("file_index", chunk.file_index)
-                .with_row_group_facts(chunk)
             })
         })
         .collect::<Result<Vec<_>>>()?;

@@ -1,4 +1,12 @@
-use super::*;
+use std::sync::Arc;
+
+use super::{
+    CugraphAlgorithmSpec, DataType, ExecutionPlan, GpuDataFrame, GraphAlgorithmSpec, GraphConstructionOptions,
+    GraphConstructionPolicy, GraphEdgeColumnBindings, GraphResidencyDescriptor, GraphResidencyPlanAnalysis,
+    GraphSourceFingerprintBypassReason, NexusNativeGpuProducerExec, Schema, as_nexus_native_composed_exec,
+    as_nexus_native_exec, graph_residency_descriptor_for_edge_plan, is_logical_vertex_type, native_algorithm,
+};
+
 pub(super) fn cugraph_graph_residency_descriptor(
     spec: &CugraphAlgorithmSpec,
     edge_source: Arc<dyn ExecutionPlan>,

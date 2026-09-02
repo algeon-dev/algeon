@@ -1,4 +1,9 @@
-use super::*;
+use std::time::Instant;
+
+use super::{
+    CommittedPartial, DataFrame, GpuDataFrame, LimitNode, LimitSpec, QueryError, QueryMetrics, Result,
+    limit_keeps_all_rows, limit_slice,
+};
 
 pub(super) fn execute_limit_with_token(
     node: &LimitNode,

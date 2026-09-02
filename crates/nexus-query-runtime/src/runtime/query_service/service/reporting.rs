@@ -1,6 +1,28 @@
 //! Service diagnostics: governor, cache, telemetry, and stream-pool waits.
 
-use super::*;
+#[cfg(test)]
+use std::{
+    collections::BTreeMap,
+    time::{Duration, Instant},
+};
+
+use nexus_query_planning::error::Result;
+#[cfg(test)]
+use nexus_query_planning::error::{QueryError, QueryErrorCode};
+
+#[cfg(test)]
+use super::super::admission::AdmissionState;
+use super::{
+    super::config::{QueryExecutionConfig, QueueBounds},
+    QueryService,
+};
+use crate::runtime::{
+    gpu::{
+        self, DeviceLedgerReport, DeviceMemoryFailureReport, DeviceTelemetrySnapshot, GpuTelemetry, NexusNvmlTelemetry,
+    },
+    gpu_execution_pool::{GpuExecutionPool, GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot},
+    query_service::{QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot},
+};
 
 impl QueryService {
     #[doc(hidden)]

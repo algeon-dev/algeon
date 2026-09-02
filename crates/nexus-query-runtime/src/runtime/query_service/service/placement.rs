@@ -1,12 +1,34 @@
 //! Device placement and immutable-grant admission against per-device ledgers.
 
-use super::*;
-use crate::runtime::gpu::placement::ordered_placement_candidate_snapshots;
+#[cfg(test)]
+use std::sync::{Arc, Mutex};
+
+use nexus_query_planning::{
+    admission::AttemptRequirement,
+    error::{QueryError, QueryErrorCode, Result},
+};
+
+#[cfg(test)]
+use super::QueryServiceInner;
+#[cfg(test)]
+use super::TestPauseHandle;
+use super::{
+    super::{
+        admission::{DeviceAdmissionEntries, PlacedQuery},
+        device_waiters::PendingDeviceSlotNotifications,
+        resources::QueryServiceResources,
+    },
+    QueryService,
+};
+use crate::{
+    observability::AdmissionRequestId,
+    runtime::gpu::{PlacementRequest, placement::ordered_placement_candidate_snapshots},
+};
 
 /// Returns the immutable capabilities required before placement.
 pub(in crate::runtime::query_service) fn required_capabilities_for_placement(
     requirement: &AttemptRequirement,
-) -> Vec<crate::capability::ReservationRequirement> {
+) -> Vec<nexus_query_planning::capability::ReservationRequirement> {
     requirement.required_capabilities.clone()
 }
 

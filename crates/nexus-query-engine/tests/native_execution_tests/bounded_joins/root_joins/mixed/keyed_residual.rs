@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::*;
 #[test]
 fn bounded_native_query_executes_root_mixed_inner_join_with_ordered_reservations() {

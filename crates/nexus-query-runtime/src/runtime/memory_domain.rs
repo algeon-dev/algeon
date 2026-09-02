@@ -9,8 +9,9 @@
 
 use std::sync::Arc;
 
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
+
 use super::MemoryGrant;
-use crate::error::{QueryError, QueryErrorCode, Result};
 
 /// Creates the authoritative hard allocation domain for one admitted attempt.
 ///

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::{
     column::{
         transfer_from_owned_column_with_runtime_release,

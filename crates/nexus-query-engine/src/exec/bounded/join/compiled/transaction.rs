@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    ActiveReservation, BoundedExecutionAttempt, BoundedJoinSideFrame, CompiledJoinIndices, GpuDataFrame,
+    ResidentGpuFrame, release_bounded_join_side_frame,
+};
 
 /// Transaction boundary for bounded join materialization resources.
 ///

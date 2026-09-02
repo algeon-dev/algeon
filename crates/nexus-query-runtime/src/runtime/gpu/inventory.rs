@@ -2,9 +2,8 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use nexus_query_planning::error::{QueryError, Result};
 use serde::Serialize;
-
-use crate::error::{QueryError, Result};
 
 /// Availability of one live device-telemetry substrate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

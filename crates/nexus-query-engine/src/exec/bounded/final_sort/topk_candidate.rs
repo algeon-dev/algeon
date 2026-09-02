@@ -1,4 +1,6 @@
-use super::*;
+use std::time::Instant;
+
+use super::{CudfSortOptions, GpuDataFrame, QueryError, QueryMetrics, Result, SortNode, lower_sort_spec};
 
 pub(super) fn sort_topk_candidate_with_budget(
     sort: &SortNode,

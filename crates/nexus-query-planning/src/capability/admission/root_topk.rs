@@ -1,4 +1,8 @@
-use super::*;
+use super::{
+    CapabilityDecision, EdgeContract, InvariantSelector, NodeCapability, QueryPlan, SubgraphInvariant,
+    collect_reachable_node_ids, first_reachable_edge_rejection, first_reachable_node_rejection,
+    root_topk_join_aggregate_shape_decision, solved_invariant_decision,
+};
 
 pub(in crate::capability) fn analyze_root_topk_join_aggregate_admission(
     plan: &QueryPlan,

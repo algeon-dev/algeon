@@ -75,6 +75,11 @@ pub(crate) fn attach_query_response_metadata<T>(
 
 #[cfg(test)]
 mod correlation_tests {
+    use std::{
+        sync::Arc,
+        time::{Duration, Instant},
+    };
+
     use nexus_query_engine::observability::{
         QueryBoundaryKind, RUNTIME_OBSERVATION_JSONL_SCHEMA, RuntimeObservationPayload,
         RuntimeObservationRecordDisposition, RuntimeReservationAction, RuntimeReservationDisposition,

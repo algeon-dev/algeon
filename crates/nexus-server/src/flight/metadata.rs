@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::*;
 
 const FLIGHT_SQL_TABLE_TYPE_TABLE: &str = "TABLE";
@@ -316,7 +318,11 @@ pub(super) fn sql_info_bitmask(values: impl IntoIterator<Item = i32>) -> i32 {
 
 #[cfg(test)]
 mod get_tables_prefilter_tests {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::{
+        collections::{BTreeMap, BTreeSet},
+        sync::Mutex,
+        time::Duration,
+    };
 
     use arrow::datatypes::SchemaRef;
     use datafusion::{

@@ -22,16 +22,16 @@ use cudf::{
         InfoDetail, PreparedHostBatch as CudfPreparedHostBatch,
     },
 };
-
-use crate::{
+use nexus_query_planning::{
     error::{QueryError, Result},
     naming::is_datafusion_order_column_name,
     plan::{GraphResidencyDescriptor, JoinNullEquality},
-    runtime::{
-        DevicePlacement, ExecutionCancellation, ExecutionContext,
-        cache::local_parquet::GpuLocalParquetSourceCachePin,
-        gpu::ledger::{MemoryGrant, MemoryGrantLiveReservation},
-    },
+};
+
+use crate::runtime::{
+    DevicePlacement, ExecutionCancellation, ExecutionContext,
+    cache::local_parquet::GpuLocalParquetSourceCachePin,
+    gpu::ledger::{MemoryGrant, MemoryGrantLiveReservation},
 };
 
 /// Local lookup table for GPU-resident inputs consumed by a query.
@@ -43,14 +43,14 @@ pub type GpuResidentInputMap = BTreeMap<String, GpuResultHandle>;
 #[doc(hidden)]
 pub fn resident_input_evidence_map(
     inputs: &GpuResidentInputMap,
-) -> Result<crate::plan::column_evidence::ResidentInputEvidenceMap> {
+) -> Result<nexus_query_planning::plan::column_evidence::ResidentInputEvidenceMap> {
     inputs
         .iter()
         .map(|(input_name, handle)| {
             let producer_execution_scope_fingerprint = handle.producer_execution_scope().map(str::to_owned);
             let row_count = u64::try_from(handle.frame().num_rows()).map_err(|_| {
                 QueryError::new(
-                    crate::error::QueryErrorCode::SizeOverflow,
+                    nexus_query_planning::error::QueryErrorCode::SizeOverflow,
                     "nexus_query_engine.admission.resident_evidence",
                     "resident frame row count exceeds the admission integer range",
                 )
@@ -64,7 +64,7 @@ pub fn resident_input_evidence_map(
             )?;
             Ok((
                 input_name.clone(),
-                crate::plan::column_evidence::ResidentInputEvidence {
+                nexus_query_planning::plan::column_evidence::ResidentInputEvidence {
                     schema: Arc::clone(handle.schema()),
                     producer_execution_scope_fingerprint,
                     row_count,
@@ -79,8 +79,8 @@ fn resident_frame_column_evidence(
     handle: &GpuResultHandle,
     occurrence_id: &str,
     execution_scope_fingerprint: &str,
-) -> Result<crate::plan::column_evidence::PlanColumnEvidence> {
-    use crate::plan::column_evidence::{PlanColumnEvidence, StringPayloadBound, StringPayloadLineage};
+) -> Result<nexus_query_planning::plan::column_evidence::PlanColumnEvidence> {
+    use nexus_query_planning::plan::column_evidence::{PlanColumnEvidence, StringPayloadBound, StringPayloadLineage};
 
     let operation = "nexus_query_engine.admission.resident_evidence";
     let frame = handle.frame();
@@ -90,7 +90,7 @@ fn resident_frame_column_evidence(
     })?;
     let columns = info.columns.ok_or_else(|| {
         QueryError::new(
-            crate::error::QueryErrorCode::Internal,
+            nexus_query_planning::error::QueryErrorCode::Internal,
             operation,
             "resident frame metadata omitted column details",
         )
@@ -98,7 +98,7 @@ fn resident_frame_column_evidence(
     })?;
     if columns.len() != handle.schema().fields().len() {
         return Err(QueryError::new(
-            crate::error::QueryErrorCode::UnsupportedPlanShape,
+            nexus_query_planning::error::QueryErrorCode::UnsupportedPlanShape,
             operation,
             "resident frame schema width differs from its admitted descriptor",
         )
@@ -118,7 +118,7 @@ fn resident_frame_column_evidence(
         }
         if column.data_type.id() != cudf::TypeId::String {
             return Err(QueryError::new(
-                crate::error::QueryErrorCode::UnsupportedPlanShape,
+                nexus_query_planning::error::QueryErrorCode::UnsupportedPlanShape,
                 operation,
                 "resident string evidence is not backed by a physical string column",
             )
@@ -148,7 +148,7 @@ fn resident_frame_column_evidence(
             })?;
             let chars_bytes = u64::try_from(chars_bytes.max(0)).map_err(|_| {
                 QueryError::new(
-                    crate::error::QueryErrorCode::SizeOverflow,
+                    nexus_query_planning::error::QueryErrorCode::SizeOverflow,
                     operation,
                     "resident string payload exceeds the admission integer range",
                 )
@@ -157,7 +157,7 @@ fn resident_frame_column_evidence(
             })?;
             let max_length = u64::try_from(max_length.unwrap_or(0).max(0)).map_err(|_| {
                 QueryError::new(
-                    crate::error::QueryErrorCode::SizeOverflow,
+                    nexus_query_planning::error::QueryErrorCode::SizeOverflow,
                     operation,
                     "resident string value length exceeds the admission integer range",
                 )
@@ -392,7 +392,7 @@ impl GpuDataFrame {
         let bytes =
             info.memory_accounting.and_then(|accounting| accounting.device_allocated_bytes).ok_or_else(|| {
                 QueryError::new(
-                    crate::error::QueryErrorCode::Internal,
+                    nexus_query_planning::error::QueryErrorCode::Internal,
                     "nexus_query_engine.gpu_dataframe.device_memory",
                     "cudf dataframe memory accounting did not include device-allocated bytes",
                 )
@@ -606,7 +606,7 @@ impl GpuResultHandle {
     ) -> Result<Self> {
         if frame.placement().device != context.runtime()?.device() {
             return Err(QueryError::new(
-                crate::error::QueryErrorCode::InvalidPlan,
+                nexus_query_planning::error::QueryErrorCode::InvalidPlan,
                 "nexus_query_engine.gpu_result_handle",
                 "native GPU result frame device does not match the execution context",
             )
@@ -719,7 +719,7 @@ impl GpuResultHandle {
         let bytes =
             info.memory_accounting.and_then(|accounting| accounting.device_allocated_bytes).ok_or_else(|| {
                 QueryError::new(
-                    crate::error::QueryErrorCode::Internal,
+                    nexus_query_planning::error::QueryErrorCode::Internal,
                     "nexus_query_engine.gpu_result_handle.device_memory",
                     "GPU result memory accounting did not include device-allocated bytes",
                 )
@@ -748,7 +748,7 @@ impl GpuResultHandle {
         const OPERATION: &str = "nexus_query_engine.gpu_local_parquet_source_cache.copy_for_cache";
         if self.source_cache_pin.is_some() || self.graph_residency.is_some() {
             return Err(QueryError::new(
-                crate::error::QueryErrorCode::InvalidPlan,
+                nexus_query_planning::error::QueryErrorCode::InvalidPlan,
                 OPERATION,
                 "local Parquet cache input already carries non-attempt cache residency",
             )
@@ -756,7 +756,7 @@ impl GpuResultHandle {
         }
         if self.runtime.device() != allocation_lease.domain().device() {
             return Err(QueryError::new(
-                crate::error::QueryErrorCode::InvalidPlan,
+                nexus_query_planning::error::QueryErrorCode::InvalidPlan,
                 OPERATION,
                 "local Parquet cache allocation domain is on another CUDA device",
             )
@@ -765,7 +765,7 @@ impl GpuResultHandle {
         }
         if self.runtime.binding_id() == allocation_lease.runtime().binding_id() {
             return Err(QueryError::new(
-                crate::error::QueryErrorCode::InvalidPlan,
+                nexus_query_planning::error::QueryErrorCode::InvalidPlan,
                 OPERATION,
                 "local Parquet cache allocation lease must use an independent execution binding",
             )
@@ -872,7 +872,7 @@ fn validate_host_output_schema_binding(internal_schema: &SchemaRef, output_schem
     const OPERATION: &str = "nexus_query_engine.host_output_schema_binding";
     if internal_schema.fields().len() != output_schema.fields().len() {
         return Err(QueryError::new(
-            crate::error::QueryErrorCode::InvalidPlan,
+            nexus_query_planning::error::QueryErrorCode::InvalidPlan,
             OPERATION,
             "internal executable schema and external host schema have different field counts",
         )
@@ -886,7 +886,7 @@ fn validate_host_output_schema_binding(internal_schema: &SchemaRef, output_schem
     {
         if internal.data_type() != external.data_type() {
             return Err(QueryError::new(
-                crate::error::QueryErrorCode::InvalidPlan,
+                nexus_query_planning::error::QueryErrorCode::InvalidPlan,
                 OPERATION,
                 "internal executable field and external host field have different Arrow types",
             )
@@ -905,7 +905,7 @@ fn bind_host_output_schema(batch: RecordBatch, output_schema: &SchemaRef) -> Res
     let options = RecordBatchOptions::new().with_row_count(Some(batch.num_rows()));
     RecordBatch::try_new_with_options(Arc::clone(output_schema), batch.columns().to_vec(), &options).map_err(|error| {
         QueryError::new(
-            crate::error::QueryErrorCode::Internal,
+            nexus_query_planning::error::QueryErrorCode::Internal,
             "nexus_query_engine.host_output_schema_binding",
             "failed to apply the validated external host schema to a materialized native output batch",
         )
@@ -945,7 +945,7 @@ impl GpuLocalParquetCachedResult {
         let bytes =
             info.memory_accounting.and_then(|accounting| accounting.device_allocated_bytes).ok_or_else(|| {
                 QueryError::new(
-                    crate::error::QueryErrorCode::Internal,
+                    nexus_query_planning::error::QueryErrorCode::Internal,
                     "nexus_query_engine.gpu_local_parquet_source_cache.device_memory",
                     "cached local Parquet memory accounting did not include device-allocated bytes",
                 )
@@ -961,7 +961,7 @@ impl GpuLocalParquetCachedResult {
             || self.device_placement != context.device_placement()
         {
             return Err(QueryError::new(
-                crate::error::QueryErrorCode::InvalidPlan,
+                nexus_query_planning::error::QueryErrorCode::InvalidPlan,
                 OPERATION,
                 "local Parquet cache entry does not match the current query device placement",
             )
@@ -1058,7 +1058,7 @@ impl GpuFilteredJoinBuildHandle {
     ) -> Result<Self> {
         if filtered_join.build().placement().device != context.runtime()?.device() {
             return Err(QueryError::new(
-                crate::error::QueryErrorCode::InvalidPlan,
+                nexus_query_planning::error::QueryErrorCode::InvalidPlan,
                 "nexus_query_engine.gpu_filtered_join_build_handle",
                 "native GPU filtered-join build artifact device does not match the execution context",
             )
@@ -1130,7 +1130,7 @@ impl GpuHashJoinBuildHandle {
     ) -> Result<Self> {
         if hash_join.build().placement().device != context.runtime()?.device() {
             return Err(QueryError::new(
-                crate::error::QueryErrorCode::InvalidPlan,
+                nexus_query_planning::error::QueryErrorCode::InvalidPlan,
                 "nexus_query_engine.gpu_hash_join_build_handle",
                 "native GPU hash-join build artifact device does not match the execution context",
             )
@@ -1207,10 +1207,10 @@ mod tests {
         record_batch::RecordBatch,
     };
     use cudf::{DataFrame, ops::expr::col};
+    use nexus_query_planning::error::{QueryErrorCode, QueryErrorKind, QueryErrorStatus};
 
     use super::*;
     use crate::{
-        error::{QueryErrorCode, QueryErrorKind, QueryErrorStatus},
         observability::AdmissionRequestId,
         runtime::gpu::ledger::{DeviceLedger, MemoryGrant},
     };
@@ -1313,7 +1313,7 @@ mod tests {
         assert_eq!(cursor.next_batch().unwrap().unwrap().num_rows(), 1);
         cancellation.cancel();
         let error = cursor.next_batch().expect_err("cancellation must stop the next host chunk");
-        assert_eq!(error.code(), crate::error::QueryErrorCode::Cancelled);
+        assert_eq!(error.code(), nexus_query_planning::error::QueryErrorCode::Cancelled);
         assert_eq!(cursor.remaining_rows(), 2);
     }
 

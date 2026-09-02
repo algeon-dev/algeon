@@ -10,8 +10,6 @@
 //! cryptographic hashes. Unordered comparisons sort canonical rows before
 //! comparing values; ordered comparisons preserve batch row order.
 
-use std::{collections::HashMap, fmt::Write, sync::Arc};
-
 use arrow::{
     array::{
         Array, BinaryArray, BinaryViewArray, BooleanArray, Date32Array, Date64Array, Decimal128Array, Decimal256Array,

@@ -2,8 +2,12 @@
 //!
 //! Provides reachability and topological-walk utilities over [`QueryPlan`]
 //! nodes that admission and invariant analyses share.
+use std::collections::{BTreeMap, BTreeSet};
 
-use super::{model::*, *};
+use super::{
+    JoinSide, NodeId, PlanNode, QueryPlan,
+    model::{CapabilityDecision, EdgeContract, NodeCapability, ReservationRequirement, SubgraphInvariant},
+};
 
 // Proves a dependency walk can be scheduled without cycles or missing nodes.
 pub(super) struct GraphScheduleProof<'a> {

@@ -3,12 +3,11 @@ use std::{
     time::Duration,
 };
 
-use crate::{
-    admission::{AttemptRequirement, EstimateQuality},
-    runtime::{
-        DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership,
-        KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryExecutionConfig, QueryService, QueueBounds,
-    },
+use nexus_query_planning::admission::{AttemptRequirement, EstimateQuality};
+
+use crate::runtime::{
+    DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership,
+    KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryExecutionConfig, QueryService, QueueBounds,
 };
 
 const TEST_DEVICE_CAPACITY_BYTES: u64 = 64 * 1024 * 1024;
@@ -530,7 +529,7 @@ fn queued_query_service_admission_times_out_while_device_capacity_is_busy() {
     std::thread::sleep(Duration::from_millis(5));
     let error = waiter.try_admit().unwrap_err();
 
-    assert_eq!(error.code(), crate::error::QueryErrorCode::ServiceOverloaded);
+    assert_eq!(error.code(), nexus_query_planning::error::QueryErrorCode::ServiceOverloaded);
     assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
 }
 

@@ -6,7 +6,7 @@
 //! Sentinel strings such as `none`, `unknown`, `not_run`, and `not_computed`
 //! are part of the report contract when emitted by the TSV helpers.
 
-use std::{fmt::Write, sync::Arc};
+use std::sync::Arc;
 
 use datafusion::{
     common::ScalarValue,

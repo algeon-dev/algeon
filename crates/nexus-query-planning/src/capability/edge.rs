@@ -4,7 +4,17 @@
 //! (column carriage, key carriage, partition compatibility, etc.). Rejections
 //! here are local to the edge; whole-plan admission lives in [`super::admission`].
 
-use super::{graph::*, model::*, node::*, *};
+use super::{
+    JoinSide, KeyedHashJoinStrategy, KeyedHashJoinStrategyDecision, NodeId, PlanNode, QueryPlan, ReservationKind,
+    SourceNode,
+    graph::{collect_reachable_node_ids, consumer_nodes_for_reachable},
+    keyed_hash_join_strategy_decision_for_plan, local_parquet_source_has_exact_read_preflight,
+    model::{
+        CapabilityDecision, ContractQuality, EdgeConsumer, EdgeContract, EdgeContractKind, InputRole, ProducedProperty,
+        RequiredProperty, ReservationRequirement, ResultSinkKind, SharedProducerIdentity, VectorInputRole,
+    },
+    node::{produced_properties, source_format_capability},
+};
 
 pub(super) fn analyze_input_edges(plan: &QueryPlan, consumer_id: NodeId, kind: &PlanNode) -> Vec<EdgeContract> {
     kind.input_ids()

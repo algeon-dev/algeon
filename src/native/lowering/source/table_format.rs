@@ -1,7 +1,4 @@
-use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
-    sync::Arc,
-};
+use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{DataType, Field, Schema, SchemaRef};
 use datafusion::physical_plan::ExecutionPlan;
@@ -51,8 +48,11 @@ mod files;
 mod groups;
 mod schema_match;
 
-use admission::*;
 pub(in crate::native::lowering) use admission::{available_table_format_scan_plan, table_format_scan_rejection};
+use admission::{
+    table_format_column_mapping_by_name, table_format_column_requirements, table_format_scan_plan_is_empty_admissible,
+    table_format_scan_plan_rejection, validate_table_format_scan_plan,
+};
 #[cfg(test)]
 use count_star::lower_table_format_count_star_fallback_source_for_plan;
 use count_star::table_format_count_star_fallback_column;
@@ -62,10 +62,20 @@ pub(in crate::native::lowering) use count_star::{
     table_format_count_star_mixed_row_count_metadata_can_split, table_format_count_star_probe_can_lower,
     table_format_zero_column_count_metadata_is_available,
 };
-use field_id::*;
-use files::*;
-use groups::*;
-use schema_match::*;
+use field_id::{
+    TableFormatFieldIdReadBinding, TableFormatFileReadBindings, table_format_file_field_id_read_bindings,
+    table_format_requires_iceberg_field_id_bindings, validate_table_format_direct_file_column_field_ids,
+};
+use files::{
+    table_format_local_parquet_files, table_format_local_parquet_files_for_group, table_format_local_path,
+    table_format_native_parquet_file, table_format_scalar_value_to_native_literal,
+};
+use groups::{TableFormatSourceReadGroup, table_format_source_output_schema, table_format_source_read_groups};
+use schema_match::{
+    table_format_arrow_data_types_match_except_list_child_names, table_format_data_file_footer_arrow_schema,
+    table_format_file_schema, table_format_footer_data_type_needs_logical_source_contract,
+    table_format_footer_field_matches_mapping, table_format_local_footer_schema,
+};
 
 pub(super) fn lower_table_format_source_input(
     scan_exec: &NexusIcebergScanExec,

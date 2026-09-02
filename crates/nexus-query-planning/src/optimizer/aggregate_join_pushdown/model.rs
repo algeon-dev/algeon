@@ -1,4 +1,4 @@
-use super::*;
+use super::{NodeId, QueryPlan};
 
 /// Stable rule name used in optimizer diagnostics.
 pub const AGGREGATE_JOIN_PUSHDOWN_RULE_NAME: &str = "aggregate_join_pushdown";

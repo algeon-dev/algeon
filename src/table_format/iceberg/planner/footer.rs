@@ -1,6 +1,11 @@
+use std::{collections::BTreeMap, sync::Arc};
+
 use nexus_query_engine::parquet_stats::row_group_null_counts_by_root_column;
 
-use super::*;
+use super::{
+    BytesMut, Error, ErrorCode, FOOTER_SIZE, FileIO, FileRead, FooterTail, ParquetMetaData, ParquetMetaDataReader,
+    Result, SchemaRef, TableFormat, TableFormatColumnSource, TableFormatScanPlan,
+};
 
 pub(super) fn scan_plan_needs_field_id_footer_schema(plan: &TableFormatScanPlan) -> bool {
     plan.format == TableFormat::Iceberg

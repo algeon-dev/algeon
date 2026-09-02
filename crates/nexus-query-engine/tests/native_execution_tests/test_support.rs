@@ -1,3 +1,5 @@
+use std::{path::Path, sync::Arc};
+
 use super::*;
 
 pub(super) fn projection_outputs(expressions: Vec<Expr>, schema: Arc<Schema>) -> Vec<ProjectionOutput> {

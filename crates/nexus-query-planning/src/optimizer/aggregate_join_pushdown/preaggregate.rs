@@ -1,4 +1,10 @@
-use super::*;
+use std::{collections::BTreeSet, sync::Arc};
+
+use super::{
+    AggregateExpr, AggregateFunction, AggregateJoinLineage, AggregateJoinPushdownRejectedReason, AggregateNode,
+    AggregateSpec, CaseWhen, DataType, Expr, Field, JoinNode, JoinSide, JoinType, NodeId, ProjectionOutput, Schema,
+    SchemaRef, avg_pushdown_sum_state_data_type, join_side_index, join_side_introduces_nulls, simple_projection_column,
+};
 
 #[derive(Clone)]
 pub(in crate::optimizer::aggregate_join_pushdown) struct PreAggregateColumn {

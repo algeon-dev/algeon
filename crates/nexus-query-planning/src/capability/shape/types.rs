@@ -1,4 +1,4 @@
-use super::*;
+use super::{AggregateFunction, CapabilityDecision, JoinNode, NodeId, expr_references_input};
 
 /// Root keyed/residual join whose inputs are a resident multi-join subtree and
 /// a projection-wrapped grouped aggregate, followed by projection, scalar

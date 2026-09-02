@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use super::*;
 
 #[path = "native_join_execution/cross_projection.rs"]

@@ -1,8 +1,11 @@
-use std::path::Path;
+use std::{collections::HashMap, path::Path, sync::Arc};
 
 use nexus_query_engine::datatypes::arrow_field_metadata_matches_except_parquet_field_id;
 
-use super::*;
+use super::{
+    DataType, Field, FileReader, Schema, SchemaRef, TableFormatColumnMapping, TableFormatDataFile, TableFormatScanPlan,
+    table_format_local_path, table_format_native_parquet_file,
+};
 
 pub(super) fn table_format_file_schema(scan_plan: &TableFormatScanPlan) -> SchemaRef {
     table_format_local_footer_schema(scan_plan)

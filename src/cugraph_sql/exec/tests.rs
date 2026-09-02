@@ -52,7 +52,14 @@ use crate::{
     cugraph_sql::{
         CugraphAlgorithmParams, CugraphBfsOutputOptions, CugraphBfsParams, CugraphBfsSource,
         CugraphGraphEdgePredicateTable, CugraphGraphOptions, CugraphGraphPredicateTable, CugraphPageRankParams,
-        CugraphSqlConfig, CugraphTableReference, CugraphTriangleCountAllParams, result_schema_for_params,
+        CugraphSqlConfig, CugraphTableReference, CugraphTriangleCountAllParams,
+        exec::{
+            admission::lowered_native_edge_plan,
+            input::{StagedCugraphSource, execute_edge_source_to_gpu, stage_cugraph_inputs},
+            lowering::cugraph_side_input_name,
+            residency::{graph_residency_matches_edge_schema, native_graph_spec_for_residency},
+        },
+        result_schema_for_params,
     },
     error::{DataFusionErrorExt, ErrorCode},
     native_exec::{

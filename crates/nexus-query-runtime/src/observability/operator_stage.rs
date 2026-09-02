@@ -6,11 +6,12 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use nexus_query_planning::error::{QueryError, QueryErrorCode};
+
 use super::{
     PlanExecutionId, RuntimeEventContext, RuntimeObservationHandle, RuntimeObservationPayload,
     RuntimeOperatorStageKind, RuntimeOperatorStageObservation, RuntimeOperatorStageState, RuntimeSpanId, RuntimeTaskId,
 };
-use crate::error::{QueryError, QueryErrorCode};
 
 /// Process-local high span ids reserved for operator substages so they do not
 /// collide with the small deterministic planner/task span scheme.

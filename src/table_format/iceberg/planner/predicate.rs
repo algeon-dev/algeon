@@ -1,4 +1,6 @@
-use super::*;
+use super::{
+    Datum, Expr, Operator, Reference, ScalarValue, TableFormatLiteral, TableFormatPredicate, TableFormatPredicateOp,
+};
 
 pub(super) fn datafusion_filters_to_table_format_predicate(filters: &[Expr]) -> Option<TableFormatPredicate> {
     filters

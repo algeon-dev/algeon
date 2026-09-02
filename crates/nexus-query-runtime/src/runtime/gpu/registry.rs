@@ -8,16 +8,15 @@ use std::{
     },
 };
 
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
+
 use super::{
     DeviceCapabilities, DeviceContext, DeviceLedger, DeviceMemoryFailureReport, DeviceMemoryFailureTracker,
     DeviceOwnerToken, DeviceResourceEnvelope, DeviceResourceProfile, GpuInventory,
 };
-use crate::{
-    error::{QueryError, QueryErrorCode, Result},
-    runtime::{
-        GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe, GpuMemoryFraction, ServiceStreamPool,
-        backend_core::ConstructionResourceJournal, backend_metrics::BackendMetricsStore,
-    },
+use crate::runtime::{
+    GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe, GpuMemoryFraction, ServiceStreamPool,
+    backend_core::ConstructionResourceJournal, backend_metrics::BackendMetricsStore,
 };
 
 /// Soft managed-capacity calculation for one installed device.
@@ -496,7 +495,7 @@ impl DeviceRegistry {
     pub fn supports_capabilities(
         &self,
         device_ordinal: usize,
-        requirements: &[crate::capability::ReservationRequirement],
+        requirements: &[nexus_query_planning::capability::ReservationRequirement],
     ) -> bool {
         self.resource_profile(device_ordinal)
             .is_some_and(|profile| profile.device_capabilities.supports_all(requirements))

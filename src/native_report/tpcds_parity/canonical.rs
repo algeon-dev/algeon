@@ -1,4 +1,12 @@
-use super::*;
+use std::fmt::Write;
+
+use super::{
+    Array, BinaryArray, BinaryViewArray, BooleanArray, DataType, Date32Array, Date64Array, Decimal128Array,
+    Decimal256Array, Float32Array, Float64Array, Int8Array, Int16Array, Int32Array, Int64Array, LargeBinaryArray,
+    LargeStringArray, ParityCompareOptions, ParityFloatTolerance, RecordBatch, Schema, StringArray, StringViewArray,
+    TimeUnit, TimestampMicrosecondArray, TimestampMillisecondArray, TimestampNanosecondArray, TimestampSecondArray,
+    UInt8Array, UInt16Array, UInt32Array, UInt64Array, i256,
+};
 
 pub(super) fn collect_canonical_rows(schema: &Schema, batches: &[RecordBatch]) -> Result<Vec<CanonicalRow>, String> {
     let mut rows = Vec::new();

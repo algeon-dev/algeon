@@ -1,4 +1,9 @@
-use super::*;
+use std::time::Instant;
+
+use super::{
+    CudfSortOptions, DataFrame, DropDuplicatesOptions, DuplicateKeepOption, ExecutionContext, GpuDataFrame, NodeId,
+    QueryError, QueryMetrics, Result, execution_overrides,
+};
 use crate::plan::{EdgeDedupStrategy, EdgeNormalizeNode, EdgeNormalizeSpec, EdgeWeightCombiner};
 
 pub(super) fn execute_edge_normalize(

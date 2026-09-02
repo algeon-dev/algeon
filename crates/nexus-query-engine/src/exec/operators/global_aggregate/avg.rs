@@ -1,6 +1,10 @@
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
-use super::*;
+use super::{
+    AggregateFunction, AggregateSpec, ArrowDataType, AvgStateAliases, BinaryOp, DataFrame, ExecutionBudgetToken,
+    ExecutionContext, Expr, LiteralValue, QueryError, QueryErrorCode, QueryMetrics, Result, aggregate_spec_has_avg,
+    budgeted_value, execution_overrides, frame_column_arrow_data_type, lower_expr, validate_avg_output_fields,
+};
 
 pub(in crate::exec) fn finalize_avg_output_columns(
     context: &ExecutionContext,

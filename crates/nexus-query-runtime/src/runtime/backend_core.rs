@@ -14,6 +14,8 @@ use std::{
     thread,
 };
 
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
+
 #[cfg(test)]
 use super::observation_completion::ObservationCompletionWorkerLane;
 use super::{
@@ -32,12 +34,9 @@ use super::{
     gpu::{LiveBackendLease, claim_live_backend, normalize_device_ordinals},
     observation_completion::ObservationCompletionExecutor,
 };
-use crate::{
-    attempt::{
-        AttemptBackendCounters, AttemptBackendCountersSnapshot, AttemptBegin, AttemptCompletionQueue, AttemptOwner,
-        BeginAttemptRequest,
-    },
-    error::{QueryError, QueryErrorCode, Result},
+use crate::attempt::{
+    AttemptBackendCounters, AttemptBackendCountersSnapshot, AttemptBegin, AttemptCompletionQueue, AttemptOwner,
+    BeginAttemptRequest,
 };
 
 const BUILD_OPERATION: &str = "nexus_query_engine.gpu_backend_core.build";

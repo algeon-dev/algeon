@@ -5,7 +5,6 @@
 //! caller-owned runtime/cache/governor injection remain crate-private.
 
 use std::{
-    collections::HashMap,
     fs::{self, File},
     ops::Deref,
     path::Path,

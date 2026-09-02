@@ -14,10 +14,9 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::{
-    error::{QueryError, QueryErrorCode, Result},
-    runtime::gpu::DeviceLedger,
-};
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
+
+use crate::runtime::gpu::DeviceLedger;
 
 const OPERATION: &str = "nexus_query_engine.runtime.cache.residency";
 
@@ -551,7 +550,7 @@ mod tests {
             ledger
                 .try_admit(
                     crate::observability::AdmissionRequestId::new(1),
-                    &crate::admission::AttemptRequirement::empty(),
+                    &nexus_query_planning::admission::AttemptRequirement::empty(),
                 )
                 .unwrap()
                 .is_none()

@@ -1,3 +1,8 @@
+use std::{
+    sync::{Arc, Mutex},
+    time::Instant,
+};
+
 use futures::future::BoxFuture;
 use nexus_query_engine::observability::RuntimeTerminalOutcome;
 

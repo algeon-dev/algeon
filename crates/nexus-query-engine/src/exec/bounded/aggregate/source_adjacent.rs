@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use super::{partitioned::partitioned_aggregate_partition_count, *};
 
 struct SourceAdjacentPartitionInput {

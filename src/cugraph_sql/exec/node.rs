@@ -1,7 +1,35 @@
+use std::{
+    sync::{Arc, atomic::Ordering},
+    time::Instant,
+};
+
 use nexus_query_engine::admission::QueryPlanCapabilityProof;
 
-use super::*;
+use super::{
+    Boundedness, BoxFuture, Column, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBfsOutputMode,
+    CugraphEdgeCanonicalFacts, CugraphInputRowBounds, CugraphPlanDefinition, CugraphResultPlanOptions, DataFusionError,
+    DisplayAs, DisplayFormatType, EagerCugraphHostOutput, EmissionType, EquivalenceProperties, Error, ErrorCode,
+    ExecutionContext, ExecutionPlan, ExecutionPlanMetricsSet, GpuIslandHostBoundaryConfig, GpuResidentProducer,
+    GpuResultHandle, GraphAlgorithmRuntimeMetrics, GraphBfsFollowerOutcome, GraphBfsFollowerRoute, GraphBfsLeader,
+    GraphBfsPublishedResult, GraphBfsSingleflightJoin, GraphBfsSingleflightKey, GraphExecutionMetrics,
+    GraphExecutionPlan, GraphResidencyDescriptor, MetricsSet, NEXT_CUGRAPH_GPU_RESULT_INPUT_ID,
+    NativeExecutionMetricsCapture, NativeExpr, NexusNativeExecutionConfig, NexusNativeMetrics, Partitioning,
+    PhysicalExpr, PhysicalSortExpr, PlanNode, PlanProperties, QueryMetrics, RecordBatch, RecordBatchStreamAdapter,
+    Result, Schema, SchemaRef, SendableRecordBatchStream, SortOptions, SourceNode, StagedCugraphInputs, TaskContext,
+    TreeNodeRecursion, TryStreamExt, UploadedCugraphInputs, attach_graph_residency, check_host_staging_cancellation,
+    collect_cugraph_inputs, counted_cudf_runtime, cugraph_edge_canonical_facts, cugraph_edge_normalize_inserted,
+    cugraph_execution_capability_proof, cugraph_execution_config_after_staging, cugraph_graph_residency_descriptor,
+    cugraph_schema_query_plan, edge_execution_config, edge_source_graph_vertex_estimate,
+    exact_native_edge_source_gpu_plan, execute_cugraph_query_to_gpu_with_options, graph_uses_logical_mapping,
+    is_bfs_path_output, materialize_gpu_output_eagerly, native_graph_spec_for_placement_hint, plan_error,
+    planned_resident_graph_key, preflight_cugraph_query_plan, prepare_cugraph_source_metadata, record_batches_to_gpu,
+    register_gpu_resident_producer_discovery, register_graph_execution_plan_discovery, run_gpu_execution_task,
+    task_context_with_cugraph_execution_ticket, validate_cugraph_graph_owner_preflight,
+    validate_standalone_bounded_cugraph_sources,
+};
 use crate::attempt::NexusAttemptExtension;
+#[cfg(test)]
+use crate::{cugraph_sql::exec::admission::cugraph_graph_model_ask_bytes, native_exec::graph::GraphAdmissionModelAsk};
 #[derive(Clone, Debug)]
 pub struct CugraphAlgoExec {
     pub(super) spec: CugraphAlgorithmSpec,
@@ -999,8 +1027,7 @@ pub(super) fn register_cugraph_execution_spis() {
 
 impl CugraphAlgoExec {
     /// The graph-fragment definition this occurrence lowers to.
-    #[cfg_attr(not(test), expect(dead_code, reason = "used by in-crate cugraph plan tests"))]
-    pub(crate) fn plan_definition(&self) -> CugraphPlanDefinition {
+    pub(super) fn plan_definition(&self) -> CugraphPlanDefinition {
         CugraphPlanDefinition {
             spec: self.spec.clone(),
             edge_schema: self.edge_source.schema(),

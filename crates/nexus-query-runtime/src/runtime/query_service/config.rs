@@ -1,5 +1,19 @@
-use super::*;
-use crate::{admission::AttemptReservationPolicy, graph_memory::GraphMemoryCalibrationOverride};
+use std::time::Duration;
+
+use nexus_query_planning::{
+    admission::AttemptReservationPolicy,
+    capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
+    chunk::SourceChunkPlanningOptions,
+    dynamic_filter::DynamicFilterExecutionOptions,
+    error::{QueryError, QueryErrorCode, Result},
+    execution_contracts::{
+        ExecutionBoundaryPolicy, MemoryControlPolicy, SourceChunkPlanningMode, SourceSchedulerPolicy,
+    },
+    graph_memory::GraphMemoryCalibrationOverride,
+    mode::StatisticalAggregateExecutionMode,
+};
+
+use crate::runtime::{LakehouseCacheFillConfig, SourceStorageProfile};
 
 /// Bounded admission-queue policy.
 #[derive(Debug, Clone, PartialEq, Eq)]

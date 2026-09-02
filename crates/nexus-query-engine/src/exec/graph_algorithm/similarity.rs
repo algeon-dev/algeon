@@ -1,6 +1,10 @@
 //! Shared explicit-pair similarity execution.
 
-use super::*;
+use super::{
+    ExecutionContext, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult, NvtxRange, QueryError,
+    QueryErrorCode, Result, empty_graph_execution_result, map_cugraph_error, normalize_graph_result_schema,
+    project_edge_list, run_with_accounted_resident_cugraph_graph, similarity_params, table_graph_options,
+};
 
 pub(super) fn execute_similarity(
     context: &ExecutionContext,

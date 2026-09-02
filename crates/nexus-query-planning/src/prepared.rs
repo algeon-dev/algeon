@@ -22,11 +22,16 @@ use crate::{
     plan::ProjectionOutput,
 };
 
-#[path = "prepared/aggregate.rs"]
 mod aggregate;
 
 #[doc(hidden)]
-pub use aggregate::*;
+pub use aggregate::{
+    AvgStateAliases, LoweredAggregate, aggregate_expr_is_exact_nunique, aggregate_spec_has_avg,
+    aggregate_spec_has_distinct, aggregate_spec_has_filters, aggregate_spec_has_floating_statistical_aggregate,
+    aggregate_spec_has_median, aggregate_spec_requires_whole_input, lower_aggregate_function, lower_aggregate_spec,
+    lower_aggregate_spec_keys, lower_final_aggregate_function, lower_final_aggregate_spec,
+    lower_partial_aggregate_spec, lower_single_stage_grouped_aggregate_spec,
+};
 
 #[doc(hidden)]
 pub fn lower_expr(expr: &Expr) -> Result<cudf::Expr> {

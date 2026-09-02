@@ -1,4 +1,7 @@
-use super::*;
+use super::{
+    CapabilityDecision, JoinSide, QueryPlan, generic_join_node, join_side_index, reachable_join_count_from_sink,
+    root_join_with_post_root_stages, validate_general_post_root_stages, validate_resident_leaf_pipeline_for_capability,
+};
 
 pub(in crate::capability) fn single_join_post_root_pipeline_shape_decision(
     plan: &QueryPlan,
