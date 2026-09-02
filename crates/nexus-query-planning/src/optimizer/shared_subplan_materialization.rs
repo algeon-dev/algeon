@@ -13,6 +13,7 @@ use crate::{
         ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior,
     },
     source::{LocalParquetSource, ParquetSourceLocation, ResolvedParquetSource, SourceColumnRef, SourceNode},
+    util::fnv1a64,
 };
 
 // Shared-subplan materialization is kept as one private module surface while

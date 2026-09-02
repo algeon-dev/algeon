@@ -1,4 +1,6 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, hash::Hasher};
+
+use fnv::FnvHasher;
 
 #[doc(hidden)]
 pub fn max_option<T: Ord>(left: Option<T>, right: Option<T>) -> Option<T> {
@@ -30,10 +32,9 @@ impl StableFnv1a64 {
     }
 
     pub fn update_bytes(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.state ^= u64::from(*byte);
-            self.state = self.state.wrapping_mul(Self::PRIME);
-        }
+        let mut hasher = FnvHasher::with_key(self.state);
+        hasher.write(bytes);
+        self.state = hasher.finish();
     }
 
     pub fn update_metadata(&mut self, metadata: &HashMap<String, String>) {
@@ -49,6 +50,12 @@ impl StableFnv1a64 {
     pub const fn finish(&self) -> u64 {
         self.state
     }
+}
+
+pub(crate) fn fnv1a64(bytes: &[u8]) -> u64 {
+    let mut hasher = FnvHasher::default();
+    hasher.write(bytes);
+    hasher.finish()
 }
 
 impl Default for StableFnv1a64 {

@@ -97,7 +97,7 @@ fn discover_scalar_aggregate_from_grouped_aggregate_candidates(plan: &QueryPlan)
                 rule_name: SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME,
                 family_key: format!(
                     "shared-grouped-scalar-v1-fnv64-{:016x}",
-                    stable_fnv1a64(scalar_rowset_signature.as_bytes())
+                    fnv1a64(scalar_rowset_signature.as_bytes())
                 ),
                 aggregate_node_ids: vec![*grouped_id, scalar_id],
                 reuse_count: 2,

@@ -21,6 +21,7 @@ blake3 = { workspace = true }
 cudf = { workspace = true }
 cugraph = { workspace = true, optional = true }
 cuvs = { workspace = true, optional = true }
+fnv = { workspace = true }
 parquet = { workspace = true, features = ["arrow"] }
 serde = { workspace = true }
 serde_json = { workspace = true }

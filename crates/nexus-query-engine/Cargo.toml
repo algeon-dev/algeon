@@ -33,6 +33,7 @@ cugraph = { workspace = true, optional = true }
 cugraph-sys = { workspace = true, optional = true }
 cuvs = { workspace = true, optional = true }
 cuvs-sys = { workspace = true, optional = true }
+fnv = { workspace = true }
 futures = { workspace = true }
 nexus-query-planning = { workspace = true }
 nexus-query-runtime = { workspace = true }

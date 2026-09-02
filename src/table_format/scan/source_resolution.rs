@@ -1,6 +1,11 @@
-use std::path::{Path, PathBuf};
 #[cfg(test)]
 use std::sync::Arc;
+use std::{
+    hash::Hasher,
+    path::{Path, PathBuf},
+};
+
+use fnv::FnvHasher;
 
 #[cfg(test)]
 use super::{DataType, Schema};
@@ -427,12 +432,9 @@ fn sanitize_cache_component(value: &str) -> String {
 }
 
 fn fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
+    let mut hasher = FnvHasher::default();
+    hasher.write(bytes);
+    hasher.finish()
 }
 
 #[cfg(test)]

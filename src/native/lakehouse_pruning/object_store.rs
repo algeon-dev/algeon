@@ -1,11 +1,12 @@
 //! Object-store lookup, native storage-profile fallback, and redacted diagnostics.
 
-use std::{collections::HashMap, error::Error as StdError, sync::Arc};
+use std::{collections::HashMap, error::Error as StdError, hash::Hasher, sync::Arc};
 
 use datafusion::{
     execution::{object_store::ObjectStoreUrl, runtime_env::RuntimeEnv},
     object_store::path::Path as ObjectStorePath,
 };
+use fnv::FnvHasher;
 use nexus_query_engine::{
     plan::NodeId,
     runtime::SourceStorageProfile,
@@ -261,9 +262,7 @@ fn redacted_object_path_leaf(path: &str) -> String {
 }
 
 pub(super) fn stable_hash_hex(value: &str) -> String {
-    let hash = value
-        .as_bytes()
-        .iter()
-        .fold(0xcbf29ce484222325_u64, |hash, byte| (hash ^ u64::from(*byte)).wrapping_mul(0x100000001b3));
-    format!("{hash:016x}")
+    let mut hasher = FnvHasher::default();
+    hasher.write(value.as_bytes());
+    format!("{:016x}", hasher.finish())
 }

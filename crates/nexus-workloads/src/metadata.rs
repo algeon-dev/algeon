@@ -1,6 +1,28 @@
-use std::path::PathBuf;
+use std::{hash::Hasher, path::PathBuf};
 
+use fnv::FnvHasher;
 use serde::Serialize;
+
+pub(crate) struct DatasetFingerprint(FnvHasher);
+
+impl DatasetFingerprint {
+    pub(crate) fn new() -> Self {
+        Self(FnvHasher::default())
+    }
+
+    pub(crate) fn update_field(&mut self, value: &str) {
+        self.update_bytes(value.as_bytes());
+        self.update_bytes(&[0]);
+    }
+
+    pub(crate) fn update_bytes(&mut self, bytes: &[u8]) {
+        self.0.write(bytes);
+    }
+
+    pub(crate) fn finish(&self) -> u64 {
+        self.0.finish()
+    }
+}
 
 /// Adapter-neutral dataset metadata shared by workload consumers.
 ///

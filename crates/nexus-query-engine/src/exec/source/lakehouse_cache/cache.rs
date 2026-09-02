@@ -1,5 +1,6 @@
 use std::{
     fs::{self, OpenOptions},
+    hash::Hasher,
     io::Write,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -7,6 +8,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use fnv::FnvHasher;
 use futures::StreamExt;
 use object_store::ObjectStoreExt;
 
@@ -504,12 +506,9 @@ fn sanitize_cache_component(value: &str) -> String {
 }
 
 fn stable_fnv1a64(bytes: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    hash
+    let mut hasher = FnvHasher::default();
+    hasher.write(bytes);
+    hasher.finish()
 }
 
 #[expect(
@@ -1005,12 +1004,7 @@ fn lakehouse_cache_temp_path(cache_path: &Path) -> PathBuf {
 }
 
 pub(super) fn stable_log_hash(value: &str) -> String {
-    let mut hash = 0xcbf29ce484222325u64;
-    for byte in value.as_bytes() {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    format!("{hash:016x}")
+    format!("{:016x}", stable_fnv1a64(value.as_bytes()))
 }
 
 fn lakehouse_cache_path_fact(path: &Path) -> String {
