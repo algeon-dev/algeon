@@ -26,12 +26,10 @@ impl CompiledGpuTaskExecutor<'_> {
                 .with_fact("plan_node_id", node_id));
         };
         let frame = crate::exec::bounded::execute_bounded_edge_normalize_from_input(
-            self.context,
+            &mut self.execution,
             node_id,
             edge_normalize,
             *frame,
-            &mut self.reservations,
-            self.metrics,
         )?;
         Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))
     }

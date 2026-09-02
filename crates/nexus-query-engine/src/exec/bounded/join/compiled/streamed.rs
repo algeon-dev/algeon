@@ -1,22 +1,20 @@
 use super::*;
 
 pub(super) fn execute_compiled_streamed_one_shot_join_materialize(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
     build: BoundedCompiledPreparedJoinBuildState,
     outputs: Vec<ResidentGpuFrame>,
     summary: StreamedOneShotJoinSummary,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     let BoundedCompiledPreparedJoinBuildState { side: build_side, input, .. } = build;
     let probe_side = probe_side(build_side);
     let build_rows = input.rows;
     let build_bytes = input.bytes;
-    release_bounded_join_side_frame(input, reservations, metrics);
+    release_bounded_join_side_frame(execution, input);
 
-    let output = concatenate_streamed_hash_join_outputs(context, node_id, outputs, reservations, metrics)?;
+    let output = concatenate_streamed_hash_join_outputs(execution, node_id, outputs)?;
     record_streamed_one_shot_join_metrics(
         node_id,
         node,
@@ -25,12 +23,12 @@ pub(super) fn execute_compiled_streamed_one_shot_join_materialize(
         build_rows,
         build_bytes,
         &summary,
-        metrics,
+        execution.metrics_mut(),
     );
     Ok(output)
 }
 pub(super) fn execute_compiled_streamed_partitioned_hash_join_materialize(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
     build_side: JoinSide,
@@ -38,10 +36,8 @@ pub(super) fn execute_compiled_streamed_partitioned_hash_join_materialize(
     build_bytes: u64,
     outputs: Vec<ResidentGpuFrame>,
     summary: StreamedPartitionedJoinSummary,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
-    let output = concatenate_streamed_hash_join_outputs(context, node_id, outputs, reservations, metrics)?;
+    let output = concatenate_streamed_hash_join_outputs(execution, node_id, outputs)?;
     record_streamed_partitioned_hash_join_metrics(
         node_id,
         node,
@@ -50,7 +46,7 @@ pub(super) fn execute_compiled_streamed_partitioned_hash_join_materialize(
         build_rows,
         build_bytes,
         &summary,
-        metrics,
+        execution.metrics_mut(),
     );
     Ok(output)
 }

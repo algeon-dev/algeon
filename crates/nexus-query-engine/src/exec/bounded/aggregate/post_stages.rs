@@ -2,31 +2,25 @@ use super::*;
 use crate::capability::AggregateExecutionStage;
 
 pub(in crate::exec::bounded) fn execute_post_aggregate_stages(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
     input: CommittedPartial,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
-    execute_post_final_stages(context, &bounded.post_aggregate_stages, input, reservations, metrics)
+    execute_post_final_stages(execution, &bounded.post_aggregate_stages, input)
 }
 
 pub(in crate::exec::bounded) fn execute_post_sort_projections(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
     input: CommittedPartial,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
-    execute_post_final_stages(context, &bounded.post_sort_projections, input, reservations, metrics)
+    execute_post_final_stages(execution, &bounded.post_sort_projections, input)
 }
 
 pub(in crate::exec::bounded) fn execute_standalone_limit(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
     input: CommittedPartial,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
     if bounded.sort.is_some() {
         return Ok(input);
@@ -35,13 +29,11 @@ pub(in crate::exec::bounded) fn execute_standalone_limit(
         return Ok(input);
     };
     execute_post_final_stage(
-        context,
+        execution,
         node_id,
         "post_aggregate_limit",
         "post_aggregate_limit_output",
         input,
-        reservations,
-        metrics,
         |context, input, _token, metrics| execute_limit(context, limit, input, metrics),
         false,
         None,
@@ -49,22 +41,18 @@ pub(in crate::exec::bounded) fn execute_standalone_limit(
 }
 
 fn execute_post_final_stages(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     stages: &[BoundedUnaryStage<'_>],
     mut input: CommittedPartial,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
     for stage in stages {
         input = match stage {
             BoundedUnaryStage::Filter { node_id, node } => execute_post_final_stage(
-                context,
+                execution,
                 *node_id,
                 "post_aggregate_filter",
                 "post_aggregate_filter_output",
                 input,
-                reservations,
-                metrics,
                 |context, input, token, metrics| {
                     execute_filter_with_budget(
                         context,
@@ -79,16 +67,15 @@ fn execute_post_final_stages(
             )?,
             BoundedUnaryStage::Projection { node_id, node, output_schema } => {
                 debug_assert_eq!(node.output_schema().as_ref(), output_schema.as_ref());
-                let work_request_bytes = projection_regexp_replace_work_reservation_bytes(context, node, &input.frame)?
-                    .map(|preflight| preflight.max(input.reservation.bytes()));
+                let work_request_bytes =
+                    projection_regexp_replace_work_reservation_bytes(execution.context(), node, &input.frame)?
+                        .map(|preflight| preflight.max(input.reservation.bytes()));
                 execute_post_final_stage(
-                    context,
+                    execution,
                     *node_id,
                     "post_aggregate_projection",
                     "post_aggregate_projection_output",
                     input,
-                    reservations,
-                    metrics,
                     |context, input, token, metrics| {
                         execute_projection_with_budget(
                             context,
@@ -108,13 +95,11 @@ fn execute_post_final_stages(
 }
 
 fn execute_post_final_stage(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     stage: &'static str,
     output_boundary: &'static str,
     input: CommittedPartial,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     execute: impl FnOnce(
         &ExecutionContext,
         GpuDataFrame,
@@ -125,14 +110,12 @@ fn execute_post_final_stage(
     work_request_bytes: Option<u64>,
 ) -> Result<CommittedPartial> {
     execute_bounded_generic_unary_consuming_input_with_reservation_kind(
-        context,
+        execution,
         node_id,
         stage,
         output_boundary,
         input,
         ReservationKind::FinalMerge,
-        reservations,
-        metrics,
         use_budget_token,
         work_request_bytes,
         execute,
@@ -140,33 +123,34 @@ fn execute_post_final_stage(
 }
 
 pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate_projection(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
     input: CommittedPartial,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<CommittedPartial> {
     if !aggregate_spec_has_global_final_state(&bounded.aggregate.0.spec) {
         return Ok(input);
     }
 
-    let request =
-        MemoryReservationRequest::new(ReservationKind::FinalMerge, input.reservation.bytes(), reservations.budget())
-            .with_memory_boundary("final_aggregate_projection")
-            .with_node_id(bounded.aggregate_id)
-            .with_stage("final_projection")
-            .with_task_registration(
-                legacy_bounded_final_merge_task_id(bounded.aggregate_id, "final_projection"),
-                1,
-                "aggregate",
-            );
-    let work_reservation = reservations.try_reserve(request, metrics)?;
+    let request = MemoryReservationRequest::new(
+        ReservationKind::FinalMerge,
+        input.reservation.bytes(),
+        execution.reservations().budget(),
+    )
+    .with_memory_boundary("final_aggregate_projection")
+    .with_node_id(bounded.aggregate_id)
+    .with_stage("final_projection")
+    .with_task_registration(
+        legacy_bounded_final_merge_task_id(bounded.aggregate_id, "final_projection"),
+        1,
+        "aggregate",
+    );
+    let work_reservation = execution.try_reserve(request)?;
     let expected_output_names =
         bounded.aggregate.1.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
     let result = if aggregate_spec_has_avg(&bounded.aggregate.0.spec) {
-        let token_budget = reservations.available_bytes_including(&work_reservation);
+        let token_budget = execution.reservations().available_bytes_including(&work_reservation);
         let token = match execution_budget_token_for_boundary(
-            context,
+            execution.context(),
             token_budget,
             "final_aggregate_projection",
             "nexus_query_engine.final_projection.budget_token",
@@ -174,8 +158,8 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate_projection(
         ) {
             Ok(token) => token,
             Err(error) => {
-                reservations.release(work_reservation, metrics);
-                reservations.release(input.reservation, metrics);
+                execution.release(work_reservation);
+                execution.release(input.reservation);
                 return Err(RuntimeResourceFacts {
                     memory_boundary: "final_aggregate_projection",
                     stage: "final_projection",
@@ -183,18 +167,18 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate_projection(
                     attempt: 1,
                     max_attempts: 1,
                     resume_boundary: "final_projection",
-                    metrics,
+                    metrics: execution.metrics_mut(),
                 }
                 .attach_to(error));
             },
         };
         finalize_avg_output_columns_with_budget(
-            context,
+            execution.context(),
             input.frame.into_frame(),
             &bounded.aggregate.0.spec,
             bounded.aggregate.1,
             &token,
-            metrics,
+            execution.metrics_mut(),
         )
     } else {
         Ok(input.frame.into_frame())
@@ -209,11 +193,11 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate_projection(
         })
     })
     .map(GpuDataFrame::new);
-    reservations.release(work_reservation, metrics);
+    execution.release(work_reservation);
     let frame = match result {
         Ok(frame) => frame,
         Err(error) => {
-            reservations.release(input.reservation, metrics);
+            execution.release(input.reservation);
             return Err(RuntimeResourceFacts {
                 memory_boundary: "final_aggregate_projection",
                 stage: "final_projection",
@@ -221,14 +205,14 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate_projection(
                 attempt: 1,
                 max_attempts: 1,
                 resume_boundary: "final_projection",
-                metrics,
+                metrics: execution.metrics_mut(),
             }
             .attach_to(error));
         },
     };
 
-    reservations.release(input.reservation, metrics);
-    let output_bytes = observe_device_memory_bytes(&frame, metrics).map_err(|error| {
+    execution.release(input.reservation);
+    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut()).map_err(|error| {
         RuntimeResourceFacts {
             memory_boundary: "final_aggregate_projection_output",
             stage: "final_projection",
@@ -236,12 +220,12 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate_projection(
             attempt: 1,
             max_attempts: 1,
             resume_boundary: "final_projection",
-            metrics,
+            metrics: execution.metrics_mut(),
         }
         .attach_to(error)
     })?;
     let output_request =
-        MemoryReservationRequest::new(ReservationKind::FinalMerge, output_bytes, reservations.budget())
+        MemoryReservationRequest::new(ReservationKind::FinalMerge, output_bytes, execution.reservations().budget())
             .with_memory_boundary("final_aggregate_projection_output")
             .with_node_id(bounded.aggregate_id)
             .with_stage("final_projection")
@@ -250,7 +234,7 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate_projection(
                 1,
                 "aggregate",
             );
-    let output_reservation = reservations.try_reserve(output_request, metrics)?;
+    let output_reservation = execution.try_reserve(output_request)?;
     Ok(CommittedPartial { frame, reservation: output_reservation })
 }
 

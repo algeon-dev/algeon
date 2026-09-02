@@ -1,25 +1,21 @@
 use super::*;
 
 pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_mixed_keyed_residual_join_materialize(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
     left: BoundedJoinSideFrame,
     right: BoundedJoinSideFrame,
     strategy_options: KeyedHashJoinStrategyOptions,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     match execute_compiled_partitioned_mixed_keyed_residual_join_materialize_output(
-        context,
+        execution,
         node_id,
         node,
         left,
         right,
         strategy_options,
         false,
-        reservations,
-        metrics,
     )? {
         BoundedCompiledJoinMaterializeOutput::Frame(frame) => Ok(*frame),
         BoundedCompiledJoinMaterializeOutput::Stream(_) | BoundedCompiledJoinMaterializeOutput::LazyStream(_) => {
@@ -29,38 +25,32 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_mix
 }
 
 pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_mixed_keyed_residual_join_materialize_preserving_stream(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
     left: BoundedJoinSideFrame,
     right: BoundedJoinSideFrame,
     strategy_options: KeyedHashJoinStrategyOptions,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<BoundedCompiledJoinMaterializeOutput> {
     execute_compiled_partitioned_mixed_keyed_residual_join_materialize_output(
-        context,
+        execution,
         node_id,
         node,
         left,
         right,
         strategy_options,
         true,
-        reservations,
-        metrics,
     )
 }
 
 fn execute_compiled_partitioned_mixed_keyed_residual_join_materialize_output(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
     left: BoundedJoinSideFrame,
     right: BoundedJoinSideFrame,
     strategy_options: KeyedHashJoinStrategyOptions,
     preserve_stream: bool,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<BoundedCompiledJoinMaterializeOutput> {
     validate_partitioned_mixed_keyed_residual_join(node)?;
     let original = PartitionedJoinInputStats {
@@ -70,26 +60,24 @@ fn execute_compiled_partitioned_mixed_keyed_residual_join_materialize_output(
         right_bytes: right.bytes,
     };
     let partition_count =
-        partitioned_mixed_join_partition_count(context, left.rows, left.bytes, right.rows, right.bytes);
+        partitioned_mixed_join_partition_count(execution.context(), left.rows, left.bytes, right.rows, right.bytes);
     let plan = PartitionedJoinDriverPlan {
-        context,
         node_id,
         node,
         strategy: PARTITIONED_MIXED_KEYED_RESIDUAL_STRATEGY,
         strategy_options,
         partition_count,
-        partition_target_bytes: partitioned_join_target_bytes_for_context(context),
+        partition_target_bytes: partitioned_join_target_bytes_for_context(execution.context()),
     };
 
     if preserve_stream {
-        record_partitioned_join_selection(plan, original, metrics);
-        let partitioned = partition_join_sides(plan, left, right, reservations, metrics)?;
+        record_partitioned_join_selection(plan, original, execution.metrics_mut());
+        let partitioned = partition_join_sides(execution, plan, left, right)?;
         let left_partitioned_bytes = partitioned.left.reservation.bytes();
         let right_partitioned_bytes = partitioned.right.reservation.bytes();
-        record_partitioned_join_sides(plan, left_partitioned_bytes, right_partitioned_bytes, metrics);
+        record_partitioned_join_sides(plan, left_partitioned_bytes, right_partitioned_bytes, execution.metrics_mut());
         let PartitionedJoinSides { left: left_partitioned, right: right_partitioned } = partitioned;
         let stream = PartitionedMixedJoinStreamSource {
-            context: context.clone(),
             node_id,
             node: node.clone(),
             left_partitioned: Some(left_partitioned),
@@ -114,34 +102,31 @@ fn execute_compiled_partitioned_mixed_keyed_residual_join_materialize_output(
     }
 
     let mut result = run_partitioned_join_driver(
+        execution,
         plan,
         left,
         right,
-        reservations,
-        metrics,
         materialize_partitioned_mixed_keyed_residual_join_partition,
     )?;
-    let output = concatenate_streamed_hash_join_outputs(context, node_id, result.outputs, reservations, metrics)?;
+    let output = concatenate_streamed_hash_join_outputs(execution, node_id, result.outputs)?;
     result.summary.observe_concatenated_output(&output);
-    record_partitioned_join_operator_metrics(plan, result.original, &result.summary, metrics);
+    record_partitioned_join_operator_metrics(plan, result.original, &result.summary, execution.metrics_mut());
     Ok(BoundedCompiledJoinMaterializeOutput::Frame(Box::new(output)))
 }
 
 fn materialize_partitioned_mixed_keyed_residual_join_partition(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
     left: BoundedJoinSideFrame,
     right: BoundedJoinSideFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<PartitionedJoinPartitionOutput> {
     let residual_columns = residual_input_columns(node)?;
     let left_keys = node.spec.keys.iter().map(|key| key.left.name().to_string()).collect::<Vec<_>>();
     let right_keys = node.spec.keys.iter().map(|key| key.right.name().to_string()).collect::<Vec<_>>();
-    let overrides_lease = execution_overrides(context)?;
+    let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
-    let predicate = lower_join_residual_predicate(context, node, &residual_columns)?;
+    let predicate = lower_join_residual_predicate(execution.context(), node, &residual_columns)?;
     let options = dataframe_mixed_join_options(&left_keys, &right_keys, &residual_columns, node.spec.null_equality);
     let timer = Instant::now();
     let mut txn = JoinMaterializationTxn::with_sides(left, right);
@@ -178,7 +163,7 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
     let size_data = match size_data {
         Ok(size_data) => size_data,
         Err(error) => {
-            txn.rollback(reservations, metrics);
+            txn.rollback(execution);
             return Err(error);
         },
     };
@@ -186,48 +171,42 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
     let mixed_size_data_bytes = match size_data.device_allocated_size_bytes(node) {
         Ok(bytes) => bytes,
         Err(error) => {
-            txn.rollback(reservations, metrics);
+            txn.rollback(execution);
             return Err(error);
         },
     };
-    let size_data_reservation = match reservations.try_reserve(
-        bounded_join_request(
-            ReservationKind::MixedSizeData,
-            "join_partition_mixed_size_data",
-            mixed_size_data_bytes,
-            reservations.budget(),
-            node_id,
-        ),
-        metrics,
-    ) {
+    let size_data_reservation = match execution.try_reserve(bounded_join_request(
+        ReservationKind::MixedSizeData,
+        "join_partition_mixed_size_data",
+        mixed_size_data_bytes,
+        execution.reservations().budget(),
+        node_id,
+    )) {
         Ok(reservation) => reservation,
         Err(error) => {
-            txn.rollback(reservations, metrics);
+            txn.rollback(execution);
             return Err(error);
         },
     };
     txn.set_mixed_size_data_reservation(size_data_reservation);
-    metrics.record_mixed_join_size_data_bytes(mixed_size_data_bytes);
+    execution.metrics_mut().record_mixed_join_size_data_bytes(mixed_size_data_bytes);
     let gather_map_reservation_bytes = match size_data.gather_map_reservation_size_bytes(node) {
         Ok(bytes) => bytes,
         Err(error) => {
-            txn.rollback(reservations, metrics);
+            txn.rollback(execution);
             return Err(error);
         },
     };
-    let gather_map_reservation = match reservations.try_reserve(
-        bounded_join_request(
-            ReservationKind::GatherMap,
-            "join_partition_mixed_indices",
-            gather_map_reservation_bytes,
-            reservations.budget(),
-            node_id,
-        ),
-        metrics,
-    ) {
+    let gather_map_reservation = match execution.try_reserve(bounded_join_request(
+        ReservationKind::GatherMap,
+        "join_partition_mixed_indices",
+        gather_map_reservation_bytes,
+        execution.reservations().budget(),
+        node_id,
+    )) {
         Ok(reservation) => reservation,
         Err(error) => {
-            txn.rollback(reservations, metrics);
+            txn.rollback(execution);
             return Err(error);
         },
     };
@@ -235,50 +214,39 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
     let indices = match size_data.materialize_indices_in(&overrides, node) {
         Ok(indices) => indices,
         Err(error) => {
-            txn.rollback(reservations, metrics);
+            txn.rollback(execution);
             return Err(error);
         },
     };
-    txn.release_mixed_size_data_reservation(reservations, metrics);
+    txn.release_mixed_size_data_reservation(execution);
     txn.set_indices(indices);
     let index_bytes = match txn.indices().device_allocated_size_bytes(node) {
         Ok(bytes) => bytes,
         Err(error) => {
-            txn.rollback(reservations, metrics);
+            txn.rollback(execution);
             return Err(error);
         },
     };
     let (left, right) = txn.sides();
-    let forecast_output_reservation_bytes = match partitioned_mixed_join_output_upper_bound_bytes(
-        context,
-        node_id,
-        node,
-        left,
-        right,
-        output_rows,
-        reservations,
-        metrics,
-    ) {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            txn.rollback(reservations, metrics);
-            return Err(error);
-        },
-    };
+    let forecast_output_reservation_bytes =
+        match partitioned_mixed_join_output_upper_bound_bytes(execution, node_id, node, left, right, output_rows) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                txn.rollback(execution);
+                return Err(error);
+            },
+        };
     let output_reservation_bytes = forecast_output_reservation_bytes;
-    let output_reservation = match reservations.try_reserve(
-        bounded_join_request(
-            ReservationKind::JoinOutput,
-            "join_partition_output",
-            output_reservation_bytes,
-            reservations.budget(),
-            node_id,
-        ),
-        metrics,
-    ) {
+    let output_reservation = match execution.try_reserve(bounded_join_request(
+        ReservationKind::JoinOutput,
+        "join_partition_output",
+        output_reservation_bytes,
+        execution.reservations().budget(),
+        node_id,
+    )) {
         Ok(reservation) => reservation,
         Err(error) => {
-            txn.rollback(reservations, metrics);
+            txn.rollback(execution);
             return Err(error);
         },
     };
@@ -294,27 +262,27 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
     ) {
         Ok(output) => output,
         Err(error) => {
-            txn.rollback(reservations, metrics);
+            txn.rollback(execution);
             return Err(error);
         },
     };
-    metrics.operator_time += timer.elapsed();
-    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), metrics) {
+    execution.metrics_mut().operator_time += timer.elapsed();
+    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics_mut()) {
         Ok(bytes) => bytes,
         Err(error) => {
-            txn.rollback(reservations, metrics);
+            txn.rollback(execution);
             return Err(error);
         },
     };
     if let Err(error) =
-        reconcile_join_output_upper_bound(node_id, txn.output_reservation_mut(), output_bytes, reservations, metrics)
+        reconcile_join_output_upper_bound(execution, node_id, txn.output_reservation_mut(), output_bytes)
     {
-        txn.rollback(reservations, metrics);
+        txn.rollback(execution);
         return Err(error);
     }
-    txn.release_gather_map_reservation(reservations, metrics);
+    txn.release_gather_map_reservation(execution);
     Ok(PartitionedJoinPartitionOutput {
-        frame: txn.commit_frame(GpuDataFrame::new(output), reservations, metrics),
+        frame: txn.commit_frame(execution, GpuDataFrame::new(output)),
         index_bytes,
         mixed_size_data_bytes,
         output_reservation_bytes,
@@ -324,42 +292,35 @@ fn materialize_partitioned_mixed_keyed_residual_join_partition(
 }
 
 fn partitioned_mixed_join_output_upper_bound_bytes(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
     left: &BoundedJoinSideFrame,
     right: &BoundedJoinSideFrame,
     expected_output_rows: u64,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<u64> {
     let left_projection = projected_output_columns_for_retained_sizing(&node.spec.output_projection, JoinSide::Left);
     let right_projection = projected_output_columns_for_retained_sizing(&node.spec.output_projection, JoinSide::Right);
     let left_bytes = join_side_output_upper_bound_bytes(
-        context,
+        execution,
         node_id,
         &left.frame,
         expected_output_rows,
         &left_projection,
         JoinSide::Left,
-        reservations,
-        metrics,
     )?;
     let right_bytes = join_side_output_upper_bound_bytes(
-        context,
+        execution,
         node_id,
         &right.frame,
         expected_output_rows,
         &right_projection,
         JoinSide::Right,
-        reservations,
-        metrics,
     )?;
     Ok(left_bytes.saturating_add(right_bytes))
 }
 
 struct PartitionedMixedJoinStreamSource {
-    context: ExecutionContext,
     node_id: NodeId,
     node: JoinNode,
     left_partitioned: Option<PartitionedJoinSide>,
@@ -374,37 +335,32 @@ struct PartitionedMixedJoinStreamSource {
 }
 
 impl PartitionedMixedJoinStreamSource {
-    fn record_success_metrics(&mut self, metrics: &mut QueryMetrics) {
+    fn record_success_metrics(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
         if self.metrics_recorded {
             return;
         }
         self.metrics_recorded = true;
         let plan = PartitionedJoinDriverPlan {
-            context: &self.context,
             node_id: self.node_id,
             node: &self.node,
             strategy: PARTITIONED_MIXED_KEYED_RESIDUAL_STRATEGY,
             strategy_options: self.strategy_options,
             partition_count: self.partition_count,
-            partition_target_bytes: partitioned_join_target_bytes_for_context(&self.context),
+            partition_target_bytes: partitioned_join_target_bytes_for_context(execution.context()),
         };
-        record_partitioned_join_operator_metrics(plan, self.original, &self.output_summary, metrics);
+        record_partitioned_join_operator_metrics(plan, self.original, &self.output_summary, execution.metrics_mut());
     }
 }
 
 impl ResidentFrameStreamSource for PartitionedMixedJoinStreamSource {
-    fn next_frame(
-        &mut self,
-        reservations: &mut ReservationTracker,
-        metrics: &mut QueryMetrics,
-    ) -> Option<Result<ResidentGpuFrame>> {
+    fn next_frame(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Option<Result<ResidentGpuFrame>> {
         loop {
             if let Some(output) = self.pending_outputs.pop_front() {
                 return Some(Ok(output));
             }
             if self.next_partition >= self.partition_count {
-                self.record_success_metrics(metrics);
-                self.release(reservations, metrics);
+                self.record_success_metrics(execution);
+                self.release(execution);
                 return None;
             }
             let partition = self.next_partition;
@@ -414,21 +370,19 @@ impl ResidentFrameStreamSource for PartitionedMixedJoinStreamSource {
             let right_partitioned =
                 self.right_partitioned.as_ref().expect("right partitioned side released before stream end");
             let plan = PartitionedJoinDriverPlan {
-                context: &self.context,
                 node_id: self.node_id,
                 node: &self.node,
                 strategy: PARTITIONED_MIXED_KEYED_RESIDUAL_STRATEGY,
                 strategy_options: self.strategy_options,
                 partition_count: self.partition_count,
-                partition_target_bytes: partitioned_join_target_bytes_for_context(&self.context),
+                partition_target_bytes: partitioned_join_target_bytes_for_context(execution.context()),
             };
             match materialize_partitioned_join_partition_with_retry(
+                execution,
                 plan,
                 left_partitioned,
                 right_partitioned,
                 partition,
-                reservations,
-                metrics,
                 &mut materialize_partitioned_mixed_keyed_residual_join_partition,
             ) {
                 Ok(outputs) => {
@@ -438,20 +392,20 @@ impl ResidentFrameStreamSource for PartitionedMixedJoinStreamSource {
                     }
                 },
                 Err(error) => {
-                    self.release(reservations, metrics);
+                    self.release(execution);
                     return Some(Err(error));
                 },
             }
         }
     }
 
-    fn release(&mut self, reservations: &mut ReservationTracker, metrics: &mut QueryMetrics) {
-        release_streamed_join_outputs_reverse(reservations, self.pending_outputs.drain(..).collect(), metrics);
+    fn release(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
+        release_streamed_join_outputs_reverse(execution, self.pending_outputs.drain(..).collect());
         if let Some(left) = self.left_partitioned.take() {
-            release_partitioned_join_side(left, reservations, metrics);
+            release_partitioned_join_side(execution, left);
         }
         if let Some(right) = self.right_partitioned.take() {
-            release_partitioned_join_side(right, reservations, metrics);
+            release_partitioned_join_side(execution, right);
         }
     }
 }

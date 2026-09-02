@@ -50,24 +50,22 @@ impl BoundedRootHashJoinProbeState {
 }
 
 pub(in crate::exec::bounded) fn release_bounded_root_hash_join_build_state(
+    execution: &mut BoundedExecutionAttempt<'_>,
     build: BoundedRootHashJoinBuildState,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) {
     let BoundedRootHashJoinBuildState { build: build_frame, hash_join: _, hash_table_reservation, .. } = build;
-    reservations.release(hash_table_reservation, metrics);
-    release_bounded_join_side_frame(build_frame, reservations, metrics);
+    execution.release(hash_table_reservation);
+    release_bounded_join_side_frame(execution, build_frame);
 }
 
 pub(in crate::exec::bounded) fn release_bounded_root_hash_join_probe_state(
+    execution: &mut BoundedExecutionAttempt<'_>,
     probe: BoundedRootHashJoinProbeState,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) {
     let BoundedRootHashJoinProbeState { build, probe, indices: _, gather_map_reservation, .. } = probe;
-    reservations.release(gather_map_reservation, metrics);
-    release_bounded_root_hash_join_build_state(build, reservations, metrics);
-    release_bounded_join_side_frame(probe, reservations, metrics);
+    execution.release(gather_map_reservation);
+    release_bounded_root_hash_join_build_state(execution, build);
+    release_bounded_join_side_frame(execution, probe);
 }
 
 pub(in crate::exec::bounded::join::hash) fn validate_root_hash_join(node: &JoinNode) -> Result<()> {

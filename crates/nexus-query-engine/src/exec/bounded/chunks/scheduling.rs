@@ -1,31 +1,28 @@
 use super::*;
 
 pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
     chunks: &[SourceChunk],
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<Vec<CommittedPartial>> {
     let MemoryControlPolicy::Bounded { max_retry_attempts, min_retry_chunk_row_groups, .. } =
-        context.memory_control_policy()
+        execution.context().memory_control_policy()
     else {
         unreachable!("execute_bounded_chunks_with_source_scheduler is called only for bounded policies");
     };
     let max_attempts = max_retry_attempts.max(1);
     let min_retry_chunk_row_groups = min_retry_chunk_row_groups.max(1);
-    if bounded_source_adjacent_chunk_batching_enabled(context, bounded, chunks) {
-        return execute_bounded_source_adjacent_chunk_batches_serial(context, bounded, chunks, reservations, metrics);
+    if bounded_source_adjacent_chunk_batching_enabled(execution.context(), bounded, chunks) {
+        return execute_bounded_source_adjacent_chunk_batches_serial(execution, bounded, chunks);
     }
-    if !context.source_scheduler_policy().enables_prefetch() || chunks.len() <= 1 {
+    if !execution.context().source_scheduler_policy().enables_prefetch() || chunks.len() <= 1 {
         let mut partials = Vec::with_capacity(chunks.len());
         for chunk in chunks {
-            context.check_cancellation("nexus_query_engine.exec.bounded.chunk_scheduler")?;
-            let chunk_partials = match execute_bounded_chunk_with_retry(context, bounded, chunk, reservations, metrics)
-            {
+            execution.context().check_cancellation("nexus_query_engine.exec.bounded.chunk_scheduler")?;
+            let chunk_partials = match execute_bounded_chunk_with_retry(execution, bounded, chunk) {
                 Ok(partials) => partials,
                 Err(error) => {
-                    release_committed_partials_reverse(reservations, partials, metrics);
+                    release_committed_partials_reverse(execution, partials);
                     return Err(error);
                 },
             };
@@ -35,248 +32,213 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
     }
 
     let mut partials = Vec::with_capacity(chunks.len());
-    context.check_cancellation("nexus_query_engine.exec.bounded.chunk_scheduler")?;
+    execution.context().check_cancellation("nexus_query_engine.exec.bounded.chunk_scheduler")?;
     let mut queue = match OrderedSourceReadQueue::start(
-        context,
+        execution,
         bounded.source,
         chunks,
-        reservations,
-        metrics,
         max_attempts,
-        context.source_scheduler_policy().max_source_reads_in_flight(),
+        execution.context().source_scheduler_policy().max_source_reads_in_flight(),
     ) {
         Ok(queue) => queue,
         Err(error) if is_retryable_chunk_error(&error) => {
             if let Err(error) = execute_remaining_chunks_serial_after_scheduler_error(
-                context,
+                execution,
                 bounded,
                 chunks,
                 0,
                 error,
-                reservations,
-                metrics,
                 &mut partials,
                 max_attempts,
                 min_retry_chunk_row_groups,
             ) {
-                release_committed_partials_reverse(reservations, partials, metrics);
+                release_committed_partials_reverse(execution, partials);
                 return Err(error);
             }
             return Ok(partials);
         },
         Err(error) => {
-            release_committed_partials_reverse(reservations, partials, metrics);
+            release_committed_partials_reverse(execution, partials);
             return Err(error);
         },
     };
 
     for (index, chunk) in chunks.iter().enumerate() {
-        if let Err(error) = context.check_cancellation("nexus_query_engine.exec.bounded.chunk_scheduler") {
-            queue.abandon_all(index, reservations, metrics);
+        if let Err(error) = execution.context().check_cancellation("nexus_query_engine.exec.bounded.chunk_scheduler") {
+            queue.abandon_all(execution, index);
             return Err(error);
         }
         let scheduled =
             queue.pop_front().expect("source scheduler should always have a current read before processing a chunk");
         let source = match finish_scheduled_source_read(
+            execution,
             scheduled,
-            context,
             bounded.source,
-            reservations,
-            metrics,
             1,
             max_attempts,
             retain_decoded_source(bounded),
         ) {
             Ok(source) => source,
             Err(error) if is_prefetch_chunk_error(&error) && is_retryable_chunk_error(&error) => {
-                metrics.record_source_read_prefetch_abandoned();
-                queue.abandon_all(index + 1, reservations, metrics);
-                let chunk_partials =
-                    match execute_bounded_chunk_with_retry(context, bounded, chunk, reservations, metrics) {
-                        Ok(partials) => partials,
-                        Err(error) => {
-                            release_committed_partials_reverse(reservations, partials, metrics);
-                            return Err(error);
-                        },
-                    };
+                execution.metrics_mut().record_source_read_prefetch_abandoned();
+                queue.abandon_all(execution, index + 1);
+                let chunk_partials = match execute_bounded_chunk_with_retry(execution, bounded, chunk) {
+                    Ok(partials) => partials,
+                    Err(error) => {
+                        release_committed_partials_reverse(execution, partials);
+                        return Err(error);
+                    },
+                };
                 partials.extend(chunk_partials);
-                if let Err(error) =
-                    queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)
-                {
-                    queue.abandon_all(index + 1, reservations, metrics);
+                if let Err(error) = queue.ensure_current_required(execution, bounded.source, chunks, max_attempts) {
+                    queue.abandon_all(execution, index + 1);
                     if is_retryable_chunk_error(&error) {
                         if let Err(error) = execute_remaining_chunks_serial_after_scheduler_error(
-                            context,
+                            execution,
                             bounded,
                             chunks,
                             index + 1,
                             error,
-                            reservations,
-                            metrics,
                             &mut partials,
                             max_attempts,
                             min_retry_chunk_row_groups,
                         ) {
-                            release_committed_partials_reverse(reservations, partials, metrics);
+                            release_committed_partials_reverse(execution, partials);
                             return Err(error);
                         }
                         return Ok(partials);
                     }
-                    release_committed_partials_reverse(reservations, partials, metrics);
+                    release_committed_partials_reverse(execution, partials);
                     return Err(error);
                 }
                 continue;
             },
             Err(error) if is_retryable_chunk_error(&error) => {
-                queue.abandon_all(index + 1, reservations, metrics);
+                queue.abandon_all(execution, index + 1);
                 let chunk_partials = match retry_after_chunk_error(
-                    context,
+                    execution,
                     bounded,
                     chunk.clone(),
                     error,
-                    reservations,
-                    metrics,
                     1,
                     max_attempts,
                     min_retry_chunk_row_groups,
                 ) {
                     Ok(partials) => partials,
                     Err(error) => {
-                        release_committed_partials_reverse(reservations, partials, metrics);
+                        release_committed_partials_reverse(execution, partials);
                         return Err(error);
                     },
                 };
                 partials.extend(chunk_partials);
-                if let Err(error) =
-                    queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)
-                {
-                    queue.abandon_all(index + 1, reservations, metrics);
+                if let Err(error) = queue.ensure_current_required(execution, bounded.source, chunks, max_attempts) {
+                    queue.abandon_all(execution, index + 1);
                     if is_retryable_chunk_error(&error) {
                         if let Err(error) = execute_remaining_chunks_serial_after_scheduler_error(
-                            context,
+                            execution,
                             bounded,
                             chunks,
                             index + 1,
                             error,
-                            reservations,
-                            metrics,
                             &mut partials,
                             max_attempts,
                             min_retry_chunk_row_groups,
                         ) {
-                            release_committed_partials_reverse(reservations, partials, metrics);
+                            release_committed_partials_reverse(execution, partials);
                             return Err(error);
                         }
                         return Ok(partials);
                     }
-                    release_committed_partials_reverse(reservations, partials, metrics);
+                    release_committed_partials_reverse(execution, partials);
                     return Err(error);
                 }
                 continue;
             },
             Err(error) => {
-                queue.abandon_all(index + 1, reservations, metrics);
-                release_committed_partials_reverse(reservations, partials, metrics);
+                queue.abandon_all(execution, index + 1);
+                release_committed_partials_reverse(execution, partials);
                 return Err(error);
             },
         };
 
         let prefetch_during_operator = !bounded.has_source_adjacent_stages();
-        let result = execute_bounded_chunk_operator_from_source(
-            context,
-            bounded,
-            source,
-            reservations,
-            metrics,
-            1,
-            max_attempts,
-            |reservations, metrics| {
+        let result =
+            execute_bounded_chunk_operator_from_source(execution, bounded, source, 1, max_attempts, |execution| {
                 if prefetch_during_operator {
-                    queue.fill_optional(context, bounded.source, chunks, reservations, metrics, max_attempts)
+                    queue.fill_optional(execution, bounded.source, chunks, max_attempts)
                 } else {
                     Ok(())
                 }
-            },
-        );
+            });
 
         match result {
             Ok(partial) => partials.push(partial),
             Err(error) if is_retryable_chunk_error(&error) => {
-                queue.abandon_all(index + 1, reservations, metrics);
+                queue.abandon_all(execution, index + 1);
                 let chunk_partials = match retry_after_chunk_error(
-                    context,
+                    execution,
                     bounded,
                     chunk.clone(),
                     error,
-                    reservations,
-                    metrics,
                     1,
                     max_attempts,
                     min_retry_chunk_row_groups,
                 ) {
                     Ok(partials) => partials,
                     Err(error) => {
-                        release_committed_partials_reverse(reservations, partials, metrics);
+                        release_committed_partials_reverse(execution, partials);
                         return Err(error);
                     },
                 };
                 partials.extend(chunk_partials);
-                if let Err(error) =
-                    queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)
-                {
-                    queue.abandon_all(index + 1, reservations, metrics);
+                if let Err(error) = queue.ensure_current_required(execution, bounded.source, chunks, max_attempts) {
+                    queue.abandon_all(execution, index + 1);
                     if is_retryable_chunk_error(&error) {
                         if let Err(error) = execute_remaining_chunks_serial_after_scheduler_error(
-                            context,
+                            execution,
                             bounded,
                             chunks,
                             index + 1,
                             error,
-                            reservations,
-                            metrics,
                             &mut partials,
                             max_attempts,
                             min_retry_chunk_row_groups,
                         ) {
-                            release_committed_partials_reverse(reservations, partials, metrics);
+                            release_committed_partials_reverse(execution, partials);
                             return Err(error);
                         }
                         return Ok(partials);
                     }
-                    release_committed_partials_reverse(reservations, partials, metrics);
+                    release_committed_partials_reverse(execution, partials);
                     return Err(error);
                 }
                 continue;
             },
             Err(error) => {
-                queue.abandon_all(index + 1, reservations, metrics);
-                release_committed_partials_reverse(reservations, partials, metrics);
+                queue.abandon_all(execution, index + 1);
+                release_committed_partials_reverse(execution, partials);
                 return Err(error);
             },
         }
-        if let Err(error) =
-            queue.ensure_current_required(context, bounded.source, chunks, reservations, metrics, max_attempts)
-        {
-            queue.abandon_all(index + 1, reservations, metrics);
+        if let Err(error) = queue.ensure_current_required(execution, bounded.source, chunks, max_attempts) {
+            queue.abandon_all(execution, index + 1);
             if is_retryable_chunk_error(&error) {
                 if let Err(error) = execute_remaining_chunks_serial_after_scheduler_error(
-                    context,
+                    execution,
                     bounded,
                     chunks,
                     index + 1,
                     error,
-                    reservations,
-                    metrics,
                     &mut partials,
                     max_attempts,
                     min_retry_chunk_row_groups,
                 ) {
-                    release_committed_partials_reverse(reservations, partials, metrics);
+                    release_committed_partials_reverse(execution, partials);
                     return Err(error);
                 }
                 return Ok(partials);
             }
-            release_committed_partials_reverse(reservations, partials, metrics);
+            release_committed_partials_reverse(execution, partials);
             return Err(error);
         }
     }
@@ -285,13 +247,11 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
 }
 
 fn execute_remaining_chunks_serial_after_scheduler_error(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
     chunks: &[SourceChunk],
     next_chunk_index: usize,
     error: QueryError,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     partials: &mut Vec<CommittedPartial>,
     max_attempts: usize,
     min_retry_chunk_row_groups: usize,
@@ -300,19 +260,17 @@ fn execute_remaining_chunks_serial_after_scheduler_error(
         return Err(error);
     };
     partials.extend(retry_after_chunk_error(
-        context,
+        execution,
         bounded,
         first_chunk.clone(),
         error,
-        reservations,
-        metrics,
         1,
         max_attempts,
         min_retry_chunk_row_groups,
     )?);
     for chunk in &chunks[next_chunk_index + 1..] {
-        context.check_cancellation("nexus_query_engine.exec.bounded.chunk_scheduler")?;
-        partials.extend(execute_bounded_chunk_with_retry(context, bounded, chunk, reservations, metrics)?);
+        execution.context().check_cancellation("nexus_query_engine.exec.bounded.chunk_scheduler")?;
+        partials.extend(execute_bounded_chunk_with_retry(execution, bounded, chunk)?);
     }
     Ok(())
 }
@@ -325,16 +283,14 @@ struct OrderedSourceReadQueue {
 
 impl OrderedSourceReadQueue {
     fn start(
-        context: &ExecutionContext,
+        execution: &mut BoundedExecutionAttempt<'_>,
         source: &LocalParquetSource,
         chunks: &[SourceChunk],
-        reservations: &mut ReservationTracker,
-        metrics: &mut QueryMetrics,
         max_attempts: usize,
         max_in_flight: usize,
     ) -> Result<Self> {
         let mut queue = Self { pending: VecDeque::new(), next_chunk_index: 0, max_in_flight: max_in_flight.max(1) };
-        queue.ensure_current_required(context, source, chunks, reservations, metrics, max_attempts)?;
+        queue.ensure_current_required(execution, source, chunks, max_attempts)?;
         Ok(queue)
     }
 
@@ -344,25 +300,15 @@ impl OrderedSourceReadQueue {
 
     fn ensure_current_required(
         &mut self,
-        context: &ExecutionContext,
+        execution: &mut BoundedExecutionAttempt<'_>,
         source: &LocalParquetSource,
         chunks: &[SourceChunk],
-        reservations: &mut ReservationTracker,
-        metrics: &mut QueryMetrics,
         max_attempts: usize,
     ) -> Result<()> {
         if self.pending.is_empty()
             && let Some(chunk) = chunks.get(self.next_chunk_index)
         {
-            self.pending.push_back(start_required_scheduled_source_read(
-                context,
-                source,
-                chunk,
-                reservations,
-                metrics,
-                1,
-                max_attempts,
-            )?);
+            self.pending.push_back(start_required_scheduled_source_read(execution, source, chunk, 1, max_attempts)?);
             self.next_chunk_index += 1;
         }
         Ok(())
@@ -370,26 +316,17 @@ impl OrderedSourceReadQueue {
 
     fn fill_optional(
         &mut self,
-        context: &ExecutionContext,
+        execution: &mut BoundedExecutionAttempt<'_>,
         source: &LocalParquetSource,
         chunks: &[SourceChunk],
-        reservations: &mut ReservationTracker,
-        metrics: &mut QueryMetrics,
         max_attempts: usize,
     ) -> Result<()> {
         while self.pending.len() < optional_prefetch_target(self.max_in_flight) {
             let Some(chunk) = chunks.get(self.next_chunk_index) else {
                 break;
             };
-            let Some(prefetch) = try_start_optional_scheduled_source_read(
-                context,
-                source,
-                Some(chunk),
-                reservations,
-                metrics,
-                1,
-                max_attempts,
-            )?
+            let Some(prefetch) =
+                try_start_optional_scheduled_source_read(execution, source, Some(chunk), 1, max_attempts)?
             else {
                 break;
             };
@@ -399,14 +336,9 @@ impl OrderedSourceReadQueue {
         Ok(())
     }
 
-    fn abandon_all(
-        &mut self,
-        next_chunk_index: usize,
-        reservations: &mut ReservationTracker,
-        metrics: &mut QueryMetrics,
-    ) {
+    fn abandon_all(&mut self, execution: &mut BoundedExecutionAttempt<'_>, next_chunk_index: usize) {
         while let Some(prefetch) = self.pending.pop_back() {
-            prefetch.abandon(reservations, metrics);
+            prefetch.abandon(execution);
         }
         self.next_chunk_index = next_chunk_index;
     }
@@ -420,21 +352,17 @@ fn optional_prefetch_target(max_in_flight: usize) -> usize {
     usize::from(max_in_flight > 1)
 }
 fn start_required_scheduled_source_read(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     chunk: &SourceChunk,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     attempt: usize,
     max_attempts: usize,
 ) -> Result<ScheduledLocalParquetRead> {
-    let requested_bytes = chunk_requested_bytes(context.memory_control_policy(), chunk);
+    let requested_bytes = chunk_requested_bytes(execution.context().memory_control_policy(), chunk);
     start_scheduled_source_read(
-        context,
+        execution,
         source,
         chunk,
-        reservations,
-        metrics,
         requested_bytes,
         "source_chunk_read",
         attempt,
@@ -444,29 +372,25 @@ fn start_required_scheduled_source_read(
     )
 }
 fn try_start_optional_scheduled_source_read(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     chunk: Option<&SourceChunk>,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     attempt: usize,
     max_attempts: usize,
 ) -> Result<Option<ScheduledLocalParquetRead>> {
     let Some(chunk) = chunk else {
         return Ok(None);
     };
-    let requested_bytes = prefetch_requested_bytes(context.memory_control_policy(), chunk);
-    if !reservations.can_reserve(requested_bytes) {
-        metrics.record_source_read_prefetch_skipped();
+    let requested_bytes = prefetch_requested_bytes(execution.context().memory_control_policy(), chunk);
+    if !execution.reservations().can_reserve(requested_bytes) {
+        execution.metrics_mut().record_source_read_prefetch_skipped();
         return Ok(None);
     }
-    metrics.record_source_read_prefetch_started();
+    execution.metrics_mut().record_source_read_prefetch_started();
     start_scheduled_source_read(
-        context,
+        execution,
         source,
         chunk,
-        reservations,
-        metrics,
         requested_bytes,
         "source_chunk_prefetch",
         attempt,
@@ -477,11 +401,9 @@ fn try_start_optional_scheduled_source_read(
     .map(Some)
 }
 fn start_scheduled_source_read(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     chunk: &SourceChunk,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     requested_bytes: u64,
     budget_boundary: &'static str,
     attempt: usize,
@@ -489,24 +411,27 @@ fn start_scheduled_source_read(
     hard_token_budget: bool,
     prefetch: bool,
 ) -> Result<ScheduledLocalParquetRead> {
-    context.check_cancellation("nexus_query_engine.exec.bounded.source_scheduler_start")?;
-    metrics.record_source_chunk_attempt();
-    let contract = source_read_reservation_contract(context.memory_control_policy(), chunk);
+    execution.context().check_cancellation("nexus_query_engine.exec.bounded.source_scheduler_start")?;
+    execution.metrics_mut().record_source_chunk_attempt();
+    let contract = source_read_reservation_contract(execution.context().memory_control_policy(), chunk);
     let request = chunk_reservation_request(
         ReservationKind::SourceRead,
         budget_boundary,
         requested_bytes,
-        reservations.budget(),
+        execution.reservations().budget(),
         chunk,
         attempt,
         max_attempts,
     )
     .with_source_read_contract(contract.quality.as_str(), contract.planning_bytes, contract.estimated_bytes);
-    let reservation = reservations.try_reserve(request, metrics)?;
-    let source_token_budget =
-        if hard_token_budget { reservation.bytes() } else { reservations.available_bytes_including(&reservation) };
+    let reservation = execution.try_reserve(request)?;
+    let source_token_budget = if hard_token_budget {
+        reservation.bytes()
+    } else {
+        execution.reservations().available_bytes_including(&reservation)
+    };
     ScheduledLocalParquetRead::spawn(
-        context.clone(),
+        execution.context().clone(),
         source.clone(),
         chunk.clone(),
         reservation,
@@ -519,49 +444,45 @@ fn start_scheduled_source_read(
 }
 
 fn finish_scheduled_source_read(
+    execution: &mut BoundedExecutionAttempt<'_>,
     scheduled: ScheduledLocalParquetRead,
-    _context: &ExecutionContext,
     _source: &LocalParquetSource,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     attempt: usize,
     max_attempts: usize,
     grow_source_to_observed: bool,
 ) -> Result<ScheduledLocalParquetReadOutput> {
     let is_prefetch = scheduled.is_prefetch();
     let memory_boundary = scheduled.budget_boundary();
-    let mut output = scheduled.finish(reservations, metrics)?;
+    let mut output = scheduled.finish(execution)?;
     if grow_source_to_observed {
         output.observed_bytes = grow_source_reservation_to_observed(
+            execution,
             &output.frame,
             &mut output.reservation,
-            reservations,
             &output.chunk,
-            metrics,
             memory_boundary,
             attempt,
             max_attempts,
         )?;
     } else {
         output.observed_bytes = match shrink_source_reservation_to_observed_without_grow(
+            execution,
             &output.frame,
             &mut output.reservation,
-            reservations,
             &output.chunk,
-            metrics,
             memory_boundary,
             attempt,
             max_attempts,
         ) {
             Ok(bytes) => bytes,
             Err(error) => {
-                reservations.release(output.reservation, metrics);
+                execution.release(output.reservation);
                 return Err(error);
             },
         };
     }
     if is_prefetch {
-        metrics.record_source_read_prefetch_completed();
+        execution.metrics_mut().record_source_read_prefetch_completed();
     }
     Ok(output)
 }

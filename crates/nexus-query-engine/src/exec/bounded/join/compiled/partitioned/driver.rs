@@ -42,7 +42,6 @@ pub(super) struct PartitionedJoinStrategy {
 // Immutable inputs and strategy knobs for one partitioned join run.
 #[derive(Clone, Copy)]
 pub(super) struct PartitionedJoinDriverPlan<'a> {
-    pub(super) context: &'a ExecutionContext,
     pub(super) node_id: NodeId,
     pub(super) node: &'a JoinNode,
     pub(super) strategy: PartitionedJoinStrategy,
@@ -107,22 +106,19 @@ impl PartitionedJoinOutputSummary {
 }
 
 pub(super) fn run_partitioned_join_driver<F>(
+    execution: &mut BoundedExecutionAttempt<'_>,
     plan: PartitionedJoinDriverPlan<'_>,
     left: BoundedJoinSideFrame,
     right: BoundedJoinSideFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     mut materialize_partition: F,
 ) -> Result<PartitionedJoinBufferedOutput>
 where
     F: FnMut(
-        &ExecutionContext,
+        &mut BoundedExecutionAttempt<'_>,
         NodeId,
         &JoinNode,
         BoundedJoinSideFrame,
         BoundedJoinSideFrame,
-        &mut ReservationTracker,
-        &mut QueryMetrics,
     ) -> Result<PartitionedJoinPartitionOutput>,
 {
     let original = PartitionedJoinInputStats {
@@ -131,23 +127,22 @@ where
         right_rows: right.rows,
         right_bytes: right.bytes,
     };
-    record_partitioned_join_selection(plan, original, metrics);
-    let partitioned = partition_join_sides(plan, left, right, reservations, metrics)?;
+    record_partitioned_join_selection(plan, original, execution.metrics_mut());
+    let partitioned = partition_join_sides(execution, plan, left, right)?;
     let left_partitioned_bytes = partitioned.left.reservation.bytes();
     let right_partitioned_bytes = partitioned.right.reservation.bytes();
-    record_partitioned_join_sides(plan, left_partitioned_bytes, right_partitioned_bytes, metrics);
+    record_partitioned_join_sides(plan, left_partitioned_bytes, right_partitioned_bytes, execution.metrics_mut());
 
     let mut outputs = Vec::with_capacity(plan.partition_count);
     let mut summary = PartitionedJoinOutputSummary::default();
     let PartitionedJoinSides { left: left_partitioned, right: right_partitioned } = partitioned;
     for partition in 0..plan.partition_count {
         match materialize_partitioned_join_partition_with_retry(
+            execution,
             plan,
             &left_partitioned,
             &right_partitioned,
             partition,
-            reservations,
-            metrics,
             &mut materialize_partition,
         ) {
             Ok(partition_outputs) => {
@@ -158,39 +153,35 @@ where
             },
             Err(error) => {
                 release_partitioned_join_driver_state(
+                    execution,
                     Some(left_partitioned),
                     Some(right_partitioned),
                     outputs,
-                    reservations,
-                    metrics,
                 );
                 return Err(error);
             },
         }
     }
-    release_partitioned_join_side(left_partitioned, reservations, metrics);
-    release_partitioned_join_side(right_partitioned, reservations, metrics);
+    release_partitioned_join_side(execution, left_partitioned);
+    release_partitioned_join_side(execution, right_partitioned);
     Ok(PartitionedJoinBufferedOutput { outputs, original, summary })
 }
 
 pub(super) fn materialize_partitioned_join_partition_with_retry<F>(
+    execution: &mut BoundedExecutionAttempt<'_>,
     plan: PartitionedJoinDriverPlan<'_>,
     left_partitioned: &PartitionedJoinSide,
     right_partitioned: &PartitionedJoinSide,
     partition: usize,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     materialize_partition: &mut F,
 ) -> Result<Vec<PartitionedJoinPartitionOutput>>
 where
     F: FnMut(
-        &ExecutionContext,
+        &mut BoundedExecutionAttempt<'_>,
         NodeId,
         &JoinNode,
         BoundedJoinSideFrame,
         BoundedJoinSideFrame,
-        &mut ReservationTracker,
-        &mut QueryMetrics,
     ) -> Result<PartitionedJoinPartitionOutput>,
 {
     let work = PartitionedJoinWorkSlice {
@@ -201,53 +192,49 @@ where
         right: partition_row_range(right_partitioned, partition)?,
     };
     materialize_partitioned_join_work_with_retry(
+        execution,
         plan,
         left_partitioned,
         right_partitioned,
         work,
-        partitioned_join_retry_policy(plan.context),
+        partitioned_join_retry_policy(execution.context()),
         1,
-        reservations,
-        metrics,
         materialize_partition,
     )
 }
 
 fn materialize_partitioned_join_work_with_retry<F>(
+    execution: &mut BoundedExecutionAttempt<'_>,
     plan: PartitionedJoinDriverPlan<'_>,
     left_partitioned: &PartitionedJoinSide,
     right_partitioned: &PartitionedJoinSide,
     work: PartitionedJoinWorkSlice,
     policy: PartitionedJoinRetryPolicy,
     attempt: usize,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     materialize_partition: &mut F,
 ) -> Result<Vec<PartitionedJoinPartitionOutput>>
 where
     F: FnMut(
-        &ExecutionContext,
+        &mut BoundedExecutionAttempt<'_>,
         NodeId,
         &JoinNode,
         BoundedJoinSideFrame,
         BoundedJoinSideFrame,
-        &mut ReservationTracker,
-        &mut QueryMetrics,
     ) -> Result<PartitionedJoinPartitionOutput>,
 {
-    plan.context.check_cancellation("nexus_query_engine.exec.bounded.partitioned_join_retry")?;
+    execution.context().check_cancellation("nexus_query_engine.exec.bounded.partitioned_join_retry")?;
     match materialize_partitioned_join_work_once(
+        execution,
         plan,
         left_partitioned,
         right_partitioned,
         work,
-        reservations,
-        metrics,
         materialize_partition,
     ) {
         Ok(output) => Ok(vec![output]),
         Err(error) if crate::exec::retry::is_retryable_resource_error(&error) => {
             retry_partitioned_join_work_after_error(
+                execution,
                 plan,
                 left_partitioned,
                 right_partitioned,
@@ -255,8 +242,6 @@ where
                 policy,
                 attempt,
                 error,
-                reservations,
-                metrics,
                 materialize_partition,
             )
         },
@@ -265,6 +250,7 @@ where
 }
 
 fn retry_partitioned_join_work_after_error<F>(
+    execution: &mut BoundedExecutionAttempt<'_>,
     plan: PartitionedJoinDriverPlan<'_>,
     left_partitioned: &PartitionedJoinSide,
     right_partitioned: &PartitionedJoinSide,
@@ -272,22 +258,18 @@ fn retry_partitioned_join_work_after_error<F>(
     policy: PartitionedJoinRetryPolicy,
     attempt: usize,
     error: QueryError,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     materialize_partition: &mut F,
 ) -> Result<Vec<PartitionedJoinPartitionOutput>>
 where
     F: FnMut(
-        &ExecutionContext,
+        &mut BoundedExecutionAttempt<'_>,
         NodeId,
         &JoinNode,
         BoundedJoinSideFrame,
         BoundedJoinSideFrame,
-        &mut ReservationTracker,
-        &mut QueryMetrics,
     ) -> Result<PartitionedJoinPartitionOutput>,
 {
-    record_partitioned_join_retry_error(&error, metrics);
+    record_partitioned_join_retry_error(&error, execution.metrics_mut());
     if attempt >= policy.max_attempts {
         return Err(attach_partitioned_join_retry_error(
             error,
@@ -304,36 +286,34 @@ where
         && let Some((left_work, right_work)) = split_partitioned_join_probe_work(plan.node, work, policy.min_probe_rows)
     {
         crate::exec::retry::backoff_before_retry(
-            plan.context,
+            execution.context(),
             "nexus_query_engine.exec.bounded.partitioned_join_probe_split_retry",
         )?;
         return materialize_partitioned_join_retry_children(
+            execution,
             plan,
             left_partitioned,
             right_partitioned,
             [left_work, right_work],
             policy,
             attempt + 1,
-            reservations,
-            metrics,
             materialize_partition,
         );
     }
 
     if can_repartition_partitioned_join_work(work) {
         crate::exec::retry::backoff_before_retry(
-            plan.context,
+            execution.context(),
             "nexus_query_engine.exec.bounded.partitioned_join_repartition_retry",
         )?;
         return materialize_repartitioned_join_work_with_retry(
+            execution,
             plan,
             left_partitioned,
             right_partitioned,
             work,
             policy,
             attempt + 1,
-            reservations,
-            metrics,
             materialize_partition,
         )
         .map_err(|retry_error| {
@@ -365,43 +345,39 @@ fn record_partitioned_join_retry_error(error: &QueryError, metrics: &mut QueryMe
 }
 
 fn materialize_partitioned_join_retry_children<F>(
+    execution: &mut BoundedExecutionAttempt<'_>,
     plan: PartitionedJoinDriverPlan<'_>,
     left_partitioned: &PartitionedJoinSide,
     right_partitioned: &PartitionedJoinSide,
     children: [PartitionedJoinWorkSlice; 2],
     policy: PartitionedJoinRetryPolicy,
     attempt: usize,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     materialize_partition: &mut F,
 ) -> Result<Vec<PartitionedJoinPartitionOutput>>
 where
     F: FnMut(
-        &ExecutionContext,
+        &mut BoundedExecutionAttempt<'_>,
         NodeId,
         &JoinNode,
         BoundedJoinSideFrame,
         BoundedJoinSideFrame,
-        &mut ReservationTracker,
-        &mut QueryMetrics,
     ) -> Result<PartitionedJoinPartitionOutput>,
 {
     let mut outputs = Vec::new();
     for child in children {
         match materialize_partitioned_join_work_with_retry(
+            execution,
             plan,
             left_partitioned,
             right_partitioned,
             child,
             policy,
             attempt,
-            reservations,
-            metrics,
             materialize_partition,
         ) {
             Ok(mut child_outputs) => outputs.append(&mut child_outputs),
             Err(error) => {
-                release_partitioned_join_partition_outputs(outputs, reservations, metrics);
+                release_partitioned_join_partition_outputs(execution, outputs);
                 return Err(error);
             },
         }
@@ -410,135 +386,123 @@ where
 }
 
 fn materialize_repartitioned_join_work_with_retry<F>(
+    execution: &mut BoundedExecutionAttempt<'_>,
     plan: PartitionedJoinDriverPlan<'_>,
     left_partitioned: &PartitionedJoinSide,
     right_partitioned: &PartitionedJoinSide,
     work: PartitionedJoinWorkSlice,
     policy: PartitionedJoinRetryPolicy,
     attempt: usize,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     materialize_partition: &mut F,
 ) -> Result<Vec<PartitionedJoinPartitionOutput>>
 where
     F: FnMut(
-        &ExecutionContext,
+        &mut BoundedExecutionAttempt<'_>,
         NodeId,
         &JoinNode,
         BoundedJoinSideFrame,
         BoundedJoinSideFrame,
-        &mut ReservationTracker,
-        &mut QueryMetrics,
     ) -> Result<PartitionedJoinPartitionOutput>,
 {
-    let repartitioned =
-        repartition_partitioned_join_work(plan, left_partitioned, right_partitioned, work, reservations, metrics)?;
+    let repartitioned = repartition_partitioned_join_work(execution, plan, left_partitioned, right_partitioned, work)?;
     let PartitionedJoinSides { left: retry_left, right: retry_right } = repartitioned;
     let mut outputs = Vec::new();
     for partition in 0..PARTITIONED_JOIN_RETRY_REPARTITION_COUNT {
         let child = match repartitioned_join_child_work(work, &retry_left, &retry_right, partition) {
             Ok(child) => child,
             Err(error) => {
-                release_partitioned_join_partition_outputs(outputs, reservations, metrics);
-                release_partitioned_join_side(retry_left, reservations, metrics);
-                release_partitioned_join_side(retry_right, reservations, metrics);
+                release_partitioned_join_partition_outputs(execution, outputs);
+                release_partitioned_join_side(execution, retry_left);
+                release_partitioned_join_side(execution, retry_right);
                 return Err(error);
             },
         };
         match materialize_partitioned_join_work_with_retry(
+            execution,
             plan,
             &retry_left,
             &retry_right,
             child,
             policy,
             attempt,
-            reservations,
-            metrics,
             materialize_partition,
         ) {
             Ok(mut partition_outputs) => outputs.append(&mut partition_outputs),
             Err(error) => {
-                release_partitioned_join_partition_outputs(outputs, reservations, metrics);
-                release_partitioned_join_side(retry_left, reservations, metrics);
-                release_partitioned_join_side(retry_right, reservations, metrics);
+                release_partitioned_join_partition_outputs(execution, outputs);
+                release_partitioned_join_side(execution, retry_left);
+                release_partitioned_join_side(execution, retry_right);
                 return Err(error);
             },
         }
     }
-    release_partitioned_join_side(retry_left, reservations, metrics);
-    release_partitioned_join_side(retry_right, reservations, metrics);
+    release_partitioned_join_side(execution, retry_left);
+    release_partitioned_join_side(execution, retry_right);
     Ok(outputs)
 }
 
 fn repartition_partitioned_join_work(
+    execution: &mut BoundedExecutionAttempt<'_>,
     plan: PartitionedJoinDriverPlan<'_>,
     left_partitioned: &PartitionedJoinSide,
     right_partitioned: &PartitionedJoinSide,
     work: PartitionedJoinWorkSlice,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<PartitionedJoinSides> {
     let left = slice_partition_join_side_range(
-        plan.context,
+        execution,
         plan.node_id,
         JoinSide::Left,
         plan.node.spec.build_side,
         left_partitioned,
         work.partition,
         work.left,
-        reservations,
-        metrics,
     )?;
     let right = match slice_partition_join_side_range(
-        plan.context,
+        execution,
         plan.node_id,
         JoinSide::Right,
         plan.node.spec.build_side,
         right_partitioned,
         work.partition,
         work.right,
-        reservations,
-        metrics,
     ) {
         Ok(right) => right,
         Err(error) => {
-            release_bounded_join_side_frame(left, reservations, metrics);
+            release_bounded_join_side_frame(execution, left);
             return Err(error);
         },
     };
     let left_keys = join_keys_for_side(plan.node, JoinSide::Left);
     let right_keys = join_keys_for_side(plan.node, JoinSide::Right);
-    let overrides_lease = execution_overrides(plan.context)?;
+    let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
     let left_partitioned = match hash_partition_join_side(
+        execution,
         plan.node_id,
         JoinSide::Left,
         left,
         &left_keys,
         PARTITIONED_JOIN_RETRY_REPARTITION_COUNT,
         &overrides,
-        reservations,
-        metrics,
     ) {
         Ok(partitioned) => partitioned,
         Err(error) => {
-            release_bounded_join_side_frame(right, reservations, metrics);
+            release_bounded_join_side_frame(execution, right);
             return Err(error);
         },
     };
     let right_partitioned = match hash_partition_join_side(
+        execution,
         plan.node_id,
         JoinSide::Right,
         right,
         &right_keys,
         PARTITIONED_JOIN_RETRY_REPARTITION_COUNT,
         &overrides,
-        reservations,
-        metrics,
     ) {
         Ok(partitioned) => partitioned,
         Err(error) => {
-            release_partitioned_join_side(left_partitioned, reservations, metrics);
+            release_partitioned_join_side(execution, left_partitioned);
             return Err(error);
         },
     };
@@ -546,60 +510,51 @@ fn repartition_partitioned_join_work(
 }
 
 fn materialize_partitioned_join_work_once<F>(
+    execution: &mut BoundedExecutionAttempt<'_>,
     plan: PartitionedJoinDriverPlan<'_>,
     left_partitioned: &PartitionedJoinSide,
     right_partitioned: &PartitionedJoinSide,
     work: PartitionedJoinWorkSlice,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     materialize_partition: &mut F,
 ) -> Result<PartitionedJoinPartitionOutput>
 where
     F: FnMut(
-        &ExecutionContext,
+        &mut BoundedExecutionAttempt<'_>,
         NodeId,
         &JoinNode,
         BoundedJoinSideFrame,
         BoundedJoinSideFrame,
-        &mut ReservationTracker,
-        &mut QueryMetrics,
     ) -> Result<PartitionedJoinPartitionOutput>,
 {
     let left_part = slice_partition_join_side_range(
-        plan.context,
+        execution,
         plan.node_id,
         JoinSide::Left,
         plan.node.spec.build_side,
         left_partitioned,
         work.partition,
         work.left,
-        reservations,
-        metrics,
     )?;
     let right_part = match slice_partition_join_side_range(
-        plan.context,
+        execution,
         plan.node_id,
         JoinSide::Right,
         plan.node.spec.build_side,
         right_partitioned,
         work.partition,
         work.right,
-        reservations,
-        metrics,
     ) {
         Ok(partition) => partition,
         Err(error) => {
-            release_bounded_join_side_frame(left_part, reservations, metrics);
+            release_bounded_join_side_frame(execution, left_part);
             return Err(error);
         },
     };
-    materialize_partition(plan.context, plan.node_id, plan.node, left_part, right_part, reservations, metrics).map_err(
-        |error| {
-            error
-                .with_fact_if_absent("partition", work.root_partition)
-                .with_fact_if_absent("logical_partition_count", work.logical_partition_count)
-        },
-    )
+    materialize_partition(execution, plan.node_id, plan.node, left_part, right_part).map_err(|error| {
+        error
+            .with_fact_if_absent("partition", work.root_partition)
+            .with_fact_if_absent("logical_partition_count", work.logical_partition_count)
+    })
 }
 
 fn partitioned_join_retry_policy(context: &ExecutionContext) -> PartitionedJoinRetryPolicy {
@@ -729,39 +684,36 @@ fn attach_partitioned_join_retry_error(
 }
 
 pub(super) fn partition_join_sides(
+    execution: &mut BoundedExecutionAttempt<'_>,
     plan: PartitionedJoinDriverPlan<'_>,
     left: BoundedJoinSideFrame,
     right: BoundedJoinSideFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<PartitionedJoinSides> {
     let left_keys = join_keys_for_side(plan.node, JoinSide::Left);
     let right_keys = join_keys_for_side(plan.node, JoinSide::Right);
-    let overrides_lease = execution_overrides(plan.context)?;
+    let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
     let left_partitioned = hash_partition_join_side(
+        execution,
         plan.node_id,
         JoinSide::Left,
         left,
         &left_keys,
         plan.partition_count,
         &overrides,
-        reservations,
-        metrics,
     )?;
     let right_partitioned = match hash_partition_join_side(
+        execution,
         plan.node_id,
         JoinSide::Right,
         right,
         &right_keys,
         plan.partition_count,
         &overrides,
-        reservations,
-        metrics,
     ) {
         Ok(partitioned) => partitioned,
         Err(error) => {
-            release_partitioned_join_side(left_partitioned, reservations, metrics);
+            release_partitioned_join_side(execution, left_partitioned);
             return Err(error);
         },
     };
@@ -876,30 +828,28 @@ pub(super) fn record_partitioned_join_operator_metrics(
 }
 
 fn release_partitioned_join_partition_outputs(
+    execution: &mut BoundedExecutionAttempt<'_>,
     mut outputs: Vec<PartitionedJoinPartitionOutput>,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) {
     let mut frames = Vec::with_capacity(outputs.len());
     while let Some(output) = outputs.pop() {
         frames.push(output.frame);
     }
-    release_streamed_join_outputs_reverse(reservations, frames, metrics);
+    release_streamed_join_outputs_reverse(execution, frames);
 }
 
 fn release_partitioned_join_driver_state(
+    execution: &mut BoundedExecutionAttempt<'_>,
     left: Option<PartitionedJoinSide>,
     right: Option<PartitionedJoinSide>,
     outputs: Vec<ResidentGpuFrame>,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) {
-    release_streamed_join_outputs_reverse(reservations, outputs, metrics);
+    release_streamed_join_outputs_reverse(execution, outputs);
     if let Some(left) = left {
-        release_partitioned_join_side(left, reservations, metrics);
+        release_partitioned_join_side(execution, left);
     }
     if let Some(right) = right {
-        release_partitioned_join_side(right, reservations, metrics);
+        release_partitioned_join_side(execution, right);
     }
 }
 

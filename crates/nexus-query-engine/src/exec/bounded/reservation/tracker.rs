@@ -103,17 +103,6 @@ impl ReservationTracker {
         Ok(tracker)
     }
 
-    pub(in crate::exec) fn new_for_compiled_context(
-        context: &ExecutionContext,
-        _plan: &QueryPlan,
-        _pipeline: &CompiledPipeline,
-        budget_bytes: u64,
-        metrics: &mut QueryMetrics,
-        observation_scope: Option<&RuntimeExecutionObservationScope>,
-    ) -> Result<Self> {
-        Self::new_for_context(context, budget_bytes, metrics, observation_scope)
-    }
-
     pub(in crate::exec) fn budget(&self) -> u64 {
         self.budget.bytes()
     }

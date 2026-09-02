@@ -32,7 +32,7 @@ impl CompiledGpuTaskExecutor<'_> {
             match input_payload.payload {
                 CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
                     execute_compiled_bounded_aggregate_from_stream(
-                        self.context,
+                        &mut self.execution,
                         node_id,
                         aggregate,
                         self.plan
@@ -45,8 +45,6 @@ impl CompiledGpuTaskExecutor<'_> {
                             .output_schema(),
                         node.output_schema(),
                         stream,
-                        &mut self.reservations,
-                        self.metrics,
                     )
                 },
                 CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => {
@@ -70,7 +68,7 @@ impl CompiledGpuTaskExecutor<'_> {
             };
             let stream = self.apply_dynamic_filters_to_source_stream(*stream)?;
             execute_compiled_bounded_aggregate_from_source_stream(
-                self.context,
+                &mut self.execution,
                 node_id,
                 aggregate,
                 self.plan
@@ -83,8 +81,6 @@ impl CompiledGpuTaskExecutor<'_> {
                     .output_schema(),
                 node.output_schema(),
                 stream,
-                &mut self.reservations,
-                self.metrics,
             )
         } else if state.can_consume_task_input_resource(task, input) {
             let input_payload = state.consume_task_input_resource(task, input)?.into_payload();
@@ -97,7 +93,7 @@ impl CompiledGpuTaskExecutor<'_> {
             let ResidentGpuFrame { frame: input_frame, reservation: input_reservation } = *frame;
             let input_reserved_bytes = input_reservation.bytes();
             let result = execute_compiled_bounded_aggregate_from_frame(
-                self.context,
+                &mut self.execution,
                 node_id,
                 aggregate,
                 self.plan
@@ -111,10 +107,8 @@ impl CompiledGpuTaskExecutor<'_> {
                 node.output_schema(),
                 input_frame,
                 input_reserved_bytes,
-                &mut self.reservations,
-                self.metrics,
             );
-            self.reservations.release(input_reservation, self.metrics);
+            self.execution.release(input_reservation);
             match result {
                 Ok(output) => Ok(output),
                 Err(error) => Err(error),
@@ -124,7 +118,7 @@ impl CompiledGpuTaskExecutor<'_> {
             if let Some(stream) = input_payload.as_join_leaf_local_parquet_source().cloned() {
                 let stream = self.apply_dynamic_filters_to_source_stream(stream)?;
                 execute_compiled_bounded_aggregate_from_source_stream(
-                    self.context,
+                    &mut self.execution,
                     node_id,
                     aggregate,
                     self.plan
@@ -137,8 +131,6 @@ impl CompiledGpuTaskExecutor<'_> {
                         .output_schema(),
                     node.output_schema(),
                     stream,
-                    &mut self.reservations,
-                    self.metrics,
                 )
             } else if matches!(input_payload.payload, CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_))
             {
@@ -150,7 +142,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 self.apply_ready_dynamic_filters_to_shared_source_resource(state, input)?;
                 let input_payload = state.resource_payload(input)?;
                 execute_compiled_bounded_aggregate_from_frame(
-                    self.context,
+                    &mut self.execution,
                     node_id,
                     aggregate,
                     self.plan
@@ -164,8 +156,6 @@ impl CompiledGpuTaskExecutor<'_> {
                     node.output_schema(),
                     input_payload.clone_frame(),
                     input_payload.reservation_bytes(),
-                    &mut self.reservations,
-                    self.metrics,
                 )
             }
         }
@@ -206,14 +196,12 @@ impl CompiledGpuTaskExecutor<'_> {
             .clone();
         let output_schema = node.output_schema().clone();
         let frame = execute_bounded_generic_unary_from_frame(
-            self.context,
+            &mut self.execution,
             node_id,
             "compiled_window",
             "compiled_window_output",
             input_payload.clone_frame(),
             input_payload.reservation_bytes(),
-            &mut self.reservations,
-            self.metrics,
             false,
             |context, input, _token, metrics| {
                 crate::exec::operators::execute_window(context, window, &input_schema, input, &output_schema, metrics)
@@ -239,25 +227,15 @@ impl CompiledGpuTaskExecutor<'_> {
             let frame = match input_payload.payload {
                 CompiledGpuResourcePayload::ResidentFrame { frame: input_frame, .. } => {
                     execute_final_sort_node_from_committed_with_retry(
-                        self.context,
+                        &mut self.execution,
                         node_id,
                         &sort,
                         Some(&limit),
                         *input_frame,
-                        &mut self.reservations,
-                        self.metrics,
                     )
                 },
                 CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
-                    execute_final_sort_node_from_stream_with_retry(
-                        self.context,
-                        node_id,
-                        &sort,
-                        &limit,
-                        stream,
-                        &mut self.reservations,
-                        self.metrics,
-                    )
+                    execute_final_sort_node_from_stream_with_retry(&mut self.execution, node_id, &sort, &limit, stream)
                 },
                 CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => {
                     Err(invalid("compiled final sort cannot consume a deferred join leaf source")
@@ -279,12 +257,10 @@ impl CompiledGpuTaskExecutor<'_> {
 
         let input_payload = state.resource_payload(input)?;
         let frame = execute_final_sort_node_from_frame_with_retry(
-            self.context,
+            &mut self.execution,
             node_id,
             &sort,
             input_payload.clone_frame(),
-            &mut self.reservations,
-            self.metrics,
         )
         .map_err(|error| attach_task_facts(error, task, node_id))?;
         Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))

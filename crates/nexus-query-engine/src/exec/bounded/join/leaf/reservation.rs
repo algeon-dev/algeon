@@ -180,56 +180,64 @@ fn observed_join_source_read_batch_reservation_request(
 }
 
 pub(super) fn grow_join_source_reservation_to_observed_frame(
+    execution: &mut BoundedExecutionAttempt<'_>,
     frame: &GpuDataFrame,
     reservation: &mut ActiveReservation,
-    reservations: &mut ReservationTracker,
     node_id: NodeId,
     chunk: &SourceChunk,
-    metrics: &mut QueryMetrics,
     attempt: usize,
     max_attempts: usize,
 ) -> Result<()> {
-    let observed_bytes = observe_device_memory_bytes(frame, metrics)?;
+    let observed_bytes = observe_device_memory_bytes(frame, execution.metrics_mut())?;
     if observed_bytes <= reservation.bytes() {
-        reservations.shrink_to_observed_with_request(
+        execution.shrink_to_observed_with_request(
             reservation,
             observed_bytes,
-            observed_join_source_read_reservation_request(reservations.budget(), node_id, chunk, attempt, max_attempts),
-            metrics,
+            observed_join_source_read_reservation_request(
+                execution.reservations().budget(),
+                node_id,
+                chunk,
+                attempt,
+                max_attempts,
+            ),
         );
         return Ok(());
     }
     let delta = observed_bytes.saturating_sub(reservation.bytes());
-    reservations.try_grow(
+    execution.try_grow(
         reservation,
-        observed_join_source_read_reservation_request(reservations.budget(), node_id, chunk, attempt, max_attempts)
-            .with_requested_bytes(delta),
-        metrics,
+        observed_join_source_read_reservation_request(
+            execution.reservations().budget(),
+            node_id,
+            chunk,
+            attempt,
+            max_attempts,
+        )
+        .with_requested_bytes(delta),
     )
 }
 
 pub(super) fn grow_join_source_batch_reservation_to_observed_frame(
+    execution: &mut BoundedExecutionAttempt<'_>,
     frame: &GpuDataFrame,
     reservation: &mut ActiveReservation,
-    reservations: &mut ReservationTracker,
     node_id: NodeId,
     batch: &SourceChunkBatch,
-    metrics: &mut QueryMetrics,
     attempt: usize,
     max_attempts: usize,
 ) -> Result<()> {
-    let observed_bytes = observe_device_memory_bytes(frame, metrics)?;
+    let observed_bytes = observe_device_memory_bytes(frame, execution.metrics_mut())?;
     let observed_request = observed_join_source_read_batch_reservation_request(
-        reservations.budget(),
+        execution.reservations().budget(),
         node_id,
         batch,
         attempt,
         max_attempts,
     );
     if observed_bytes <= reservation.bytes() {
-        reservations.shrink_to_observed_with_request(reservation, observed_bytes, observed_request, metrics);
+        execution.shrink_to_observed_with_request(reservation, observed_bytes, observed_request);
         return Ok(());
     }
     let delta = observed_bytes.saturating_sub(reservation.bytes());
-    reservations.try_grow(reservation, observed_request.with_requested_bytes(delta), metrics)
+    execution.try_grow(reservation, observed_request.with_requested_bytes(delta))
 }

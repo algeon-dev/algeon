@@ -22,15 +22,13 @@ impl CompiledGpuTaskExecutor<'_> {
 
         let input_payload = state.resource_payload(input)?;
         let frame = execute_bounded_generic_unary_from_frame_with_reservation_kind(
-            self.context,
+            &mut self.execution,
             node_id,
             "compiled_limit",
             "compiled_limit_output",
             input_payload.clone_frame(),
             input_payload.reservation_bytes(),
             ReservationKind::FinalSort,
-            &mut self.reservations,
-            self.metrics,
             false,
             |context, input, _token, metrics| crate::exec::operators::execute_limit(context, limit, input, metrics),
         )
@@ -57,7 +55,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 .with_fact("pipeline_task_kind", task.kind().as_str()));
         }
         let inputs = self.union_task_inputs(task, state, node_id)?;
-        let frame = execute_bounded_generic_union(self.context, node_id, inputs, &mut self.reservations, self.metrics)
+        let frame = execute_bounded_generic_union(&mut self.execution, node_id, inputs)
             .map_err(|error| attach_task_facts(error, task, node_id))?;
         Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))
     }
@@ -79,9 +77,8 @@ impl CompiledGpuTaskExecutor<'_> {
             };
             if let Err(error) = result {
                 release_reservations_reverse(
-                    &mut self.reservations,
+                    &mut self.execution,
                     inputs.into_iter().map(|input| input.reservation).collect(),
-                    self.metrics,
                 );
                 return Err(error);
             }
@@ -101,7 +98,7 @@ impl CompiledGpuTaskExecutor<'_> {
         match payload.payload {
             CompiledGpuResourcePayload::ResidentFrame { frame, .. } => inputs.push(*frame),
             CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
-                inputs.extend(stream.into_remaining_frames_owned(&mut self.reservations, self.metrics)?)
+                inputs.extend(stream.into_remaining_frames_owned(&mut self.execution)?)
             },
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(stream) => {
                 if !consumed {
@@ -111,12 +108,7 @@ impl CompiledGpuTaskExecutor<'_> {
                         .with_fact("resident_resource_id", resource));
                 }
                 let stream = self.apply_dynamic_filters_to_source_stream(*stream)?;
-                inputs.push(materialize_bounded_join_leaf_local_parquet_source_stream(
-                    self.context,
-                    stream,
-                    &mut self.reservations,
-                    self.metrics,
-                )?);
+                inputs.push(materialize_bounded_join_leaf_local_parquet_source_stream(&mut self.execution, stream)?);
             },
             CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(prefetch) => {
                 if !consumed {
@@ -125,7 +117,7 @@ impl CompiledGpuTaskExecutor<'_> {
                         .with_fact("plan_node_id", node_id)
                         .with_fact("resident_resource_id", resource));
                 }
-                inputs.push(prefetch.finish(self.context, &mut self.reservations, self.metrics)?);
+                inputs.push(prefetch.finish(&mut self.execution)?);
             },
         }
         Ok(())
@@ -171,14 +163,17 @@ impl CompiledGpuTaskExecutor<'_> {
     }
 
     pub(super) fn union_alias_reservation(&mut self, node_id: NodeId, source: &ActiveReservation) -> ActiveReservation {
-        self.reservations.alias_reservation(
+        self.execution.alias_reservation(
             source,
-            MemoryReservationRequest::new(ReservationKind::OperatorOutput, source.bytes(), self.reservations.budget())
-                .with_memory_boundary("compiled_union_input_alias")
-                .with_node_id(node_id)
-                .with_stage("compiled_union_input_alias")
-                .with_attempt(1, 1),
-            self.metrics,
+            MemoryReservationRequest::new(
+                ReservationKind::OperatorOutput,
+                source.bytes(),
+                self.execution.reservations().budget(),
+            )
+            .with_memory_boundary("compiled_union_input_alias")
+            .with_node_id(node_id)
+            .with_stage("compiled_union_input_alias")
+            .with_attempt(1, 1),
         )
     }
 
@@ -218,14 +213,12 @@ impl CompiledGpuTaskExecutor<'_> {
             })?
             .output_schema();
         let output = materialize_bounded_frame_to_host(
-            self.context,
+            &mut self.execution,
             input_payload.clone_frame(),
             input_payload.reservation_bytes(),
             *final_node_id,
             executable_schema,
             schema,
-            &mut self.reservations,
-            self.metrics,
         )
         .map_err(|error| {
             error

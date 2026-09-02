@@ -11,8 +11,6 @@ use super::{
     scheduler::{CompiledSchedulingCycle, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput},
     state::CompiledPipelineState,
 };
-#[cfg(test)]
-use crate::runtime::MemorySpaceId;
 use crate::{
     admission::{CompiledJoinExecutionStrategy, CompiledJoinStrategySelection},
     capability::{
@@ -29,7 +27,7 @@ use crate::{
     exec::{
         bounded::{
             ActiveReservation, BoundedCompiledJoinBuildState, BoundedCompiledJoinMaterializeOutput,
-            BoundedCompiledJoinProbeState, BoundedJoinLeafLocalParquetSourcePrefetch,
+            BoundedCompiledJoinProbeState, BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourcePrefetch,
             BoundedJoinLeafLocalParquetSourceStream, BoundedPartitionTargetPolicy, ReservationTracker,
             ResidentGpuFrame, SourceAdjacentAggregateChunkCapHints, execute_bounded_compiled_join_build_from_frame,
             execute_bounded_compiled_join_build_from_resident_frame, execute_bounded_compiled_join_materialize,

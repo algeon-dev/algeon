@@ -7,10 +7,9 @@ pub(super) enum TopKLevelItem {
 }
 
 pub(super) fn commit_topk_merge_level(
+    execution: &mut BoundedExecutionAttempt<'_>,
     candidates: Vec<CommittedPartial>,
     level_output: Vec<TopKLevelItem>,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Vec<CommittedPartial> {
     let mut candidates = candidates.into_iter().map(Some).collect::<Vec<_>>();
     let mut next_candidates = Vec::with_capacity(level_output.len());
@@ -26,39 +25,27 @@ pub(super) fn commit_topk_merge_level(
     }
 
     for partial in candidates.into_iter().flatten() {
-        reservations.release(partial.reservation, metrics);
+        execution.release(partial.reservation);
     }
 
     next_candidates
 }
 
-pub(super) fn release_topk_level_items(
-    items: Vec<TopKLevelItem>,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
-) {
+pub(super) fn release_topk_level_items(execution: &mut BoundedExecutionAttempt<'_>, items: Vec<TopKLevelItem>) {
     for item in items {
         if let TopKLevelItem::Merged(partial) = item {
             let partial = *partial;
-            reservations.release(partial.reservation, metrics);
+            execution.release(partial.reservation);
         }
     }
 }
 
-pub(super) fn release_committed_partials(
-    partials: Vec<CommittedPartial>,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
-) {
+pub(super) fn release_committed_partials(execution: &mut BoundedExecutionAttempt<'_>, partials: Vec<CommittedPartial>) {
     for partial in partials {
-        release_committed_partial(partial, reservations, metrics);
+        release_committed_partial(execution, partial);
     }
 }
 
-pub(super) fn release_committed_partial(
-    partial: CommittedPartial,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
-) {
-    reservations.release(partial.reservation, metrics);
+pub(super) fn release_committed_partial(execution: &mut BoundedExecutionAttempt<'_>, partial: CommittedPartial) {
+    execution.release(partial.reservation);
 }

@@ -24,12 +24,10 @@ pub(super) fn join_build_key_uniqueness_probe_can_fallback(error: &QueryError) -
 /// Compiled task interpreter for bounded GPU work.
 #[doc(hidden)]
 pub struct CompiledGpuTaskExecutor<'a> {
-    pub(super) context: &'a ExecutionContext,
+    pub(super) execution: BoundedExecutionAttempt<'a>,
     pub(super) plan: &'a QueryPlan,
     pub(super) pipeline: &'a CompiledPipeline,
     pub(super) gpu_inputs: GpuResidentInputMap,
-    pub(super) metrics: &'a mut QueryMetrics,
-    pub(super) reservations: ReservationTracker,
     pub(super) dynamic_filters: DynamicFilterSet,
     pub(super) source_post_decode_applied_routes: BTreeMap<ResidentResourceId, BTreeSet<DynamicFilterId>>,
     pub(super) join_builds: BTreeMap<NodeId, BoundedCompiledJoinBuildState>,
@@ -50,22 +48,13 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
             return Err(invalid("compiled bounded task execution requires bounded memory control")
                 .with_fact("memory_control_policy", context.memory_control_policy().as_str()));
         };
-        let reservations = ReservationTracker::new_for_compiled_context(
-            context,
-            plan,
-            pipeline,
-            device_budget_bytes,
-            metrics,
-            observation_scope,
-        )?;
-        let gpu_inputs = reservations.augment_gpu_inputs(gpu_inputs)?;
+        let execution = BoundedExecutionAttempt::new(context, device_budget_bytes, metrics, observation_scope)?;
+        let gpu_inputs = execution.reservations().augment_gpu_inputs(gpu_inputs)?;
         Ok(Self {
-            context,
+            execution,
             plan,
             pipeline,
             gpu_inputs,
-            metrics,
-            reservations,
             dynamic_filters: DynamicFilterSet::new(),
             source_post_decode_applied_routes: BTreeMap::new(),
             join_builds: BTreeMap::new(),
@@ -75,18 +64,18 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
     }
 
     pub fn reserved_bytes(&self) -> u64 {
-        self.reservations.reserved_bytes()
+        self.execution.reservations().reserved_bytes()
     }
 
     pub fn remaining_bytes(&self) -> u64 {
-        self.reservations.remaining_bytes()
+        self.execution.reservations().remaining_bytes()
     }
 
     pub(in crate::exec::bounded) fn into_reservations(self) -> ReservationTracker {
-        let Self { gpu_inputs, reservations, .. } = self;
+        let Self { gpu_inputs, execution, .. } = self;
         // The post-execution invariant must observe the tracker after all augmented input guards release.
         drop(gpu_inputs);
-        reservations
+        execution.into_reservations()
     }
 
     pub fn take_host_output(&mut self) -> Result<RecordBatch> {
@@ -128,21 +117,21 @@ impl<'a> CompiledGpuTaskExecutor<'a> {
         let frame =
             frame.with_producer_execution_scope(crate::admission::canonical_execution_scope_fingerprint(self.plan));
         let handle = match GpuResultHandle::new_with_live_reservation(
-            self.context,
+            self.execution.context(),
             frame,
             self.plan.output_schema().clone(),
             live_reservation,
         ) {
             Ok(handle) => handle,
             Err(error) => {
-                self.reservations.release(reservation, self.metrics);
+                self.execution.release(reservation);
                 return Err(error
                     .with_fact_if_absent("sink_boundary_task_id", self.pipeline.sink().input())
                     .with_fact_if_absent("resident_resource_id", resource)
                     .with_fact_if_absent("sink_boundary_kind", self.pipeline.sink().kind().as_str()));
             },
         };
-        self.reservations.release(reservation, self.metrics);
+        self.execution.release(reservation);
         Ok(handle)
     }
 }
@@ -176,16 +165,20 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
         attempt_id: &crate::observability::TaskAttemptId,
         span_id: crate::observability::RuntimeSpanId,
     ) -> Result<CompiledTaskOutput<Self::Resource>> {
-        self.context.check_cancellation("nexus_query_engine.exec.bounded.compiled.task")?;
-        self.metrics.record_compiled_pipeline_task_mapping(task.id(), task.kind().as_str(), task.plan_node());
-        self.metrics.record_compiled_pipeline_task_execution(task.id(), task.kind().as_str());
-        let _task_observation_scope = self.reservations.enter_task_observation_scope(
+        self.execution.context().check_cancellation("nexus_query_engine.exec.bounded.compiled.task")?;
+        self.execution.metrics_mut().record_compiled_pipeline_task_mapping(
+            task.id(),
+            task.kind().as_str(),
+            task.plan_node(),
+        );
+        self.execution.metrics_mut().record_compiled_pipeline_task_execution(task.id(), task.kind().as_str());
+        let _task_observation_scope = self.execution.reservations().enter_task_observation_scope(
             attempt_id.clone(),
             task.kind().as_str(),
             span_id,
             task_diagnostic_resident_resource(task),
         );
-        let budget_event_start = self.metrics.budgeted_execution_event_count();
+        let budget_event_start = self.execution.metrics_mut().budgeted_execution_event_count();
         let timer = Instant::now();
         let result = match task.kind() {
             PipelineTaskKind::SourceRead
@@ -204,23 +197,23 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
             PipelineTaskKind::GraphAlgorithm => self.execute_graph_algorithm_task(task, state),
             PipelineTaskKind::SinkMaterialize => self.execute_sink_materialize_task(task, state),
         };
-        self.metrics.record_task_budget_observations_since(task.id(), budget_event_start);
-        self.metrics.record_task_elapsed(task.id(), task.kind().as_str(), timer.elapsed());
+        self.execution.metrics_mut().record_task_budget_observations_since(task.id(), budget_event_start);
+        self.execution.metrics_mut().record_task_elapsed(task.id(), task.kind().as_str(), timer.elapsed());
         result
     }
 
     fn release_resource(&mut self, resource: ResidentResourceId, payload: Self::Resource) -> Result<()> {
-        let _resource_observation_scope = self.reservations.enter_resource_observation_scope(resource);
+        let _resource_observation_scope = self.execution.reservations().enter_resource_observation_scope(resource);
         match payload.payload {
             CompiledGpuResourcePayload::ResidentFrame { frame, .. } => {
-                self.reservations.release(frame.reservation, self.metrics);
+                self.execution.release(frame.reservation);
             },
             CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
-                stream.release_all(&mut self.reservations, self.metrics);
+                stream.release_all(&mut self.execution);
             },
             CompiledGpuResourcePayload::JoinLeafLocalParquetSource(_) => {},
             CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(prefetch) => {
-                prefetch.abandon(&mut self.reservations, self.metrics);
+                prefetch.abandon(&mut self.execution);
             },
         }
         Ok(())
@@ -228,20 +221,22 @@ impl CompiledTaskExecutor for CompiledGpuTaskExecutor<'_> {
 
     fn cleanup_resource(&mut self, resource: ResidentResourceId, payload: Self::Resource) -> Result<()> {
         let _cleanup_observation_scope = self
-            .reservations
+            .execution
+            .reservations()
             .enter_release_observation_scope(crate::observability::RuntimeReservationDisposition::CleanupRelease);
         self.release_resource(resource, payload)
     }
 
     fn cleanup_after_error(&mut self) -> Result<()> {
         let _cleanup_observation_scope = self
-            .reservations
+            .execution
+            .reservations()
             .enter_release_observation_scope(crate::observability::RuntimeReservationDisposition::CleanupRelease);
         while let Some((_, probe)) = self.join_probes.pop_first() {
-            release_bounded_compiled_join_probe_state(probe, &mut self.reservations, self.metrics);
+            release_bounded_compiled_join_probe_state(&mut self.execution, probe);
         }
         while let Some((_, build)) = self.join_builds.pop_first() {
-            release_bounded_compiled_join_build_state(build, &mut self.reservations, self.metrics);
+            release_bounded_compiled_join_build_state(&mut self.execution, build);
         }
         Ok(())
     }

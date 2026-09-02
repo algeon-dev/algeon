@@ -25,14 +25,12 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use super::*;
 
 pub(super) fn partial_aggregate_work_reservation_upper_bound_bytes(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     aggregate: &AggregateNode,
     input_schema: &ArrowSchemaRef,
     aggregate_output_schema: &ArrowSchemaRef,
     input: &GpuDataFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<u64> {
     let shape = if aggregate.spec.group_exprs.is_empty() {
         PartialAggregateShape::Global
@@ -44,85 +42,71 @@ pub(super) fn partial_aggregate_work_reservation_upper_bound_bytes(
         PartialAggregateShape::Grouped { input_rows: input.num_rows() as u64 }
     };
     let columns = partial_aggregate_upper_bound_columns(
-        context,
+        execution,
         node_id,
         aggregate,
         input_schema,
         aggregate_output_schema,
         input,
-        reservations,
-        metrics,
     )?;
     partial_aggregate_upper_bound_bytes(shape, &columns)
 }
 
 pub(super) fn statistical_partial_aggregate_work_reservation_upper_bound_bytes(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     aggregate: &AggregateNode,
     input_schema: &ArrowSchemaRef,
     aggregate_output_schema: &ArrowSchemaRef,
     input: &GpuDataFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<u64> {
     let shape = PartialAggregateShape::Grouped { input_rows: input.num_rows() as u64 };
     let columns = statistical_partial_aggregate_upper_bound_columns(
-        context,
+        execution,
         node_id,
         &aggregate.spec,
         input_schema,
         aggregate_output_schema,
         input,
-        reservations,
-        metrics,
     )?;
     partial_aggregate_upper_bound_bytes(shape, &columns)
 }
 
 fn partial_aggregate_upper_bound_columns(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     aggregate: &AggregateNode,
     input_schema: &ArrowSchemaRef,
     aggregate_output_schema: &ArrowSchemaRef,
     input: &GpuDataFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<Vec<JoinOutputColumnUpperBoundInput>> {
     if aggregate.spec.group_exprs.is_empty() {
         return global_partial_aggregate_upper_bound_columns(
-            context,
+            execution,
             node_id,
             &aggregate.spec,
             input_schema,
             aggregate_output_schema,
             input,
-            reservations,
-            metrics,
         );
     }
     grouped_partial_aggregate_upper_bound_columns(
-        context,
+        execution,
         node_id,
         &aggregate.spec,
         input_schema,
         aggregate_output_schema,
         input,
-        reservations,
-        metrics,
     )
 }
 
 fn global_partial_aggregate_upper_bound_columns(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     spec: &AggregateSpec,
     input_schema: &ArrowSchemaRef,
     aggregate_output_schema: &ArrowSchemaRef,
     input: &GpuDataFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<Vec<JoinOutputColumnUpperBoundInput>> {
     let partial_schema = partial_global_aggregate_output_schema(spec, input_schema, aggregate_output_schema)?;
     let mut fields_by_name =
@@ -146,14 +130,12 @@ fn global_partial_aggregate_upper_bound_columns(
             },
             AggregateFunction::Sum | AggregateFunction::Min | AggregateFunction::Max => {
                 columns.push(partial_column_for_field_and_optional_input(
-                    context,
+                    execution,
                     node_id,
                     take_partial_field(&mut fields_by_name, expr.alias.as_str(), "global aggregate value state")?,
                     Some(&expr.expr),
                     input_schema,
                     input,
-                    reservations,
-                    metrics,
                 )?);
                 columns.push(fixed_partial_column(take_partial_field(
                     &mut fields_by_name,
@@ -171,14 +153,12 @@ fn global_partial_aggregate_upper_bound_columns(
             },
             AggregateFunction::Count | AggregateFunction::NUnique => {
                 columns.push(partial_column_for_field_and_optional_input(
-                    context,
+                    execution,
                     node_id,
                     take_partial_field(&mut fields_by_name, expr.alias.as_str(), "global aggregate state")?,
                     None,
                     input_schema,
                     input,
-                    reservations,
-                    metrics,
                 )?);
             },
             AggregateFunction::StddevSamp
@@ -186,14 +166,12 @@ fn global_partial_aggregate_upper_bound_columns(
             | AggregateFunction::VarSamp
             | AggregateFunction::VarPop => {
                 columns.push(partial_column_for_field_and_optional_input(
-                    context,
+                    execution,
                     node_id,
                     take_partial_field(&mut fields_by_name, expr.alias.as_str(), "global aggregate state")?,
                     None,
                     input_schema,
                     input,
-                    reservations,
-                    metrics,
                 )?);
             },
         }
@@ -203,14 +181,12 @@ fn global_partial_aggregate_upper_bound_columns(
 }
 
 fn grouped_partial_aggregate_upper_bound_columns(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     spec: &AggregateSpec,
     input_schema: &ArrowSchemaRef,
     aggregate_output_schema: &ArrowSchemaRef,
     input: &GpuDataFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<Vec<JoinOutputColumnUpperBoundInput>> {
     let lowered = lower_partial_aggregate_spec(spec)?;
     let mut columns = Vec::with_capacity(lowered.output_names.len());
@@ -229,13 +205,11 @@ fn grouped_partial_aggregate_upper_bound_columns(
             .with_fact("arrow_error", error.to_string())
         })?;
         columns.push(partial_column_for_field_and_input_column(
-            context,
+            execution,
             node_id,
             field,
             input_column.as_str(),
             input,
-            reservations,
-            metrics,
         )?);
     }
 
@@ -303,14 +277,12 @@ fn grouped_partial_aggregate_upper_bound_columns(
                     .with_fact("arrow_error", error.to_string())
                 })?;
                 columns.push(partial_column_for_field_and_optional_input(
-                    context,
+                    execution,
                     node_id,
                     field,
                     Some(&expr.expr),
                     input_schema,
                     input,
-                    reservations,
-                    metrics,
                 )?);
             },
             AggregateFunction::Median => {
@@ -335,14 +307,12 @@ fn grouped_partial_aggregate_upper_bound_columns(
                     .with_fact("arrow_error", error.to_string())
                 })?;
                 columns.push(partial_column_for_field_and_optional_input(
-                    context,
+                    execution,
                     node_id,
                     field,
                     Some(&expr.expr),
                     input_schema,
                     input,
-                    reservations,
-                    metrics,
                 )?);
             },
         }
@@ -352,14 +322,12 @@ fn grouped_partial_aggregate_upper_bound_columns(
 }
 
 fn statistical_partial_aggregate_upper_bound_columns(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     spec: &AggregateSpec,
     input_schema: &ArrowSchemaRef,
     aggregate_output_schema: &ArrowSchemaRef,
     input: &GpuDataFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<Vec<JoinOutputColumnUpperBoundInput>> {
     let mut columns =
         Vec::with_capacity(spec.group_exprs.len().saturating_add(spec.aggr_exprs.len().saturating_mul(3)));
@@ -378,13 +346,11 @@ fn statistical_partial_aggregate_upper_bound_columns(
             .with_fact("arrow_error", error.to_string())
         })?;
         columns.push(partial_column_for_field_and_input_column(
-            context,
+            execution,
             node_id,
             field,
             input_column.as_str(),
             input,
-            reservations,
-            metrics,
         )?);
     }
 
@@ -461,14 +427,12 @@ fn fixed_partial_column_for_type(data_type: ArrowDataType) -> JoinOutputColumnUp
 }
 
 fn partial_column_for_field_and_optional_input(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     field: &Field,
     input_expr: Option<&Expr>,
     input_schema: &ArrowSchemaRef,
     input: &GpuDataFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<JoinOutputColumnUpperBoundInput> {
     if !partial_sizing_dtype_needs_string_max(field.data_type()) {
         return Ok(fixed_partial_column(field));
@@ -503,36 +467,19 @@ fn partial_column_for_field_and_optional_input(
         .with_fact("input_type", format!("{:?}", schema_field.data_type()))
         .with_fact("output_type", format!("{:?}", field.data_type())));
     }
-    partial_column_for_field_and_input_column(
-        context,
-        node_id,
-        field,
-        input_column.as_str(),
-        input,
-        reservations,
-        metrics,
-    )
+    partial_column_for_field_and_input_column(execution, node_id, field, input_column.as_str(), input)
 }
 
 fn partial_column_for_field_and_input_column(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     field: &Field,
     input_column: &str,
     input: &GpuDataFrame,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<JoinOutputColumnUpperBoundInput> {
     let (input_max_string_length_bytes, input_total_string_bytes) =
         if partial_sizing_dtype_needs_string_max(field.data_type()) {
-            let stats = string_byte_length_stats_for_partial_sizing(
-                context,
-                node_id,
-                input,
-                input_column,
-                reservations,
-                metrics,
-            )?;
+            let stats = string_byte_length_stats_for_partial_sizing(execution, node_id, input, input_column)?;
             (Some(stats.max_len), Some(stats.total_bytes))
         } else {
             (None, None)
@@ -551,12 +498,10 @@ struct StringByteLengthStats {
 }
 
 fn string_byte_length_stats_for_partial_sizing(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     input: &GpuDataFrame,
     input_column: &str,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<StringByteLengthStats> {
     if input.num_rows() == 0 {
         return Ok(StringByteLengthStats { max_len: 0, total_bytes: 0 });
@@ -569,23 +514,26 @@ fn string_byte_length_stats_for_partial_sizing(
             input_total_string_bytes: None,
         }],
     )?;
-    let mut reservation = reservations.try_reserve_work(
-        MemoryReservationRequest::new(ReservationKind::ChunkOperator, byte_count_bound, reservations.budget())
-            .with_memory_boundary("compiled_aggregate_string_length_sizing")
-            .with_node_id(node_id)
-            .with_stage("compiled_aggregate_string_length_sizing"),
-        metrics,
+    let mut reservation = execution.try_reserve_work(
+        MemoryReservationRequest::new(
+            ReservationKind::ChunkOperator,
+            byte_count_bound,
+            execution.reservations().budget(),
+        )
+        .with_memory_boundary("compiled_aggregate_string_length_sizing")
+        .with_node_id(node_id)
+        .with_stage("compiled_aggregate_string_length_sizing"),
     )?;
     let token = match execution_budget_token_for_boundary(
-        context,
-        reservations.available_bytes_including(&reservation),
+        execution.context(),
+        execution.reservations().available_bytes_including(&reservation),
         "compiled_aggregate_string_length_sizing",
         "nexus_query_engine.bounded.aggregate.string_length_sizing.budget_token",
         "failed to create bounded native partial aggregate string-length sizing budget token",
     ) {
         Ok(token) => token,
         Err(error) => {
-            reservations.release(reservation, metrics);
+            execution.release(reservation);
             return Err(error);
         },
     };
@@ -593,7 +541,7 @@ fn string_byte_length_stats_for_partial_sizing(
     let series = match input.frame().series(input_column) {
         Ok(series) => series,
         Err(error) => {
-            reservations.release(reservation, metrics);
+            execution.release(reservation);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.aggregate.string_length_sizing",
                 "failed to access string input column for partial aggregate sizing",
@@ -605,7 +553,7 @@ fn string_byte_length_stats_for_partial_sizing(
     let byte_counts = match series.str().byte_count_in(&token.execution_overrides()) {
         Ok(byte_counts) => byte_counts,
         Err(error) => {
-            reservations.release(reservation, metrics);
+            execution.release(reservation);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.aggregate.string_length_sizing",
                 "failed to compute string byte counts for partial aggregate sizing",
@@ -617,7 +565,7 @@ fn string_byte_length_stats_for_partial_sizing(
     let observed = match byte_counts.device_allocated_size_bytes() {
         Ok(bytes) => bytes as u64,
         Err(error) => {
-            reservations.release(reservation, metrics);
+            execution.release(reservation);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.aggregate.string_length_sizing",
                 "failed to observe string byte-count sizing memory",
@@ -628,14 +576,14 @@ fn string_byte_length_stats_for_partial_sizing(
     };
     if observed > reservation.bytes() {
         let error = partial_aggregate_string_sizing_upper_bound_violation_error(node_id, reservation.bytes(), observed);
-        reservations.release(reservation, metrics);
+        execution.release(reservation);
         return Err(error.with_fact("column", input_column));
     }
-    reservations.shrink_to_observed(&mut reservation, observed, metrics);
+    execution.shrink_to_observed(&mut reservation, observed);
     let max_len = match byte_counts.max_value_in::<i32>(&token.execution_overrides()) {
         Ok(max_len) => max_len,
         Err(error) => {
-            reservations.release(reservation, metrics);
+            execution.release(reservation);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.aggregate.string_length_sizing",
                 "failed to reduce string byte-count sizing column",
@@ -647,7 +595,7 @@ fn string_byte_length_stats_for_partial_sizing(
     let total_bytes = match byte_counts.sum_value_in::<i64>(&token.execution_overrides()) {
         Ok(total_bytes) => total_bytes,
         Err(error) => {
-            reservations.release(reservation, metrics);
+            execution.release(reservation);
             return Err(QueryError::from_cudf(
                 "nexus_query_engine.bounded.aggregate.string_length_sizing",
                 "failed to sum string byte-count sizing column",
@@ -656,7 +604,7 @@ fn string_byte_length_stats_for_partial_sizing(
             .with_fact("column", input_column));
         },
     };
-    reservations.release(reservation, metrics);
+    execution.release(reservation);
     Ok(StringByteLengthStats { max_len: max_len.unwrap_or(0).max(0) as u64, total_bytes: total_bytes.max(0) as u64 })
 }
 

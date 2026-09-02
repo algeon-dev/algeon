@@ -28,68 +28,53 @@ impl CompiledGpuTaskExecutor<'_> {
                     let has_dynamic_filter_routes = self.source_has_dynamic_filter_routes(node_id);
                     if !can_defer_source && feeds_join {
                         let stream = plan_bounded_join_leaf_local_parquet_source_stream(
-                            self.context,
+                            self.execution.context(),
                             source,
                             node_id,
                             has_join_source_adjacent_stages,
-                            self.metrics,
+                            self.execution.metrics_mut(),
                         )?;
-                        materialize_bounded_join_leaf_local_parquet_source_stream(
-                            self.context,
-                            stream,
-                            &mut self.reservations,
-                            self.metrics,
-                        )
-                        .map(CompiledGpuResource::new)
+                        materialize_bounded_join_leaf_local_parquet_source_stream(&mut self.execution, stream)
+                            .map(CompiledGpuResource::new)
                     } else if !can_defer_source || (!feeds_join && !feeds_aggregate && !has_dynamic_filter_routes) {
-                        execute_bounded_generic_local_parquet_source(
-                            self.context,
-                            source,
-                            node_id,
-                            &mut self.reservations,
-                            self.metrics,
-                        )
-                        .map(CompiledGpuResource::new)
+                        execute_bounded_generic_local_parquet_source(&mut self.execution, source, node_id)
+                            .map(CompiledGpuResource::new)
                     } else {
                         let has_source_adjacent_stages =
                             has_join_source_adjacent_stages || has_aggregate_source_adjacent_stages;
                         let aggregate_chunk_cap_hints = self.source_adjacent_aggregate_chunk_cap_hints(task.id());
                         let stream = if feeds_aggregate && (feeds_direct_join || feeds_join_through_unary) {
                             plan_bounded_shared_join_aggregate_local_parquet_source_stream(
-                                self.context,
+                                self.execution.context(),
                                 source,
                                 node_id,
                                 has_source_adjacent_stages,
                                 aggregate_chunk_cap_hints,
-                                self.metrics,
+                                self.execution.metrics_mut(),
                             )?
                         } else if feeds_aggregate {
                             plan_bounded_aggregate_input_local_parquet_source_stream(
-                                self.context,
+                                self.execution.context(),
                                 source,
                                 node_id,
                                 has_aggregate_source_adjacent_stages,
                                 aggregate_chunk_cap_hints,
-                                self.metrics,
+                                self.execution.metrics_mut(),
                             )?
                         } else {
                             plan_bounded_join_leaf_local_parquet_source_stream(
-                                self.context,
+                                self.execution.context(),
                                 source,
                                 node_id,
                                 has_join_source_adjacent_stages,
-                                self.metrics,
+                                self.execution.metrics_mut(),
                             )?
                         };
                         if feeds_direct_join
                             && !has_multiple_consumers
                             && !has_dynamic_filter_routes
-                            && let Some(prefetch) = try_start_bounded_join_leaf_local_parquet_source_prefetch(
-                                self.context,
-                                &stream,
-                                &mut self.reservations,
-                                self.metrics,
-                            )?
+                            && let Some(prefetch) =
+                                try_start_bounded_join_leaf_local_parquet_source_prefetch(&mut self.execution, &stream)?
                         {
                             return Ok(CompiledTaskOutput::new(vec![(
                                 output,
@@ -104,50 +89,27 @@ impl CompiledGpuTaskExecutor<'_> {
                         {
                             Ok(CompiledGpuResource::join_leaf_local_parquet_source(stream))
                         } else {
-                            materialize_bounded_join_leaf_local_parquet_source_stream(
-                                self.context,
-                                stream,
-                                &mut self.reservations,
-                                self.metrics,
-                            )
-                            .map(CompiledGpuResource::new)
+                            materialize_bounded_join_leaf_local_parquet_source_stream(&mut self.execution, stream)
+                                .map(CompiledGpuResource::new)
                         }
                     }
                 },
-                source if self.task_feeds_join_input(task.id()) => execute_bounded_join_leaf_source(
-                    self.context,
-                    source,
-                    node_id,
-                    &self.gpu_inputs,
-                    &mut self.reservations,
-                    self.metrics,
-                )
-                .map(CompiledGpuResource::new),
-                SourceNode::LocalParquet(source) => execute_bounded_generic_local_parquet_source(
-                    self.context,
-                    source,
-                    node_id,
-                    &mut self.reservations,
-                    self.metrics,
-                )
-                .map(CompiledGpuResource::new),
-                SourceNode::GpuResident(source) => execute_bounded_generic_gpu_resident_source(
-                    self.context,
-                    source,
-                    node_id,
-                    &self.gpu_inputs,
-                    &mut self.reservations,
-                    self.metrics,
-                )
-                .map(CompiledGpuResource::new),
-                SourceNode::LiteralBatch(source) => execute_bounded_generic_literal_batch_source(
-                    self.context,
-                    source,
-                    node_id,
-                    &mut self.reservations,
-                    self.metrics,
-                )
-                .map(CompiledGpuResource::new),
+                source if self.task_feeds_join_input(task.id()) => {
+                    execute_bounded_join_leaf_source(&mut self.execution, source, node_id, &self.gpu_inputs)
+                        .map(CompiledGpuResource::new)
+                },
+                SourceNode::LocalParquet(source) => {
+                    execute_bounded_generic_local_parquet_source(&mut self.execution, source, node_id)
+                        .map(CompiledGpuResource::new)
+                },
+                SourceNode::GpuResident(source) => {
+                    execute_bounded_generic_gpu_resident_source(&mut self.execution, source, node_id, &self.gpu_inputs)
+                        .map(CompiledGpuResource::new)
+                },
+                SourceNode::LiteralBatch(source) => {
+                    execute_bounded_generic_literal_batch_source(&mut self.execution, source, node_id)
+                        .map(CompiledGpuResource::new)
+                },
             },
             _ => Err(invalid("compiled source task does not reference a source plan node")
                 .with_fact("compiled_task_id", task.id())

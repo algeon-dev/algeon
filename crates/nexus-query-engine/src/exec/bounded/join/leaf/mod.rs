@@ -227,29 +227,26 @@ impl BoundedJoinLeafLocalParquetSourcePrefetch {
 
     pub(in crate::exec::bounded) fn finish(
         self,
-        _context: &ExecutionContext,
-        reservations: &mut ReservationTracker,
-        metrics: &mut QueryMetrics,
+        execution: &mut BoundedExecutionAttempt<'_>,
     ) -> Result<ResidentGpuFrame> {
         let is_prefetch = self.scheduled.is_prefetch();
-        let mut output = self.scheduled.finish(reservations, metrics)?;
+        let mut output = self.scheduled.finish(execution)?;
         if is_prefetch {
-            metrics.record_source_read_prefetch_completed();
+            execution.metrics_mut().record_source_read_prefetch_completed();
         }
         if let Err(error) = grow_join_source_reservation_to_observed_frame(
+            execution,
             &output.frame,
             &mut output.reservation,
-            reservations,
             self.node_id,
             &output.chunk,
-            metrics,
             1,
             self.max_attempts,
         ) {
-            reservations.release(output.reservation, metrics);
+            execution.release(output.reservation);
             return Err(error);
         }
-        metrics.record_source_chunk_commit(
+        execution.metrics_mut().record_source_chunk_commit(
             output
                 .observed_row_group_count
                 .or_else(|| output.chunk.known_read_row_group_count().map(|row_groups| row_groups as u64))
@@ -258,18 +255,16 @@ impl BoundedJoinLeafLocalParquetSourcePrefetch {
         Ok(ResidentGpuFrame { frame: output.frame, reservation: output.reservation })
     }
 
-    pub(in crate::exec::bounded) fn abandon(self, reservations: &mut ReservationTracker, metrics: &mut QueryMetrics) {
-        self.scheduled.abandon(reservations, metrics);
+    pub(in crate::exec::bounded) fn abandon(self, execution: &mut BoundedExecutionAttempt<'_>) {
+        self.scheduled.abandon(execution);
     }
 }
 
 pub(in crate::exec::bounded) fn try_start_bounded_join_leaf_local_parquet_source_prefetch(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     stream: &BoundedJoinLeafLocalParquetSourceStream,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<Option<BoundedJoinLeafLocalParquetSourcePrefetch>> {
-    if !context.source_scheduler_policy().enables_prefetch()
+    if !execution.context().source_scheduler_policy().enables_prefetch()
         || stream.has_stages()
         || !stream.reader_dynamic_filters.is_empty()
         || stream.chunks.len() != 1
@@ -278,19 +273,17 @@ pub(in crate::exec::bounded) fn try_start_bounded_join_leaf_local_parquet_source
         return Ok(None);
     }
     let chunk = stream.chunks.first().expect("single chunk checked");
-    let requested_bytes = chunk_requested_bytes(context.memory_control_policy(), chunk);
-    if !reservations.can_reserve(requested_bytes) {
-        metrics.record_source_read_prefetch_skipped();
+    let requested_bytes = chunk_requested_bytes(execution.context().memory_control_policy(), chunk);
+    if !execution.reservations().can_reserve(requested_bytes) {
+        execution.metrics_mut().record_source_read_prefetch_skipped();
         return Ok(None);
     }
-    metrics.record_source_read_prefetch_started();
+    execution.metrics_mut().record_source_read_prefetch_started();
     let scheduled = start_join_leaf_scheduled_source_read(
-        context,
+        execution,
         &stream.source,
         chunk,
         stream.node_id,
-        reservations,
-        metrics,
         requested_bytes,
         "join_source_read_prefetch",
         false,
@@ -313,161 +306,150 @@ fn join_leaf_source_prefetch_remote_reader_admitted(source: &LocalParquetSource)
 }
 
 pub(in crate::exec::bounded) fn execute_bounded_join_leaf_source(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &crate::source::SourceNode,
     node_id: NodeId,
     gpu_inputs: &GpuResidentInputMap,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     match source {
         crate::source::SourceNode::LocalParquet(source) => {
             validate_local_parquet_source(source)?;
             if source.has_position_delete_visible_scan_limit() {
-                return execute_bounded_generic_local_parquet_source(context, source, node_id, reservations, metrics);
+                return execute_bounded_generic_local_parquet_source(execution, source, node_id);
             }
-            execute_bounded_join_leaf_local_parquet_source(context, source, node_id, reservations, metrics)
+            execute_bounded_join_leaf_local_parquet_source(execution, source, node_id)
         },
         crate::source::SourceNode::GpuResident(source) => {
-            let frame = read_gpu_resident_source(context, source, gpu_inputs, metrics)?;
-            let requested_bytes = observe_device_memory_bytes(&frame, metrics)?;
-            let reservation = reservations.borrow_resident(
-                MemoryReservationRequest::new(ReservationKind::SourceRead, requested_bytes, reservations.budget())
-                    .with_memory_boundary("gpu_resident_join_input")
-                    .with_node_id(node_id)
-                    .with_stage("gpu_resident_join_input")
-                    .with_attempt(1, 1),
-                metrics,
+            let frame = read_gpu_resident_source(execution.context(), source, gpu_inputs, execution.metrics_mut())?;
+            let requested_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+            let reservation = execution.borrow_resident(
+                MemoryReservationRequest::new(
+                    ReservationKind::SourceRead,
+                    requested_bytes,
+                    execution.reservations().budget(),
+                )
+                .with_memory_boundary("gpu_resident_join_input")
+                .with_node_id(node_id)
+                .with_stage("gpu_resident_join_input")
+                .with_attempt(1, 1),
             );
             Ok(ResidentGpuFrame { frame, reservation })
         },
         crate::source::SourceNode::LiteralBatch(source) => {
-            let frame = read_literal_batch_source(context, source, metrics)?;
-            let requested_bytes = observe_device_memory_bytes(&frame, metrics)?;
-            let reservation = reservations.try_reserve(
-                MemoryReservationRequest::new(ReservationKind::SourceRead, requested_bytes, reservations.budget())
-                    .with_memory_boundary("literal_batch_join_input")
-                    .with_node_id(node_id)
-                    .with_stage("literal_batch_join_input")
-                    .with_attempt(1, 1),
-                metrics,
+            let frame = read_literal_batch_source(execution.context(), source, execution.metrics_mut())?;
+            let requested_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+            let reservation = execution.try_reserve(
+                MemoryReservationRequest::new(
+                    ReservationKind::SourceRead,
+                    requested_bytes,
+                    execution.reservations().budget(),
+                )
+                .with_memory_boundary("literal_batch_join_input")
+                .with_node_id(node_id)
+                .with_stage("literal_batch_join_input")
+                .with_attempt(1, 1),
             )?;
             Ok(ResidentGpuFrame { frame, reservation })
         },
     }
 }
 pub(in crate::exec::bounded) fn materialize_bounded_join_leaf_local_parquet_source_stream(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     stream: BoundedJoinLeafLocalParquetSourceStream,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
     let node_id = stream.node_id;
     if stream.chunks.is_empty() {
         // Every row group was pruned before execution; the streaming paths
         // below would otherwise yield zero chunks and no frame to return.
-        let mut empty = empty_join_leaf_source_frame(context, &stream, reservations, metrics)?;
+        let mut empty = empty_join_leaf_source_frame(execution, &stream)?;
         if !stream.stages.is_empty() {
-            empty = apply_join_leaf_source_stream_stages(context, &stream, empty, reservations, metrics)?;
+            empty = apply_join_leaf_source_stream_stages(execution, &stream, empty)?;
         }
         return Ok(empty);
     }
     if stream.has_stages() {
         let mut chunks = Vec::with_capacity(stream.chunk_count());
-        let stream_result =
-            stream_join_leaf_source_chunks_serial(context, &stream, reservations, metrics, &mut |input, _, _| {
-                chunks.push((input.frame, input.reservation));
-                Ok(())
-            });
+        let stream_result = stream_join_leaf_source_chunks_serial(execution, &stream, &mut |input, _| {
+            chunks.push((input.frame, input.reservation));
+            Ok(())
+        });
         if let Err(error) = stream_result {
-            release_join_source_chunks_reverse(reservations, chunks, metrics);
+            release_join_source_chunks_reverse(execution, chunks);
             return Err(error);
         }
-        return concatenate_join_source_chunks(context, node_id, chunks, reservations, metrics);
+        return concatenate_join_source_chunks(execution, node_id, chunks);
     }
 
-    let chunks = read_join_leaf_source_stream_chunks(context, &stream, reservations, metrics)?;
-    concatenate_join_source_chunks(context, node_id, chunks, reservations, metrics)
+    let chunks = read_join_leaf_source_stream_chunks(execution, &stream)?;
+    concatenate_join_source_chunks(execution, node_id, chunks)
 }
 
 pub(in crate::exec::bounded) fn stream_bounded_join_leaf_local_parquet_source<F>(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     stream: BoundedJoinLeafLocalParquetSourceStream,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     mut consume: F,
 ) -> Result<()>
 where
-    F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
+    F: FnMut(ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
 {
-    if stream_has_multi_source_batches(context, &stream) {
-        stream_join_leaf_source_chunks_serial(context, &stream, reservations, metrics, &mut consume)
-    } else if context.source_scheduler_policy().enables_prefetch() && stream.chunks.len() > 1 {
-        stream_join_leaf_source_chunks_with_scheduler(context, &stream, reservations, metrics, &mut consume)
+    if stream_has_multi_source_batches(execution.context(), &stream) {
+        stream_join_leaf_source_chunks_serial(execution, &stream, &mut consume)
+    } else if execution.context().source_scheduler_policy().enables_prefetch() && stream.chunks.len() > 1 {
+        stream_join_leaf_source_chunks_with_scheduler(execution, &stream, &mut consume)
     } else {
-        stream_join_leaf_source_chunks_serial(context, &stream, reservations, metrics, &mut consume)
+        stream_join_leaf_source_chunks_serial(execution, &stream, &mut consume)
     }
 }
 
 pub(in crate::exec::bounded) fn stream_bounded_join_leaf_local_parquet_source_chunks<F>(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     stream: BoundedJoinLeafLocalParquetSourceStream,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     mut consume: F,
 ) -> Result<()>
 where
-    F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
+    F: FnMut(ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
 {
     for chunk in stream.chunks.clone() {
-        stream_join_leaf_source_chunk_with_consumer_retry(
-            context,
-            &stream,
-            chunk,
-            1,
-            reservations,
-            metrics,
-            &mut consume,
-        )?;
+        stream_join_leaf_source_chunk_with_consumer_retry(execution, &stream, chunk, 1, &mut consume)?;
     }
     Ok(())
 }
 
 pub(in crate::exec::bounded) fn stream_bounded_join_leaf_local_parquet_source_serial<F>(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     stream: BoundedJoinLeafLocalParquetSourceStream,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     mut consume: F,
 ) -> Result<()>
 where
-    F: FnMut(ResidentGpuFrame, &mut ReservationTracker, &mut QueryMetrics) -> Result<()>,
+    F: FnMut(ResidentGpuFrame, &mut BoundedExecutionAttempt<'_>) -> Result<()>,
 {
-    stream_join_leaf_source_chunks_serial(context, &stream, reservations, metrics, &mut consume)
+    stream_join_leaf_source_chunks_serial(execution, &stream, &mut consume)
 }
 
 fn execute_bounded_join_leaf_local_parquet_source(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     node_id: NodeId,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
-    let stream = plan_bounded_join_leaf_local_parquet_source_stream(context, source, node_id, false, metrics)?;
-    let chunks = read_join_leaf_source_stream_chunks(context, &stream, reservations, metrics)?;
-    concatenate_join_source_chunks(context, node_id, chunks, reservations, metrics)
+    let stream = plan_bounded_join_leaf_local_parquet_source_stream(
+        execution.context(),
+        source,
+        node_id,
+        false,
+        execution.metrics_mut(),
+    )?;
+    let chunks = read_join_leaf_source_stream_chunks(execution, &stream)?;
+    concatenate_join_source_chunks(execution, node_id, chunks)
 }
 
 fn read_join_leaf_source_stream_chunks(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     stream: &BoundedJoinLeafLocalParquetSourceStream,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<Vec<(GpuDataFrame, ActiveReservation)>> {
     if stream.chunks.is_empty() {
-        let mut empty = empty_join_leaf_source_frame(context, stream, reservations, metrics)?;
+        let mut empty = empty_join_leaf_source_frame(execution, stream)?;
         if !stream.stages.is_empty() {
-            empty = apply_join_leaf_source_stream_stages(context, stream, empty, reservations, metrics)?;
+            empty = apply_join_leaf_source_stream_stages(execution, stream, empty)?;
         }
         return Ok(vec![(empty.frame, empty.reservation)]);
     }
@@ -476,38 +458,32 @@ fn read_join_leaf_source_stream_chunks(
     let materialized_batches = materialized_source_chunk_batches_for_execution(stream);
     let mut chunks = if materialized_batches.iter().any(|batch| batch.chunk_count() > 1) {
         read_join_leaf_source_batches_serial(
-            context,
+            execution,
             &stream.source,
             stream.node_id,
             materialized_batches,
             &stream.reader_dynamic_filters,
-            reservations,
-            metrics,
             stream.max_attempts,
             stream.min_retry_chunk_row_groups,
             grow_source_to_observed,
         )?
-    } else if context.source_scheduler_policy().enables_prefetch() && stream.chunks.len() > 1 {
+    } else if execution.context().source_scheduler_policy().enables_prefetch() && stream.chunks.len() > 1 {
         match read_join_leaf_source_chunks_with_scheduler(
-            context,
+            execution,
             &stream.source,
             stream.node_id,
             &stream.chunks,
             &stream.reader_dynamic_filters,
-            reservations,
-            metrics,
             stream.max_attempts,
             grow_source_to_observed,
         ) {
             Ok(chunks) => chunks,
             Err(error) if is_retryable_chunk_error(&error) => read_join_leaf_source_chunks_serial(
-                context,
+                execution,
                 &stream.source,
                 stream.node_id,
                 &stream.chunks,
                 &stream.reader_dynamic_filters,
-                reservations,
-                metrics,
                 stream.max_attempts,
                 stream.min_retry_chunk_row_groups,
                 grow_source_to_observed,
@@ -516,13 +492,11 @@ fn read_join_leaf_source_stream_chunks(
         }
     } else {
         read_join_leaf_source_chunks_serial(
-            context,
+            execution,
             &stream.source,
             stream.node_id,
             &stream.chunks,
             &stream.reader_dynamic_filters,
-            reservations,
-            metrics,
             stream.max_attempts,
             stream.min_retry_chunk_row_groups,
             grow_source_to_observed,
@@ -534,18 +508,13 @@ fn read_join_leaf_source_stream_chunks(
         let mut transformed = Vec::with_capacity(chunk_count);
         while !pending.is_empty() {
             let (frame, reservation) = pending.remove(0);
-            let output = apply_join_leaf_source_stream_stages(
-                context,
-                stream,
-                ResidentGpuFrame { frame, reservation },
-                reservations,
-                metrics,
-            );
+            let output =
+                apply_join_leaf_source_stream_stages(execution, stream, ResidentGpuFrame { frame, reservation });
             match output {
                 Ok(output) => transformed.push((output.frame, output.reservation)),
                 Err(error) => {
-                    release_join_source_chunks_reverse(reservations, pending, metrics);
-                    release_join_source_chunks_reverse(reservations, transformed, metrics);
+                    release_join_source_chunks_reverse(execution, pending);
+                    release_join_source_chunks_reverse(execution, transformed);
                     return Err(error);
                 },
             }
@@ -560,20 +529,18 @@ fn retain_decoded_source(stream: &BoundedJoinLeafLocalParquetSourceStream) -> bo
 }
 
 fn empty_join_leaf_source_frame(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     stream: &BoundedJoinLeafLocalParquetSourceStream,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<ResidentGpuFrame> {
-    let frame = read_local_parquet_source(context, stream.node_id, &stream.source, metrics)?;
-    let requested_bytes = observe_device_memory_bytes(&frame, metrics)?;
-    let reservation = reservations.try_reserve(
-        MemoryReservationRequest::new(ReservationKind::SourceRead, requested_bytes, reservations.budget())
+    let frame =
+        read_local_parquet_source(execution.context(), stream.node_id, &stream.source, execution.metrics_mut())?;
+    let requested_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+    let reservation = execution.try_reserve(
+        MemoryReservationRequest::new(ReservationKind::SourceRead, requested_bytes, execution.reservations().budget())
             .with_memory_boundary("join_source_empty_output")
             .with_node_id(stream.node_id)
             .with_stage("join_source_empty_output")
             .with_attempt(1, 1),
-        metrics,
     )?;
     Ok(ResidentGpuFrame { frame, reservation })
 }

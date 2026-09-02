@@ -53,13 +53,9 @@ impl JoinMaterializationTxn {
         self.gather_map_reservation = Some(reservation);
     }
 
-    pub(in crate::exec) fn release_gather_map_reservation(
-        &mut self,
-        reservations: &mut ReservationTracker,
-        metrics: &mut QueryMetrics,
-    ) {
+    pub(in crate::exec) fn release_gather_map_reservation(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
         if let Some(reservation) = self.gather_map_reservation.take() {
-            reservations.release(reservation, metrics);
+            execution.release(reservation);
         }
     }
 
@@ -71,13 +67,9 @@ impl JoinMaterializationTxn {
         self.mixed_size_data_reservation = Some(reservation);
     }
 
-    pub(in crate::exec) fn release_mixed_size_data_reservation(
-        &mut self,
-        reservations: &mut ReservationTracker,
-        metrics: &mut QueryMetrics,
-    ) {
+    pub(in crate::exec) fn release_mixed_size_data_reservation(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
         if let Some(reservation) = self.mixed_size_data_reservation.take() {
-            reservations.release(reservation, metrics);
+            execution.release(reservation);
         }
     }
 
@@ -111,34 +103,34 @@ impl JoinMaterializationTxn {
 
     pub(in crate::exec) fn commit_frame(
         mut self,
+        execution: &mut BoundedExecutionAttempt<'_>,
         frame: GpuDataFrame,
-        reservations: &mut ReservationTracker,
-        metrics: &mut QueryMetrics,
     ) -> ResidentGpuFrame {
         let output_reservation = self.take_output_reservation();
-        self.release_uncommitted(reservations, metrics);
+        self.release_uncommitted(execution);
         ResidentGpuFrame { frame, reservation: output_reservation }
     }
 
-    pub(in crate::exec) fn rollback(mut self, reservations: &mut ReservationTracker, metrics: &mut QueryMetrics) {
-        let _rollback_observation_scope = reservations
+    pub(in crate::exec) fn rollback(mut self, execution: &mut BoundedExecutionAttempt<'_>) {
+        let _rollback_observation_scope = execution
+            .reservations()
             .enter_release_observation_scope(crate::observability::RuntimeReservationDisposition::RollbackRelease);
-        self.release_uncommitted(reservations, metrics);
+        self.release_uncommitted(execution);
     }
 
-    fn release_uncommitted(&mut self, reservations: &mut ReservationTracker, metrics: &mut QueryMetrics) {
+    fn release_uncommitted(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
         self.indices = None;
         if let Some(reservation) = self.output_reservation.take() {
-            reservations.release(reservation, metrics);
+            execution.release(reservation);
         }
         if let Some(reservation) = self.gather_map_reservation.take() {
-            reservations.release(reservation, metrics);
+            execution.release(reservation);
         }
         if let Some(reservation) = self.mixed_size_data_reservation.take() {
-            reservations.release(reservation, metrics);
+            execution.release(reservation);
         }
         while let Some(side) = self.sides.pop() {
-            release_bounded_join_side_frame(side, reservations, metrics);
+            release_bounded_join_side_frame(execution, side);
         }
     }
 

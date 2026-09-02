@@ -1,7 +1,7 @@
 use super::*;
 
 pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_probe_stream(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     node: &JoinNode,
     build: &BoundedRootHashJoinBuildState,
@@ -10,10 +10,8 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
     gather_map_reservation: ActiveReservation,
     gather_map_bytes: u64,
     timer: Instant,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
 ) -> Result<Vec<ResidentGpuFrame>> {
-    let overrides_lease = execution_overrides(context)?;
+    let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
     let build_side = build.build_side;
     let probe_side = build.probe_side;
@@ -37,34 +35,30 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
     let left_projection = projected_output_columns_for_retained_sizing(&node.spec.output_projection, JoinSide::Left);
     let right_projection = projected_output_columns_for_retained_sizing(&node.spec.output_projection, JoinSide::Right);
     let left_output_bytes = match join_side_output_upper_bound_bytes(
-        context,
+        execution,
         node_id,
         &left.frame,
         output_rows,
         &left_projection,
         JoinSide::Left,
-        reservations,
-        metrics,
     ) {
         Ok(bytes) => bytes,
         Err(error) => {
-            reservations.release(gather_map_reservation, metrics);
+            execution.release(gather_map_reservation);
             return Err(error);
         },
     };
     let right_output_bytes = match join_side_output_upper_bound_bytes(
-        context,
+        execution,
         node_id,
         &right.frame,
         output_rows,
         &right_projection,
         JoinSide::Right,
-        reservations,
-        metrics,
     ) {
         Ok(bytes) => bytes,
         Err(error) => {
-            reservations.release(gather_map_reservation, metrics);
+            execution.release(gather_map_reservation);
             return Err(error);
         },
     };
@@ -77,7 +71,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
     let output_len = indices.build().len();
     if output_len == 0 {
         match materialize_bounded_root_hash_join_index_slice(
-            context,
+            execution,
             node_id,
             node,
             left,
@@ -87,8 +81,6 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
             0,
             0,
             &overrides,
-            reservations,
-            metrics,
         ) {
             Ok(slice_outputs) => {
                 for output in slice_outputs {
@@ -99,7 +91,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
                 }
             },
             Err(error) => {
-                reservations.release(gather_map_reservation, metrics);
+                execution.release(gather_map_reservation);
                 return Err(error);
             },
         }
@@ -108,7 +100,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
         let remaining_rows = (output_len - offset) as u64;
         let remaining_output_reservation_bytes =
             proportional_join_stream_bytes(output_reservation_bytes, remaining_rows, output_rows);
-        let chunk_target_bytes = reusable_hash_join_stream_target_output_bytes(context, reservations);
+        let chunk_target_bytes = reusable_hash_join_stream_target_output_bytes(execution);
         let chunk_rows = reusable_hash_join_stream_chunk_rows(
             remaining_rows,
             remaining_output_reservation_bytes,
@@ -116,7 +108,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
         );
         let take = chunk_rows.min(output_len - offset);
         match materialize_bounded_root_hash_join_index_slice(
-            context,
+            execution,
             node_id,
             node,
             left,
@@ -126,8 +118,6 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
             offset,
             take,
             &overrides,
-            reservations,
-            metrics,
         ) {
             Ok(slice_outputs) => {
                 for output in slice_outputs {
@@ -140,14 +130,14 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
                 offset += take;
             },
             Err(error) => {
-                release_root_hash_join_stream_outputs(outputs, reservations, metrics);
-                reservations.release(gather_map_reservation, metrics);
+                release_root_hash_join_stream_outputs(execution, outputs);
+                execution.release(gather_map_reservation);
                 return Err(error);
             },
         }
     }
-    metrics.operator_time += timer.elapsed();
-    metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
+    execution.metrics_mut().operator_time += timer.elapsed();
+    execution.metrics_mut().record_operator_metrics(crate::metrics::OperatorMetrics::join(
         node_id,
         crate::metrics::JoinOperatorMetrics {
             query_id: None,
@@ -171,7 +161,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
             output_bytes: cumulative_output_bytes,
         },
     ));
-    reservations.release(gather_map_reservation, metrics);
+    execution.release(gather_map_reservation);
     Ok(outputs)
 }
 
@@ -235,10 +225,9 @@ impl RootHashJoinMaterializeStreamSource {
 
     pub(in crate::exec::bounded::join::hash) fn materialize_slice(
         &mut self,
+        execution: &mut BoundedExecutionAttempt<'_>,
         offset: usize,
         take: usize,
-        reservations: &mut ReservationTracker,
-        metrics: &mut QueryMetrics,
     ) -> Result<()> {
         let build = self.build.as_ref().expect("root hash join build state released before stream end");
         let probe = self.probe.as_ref().expect("root hash join probe frame released before stream end");
@@ -252,7 +241,7 @@ impl RootHashJoinMaterializeStreamSource {
         let overrides_lease = execution_overrides(&self.context)?;
         let overrides = overrides_lease.overrides();
         let slice_outputs = materialize_bounded_root_hash_join_index_slice(
-            &self.context,
+            execution,
             self.node_id,
             &self.node,
             left,
@@ -262,8 +251,6 @@ impl RootHashJoinMaterializeStreamSource {
             offset,
             take,
             &overrides,
-            reservations,
-            metrics,
         )?;
         for output in slice_outputs {
             self.cumulative_output_reservation_bytes =
@@ -275,11 +262,7 @@ impl RootHashJoinMaterializeStreamSource {
         Ok(())
     }
 
-    pub(in crate::exec::bounded::join::hash) fn finish_success(
-        &mut self,
-        reservations: &mut ReservationTracker,
-        metrics: &mut QueryMetrics,
-    ) {
+    pub(in crate::exec::bounded::join::hash) fn finish_success(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
         if let (Some(timer), Some(build), Some(probe)) = (self.timer.take(), self.build.as_ref(), self.probe.as_ref()) {
             let build_side = build.build_side;
             let probe_side = build.probe_side;
@@ -291,8 +274,8 @@ impl RootHashJoinMaterializeStreamSource {
             let original_right_rows = right.rows;
             let left_bytes = left.bytes;
             let right_bytes = right.bytes;
-            metrics.operator_time += timer.elapsed();
-            metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
+            execution.metrics_mut().operator_time += timer.elapsed();
+            execution.metrics_mut().record_operator_metrics(crate::metrics::OperatorMetrics::join(
                 self.node_id,
                 crate::metrics::JoinOperatorMetrics {
                     query_id: None,
@@ -317,62 +300,54 @@ impl RootHashJoinMaterializeStreamSource {
                 },
             ));
         }
-        self.release_owned(reservations, metrics);
+        self.release_owned(execution);
     }
 
-    pub(in crate::exec::bounded::join::hash) fn release_owned(
-        &mut self,
-        reservations: &mut ReservationTracker,
-        metrics: &mut QueryMetrics,
-    ) {
+    pub(in crate::exec::bounded::join::hash) fn release_owned(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
         while let Some(output) = self.pending_outputs.pop_back() {
             let ResidentGpuFrame { reservation, .. } = output;
-            reservations.release(reservation, metrics);
+            execution.release(reservation);
         }
         self.left_indices = None;
         self.right_indices = None;
         self.indices = None;
         if let Some(reservation) = self.gather_map_reservation.take() {
-            reservations.release(reservation, metrics);
+            execution.release(reservation);
         }
         if let Some(probe) = self.probe.take() {
-            release_bounded_join_side_frame(probe, reservations, metrics);
+            release_bounded_join_side_frame(execution, probe);
         }
         if let Some(build) = self.build.take() {
-            release_bounded_root_hash_join_build_state(build, reservations, metrics);
+            release_bounded_root_hash_join_build_state(execution, build);
         }
     }
 }
 
 impl ResidentFrameStreamSource for RootHashJoinMaterializeStreamSource {
-    fn next_frame(
-        &mut self,
-        reservations: &mut ReservationTracker,
-        metrics: &mut QueryMetrics,
-    ) -> Option<Result<ResidentGpuFrame>> {
+    fn next_frame(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Option<Result<ResidentGpuFrame>> {
         loop {
             if let Some(output) = self.pending_outputs.pop_front() {
                 return Some(Ok(output));
             }
             if self.output_len == 0 {
                 if self.emitted_empty_output {
-                    self.finish_success(reservations, metrics);
+                    self.finish_success(execution);
                     return None;
                 }
                 self.emitted_empty_output = true;
-                return match self.materialize_slice(0, 0, reservations, metrics) {
+                return match self.materialize_slice(execution, 0, 0) {
                     Ok(()) => continue,
                     Err(error) => Some(Err(error)),
                 };
             }
             if self.offset >= self.output_len {
-                self.finish_success(reservations, metrics);
+                self.finish_success(execution);
                 return None;
             }
             let remaining_rows = (self.output_len - self.offset) as u64;
             let remaining_output_reservation_bytes =
                 proportional_join_stream_bytes(self.output_reservation_bytes, remaining_rows, self.output_len as u64);
-            let chunk_target_bytes = reusable_hash_join_stream_target_output_bytes(&self.context, reservations);
+            let chunk_target_bytes = reusable_hash_join_stream_target_output_bytes(execution);
             let chunk_rows = reusable_hash_join_stream_chunk_rows(
                 remaining_rows,
                 remaining_output_reservation_bytes,
@@ -380,15 +355,15 @@ impl ResidentFrameStreamSource for RootHashJoinMaterializeStreamSource {
             );
             let take = chunk_rows.min(self.output_len - self.offset);
             let offset = self.offset;
-            match self.materialize_slice(offset, take, reservations, metrics) {
+            match self.materialize_slice(execution, offset, take) {
                 Ok(()) => self.offset += take,
                 Err(error) => return Some(Err(error)),
             }
         }
     }
 
-    fn release(&mut self, reservations: &mut ReservationTracker, metrics: &mut QueryMetrics) {
-        self.release_owned(reservations, metrics);
+    fn release(&mut self, execution: &mut BoundedExecutionAttempt<'_>) {
+        self.release_owned(execution);
     }
 }
 
@@ -427,9 +402,10 @@ pub(in crate::exec::bounded::join::hash) fn proportional_join_stream_bytes(
 }
 
 pub(in crate::exec::bounded) fn reusable_hash_join_stream_target_output_bytes(
-    context: &ExecutionContext,
-    reservations: &ReservationTracker,
+    execution: &BoundedExecutionAttempt<'_>,
 ) -> u64 {
-    BoundedPartitionTargetPolicy::default()
-        .reusable_hash_join_stream_target_output_bytes(context.memory_control_policy(), reservations.remaining_bytes())
+    BoundedPartitionTargetPolicy::default().reusable_hash_join_stream_target_output_bytes(
+        execution.context().memory_control_policy(),
+        execution.reservations().remaining_bytes(),
+    )
 }

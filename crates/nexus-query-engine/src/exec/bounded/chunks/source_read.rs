@@ -3,49 +3,27 @@ use parquet::file::reader::FileReader;
 use super::*;
 
 pub(in crate::exec::bounded) fn read_local_parquet_chunks_required_only(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     chunks: &[SourceChunk],
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     memory_boundary: &'static str,
 ) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
-    read_local_parquet_chunks_required_only_with_observation(
-        context,
-        source,
-        chunks,
-        reservations,
-        metrics,
-        memory_boundary,
-        true,
-    )
+    read_local_parquet_chunks_required_only_with_observation(execution, source, chunks, memory_boundary, true)
 }
 
 pub(in crate::exec::bounded) fn read_local_parquet_chunks_required_only_with_observation(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     chunks: &[SourceChunk],
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     memory_boundary: &'static str,
     grow_source_to_observed: bool,
 ) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
-    read_local_parquet_chunks_serial(
-        context,
-        source,
-        chunks,
-        reservations,
-        metrics,
-        memory_boundary,
-        grow_source_to_observed,
-    )
+    read_local_parquet_chunks_serial(execution, source, chunks, memory_boundary, grow_source_to_observed)
 }
 pub(in crate::exec::bounded) fn concatenate_source_read_outputs(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
     mut chunks: Vec<ScheduledLocalParquetReadOutput>,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     concat_output_boundary: &'static str,
     operation: &'static str,
     message: &'static str,
@@ -58,17 +36,20 @@ pub(in crate::exec::bounded) fn concatenate_source_read_outputs(
 
     let output_reservation_bytes =
         chunks.iter().fold(0u64, |total, chunk| total.saturating_add(chunk.reservation.bytes()));
-    let mut output_reservation = match reservations.try_reserve(
-        MemoryReservationRequest::new(ReservationKind::SourceRead, output_reservation_bytes, reservations.budget())
-            .with_memory_boundary(concat_output_boundary)
-            .with_node_id(node_id)
-            .with_stage(concat_output_boundary)
-            .with_attempt(1, 1),
-        metrics,
+    let mut output_reservation = match execution.try_reserve(
+        MemoryReservationRequest::new(
+            ReservationKind::SourceRead,
+            output_reservation_bytes,
+            execution.reservations().budget(),
+        )
+        .with_memory_boundary(concat_output_boundary)
+        .with_node_id(node_id)
+        .with_stage(concat_output_boundary)
+        .with_attempt(1, 1),
     ) {
         Ok(reservation) => reservation,
         Err(error) => {
-            release_source_read_outputs_reverse(reservations, chunks, metrics);
+            release_source_read_outputs_reverse(execution, chunks);
             return Err(error);
         },
     };
@@ -83,7 +64,7 @@ pub(in crate::exec::bounded) fn concatenate_source_read_outputs(
         let chunk_count = input_reservations.len();
         let first_frame = frames.remove(0);
         let rest_frame_refs = frames.iter().collect::<Vec<_>>();
-        let overrides_lease = execution_overrides(context)?;
+        let overrides_lease = execution_overrides(execution.context())?;
         let overrides = overrides_lease.overrides();
         let timer = Instant::now();
         let output = first_frame.with_execution(&overrides).concat_many(&rest_frame_refs).map_err(|error| {
@@ -91,74 +72,69 @@ pub(in crate::exec::bounded) fn concatenate_source_read_outputs(
                 .with_fact("node_id", node_id)
                 .with_fact("chunk_count", chunk_count)
         })?;
-        metrics.operator_time += timer.elapsed();
+        execution.metrics_mut().operator_time += timer.elapsed();
 
         let output_frame = GpuDataFrame::new(output);
-        let output_bytes = observe_device_memory_bytes(&output_frame, metrics)?;
+        let output_bytes = observe_device_memory_bytes(&output_frame, execution.metrics_mut())?;
         if output_bytes > output_reservation.bytes() {
             let delta = output_bytes.saturating_sub(output_reservation.bytes());
-            reservations.try_grow(
+            execution.try_grow(
                 &mut output_reservation,
-                MemoryReservationRequest::new(ReservationKind::SourceRead, delta, reservations.budget())
+                MemoryReservationRequest::new(ReservationKind::SourceRead, delta, execution.reservations().budget())
                     .with_memory_boundary(concat_output_boundary)
                     .with_node_id(node_id)
                     .with_stage(concat_output_boundary)
                     .with_attempt(1, 1),
-                metrics,
             )?;
         }
         Ok::<_, QueryError>(output_frame)
     })();
-    release_source_reservations_reverse(reservations, input_reservations, metrics);
+    release_source_reservations_reverse(execution, input_reservations);
     match output {
         Ok(frame) => Ok(ResidentGpuFrame { frame, reservation: output_reservation }),
         Err(error) => {
-            reservations.release(output_reservation, metrics);
+            execution.release(output_reservation);
             Err(error)
         },
     }
 }
 
 fn read_local_parquet_chunks_serial(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     chunks: &[SourceChunk],
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     memory_boundary: &'static str,
     grow_source_to_observed: bool,
 ) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
     if source.has_position_delete_visible_scan_limit() {
         return read_local_parquet_chunks_serial_with_position_delete_visible_limit(
-            context,
+            execution,
             source,
             chunks,
-            reservations,
-            metrics,
             memory_boundary,
             grow_source_to_observed,
         );
     }
 
-    let batches = generic_source_chunk_batches(context, source, chunks);
+    let batches = generic_source_chunk_batches(execution.context(), source, chunks);
     let mut outputs = Vec::with_capacity(batches.len());
     for batch in batches {
-        if let Err(error) = context.check_cancellation("nexus_query_engine.exec.bounded.serial_source_chunk") {
-            release_source_read_outputs_reverse(reservations, outputs, metrics);
+        if let Err(error) =
+            execution.context().check_cancellation("nexus_query_engine.exec.bounded.serial_source_chunk")
+        {
+            release_source_read_outputs_reverse(execution, outputs);
             return Err(error);
         }
         match read_local_parquet_source_batch_or_split(
-            context,
+            execution,
             source,
             batch,
-            reservations,
-            metrics,
             memory_boundary,
             grow_source_to_observed,
         ) {
             Ok(mut batch_outputs) => outputs.append(&mut batch_outputs),
             Err(error) => {
-                release_source_read_outputs_reverse(reservations, outputs, metrics);
+                release_source_read_outputs_reverse(execution, outputs);
                 return Err(error);
             },
         }
@@ -167,38 +143,36 @@ fn read_local_parquet_chunks_serial(
 }
 
 fn read_local_parquet_chunks_serial_with_position_delete_visible_limit(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     chunks: &[SourceChunk],
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     memory_boundary: &'static str,
     grow_source_to_observed: bool,
 ) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
     let mut outputs = Vec::with_capacity(chunks.len());
     let mut remaining_rows = source.scan_limit;
     for chunk in chunks {
-        if let Err(error) = context.check_cancellation("nexus_query_engine.exec.bounded.serial_source_chunk") {
-            release_source_read_outputs_reverse(reservations, outputs, metrics);
+        if let Err(error) =
+            execution.context().check_cancellation("nexus_query_engine.exec.bounded.serial_source_chunk")
+        {
+            release_source_read_outputs_reverse(execution, outputs);
             return Err(error);
         }
         match read_local_parquet_chunk_required_only(
-            context,
+            execution,
             source,
             chunk,
-            reservations,
-            metrics,
             memory_boundary,
             grow_source_to_observed,
             false,
             Some(&mut remaining_rows),
         ) {
             Ok(output) => {
-                record_position_delete_visible_limit_chunk_metrics(&output.chunk, metrics);
+                record_position_delete_visible_limit_chunk_metrics(&output.chunk, execution.metrics_mut());
                 outputs.push(output);
             },
             Err(error) => {
-                release_source_read_outputs_reverse(reservations, outputs, metrics);
+                release_source_read_outputs_reverse(execution, outputs);
                 return Err(error);
             },
         }
@@ -220,24 +194,20 @@ fn record_position_delete_visible_limit_chunk_metrics(chunk: &SourceChunk, metri
 }
 
 fn read_local_parquet_source_batch_or_split(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     batch: crate::chunk::SourceChunkBatch,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     memory_boundary: &'static str,
     grow_source_to_observed: bool,
 ) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
-    context.check_cancellation("nexus_query_engine.exec.bounded.serial_source_chunk_batch_retry")?;
-    let (max_attempts, min_retry_chunk_row_groups) = source_read_retry_policy(context);
+    execution.context().check_cancellation("nexus_query_engine.exec.bounded.serial_source_chunk_batch_retry")?;
+    let (max_attempts, min_retry_chunk_row_groups) = source_read_retry_policy(execution.context());
     if batch.is_singleton() {
         let chunk = batch.chunks.first().expect("singleton source batch has one chunk").clone();
         return read_local_parquet_chunk_required_only_or_split(
-            context,
+            execution,
             source,
             chunk,
-            reservations,
-            metrics,
             memory_boundary,
             grow_source_to_observed,
             1,
@@ -246,43 +216,39 @@ fn read_local_parquet_source_batch_or_split(
         );
     }
     match read_local_parquet_chunk_batch_required_only_no_commit(
-        context,
+        execution,
         source,
         &batch,
-        reservations,
-        metrics,
         memory_boundary,
         grow_source_to_observed,
     ) {
         Ok(output) => {
-            metrics.record_source_chunk_commit_count(batch.chunk_count() as u64, batch.row_group_count() as u64);
+            execution
+                .metrics_mut()
+                .record_source_chunk_commit_count(batch.chunk_count() as u64, batch.row_group_count() as u64);
             Ok(vec![output])
         },
         Err(error) if is_retryable_chunk_error(&error) => {
-            record_chunk_retry_error(&error, metrics);
-            metrics.record_source_chunk_retry();
+            record_chunk_retry_error(&error, execution.metrics_mut());
+            execution.metrics_mut().record_source_chunk_retry();
             let Some((left, right)) = batch.split_for_retry() else {
                 return Err(error);
             };
             crate::exec::retry::backoff_before_retry(
-                context,
+                execution.context(),
                 "nexus_query_engine.exec.bounded.source_read_batch_split_retry",
             )?;
             let mut outputs = read_local_parquet_source_batch_or_split(
-                context,
+                execution,
                 source,
                 left,
-                reservations,
-                metrics,
                 memory_boundary,
                 grow_source_to_observed,
             )?;
             match read_local_parquet_source_batch_or_split(
-                context,
+                execution,
                 source,
                 right,
-                reservations,
-                metrics,
                 memory_boundary,
                 grow_source_to_observed,
             ) {
@@ -291,7 +257,7 @@ fn read_local_parquet_source_batch_or_split(
                     Ok(outputs)
                 },
                 Err(error) => {
-                    release_source_read_outputs_reverse(reservations, outputs, metrics);
+                    release_source_read_outputs_reverse(execution, outputs);
                     Err(error)
                 },
             }
@@ -310,24 +276,20 @@ fn source_read_retry_policy(context: &ExecutionContext) -> (usize, usize) {
 }
 
 fn read_local_parquet_chunk_required_only_or_split(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     chunk: SourceChunk,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     memory_boundary: &'static str,
     grow_source_to_observed: bool,
     attempt: usize,
     max_attempts: usize,
     min_retry_chunk_row_groups: usize,
 ) -> Result<Vec<ScheduledLocalParquetReadOutput>> {
-    context.check_cancellation("nexus_query_engine.exec.bounded.serial_source_chunk_retry")?;
+    execution.context().check_cancellation("nexus_query_engine.exec.bounded.serial_source_chunk_retry")?;
     match read_local_parquet_chunk_required_only_attempt(
-        context,
+        execution,
         source,
         &chunk,
-        reservations,
-        metrics,
         memory_boundary,
         grow_source_to_observed,
         true,
@@ -337,21 +299,19 @@ fn read_local_parquet_chunk_required_only_or_split(
     ) {
         Ok(output) => Ok(vec![output]),
         Err(error) if is_retryable_chunk_error(&error) => {
-            record_chunk_retry_error(&error, metrics);
+            record_chunk_retry_error(&error, execution.metrics_mut());
             if attempt < max_attempts
                 && let Some((left, right)) = split_retryable_chunk(&chunk, min_retry_chunk_row_groups)
             {
-                metrics.record_source_chunk_retry();
+                execution.metrics_mut().record_source_chunk_retry();
                 crate::exec::retry::backoff_before_retry(
-                    context,
+                    execution.context(),
                     "nexus_query_engine.exec.bounded.serial_source_chunk_split_retry",
                 )?;
                 let mut outputs = read_local_parquet_chunk_required_only_or_split(
-                    context,
+                    execution,
                     source,
                     left,
-                    reservations,
-                    metrics,
                     memory_boundary,
                     grow_source_to_observed,
                     attempt + 1,
@@ -359,11 +319,9 @@ fn read_local_parquet_chunk_required_only_or_split(
                     min_retry_chunk_row_groups,
                 )?;
                 match read_local_parquet_chunk_required_only_or_split(
-                    context,
+                    execution,
                     source,
                     right,
-                    reservations,
-                    metrics,
                     memory_boundary,
                     grow_source_to_observed,
                     attempt + 1,
@@ -375,12 +333,12 @@ fn read_local_parquet_chunk_required_only_or_split(
                         Ok(outputs)
                     },
                     Err(error) => {
-                        release_source_read_outputs_reverse(reservations, outputs, metrics);
+                        release_source_read_outputs_reverse(execution, outputs);
                         Err(error)
                     },
                 }
             } else {
-                Err(chunk_retry_facts(&chunk, metrics).attach_to_error(error))
+                Err(chunk_retry_facts(&chunk, execution.metrics_mut()).attach_to_error(error))
             }
         },
         Err(error) => Err(error),
@@ -388,22 +346,18 @@ fn read_local_parquet_chunk_required_only_or_split(
 }
 
 fn read_local_parquet_chunk_required_only(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     chunk: &SourceChunk,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     memory_boundary: &'static str,
     grow_source_to_observed: bool,
     _cache_chunks: bool,
     visible_limit_remaining: Option<&mut Option<usize>>,
 ) -> Result<ScheduledLocalParquetReadOutput> {
     read_local_parquet_chunk_required_only_attempt(
-        context,
+        execution,
         source,
         chunk,
-        reservations,
-        metrics,
         memory_boundary,
         grow_source_to_observed,
         _cache_chunks,
@@ -414,11 +368,9 @@ fn read_local_parquet_chunk_required_only(
 }
 
 fn read_local_parquet_chunk_required_only_attempt(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     chunk: &SourceChunk,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     memory_boundary: &'static str,
     grow_source_to_observed: bool,
     _cache_chunks: bool,
@@ -426,29 +378,34 @@ fn read_local_parquet_chunk_required_only_attempt(
     attempt: usize,
     max_attempts: usize,
 ) -> Result<ScheduledLocalParquetReadOutput> {
-    metrics.record_source_chunk_attempt();
-    let selected_row_groups_before_read = metrics.row_groups_selected;
+    execution.metrics_mut().record_source_chunk_attempt();
+    let selected_row_groups_before_read = execution.metrics_mut().row_groups_selected;
     let source_request = source_read_reservation_request(
-        context.memory_control_policy(),
+        execution.context().memory_control_policy(),
         ReservationKind::SourceRead,
         memory_boundary,
-        reservations.budget(),
+        execution.reservations().budget(),
         chunk,
         attempt,
         max_attempts,
     );
-    let mut reservation = reservations.try_reserve(source_request, metrics)?;
-    let source_token_budget = reservations.available_bytes_including(&reservation);
-    let frame = match read_local_parquet_chunk(context, source, chunk, source_token_budget, memory_boundary, metrics) {
+    let mut reservation = execution.try_reserve(source_request)?;
+    let source_token_budget = execution.reservations().available_bytes_including(&reservation);
+    let frame = match read_local_parquet_chunk(
+        execution.context(),
+        source,
+        chunk,
+        source_token_budget,
+        memory_boundary,
+        execution.metrics_mut(),
+    ) {
         Ok(frame) => frame,
         Err(error) => {
             match try_read_local_parquet_chunk_with_corrected_budget_after_error(
-                context,
+                execution,
                 source,
                 chunk,
                 &mut reservation,
-                reservations,
-                metrics,
                 memory_boundary,
                 &error,
                 attempt,
@@ -456,18 +413,23 @@ fn read_local_parquet_chunk_required_only_attempt(
             ) {
                 Ok(Some(frame)) => frame,
                 Ok(None) => {
-                    reservations.release(reservation, metrics);
+                    execution.release(reservation);
                     return Err(error);
                 },
                 Err(retry_error) => {
-                    reservations.release(reservation, metrics);
+                    execution.release(reservation);
                     return Err(retry_error);
                 },
             }
         },
     };
     let frame = if let Some(remaining_rows) = visible_limit_remaining {
-        match apply_source_scan_limit_to_frame(context, frame.frame().clone(), *remaining_rows, metrics) {
+        match apply_source_scan_limit_to_frame(
+            execution.context(),
+            frame.frame().clone(),
+            *remaining_rows,
+            execution.metrics_mut(),
+        ) {
             Ok((limited, remaining)) => {
                 *remaining_rows = remaining;
                 // A slice may retain aliases into a checked-out cache frame.
@@ -476,13 +438,13 @@ fn read_local_parquet_chunk_required_only_attempt(
                 match GpuDataFrame::try_new_with_source_residency(limited, &frame) {
                     Ok(frame) => frame,
                     Err(error) => {
-                        reservations.release(reservation, metrics);
+                        execution.release(reservation);
                         return Err(error);
                     },
                 }
             },
             Err(error) => {
-                reservations.release(reservation, metrics);
+                execution.release(reservation);
                 return Err(error);
             },
         }
@@ -498,22 +460,20 @@ fn read_local_parquet_chunk_required_only_attempt(
     };
     output.observed_bytes = match if grow_source_to_observed {
         grow_source_reservation_to_observed(
+            execution,
             &output.frame,
             &mut output.reservation,
-            reservations,
             &output.chunk,
-            metrics,
             memory_boundary,
             attempt,
             max_attempts,
         )
     } else {
         shrink_source_reservation_to_observed_without_grow(
+            execution,
             &output.frame,
             &mut output.reservation,
-            reservations,
             &output.chunk,
-            metrics,
             memory_boundary,
             attempt,
             max_attempts,
@@ -521,15 +481,13 @@ fn read_local_parquet_chunk_required_only_attempt(
     } {
         Ok(observed_bytes) => observed_bytes,
         Err(error) => {
-            reservations.release(output.reservation, metrics);
+            execution.release(output.reservation);
             return Err(error);
         },
     };
-    metrics.record_source_chunk_commit(committed_source_chunk_row_groups(
-        chunk,
-        selected_row_groups_before_read,
-        metrics,
-    ));
+    let committed_row_groups =
+        committed_source_chunk_row_groups(chunk, selected_row_groups_before_read, execution.metrics());
+    execution.metrics_mut().record_source_chunk_commit(committed_row_groups);
     Ok(output)
 }
 
@@ -555,64 +513,49 @@ fn committed_source_chunk_row_groups(
 }
 
 pub(in crate::exec::bounded) fn read_local_parquet_chunk_batch_required_only_no_commit(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     batch: &crate::chunk::SourceChunkBatch,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     memory_boundary: &'static str,
     grow_source_to_observed: bool,
 ) -> Result<ScheduledLocalParquetReadOutput> {
     for _chunk in &batch.chunks {
-        metrics.record_source_chunk_attempt();
+        execution.metrics_mut().record_source_chunk_attempt();
     }
-    let selected_row_groups_before_read = metrics.row_groups_selected;
-    let mut reservation = reservations.try_reserve(
-        source_read_batch_reservation_request(
-            context.memory_control_policy(),
-            ReservationKind::SourceRead,
-            memory_boundary,
-            reservations.budget(),
-            batch,
-            1,
-            1,
-        ),
-        metrics,
-    )?;
-    let source_token_budget = reservations.available_bytes_including(&reservation);
+    let selected_row_groups_before_read = execution.metrics_mut().row_groups_selected;
+    let mut reservation = execution.try_reserve(source_read_batch_reservation_request(
+        execution.context().memory_control_policy(),
+        ReservationKind::SourceRead,
+        memory_boundary,
+        execution.reservations().budget(),
+        batch,
+        1,
+        1,
+    ))?;
+    let source_token_budget = execution.reservations().available_bytes_including(&reservation);
     let frame = match read_local_parquet_chunk_batch(
-        context,
+        execution.context(),
         source,
         batch,
         source_token_budget,
         memory_boundary,
         0,
-        metrics,
+        execution.metrics_mut(),
     ) {
         Ok(frame) => frame,
         Err(error) => {
-            reservations.release(reservation, metrics);
+            execution.release(reservation);
             return Err(error);
         },
     };
     let observed_bytes = match if grow_source_to_observed {
-        grow_source_batch_reservation_to_observed(
-            &frame,
-            &mut reservation,
-            reservations,
-            batch,
-            metrics,
-            memory_boundary,
-            1,
-            1,
-        )
+        grow_source_batch_reservation_to_observed(execution, &frame, &mut reservation, batch, memory_boundary, 1, 1)
     } else {
         shrink_source_batch_reservation_to_observed_without_grow(
+            execution,
             &frame,
             &mut reservation,
-            reservations,
             batch,
-            metrics,
             memory_boundary,
             1,
             1,
@@ -620,7 +563,7 @@ pub(in crate::exec::bounded) fn read_local_parquet_chunk_batch_required_only_no_
     } {
         Ok(observed_bytes) => observed_bytes,
         Err(error) => {
-            reservations.release(reservation, metrics);
+            execution.release(reservation);
             return Err(error);
         },
     };
@@ -630,7 +573,11 @@ pub(in crate::exec::bounded) fn read_local_parquet_chunk_batch_required_only_no_
         frame,
         reservation,
         observed_bytes,
-        observed_row_group_count: source_chunk_batch_read_row_groups(batch, selected_row_groups_before_read, metrics),
+        observed_row_group_count: source_chunk_batch_read_row_groups(
+            batch,
+            selected_row_groups_before_read,
+            execution.metrics_mut(),
+        ),
     })
 }
 
@@ -682,22 +629,20 @@ fn source_chunk_batch_decode_scratch_risk(source: &LocalParquetSource, chunks: &
 }
 
 pub(in crate::exec::bounded) fn release_source_read_outputs_reverse(
-    reservations: &mut ReservationTracker,
+    execution: &mut BoundedExecutionAttempt<'_>,
     mut chunks: Vec<ScheduledLocalParquetReadOutput>,
-    metrics: &mut QueryMetrics,
 ) {
     while let Some(chunk) = chunks.pop() {
-        reservations.release(chunk.reservation, metrics);
+        execution.release(chunk.reservation);
     }
 }
 
 fn release_source_reservations_reverse(
-    reservations: &mut ReservationTracker,
+    execution: &mut BoundedExecutionAttempt<'_>,
     mut active: Vec<ActiveReservation>,
-    metrics: &mut QueryMetrics,
 ) {
     while let Some(reservation) = active.pop() {
-        reservations.release(reservation, metrics);
+        execution.release(reservation);
     }
 }
 

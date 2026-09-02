@@ -150,8 +150,8 @@ impl SourceReadBudgetCorrection {
 }
 
 pub(in crate::exec) fn source_read_budget_correction_from_error(
+    execution: &mut BoundedExecutionAttempt<'_>,
     error: &QueryError,
-    reservations: &ReservationTracker,
     reservation: &ActiveReservation,
 ) -> Option<SourceReadBudgetCorrection> {
     if error.code() != QueryErrorCode::CudfResourceExhausted {
@@ -170,7 +170,7 @@ pub(in crate::exec) fn source_read_budget_correction_from_error(
         peak_aligned_bytes,
         largest_failed_allocation_bytes,
     );
-    let cap_bytes = reservations.available_bytes_including(reservation);
+    let cap_bytes = execution.reservations().available_bytes_including(reservation);
     let corrected_budget_bytes = lower_bound.min(cap_bytes);
     if corrected_budget_bytes <= previous_budget_bytes {
         return None;
@@ -186,11 +186,10 @@ pub(in crate::exec) fn source_read_budget_correction_from_error(
 }
 
 pub(in crate::exec) fn try_grow_source_read_reservation_for_budget_correction(
-    reservations: &mut ReservationTracker,
+    execution: &mut BoundedExecutionAttempt<'_>,
     reservation: &mut ActiveReservation,
     correction: SourceReadBudgetCorrection,
     mut request: MemoryReservationRequest,
-    metrics: &mut QueryMetrics,
 ) -> Result<()> {
     if correction.corrected_budget_bytes <= reservation.bytes() {
         return Ok(());
@@ -201,45 +200,53 @@ pub(in crate::exec) fn try_grow_source_read_reservation_for_budget_correction(
         Some(correction.previous_budget_bytes),
         Some(correction.corrected_budget_bytes),
     );
-    reservations.try_grow(reservation, request, metrics).map_err(|error| correction.attach_to_error(error))
+    execution.try_grow(reservation, request).map_err(|error| correction.attach_to_error(error))
 }
 
 pub(in crate::exec::bounded::chunks) fn try_read_local_parquet_chunk_with_corrected_budget_after_error(
-    context: &ExecutionContext,
+    execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
     chunk: &SourceChunk,
     reservation: &mut ActiveReservation,
-    reservations: &mut ReservationTracker,
-    metrics: &mut QueryMetrics,
     memory_boundary: &'static str,
     error: &QueryError,
     attempt: usize,
     max_attempts: usize,
 ) -> Result<Option<GpuDataFrame>> {
-    context.check_cancellation("nexus_query_engine.exec.bounded.source_chunk_budget_retry")?;
+    execution.context().check_cancellation("nexus_query_engine.exec.bounded.source_chunk_budget_retry")?;
     if attempt >= max_attempts {
         return Ok(None);
     }
-    let Some(correction) = source_read_budget_correction_from_error(error, reservations, reservation) else {
+    let Some(correction) = source_read_budget_correction_from_error(execution, error, reservation) else {
         return Ok(None);
     };
-    record_chunk_retry_error(error, metrics);
-    metrics.record_source_chunk_retry();
-    crate::exec::retry::backoff_before_retry(context, "nexus_query_engine.exec.bounded.source_chunk_budget_retry")?;
+    record_chunk_retry_error(error, execution.metrics_mut());
+    execution.metrics_mut().record_source_chunk_retry();
+    crate::exec::retry::backoff_before_retry(
+        execution.context(),
+        "nexus_query_engine.exec.bounded.source_chunk_budget_retry",
+    )?;
     let request = chunk_reservation_request(
         ReservationKind::SourceRead,
         memory_boundary,
         0,
-        reservations.budget(),
+        execution.reservations().budget(),
         chunk,
         attempt + 1,
         max_attempts,
     );
-    try_grow_source_read_reservation_for_budget_correction(reservations, reservation, correction, request, metrics)?;
-    metrics.record_source_chunk_attempt();
-    read_local_parquet_chunk(context, source, chunk, correction.corrected_budget_bytes(), memory_boundary, metrics)
-        .map(Some)
-        .map_err(|error| correction.attach_to_error(error))
+    try_grow_source_read_reservation_for_budget_correction(execution, reservation, correction, request)?;
+    execution.metrics_mut().record_source_chunk_attempt();
+    read_local_parquet_chunk(
+        execution.context(),
+        source,
+        chunk,
+        correction.corrected_budget_bytes(),
+        memory_boundary,
+        execution.metrics_mut(),
+    )
+    .map(Some)
+    .map_err(|error| correction.attach_to_error(error))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
