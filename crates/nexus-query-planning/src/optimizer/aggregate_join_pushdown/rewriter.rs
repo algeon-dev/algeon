@@ -212,6 +212,23 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
         if lineage.single_measure_side()? != JoinSide::Left || lineage.single_group_side()? != JoinSide::Left {
             return Err(AggregateJoinPushdownRejectedReason::UnsupportedSidePattern);
         }
+        // A semi join on final group keys keeps or drops whole groups, so the
+        // grouped result is the same whether it filters detail rows or groups.
+        // Pre-aggregating first would group every unfiltered row (the final
+        // grouping plus the same keys) before the keyset is applied, which is
+        // pure retained state; grouping sets still benefit from a plain
+        // pre-aggregate below the rollup expansion.
+        if aggregate.spec.grouping_sets.is_none()
+            && join.spec.keys.iter().all(|key| {
+                let key_column = join_key_for_side(key, JoinSide::Left);
+                lineage
+                    .group_columns
+                    .iter()
+                    .any(|group| group.side == JoinSide::Left && group.source_name == key_column.name())
+            })
+        {
+            return Err(AggregateJoinPushdownRejectedReason::LeftSemiAlreadyFiltersFinalGroups);
+        }
         self.rewrite_join_aggregate_with_preagg(
             aggregate,
             aggregate_facts,

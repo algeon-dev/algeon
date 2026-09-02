@@ -104,26 +104,6 @@ fn partitioned_build_decision<'a>(
         .unwrap_or_else(|| panic!("join {node_id} should commit to partition-wise build consumption: {metrics:#?}"))
 }
 
-// Runs the plan on an admitted context so the query domain's real peak is
-// observable after the attempt.
-fn execute_admitted_with_peak(
-    context: &BackendQueryContext,
-    plan: &QueryPlan,
-) -> (nexus_query_engine::error::Result<QueryOutput>, QueryMetrics, u64) {
-    let admitted = context.admit_plan(plan).unwrap();
-    let outcome = execute_query_plan_direct(
-        admitted.context.context(),
-        QueryExecutionRequest::new(plan).with_gpu_inputs(&GpuResidentInputMap::new()),
-    );
-    let (result, metrics, _observation) = outcome.into_parts();
-    let usage = admitted
-        .attempt_allocation_domain_usage()
-        .expect("allocation-domain usage samples")
-        .expect("admitted context owns one allocation domain");
-    admitted.finish();
-    (result, metrics, usage.peak_bytes)
-}
-
 // One 2 MiB row group per chunk under the suite's default 1 MiB chunk policy.
 fn build_recovery_policy(device_budget_bytes: u64, max_row_groups_per_chunk: usize) -> MemoryControlPolicy {
     MemoryControlPolicy::Bounded {

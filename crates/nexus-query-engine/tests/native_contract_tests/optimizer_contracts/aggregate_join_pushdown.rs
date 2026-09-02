@@ -904,3 +904,129 @@ fn aggregate_join_pushdown_does_not_split_union_when_any_branch_size_is_unknown(
         "unknown union branch size should keep the original join-over-union pre-aggregate"
     );
 }
+
+fn left_semi_keyset_aggregate_plan(
+    group_columns: &[&str],
+    grouping_sets: Option<nexus_query_engine::expr::GroupingSetsSpec>,
+) -> nexus_query_engine::plan::QueryPlan {
+    let semi_schema = schema(&["order_key", "category", "value"]);
+    let mut aggregate_fields = group_columns.to_vec();
+    if grouping_sets.is_some() {
+        aggregate_fields.push("__grouping_id");
+    }
+    aggregate_fields.push("sum_value");
+    let aggregate_schema = schema(&aggregate_fields);
+
+    let mut builder = QueryPlanBuilder::new();
+    let detail = builder.add_source(estimated_local_source_with_fields(
+        "semi_detail",
+        &["order_key", "category", "value"],
+        4 * 1024 * 1024 * 1024,
+        80_000_000,
+    ));
+    let keyset = builder.add_source(estimated_local_source_with_fields("semi_keyset", &["order_key"], 64 * 1024, 1_000));
+    let semi = builder.add_join(
+        detail,
+        keyset,
+        JoinSpec::new(
+            JoinType::LeftSemi,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "order_key", "order_key"),
+                ColumnRef::input(1, "order_key", "order_key"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "order_key", "order_key"), "order_key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "category", "category"), "category"),
+            JoinOutputColumn::left(ColumnRef::input(0, "value", "value"), "value"),
+        ])
+        .with_build_side(JoinSide::Right),
+        semi_schema,
+    );
+    let mut spec = AggregateSpec::new(
+        group_columns.iter().map(|column| Expr::column(*column)).collect(),
+        vec![AggregateExpr::new(AggregateFunction::Sum, Expr::column("value"), "sum_value")],
+    );
+    if let Some(grouping_sets) = grouping_sets {
+        spec = spec.with_grouping_sets(grouping_sets);
+    }
+    let aggregate = builder.add_aggregate(semi, spec, aggregate_schema);
+    builder.finish_with_host_sink(aggregate)
+}
+
+fn aggregate_join_pushdown_only_options() -> NativeOptimizerOptions {
+    let mut options = NativeOptimizerOptions::disabled();
+    options.aggregate_join_pushdown = AggregateJoinPushdownOptions::default();
+    options
+}
+
+#[test]
+fn aggregate_join_pushdown_keeps_left_semi_on_final_group_keys_below_the_aggregate() {
+    let plan = left_semi_keyset_aggregate_plan(&["order_key", "category"], None);
+
+    let optimized = optimize_query_plan(plan.clone(), &aggregate_join_pushdown_only_options());
+
+    assert_eq!(optimized.change, NativeOptimizerChange::Unchanged);
+    assert_eq!(optimized.plan, plan);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.considered_count, 1);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 0);
+    assert_eq!(
+        optimized.diagnostics.aggregate_join_pushdown.candidates[0].rejected_reason,
+        Some(AggregateJoinPushdownRejectedReason::LeftSemiAlreadyFiltersFinalGroups)
+    );
+}
+
+#[test]
+fn aggregate_join_pushdown_still_preaggregates_below_left_semi_whose_key_is_not_a_group_key() {
+    let plan = left_semi_keyset_aggregate_plan(&["category"], None);
+
+    let optimized = optimize_query_plan(plan, &aggregate_join_pushdown_only_options());
+
+    assert_eq!(optimized.change, NativeOptimizerChange::Changed);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 1);
+    let PlanNode::Aggregate(final_aggregate) = &optimized.plan.root_node().kind else {
+        panic!("optimized root should remain the final aggregate");
+    };
+    assert_eq!(final_aggregate.spec.group_exprs, vec![Expr::column("category")]);
+    let PlanNode::Join(semi) = &optimized.plan.node(final_aggregate.input).expect("final input").kind else {
+        panic!("final aggregate should consume the left-semi join");
+    };
+    assert_eq!(semi.spec.join_type, JoinType::LeftSemi);
+    let PlanNode::Aggregate(preaggregate) = &optimized.plan.node(semi.inputs[0]).expect("semi left input").kind
+    else {
+        panic!("semi key outside the final grouping needs the pre-aggregate to carry it");
+    };
+    assert_eq!(
+        preaggregate.spec.group_exprs,
+        vec![Expr::column("category").alias("category"), Expr::column("order_key").alias("order_key")]
+    );
+}
+
+#[test]
+fn aggregate_join_pushdown_still_preaggregates_grouping_sets_below_left_semi_on_group_keys() {
+    let plan = left_semi_keyset_aggregate_plan(
+        &["order_key", "category"],
+        Some(nexus_query_engine::expr::GroupingSetsSpec::new(
+            vec![vec![true, true], vec![true, false], vec![false, false]],
+            "__grouping_id",
+        )),
+    );
+
+    let optimized = optimize_query_plan(plan, &aggregate_join_pushdown_only_options());
+
+    assert_eq!(optimized.change, NativeOptimizerChange::Changed);
+    assert_eq!(optimized.diagnostics.aggregate_join_pushdown.applied_count, 1);
+    let PlanNode::Aggregate(final_aggregate) = &optimized.plan.root_node().kind else {
+        panic!("optimized root should remain the rollup final aggregate");
+    };
+    assert!(final_aggregate.spec.grouping_sets.is_some());
+    let PlanNode::Join(semi) = &optimized.plan.node(final_aggregate.input).expect("final input").kind else {
+        panic!("rollup final aggregate should consume the left-semi join");
+    };
+    assert_eq!(semi.spec.join_type, JoinType::LeftSemi);
+    let PlanNode::Aggregate(preaggregate) = &optimized.plan.node(semi.inputs[0]).expect("semi left input").kind
+    else {
+        panic!("rollup pre-aggregate should still reduce detail rows before the grouping-set expansion");
+    };
+    assert!(preaggregate.spec.grouping_sets.is_none());
+}
