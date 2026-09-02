@@ -1,4 +1,4 @@
-//! Tests for the dynamic Iceberg catalog/schema provider (Milestone 2).
+//! Tests for the dynamic Iceberg catalog/schema provider.
 //!
 //! All tests in this file are credential-free and use a `MockIcebergCatalogBackend`.
 

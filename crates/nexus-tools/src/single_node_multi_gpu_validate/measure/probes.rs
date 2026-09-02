@@ -7,7 +7,7 @@ pub(super) struct FeatureOffCugraphProbeSchedule {
     pub(super) measurement_probe_attempts: usize,
 }
 
-/// Adds S1's runner-owned graph request after the relational set.  The caller
+/// Adds the runner-owned feature-off graph request after the relational set. The caller
 /// retains its index for the dedicated probe schedule, while normal arrivals
 /// are planned against the pre-append relational count.
 pub(super) fn append_feature_off_cugraph_probe(
@@ -56,7 +56,7 @@ pub(in crate::single_node_multi_gpu_validate) fn validate_cugraph_runner_mode(
     Ok(())
 }
 
-/// Runs the serial, public-SQL P6.6 domain-cap probe. The profile preflight
+/// Runs the serial, public-SQL domain-cap probe. The profile preflight
 /// pins the two-attempt shape (`q01` followed by `edge_scan`) and the single
 /// static partition. This driver deliberately reuses ordinary submission and
 /// drain logic: no runner-created error substitutes for allocator evidence.
@@ -73,7 +73,7 @@ pub(super) async fn drive_domain_exhaustion_probe(
     drive(backend, sessions, queries, plan, completion_drain_grace, None, None).await
 }
 
-/// Drives P6.6's one-device physical allocator-pressure probe.
+/// Drives the one-device physical allocator-pressure probe.
 ///
 /// The cuDF testing lease owns a separate `cuda_on` sidecar and only exposes
 /// observed CUDA memory facts. It is established after the service has
@@ -115,7 +115,7 @@ pub(super) async fn drive_physical_allocator_pressure(
     let mut begin_failures = 0_u64;
     let mut join_failures = 0_u64;
     let mut cancellation_barrier = None;
-    // Dedicated probes never arm S5 storms; the knob set stays disabled.
+    // Dedicated probes never arm deadline/cancellation storms; the knob set stays disabled.
     let mut storm_cancellers = Vec::new();
     match spawn_attempt_task(
         backend,
@@ -233,7 +233,7 @@ pub(super) type AttemptTask = tokio::task::JoinHandle<(
     OutputCapture,
 )>;
 
-/// Schedules each runner-owned S1 request through the ordinary public attempt
+/// Schedules each runner-owned feature-off request through the ordinary public attempt
 /// path.  Only the selected query and sequence differ from a planned
 /// relational arrival; no result or error evidence is synthesized here.
 #[allow(clippy::too_many_arguments)]
@@ -262,7 +262,7 @@ pub(super) fn spawn_feature_off_cugraph_probes(
             step_index,
             offset_ns: 0,
             // `spawn_attempt_task` records the observed closed-loop phase at
-            // submission, which is the only phase evidence the S1 reducer
+            // submission, which is the only phase evidence the feature-off reducer
             // trusts. This placeholder is therefore never artifact-visible.
             phase: SchedulePhase::Warmup,
             rate_overrun: RateOverrunPolicy::Delay,
@@ -320,7 +320,7 @@ pub(super) fn spawn_attempt_task(
 }
 
 /// The normal runner deliberately lets the public attempt API mint its own
-/// query id. The S7 exact-cohort probe is the narrow exception: it supplies a
+/// query id. The exact-key cache probe is the narrow exception: it supplies a
 /// unique id whose one-way fingerprint can be matched against cache-owner and
 /// BFS-coordinator observations without retaining the raw id in the artifact.
 #[allow(clippy::too_many_arguments)]
@@ -338,7 +338,7 @@ pub(super) fn spawn_attempt_task_with_query_id(
     storm_cancellers: &mut Vec<PendingCancellationBarrier>,
     query_id: Option<String>,
 ) -> Result<AttemptTask, ()> {
-    // S5 deadline storm: each attempt carries its own caller deadline, never
+    // Per-attempt deadline: each attempt carries its own caller deadline, never
     // later than the shared window deadline.
     let attempt_deadline = storm
         .attempt_deadline_ms
@@ -365,7 +365,7 @@ pub(super) fn spawn_attempt_task_with_query_id(
         *cancellation_barrier =
             Some(PendingCancellationBarrier { attempt_sequence: arrival.sequence, requested_after, requested, task });
     }
-    // S5 cancellation storm: every Nth attempt gets its own cooperative
+    // Per-attempt cancellation: every Nth attempt gets its own cooperative
     // canceller through the same public cancellation handle.
     if let Some(every_n) = storm.cancel_every_n
         && arrival.sequence % every_n == every_n - 1
@@ -431,7 +431,7 @@ pub(super) fn spawn_attempt_task_with_query_id(
                 }
             },
         }
-        // I8's optional sink deliberately serializes the public completion
+        // The optional sink deliberately serializes the public completion
         // receiver. The permit remains live through `.completion().await`,
         // so a saturated sink can exert the real handoff backpressure that a
         // per-task sleep before this point would miss.
@@ -521,7 +521,7 @@ pub(super) async fn drain(
     }
 }
 
-/// Ordinary stress cells use [`drain`]. The feature-off S1 driver retains one
+/// Ordinary stress cells use [`drain`]. The feature-off driver retains one
 /// extra bounded source-error projection for its runner-owned UDTF so the
 /// artifact can pair exact adapter facts with the same sealed report row.
 pub(super) async fn drain_with_feature_off_cugraph_capture(

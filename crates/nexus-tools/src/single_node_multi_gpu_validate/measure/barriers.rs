@@ -1,6 +1,6 @@
 use super::*;
 
-/// Runner-local facts captured at the S6 close boundary. The evidence
+/// Runner-local facts captured at the close boundary. The evidence
 /// reducer combines these with sealed attempt outcomes; nothing here infers
 /// queue membership from runner ordering.
 pub(super) struct CloseUnderLoadBarrier {
@@ -13,7 +13,7 @@ pub(super) struct CloseUnderLoadBarrier {
     pub(super) submitted_attempts: u64,
 }
 
-/// The S5 per-attempt storm knobs, resolved from the arrival plan once.
+/// The per-attempt deadline/cancellation storm knobs, resolved from the arrival plan once.
 #[derive(Clone, Copy, Default)]
 pub(super) struct StormKnobs {
     pub(super) attempt_deadline_ms: Option<u64>,

@@ -58,7 +58,7 @@ impl std::error::Error for FixturePreflightError {}
 pub(super) struct FixturePreflight;
 
 /// How many fixture kinds a mode requires. `--fixture-preflight` pins the
-/// P6.4 contract; a measured run validates whatever mix it will execute.
+/// contract; a measured run validates whatever mix it will execute.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum FixtureSelectionPolicy {
     BothKindsExactly,

@@ -148,7 +148,7 @@ pub(super) fn project_graph_claim_calibration_snapshot(
     }
 }
 
-/// Projects P6.6's report facts without persisting caller correlations or
+/// Projects dedicated-probe report facts without persisting caller correlations or
 /// arbitrary failure text. The sealed report remains the sole event record.
 pub(super) fn terminal_evidence(report: &QueryAttemptReport) -> AttemptTerminalEvidence {
     AttemptTerminalEvidence {
@@ -190,8 +190,8 @@ pub(super) fn json_value<T: serde::Serialize>(value: T) -> Value {
 }
 
 /// Closes the public backend once and retains an auditable bounded projection
-/// of either outcome. Do not convert an error to a `null` artifact field: P6.6
-/// treats a failed close as a real result that must remain visible.
+/// of either outcome. Do not convert an error to a `null` artifact field: a
+/// failed close is a real result that must remain visible.
 pub(super) fn close_backend(backend: &NexusGpuBackend) -> BackendCloseEvidence {
     let before = project_close_snapshot(backend.close_snapshot());
     let outcome = match backend.close_and_wait(CLOSE_TIMEOUT) {
@@ -247,7 +247,7 @@ pub(super) fn device_configurations(backend: &NexusGpuBackend) -> Vec<DeviceConf
             ownership: format!("{:?}", record.memory_ownership),
             device_health_generation: record.device_health_generation,
             // A device that enumerated a startup record is admissible at t0;
-            // P6.6 owns making one become ineligible mid-run.
+            // The quarantine scenario owns making one become ineligible mid-run.
             starting_health_open: true,
         })
         .collect()

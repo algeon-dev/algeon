@@ -1,4 +1,4 @@
-//! W1 utilization/drift time series.
+//! Compact utilization/drift time series.
 //!
 //! The GPU-side sampler (`measure.rs`) projects each public snapshot pull
 //! into the compact rows defined here; everything below the row structs is a
@@ -44,7 +44,7 @@ pub(super) struct DeviceSeriesRow {
     pub(super) offset_ns: u64,
     pub(super) device_ordinal: usize,
     /// The ledger's admission health at this tick. A closed ordinal must
-    /// receive no further placements, which S3/S6 read from this series.
+    /// receive no further placements; device-health and close checks read this series.
     pub(super) health_open: bool,
     pub(super) gpu_utilization_pct: Option<u32>,
     pub(super) memory_utilization_pct: Option<u32>,
@@ -77,7 +77,7 @@ pub(super) struct DeviceSeriesRow {
     pub(super) claim_snapshot_end_sequence: Option<u64>,
     /// Whether the admission-plus-cache claim was stable across the telemetry
     /// bracket.  Unstable rows remain useful for utilization/drift reporting,
-    /// but are deliberately excluded from I11 calibration.
+    /// but are deliberately excluded from graph-model calibration.
     pub(super) claim_snapshot_stable: bool,
     pub(super) active_query_jobs: usize,
     pub(super) queued_jobs: usize,
@@ -89,13 +89,13 @@ pub(super) struct ProcessSeriesRow {
     pub(super) offset_ns: u64,
     pub(super) active_queries: usize,
     pub(super) queued_queries: usize,
-    /// Backend observation generations, recorded so S4 can prove metric
+    /// Backend observation generations, recorded so the audit can prove metric
     /// cardinality/identity stayed fixed across the window.
     pub(super) backend_generation: u64,
     pub(super) metric_generation: u64,
     /// Wall-clock duration of the complete public observation pull that
     /// produced this row. It includes metrics, ledger, admission, pool,
-    /// failure, and telemetry snapshots, so S1/S3 can report monitoring cost
+    /// failure, and telemetry snapshots; feature-off and telemetry checks report monitoring cost
     /// without timing unrelated runner work.
     pub(super) observation_pull_ns: u64,
     pub(super) completed_attempts: u64,
@@ -267,7 +267,7 @@ pub(super) fn fleet_utilization_interval(
     Ok(best)
 }
 
-/// W8/I13's bounded summary of the public monitoring pull cost.
+/// Bounded summary of the public monitoring pull cost.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub(super) struct ObservationPullSummary {
     pub(super) samples: u64,
@@ -297,8 +297,8 @@ pub(super) struct OrdinalUtilizationSummary {
 
 /// Baseline-vs-end comparison per ordinal. The sampler starts before load
 /// and finishes after the drain, so first/last rows approximate quiescence;
-/// the runbook's S4 drain-gap phasing is what makes that approximation a
-/// contract.
+/// the gap between the final submission and terminal sample makes that
+/// approximation a contract.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub(super) struct OrdinalDriftSummary {
     pub(super) device_ordinal: usize,
@@ -317,7 +317,7 @@ pub(super) struct OrdinalDriftSummary {
     pub(super) cache_resident_bytes_peak: u64,
     pub(super) allocation_failure_count_first: u64,
     pub(super) allocation_failure_count_last: u64,
-    /// I5 fragmentation canary: counter increments in the first versus the
+    /// Fragmentation canary: counter increments in the first versus the
     /// second half of the run. An upward trend absent external pressure is a
     /// drift finding, measured rather than judged here.
     pub(super) allocation_failures_first_half: u64,

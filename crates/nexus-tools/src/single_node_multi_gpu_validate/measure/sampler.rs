@@ -1,7 +1,7 @@
 use super::*;
 
 /// Polls the public snapshot accessors on the window-aware interval and folds
-/// them into per-device peaks plus the W1 compact time series.
+/// them into per-device peaks plus the compact time series.
 pub(super) struct Sampler {
     pub(super) stop: Arc<(Mutex<bool>, Condvar)>,
     pub(super) handle: std::thread::JoinHandle<SamplerResult>,
@@ -130,7 +130,7 @@ impl SamplerResult {
     }
 }
 
-/// The ledger-owned portion of one I11 observation. Equality across the two
+/// The ledger-owned portion of one graph-model calibration observation. Equality across the two
 /// reads bracketing telemetry proves that the physical sample is not paired
 /// with a claim from a different ledger transition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,7 +160,7 @@ pub(super) fn calibration_claim_stable_across_telemetry(
 }
 
 /// One polling pass: folds the peaks, retains a bounded raw sample, and
-/// appends the compact W1 series rows. Raw retention may displace its tail
+/// appends the compact series rows. Raw retention may displace its tail
 /// for the terminal sample; the compact series instead keeps the whole run,
 /// since whole-window drift coverage is its purpose and its rows stay small.
 #[allow(clippy::too_many_arguments)]
@@ -176,7 +176,7 @@ pub(super) fn sample_once(
     retain_terminal_sample: bool,
 ) {
     let observation_started = Instant::now();
-    // I11 calibrates a logical claim against device telemetry. The public
+    // Graph-model calibration compares a logical claim against device telemetry. The public
     // accessors are individually coherent but not one global transaction, so
     // bracket telemetry with two ledger reads. A row whose ledger sequence
     // changed cannot supply the "same-sample" claim and is retained only for
@@ -225,7 +225,7 @@ pub(super) fn sample_once(
         entry.allocation_failure_count = entry.allocation_failure_count.max(failure.allocation_failure_count);
     }
     // Raw snapshots and metric-audit DTOs have a bounded artifact retention
-    // budget, but the compact W1 series must span the entire load window.
+    // budget, but the compact series must span the entire load window.
     // Keep sampling the same public observations after the raw budget fills.
     let retain_raw_snapshot =
         reserve_snapshot_slot(samples, metric_snapshots, raw_snapshot_retention_truncated, retain_terminal_sample);
@@ -323,8 +323,8 @@ pub(super) fn cugraph_bfs_singleflight_snapshot(_backend: &NexusGpuBackend) -> V
 }
 
 /// Reserves one bounded raw/audit snapshot slot. The two vectors always move
-/// together so an artifact sample and the corresponding P6.7 DTO cannot refer
-/// to different P4 pulls.
+/// together so an artifact sample and the corresponding metrics-audit DTO
+/// cannot refer to different public backend-metric pulls.
 pub(super) fn reserve_snapshot_slot<T, U>(
     samples: &mut Vec<T>,
     metric_snapshots: &mut Vec<U>,
@@ -339,8 +339,8 @@ pub(super) fn reserve_snapshot_slot<T, U>(
     if !retain_terminal_sample {
         return false;
     }
-    // The bounded artifact cannot retain every intermediate snapshot, but P4
-    // report equality must use the post-drain pull. Drop the former tail and
+    // The bounded artifact cannot retain every intermediate snapshot, but
+    // backend-metric report equality must use the post-drain pull. Drop the former tail and
     // replace it with the terminal snapshot in lockstep with the audit DTO;
     // cadence remains explicitly not-evidenced after truncation.
     samples.pop();
@@ -348,7 +348,7 @@ pub(super) fn reserve_snapshot_slot<T, U>(
     true
 }
 
-/// Projects one public P4 snapshot into the pure P6.7 audit DTO. The raw
+/// Projects one public backend snapshot into the pure metrics-audit DTO. The raw
 /// snapshot is retained separately in the artifact; this only records the
 /// bounded checks needed to prove its cadence, cardinality, and exact terminal
 /// count.

@@ -1,7 +1,7 @@
 use super::*;
 
 /// Runtime-only OTLP exporter input. Its full endpoint is deliberately never
-/// copied into an artifact; only `endpoint_host_port` is retained by W8.
+/// copied into an artifact; only `endpoint_host_port` is retained.
 #[derive(Clone)]
 pub(in crate::single_node_multi_gpu_validate) struct OtlpExportConfig {
     #[cfg(feature = "single-node-multi-gpu-validate-run-otlp")]

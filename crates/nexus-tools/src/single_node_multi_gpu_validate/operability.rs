@@ -17,7 +17,7 @@ use super::{
     schedule::SchedulePhase,
 };
 
-/// The runner-owned, schema-only graph UDTF appended to a feature-off S1
+/// The runner-owned, schema-only graph UDTF appended to a feature-off
 /// profile. Keeping this label outside user-selected catalog labels prevents
 /// another graph workload from silently becoming part of the cell.
 pub(super) const FEATURE_OFF_CUGRAPH_QUERY_LABEL: &str = "feature_off_cugraph_pagerank";
@@ -61,7 +61,7 @@ pub(super) struct FeatureOffCugraphAttemptEvidence {
     pub(super) within_measured_latency_bound: Option<bool>,
 }
 
-/// S1 feature-off cell evidence. This is a load-harness projection, not a
+/// Feature-off cell evidence. This is a load-harness projection, not a
 /// unit-test result: it proves that every emitted UDTF request sealed an exact
 /// structured rejection while relational attempts continued to reach GPU work
 /// in the same measured window.
@@ -250,7 +250,7 @@ pub(super) struct MissingAttributionField {
     pub(super) attempts: u64,
 }
 
-/// W8's artifact-level attribution-completeness section.
+/// Artifact-level attribution-completeness section.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub(super) struct AttributionCompleteness {
     pub(super) status: ClauseStatus,
@@ -263,7 +263,7 @@ pub(super) struct AttributionCompleteness {
     pub(super) missing_fields: Vec<MissingAttributionField>,
 }
 
-/// W8's explicit reference-exporter cell. The endpoint stored in an artifact
+/// The explicit reference-exporter cell. The endpoint stored in an artifact
 /// is always reduced to host:port; credentials and paths never leave the
 /// invocation boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -405,7 +405,7 @@ impl AttributionCompleteness {
     }
 }
 
-/// Projects W8 completeness for an individual attempt row.
+/// Projects reference-exporter completeness for an individual attempt row.
 pub(super) fn attribution_for(observation: &AttemptObservation) -> AttemptAttribution {
     if observation.succeeded {
         return AttemptAttribution {

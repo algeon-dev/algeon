@@ -321,7 +321,7 @@ pub fn stable_graph_result_schema(algorithm: GraphAlgorithm) -> SchemaRef {
             Field::new("core_number", arrow::datatypes::DataType::Int64, false),
         ],
         // KCore and MST return an edge list; column names follow the
-        // graph-SQL `src`/`dst` convention. Weight is deferred to Milestone 2.
+        // graph-SQL `src`/`dst` convention. The current output contract omits weight.
         GraphAlgorithm::KCore | GraphAlgorithm::MinimumSpanningTree => vec![
             Field::new("src", arrow::datatypes::DataType::Int64, false),
             Field::new("dst", arrow::datatypes::DataType::Int64, false),

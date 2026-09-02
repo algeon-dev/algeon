@@ -95,12 +95,12 @@ const SAMPLE_INTERVAL: Duration = Duration::from_millis(250);
 /// report vectors, so this caps artifact size and peak memory; the per-device
 /// peaks the scenario clauses use keep folding past the cap. A final sample
 /// always displaces the retained tail when this bound is reached, so terminal
-/// P4 counters are never audited against a pre-drain snapshot.
+/// backend-metric counters are never audited against a pre-drain snapshot.
 const MAX_SNAPSHOT_SAMPLES: usize = 1024;
 
 /// The sampler cadence for a configured run window. Windows short enough to
 /// fit the retention bound at the base interval keep 250 ms; longer windows
-/// (S4 plateaus) trade cadence for whole-window coverage instead of
+/// (long plateaus) trade cadence for whole-window coverage instead of
 /// truncating the series mid-window.
 fn sample_interval_for(window: Duration) -> Duration {
     let window_ns = window.as_nanos().min(u128::from(u64::MAX)) as u64;
@@ -126,7 +126,7 @@ fn feature_off_cugraph_sql() -> String {
 /// warmup-plus-measurement boundary; already-admitted work may use only the
 /// profile-owned completion grace to reach a native safe boundary and seal.
 /// This keeps sustained-service measurement duration distinct from bounded
-/// cooperative finalization without weakening legacy P6's zero-grace shape.
+/// cooperative finalization; the post-submission drain grace is optional.
 #[derive(Clone, Copy)]
 struct RunTiming {
     started: Instant,
@@ -159,7 +159,7 @@ impl RunTiming {
     }
 }
 
-/// S1's graph request is intentionally absent from normal relational
+/// The feature-off graph request is intentionally absent from normal relational
 /// round-robin selection.  The runner uses this profile-owned schedule to
 /// issue the declared warmup and measurement probes beside live relational
 /// attempts without changing the relational cohort's query distribution.
@@ -181,14 +181,14 @@ pub(super) struct ProbeSelection {
     pub(super) domain_exhaustion_probe: bool,
     pub(super) overload_fairness: bool,
     pub(super) physical_allocator_pressure: bool,
-    /// S6 repeated quarantine cycles over a rotation of configured ordinals.
+    /// Repeated quarantine cycles over a rotation of configured ordinals.
     pub(super) quarantine_cycles: Option<usize>,
-    /// S6 close initiated at the midpoint of the measurement window.
+    /// Close initiated at the midpoint of the measurement window.
     pub(super) close_under_load: bool,
-    /// W8's explicit reference OTLP exporter cell. None means the run records
+    /// The explicit reference OTLP exporter cell. None means the run records
     /// that no exporter was requested rather than claiming export success.
     pub(super) otlp_export: Option<OtlpExportConfig>,
-    /// I8's intentionally serialized public completion receiver. The sink is
+    /// The intentionally serialized public completion receiver. The sink is
     /// a probe-only consumer delay, not an execution or admission policy.
     pub(super) slow_report_sink: Option<Duration>,
 }
@@ -240,7 +240,7 @@ async fn run_measured(
             }
         });
     if plan.truncated_by_attempt_cap {
-        // W6: the artifact records this too; the operator warning keeps a
+        // The artifact records this too; the operator warning keeps a
         // truncated offered process from reading as the profile's intent.
         eprintln!(
             "warning: offered process exceeds the planned-attempt cap {}; the plan was truncated and the artifact records truncated_by_attempt_cap",
@@ -377,7 +377,7 @@ async fn run_measured(
     // attempt rows remain canonical. The evidence retains a timeout or cleanup
     // failure instead of erasing it with `.ok()`.
     let close = close_backend(&backend);
-    // S7's same-key proof needs a cold cache on exactly one allocation
+    // The same-key cache proof needs a cold cache on exactly one allocation
     // domain. It therefore runs only after the normal traffic backend closes,
     // on a fresh backend restricted to the profile-owned ordinal.
     let cache_same_key_probe = match profile.cache.stress.as_ref().and_then(|stress| stress.same_key_probe.as_ref()) {
@@ -693,7 +693,7 @@ fn has_measurement_attempts(aggregate: &MeasuredAggregate) -> bool {
     aggregate.window.measurement_attempts != 0
 }
 
-/// An explicit multi-phase W3 schedule is an envelope only when every
+/// An explicit multi-phase schedule is an envelope only when every
 /// declared phase emitted a measured attempt. A long warmup or prior phase
 /// that consumes a later phase's wall-clock interval is a coverage failure,
 /// not a zero-QPS datum. A single implicit phase is covered by
@@ -710,7 +710,7 @@ fn every_configured_step_has_measurement_attempts(plan: &ArrivalPlan, aggregate:
     })
 }
 
-/// Runs S7's explicit cold-cache coalescing cohorts.  The throughput run may
+/// Runs the explicit cold-cache coalescing cohorts. The throughput run may
 /// span several ordinal-local domains, so it cannot prove that equal keys
 /// actually joined one cache. This probe isolates one configured ordinal on a
 /// fresh backend and retains only public observations before and after each
@@ -910,10 +910,10 @@ fn cache_source_event_snapshots(backend: &NexusGpuBackend) -> ToolResult<Value> 
 }
 
 /// Applies only the ordinary scenario clauses that the requested physical run
-/// is able to prove. Dedicated P6.6 probes have their own strict predicates:
-/// the deadline barrier is serialized, while overload uses sealed queue facts
-/// rather than P6.5 overlap clauses. The complete aggregate remains in the
-/// artifact in either case.
+/// is able to prove. Dedicated probes have their own strict predicates: the
+/// deadline barrier is serialized, while overload uses sealed queue facts
+/// rather than ordinary overlap clauses. The complete aggregate remains in
+/// the artifact in either case.
 fn selected_scenario_clauses_pass(
     scenarios: &super::aggregate::ScenarioEvidence,
     dedicated_p6_6_scenario: bool,
@@ -941,7 +941,7 @@ fn selected_scenario_clauses_pass(
     !same_device_failed && !progress_failed && !heterogeneity_failed
 }
 
-/// Projects I8's explicit handoff-pressure contract. Every step must offer
+/// Projects the explicit handoff-pressure contract. Every step must offer
 /// more completions than one serialized sink can drain; the profile preflight
 /// rejects any slower step before fixtures or CUDA are touched. The bounded
 /// drain allowance is derived from the actual started-task count and the
@@ -1054,7 +1054,7 @@ pub(super) fn build_backend(profile: &RunProfile) -> ToolResult<NexusGpuBackend>
 }
 
 /// The shared session pool, keyed by profile workload position. TPC-H and
-/// TPC-DS share table names (`customer`), and W9 permits several DBLP graph
+/// TPC-DS share table names (`customer`), and several DBLP graph
 /// fixtures with those same registration names, so one context pool per
 /// fixture workload is the only correct routing boundary.
 pub(super) type SessionPool = BTreeMap<usize, Vec<SessionContext>>;

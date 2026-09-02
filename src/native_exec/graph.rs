@@ -54,7 +54,7 @@ const OPERATION: &str = "datafusion_nexus.graph_execution.bfs_singleflight";
 #[cfg(feature = "cugraph")]
 const DEFAULT_MAX_BATCH_WIDTH: usize = 32;
 /// The coordinator remains a serving primitive, not an unbounded event
-/// recorder.  A fresh S7 cohort is far smaller than this bounded projection.
+/// recorder. A fresh same-key cohort is far smaller than this bounded projection.
 #[cfg(feature = "cugraph")]
 const MAX_BFS_SINGLEFLIGHT_EVENT_SNAPSHOTS: usize = 256;
 

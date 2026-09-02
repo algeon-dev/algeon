@@ -149,7 +149,7 @@ def standard_rate_profile(profile_class: str, knee_qps: int, phase_seconds: int)
         if profile_class == "aggregate":
             # q01's reservation-limit witness is 1,068,599,820 B live plus
             # 15,237,120 B requested. Keep the immutable floor above that
-            # observed owner-side requirement in both S2 phases.
+            # observed owner-side requirement in both rate phases.
             aggregate_floor = 1_342_177_280
             profile["backend"]["native_execution"]["device_budget_bytes"] = aggregate_floor
             for device in profile["backend"]["device_profiles"]:

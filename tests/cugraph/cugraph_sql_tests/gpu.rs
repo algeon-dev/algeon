@@ -666,8 +666,7 @@ async fn cugraph_sql_gpu_composed_attempt_returns_cache_checkouts_before_deferre
 // previously lived here. They have been subsumed by the registry-driven
 // `tests/cugraph/cugraph_parity.rs` harness, which reads local oracle JSON
 // produced by `fixture/graph/cugraph_oracle.py`. The composition test below
-// stays in place and will move into the harness as a Milestone 2
-// composition entry.
+// stays in place until the harness has a composition entry for it.
 
 #[tokio::test]
 async fn cugraph_sql_backend_session_records_query_service_admission_metrics() {

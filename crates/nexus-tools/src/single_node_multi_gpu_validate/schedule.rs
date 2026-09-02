@@ -31,7 +31,7 @@ pub(super) struct ScheduledArrival {
     /// drains a round before submitting the next, making `concurrency` an
     /// in-flight ceiling. Rounds restart at zero for each step.
     pub(super) round: usize,
-    /// W3 step this arrival belongs to. Single-phase profiles place every
+    /// Multi-phase step this arrival belongs to. Single-phase profiles place every
     /// arrival in step zero.
     pub(super) step_index: usize,
     pub(super) offset_ns: u64,
@@ -74,9 +74,9 @@ pub(super) struct ArrivalPlan {
     pub(super) max_rounds: Option<usize>,
     /// Duration-paced closed-loop profiles construct each round at the driver
     /// boundary instead of materializing a speculative wall-clock number of
-    /// arrivals. This prevents the planning cap from omitting later W3 steps
+    /// arrivals. This prevents the planning cap from omitting later steps
     /// while retaining a finite, reproducible plan for rate and fixed-cohort
-    /// P6 scenarios.
+    /// fixed-cohort validation scenarios.
     pub(super) duration_paced_concurrency: bool,
     pub(super) rate_overrun: &'static str,
     pub(super) warmup_ns: u64,
@@ -91,7 +91,7 @@ pub(super) struct ArrivalPlan {
     /// Sequential phases of this plan. Always non-empty; a single-phase
     /// profile contributes exactly one step.
     pub(super) steps: Vec<StepPlan>,
-    /// S5 storm knobs, echoed from the profile so the driver can arm them
+    /// deadline/cancellation storm knobs, echoed from the profile so the driver can arm them
     /// per attempt.
     pub(super) attempt_deadline_ms: Option<u64>,
     pub(super) cancel_every_n: Option<usize>,

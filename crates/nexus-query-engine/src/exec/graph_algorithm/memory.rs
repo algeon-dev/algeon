@@ -71,7 +71,7 @@ pub(super) fn admit_graph_memory(
         retained_normalization_source_credit_cap_bytes: None,
         already_accounted_similarity_pair_input_bytes: 0,
     })?;
-    // Every non-empty graph executor gets an I11 calibration row, including
+    // Every non-empty graph executor gets a calibration row, including
     // algorithms whose model is currently diagnostic-only rather than a live
     // graph-tier reservation.
     metrics.record_graph_claim_calibration(report.clone(), node_id);

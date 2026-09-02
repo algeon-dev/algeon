@@ -386,7 +386,7 @@ fn bounded_sparse_pagerank_uses_runtime_vertex_estimate_to_admit_graph_memory() 
     assert_eq!(graph_statistics.sum_out_degree, None);
     assert_eq!(graph_statistics.degree_max, None);
     assert_eq!(graph_statistics.sum_min_degree_oriented, None);
-    // R6 records the drift ratio from the graph stream reservation high-water
+    // The drift ratio is recorded from the graph stream reservation high-water
     // even when a tiny graph cannot raise the process pool high-water.
     assert!(
         graph_reservations[0].graph_model_error_ratio.is_some(),
