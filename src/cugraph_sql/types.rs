@@ -579,6 +579,26 @@ impl CugraphAlgorithmSpec {
                     PredicateSourceColumn::vertex(params.vertex_pairs.second_vertex_col.clone()),
                 ],
             }),
+            CugraphAlgorithmParams::ForceAtlas2(params) => {
+                if let Some(input) = &params.vertex_attributes {
+                    let mut columns = vec![PredicateSourceColumn::vertex(input.vertex_col.clone())];
+                    for column in [&input.radius_col, &input.mobility_col, &input.mass_col].into_iter().flatten() {
+                        if !columns.iter().any(|existing| existing.name == *column) {
+                            columns.push(PredicateSourceColumn::float32_value(column.clone()));
+                        }
+                    }
+                    sources.push(PredicateSourceSpec { table_name: input.table_name.clone(), columns });
+                }
+                if let Some(input) = &params.initial_positions {
+                    let mut columns = vec![PredicateSourceColumn::vertex(input.vertex_col.clone())];
+                    for column in [&input.x_col, &input.y_col] {
+                        if !columns.iter().any(|existing| existing.name == *column) {
+                            columns.push(PredicateSourceColumn::float32_value(column.clone()));
+                        }
+                    }
+                    sources.push(PredicateSourceSpec { table_name: input.table_name.clone(), columns });
+                }
+            },
             _ => {},
         }
         sources
@@ -622,6 +642,7 @@ pub(crate) enum PredicateSourceColumnRole {
     Vertex,
     EdgeId,
     FloatValue,
+    Float32Value,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -641,6 +662,10 @@ impl PredicateSourceColumn {
 
     fn float_value(name: impl Into<String>) -> Self {
         Self { name: name.into(), role: PredicateSourceColumnRole::FloatValue }
+    }
+
+    fn float32_value(name: impl Into<String>) -> Self {
+        Self { name: name.into(), role: PredicateSourceColumnRole::Float32Value }
     }
 }
 
@@ -893,6 +918,8 @@ impl CugraphAlgorithmParams {
                 gravity: params.gravity,
                 verbose: params.verbose,
                 seed: params.seed,
+                vertex_attributes: None,
+                initial_positions: None,
             }),
             NativeGraphAlgorithmParams::Similarity(_) => Self::Similarity(CugraphSimilarityParams::default()),
         }
@@ -1794,6 +1821,52 @@ pub struct CugraphForceAtlas2Params {
     pub verbose: bool,
     /// RNG seed for deterministic layout runs.
     pub seed: u64,
+    /// Optional relation containing per-vertex layout attributes.
+    pub vertex_attributes: Option<CugraphForceAtlas2VertexAttributesTable>,
+    /// Optional relation containing complete warm-start positions.
+    pub initial_positions: Option<CugraphForceAtlas2InitialPositionsTable>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CugraphForceAtlas2VertexAttributesTable {
+    pub table_name: CugraphTableReference,
+    pub vertex_col: String,
+    pub radius_col: Option<String>,
+    pub mobility_col: Option<String>,
+    pub mass_col: Option<String>,
+}
+
+impl Default for CugraphForceAtlas2VertexAttributesTable {
+    fn default() -> Self {
+        Self {
+            table_name: CugraphTableReference::parse("vertex_attributes")
+                .expect("default vertex-attribute table name is valid"),
+            vertex_col: "vertex".to_string(),
+            radius_col: None,
+            mobility_col: None,
+            mass_col: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CugraphForceAtlas2InitialPositionsTable {
+    pub table_name: CugraphTableReference,
+    pub vertex_col: String,
+    pub x_col: String,
+    pub y_col: String,
+}
+
+impl Default for CugraphForceAtlas2InitialPositionsTable {
+    fn default() -> Self {
+        Self {
+            table_name: CugraphTableReference::parse("initial_positions")
+                .expect("default initial-position table name is valid"),
+            vertex_col: "vertex".to_string(),
+            x_col: "x".to_string(),
+            y_col: "y".to_string(),
+        }
+    }
 }
 
 impl Default for CugraphForceAtlas2Params {
@@ -1814,6 +1887,8 @@ impl Default for CugraphForceAtlas2Params {
             gravity: 1.0,
             verbose: false,
             seed: 0,
+            vertex_attributes: None,
+            initial_positions: None,
         }
     }
 }

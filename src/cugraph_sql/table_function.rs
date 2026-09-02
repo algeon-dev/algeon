@@ -599,6 +599,14 @@ fn validate_predicate_source_schema(
                     )));
                 }
             },
+            PredicateSourceColumnRole::Float32Value => {
+                if field.data_type() != &DataType::Float32 {
+                    return Err(plan_error(format!(
+                        "cuGraph side-input value column '{}' in '{}' must have dtype Float32",
+                        column.name, source.table_name
+                    )));
+                }
+            },
         }
     }
     Ok(())

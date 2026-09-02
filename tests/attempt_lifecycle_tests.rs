@@ -7,6 +7,8 @@ use datafusion_nexus::{
     attempt::{AttemptOptions, RuntimeObservationConfig},
     backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile},
     native_exec::NexusNativeExecutionConfig,
+    native_report::NativeDataFusionExecutionMetrics,
+    planner::FinalPlanDisposition,
 };
 use futures::StreamExt;
 use nexus_query_engine::observability::{
@@ -263,6 +265,15 @@ async fn reused_plans_mint_fresh_attempts_and_never_observe_plan_lifetime_attemp
     let report = planner.completion().await;
     assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
     let metrics = plan.metrics().expect("native root exposes DataFusion metrics");
+    let execution = planner.sealed_native_execution_snapshot().expect("sealed native execution snapshot");
+    assert_eq!(execution.attempt_id, planner_id);
+    assert_eq!(execution.final_disposition, FinalPlanDisposition::Native);
+    assert_eq!(execution.native_plan_fragment_count, 1);
+    assert_eq!(execution.explicit_gpu_island_count, 0);
+    assert_eq!(execution.host_datafusion_boundary_count, 0);
+    assert_eq!(execution.terminal_host_materialization_count, 1);
+    assert_eq!(execution.intermediate_device_to_host_materialization_count, 0);
+    assert_eq!(execution.metrics, NativeDataFusionExecutionMetrics::from_metrics(&metrics));
     assert_eq!(metrics.sum_by_name("attempt_report_rows").unwrap().as_usize(), 1);
     let sealed_rows = metrics
         .iter()

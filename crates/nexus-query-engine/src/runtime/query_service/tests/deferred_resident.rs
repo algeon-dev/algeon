@@ -217,8 +217,8 @@ fn shared_resident_two_left_joins_preserve_duplicate_multiplicity() {
             .as_requirement()
             .deferred_resident_phase_for_plan(&consumer_plan)
             .expect("the composed scope must be unambiguous")
-            .is_none(),
-        "complete Parquet evidence must keep the composed joins on the static schedule"
+            .is_some(),
+        "resident string outputs must defer until their exact max lengths are measured"
     );
     let service = try_guaranteed_runtime_test_service().expect("runtime-backed admission service");
     let attempt = service

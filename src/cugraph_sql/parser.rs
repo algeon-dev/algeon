@@ -8,10 +8,10 @@ use serde_json::Value;
 use super::{
     CugraphAlgorithm, CugraphAlgorithmParams, CugraphAlgorithmSpec, CugraphBetweennessSeeds, CugraphBfsOutputMode,
     CugraphBfsOutputOptions, CugraphBfsPredicateInputs, CugraphBfsSource, CugraphBfsSourceVertex,
-    CugraphGraphConstructionPolicy, CugraphGraphEdgePredicateTable, CugraphGraphOptions, CugraphGraphPredicateTable,
-    CugraphKCoreDegreeType, CugraphPageRankParams, CugraphSimilarityParams, CugraphSqlConfig, CugraphTableReference,
-    CugraphVertexPairTable, CugraphVertexSelector, literal_string_arg, plan_error, result_schema_for_params,
-    unsupported_option_error,
+    CugraphForceAtlas2InitialPositionsTable, CugraphForceAtlas2VertexAttributesTable, CugraphGraphConstructionPolicy,
+    CugraphGraphEdgePredicateTable, CugraphGraphOptions, CugraphGraphPredicateTable, CugraphKCoreDegreeType,
+    CugraphPageRankParams, CugraphSimilarityParams, CugraphSqlConfig, CugraphTableReference, CugraphVertexPairTable,
+    CugraphVertexSelector, literal_string_arg, plan_error, result_schema_for_params, unsupported_option_error,
 };
 
 pub fn parse_cugraph_algorithm_spec(
@@ -716,15 +716,11 @@ fn parse_options_json(
             },
             "prevent_overlapping" if algorithm == CugraphAlgorithm::ForceAtlas2 => {
                 let value = json_bool(value, key)?;
-                if value {
-                    return Err(unsupported_option_error(
-                        "ForceAtlas2 prevent_overlapping requires vertex_radius side input, which the SQL API does not support yet",
-                    ));
-                }
                 if let CugraphAlgorithmParams::ForceAtlas2(params) = params {
                     params.prevent_overlapping = value;
                 }
             },
+            key if algorithm == CugraphAlgorithm::ForceAtlas2 && is_force_atlas2_side_input_option(key) => {},
             "overlap_scaling_ratio" if algorithm == CugraphAlgorithm::ForceAtlas2 => {
                 let overlap_scaling_ratio = json_f64(value, key)?;
                 if overlap_scaling_ratio <= 0.0 {
@@ -818,6 +814,9 @@ fn parse_options_json(
     }
     if is_betweenness_algorithm(algorithm) {
         validate_betweenness_options(params)?;
+    }
+    if algorithm == CugraphAlgorithm::ForceAtlas2 {
+        parse_force_atlas2_side_input_options(object, params)?;
     }
 
     Ok(source_relation)
@@ -953,6 +952,79 @@ fn is_bfs_predicate_option(key: &str) -> bool {
             | "output_mode"
             | "return_target_info"
     )
+}
+
+fn is_force_atlas2_side_input_option(key: &str) -> bool {
+    matches!(
+        key,
+        "vertex_attributes_table"
+            | "vertex_attributes_vertex_col"
+            | "vertex_radius_col"
+            | "vertex_mobility_col"
+            | "vertex_mass_col"
+            | "initial_positions_table"
+            | "initial_positions_vertex_col"
+            | "initial_x_col"
+            | "initial_y_col"
+    )
+}
+
+fn parse_force_atlas2_side_input_options(
+    object: &serde_json::Map<String, Value>,
+    params: &mut CugraphAlgorithmParams,
+) -> Result<()> {
+    let CugraphAlgorithmParams::ForceAtlas2(params) = params else {
+        return Err(plan_error("cugraph_force_atlas2 carried non-ForceAtlas2 parameters"));
+    };
+    let attributes_table = optional_table_reference(object, "vertex_attributes_table")?;
+    let attributes_vertex = optional_json_string(object, "vertex_attributes_vertex_col")?;
+    let radius = optional_json_string(object, "vertex_radius_col")?;
+    let mobility = optional_json_string(object, "vertex_mobility_col")?;
+    let mass = optional_json_string(object, "vertex_mass_col")?;
+    let has_attribute_columns = radius.is_some() || mobility.is_some() || mass.is_some();
+    params.vertex_attributes = match (attributes_table, attributes_vertex, has_attribute_columns) {
+        (Some(table_name), Some(vertex_col), true) => Some(CugraphForceAtlas2VertexAttributesTable {
+            table_name,
+            vertex_col,
+            radius_col: radius,
+            mobility_col: mobility,
+            mass_col: mass,
+        }),
+        (Some(_), None, _) => {
+            return Err(plan_error("ForceAtlas2 vertex_attributes_table requires vertex_attributes_vertex_col"));
+        },
+        (Some(_), Some(_), false) => {
+            return Err(plan_error(
+                "ForceAtlas2 vertex attributes require at least one of vertex_radius_col, vertex_mobility_col, or vertex_mass_col",
+            ));
+        },
+        (None, Some(_), _) | (None, None, true) => {
+            return Err(plan_error("ForceAtlas2 vertex attribute columns require vertex_attributes_table"));
+        },
+        (None, None, false) => None,
+    };
+    if params.prevent_overlapping && params.vertex_attributes.as_ref().is_none_or(|input| input.radius_col.is_none()) {
+        return Err(plan_error(
+            "ForceAtlas2 prevent_overlapping=true requires vertex_attributes_table and vertex_radius_col",
+        ));
+    }
+
+    let positions_table = optional_table_reference(object, "initial_positions_table")?;
+    let positions_vertex = optional_json_string(object, "initial_positions_vertex_col")?;
+    let x = optional_json_string(object, "initial_x_col")?;
+    let y = optional_json_string(object, "initial_y_col")?;
+    params.initial_positions = match (positions_table, positions_vertex, x, y) {
+        (Some(table_name), Some(vertex_col), Some(x_col), Some(y_col)) => {
+            Some(CugraphForceAtlas2InitialPositionsTable { table_name, vertex_col, x_col, y_col })
+        },
+        (None, None, None, None) => None,
+        _ => {
+            return Err(plan_error(
+                "ForceAtlas2 initial positions require initial_positions_table, initial_positions_vertex_col, initial_x_col, and initial_y_col",
+            ));
+        },
+    };
+    Ok(())
 }
 
 fn parse_bfs_predicate_options(

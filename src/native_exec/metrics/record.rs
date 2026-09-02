@@ -24,7 +24,7 @@ use super::{
     SERVER_CAPTURE_LOSS_METRIC_NAME, capture::NativeExecutionMetricsCapture, contract::metric_name,
     registry::NativeMetricRegistry,
 };
-use crate::native_exec::admission::QueryAdmissionFacts;
+use crate::{native_exec::admission::QueryAdmissionFacts, native_report::NativeDataFusionExecutionMetrics};
 
 mod mapping;
 
@@ -65,7 +65,11 @@ impl SealedAttemptMetricsTarget {
     /// The caller elects exactly one root wrapper before execution. All labels
     /// are derived from the sealed projection; in particular, the attempt id and device
     /// ordinal deliberately never become metric labels.
-    pub(crate) fn record(self, report: &QueryAttemptReport) -> SealedAttemptGraphClaimCalibrationSnapshot {
+    pub(crate) fn record(
+        self,
+        report: &QueryAttemptReport,
+    ) -> (SealedAttemptGraphClaimCalibrationSnapshot, NativeDataFusionExecutionMetrics) {
+        let execution = NativeDataFusionExecutionMetrics::from_metrics(&self.metrics.clone_inner());
         let graph_claim_calibration = SealedAttemptGraphClaimCalibrationSnapshot::from_captures(
             report.attempt_id,
             self.graph_claim_calibration_captures,
@@ -87,7 +91,7 @@ impl SealedAttemptMetricsTarget {
             .with_new_label("resource_evidence", labels.resource_evidence)
             .global_counter(metric_name::attempt_report_rows())
             .add(1);
-        graph_claim_calibration
+        (graph_claim_calibration, execution)
     }
 }
 

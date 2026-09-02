@@ -1134,10 +1134,15 @@ pub(crate) fn generic_gpu_resident_owner_terms(
         owner_term_error("gpu_resident_row_bound_unavailable", Some(OwnerTermRole::RetainedOutput), None)
     })?;
     let output_evidence = PlanColumnEvidenceAnalysis::for_plan(plan, resident_outputs)?.root(plan);
-    let output_bytes = bounded_consumer_frame_bytes_with_evidence(rows, plan.output_schema(), &output_evidence)
-        .map_err(|error| {
-            owner_term_error("gpu_resident_output_bytes_unavailable", Some(OwnerTermRole::RetainedOutput), None)
-                .with_fact("sizing_reason", error.fact_value("schedule_reason").unwrap_or("unknown"))
+    let output_bytes = bounded_retained_output_frame_bytes_with_evidence(rows, plan.output_schema(), &output_evidence)
+        .map_err(|source_error| {
+            let error =
+                owner_term_error("gpu_resident_output_bytes_unavailable", Some(OwnerTermRole::RetainedOutput), None)
+                    .with_fact("sizing_reason", source_error.fact_value("schedule_reason").unwrap_or("unknown"));
+            match source_error.fact_value("column") {
+                Some(column) => error.with_fact("sizing_column", column),
+                None => error,
+            }
         })?;
     let mut terms = reachable_gpu_sources
         .iter()
@@ -1152,7 +1157,9 @@ pub(crate) fn generic_gpu_resident_owner_terms(
                 owner_term_error("gpu_resident_input_row_bound_unavailable", Some(OwnerTermRole::SourceStage), None)
             })?;
             let input_bytes = match resident_outputs.get(&source.input_name) {
-                Some(evidence) => bounded_consumer_frame_bytes_with_evidence(input_rows, &source.schema, evidence),
+                Some(evidence) => {
+                    bounded_retained_output_frame_bytes_with_evidence(input_rows, &source.schema, evidence)
+                },
                 None => bounded_consumer_frame_bytes(input_rows, &source.schema),
             }
             .map_err(|error| {

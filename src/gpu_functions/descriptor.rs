@@ -77,4 +77,26 @@ impl GpuFunctionDescriptor {
             })
             .collect()
     }
+
+    /// Return relation roles whose descriptor does not mark them optional.
+    pub(crate) fn required_relation_role_names(&self) -> Result<Vec<&str>, &'static str> {
+        let Value::Array(roles) = &self.relation_roles else {
+            return Err("relation_roles must be a JSON array");
+        };
+        roles
+            .iter()
+            .filter_map(|role| match role {
+                Value::String(name) => Some(Ok(name.as_str())),
+                Value::Object(role) => {
+                    let required = role.get("required").and_then(Value::as_bool).unwrap_or(true);
+                    required.then(|| {
+                        role.get("name")
+                            .and_then(Value::as_str)
+                            .ok_or("relation role objects must contain a string name")
+                    })
+                },
+                _ => Some(Err("each relation role must be a string or an object with a string name")),
+            })
+            .collect()
+    }
 }

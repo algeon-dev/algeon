@@ -73,6 +73,74 @@ pub struct GraphForceAtlas2Params {
     pub verbose: bool,
     /// RNG seed for deterministic layout runs.
     pub seed: u64,
+    /// Optional per-vertex radius, mobility, and mass relation.
+    pub vertex_attributes: Option<GraphForceAtlas2VertexAttributesInput>,
+    /// Optional complete warm-start position relation.
+    pub initial_positions: Option<GraphForceAtlas2InitialPositionsInput>,
+}
+
+impl GraphForceAtlas2Params {
+    /// Visits every side-input node id in stable role order.
+    pub fn side_input_node_ids(&self) -> impl Iterator<Item = NodeId> + '_ {
+        self.vertex_attributes
+            .iter()
+            .map(|input| input.input)
+            .chain(self.initial_positions.iter().map(|input| input.input))
+    }
+}
+
+/// Optional per-vertex ForceAtlas2 attributes produced by another plan node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphForceAtlas2VertexAttributesInput {
+    /// Plan node producing the attribute relation.
+    pub input: NodeId,
+    /// Vertex identifier column.
+    pub vertex: String,
+    /// Optional non-null Float32 radius column.
+    pub radius: Option<String>,
+    /// Optional non-null Float32 mobility column.
+    pub mobility: Option<String>,
+    /// Optional non-null Float32 mass column.
+    pub mass: Option<String>,
+}
+
+impl GraphForceAtlas2VertexAttributesInput {
+    /// Creates a vertex-attribute binding.
+    pub fn new(
+        input: NodeId,
+        vertex: impl Into<String>,
+        radius: Option<impl Into<String>>,
+        mobility: Option<impl Into<String>>,
+        mass: Option<impl Into<String>>,
+    ) -> Self {
+        Self {
+            input,
+            vertex: vertex.into(),
+            radius: radius.map(Into::into),
+            mobility: mobility.map(Into::into),
+            mass: mass.map(Into::into),
+        }
+    }
+}
+
+/// Complete per-vertex ForceAtlas2 warm-start positions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphForceAtlas2InitialPositionsInput {
+    /// Plan node producing the position relation.
+    pub input: NodeId,
+    /// Vertex identifier column.
+    pub vertex: String,
+    /// Non-null Float32 X-coordinate column.
+    pub x: String,
+    /// Non-null Float32 Y-coordinate column.
+    pub y: String,
+}
+
+impl GraphForceAtlas2InitialPositionsInput {
+    /// Creates an initial-position binding.
+    pub fn new(input: NodeId, vertex: impl Into<String>, x: impl Into<String>, y: impl Into<String>) -> Self {
+        Self { input, vertex: vertex.into(), x: x.into(), y: y.into() }
+    }
 }
 
 impl Default for GraphForceAtlas2Params {
@@ -94,6 +162,8 @@ impl Default for GraphForceAtlas2Params {
             gravity: 1.0,
             verbose: false,
             seed: 0,
+            vertex_attributes: None,
+            initial_positions: None,
         }
     }
 }

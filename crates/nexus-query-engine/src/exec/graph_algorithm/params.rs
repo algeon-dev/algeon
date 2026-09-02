@@ -282,13 +282,6 @@ pub(super) fn spectral_clustering_params(
 pub(super) fn force_atlas2_params(
     params: &crate::plan::GraphForceAtlas2Params,
 ) -> Result<cugraph::layout::ForceAtlas2Params> {
-    if params.prevent_overlapping {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.graph_algorithm.force_atlas2_params",
-            "cuGraph ForceAtlas2 prevent_overlapping requires vertex_radius side input, which the native graph API does not support yet",
-        ));
-    }
     if params.max_iter > i32::MAX as u32 {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -337,7 +330,7 @@ pub(super) fn force_atlas2_params(
             "invalid cuGraph ForceAtlas2 gravity",
         ))?,
         verbose: params.verbose,
-        do_expensive_check: false,
+        do_expensive_check: params.vertex_attributes.is_some() || params.initial_positions.is_some(),
     })
 }
 

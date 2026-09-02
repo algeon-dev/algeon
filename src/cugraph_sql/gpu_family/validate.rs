@@ -376,6 +376,13 @@ async fn validate_predicate_sources(
                         ),
                     ))
                 },
+                PredicateSourceColumnRole::Float32Value if field.data_type() != &DataType::Float32 => Some((
+                    ERROR_UNSUPPORTED_WEIGHT_DTYPE,
+                    format!(
+                        "cuGraph side-input value column '{}' in '{}' must have dtype Float32",
+                        column.name, source.table_name
+                    ),
+                )),
                 _ => None,
             };
             if let Some((code, message)) = mismatch {

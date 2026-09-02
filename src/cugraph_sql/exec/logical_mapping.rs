@@ -174,16 +174,8 @@ pub(super) fn decode_logical_graph_result(
         _ => contract.output_columns,
     };
     for column in output_columns {
-        let preserves_total_payload_bound = column.multiplicity != CugraphLogicalOutputMultiplicity::OnePerVertex;
-        (root, root_schema) = decode_relation_column(
-            builder,
-            root,
-            root_schema,
-            column.name,
-            column.nullable,
-            codebook,
-            preserves_total_payload_bound,
-        )?;
+        (root, root_schema) =
+            decode_relation_column(builder, root, root_schema, column.name, column.nullable, codebook, true)?;
     }
     Ok((root, root_schema))
 }

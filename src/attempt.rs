@@ -30,8 +30,8 @@ pub use nexus_query_engine::{
     attempt::{AttemptBackendCountersSnapshot, AttemptCancellation, AttemptCompletion},
     graph_memory::GraphClaimCalibrationRow,
     observability::{
-        AttemptDisposition, AttemptId, AttemptQueryId, AttemptTraceContext, QueryAttemptReport,
-        RuntimeObservationConfig, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
+        AttemptCleanupDisposition, AttemptDisposition, AttemptId, AttemptQueryId, AttemptTraceContext,
+        QueryAttemptReport, RuntimeObservationConfig, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
     },
 };
 
@@ -48,6 +48,7 @@ use crate::{
         },
         sealed_attempt_metrics_target, transparent_root_wrapper_input,
     },
+    native_report::NativeDataFusionExecutionMetrics,
     planner::{FinalPlanDisposition, classify_final_plan},
 };
 
@@ -71,6 +72,21 @@ impl Default for AttemptOptions {
     }
 }
 
+/// Immutable native-plan and boundary evidence captured by the elected root
+/// at the same seal point as its attempt report.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SealedAttemptNativeExecutionSnapshot {
+    pub attempt_id: AttemptId,
+    pub final_disposition: FinalPlanDisposition,
+    pub native_plan_fragment_count: usize,
+    pub explicit_gpu_island_count: usize,
+    pub host_datafusion_boundary_count: usize,
+    pub terminal_host_materialization_count: usize,
+    pub intermediate_device_to_host_materialization_count: usize,
+    pub metrics: NativeDataFusionExecutionMetrics,
+}
+
 /// Per-invocation state propagated through DataFusion configuration.
 ///
 /// This is deliberately private: the extension carries an invocation binding
@@ -87,10 +103,12 @@ struct AttemptExecutionState {
     /// The one elected native root that may receive the fixed-cardinality
     /// attempt metric after this attempt's report has sealed. The target is
     /// consumed at seal, so no wrapper can publish a second row.
-    sealed_metrics_target: Mutex<Option<SealedAttemptMetricsTarget>>,
+    sealed_metrics_target:
+        Mutex<Option<(SealedAttemptMetricsTarget, crate::final_plan_observation::FinalPlanObservation)>>,
     /// Typed graph claim/peak rows frozen by the elected target at the same
     /// seal point as the immutable attempt report.
     sealed_graph_claim_calibration: Mutex<Option<SealedAttemptGraphClaimCalibrationSnapshot>>,
+    sealed_native_execution: Mutex<Option<SealedAttemptNativeExecutionSnapshot>>,
 }
 
 impl AttemptExecutionState {
@@ -100,20 +118,37 @@ impl AttemptExecutionState {
         // Planning supplies a fallback for paths such as CTAS; the actual
         // execution root replaces it before terminal publication so a replan
         // never projects into an unexecuted wrapper.
-        *slot = Some(target);
+        *slot = Some((target, crate::final_plan_observation::observe_final_plan(plan)));
     }
 
     fn publish_sealed_metrics(&self, report: &QueryAttemptReport) {
         let target = self.sealed_metrics_target.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
-        if let Some(target) = target {
-            let snapshot = target.record(report);
+        if let Some((target, observation)) = target {
+            let (snapshot, metrics) = target.record(report);
+            let intermediate_device_to_host_materialization_count =
+                metrics.device_to_host_materializations.saturating_sub(observation.host_materialization_count);
             *self.sealed_graph_claim_calibration.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
                 Some(snapshot);
+            *self.sealed_native_execution.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+                Some(SealedAttemptNativeExecutionSnapshot {
+                    attempt_id: report.attempt_id,
+                    final_disposition: observation.disposition,
+                    native_plan_fragment_count: observation.native_fragment_count,
+                    explicit_gpu_island_count: observation.explicit_gpu_island_count,
+                    host_datafusion_boundary_count: observation.datafusion_boundary_count,
+                    terminal_host_materialization_count: observation.host_materialization_count,
+                    intermediate_device_to_host_materialization_count,
+                    metrics,
+                });
         }
     }
 
     fn sealed_graph_claim_calibration_snapshot(&self) -> Option<SealedAttemptGraphClaimCalibrationSnapshot> {
         self.sealed_graph_claim_calibration.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+    }
+
+    fn sealed_native_execution_snapshot(&self) -> Option<SealedAttemptNativeExecutionSnapshot> {
+        self.sealed_native_execution.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 }
 
@@ -256,6 +291,7 @@ impl NexusGpuBackend {
             ticket: Mutex::new(None),
             sealed_metrics_target: Mutex::new(None),
             sealed_graph_claim_calibration: Mutex::new(None),
+            sealed_native_execution: Mutex::new(None),
         });
         // The attempt object is a factory, not a receiver: the begin
         // completion is dropped here so only caller-held receivers count
@@ -299,6 +335,9 @@ impl NexusAttempt {
     /// engine's admission, ledger, or allocator state.
     pub fn sealed_graph_claim_calibration_snapshot(&self) -> Option<SealedAttemptGraphClaimCalibrationSnapshot> {
         self.state.sealed_graph_claim_calibration_snapshot()
+    }
+    pub fn sealed_native_execution_snapshot(&self) -> Option<SealedAttemptNativeExecutionSnapshot> {
+        self.state.sealed_native_execution_snapshot()
     }
     pub fn cancellation(&self) -> AttemptCancellation {
         self.state.cancellation.clone()

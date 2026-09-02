@@ -463,6 +463,13 @@ pub(super) fn exact_execution_plan_output_rows(plan: &dyn ExecutionPlan) -> Resu
     Ok(Some(total))
 }
 
+pub(super) fn resident_side_input_output_rows(plan: &dyn ExecutionPlan) -> Result<Option<u64>> {
+    if let Some(rows) = gpu_resident_producer_hard_output_row_upper_bound(plan) {
+        return Ok(Some(rows));
+    }
+    exact_execution_plan_output_rows(plan)
+}
+
 fn native_query_plan_hard_row_upper_bound(plan: &dyn ExecutionPlan) -> Option<u64> {
     lowered_native_edge_plan(plan).and_then(nexus_query_engine::graph_memory::query_plan_hard_row_upper_bound)
 }

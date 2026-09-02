@@ -22,7 +22,13 @@ cugraph_force_atlas2(table_name [, src_col, dst_col [, weight_col [, options_jso
 
 ## Relation inputs
 
-The first positional argument names a registered edge table or view (the `edges` role). Parenthesized relation subqueries are not accepted; metadata validation uses the same registered name.
+The first positional argument names the registered edge table or view. Optional relations are named by their side-input table options. Parenthesized relation subqueries are not accepted; metadata validation resolves the same registered names.
+
+| Role | Required | Contract |
+| --- | --- | --- |
+| `edges` | yes | Required edge-list table or view for graph construction. |
+| `vertex_attributes` | no | Optional complete per-vertex radius, mobility, and mass relation. |
+| `initial_positions` | no | Optional complete per-vertex Float32 x/y warm-start relation. |
 
 ## Vertex ID types
 
@@ -57,16 +63,25 @@ Logical string side-input limitations:
 | `barnes_hut_theta` | `Float64` | `0.5` | min 0; max 1 |  |
 | `edge_weight_influence` | `Float64` | `1` | min 0 |  |
 | `gravity` | `Float64` | `1` | min 0 |  |
+| `initial_positions_table` | `Utf8\|null` | `null` | side input (initial_positions, cols: `initial_positions_vertex_col`, `initial_x_col`, `initial_y_col`) |  |
+| `initial_positions_vertex_col` | `Utf8\|null` | `null` | column of `initial_positions_table`; type ref `vertex_domain` |  |
+| `initial_x_col` | `Utf8\|null` | `null` | column of `initial_positions_table`; type ref `Float32` |  |
+| `initial_y_col` | `Utf8\|null` | `null` | column of `initial_positions_table`; type ref `Float32` |  |
 | `jitter_tolerance` | `Float64` | `1` | min 0 |  |
 | `lin_log_mode` | `Boolean` | `false` |  |  |
 | `max_iter` | `UInt32` | `500` | min 1; max 2147483647 |  |
 | `outbound_attraction_distribution` | `Boolean` | `false` |  |  |
 | `overlap_scaling_ratio` | `Float64` | `2` | &gt; 0 |  |
-| `prevent_overlapping` | `Boolean` | `false` | one of `false`; valid when unsupported until vertex_radius side inputs are exposed by the SQL API |  |
+| `prevent_overlapping` | `Boolean` | `false` | valid when true requires vertex_attributes_table and vertex_radius_col |  |
 | `scaling_ratio` | `Float64` | `2` | &gt; 0 |  |
 | `seed` | `UInt64` | `0` |  |  |
 | `strong_gravity_mode` | `Boolean` | `false` |  |  |
 | `verbose` | `Boolean` | `false` |  |  |
+| `vertex_attributes_table` | `Utf8\|null` | `null` | side input (vertex_attributes, cols: `vertex_attributes_vertex_col`, `vertex_radius_col`, `vertex_mobility_col`, `vertex_mass_col`) |  |
+| `vertex_attributes_vertex_col` | `Utf8\|null` | `null` | column of `vertex_attributes_table`; type ref `vertex_domain` |  |
+| `vertex_mass_col` | `Utf8\|null` | `null` | column of `vertex_attributes_table`; type ref `Float32` |  |
+| `vertex_mobility_col` | `Utf8\|null` | `null` | column of `vertex_attributes_table`; type ref `Float32` |  |
+| `vertex_radius_col` | `Utf8\|null` | `null` | column of `vertex_attributes_table`; type ref `Float32` |  |
 
 ### Graph construction options
 
@@ -90,7 +105,10 @@ import Examples from '../../_examples/cugraph_force_atlas2.mdx';
 
 ## Limitations & lifecycle
 
-- prevent_overlapping=true is rejected until vertex_radius side inputs are exposed
+- vertex_attributes and initial_positions must contain exactly one non-null row for every graph vertex
+- duplicate, missing, and extra ForceAtlas2 side-input vertices are rejected at execution
+- radius, mobility, mass, x, and y side-input columns must be Float32
+- prevent_overlapping=true requires a radius binding
 
 ## Validate before running
 

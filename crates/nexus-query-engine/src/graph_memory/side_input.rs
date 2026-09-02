@@ -36,6 +36,9 @@ pub(super) fn graph_side_input_workspace_peak_bytes(
         let has_bounded_side_input = match &graph.spec.params {
             GraphAlgorithmParams::Bfs(params) => params.has_predicates() || params.source_vertices.is_some(),
             GraphAlgorithmParams::PersonalizedPageRank(_) => true,
+            GraphAlgorithmParams::ForceAtlas2(params) => {
+                params.vertex_attributes.is_some() || params.initial_positions.is_some()
+            },
             _ => false,
         };
         if has_bounded_side_input {
@@ -80,8 +83,26 @@ fn side_input_workspace_error(
 #[derive(Debug, Clone, Copy)]
 enum GraphSideInputColumns<'a> {
     Vertex(&'a str),
-    Edge { source: &'a str, destination: &'a str, edge_id: Option<&'a str> },
-    Personalization { vertex: &'a str, value: &'a str },
+    Edge {
+        source: &'a str,
+        destination: &'a str,
+        edge_id: Option<&'a str>,
+    },
+    Personalization {
+        vertex: &'a str,
+        value: &'a str,
+    },
+    ForceAtlas2VertexAttributes {
+        vertex: &'a str,
+        radius: Option<&'a str>,
+        mobility: Option<&'a str>,
+        mass: Option<&'a str>,
+    },
+    ForceAtlas2InitialPositions {
+        vertex: &'a str,
+        x: &'a str,
+        y: &'a str,
+    },
 }
 
 #[cfg(feature = "cugraph")]
@@ -153,7 +174,9 @@ fn graph_side_input_workspace_peak_bytes_with_owner(
                         }
                         include_edges = Some((rows, 2 + usize::from(edge_id.is_some())));
                     },
-                    GraphSideInputColumns::Personalization { .. } => {
+                    GraphSideInputColumns::Personalization { .. }
+                    | GraphSideInputColumns::ForceAtlas2VertexAttributes { .. }
+                    | GraphSideInputColumns::ForceAtlas2InitialPositions { .. } => {
                         return Err(side_input_workspace_preflight_unavailable(
                             "invalid_bfs_binding",
                             Some(binding.role),
@@ -270,8 +293,135 @@ fn graph_side_input_workspace_peak_bytes_with_owner(
                 })?;
             Ok(Some(preflight.peak_bytes()))
         },
+        GraphAlgorithmParams::ForceAtlas2(params)
+            if params.vertex_attributes.is_some() || params.initial_positions.is_some() =>
+        {
+            let bindings = graph_side_input_bindings(graph)?;
+            let graph_vertex_type = graph_side_input_graph_vertex_type(plan, graph)?;
+            let mut attribute_rows = None;
+            let mut initial_position_rows = None;
+            let mut has_radius = false;
+            let mut has_mobility = false;
+            let mut has_mass = false;
+            for binding in &bindings {
+                let rows = graph_side_input_rows(plan, binding)?;
+                match binding.columns {
+                    GraphSideInputColumns::ForceAtlas2VertexAttributes { vertex, radius, mobility, mass } => {
+                        graph_side_input_vertex_type(
+                            plan,
+                            binding.input,
+                            vertex,
+                            graph_vertex_type,
+                            binding.role,
+                            graph.spec.algorithm,
+                        )?;
+                        for column in [radius, mobility, mass].into_iter().flatten() {
+                            graph_side_input_float32_type(
+                                plan,
+                                binding.input,
+                                column,
+                                binding.role,
+                                graph.spec.algorithm,
+                            )?;
+                        }
+                        attribute_rows = Some(rows);
+                        has_radius = radius.is_some();
+                        has_mobility = mobility.is_some();
+                        has_mass = mass.is_some();
+                    },
+                    GraphSideInputColumns::ForceAtlas2InitialPositions { vertex, x, y } => {
+                        graph_side_input_vertex_type(
+                            plan,
+                            binding.input,
+                            vertex,
+                            graph_vertex_type,
+                            binding.role,
+                            graph.spec.algorithm,
+                        )?;
+                        for column in [x, y] {
+                            graph_side_input_float32_type(
+                                plan,
+                                binding.input,
+                                column,
+                                binding.role,
+                                graph.spec.algorithm,
+                            )?;
+                        }
+                        initial_position_rows = Some(rows);
+                    },
+                    _ => {
+                        return Err(side_input_workspace_preflight_unavailable(
+                            "invalid_force_atlas2_binding",
+                            Some(binding.role),
+                            Some(graph.spec.algorithm),
+                        ));
+                    },
+                }
+            }
+            let input = cugraph::cudf_interop::ForceAtlas2SideInputPreflightInput::new(
+                graph_vertex_type,
+                initial_position_rows,
+                attribute_rows,
+                has_radius,
+                has_mobility,
+                has_mass,
+            )
+            .map_err(|error| {
+                side_input_workspace_preflight_unavailable("owner_input_rejected", None, Some(graph.spec.algorithm))
+                    .with_source(error)
+            })?;
+            let preflight =
+                cugraph::cudf_interop::force_atlas2_side_input_workspace_preflight(&input).map_err(|error| {
+                    side_input_workspace_preflight_unavailable("owner_query_failed", None, Some(graph.spec.algorithm))
+                        .with_source(error)
+                })?;
+            let distinct_peak = [attribute_rows, initial_position_rows]
+                .into_iter()
+                .flatten()
+                .map(|rows| force_atlas2_vertex_distinct_peak_bytes(graph_vertex_type, rows, graph.spec.algorithm))
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .max()
+                .unwrap_or(0);
+            Ok(Some(preflight.peak_bytes().max(distinct_peak)))
+        },
         _ => Ok(None),
     }
+}
+
+#[cfg(feature = "cugraph")]
+fn force_atlas2_vertex_distinct_peak_bytes(
+    vertex_type: cugraph::types::DataType,
+    rows: usize,
+    algorithm: GraphAlgorithm,
+) -> Result<u64> {
+    let key_type = match vertex_type {
+        cugraph::types::DataType::Int32 => cudf::DataType::new(cudf::TypeId::Int32),
+        cugraph::types::DataType::Int64 => cudf::DataType::new(cudf::TypeId::Int64),
+        _ => {
+            return Err(side_input_workspace_preflight_unavailable(
+                "side_input_vertex_dtype_unsupported",
+                None,
+                Some(algorithm),
+            ));
+        },
+    };
+    let preflight =
+        cudf::ScalarReductionDistinctWorkspacePreflight::for_metadata(rows, key_type, 0).map_err(|error| {
+            side_input_workspace_preflight_unavailable(
+                "owner_query_failed",
+                Some("force_atlas2_vertex_uniqueness"),
+                Some(algorithm),
+            )
+            .with_source(error)
+        })?;
+    u64::try_from(preflight.active_workspace_peak_bytes()).map_err(|_| {
+        side_input_workspace_preflight_unavailable(
+            "owner_byte_count_conversion_overflow",
+            Some("force_atlas2_vertex_uniqueness"),
+            Some(algorithm),
+        )
+    })
 }
 
 #[cfg(feature = "cugraph")]
@@ -423,6 +573,31 @@ fn graph_side_input_bindings<'a>(graph: &'a crate::plan::GraphAlgorithmNode) -> 
                 },
             });
         },
+        GraphAlgorithmParams::ForceAtlas2(params) => {
+            if let Some(input) = params.vertex_attributes.as_ref() {
+                bindings.push(GraphSideInputBinding {
+                    role: "vertex_attributes",
+                    input: input.input,
+                    columns: GraphSideInputColumns::ForceAtlas2VertexAttributes {
+                        vertex: input.vertex.as_str(),
+                        radius: input.radius.as_deref(),
+                        mobility: input.mobility.as_deref(),
+                        mass: input.mass.as_deref(),
+                    },
+                });
+            }
+            if let Some(input) = params.initial_positions.as_ref() {
+                bindings.push(GraphSideInputBinding {
+                    role: "initial_positions",
+                    input: input.input,
+                    columns: GraphSideInputColumns::ForceAtlas2InitialPositions {
+                        vertex: input.vertex.as_str(),
+                        x: input.x.as_str(),
+                        y: input.y.as_str(),
+                    },
+                });
+            }
+        },
         _ => return Ok(bindings),
     }
 
@@ -555,6 +730,29 @@ fn graph_side_input_value_type(
         )
         .with_fact("column", column)),
     }
+}
+
+#[cfg(feature = "cugraph")]
+fn graph_side_input_float32_type(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    column: &str,
+    role: &'static str,
+    algorithm: GraphAlgorithm,
+) -> Result<()> {
+    let actual = graph_side_input_value_type(plan, node_id, column, role, algorithm)?;
+    if actual != cugraph::types::DataType::Float32 {
+        return Err(side_input_workspace_error(
+            QueryErrorCode::UnsupportedType,
+            "side_input_value_dtype_mismatch",
+            Some(role),
+            Some(algorithm),
+        )
+        .with_fact("expected_dtype", cugraph::types::DataType::Float32)
+        .with_fact("actual_dtype", actual)
+        .with_fact("column", column));
+    }
+    Ok(())
 }
 
 #[cfg(feature = "cugraph")]

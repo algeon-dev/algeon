@@ -647,7 +647,7 @@ impl QueryPlanCapabilityProof {
         let Some(direct_input) = direct_input else {
             let mut producers = vec![(input_name.to_owned(), producer)];
             producers.extend(additional_producers);
-            return Self::combine_composed_graph_attempt(graph_plan, graph, producers).map(Some);
+            return Self::combine_cugraph_materialized_graph_attempt(graph_plan, graph, producers).map(Some);
         };
         if direct_input != *source_node {
             return Err(composed_schedule_error("graph_input_source_identity_mismatch", Some(input_name)));
@@ -657,7 +657,7 @@ impl QueryPlanCapabilityProof {
         }
         let mut producers = vec![(input_name.to_owned(), producer)];
         producers.extend(additional_producers);
-        Self::combine_composed_graph_attempt(graph_plan, graph, producers).map(Some)
+        Self::combine_cugraph_materialized_graph_attempt(graph_plan, graph, producers).map(Some)
     }
 
     fn combine_deferred_cugraph_graph_phase(
@@ -999,6 +999,42 @@ impl QueryPlanCapabilityProof {
         ordered_producers: impl IntoIterator<Item = (String, Self)>,
     ) -> Result<Self> {
         let ordered_producers = ordered_producers.into_iter().collect::<Vec<_>>();
+        Self::combine_composed_graph_attempt_with_ordered_producers(consumer_plan, consumer, ordered_producers)
+    }
+
+    fn combine_cugraph_materialized_graph_attempt(
+        consumer_plan: &QueryPlan,
+        consumer: Self,
+        ordered_producers: impl IntoIterator<Item = (String, Self)>,
+    ) -> Result<Self> {
+        let ordered_producers = ordered_producers.into_iter().collect::<Vec<_>>();
+        match Self::combine_composed_graph_attempt_with_ordered_producers(
+            consumer_plan,
+            consumer.clone(),
+            ordered_producers.clone(),
+        ) {
+            Ok(proof) => Ok(proof),
+            Err(ordered_error) => {
+                match Self::combine_deferred_resident_composed_attempt(consumer_plan, consumer, ordered_producers) {
+                    Ok(Some(proof)) => Ok(proof),
+                    Ok(None) => Err(ordered_error),
+                    Err(deferred_error) => Err(ordered_error.with_fact(
+                        "deferred_reason",
+                        deferred_error
+                            .fact_value("schedule_reason")
+                            .or_else(|| deferred_error.fact_value("reason"))
+                            .unwrap_or("deferred_timeline_unavailable"),
+                    )),
+                }
+            },
+        }
+    }
+
+    fn combine_composed_graph_attempt_with_ordered_producers(
+        consumer_plan: &QueryPlan,
+        consumer: Self,
+        ordered_producers: Vec<(String, Self)>,
+    ) -> Result<Self> {
         if ordered_producers.is_empty() {
             return Err(composed_schedule_error("missing_producer_evidence", None));
         }
@@ -1132,7 +1168,6 @@ impl QueryPlanCapabilityProof {
         let mut occurrence_ids = HashSet::with_capacity(ordered_producers.len());
         let mut occurrences = Vec::with_capacity(ordered_producers.len());
         let mut producer_phases = Vec::with_capacity(ordered_producers.len());
-        let mut producer_outputs = Vec::with_capacity(ordered_producers.len());
         let mut producer_requirements = Vec::with_capacity(ordered_producers.len());
         let mut inputs = Vec::with_capacity(ordered_producers.len());
         for (occurrence_id, producer) in ordered_producers {
@@ -1158,11 +1193,6 @@ impl QueryPlanCapabilityProof {
                     normalized.concurrent_side_input_term_ids,
                 )
             });
-            producer_outputs.push(ComposedGraphProducerOutputEvidence {
-                occurrence_id: normalized.occurrence_id.clone(),
-                row_count_upper_bound: normalized.row_count_upper_bound,
-                column_evidence: normalized.output_column_evidence.clone(),
-            });
             inputs.push(DeferredResidentInputDescriptor {
                 producer_execution_scope_fingerprint: normalized.execution_scope_fingerprint,
                 input_name: normalized.occurrence_id,
@@ -1171,7 +1201,6 @@ impl QueryPlanCapabilityProof {
             });
             producer_requirements.push(normalized.proof.requirement);
         }
-        consumer.bind_composed_sort_owner(consumer_plan, &producer_outputs)?;
         consumer.requirement.requires_composed_producer_binding = false;
         consumer.requirement.remove_generic_gpu_resident_retained_output_terms();
         let attempt_wide_fixed_term_ids = producer_requirements
@@ -1191,6 +1220,7 @@ impl QueryPlanCapabilityProof {
         let [consumer_shape] = consumer.requirement.reservation_shapes.as_mut_slice() else {
             return Err(composed_schedule_error("missing_consumer_scope", None));
         };
+        consumer_shape.clear_resolved_gpu_output_owner_rejection();
         consumer_shape.set_producer_occurrences(occurrences)?;
         consumer_shape.attach_ordered_schedule(schedule)?;
         consumer.requirement.deferred_resident_phases.push(DeferredResidentPhaseDescriptor {
@@ -1223,6 +1253,16 @@ impl QueryPlanCapabilityProof {
                 consumer.clone(),
                 &normalized_candidates,
             )? {
+                return Ok(proof);
+            }
+
+            if Self::composed_producers_require_resident_refinement(&normalized_candidates)?
+                && let Some(proof) = Self::combine_deferred_resident_composed_attempt(
+                    consumer_plan,
+                    consumer.clone(),
+                    normalized_candidates.clone(),
+                )?
+            {
                 return Ok(proof);
             }
 
@@ -1279,7 +1319,27 @@ impl QueryPlanCapabilityProof {
         })
     }
 
-    pub(crate) fn reuse_complete_schedule_for_passthrough_consumer(
+    fn composed_producers_require_resident_refinement(producers: &[(String, Self)]) -> Result<bool> {
+        let mut occurrence_ids = HashSet::with_capacity(producers.len());
+        for (occurrence_id, producer) in producers {
+            let Ok(normalized) =
+                Self::normalize_composed_producer(occurrence_id.clone(), producer.clone(), &mut occurrence_ids)
+            else {
+                return Ok(false);
+            };
+            if normalized
+                .output_column_evidence
+                .string_payload_bounds
+                .values()
+                .any(|bound| bound.max_single_value_length_bytes.is_none())
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    fn reuse_complete_schedule_for_passthrough_consumer(
         consumer_plan: &QueryPlan,
         consumer: Self,
         producers: &[(String, Self)],
@@ -1287,9 +1347,10 @@ impl QueryPlanCapabilityProof {
         let [(occurrence_id, producer)] = producers else {
             return Ok(None);
         };
-        let has_complete_schedule =
-            producer.requirement.reservation_shapes.iter().any(|shape| shape.ordered_schedule().is_some());
-        if !has_complete_schedule {
+        if !producer.requirement.reservation_shapes.iter().any(|shape| shape.ordered_schedule().is_some()) {
+            return Ok(None);
+        }
+        if !producer.requirement.owner_terms.iter().any(AllocationOwnerTerm::is_retained_output) {
             return Ok(None);
         }
         let unreachable = consumer_plan.unreachable_node_ids();
@@ -1309,16 +1370,17 @@ impl QueryPlanCapabilityProof {
         let mut requirement =
             AttemptCapabilityEvidence::aggregate([producer.requirement.clone(), consumer.requirement])?;
         requirement.requires_composed_producer_binding = false;
-        let matching_consumer_scopes = requirement
+        let matching = requirement
             .reservation_shapes
             .iter()
             .enumerate()
             .filter_map(|(index, shape)| shape.matches(consumer_plan).then_some(index))
             .collect::<Vec<_>>();
-        let [consumer_scope_index] = matching_consumer_scopes.as_slice() else {
+        let [consumer_scope_index] = matching.as_slice() else {
             return Err(composed_schedule_error("consumer_scope_coverage_mismatch", None));
         };
-        requirement.reservation_shapes[*consumer_scope_index].account_for_by_producer_phase();
+        requirement.reservation_shapes[*consumer_scope_index]
+            .account_for_by_passthrough_producer(occurrence_id.clone());
         Ok(Some(Self { requirement }))
     }
 
@@ -1392,9 +1454,17 @@ impl QueryPlanCapabilityProof {
         if !has_reachable_sort(consumer_plan) {
             return Ok(());
         }
-        let [shape] = self.requirement.reservation_shapes.as_mut_slice() else {
+        let matching = self
+            .requirement
+            .reservation_shapes
+            .iter()
+            .enumerate()
+            .filter_map(|(index, shape)| shape.matches(consumer_plan).then_some(index))
+            .collect::<Vec<_>>();
+        let [shape_index] = matching.as_slice() else {
             return Err(composed_schedule_error("missing_consumer_scope", None));
         };
+        let shape = &mut self.requirement.reservation_shapes[*shape_index];
         if !shape.sort_metadata().is_empty() {
             return Ok(());
         }

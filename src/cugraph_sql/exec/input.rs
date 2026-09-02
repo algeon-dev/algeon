@@ -117,7 +117,7 @@ impl CugraphInputRowBounds {
             edge: edge_source_output_rows(edge_source)?,
             predicates: predicate_sources
                 .iter()
-                .map(|source| exact_execution_plan_output_rows(source.as_ref()))
+                .map(|source| resident_side_input_output_rows(source.as_ref()))
                 .collect::<Result<Vec<_>>>()?,
         })
     }
@@ -440,7 +440,7 @@ impl StagedCugraphSource {
         match self {
             Self::Native { plan, .. } => match role {
                 StagedCugraphSourceRole::Edge => edge_source_output_rows(plan.as_ref()),
-                StagedCugraphSourceRole::Predicate(_) => exact_execution_plan_output_rows(plan.as_ref()),
+                StagedCugraphSourceRole::Predicate(_) => resident_side_input_output_rows(plan.as_ref()),
             },
             Self::Host { batches, .. } => checked_staged_host_rows(batches, role).map(Some),
         }

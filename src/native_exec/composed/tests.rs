@@ -549,55 +549,45 @@ fn complete_composed_admission_proof_preserves_bounded_single_graph_consumer_pat
 }
 
 #[test]
-fn complete_composed_admission_proof_rejects_invalid_graph_result_sorts_at_admission() {
+fn complete_composed_admission_proof_defers_string_sort_payload_until_resident_refinement() {
     register_gpu_resident_producer_discovery(fake_gpu_resident_producer);
     register_graph_execution_plan_discovery(fake_graph_execution_plan);
     let backend = InstalledTestGpuBackend::new();
     let source = admission_source(&backend);
-    let (_producer_schema, producer_proof) = typed_graph_producer_proof();
-    let cases = [(
-        Arc::new(Schema::new(vec![Field::new("vertex", DataType::Utf8, false)])),
-        1,
-        None,
-        "sort_owner_sort_output_string_payload_evidence_missing",
-    )];
-
-    for (schema, key_count, row_count_upper_bound, sort_rejection_reason) in cases {
-        let consumer_plan = sorted_consumer_plan_with_shape(Arc::clone(&schema), key_count, row_count_upper_bound);
-        let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof.clone()));
-        let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
-            input_name: "fake_input".to_string(),
-            ticket: producer_ticket,
-            capability_proof: producer_proof.clone(),
-            graph_execution: true,
-            execute_count: Arc::new(AtomicUsize::new(0)),
-            inner: EmptyExec::new(Arc::clone(&schema)),
-        })];
-        let config =
-            NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source.clone());
-        let completed =
-            complete_composed_admission_proof(config, &consumer_plan, &prepared_inputs, &TaskContext::default())
-                .expect("invalid graph-result sort retains a typed proof until envelope resolution");
-        let completed_ticket = completed
-            .execution_config
-            .query_admission_ticket()
-            .expect("proof completion installs one admission ticket");
-        let proof = completed_ticket
-            .attempt_capability_proof()
-            .expect("completed ticket retains the composed capability proof")
-            .clone();
-        let error = backend
-            .backend()
-            .session_capability()
-            .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof))
-            .expect_err("invalid graph-result sort must reject before producer GPU work");
-        assert_eq!(error.fact_value("reason"), Some("graph_attempt_complete_phase_unmodeled"));
-        assert_eq!(error.fact_value("schedule_reason"), Some("sort_metadata_rejected"));
-        assert_eq!(error.fact_value("sort_rejection_reason"), Some(sort_rejection_reason));
-        let snapshot = backend.backend().admission_snapshot().expect("test backend exposes admission state");
-        assert_eq!(snapshot.active_queries, 0, "a rejected sort must not mutate the grant ledger");
-        assert_eq!(snapshot.queued_queries, 0, "a rejected sort must not become a generic admission waiter");
-    }
+    let (schema, producer_proof) = typed_graph_producer_proof();
+    let consumer_plan = sorted_consumer_plan_with_shape(Arc::clone(&schema), 1, None);
+    let execute_count = Arc::new(AtomicUsize::new(0));
+    let producer_ticket = QueryAdmissionTicket::new(source.clone(), Some(producer_proof.clone()));
+    let prepared_inputs: Vec<Arc<dyn ExecutionPlan>> = vec![Arc::new(FakeGpuResidentProducer {
+        input_name: "fake_input".to_string(),
+        ticket: producer_ticket,
+        capability_proof: producer_proof,
+        graph_execution: true,
+        execute_count: Arc::clone(&execute_count),
+        inner: EmptyExec::new(schema),
+    })];
+    let config = NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1).with_query_admission_source(source);
+    let completed =
+        complete_composed_admission_proof(config, &consumer_plan, &prepared_inputs, &TaskContext::default())
+            .expect("string sort retains a deferred resident-evidence phase");
+    let completed_ticket =
+        completed.execution_config.query_admission_ticket().expect("proof completion installs one admission ticket");
+    let proof = completed_ticket
+        .attempt_capability_proof()
+        .expect("completed ticket retains the composed capability proof")
+        .clone();
+    let handle = backend
+        .backend()
+        .session_capability()
+        .admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof))
+        .expect("missing string payload evidence is refined after the producer becomes resident");
+    assert_eq!(execute_count.load(Ordering::SeqCst), 0, "admission must not execute the producer");
+    let active = backend.backend().admission_snapshot().expect("test backend exposes admission state");
+    assert_eq!(active.active_queries, 1);
+    handle.finish();
+    drop(handle);
+    drop(completed_ticket);
+    drop(prepared_inputs);
 }
 
 #[test]

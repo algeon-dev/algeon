@@ -57,3 +57,44 @@ bit-reproducible — expect slightly different (equally valid) coordinates on
 each run. If downstream queries must agree on positions, snapshot into the
 mutable `datafusion.public` workspace with `CREATE TABLE … AS`; that does not
 write back to the Iceberg source catalog.
+
+### Refine a saved layout with radius and mass
+
+The optional relations are complete vertex-domain tables. This second pass
+uses the first pass as its warm start and supplies one radius and mass value
+for every vertex:
+
+```sql
+CREATE VIEW initial_layout AS
+SELECT vertex, x, y
+FROM cugraph_force_atlas2(
+  'attention_ego_edges', 'src', 'dst', NULL,
+  '{"max_iter":250,"seed":42}');
+
+CREATE VIEW layout_attributes AS
+SELECT vertex,
+       CAST(0.75 AS REAL) AS radius,
+       CAST(1.0 AS REAL) AS mass
+FROM initial_layout;
+
+SELECT vertex, x, y
+FROM cugraph_force_atlas2(
+  'attention_ego_edges', 'src', 'dst', NULL,
+  '{
+    "max_iter":250,
+    "seed":42,
+    "prevent_overlapping":true,
+    "vertex_attributes_table":"layout_attributes",
+    "vertex_attributes_vertex_col":"vertex",
+    "vertex_radius_col":"radius",
+    "vertex_mass_col":"mass",
+    "initial_positions_table":"initial_layout",
+    "initial_positions_vertex_col":"vertex",
+    "initial_x_col":"x",
+    "initial_y_col":"y"
+  }');
+```
+
+Both side inputs reject null, duplicate, missing, or extra vertices. Radius,
+mass, mobility, and coordinates are `Float32`; their vertex column must match
+the edge endpoint domain.

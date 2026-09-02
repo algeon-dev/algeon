@@ -821,10 +821,15 @@ impl DeviceLedger {
         grant_ceiling: u64,
         is_protected: bool,
     ) -> Result<MemoryGrant> {
-        // A request with no soft estimate has no estimate-derived bound: the
-        // grant is the full candidate maximum, clamped below by its floor.
-        let grant_bytes =
-            requirement.soft_working_set_hint_bytes.unwrap_or(grant_ceiling).clamp(required_floor, grant_ceiling);
+        let charged_cache_bytes = state.evictable_bytes.saturating_add(state.pinned_bytes);
+        let uncharged_cache_cap_bytes = self.inner.profile.cache_cap_bytes.saturating_sub(charged_cache_bytes);
+        // An unmodeled attempt cannot consume the unused cache share and then
+        // expect its own source promotion to allocate outside the same ledger.
+        let unmodeled_target_bytes = grant_ceiling.saturating_sub(uncharged_cache_cap_bytes).max(required_floor);
+        let grant_bytes = requirement
+            .soft_working_set_hint_bytes
+            .unwrap_or(unmodeled_target_bytes)
+            .clamp(required_floor, grant_ceiling);
         let generation = state.next_grant_generation;
         let next_grant_generation = generation.checked_add(1).ok_or_else(|| {
             QueryError::new(QueryErrorCode::Internal, OPERATION, "device ledger grant generation exhausted")

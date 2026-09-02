@@ -255,7 +255,7 @@ fn statement_execution_domain_classifier_is_fail_closed() {
         "SELECT table_name FROM information_schema.tables",
         "SELECT a.table_name FROM information_schema.tables a JOIN information_schema.columns b ON a.table_name = b.table_name",
         &format!(
-            "SELECT function_name, provider, domain, available, summary \
+            "SELECT function_name, provider, available, summary \
              FROM {GPU_LIST_FUNCTIONS_FUNCTION}() \
              WHERE provider IN ('cugraph', 'cuvs') \
              ORDER BY function_name"

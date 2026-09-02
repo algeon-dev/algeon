@@ -5009,11 +5009,19 @@ pub nexus_query_engine::plan::GraphEigenvectorCentralityParams::epsilon: f64
 pub nexus_query_engine::plan::GraphEigenvectorCentralityParams::max_iterations: u32
 impl core::default::Default for nexus_query_engine::plan::GraphEigenvectorCentralityParams
 pub fn nexus_query_engine::plan::GraphEigenvectorCentralityParams::default() -> Self
+pub struct nexus_query_engine::plan::GraphForceAtlas2InitialPositionsInput
+pub nexus_query_engine::plan::GraphForceAtlas2InitialPositionsInput::input: nexus_query_engine::plan::NodeId
+pub nexus_query_engine::plan::GraphForceAtlas2InitialPositionsInput::vertex: alloc::string::String
+pub nexus_query_engine::plan::GraphForceAtlas2InitialPositionsInput::x: alloc::string::String
+pub nexus_query_engine::plan::GraphForceAtlas2InitialPositionsInput::y: alloc::string::String
+impl nexus_query_engine::plan::GraphForceAtlas2InitialPositionsInput
+pub fn nexus_query_engine::plan::GraphForceAtlas2InitialPositionsInput::new(nexus_query_engine::plan::NodeId, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>, impl core::convert::Into<alloc::string::String>) -> Self
 pub struct nexus_query_engine::plan::GraphForceAtlas2Params
 pub nexus_query_engine::plan::GraphForceAtlas2Params::barnes_hut_optimize: bool
 pub nexus_query_engine::plan::GraphForceAtlas2Params::barnes_hut_theta: f64
 pub nexus_query_engine::plan::GraphForceAtlas2Params::edge_weight_influence: f64
 pub nexus_query_engine::plan::GraphForceAtlas2Params::gravity: f64
+pub nexus_query_engine::plan::GraphForceAtlas2Params::initial_positions: core::option::Option<nexus_query_engine::plan::GraphForceAtlas2InitialPositionsInput>
 pub nexus_query_engine::plan::GraphForceAtlas2Params::jitter_tolerance: f64
 pub nexus_query_engine::plan::GraphForceAtlas2Params::lin_log_mode: bool
 pub nexus_query_engine::plan::GraphForceAtlas2Params::max_iter: u32
@@ -5024,8 +5032,19 @@ pub nexus_query_engine::plan::GraphForceAtlas2Params::scaling_ratio: f64
 pub nexus_query_engine::plan::GraphForceAtlas2Params::seed: u64
 pub nexus_query_engine::plan::GraphForceAtlas2Params::strong_gravity_mode: bool
 pub nexus_query_engine::plan::GraphForceAtlas2Params::verbose: bool
+pub nexus_query_engine::plan::GraphForceAtlas2Params::vertex_attributes: core::option::Option<nexus_query_engine::plan::GraphForceAtlas2VertexAttributesInput>
+impl nexus_query_engine::plan::GraphForceAtlas2Params
+pub fn nexus_query_engine::plan::GraphForceAtlas2Params::side_input_node_ids(&self) -> impl core::iter::traits::iterator::Iterator<Item = nexus_query_engine::plan::NodeId> + '_
 impl core::default::Default for nexus_query_engine::plan::GraphForceAtlas2Params
 pub fn nexus_query_engine::plan::GraphForceAtlas2Params::default() -> Self
+pub struct nexus_query_engine::plan::GraphForceAtlas2VertexAttributesInput
+pub nexus_query_engine::plan::GraphForceAtlas2VertexAttributesInput::input: nexus_query_engine::plan::NodeId
+pub nexus_query_engine::plan::GraphForceAtlas2VertexAttributesInput::mass: core::option::Option<alloc::string::String>
+pub nexus_query_engine::plan::GraphForceAtlas2VertexAttributesInput::mobility: core::option::Option<alloc::string::String>
+pub nexus_query_engine::plan::GraphForceAtlas2VertexAttributesInput::radius: core::option::Option<alloc::string::String>
+pub nexus_query_engine::plan::GraphForceAtlas2VertexAttributesInput::vertex: alloc::string::String
+impl nexus_query_engine::plan::GraphForceAtlas2VertexAttributesInput
+pub fn nexus_query_engine::plan::GraphForceAtlas2VertexAttributesInput::new(nexus_query_engine::plan::NodeId, impl core::convert::Into<alloc::string::String>, core::option::Option<impl core::convert::Into<alloc::string::String>>, core::option::Option<impl core::convert::Into<alloc::string::String>>, core::option::Option<impl core::convert::Into<alloc::string::String>>) -> Self
 pub struct nexus_query_engine::plan::GraphHitsParams
 pub nexus_query_engine::plan::GraphHitsParams::epsilon: f64
 pub nexus_query_engine::plan::GraphHitsParams::max_iterations: u32
@@ -6071,6 +6090,7 @@ pub fn nexus_query_engine::runtime::ExecutionContext::statistical_aggregate_exec
 pub fn nexus_query_engine::runtime::ExecutionContext::trace_id(&self) -> core::option::Option<&nexus_query_engine::metrics::TraceId>
 pub fn nexus_query_engine::runtime::ExecutionContext::validate_admitted_composed_attempt(&self, &nexus_query_engine::plan::QueryPlan, &[alloc::string::String]) -> nexus_query_engine::error::Result<core::option::Option<nexus_query_engine::observability::AttemptComposedScheduleProjection>>
 pub fn nexus_query_engine::runtime::ExecutionContext::validate_admitted_plan_capabilities(&self, &nexus_query_engine::plan::QueryPlan) -> nexus_query_engine::error::Result<()>
+pub fn nexus_query_engine::runtime::ExecutionContext::with_admitted_gpu_inputs(&self, &nexus_query_engine::plan::QueryPlan, &nexus_query_engine::runtime::resident::GpuResidentInputMap) -> nexus_query_engine::error::Result<Self>
 pub fn nexus_query_engine::runtime::ExecutionContext::with_graph_memory_calibration_override(&self, nexus_query_engine::graph_memory::GraphMemoryCalibrationOverride) -> Self
 pub fn nexus_query_engine::runtime::ExecutionContext::with_io_lifecycle(self, nexus_query_engine::runtime::IoLifecycle) -> Self
 pub fn nexus_query_engine::runtime::ExecutionContext::with_owned_stream_lease(&self, nexus_query_engine::runtime::StreamLease) -> nexus_query_engine::error::Result<nexus_query_engine::runtime::LeasedExecutionContext>
