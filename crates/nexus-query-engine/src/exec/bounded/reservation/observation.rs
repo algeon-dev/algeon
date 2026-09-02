@@ -15,6 +15,10 @@ impl ReservationObservation {
         self.span_id = span_id;
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+    )]
     pub(super) fn record(
         &self,
         context: &ActiveReservationEventContext,
@@ -57,6 +61,10 @@ impl ReservationObservation {
         );
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+    )]
     fn record_with_denied_action(
         &self,
         context: &ActiveReservationEventContext,

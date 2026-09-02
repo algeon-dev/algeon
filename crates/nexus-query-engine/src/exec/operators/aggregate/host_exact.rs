@@ -182,6 +182,10 @@ struct HostAggregateGroup {
     aggregates: Vec<HostAggregateState>,
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 pub(super) fn execute_datafusion_exact_host_aggregate(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
@@ -355,6 +359,10 @@ pub(in crate::exec) fn upload_datafusion_exact_host_aggregate_output(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+)]
 fn record_datafusion_exact_floating_statistical_aggregate_strategy_decision(
     metrics: &mut QueryMetrics,
     node_id: Option<String>,

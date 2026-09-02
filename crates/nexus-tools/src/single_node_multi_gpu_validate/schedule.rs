@@ -271,7 +271,7 @@ fn rate_overrun_label(policy: RateOverrunPolicy) -> &'static str {
 /// Rounds are planned generously against the step horizon because completion
 /// pacing is observed. The driver stops at the step deadline, and unsubmitted
 /// arrivals never become attempt rows.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "arrival-planning matrix helper; each parameter is one planning axis")]
 fn plan_concurrency(
     concurrency: usize,
     max_rounds: Option<usize>,
@@ -299,7 +299,7 @@ fn plan_concurrency(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "arrival-planning matrix helper; each parameter is one planning axis")]
 fn plan_rate(
     rate_per_second: u64,
     rng: &mut SplitMix64,
@@ -327,7 +327,7 @@ fn plan_rate(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "arrival-planning matrix helper; each parameter is one planning axis")]
 fn arrival(
     sequence: usize,
     round: usize,

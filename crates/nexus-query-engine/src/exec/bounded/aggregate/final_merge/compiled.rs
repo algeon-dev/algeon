@@ -337,6 +337,10 @@ fn execute_compiled_partitioned_final_merge_group(
     Ok(CommittedPartial { frame, reservation: output_reservation })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 fn merge_compiled_partitioned_final_aggregate_partials_consuming(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -422,6 +426,10 @@ fn merge_compiled_partitioned_final_aggregate_partials_consuming(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+)]
 fn record_compiled_partitioned_final_merge_strategy(
     context: &ExecutionContext,
     node_id: NodeId,
@@ -502,6 +510,10 @@ fn compiled_partial_merge_basis_bytes(partial: &CommittedPartial) -> u64 {
     partial.reservation.bytes().max(partial.frame.num_rows() as u64)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 fn execute_compiled_final_merge_level_attempt(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -543,6 +555,10 @@ fn execute_compiled_final_merge_level_attempt(
     Ok(output)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 fn execute_compiled_final_merge_group_attempt(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -611,6 +627,10 @@ fn execute_compiled_final_merge_group_attempt(
     Ok(CommittedPartial { frame, reservation: output_reservation })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 fn merge_compiled_final_aggregate_partials(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,

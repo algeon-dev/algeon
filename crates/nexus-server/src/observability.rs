@@ -702,6 +702,7 @@ pub(super) struct ShutdownCaptureSnapshot {
 }
 
 impl ShutdownCaptureSnapshot {
+    #[expect(clippy::too_many_arguments, reason = "service wiring parameters are distinct ownership values")]
     pub(super) fn to_query_stats_payload(
         &self,
         _now: Instant,
@@ -1010,6 +1011,7 @@ fn project_native_execution_metrics(
     max_records: usize,
     max_logical_bytes: usize,
 ) -> MetricsProjection {
+    #[expect(clippy::too_many_arguments, reason = "service wiring parameters are distinct ownership values")]
     fn visit(
         plan: &Arc<dyn ExecutionPlan>,
         seen_plans: &mut HashSet<*const ()>,

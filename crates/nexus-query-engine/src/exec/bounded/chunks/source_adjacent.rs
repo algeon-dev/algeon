@@ -334,6 +334,10 @@ pub(in crate::exec::bounded::chunks) fn execute_source_adjacent_chunk_stages(
     Ok(input)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_projection(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -521,6 +525,10 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_projection(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 fn finish_source_adjacent_chunk_unary(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -594,6 +602,10 @@ fn finish_source_adjacent_chunk_unary(
     Ok(CommittedPartial { frame, reservation: output_reservation })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_unary(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,
@@ -623,6 +635,10 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_unary(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 fn execute_source_adjacent_chunk_unary_with_work_bytes(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,

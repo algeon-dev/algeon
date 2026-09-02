@@ -406,6 +406,7 @@ fn run_fixture_preflight(
 /// a misconfigured run cannot reach a backend build or publish a partial
 /// artifact.
 #[cfg(any(test, not(feature = "single-node-multi-gpu-validate-run")))]
+#[expect(clippy::too_many_arguments, reason = "validation harness parameters are independent measurement axes")]
 fn measured_run_preflight(
     profile: &RunProfile,
     quarantine_device: Option<usize>,
@@ -433,6 +434,7 @@ fn measured_run_preflight(
 
 /// Extends the established measured-run preflight with the dedicated sink
 /// shape without widening the helpers used by the existing scenario tests.
+#[expect(clippy::too_many_arguments, reason = "validation harness parameters are independent measurement axes")]
 fn measured_run_preflight_with_completion_sink(
     profile: &RunProfile,
     quarantine_device: Option<usize>,

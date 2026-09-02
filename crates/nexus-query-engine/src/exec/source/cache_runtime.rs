@@ -49,6 +49,10 @@ pub(super) fn record_background_cache_chunk_fill_enqueue(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"
+)]
 pub(super) fn read_optimized_local_cache_chunk_batch(
     context: &ExecutionContext,
     source: &LocalParquetSource,

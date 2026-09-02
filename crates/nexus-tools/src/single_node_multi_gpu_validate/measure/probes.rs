@@ -236,7 +236,7 @@ pub(super) type AttemptTask = tokio::task::JoinHandle<(
 /// Schedules each runner-owned feature-off request through the ordinary public attempt
 /// path.  Only the selected query and sequence differ from a planned
 /// relational arrival; no result or error evidence is synthesized here.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "probe-harness expansion; parameters are the independent probe axes")]
 pub(super) fn spawn_feature_off_cugraph_probes(
     backend: &NexusGpuBackend,
     sessions: &SessionPool,
@@ -289,7 +289,7 @@ pub(super) fn spawn_feature_off_cugraph_probes(
 /// Begins one ordinary public attempt and packages its report collector. The
 /// quarantine scenario uses the same submission path as a regular measured
 /// run; only the placement of the controller acknowledgement differs.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "probe-harness expansion; parameters are the independent probe axes")]
 pub(super) fn spawn_attempt_task(
     backend: &NexusGpuBackend,
     sessions: &SessionPool,
@@ -323,7 +323,7 @@ pub(super) fn spawn_attempt_task(
 /// query id. The exact-key cache probe is the narrow exception: it supplies a
 /// unique id whose one-way fingerprint can be matched against cache-owner and
 /// BFS-coordinator observations without retaining the raw id in the artifact.
-#[allow(clippy::too_many_arguments)]
+#[expect(clippy::too_many_arguments, reason = "probe-harness expansion; parameters are the independent probe axes")]
 pub(super) fn spawn_attempt_task_with_query_id(
     backend: &NexusGpuBackend,
     sessions: &SessionPool,

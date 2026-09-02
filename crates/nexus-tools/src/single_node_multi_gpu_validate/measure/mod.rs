@@ -788,7 +788,10 @@ fn same_key_probe_query_index(
     Ok(index)
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "measurement-harness expansion; parameters are the independent measurement axes"
+)]
 async fn run_cache_same_key_cohort(
     backend: &NexusGpuBackend,
     sessions: &SessionPool,

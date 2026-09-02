@@ -43,10 +43,10 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_chunk(
                 .with_fact("read_columns", chunk.read_columns.len())
                 .with_row_group_facts(chunk)
             })?;
+    let predicate = lower_source_reader_predicate(context, source, &cudf_source, &cudf_chunk)?;
     let cudf_source = attach_cudf_source_reader_predicate(
-        context,
         cudf_source,
-        &cudf_chunk,
+        predicate,
         source,
         "nexus_query_engine.local_parquet_chunk.source_cudf",
         chunk.path.as_path(),
@@ -130,10 +130,10 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_chunk_batch(
             })
         })
         .collect::<Result<Vec<_>>>()?;
-    cudf_source = attach_cudf_source_reader_batch_predicate(
-        context,
+    let predicate = lower_source_reader_batch_predicate(context, source, &cudf_source, &cudf_chunks)?;
+    cudf_source = attach_cudf_source_reader_predicate(
         cudf_source,
-        &cudf_chunks,
+        predicate,
         source,
         "nexus_query_engine.local_parquet_chunk_batch.source_cudf",
         chunks[0].path.as_path(),
@@ -178,10 +178,10 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_file_selection(
                 .with_fact("read_columns", source.read_columns.len())
             },
         )?;
+    let predicate = lower_source_reader_predicate(context, source, &cudf_source, &cudf_chunk)?;
     let cudf_source = attach_cudf_source_reader_predicate(
-        context,
         cudf_source,
-        &cudf_chunk,
+        predicate,
         source,
         "nexus_query_engine.local_parquet_source.source_cudf",
         file.path.as_path(),
@@ -323,10 +323,15 @@ pub(in crate::exec::source) fn cudf_local_parquet_source_from_files<'a>(
     })
 }
 
+/// Attaches a lowered reader predicate to a cudf source contract, enriching
+/// attach failures with the read's identity facts.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "native cuDF/cuGraph/cuVS call parameters stay explicit at the FFI boundary"
+)]
 pub(in crate::exec::source) fn attach_cudf_source_reader_predicate(
-    context: &ExecutionContext,
     mut cudf_source: cudf::io::source::LocalParquetSource,
-    cudf_chunk: &cudf::io::source::SourceChunk,
+    predicate: Option<std::sync::Arc<cudf::ops::ast::AstExpression>>,
     source: &LocalParquetSource,
     operation: &'static str,
     path: &Path,
@@ -335,42 +340,12 @@ pub(in crate::exec::source) fn attach_cudf_source_reader_predicate(
     read_columns: usize,
     row_groups: Option<String>,
 ) -> Result<cudf::io::source::LocalParquetSource> {
-    if let Some(predicate) = lower_source_reader_predicate(context, source, &cudf_source, cudf_chunk)? {
+    if let Some(predicate) = predicate {
         cudf_source = cudf_source.with_reader_predicate(predicate).map_err(|error| {
             let error = cudf_error_for_source(
                 source,
                 operation,
                 "failed to attach native reader predicate to cudf source contract",
-                error,
-            )
-            .with_fact("path", path_fact(path))
-            .with_fact("chunk_index", chunk_index)
-            .with_fact("file_index", file_index)
-            .with_fact("read_columns", read_columns);
-            if let Some(row_groups) = row_groups { error.with_fact("row_group_indexes", row_groups) } else { error }
-        })?;
-    }
-    Ok(cudf_source)
-}
-
-pub(in crate::exec::source) fn attach_cudf_source_reader_batch_predicate(
-    context: &ExecutionContext,
-    mut cudf_source: cudf::io::source::LocalParquetSource,
-    cudf_chunks: &[cudf::io::source::SourceChunk],
-    source: &LocalParquetSource,
-    operation: &'static str,
-    path: &Path,
-    chunk_index: usize,
-    file_index: usize,
-    read_columns: usize,
-    row_groups: Option<String>,
-) -> Result<cudf::io::source::LocalParquetSource> {
-    if let Some(predicate) = lower_source_reader_batch_predicate(context, source, &cudf_source, cudf_chunks)? {
-        cudf_source = cudf_source.with_reader_predicate(predicate).map_err(|error| {
-            let error = cudf_error_for_source(
-                source,
-                operation,
-                "failed to attach native reader predicate to cudf source batch contract",
                 error,
             )
             .with_fact("path", path_fact(path))

@@ -182,6 +182,7 @@ impl QueryCoordinator {
         .map_err(|error| error.with_query_id(query_id))
     }
 
+    #[expect(clippy::too_many_arguments, reason = "service wiring parameters are distinct ownership values")]
     pub(crate) fn register_locked(
         self: &Arc<Self>,
         state: &mut QueryRegistryState,

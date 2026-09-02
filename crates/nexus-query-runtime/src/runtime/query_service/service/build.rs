@@ -82,6 +82,10 @@ impl QueryService {
     /// it only after destroying the returned service and every derived GPU
     /// resource.
     #[doc(hidden)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "service construction inputs are distinct admission and ownership values"
+    )]
     pub fn install_for_backend(
         device_ordinals: Vec<usize>,
         controller: GpuBackendControllerDraft,
@@ -110,6 +114,10 @@ impl QueryService {
         Self::build(config, queue_bounds, Some(resources))
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "service construction inputs are distinct admission and ownership values"
+    )]
     fn install_runtime_resources(
         config: &QueryExecutionConfig,
         deployment_io_capability: DeploymentIoCapability,

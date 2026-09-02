@@ -32,7 +32,7 @@ use std::{
 
 use serde::Serialize;
 
-use super::DeviceResourceProfile;
+use super::{DeviceCapabilities, DeviceResourceEnvelope, DeviceResourceProfile};
 use crate::{
     admission::AttemptRequirement,
     error::{QueryError, QueryErrorCode, Result},
@@ -399,17 +399,20 @@ impl DeviceLedger {
         let max_active_attempts = max_active_attempts.max(1);
         let source_work = 1usize;
         let slots = max_active_attempts.saturating_mul(2).max(max_active_attempts);
-        let profile = DeviceResourceProfile::resolve(
+        let profile = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
             device_ordinal,
-            managed_capacity_bytes,
-            0,
-            0,
-            (managed_capacity_bytes / u64::try_from(max_active_attempts).unwrap_or(1).max(8)).max(1),
+            device_capabilities: DeviceCapabilities::default(),
+            configured_limit_bytes: managed_capacity_bytes,
+            headroom_bytes: 0,
+            backend_reserve_bytes: 0,
+            attempt_floor_bytes: (managed_capacity_bytes / u64::try_from(max_active_attempts).unwrap_or(1).max(8))
+                .max(1),
             max_active_attempts,
-            source_work,
-            slots,
-            slots,
-        )
+            source_work_per_attempt: source_work,
+            stream_pool_size: slots,
+            worker_job_capacity: slots,
+            cache_cap_bytes: 0,
+        })
         .expect("test ledger profile must resolve");
         Self::new(profile)
     }
@@ -830,6 +833,10 @@ impl DeviceLedger {
         self.try_admit_for_attempt(waiter_id, AttemptId::mint(), requirement)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "service construction inputs are distinct admission and ownership values"
+    )]
     fn commit_grant_locked(
         &self,
         state: &mut DeviceLedgerState,

@@ -157,6 +157,10 @@ fn execute_prepared_graph_algorithm(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "native cuDF/cuGraph/cuVS call parameters stay explicit at the FFI boundary"
+)]
 pub(in crate::exec) fn execute_graph_algorithm_sanitized(
     context: &ExecutionContext,
     node_id: NodeId,

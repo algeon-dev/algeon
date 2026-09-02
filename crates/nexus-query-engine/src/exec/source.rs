@@ -50,6 +50,7 @@ pub(in crate::exec) fn parquet_chunk_path_fact(chunk: &SourceChunk) -> String {
     crate::source::parquet_source_path_fact(&chunk.location, &chunk.path)
 }
 
+#[expect(clippy::too_many_arguments, reason = "execution inputs are distinct domain values that share no owner")]
 pub(in crate::exec) fn source_read_request(
     kind: ReservationKind,
     memory_boundary: &'static str,
@@ -74,6 +75,7 @@ pub(in crate::exec) fn source_read_request(
     request
 }
 
+#[expect(clippy::too_many_arguments, reason = "execution inputs are distinct domain values that share no owner")]
 pub(in crate::exec) fn source_read_batch_request(
     kind: ReservationKind,
     memory_boundary: &'static str,

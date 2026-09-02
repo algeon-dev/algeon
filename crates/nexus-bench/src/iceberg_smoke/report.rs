@@ -61,6 +61,7 @@ pub struct IcebergNativeSmokeReportRow {
 }
 
 impl IcebergNativeSmokeReportRow {
+    #[expect(clippy::too_many_arguments, reason = "benchmark harness parameters are independent measurement axes")]
     pub fn new(
         query_id: String,
         fixture_mode: String,

@@ -249,6 +249,7 @@ pub(super) fn duration_paced_arrival(
     }
 }
 
+#[expect(clippy::too_many_arguments, reason = "validation harness parameters are independent measurement axes")]
 pub(super) async fn drive_with_queue_observation(
     backend: &NexusGpuBackend,
     sessions: &SessionPool,

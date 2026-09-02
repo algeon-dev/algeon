@@ -433,6 +433,7 @@ fn render_markdown(report: &MatrixReport) -> String {
     out
 }
 
+#[expect(clippy::too_many_arguments, reason = "validation harness parameters are independent measurement axes")]
 async fn run_parquet_case(
     id: &str,
     selection: RelationalExecution,
@@ -483,6 +484,7 @@ async fn run_parquet_case(
     }
 }
 
+#[expect(clippy::too_many_arguments, reason = "validation harness parameters are independent measurement axes")]
 async fn run_parquet_case_inner(
     id: &str,
     selection: RelationalExecution,

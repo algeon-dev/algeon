@@ -59,7 +59,23 @@ split-debuginfo = "unpacked"
 broken_intra_doc_links = "deny"
 bare_urls = "deny"
 
+# High-signal, low-noise guards. Every entry must stay zero-hit across the
+# workspace (the canonical Clippy phase raises warn to gate failure via
+# `-D warnings`); new entries require a concrete FFI-, runtime-, or
+# path-correctness reason, verified across all targets and features.
 [workspace.lints.clippy]
+coerce_container_to_any = "warn"
+debug_assert_with_mut_call = "warn"
+default_union_representation = "warn"
+fn_to_numeric_cast_any = "warn"
+infinite_loop = "warn"
+large_stack_frames = "warn"
+path_buf_push_overwrite = "warn"
+precedence_bits = "warn"
+suspicious_xor_used_as_pow = "warn"
+trailing_empty_array = "warn"
+uninhabited_references = "warn"
+
 drop_non_drop = "deny"
 
 [lints]

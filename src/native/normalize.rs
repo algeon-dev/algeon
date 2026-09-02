@@ -555,6 +555,7 @@ fn normalize_sort_input_root<'a>(
     )
 }
 
+#[expect(clippy::too_many_arguments, reason = "inputs are distinct domain values that share no owner")]
 fn normalize_input_root<'a>(
     output_schema_fields: usize,
     stack_root: Option<NativeStackRoot>,

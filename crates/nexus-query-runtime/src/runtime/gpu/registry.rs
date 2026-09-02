@@ -10,7 +10,7 @@ use std::{
 
 use super::{
     DeviceCapabilities, DeviceContext, DeviceLedger, DeviceMemoryFailureReport, DeviceMemoryFailureTracker,
-    DeviceOwnerToken, DeviceResourceProfile, GpuInventory,
+    DeviceOwnerToken, DeviceResourceEnvelope, DeviceResourceProfile, GpuInventory,
 };
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
@@ -281,19 +281,19 @@ impl DeviceRegistry {
                     floor
                 },
             };
-            let resource_profile = DeviceResourceProfile::resolve_with_capabilities_and_cache_cap(
-                *ordinal,
+            let resource_profile = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+                device_ordinal: *ordinal,
+                device_capabilities: profile.device_capabilities.clone(),
                 configured_limit_bytes,
-                0,
-                profile.backend_reserve_bytes,
+                headroom_bytes: 0,
+                backend_reserve_bytes: profile.backend_reserve_bytes,
                 attempt_floor_bytes,
-                profile.max_active_attempts,
-                profile.source_work_per_attempt,
-                profile.stream_pool_size,
-                profile.worker_job_capacity,
-                profile.device_capabilities.clone(),
-                profile.cache_cap_bytes(),
-            )?;
+                max_active_attempts: profile.max_active_attempts,
+                source_work_per_attempt: profile.source_work_per_attempt,
+                stream_pool_size: profile.stream_pool_size,
+                worker_job_capacity: profile.worker_job_capacity,
+                cache_cap_bytes: profile.cache_cap_bytes(),
+            })?;
             if profile.lane_count < resource_profile.max_active_attempts {
                 return Err(QueryError::new(
                     QueryErrorCode::InvalidPlan,

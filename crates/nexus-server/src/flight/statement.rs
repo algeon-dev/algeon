@@ -255,6 +255,7 @@ impl DatafusionNexusFlightSqlService {
         terminal.finish_attempt_report_delivery_failed(error, None);
     }
 
+    #[expect(clippy::too_many_arguments, reason = "service wiring parameters are distinct ownership values")]
     pub(super) async fn statement_flight_info(
         &self,
         mut planning_lease: QueryPlanningLease,
@@ -449,6 +450,7 @@ impl DatafusionNexusFlightSqlService {
     /// Issue an `EXPLAIN GPU` ticket without asking DataFusion to parse the
     /// extension as its ordinary `EXPLAIN` statement. The inner SQL is planned
     /// exactly once at DoGet by `validate_query`.
+    #[expect(clippy::too_many_arguments, reason = "service wiring parameters are distinct ownership values")]
     pub(super) fn explain_gpu_flight_info(
         &self,
         mut planning_lease: QueryPlanningLease,

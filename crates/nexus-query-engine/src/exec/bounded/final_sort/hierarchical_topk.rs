@@ -490,6 +490,10 @@ impl FinalSortExecutor<'_, '_> {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+    )]
     fn sort_and_limit_topk_candidate(
         &mut self,
         work_reservation: ActiveReservation,

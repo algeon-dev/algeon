@@ -303,6 +303,7 @@ async fn build_native_ctx(
     Ok((ctx, native_rule))
 }
 
+#[expect(clippy::too_many_arguments, reason = "benchmark harness parameters are independent measurement axes")]
 async fn measure_query(
     ctx: &SessionContext,
     query: &ClickbenchQuery,

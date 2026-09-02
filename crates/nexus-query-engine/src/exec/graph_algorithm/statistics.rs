@@ -129,6 +129,7 @@ fn runtime_graph_statistics_probe_in_runtime(
 }
 
 #[cfg(feature = "cugraph")]
+#[expect(clippy::too_many_arguments, reason = "graph algorithm admission inputs are distinct proof values")]
 fn graph_statistics_optional_algorithm_evidence(
     ctx: &ExecutionOverrides<'_>,
     source: cudf::Series,

@@ -246,6 +246,10 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
     Ok(partials)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 fn execute_remaining_chunks_serial_after_scheduler_error(
     execution: &mut BoundedExecutionAttempt<'_>,
     bounded: &BoundedPlan<'_>,
@@ -400,6 +404,10 @@ fn try_start_optional_scheduled_source_read(
     )
     .map(Some)
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 fn start_scheduled_source_read(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,

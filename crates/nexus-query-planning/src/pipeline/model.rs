@@ -545,6 +545,7 @@ pub struct ReservationGate {
 
 impl ReservationGate {
     /// Create a gate from individual reservation requirement fields.
+    #[expect(clippy::too_many_arguments, reason = "planning inputs are distinct proof and constraint values")]
     pub fn new(
         id: ReservationGateId,
         owner: ReservationGateOwner,

@@ -464,22 +464,22 @@ mod tests {
     };
 
     use super::*;
-    use crate::runtime::gpu::{DeviceCapabilities, DeviceResourceProfile};
+    use crate::runtime::gpu::{DeviceCapabilities, DeviceResourceEnvelope, DeviceResourceProfile};
 
     fn ledger(cache_cap_bytes: u64) -> DeviceLedger {
-        let profile = DeviceResourceProfile::resolve_with_capabilities_and_cache_cap(
-            0,
-            10_000,
-            0,
-            0,
-            100,
-            1,
-            1,
-            2,
-            2,
-            DeviceCapabilities::default(),
+        let profile = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+            device_ordinal: 0,
+            configured_limit_bytes: 10_000,
+            headroom_bytes: 0,
+            backend_reserve_bytes: 0,
+            attempt_floor_bytes: 100,
+            max_active_attempts: 1,
+            source_work_per_attempt: 1,
+            stream_pool_size: 2,
+            worker_job_capacity: 2,
+            device_capabilities: DeviceCapabilities::default(),
             cache_cap_bytes,
-        )
+        })
         .expect("cache test profile must resolve");
         DeviceLedger::new(profile)
     }

@@ -90,6 +90,7 @@ pub fn validate_position_delete_planned_row_groups(
 }
 
 #[doc(hidden)]
+#[expect(clippy::too_many_arguments, reason = "planning inputs are distinct proof and constraint values")]
 pub fn append_row_group_chunks(
     source_node_id: NodeId,
     source: &LocalParquetSource,
@@ -164,6 +165,7 @@ pub fn append_row_group_chunks(
     );
 }
 #[doc(hidden)]
+#[expect(clippy::too_many_arguments, reason = "planning inputs are distinct proof and constraint values")]
 pub fn push_pending_chunk(
     source_node_id: NodeId,
     source: &LocalParquetSource,
@@ -339,6 +341,7 @@ pub fn projected_and_pure_filter_file_columns_overlap(source: &LocalParquetSourc
 }
 
 #[doc(hidden)]
+#[expect(clippy::too_many_arguments, reason = "planning inputs are distinct proof and constraint values")]
 pub fn single_all_row_groups_chunk(
     source_node_id: NodeId,
     source: &LocalParquetSource,
@@ -396,6 +399,7 @@ pub fn single_all_row_groups_chunk(
 /// identity so the lowered `SUM(weight)` yields `COUNT(*) = 0` rather than
 /// SQL `SUM(empty) = NULL`.
 #[doc(hidden)]
+#[expect(clippy::too_many_arguments, reason = "planning inputs are distinct proof and constraint values")]
 pub fn zero_column_count_identity_chunk(
     source_node_id: NodeId,
     source: &LocalParquetSource,
@@ -457,6 +461,7 @@ pub struct PendingChunk {
 }
 
 impl PendingChunk {
+    #[expect(clippy::too_many_arguments, reason = "planning inputs are distinct proof and constraint values")]
     fn push(
         &mut self,
         row_group: usize,

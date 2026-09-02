@@ -148,6 +148,10 @@ pub(super) fn select_filtered_global_aggregate_strategy(
     Ok(FilteredGlobalAggregateStrategyDecision { use_segmented, decision, rows_per_chunk, filtered_inputs_per_segment })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 pub(super) fn execute_segmented_filtered_global_aggregate_with_budget(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
@@ -237,6 +241,10 @@ pub(super) fn execute_segmented_filtered_global_aggregate_with_budget(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 pub(super) fn execute_segmented_filtered_global_partial_aggregate_with_budget(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
@@ -313,6 +321,10 @@ pub(super) fn execute_segmented_filtered_global_partial_aggregate_with_budget(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+)]
 pub(super) fn record_filtered_global_partial_single_pass(
     metrics: &mut QueryMetrics,
     context: &ExecutionContext,
@@ -349,6 +361,10 @@ pub(super) fn record_filtered_global_partial_single_pass(
     );
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+)]
 pub(super) fn record_filtered_global_aggregate_single_pass(
     metrics: &mut QueryMetrics,
     context: &ExecutionContext,
@@ -379,6 +395,10 @@ pub(super) fn record_filtered_global_aggregate_single_pass(
     );
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+)]
 pub(super) fn record_filtered_global_segmented_failure(
     metrics: &mut QueryMetrics,
     context: &ExecutionContext,
@@ -445,6 +465,10 @@ fn add_segmented_failure_error_facts(
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 fn execute_segmented_filtered_global_partial_state(
     context: &ExecutionContext,
     spec: &AggregateSpec,
@@ -508,6 +532,10 @@ fn execute_segmented_filtered_global_partial_state(
     Ok(frame)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 fn execute_filtered_global_partial_state_for_chunk(
     context: &ExecutionContext,
     spec: &AggregateSpec,
@@ -587,6 +615,10 @@ fn execute_filtered_global_partial_state_for_chunk(
     Ok(frame)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 fn append_filtered_global_partial_segment(
     context: &ExecutionContext,
     input_schema: &ArrowSchemaRef,
@@ -867,6 +899,10 @@ fn concat_partial_state_frames(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+)]
 fn record_segmented_filtered_global_aggregate_strategy(
     metrics: &mut QueryMetrics,
     context: &ExecutionContext,
@@ -902,6 +938,10 @@ fn record_segmented_filtered_global_aggregate_strategy(
     );
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+)]
 fn record_segmented_filtered_global_partial_strategy(
     metrics: &mut QueryMetrics,
     context: &ExecutionContext,

@@ -97,6 +97,10 @@ impl ActiveReservation {
         )
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+    )]
     pub(super) fn charged(
         memory_space: MemorySpaceId,
         reserved_bytes: Rc<Cell<u64>>,
@@ -149,6 +153,10 @@ impl ActiveReservation {
         }
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+    )]
     pub(super) fn alias(
         memory_space: MemorySpaceId,
         reserved_bytes: Rc<Cell<u64>>,

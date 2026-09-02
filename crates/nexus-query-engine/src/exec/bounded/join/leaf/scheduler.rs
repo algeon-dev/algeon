@@ -185,6 +185,10 @@ pub(super) fn fill_optional_join_leaf_reads(
     }
     Ok(())
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(super) fn start_join_leaf_scheduled_source_read(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,

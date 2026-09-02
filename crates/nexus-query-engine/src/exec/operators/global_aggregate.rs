@@ -143,6 +143,10 @@ fn execute_global_aggregate_impl(
     metrics.operator_time += timer.elapsed();
     Ok(GpuDataFrame::new(output))
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 fn reduce_global_aggregate_column_impl(
     context: &ExecutionContext,
     frame: &DataFrame,

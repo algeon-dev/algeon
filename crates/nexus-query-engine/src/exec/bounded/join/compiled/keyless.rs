@@ -169,6 +169,10 @@ pub(super) fn keyless_conditional_join_gather_map_reservation_size_bytes(
         .with_fact("join_type", node.spec.join_type)
     })
 }
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(super) fn keyless_conditional_join_indices_with_output_size(
     join_type: KeylessConditionalJoinKind,
     left: &DataFrame,

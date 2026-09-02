@@ -120,6 +120,7 @@ pub(in crate::capability) fn root_full_sort_join_aggregate_shape_decision(
     })
 }
 
+#[expect(clippy::too_many_arguments, reason = "planning inputs are distinct proof and constraint values")]
 fn root_full_sort_keyless_shared_aggregate_fanout_shape(
     plan: &QueryPlan,
     root_join_id: NodeId,

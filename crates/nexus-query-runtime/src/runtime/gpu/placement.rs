@@ -7,7 +7,7 @@
 //! boundary before queue maintenance or direct placement begins; this module
 //! only reads the resulting ledger state.
 
-use super::{DeviceLedger, DeviceRegistry, DeviceResourceProfile};
+use super::{DeviceLedger, DeviceRegistry, DeviceResourceEnvelope, DeviceResourceProfile};
 use crate::{admission::AttemptRequirement, capability::ReservationRequirement, error::Result};
 
 /// Internal placement input derived from planner-owned capability evidence.
@@ -303,34 +303,36 @@ mod tests {
             "test_operator_contract",
             ContractQuality::CapabilityProof,
         );
-        let incapable = DeviceResourceProfile::resolve_with_capabilities(
-            0,
-            1_000,
-            0,
-            0,
-            100,
-            1,
-            1,
-            2,
-            2,
-            DeviceCapabilities::only(std::iter::empty::<DeviceCapability>()),
-        )
+        let incapable = /*OK*/DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+            device_ordinal: 0,
+            configured_limit_bytes: 1_000,
+            headroom_bytes: 0,
+            backend_reserve_bytes: 0,
+            attempt_floor_bytes: 100,
+            max_active_attempts: 1,
+            source_work_per_attempt: 1,
+            stream_pool_size: 2,
+            worker_job_capacity: 2,
+            device_capabilities: DeviceCapabilities::only(std::iter::empty::<DeviceCapability>()),
+            cache_cap_bytes: 0,
+        })
         .unwrap();
-        let capable = DeviceResourceProfile::resolve_with_capabilities(
-            1,
-            1_000,
-            0,
-            0,
-            100,
-            1,
-            1,
-            2,
-            2,
-            DeviceCapabilities::only([DeviceCapability::new(
+        let capable = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+            device_ordinal: 1,
+            configured_limit_bytes: 1_000,
+            headroom_bytes: 0,
+            backend_reserve_bytes: 0,
+            attempt_floor_bytes: 100,
+            max_active_attempts: 1,
+            source_work_per_attempt: 1,
+            stream_pool_size: 2,
+            worker_job_capacity: 2,
+            device_capabilities: DeviceCapabilities::only([DeviceCapability::new(
                 ReservationKind::OperatorOutput,
                 "test_operator_contract",
             )]),
-        )
+            cache_cap_bytes: 0,
+        })
         .unwrap();
 
         assert!(!profile_supports_placement_request(Some(&incapable), std::slice::from_ref(&requirement)));

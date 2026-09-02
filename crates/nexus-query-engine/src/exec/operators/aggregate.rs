@@ -241,6 +241,10 @@ pub(in crate::exec) fn execute_aggregate_with_budget(
     execute_aggregate_with_budget_for_node(context, None, node, input_schema, input, output_schema, token, metrics)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
@@ -626,6 +630,10 @@ pub(in crate::exec) fn should_execute_datafusion_exact_floating_statistical_aggr
         && context.statistical_aggregate_execution_mode().is_datafusion_exact()
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+)]
 fn record_single_grouped_aggregate_strategy_decision(
     metrics: &mut QueryMetrics,
     context: &ExecutionContext,
@@ -655,6 +663,10 @@ fn record_single_grouped_aggregate_strategy_decision(
     );
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
+)]
 pub(in crate::exec::operators::aggregate) fn record_single_grouped_aggregate_strategy_decision_with_metrics(
     metrics: &mut QueryMetrics,
     context: &ExecutionContext,
@@ -705,6 +717,10 @@ pub(in crate::exec::operators::aggregate) fn record_single_grouped_aggregate_str
     );
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 pub(in crate::exec) fn execute_partial_aggregate_with_budget(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
@@ -838,6 +854,10 @@ pub(in crate::exec) fn execute_partial_aggregate_with_budget(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 fn execute_partial_aggregate_with_budget_single_pass(
     context: &ExecutionContext,
     node_id: Option<NodeId>,

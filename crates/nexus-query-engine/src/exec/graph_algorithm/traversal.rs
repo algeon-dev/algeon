@@ -293,7 +293,10 @@ pub(super) fn execute_bfs(
     )
 }
 
-#[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "BFS path extraction passes the native call state explicitly at the FFI boundary"
+)]
 fn extract_bfs_path_frame<V>(
     context: &ExecutionContext,
     spec: &crate::plan::GraphAlgorithmSpec,
@@ -942,6 +945,7 @@ fn project_bfs_inputs(
     Ok((edges, predicate_columns))
 }
 
+#[expect(clippy::too_many_arguments, reason = "graph algorithm admission inputs are distinct proof values")]
 fn graph_bfs_error_for_missing_path_endpoint(
     context: &ExecutionContext,
     spec: &crate::plan::GraphAlgorithmSpec,

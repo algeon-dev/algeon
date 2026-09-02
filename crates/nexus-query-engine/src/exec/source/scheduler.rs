@@ -454,6 +454,10 @@ fn acquire_source_read_lease_then_enqueue(
 }
 
 impl ScheduledLocalParquetRead {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"
+    )]
     pub(in crate::exec) fn spawn(
         context: ExecutionContext,
         source: LocalParquetSource,
@@ -658,6 +662,10 @@ impl ScheduledLocalParquetRead {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "source-read inputs (file/chunk identity, reader state, budgets) are distinct domain values"
+)]
 fn try_finish_scheduled_source_read_with_corrected_budget(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,

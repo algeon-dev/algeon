@@ -40,6 +40,7 @@ pub(in crate::exec) fn source_graph_raw_edge_row_count(
 }
 
 #[cfg(feature = "cugraph")]
+#[expect(clippy::too_many_arguments, reason = "graph algorithm admission inputs are distinct proof values")]
 pub(super) fn admit_graph_memory(
     context: &ExecutionContext,
     node_id: NodeId,

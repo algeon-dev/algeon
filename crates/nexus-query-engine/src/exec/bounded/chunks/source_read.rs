@@ -275,6 +275,10 @@ fn source_read_retry_policy(context: &ExecutionContext) -> (usize, usize) {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 fn read_local_parquet_chunk_required_only_or_split(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,
@@ -367,6 +371,10 @@ fn read_local_parquet_chunk_required_only(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 fn read_local_parquet_chunk_required_only_attempt(
     execution: &mut BoundedExecutionAttempt<'_>,
     source: &LocalParquetSource,

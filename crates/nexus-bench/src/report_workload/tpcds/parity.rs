@@ -172,6 +172,7 @@ pub async fn tpcds_parity_report_rows_with_external_oracles(
     .await
 }
 
+#[expect(clippy::too_many_arguments, reason = "benchmark harness parameters are independent measurement axes")]
 pub async fn tpcds_parity_report_rows_with_external_oracles_and_device_memory_limit(
     root: &Path,
     session_config: SessionConfig,
@@ -220,6 +221,7 @@ async fn tpcds_parity_workload_items_with_session_configs_and_external_oracles(
     Ok(items)
 }
 
+#[expect(clippy::too_many_arguments, reason = "benchmark harness parameters are independent measurement axes")]
 async fn tpcds_parity_report_rows_with_session_configs_and_external_oracles(
     root: &Path,
     cpu_session_config: SessionConfig,

@@ -94,6 +94,10 @@ fn execute_post_final_stages(
     Ok(input)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 fn execute_post_final_stage(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,

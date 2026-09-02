@@ -203,6 +203,10 @@ where
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 fn materialize_partitioned_join_work_with_retry<F>(
     execution: &mut BoundedExecutionAttempt<'_>,
     plan: PartitionedJoinDriverPlan<'_>,
@@ -249,6 +253,10 @@ where
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 fn retry_partitioned_join_work_after_error<F>(
     execution: &mut BoundedExecutionAttempt<'_>,
     plan: PartitionedJoinDriverPlan<'_>,
@@ -344,6 +352,10 @@ fn record_partitioned_join_retry_error(error: &QueryError, metrics: &mut QueryMe
     crate::exec::retry::record_retryable_resource_error(error, metrics);
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 fn materialize_partitioned_join_retry_children<F>(
     execution: &mut BoundedExecutionAttempt<'_>,
     plan: PartitionedJoinDriverPlan<'_>,
@@ -385,6 +397,10 @@ where
     Ok(outputs)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 fn materialize_repartitioned_join_work_with_retry<F>(
     execution: &mut BoundedExecutionAttempt<'_>,
     plan: PartitionedJoinDriverPlan<'_>,

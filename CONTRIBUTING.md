@@ -173,6 +173,22 @@ In the PR description, include:
 
 Do not describe a compile-only check as native or GPU qualification.
 
+### Lint Exceptions
+
+Workspace lint levels are owned by `[workspace.lints]` in the root `Cargo.toml`
+and inherited by every workspace package; the canonical Clippy gate is
+`cargo clippy --workspace --all-targets --all-features -- -D warnings`.
+
+- Fix the owning abstraction before adding a lint exception. When a lint
+  fires, first ask whether the code repeats shared state across signatures or
+  is missing a real owner; suppressions must not become a substitute for that
+  repair.
+- Clippy exceptions must be narrow and justified. Prefer a per-item
+  `#[expect(clippy::..., reason = "...")]` with a concrete, verifiable
+  justification. Do not add crate-, module-, or workspace-wide
+  `#[allow]` attributes, and never use `#[allow]` as a migration baseline —
+  it silently survives the refactor it was meant to be temporary for.
+
 ## Local Setup
 
 DataFusion Nexus is a single recursive checkout. The root workspace owns the

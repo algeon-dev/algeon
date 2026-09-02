@@ -34,6 +34,10 @@ pub(in crate::exec) fn execute_groupby_aggregate_with_budget(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 pub(in crate::exec) fn execute_groupby_aggregate_with_budget_observed(
     context: Option<&ExecutionContext>,
     _overrides: &ExecutionOverrides<'_>,

@@ -91,6 +91,7 @@ impl CugraphAlgoExec {
         )
     }
 
+    #[expect(clippy::too_many_arguments, reason = "execution inputs are distinct domain values that share no owner")]
     pub(super) fn try_new_with_gpu_result_input_name(
         spec: CugraphAlgorithmSpec,
         edge_source: Arc<dyn ExecutionPlan>,
@@ -129,15 +130,16 @@ impl CugraphAlgoExec {
         let input_row_bounds = CugraphInputRowBounds::from_execution_plans(edge_source.as_ref(), &predicate_sources)?;
         let edge_vertex_upper_bound =
             edge_source_graph_vertex_estimate(edge_source.as_ref()).map(|estimate| estimate.count);
-        preflight_cugraph_query_plan(
-            &spec,
-            edge_source.schema(),
-            predicate_sources.iter().map(|source| source.schema()).collect(),
-            &result_options,
+        preflight_cugraph_query_plan(&CugraphPlanDefinition {
+            spec: spec.clone(),
+            edge_schema: edge_source.schema(),
+            predicate_schemas: predicate_sources.iter().map(|source| source.schema()).collect(),
+            predicate_row_upper_bounds: vec![None; predicate_sources.len()],
+            result_options: result_options.clone(),
             edge_normalize_inserted,
-            input_row_bounds.edge_row_upper_bound(),
+            edge_row_upper_bound: input_row_bounds.edge_row_upper_bound(),
             edge_vertex_upper_bound,
-        )?;
+        })?;
         let graph_residency =
             cugraph_graph_residency_descriptor(&spec, Arc::clone(&edge_source), edge_normalize_inserted);
         // Footer pruning is async and can change the exact graph cardinality.
@@ -186,18 +188,7 @@ impl CugraphAlgoExec {
 
     #[cfg(test)]
     pub(crate) fn graph_model_ask_bytes_for_admission_ticket(&self) -> Result<Option<GraphAdmissionModelAsk>> {
-        let edge_vertex_upper_bound =
-            edge_source_graph_vertex_estimate(self.edge_source.as_ref()).map(|estimate| estimate.count);
-        let (graph_plan, _) = cugraph_execution_capability_proof_with_edge_row_upper_bound(
-            &self.spec,
-            self.edge_source.schema(),
-            self.predicate_sources.iter().map(|source| source.schema()).collect(),
-            self.input_row_bounds.predicate_row_upper_bounds(),
-            &self.result_options,
-            self.edge_normalize_inserted(),
-            self.input_row_bounds.edge_row_upper_bound(),
-            edge_vertex_upper_bound,
-        )?;
+        let (graph_plan, _) = cugraph_execution_capability_proof(&self.plan_definition())?;
         cugraph_graph_model_ask_bytes(&graph_plan, self.edge_source.as_ref(), &self.native_execution_config)
     }
 
@@ -734,15 +725,9 @@ impl CugraphAlgoExec {
             let handle = execute_cugraph_query_to_gpu_with_options(
                 native_context,
                 &mut graph_metrics,
-                &self.spec,
-                edge_schema,
+                &self.plan_definition(),
                 edge_frame,
                 predicate_frames,
-                self.input_row_bounds.predicate_row_upper_bounds(),
-                &self.result_options,
-                self.edge_normalize_inserted(),
-                self.input_row_bounds.edge_row_upper_bound(),
-                edge_source_graph_vertex_estimate(self.edge_source.as_ref()).map(|estimate| estimate.count),
                 singleflight_leader,
             )?;
             let output = materialize_gpu_output_eagerly(
@@ -846,15 +831,9 @@ impl CugraphAlgoExec {
             let handle = execute_cugraph_query_to_gpu_with_options(
                 native_context,
                 &mut graph_metrics,
-                &self.spec,
-                edge_schema,
+                &self.plan_definition(),
                 edge_frame,
                 predicate_frames,
-                self.input_row_bounds.predicate_row_upper_bounds(),
-                &self.result_options,
-                self.edge_normalize_inserted(),
-                self.input_row_bounds.edge_row_upper_bound(),
-                edge_source_graph_vertex_estimate(self.edge_source.as_ref()).map(|estimate| estimate.count),
                 singleflight_leader,
             )?;
             Ok((self.gpu_result_input_name.clone(), handle))
@@ -870,34 +849,14 @@ impl GpuResidentProducer for CugraphAlgoExec {
     }
 
     fn hard_output_row_upper_bound(&self) -> Option<u64> {
-        cugraph_schema_query_plan(
-            &self.spec,
-            self.edge_source.schema(),
-            self.predicate_sources.iter().map(|source| source.schema()).collect(),
-            self.input_row_bounds.predicate_row_upper_bounds(),
-            &self.result_options,
-            self.edge_normalize_inserted(),
-            self.input_row_bounds.edge_row_upper_bound(),
-            edge_source_graph_vertex_estimate(self.edge_source.as_ref()).map(|estimate| estimate.count),
-        )
-        .ok()
-        .as_ref()
-        .and_then(nexus_query_engine::graph_memory::query_plan_hard_row_upper_bound)
+        cugraph_schema_query_plan(&self.plan_definition())
+            .ok()
+            .as_ref()
+            .and_then(nexus_query_engine::graph_memory::query_plan_hard_row_upper_bound)
     }
 
     fn unique_output_key_columns(&self) -> Option<&'static [&'static str]> {
-        cugraph_schema_query_plan(
-            &self.spec,
-            self.edge_source.schema(),
-            self.predicate_sources.iter().map(|source| source.schema()).collect(),
-            self.input_row_bounds.predicate_row_upper_bounds(),
-            &self.result_options,
-            self.edge_normalize_inserted(),
-            self.input_row_bounds.edge_row_upper_bound(),
-            edge_source_graph_vertex_estimate(self.edge_source.as_ref()).map(|estimate| estimate.count),
-        )
-        .ok()
-        .and_then(|plan| {
+        cugraph_schema_query_plan(&self.plan_definition()).ok().and_then(|plan| {
             let key = plan.nodes().iter().find_map(|node| match &node.kind {
                 nexus_query_engine::plan::PlanNode::GraphAlgorithm(graph) => {
                     Some(graph.spec.unique_output_key_columns())
@@ -1038,21 +997,27 @@ pub(super) fn register_cugraph_execution_spis() {
     });
 }
 
+impl CugraphAlgoExec {
+    /// The graph-fragment definition this occurrence lowers to.
+    #[cfg_attr(not(test), expect(dead_code, reason = "used by in-crate cugraph plan tests"))]
+    pub(crate) fn plan_definition(&self) -> CugraphPlanDefinition {
+        CugraphPlanDefinition {
+            spec: self.spec.clone(),
+            edge_schema: self.edge_source.schema(),
+            predicate_schemas: self.predicate_sources.iter().map(|source| source.schema()).collect(),
+            predicate_row_upper_bounds: self.input_row_bounds.predicate_row_upper_bounds().to_vec(),
+            result_options: self.result_options.clone(),
+            edge_normalize_inserted: self.edge_normalize_inserted(),
+            edge_row_upper_bound: self.input_row_bounds.edge_row_upper_bound(),
+            edge_vertex_upper_bound: edge_source_graph_vertex_estimate(self.edge_source.as_ref())
+                .map(|estimate| estimate.count),
+        }
+    }
+}
+
 impl GraphExecutionPlan for CugraphAlgoExec {
     fn graph_execution_capability_proof(&self) -> Result<QueryPlanCapabilityProof> {
-        let edge_vertex_upper_bound =
-            edge_source_graph_vertex_estimate(self.edge_source.as_ref()).map(|estimate| estimate.count);
-        cugraph_execution_capability_proof_with_edge_row_upper_bound(
-            &self.spec,
-            self.edge_source.schema(),
-            self.predicate_sources.iter().map(|source| source.schema()).collect(),
-            self.input_row_bounds.predicate_row_upper_bounds(),
-            &self.result_options,
-            cugraph_edge_normalize_inserted(&self.spec, &self.edge_source_canonical_facts),
-            self.input_row_bounds.edge_row_upper_bound(),
-            edge_vertex_upper_bound,
-        )
-        .map(|(_, proof)| proof)
+        cugraph_execution_capability_proof(&self.plan_definition()).map(|(_, proof)| proof)
     }
 
     fn graph_result_input_name(&self) -> &str {

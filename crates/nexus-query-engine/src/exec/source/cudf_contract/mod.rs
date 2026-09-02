@@ -20,7 +20,7 @@ pub(super) use error::{
 #[cfg(test)]
 #[allow(unused_imports)]
 pub(super) use local::{
-    attach_cudf_source_reader_batch_predicate, attach_cudf_source_reader_predicate, chunk_with_reader_decimal_types,
+    attach_cudf_source_reader_predicate, chunk_with_reader_decimal_types,
     cudf_local_parquet_file, cudf_local_parquet_file_for_chunk, cudf_local_parquet_source_for_chunk,
     cudf_local_parquet_source_for_file, cudf_local_parquet_source_from_file, cudf_local_parquet_source_from_files,
     footer_verified_reader_decimal_types_for_chunk, footer_verified_reader_decimal_types_for_chunk_with_cache,

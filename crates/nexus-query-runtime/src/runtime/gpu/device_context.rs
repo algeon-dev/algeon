@@ -39,6 +39,10 @@ struct DeviceContextInner {
 impl DeviceContext {
     /// Creates a per-device service context.
     #[doc(hidden)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "service construction inputs are distinct admission and ownership values"
+    )]
     pub fn new(
         device: cudf::DeviceId,
         stream_pool: ServiceStreamPool,

@@ -1,5 +1,9 @@
 use super::*;
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "bounded execution passes operator-occurrence inputs explicitly beside the attempt state"
+)]
 pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_probe_stream(
     execution: &mut BoundedExecutionAttempt<'_>,
     node_id: NodeId,

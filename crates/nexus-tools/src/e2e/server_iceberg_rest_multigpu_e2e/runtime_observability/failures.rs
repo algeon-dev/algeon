@@ -147,6 +147,7 @@ pub(super) async fn run_midstream_drop(params: &RuntimeParams, channel: &Channel
     terminal_scenario(params, channel, started, scenario, query_id, correlation_id, 1, rows).await
 }
 
+#[expect(clippy::too_many_arguments, reason = "validation harness parameters are independent measurement axes")]
 pub(super) async fn terminal_scenario(
     params: &RuntimeParams,
     channel: &Channel,

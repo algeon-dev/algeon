@@ -10,6 +10,10 @@ use crate::{
     runtime::ExecutionContext,
 };
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "join materialization passes build/probe/output inputs explicitly beside the attempt state"
+)]
 pub(super) fn materialize_join_output(
     context: &ExecutionContext,
     left: &DataFrame,
@@ -110,6 +114,10 @@ pub(in crate::exec) fn select_join_input(
     })
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "join materialization passes build/probe/output inputs explicitly beside the attempt state"
+)]
 pub(in crate::exec) fn materialize_join_output_projection(
     left: &DataFrame,
     right: &DataFrame,

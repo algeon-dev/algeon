@@ -47,6 +47,10 @@ pub(in crate::exec::operators::aggregate) fn prepare_prepared_sort_groupby_with_
     Ok((prepared, prepare_timer.elapsed()))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_single_aggregate_with_budget(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
@@ -140,6 +144,10 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_singl
     Ok(GpuDataFrame::new(output))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_partial_aggregate_with_budget(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
@@ -240,6 +248,10 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_parti
     Ok(GpuDataFrame::new(output))
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "aggregate occurrence inputs (spec, schemas, token, evidence) are distinct domain values"
+)]
 pub(in crate::exec::operators::aggregate) fn execute_encoded_key_partial_aggregate_with_budget(
     context: &ExecutionContext,
     node_id: Option<NodeId>,
