@@ -1,7 +1,7 @@
 //! CPU/GPU candidate-outcome capability reason codes.
 //!
-//! `CapabilityReason::code()` produces the snake-case strings that planning
-//! and report projections emit verbatim. Changing a code is
+//! [`CapabilityReason::code`] produces the snake-case strings that planning
+//! and [`crate::native_report`] projections emit verbatim. Changing a code is
 //! a TSV schema break and requires bumping the consuming report's schema
 //! version.
 

@@ -315,18 +315,32 @@ impl NexusGpuBackend {
         NexusGpuBackendBuilder::default()
     }
 
-    /// Canonical production install: register this backend's native optimizer
-    /// into a session builder so the installed session plans and admits
-    /// native execution through this backend's admission ledger.
+    /// Installs the backend-managed DataFusion integration on `builder`.
+    ///
+    /// The installation binds the native optimizer and
+    /// [`DataFusionNexusSessionConfig`]
+    /// to this backend's admission authority, and installs the GPU coverage
+    /// UDTF, common GPU function catalog, and relation-aware cuVS planner and
+    /// metadata family. The resulting session plans and admits native
+    /// execution through this backend's ledger.
+    ///
+    /// This method does not install cuGraph. Use
+    /// [`Self::install_on_with_cugraph_sql`], or call
+    /// [`NexusSessionStateBuilderExt::try_with_cugraph_sql`] on the returned
+    /// builder. Installing cuGraph first is rejected because its captured
+    /// configuration is not yet bound to this backend's admission authority.
     pub fn install_on(&self, builder: SessionStateBuilder) -> Result<SessionStateBuilder> {
         install_backend_optimizer_config(builder, &self.optimizer_config)
     }
 
-    /// Installs the native optimizer and cuGraph SQL functions.
+    /// Installs [`Self::install_on`] followed by the cuGraph SQL family.
     ///
-    /// Without the `cugraph` feature, execution returns a structured feature-disabled error.
-    /// Reinstalling the `cugraph` family with a different descriptor projection returns the
-    /// structured installation error instead of panicking.
+    /// This is equivalent to calling [`Self::install_on`] and then
+    /// [`NexusSessionStateBuilderExt::try_with_cugraph_sql`] with `config`.
+    /// Without the `cugraph` feature, execution returns a structured
+    /// feature-disabled error. Reinstalling the family with an equal
+    /// configuration is idempotent; a different descriptor projection is a
+    /// structured installation error.
     pub fn install_on_with_cugraph_sql(
         &self,
         builder: SessionStateBuilder,

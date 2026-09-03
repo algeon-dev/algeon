@@ -1,9 +1,18 @@
-//! Session-state helpers for installing datafusion-nexus public integrations.
+//! Installation paths for caller-owned DataFusion session builders.
+//!
+//! | Entry point | Installs | Required input | Idempotency | Owns admission |
+//! | --- | --- | --- | --- | --- |
+//! | [`NexusGpuBackend::install_on`](crate::backend::NexusGpuBackend::install_on) | backend-bound optimizer, session config, coverage, common catalog, cuVS | built backend | same backend and no preinstalled cuGraph | yes |
+//! | [`NexusGpuBackend::install_on_with_cugraph_sql`](crate::backend::NexusGpuBackend::install_on_with_cugraph_sql) | `install_on` plus cuGraph | backend and [`CugraphSqlConfig`] | install once on a builder without cuGraph | yes |
+//! | [`NexusSessionStateBuilderExt::with_nexus_native`] | optimizer, session config, coverage | [`NexusNativeOptimizerConfig`] | replaces existing Nexus rules | no |
+//! | [`NexusSessionStateBuilderExt::try_with_cuvs_sql`] | cuVS planner, metadata, function family | none | identical installation is a no-op | no |
+//! | [`NexusSessionStateBuilderExt::try_with_cugraph_sql`] | cuGraph function family | [`CugraphSqlConfig`] | equal config is a no-op; conflicts error | no; preserves an existing backend binding |
 //!
 //! The native physical optimizer uses two insertion points. A count-only probe
-//! is placed before DataFusion aggregate statistics so count queries can be
-//! detected early. The final native rewrite is placed immediately before
-//! DataFusion's final sanity check so rewritten plans are still validated.
+//! precedes DataFusion aggregate statistics, and the final native rewrite
+//! precedes DataFusion's final sanity check so rewritten plans remain
+//! validated. Embedded applications should use a backend entry point; the raw
+//! extension methods are for planning, coverage, and controlled composition.
 
 use std::sync::Arc;
 

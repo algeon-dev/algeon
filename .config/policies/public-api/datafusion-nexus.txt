@@ -930,7 +930,6 @@ pub const datafusion_nexus::gpu_functions::GPU_DESCRIBE_FUNCTION_FUNCTION: &str
 pub const datafusion_nexus::gpu_functions::GPU_LIST_FUNCTIONS_FUNCTION: &str
 pub const datafusion_nexus::gpu_functions::GPU_VALIDATE_CALL_FUNCTION: &str
 pub fn datafusion_nexus::gpu_functions::is_builtin_gpu_metadata_table_source(&alloc::sync::Arc<dyn datafusion_expr::table_source::TableSource>) -> bool
-pub mod datafusion_nexus::native
 pub mod datafusion_nexus::native_exec
 pub use datafusion_nexus::native_exec::AggregateStrategyExecutionOptions
 pub use datafusion_nexus::native_exec::DynamicFilterExecutionOptions

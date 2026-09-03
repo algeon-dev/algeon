@@ -33,7 +33,16 @@ impl UnsupportedColumnDetail {
 /// Physical-plan candidate considered for native GPU execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GpuCandidate {
-    /// Stable shape label used by planning and fallback reports.
+    /// Stable diagnostic vocabulary used by planning and fallback reports,
+    /// not arbitrary display prose.
+    ///
+    /// The recursive grammar is a leaf `Op`, unary `Op(child)`, or binary
+    /// `Op(left,right)`. Fetch and other variant labels are part of the
+    /// operator token, as in `SortExec(fetch)(child)`. The broader families
+    /// are named by the
+    /// [`NATIVE_CANDIDATE_SHAPE_FAMILY_*`](crate::native_report::NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN)
+    /// constants, and [`NativeDataFusionPlanningRow::native_candidate_shape`](crate::native_report::NativeDataFusionPlanningRow::native_candidate_shape)
+    /// is the report projection of this value.
     pub shape: String,
     /// Native plan node that anchors this candidate, when lowering reached native IR.
     pub plan_node_id: Option<PlanNodeId>,

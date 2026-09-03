@@ -924,7 +924,10 @@ mod tests {
         register_tpcds_tables_with_native_metadata(&ctx, &root).await.unwrap();
 
         let provider = ctx.table_provider("reason").await.unwrap();
-        assert_eq!(provider.schema().metadata().get(SOURCE_UNIQUE_KEYS_METADATA_KEY), Some(&"r_reason_sk".to_string()));
+        assert_eq!(
+            provider.schema().metadata().get(SOURCE_UNIQUE_KEYS_METADATA_KEY),
+            Some(&r#"[["r_reason_sk"]]"#.to_string())
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 }
