@@ -62,7 +62,7 @@ async fn run_query(
         Err(error) => return NativeTpchBenchmarkRow::planning_failure(query.id, error),
     };
 
-    if planned.planning_row.outcome != Some(NativeDataFusionPlanningOutcome::Selected) {
+    if planned.planning_row.outcome != Some(CandidateOutcomeKind::Selected) {
         if let Err(error) = execution::validate_decision_grade_native_not_selected_row(query.id, &planned.planning_row)
         {
             return NativeTpchBenchmarkRow::planning_failure(query.id, error);

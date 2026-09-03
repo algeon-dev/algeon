@@ -496,7 +496,7 @@ pub(super) fn planning_replacement_row<'a>(
     // `whole_plan_planning_row` so those rejections remain visible.
     rows.clone()
         .rev()
-        .find(|row| row.outcome == Some(NativeDataFusionPlanningOutcome::Selected))
+        .find(|row| row.outcome == Some(CandidateOutcomeKind::Selected))
         .or_else(|| rows.into_iter().next())
         .expect("report row should exist")
 }

@@ -221,13 +221,13 @@ impl NativeTpchBenchmarkReport {
 #[derive(Debug, Clone)]
 pub(super) struct NativeTpchBenchmarkRow {
     pub(super) query_id: String,
-    pub(super) planning_outcome: Option<NativeDataFusionPlanningOutcome>,
+    pub(super) planning_outcome: Option<CandidateOutcomeKind>,
     pub(super) capability_contract_rows: Vec<CapabilityContractGateRow>,
     pub(super) capability_compiled_graphs: Vec<NativeCapabilityCompiledGraphDiagnostics>,
     pub(super) reason_code: Option<String>,
     pub(super) unsupported_category: Option<String>,
     pub(super) native_candidate_shape_family: Option<String>,
-    pub(super) final_disposition: FinalPlanDisposition,
+    pub(super) final_disposition: Option<FinalPlanDisposition>,
     pub(super) rejected_before_execution: bool,
     pub(super) cpu_runtime_started: bool,
     pub(super) native_runtime_started: bool,
@@ -303,7 +303,7 @@ impl NativeTpchBenchmarkRow {
             reason_code: Some("physical_planning_failed".to_string()),
             unsupported_category: Some("planning".to_string()),
             native_candidate_shape_family: None,
-            final_disposition: FinalPlanDisposition::Rejected,
+            final_disposition: None,
             rejected_before_execution: true,
             cpu_runtime_started: false,
             native_runtime_started: false,
@@ -419,14 +419,14 @@ impl NativeTpchBenchmarkRow {
         let runtime = dominant_runtime_operator_class(self, &task_high_water_summaries);
         let fields = [
             self.query_id.clone(),
-            self.planning_outcome.map_or("none", NativeDataFusionPlanningOutcome::as_str).to_string(),
+            self.planning_outcome.map_or("none", CandidateOutcomeKind::as_str).to_string(),
             bounded_status(self).to_string(),
             optional_text(self.reason_code.as_deref(), "none"),
             optional_text(self.unsupported_category.as_deref(), "none"),
             format_capability_contract_rows(&self.capability_contract_rows),
             format_capability_compiled_graphs(&self.capability_compiled_graphs),
             optional_text(self.native_candidate_shape_family.as_deref(), "none"),
-            self.final_disposition.as_str().to_string(),
+            self.final_disposition.map_or("none", FinalPlanDisposition::as_str).to_string(),
             self.rejected_before_execution.to_string(),
             self.cpu_runtime_started.to_string(),
             self.native_runtime_started.to_string(),
@@ -859,8 +859,7 @@ impl NativeTpchTimingMetrics {
 }
 
 pub(super) fn bounded_status(row: &NativeTpchBenchmarkRow) -> &'static str {
-    let accepted =
-        row.planning_outcome == Some(NativeDataFusionPlanningOutcome::Selected) && !row.rejected_before_execution;
+    let accepted = row.planning_outcome == Some(CandidateOutcomeKind::Selected) && !row.rejected_before_execution;
     let planning_failed = row.unsupported_category.as_deref() == Some("planning")
         || row.reason_code.as_deref() == Some("physical_planning_failed");
     match (accepted, planning_failed, row.parity_status) {

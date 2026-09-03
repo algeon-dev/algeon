@@ -23,8 +23,7 @@ use datafusion_nexus::{
     error::{Error, ErrorCode},
     native_exec::NexusNativeExecutionConfig,
     native_report::{
-        FinalPlanDisposition, NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome,
-        NativeDataFusionRuntimeOutcome,
+        CandidateOutcomeKind, FinalPlanDisposition, NativeDataFusionExecutionMetrics, NativeDataFusionRuntimeOutcome,
         bench_support::{
             ParityComparisonMode, ParityFloatTolerance, ParityStatus, compare_record_batches,
             sql_has_top_level_order_by, sql_top_level_order_by_covers_output_columns,

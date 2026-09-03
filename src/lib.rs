@@ -18,6 +18,20 @@
 //! an isolated planning-only pass without beginning an execution attempt or
 //! acquiring admission.
 //!
+//! Public diagnostics separate three decision layers with different owners
+//! and cardinalities:
+//!
+//! - Candidate decisions ([`report::CandidateOutcome`], one row per optimizer
+//!   candidate) explain why a candidate was selected, deferred, or rejected;
+//!   [`report::CandidateOutcomeKind`] owns the stable projection labels.
+//! - Final-plan coverage ([`gpu_coverage::QueryGpuPlanningOutcome`], at most
+//!   one executable plan per validation) describes whether the completed plan
+//!   runs on DataFusion, native, or both, or why planning produced no
+//!   executable plan at all.
+//! - Attempt disposition ([`attempt`], one row per sealed execution attempt)
+//!   records how a started attempt terminated. It is owned by the runtime and
+//!   never re-derived from plan-time types.
+//!
 //! ```no_run
 //! use std::time::Duration;
 //!

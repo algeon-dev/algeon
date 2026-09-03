@@ -5,6 +5,12 @@
 //! part of the report contract for consumers that parse these diagnostics.
 //! Sentinel strings such as `none`, `unknown`, `not_run`, and `not_computed`
 //! are part of the report contract when emitted by the TSV helpers.
+//!
+//! Rows project the shared [`crate::report::CandidateOutcomeKind`] labels and
+//! the shared [`crate::planner::FinalPlanCoverage`] facts; this module keeps
+//! no parallel decision enums. Planning failures carry no executable plan, so
+//! candidate outcome and final-plan cells serialize as `none`, never as zero
+//! counts or a fabricated disposition.
 //! Capability rejection columns contain the stable strings returned by
 //! [`crate::capability::CapabilityReason::code`].
 
@@ -90,8 +96,7 @@ pub use reports::{
     NativeFallbackPressureReport,
 };
 pub use rows::{
-    NativeDataFusionExecutionRow, NativeDataFusionPlanCoverage, NativeDataFusionPlanningOutcome,
-    NativeDataFusionPlanningRow, NativeDataFusionRuntimeOutcome, NativeFallbackPressureOutcome,
+    CandidateOutcomeKind, NativeDataFusionExecutionRow, NativeDataFusionPlanningRow, NativeDataFusionRuntimeOutcome,
     NativeFallbackPressureRow, NativeJoinDiagnosticSummary, NativeSourceDiagnosticSummary,
 };
 use runtime_summary::NativeDataFusionRuntimeSummary;
@@ -110,6 +115,8 @@ pub use schema::{
     NATIVE_CANDIDATE_SHAPE_FAMILY_UNSUPPORTED_NATIVE_PHYSICAL_PLAN, NATIVE_DATAFUSION_EXECUTION_TSV_HEADER,
     NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_HEADER,
 };
+
+pub use crate::planner::FinalPlanCoverage;
 /// TPC-DS parity comparison and reporting support for benchmark and E2E
 /// applications. Hidden from the normal report contract; enable the
 /// `bench-support` feature to use it.
@@ -210,20 +217,31 @@ fn report_rows_for_plan(
         .outcomes()
         .iter()
         .map(|outcome| match outcome {
-            CandidateOutcome::Selected { candidate } | CandidateOutcome::Deferred { candidate, .. } => {
-                NativeFallbackPressureRow {
-                    query_id: query_id.clone(),
-                    physical_root: physical_root.clone(),
-                    physical_shape: physical_shape.clone(),
-                    native_candidate_shape: Some(candidate.shape.to_string()),
-                    native_candidate_shape_family: Some(candidate_shape_family(candidate)),
-                    outcome: Some(NativeFallbackPressureOutcome::Selected),
-                    reason_code: None,
-                    unsupported_category: None,
-                    join_diagnostics: join_diagnostics.clone(),
-                    source_diagnostics: source_diagnostics.clone(),
-                    rejected_before_execution: false,
-                }
+            CandidateOutcome::Selected { candidate } => NativeFallbackPressureRow {
+                query_id: query_id.clone(),
+                physical_root: physical_root.clone(),
+                physical_shape: physical_shape.clone(),
+                native_candidate_shape: Some(candidate.shape.to_string()),
+                native_candidate_shape_family: Some(candidate_shape_family(candidate)),
+                outcome: Some(CandidateOutcomeKind::Selected),
+                reason_code: None,
+                unsupported_category: None,
+                join_diagnostics: join_diagnostics.clone(),
+                source_diagnostics: source_diagnostics.clone(),
+                rejected_before_execution: false,
+            },
+            CandidateOutcome::Deferred { candidate, .. } => NativeFallbackPressureRow {
+                query_id: query_id.clone(),
+                physical_root: physical_root.clone(),
+                physical_shape: physical_shape.clone(),
+                native_candidate_shape: Some(candidate.shape.to_string()),
+                native_candidate_shape_family: Some(candidate_shape_family(candidate)),
+                outcome: Some(CandidateOutcomeKind::Deferred),
+                reason_code: candidate_reason_code(outcome),
+                unsupported_category: None,
+                join_diagnostics: join_diagnostics.clone(),
+                source_diagnostics: source_diagnostics.clone(),
+                rejected_before_execution: false,
             },
             CandidateOutcome::NotSupported { candidate, capability_reason } => NativeFallbackPressureRow {
                 query_id: query_id.clone(),
@@ -231,8 +249,8 @@ fn report_rows_for_plan(
                 physical_shape: physical_shape.clone(),
                 native_candidate_shape: Some(candidate.shape.to_string()),
                 native_candidate_shape_family: Some(candidate_shape_family(candidate)),
-                outcome: Some(NativeFallbackPressureOutcome::NotSupported),
-                reason_code: Some(capability_reason.code().to_string()),
+                outcome: Some(CandidateOutcomeKind::NotSupported),
+                reason_code: candidate_reason_code(outcome),
                 unsupported_category: unsupported_category(
                     source_diagnostics_plan.as_ref(),
                     candidate,
@@ -242,8 +260,18 @@ fn report_rows_for_plan(
                 source_diagnostics: source_diagnostics.clone(),
                 rejected_before_execution: false,
             },
-            CandidateOutcome::NotSelectedByCost { .. } => {
-                unreachable!("candidate-only pressure report does not run cost selection")
+            CandidateOutcome::NotSelectedByCost { candidate, .. } => NativeFallbackPressureRow {
+                query_id: query_id.clone(),
+                physical_root: physical_root.clone(),
+                physical_shape: physical_shape.clone(),
+                native_candidate_shape: Some(candidate.shape.to_string()),
+                native_candidate_shape_family: Some(candidate_shape_family(candidate)),
+                outcome: Some(outcome.kind()),
+                reason_code: candidate_reason_code(outcome),
+                unsupported_category: None,
+                join_diagnostics: join_diagnostics.clone(),
+                source_diagnostics: source_diagnostics.clone(),
+                rejected_before_execution: false,
             },
         })
         .collect()
@@ -329,8 +357,8 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                     physical_shape: native_diagnostics.input_plan_shape.clone(),
                     native_candidate_shape: Some(candidate.shape.to_string()),
                     native_candidate_shape_family: Some(candidate_shape_family(candidate)),
-                    outcome: Some(candidate_planning_outcome(outcome)),
-                    reason_code: candidate_deferred_reason_code(outcome),
+                    outcome: Some(outcome.kind()),
+                    reason_code: candidate_reason_code(outcome),
                     unsupported_category: None,
                     capability_contract_rows: capability_contract_rows_for_candidate(
                         &native_diagnostics.capability_contract,
@@ -344,16 +372,16 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                     ),
                     native_optimizer: native_diagnostics.native_optimizer.clone(),
                     edge_normalize_inserted,
-                    join_diagnostics: if post_native_coverage.final_disposition == FinalPlanDisposition::Native {
+                    join_diagnostics: if post_native_coverage.disposition() == FinalPlanDisposition::Native {
                         post_native_join_diagnostics.clone()
                     } else {
                         input_join_diagnostics.clone()
                     },
                     source_diagnostics: source_diagnostics.clone(),
                     post_native_plan_root: post_native_plan_root.clone(),
-                    final_disposition: post_native_coverage.final_disposition,
-                    native_plan_fragment_count: post_native_coverage.native_fragment_count,
-                    host_datafusion_boundary_count: post_native_coverage.host_datafusion_boundary_count,
+                    final_disposition: Some(post_native_coverage.disposition()),
+                    native_plan_fragment_count: Some(post_native_coverage.native_fragment_count()),
+                    host_datafusion_boundary_count: Some(post_native_coverage.datafusion_boundary_count()),
                     rejected_before_execution: false,
                 }
             },
@@ -363,8 +391,8 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 physical_shape: native_diagnostics.input_plan_shape.clone(),
                 native_candidate_shape: Some(candidate.shape.to_string()),
                 native_candidate_shape_family: Some(candidate_shape_family(candidate)),
-                outcome: Some(NativeDataFusionPlanningOutcome::NotSupported),
-                reason_code: Some(capability_reason.code().to_string()),
+                outcome: Some(outcome.kind()),
+                reason_code: candidate_reason_code(outcome),
                 unsupported_category: unsupported_category(planned_plan.as_ref(), candidate, *capability_reason),
                 capability_contract_rows: capability_contract_rows_for_candidate(
                     &native_diagnostics.capability_contract,
@@ -381,19 +409,19 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 join_diagnostics: input_join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
-                final_disposition: post_native_coverage.final_disposition,
-                native_plan_fragment_count: post_native_coverage.native_fragment_count,
-                host_datafusion_boundary_count: post_native_coverage.host_datafusion_boundary_count,
+                final_disposition: Some(post_native_coverage.disposition()),
+                native_plan_fragment_count: Some(post_native_coverage.native_fragment_count()),
+                host_datafusion_boundary_count: Some(post_native_coverage.datafusion_boundary_count()),
                 rejected_before_execution: false,
             },
-            CandidateOutcome::NotSelectedByCost { candidate, cost_reason, .. } => NativeDataFusionPlanningRow {
+            CandidateOutcome::NotSelectedByCost { candidate, .. } => NativeDataFusionPlanningRow {
                 query_id: item.query_id.clone(),
                 physical_root: native_diagnostics.input_plan_root.clone(),
                 physical_shape: native_diagnostics.input_plan_shape.clone(),
                 native_candidate_shape: Some(candidate.shape.to_string()),
                 native_candidate_shape_family: Some(candidate_shape_family(candidate)),
-                outcome: Some(NativeDataFusionPlanningOutcome::NotSelectedByCost),
-                reason_code: Some(cost_reason.code().to_string()),
+                outcome: Some(outcome.kind()),
+                reason_code: candidate_reason_code(outcome),
                 unsupported_category: None,
                 capability_contract_rows: Vec::new(),
                 capability_compiled_graphs: Vec::new(),
@@ -402,9 +430,9 @@ fn datafusion_planning_rows_for_item(item: NativeDataFusionPlanningWorkloadItem)
                 join_diagnostics: input_join_diagnostics.clone(),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
-                final_disposition: post_native_coverage.final_disposition,
-                native_plan_fragment_count: post_native_coverage.native_fragment_count,
-                host_datafusion_boundary_count: post_native_coverage.host_datafusion_boundary_count,
+                final_disposition: Some(post_native_coverage.disposition()),
+                native_plan_fragment_count: Some(post_native_coverage.native_fragment_count()),
+                host_datafusion_boundary_count: Some(post_native_coverage.datafusion_boundary_count()),
                 rejected_before_execution: false,
             },
         })
@@ -426,7 +454,7 @@ fn datafusion_execution_rows_for_item(
     let post_native_coverage = post_native_plan_coverage(planned_plan.as_ref());
     let source_diagnostics =
         native_diagnostics.source_diagnostics.iter().map(summarize_source_diagnostics).collect::<Vec<_>>();
-    let runtime_summary = runtime_summary_for_final_plan(post_native_coverage.final_disposition, runtime);
+    let runtime_summary = runtime_summary_for_final_plan(post_native_coverage.disposition(), runtime);
 
     native_diagnostics
         .report
@@ -440,8 +468,8 @@ fn datafusion_execution_rows_for_item(
                     physical_shape: native_diagnostics.input_plan_shape.clone(),
                     native_candidate_shape: Some(candidate.shape.to_string()),
                     native_candidate_shape_family: Some(candidate_shape_family(candidate)),
-                    planning_outcome: Some(candidate_planning_outcome(outcome)),
-                    reason_code: candidate_deferred_reason_code(outcome),
+                    planning_outcome: Some(outcome.kind()),
+                    reason_code: candidate_reason_code(outcome),
                     unsupported_category: None,
                     capability_contract_rows: capability_contract_rows_for_candidate(
                         &native_diagnostics.capability_contract,
@@ -455,9 +483,9 @@ fn datafusion_execution_rows_for_item(
                     ),
                     source_diagnostics: source_diagnostics.clone(),
                     post_native_plan_root: post_native_plan_root.clone(),
-                    final_disposition: post_native_coverage.final_disposition,
-                    native_plan_fragment_count: post_native_coverage.native_fragment_count,
-                    host_datafusion_boundary_count: post_native_coverage.host_datafusion_boundary_count,
+                    final_disposition: Some(post_native_coverage.disposition()),
+                    native_plan_fragment_count: Some(post_native_coverage.native_fragment_count()),
+                    host_datafusion_boundary_count: Some(post_native_coverage.datafusion_boundary_count()),
                     rejected_before_execution: false,
                     native_runtime_started: runtime_summary.started,
                     runtime_outcome: runtime_summary.outcome,
@@ -474,8 +502,8 @@ fn datafusion_execution_rows_for_item(
                 physical_shape: native_diagnostics.input_plan_shape.clone(),
                 native_candidate_shape: Some(candidate.shape.to_string()),
                 native_candidate_shape_family: Some(candidate_shape_family(candidate)),
-                planning_outcome: Some(NativeDataFusionPlanningOutcome::NotSupported),
-                reason_code: Some(capability_reason.code().to_string()),
+                planning_outcome: Some(outcome.kind()),
+                reason_code: candidate_reason_code(outcome),
                 unsupported_category: unsupported_category(planned_plan.as_ref(), candidate, *capability_reason),
                 capability_contract_rows: capability_contract_rows_for_candidate(
                     &native_diagnostics.capability_contract,
@@ -489,9 +517,9 @@ fn datafusion_execution_rows_for_item(
                 ),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
-                final_disposition: post_native_coverage.final_disposition,
-                native_plan_fragment_count: post_native_coverage.native_fragment_count,
-                host_datafusion_boundary_count: post_native_coverage.host_datafusion_boundary_count,
+                final_disposition: Some(post_native_coverage.disposition()),
+                native_plan_fragment_count: Some(post_native_coverage.native_fragment_count()),
+                host_datafusion_boundary_count: Some(post_native_coverage.datafusion_boundary_count()),
                 rejected_before_execution: false,
                 native_runtime_started: runtime_summary.started,
                 runtime_outcome: runtime_summary.outcome,
@@ -501,22 +529,22 @@ fn datafusion_execution_rows_for_item(
                 output_bytes: runtime_summary.output_bytes,
                 metrics: runtime_summary.metrics.clone(),
             },
-            CandidateOutcome::NotSelectedByCost { candidate, cost_reason, .. } => NativeDataFusionExecutionRow {
+            CandidateOutcome::NotSelectedByCost { candidate, .. } => NativeDataFusionExecutionRow {
                 query_id: item.query_id.clone(),
                 physical_root: native_diagnostics.input_plan_root.clone(),
                 physical_shape: native_diagnostics.input_plan_shape.clone(),
                 native_candidate_shape: Some(candidate.shape.to_string()),
                 native_candidate_shape_family: Some(candidate_shape_family(candidate)),
-                planning_outcome: Some(NativeDataFusionPlanningOutcome::NotSelectedByCost),
-                reason_code: Some(cost_reason.code().to_string()),
+                planning_outcome: Some(outcome.kind()),
+                reason_code: candidate_reason_code(outcome),
                 unsupported_category: None,
                 capability_contract_rows: Vec::new(),
                 capability_compiled_graphs: Vec::new(),
                 source_diagnostics: source_diagnostics.clone(),
                 post_native_plan_root: post_native_plan_root.clone(),
-                final_disposition: post_native_coverage.final_disposition,
-                native_plan_fragment_count: post_native_coverage.native_fragment_count,
-                host_datafusion_boundary_count: post_native_coverage.host_datafusion_boundary_count,
+                final_disposition: Some(post_native_coverage.disposition()),
+                native_plan_fragment_count: Some(post_native_coverage.native_fragment_count()),
+                host_datafusion_boundary_count: Some(post_native_coverage.datafusion_boundary_count()),
                 rejected_before_execution: false,
                 native_runtime_started: runtime_summary.started,
                 runtime_outcome: runtime_summary.outcome,
@@ -542,7 +570,7 @@ fn runtime_summary_for_final_plan(
         FinalPlanDisposition::Native | FinalPlanDisposition::Mixed => {
             NativeDataFusionRuntimeSummary::from_runtime(runtime)
         },
-        FinalPlanDisposition::DataFusion | FinalPlanDisposition::Rejected => {
+        FinalPlanDisposition::DataFusion => {
             NativeDataFusionRuntimeSummary::from_runtime(NativeDataFusionRuntime::NotStarted)
         },
     }
@@ -568,9 +596,9 @@ fn datafusion_planning_row_for_planning_failure(
         join_diagnostics: Vec::new(),
         source_diagnostics: Vec::new(),
         post_native_plan_root: "PlanningFailure".to_string(),
-        final_disposition: FinalPlanDisposition::Rejected,
-        native_plan_fragment_count: 0,
-        host_datafusion_boundary_count: 0,
+        final_disposition: None,
+        native_plan_fragment_count: None,
+        host_datafusion_boundary_count: None,
         rejected_before_execution: true,
     }
 }
@@ -592,9 +620,9 @@ fn datafusion_execution_row_for_planning_failure(
         capability_compiled_graphs: Vec::new(),
         source_diagnostics: Vec::new(),
         post_native_plan_root: "PlanningFailure".to_string(),
-        final_disposition: FinalPlanDisposition::Rejected,
-        native_plan_fragment_count: 0,
-        host_datafusion_boundary_count: 0,
+        final_disposition: None,
+        native_plan_fragment_count: None,
+        host_datafusion_boundary_count: None,
         rejected_before_execution: true,
         native_runtime_started: false,
         runtime_outcome: NativeDataFusionRuntimeOutcome::NotStarted,
@@ -641,23 +669,12 @@ fn capability_contract_rows_for_candidate(
         .collect()
 }
 
-fn candidate_planning_outcome(outcome: &CandidateOutcome) -> NativeDataFusionPlanningOutcome {
+fn candidate_reason_code(outcome: &CandidateOutcome) -> Option<String> {
     match outcome {
-        CandidateOutcome::Selected { .. } => NativeDataFusionPlanningOutcome::Selected,
-        CandidateOutcome::Deferred { .. } => NativeDataFusionPlanningOutcome::Deferred,
-        CandidateOutcome::NotSupported { .. } | CandidateOutcome::NotSelectedByCost { .. } => {
-            unreachable!("candidate outcome is not selected")
-        },
-    }
-}
-
-fn candidate_deferred_reason_code(outcome: &CandidateOutcome) -> Option<String> {
-    match outcome {
-        CandidateOutcome::Deferred { producer_binding, .. } => Some(producer_binding.reason_code().to_string()),
         CandidateOutcome::Selected { .. } => None,
-        CandidateOutcome::NotSupported { .. } | CandidateOutcome::NotSelectedByCost { .. } => {
-            unreachable!("candidate outcome is not selected")
-        },
+        CandidateOutcome::Deferred { producer_binding, .. } => Some(producer_binding.reason_code().to_string()),
+        CandidateOutcome::NotSupported { capability_reason, .. } => Some(capability_reason.code().to_string()),
+        CandidateOutcome::NotSelectedByCost { cost_reason, .. } => Some(cost_reason.code().to_string()),
     }
 }
 
@@ -679,4 +696,83 @@ fn capability_compiled_graphs_for_candidate(
 
 fn capability_contract_is_candidate_scoped(candidate: &GpuCandidate, reason: Option<CapabilityReason>) -> bool {
     reason == Some(CapabilityReason::NativeBoundedJoinUnsupported) || candidate.shape.contains("JoinExec")
+}
+
+#[cfg(test)]
+mod tests {
+    use arrow::datatypes::{DataType, Field, Schema};
+    use nexus_query_engine::{
+        admission::QueryPlanCapabilityProof,
+        expr::ColumnRef,
+        plan::{JoinKey, JoinOutputColumn, JoinSide, JoinSpec, JoinType, QueryPlanBuilder},
+        source::{GpuResidentSource, LocalParquetFile, LocalParquetSource, SourceNode},
+    };
+
+    use super::*;
+    use crate::{planner::NativePlanningDiagnostics, report::PlanningReport};
+
+    #[test]
+    fn deferred_candidate_projects_deferred_kind_without_deriving_disposition() {
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
+        let file = LocalParquetFile::new("/tmp/native-report-deferred-not-read.parquet")
+            .with_file_size_bytes(8)
+            .with_row_group_bytes(vec![8])
+            .with_projected_row_group_bytes(vec![8], vec![8])
+            .with_row_group_rows(vec![1]);
+        let mut builder = QueryPlanBuilder::new();
+        let local = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+            vec![file],
+            Arc::clone(&schema),
+            vec!["id".to_string()],
+        )));
+        let resident = builder.add_source(SourceNode::GpuResident(
+            GpuResidentSource::new("producer", Arc::clone(&schema)).with_row_count_upper_bound(1),
+        ));
+        let join = builder.add_join(
+            local,
+            resident,
+            JoinSpec::new(
+                JoinType::Inner,
+                vec![JoinKey::new(ColumnRef::unqualified("id"), ColumnRef::unqualified("id"))],
+            )
+            .with_output_projection(vec![JoinOutputColumn::new(
+                JoinSide::Left,
+                ColumnRef::unqualified("id"),
+                "id",
+            )]),
+            Arc::clone(&schema),
+        );
+        let proof_plan = builder.finish_with_host_sink_schema(join, schema);
+        let producer_binding = QueryPlanCapabilityProof::for_composed_consumer_plan(&proof_plan)
+            .expect("the mixed consumer must issue a structural proof")
+            .composed_producer_binding_diagnostics(&proof_plan)
+            .expect("the unbound resident occurrence must defer");
+        let expected_reason = producer_binding.reason_code().to_string();
+        let report = PlanningReport::from_outcomes([CandidateOutcome::Deferred {
+            candidate: GpuCandidate::new("mixed_join", 1),
+            planning_stage: "physical_optimizer".to_string(),
+            producer_binding,
+        }]);
+        let diagnostics = NativePlanningDiagnostics {
+            input_plan_root: "EmptyExec".to_string(),
+            input_plan_shape: "EmptyExec".to_string(),
+            input_join_diagnostics: Vec::new(),
+            report,
+            native_optimizer: NativeOptimizerDiagnostics::default(),
+            source_diagnostics: Vec::new(),
+            capability_contract: Default::default(),
+        };
+        let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
+        let report = NativeDataFusionPlanningReport::collect([NativeDataFusionPlanningWorkloadItem::new(
+            "deferred-projection",
+            plan,
+            diagnostics,
+        )]);
+
+        assert_eq!(report.rows.len(), 1);
+        let row = &report.rows[0];
+        assert_eq!(row.outcome, Some(CandidateOutcomeKind::Deferred));
+        assert_eq!(row.reason_code.as_deref(), Some(expected_reason.as_str()));
+        assert_eq!(row.final_disposition, Some(FinalPlanDisposition::DataFusion));
+    }
 }

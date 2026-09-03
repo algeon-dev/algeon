@@ -94,14 +94,14 @@ pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::cpu_runtime_started
 pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::credential_source: alloc::string::String
 pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::diagnostics: datafusion_nexus::table_format::scan::diagnostics::TableFormatScanDiagnostics
 pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::expected_count: core::option::Option<u64>
-pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::final_disposition: datafusion_nexus::planner::FinalPlanDisposition
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::final_disposition: core::option::Option<datafusion_nexus::planner::FinalPlanDisposition>
 pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::fixture_mode: alloc::string::String
 pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::lakehouse_cache_fill_event_snapshot_rows: alloc::string::String
 pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::native_count_value: core::option::Option<u64>
 pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::native_output_batches: core::option::Option<usize>
 pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::native_output_fingerprint: core::option::Option<alloc::string::String>
 pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::native_output_rows: core::option::Option<usize>
-pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::native_planning_outcome: core::option::Option<datafusion_nexus::native_report::rows::NativeDataFusionPlanningOutcome>
+pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::native_planning_outcome: core::option::Option<datafusion_nexus::report::CandidateOutcomeKind>
 pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::native_reason_code: core::option::Option<alloc::string::String>
 pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::native_runtime_elapsed_ms: core::option::Option<u128>
 pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::native_runtime_outcome: datafusion_nexus::native_report::rows::NativeDataFusionRuntimeOutcome
@@ -115,7 +115,7 @@ pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::staging_summary: ne
 pub nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::table_ident: alloc::string::String
 impl nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow
 pub fn nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::finalize_count_parity_if_needed(&mut self)
-pub fn nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::new(alloc::string::String, alloc::string::String, alloc::string::String, alloc::string::String, alloc::string::String, datafusion_nexus::table_format::scan::diagnostics::TableFormatScanDiagnostics, core::option::Option<datafusion_nexus::native_report::rows::NativeDataFusionPlanningOutcome>, core::option::Option<alloc::string::String>, datafusion_nexus::planner::FinalPlanDisposition, core::option::Option<u64>, nexus_bench::iceberg_smoke::ObjectStoreStagingSummary, alloc::string::String) -> Self
+pub fn nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::new(alloc::string::String, alloc::string::String, alloc::string::String, alloc::string::String, alloc::string::String, datafusion_nexus::table_format::scan::diagnostics::TableFormatScanDiagnostics, core::option::Option<datafusion_nexus::report::CandidateOutcomeKind>, core::option::Option<alloc::string::String>, core::option::Option<datafusion_nexus::planner::FinalPlanDisposition>, nexus_bench::iceberg_smoke::ObjectStoreStagingSummary, core::option::Option<u64>, alloc::string::String) -> Self
 pub fn nexus_bench::iceberg_smoke::IcebergNativeSmokeReportRow::record_native_metrics(&mut self, datafusion_nexus::native_report::metrics::NativeDataFusionExecutionMetrics)
 pub struct nexus_bench::iceberg_smoke::ObjectStoreStagingSummary
 pub nexus_bench::iceberg_smoke::ObjectStoreStagingSummary::mode: nexus_bench::iceberg_smoke::ObjectStoreStagingMode

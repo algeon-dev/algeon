@@ -5,7 +5,7 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionContext},
 };
 use datafusion_nexus::{
-    gpu_coverage::{QueryGpuCandidateOutcome, QueryGpuCoverage, QueryGpuCoverageOverall, validate_query},
+    gpu_coverage::{QueryGpuCandidateOutcome, QueryGpuCoverage, QueryGpuPlanningOutcome, validate_query},
     planner::NexusNativeOptimizerConfig,
     session::NexusSessionStateBuilderExt,
 };
@@ -111,24 +111,24 @@ fn path_str(path: &PathBuf) -> ValidateResult<&str> {
 }
 
 fn print_human(coverage: &QueryGpuCoverage) {
-    println!("overall: {}", coverage.overall.as_str());
-    if let QueryGpuCoverageOverall::Rejected { phase, reason_code, retry_advice, source_error_status, detail } =
-        &coverage.overall
-    {
-        println!("rejection_phase: {}", phase.as_str());
-        println!("reason_code: {reason_code}");
-        println!("retry_advice_availability: {}", retry_advice.availability());
-        println!("retry_advice_reason: {}", retry_advice.reason());
-        if let Some(status) = source_error_status {
-            println!("source_error_status: {status}");
-        }
-        println!("detail: {detail}");
+    println!("gpu_path: {}", coverage.gpu_path());
+    match &coverage.planning_outcome {
+        QueryGpuPlanningOutcome::Planned(plan) => {
+            println!("final_disposition: {}", plan.disposition().as_str());
+            println!("native_fragment_count: {}", plan.native_fragment_count());
+            println!("explicit_gpu_island_count: {}", plan.explicit_gpu_island_count());
+            println!("datafusion_boundary_count: {}", plan.datafusion_boundary_count());
+            println!("host_materialization_count: {}", plan.host_materialization_count());
+        },
+        QueryGpuPlanningOutcome::Rejected(rejection) => {
+            println!("rejection_phase: {}", rejection.phase.as_str());
+            println!("reason_code: {}", rejection.reason_code);
+            if let Some(status) = &rejection.source_error_status {
+                println!("source_error_status: {status}");
+            }
+            println!("detail: {}", rejection.detail);
+        },
     }
-    println!("final_disposition: {}", coverage.final_disposition.as_str());
-    println!("native_fragment_count: {}", coverage.domains.native_fragment_count);
-    println!("explicit_gpu_island_count: {}", coverage.domains.explicit_gpu_island_count);
-    println!("datafusion_boundary_count: {}", coverage.domains.datafusion_boundary_count);
-    println!("host_materialization_count: {}", coverage.domains.host_materialization_count);
     println!("confidence: {}", coverage.confidence.as_str());
     println!("planning_did_io: {}", coverage.planning_did_io);
     println!("optimizer_config_source: {}", coverage.validated_under.optimizer_config_source);
@@ -165,14 +165,14 @@ fn validate_query_usage() -> String {
 
 #[cfg(test)]
 mod tests {
-    use datafusion_nexus::gpu_coverage::{QueryGpuCandidateReasonKind, QueryGpuCandidateSelectionOutcome};
+    use datafusion_nexus::{gpu_coverage::QueryGpuCandidateReasonKind, report::CandidateOutcomeKind};
 
     use super::*;
 
     #[test]
     fn selected_candidate_human_line_marks_optional_reason_fields_absent() {
         let outcome = QueryGpuCandidateOutcome {
-            selection: QueryGpuCandidateSelectionOutcome::Selected,
+            selection: CandidateOutcomeKind::Selected,
             candidate_family: "projection".to_string(),
             reason_code: None,
             reason_kind: None,
@@ -188,7 +188,7 @@ mod tests {
         );
 
         let unsupported = QueryGpuCandidateOutcome {
-            selection: QueryGpuCandidateSelectionOutcome::NotSupported,
+            selection: CandidateOutcomeKind::NotSupported,
             candidate_family: "projection".to_string(),
             reason_code: Some("unsupported_expression".to_string()),
             reason_kind: Some(QueryGpuCandidateReasonKind::Expression),

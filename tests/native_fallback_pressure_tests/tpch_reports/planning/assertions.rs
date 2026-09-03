@@ -16,9 +16,7 @@ pub(super) fn assert_tpch_datafusion_planning_report_contract(
     assert!(report.rows.len() >= TPCH_QUERY_COUNT);
     assert_duplicate_query_rows_are_mixed_plan_fragments(report);
     let accepted_primary_count = tpch_query_ids()
-        .filter(|query_id| {
-            planning_replacement_row(report, query_id).outcome == Some(NativeDataFusionPlanningOutcome::Selected)
-        })
+        .filter(|query_id| planning_replacement_row(report, query_id).outcome == Some(CandidateOutcomeKind::Selected))
         .count();
     assert_eq!(accepted_primary_count, EXPECTED_BOUNDED_TPCH_ACCEPTED.len());
     assert_eq!(TPCH_QUERY_COUNT - accepted_primary_count, TPCH_QUERY_COUNT - EXPECTED_BOUNDED_TPCH_ACCEPTED.len());
@@ -46,7 +44,7 @@ fn assert_duplicate_query_rows_are_mixed_plan_fragments(report: &NativeDataFusio
         let whole_plan = whole_plan_planning_row(report, query_id);
         assert_eq!(
             whole_plan.outcome,
-            Some(NativeDataFusionPlanningOutcome::NotSupported),
+            Some(CandidateOutcomeKind::NotSupported),
             "{query_id} duplicate diagnostics should keep the whole-plan bounded rejection as the first row"
         );
         assert!(
@@ -58,13 +56,11 @@ fn assert_duplicate_query_rows_are_mixed_plan_fragments(report: &NativeDataFusio
             "{query_id} whole-plan duplicate diagnostic must carry rejection details"
         );
         assert!(
-            rows.iter().all(|row| row.final_disposition == FinalPlanDisposition::Mixed),
+            rows.iter().all(|row| row.final_disposition == Some(FinalPlanDisposition::Mixed)),
             "{query_id} duplicate rows must be scoped to mixed-plan planning diagnostics"
         );
-        let accepted = rows
-            .iter()
-            .filter(|row| row.outcome == Some(NativeDataFusionPlanningOutcome::Selected))
-            .collect::<Vec<_>>();
+        let accepted =
+            rows.iter().filter(|row| row.outcome == Some(CandidateOutcomeKind::Selected)).collect::<Vec<_>>();
         assert!(
             !accepted.is_empty(),
             "{query_id} duplicate mixed-plan diagnostics must include accepted fragment rows"
@@ -81,10 +77,8 @@ fn assert_duplicate_query_rows_are_mixed_plan_fragments(report: &NativeDataFusio
                 "{query_id} accepted fragment must carry candidate diagnostics"
             );
         }
-        let rejected = rows
-            .iter()
-            .filter(|row| row.outcome == Some(NativeDataFusionPlanningOutcome::NotSupported))
-            .collect::<Vec<_>>();
+        let rejected =
+            rows.iter().filter(|row| row.outcome == Some(CandidateOutcomeKind::NotSupported)).collect::<Vec<_>>();
         assert!(
             !rejected.is_empty(),
             "{query_id} duplicate mixed-plan diagnostics must include rejected whole-plan candidate rows"

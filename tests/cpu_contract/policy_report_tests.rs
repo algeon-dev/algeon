@@ -1,6 +1,6 @@
 use datafusion_nexus::{
     capability::CapabilityReason,
-    report::{CandidateOutcome, GpuCandidate, PlanningReport},
+    report::{CandidateOutcome, CandidateOutcomeKind, GpuCandidate, PlanningReport},
 };
 use nexus_query_engine::{
     plan::NativePlanCostReason,
@@ -95,6 +95,10 @@ fn planning_report_keeps_selected_and_not_supported_candidates_in_order() {
             },
             CandidateOutcome::Selected { candidate: projection_filter },
         ],
+    );
+    assert_eq!(
+        report.outcomes().iter().map(CandidateOutcome::kind).collect::<Vec<_>>(),
+        vec![CandidateOutcomeKind::NotSupported, CandidateOutcomeKind::Selected],
     );
 }
 

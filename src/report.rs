@@ -2,6 +2,14 @@
 //!
 //! Tests and downstream report rows assert on these structured outcomes
 //! rather than parsing printed physical plans.
+//!
+//! [`CandidateOutcome`] is per-candidate evidence: one report holds one row
+//! per optimizer candidate, and several decision kinds can coexist. Candidate
+//! rows never describe final-plan composition; see
+//! [`crate::gpu_coverage::QueryGpuPlanningOutcome`] for the completed plan.
+//! [`CandidateOutcomeKind`] owns the stable `selected`, `deferred`,
+//! `not_supported`, and `not_selected_by_cost` projection labels shared by
+//! [`crate::gpu_coverage`] and [`crate::native_report`].
 
 pub use nexus_query_engine::{
     admission::ComposedProducerBindingDiagnostics,
@@ -151,6 +159,45 @@ mod tests {
             json!(["owner=producer:producer,role=retained_output"]),
         );
     }
+
+    #[test]
+    fn candidate_outcome_kind_labels_are_stable() {
+        assert_eq!(CandidateOutcomeKind::Selected.as_str(), "selected");
+        assert_eq!(CandidateOutcomeKind::Deferred.as_str(), "deferred");
+        assert_eq!(CandidateOutcomeKind::NotSupported.as_str(), "not_supported");
+        assert_eq!(CandidateOutcomeKind::NotSelectedByCost.as_str(), "not_selected_by_cost");
+    }
+}
+
+/// Canonical classification for a native GPU candidate decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum CandidateOutcomeKind {
+    /// Candidate was selected for native execution.
+    Selected,
+    /// Candidate was selected, but composed proof awaits resident producer evidence.
+    Deferred,
+    /// Candidate cannot execute under the native capability contract.
+    NotSupported,
+    /// Candidate is native-capable but was not selected by the cost model.
+    NotSelectedByCost,
+}
+
+impl CandidateOutcomeKind {
+    /// Stable TSV, JSON, and Arrow label for this candidate outcome kind.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Selected => "selected",
+            Self::Deferred => "deferred",
+            Self::NotSupported => "not_supported",
+            Self::NotSelectedByCost => "not_selected_by_cost",
+        }
+    }
+}
+
+impl std::fmt::Display for CandidateOutcomeKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// Planning outcome for one native GPU candidate.
@@ -180,6 +227,18 @@ pub enum CandidateOutcome {
         /// Facts evaluated by the cost model.
         evidence: NativeCandidateCostEvidence,
     },
+}
+
+impl CandidateOutcome {
+    /// Returns the canonical outcome kind for this candidate decision.
+    pub const fn kind(&self) -> CandidateOutcomeKind {
+        match self {
+            Self::Selected { .. } => CandidateOutcomeKind::Selected,
+            Self::Deferred { .. } => CandidateOutcomeKind::Deferred,
+            Self::NotSupported { .. } => CandidateOutcomeKind::NotSupported,
+            Self::NotSelectedByCost { .. } => CandidateOutcomeKind::NotSelectedByCost,
+        }
+    }
 }
 
 /// Stable root-owned cost evidence for a native candidate selection decision.
@@ -551,14 +610,14 @@ impl CandidateOutcome {
     pub fn to_json(&self) -> Value {
         match self {
             Self::Selected { candidate } => json!({
-                "outcome": "selected",
+                "outcome": self.kind().as_str(),
                 "candidate": candidate.to_json(),
                 "capability_reason_code": null,
                 "cost_reason_code": null,
                 "cost_evidence": null,
             }),
             Self::Deferred { candidate, planning_stage, producer_binding } => json!({
-                "outcome": "deferred",
+                "outcome": self.kind().as_str(),
                 "candidate": candidate.to_json(),
                 "planning_stage": planning_stage,
                 "consumer_execution_scope_fingerprint": producer_binding.consumer_execution_scope_fingerprint(),
@@ -573,14 +632,14 @@ impl CandidateOutcome {
                 "cost_evidence": null,
             }),
             Self::NotSupported { candidate, capability_reason } => json!({
-                "outcome": "not_supported",
+                "outcome": self.kind().as_str(),
                 "candidate": candidate.to_json(),
                 "capability_reason_code": capability_reason.code(),
                 "cost_reason_code": null,
                 "cost_evidence": null,
             }),
             Self::NotSelectedByCost { candidate, cost_reason, evidence } => json!({
-                "outcome": "not_selected_by_cost",
+                "outcome": self.kind().as_str(),
                 "candidate": candidate.to_json(),
                 "capability_reason_code": null,
                 "cost_reason_code": cost_reason.code(),

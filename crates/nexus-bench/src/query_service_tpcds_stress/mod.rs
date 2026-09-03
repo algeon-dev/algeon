@@ -16,8 +16,7 @@ use datafusion_nexus::{
     error::{DataFusionErrorExt, Error as AdapterError},
     native_exec::NexusNativeExecutionConfig,
     native_report::{
-        FinalPlanDisposition, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
-        NativeDataFusionPlanningRow,
+        CandidateOutcomeKind, FinalPlanDisposition, NativeDataFusionPlanningReport, NativeDataFusionPlanningRow,
     },
     planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     session::NexusSessionStateBuilderExt,
@@ -514,11 +513,11 @@ async fn run_native_request(
                 admission_wait_ms,
                 total_wall_ms: duration_ms(total_started.elapsed()),
                 native_wall_ms: Some(duration_ms(native_started.elapsed())),
-                planning_outcome: planning_row
-                    .outcome
-                    .map_or("none", NativeDataFusionPlanningOutcome::as_str)
+                planning_outcome: planning_row.outcome.map_or("none", CandidateOutcomeKind::as_str).to_string(),
+                final_disposition: planning_row
+                    .final_disposition
+                    .map_or("none", FinalPlanDisposition::as_str)
                     .to_string(),
-                final_disposition: planning_row.final_disposition.as_str().to_string(),
                 native_runtime_outcome: "succeeded",
                 parity_status: parity,
                 cpu_output_rows: cpu.map(|cpu| cpu.output_rows),
@@ -541,8 +540,8 @@ async fn run_native_request(
                 total_started.elapsed(),
                 admission_sequence,
                 admission_wait_ms,
-                planning_row.outcome.map_or("none", NativeDataFusionPlanningOutcome::as_str),
-                planning_row.final_disposition.as_str(),
+                planning_row.outcome.map_or("none", CandidateOutcomeKind::as_str),
+                planning_row.final_disposition.map_or("none", FinalPlanDisposition::as_str),
                 "failed",
                 "native_failed",
                 StructuredFailure::from_datafusion_error(&error),
@@ -615,19 +614,19 @@ async fn collect_native_with_handle(
     let plan = df.create_physical_plan().await?;
     let planning_report = NativeDataFusionPlanningReport::from_retained_rule(query.id, Arc::clone(&plan), &native_rule);
     let planning_row = select_planning_row(query.id, planning_report.rows)?;
-    if planning_row.outcome != Some(NativeDataFusionPlanningOutcome::Selected) {
+    if planning_row.outcome != Some(CandidateOutcomeKind::Selected) {
         return Err(plan_error(format!(
             "{} was not accepted by native planning; outcome={} reason_code={}",
             query.id,
-            planning_row.outcome.map_or("none", NativeDataFusionPlanningOutcome::as_str),
+            planning_row.outcome.map_or("none", CandidateOutcomeKind::as_str),
             planning_row.reason_code.as_deref().unwrap_or("none"),
         )));
     }
-    if planning_row.final_disposition != FinalPlanDisposition::Native {
+    if planning_row.final_disposition != Some(FinalPlanDisposition::Native) {
         return Err(plan_error(format!(
             "{} accepted planning row did not produce final_disposition=native; observed {}",
             query.id,
-            planning_row.final_disposition.as_str(),
+            planning_row.final_disposition.map_or("none", FinalPlanDisposition::as_str),
         )));
     }
     let schema = plan.schema();

@@ -3,10 +3,10 @@ use std::{fmt::Write, sync::Arc};
 use nexus_query_engine::mode::StatisticalAggregateExecutionMode;
 
 use super::{
-    ExecutionPlan, FinalPlanDisposition, NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
-    NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NativeDataFusionExecutionRow, NativeDataFusionExecutionWorkloadItem,
-    NativeDataFusionPlanningOutcome, NativeDataFusionPlanningRow, NativeDataFusionPlanningWorkloadItem,
-    NativeDataFusionRuntime, NativeDataFusionRuntimeSummary, NativeFallbackPressureOutcome, NativeFallbackPressureRow,
+    CandidateOutcomeKind, ExecutionPlan, FinalPlanDisposition, NATIVE_DATAFUSION_EXECUTION_TSV_HEADER,
+    NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NativeDataFusionExecutionRow,
+    NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningRow, NativeDataFusionPlanningWorkloadItem,
+    NativeDataFusionRuntime, NativeDataFusionRuntimeSummary, NativeFallbackPressureRow,
     NativeFallbackPressureWorkloadItem, NexusNativeExecutionConfig, NexusNativePhysicalOptimizerRule, TsvRow,
     WorkloadDatasetMetadata, datafusion_execution_rows_for_item, datafusion_planning_rows_for_item,
     report_rows_for_item, write_workload_dataset_metadata,
@@ -15,6 +15,10 @@ use super::{
 /// In-memory fallback-pressure report.
 ///
 /// Rows describe native candidate acceptance or rejection before execution.
+/// This collector runs candidate-only lowering without cost selection, so it
+/// observes the producer subset (`Selected`, `Deferred`, `NotSupported`);
+/// the shared [`CandidateOutcomeKind`] projection still covers cost outcomes
+/// without a narrowed enum.
 /// TSV serialization writes optional workload metadata, then
 /// [`NATIVE_FALLBACK_PRESSURE_TSV_HEADER`].
 /// Optional planning fields serialize as `none`; missing dataset content
@@ -62,14 +66,22 @@ impl NativeFallbackPressureReport {
 
     /// Number of accepted candidate rows, not distinct query ids.
     pub fn selected_count(&self) -> usize {
-        self.rows.iter().filter(|row| row.outcome == Some(NativeFallbackPressureOutcome::Selected)).count()
+        self.rows
+            .iter()
+            .filter(|row| matches!(row.outcome, Some(CandidateOutcomeKind::Selected | CandidateOutcomeKind::Deferred)))
+            .count()
     }
 
     /// Number of rejected candidate rows, not distinct query ids.
     pub fn not_selected_count(&self) -> usize {
         self.rows
             .iter()
-            .filter(|row| row.outcome.is_some_and(|outcome| outcome != NativeFallbackPressureOutcome::Selected))
+            .filter(|row| {
+                matches!(
+                    row.outcome,
+                    Some(CandidateOutcomeKind::NotSupported | CandidateOutcomeKind::NotSelectedByCost)
+                )
+            })
             .count()
     }
 
@@ -139,12 +151,7 @@ impl NativeDataFusionPlanningReport {
     pub fn selected_count(&self) -> usize {
         self.rows
             .iter()
-            .filter(|row| {
-                matches!(
-                    row.outcome,
-                    Some(NativeDataFusionPlanningOutcome::Selected | NativeDataFusionPlanningOutcome::Deferred)
-                )
-            })
+            .filter(|row| matches!(row.outcome, Some(CandidateOutcomeKind::Selected | CandidateOutcomeKind::Deferred)))
             .count()
     }
 
@@ -154,10 +161,7 @@ impl NativeDataFusionPlanningReport {
             .iter()
             .filter(|row| {
                 row.outcome.is_some_and(|outcome| {
-                    !matches!(
-                        outcome,
-                        NativeDataFusionPlanningOutcome::Selected | NativeDataFusionPlanningOutcome::Deferred
-                    )
+                    !matches!(outcome, CandidateOutcomeKind::Selected | CandidateOutcomeKind::Deferred)
                 })
             })
             .count()
@@ -327,16 +331,16 @@ fn runtime_fields(query_id: &str, summary: NativeDataFusionRuntimeSummary) -> Ve
         physical_shape: String::new(),
         native_candidate_shape: None,
         native_candidate_shape_family: None,
-        planning_outcome: Some(NativeDataFusionPlanningOutcome::Selected),
+        planning_outcome: Some(CandidateOutcomeKind::Selected),
         reason_code: None,
         unsupported_category: None,
         capability_contract_rows: Vec::new(),
         capability_compiled_graphs: Vec::new(),
         source_diagnostics: Vec::new(),
         post_native_plan_root: String::new(),
-        final_disposition: FinalPlanDisposition::DataFusion,
-        native_plan_fragment_count: 0,
-        host_datafusion_boundary_count: 0,
+        final_disposition: Some(FinalPlanDisposition::DataFusion),
+        native_plan_fragment_count: Some(0),
+        host_datafusion_boundary_count: Some(0),
         rejected_before_execution: false,
         native_runtime_started: summary.started,
         runtime_outcome: summary.outcome,
@@ -365,16 +369,16 @@ mod tests {
                 physical_shape: "Root(Source)".to_string(),
                 native_candidate_shape: None,
                 native_candidate_shape_family: None,
-                planning_outcome: Some(NativeDataFusionPlanningOutcome::Selected),
+                planning_outcome: Some(CandidateOutcomeKind::Selected),
                 reason_code: None,
                 unsupported_category: None,
                 capability_contract_rows: Vec::new(),
                 capability_compiled_graphs: Vec::new(),
                 source_diagnostics: Vec::new(),
                 post_native_plan_root: "NexusNativeExec".to_string(),
-                final_disposition: FinalPlanDisposition::Native,
-                native_plan_fragment_count: 1,
-                host_datafusion_boundary_count: 0,
+                final_disposition: Some(FinalPlanDisposition::Native),
+                native_plan_fragment_count: Some(1),
+                host_datafusion_boundary_count: Some(0),
                 rejected_before_execution: false,
                 native_runtime_started: false,
                 runtime_outcome: NativeDataFusionRuntimeOutcome::NotStarted,

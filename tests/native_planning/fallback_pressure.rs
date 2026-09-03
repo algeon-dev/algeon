@@ -37,12 +37,11 @@ use datafusion_nexus::{
     capability::CapabilityReason,
     native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec},
     native_report::{
-        FinalPlanDisposition, NATIVE_DATAFUSION_EXECUTION_TSV_HEADER, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
-        NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NativeDataFusionExecutionMetrics, NativeDataFusionExecutionReport,
-        NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningOutcome, NativeDataFusionPlanningReport,
+        CandidateOutcomeKind, FinalPlanDisposition, NATIVE_DATAFUSION_EXECUTION_TSV_HEADER,
+        NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NativeDataFusionExecutionMetrics,
+        NativeDataFusionExecutionReport, NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningReport,
         NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime, NativeDataFusionRuntimeOutcome,
-        NativeDynamicFilterRuntimeMetricRow, NativeFallbackPressureOutcome, NativeFallbackPressureReport,
-        NativeFallbackPressureWorkloadItem,
+        NativeDynamicFilterRuntimeMetricRow, NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem,
     },
     planner::{
         NativeCapabilityAcceptedCandidateDiagnostics, NativeCapabilityCompiledGraphDiagnostics,
@@ -156,7 +155,7 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert_eq!(report.not_selected_count(), 2);
 
     let rewritten = report_row(&report, "sum_rewrite");
-    assert_eq!(rewritten.outcome, Some(NativeFallbackPressureOutcome::Selected));
+    assert_eq!(rewritten.outcome, Some(CandidateOutcomeKind::Selected));
     assert_eq!(rewritten.reason_code, None);
     assert_eq!(rewritten.unsupported_category, None);
     assert!(!rewritten.rejected_before_execution);
@@ -172,25 +171,25 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert_eq!(rewritten.source_diagnostics[0].pure_filter_column_count, 1);
 
     let not = report_row(&report, "not_rewrite");
-    assert_eq!(not.outcome, Some(NativeFallbackPressureOutcome::Selected));
+    assert_eq!(not.outcome, Some(CandidateOutcomeKind::Selected));
     assert_eq!(not.reason_code, None);
     assert_eq!(not.unsupported_category, None);
     assert!(!not.rejected_before_execution);
 
     let cast = report_row(&report, "cast_rewrite");
-    assert_eq!(cast.outcome, Some(NativeFallbackPressureOutcome::Selected));
+    assert_eq!(cast.outcome, Some(CandidateOutcomeKind::Selected));
     assert_eq!(cast.reason_code, None);
     assert_eq!(cast.unsupported_category, None);
     assert!(!cast.rejected_before_execution);
 
     let avg = report_row(&report, "avg_rewrite");
-    assert_eq!(avg.outcome, Some(NativeFallbackPressureOutcome::Selected));
+    assert_eq!(avg.outcome, Some(CandidateOutcomeKind::Selected));
     assert_eq!(avg.reason_code, None);
     assert_eq!(avg.unsupported_category, None);
     assert!(!avg.rejected_before_execution);
 
     let distributed_avg = report_row(&report, "distributed_avg_rewrite");
-    assert_eq!(distributed_avg.outcome, Some(NativeFallbackPressureOutcome::Selected));
+    assert_eq!(distributed_avg.outcome, Some(CandidateOutcomeKind::Selected));
     assert_eq!(
         distributed_avg.native_candidate_shape.as_deref(),
         Some(
@@ -206,7 +205,7 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert!(!distributed_avg.rejected_before_execution);
 
     let count_only = report_row(&report, "count_only_rewrite");
-    assert_eq!(count_only.outcome, Some(NativeFallbackPressureOutcome::Selected));
+    assert_eq!(count_only.outcome, Some(CandidateOutcomeKind::Selected));
     assert_eq!(count_only.native_candidate_shape.as_deref(), Some("ProjectionExec(AggregateExec(LocalParquetScan))"));
     assert_eq!(count_only.native_candidate_shape_family.as_deref(), Some("projected_global_local_parquet_aggregate"));
     assert_eq!(count_only.reason_code, None);
@@ -219,25 +218,25 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     assert_eq!(count_only.source_diagnostics[0].zero_column_count_disposition, "represented");
 
     let filtered = report_row(&report, "filtered_rewrite");
-    assert_eq!(filtered.outcome, Some(NativeFallbackPressureOutcome::Selected));
+    assert_eq!(filtered.outcome, Some(CandidateOutcomeKind::Selected));
     assert_eq!(filtered.reason_code, None);
     assert_eq!(filtered.unsupported_category, None);
     assert!(!filtered.rejected_before_execution);
 
     let distributed_filtered_avg = report_row(&report, "distributed_filtered_avg_rewrite");
-    assert_eq!(distributed_filtered_avg.outcome, Some(NativeFallbackPressureOutcome::Selected));
+    assert_eq!(distributed_filtered_avg.outcome, Some(CandidateOutcomeKind::Selected));
     assert_eq!(distributed_filtered_avg.reason_code, None);
     assert_eq!(distributed_filtered_avg.unsupported_category, None);
     assert!(!distributed_filtered_avg.rejected_before_execution);
 
     let try_cast = report_row(&report, "try_cast_reject");
-    assert_eq!(try_cast.outcome, Some(NativeFallbackPressureOutcome::NotSupported));
+    assert_eq!(try_cast.outcome, Some(CandidateOutcomeKind::NotSupported));
     assert_eq!(try_cast.reason_code.as_deref(), Some("unsupported_expression"));
     assert_eq!(try_cast.unsupported_category.as_deref(), Some("expression_try_cast_int64_to_int32"));
     assert!(!try_cast.rejected_before_execution);
 
     let distributed_distinct_avg = report_row(&report, "distributed_distinct_avg_rewrite");
-    assert_eq!(distributed_distinct_avg.outcome, Some(NativeFallbackPressureOutcome::Selected));
+    assert_eq!(distributed_distinct_avg.outcome, Some(CandidateOutcomeKind::Selected));
     assert_eq!(distributed_distinct_avg.reason_code, None);
     assert_eq!(distributed_distinct_avg.unsupported_category, None);
     assert!(!distributed_distinct_avg.rejected_before_execution);
@@ -245,7 +244,7 @@ async fn native_fallback_pressure_report_summarizes_workload_outcomes() {
     // Integer modulo cannot match DataFusion by-zero errors on GPU, so the
     // native candidate is left on the executable DataFusion baseline.
     let modulo = report_row(&report, "integer_modulo_fallback");
-    assert_eq!(modulo.outcome, Some(NativeFallbackPressureOutcome::NotSupported));
+    assert_eq!(modulo.outcome, Some(CandidateOutcomeKind::NotSupported));
     assert_eq!(modulo.reason_code.as_deref(), Some("unsupported_expression"));
     assert!(!modulo.rejected_before_execution);
 
@@ -340,7 +339,7 @@ async fn native_fallback_pressure_report_keeps_supported_typed_null_literals_out
 
     assert_eq!(report.rows.len(), 1);
     let row = report_row(&report, "typed_null_try_cast_reject");
-    assert_eq!(row.outcome, Some(NativeFallbackPressureOutcome::NotSupported));
+    assert_eq!(row.outcome, Some(CandidateOutcomeKind::NotSupported));
     assert_eq!(row.reason_code.as_deref(), Some("unsupported_expression"));
     assert_eq!(row.unsupported_category.as_deref(), Some("expression_try_cast_int64_to_int32"));
     assert_ne!(row.unsupported_category.as_deref(), Some("expression_literal"));
@@ -372,7 +371,7 @@ async fn native_fallback_pressure_reports_narrow_decimal_literals_as_unsupported
 
     for query_id in ["decimal32_literal", "decimal64_literal"] {
         let row = report_row(&report, query_id);
-        assert_eq!(row.outcome, Some(NativeFallbackPressureOutcome::NotSupported));
+        assert_eq!(row.outcome, Some(CandidateOutcomeKind::NotSupported));
         assert_eq!(row.reason_code.as_deref(), Some("unsupported_expression"));
         assert_eq!(row.unsupported_category.as_deref(), Some("expression"));
         assert!(!row.rejected_before_execution);
@@ -392,11 +391,11 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     assert_eq!(accepted.selected_count(), 1);
     assert_eq!(accepted.not_selected_count(), 0);
     let accepted_row = &accepted.rows[0];
-    assert_eq!(accepted_row.outcome, Some(NativeDataFusionPlanningOutcome::Selected));
+    assert_eq!(accepted_row.outcome, Some(CandidateOutcomeKind::Selected));
     assert_eq!(accepted_row.reason_code, None);
     assert_eq!(accepted_row.unsupported_category, None);
     assert_eq!(accepted_row.post_native_plan_root, "NexusNativeExec");
-    assert_eq!(accepted_row.final_disposition, FinalPlanDisposition::Native);
+    assert_eq!(accepted_row.final_disposition, Some(FinalPlanDisposition::Native));
     assert!(!accepted_row.rejected_before_execution);
     assert_eq!(accepted_row.source_diagnostics.len(), 1);
     assert!(accepted_row.source_diagnostics[0].direct_device_read);
@@ -408,7 +407,7 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     assert_eq!(count_only.selected_count(), 1);
     assert_eq!(count_only.not_selected_count(), 0);
     let count_only_row = &count_only.rows[0];
-    assert_eq!(count_only_row.outcome, Some(NativeDataFusionPlanningOutcome::Selected));
+    assert_eq!(count_only_row.outcome, Some(CandidateOutcomeKind::Selected));
     assert_eq!(
         count_only_row.native_candidate_shape.as_deref(),
         Some("ProjectionExec(FinalAggregateExec(CoalescePartitionsExec(PartialAggregateExec(LocalParquetScan))))")
@@ -418,7 +417,7 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
         Some("projected_global_local_parquet_distributed_aggregate")
     );
     assert_eq!(count_only_row.post_native_plan_root, "NexusNativeExec");
-    assert_eq!(count_only_row.final_disposition, FinalPlanDisposition::Native);
+    assert_eq!(count_only_row.final_disposition, Some(FinalPlanDisposition::Native));
     assert_eq!(count_only_row.source_diagnostics.len(), 1);
     assert_eq!(count_only_row.source_diagnostics[0].read_column_count, 0);
     assert_eq!(count_only_row.source_diagnostics[0].zero_column_count_disposition, "represented");
@@ -434,11 +433,11 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     assert_eq!(distributed_avg.selected_count(), 1);
     assert_eq!(distributed_avg.not_selected_count(), 0);
     let distributed_avg_row = &distributed_avg.rows[0];
-    assert_eq!(distributed_avg_row.outcome, Some(NativeDataFusionPlanningOutcome::Selected));
+    assert_eq!(distributed_avg_row.outcome, Some(CandidateOutcomeKind::Selected));
     assert_eq!(distributed_avg_row.reason_code, None);
     assert_eq!(distributed_avg_row.unsupported_category, None);
     assert_eq!(distributed_avg_row.post_native_plan_root, "NexusNativeExec");
-    assert_eq!(distributed_avg_row.final_disposition, FinalPlanDisposition::Native);
+    assert_eq!(distributed_avg_row.final_disposition, Some(FinalPlanDisposition::Native));
     assert!(!distributed_avg_row.rejected_before_execution);
 
     let rejected_plan = typed_null_and_try_cast_reject_plan(parquet_scan(&path).await);
@@ -452,10 +451,10 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     assert_eq!(rejected.selected_count(), 0);
     assert_eq!(rejected.not_selected_count(), 1);
     let rejected_row = &rejected.rows[0];
-    assert_eq!(rejected_row.outcome, Some(NativeDataFusionPlanningOutcome::NotSupported));
+    assert_eq!(rejected_row.outcome, Some(CandidateOutcomeKind::NotSupported));
     assert_eq!(rejected_row.reason_code.as_deref(), Some("unsupported_expression"));
     assert_eq!(rejected_row.unsupported_category.as_deref(), Some("expression_try_cast_int64_to_int32"));
-    assert_eq!(rejected_row.final_disposition, FinalPlanDisposition::DataFusion);
+    assert_eq!(rejected_row.final_disposition, Some(FinalPlanDisposition::DataFusion));
     assert!(!rejected_row.rejected_before_execution);
     assert_eq!(rejected_row.source_diagnostics.len(), 1);
     assert!(rejected_row.source_diagnostics[0].direct_device_read);
@@ -480,7 +479,9 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     assert_eq!(planning_failure_row.unsupported_category.as_deref(), Some("planning"));
     assert!(planning_failure_row.source_diagnostics.is_empty());
     assert_eq!(planning_failure_row.post_native_plan_root, "PlanningFailure");
-    assert_eq!(planning_failure_row.final_disposition, FinalPlanDisposition::Rejected);
+    assert_eq!(planning_failure_row.final_disposition, None);
+    assert_eq!(planning_failure_row.native_plan_fragment_count, None);
+    assert_eq!(planning_failure_row.host_datafusion_boundary_count, None);
     assert!(planning_failure_row.rejected_before_execution);
 
     let text = accepted.to_tsv();

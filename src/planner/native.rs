@@ -133,7 +133,7 @@ fn final_plan_requirement_error(
     )
     .with_fact("requirement", requirement.as_str())
     .with_fact("observed_final_plan_disposition", disposition.as_str())
-    .with_fact("terminal_plan_disposition", FinalPlanDisposition::Rejected.as_str())
+    .with_fact("terminal_plan_disposition", "rejected")
     .with_fact("physical_plan_root", plan.name());
     if let Some((candidate, capability_reason, detail)) = rejection {
         error = error
@@ -592,7 +592,6 @@ mod tests {
 
         assert_eq!(classify_final_plan(datafusion.as_ref()), FinalPlanDisposition::DataFusion);
         assert_eq!(classify_final_plan(native_exec_leaf().as_ref()), FinalPlanDisposition::Native);
-        assert_eq!(FinalPlanDisposition::Rejected.as_str(), "rejected");
     }
 
     #[test]

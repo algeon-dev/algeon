@@ -1,8 +1,8 @@
 use std::{fmt::Write, sync::Arc};
 
 use super::{
-    ExecutionPlan, FinalPlanDisposition, MetricsSet, NATIVE_TPCDS_PARITY_TSV_COLUMNS, NATIVE_TPCDS_PARITY_TSV_HEADER,
-    NativeDataFusionExecutionMetrics, NativeDataFusionPlanningOutcome, NativeDataFusionRuntimeOutcome,
+    CandidateOutcomeKind, ExecutionPlan, FinalPlanDisposition, MetricsSet, NATIVE_TPCDS_PARITY_TSV_COLUMNS,
+    NATIVE_TPCDS_PARITY_TSV_HEADER, NativeDataFusionExecutionMetrics, NativeDataFusionRuntimeOutcome,
     NativePlanningDiagnostics, NativePlanningFailure, ParityCompareOptions, ParityComparisonResult, RecordBatch,
     Schema, SchemaRef, StatisticalAggregateExecutionMode, TsvRow, WorkloadDatasetMetadata,
     compare_record_batches_with_options, fingerprint_batches, post_native_plan_coverage, sql_has_top_level_order_by,
@@ -126,17 +126,17 @@ pub struct NativeTpcdsParityRow {
     /// CPU DataFusion runtime status after physical planning succeeds.
     pub cpu_runtime_status: ParityStageStatus,
     /// Candidate-selection outcome, or `None` for a terminal planning failure.
-    pub native_planning_outcome: Option<NativeDataFusionPlanningOutcome>,
+    pub native_planning_outcome: Option<CandidateOutcomeKind>,
     /// Native fallback or planning reason code; `None` serializes as `none`.
     pub native_reason_code: Option<String>,
     /// Coarse unsupported category for native rejection; `None` serializes as `none`.
     pub native_unsupported_category: Option<String>,
-    /// Native coverage of the post-optimizer DataFusion plan.
-    pub final_disposition: FinalPlanDisposition,
-    /// Number of native plan fragments visible after native planning.
-    pub native_plan_fragment_count: usize,
-    /// Number of host DataFusion boundaries around native fragments.
-    pub host_datafusion_boundary_count: usize,
+    /// Native coverage of the post-optimizer DataFusion plan, or `None` when rejected.
+    pub final_disposition: Option<FinalPlanDisposition>,
+    /// Number of native plan fragments visible after native planning, or `None` when rejected.
+    pub native_plan_fragment_count: Option<usize>,
+    /// Number of host DataFusion boundaries around native fragments, or `None` when rejected.
+    pub host_datafusion_boundary_count: Option<usize>,
     /// Whether native runtime was invoked for this query.
     pub native_runtime_started: bool,
     /// Native runtime status after planning.
@@ -182,9 +182,9 @@ impl TsvRow for NativeTpcdsParityRow {
             self.native_planning_outcome.map_or_else(|| "none".to_string(), |outcome| outcome.as_str().to_string()),
             self.native_reason_code.as_deref().unwrap_or("none").to_string(),
             self.native_unsupported_category.as_deref().unwrap_or("none").to_string(),
-            self.final_disposition.as_str().to_string(),
-            self.native_plan_fragment_count.to_string(),
-            self.host_datafusion_boundary_count.to_string(),
+            self.final_disposition.map_or_else(|| "none".to_string(), |d| d.as_str().to_string()),
+            self.native_plan_fragment_count.map_or_else(|| "none".to_string(), |c| c.to_string()),
+            self.host_datafusion_boundary_count.map_or_else(|| "none".to_string(), |c| c.to_string()),
             self.native_runtime_started.to_string(),
             self.native_runtime_outcome.as_str().to_string(),
             self.parity_status.as_str().to_string(),
@@ -394,12 +394,12 @@ mod tests {
             query_id: "q01".to_string(),
             cpu_planning_status: ParityStageStatus::Succeeded,
             cpu_runtime_status: ParityStageStatus::Succeeded,
-            native_planning_outcome: Some(NativeDataFusionPlanningOutcome::NotSupported),
+            native_planning_outcome: Some(CandidateOutcomeKind::NotSupported),
             native_reason_code: Some("unsupported_operator".to_string()),
             native_unsupported_category: Some("operator_join".to_string()),
-            final_disposition: FinalPlanDisposition::DataFusion,
-            native_plan_fragment_count: 0,
-            host_datafusion_boundary_count: 0,
+            final_disposition: Some(FinalPlanDisposition::DataFusion),
+            native_plan_fragment_count: Some(0),
+            host_datafusion_boundary_count: Some(0),
             native_runtime_started: false,
             native_runtime_outcome: NativeDataFusionRuntimeOutcome::NotStarted,
             parity_status: ParityStatus::NativeRejected,
@@ -559,9 +559,9 @@ fn parity_row_for_item(
                 outcome,
                 reason_code,
                 unsupported_category,
-                coverage.final_disposition,
-                coverage.native_fragment_count,
-                coverage.host_datafusion_boundary_count,
+                Some(coverage.disposition()),
+                Some(coverage.native_fragment_count()),
+                Some(coverage.datafusion_boundary_count()),
                 None,
             )
         },
@@ -569,9 +569,9 @@ fn parity_row_for_item(
             None,
             Some(failure.reason_code.clone()),
             Some("planning".to_string()),
-            FinalPlanDisposition::Rejected,
-            0,
-            0,
+            None,
+            None,
+            None,
             Some(failure.message.clone()),
         ),
     };
@@ -717,7 +717,7 @@ fn planning_outcome_diagnostics(
     plan: &dyn ExecutionPlan,
     diagnostics: &NativePlanningDiagnostics,
     accepted: bool,
-) -> (Option<NativeDataFusionPlanningOutcome>, Option<String>, Option<String>) {
+) -> (Option<CandidateOutcomeKind>, Option<String>, Option<String>) {
     if accepted {
         if let Some(crate::report::CandidateOutcome::Deferred { producer_binding, .. }) = diagnostics
             .report
@@ -725,37 +725,25 @@ fn planning_outcome_diagnostics(
             .iter()
             .find(|outcome| matches!(outcome, crate::report::CandidateOutcome::Deferred { .. }))
         {
-            return (
-                Some(NativeDataFusionPlanningOutcome::Deferred),
-                Some(producer_binding.reason_code().to_string()),
-                None,
-            );
+            return (Some(CandidateOutcomeKind::Deferred), Some(producer_binding.reason_code().to_string()), None);
         }
-        return (Some(NativeDataFusionPlanningOutcome::Selected), None, None);
+        return (Some(CandidateOutcomeKind::Selected), None, None);
     }
     for outcome in diagnostics.report.outcomes() {
         match outcome {
             crate::report::CandidateOutcome::Selected { .. } => {},
             crate::report::CandidateOutcome::Deferred { producer_binding, .. } => {
-                return (
-                    Some(NativeDataFusionPlanningOutcome::Deferred),
-                    Some(producer_binding.reason_code().to_string()),
-                    None,
-                );
+                return (Some(CandidateOutcomeKind::Deferred), Some(producer_binding.reason_code().to_string()), None);
             },
             crate::report::CandidateOutcome::NotSupported { candidate, capability_reason } => {
                 return (
-                    Some(NativeDataFusionPlanningOutcome::NotSupported),
+                    Some(CandidateOutcomeKind::NotSupported),
                     Some(capability_reason.code().to_string()),
                     unsupported_category(plan, candidate, *capability_reason),
                 );
             },
             crate::report::CandidateOutcome::NotSelectedByCost { cost_reason, .. } => {
-                return (
-                    Some(NativeDataFusionPlanningOutcome::NotSelectedByCost),
-                    Some(cost_reason.code().to_string()),
-                    None,
-                );
+                return (Some(CandidateOutcomeKind::NotSelectedByCost), Some(cost_reason.code().to_string()), None);
             },
         }
     }
@@ -769,7 +757,7 @@ fn total_rows(batches: &[RecordBatch]) -> usize {
 struct ParityInputs<'a> {
     cpu_planning_status: ParityStageStatus,
     cpu_runtime_status: ParityStageStatus,
-    native_planning_outcome: Option<NativeDataFusionPlanningOutcome>,
+    native_planning_outcome: Option<CandidateOutcomeKind>,
     native_runtime_started: bool,
     native_runtime_outcome: NativeDataFusionRuntimeOutcome,
     cpu_schema: Option<&'a SchemaRef>,
@@ -790,11 +778,10 @@ fn derive_parity_outcome(
         return (ParityStatus::CpuFailed, ParityComparisonMode::NotApplicable, None, None, None);
     }
     match inputs.native_planning_outcome {
-        Some(NativeDataFusionPlanningOutcome::NotSupported | NativeDataFusionPlanningOutcome::NotSelectedByCost)
-        | None => {
+        Some(CandidateOutcomeKind::NotSupported | CandidateOutcomeKind::NotSelectedByCost) | None => {
             return (ParityStatus::NativeRejected, ParityComparisonMode::NotApplicable, None, None, None);
         },
-        Some(NativeDataFusionPlanningOutcome::Selected | NativeDataFusionPlanningOutcome::Deferred) => {},
+        Some(CandidateOutcomeKind::Selected | CandidateOutcomeKind::Deferred) => {},
     }
     if !inputs.native_runtime_started {
         return (ParityStatus::NativeRejected, ParityComparisonMode::NotApplicable, None, None, None);

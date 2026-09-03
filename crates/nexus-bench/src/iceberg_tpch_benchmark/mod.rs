@@ -9,7 +9,7 @@ use std::{
 
 use datafusion_nexus::{
     native_report::{
-        FinalPlanDisposition, NativeDataFusionPlanningOutcome, NativeDataFusionRuntimeOutcome,
+        CandidateOutcomeKind, NativeDataFusionRuntimeOutcome,
         bench_support::{ParityComparisonMode, ParityStatus},
     },
     table_format::{TableFormat, TableFormatScanPlan},
@@ -683,9 +683,9 @@ fn timeout_smoke_row(
         diagnostics,
         None,
         Some(category.as_str().to_string()),
-        FinalPlanDisposition::Rejected,
         None,
         ObjectStoreStagingSummary::new(config.smoke_config.object_store_staging, ObjectStoreStagingStatus::NotNeeded),
+        None,
         config.smoke_config.fixture.credential_source().to_string(),
     );
     row.native_runtime_outcome = NativeDataFusionRuntimeOutcome::Failed;
@@ -867,7 +867,7 @@ impl IcebergTpchBenchmarkRow {
             object_store_staging_status_code(row.staging_summary.status).to_string(),
             row.staging_summary.staged_data_file_count.to_string(),
             row.staging_summary.staged_bytes.to_string(),
-            row.native_planning_outcome.map_or("none", NativeDataFusionPlanningOutcome::as_str).to_string(),
+            row.native_planning_outcome.map_or("none", CandidateOutcomeKind::as_str).to_string(),
             row.native_runtime_outcome.as_str().to_string(),
             optional_u128(row.native_runtime_elapsed_ms),
             optional_usize(row.native_output_rows),
@@ -976,10 +976,10 @@ pub fn validate_full_sf1_staged_s3_gate_for_config(
                 row.smoke_row.staging_summary.staged_data_file_count
             ));
         }
-        if row.smoke_row.native_planning_outcome != Some(NativeDataFusionPlanningOutcome::Selected) {
+        if row.smoke_row.native_planning_outcome != Some(CandidateOutcomeKind::Selected) {
             failures.push(format!(
                 "{query_id}:native_planning_outcome={}",
-                row.smoke_row.native_planning_outcome.map_or("none", NativeDataFusionPlanningOutcome::as_str)
+                row.smoke_row.native_planning_outcome.map_or("none", CandidateOutcomeKind::as_str)
             ));
         }
         if row.smoke_row.native_runtime_outcome.as_str() != "succeeded" {

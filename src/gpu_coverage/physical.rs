@@ -4,8 +4,8 @@ use datafusion::physical_plan::ExecutionPlan;
 
 use super::{
     model::{
-        QueryGpuCandidateOutcome, QueryGpuCandidateReasonKind, QueryGpuCandidateSelectionOutcome, QueryGpuCugraphCall,
-        QueryGpuRuntimeCaveat, QueryGpuValidatedUnder,
+        QueryGpuCandidateOutcome, QueryGpuCandidateReasonKind, QueryGpuCugraphCall, QueryGpuRuntimeCaveat,
+        QueryGpuValidatedUnder,
     },
     remedy::{capability_remedy, cost_remedy},
 };
@@ -13,8 +13,8 @@ use super::{
 use crate::cugraph_sql::CugraphAlgoExec;
 use crate::{
     capability::CapabilityReason,
-    final_plan_observation::FinalPlanObservation,
     native_report::candidate_shape_family,
+    planner::FinalPlanCoverage,
     report::{CandidateOutcome, PlanningReport},
 };
 
@@ -50,7 +50,7 @@ pub(super) fn candidate_outcomes_from_report(report: &PlanningReport) -> Vec<Que
         .iter()
         .map(|outcome| match outcome {
             CandidateOutcome::Selected { candidate } => QueryGpuCandidateOutcome {
-                selection: QueryGpuCandidateSelectionOutcome::Selected,
+                selection: outcome.kind(),
                 candidate_family: candidate_shape_family(candidate),
                 reason_code: None,
                 reason_kind: None,
@@ -60,7 +60,7 @@ pub(super) fn candidate_outcomes_from_report(report: &PlanningReport) -> Vec<Que
                 cost_evidence: None,
             },
             CandidateOutcome::Deferred { candidate, producer_binding, .. } => QueryGpuCandidateOutcome {
-                selection: QueryGpuCandidateSelectionOutcome::Deferred,
+                selection: outcome.kind(),
                 candidate_family: candidate_shape_family(candidate),
                 reason_code: Some(producer_binding.reason_code().to_string()),
                 reason_kind: Some(QueryGpuCandidateReasonKind::PlanShape),
@@ -70,7 +70,7 @@ pub(super) fn candidate_outcomes_from_report(report: &PlanningReport) -> Vec<Que
                 cost_evidence: None,
             },
             CandidateOutcome::NotSupported { candidate, capability_reason } => QueryGpuCandidateOutcome {
-                selection: QueryGpuCandidateSelectionOutcome::NotSupported,
+                selection: outcome.kind(),
                 candidate_family: candidate_shape_family(candidate),
                 reason_code: Some(capability_reason.code().to_string()),
                 reason_kind: Some(capability_reason_kind(*capability_reason)),
@@ -80,7 +80,7 @@ pub(super) fn candidate_outcomes_from_report(report: &PlanningReport) -> Vec<Que
                 cost_evidence: None,
             },
             CandidateOutcome::NotSelectedByCost { candidate, cost_reason, evidence } => QueryGpuCandidateOutcome {
-                selection: QueryGpuCandidateSelectionOutcome::NotSelectedByCost,
+                selection: outcome.kind(),
                 candidate_family: candidate_shape_family(candidate),
                 reason_code: Some(cost_reason.code().to_string()),
                 reason_kind: Some(QueryGpuCandidateReasonKind::Cost),
@@ -132,7 +132,7 @@ fn capability_reason_kind(reason: CapabilityReason) -> QueryGpuCandidateReasonKi
 }
 
 pub(super) fn runtime_caveats(
-    observation: FinalPlanObservation,
+    observation: FinalPlanCoverage,
     cugraph_calls: &[QueryGpuCugraphCall],
     validated_under: &QueryGpuValidatedUnder,
 ) -> Vec<QueryGpuRuntimeCaveat> {
@@ -153,7 +153,7 @@ pub(super) fn runtime_caveats(
             "once native GPU execution starts, native failures are surfaced as failures rather than CPU fallback",
         ),
     ];
-    if observation.host_materialization_count > 0 {
+    if observation.host_materialization_count() > 0 {
         caveats.push(QueryGpuRuntimeCaveat::new(
             "host_output_materialization",
             "DataFusion-facing query output is materialized back to host Arrow outside the GPU-execution promise",

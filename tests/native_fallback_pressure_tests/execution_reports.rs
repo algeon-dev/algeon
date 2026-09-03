@@ -18,13 +18,13 @@ fn native_datafusion_execution_report_records_runtime_boundaries() {
     assert_eq!(report.runtime_started_count(), 1);
     assert_eq!(report.rejected_before_execution_count(), 0);
     let row = &report.rows[0];
-    assert_eq!(row.planning_outcome, Some(NativeDataFusionPlanningOutcome::Selected));
+    assert_eq!(row.planning_outcome, Some(CandidateOutcomeKind::Selected));
     assert_eq!(row.capability_contract_rows.len(), 2);
     assert_eq!(row.capability_compiled_graphs.len(), 1);
     assert!(row.capability_contract_rows.iter().any(|gate| gate.reservation_kind == ReservationKind::Materialization
         && gate.contract_quality == ContractQuality::QueryEngineOwnedBoundary));
     assert_eq!(row.post_native_plan_root, "NexusNativeExec");
-    assert_eq!(row.final_disposition, FinalPlanDisposition::Native);
+    assert_eq!(row.final_disposition, Some(FinalPlanDisposition::Native));
     assert!(!row.rejected_before_execution);
     assert!(row.native_runtime_started);
     assert_eq!(row.runtime_outcome, NativeDataFusionRuntimeOutcome::Succeeded);
@@ -574,16 +574,16 @@ fn native_datafusion_execution_report_projects_runtime_for_mixed_plan_despite_ca
 
     assert_eq!(report.rows.len(), 2);
     assert!(report.rows.iter().any(|row| {
-        row.planning_outcome == Some(NativeDataFusionPlanningOutcome::NotSupported)
+        row.planning_outcome == Some(CandidateOutcomeKind::NotSupported)
             && row.reason_code.as_deref() == Some("unsupported_expression")
     }));
     assert!(report.rows.iter().any(|row| {
-        row.planning_outcome == Some(NativeDataFusionPlanningOutcome::NotSelectedByCost)
+        row.planning_outcome == Some(CandidateOutcomeKind::NotSelectedByCost)
             && row.reason_code.as_deref() == Some("native_small_selective_topk_not_selected_by_cost")
     }));
 
     for row in &report.rows {
-        assert_eq!(row.final_disposition, FinalPlanDisposition::Mixed);
+        assert_eq!(row.final_disposition, Some(FinalPlanDisposition::Mixed));
         assert!(row.native_runtime_started);
         assert_eq!(row.runtime_outcome, NativeDataFusionRuntimeOutcome::Succeeded);
         assert_eq!(row.output_batches, Some(1));
@@ -610,7 +610,7 @@ fn native_datafusion_execution_report_keeps_runtime_unstarted_for_pure_datafusio
 
     assert_eq!(report.rows.len(), 2);
     for row in &report.rows {
-        assert_eq!(row.final_disposition, FinalPlanDisposition::DataFusion);
+        assert_eq!(row.final_disposition, Some(FinalPlanDisposition::DataFusion));
         assert!(!row.native_runtime_started);
         assert_eq!(row.runtime_outcome, NativeDataFusionRuntimeOutcome::NotStarted);
         assert_eq!(row.runtime_failure, None);
@@ -1189,7 +1189,9 @@ fn native_datafusion_execution_report_marks_terminal_planning_failure_before_run
     let row = &report.rows[0];
     assert_eq!(row.planning_outcome, None);
     assert_eq!(row.reason_code.as_deref(), Some("native_planning_failed"));
-    assert_eq!(row.final_disposition, FinalPlanDisposition::Rejected);
+    assert_eq!(row.final_disposition, None);
+    assert_eq!(row.native_plan_fragment_count, None);
+    assert_eq!(row.host_datafusion_boundary_count, None);
     assert!(row.capability_contract_rows.is_empty());
     assert!(row.capability_compiled_graphs.is_empty());
     assert!(row.rejected_before_execution);
@@ -1209,7 +1211,7 @@ fn native_datafusion_reports_classify_composed_native_roots_as_native() {
         accepted_native_diagnostics(),
     )]);
     assert_eq!(planning.rows[0].post_native_plan_root, "NexusNativeComposedExec");
-    assert_eq!(planning.rows[0].final_disposition, FinalPlanDisposition::Native);
+    assert_eq!(planning.rows[0].final_disposition, Some(FinalPlanDisposition::Native));
 
     let execution = NativeDataFusionExecutionReport::collect([NativeDataFusionExecutionWorkloadItem::new(
         "composed",
@@ -1218,5 +1220,5 @@ fn native_datafusion_reports_classify_composed_native_roots_as_native() {
         NativeDataFusionRuntime::NotStarted,
     )]);
     assert_eq!(execution.rows[0].post_native_plan_root, "NexusNativeComposedExec");
-    assert_eq!(execution.rows[0].final_disposition, FinalPlanDisposition::Native);
+    assert_eq!(execution.rows[0].final_disposition, Some(FinalPlanDisposition::Native));
 }

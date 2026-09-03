@@ -5,22 +5,60 @@ use serde_json::{Value, json};
 
 use super::preflight::QueryGpuRejection;
 use crate::{
-    final_plan_observation::FinalPlanObservation,
     physical_plan::physical_plan_shape,
-    planner::{FinalPlanDisposition, NativePlanningDiagnostics},
-    report::NativeCandidateCostEvidence,
+    planner::{FinalPlanCoverage, FinalPlanDisposition, NativePlanningDiagnostics},
+    report::{CandidateOutcomeKind, NativeCandidateCostEvidence},
 };
+
+/// Single sum type representing whether GPU planning produced an executable plan or was rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QueryGpuPlanningOutcome {
+    Planned(FinalPlanCoverage),
+    Rejected(QueryGpuPlanningRejection),
+}
+
+impl QueryGpuPlanningOutcome {
+    pub fn to_json(&self) -> Value {
+        match self {
+            Self::Planned(plan) => json!({
+                "status": "planned",
+                "final_plan": {
+                    "disposition": plan.disposition().as_str(),
+                    "native_fragment_count": plan.native_fragment_count(),
+                    "explicit_gpu_island_count": plan.explicit_gpu_island_count(),
+                    "datafusion_boundary_count": plan.datafusion_boundary_count(),
+                    "host_materialization_count": plan.host_materialization_count(),
+                    "has_gpu_runtime": plan.has_gpu_runtime(),
+                },
+                "rejection": null,
+            }),
+            Self::Rejected(rejection) => json!({
+                "status": "rejected",
+                "final_plan": null,
+                "rejection": {
+                    "phase": rejection.phase.as_str(),
+                    "reason_code": &rejection.reason_code,
+                    "source_error_status": &rejection.source_error_status,
+                    "detail": &rejection.detail,
+                },
+            }),
+        }
+    }
+}
+
+/// Plan-time rejection details when planning fails before an executable physical plan is produced.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueryGpuPlanningRejection {
+    pub phase: QueryGpuRejectionPhase,
+    pub reason_code: String,
+    pub source_error_status: Option<String>,
+    pub detail: String,
+}
 
 /// Structured answer for "will this query's planned path avoid DataFusion CPU execution?"
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryGpuCoverage {
-    pub overall: QueryGpuCoverageOverall,
-    /// Final disposition of the exact physical plan, or `Rejected` for a
-    /// terminal planning result with no executable plan.
-    pub final_disposition: FinalPlanDisposition,
-    pub domains: QueryGpuCoverageDomains,
-    /// Native candidate selections retained independently from final-plan
-    /// disposition.
+    pub planning_outcome: QueryGpuPlanningOutcome,
     pub candidate_outcomes: Vec<QueryGpuCandidateOutcome>,
     pub cugraph_calls: Vec<QueryGpuCugraphCall>,
     pub runtime_caveats: Vec<QueryGpuRuntimeCaveat>,
@@ -43,33 +81,15 @@ impl QueryGpuCoverage {
     pub(super) fn planned(
         validated_under: QueryGpuValidatedUnder,
         plan: &dyn ExecutionPlan,
-        observation: FinalPlanObservation,
+        coverage: FinalPlanCoverage,
         candidate_outcomes: Vec<QueryGpuCandidateOutcome>,
         cugraph_calls: Vec<QueryGpuCugraphCall>,
         planning_did_io: bool,
         diagnostics: Option<&NativePlanningDiagnostics>,
     ) -> Self {
-        debug_assert_ne!(observation.disposition, FinalPlanDisposition::Rejected);
-        let overall = match observation.disposition {
-            FinalPlanDisposition::Native => QueryGpuCoverageOverall::NoCpuInPlannedPath,
-            FinalPlanDisposition::Mixed => QueryGpuCoverageOverall::PartialGpuPlanned {
-                gpu_fragments: observation.native_fragment_count + observation.explicit_gpu_island_count,
-                cpu_boundaries: observation.datafusion_boundary_count,
-            },
-            FinalPlanDisposition::DataFusion => QueryGpuCoverageOverall::CpuOnly,
-            FinalPlanDisposition::Rejected => unreachable!("an executable final plan cannot be rejected"),
-        };
-        let runtime_caveats = super::physical::runtime_caveats(observation, &cugraph_calls, &validated_under);
-        let domains = QueryGpuCoverageDomains {
-            native_fragment_count: observation.native_fragment_count,
-            explicit_gpu_island_count: observation.explicit_gpu_island_count,
-            datafusion_boundary_count: observation.datafusion_boundary_count,
-            host_materialization_count: observation.host_materialization_count,
-        };
+        let runtime_caveats = super::physical::runtime_caveats(coverage, &cugraph_calls, &validated_under);
         Self {
-            overall,
-            final_disposition: observation.disposition,
-            domains,
+            planning_outcome: QueryGpuPlanningOutcome::Planned(coverage),
             candidate_outcomes,
             cugraph_calls,
             runtime_caveats,
@@ -97,17 +117,14 @@ impl QueryGpuCoverage {
         diagnostics: Option<&NativePlanningDiagnostics>,
         planning_did_io: bool,
     ) -> Self {
-        let overall = QueryGpuCoverageOverall::Rejected {
+        let planning_outcome = QueryGpuPlanningOutcome::Rejected(QueryGpuPlanningRejection {
             phase: rejection.phase,
             reason_code: rejection.reason_code,
-            retry_advice: QueryGpuRetryAdviceAvailability::NoSealedAttemptReport,
             source_error_status: rejection.source_error_status.map(ToString::to_string),
             detail: rejection.detail,
-        };
+        });
         Self {
-            overall,
-            final_disposition: FinalPlanDisposition::Rejected,
-            domains: QueryGpuCoverageDomains::default(),
+            planning_outcome,
             candidate_outcomes: diagnostics
                 .map(|diagnostics| super::physical::candidate_outcomes_from_report(&diagnostics.report))
                 .unwrap_or_default(),
@@ -127,12 +144,39 @@ impl QueryGpuCoverage {
         }
     }
 
+    pub fn planning_outcome(&self) -> &QueryGpuPlanningOutcome {
+        &self.planning_outcome
+    }
+
+    pub fn final_plan_coverage(&self) -> Option<&FinalPlanCoverage> {
+        match &self.planning_outcome {
+            QueryGpuPlanningOutcome::Planned(coverage) => Some(coverage),
+            QueryGpuPlanningOutcome::Rejected(_) => None,
+        }
+    }
+
+    pub fn rejection(&self) -> Option<&QueryGpuPlanningRejection> {
+        match &self.planning_outcome {
+            QueryGpuPlanningOutcome::Planned(_) => None,
+            QueryGpuPlanningOutcome::Rejected(rejection) => Some(rejection),
+        }
+    }
+
+    pub fn gpu_path(&self) -> &'static str {
+        match &self.planning_outcome {
+            QueryGpuPlanningOutcome::Planned(coverage) => match coverage.disposition() {
+                FinalPlanDisposition::Native => "native",
+                FinalPlanDisposition::Mixed => "partial_native",
+                FinalPlanDisposition::DataFusion => "cpu",
+            },
+            QueryGpuPlanningOutcome::Rejected(_) => "rejected",
+        }
+    }
+
     /// Serialize the verdict to a structured JSON shape.
     pub fn to_json(&self) -> Value {
         json!({
-            "overall": self.overall.to_json(),
-            "final_disposition": self.final_disposition.as_str(),
-            "domains": self.domains.to_json(),
+            "planning_outcome": self.planning_outcome.to_json(),
             "candidate_outcomes": self.candidate_outcomes.iter().map(QueryGpuCandidateOutcome::to_json).collect::<Vec<_>>(),
             "cugraph_calls": self.cugraph_calls.iter().map(QueryGpuCugraphCall::to_json).collect::<Vec<_>>(),
             "runtime_caveats": self.runtime_caveats.iter().map(QueryGpuRuntimeCaveat::to_json).collect::<Vec<_>>(),
@@ -144,95 +188,6 @@ impl QueryGpuCoverage {
             "physical_plan_root": self.physical_plan_root,
             "physical_plan_shape": self.physical_plan_shape,
         })
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum QueryGpuCoverageOverall {
-    NoCpuInPlannedPath,
-    PartialGpuPlanned {
-        gpu_fragments: usize,
-        cpu_boundaries: usize,
-    },
-    CpuOnly,
-    Rejected {
-        phase: QueryGpuRejectionPhase,
-        reason_code: String,
-        /// A planning-only rejection has no execution attempt and therefore
-        /// cannot expose a sealed retry decision.
-        retry_advice: QueryGpuRetryAdviceAvailability,
-        /// Coarse source status remains diagnostic context only.
-        source_error_status: Option<String>,
-        detail: String,
-    },
-}
-
-/// Whether a public surface can truthfully expose sealed attempt retry advice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QueryGpuRetryAdviceAvailability {
-    NoSealedAttemptReport,
-}
-
-impl QueryGpuRetryAdviceAvailability {
-    pub const fn availability(self) -> &'static str {
-        match self {
-            Self::NoSealedAttemptReport => "unavailable",
-        }
-    }
-
-    pub const fn reason(self) -> &'static str {
-        match self {
-            Self::NoSealedAttemptReport => "no_sealed_attempt_report",
-        }
-    }
-}
-
-impl QueryGpuCoverageOverall {
-    pub const fn as_str(&self) -> &'static str {
-        match self {
-            Self::NoCpuInPlannedPath => "no_cpu_in_planned_path",
-            Self::PartialGpuPlanned { .. } => "partial_gpu_planned",
-            Self::CpuOnly => "cpu_only",
-            Self::Rejected { .. } => "rejected",
-        }
-    }
-
-    /// Stable, user-facing execution-path vocabulary shared by the UDTF and
-    /// `EXPLAIN GPU` projection.
-    pub const fn as_gpu_path(&self) -> &'static str {
-        match self {
-            Self::NoCpuInPlannedPath => "native",
-            Self::PartialGpuPlanned { .. } => "partial_native",
-            Self::CpuOnly => "cpu",
-            Self::Rejected { .. } => "rejected",
-        }
-    }
-
-    fn to_json(&self) -> Value {
-        match self {
-            Self::NoCpuInPlannedPath => json!({
-                "verdict": self.as_str(),
-                "message": "No DataFusion CPU execution is present in the planned physical path inspected.",
-                "runtime_gpu_admission_unknown": true,
-            }),
-            Self::PartialGpuPlanned { gpu_fragments, cpu_boundaries } => json!({
-                "verdict": self.as_str(),
-                "gpu_fragments": gpu_fragments,
-                "cpu_boundaries": cpu_boundaries,
-            }),
-            Self::CpuOnly => json!({ "verdict": self.as_str() }),
-            Self::Rejected { phase, reason_code, retry_advice, source_error_status, detail } => json!({
-                "verdict": self.as_str(),
-                "phase": phase.as_str(),
-                "reason_code": reason_code,
-                "retry_advice": {
-                    "availability": retry_advice.availability(),
-                    "reason": retry_advice.reason(),
-                },
-                "source_error_status": source_error_status,
-                "detail": detail,
-            }),
-        }
     }
 }
 
@@ -253,46 +208,6 @@ impl QueryGpuRejectionPhase {
             Self::PhysicalPlanning => "physical_planning",
             Self::PlanningIo => "planning_io",
             Self::NativeLowering => "native_lowering",
-        }
-    }
-}
-
-/// Final-plan execution domains derived from the shared observation walk.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct QueryGpuCoverageDomains {
-    pub native_fragment_count: usize,
-    pub explicit_gpu_island_count: usize,
-    pub datafusion_boundary_count: usize,
-    pub host_materialization_count: usize,
-}
-
-impl QueryGpuCoverageDomains {
-    fn to_json(self) -> Value {
-        json!({
-            "native_fragment_count": self.native_fragment_count,
-            "explicit_gpu_island_count": self.explicit_gpu_island_count,
-            "datafusion_boundary_count": self.datafusion_boundary_count,
-            "host_materialization_count": self.host_materialization_count,
-        })
-    }
-}
-
-/// Selection class for a candidate retained in coverage diagnostics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum QueryGpuCandidateSelectionOutcome {
-    Selected,
-    Deferred,
-    NotSupported,
-    NotSelectedByCost,
-}
-
-impl QueryGpuCandidateSelectionOutcome {
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Selected => "selected",
-            Self::Deferred => "deferred",
-            Self::NotSupported => "not_supported",
-            Self::NotSelectedByCost => "not_selected_by_cost",
         }
     }
 }
@@ -324,7 +239,7 @@ impl QueryGpuCandidateReasonKind {
 /// Candidate selection diagnostic retained independently from final coverage.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueryGpuCandidateOutcome {
-    pub selection: QueryGpuCandidateSelectionOutcome,
+    pub selection: CandidateOutcomeKind,
     /// Stable family derived from the native candidate shape.
     pub candidate_family: String,
     /// Present only when a capability or cost decision has a stable reason.

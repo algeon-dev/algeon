@@ -3,6 +3,12 @@
 //! This module answers the developer-facing planning question: whether the
 //! optimized physical path contains known DataFusion CPU execution. It is a
 //! plan-time validation surface, not a runtime admission or success guarantee.
+//!
+//! Each validation produces one [`QueryGpuPlanningOutcome`]: either a planned
+//! [`FinalPlanCoverage`] describing the single completed executable plan, or
+//! a typed rejection recording where planning failed. Candidate diagnostics
+//! stay per-candidate under [`crate::report::CandidateOutcome`]; attempt
+//! termination stays runtime-owned under [`crate::attempt`].
 
 mod explain_gpu;
 mod model;
@@ -22,10 +28,9 @@ use futures::future::BoxFuture;
 pub use self::{
     explain_gpu::{ExplainGpuOutputMode, ExplainGpuStatement, parse_explain_gpu},
     model::{
-        QueryGpuCandidateOutcome, QueryGpuCandidateReasonKind, QueryGpuCandidateSelectionOutcome, QueryGpuCoverage,
-        QueryGpuCoverageConfidence, QueryGpuCoverageDomains, QueryGpuCoverageOverall, QueryGpuCugraphCall,
-        QueryGpuRejectionPhase, QueryGpuRemedy, QueryGpuRemedyKind, QueryGpuRetryAdviceAvailability,
-        QueryGpuRuntimeCaveat, QueryGpuValidatedUnder,
+        QueryGpuCandidateOutcome, QueryGpuCandidateReasonKind, QueryGpuCoverage, QueryGpuCoverageConfidence,
+        QueryGpuCugraphCall, QueryGpuPlanningOutcome, QueryGpuPlanningRejection, QueryGpuRejectionPhase,
+        QueryGpuRemedy, QueryGpuRemedyKind, QueryGpuRuntimeCaveat, QueryGpuValidatedUnder,
     },
 };
 use self::{
@@ -39,11 +44,12 @@ use crate::{
     final_plan_observation::observe_final_plan, planner::NexusNativePhysicalOptimizerRule,
     session::NexusSessionStateBuilderExt,
 };
+pub use crate::{planner::FinalPlanCoverage, report::CandidateOutcomeKind};
 
 /// SQL table function that exposes query GPU coverage validation.
 pub const NEXUS_EXPLAIN_COVERAGE_FUNCTION: &str = "nexus_explain_coverage";
 /// Version of the shared multi-row UDTF and `EXPLAIN GPU` output schema.
-pub const EXPLAIN_GPU_SCHEMA_VERSION: u8 = 1;
+pub const EXPLAIN_GPU_SCHEMA_VERSION: u8 = 2;
 pub(crate) const COVERAGE_VALIDATOR_RECURSION_REASON_CODE: &str = "coverage_validator_recursion_unsupported";
 pub(crate) const GPU_COVERAGE_REJECTION_REASON_FACT: &str = "gpu_coverage_rejection_reason";
 
@@ -57,8 +63,8 @@ pub(crate) use self::preflight::{coverage_validator_recursion_error, gpu_coverag
 /// caller with no native rule remains on its DataFusion CPU baseline.
 ///
 /// Candidate outcomes are retained as optimizer diagnostics, not an alternative
-/// verdict. They can be non-empty even when the final optimized plan has
-/// [`QueryGpuCoverageOverall::NoCpuInPlannedPath`].
+/// verdict. One report can hold several decision kinds at once; they never
+/// re-derive the completed plan's disposition.
 ///
 /// `validated_under.catalog_snapshot` is a constant label for the cloned
 /// planning state, not a catalog or table-state fingerprint. Do not compare

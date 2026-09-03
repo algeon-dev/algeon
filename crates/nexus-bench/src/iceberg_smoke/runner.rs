@@ -531,9 +531,9 @@ pub(crate) fn query_error_report_row(
         aggregate_scan_diagnostics(&records),
         None,
         Some("query_error".to_string()),
-        FinalPlanDisposition::Rejected,
         None,
         aggregate_staging_summary(&records),
+        None,
         credential_source,
     );
     row.parity_status = ParityStatus::NativeRejected;
@@ -602,18 +602,18 @@ pub(crate) async fn run_query_with_registered_native_tables(
             .and_then(CapabilityReason::from_code)
             .map(|reason| reason.code().to_string()),
         planning_row.final_disposition,
-        None,
         staging_summary,
+        None,
         credential_source,
     );
 
-    let should_execute_native = planning_row.outcome == Some(NativeDataFusionPlanningOutcome::Selected)
-        && planning_row.final_disposition == FinalPlanDisposition::Native;
+    let should_execute_native = planning_row.outcome == Some(CandidateOutcomeKind::Selected)
+        && planning_row.final_disposition == Some(FinalPlanDisposition::Native);
     eprintln!(
         "[native_iceberg_smoke_report] stage=query_planning_finish query_id={} native_planning_outcome={} final_disposition={} planned_data_file_count={} native_source_read_capability={}",
         row.query_id,
-        row.native_planning_outcome.map_or("none", NativeDataFusionPlanningOutcome::as_str),
-        row.final_disposition.as_str(),
+        row.native_planning_outcome.map_or("none", CandidateOutcomeKind::as_str),
+        row.final_disposition.map_or("none", FinalPlanDisposition::as_str),
         row.diagnostics.planned_data_file_count,
         empty_as_none(&row.diagnostics.native_source_read_capability),
     );
@@ -844,12 +844,12 @@ fn log_native_plan_debug_row(
         stable_tsv_field(&planning_row.physical_shape),
         stable_tsv_field(planning_row.native_candidate_shape.as_deref().unwrap_or("none")),
         stable_tsv_field(planning_row.native_candidate_shape_family.as_deref().unwrap_or("none")),
-        planning_row.outcome.map_or("none", NativeDataFusionPlanningOutcome::as_str),
+        planning_row.outcome.map_or("none", CandidateOutcomeKind::as_str),
         stable_tsv_field(planning_row.reason_code.as_deref().unwrap_or("none")),
         stable_tsv_field(&planning_row.post_native_plan_root),
-        planning_row.final_disposition.as_str(),
-        planning_row.native_plan_fragment_count,
-        planning_row.host_datafusion_boundary_count,
+        planning_row.final_disposition.map_or("none", FinalPlanDisposition::as_str),
+        planning_row.native_plan_fragment_count.map_or_else(|| "none".to_string(), |c| c.to_string()),
+        planning_row.host_datafusion_boundary_count.map_or_else(|| "none".to_string(), |c| c.to_string()),
     );
     eprintln!(
         "[native_iceberg_smoke_report] stage=post_native_plan query_id={}\n{}",

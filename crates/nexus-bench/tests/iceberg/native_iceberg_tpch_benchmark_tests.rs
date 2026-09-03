@@ -7,7 +7,7 @@ use arrow::{
 };
 use datafusion_nexus::{
     native_report::{
-        FinalPlanDisposition, NativeDataFusionPlanningOutcome, NativeDataFusionRuntimeOutcome,
+        CandidateOutcomeKind, FinalPlanDisposition, NativeDataFusionRuntimeOutcome,
         bench_support::{ParityComparisonMode, ParityStatus},
     },
     planner::NexusNativeOptimizerConfig,
@@ -275,11 +275,11 @@ fn benchmark_report_tsv_exposes_runtime_timing_and_parity_fields() {
         "tpch_sf1_all_tables".to_string(),
         "select 1".to_string(),
         plan.diagnostics(),
-        Some(NativeDataFusionPlanningOutcome::Selected),
+        Some(CandidateOutcomeKind::Selected),
         None,
-        FinalPlanDisposition::Native,
-        None,
+        Some(FinalPlanDisposition::Native),
         ObjectStoreStagingSummary::new(ObjectStoreStagingMode::Auto, ObjectStoreStagingStatus::StagedLocal),
+        None,
         "aws_profile_env".to_string(),
     );
     smoke_row.native_runtime_started = true;
@@ -537,11 +537,11 @@ fn staged_s3_matched_row(query_id: &str) -> IcebergTpchBenchmarkRow {
         "tpch_sf1_all_tables".to_string(),
         "select 1".to_string(),
         plan.diagnostics(),
-        Some(NativeDataFusionPlanningOutcome::Selected),
+        Some(CandidateOutcomeKind::Selected),
         None,
-        FinalPlanDisposition::Native,
-        None,
+        Some(FinalPlanDisposition::Native),
         staging_summary,
+        None,
         "aws_profile_env".to_string(),
     );
     smoke_row.native_runtime_started = true;
