@@ -21,7 +21,10 @@ use arrow::{
 use datafusion::{datasource::MemTable, execution::SessionStateBuilder, prelude::SessionContext};
 use datafusion_nexus::{
     attempt::AttemptOptions,
-    backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile, NexusGpuQueuePolicy},
+    backend::{
+        GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig,
+        NexusGpuDeviceInstallationBounds, NexusGpuDeviceProfile, NexusGpuQueuePolicy,
+    },
     error::DataFusionErrorExt,
     native_exec::NexusNativeExecutionConfig,
 };
@@ -1015,8 +1018,8 @@ pub(super) fn build_backend(profile: &RunProfile) -> ToolResult<NexusGpuBackend>
         // silently falling back.
         .with_no_datafusion_cpu_requirement()
         .queue_policy(queue)
-        .device_profiles(profile.backend.device_profiles.iter().map(|device| {
-            NexusGpuDeviceProfile::new(device.ordinal)
+        .devices(profile.backend.device_profiles.iter().map(|device| {
+            let p = NexusGpuDeviceProfile::new(device.ordinal)
                 .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: device.memory_limit_bytes })
                 .with_backend_reserve_bytes(device.backend_reserve_bytes)
                 .with_cache_cap_bytes(device.cache_cap_bytes)
@@ -1024,22 +1027,18 @@ pub(super) fn build_backend(profile: &RunProfile) -> ToolResult<NexusGpuBackend>
                 .with_source_work_per_attempt(device.source_work_per_attempt)
                 .with_max_active_attempts(device.max_active_attempts)
                 .with_telemetry(device.install_telemetry)
-                .with_installation_bounds(
+                .with_installation_bounds(NexusGpuDeviceInstallationBounds::new(
                     device.installation.stream_pool_size,
                     device.installation.worker_count,
                     device.installation.lane_count,
-                )
-        }))
-        .device_memory_ownership(profile.backend.device_profiles.iter().map(|device| {
-            (
-                device.ordinal,
-                match device.ownership {
-                    DeviceOwnership::WholeDeviceExclusive => GpuMemoryOwnership::WholeDeviceExclusive,
-                    DeviceOwnership::StaticPartition { allocation_limit_bytes } => {
-                        GpuMemoryOwnership::StaticPartition { allocation_limit_bytes }
-                    },
+                ));
+            let ownership = match device.ownership {
+                DeviceOwnership::WholeDeviceExclusive => GpuMemoryOwnership::WholeDeviceExclusive,
+                DeviceOwnership::StaticPartition { allocation_limit_bytes } => {
+                    GpuMemoryOwnership::StaticPartition { allocation_limit_bytes }
                 },
-            )
+            };
+            NexusGpuDeviceConfig::new(p, ownership)
         }))
         // The engine's device-config rejection carries the field and reason;
         // flattening the source chain keeps that actionable instead of leaving

@@ -24,15 +24,18 @@
 //! use datafusion::{execution::SessionStateBuilder, prelude::SessionContext};
 //! use datafusion_nexus::{
 //!     attempt::AttemptOptions,
-//!     backend::{GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile},
+//!     backend::{
+//!         GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceProfile,
+//!     },
 //! };
 //! use futures::TryStreamExt;
 //!
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
-//! let backend = NexusGpuBackend::builder()
-//!     .device_profiles([NexusGpuDeviceProfile::new(0)])
-//!     .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
-//!     .build()?;
+//! let device = NexusGpuDeviceConfig::new(
+//!     NexusGpuDeviceProfile::new(0),
+//!     GpuMemoryOwnership::WholeDeviceExclusive,
+//! );
+//! let backend = NexusGpuBackend::builder().devices([device]).build()?;
 //! let state = backend.install_on(SessionStateBuilder::new_with_default_features())?.build();
 //! let ctx = SessionContext::new_with_state(state);
 //!

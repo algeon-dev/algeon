@@ -22,7 +22,7 @@ use std::{
     fmt,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -176,12 +176,8 @@ impl GraphExecutionServices {
         self.bfs_singleflight.snapshot()
     }
 
-    pub(crate) fn set_bfs_singleflight_enabled(&self, enabled: bool) {
-        self.bfs_singleflight.set_enabled(enabled);
-    }
-
     pub(crate) fn bfs_singleflight_enabled(&self) -> bool {
-        self.bfs_singleflight.is_enabled()
+        true
     }
 }
 
@@ -259,19 +255,10 @@ impl GraphBfsSingleflight {
         Self {
             inner: Arc::new(SingleflightInner {
                 max_batch_width,
-                enabled: AtomicBool::new(true),
                 state: Mutex::new(SingleflightState::default()),
                 counters: SingleflightCounters::default(),
             }),
         }
-    }
-
-    pub(crate) fn set_enabled(&self, enabled: bool) {
-        self.inner.enabled.store(enabled, Ordering::Release);
-    }
-
-    pub(crate) fn is_enabled(&self) -> bool {
-        self.inner.enabled.load(Ordering::Acquire)
     }
 
     #[cfg(test)]
@@ -474,7 +461,6 @@ impl GraphBfsSingleflight {
 #[derive(Debug)]
 struct SingleflightInner {
     max_batch_width: usize,
-    enabled: AtomicBool,
     state: Mutex<SingleflightState>,
     counters: SingleflightCounters,
 }

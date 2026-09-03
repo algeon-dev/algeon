@@ -1,7 +1,10 @@
 use std::time::Duration;
 
 use datafusion_nexus::{
-    backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile},
+    backend::{
+        GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig,
+        NexusGpuDeviceInstallationBounds, NexusGpuDeviceProfile,
+    },
     native_exec::NexusNativeExecutionConfig,
 };
 
@@ -13,7 +16,7 @@ fn device_profile(device_ordinal: usize) -> NexusGpuDeviceProfile {
     NexusGpuDeviceProfile::new(device_ordinal)
         .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: BACKEND_MEMORY_LIMIT_BYTES })
         .with_max_active_attempts(1)
-        .with_installation_bounds(3, 1, 1)
+        .with_installation_bounds(NexusGpuDeviceInstallationBounds::new(3, 1, 1))
 }
 
 #[test]
@@ -22,7 +25,8 @@ fn public_backend_startup_records_capture_four_device_identities() {
     let device_count = cudf::DeviceId::count().expect("CUDA device enumeration succeeds");
     assert!(device_count >= REQUIRED_DEVICE_COUNT, "identity coverage requires at least four CUDA devices");
 
-    let device_ordinals = 0..REQUIRED_DEVICE_COUNT;
+    let devices = (0..REQUIRED_DEVICE_COUNT)
+        .map(|ordinal| NexusGpuDeviceConfig::new(device_profile(ordinal), GpuMemoryOwnership::WholeDeviceExclusive));
     let backend = NexusGpuBackend::builder()
         .with_native_execution_config(NexusNativeExecutionConfig::bounded(
             ATTEMPT_MEMORY_LIMIT_BYTES,
@@ -31,10 +35,7 @@ fn public_backend_startup_records_capture_four_device_identities() {
             3,
             1,
         ))
-        .device_profiles(device_ordinals.clone().map(device_profile))
-        .device_memory_ownership(
-            device_ordinals.clone().map(|ordinal| (ordinal, GpuMemoryOwnership::WholeDeviceExclusive)),
-        )
+        .devices(devices)
         .build()
         .expect("public backend builds across the qualifying devices");
 

@@ -338,7 +338,7 @@ async fn backend_clone_installed_sessions_share_identity_queue_and_worker_pool_r
     assert_eq!(first_worker_pools.len(), 1);
     assert!(first_worker_pools[0].pool_id > 0);
     assert_eq!(first_worker_pools[0].pool_id, second_worker_pools[0].pool_id);
-    assert_eq!(first_worker_pools[0].device_ordinal, backend.device_ordinals()[0]);
+    assert_eq!(first_worker_pools[0].device_ordinal, backend.devices()[0].device_ordinal());
     assert_eq!(first_worker_pools[0].worker_count, 1);
 
     let dir = tempfile::Builder::new().prefix("datafusion-nexus-cloned-session-backend-").tempdir().unwrap();

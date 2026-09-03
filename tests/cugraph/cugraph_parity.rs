@@ -28,7 +28,7 @@ use datafusion::{
     prelude::{CsvReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    backend::{GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile},
+    backend::{GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceProfile},
     cugraph_sql::{
         CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, CugraphSqlConfig,
         parity::{
@@ -299,11 +299,8 @@ fn parity_session() -> (NexusGpuBackend, SessionContext) {
         .with_repartition_file_scans(false)
         .with_repartition_aggregations(false)
         .with_repartition_sorts(false);
-    let backend = NexusGpuBackend::builder()
-        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
-        .device_profiles([NexusGpuDeviceProfile::new(0)])
-        .build()
-        .expect("parity backend must build");
+    let device = NexusGpuDeviceConfig::new(NexusGpuDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive);
+    let backend = NexusGpuBackend::builder().devices([device]).build().expect("parity backend must build");
     let state = backend
         .install_on_with_cugraph_sql(
             SessionStateBuilder::new().with_config(config).with_default_features(),

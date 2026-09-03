@@ -77,14 +77,13 @@ pub use session::{build_session_config, build_session_context, build_session_con
 
 /// Build the server's bounded query-service backend from a validated config.
 pub fn backend_from_server_config(config: &ServerConfig) -> Result<NexusGpuBackend> {
-    config.validate_gpu_device_profiles()?;
-    NexusGpuBackend::from_optimizer_config_for_admission(
-        config.native_optimizer_config.clone(),
-        config.gpu_device_profiles.clone(),
-        config.gpu_memory_ownership.clone(),
-        admission::server_queue_policy(config),
-    )
-    .map_err(|error| ServerError::session("failed to initialize query service admission", error))
+    let devices = config.resolve_gpu_devices()?;
+    NexusGpuBackend::builder()
+        .with_optimizer_config(config.native_optimizer_config.clone())
+        .devices(devices)
+        .queue_policy(admission::server_queue_policy(config))
+        .build()
+        .map_err(|error| ServerError::session("failed to initialize query service admission", error))
 }
 
 /// Flight SQL server shutdown source.
@@ -582,7 +581,7 @@ fn validate_test_validation_projection_matches_config(
     config: &ServerConfig,
 ) -> Result<()> {
     validate_injected_queue_policy(backend.queue_policy(), config)?;
-    validate_test_profile_projection(backend.device_profiles(), backend.device_memory_ownership(), config)
+    validate_test_profile_projection(backend.devices(), config)
 }
 
 fn validate_injected_queue_policy(injected: &crate::backend::NexusGpuQueuePolicy, config: &ServerConfig) -> Result<()> {
@@ -720,23 +719,22 @@ fn validate_injected_startup_profiles(
 
 #[cfg(test)]
 fn validate_test_profile_projection(
-    backend_profiles: &[crate::backend::NexusGpuDeviceProfile],
-    backend_ownership: &[(usize, crate::backend::GpuMemoryOwnership)],
+    backend_devices: &[crate::backend::NexusGpuDeviceConfig],
     config: &ServerConfig,
 ) -> Result<()> {
     let configured_profiles = configured_profile_map(config)?;
     let configured_ownership = configured_ownership_map(config)?;
-    if backend_profiles.len() != configured_profiles.len() {
+    if backend_devices.len() != configured_profiles.len() {
         return Err(ServerError::builder_conflict(
             "server_backend_admission_conflict",
             "admission.device_profiles",
             configured_profiles.len(),
-            backend_profiles.len(),
+            backend_devices.len(),
         ));
     }
-    let backend_ownership = backend_ownership.iter().copied().collect::<std::collections::BTreeMap<_, _>>();
-    for profile in backend_profiles {
-        let ordinal = profile.device_ordinal();
+    for device in backend_devices {
+        let ordinal = device.device_ordinal();
+        let profile = device.profile();
         let expected = configured_profiles.get(&ordinal).ok_or_else(|| {
             ServerError::builder_conflict(
                 "server_backend_admission_conflict",
@@ -800,13 +798,7 @@ fn validate_test_profile_projection(
             )
             .with_fact("device_ordinal", ordinal)
         })?;
-        let actual_ownership = backend_ownership.get(&ordinal).ok_or_else(|| {
-            ServerError::builder_validation(
-                "server_backend_admission_conflict",
-                "test backend has no deployment ownership declaration for a device profile",
-            )
-            .with_fact("device_ordinal", ordinal)
-        })?;
+        let actual_ownership = device.memory_ownership();
         compare_profile_field(
             ordinal,
             "gpu_memory_ownership",

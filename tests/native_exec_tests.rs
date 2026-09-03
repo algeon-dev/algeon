@@ -34,7 +34,7 @@ use datafusion::{
     },
 };
 use datafusion_nexus::{
-    backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile},
+    backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceProfile},
     capability::CapabilityReason,
     error::{DataFusionErrorExt, ErrorCode},
     native::lower_physical_plan_to_native_for_test,
@@ -81,6 +81,9 @@ use support::*;
 fn test_gpu_backend() -> &'static NexusGpuBackend {
     static BACKEND: OnceLock<NexusGpuBackend> = OnceLock::new();
     BACKEND.get_or_init(|| {
+        let profile = NexusGpuDeviceProfile::new(0)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 });
+        let device = NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
         NexusGpuBackend::builder()
             .with_native_execution_config(NexusNativeExecutionConfig::bounded(
                 256 * 1024 * 1024,
@@ -89,9 +92,7 @@ fn test_gpu_backend() -> &'static NexusGpuBackend {
                 3,
                 1,
             ))
-            .device_profiles([NexusGpuDeviceProfile::new(0)
-                .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })])
-            .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+            .devices([device])
             .build()
             .expect("native execution tests require a backend-owned GPU")
     })

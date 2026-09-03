@@ -9,7 +9,10 @@ use arrow::{array::Int32Array, record_batch::RecordBatch};
 use datafusion::prelude::SessionContext;
 use datafusion_nexus::{
     attempt::{AttemptDisposition, AttemptOptions, QueryAttemptReport},
-    backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile},
+    backend::{
+        GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig,
+        NexusGpuDeviceInstallationBounds, NexusGpuDeviceProfile,
+    },
     native_exec::NexusNativeExecutionConfig,
 };
 use futures::StreamExt;
@@ -33,6 +36,11 @@ async fn main() -> ExitCode {
 }
 
 async fn run() -> anyhow::Result<()> {
+    let profile = NexusGpuDeviceProfile::new(0)
+        .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: DEVICE_MEMORY_LIMIT_BYTES })
+        .with_max_active_attempts(2)
+        .with_installation_bounds(NexusGpuDeviceInstallationBounds::new(8, 2, 2));
+    let device = NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
     let backend = NexusGpuBackend::builder()
         .with_native_execution_config(NexusNativeExecutionConfig::bounded(
             ATTEMPT_MEMORY_LIMIT_BYTES,
@@ -41,11 +49,7 @@ async fn run() -> anyhow::Result<()> {
             3,
             1,
         ))
-        .device_profiles([NexusGpuDeviceProfile::new(0)
-            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: DEVICE_MEMORY_LIMIT_BYTES })
-            .with_max_active_attempts(2)
-            .with_installation_bounds(8, 2, 2)])
-        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+        .devices([device])
         .build()
         .map_err(|error| anyhow!("no usable CUDA device 0 for this example: {error}"))?;
 

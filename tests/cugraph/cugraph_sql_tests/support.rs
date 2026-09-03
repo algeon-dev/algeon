@@ -108,11 +108,11 @@ fn append_plan_metrics(
 }
 
 pub(super) fn backend_cugraph_sql_context(builder: SessionStateBuilder) -> (NexusGpuBackend, SessionContext) {
-    let backend = NexusGpuBackend::builder()
-        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
-        .device_profiles([datafusion_nexus::backend::NexusGpuDeviceProfile::new(0)])
-        .build()
-        .unwrap();
+    let device = NexusGpuDeviceConfig::new(
+        datafusion_nexus::backend::NexusGpuDeviceProfile::new(0),
+        GpuMemoryOwnership::WholeDeviceExclusive,
+    );
+    let backend = NexusGpuBackend::builder().devices([device]).build().unwrap();
     let state = backend.install_on_with_cugraph_sql(builder, CugraphSqlConfig::default()).unwrap().build();
     (backend, SessionContext::new_with_state(state))
 }

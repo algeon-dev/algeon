@@ -2,11 +2,7 @@
 
 #[cfg(any(test, feature = "test-support"))]
 use std::sync::{Mutex, MutexGuard};
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    sync::Arc,
-    time::Duration,
-};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
 use datafusion::{
     common::DataFusionError,
@@ -55,10 +51,34 @@ pub struct NexusGpuBackend {
     core: GpuBackendCore,
     session: GpuBackendSession,
     optimizer_config: NexusNativeOptimizerConfig,
-    device_ordinals: Vec<usize>,
-    device_profiles: Vec<NexusGpuDeviceProfile>,
-    device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
+    devices: Vec<NexusGpuDeviceConfig>,
     queue_policy: NexusGpuQueuePolicy,
+}
+
+/// Concrete device declaration binding a device-local resource profile to an
+/// explicit process-scoped GPU memory ownership promise.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NexusGpuDeviceConfig {
+    profile: NexusGpuDeviceProfile,
+    memory_ownership: GpuMemoryOwnership,
+}
+
+impl NexusGpuDeviceConfig {
+    pub fn new(profile: NexusGpuDeviceProfile, memory_ownership: GpuMemoryOwnership) -> Self {
+        Self { profile, memory_ownership }
+    }
+
+    pub fn profile(&self) -> &NexusGpuDeviceProfile {
+        &self.profile
+    }
+
+    pub fn memory_ownership(&self) -> GpuMemoryOwnership {
+        self.memory_ownership
+    }
+
+    pub fn device_ordinal(&self) -> usize {
+        self.profile.device_ordinal()
+    }
 }
 
 /// Explicit immutable resource envelope for one CUDA device.
@@ -157,9 +177,8 @@ impl NexusGpuDeviceProfile {
         self
     }
 
-    pub fn with_installation_bounds(mut self, stream_pool_size: usize, worker_count: usize, lane_count: usize) -> Self {
-        self.installation_bounds =
-            Some(NexusGpuDeviceInstallationBounds::new(stream_pool_size, worker_count, lane_count));
+    pub fn with_installation_bounds(mut self, bounds: NexusGpuDeviceInstallationBounds) -> Self {
+        self.installation_bounds = Some(bounds);
         self
     }
 
@@ -298,27 +317,12 @@ impl Default for NexusGpuQueuePolicy {
 }
 
 /// Builder for [`NexusGpuBackend`].
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct NexusGpuBackendBuilder {
-    native_execution_config: NexusNativeExecutionConfig,
-    device_profiles: Vec<NexusGpuDeviceProfile>,
-    device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
+    optimizer_config: NexusNativeOptimizerConfig,
+    devices: Vec<NexusGpuDeviceConfig>,
     queue_policy: NexusGpuQueuePolicy,
-    final_plan_requirements: Vec<FinalPlanRequirement>,
     attempt_completion_queue_capacity: Option<usize>,
-}
-
-impl Default for NexusGpuBackendBuilder {
-    fn default() -> Self {
-        Self {
-            native_execution_config: NexusNativeExecutionConfig::bounded_default(),
-            device_profiles: Vec::new(),
-            device_memory_ownership: Vec::new(),
-            queue_policy: NexusGpuQueuePolicy::default(),
-            final_plan_requirements: Vec::new(),
-            attempt_completion_queue_capacity: None,
-        }
-    }
 }
 
 impl NexusGpuBackend {
@@ -597,59 +601,25 @@ impl NexusGpuBackend {
         self.optimizer_config.native_execution_config().graph_bfs_singleflight_snapshot()
     }
 
-    /// Enables or disables exact-request BFS coalescing for subsequent executions.
-    #[cfg(feature = "cugraph")]
-    pub fn set_cugraph_bfs_singleflight_enabled(&self, enabled: bool) {
-        self.optimizer_config.native_execution_config().set_graph_bfs_singleflight_enabled(enabled);
-    }
-
-    pub fn device_ordinals(&self) -> &[usize] {
-        &self.device_ordinals
-    }
-
-    /// Immutable root profiles requested for every selected device.  Runtime
-    /// discovery resolves automatic capacity values separately for each
-    /// ordinal; use [`Self::device_startup_records`] for those frozen facts.
-    pub fn device_profiles(&self) -> &[NexusGpuDeviceProfile] {
-        &self.device_profiles
-    }
-
-    /// Exact deployment ownership declaration for every selected device.
-    pub fn device_memory_ownership(&self) -> &[(usize, GpuMemoryOwnership)] {
-        &self.device_memory_ownership
-    }
-
-    pub fn from_optimizer_config_for_admission(
-        optimizer_config: NexusNativeOptimizerConfig,
-        device_profiles: Vec<NexusGpuDeviceProfile>,
-        device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
-        queue_policy: NexusGpuQueuePolicy,
-    ) -> Result<Self> {
-        Self::build_bounded(optimizer_config, device_profiles, device_memory_ownership, queue_policy, None)
+    pub fn devices(&self) -> &[NexusGpuDeviceConfig] {
+        &self.devices
     }
 
     fn build_bounded(
         optimizer_config: NexusNativeOptimizerConfig,
-        configured_profiles: Vec<NexusGpuDeviceProfile>,
-        device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
+        configured_devices: Vec<NexusGpuDeviceConfig>,
         queue_policy: NexusGpuQueuePolicy,
         attempt_completion_queue_capacity: Option<usize>,
     ) -> Result<Self> {
-        let device_profiles = resolve_device_profiles(configured_profiles)?;
-        let device_ordinals = device_profiles.iter().map(NexusGpuDeviceProfile::device_ordinal).collect::<Vec<_>>();
-        let ownership_by_ordinal = validate_device_memory_ownership(&device_ordinals, &device_memory_ownership)?;
-        let device_memory_ownership =
-            ownership_by_ordinal.iter().map(|(&ordinal, &ownership)| (ordinal, ownership)).collect();
+        let devices = resolve_device_configs(configured_devices)?;
         validate_queue_policy(&queue_policy)?;
         let execution_config = optimizer_config.native_execution_config().clone();
         let service_config = backend_query_execution_config(&execution_config)?;
         let queue_bounds = backend_queue_bounds(&queue_policy);
         let controller = GpuBackendControllerDraft::new(service_config, queue_bounds);
-        let devices = device_profiles
-            .iter()
-            .map(|profile| profile.engine_config(ownership_by_ordinal[&profile.device_ordinal()]))
-            .collect::<Vec<_>>();
-        let draft = GpuBackendCoreDraft::new(devices, controller, nongds_deployment());
+        let engine_devices =
+            devices.iter().map(|device| device.profile().engine_config(device.memory_ownership())).collect::<Vec<_>>();
+        let draft = GpuBackendCoreDraft::new(engine_devices, controller, nongds_deployment());
         let draft = match attempt_completion_queue_capacity {
             Some(capacity) => draft.with_attempt_completion_queue_capacity(capacity),
             None => draft,
@@ -675,15 +645,7 @@ impl NexusGpuBackend {
         let execution_config = execution_config
             .with_query_admission_source(QueryAdmissionSource::new(session.clone(), max_device_total_memory_bytes));
         let optimizer_config = optimizer_config.with_native_execution_config(execution_config);
-        Ok(NexusGpuBackend {
-            core,
-            session,
-            optimizer_config,
-            device_ordinals,
-            device_profiles,
-            device_memory_ownership,
-            queue_policy,
-        })
+        Ok(NexusGpuBackend { core, session, optimizer_config, devices, queue_policy })
     }
 }
 
@@ -732,9 +694,7 @@ pub struct TestBackendValidationProjection {
     query_execution_config: QueryExecutionConfig,
     queue_policy: NexusGpuQueuePolicy,
     optimizer_config: NexusNativeOptimizerConfig,
-    device_ordinals: Vec<usize>,
-    device_profiles: Vec<NexusGpuDeviceProfile>,
-    device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
+    devices: Vec<NexusGpuDeviceConfig>,
 }
 
 #[cfg(any(test, feature = "test-support"))]
@@ -751,16 +711,8 @@ impl TestBackendValidationProjection {
         &self.optimizer_config
     }
 
-    pub fn device_ordinals(&self) -> &[usize] {
-        &self.device_ordinals
-    }
-
-    pub fn device_profiles(&self) -> &[NexusGpuDeviceProfile] {
-        &self.device_profiles
-    }
-
-    pub fn device_memory_ownership(&self) -> &[(usize, GpuMemoryOwnership)] {
-        &self.device_memory_ownership
+    pub fn devices(&self) -> &[NexusGpuDeviceConfig] {
+        &self.devices
     }
 
     pub fn install_on(&self, builder: SessionStateBuilder) -> Result<SessionStateBuilder> {
@@ -820,11 +772,10 @@ impl InstalledTestGpuBackend {
         static SERIAL: Mutex<()> = Mutex::new(());
 
         let serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let device_ordinal = device_profile.device_ordinal();
+        let device = NexusGpuDeviceConfig::new(device_profile, GpuMemoryOwnership::WholeDeviceExclusive);
         let mut builder = NexusGpuBackend::builder()
             .with_native_execution_config(native_execution_config)
-            .device_profiles([device_profile])
-            .device_memory_ownership([(device_ordinal, GpuMemoryOwnership::WholeDeviceExclusive)])
+            .devices([device])
             .queue_policy(queue_policy);
         for requirement in final_plan_requirements {
             builder = builder.with_final_plan_requirement(requirement);
@@ -874,12 +825,8 @@ impl Drop for InstalledTestGpuBackend {
 }
 
 impl NexusGpuBackendBuilder {
-    /// Supplies the complete ordinal-keyed resource profile set.
-    ///
-    /// Every backend requires this input, including a single-device backend:
-    /// profiles are the only selector and source of device-local capacity.
-    pub fn device_profiles(mut self, device_profiles: impl IntoIterator<Item = NexusGpuDeviceProfile>) -> Self {
-        self.device_profiles = device_profiles.into_iter().collect();
+    pub fn with_optimizer_config(mut self, optimizer_config: NexusNativeOptimizerConfig) -> Self {
+        self.optimizer_config = optimizer_config;
         self
     }
 
@@ -892,9 +839,7 @@ impl NexusGpuBackendBuilder {
     /// Require each completed backend-installed physical plan to satisfy this
     /// native execution constraint.
     pub fn with_final_plan_requirement(mut self, requirement: FinalPlanRequirement) -> Self {
-        if !self.final_plan_requirements.contains(&requirement) {
-            self.final_plan_requirements.push(requirement);
-        }
+        self.optimizer_config = self.optimizer_config.with_final_plan_requirement(requirement);
         self
     }
 
@@ -909,18 +854,13 @@ impl NexusGpuBackendBuilder {
     /// selects a device or contributes device capacity; those facts are owned
     /// exclusively by [`NexusGpuDeviceProfile`].
     pub fn with_native_execution_config(mut self, native_execution_config: NexusNativeExecutionConfig) -> Self {
-        self.native_execution_config = native_execution_config;
+        self.optimizer_config = self.optimizer_config.with_native_execution_config(native_execution_config);
         self
     }
 
-    /// Declare deployment ownership for exactly the profiled devices. Missing,
-    /// extra, and duplicate ordinals are rejected before the engine begins
-    /// backend construction.
-    pub fn device_memory_ownership(
-        mut self,
-        device_memory_ownership: impl IntoIterator<Item = (usize, GpuMemoryOwnership)>,
-    ) -> Self {
-        self.device_memory_ownership = device_memory_ownership.into_iter().collect();
+    /// Supplies the complete ordinal-keyed device declaration set.
+    pub fn devices(mut self, devices: impl IntoIterator<Item = NexusGpuDeviceConfig>) -> Self {
+        self.devices = devices.into_iter().collect();
         self
     }
 
@@ -931,56 +871,38 @@ impl NexusGpuBackendBuilder {
     }
 
     pub fn build(self) -> Result<NexusGpuBackend> {
-        self.build_inner()
+        NexusGpuBackend::build_bounded(
+            self.optimizer_config,
+            self.devices,
+            self.queue_policy,
+            self.attempt_completion_queue_capacity,
+        )
     }
 
     #[cfg(any(test, feature = "test-support"))]
     #[doc(hidden)]
     pub fn build_test_validation_projection(self) -> Result<TestBackendValidationProjection> {
-        let optimizer_config = self.final_plan_requirements.into_iter().fold(
-            NexusNativeOptimizerConfig::default().with_native_execution_config(self.native_execution_config),
-            |optimizer_config, requirement| optimizer_config.with_final_plan_requirement(requirement),
-        );
-        build_test_validation_projection(
-            optimizer_config,
-            self.device_profiles,
-            self.device_memory_ownership,
-            self.queue_policy,
-        )
-    }
-
-    fn build_inner(self) -> Result<NexusGpuBackend> {
-        let optimizer_config = self.final_plan_requirements.into_iter().fold(
-            NexusNativeOptimizerConfig::default().with_native_execution_config(self.native_execution_config),
-            |optimizer_config, requirement| optimizer_config.with_final_plan_requirement(requirement),
-        );
-        NexusGpuBackend::build_bounded(
-            optimizer_config,
-            self.device_profiles,
-            self.device_memory_ownership,
-            self.queue_policy,
-            self.attempt_completion_queue_capacity,
-        )
+        build_test_validation_projection(self.optimizer_config, self.devices, self.queue_policy)
     }
 }
 
-fn resolve_device_profiles(configured_profiles: Vec<NexusGpuDeviceProfile>) -> Result<Vec<NexusGpuDeviceProfile>> {
-    if configured_profiles.is_empty() {
+fn resolve_device_configs(configured_devices: Vec<NexusGpuDeviceConfig>) -> Result<Vec<NexusGpuDeviceConfig>> {
+    if configured_devices.is_empty() {
         return Err(invalid_backend_config(
-            "device_profiles",
-            "backend construction requires at least one explicit ordinal-keyed device profile",
+            "devices",
+            "backend construction requires at least one explicit ordinal-keyed device declaration",
         )
-        .with_fact("reason", "missing_device_profiles"));
+        .with_fact("reason", "missing_devices"));
     }
 
     let mut by_ordinal = BTreeMap::new();
-    for profile in configured_profiles {
-        validate_device_profile(&profile)?;
-        let device_ordinal = profile.device_ordinal();
-        if by_ordinal.insert(device_ordinal, profile).is_some() {
+    for device in configured_devices {
+        validate_device_profile(device.profile())?;
+        let device_ordinal = device.device_ordinal();
+        if by_ordinal.insert(device_ordinal, device).is_some() {
             return Err(invalid_backend_config(
-                "device_profiles",
-                "must contain exactly one configured profile for each device ordinal",
+                "devices",
+                "must contain exactly one configured declaration for each device ordinal",
             )
             .with_fact("reason", "duplicate_device")
             .with_fact("device_ordinal", device_ordinal));
@@ -1022,25 +944,18 @@ fn validate_device_profile(profile: &NexusGpuDeviceProfile) -> Result<()> {
 #[cfg(any(test, feature = "test-support"))]
 fn build_test_validation_projection(
     optimizer_config: NexusNativeOptimizerConfig,
-    configured_profiles: Vec<NexusGpuDeviceProfile>,
-    device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
+    configured_devices: Vec<NexusGpuDeviceConfig>,
     queue_policy: NexusGpuQueuePolicy,
 ) -> Result<TestBackendValidationProjection> {
-    let device_profiles = resolve_device_profiles(configured_profiles)?;
-    let device_ordinals = device_profiles.iter().map(NexusGpuDeviceProfile::device_ordinal).collect::<Vec<_>>();
-    let ownership_by_ordinal = validate_device_memory_ownership(&device_ordinals, &device_memory_ownership)?;
-    let device_memory_ownership =
-        ownership_by_ordinal.iter().map(|(&ordinal, &ownership)| (ordinal, ownership)).collect();
+    let devices = resolve_device_configs(configured_devices)?;
     validate_queue_policy(&queue_policy)?;
     let execution_config = optimizer_config.native_execution_config().clone();
     let query_execution_config = backend_query_execution_config(&execution_config)?;
     let queue_bounds = backend_queue_bounds(&queue_policy);
     let controller_draft = GpuBackendControllerDraft::new(query_execution_config.clone(), queue_bounds.clone());
-    let devices = device_profiles
-        .iter()
-        .map(|profile| profile.engine_config(ownership_by_ordinal[&profile.device_ordinal()]))
-        .collect::<Vec<_>>();
-    GpuBackendCoreDraft::new(devices, controller_draft, nongds_deployment()).validate().map_err(|error| {
+    let engine_devices =
+        devices.iter().map(|device| device.profile().engine_config(device.memory_ownership())).collect::<Vec<_>>();
+    GpuBackendCoreDraft::new(engine_devices, controller_draft, nongds_deployment()).validate().map_err(|error| {
         Error::from_native(
             "datafusion_nexus.backend.gpu_core",
             "invalid ownership-enforcing GPU backend core configuration",
@@ -1048,25 +963,7 @@ fn build_test_validation_projection(
         )
     })?;
 
-    Ok(TestBackendValidationProjection {
-        query_execution_config,
-        queue_policy,
-        optimizer_config,
-        device_ordinals,
-        device_profiles,
-        device_memory_ownership,
-    })
-}
-
-#[cfg(any(test, feature = "test-support"))]
-#[doc(hidden)]
-pub fn test_validation_projection_from_optimizer_config(
-    optimizer_config: NexusNativeOptimizerConfig,
-    device_profiles: Vec<NexusGpuDeviceProfile>,
-    device_memory_ownership: Vec<(usize, GpuMemoryOwnership)>,
-    queue_policy: NexusGpuQueuePolicy,
-) -> Result<TestBackendValidationProjection> {
-    build_test_validation_projection(optimizer_config, device_profiles, device_memory_ownership, queue_policy)
+    Ok(TestBackendValidationProjection { query_execution_config, queue_policy, optimizer_config, devices })
 }
 
 fn backend_query_execution_config(execution_config: &NexusNativeExecutionConfig) -> Result<QueryExecutionConfig> {
@@ -1123,49 +1020,6 @@ fn validate_queue_policy(policy: &NexusGpuQueuePolicy) -> Result<()> {
         return Err(invalid_backend_config("max_overtakes_per_waiter", "must be greater than zero"));
     }
     Ok(())
-}
-
-fn validate_device_memory_ownership(
-    device_ordinals: &[usize],
-    declarations: &[(usize, GpuMemoryOwnership)],
-) -> Result<BTreeMap<usize, GpuMemoryOwnership>> {
-    let selected = device_ordinals.iter().copied().collect::<BTreeSet<_>>();
-    let mut ownership_by_ordinal = BTreeMap::new();
-    for (device_ordinal, ownership) in declarations.iter().copied() {
-        if ownership_by_ordinal.insert(device_ordinal, ownership).is_some() {
-            return Err(invalid_backend_config(
-                "device_memory_ownership",
-                "must contain exactly one declaration for each selected device",
-            )
-            .with_fact("reason", "duplicate_device")
-            .with_fact("device_ordinal", device_ordinal));
-        }
-    }
-
-    let declared = ownership_by_ordinal.keys().copied().collect::<BTreeSet<_>>();
-    let missing = selected.difference(&declared).copied().collect::<Vec<_>>();
-    if !missing.is_empty() {
-        return Err(invalid_backend_config(
-            "device_memory_ownership",
-            "must declare ownership for every selected device",
-        )
-        .with_fact("reason", "missing_devices")
-        .with_fact("device_ordinals", format_device_ordinals(&missing)));
-    }
-    let extra = declared.difference(&selected).copied().collect::<Vec<_>>();
-    if !extra.is_empty() {
-        return Err(invalid_backend_config(
-            "device_memory_ownership",
-            "must not declare ownership for an unselected device",
-        )
-        .with_fact("reason", "extra_devices")
-        .with_fact("device_ordinals", format_device_ordinals(&extra)));
-    }
-    Ok(ownership_by_ordinal)
-}
-
-fn format_device_ordinals(device_ordinals: &[usize]) -> String {
-    device_ordinals.iter().map(usize::to_string).collect::<Vec<_>>().join(",")
 }
 
 fn validate_positive_u64(field: &'static str, value: u64) -> Result<()> {

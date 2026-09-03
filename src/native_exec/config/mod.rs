@@ -408,11 +408,6 @@ impl NexusNativeExecutionConfig {
         self.graph_execution_services.bfs_singleflight_snapshot()
     }
 
-    #[cfg(feature = "cugraph")]
-    pub(crate) fn set_graph_bfs_singleflight_enabled(&self, enabled: bool) {
-        self.graph_execution_services.set_bfs_singleflight_enabled(enabled);
-    }
-
     /// Register source object-store profiles used by native remote source
     /// fetches and local-cache miss fills.
     pub fn with_source_storage_profiles(mut self, profiles: impl IntoIterator<Item = SourceStorageProfile>) -> Self {

@@ -88,6 +88,9 @@ async fn real_iceberg_provider_exposes_one_canonical_schema_to_cpu_and_native_op
 
 #[cfg(feature = "cuvs")]
 fn cuvs_iceberg_session() -> (NexusGpuBackend, SessionContext) {
+    let profile = NexusGpuDeviceProfile::new(0)
+        .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 512 * 1024 * 1024 });
+    let device = NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
     let backend = NexusGpuBackend::builder()
         .with_native_execution_config(NexusNativeExecutionConfig::bounded(
             512 * 1024 * 1024,
@@ -96,9 +99,7 @@ fn cuvs_iceberg_session() -> (NexusGpuBackend, SessionContext) {
             3,
             1,
         ))
-        .device_profiles([NexusGpuDeviceProfile::new(0)
-            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 512 * 1024 * 1024 })])
-        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+        .devices([device])
         .build()
         .expect("cuVS Iceberg tests require a backend-owned GPU");
     let state = backend

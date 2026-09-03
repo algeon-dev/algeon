@@ -5,7 +5,7 @@ use std::ops::Deref;
 use datafusion::prelude::SessionContext;
 use datafusion_nexus::{
     attempt::{AttemptOptions, RuntimeObservationConfig},
-    backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile},
+    backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceProfile},
     native_exec::NexusNativeExecutionConfig,
     native_report::NativeDataFusionExecutionMetrics,
     planner::FinalPlanDisposition,
@@ -25,6 +25,9 @@ struct BackendFixture {
 impl BackendFixture {
     fn new(queue_capacity: Option<usize>, resource_policy: datafusion_nexus::backend::NexusGpuQueuePolicy) -> Self {
         let guard = super::root_gpu_fixture::lock();
+        let profile = NexusGpuDeviceProfile::new(0)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 });
+        let device = NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
         let mut builder = NexusGpuBackend::builder()
             .with_native_execution_config(NexusNativeExecutionConfig::bounded(
                 256 * 1024 * 1024,
@@ -33,9 +36,7 @@ impl BackendFixture {
                 3,
                 1,
             ))
-            .device_profiles([NexusGpuDeviceProfile::new(0)
-                .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })])
-            .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+            .devices([device])
             .queue_policy(resource_policy);
         if let Some(capacity) = queue_capacity {
             builder = builder.with_attempt_completion_queue_capacity(capacity);

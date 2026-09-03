@@ -17,7 +17,7 @@ use datafusion::{
 #[cfg(feature = "cugraph")]
 use datafusion_nexus::cugraph_sql::CugraphSqlConfig;
 use datafusion_nexus::{
-    backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile},
+    backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceProfile},
     cuvs_sql::CuvsAlgoExec,
     error::{DataFusionErrorExt, ErrorCode},
     native_exec::NexusNativeExecutionConfig,
@@ -413,6 +413,9 @@ async fn cuvs_kmeans_and_pca_plan_over_parquet_then_reject_bounded_execution() {
 }
 
 fn cuvs_test_backend() -> NexusGpuBackend {
+    let profile = NexusGpuDeviceProfile::new(0)
+        .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 512 * 1024 * 1024 });
+    let device = NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
     NexusGpuBackend::builder()
         .with_native_execution_config(NexusNativeExecutionConfig::bounded(
             512 * 1024 * 1024,
@@ -421,9 +424,7 @@ fn cuvs_test_backend() -> NexusGpuBackend {
             3,
             1,
         ))
-        .device_profiles([NexusGpuDeviceProfile::new(0)
-            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 512 * 1024 * 1024 })])
-        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+        .devices([device])
         .build()
         .expect("cuVS SQL tests require a backend-owned GPU")
 }

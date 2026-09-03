@@ -7,7 +7,7 @@ use nexus_query_engine::runtime::QueryHandle;
 
 use crate::{
     attempt::{AttemptOptions, NexusAttempt},
-    backend::{NexusGpuBackend, NexusGpuQueuePolicy},
+    backend::{NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuQueuePolicy},
     config::ServerConfig,
     error::{Result, ServerError},
 };
@@ -177,10 +177,12 @@ impl QueryAdmission {
             QueryAdmissionBackend::QueryService { backend } => {
                 let queue_policy = backend.queue_policy();
                 let _ = writeln!(output, "# backend=query_service");
-                let _ = writeln!(output, "# device_ordinals={}", payload_value(&join_usize(backend.device_ordinals())));
-                let _ = writeln!(output, "# device_profile_count={}", backend.device_profiles().len());
-                for profile in backend.device_profiles() {
-                    let ordinal = profile.device_ordinal();
+                let ordinals = backend.devices().iter().map(NexusGpuDeviceConfig::device_ordinal).collect::<Vec<_>>();
+                let _ = writeln!(output, "# device_ordinals={}", payload_value(&join_usize(&ordinals)));
+                let _ = writeln!(output, "# device_profile_count={}", backend.devices().len());
+                for device in backend.devices() {
+                    let profile = device.profile();
+                    let ordinal = device.device_ordinal();
                     let _ =
                         writeln!(output, "# device_{ordinal}_max_active_attempts={}", profile.max_active_attempts());
                     let _ = writeln!(
@@ -297,14 +299,13 @@ impl Drop for QueryAdmissionPermit {
 fn server_test_validation_projection_from_config(
     config: &ServerConfig,
 ) -> Result<crate::backend::TestBackendValidationProjection> {
-    config.validate_gpu_device_profiles()?;
-    crate::backend::test_validation_projection_from_optimizer_config(
-        config.native_optimizer_config.clone(),
-        config.gpu_device_profiles.clone(),
-        config.gpu_memory_ownership.clone(),
-        server_queue_policy(config),
-    )
-    .map_err(|error| ServerError::session("failed to project query service admission policy", error))
+    let devices = config.resolve_gpu_devices()?;
+    NexusGpuBackend::builder()
+        .with_optimizer_config(config.native_optimizer_config.clone())
+        .devices(devices)
+        .queue_policy(server_queue_policy(config))
+        .build_test_validation_projection()
+        .map_err(|error| ServerError::session("failed to project query service admission policy", error))
 }
 
 pub(crate) fn server_queue_policy(config: &ServerConfig) -> NexusGpuQueuePolicy {
@@ -361,7 +362,7 @@ mod tests {
         let backend = server_test_validation_projection_from_config(&config).unwrap();
         let controller = backend.query_execution_config().unwrap();
 
-        let profile = &backend.device_profiles()[0];
+        let profile = backend.devices()[0].profile();
         assert_eq!(profile.max_active_attempts(), 1);
         assert_eq!(profile.device_ordinal(), 0);
         assert_eq!(profile.memory_limit(), crate::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: 3072 });
@@ -429,11 +430,7 @@ mod tests {
 
         let backend = server_test_validation_projection_from_config(&config).unwrap();
 
-        assert_eq!(backend.device_ordinals(), &[0, 1]);
-        assert_eq!(
-            backend.device_profiles().iter().map(|profile| profile.device_ordinal()).collect::<Vec<_>>(),
-            vec![0, 1]
-        );
+        assert_eq!(backend.devices().iter().map(|device| device.device_ordinal()).collect::<Vec<_>>(), vec![0, 1]);
     }
 
     #[test]

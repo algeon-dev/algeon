@@ -4,7 +4,9 @@ use super::{
     native::{duration_millis_from_value, optional_duration_millis_value, optional_native_u64, optional_native_usize},
     *,
 };
-use crate::backend::{GpuDeviceMemoryLimit, NexusGpuDeviceProfile, NexusGpuQueuePolicy};
+use crate::backend::{
+    GpuDeviceMemoryLimit, NexusGpuDeviceInstallationBounds, NexusGpuDeviceProfile, NexusGpuQueuePolicy,
+};
 
 pub const NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV: &str = "NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS";
 pub const NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV: &str = "NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS";
@@ -169,7 +171,11 @@ fn profile_from_file(raw: &super::file::ServerAdmissionDeviceProfileFileConfig) 
     match (raw.stream_pool_size, raw.worker_count, raw.lane_count) {
         (None, None, None) => {},
         (Some(stream_pool_size), Some(worker_count), Some(lane_count)) => {
-            profile = profile.with_installation_bounds(stream_pool_size, worker_count, lane_count);
+            profile = profile.with_installation_bounds(NexusGpuDeviceInstallationBounds::new(
+                stream_pool_size,
+                worker_count,
+                lane_count,
+            ));
         },
         _ => {
             return Err(ServerError::invalid_config(

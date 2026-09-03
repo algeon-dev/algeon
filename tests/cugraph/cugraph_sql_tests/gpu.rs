@@ -541,13 +541,9 @@ async fn cugraph_sql_gpu_composed_attempt_returns_cache_checkouts_before_deferre
     let path = dir.join("graph_edges.parquet");
     write_tiny_directed_edges(&path);
 
-    let backend = NexusGpuBackend::builder()
-        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
-        .device_profiles([
-            datafusion_nexus::backend::NexusGpuDeviceProfile::new(0).with_cache_cap_bytes(CACHE_CAP_BYTES)
-        ])
-        .build()
-        .unwrap();
+    let profile = datafusion_nexus::backend::NexusGpuDeviceProfile::new(0).with_cache_cap_bytes(CACHE_CAP_BYTES);
+    let device = NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
+    let backend = NexusGpuBackend::builder().devices([device]).build().unwrap();
     let cugraph = CugraphSqlConfig::default()
         .with_native_execution_config(backend.optimizer_config().native_execution_config().clone());
     let mut config = SessionConfig::new()
@@ -676,11 +672,11 @@ async fn cugraph_sql_backend_session_records_query_service_admission_metrics() {
     let path = dir.join("tiny_directed_edges.parquet");
     write_tiny_directed_edges(&path);
 
-    let backend = NexusGpuBackend::builder()
-        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
-        .device_profiles([datafusion_nexus::backend::NexusGpuDeviceProfile::new(0)])
-        .build()
-        .unwrap();
+    let device = NexusGpuDeviceConfig::new(
+        datafusion_nexus::backend::NexusGpuDeviceProfile::new(0),
+        GpuMemoryOwnership::WholeDeviceExclusive,
+    );
+    let backend = NexusGpuBackend::builder().devices([device]).build().unwrap();
     let cugraph = CugraphSqlConfig::default()
         .with_native_execution_config(backend.optimizer_config().native_execution_config().clone());
     let mut config = SessionConfig::new()
@@ -746,13 +742,11 @@ async fn filtered_local_parquet_context(
     path: &std::path::Path,
     device_capacity_bytes: u64,
 ) -> (NexusGpuBackend, SessionContext) {
-    let backend = NexusGpuBackend::builder()
-        .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
-        .device_profiles([datafusion_nexus::backend::NexusGpuDeviceProfile::new(0).with_memory_limit(
-            datafusion_nexus::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: device_capacity_bytes },
-        )])
-        .build()
-        .unwrap();
+    let profile = datafusion_nexus::backend::NexusGpuDeviceProfile::new(0).with_memory_limit(
+        datafusion_nexus::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: device_capacity_bytes },
+    );
+    let device = NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
+    let backend = NexusGpuBackend::builder().devices([device]).build().unwrap();
     let cugraph = CugraphSqlConfig::default()
         .with_native_execution_config(backend.optimizer_config().native_execution_config().clone());
     let mut config = SessionConfig::new()

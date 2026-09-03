@@ -39,12 +39,12 @@ per-device ledgers, and execution resources:
 use datafusion::execution::SessionStateBuilder;
 use datafusion::prelude::SessionContext;
 use datafusion_nexus::backend::{
-    GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile,
+    GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceProfile,
 };
 
+let device = NexusGpuDeviceConfig::new(NexusGpuDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive);
 let backend = NexusGpuBackend::builder()
-    .device_profiles([NexusGpuDeviceProfile::new(0)])
-    .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+    .devices([device])
     .build()?;
 
 let state = backend
@@ -134,15 +134,19 @@ Device capacity belongs to profiles; shared queue behavior belongs to
 `NexusGpuQueuePolicy`:
 
 ```rust
-use datafusion_nexus::backend::NexusGpuQueuePolicy;
+use datafusion_nexus::backend::{
+    GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceProfile,
+    NexusGpuQueuePolicy,
+};
 
+let device = NexusGpuDeviceConfig::new(
+    NexusGpuDeviceProfile::new(0)
+        .with_max_active_attempts(10)
+        .with_attempt_floor_bytes(Some(512 * 1024 * 1024)),
+    GpuMemoryOwnership::WholeDeviceExclusive,
+);
 let backend = NexusGpuBackend::builder()
-    .device_profiles([
-        NexusGpuDeviceProfile::new(0)
-            .with_max_active_attempts(10)
-            .with_attempt_floor_bytes(Some(512 * 1024 * 1024)),
-    ])
-    .device_memory_ownership([(0, GpuMemoryOwnership::WholeDeviceExclusive)])
+    .devices([device])
     .queue_policy(
         NexusGpuQueuePolicy::default()
             .with_max_queued_attempts(64)

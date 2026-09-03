@@ -36,7 +36,10 @@ use datafusion::{
     prelude::{ParquetReadOptions, SessionConfig, SessionContext},
 };
 use datafusion_nexus::{
-    backend::{GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceProfile, NexusGpuQueuePolicy},
+    backend::{
+        GpuDeviceMemoryLimit, GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceProfile,
+        NexusGpuQueuePolicy,
+    },
     native::lower_physical_plan_to_native_for_test,
     native_exec::{NexusNativeExec, NexusNativeExecutionConfig},
 };
