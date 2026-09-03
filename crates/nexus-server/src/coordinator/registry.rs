@@ -6,6 +6,7 @@ use std::{
     time::Instant,
 };
 
+use datafusion_nexus::attempt::server_internal::NexusAttemptServerExt;
 use nexus_query_engine::{
     observability::{
         QueryAttemptReport, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeQueryId, RuntimeTerminalOutcome,

@@ -1,8 +1,13 @@
 use std::{error::Error, path::PathBuf};
 
-use datafusion::prelude::{ParquetReadOptions, SessionContext};
-use datafusion_nexus::gpu_coverage::{
-    QueryGpuCandidateOutcome, QueryGpuCoverage, QueryGpuCoverageOverall, validate_query,
+use datafusion::{
+    execution::SessionStateBuilder,
+    prelude::{ParquetReadOptions, SessionContext},
+};
+use datafusion_nexus::{
+    gpu_coverage::{QueryGpuCandidateOutcome, QueryGpuCoverage, QueryGpuCoverageOverall, validate_query},
+    planner::NexusNativeOptimizerConfig,
+    session::NexusSessionStateBuilderExt,
 };
 
 type ValidateResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
@@ -42,7 +47,10 @@ pub async fn run(args: Vec<String>) -> ValidateResult<()> {
 }
 
 async fn build_context(config: &Config) -> ValidateResult<SessionContext> {
-    let ctx = SessionContext::new();
+    let state = SessionStateBuilder::new_with_default_features()
+        .with_nexus_native(NexusNativeOptimizerConfig::default())
+        .build();
+    let ctx = SessionContext::new_with_state(state);
     for table in &config.parquet_tables {
         ctx.register_parquet(&table.table, path_str(&table.path)?, ParquetReadOptions::default()).await?;
     }
@@ -193,5 +201,15 @@ mod tests {
             candidate_outcome_human_line(&unsupported),
             "candidate_outcome: outcome=not_supported reason_code=unsupported_expression reason_kind=expression category=expression detail=ProjectionExec"
         );
+    }
+
+    #[tokio::test]
+    async fn build_context_installs_native_optimizer_rule() {
+        let config =
+            Config { sql: "SELECT 1 AS value".to_string(), format: OutputFormat::Json, parquet_tables: Vec::new() };
+        let ctx = build_context(&config).await.expect("context build succeeds");
+        let coverage = validate_query(&ctx, &config.sql).await.expect("validate_query succeeds");
+        assert!(coverage.validated_under.native_optimizer_rule_installed);
+        assert_eq!(coverage.validated_under.optimizer_config_source, "installed_session_rule");
     }
 }

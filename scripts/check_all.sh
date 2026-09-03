@@ -408,7 +408,7 @@ lane_safe=1
 gpu_scheduling_summary=""
 doctest_summary="not-run"
 rustdoc_summary="not-run"
-policy_selftest_count=13
+policy_selftest_count=14
 
 PHASE_ORDER=(
   policy-selftests
@@ -430,7 +430,7 @@ PHASE_ORDER=(
   public-api-surface
   clippy
 )
-declare -A PHASE_COMMAND PHASE_DURATION PHASE_STATUS PHASE_COUNTS
+declare -A PHASE_COMMAND PHASE_DURATION PHASE_STATUS PHASE_COUNTS PHASE_KIND
 declare -A PHASE_GPU_CAP PHASE_LOCK PHASE_FEATURES PHASE_LOG PHASE_EXIT
 declare -A PHASE_HASH PHASE_CACHE PHASE_LAST_PASS_HASH PHASE_SCOPE_HASH
 PHASE_SUBMODULE_SOURCE_HASH=
@@ -442,6 +442,7 @@ define_phase() {
   PHASE_DURATION["${id}"]=-
   PHASE_STATUS["${id}"]=SKIPPED
   PHASE_COUNTS["${id}"]=-
+  PHASE_KIND["${id}"]=-
   PHASE_GPU_CAP["${id}"]=-
   PHASE_LOCK["${id}"]=-
   PHASE_FEATURES["${id}"]=${feature_label}
@@ -520,6 +521,7 @@ run_phase() {
     return 1
   }
   PHASE_LOG["${id}"]=${phase_log}
+  PHASE_KIND["${id}"]=${count_kind}
   PHASE_GPU_CAP["${id}"]=${gpu_cap}
   PHASE_LOCK["${id}"]=${lock_path}
   echo
@@ -888,6 +890,7 @@ cache_phase_hit() {
   PHASE_DURATION["${id}"]='0.000s'
   PHASE_STATUS["${id}"]=CACHED
   PHASE_COUNTS["${id}"]=cached
+  PHASE_KIND["${id}"]=-
   PHASE_GPU_CAP["${id}"]=${gpu_cap}
   PHASE_LOCK["${id}"]=${lock_path}
   PHASE_LOG["${id}"]=${phase_log}
@@ -942,6 +945,7 @@ run_isolated_policy_commands() {
     scripts/ci/tests/check_dependency_direction_tests.sh \
     scripts/ci/tests/check_doctest_report_tests.sh \
     scripts/ci/tests/check_phase_test_counts_tests.sh \
+    scripts/ci/tests/check_phase_failed_tests_tests.sh \
     scripts/ci/tests/check_gpu_test_lane_tests.sh \
     scripts/ci/tests/check_native_sources_tests.sh \
     scripts/ci/tests/check_doctest_rustdoc_tests.sh \
@@ -1166,24 +1170,75 @@ sanitize_phase_cell() {
 }
 
 print_phase_table() {
-  local id
-  echo
-  echo "PHASE SUMMARY"
-  echo "Phase | Command | Duration | Status | Test counts | GPU cap | Lock | Features | Log | Cache"
-  echo "--- | --- | --- | --- | --- | --- | --- | --- | --- | ---"
+  local id status pass_count=0 fail_count=0 cached_count=0 skipped_count=0
   for id in "${PHASE_ORDER[@]}"; do
-    printf '%s | %s | %s | %s | %s | %s | %s | %s | %s | %s\n' \
-      "$(sanitize_phase_cell "${id}")" \
-      "$(sanitize_phase_cell "${PHASE_COMMAND[${id}]}")" \
-      "$(sanitize_phase_cell "${PHASE_DURATION[${id}]}")" \
-      "$(sanitize_phase_cell "${PHASE_STATUS[${id}]}")" \
-      "$(sanitize_phase_cell "${PHASE_COUNTS[${id}]}")" \
-      "$(sanitize_phase_cell "${PHASE_GPU_CAP[${id}]}")" \
-      "$(sanitize_phase_cell "${PHASE_LOCK[${id}]}")" \
-      "$(sanitize_phase_cell "${PHASE_FEATURES[${id}]}")" \
-      "$(sanitize_phase_cell "${PHASE_LOG[${id}]}")" \
-      "$(sanitize_phase_cell "${PHASE_CACHE[${id}]}")"
+    status=${PHASE_STATUS[${id}]}
+    if [[ "${status}" == PASS ]]; then
+      pass_count=$((pass_count + 1))
+    elif [[ "${status}" == FAIL* ]]; then
+      fail_count=$((fail_count + 1))
+    elif [[ "${status}" == CACHED ]]; then
+      cached_count=$((cached_count + 1))
+    else
+      skipped_count=$((skipped_count + 1))
+    fi
   done
+  echo
+  echo "PHASE SUMMARY (${#PHASE_ORDER[@]} phases: ${pass_count} PASS, ${fail_count} FAIL, ${cached_count} CACHED, ${skipped_count} SKIPPED)"
+  echo "Phase | Status | Duration | Counts"
+  echo "--- | --- | --- | ---"
+  for id in "${PHASE_ORDER[@]}"; do
+    printf '%s | %s | %s | %s\n' \
+      "$(sanitize_phase_cell "${id}")" \
+      "$(sanitize_phase_cell "${PHASE_STATUS[${id}]}")" \
+      "$(sanitize_phase_cell "${PHASE_DURATION[${id}]}")" \
+      "$(sanitize_phase_cell "${PHASE_COUNTS[${id}]}")"
+  done
+  print_phase_failures
+}
+
+print_phase_failures() {
+  local id kind parser_kind failed_output
+  local -a names
+  local printed=0
+  for id in "${PHASE_ORDER[@]}"; do
+    [[ "${PHASE_STATUS[${id}]}" == FAIL* ]] || continue
+    if [[ "${printed}" -eq 0 ]]; then
+      echo
+      echo "FAILURES"
+      printed=1
+    fi
+    echo "--- ${id} [${PHASE_STATUS[${id}]}, ${PHASE_DURATION[${id}]}] ---"
+    printf 'command: %s\n' "${PHASE_COMMAND[${id}]}"
+    printf 'log: %s\n' "${PHASE_LOG[${id}]}"
+    kind=${PHASE_KIND[${id}]}
+    case "${kind}" in
+      nextest) parser_kind=nextest ;;
+      cargo | doctest) parser_kind=cargo ;;
+      *) continue ;;
+    esac
+    if ! failed_output=$(python3 scripts/ci/phase_failed_tests.py --kind "${parser_kind}" --input "${PHASE_LOG[${id}]}"); then
+      echo "failed tests: unavailable (see log)"
+    elif [[ -z "${failed_output}" ]]; then
+      echo "failed tests: none listed (see log)"
+    else
+      mapfile -t names <<<"${failed_output}"
+      printf 'failed tests (%d):\n' "${#names[@]}"
+      print_phase_failure_names "${names[@]}"
+    fi
+  done
+}
+
+print_phase_failure_names() {
+  local name shown=0 total=$#
+  for name in "$@"; do
+    [[ "${shown}" -lt 20 ]] || break
+    printf '  %s\n' "${name}"
+    shown=$((shown + 1))
+  done
+  if [[ "${total}" -gt 20 ]]; then
+    printf '  ... and %d more (see log)\n' "$((total - 20))"
+  fi
 }
 
 print_phase_table

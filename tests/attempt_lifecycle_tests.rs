@@ -527,7 +527,7 @@ async fn close_during_cpu_result_drain_times_out_then_recovers_after_one_report(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn begin_after_close_is_backend_closing_and_reports_outlive_quiescence() {
+async fn idle_installed_context_does_not_block_close_and_reports_outlive_quiescence() {
     let backend = backend();
     let ctx = native_context(&backend).await;
 
@@ -540,6 +540,7 @@ async fn begin_after_close_is_backend_closing_and_reports_outlive_quiescence() {
     let report = completion.await;
     assert!(matches!(report.outcome, RuntimeTerminalOutcome::Succeeded));
 
+    // An idle installed SessionContext does not block close or quiescence:
     let close = backend.close_and_wait(std::time::Duration::from_secs(10)).expect("close completes");
     assert!(close.gpu_resource_quiescent);
     // The published report remains readable after GPU-resource quiescence:

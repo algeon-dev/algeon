@@ -30,6 +30,7 @@ use datafusion::{
     physical_plan::{SendableRecordBatchStream, execute_stream as execute_physical_stream},
     prelude::SessionContext,
 };
+use datafusion_nexus::attempt::server_internal::NexusAttemptServerExt;
 use futures::{Stream, StreamExt, TryStreamExt, stream::BoxStream};
 use nexus_query_engine::{
     observability::{RuntimeObservationConfig, RuntimeObservationHandle},

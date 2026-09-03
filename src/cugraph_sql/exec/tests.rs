@@ -2875,7 +2875,7 @@ async fn installed_backend_datafusion_parquet_graph_ticket_keeps_post_hydration_
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("citation_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
     let attempt = backend.backend().begin_attempt(AttemptOptions::default()).unwrap();
-    let invocation = attempt.planning_context(&ctx).unwrap();
+    let invocation = attempt.invocation_context_for_test(&ctx).unwrap();
 
     let plan = invocation
         .sql(
@@ -2978,7 +2978,7 @@ async fn installed_backend_string_pagerank_ticket_orders_source_mapping_and_grap
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("string_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
     let attempt = backend.backend().begin_attempt(AttemptOptions::default()).unwrap();
-    let invocation = attempt.planning_context(&ctx).unwrap();
+    let invocation = attempt.invocation_context_for_test(&ctx).unwrap();
     let plan = invocation
         .sql(
             "SELECT vertex, value FROM cugraph_pagerank(\
@@ -3123,7 +3123,7 @@ async fn qualification_dblp_force_atlas2_ticket_uses_full_footer_metadata() {
     let ctx = SessionContext::new_with_state(state);
     nexus_workloads::graph::register_dblp_tables(&ctx, std::path::Path::new(DBLP_PARQUET_ROOT)).await.unwrap();
     let attempt = backend.backend().begin_attempt(AttemptOptions::default()).unwrap();
-    let invocation = attempt.planning_context(&ctx).unwrap();
+    let invocation = attempt.invocation_context_for_test(&ctx).unwrap();
 
     let plan = invocation
         .sql(

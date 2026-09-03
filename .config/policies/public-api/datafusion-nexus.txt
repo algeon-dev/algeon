@@ -29,7 +29,6 @@ impl core::default::Default for datafusion_nexus::attempt::AttemptOptions
 pub fn datafusion_nexus::attempt::AttemptOptions::default() -> Self
 pub struct datafusion_nexus::attempt::AttemptStream
 impl datafusion_nexus::attempt::AttemptStream
-pub fn datafusion_nexus::attempt::AttemptStream::completion(&self) -> nexus_query_runtime::attempt::owner::AttemptCompletion
 pub fn datafusion_nexus::attempt::AttemptStream::sealed_graph_claim_calibration_snapshot(&self) -> core::option::Option<datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot>
 impl core::fmt::Debug for datafusion_nexus::attempt::AttemptStream
 pub fn datafusion_nexus::attempt::AttemptStream::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -43,17 +42,11 @@ pub fn datafusion_nexus::attempt::AttemptStream::poll_next(core::pin::Pin<&mut S
 pub struct datafusion_nexus::attempt::NexusAttempt
 impl datafusion_nexus::attempt::NexusAttempt
 pub fn datafusion_nexus::attempt::NexusAttempt::attempt_id(&self) -> nexus_query_planning::schedule_projection::AttemptId
-pub fn datafusion_nexus::attempt::NexusAttempt::cancel_before_stream(&self)
 pub fn datafusion_nexus::attempt::NexusAttempt::cancellation(&self) -> nexus_query_runtime::attempt::cancellation::AttemptCancellation
-pub fn datafusion_nexus::attempt::NexusAttempt::complete_without_result_stream(&self)
 pub fn datafusion_nexus::attempt::NexusAttempt::completion(&self) -> nexus_query_runtime::attempt::owner::AttemptCompletion
 pub async fn datafusion_nexus::attempt::NexusAttempt::execute_dataframe(&self, datafusion::dataframe::DataFrame) -> datafusion_common::error::Result<datafusion_nexus::attempt::AttemptStream>
 pub fn datafusion_nexus::attempt::NexusAttempt::execute_physical_plan(&self, alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>, &datafusion::execution::context::SessionContext) -> datafusion_common::error::Result<datafusion_nexus::attempt::AttemptStream>
-pub fn datafusion_nexus::attempt::NexusAttempt::physical_planning_finished(&self, &dyn datafusion_physical_plan::execution_plan::ExecutionPlan)
 pub fn datafusion_nexus::attempt::NexusAttempt::plan_sql<'a>(&'a self, &'a datafusion::execution::context::SessionContext, &'a str) -> futures_core::future::BoxFuture<'a, datafusion_common::error::Result<alloc::sync::Arc<dyn datafusion_physical_plan::execution_plan::ExecutionPlan>>>
-pub fn datafusion_nexus::attempt::NexusAttempt::planning_context(&self, &datafusion::execution::context::SessionContext) -> datafusion_common::error::Result<datafusion::execution::context::SessionContext>
-pub fn datafusion_nexus::attempt::NexusAttempt::planning_failed(&self, &datafusion_common::error::DataFusionError)
-pub fn datafusion_nexus::attempt::NexusAttempt::planning_failed_adapter(&self, &datafusion_nexus::error::Error)
 pub fn datafusion_nexus::attempt::NexusAttempt::register_sealed_report_observer<F>(&self, F) where F: core::ops::function::Fn(core::option::Option<alloc::sync::Arc<nexus_query_runtime::observability::attempt_report::QueryAttemptReport>>, nexus_query_runtime::observability::recorder::SealedRuntimeObservationSnapshot) + core::marker::Send + core::marker::Sync + 'static
 pub fn datafusion_nexus::attempt::NexusAttempt::sealed_graph_claim_calibration_snapshot(&self) -> core::option::Option<datafusion_nexus::attempt::SealedAttemptGraphClaimCalibrationSnapshot>
 pub fn datafusion_nexus::attempt::NexusAttempt::sealed_native_execution_snapshot(&self) -> core::option::Option<datafusion_nexus::attempt::SealedAttemptNativeExecutionSnapshot>

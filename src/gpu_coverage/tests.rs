@@ -353,17 +353,26 @@ async fn validate_query_preserves_the_installed_final_plan_requirement() {
 }
 
 #[tokio::test]
-async fn validate_query_without_a_native_rule_keeps_the_default_session_cpu_baseline() {
+async fn validate_query_without_a_native_rule_fails_closed_with_structured_error() {
     let ctx = SessionContext::new();
+
+    let error = validate_query(&ctx, "SELECT random() AS r").await.unwrap_err();
+
+    assert_eq!(error.code(), ErrorCode::InvalidRequest);
+    assert_eq!(error.operation(), "datafusion_nexus.gpu_coverage.validation_config");
+    assert_eq!(error.fact_value("reason"), Some("native_optimizer_rule_not_installed"));
+}
+
+#[tokio::test]
+async fn validate_query_with_installed_rule_and_unsupported_candidate_produces_cpu_only() {
+    let ctx = validation_context(bounded_optimizer_config());
 
     let coverage = validate_query(&ctx, "SELECT random() AS r").await.unwrap();
 
     assert_eq!(coverage.overall, QueryGpuCoverageOverall::CpuOnly);
-    assert!(!coverage.validated_under.native_optimizer_rule_installed);
-    assert_eq!(coverage.validated_under.optimizer_config_source, "native_rule_absent");
-    assert_eq!(coverage.validated_under.execution_mode, None);
-    assert!(coverage.validated_under.final_plan_requirements.is_empty());
-    assert!(coverage.candidate_outcomes.is_empty(), "coverage={coverage:?}");
+    assert!(coverage.validated_under.native_optimizer_rule_installed);
+    assert_eq!(coverage.validated_under.optimizer_config_source, "installed_session_rule");
+    assert_eq!(coverage.final_disposition, FinalPlanDisposition::DataFusion);
 }
 
 #[tokio::test]
