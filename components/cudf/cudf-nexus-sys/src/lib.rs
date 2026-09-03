@@ -23,6 +23,7 @@
 //! for narrow permissive diagnostics and legacy regression hooks.
 
 #![deny(unsafe_op_in_unsafe_fn)]
+#![allow(clippy::allow_attributes)] // reason = "raw C FFI bindings crate with module-level allows"
 
 mod abi_ext;
 #[allow(

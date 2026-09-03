@@ -169,7 +169,10 @@ pub fn variable_width_payload_evidence_by_root_column(
         .collect()
 }
 
-#[allow(deprecated)]
+#[expect(
+    deprecated,
+    reason = "Parquet BIT_PACKED encoding is deprecated upstream but supported for Parquet metadata compatibility"
+)]
 fn variable_width_encoding_proof(
     encodings: impl IntoIterator<Item = Encoding>,
 ) -> Option<ParquetVariableWidthEncodingProof> {
@@ -272,7 +275,6 @@ mod tests {
         variable_width_payload_evidence_for_root_column,
     };
 
-    #[allow(deprecated)]
     fn variable_width_metadata(
         schema_body: &str,
         encodings: Vec<Vec<Encoding>>,
@@ -338,7 +340,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
+    #[expect(
+        deprecated,
+        reason = "Parquet BIT_PACKED encoding is deprecated upstream but tested for Parquet metadata compatibility"
+    )]
     fn variable_width_payload_evidence_sums_exact_selected_row_groups_and_proves_encoding_family() {
         let metadata = variable_width_metadata(
             "
@@ -398,7 +403,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
     fn variable_width_payload_evidence_rejects_unsafe_or_incomplete_encodings() {
         for encodings in [
             vec![Encoding::DELTA_BINARY_PACKED],
@@ -435,7 +439,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
     fn variable_width_payload_evidence_rejects_overflowing_chunk_size_sum() {
         let metadata = variable_width_metadata(
             "
@@ -450,7 +453,6 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)]
     fn variable_width_payload_evidence_rejects_unannotated_binary_columns() {
         let metadata = variable_width_metadata(
             "

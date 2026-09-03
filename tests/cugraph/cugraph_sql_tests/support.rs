@@ -52,8 +52,6 @@ pub(super) fn schema_fields(algorithm: CugraphAlgorithm) -> Vec<Field> {
     stable_result_schema(algorithm).fields().iter().map(|field| field.as_ref().clone()).collect()
 }
 
-// Used by the explicit Python-cuGraph PageRank tools runner.
-#[cfg_attr(test, allow(dead_code))]
 pub(super) fn find_composed_exec(
     plan: &dyn datafusion::physical_plan::ExecutionPlan,
 ) -> Option<&NexusNativeComposedExec> {
@@ -133,8 +131,6 @@ pub(super) struct PageRankRow {
     pub(super) value: f64,
 }
 
-// Used by the explicit Python-cuGraph PageRank tools runner.
-#[cfg_attr(test, allow(dead_code))]
 #[derive(Debug)]
 pub(super) struct PythonPageRankOracle {
     pub(super) versions: String,
@@ -160,8 +156,6 @@ pub(super) fn pagerank_values(batches: &[RecordBatch]) -> Vec<f64> {
         .collect()
 }
 
-// Used by the explicit Python-cuGraph PageRank tools runner.
-#[cfg_attr(test, allow(dead_code))]
 pub(super) fn python_pagerank_oracle(path: &Path) -> Option<PythonPageRankOracle> {
     let script = r#"
 import json
@@ -219,8 +213,6 @@ print(json.dumps({
     Some(PythonPageRankOracle { versions, rows })
 }
 
-// Used by the explicit Python-cuGraph PageRank tools runner.
-#[cfg_attr(test, allow(dead_code))]
 pub(super) fn handle_python_oracle_unavailable(message: impl AsRef<str>) -> ! {
     crate::cugraph_optional_fixture::handle_cugraph_python_oracle_unavailable("cuGraph Python oracle", message);
 }

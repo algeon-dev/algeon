@@ -1,5 +1,7 @@
 //! Generated raw FFI bindings to the pinned cuVS 26.08 C API.
 
+#![allow(clippy::allow_attributes)] // reason = "generated FFI bindings use allow attributes"
+
 use std::{
     ffi::{c_char, c_int, c_uint, c_void},
     fmt,

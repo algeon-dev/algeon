@@ -1,6 +1,5 @@
 mod support;
 
-#[allow(dead_code)]
 #[path = "ffi_regressions/helpers.rs"]
 mod helpers;
 

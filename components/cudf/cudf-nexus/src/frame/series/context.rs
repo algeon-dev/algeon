@@ -1184,7 +1184,7 @@ impl Series {
     ) -> Result<Series> {
         let (output_domain, _consumer_fence) = self.resolve_context_output_domain(ctx, operation)?;
         let cv = self.column.view()?;
-        let scalar = value.into_runtime_scalar(&output_domain)?;
+        let scalar = Scalar::from_runtime_scalar(value, &output_domain)?;
         let output_type = binary::infer_binary_output_dtype_in(cv.data_type()?, scalar.data_type()?, op, operation)?;
         let exec_options = output_domain.enter_execution()?;
         let col = binary::binary_operation_vs_impl(

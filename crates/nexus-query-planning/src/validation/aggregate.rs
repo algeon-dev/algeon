@@ -9,7 +9,6 @@ use super::{
 
 const GLOBAL_VALID_COUNT_STATE_ALIAS_PREFIX: &str = "__nexus_native_global_valid_count_";
 
-#[doc(hidden)]
 pub fn host_group_expr_output_name(expr: &Expr) -> String {
     match expr {
         Expr::Alias { alias, .. } => alias.clone(),
@@ -18,7 +17,6 @@ pub fn host_group_expr_output_name(expr: &Expr) -> String {
     }
 }
 
-#[doc(hidden)]
 pub fn global_count_star_expr(expr: &Expr) -> bool {
     matches!(
         expr,
@@ -45,7 +43,6 @@ pub fn global_count_star_expr(expr: &Expr) -> bool {
     )
 }
 
-#[doc(hidden)]
 pub fn validate_avg_state_alias_collisions(spec: &AggregateSpec, operation: &'static str) -> Result<()> {
     if !aggregate_spec_has_avg(spec) {
         return Ok(());
@@ -60,7 +57,6 @@ pub fn validate_avg_state_alias_collisions(spec: &AggregateSpec, operation: &'st
     validate_reserved_aggregate_aliases(spec, operation, &reserved_aliases, "AVG")
 }
 
-#[doc(hidden)]
 pub fn validate_avg_output_fields(spec: &AggregateSpec, output_schema: &ArrowSchemaRef) -> Result<()> {
     for expr in spec.aggr_exprs.iter().filter(|expr| expr.function == AggregateFunction::Avg) {
         let field = output_schema.field_with_name(expr.alias.as_str()).map_err(|_| {
@@ -87,12 +83,10 @@ pub fn validate_avg_output_fields(spec: &AggregateSpec, output_schema: &ArrowSch
     Ok(())
 }
 
-#[doc(hidden)]
 pub fn global_valid_count_state_alias(alias: &str) -> String {
     format!("{GLOBAL_VALID_COUNT_STATE_ALIAS_PREFIX}{alias}")
 }
 
-#[doc(hidden)]
 pub fn validate_global_valid_count_state_alias_collisions(spec: &AggregateSpec, operation: &'static str) -> Result<()> {
     let reserved_aliases = spec
         .aggr_exprs
@@ -134,7 +128,6 @@ fn validate_reserved_aggregate_aliases(
     Ok(())
 }
 
-#[doc(hidden)]
 pub fn validate_aggregate_capability(node: &AggregateNode, output_schema: &ArrowSchemaRef) -> Result<()> {
     if node.spec.group_exprs.is_empty() {
         validate_global_valid_count_state_alias_collisions(
@@ -198,7 +191,6 @@ fn aggregate_validation_spec(spec: &AggregateSpec) -> AggregateSpec {
     validation
 }
 
-#[doc(hidden)]
 pub fn validate_final_aggregate_capability(node: &AggregateNode, output_schema: &ArrowSchemaRef) -> Result<()> {
     if node.spec.group_exprs.is_empty() {
         validate_global_valid_count_state_alias_collisions(
@@ -231,7 +223,6 @@ pub fn validate_final_aggregate_capability(node: &AggregateNode, output_schema: 
     )
 }
 
-#[doc(hidden)]
 pub fn validate_global_aggregate_capability(spec: &AggregateSpec, output_schema: &ArrowSchemaRef) -> Result<()> {
     if aggregate_spec_has_avg(spec) {
         validate_avg_state_alias_collisions(spec, "nexus_query_engine.global_aggregate.validate_avg_state_alias")?;
@@ -291,7 +282,6 @@ fn validate_global_aggregate_input_expr(expr: &AggregateExpr) -> Result<()> {
     }
 }
 
-#[doc(hidden)]
 pub fn validate_aggregate_output_names(
     aggregate: &LoweredAggregate,
     output_schema: &ArrowSchemaRef,

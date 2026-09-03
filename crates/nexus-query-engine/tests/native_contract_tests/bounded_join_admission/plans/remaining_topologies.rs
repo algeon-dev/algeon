@@ -1225,8 +1225,7 @@ fn grouped_aggregate_with_extra_key(
     builder.add_projection(grouped, projection_outputs(vec![Expr::column("k"), Expr::column("v")], key_value_schema()))
 }
 
-// Used via plans re-export by CPU admission; other path-includes of this file may not call it.
-#[allow(dead_code)]
+#[expect(dead_code, reason = "shared across test binaries; not all path-includes call this constructor")]
 pub(crate) fn shared_grouped_aggregate_fanout_to_join_and_grouped_aggregate_plan() -> nexus_query_engine::plan::QueryPlan
 {
     let mut builder = QueryPlanBuilder::new();

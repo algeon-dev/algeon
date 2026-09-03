@@ -924,7 +924,7 @@ async fn cugraph_sql_gpu_raw_edge_calibration_cannot_overcredit_a_smaller_live_s
 ///
 /// This is an explicit tools command rather than a Cargo test because it
 /// requires an external Python/cuGraph installation.
-#[cfg_attr(test, allow(dead_code))]
+#[cfg_attr(test, expect(dead_code, reason = "explicit tools runner entry point"))]
 pub async fn run_pagerank_filter_sort_limit_acceptance() {
     let dir = unique_temp_dir("datafusion-nexus-cugraph-pagerank-compose");
     let path = dir.join("tiny_directed_edges.parquet");

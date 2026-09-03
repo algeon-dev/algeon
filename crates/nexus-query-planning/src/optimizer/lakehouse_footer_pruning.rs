@@ -83,7 +83,7 @@ pub struct LakehouseFooterPruningResult {
 /// Implementations may perform remote footer reads and filtered dimension scans,
 /// but must not mutate the native plan.  The engine owns all plan inspection,
 /// candidate ordering, capacity checks, and row-group selection application.
-#[allow(async_fn_in_trait)]
+#[expect(async_fn_in_trait, reason = "internal trait consumed within engine runtime async contexts")]
 pub trait LakehouseFooterPruningResolver {
     /// Resolves static reader-predicate selections for one remote source.
     ///

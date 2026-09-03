@@ -151,7 +151,6 @@ fn object_store_error_kind(error: &datafusion::object_store::Error) -> &'static 
         datafusion::object_store::Error::Generic { .. } => "generic",
         datafusion::object_store::Error::InvalidPath { .. } => "invalid_path",
         datafusion::object_store::Error::NotSupported { .. } => "not_supported",
-        #[allow(unreachable_patterns)]
         _ => "other",
     }
 }

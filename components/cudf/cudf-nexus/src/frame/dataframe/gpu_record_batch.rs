@@ -456,7 +456,6 @@ impl ValidatedFixedSizeListFloat32Export<'_> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn pack_validated_list_float32_child_into_runtime(
     export: &PreparedColumnExport<'_>,
     producer_domain: &Arc<ExecutionDomain>,

@@ -237,7 +237,6 @@ pub struct BfsSideInputPreflightInput {
 impl BfsSideInputPreflightInput {
     /// Construct a validated BFS side-input shape. Predicate flags preserve
     /// the distinction between an absent input and a present empty frame.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         vertex_type: DataType,
         edge_type: DataType,

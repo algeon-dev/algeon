@@ -69,7 +69,6 @@ pub fn interval_month_day_nano(expr: &Expr) -> Option<(i32, i32, i64)> {
 /// structured diagnostic. The `Display` implementation is part of the
 /// human-readable diagnostics contract; keep it stable unless the displayed IR
 /// is misleading.
-#[allow(missing_docs)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Expr {
     /// A column reference resolved against the current node input schema.
@@ -281,7 +280,6 @@ pub enum Expr {
     },
 }
 
-#[allow(missing_docs)]
 impl Expr {
     pub fn column(name: impl Into<String>) -> Self {
         Self::Column(ColumnRef::unqualified(name))
@@ -620,7 +618,6 @@ impl CaseWhen {
 }
 
 /// Date or timestamp field supported by `EXTRACT`.
-#[allow(missing_docs)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DatePart {
     Year,
@@ -651,7 +648,6 @@ impl fmt::Display for DatePart {
 }
 
 /// Binary operator in native expression IR.
-#[allow(missing_docs)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BinaryOp {
     /// Arithmetic addition. Temporal handling is context/type-dependent.

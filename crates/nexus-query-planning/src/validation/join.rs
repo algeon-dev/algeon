@@ -17,7 +17,6 @@ use crate::{
     plan::{JoinNode, JoinOutputColumn, JoinSide, JoinType},
 };
 
-#[doc(hidden)]
 pub fn validate_join_capability(
     join: &JoinNode,
     left_schema: &SchemaRef,

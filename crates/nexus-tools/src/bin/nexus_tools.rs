@@ -4,6 +4,8 @@
 //! includes pure parser/CLI unit tests; external-service runners remain behind
 //! `not(test)` and are executed explicitly with `cargo run`.
 
+#![allow(clippy::allow_attributes)] // reason = "tool binary contains extensive multi-feature conditional compilation"
+
 use std::{env, error::Error};
 
 type ToolResult<T> = Result<T, Box<dyn Error + Send + Sync>>;

@@ -1060,9 +1060,6 @@ pub struct RuntimeObservationFooter {
 }
 
 /// One independently parseable JSONL record.
-// Timeline records retain the stable public enum shape even though reservation
-// payloads are deliberately context-rich.
-#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "record_type", content = "data", rename_all = "snake_case")]
 pub enum RuntimeObservationRecord {

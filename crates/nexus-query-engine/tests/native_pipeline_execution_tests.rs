@@ -76,13 +76,13 @@ mod fixtures_parquet;
 #[path = "native_contract_tests/pipeline_compiled_execution/fixtures_plans.rs"]
 // Shared with the CPU contract target. Only a subset is exercised here, so
 // unused fixture constructors are expected for this binary.
-#[allow(dead_code)]
+#[expect(dead_code, reason = "shared fixture file partially exercised in this integration test binary")]
 mod fixtures_plans;
 #[path = "native_contract_tests/pipeline_compiled_execution/gpu_execution.rs"]
 mod gpu_execution;
 #[path = "native_contract_tests/bounded_join_admission/plans/remaining_topologies.rs"]
 // Shared with the CPU contract target; this binary only calls three constructors.
-#[allow(dead_code)]
+#[expect(dead_code, reason = "shared fixture file partially exercised in this integration test binary")]
 mod remaining_topologies;
 
 use fixtures_parquet::*;

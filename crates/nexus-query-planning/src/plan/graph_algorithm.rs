@@ -55,7 +55,6 @@ pub use traversal::{
 };
 
 /// Algorithm-specific parameters.
-#[allow(missing_docs)]
 #[derive(Debug, Clone, PartialEq)]
 pub enum GraphAlgorithmParams {
     PageRank(GraphPageRankParams),

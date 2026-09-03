@@ -2,7 +2,7 @@ use super::*;
 
 // `cudf::Runtime` explicitly implements Send and Sync: it re-enters its
 // device at each FFI boundary. Clippy cannot see that cross-crate unsafe impl.
-#[allow(clippy::arc_with_non_send_sync)]
+#[expect(clippy::arc_with_non_send_sync, reason = "cudf::Runtime explicitly implements Send and Sync")]
 fn shared_runtime(runtime: cudf::Runtime) -> Arc<cudf::Runtime> {
     Arc::new(runtime)
 }

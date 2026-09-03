@@ -18,7 +18,6 @@ use crate::{
     plan::ProjectionOutput,
 };
 
-#[doc(hidden)]
 pub fn validate_expr(
     expr: &Expr,
     input_schema: &SchemaRef,
@@ -237,7 +236,6 @@ fn validate_timestamp_second_integer_cast_expr(
     require_integral_type(&source_type, "timestamp cast source")
 }
 
-#[doc(hidden)]
 pub fn validate_projection_output_expr(
     output: &ProjectionOutput,
     input_schema: &SchemaRef,
@@ -273,7 +271,6 @@ fn validate_expr_with_expected_type(
     }
 }
 
-#[doc(hidden)]
 pub fn validate_column(
     name: &str,
     input_schema: &SchemaRef,
@@ -309,7 +306,6 @@ pub fn validate_column(
     Ok(field.data_type().clone())
 }
 
-#[doc(hidden)]
 pub fn validate_literal(value: &LiteralValue) -> Result<ArrowDataType> {
     if matches!(value, LiteralValue::IntervalMonthDayNano { .. }) {
         return Err(QueryError::new(
@@ -786,7 +782,6 @@ fn validate_like_escape_contract(escape: &str) -> Result<()> {
     }
 }
 
-#[doc(hidden)]
 pub fn comma_separated(columns: &BTreeSet<String>) -> String {
     columns.iter().cloned().collect::<Vec<_>>().join(",")
 }

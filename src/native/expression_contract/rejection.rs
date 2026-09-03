@@ -38,15 +38,6 @@ pub(in crate::native) struct ExpressionRejection {
 }
 
 impl ExpressionRejection {
-    // Compatibility-shaped constants are private to the contract
-    // implementation. They keep generic validation branches concise while
-    // capability-specific branches use the constructors below.
-    #[allow(non_upper_case_globals)]
-    pub(super) const UnsupportedExpression: Self =
-        Self::unsupported_expression(ExpressionCapability::PhysicalExpression);
-    #[allow(non_upper_case_globals)]
-    pub(super) const UnsupportedType: Self = Self::unsupported_type(ExpressionCapability::PhysicalExpression);
-
     pub(super) const fn unsupported_expression(capability: ExpressionCapability) -> Self {
         Self { kind: ExpressionRejectionKind::UnsupportedExpression, capability }
     }

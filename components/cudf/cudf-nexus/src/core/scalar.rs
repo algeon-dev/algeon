@@ -191,6 +191,30 @@ impl Scalar {
         Self::from_handle_with_domain(handle, Arc::clone(domain))
     }
 
+    pub(crate) fn from_runtime_scalar<T: IntoRuntimeScalar>(value: T, domain: &Arc<ExecutionDomain>) -> Result<Self> {
+        match value.into_erased_scalar() {
+            sealed::ErasedScalar::Numeric(type_id, bytes) => {
+                let mut handle = ptr::null_mut();
+                let exec_options = domain.enter_execution()?;
+                error::check_status_in(
+                    unsafe {
+                        cudf_sys::cudf_scalar_create_numeric_ex(
+                            type_id.to_raw(),
+                            bytes.as_ptr() as *const c_void,
+                            1,
+                            exec_options.options(),
+                            &mut handle,
+                        )
+                    },
+                    "scalar::from_runtime_scalar",
+                )?;
+                Self::from_handle_with_domain(handle, Arc::clone(domain))
+            },
+            sealed::ErasedScalar::Str(s) => Self::from_str_in_domain(s, domain),
+            sealed::ErasedScalar::String(s) => Self::from_str_in_domain(&s, domain),
+        }
+    }
+
     pub(crate) fn null_numeric_in_domain<T: CudfType>(domain: &Arc<ExecutionDomain>) -> Result<Self> {
         // SAFETY: `CudfType` is sealed to the built-in fixed-width cudf Rust
         // primitives, all of which have valid all-zero bit patterns.
@@ -825,6 +849,22 @@ impl Drop for Scalar {
     }
 }
 
+mod sealed {
+    use super::*;
+
+    #[derive(Debug)]
+    pub enum ErasedScalar<'a> {
+        Numeric(TypeId, [u8; 8]),
+        Str(&'a str),
+        String(String),
+    }
+
+    pub trait Sealed {
+        fn into_erased_scalar<'a>(self) -> ErasedScalar<'a>
+        where Self: 'a;
+    }
+}
+
 /// Conversion from a host value into a device-resident [`Scalar`] that adopts
 /// the execution provenance of an existing GPU object.
 ///
@@ -833,46 +873,43 @@ impl Drop for Scalar {
 /// expose a single generic `*_scalar` method that accepts both numeric and
 /// string operands.
 ///
-/// Users typically do not implement this trait themselves; the blanket impls
+/// Users cannot implement this trait themselves; the blanket impls
 /// for `T: CudfType`, `&str`, `String`, and `&String` cover the supported
-/// host-side scalar inputs. The trait is sealed via the private
-/// [`Scalar`] constructors it delegates to.
-///
-/// The `domain` argument is an opaque execution-provenance handle exposed only
-/// internally; this trait is invoked through generic bounds on safe wrappers
-/// (e.g. [`Series::eq_scalar`](crate::Series::eq_scalar)) rather than called
-/// directly by end users.
-pub trait IntoRuntimeScalar {
-    /// Build an owned device-resident [`Scalar`] bound to the same execution
-    /// provenance as `domain`.
-    #[allow(private_interfaces)]
-    fn into_runtime_scalar(self, domain: &Arc<ExecutionDomain>) -> Result<Scalar>;
-}
+/// host-side scalar inputs.
+pub trait IntoRuntimeScalar: sealed::Sealed {}
 
-impl<T: CudfType> IntoRuntimeScalar for T {
-    #[allow(private_interfaces)]
-    fn into_runtime_scalar(self, domain: &Arc<ExecutionDomain>) -> Result<Scalar> {
-        Scalar::from_value_in_domain(self, domain)
+impl<T: CudfType> sealed::Sealed for T {
+    fn into_erased_scalar<'a>(self) -> sealed::ErasedScalar<'a> {
+        let mut bytes = [0u8; 8];
+        let size = std::mem::size_of::<T>();
+        debug_assert!(size <= 8);
+        unsafe {
+            std::ptr::copy_nonoverlapping(&self as *const T as *const u8, bytes.as_mut_ptr(), size);
+        }
+        sealed::ErasedScalar::Numeric(T::TYPE_ID, bytes)
     }
 }
+impl<T: CudfType> IntoRuntimeScalar for T {}
 
-impl IntoRuntimeScalar for &str {
-    #[allow(private_interfaces)]
-    fn into_runtime_scalar(self, domain: &Arc<ExecutionDomain>) -> Result<Scalar> {
-        Scalar::from_str_in_domain(self, domain)
+impl sealed::Sealed for &str {
+    fn into_erased_scalar<'a>(self) -> sealed::ErasedScalar<'a>
+    where Self: 'a {
+        sealed::ErasedScalar::Str(self)
     }
 }
+impl IntoRuntimeScalar for &str {}
 
-impl IntoRuntimeScalar for &String {
-    #[allow(private_interfaces)]
-    fn into_runtime_scalar(self, domain: &Arc<ExecutionDomain>) -> Result<Scalar> {
-        Scalar::from_str_in_domain(self.as_str(), domain)
+impl sealed::Sealed for &String {
+    fn into_erased_scalar<'a>(self) -> sealed::ErasedScalar<'a>
+    where Self: 'a {
+        sealed::ErasedScalar::Str(self.as_str())
     }
 }
+impl IntoRuntimeScalar for &String {}
 
-impl IntoRuntimeScalar for String {
-    #[allow(private_interfaces)]
-    fn into_runtime_scalar(self, domain: &Arc<ExecutionDomain>) -> Result<Scalar> {
-        Scalar::from_str_in_domain(self.as_str(), domain)
+impl sealed::Sealed for String {
+    fn into_erased_scalar<'a>(self) -> sealed::ErasedScalar<'a> {
+        sealed::ErasedScalar::String(self)
     }
 }
+impl IntoRuntimeScalar for String {}

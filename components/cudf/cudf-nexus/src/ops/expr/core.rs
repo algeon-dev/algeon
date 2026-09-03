@@ -151,12 +151,6 @@ impl Expr {
         Expr::InList { input: Box::new(self), values, negated: true }
     }
 
-    /// Logical NOT (explicit method, equivalent to `!expr`).
-    #[allow(clippy::should_implement_trait)]
-    pub fn not(self) -> Expr {
-        Expr::UnaryOp { op: UnaryOperator::Not, input: Box::new(self) }
-    }
-
     /// Exponentiation (`self ^ rhs`). Result type follows cuDF `Pow` rules.
     pub fn pow(self, rhs: impl IntoExpr) -> Expr {
         Expr::BinaryOp { lhs: Box::new(self), op: BinaryOperator::Pow, rhs: Box::new(rhs.into_expr()) }

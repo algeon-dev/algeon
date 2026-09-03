@@ -585,7 +585,7 @@ pub struct DeviceTensor<'a, T: DeviceElement> {
 }
 
 impl<T: DeviceElement> DeviceTensor<'_, T> {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "all tensor descriptor parts are required")]
     pub(crate) fn from_parts(
         data: *mut c_void,
         device: i32,
@@ -754,7 +754,7 @@ pub struct DeviceTensorMut<'a, T: DeviceElement> {
 }
 
 impl<T: DeviceElement> DeviceTensorMut<'_, T> {
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments, reason = "all tensor descriptor parts are required")]
     fn from_parts(
         data: *mut c_void,
         device: i32,
