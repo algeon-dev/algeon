@@ -477,8 +477,7 @@ async fn cugraph_sql_gpu_composed_attempt_returns_cache_checkouts_before_deferre
     let profile = datafusion_nexus::backend::NexusGpuDeviceProfile::new(0).with_cache_cap_bytes(CACHE_CAP_BYTES);
     let device = NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
     let backend = NexusGpuBackend::builder().devices([device]).build().unwrap();
-    let cugraph = CugraphSqlConfig::default()
-        .with_native_execution_config(backend.optimizer_config().native_execution_config().clone());
+    let cugraph = CugraphSqlConfig::default();
     let mut config = SessionConfig::new()
         .with_target_partitions(1)
         .with_repartition_file_scans(false)
@@ -610,8 +609,7 @@ async fn cugraph_sql_backend_session_records_query_service_admission_metrics() {
         GpuMemoryOwnership::WholeDeviceExclusive,
     );
     let backend = NexusGpuBackend::builder().devices([device]).build().unwrap();
-    let cugraph = CugraphSqlConfig::default()
-        .with_native_execution_config(backend.optimizer_config().native_execution_config().clone());
+    let cugraph = CugraphSqlConfig::default();
     let mut config = SessionConfig::new()
         .with_target_partitions(1)
         .with_repartition_file_scans(false)
@@ -680,8 +678,7 @@ async fn filtered_local_parquet_context(
     );
     let device = NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
     let backend = NexusGpuBackend::builder().devices([device]).build().unwrap();
-    let cugraph = CugraphSqlConfig::default()
-        .with_native_execution_config(backend.optimizer_config().native_execution_config().clone());
+    let cugraph = CugraphSqlConfig::default();
     let mut config = SessionConfig::new()
         .with_target_partitions(1)
         .with_repartition_file_scans(false)
@@ -833,7 +830,9 @@ async fn cugraph_sql_gpu_memory_estimate_exceeding_budget_fails_admission() {
     );
     let backend = NexusGpuBackend::builder().devices([device]).build().unwrap();
     let state = backend
-        .install_on_with_cugraph_sql(SessionStateBuilder::new_with_default_features(), CugraphSqlConfig::default())
+        .install_on(SessionStateBuilder::new_with_default_features())
+        .unwrap()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
         .unwrap()
         .build();
     let ctx = SessionContext::new_with_state(state);

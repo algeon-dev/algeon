@@ -11,10 +11,7 @@ use nexus_query_engine::plan::{
 };
 
 use super::plan_error;
-use crate::{
-    error::{Error, ErrorCode},
-    native_exec::NexusNativeExecutionConfig,
-};
+use crate::error::{Error, ErrorCode};
 
 /// Cumulative host-memory ceilings for one explicit CPU-to-GPU-to-CPU graph
 /// island.
@@ -89,37 +86,11 @@ pub const CUGRAPH_SORENSEN_FUNCTION: &str = "cugraph_sorensen";
 pub const CUGRAPH_OVERLAP_FUNCTION: &str = "cugraph_overlap";
 pub const CUGRAPH_COSINE_FUNCTION: &str = "cugraph_cosine";
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct CugraphSqlConfig {
     /// Graph construction defaults applied before per-call `options_json`
     /// overrides.
     pub default_graph_options: CugraphGraphOptions,
-    /// Native execution policy used when a cuGraph edge source has not already
-    /// been rewritten into a nexus native execution node.
-    pub native_execution_config: NexusNativeExecutionConfig,
-}
-
-impl Default for CugraphSqlConfig {
-    fn default() -> Self {
-        Self {
-            default_graph_options: CugraphGraphOptions::default(),
-            native_execution_config: NexusNativeExecutionConfig::bounded_default(),
-        }
-    }
-}
-
-impl CugraphSqlConfig {
-    /// Set the native execution policy used by `CugraphAlgoExec`.
-    ///
-    /// The server uses this to keep cuGraph SQL execution aligned with the
-    /// configured bounded/unbounded memory policy. If an edge-source child is
-    /// already a nexus native execution node, cuGraph execution still inherits
-    /// that child node's config so composed GPU-resident pipelines use one
-    /// native context.
-    pub fn with_native_execution_config(mut self, native_execution_config: NexusNativeExecutionConfig) -> Self {
-        self.native_execution_config = native_execution_config;
-        self
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -364,7 +335,7 @@ impl CugraphOperationDefinition {
 /// Source-of-truth list of SQL-visible cuGraph algorithms.
 ///
 /// Order is preserved by [`CugraphAlgorithm::all`] and is the order in which
-/// [`cugraph_table_functions`](crate::cugraph_sql::cugraph_table_functions) registers UDTFs.
+/// cuGraph table functions are registered.
 pub const CUGRAPH_OPERATION_REGISTRY: &[CugraphOperationDefinition] = &[
     CugraphOperationDefinition {
         algorithm: CugraphAlgorithm::PageRank,

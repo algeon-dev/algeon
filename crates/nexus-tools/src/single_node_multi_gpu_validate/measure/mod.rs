@@ -27,6 +27,7 @@ use datafusion_nexus::{
     },
     error::DataFusionErrorExt,
     native_exec::NexusNativeExecutionConfig,
+    session::NexusSessionStateBuilderExt,
 };
 use futures::StreamExt as _;
 use nexus_query_engine::{
@@ -1075,11 +1076,11 @@ pub(super) async fn install_sessions(
             // native device pipeline parallelizes reads internally.
             let session_config = datafusion::prelude::SessionConfig::new().with_target_partitions(1);
             let builder = SessionStateBuilder::new_with_default_features().with_config(session_config);
+            let builder = backend.install_on(builder)?;
             let builder = if needs_cugraph_sql {
-                backend
-                    .install_on_with_cugraph_sql(builder, datafusion_nexus::cugraph_sql::CugraphSqlConfig::default())?
+                builder.try_with_cugraph_sql(datafusion_nexus::cugraph_sql::CugraphSqlConfig::default())?
             } else {
-                backend.install_on(builder)?
+                builder
             };
             let ctx = SessionContext::new_with_state(builder.build());
             match workload.kind {

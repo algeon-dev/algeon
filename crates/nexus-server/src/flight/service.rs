@@ -27,7 +27,6 @@ pub struct DatafusionNexusFlightSqlService {
     /// Flight/application-layer bearer-token validator. The underlying token
     /// store is shared with the handshake path and never reaches GPU control.
     pub(super) auth: AuthInterceptor,
-    pub(super) cugraph_sql_config: Option<CugraphSqlConfig>,
 }
 
 /// Per-statement session context paired with the retained native rule that
@@ -121,13 +120,8 @@ impl DatafusionNexusFlightSqlService {
         native_optimizer_config: NexusNativeOptimizerConfig,
         admission: Arc<QueryAdmission>,
         statement_ticket_ttl: Duration,
-        #[cfg(feature = "cugraph")] cugraph_sql_config: Option<CugraphSqlConfig>,
     ) -> Self {
         let io_lifecycle = Arc::new(crate::io_lifecycle::ServerIoLifecycle::new());
-        #[cfg(feature = "cugraph")]
-        let cugraph_sql_config = cugraph_sql_config;
-        #[cfg(not(feature = "cugraph"))]
-        let cugraph_sql_config = None;
         Self::new_with_io_lifecycle(
             ctx,
             native_optimizer_config,
@@ -135,7 +129,6 @@ impl DatafusionNexusFlightSqlService {
             statement_ticket_ttl,
             AuthInterceptor::new(AuthMode::Disabled, TokenStore::new()),
             io_lifecycle,
-            cugraph_sql_config,
         )
     }
 
@@ -146,7 +139,6 @@ impl DatafusionNexusFlightSqlService {
         statement_ticket_ttl: Duration,
         auth: AuthInterceptor,
         io_lifecycle: Arc<crate::io_lifecycle::ServerIoLifecycle>,
-        cugraph_sql_config: Option<CugraphSqlConfig>,
     ) -> Self {
         let native_execution_config = native_optimizer_config
             .native_execution_config()
@@ -155,8 +147,6 @@ impl DatafusionNexusFlightSqlService {
             .with_host_output_memory_pool_accounting(true);
         let native_optimizer_config =
             native_optimizer_config.with_native_execution_config(native_execution_config.clone());
-        let cugraph_sql_config =
-            cugraph_sql_config.map(|config| config.with_native_execution_config(native_execution_config));
         let observability_config = crate::config::ServerObservabilityConfig::default();
         Self {
             ctx,
@@ -170,7 +160,6 @@ impl DatafusionNexusFlightSqlService {
             statement_ticket_ttl,
             shutdown_token: CancellationToken::new(),
             auth,
-            cugraph_sql_config,
         }
     }
 
@@ -410,13 +399,6 @@ pub(super) fn bounded_test_service(statement_ticket_ttl: Duration) -> BoundedTes
     let ctx = Arc::new(SessionContext::new_with_state(state));
     let native_optimizer_config = backend.optimizer_config().clone();
     let admission = Arc::new(QueryAdmission::from_backend(&backend));
-    let service = DatafusionNexusFlightSqlService::new(
-        ctx,
-        native_optimizer_config,
-        admission,
-        statement_ticket_ttl,
-        #[cfg(feature = "cugraph")]
-        None,
-    );
+    let service = DatafusionNexusFlightSqlService::new(ctx, native_optimizer_config, admission, statement_ticket_ttl);
     BoundedTestFlightSqlService { service, _backend: backend }
 }

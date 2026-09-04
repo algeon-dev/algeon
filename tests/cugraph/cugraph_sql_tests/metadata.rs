@@ -637,10 +637,8 @@ async fn cugraph_reinstall_is_idempotent_and_conflicting_graph_defaults_are_reje
         .try_with_cugraph_sql(CugraphSqlConfig::default())
         .expect("identical reinstall is idempotent");
 
-    let conflicting = CugraphSqlConfig {
-        default_graph_options: CugraphGraphOptions { directed: false, ..Default::default() },
-        ..Default::default()
-    };
+    let conflicting =
+        CugraphSqlConfig { default_graph_options: CugraphGraphOptions { directed: false, ..Default::default() } };
     let error = builder.try_with_cugraph_sql(conflicting).expect_err("conflicting graph defaults must be rejected");
     let nexus = typed_nexus_error(&error);
     assert_eq!(nexus.code(), ErrorCode::InvalidRequest);

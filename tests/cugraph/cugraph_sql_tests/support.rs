@@ -113,7 +113,7 @@ pub(super) fn backend_cugraph_sql_context(builder: SessionStateBuilder) -> (Nexu
         GpuMemoryOwnership::WholeDeviceExclusive,
     );
     let backend = NexusGpuBackend::builder().devices([device]).build().unwrap();
-    let state = backend.install_on_with_cugraph_sql(builder, CugraphSqlConfig::default()).unwrap().build();
+    let state = backend.install_on(builder).unwrap().try_with_cugraph_sql(CugraphSqlConfig::default()).unwrap().build();
     (backend, SessionContext::new_with_state(state))
 }
 

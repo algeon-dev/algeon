@@ -168,16 +168,6 @@ impl DatafusionNexusFlightSqlService {
         let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
         let builder =
             SessionStateBuilder::new_from_existing(self.ctx.state()).with_nexus_native_rule(Arc::clone(&native_rule));
-        let builder = if let Some(cugraph_sql_config) = &self.cugraph_sql_config {
-            builder
-                .try_with_cugraph_sql(cugraph_sql_config.clone().with_native_execution_config(execution_config))
-                // The service cugraph config and the installed session state
-                // both derive from the same validated server config, so the
-                // descriptor projection is identical and reinstall is a no-op.
-                .expect("identical validated cuGraph config reinstall cannot conflict")
-        } else {
-            builder
-        };
         let state = builder.build();
         QueryPlanning { ctx: SessionContext::new_with_state(state), native_rule: Some(native_rule) }
     }

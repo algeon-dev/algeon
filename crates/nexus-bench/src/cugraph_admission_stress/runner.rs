@@ -283,7 +283,7 @@ async fn build_session(
         session_config = session_config.with_batch_size(batch_size);
     }
     let builder = SessionStateBuilder::new().with_config(session_config).with_default_features();
-    let builder = backend.install_on_with_cugraph_sql(builder, CugraphSqlConfig::default())?;
+    let builder = backend.install_on(builder)?.try_with_cugraph_sql(CugraphSqlConfig::default())?;
     // Retain the rule only when its PlanningReports must outlive optimizer execution.
     let builder = if std::env::var(ENV_PRINT_PLANNING).is_ok() {
         let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(backend.optimizer_config().clone()));

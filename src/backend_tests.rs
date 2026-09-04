@@ -322,6 +322,51 @@ fn backend_session_binding_predicate_tracks_installed_backend_identity() {
     );
 }
 
+#[derive(Debug)]
+struct SentinelQueryPlanner;
+
+#[async_trait::async_trait]
+impl datafusion::execution::context::QueryPlanner for SentinelQueryPlanner {
+    async fn create_physical_plan(
+        &self,
+        logical_plan: &datafusion::logical_expr::LogicalPlan,
+        session: &dyn datafusion::catalog::Session,
+    ) -> datafusion::common::Result<Arc<dyn datafusion::physical_plan::ExecutionPlan>> {
+        use datafusion::physical_planner::PhysicalPlanner;
+
+        datafusion::physical_planner::DefaultPhysicalPlanner::default()
+            .create_physical_plan(logical_plan, session)
+            .await
+    }
+}
+
+#[test]
+fn backend_install_on_preserves_caller_custom_query_planner() {
+    let backend = InstalledTestGpuBackend::new();
+    let builder = SessionStateBuilder::new().with_query_planner(Arc::new(SentinelQueryPlanner));
+    let state = backend.install_on(builder).expect("backend install_on must succeed with custom query planner").build();
+    let any = state.query_planner().as_ref() as &dyn std::any::Any;
+    assert!(any.is::<SentinelQueryPlanner>(), "installed session must retain the custom query planner");
+    assert!(backend.backend().is_session_state_bound(&state));
+}
+
+#[test]
+fn backend_can_install_independent_custom_planner_and_cuvs_sessions() {
+    use crate::session::NexusSessionStateBuilderExt;
+
+    let backend = InstalledTestGpuBackend::new();
+    let core_builder = SessionStateBuilder::new().with_query_planner(Arc::new(SentinelQueryPlanner));
+    let core_state = backend.install_on(core_builder).expect("core install succeeds").build();
+    let any = core_state.query_planner().as_ref() as &dyn std::any::Any;
+    assert!(any.is::<SentinelQueryPlanner>());
+    assert!(backend.backend().is_session_state_bound(&core_state));
+
+    let cuvs_builder = SessionStateBuilder::new_with_default_features();
+    let cuvs_builder = backend.install_on(cuvs_builder).expect("backend install succeeds");
+    let cuvs_state = cuvs_builder.try_with_cuvs_sql().expect("cuVS install succeeds").build();
+    assert!(backend.backend().is_session_state_bound(&cuvs_state));
+}
+
 #[test]
 fn backend_session_binding_predicate_rejects_sessions_from_another_backend() {
     let first = InstalledTestGpuBackend::new();
@@ -336,29 +381,29 @@ fn backend_session_binding_predicate_rejects_sessions_from_another_backend() {
 }
 
 #[test]
-fn backend_install_on_with_cugraph_sql_preserves_conflicting_reinstall_error() {
-    use crate::cugraph_sql::{CugraphGraphOptions, CugraphSqlConfig};
+fn backend_install_with_cugraph_sql_preserves_conflicting_reinstall_error() {
+    use crate::{
+        cugraph_sql::{CugraphGraphOptions, CugraphSqlConfig},
+        error::DataFusionErrorExt,
+        session::NexusSessionStateBuilderExt,
+    };
 
     let backend = validated(bounded_backend_builder(&[0])).unwrap();
-    let mut installed = super::install_cugraph_sql_on_installed_backend(
-        super::install_backend_optimizer_config(SessionStateBuilder::new(), &backend.optimizer_config).unwrap(),
-        &backend.optimizer_config,
-        CugraphSqlConfig::default(),
-    )
-    .unwrap();
+    let mut installed = super::install_backend_optimizer_config(SessionStateBuilder::new(), &backend.optimizer_config)
+        .unwrap()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .unwrap();
     // Carry the installed catalog (including the cugraph family) into a fresh
     // builder whose table functions are empty, so the conflicting family
-    // projection — not the preexisting-UDTF admission gate — is the failure.
+    // projection is the failure.
     let builder = SessionStateBuilder::new().with_config(installed.config().as_ref().unwrap().clone());
-    let conflicting = CugraphSqlConfig {
-        default_graph_options: CugraphGraphOptions { directed: false, ..Default::default() },
-        ..Default::default()
-    };
-    let error =
-        super::install_cugraph_sql_on_installed_backend(builder, &backend.optimizer_config, conflicting).unwrap_err();
-    assert_eq!(error.code(), ErrorCode::InvalidRequest);
-    assert_eq!(error.operation(), "datafusion_nexus.gpu_functions.install");
-    assert!(error.message().contains("conflicting GPU function family installation"));
+    let conflicting =
+        CugraphSqlConfig { default_graph_options: CugraphGraphOptions { directed: false, ..Default::default() } };
+    let error = builder.try_with_cugraph_sql(conflicting).unwrap_err();
+    let typed = error.find_nexus_error().expect("structured error");
+    assert_eq!(typed.code(), ErrorCode::InvalidRequest);
+    assert_eq!(typed.operation(), "datafusion_nexus.gpu_functions.install");
+    assert!(typed.message().contains("conflicting GPU function family installation"));
 }
 
 #[cfg(feature = "qualification")]

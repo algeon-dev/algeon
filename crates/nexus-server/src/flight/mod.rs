@@ -67,7 +67,6 @@ use crate::{
         NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
         NexusSessionStateBuilderExt,
     },
-    cugraph_sql::CugraphSqlConfig,
     gpu_coverage::{ExplainGpuOutputMode, parse_explain_gpu, validate_query},
     gpu_coverage_sql::{coverage_batch, coverage_schema},
     native_exec::{

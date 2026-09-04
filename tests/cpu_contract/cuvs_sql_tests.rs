@@ -257,6 +257,43 @@ fn identical_cuvs_installation_is_idempotent_over_its_existing_query_planner() {
     assert!(builder.query_planner().is_some());
 }
 
+#[derive(Debug)]
+struct SentinelQueryPlanner;
+
+#[async_trait::async_trait]
+impl datafusion::execution::context::QueryPlanner for SentinelQueryPlanner {
+    async fn create_physical_plan(
+        &self,
+        logical_plan: &datafusion::logical_expr::LogicalPlan,
+        session: &dyn datafusion::catalog::Session,
+    ) -> datafusion::common::Result<Arc<dyn datafusion::physical_plan::ExecutionPlan>> {
+        use datafusion::physical_planner::PhysicalPlanner;
+
+        datafusion::physical_planner::DefaultPhysicalPlanner::default()
+            .create_physical_plan(logical_plan, session)
+            .await
+    }
+}
+
+#[test]
+fn try_with_cuvs_sql_rejects_opaque_custom_query_planner() {
+    let builder = SessionStateBuilder::new_with_default_features().with_query_planner(Arc::new(SentinelQueryPlanner));
+    let error =
+        builder.try_with_cuvs_sql().expect_err("cuVS SQL installation must reject existing opaque query planner");
+    let typed = error.find_nexus_error().expect("structured error");
+    assert_eq!(typed.fact_value("reason"), Some("query_planner_conflict"));
+}
+
+#[test]
+fn try_with_cuvs_sql_rejects_reinstall_when_planner_is_replaced() {
+    let builder = SessionStateBuilder::new_with_default_features().try_with_cuvs_sql().expect("first cuVS install");
+    let builder = builder.with_query_planner(Arc::new(SentinelQueryPlanner));
+    let error =
+        builder.try_with_cuvs_sql().expect_err("cuVS SQL reinstall must not succeed when query planner was replaced");
+    let typed = error.find_nexus_error().expect("structured error");
+    assert_eq!(typed.fact_value("reason"), Some("query_planner_conflict"));
+}
+
 #[tokio::test]
 async fn root_relation_binding_validation_delegates_to_canonical_registry() {
     let raw = r#"{"input":{"id":"item_id","vector":{}},"n_clusters":1}"#;

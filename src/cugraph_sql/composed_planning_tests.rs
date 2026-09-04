@@ -21,6 +21,7 @@ use super::{CugraphAlgoExec, CugraphSqlConfig};
 use crate::{
     backend::{GpuMemoryOwnership, NexusGpuBackend, NexusGpuDeviceConfig, NexusGpuDeviceProfile},
     native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec},
+    session::NexusSessionStateBuilderExt,
 };
 
 const CPU_INPUT_BFS_SQL: &str = "SELECT vertex, distance, predecessor \
@@ -48,7 +49,9 @@ fn backend_context() -> (NexusGpuBackend, SessionContext) {
     let device = NexusGpuDeviceConfig::new(NexusGpuDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive);
     let backend = NexusGpuBackend::builder().devices([device]).build().unwrap();
     let state = backend
-        .install_on_with_cugraph_sql(SessionStateBuilder::new_with_default_features(), CugraphSqlConfig::default())
+        .install_on(SessionStateBuilder::new_with_default_features())
+        .unwrap()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
         .unwrap()
         .build();
     (backend, SessionContext::new_with_state(state))

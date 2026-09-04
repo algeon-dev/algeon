@@ -48,8 +48,10 @@ const PCA_OPTIONS: &str = r#"{
 async fn cuvs_sql_plans_cugraph_relational_input_then_rejects_bounded_execution() {
     let backend = cuvs_test_backend();
     let state = backend
-        .install_on_with_cugraph_sql(SessionStateBuilder::new_with_default_features(), CugraphSqlConfig::default())
-        .expect("install backend-owned cuGraph SQL")
+        .install_on(SessionStateBuilder::new_with_default_features())
+        .expect("install backend")
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
         .try_with_cuvs_sql()
         .expect("install cuGraph and cuVS SQL")
         .build();

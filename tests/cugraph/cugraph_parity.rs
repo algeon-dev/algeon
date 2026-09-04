@@ -36,6 +36,7 @@ use datafusion_nexus::{
             load_ref_csv_vertex_list,
         },
     },
+    session::NexusSessionStateBuilderExt,
 };
 use serde_json::{Map, Value};
 
@@ -302,10 +303,9 @@ fn parity_session() -> (NexusGpuBackend, SessionContext) {
     let device = NexusGpuDeviceConfig::new(NexusGpuDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive);
     let backend = NexusGpuBackend::builder().devices([device]).build().expect("parity backend must build");
     let state = backend
-        .install_on_with_cugraph_sql(
-            SessionStateBuilder::new().with_config(config).with_default_features(),
-            CugraphSqlConfig::default(),
-        )
+        .install_on(SessionStateBuilder::new().with_config(config).with_default_features())
+        .expect("backend must install")
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
         .expect("cuGraph SQL must install")
         .build();
     (backend, SessionContext::new_with_state(state))

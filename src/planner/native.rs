@@ -204,6 +204,7 @@ pub struct NexusNativePhysicalOptimizerRule {
     config: NexusNativeOptimizerConfig,
     stage: NativeOptimizerStage,
     state: Arc<NexusNativePhysicalOptimizerRuleState>,
+    mints_plan_ticket: bool,
 }
 
 #[derive(Debug)]
@@ -241,6 +242,25 @@ impl NexusNativePhysicalOptimizerRule {
                 last_source_diagnostics: Mutex::new(Vec::new()),
                 last_capability_contract: Mutex::new(NativeCapabilityContractDiagnostics::default()),
             }),
+            mints_plan_ticket: true,
+        }
+    }
+
+    #[cfg(feature = "cugraph")]
+    pub(crate) fn new_cugraph_subplan(config: NexusNativeOptimizerConfig) -> Self {
+        Self {
+            config,
+            stage: NativeOptimizerStage::Final,
+            state: Arc::new(NexusNativePhysicalOptimizerRuleState {
+                last_input_plan_root: Mutex::new(String::new()),
+                last_input_plan_shape: Mutex::new(String::new()),
+                last_input_join_diagnostics: Mutex::new(Vec::new()),
+                last_report: Mutex::new(None),
+                last_native_optimizer: Mutex::new(nexus_query_engine::optimizer::NativeOptimizerDiagnostics::default()),
+                last_source_diagnostics: Mutex::new(Vec::new()),
+                last_capability_contract: Mutex::new(NativeCapabilityContractDiagnostics::default()),
+            }),
+            mints_plan_ticket: false,
         }
     }
 
@@ -254,6 +274,7 @@ impl NexusNativePhysicalOptimizerRule {
             config: self.config.clone(),
             stage: NativeOptimizerStage::CountOnlyProbe,
             state: Arc::clone(&self.state),
+            mints_plan_ticket: self.mints_plan_ticket,
         }
     }
 
@@ -369,11 +390,12 @@ impl PhysicalOptimizerRule for NexusNativePhysicalOptimizerRule {
         };
         let mut optimized = optimized;
         if optimized.rewritten
+            && self.mints_plan_ticket
             && let Some(extension) = &attempt_extension
         {
             extension.native_admission_planned(optimized.plan.as_ref());
         }
-        let query_admission_ticket = if optimized.rewritten {
+        let query_admission_ticket = if optimized.rewritten && self.mints_plan_ticket {
             plan_query_admission_ticket_for_optimized_plan(
                 optimized.plan.as_ref(),
                 native_execution_config,
@@ -382,10 +404,14 @@ impl PhysicalOptimizerRule for NexusNativePhysicalOptimizerRule {
         } else {
             None
         };
-        if let (Some(extension), Some(ticket)) = (&attempt_extension, &query_admission_ticket) {
+        if self.mints_plan_ticket
+            && let (Some(extension), Some(ticket)) = (&attempt_extension, &query_admission_ticket)
+        {
             extension.bind_ticket(Arc::clone(ticket));
         }
-        apply_execution_admission_wrappers(&mut optimized, query_admission_ticket);
+        if self.mints_plan_ticket {
+            apply_execution_admission_wrappers(&mut optimized, query_admission_ticket);
+        }
         self.store_optimization_attempt(&optimized)?;
         Ok(optimized.plan)
     }

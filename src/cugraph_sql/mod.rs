@@ -27,8 +27,7 @@ pub(crate) use gpu_family::CugraphGpuFunctionFamily;
 pub use parser::parse_cugraph_algorithm_spec;
 #[cfg(feature = "cugraph")]
 pub use table_function::CugraphAlgoTableProvider;
-pub(crate) use table_function::is_feature_disabled_execution_plan;
-pub use table_function::{cugraph_table_functions, register_cugraph_udtfs};
+pub(crate) use table_function::{cugraph_table_functions, is_feature_disabled_execution_plan};
 #[cfg(feature = "cugraph")]
 pub(crate) use types::CugraphLogicalOutputMultiplicity;
 pub use types::{

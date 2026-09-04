@@ -2866,10 +2866,9 @@ async fn installed_backend_datafusion_parquet_graph_ticket_keeps_post_hydration_
     let backend = test_gpu_backend();
     let state = backend
         .backend()
-        .install_on_with_cugraph_sql(
-            datafusion::execution::SessionStateBuilder::new_with_default_features(),
-            CugraphSqlConfig::default(),
-        )
+        .install_on(datafusion::execution::SessionStateBuilder::new_with_default_features())
+        .unwrap()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
         .unwrap()
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -2969,10 +2968,9 @@ async fn installed_backend_string_pagerank_ticket_orders_source_mapping_and_grap
     let backend = test_gpu_backend();
     let state = backend
         .backend()
-        .install_on_with_cugraph_sql(
-            datafusion::execution::SessionStateBuilder::new_with_default_features(),
-            CugraphSqlConfig::default(),
-        )
+        .install_on(datafusion::execution::SessionStateBuilder::new_with_default_features())
+        .unwrap()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
         .unwrap()
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -3051,10 +3049,9 @@ async fn force_atlas2_count_and_coordinate_sums_execute_natively() {
     let backend = test_gpu_backend();
     let state = backend
         .backend()
-        .install_on_with_cugraph_sql(
-            datafusion::execution::SessionStateBuilder::new_with_default_features(),
-            CugraphSqlConfig::default(),
-        )
+        .install_on(datafusion::execution::SessionStateBuilder::new_with_default_features())
+        .unwrap()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
         .unwrap()
         .build();
     let ctx = SessionContext::new_with_state(state);
@@ -3114,10 +3111,9 @@ async fn qualification_dblp_force_atlas2_ticket_uses_full_footer_metadata() {
     let backend = test_gpu_backend();
     let state = backend
         .backend()
-        .install_on_with_cugraph_sql(
-            datafusion::execution::SessionStateBuilder::new_with_default_features(),
-            CugraphSqlConfig::default(),
-        )
+        .install_on(datafusion::execution::SessionStateBuilder::new_with_default_features())
+        .unwrap()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
         .unwrap()
         .build();
     let ctx = SessionContext::new_with_state(state);

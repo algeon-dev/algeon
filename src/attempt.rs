@@ -925,6 +925,7 @@ mod tests {
         error::ErrorCode,
         native_exec::NexusNativeExecutionConfig,
         planner::FinalPlanRequirement,
+        session::NexusSessionStateBuilderExt,
     };
 
     #[tokio::test]
@@ -936,13 +937,15 @@ mod tests {
             NexusGpuQueuePolicy::default(),
             [FinalPlanRequirement::NoDataFusionCpu],
         );
-        let state = backend
+        let builder = backend
             .backend()
-            .install_on_with_cugraph_sql(
+            .install_on(
                 SessionStateBuilder::new_with_default_features()
                     .with_config(SessionConfig::new().with_target_partitions(1)),
-                CugraphSqlConfig::default(),
             )
+            .expect("feature-off cuGraph SQL backend install must succeed");
+        let state = builder
+            .try_with_cugraph_sql(CugraphSqlConfig::default())
             .expect("feature-off cuGraph SQL must install on an attempt-capable backend")
             .build();
         let ctx = SessionContext::new_with_state(state);

@@ -236,9 +236,6 @@ impl FlightSqlServerBuilder {
             effective_config.statement_ticket_ttl,
             auth_interceptor,
             io_lifecycle,
-            effective_config.cugraph.as_ref().map(|cugraph| {
-                session::cugraph_sql_config(cugraph, native_optimizer_config.native_execution_config().clone())
-            }),
         )
         .with_server_config_diagnostics(&effective_config);
         let local_addr = matches!(&listen, Listen::Prebound(_)).then_some(addr);

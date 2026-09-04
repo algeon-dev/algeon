@@ -338,6 +338,8 @@ async fn metadata_logical_proof_rejects_user_sources_and_source_free_queries() {
                 .with_config(SessionConfig::new().with_information_schema(true)),
         )
         .unwrap()
+        .try_with_cuvs_sql()
+        .unwrap()
         .build();
     let ctx = Arc::new(SessionContext::new_with_state(state));
     let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
@@ -347,8 +349,6 @@ async fn metadata_logical_proof_rejects_user_sources_and_source_free_queries() {
         backend.optimizer_config().clone(),
         Arc::new(QueryAdmission::from_backend(&backend)),
         Duration::from_secs(30),
-        #[cfg(feature = "cugraph")]
-        None,
     );
 
     let validate_call = r#"{"schema_version":1,"relations":{"input":{"table":"input"}},"options":{}}"#;
@@ -611,8 +611,6 @@ async fn table_format_distinct_list_issues_ticket_and_executes_datafusion_delega
         NexusNativeOptimizerConfig::default(),
         Arc::new(QueryAdmission::new_for_tests()),
         Duration::from_secs(30),
-        #[cfg(feature = "cugraph")]
-        None,
     );
 
     issue_statement_ticket(&service, "SELECT DISTINCT \"pCodes\" FROM iceberg_t")
@@ -657,8 +655,6 @@ async fn table_format_map_preserves_datafusion_baseline() {
         NexusNativeOptimizerConfig::default(),
         Arc::new(QueryAdmission::new_for_tests()),
         Duration::from_secs(30),
-        #[cfg(feature = "cugraph")]
-        None,
     );
 
     issue_statement_ticket(&service, "SELECT i.\"countDetail\" FROM iceberg_t AS i CROSS JOIN mem_t AS m")
@@ -750,8 +746,6 @@ async fn planning_timeout_consumes_statement_ticket_without_holding_admission() 
         NexusNativeOptimizerConfig::default(),
         Arc::new(QueryAdmission::new_for_tests()),
         Duration::from_secs(30),
-        #[cfg(feature = "cugraph")]
-        None,
     );
 
     issue_statement_ticket(&service, "SELECT COUNT(*) AS c FROM iceberg_t")
@@ -786,8 +780,6 @@ async fn update_ddl_read_only_schema_failure_does_not_classify_upstream_error_pr
         NexusNativeOptimizerConfig::default(),
         Arc::new(QueryAdmission::new_for_tests()),
         Duration::from_secs(30),
-        #[cfg(feature = "cugraph")]
-        None,
     );
     let query_id = "read-only-ddl-target".to_string();
     let sql = "CREATE VIEW target_edges AS SELECT src, dst FROM edges_by_src".to_string();
@@ -829,8 +821,6 @@ async fn update_set_datafusion_nexus_key_is_rejected_loudly() {
         NexusNativeOptimizerConfig::default(),
         Arc::new(QueryAdmission::new_for_tests()),
         Duration::from_secs(30),
-        #[cfg(feature = "cugraph")]
-        None,
     );
     let query_id = "reject-nexus-set".to_string();
     let sql = "SET datafusion_nexus.request.requested_grant_bytes = '1048576'".to_string();
@@ -912,8 +902,6 @@ async fn prepared_update_shutdown_promotion_preserves_operation_and_request_meta
         NexusNativeOptimizerConfig::default(),
         Arc::new(QueryAdmission::new_for_tests()),
         Duration::from_secs(30),
-        #[cfg(feature = "cugraph")]
-        None,
     );
     let query_id = "prepared-update-shutdown-race".to_string();
     let correlation_id = "prepared-update-correlation".to_string();
@@ -964,8 +952,6 @@ async fn issuing_a_new_ticket_sweeps_abandoned_tickets_without_do_get() {
         NexusNativeOptimizerConfig::default(),
         Arc::new(QueryAdmission::new_for_tests()),
         Duration::ZERO,
-        #[cfg(feature = "cugraph")]
-        None,
     );
 
     issue_statement_ticket(&service, "SELECT 1").await.expect("first ticket should issue");
