@@ -10,11 +10,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use arrow::{
-    array::Int32Array,
-    datatypes::{DataType, Field, Schema},
-    record_batch::RecordBatch,
-};
+use arrow::datatypes::{DataType, Field, Schema};
 use datafusion::physical_plan::{empty::EmptyExec, union::UnionExec};
 use futures::future::BoxFuture;
 use nexus_query_engine::{
@@ -25,9 +21,7 @@ use nexus_query_engine::{
         QUERY_ATTEMPT_REPORT_SCHEMA_V1, QueryAttemptReport, RuntimeObservationConfig, RuntimeObservationOwner,
         RuntimeQueryId, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot,
     },
-    plan::QueryPlanBuilder,
     runtime::ExecutionCancellation,
-    source::{GpuResidentSource, LiteralBatchSource, SourceNode},
 };
 
 use super::{
@@ -44,7 +38,6 @@ use super::{
 };
 use crate::{
     adapter_error::ErrorCode,
-    native_exec::{NexusNativeComposedExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec},
     planner::NativePlanningDiagnostics,
     report::{GpuCandidate, PlanningReport},
 };
@@ -698,31 +691,6 @@ fn tsv_value<'a>(payload: &'a str, section: &str, column: &str) -> &'a str {
     row[header.iter().position(|name| *name == column).unwrap()]
 }
 
-fn test_native_producer(input_name: &str) -> (NexusNativeGpuProducerExec, Arc<Schema>) {
-    let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int32, false)]));
-    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(Int32Array::from(vec![1]))]).unwrap();
-    let mut builder = QueryPlanBuilder::new();
-    let source =
-        builder.add_source(SourceNode::LiteralBatch(LiteralBatchSource::new(Arc::clone(&schema), vec![batch])));
-    let plan = builder.finish_with_host_sink(source).clone_with_gpu_resident_sink();
-    (NexusNativeGpuProducerExec::try_new_for_test(input_name, plan).unwrap(), schema)
-}
-
-fn record_one_gpu_handoff(producer: &NexusNativeGpuProducerExec) {
-    let _ = producer;
-}
-
-fn capture_successful_plan(
-    coordinator: &Arc<QueryCoordinator>,
-    query_id: &str,
-    plan: Arc<dyn ExecutionPlan>,
-) -> String {
-    let planning = register(coordinator, query_id);
-    coordinator.capture_planning(query_id, Some(accepted_native_diagnostics()), plan);
-    planning.into_execution().unwrap().succeed();
-    String::from_utf8(coordinator.query_stats(query_id).unwrap().to_vec()).unwrap()
-}
-
 #[test]
 fn terminal_artifact_composer_reserves_fixed_frames_and_keeps_complete_utf8_lines() {
     let control = Arc::<[u8]>::from(&b"control"[..]);
@@ -1254,47 +1222,6 @@ fn finalization_projection_panic_installs_bounded_unavailable_without_poisoning_
 fn checked_deadline_overflow_is_immediate_and_never_panics() {
     let now = Instant::now();
     assert_eq!(checked_deadline(now, Duration::MAX), now);
-}
-
-#[test]
-fn coordinator_stats_do_not_mint_producer_only_composed_runtime_metrics() {
-    let mut metrics_config = config();
-    metrics_config.retained_max_bytes = 1024 * 1024;
-    let coordinator = QueryCoordinator::new(metrics_config);
-    let (producer, schema) = test_native_producer("producer-only");
-    record_one_gpu_handoff(&producer);
-
-    let mut consumer_builder = QueryPlanBuilder::new();
-    let source = consumer_builder.add_source(SourceNode::GpuResident(GpuResidentSource::new("producer-only", schema)));
-    let consumer = consumer_builder.finish_with_host_sink(source);
-    let composed = NexusNativeComposedExec::try_new_for_test(
-        consumer,
-        vec![Arc::new(producer)],
-        NexusNativeExecutionConfig::bounded_default(),
-    )
-    .unwrap();
-    let plan = Arc::new(composed) as Arc<dyn ExecutionPlan>;
-
-    let payload = capture_successful_plan(&coordinator, "producer-composed-metrics", plan);
-
-    assert_eq!(tsv_value(&payload, "execution", "gpu_resident_input_handoffs"), "0", "{payload}");
-}
-
-#[test]
-fn coordinator_stats_do_not_mint_shared_dag_runtime_metrics() {
-    let mut metrics_config = config();
-    metrics_config.retained_max_bytes = 1024 * 1024;
-    let coordinator = QueryCoordinator::new(metrics_config);
-    let (producer, _) = test_native_producer("shared-metrics");
-    record_one_gpu_handoff(&producer);
-    let shared = Arc::new(producer.clone()) as Arc<dyn ExecutionPlan>;
-    let same_node = Arc::clone(&shared);
-    let distinct_node_with_shared_metrics = Arc::new(producer) as Arc<dyn ExecutionPlan>;
-    let plan = UnionExec::try_new(vec![shared, same_node, distinct_node_with_shared_metrics]).unwrap();
-
-    let payload = capture_successful_plan(&coordinator, "shared-dag-metrics", plan);
-
-    assert_eq!(tsv_value(&payload, "execution", "gpu_resident_input_handoffs"), "0", "{payload}");
 }
 
 #[test]

@@ -575,15 +575,6 @@ fn validate_injected_backend_matches_config(backend: &NexusGpuBackend, config: &
     validate_injected_startup_profiles(backend.device_startup_records(), config)
 }
 
-#[cfg(test)]
-fn validate_test_validation_projection_matches_config(
-    backend: &crate::backend::TestBackendValidationProjection,
-    config: &ServerConfig,
-) -> Result<()> {
-    validate_injected_queue_policy(backend.queue_policy(), config)?;
-    validate_test_profile_projection(backend.devices(), config)
-}
-
 fn validate_injected_queue_policy(injected: &crate::backend::NexusGpuQueuePolicy, config: &ServerConfig) -> Result<()> {
     let queue_policy = admission::server_queue_policy(config);
     if queue_policy.max_queued_attempts() != injected.max_queued_attempts() {
@@ -712,98 +703,6 @@ fn validate_injected_startup_profiles(
             "admission.device_profiles.install_telemetry",
             profile.install_telemetry(),
             record.install_telemetry,
-        )?;
-    }
-    Ok(())
-}
-
-#[cfg(test)]
-fn validate_test_profile_projection(
-    backend_devices: &[crate::backend::NexusGpuDeviceConfig],
-    config: &ServerConfig,
-) -> Result<()> {
-    let configured_profiles = configured_profile_map(config)?;
-    let configured_ownership = configured_ownership_map(config)?;
-    if backend_devices.len() != configured_profiles.len() {
-        return Err(ServerError::builder_conflict(
-            "server_backend_admission_conflict",
-            "admission.device_profiles",
-            configured_profiles.len(),
-            backend_devices.len(),
-        ));
-    }
-    for device in backend_devices {
-        let ordinal = device.device_ordinal();
-        let profile = device.profile();
-        let expected = configured_profiles.get(&ordinal).ok_or_else(|| {
-            ServerError::builder_conflict(
-                "server_backend_admission_conflict",
-                "admission.device_profiles",
-                format_usize_list(&config.gpu_devices),
-                ordinal,
-            )
-        })?;
-        compare_profile_field(
-            ordinal,
-            "admission.device_profiles.memory_limit",
-            format!("{:?}", expected.memory_limit()),
-            format!("{:?}", profile.memory_limit()),
-        )?;
-        compare_profile_field(
-            ordinal,
-            "admission.device_profiles.backend_reserve_bytes",
-            expected.backend_reserve_bytes(),
-            profile.backend_reserve_bytes(),
-        )?;
-        compare_profile_field(
-            ordinal,
-            "admission.device_profiles.attempt_floor_bytes",
-            format!("{:?}", expected.attempt_floor_bytes()),
-            format!("{:?}", profile.attempt_floor_bytes()),
-        )?;
-        compare_profile_field(
-            ordinal,
-            "admission.device_profiles.source_work_per_attempt",
-            expected.source_work_per_attempt(),
-            profile.source_work_per_attempt(),
-        )?;
-        compare_profile_field(
-            ordinal,
-            "admission.device_profiles.max_active_attempts",
-            expected.max_active_attempts(),
-            profile.max_active_attempts(),
-        )?;
-        compare_profile_field(
-            ordinal,
-            "admission.device_profiles.installation_bounds",
-            format!("{:?}", expected.installation_bounds()),
-            format!("{:?}", profile.installation_bounds()),
-        )?;
-        compare_profile_field(
-            ordinal,
-            "admission.device_profiles.capabilities",
-            format!("{:?}", expected.device_capabilities()),
-            format!("{:?}", profile.device_capabilities()),
-        )?;
-        compare_profile_field(
-            ordinal,
-            "admission.device_profiles.install_telemetry",
-            expected.install_telemetry(),
-            profile.install_telemetry(),
-        )?;
-        let expected_ownership = configured_ownership.get(&ordinal).ok_or_else(|| {
-            ServerError::builder_validation(
-                "server_backend_admission_conflict",
-                "server config has no deployment ownership declaration for a test device profile",
-            )
-            .with_fact("device_ordinal", ordinal)
-        })?;
-        let actual_ownership = device.memory_ownership();
-        compare_profile_field(
-            ordinal,
-            "gpu_memory_ownership",
-            format!("{expected_ownership:?}"),
-            format!("{actual_ownership:?}"),
         )?;
     }
     Ok(())

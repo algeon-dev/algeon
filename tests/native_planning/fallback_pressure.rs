@@ -27,7 +27,6 @@ use datafusion::{
         aggregates::{AggregateExec, AggregateMode, PhysicalGroupBy},
         filter::FilterExec,
         limit::LocalLimitExec,
-        metrics::{ExecutionPlanMetricsSet, MetricBuilder, MetricType},
         projection::{ProjectionExec, ProjectionExpr},
         sorts::sort::SortExec,
     },
@@ -35,32 +34,20 @@ use datafusion::{
 };
 use datafusion_nexus::{
     capability::CapabilityReason,
-    native_exec::{NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec},
+    native_exec::NexusNativeExecutionConfig,
     native_report::{
-        CandidateOutcomeKind, FinalPlanDisposition, NATIVE_DATAFUSION_EXECUTION_TSV_HEADER,
-        NATIVE_DATAFUSION_PLANNING_TSV_HEADER, NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NativeDataFusionExecutionMetrics,
-        NativeDataFusionExecutionReport, NativeDataFusionExecutionWorkloadItem, NativeDataFusionPlanningReport,
-        NativeDataFusionPlanningWorkloadItem, NativeDataFusionRuntime, NativeDataFusionRuntimeOutcome,
-        NativeDynamicFilterRuntimeMetricRow, NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem,
+        CandidateOutcomeKind, FinalPlanDisposition, NATIVE_DATAFUSION_PLANNING_TSV_HEADER,
+        NATIVE_FALLBACK_PRESSURE_TSV_HEADER, NativeDataFusionPlanningReport, NativeDataFusionPlanningWorkloadItem,
+        NativeFallbackPressureReport, NativeFallbackPressureWorkloadItem,
     },
-    planner::{
-        NativeCapabilityAcceptedCandidateDiagnostics, NativeCapabilityCompiledGraphDiagnostics,
-        NativeCapabilityContractDiagnostics, NativePlanningDiagnostics, NexusNativeOptimizerConfig,
-        NexusNativePhysicalOptimizerRule,
-    },
+    planner::{NativePlanningDiagnostics, NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     report::{GpuCandidate, PlanningReport},
     session::NexusSessionStateBuilderExt,
 };
 use nexus_query_engine::{
-    capability::{ContractQuality, ContractStatus, ReservationRequirementScope},
-    contract_report::{
-        CapabilityContractGateId, CapabilityContractGateRow, CapabilityContractOwner, CapabilityContractReport,
-    },
+    capability::{ContractQuality, ContractStatus},
     mode::CapabilityEnvelopeStatus,
-    pipeline::{ReservationGateId, ReservationGateOwner},
-    plan::QueryPlanBuilder,
     runtime::ReservationKind,
-    source::{GpuResidentSource, LocalParquetSource, SourceNode},
 };
 use nexus_workloads::tpch::{
     TPCH_QUERY_COUNT, tiny_tpch_dataset_metadata, tpch_query_ids, write_tiny_tpch_parquet_dataset,
@@ -95,8 +82,6 @@ const EXPECTED_BOUNDED_TPCH_JOIN_ACCEPTED: &[&str] = &[
 
 #[path = "../native_fallback_pressure_tests/analytical_olap.rs"]
 mod analytical_olap;
-#[path = "../native_fallback_pressure_tests/execution_reports.rs"]
-mod execution_reports;
 #[path = "../native_fallback_pressure_tests/sql.rs"]
 mod sql;
 #[path = "../native_fallback_pressure_tests/support.rs"]

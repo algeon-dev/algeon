@@ -1,6 +1,6 @@
 {
-  "schema": "datafusion_nexus.single_node_multi_gpu.run_artifact.v5",
-  "version": 5,
+  "schema": "datafusion_nexus.single_node_multi_gpu.run_artifact.v6",
+  "version": 6,
   "status": "measured_run",
   "profile": {"sha256": "PROFILE_SHA256"},
   "provenance": {

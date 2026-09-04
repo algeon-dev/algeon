@@ -44,10 +44,12 @@ mod tests;
 #[doc(hidden)]
 pub use admitted_proof::AdmittedAttemptProof;
 pub use attempt_domain::AttemptAllocationDomain;
+#[cfg(feature = "qualification")]
+pub use backend_core::GpuBackendFaultInjector;
 pub use backend_core::{
     GpuBackendCloseSnapshot, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreBuilder, GpuBackendCoreDraft,
-    GpuBackendCoreIdentity, GpuBackendDeviceConfig, GpuBackendDeviceStartupRecord, GpuBackendFaultInjector,
-    GpuBackendSession, GpuDeviceMemoryLimit, GpuMemoryFraction, GpuMemoryOwnership,
+    GpuBackendCoreIdentity, GpuBackendDeviceConfig, GpuBackendDeviceStartupRecord, GpuBackendSession,
+    GpuDeviceMemoryLimit, GpuMemoryFraction, GpuMemoryOwnership,
 };
 #[doc(hidden)]
 pub use backend_core::{GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe};
@@ -111,11 +113,13 @@ pub use object_store::{S3SourceStorageCredential, S3SourceStorageProfile, Source
 pub use process_exit::{
     ProcessExitPhase, ProcessExitRegistration, ProcessExitShutdown, register_cuda_process_exit_shutdown,
 };
+#[cfg(feature = "qualification")]
+pub use query_service::DeviceQuarantineInjection;
 #[doc(hidden)]
 pub use query_service::QueryService;
 pub use query_service::{
-    AdmittedQueryContext, DeviceQuarantineInjection, QueryActivityLease, QueryAdmissionOutcome, QueryAdmissionRequest,
-    QueryExecutionConfig, QueryHandle, QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot, QueueBounds,
+    AdmittedQueryContext, QueryActivityLease, QueryAdmissionOutcome, QueryAdmissionRequest, QueryExecutionConfig,
+    QueryHandle, QueryServiceAdmissionSnapshot, QueryServiceDeviceAdmissionSnapshot, QueueBounds,
 };
 pub use reservation::MemoryReservationRequest;
 #[doc(hidden)]

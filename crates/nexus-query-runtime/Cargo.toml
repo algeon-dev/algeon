@@ -11,6 +11,9 @@ default = []
 cugraph = ["dep:cugraph", "nexus-query-planning/cugraph"]
 cuvs = ["nexus-query-planning/cuvs"]
 nvml = ["dep:nvml-wrapper"]
+# Controlled device-quarantine qualification: closes admission on one live
+# device ledger through the same gate placement uses. No generic fault API.
+qualification = []
 test-hooks = ["nexus-query-planning/test-hooks"]
 
 [lints]

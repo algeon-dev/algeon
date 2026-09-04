@@ -1,0 +1,31 @@
+# Per-symbol allowlist for the root adapter's remaining `#[doc(hidden)] pub` surface.
+# `cargo public-api` omits hidden items, so scripts/ci/check_public_api_hidden.py
+# checks this ledger against the source instead of a snapshot. Module entries
+# cover unattributed children inside that module. No module-level wildcards:
+# every attributed hidden symbol has its own row with owner, consumer, and a
+# concrete removal condition.
+symbol	feature	owner	consumer	removal_condition
+datafusion_nexus::attempt::server_internal	server-internal	root adapter attempt lifecycle	nexus-server Flight service	Flight frontend stops driving attempt capture/render and uses public attempt reports
+datafusion_nexus::server_internal	server-internal	root adapter facade	nexus-server Flight service	same as datafusion_nexus::attempt::server_internal
+datafusion_nexus::native_exec::ServerInternalNativeMetricsCapture	server-internal	root adapter native execution	nexus-server Flight statement wiring	server stops attaching execution-local metrics capture to native configs
+datafusion_nexus::native_exec::ServerInternalNativeObservationActivityFactory	server-internal	root adapter native execution	nexus-server Flight statement wiring	server stops attaching observation activity factories to native configs
+datafusion_nexus::native_exec::config::with_cancellation_for_internal_consumer	server-internal	root adapter native execution	nexus-server Flight statement wiring	server stops propagating statement cancellation into native configs
+datafusion_nexus::native_exec::config::with_io_lifecycle_for_internal_consumer	server-internal	root adapter native execution	nexus-server Flight service wiring	server stops propagating IO lifecycle handles into native configs
+datafusion_nexus::native_exec::config::with_metrics_capture_for_internal_consumer	server-internal	root adapter native execution	nexus-server Flight statement wiring	server stops propagating metrics capture handles into native configs
+datafusion_nexus::error::from_native_for_internal_consumer	server-internal	root adapter error boundary	nexus-server error mapping	server stops translating engine QueryError at the Flight boundary
+datafusion_nexus::native_report::bench_support	bench-support	root adapter native reports	nexus-bench TPC-DS parity report	benchmark report package stops consuming parity comparison rows
+datafusion_nexus::native_exec::config::admission::with_query_service_handle	bench-support	root adapter native execution	nexus-bench query-service stress runners	stress runners stop executing through admitted query-service handles
+datafusion_nexus::native_exec::composed::native_plan_for_internal_consumer	bench-support	root adapter native execution	nexus-tools clickbench stage probe	stage probe stops reading composed consumer QueryPlans
+datafusion_nexus::native_exec::host::native_plan_for_internal_consumer	bench-support	root adapter native execution	nexus-tools clickbench stage probe	stage probe stops reading host QueryPlans
+datafusion_nexus::cugraph_sql::parity	bench-support	root adapter cuGraph SQL	cugraph parity tests and nexus-tools refresh_cugraph_oracle	oracle refresh workflow and registry-driven parity harness are deleted
+datafusion_nexus::cugraph_sql::parity::ParityComparator	bench-support	root adapter cuGraph SQL	cugraph parity compare harness	same as datafusion_nexus::cugraph_sql::parity
+datafusion_nexus::cugraph_sql::parity::ParityTruthSource	bench-support	root adapter cuGraph SQL	cugraph parity oracle harness	same as datafusion_nexus::cugraph_sql::parity
+datafusion_nexus::cugraph_sql::parity::ParityTolerance	bench-support	root adapter cuGraph SQL	cugraph parity compare harness	same as datafusion_nexus::cugraph_sql::parity
+datafusion_nexus::cugraph_sql::parity::ParitySpec	bench-support	root adapter cuGraph SQL	cugraph parity harness and nexus-tools refresh_cugraph_oracle	same as datafusion_nexus::cugraph_sql::parity
+datafusion_nexus::cugraph_sql::parity::CUGRAPH_PARITY_SPECS	bench-support	root adapter cuGraph SQL	cugraph parity harness and nexus-tools refresh_cugraph_oracle	same as datafusion_nexus::cugraph_sql::parity
+datafusion_nexus::cugraph_sql::parity::ParityDataset	bench-support	root adapter cuGraph SQL	cugraph parity datasets harness	same as datafusion_nexus::cugraph_sql::parity
+datafusion_nexus::cugraph_sql::parity::ParityReference	bench-support	root adapter cuGraph SQL	cugraph parity datasets harness	same as datafusion_nexus::cugraph_sql::parity
+datafusion_nexus::cugraph_sql::parity::ParityManifest	bench-support	root adapter cuGraph SQL	cugraph parity datasets harness and nexus-tools refresh_cugraph_oracle	same as datafusion_nexus::cugraph_sql::parity
+datafusion_nexus::cugraph_sql::parity::ParityManifestError	bench-support	root adapter cuGraph SQL	cugraph parity datasets harness	same as datafusion_nexus::cugraph_sql::parity
+datafusion_nexus::cugraph_sql::parity::RefCsvError	bench-support	root adapter cuGraph SQL	cugraph parity oracle harness	same as datafusion_nexus::cugraph_sql::parity
+datafusion_nexus::cugraph_sql::parity::OracleLookup	bench-support	root adapter cuGraph SQL	cugraph parity oracle harness and nexus-tools refresh_cugraph_oracle	same as datafusion_nexus::cugraph_sql::parity

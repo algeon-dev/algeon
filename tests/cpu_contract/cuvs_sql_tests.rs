@@ -39,9 +39,8 @@ use datafusion_nexus::{
 #[cfg(feature = "cuvs")]
 use datafusion_nexus::{planner::NexusNativeOptimizerConfig, session_config::DataFusionNexusSessionConfig};
 use nexus_query_engine::plan::{
-    CUVS_ID_TYPES, CuvsOperation as NativeCuvsOperation, PlanNode, VectorAlgorithmParams, VectorRowIdBinding,
-    canonicalize_cuvs_options, vector_brute_force_knn_output_schema, vector_kmeans_output_schema,
-    vector_pca_output_schema,
+    CUVS_ID_TYPES, CuvsOperation as NativeCuvsOperation, canonicalize_cuvs_options,
+    vector_brute_force_knn_output_schema, vector_kmeans_output_schema, vector_pca_output_schema,
 };
 
 #[path = "cuvs_sql_fixtures.rs"]
@@ -692,55 +691,6 @@ async fn local_validation_rejects_schema_dimension_option_and_empty_input_contra
         if let Some(reason) = expected_reason {
             assert_eq!(typed.facts().get("reason"), Some(reason), "{sql}");
         }
-    }
-}
-
-#[tokio::test]
-async fn physical_planning_lowers_typed_vector_ir_and_clone_retains_planner() {
-    let ctx = cuvs_context();
-    let sql = format!(
-        "SELECT * FROM {CUVS_BRUTE_FORCE_KNN_FUNCTION}(\
-             (SELECT * FROM dataset_vectors), \
-             (SELECT * FROM query_vectors), \
-             '{}')",
-        sql_literal(KNN_OPTIONS)
-    );
-    let logical = logical_plan(&ctx, &sql).await;
-    let physical = ctx.state().create_physical_plan(&logical).await.expect("cuVS physical planning");
-    let exec = find_cuvs_exec(physical.as_ref()).expect("CuvsAlgoExec");
-    assert_eq!(exec.operation(), CuvsOperation::BruteForceKnn);
-    assert_eq!(exec.children().len(), 2);
-    assert_eq!(exec.schema().as_ref(), logical.schema().as_arrow());
-    let native = exec.native_plan_for_test().expect("typed native vector plan");
-    let vector = native
-        .nodes()
-        .iter()
-        .find_map(|node| match &node.kind {
-            PlanNode::VectorAlgorithm(vector) => Some(vector),
-            _ => None,
-        })
-        .expect("VectorAlgorithmNode");
-    assert_eq!(vector.inputs.len(), 2);
-    assert_eq!(vector.spec.params.relation_bindings().count(), 2);
-    let VectorAlgorithmParams::BruteForceKnn(params) = &vector.spec.params else {
-        panic!("brute-force kNN must lower to its typed parameter payload")
-    };
-    assert_eq!(params.dataset.row_id, VectorRowIdBinding::Column("item_id".to_string()));
-    assert_eq!(params.queries.row_id, VectorRowIdBinding::Column("query_id".to_string()));
-    assert_eq!(
-        vector.spec.output_schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>(),
-        ["query_ordinal", "query_id", "neighbor_ordinal", "neighbor_id", "rank", "distance"],
-        "ordinal outputs supplement the caller's row IDs instead of replacing them"
-    );
-
-    let cloned = datafusion::execution::SessionStateBuilder::new_from_existing(ctx.state()).build();
-    let cloned_physical = cloned.create_physical_plan(&logical).await.expect("cloned planner retained");
-    assert!(find_cuvs_exec(cloned_physical.as_ref()).is_some());
-
-    #[cfg(not(feature = "cuvs"))]
-    {
-        let error = ctx.sql(&sql).await.unwrap().collect().await.expect_err("feature-disabled execution");
-        assert_feature_disabled(error);
     }
 }
 

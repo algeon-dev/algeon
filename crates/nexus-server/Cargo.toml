@@ -53,8 +53,6 @@ tracing-subscriber = { workspace = true }
 uuid = { version = "1.23", features = ["v4"] }
 
 [dev-dependencies]
-datafusion-nexus = { workspace = true, features = ["test-support"] }
-proptest = "1.7"
 tempfile = { workspace = true }
 
 [[bin]]

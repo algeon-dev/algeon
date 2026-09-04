@@ -95,23 +95,6 @@ fn runtime_backend_with_policy(max_active_attempts_per_device: usize, strict: bo
     builder.build().expect("runtime backend should build")
 }
 
-fn validation_projection(max_active_attempts_per_device: usize) -> crate::backend::TestBackendValidationProjection {
-    let profile = NexusGpuDeviceProfile::new(0)
-        .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_BUDGET_BYTES })
-        .with_max_active_attempts(max_active_attempts_per_device);
-    NexusGpuBackend::builder()
-        .devices([NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive)])
-        .with_native_execution_config(NexusNativeExecutionConfig::bounded(
-            TEST_DEVICE_BUDGET_BYTES,
-            TEST_MAX_SOURCE_CHUNK_BYTES,
-            TEST_MAX_ROW_GROUPS_PER_CHUNK,
-            TEST_MAX_RETRY_ATTEMPTS,
-            TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
-        ))
-        .build_test_validation_projection()
-        .expect("CUDA-free backend validation projection should build")
-}
-
 #[test]
 fn shutdown_closes_native_admission_before_coordinator_terminalization() {
     let config = bounded_config(1);
@@ -133,10 +116,9 @@ fn shutdown_closes_native_admission_before_coordinator_terminalization() {
 
     let coordinator_live = after_closing_admission(&admission, || {
         let error = backend
-            .try_admit_query()
+            .begin_attempt(attempt::AttemptOptions::default())
             .expect_err("native QueryService must be closed before coordinator shutdown begins");
-        assert_eq!(error.code(), nexus_query_engine::error::QueryErrorCode::Cancelled);
-        assert_eq!(error.fact_value("reason"), Some("backend_closing"));
+        assert_eq!(error.code(), adapter_error::ErrorCode::Cancelled);
         let activity = activity_factory().expect("coordinator remains live until admission is closed");
         drop(activity);
         coordinator.begin_shutdown(Instant::now())
@@ -188,9 +170,10 @@ async fn shutdown_activity_race_is_fallible_and_drain_waits_for_prior_activity()
         });
 
         barrier.wait();
-        let error =
-            backend.try_admit_query().expect_err("native admission is closed before the coordinator race begins");
-        assert_eq!(error.fact_value("reason"), Some("backend_closing"));
+        let error = backend
+            .begin_attempt(attempt::AttemptOptions::default())
+            .expect_err("native admission is closed before the coordinator race begins");
+        assert_eq!(error.code(), adapter_error::ErrorCode::Cancelled);
         let racing_activity = capture
             .new_observation_activity()
             .expect("coordinated acquisition cannot downgrade to no activity requirement");
@@ -265,7 +248,7 @@ async fn shutdown_supervisor_propagates_native_admission_cleanup_timeout() {
     let mut config = bounded_config(1);
     config.observability.shutdown_grace = std::time::Duration::from_millis(20);
     let backend = runtime_backend(1);
-    let live_query = backend.admit_query().unwrap();
+    let _live_attempt = backend.begin_attempt(attempt::AttemptOptions::default()).unwrap();
     let admission = Arc::new(admission::QueryAdmission::from_backend(&backend));
     let coordinator = coordinator::QueryCoordinator::new(coordinator::QueryCoordinatorConfig::from_observability(
         &config.observability,
@@ -286,7 +269,7 @@ async fn shutdown_supervisor_propagates_native_admission_cleanup_timeout() {
 
     assert_eq!(error.fact_value("reason"), Some("backend_close_timeout"));
     assert_eq!(error.fact_value("shutdown_component"), Some("query_admission"));
-    drop(live_query);
+    drop(_live_attempt);
     let snapshot = backend
         .close_and_wait(std::time::Duration::from_secs(1))
         .expect("releasing the held query must allow the already-closing backend to quiesce");
@@ -354,9 +337,9 @@ async fn builder_rejects_session_context_without_injected_backend() {
 
 #[test]
 fn builder_rejects_injected_backend_admission_conflict() {
-    let backend = validation_projection(1);
+    let backend = runtime_backend(1);
 
-    let error = validate_test_validation_projection_matches_config(&backend, &bounded_config(2)).unwrap_err();
+    let error = validate_injected_backend_matches_config(&backend, &bounded_config(2)).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some("admission.device_profiles.max_active_attempts"));
@@ -364,11 +347,11 @@ fn builder_rejects_injected_backend_admission_conflict() {
 
 #[test]
 fn builder_rejects_injected_backend_attempt_floor_conflict() {
-    let backend = validation_projection(1);
+    let backend = runtime_backend(1);
     let mut config = bounded_config(1);
     config.gpu_device_profiles[0] = config.gpu_device_profiles[0].clone().with_attempt_floor_bytes(Some(256));
 
-    let error = validate_test_validation_projection_matches_config(&backend, &config).unwrap_err();
+    let error = validate_injected_backend_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some("admission.device_profiles.attempt_floor_bytes"));
@@ -376,11 +359,11 @@ fn builder_rejects_injected_backend_attempt_floor_conflict() {
 
 #[test]
 fn builder_rejects_injected_backend_overtake_budget_conflict() {
-    let backend = validation_projection(1);
+    let backend = runtime_backend(1);
     let mut config = bounded_config(1);
     config.queue_policy = config.queue_policy.with_max_overtakes_per_waiter(7);
 
-    let error = validate_test_validation_projection_matches_config(&backend, &config).unwrap_err();
+    let error = validate_injected_backend_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some("admission.max_overtakes_per_waiter"));
@@ -388,11 +371,11 @@ fn builder_rejects_injected_backend_overtake_budget_conflict() {
 
 #[test]
 fn builder_rejects_injected_backend_per_device_limit_conflict() {
-    let backend = validation_projection(1);
+    let backend = runtime_backend(1);
     let mut config = bounded_config(1);
     config.gpu_device_profiles[0] = config.gpu_device_profiles[0].clone().with_max_active_attempts(2);
 
-    let error = validate_test_validation_projection_matches_config(&backend, &config).unwrap_err();
+    let error = validate_injected_backend_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some("admission.device_profiles.max_active_attempts"));
@@ -412,20 +395,20 @@ fn builder_accepts_matching_explicit_per_device_cap() {
             TEST_MAX_RETRY_ATTEMPTS,
             TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
         ))
-        .build_test_validation_projection()
-        .expect("CUDA-free backend validation projection should build");
+        .build()
+        .expect("injected backend should build");
     let config = bounded_config(1);
 
-    validate_test_validation_projection_matches_config(&backend, &config).unwrap();
+    validate_injected_backend_matches_config(&backend, &config).unwrap();
 }
 
 #[test]
 fn builder_rejects_injected_backend_queue_limit_conflict() {
-    let backend = validation_projection(1);
+    let backend = runtime_backend(1);
     let mut config = bounded_config(1);
     config.queue_policy = config.queue_policy.with_max_queued_attempts(3);
 
-    let error = validate_test_validation_projection_matches_config(&backend, &config).unwrap_err();
+    let error = validate_injected_backend_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some("admission.max_queued_attempts"));
@@ -433,11 +416,11 @@ fn builder_rejects_injected_backend_queue_limit_conflict() {
 
 #[test]
 fn builder_rejects_injected_backend_wait_timeout_conflict() {
-    let backend = validation_projection(1);
+    let backend = runtime_backend(1);
     let mut config = bounded_config(1);
     config.queue_policy = config.queue_policy.with_max_queue_wait(std::time::Duration::from_secs(5));
 
-    let error = validate_test_validation_projection_matches_config(&backend, &config).unwrap_err();
+    let error = validate_injected_backend_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some("admission.max_queue_wait_ms"));
@@ -445,7 +428,7 @@ fn builder_rejects_injected_backend_wait_timeout_conflict() {
 
 #[test]
 fn builder_rejects_injected_backend_gpu_device_conflict() {
-    let backend = validation_projection(1);
+    let backend = runtime_backend(1);
     let mut config = bounded_config(1);
     config.gpu_devices = vec![1];
     config.gpu_device_profiles = vec![
@@ -454,7 +437,7 @@ fn builder_rejects_injected_backend_gpu_device_conflict() {
     ];
     config.gpu_memory_ownership = vec![(1, GpuMemoryOwnership::WholeDeviceExclusive)];
 
-    let error = validate_test_validation_projection_matches_config(&backend, &config).unwrap_err();
+    let error = validate_injected_backend_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
     assert_eq!(error.fact_value("config_field"), Some("admission.device_profiles"));
@@ -462,7 +445,7 @@ fn builder_rejects_injected_backend_gpu_device_conflict() {
 
 #[test]
 fn injected_backend_validation_does_not_conflate_planner_template_with_profile_capacity() {
-    let backend = validation_projection(1);
+    let backend = runtime_backend(1);
     let mut config = bounded_config(1);
     config.native_optimizer_config =
         NexusNativeOptimizerConfig::default().with_native_execution_config(NexusNativeExecutionConfig::bounded(
@@ -473,7 +456,7 @@ fn injected_backend_validation_does_not_conflate_planner_template_with_profile_c
             TEST_MIN_RETRY_CHUNK_ROW_GROUPS,
         ));
 
-    validate_test_validation_projection_matches_config(&backend, &config)
+    validate_injected_backend_matches_config(&backend, &config)
         .expect("planner template bytes are not a backend capacity or floor assertion");
 }
 

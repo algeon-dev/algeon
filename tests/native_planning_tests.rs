@@ -1,4 +1,8 @@
-//! CPU native planning contracts: lowering + fallback pressure.
+//! CPU native planning contracts: fallback pressure through the public report API.
+//!
+//! Lowering white-box contracts live with the lowering owner as
+//! `src/native/tests.rs` unit tests; this target only asserts
+//! application-observable planning reports.
 
 #[path = "support/analytical_olap_workload.rs"]
 mod analytical_olap_workload;
@@ -9,5 +13,3 @@ mod tpch_session;
 
 #[path = "native_planning/fallback_pressure.rs"]
 mod fallback_pressure;
-#[path = "native_planning/lowering.rs"]
-mod lowering;

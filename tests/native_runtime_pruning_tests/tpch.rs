@@ -76,14 +76,10 @@ async fn native_runtime_tpch_q7_tiny_bounded_duplicate_nation_identity_matches_c
     assert_q7_nation_identity_rows(&cpu_batches);
 
     let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q7.sql).await;
-    let lowering = lower_physical_plan_to_native_for_test(Arc::clone(&physical_plan));
-    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    assert!(
-        lowering.plans[0].capability_analysis().admits_closed_multi_join_subgraph(),
-        "Q7 should use the bounded multi-join native path:\n{}",
-        lowering.plans[0]
-    );
+    let optimization = optimize_with_pruning_template(physical_plan);
+    assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
+    assert_nexus_native_exec(&optimization.plan, "bounded TPC-H Q7 should be replaced by NexusNativeExec");
 
     let native_plan = native_datafusion_tpch_sql_plan(&dir, q7.sql).await;
     assert_nexus_native_exec(&native_plan, "bounded TPC-H Q7 should be replaced by NexusNativeExec");
@@ -112,14 +108,10 @@ async fn native_runtime_tpch_q2_tiny_bounded_aggregate_over_join_subplan_topk_ma
     let cpu_batches = cpu_tpch_sql_output(&dir, q2.sql).await;
 
     let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q2.sql).await;
-    let lowering = lower_physical_plan_to_native_for_test(Arc::clone(&physical_plan));
-    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    assert!(
-        lowering.plans[0].capability_analysis().admits_multi_join_aggregate_over_join_subplan_topk_pipeline(),
-        "Q2 should use the bounded aggregate-over-join subplan TopK path:\n{}",
-        lowering.plans[0]
-    );
+    let optimization = optimize_with_pruning_template(physical_plan);
+    assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
+    assert_nexus_native_exec(&optimization.plan, "bounded TPC-H Q2 should be replaced by NexusNativeExec");
 
     let native_plan = native_datafusion_tpch_sql_plan(&dir, q2.sql).await;
     assert_nexus_native_exec(&native_plan, "bounded TPC-H Q2 should be replaced by NexusNativeExec");
@@ -168,22 +160,10 @@ async fn native_runtime_tpch_q04_tiny_bounded_left_semi_full_sort_matches_cpu() 
     assert_eq!(record_batch_row_count(&cpu_batches), 1, "tiny TPC-H Q4 CPU output should be non-empty");
 
     let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q4.sql).await;
-    let lowering = lower_physical_plan_to_native_for_test(Arc::clone(&physical_plan));
-    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    assert!(
-        lowering.plans[0].capability_analysis().admits_root_full_sort_join_aggregate_pipeline(),
-        "Q4 should use the bounded full-sort left-semi grouped aggregate path:\n{}",
-        lowering.plans[0]
-    );
-    let direct_result = execute_query_plan(&bounded_execution_context(&lowering.plans[0]), &lowering.plans[0]).unwrap();
-    let direct_metrics = direct_result.metrics();
-    assert_eq!(direct_metrics.compiled_pipeline_attempts, 1);
-    assert_eq!(direct_metrics.compiled_pipeline_host_arrow_sinks, 1);
-    let QueryOutput::HostArrow(direct_batches) = direct_result.output() else {
-        panic!("Q4 direct native query should materialize a host batch");
-    };
-    assert_batches_equal(&cpu_batches, std::slice::from_ref(direct_batches));
+    let optimization = optimize_with_pruning_template(physical_plan);
+    assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
+    assert_nexus_native_exec(&optimization.plan, "bounded TPC-H Q4 should be replaced by NexusNativeExec");
 
     let native_plan = native_datafusion_tpch_sql_plan(&dir, q4.sql).await;
     assert_nexus_native_exec(&native_plan, "bounded TPC-H Q4 should be replaced by NexusNativeExec");
@@ -199,6 +179,8 @@ async fn native_runtime_tpch_q04_tiny_bounded_left_semi_full_sort_matches_cpu() 
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
     assert!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize() >= 1);
     assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
+    assert_eq!(metrics.sum_by_name("compiled_pipeline_attempts").unwrap().as_usize(), 1);
+    assert_eq!(metrics.sum_by_name("compiled_pipeline_host_arrow_sinks").unwrap().as_usize(), 1);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -236,40 +218,10 @@ async fn native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cp
     let cpu_batches = cpu_tpch_sql_output(&dir, q18.sql).await;
 
     let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q18.sql).await;
-    let lowering = lower_physical_plan_to_native_for_test(Arc::clone(&physical_plan));
-    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    assert!(
-        lowering.plans[0]
-            .capability_analysis()
-            .admits_hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_pipeline(),
-        "Q18 should use the resident grouped aggregate TopK bounded path:\n{}",
-        lowering.plans[0]
-    );
-    let direct_result = execute_query_plan(&bounded_execution_context(&lowering.plans[0]), &lowering.plans[0]).unwrap();
-    let direct_metrics = direct_result.metrics();
-    assert_eq!(direct_metrics.compiled_pipeline_attempts, 1);
-    assert!(direct_metrics.compiled_pipeline_tasks_executed > 0);
-    assert_eq!(direct_metrics.compiled_pipeline_host_arrow_sinks, 1);
-    assert!(direct_metrics.reservation_events.iter().any(|event| {
-        event.outcome.as_str() == "granted"
-            && event.reservation_kind == nexus_query_engine::runtime::ReservationKind::PartialState
-            && event.memory_boundary == "compiled_aggregate_partial_state_work"
-            && event.action == nexus_query_engine::metrics::MemoryReservationEventAction::Reserve
-    }));
-    assert!(direct_metrics.reservation_events.iter().any(|event| {
-        event.outcome.as_str() == "granted"
-            && event.reservation_kind == nexus_query_engine::runtime::ReservationKind::FinalSort
-            && event.memory_boundary == "final_sort"
-    }));
-    assert!(
-        direct_metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_pipeline_sort"),
-        "Q18 should route final TopK through the fetch-aware final-sort executor"
-    );
-    let QueryOutput::HostArrow(direct_batches) = direct_result.output() else {
-        panic!("Q18 direct native query should materialize a host batch");
-    };
-    assert_batches_equal_allow_empty(&cpu_batches, std::slice::from_ref(direct_batches));
+    let optimization = optimize_with_pruning_template(physical_plan);
+    assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
+    assert_nexus_native_exec(&optimization.plan, "bounded TPC-H Q18 should be replaced by NexusNativeExec");
 
     let native_plan = native_datafusion_tpch_sql_plan(&dir, q18.sql).await;
     assert_nexus_native_exec(&native_plan, "bounded TPC-H Q18 should be replaced by NexusNativeExec");
@@ -285,6 +237,9 @@ async fn native_runtime_tpch_q18_tiny_bounded_resident_aggregate_topk_matches_cp
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
     assert!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize() >= 1);
     assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
+    assert_eq!(metrics.sum_by_name("compiled_pipeline_attempts").unwrap().as_usize(), 1);
+    assert!(metrics.sum_by_name("compiled_pipeline_tasks_executed").unwrap().as_usize() > 0);
+    assert_eq!(metrics.sum_by_name("compiled_pipeline_host_arrow_sinks").unwrap().as_usize(), 1);
 
     fs::remove_dir_all(dir).unwrap();
 }
@@ -297,37 +252,10 @@ async fn native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter
     let cpu_batches = cpu_tpch_sql_output(&dir, q20.sql).await;
 
     let physical_plan = tpch_sql_plan(&dir, tpch_report_session_config(), q20.sql).await;
-    let lowering = lower_physical_plan_to_native_for_test(Arc::clone(&physical_plan));
-    assert_eq!(lowering.selected_count(), 1, "outcomes={:?}", lowering.report.outcomes());
-    assert_eq!(lowering.not_selected_count(), 0, "outcomes={:?}", lowering.report.outcomes());
-    assert!(
-        lowering.plans[0].capability_analysis().admits_multi_join_resident_grouped_aggregate_subquery_filter_pipeline(),
-        "Q20 should use the resident grouped aggregate subquery-filter bounded path:\n{}",
-        lowering.plans[0]
-    );
-    let direct_result = execute_query_plan(&bounded_execution_context(&lowering.plans[0]), &lowering.plans[0]).unwrap();
-    let direct_metrics = direct_result.metrics();
-    assert_eq!(direct_metrics.compiled_pipeline_attempts, 1);
-    assert!(direct_metrics.compiled_pipeline_tasks_executed > 0);
-    assert_eq!(direct_metrics.compiled_pipeline_host_arrow_sinks, 1);
-    assert!(direct_metrics.reservation_events.iter().any(|event| {
-        event.outcome.as_str() == "granted"
-            && event.reservation_kind == nexus_query_engine::runtime::ReservationKind::OperatorOutput
-            && event.memory_boundary == "compiled_projection"
-    }));
-    assert!(direct_metrics.reservation_events.iter().any(|event| {
-        event.outcome.as_str() == "granted"
-            && event.reservation_kind == nexus_query_engine::runtime::ReservationKind::FinalSort
-            && event.memory_boundary == "final_sort"
-    }));
-    assert!(
-        direct_metrics.reservation_events.iter().all(|event| event.memory_boundary != "join_pipeline_sort"),
-        "Q20 should route final sort through the shared final-sort executor"
-    );
-    let QueryOutput::HostArrow(direct_batches) = direct_result.output() else {
-        panic!("Q20 direct native query should materialize a host batch");
-    };
-    assert_batches_equal_allow_empty(&cpu_batches, std::slice::from_ref(direct_batches));
+    let optimization = optimize_with_pruning_template(physical_plan);
+    assert_eq!(optimization.report.selected_count(), 1, "outcomes={:?}", optimization.report.outcomes());
+    assert_eq!(optimization.report.not_selected_count(), 0, "outcomes={:?}", optimization.report.outcomes());
+    assert_nexus_native_exec(&optimization.plan, "bounded TPC-H Q20 should be replaced by NexusNativeExec");
 
     let native_plan = native_datafusion_tpch_sql_plan(&dir, q20.sql).await;
     assert_nexus_native_exec(&native_plan, "bounded TPC-H Q20 should be replaced by NexusNativeExec");
@@ -343,6 +271,9 @@ async fn native_runtime_tpch_q20_tiny_bounded_resident_aggregate_subquery_filter
     assert_eq!(metrics.sum_by_name("host_to_device_uploads").unwrap().as_usize(), 0);
     assert!(metrics.sum_by_name("device_to_host_materializations").unwrap().as_usize() >= 1);
     assert_eq!(metrics.sum_by_name("reservation_denied_count").unwrap().as_usize(), 0);
+    assert_eq!(metrics.sum_by_name("compiled_pipeline_attempts").unwrap().as_usize(), 1);
+    assert!(metrics.sum_by_name("compiled_pipeline_tasks_executed").unwrap().as_usize() > 0);
+    assert_eq!(metrics.sum_by_name("compiled_pipeline_host_arrow_sinks").unwrap().as_usize(), 1);
 
     fs::remove_dir_all(dir).unwrap();
 }

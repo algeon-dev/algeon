@@ -675,9 +675,14 @@ async fn admission_rejection_reports_the_typed_rejection_not_a_synthetic_drop() 
     );
     let ctx = native_context(&backend).await;
 
-    // Hold the single admission slot so the attempt's admission must queue
-    // and time out instead of being placed.
-    let held = backend.admit_query().expect("slot holder admits");
+    // Hold the single admission slot with a live suspended execution so the
+    // attempt's admission must queue and time out instead of being placed.
+    // The holder stream is polled once to admit, then left suspended: the
+    // slot stays occupied until the stream is dropped, never reaching EOF.
+    let holder = backend.begin_attempt(AttemptOptions::default()).expect("slot holder admits");
+    let mut holder_stream = holder.sql(&ctx, "SELECT k, SUM(v) FROM native_rows GROUP BY k ORDER BY k").await.unwrap();
+    holder_stream.next().await.expect("holder admits on first poll").expect("holder batch");
+    let _held = (holder, holder_stream);
     let attempt = backend.begin_attempt(AttemptOptions::default()).unwrap();
     let completion = attempt.completion();
     let mut stream = attempt.sql(&ctx, "SELECT k, SUM(v) FROM native_rows GROUP BY k ORDER BY k").await.unwrap();
@@ -703,5 +708,5 @@ async fn admission_rejection_reports_the_typed_rejection_not_a_synthetic_drop() 
     assert!(report.timestamps.admitted_ns.is_none());
     assert!(report.timestamps.physical_execution_started_ns.is_none());
     assert!(report.timestamps.cleanup_complete_ns.is_none());
-    drop(held);
+    drop(_held);
 }

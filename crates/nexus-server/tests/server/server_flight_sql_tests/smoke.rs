@@ -18,7 +18,8 @@ async fn flight_sql_client_can_run_select_one() {
     assert_eq!(schema.field(0).name(), "one");
     let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
     let batches = client.do_get(ticket).await.unwrap().try_collect::<Vec<_>>().await.unwrap();
-    let delayed_cleanup = cleanup_backend.admit_query().expect("test cleanup owner must be admitted before shutdown");
+    let delayed_cleanup =
+        cleanup_backend.begin_attempt(AttemptOptions::default()).expect("test cleanup owner must hold capacity before shutdown");
 
     drop(client);
     server.abort();
@@ -222,7 +223,17 @@ async fn flight_sql_builder_shares_injected_backend_with_session_context() {
         "GetFlightInfo must not acquire GPU admission before DoGet"
     );
 
-    let direct_handle = backend.admit_async().await.expect("direct backend admission should occupy the shared slot");
+    // Occupy the shared slot with a live suspended attempt execution. The
+    // holder stream is polled once to admit, then left suspended: the slot
+    // stays occupied until the stream drops, never reaching EOF.
+    let holder_attempt =
+        backend.begin_attempt(AttemptOptions::default()).expect("holder attempt should begin");
+    let mut holder_stream = holder_attempt
+        .sql(&ctx, "select src from shared_edges order by src limit 1")
+        .await
+        .expect("holder should plan");
+    holder_stream.try_next().await.expect("holder admits on first poll").expect("holder batch");
+    let holder = (holder_attempt, holder_stream);
     assert_eq!(backend.admission_snapshot().unwrap().active_queries, 1);
 
     let ticket = flight_info.endpoint.first().and_then(|endpoint| endpoint.ticket.clone()).unwrap();
@@ -235,8 +246,7 @@ async fn flight_sql_builder_shares_injected_backend_with_session_context() {
         df.collect().await
     });
     wait_for_shared_ledger_queue(&backend, 2).await;
-    direct_handle.finish();
-    drop(direct_handle);
+    drop(holder);
 
     // Either queued query may win the one shared slot. Await them together so
     // the assertion does not impose an ordering, and allow the configured
@@ -287,13 +297,13 @@ async fn backend_clone_installed_sessions_share_identity_queue_and_worker_pool_r
             .expect("second cloned backend must install a session"),
     );
 
-    let identity = backend.identity();
-    assert_eq!(first_backend.identity(), identity);
-    assert_eq!(second_backend.identity(), identity);
+    assert!(first_backend.same_backend(&backend));
+    assert!(second_backend.same_backend(&backend));
     assert!(first_backend.same_backend(&second_backend));
-    assert!(identity.resource_core > 0);
-    assert!(identity.observation_core > 0);
-    assert!(identity.resource_generation > 0);
+    let backend_generation = backend.backend_metrics_snapshot().backend_generation;
+    assert!(backend_generation > 0);
+    assert_eq!(first_backend.backend_metrics_snapshot().backend_generation, backend_generation);
+    assert_eq!(second_backend.backend_metrics_snapshot().backend_generation, backend_generation);
     let first_startup_records = first_backend.device_startup_records();
     let second_startup_records = second_backend.device_startup_records();
     assert_eq!(first_startup_records, second_startup_records);
@@ -353,7 +363,16 @@ async fn backend_clone_installed_sessions_share_identity_queue_and_worker_pool_r
         .await
         .unwrap();
 
-    let holder = backend.admit_async().await.expect("direct admission must occupy the shared backend slot");
+    // Occupy the shared slot with a live suspended attempt execution, polled
+    // once to admit and held without reaching EOF.
+    let holder_attempt =
+        backend.begin_attempt(AttemptOptions::default()).expect("holder attempt should begin");
+    let mut holder_stream = holder_attempt
+        .sql(&first_session, "select src from first_edges order by src limit 1")
+        .await
+        .expect("holder should plan");
+    holder_stream.try_next().await.expect("holder admits on first poll").expect("holder batch");
+    let holder = (holder_attempt, holder_stream);
     assert_eq!(first_backend.admission_snapshot().unwrap().active_queries, 1);
     assert_eq!(second_backend.admission_snapshot().unwrap().active_queries, 1);
 
@@ -372,7 +391,6 @@ async fn backend_clone_installed_sessions_share_identity_queue_and_worker_pool_r
         "both installed sessions must observe one query-service queue and ledger"
     );
 
-    holder.finish();
     drop(holder);
     let (first_batches, second_batches) =
         tokio::time::timeout(Duration::from_secs(60), async { tokio::join!(first_query, second_query) })

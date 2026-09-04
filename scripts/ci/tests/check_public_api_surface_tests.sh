@@ -108,6 +108,7 @@ write_clean_snapshots() {
   printf '%s\n' "${baseline_nexus_server}" >"${dir}/nexus-server.txt"
   printf '%s\n' "${baseline_cudf_nexus}" >"${dir}/cudf-nexus.txt"
   printf '%s\n' "${baseline_cugraph_nexus}" >"${dir}/cugraph-nexus.txt"
+  cp .config/policies/public-api/datafusion-nexus-hidden.tsv "${dir}/"
 }
 
 run_check() {
@@ -214,6 +215,7 @@ echo "PASS: a failing underlying tool is reported per-crate rather than swallowe
 # intentional API change has a real, reviewable approval path.
 write_dir="${tmp_dir}/snapshots/write_roundtrip"
 mkdir -p "${write_dir}"
+cp .config/policies/public-api/datafusion-nexus-hidden.tsv "${write_dir}/"
 run_check write_mode "${write_dir}" "${CHECK_SCRIPT}" write --all-features
 assert_status write_mode 0
 assert_contains "${tmp_dir}/write_mode.output" "WROTE: ${write_dir}/datafusion-nexus.txt"

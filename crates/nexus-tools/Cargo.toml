@@ -21,7 +21,6 @@ datafusion-baseline-contract-validate = [
   "dep:nexus-query-engine",
   "datafusion-nexus/iceberg",
   "datafusion-nexus/bench-support",
-  "datafusion-nexus/test-support",
 ]
 clickbench-stage-probe = [
   "dep:cudf",
@@ -38,7 +37,7 @@ cugraph-oracle = [
   "dep:datafusion-nexus",
   "dep:nexus-query-engine",
   "datafusion-nexus/cugraph",
-  "datafusion-nexus/test-support",
+  "datafusion-nexus/bench-support",
 ]
 cugraph-similarity-calibrate = ["dep:cudf", "dep:nexus-query-engine", "nexus-query-engine/cugraph"]
 iceberg-e2e = [
@@ -64,7 +63,7 @@ single-node-multi-gpu-validate-run = [
   "dep:datafusion",
   "dep:datafusion-nexus",
   "dep:nexus-query-engine",
-  "datafusion-nexus/test-support",
+  "datafusion-nexus/qualification",
   # Device identity (model name, UUID, physical framebuffer) comes from NVML,
   # and the artifact contract requires recording it.
   "datafusion-nexus/nvml",

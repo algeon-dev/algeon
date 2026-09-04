@@ -13,7 +13,6 @@ use datafusion_nexus::{
     planner::{FinalPlanDisposition, NexusFinalPlanRequirementRule, NexusNativeOptimizerConfig, classify_final_plan},
 };
 use futures::StreamExt;
-use nexus_query_engine::{expr::Expr, plan::PlanNode, source::SourceNode};
 
 use super::{support::*, *};
 
@@ -220,27 +219,6 @@ async fn cugraph_sql_keeps_native_inputs_device_resident_for_native_downstream()
 
     let df = ctx.sql(CPU_INPUT_BFS_SQL).await.unwrap();
     let plan = df.create_physical_plan().await.unwrap();
-    let composed = find_composed_exec(plan.as_ref()).expect("backend SQL should compose the downstream native plan");
-    let native_plan = composed.native_plan_for_test();
-    assert!(native_plan.unreachable_node_ids().is_empty(), "the composed native plan must have no detached nodes");
-    assert_eq!(native_plan.nodes().len(), 2, "BFS ORDER BY should lower to one source and one sort");
-    let [source_node, sort_node] = native_plan.nodes() else {
-        panic!("BFS ORDER BY should lower to exactly GpuResidentSource -> Sort");
-    };
-    let PlanNode::Source(source) = &source_node.kind else {
-        panic!("BFS ORDER BY native input must be a source node");
-    };
-    let SourceNode::GpuResident(source) = source.as_ref() else {
-        panic!("BFS ORDER BY native input must remain GPU-resident");
-    };
-    assert!(!source.input_name.is_empty(), "the graph result source must retain its runtime identity");
-    let PlanNode::Sort(sort) = &sort_node.kind else {
-        panic!("BFS ORDER BY native consumer must be a Sort node");
-    };
-    assert_eq!(sort.input, source_node.id, "the Sort must consume the graph-result source directly");
-    assert_eq!(sort.spec.expressions.len(), 1, "BFS ORDER BY must use one supported sort key");
-    assert_eq!(sort.spec.expressions[0].expr, Expr::column("vertex"));
-    assert_eq!(native_plan.root_id(), sort_node.id, "the native sort must be the composed consumer root");
     let cugraph = find_cugraph_algo_exec(plan.as_ref()).expect("physical plan should contain CugraphAlgoExec");
     let cugraph_display = displayable(cugraph).indent(false).to_string();
     let cugraph_children = cugraph.children();
@@ -274,15 +252,6 @@ async fn cugraph_sql_keeps_native_inputs_device_resident_for_native_downstream()
     let top_k_plan = top_k_attempt.plan_sql(&ctx, RAW_BFS_TOP_K_SQL).await.unwrap();
     assert_eq!(schema_field_names(top_k_plan.schema().as_ref()), vec!["vertex", "distance", "predecessor"]);
     assert!(top_k_plan.schema().field_with_name("predecessor").unwrap().is_nullable());
-    let top_k_composed =
-        find_composed_exec(top_k_plan.as_ref()).expect("raw BFS top-k must lower to one composed native consumer");
-    let top_k_native_plan = top_k_composed.native_plan_for_test().to_string();
-    for expected in ["GpuResidentSource", "Sort", "Limit"] {
-        assert!(
-            top_k_native_plan.contains(expected),
-            "raw BFS top-k consumer must include {expected}:\n{top_k_native_plan}"
-        );
-    }
     let mut top_k_stream = top_k_attempt.execute_physical_plan(Arc::clone(&top_k_plan), &ctx).unwrap();
     let mut top_k_batches = Vec::new();
     while let Some(batch) = top_k_stream.next().await {
@@ -331,39 +300,14 @@ async fn cugraph_sql_gpu_pagerank_forceatlas2_join_executes_as_one_scheduled_com
         assert!(y.value(row).is_finite());
     }
 
-    for (weight_type, sql) in [(DataType::Float32, PAGERANK_FLOAT32_TOP_K_SQL), (DataType::Float64, PAGERANK_TOP_K_SQL)]
+    for (_weight_type, sql) in
+        [(DataType::Float32, PAGERANK_FLOAT32_TOP_K_SQL), (DataType::Float64, PAGERANK_TOP_K_SQL)]
     {
         let top_k_attempt = backend.begin_attempt(datafusion_nexus::attempt::AttemptOptions::default()).unwrap();
         let top_k_completion = top_k_attempt.completion();
         let top_k_plan = top_k_attempt.plan_sql(&ctx, sql).await.unwrap();
         assert_eq!(schema_field_names(top_k_plan.schema().as_ref()), vec!["vertex", "value"]);
         assert_eq!(top_k_plan.schema().field_with_name("value").unwrap().data_type(), &DataType::Float64);
-        let top_k_composed =
-            find_composed_exec(top_k_plan.as_ref()).expect("PageRank top-k must lower to one composed native consumer");
-        let top_k_native_plan = top_k_composed.native_plan_for_test();
-        assert!(top_k_native_plan.unreachable_node_ids().is_empty());
-        assert_eq!(
-            top_k_native_plan.nodes().len(),
-            3,
-            "{weight_type:?} PageRank top-k must lower to GpuResidentSource -> Sort -> Limit"
-        );
-        let [source_node, sort_node, limit_node] = top_k_native_plan.nodes() else {
-            panic!("{weight_type:?} PageRank top-k must lower to GpuResidentSource -> Sort -> Limit");
-        };
-        assert!(
-            matches!(&source_node.kind, PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::GpuResident(_)))
-        );
-        let PlanNode::Sort(sort) = &sort_node.kind else {
-            panic!("{weight_type:?} PageRank top-k consumer must sort its GPU-resident input");
-        };
-        assert_eq!(sort.input, source_node.id);
-        let PlanNode::Limit(limit) = &limit_node.kind else {
-            panic!("{weight_type:?} PageRank top-k consumer must apply a limit after sorting");
-        };
-        assert_eq!(limit.input, sort_node.id);
-        assert_eq!(limit.spec.skip, 0);
-        assert_eq!(limit.spec.fetch, Some(100));
-        assert_eq!(top_k_native_plan.root_id(), limit_node.id);
         let mut top_k_stream = top_k_attempt.execute_physical_plan(Arc::clone(&top_k_plan), &ctx).unwrap();
         let mut top_k_batches = Vec::new();
         while let Some(batch) = top_k_stream.next().await {
@@ -390,17 +334,6 @@ async fn cugraph_sql_gpu_pagerank_forceatlas2_join_executes_as_one_scheduled_com
         ),
     ] {
         let plan = ctx.sql(sql).await.unwrap().create_physical_plan().await.unwrap();
-        let composed = find_composed_exec(plan.as_ref())
-            .unwrap_or_else(|| panic!("{algorithm} bare limit must lower to one composed native consumer"));
-        let [source, limit] = composed.native_plan_for_test().nodes() else {
-            panic!("{algorithm} bare limit must lower to GpuResidentSource -> Limit");
-        };
-        assert!(
-            matches!(&source.kind, PlanNode::Source(source) if matches!(source.as_ref(), SourceNode::GpuResident(source) if source.row_count_upper_bound == Some(3)))
-        );
-        assert!(
-            matches!(&limit.kind, PlanNode::Limit(limit) if limit.input == source.id && limit.spec.fetch == Some(3))
-        );
         let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx())
             .await
             .unwrap_or_else(|error| panic!("{algorithm} bare limit must execute: {error}"));
@@ -967,15 +900,6 @@ pub async fn run_pagerank_filter_sort_limit_acceptance() {
         plan_display.contains("CugraphAlgoExec"),
         "composed native plan should keep cuGraph as the GPU-resident producer child:\n{plan_display}"
     );
-    let composed =
-        find_composed_exec(plan.as_ref()).expect("PageRank composition plan should contain NexusNativeComposedExec");
-    let native_plan = composed.native_plan_for_test().to_string();
-    for expected in ["GpuResidentSource", "Filter", "Sort", "Limit"] {
-        assert!(
-            native_plan.contains(expected),
-            "composed native consumer should include {expected} over the cuGraph result:\n{native_plan}"
-        );
-    }
 
     cudf::testing::arrow::reset_arrow_host_interop_observation_for_test();
     let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx()).await.unwrap();
@@ -2198,13 +2122,11 @@ async fn graph_results_support_aggregate_provenance_union_and_global_row_number_
     for (label, sql) in queries {
         let dataframe = ctx.sql(sql).await.unwrap_or_else(|error| panic!("{label} SQL must plan: {error}"));
         let plan = dataframe.create_physical_plan().await.unwrap();
-        let lowering = datafusion_nexus::native::lower_physical_plan_to_native_for_test(Arc::clone(&plan));
         assert_eq!(
             classify_final_plan(plan.as_ref()),
             FinalPlanDisposition::Native,
-            "{label}\n{}\n{:#?}",
+            "{label}\n{}",
             displayable(plan.as_ref()).indent(false),
-            lowering.report,
         );
         let batches = datafusion::physical_plan::collect(plan, ctx.task_ctx())
             .await
@@ -2311,10 +2233,6 @@ async fn cugraph_sql_gpu_pagerank_utf8_is_native_and_matches_dense_numeric_ids()
     let limited_df =
         ctx.sql("SELECT vertex, value FROM cugraph_pagerank('string_edges', 'src', 'dst') LIMIT 2").await.unwrap();
     let limited_plan = limited_df.create_physical_plan().await.unwrap();
-    let limited_consumer =
-        find_composed_exec(limited_plan.as_ref()).expect("pushed string PageRank limit stays native");
-    assert_eq!(limited_consumer.native_plan_for_test().nodes().len(), 1);
-    assert!(matches!(limited_consumer.native_plan_for_test().root_node().kind, PlanNode::Source(_)));
     let limited_rows = datafusion::physical_plan::collect(limited_plan, ctx.task_ctx()).await.unwrap();
     assert_eq!(limited_rows.iter().map(RecordBatch::num_rows).sum::<usize>(), 2);
     let top_k_df = ctx
@@ -2325,9 +2243,6 @@ async fn cugraph_sql_gpu_pagerank_utf8_is_native_and_matches_dense_numeric_ids()
         .await
         .unwrap();
     let top_k_plan = top_k_df.create_physical_plan().await.unwrap();
-    let top_k_consumer = find_composed_exec(top_k_plan.as_ref()).expect("string PageRank top-k stays native");
-    assert_eq!(top_k_consumer.native_plan_for_test().nodes().len(), 1);
-    assert!(matches!(top_k_consumer.native_plan_for_test().root_node().kind, PlanNode::Source(_)));
     let top_k_rows = datafusion::physical_plan::collect(top_k_plan, ctx.task_ctx()).await.unwrap();
     let top_k_batch = single_batch(&top_k_rows);
     let top_k_values = top_k_batch.column(1).as_any().downcast_ref::<Float64Array>().unwrap();
@@ -2387,15 +2302,6 @@ async fn cugraph_sql_gpu_pagerank_utf8_is_native_and_matches_dense_numeric_ids()
     );
     let numeric_large_df = ctx.sql(&numeric_large_sql).await.unwrap();
     let numeric_large_plan = numeric_large_df.create_physical_plan().await.unwrap();
-    let numeric_consumer =
-        find_composed_exec(numeric_large_plan.as_ref()).expect("numeric PageRank top-k must remain composed");
-    let numeric_native_plan = numeric_consumer.native_plan_for_test().to_string();
-    for expected in ["GpuResidentSource", "Sort", "Limit"] {
-        assert!(
-            numeric_native_plan.contains(expected),
-            "numeric PageRank top-k consumer must retain {expected} in Source -> Sort -> Limit path:\n{numeric_native_plan}"
-        );
-    }
     let numeric_large_batches = datafusion::physical_plan::collect(numeric_large_plan, ctx.task_ctx()).await.unwrap();
     assert!(numeric_large_batches.len() > 1, "numeric PageRank top-k must span multiple host batches");
     let numeric_large_values = pagerank_values(&numeric_large_batches);
@@ -2642,45 +2548,7 @@ async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively
         "shared graph Top-K metadata filter and enrichment\n{}",
         displayable(plan.as_ref()).indent(false)
     );
-    let composed = find_composed_exec(plan.as_ref()).expect("shared graph Top-K must use one composed execution");
-    let native_plan = composed.native_plan_for_test();
-    let graph_sources = native_plan
-        .nodes()
-        .iter()
-        .filter_map(|node| match &node.kind {
-            PlanNode::Source(source) => match source.as_ref() {
-                SourceNode::GpuResident(source) => Some((node.id, source.input_name.clone())),
-                _ => None,
-            },
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(graph_sources.len(), 1, "ranked must have one authoritative graph result occurrence");
-    let graph_occurrence = graph_sources[0].1.clone();
-    let shared_limits = native_plan
-        .nodes()
-        .iter()
-        .filter_map(|node| match &node.kind {
-            PlanNode::Limit(limit) if limit.spec.fetch == Some(5) => Some(node.id),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    assert_eq!(shared_limits.len(), 1, "ranked must have one authoritative Top-K occurrence");
-    let shared_limit = shared_limits[0];
-    assert_eq!(
-        native_plan.nodes().iter().filter(|node| node.input_ids().contains(&shared_limit)).count(),
-        2,
-        "metadata filtering and enrichment must consume the same ranked Top-K"
-    );
-    assert!(
-        native_plan.nodes().iter().any(|node| {
-            matches!(
-                &node.kind,
-                PlanNode::Join(join) if join.spec.join_type == nexus_query_engine::plan::JoinType::LeftSemi
-            )
-        }),
-        "the IN subquery must lower to a bounded native LeftSemi join"
-    );
+    find_composed_exec(plan.as_ref()).expect("shared graph Top-K must use one composed execution");
     let mut stream = attempt.execute_physical_plan(plan, &ctx).unwrap();
     let first = stream.next().await.expect("ranked metadata enrichment must produce a batch").unwrap();
     let active = backend.device_ledger_reports().unwrap();
@@ -2697,7 +2565,6 @@ async fn cugraph_string_pagerank_and_bfs_bounded_metadata_joins_execute_natively
         .expect("shared graph Top-K must use one ordered schedule")
         .producer_occurrences;
     assert_eq!(producer_occurrences.len(), 1);
-    assert_eq!(producer_occurrences[0].occurrence_id, graph_occurrence);
     let batch = single_batch(&batches);
     assert_eq!(batch.num_rows(), 5, "duplicate metadata must preserve LEFT JOIN multiplicity");
     assert_eq!(batch.column(2).null_count(), 1, "missing metadata must preserve the ranked graph row");

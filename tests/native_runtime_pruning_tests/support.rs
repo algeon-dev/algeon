@@ -84,27 +84,29 @@ fn pruning_test_backend() -> &'static NexusGpuBackend {
     })
 }
 
-pub(super) struct AdmittedExecutionContext {
-    context: AdmittedQueryContext,
-    _handle: QueryHandle,
+pub(super) struct TemplatedNativeOptimization {
+    pub(super) plan: Arc<dyn ExecutionPlan>,
+    pub(super) report: datafusion_nexus::report::PlanningReport,
+    pub(super) source_diagnostics: Vec<nexus_query_engine::source::SourceDiagnostics>,
 }
 
-impl std::ops::Deref for AdmittedExecutionContext {
-    type Target = ExecutionContext;
-
-    fn deref(&self) -> &Self::Target {
-        self.context.context()
+pub(super) fn optimize_with_pruning_template(plan: Arc<dyn ExecutionPlan>) -> TemplatedNativeOptimization {
+    let rule = NexusNativePhysicalOptimizerRule::new(pruning_template_optimizer_config());
+    let optimized =
+        rule.optimize(plan, &ConfigOptions::default()).expect("pruning template rule must optimize the plan");
+    TemplatedNativeOptimization {
+        plan: optimized,
+        report: rule.last_report().expect("pruning template rule must retain a planning report"),
+        source_diagnostics: rule.last_source_diagnostics(),
     }
 }
 
-pub(super) fn bounded_execution_context(plan: &QueryPlan) -> AdmittedExecutionContext {
-    let proof =
-        QueryPlanCapabilityProof::for_query_plan(plan).expect("pruning plan must issue an exact capability proof");
-    let handle = pruning_test_backend()
-        .admit_query_with_plan_capability_proof(proof)
-        .expect("pruning test query must be admitted with its exact plan proof");
-    let context = handle.acquire_context().expect("pruning test context must be acquired");
-    AdmittedExecutionContext { context, _handle: handle }
+fn pruning_template_optimizer_config() -> NexusNativeOptimizerConfig {
+    pruning_test_backend().optimizer_config().clone()
+}
+
+pub(super) fn metric_usize(metrics: &datafusion::physical_plan::metrics::MetricsSet, name: &str) -> usize {
+    metrics.sum_by_name(name).unwrap().as_usize()
 }
 
 pub(super) fn assert_nexus_native_exec(plan: &Arc<dyn ExecutionPlan>, context: &str) {

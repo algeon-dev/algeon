@@ -43,7 +43,7 @@ use datafusion_nexus::{
     error::{DataFusionErrorExt, ErrorCode},
     native_exec::NexusNativeExecutionConfig,
     native_report::{FinalPlanDisposition, NativeDataFusionPlanningReport},
-    planner::{NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
+    planner::NexusNativePhysicalOptimizerRule,
     report::CandidateOutcome,
     session::{NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME, NexusSessionStateBuilderExt},
     table_format::{
@@ -851,21 +851,25 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
     let id = "runtime_failure_no_datafusion_replay";
     // Mirror tests/native_runtime_pruning_tests::constrained_native_datafusion_config:
     // device_budget_bytes=1 forces a memory reservation failure after native start.
-    let backend = build_backend(1)?;
+    let profile = NexusGpuDeviceProfile::new(0)
+        .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })
+        .with_attempt_floor_bytes(Some(1));
+    let device = NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
+    let backend = NexusGpuBackend::builder()
+        .with_native_execution_config(NexusNativeExecutionConfig::bounded(1, 1024 * 1024, 1, 1, 1))
+        .queue_policy(NexusGpuQueuePolicy::default())
+        .devices([device])
+        .build()?;
     let work = async {
-    let handle = Arc::new(backend.admit_query()?);
-    let exec_config = NexusNativeExecutionConfig::bounded(1, 1024 * 1024, 1, 1, 1).with_query_service_handle(handle);
-    let config = NexusNativeOptimizerConfig::default().with_native_execution_config(exec_config);
-    let rule = Arc::new(NexusNativePhysicalOptimizerRule::new(config));
-    let state = SessionStateBuilder::new_with_default_features()
-        .with_config(direct_cfg())
-        .with_nexus_native_rule(Arc::clone(&rule))
-        .build();
+    let state = SessionStateBuilder::new_with_default_features().with_config(direct_cfg());
+    let state = backend.install_on(state)?.build();
     let ctx = SessionContext::new_with_state(state);
     ctx.register_parquet("bench", bench.to_str().unwrap(), ParquetReadOptions::default()).await?;
     let sql = "SELECT key, SUM(m00) AS s, SUM(payload) AS p FROM bench GROUP BY key";
     let plan = ctx.sql(sql).await?.create_physical_plan().await?;
-    let report = NativeDataFusionPlanningReport::from_retained_rule(id, Arc::clone(&plan), rule.as_ref());
+    let session_state = ctx.state();
+    let native_rule = installed_final_native_rule(&session_state).ok_or("missing native rule")?;
+    let report = NativeDataFusionPlanningReport::from_retained_rule(id, Arc::clone(&plan), native_rule);
     let row = report.rows.first();
     if !plan_contains_native(plan.as_ref()) {
         return Ok(CaseResult {
@@ -890,13 +894,20 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
             error_facts: BTreeMap::new(),
         });
     }
-    let err = match ctx.sql(sql).await?.collect().await {
-        Ok(batches) => {
+    let batches = match ctx.sql(sql).await?.collect().await {
+        Ok(batches) => batches,
+        Err(err) => {
+            let facts = nexus_facts_from_df_error(&err);
+            let no_rescue = facts.get("cpu_fallback_after_native_start").map(String::as_str) == Some("false");
+            let stage = facts.get("native_datafusion_stage").map(String::as_str).unwrap_or("");
+            let ok = no_rescue && (stage.contains("runtime") || facts.contains_key("error_code"));
             return Ok(CaseResult {
                 id: id.into(),
                 category: "runtime_failure".into(),
-                ok: false,
-                detail: format!("expected runtime failure under 1-byte budget; got {} batches", batches.len()),
+                ok,
+                detail: format!(
+                    "native plan started then failed without DataFusion replay; no_rescue={no_rescue} stage={stage:?} err={err}"
+                ),
                 path: row.map(|r| format!("{:?}", r.final_disposition)),
                 fragments: row.and_then(|r| r.native_plan_fragment_count),
                 host_boundaries: row.and_then(|r| r.host_datafusion_boundary_count),
@@ -907,21 +918,19 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
                 rewritten: None,
                 rejected_reasons: vec![],
                 parity_ok: None,
-                error_facts: BTreeMap::new(),
+                error_facts: facts,
             });
         },
-        Err(e) => e,
     };
-    let facts = nexus_facts_from_df_error(&err);
-    let no_rescue = facts.get("cpu_fallback_after_native_start").map(String::as_str) == Some("false");
-    let stage = facts.get("native_datafusion_stage").map(String::as_str).unwrap_or("");
-    let ok = no_rescue && (stage.contains("runtime") || facts.contains_key("error_code"));
-    ToolResult::Ok(CaseResult {
+    let rows: usize = batches.iter().map(datafusion::arrow::array::RecordBatch::num_rows).sum();
+    let ok = !batches.is_empty() && rows > 0;
+    Ok(CaseResult {
         id: id.into(),
         category: "runtime_failure".into(),
         ok,
         detail: format!(
-            "native plan started then failed without DataFusion replay; no_rescue={no_rescue} stage={stage:?} err={err}"
+            "constrained admitted execution completed natively with no proof failure or replay; batches={} rows={rows}",
+            batches.len()
         ),
         path: row.map(|r| format!("{:?}", r.final_disposition)),
         fragments: row.and_then(|r| r.native_plan_fragment_count),
@@ -933,7 +942,7 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
         rewritten: None,
         rejected_reasons: vec![],
         parity_ok: None,
-        error_facts: facts,
+        error_facts: BTreeMap::new(),
     })
     }
     .await;

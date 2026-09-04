@@ -28,7 +28,7 @@ pub use nexus_query_engine::{
 
 use crate::{native_exec::NexusNativeExecutionConfig, session_config::optimizer_config_with_datafusion_options};
 
-mod native;
+pub(crate) mod native;
 
 pub use native::{
     CAPABILITY_NON_JOIN_OUTSIDE_REPORT_SCOPE_REASON, NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME,

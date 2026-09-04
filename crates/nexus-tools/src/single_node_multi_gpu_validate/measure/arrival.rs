@@ -600,7 +600,7 @@ pub(super) async fn drive_concurrent_quarantine(
 
     let witness = wait_for_target_live_work(backend, target_ordinal, started, submission_deadline).await?;
     let pre_ack_cache = cache_quarantine_observation(backend, target_ordinal).ok();
-    let injection = backend.fault_injector().quarantine_device(target_ordinal)?;
+    let injection = backend.quarantine_device_for_qualification(target_ordinal)?;
     let post_ack_cache = cache_quarantine_observation(backend, target_ordinal).ok();
     let acknowledgement_offset_ns = elapsed_ns(started);
     let target_ledger_closed = backend
@@ -761,7 +761,7 @@ pub(super) async fn drive_quarantine_cycles(
             let target_ordinal = rotation[barriers.len()];
             let witness = wait_for_target_live_work(backend, target_ordinal, started, submission_deadline).await?;
             let pre_ack_cache = cache_quarantine_observation(backend, target_ordinal).ok();
-            let injection = backend.fault_injector().quarantine_device(target_ordinal)?;
+            let injection = backend.quarantine_device_for_qualification(target_ordinal)?;
             let post_ack_cache = cache_quarantine_observation(backend, target_ordinal).ok();
             let acknowledgement_offset_ns = elapsed_ns(started);
             let target_ledger_closed = backend
@@ -913,7 +913,7 @@ pub(super) async fn drive_duration_paced_quarantine_cycles(
                     wait_for_target_live_work(backend, target_ordinal, timing.started, timing.submission_deadline)
                         .await?;
                 let pre_ack_cache = cache_quarantine_observation(backend, target_ordinal).ok();
-                let injection = backend.fault_injector().quarantine_device(target_ordinal)?;
+                let injection = backend.quarantine_device_for_qualification(target_ordinal)?;
                 let post_ack_cache = cache_quarantine_observation(backend, target_ordinal).ok();
                 let acknowledgement_offset_ns = elapsed_ns(timing.started);
                 let target_ledger_closed = backend

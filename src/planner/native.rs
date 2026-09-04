@@ -432,6 +432,21 @@ fn apply_execution_admission_wrappers(
     }
 }
 
+/// Mints the rule-equivalent plan admission ticket for a directly constructed
+/// native plan and wraps it for execution. Unit tests that build native execs
+/// without the optimizer rule use this instead of duplicating ticket plumbing.
+#[cfg(test)]
+pub(crate) fn wrap_direct_native_plan_with_admission_ticket(
+    plan: Arc<dyn ExecutionPlan>,
+    native_execution_config: &NexusNativeExecutionConfig,
+) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
+    let ticket = plan_query_admission_ticket_for_optimized_plan(plan.as_ref(), native_execution_config, None)?;
+    Ok(match ticket {
+        Some(ticket) => wrap_plan_with_query_admission_ticket(plan, ticket),
+        None => plan,
+    })
+}
+
 fn plan_query_admission_ticket_for_optimized_plan(
     plan: &dyn ExecutionPlan,
     native_execution_config: &NexusNativeExecutionConfig,

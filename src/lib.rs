@@ -65,9 +65,8 @@
 //! ```
 //!
 //! Deployment features are `cugraph`, `cuvs`, `iceberg`, and `nvml`. The
-//! `test-support`, `bench-support`, and `server-internal` features expose
-//! workspace-internal support surfaces and are not ordinary application
-//! choices.
+//! `bench-support` and `server-internal` features expose workspace-internal
+//! support surfaces and are not ordinary application choices.
 //!
 //! DataFusion-specific planning belongs here. DataFusion-free native IR,
 //! runtime policy, capability admission, and native
@@ -75,6 +74,9 @@
 //! Public diagnostics and configuration are grouped under [`attempt`],
 //! [`capability`], [`gpu_coverage`], [`native_report`], [`observability`],
 //! [`report`], and [`session_config`].
+
+#[cfg(test)]
+extern crate self as datafusion_nexus;
 
 pub mod attempt;
 #[cfg(feature = "server-internal")]
@@ -89,8 +91,7 @@ mod final_plan_observation;
 pub mod gpu_coverage;
 pub mod gpu_coverage_sql;
 pub mod gpu_functions;
-#[doc(hidden)]
-pub mod native;
+mod native;
 pub mod native_exec;
 pub mod native_report;
 pub mod observability;

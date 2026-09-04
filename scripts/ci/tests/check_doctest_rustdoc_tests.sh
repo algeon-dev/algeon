@@ -206,10 +206,8 @@ assert_contains "${tmp_dir}/multi.output" "Doctest accounting final: command_sta
 assert_contains "${tmp_dir}/multi.log" "flock </tmp/cudf-gpu.lock> <cargo> <test> <--workspace> <--all-features> <--doc> <--no-fail-fast>"
 assert_contains "${tmp_dir}/multi.log" "flock </tmp/cudf-gpu.lock> <cargo> <nextest> <run> <-P> <default> <--workspace> <--all-features> <-E> <group(gpu)>"
 assert_contains "${tmp_dir}/multi.log" "cargo rustdocflags=-A warnings -Cdebuginfo=0 -D warnings <doc> <--workspace> <--all-features> <--no-deps> <--keep-going>"
-assert_phase_contains "${tmp_dir}/multi.output" doctests "0.100s | PASS | harnesses=2 executed=3 passed=3 failed=0 ignored=1 measured=0 filtered=6 | - | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/doctests.log | n/a"
-assert_phase_contains "${tmp_dir}/multi.output" doctests "doctests | flock /tmp/cudf-gpu.lock cargo test --workspace --all-features --doc --no-fail-fast | 0.100s"
-assert_phase_contains "${tmp_dir}/multi.output" rustdoc "0.100s | PASS | - | - | - | all | ${tmp_dir}/phase-logs/rustdoc.log | MISS"
-assert_phase_contains "${tmp_dir}/multi.output" rustdoc "rustdoc | RUSTDOCFLAGS='-A warnings -Cdebuginfo=0 -D warnings' cargo doc --workspace --all-features --no-deps --keep-going | 0.100s"
+assert_phase_contains "${tmp_dir}/multi.output" doctests "PASS | 0.100s | harnesses=2 executed=3 passed=3 failed=0 ignored=1 measured=0 filtered=6"
+assert_phase_contains "${tmp_dir}/multi.output" rustdoc "PASS | 0.100s | -"
 assert_contains "${tmp_dir}/phase-logs/doctests.log" "RAW_DOCTEST_STDERR"
 if [[ $(grep -c '^flock ' "${tmp_dir}/multi.log") -ne 3 ]]; then
   echo "FAIL: expected shared, exclusive, and doctest flock invocations" >&2
@@ -221,14 +219,14 @@ echo "PASS: locked multi-harness accounting and final strict rustdoc flags"
 run_check zero env FAKE_DOCTEST_CASE=zero /usr/bin/bash scripts/check_all.sh
 assert_status zero 0
 assert_contains "${tmp_dir}/zero.output" "command_status=0 parse_status=ok harnesses=1 executed=0 passed=0 failed=0 ignored=0 measured=0 filtered=0"
-assert_phase_contains "${tmp_dir}/zero.output" doctests "0.100s | PASS | harnesses=1 executed=0 passed=0 failed=0 ignored=0 measured=0 filtered=0 | - | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/doctests.log | n/a"
+assert_phase_contains "${tmp_dir}/zero.output" doctests "PASS | 0.100s | harnesses=1 executed=0 passed=0 failed=0 ignored=0 measured=0 filtered=0"
 echo "PASS: actual zero doctests"
 
 run_check no_harness env FAKE_DOCTEST_CASE=no_harness /usr/bin/bash scripts/check_all.sh
 assert_status no_harness 1
 assert_contains "${tmp_dir}/no_harness.output" "no Doc-tests harness results found"
 assert_contains "${tmp_dir}/no_harness.output" "command_status=0 parse_status=error harnesses=0 executed=0"
-assert_phase_contains "${tmp_dir}/no_harness.output" doctests "0.100s | FAIL(accounting) | harnesses=0 executed=0 passed=0 failed=0 ignored=0 measured=0 filtered=0 | - | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/doctests.log | n/a"
+assert_phase_contains "${tmp_dir}/no_harness.output" doctests "FAIL(accounting) | 0.100s | harnesses=0 executed=0 passed=0 failed=0 ignored=0 measured=0 filtered=0"
 echo "PASS: missing doctest harness fails closed"
 
 run_check failure env FAKE_DOCTEST_CASE=failure /usr/bin/bash scripts/check_all.sh
@@ -236,7 +234,7 @@ assert_status failure 1
 assert_contains "${tmp_dir}/failure.output" "RAW_FAILURE_STDOUT"
 assert_contains "${tmp_dir}/failure.output" "RAW_FAILURE_STDERR"
 assert_contains "${tmp_dir}/failure.output" "command_status=37 parse_status=ok harnesses=1 executed=1 passed=0 failed=1 ignored=0 measured=0 filtered=0"
-assert_phase_contains "${tmp_dir}/failure.output" doctests "0.100s | FAIL(37) | harnesses=1 executed=1 passed=0 failed=1 ignored=0 measured=0 filtered=0 | - | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/doctests.log | n/a"
+assert_phase_contains "${tmp_dir}/failure.output" doctests "FAIL(37) | 0.100s | harnesses=1 executed=1 passed=0 failed=1 ignored=0 measured=0 filtered=0"
 assert_contains "${tmp_dir}/phase-logs/doctests.log" "RAW_FAILURE_STDERR"
 echo "PASS: raw doctest failure status and complete output preserved"
 
@@ -244,13 +242,13 @@ run_check malformed env FAKE_DOCTEST_CASE=malformed /usr/bin/bash scripts/check_
 assert_status malformed 1
 assert_contains "${tmp_dir}/malformed.output" "malformed doctest result"
 assert_contains "${tmp_dir}/malformed.output" "command_status=0 parse_status=error harnesses=0 executed=0"
-assert_phase_contains "${tmp_dir}/malformed.output" doctests "0.100s | FAIL(accounting) | harnesses=0 executed=0 passed=0 failed=0 ignored=0 measured=0 filtered=0 | - | /tmp/cudf-gpu.lock | all | ${tmp_dir}/phase-logs/doctests.log | n/a"
+assert_phase_contains "${tmp_dir}/malformed.output" doctests "FAIL(accounting) | 0.100s | harnesses=0 executed=0 passed=0 failed=0 ignored=0 measured=0 filtered=0"
 echo "PASS: malformed doctest output fails closed"
 
 run_check rustdoc_failure env FAKE_RUSTDOC_STATUS=42 /usr/bin/bash scripts/check_all.sh
 assert_status rustdoc_failure 1
 assert_contains "${tmp_dir}/rustdoc_failure.output" "Rustdoc final: command_status=42 warnings=denied"
-assert_phase_contains "${tmp_dir}/rustdoc_failure.output" rustdoc "0.100s | FAIL(42) | - | - | - | all | ${tmp_dir}/phase-logs/rustdoc.log | MISS"
+assert_phase_contains "${tmp_dir}/rustdoc_failure.output" rustdoc "FAIL(42) | 0.100s | -"
 echo "PASS: rustdoc failure status preserved"
 
 run_check invalid_strict env STRICT=0 /usr/bin/bash scripts/check_all.sh

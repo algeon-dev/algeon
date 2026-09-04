@@ -614,16 +614,6 @@ impl Error {
         Self::from_native(operation, message, source)
     }
 
-    #[cfg(feature = "test-support")]
-    #[doc(hidden)]
-    pub fn from_native_for_test(
-        operation: &'static str,
-        message: impl Into<String>,
-        source: nexus_query_engine::error::QueryError,
-    ) -> Self {
-        Self::from_native(operation, message, source)
-    }
-
     #[cfg(feature = "server-internal")]
     #[doc(hidden)]
     pub fn from_native_for_internal_consumer(
@@ -830,6 +820,10 @@ pub fn datafusion_error_human_message(error: &DataFusionError) -> String {
 fn normalize_diagnostic_message(message: &str) -> String {
     message.split_whitespace().collect::<Vec<_>>().join(" ")
 }
+
+#[cfg(test)]
+#[path = "error_contract_tests.rs"]
+mod error_contract_tests;
 
 #[cfg(test)]
 mod tests {

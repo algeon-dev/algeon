@@ -9,7 +9,7 @@
 use std::sync::Arc;
 
 use arrow::datatypes::{DataType, Field, Schema};
-use datafusion_nexus::cugraph_sql::{CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm, stable_result_schema};
+use datafusion_nexus::cugraph_sql::{CUGRAPH_OPERATION_REGISTRY, CugraphAlgorithm};
 use nexus_query_engine::{
     capability::{CapabilityDecision, ContractQuality, ContractStatus, NodeOperator},
     contract_report::CapabilityContractReport,
@@ -24,7 +24,7 @@ use nexus_query_engine::{
         GraphOutDegreesAllParams, GraphPageRankParams, GraphPageRankPersonalizationInput,
         GraphPersonalizedPageRankParams, GraphSccParams, GraphSimilarityParams, GraphSpectralClusteringParams,
         GraphSsspParams, GraphTriangleCountAllParams, GraphVertexIdTypeSupport, GraphVertexPairInput, GraphWccParams,
-        PlanNode, QueryPlan, QueryPlanBuilder, graph_result_schema_for_vertex_type, stable_graph_result_schema,
+        PlanNode, QueryPlan, QueryPlanBuilder, graph_result_schema_for_vertex_type,
     },
     source::{GpuResidentSource, SourceNode},
 };
@@ -160,20 +160,6 @@ fn registry_native_and_sql_inventories_have_matching_lengths() {
         CUGRAPH_OPERATION_REGISTRY.len(),
         "native graph operation registry and the SQL-side mirror must have equal length",
     );
-}
-
-#[test]
-fn registry_algorithm_sql_output_schemas_agree_with_native_engine() {
-    for entry in CUGRAPH_OPERATION_REGISTRY {
-        let sql_schema = stable_result_schema(entry.algorithm);
-        let native_schema = stable_graph_result_schema(entry.algorithm.native_algorithm_for_test());
-        assert_eq!(
-            sql_schema.as_ref(),
-            native_schema.as_ref(),
-            "SQL-facing output schema for {} must mirror the native engine schema",
-            entry.sql_function_name,
-        );
-    }
 }
 
 #[test]
