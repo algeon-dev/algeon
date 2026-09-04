@@ -14,9 +14,23 @@ type ToolResult<T> = Result<T, Box<dyn Error + Send + Sync>>;
 #[path = "../gpu_backend.rs"]
 mod gpu_backend;
 
+#[cfg(any(feature = "clickbench-stage-probe", feature = "shadow-estimate-report"))]
+#[cfg_attr(test, allow(dead_code))]
+#[path = "../native_plan_peel.rs"]
+mod native_plan_peel;
+
 #[cfg(all(feature = "clickbench-stage-probe", not(test)))]
 #[path = "../clickbench_stage_probe.rs"]
 mod clickbench_stage_probe;
+
+// Shadow-estimate-report carries its own pure-logic unit tests (coverage
+// counting, delta classification, join-mismatch handling), so the module
+// itself compiles under `test` like `single_node_multi_gpu_validate`; only
+// its GPU-touching `run` dispatch stays behind `not(test)`.
+#[cfg(feature = "shadow-estimate-report")]
+#[cfg_attr(test, allow(dead_code))]
+#[path = "../shadow_estimate_report.rs"]
+mod shadow_estimate_report;
 // The timeout, exponential, and abort retry paths are only constructed by the
 // feature-gated server e2e commands, so allow dead code when they are off.
 #[cfg(any(not(test), feature = "server-runtime-observability-e2e"))]
@@ -98,6 +112,7 @@ async fn main() -> ToolResult<()> {
         Some("cugraph-fixture-e2e") => run_cugraph_fixture_e2e(env::args().nth(2)).await,
         Some("validate-query") => run_validate_query(env::args().skip(2).collect()).await,
         Some("clickbench-stage-probe") => run_clickbench_stage_probe(env::args().skip(2).collect()).await,
+        Some("shadow-estimate-report") => run_shadow_estimate_report(env::args().skip(2).collect()).await,
         Some("datafusion-baseline-contract-validate") => {
             run_datafusion_baseline_contract_validate(env::args().skip(2).collect()).await
         },
@@ -122,6 +137,7 @@ fn print_usage() {
          USAGE:\n\
            cargo run -p nexus-tools --features validate-query -- validate-query --sql <SQL> [--format json|human] [--parquet TABLE=PATH]...\n\
            flock /tmp/cudf-gpu.lock cargo run -p nexus-tools --features clickbench-stage-probe -- clickbench-stage-probe [OPTIONS]\n\
+           flock /tmp/cudf-gpu.lock cargo run -p nexus-tools --features shadow-estimate-report -- shadow-estimate-report --workload tpch|tpcds [OPTIONS]\n\
            cargo run -p nexus-tools -- flight-sql-cugraph-smoke [URL]\n\
            cargo run -p nexus-tools -- flight-sql-query [URL] [SQL]\n\
            cargo run -p nexus-tools -- flight-sql-stress --config flight-stress-profile.json --out-dir DIR\n\
@@ -209,6 +225,16 @@ async fn run_clickbench_stage_probe(args: Vec<String>) -> ToolResult<()> {
 #[cfg(not(all(feature = "clickbench-stage-probe", not(test))))]
 async fn run_clickbench_stage_probe(_args: Vec<String>) -> ToolResult<()> {
     Err("clickbench-stage-probe requires --features clickbench-stage-probe and normal cargo run execution".into())
+}
+
+#[cfg(all(feature = "shadow-estimate-report", not(test)))]
+async fn run_shadow_estimate_report(args: Vec<String>) -> ToolResult<()> {
+    shadow_estimate_report::run(args).await
+}
+
+#[cfg(not(all(feature = "shadow-estimate-report", not(test))))]
+async fn run_shadow_estimate_report(_args: Vec<String>) -> ToolResult<()> {
+    Err("shadow-estimate-report requires --features shadow-estimate-report and normal cargo run execution".into())
 }
 
 #[cfg(all(feature = "iceberg-e2e", not(test)))]

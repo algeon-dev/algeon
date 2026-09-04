@@ -145,8 +145,8 @@ fn bounded_native_query_fuses_compiled_sort_limit_with_topk() {
             .budgeted_execution_events
             .iter()
             .any(|event| event.operation == "nexus_query_engine.final_sort.topk_prepare"
-                && event.boundary == "final_sort_topk_chunk"),
-        "selective compiled Sort+Limit should use top-k as the normal final-sort path"
+                && event.boundary == "final_sort_topk_stream_chunk"),
+        "selective compiled Sort+Limit should top-k the lazily finalized aggregate output chunk by chunk"
     );
     assert!(
         metrics

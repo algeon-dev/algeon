@@ -102,10 +102,11 @@ impl CompiledPipeline {
             precedes[edge.from().index()][edge.to().index()] = true;
         }
         for through in 0..count {
-            for from in 0..count {
-                if precedes[from][through] {
-                    for to in 0..count {
-                        precedes[from][to] |= precedes[through][to];
+            let through_row = precedes[through].clone();
+            for row in &mut precedes {
+                if row[through] {
+                    for (reaches, through_reaches) in row.iter_mut().zip(&through_row) {
+                        *reaches |= *through_reaches;
                     }
                 }
             }

@@ -8,7 +8,7 @@
 # Usage:
 #   crates/nexus-bench/scripts/run_goodput_matrix.sh <group> [group...]
 #
-# Groups: calibrate g1 g2a g2b g3 g4 graph-calibrate all
+# Groups: calibrate g1 g2a g2b g3 g4 p4b graph-calibrate all
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -40,6 +40,15 @@ CD="${NEXUS_GOODPUT_DEVICE_CAPACITY_BYTES:-68719476736}"   # 64 GiB
 WARMUP_SECONDS="${NEXUS_GOODPUT_WARMUP_SECONDS:-120}"
 WINDOW_SECONDS="${NEXUS_GOODPUT_WINDOW_SECONDS:-300}"
 SEED="${NEXUS_GOODPUT_SEED:-20260910}"
+# Independent per-request cap assignment. Calibration reads the same manifest
+# as the measured runs, so both arms of a paired comparison are judged against
+# deadlines frozen at the caps they actually request.
+REQUEST_CAP_MANIFEST="${NEXUS_GOODPUT_REQUEST_CAP_MANIFEST:-}"
+# P4b sweeps several seeds and load intensities so one favourable draw cannot
+# carry the comparison.
+P4B_SEEDS="${NEXUS_GOODPUT_P4B_SEEDS:-${SEED} 20260911 20260912}"
+P4B_RATE_MULTIPLIERS="${NEXUS_GOODPUT_P4B_RATE_MULTIPLIERS:-0.7 1.0 1.5}"
+P4B_MAX_ACTIVE="${NEXUS_GOODPUT_P4B_MAX_ACTIVE:-3}"
 MAX_QUEUED="${NEXUS_GOODPUT_MAX_QUEUED_ATTEMPTS:-32}"
 MAX_QUEUE_WAIT_MS="${NEXUS_GOODPUT_MAX_QUEUE_WAIT_MS:-60000}"
 SOURCE_CHUNK_BYTES="${NEXUS_GOODPUT_MAX_SOURCE_CHUNK_BYTES:-536870912}"
@@ -103,6 +112,8 @@ record_environment() {
     printf 'captured_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
     printf 'source_identity=%s\n' "${IDENTITY}"
     printf 'device_capacity_bytes=%s\n' "${CD}"
+    printf 'request_cap_manifest=%s\n' "${REQUEST_CAP_MANIFEST:-none}"
+    [[ -n "${REQUEST_CAP_MANIFEST}" ]] && printf 'request_cap_manifest_sha256=%s\n' "$(sha256sum "${REQUEST_CAP_MANIFEST}" | cut -c1-16)"
     nvidia-smi --query-gpu=index,name,memory.total,driver_version --format=csv,noheader | sed 's/^/gpu=/'
     nvcc --version | tail -1 | sed 's/^/nvcc=/'
     rustc --version | sed 's/^/rustc=/'
@@ -133,6 +144,7 @@ run_case() {
   NEXUS_GOODPUT_DEVICE_ORDINALS="${DEVICE_ORDINAL}" \
   NEXUS_GOODPUT_DEVICE_CAPACITY_BYTES="${CD}" \
   NEXUS_GOODPUT_QUERY_CAP_BYTES="${cap}" \
+  NEXUS_GOODPUT_REQUEST_CAP_MANIFEST="${REQUEST_CAP_MANIFEST}" \
   NEXUS_GOODPUT_MAX_ACTIVE_ATTEMPTS="${max_active}" \
   NEXUS_GOODPUT_MAX_QUEUED_ATTEMPTS="${MAX_QUEUED}" \
   NEXUS_GOODPUT_MAX_QUEUE_WAIT_MS="${MAX_QUEUE_WAIT_MS}" \
@@ -164,6 +176,7 @@ run_calibration() {
   NEXUS_GOODPUT_DEVICE_ORDINALS="${DEVICE_ORDINAL}" \
   NEXUS_GOODPUT_DEVICE_CAPACITY_BYTES="${CD}" \
   NEXUS_GOODPUT_QUERY_CAP_BYTES="${CD}" \
+  NEXUS_GOODPUT_REQUEST_CAP_MANIFEST="${REQUEST_CAP_MANIFEST}" \
   NEXUS_GOODPUT_MAX_ACTIVE_ATTEMPTS=1 \
   NEXUS_GOODPUT_MAX_SOURCE_CHUNK_BYTES="${SOURCE_CHUNK_BYTES}" \
   NEXUS_GOODPUT_MAX_ROW_GROUPS_PER_CHUNK="${ROW_GROUPS_PER_CHUNK}" \
@@ -239,7 +252,27 @@ group_g4() {
   run_case "g4-hot"  "${SQL_MIX}" "${SLO_PATH}" "${CD}" 1 0.7 hot "${WARMUP_SECONDS}"
 }
 
-[[ $# -gt 0 ]] || { echo "usage: $0 <calibrate|graph-calibrate|g1|g2a|g2b|g3|g4|saturation|all>..." >&2; exit 2; }
+# Managed capacity, request caps, arrival trace, seed, window and request set
+# are all pinned; concurrency is the only varied factor. Every request carries
+# its own cap from the manifest, so the mixed arm overlaps differently sized
+# grants rather than repeating one cap.
+group_p4b() {
+  [[ -n "${REQUEST_CAP_MANIFEST}" ]] || {
+    echo "p4b requires NEXUS_GOODPUT_REQUEST_CAP_MANIFEST" >&2
+    return 2
+  }
+  local seed rate
+  for seed in ${P4B_SEEDS}; do
+    for rate in ${P4B_RATE_MULTIPLIERS}; do
+      SEED="${seed}" run_case "p4b-single-seed${seed}-rate${rate}" \
+        "${SQL_MIX}" "${SLO_PATH}" "${CD}" 1 "${rate}" hot "${WARMUP_SECONDS}"
+      SEED="${seed}" run_case "p4b-mixed-seed${seed}-rate${rate}" \
+        "${SQL_MIX}" "${SLO_PATH}" "${CD}" "${P4B_MAX_ACTIVE}" "${rate}" hot "${WARMUP_SECONDS}"
+    done
+  done
+}
+
+[[ $# -gt 0 ]] || { echo "usage: $0 <calibrate|graph-calibrate|g1|g2a|g2b|g3|g4|p4b|saturation|all>..." >&2; exit 2; }
 
 record_environment
 for group in "$@"; do
@@ -252,6 +285,7 @@ for group in "$@"; do
     g3) group_g3 ;;
     saturation) group_saturation ;;
     g4) group_g4 ;;
+    p4b) group_p4b ;;
     all) group_g1; group_g2a; group_g2b; group_g4 ;;
     *) echo "unknown group ${group}" >&2; exit 2 ;;
   esac
