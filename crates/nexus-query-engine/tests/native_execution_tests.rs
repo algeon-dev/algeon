@@ -52,9 +52,9 @@ use nexus_query_engine::{
     runtime::{
         AdmittedQueryContext, BoundedJoinReservationContract, DeploymentIoCapability, ExecutionBoundaryPolicy,
         ExecutionContext, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
-        GpuBackendDeviceConfig, GpuMemoryOwnership, KvikioCompatModeStatus, MemoryControlPolicy, MemorySpaceId,
-        NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig, QueryHandle, QueueBounds, ReservationKind,
-        SourceSchedulerPolicy,
+        GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuMemoryOwnership,
+        KvikioCompatModeStatus, MemoryControlPolicy, MemorySpaceId, NvidiaFsProbeStatus, QueryAdmissionRequest,
+        QueryExecutionConfig, QueryHandle, QueueBounds, ReservationKind, SourceSchedulerPolicy,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
     source::{
@@ -170,10 +170,13 @@ fn suite_backend_with_policy(policy: BackendTestPolicy) -> &'static GpuBackendCo
             },
             QueueBounds::default(),
         );
-        let device = GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)
-            .with_attempt_floor_bytes(NATIVE_EXECUTION_TEST_ATTEMPT_FLOOR_BYTES)
-            .with_max_active_attempts(1)
-            .with_installation_bounds(4, 1, 1);
+        let device = GpuBackendDeviceConfig::new(
+            GpuBackendDeviceProfile::new(0)
+                .with_attempt_floor_bytes(NATIVE_EXECUTION_TEST_ATTEMPT_FLOOR_BYTES)
+                .with_max_active_attempts(1)
+                .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(4, 1, 1)),
+            GpuMemoryOwnership::WholeDeviceExclusive,
+        );
         let backend = GpuBackendCore::builder(GpuBackendCoreDraft::new(vec![device], controller, non_gds_deployment()))
             .build()
             .expect("native execution suite backend");

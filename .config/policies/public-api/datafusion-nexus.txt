@@ -71,6 +71,9 @@ pub use datafusion_nexus::backend::DeviceCapabilities
 pub use datafusion_nexus::backend::DeviceQuarantineInjection
 pub use datafusion_nexus::backend::GpuDeviceMemoryLimit
 pub use datafusion_nexus::backend::GpuMemoryOwnership
+pub use datafusion_nexus::backend::NexusGpuDeviceConfig
+pub use datafusion_nexus::backend::NexusGpuDeviceInstallationBounds
+pub use datafusion_nexus::backend::NexusGpuDeviceProfile
 pub struct datafusion_nexus::backend::NexusGpuBackend
 impl datafusion_nexus::backend::NexusGpuBackend
 pub fn datafusion_nexus::backend::NexusGpuBackend::admission_snapshot(&self) -> datafusion_nexus::error::Result<nexus_query_runtime::runtime::query_service::service::api::QueryServiceAdmissionSnapshot>
@@ -78,6 +81,7 @@ pub fn datafusion_nexus::backend::NexusGpuBackend::backend_metrics_snapshot(&sel
 pub fn datafusion_nexus::backend::NexusGpuBackend::builder() -> datafusion_nexus::backend::NexusGpuBackendBuilder
 pub fn datafusion_nexus::backend::NexusGpuBackend::close(&self) -> bool
 pub fn datafusion_nexus::backend::NexusGpuBackend::close_and_wait(&self, core::time::Duration) -> datafusion_nexus::error::Result<nexus_query_runtime::runtime::backend_close::GpuBackendCloseSnapshot>
+pub async fn datafusion_nexus::backend::NexusGpuBackend::close_and_wait_async(&self, core::time::Duration) -> datafusion_nexus::error::Result<nexus_query_runtime::runtime::backend_close::GpuBackendCloseSnapshot>
 pub fn datafusion_nexus::backend::NexusGpuBackend::close_and_wait_until(&self, std::time::Instant) -> datafusion_nexus::error::Result<nexus_query_runtime::runtime::backend_close::GpuBackendCloseSnapshot>
 pub fn datafusion_nexus::backend::NexusGpuBackend::close_snapshot(&self) -> nexus_query_runtime::runtime::backend_close::GpuBackendCloseSnapshot
 pub fn datafusion_nexus::backend::NexusGpuBackend::cugraph_bfs_singleflight_snapshot(&self) -> datafusion_nexus::native_exec::GraphBfsSingleflightSnapshot
@@ -88,7 +92,7 @@ pub fn datafusion_nexus::backend::NexusGpuBackend::device_ledger_reports(&self) 
 pub fn datafusion_nexus::backend::NexusGpuBackend::device_memory_failure_reports(&self) -> datafusion_nexus::error::Result<alloc::vec::Vec<nexus_query_runtime::runtime::gpu::memory_failure::DeviceMemoryFailureReport>>
 pub fn datafusion_nexus::backend::NexusGpuBackend::device_startup_records(&self) -> &[nexus_query_runtime::runtime::backend_core::GpuBackendDeviceStartupRecord]
 pub fn datafusion_nexus::backend::NexusGpuBackend::device_telemetry_snapshots(&self) -> datafusion_nexus::error::Result<alloc::vec::Vec<nexus_query_runtime::runtime::gpu::inventory::DeviceTelemetrySnapshot>>
-pub fn datafusion_nexus::backend::NexusGpuBackend::devices(&self) -> &[datafusion_nexus::backend::NexusGpuDeviceConfig]
+pub fn datafusion_nexus::backend::NexusGpuBackend::devices(&self) -> &[nexus_query_runtime::runtime::backend_core::GpuBackendDeviceConfig]
 pub fn datafusion_nexus::backend::NexusGpuBackend::gpu_execution_pool_reports(&self) -> datafusion_nexus::error::Result<alloc::vec::Vec<nexus_query_runtime::runtime::gpu_execution_pool::GpuExecutionPoolSnapshot>>
 pub fn datafusion_nexus::backend::NexusGpuBackend::gpu_execution_query_report(&self) -> datafusion_nexus::error::Result<nexus_query_runtime::runtime::gpu_execution_pool::GpuExecutionQuerySnapshot>
 pub fn datafusion_nexus::backend::NexusGpuBackend::install_on(&self, datafusion::execution::session_state::SessionStateBuilder) -> datafusion_nexus::error::Result<datafusion::execution::session_state::SessionStateBuilder>
@@ -104,47 +108,12 @@ pub fn datafusion_nexus::backend::NexusGpuBackend::take_abandoned_attempt_report
 pub struct datafusion_nexus::backend::NexusGpuBackendBuilder
 impl datafusion_nexus::backend::NexusGpuBackendBuilder
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::build(self) -> datafusion_nexus::error::Result<datafusion_nexus::backend::NexusGpuBackend>
-pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::devices(self, impl core::iter::traits::collect::IntoIterator<Item = datafusion_nexus::backend::NexusGpuDeviceConfig>) -> Self
+pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::devices(self, impl core::iter::traits::collect::IntoIterator<Item = nexus_query_runtime::runtime::backend_core::GpuBackendDeviceConfig>) -> Self
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::queue_policy(self, datafusion_nexus::backend::NexusGpuQueuePolicy) -> Self
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::with_attempt_completion_queue_capacity(self, usize) -> Self
-pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::with_final_plan_requirement(self, datafusion_nexus::planner::FinalPlanRequirement) -> Self
+pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::with_datafusion_cpu_execution_policy(self, datafusion_nexus::planner::DataFusionCpuExecutionPolicy) -> Self
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::with_native_execution_config(self, datafusion_nexus::native_exec::NexusNativeExecutionConfig) -> Self
-pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::with_no_datafusion_cpu_requirement(self) -> Self
 pub fn datafusion_nexus::backend::NexusGpuBackendBuilder::with_optimizer_config(self, datafusion_nexus::planner::NexusNativeOptimizerConfig) -> Self
-pub struct datafusion_nexus::backend::NexusGpuDeviceConfig
-impl datafusion_nexus::backend::NexusGpuDeviceConfig
-pub fn datafusion_nexus::backend::NexusGpuDeviceConfig::device_ordinal(&self) -> usize
-pub fn datafusion_nexus::backend::NexusGpuDeviceConfig::memory_ownership(&self) -> nexus_query_runtime::runtime::backend_core::GpuMemoryOwnership
-pub fn datafusion_nexus::backend::NexusGpuDeviceConfig::new(datafusion_nexus::backend::NexusGpuDeviceProfile, nexus_query_runtime::runtime::backend_core::GpuMemoryOwnership) -> Self
-pub fn datafusion_nexus::backend::NexusGpuDeviceConfig::profile(&self) -> &datafusion_nexus::backend::NexusGpuDeviceProfile
-#[non_exhaustive] pub struct datafusion_nexus::backend::NexusGpuDeviceInstallationBounds
-pub datafusion_nexus::backend::NexusGpuDeviceInstallationBounds::lane_count: usize
-pub datafusion_nexus::backend::NexusGpuDeviceInstallationBounds::stream_pool_size: usize
-pub datafusion_nexus::backend::NexusGpuDeviceInstallationBounds::worker_count: usize
-impl datafusion_nexus::backend::NexusGpuDeviceInstallationBounds
-pub const fn datafusion_nexus::backend::NexusGpuDeviceInstallationBounds::new(usize, usize, usize) -> Self
-#[non_exhaustive] pub struct datafusion_nexus::backend::NexusGpuDeviceProfile
-impl datafusion_nexus::backend::NexusGpuDeviceProfile
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::attempt_floor_bytes(&self) -> core::option::Option<u64>
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::backend_reserve_bytes(&self) -> u64
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::cache_cap_bytes(&self) -> u64
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::device_capabilities(&self) -> &nexus_query_runtime::runtime::gpu::profile::DeviceCapabilities
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::device_ordinal(&self) -> usize
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::install_telemetry(&self) -> bool
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::installation_bounds(&self) -> core::option::Option<datafusion_nexus::backend::NexusGpuDeviceInstallationBounds>
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::max_active_attempts(&self) -> usize
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::memory_limit(&self) -> nexus_query_runtime::runtime::backend_core::GpuDeviceMemoryLimit
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::new(usize) -> Self
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::source_work_per_attempt(&self) -> usize
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::with_attempt_floor_bytes(self, core::option::Option<u64>) -> Self
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::with_backend_reserve_bytes(self, u64) -> Self
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::with_cache_cap_bytes(self, u64) -> Self
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::with_device_capabilities(self, nexus_query_runtime::runtime::gpu::profile::DeviceCapabilities) -> Self
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::with_installation_bounds(self, datafusion_nexus::backend::NexusGpuDeviceInstallationBounds) -> Self
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::with_max_active_attempts(self, usize) -> Self
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::with_memory_limit(self, nexus_query_runtime::runtime::backend_core::GpuDeviceMemoryLimit) -> Self
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::with_source_work_per_attempt(self, usize) -> Self
-pub fn datafusion_nexus::backend::NexusGpuDeviceProfile::with_telemetry(self, bool) -> Self
 #[non_exhaustive] pub struct datafusion_nexus::backend::NexusGpuQueuePolicy
 impl datafusion_nexus::backend::NexusGpuQueuePolicy
 pub fn datafusion_nexus::backend::NexusGpuQueuePolicy::max_overtakes_per_waiter(&self) -> u32
@@ -1846,6 +1815,9 @@ pub use datafusion_nexus::planner::NativeOptimizerOptions
 pub use datafusion_nexus::planner::NativePlanCostOptions
 pub use datafusion_nexus::planner::SourceDiagnostics
 pub use datafusion_nexus::planner::StatisticalAggregateExecutionMode
+#[non_exhaustive] pub enum datafusion_nexus::planner::DataFusionCpuExecutionPolicy
+pub datafusion_nexus::planner::DataFusionCpuExecutionPolicy::Allow
+pub datafusion_nexus::planner::DataFusionCpuExecutionPolicy::Reject
 #[non_exhaustive] pub enum datafusion_nexus::planner::FinalPlanDisposition
 pub datafusion_nexus::planner::FinalPlanDisposition::DataFusion
 pub datafusion_nexus::planner::FinalPlanDisposition::Mixed
@@ -1854,12 +1826,6 @@ impl datafusion_nexus::planner::FinalPlanDisposition
 pub const fn datafusion_nexus::planner::FinalPlanDisposition::as_str(self) -> &'static str
 impl core::fmt::Display for datafusion_nexus::planner::FinalPlanDisposition
 pub fn datafusion_nexus::planner::FinalPlanDisposition::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-#[non_exhaustive] pub enum datafusion_nexus::planner::FinalPlanRequirement
-pub datafusion_nexus::planner::FinalPlanRequirement::NoDataFusionCpu
-impl datafusion_nexus::planner::FinalPlanRequirement
-pub const fn datafusion_nexus::planner::FinalPlanRequirement::as_str(self) -> &'static str
-impl core::fmt::Display for datafusion_nexus::planner::FinalPlanRequirement
-pub fn datafusion_nexus::planner::FinalPlanRequirement::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct datafusion_nexus::planner::FinalPlanCoverage
 impl datafusion_nexus::gpu_coverage::FinalPlanCoverage
 pub const fn datafusion_nexus::gpu_coverage::FinalPlanCoverage::datafusion_boundary_count(&self) -> usize
@@ -1914,16 +1880,15 @@ pub fn datafusion_nexus::planner::NexusFinalPlanRequirementRule::optimize(&self,
 pub fn datafusion_nexus::planner::NexusFinalPlanRequirementRule::schema_check(&self) -> bool
 pub struct datafusion_nexus::planner::NexusNativeOptimizerConfig
 impl datafusion_nexus::planner::NexusNativeOptimizerConfig
-pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::final_plan_requirements(&self) -> &[datafusion_nexus::planner::FinalPlanRequirement]
+pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::datafusion_cpu_execution_policy(&self) -> datafusion_nexus::planner::DataFusionCpuExecutionPolicy
 pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::native_execution_config(&self) -> &datafusion_nexus::native_exec::NexusNativeExecutionConfig
 pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::native_optimizer_options(&self) -> &nexus_query_planning::optimizer::NativeOptimizerOptions
 pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::native_plan_cost_options(&self) -> &nexus_query_planning::plan::preference::NativePlanCostOptions
 pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::statistical_aggregate_execution_mode(&self) -> nexus_query_planning::mode::StatisticalAggregateExecutionMode
-pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::with_final_plan_requirement(self, datafusion_nexus::planner::FinalPlanRequirement) -> Self
+pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::with_datafusion_cpu_execution_policy(self, datafusion_nexus::planner::DataFusionCpuExecutionPolicy) -> Self
 pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::with_native_execution_config(self, datafusion_nexus::native_exec::NexusNativeExecutionConfig) -> Self
 pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::with_native_optimizer_options(self, nexus_query_planning::optimizer::NativeOptimizerOptions) -> Self
 pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::with_native_plan_cost_options(self, nexus_query_planning::plan::preference::NativePlanCostOptions) -> Self
-pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::with_no_datafusion_cpu_requirement(self) -> Self
 pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::with_statistical_aggregate_execution_mode(self, nexus_query_planning::mode::StatisticalAggregateExecutionMode) -> Self
 impl core::default::Default for datafusion_nexus::planner::NexusNativeOptimizerConfig
 pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::default() -> Self

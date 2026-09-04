@@ -23,7 +23,7 @@ use datafusion_nexus::{
     },
     error::{DataFusionErrorExt, ErrorCode},
     gpu_functions::{GPU_LIST_FUNCTIONS_FUNCTION, GPU_VALIDATE_CALL_FUNCTION},
-    planner::NexusNativeOptimizerConfig,
+    planner::{DataFusionCpuExecutionPolicy, NexusNativeOptimizerConfig},
     session::NexusSessionStateBuilderExt,
 };
 
@@ -139,7 +139,10 @@ fn feature_off_context(scans: Arc<AtomicUsize>) -> SessionContext {
 
 fn feature_off_no_cpu_context(scans: Arc<AtomicUsize>) -> SessionContext {
     let state = SessionStateBuilder::new_with_default_features()
-        .with_nexus_native(NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement())
+        .with_nexus_native(
+            NexusNativeOptimizerConfig::default()
+                .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
+        )
         .try_with_cugraph_sql(CugraphSqlConfig::default())
         .unwrap()
         .build();

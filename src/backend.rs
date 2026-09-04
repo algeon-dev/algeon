@@ -1,4 +1,9 @@
 //! Process-scoped GPU backend facade for embedded DataFusion sessions.
+//!
+//! Build one backend with [`NexusGpuBackend::builder`], install it on
+//! caller-owned session builders, and close it explicitly with
+//! [`NexusGpuBackend::close_and_wait`] or
+//! [`NexusGpuBackend::close_and_wait_async`].
 
 #[cfg(test)]
 use std::sync::{Mutex, MutexGuard};
@@ -9,10 +14,21 @@ use datafusion::execution::{SessionState, SessionStateBuilder};
 pub use nexus_query_engine::runtime::DeviceQuarantineInjection;
 use nexus_query_engine::runtime::{
     DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
-    GpuBackendDeviceConfig, GpuBackendSession, KvikioCompatModeStatus, MemoryControlPolicy, NvidiaFsProbeStatus,
-    QueryExecutionConfig, QueueBounds,
+    GpuBackendSession, KvikioCompatModeStatus, MemoryControlPolicy, NvidiaFsProbeStatus, QueryExecutionConfig,
+    QueueBounds,
 };
 pub use nexus_query_engine::runtime::{DeviceCapabilities, GpuDeviceMemoryLimit, GpuMemoryOwnership};
+/// Canonical device profile bound to an explicit process-scoped GPU memory
+/// ownership promise.
+///
+/// These are the runtime-owned device construction types under application
+/// facing Nexus names: one shared type identity, no second defaults or
+/// validation source in this adapter.
+pub use nexus_query_engine::runtime::{
+    GpuBackendDeviceConfig as NexusGpuDeviceConfig,
+    GpuBackendDeviceInstallationBounds as NexusGpuDeviceInstallationBounds,
+    GpuBackendDeviceProfile as NexusGpuDeviceProfile,
+};
 
 use crate::{
     error::{Error, ErrorCode, Result},
@@ -23,7 +39,7 @@ use crate::{
         GpuExecutionPoolSnapshot, GpuExecutionQuerySnapshot, QueryServiceAdmissionSnapshot,
         QueryServiceDeviceAdmissionSnapshot,
     },
-    planner::{FinalPlanRequirement, NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
+    planner::{DataFusionCpuExecutionPolicy, NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
     session::NexusSessionStateBuilderExt,
 };
 
@@ -39,6 +55,11 @@ use crate::{
 /// Once closing begins, new attempts and admissions are rejected fail-closed, while
 /// in-flight work drains according to contract. Published attempt reports and observation
 /// snapshots remain readable after GPU resources have achieved quiescence.
+///
+/// Dropping the last owning backend handle signals close without waiting for
+/// quiescence and cannot report a timeout or cleanup failure. The process
+/// owner should explicitly wait through [`Self::close_and_wait`] or
+/// [`Self::close_and_wait_async`].
 #[derive(Debug, Clone)]
 pub struct NexusGpuBackend {
     core: GpuBackendCore,
@@ -46,202 +67,6 @@ pub struct NexusGpuBackend {
     optimizer_config: NexusNativeOptimizerConfig,
     devices: Vec<NexusGpuDeviceConfig>,
     queue_policy: NexusGpuQueuePolicy,
-}
-
-/// Concrete device declaration binding a device-local resource profile to an
-/// explicit process-scoped GPU memory ownership promise.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct NexusGpuDeviceConfig {
-    profile: NexusGpuDeviceProfile,
-    memory_ownership: GpuMemoryOwnership,
-}
-
-impl NexusGpuDeviceConfig {
-    pub fn new(profile: NexusGpuDeviceProfile, memory_ownership: GpuMemoryOwnership) -> Self {
-        Self { profile, memory_ownership }
-    }
-
-    pub fn profile(&self) -> &NexusGpuDeviceProfile {
-        &self.profile
-    }
-
-    pub fn memory_ownership(&self) -> GpuMemoryOwnership {
-        self.memory_ownership
-    }
-
-    pub fn device_ordinal(&self) -> usize {
-        self.profile.device_ordinal()
-    }
-}
-
-/// Explicit immutable resource envelope for one CUDA device.
-///
-/// A profile is keyed by its CUDA ordinal and is projected one-for-one into
-/// the engine's [`GpuBackendDeviceConfig`].  It deliberately owns every
-/// device-local bound: capacity, reserve, floor, active-attempt count,
-/// source work, installation bounds, capabilities, and telemetry.
-/// Queue bounds live in [`NexusGpuQueuePolicy`], because they govern the
-/// one shared admission queue rather than a device envelope.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct NexusGpuDeviceProfile {
-    device_ordinal: usize,
-    memory_limit: GpuDeviceMemoryLimit,
-    backend_reserve_bytes: u64,
-    cache_cap_bytes: u64,
-    attempt_floor_bytes: Option<u64>,
-    source_work_per_attempt: usize,
-    max_active_attempts: usize,
-    installation_bounds: Option<NexusGpuDeviceInstallationBounds>,
-    device_capabilities: DeviceCapabilities,
-    install_telemetry: bool,
-}
-
-/// Explicit installation limits for one device profile.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[non_exhaustive]
-pub struct NexusGpuDeviceInstallationBounds {
-    pub stream_pool_size: usize,
-    pub worker_count: usize,
-    pub lane_count: usize,
-}
-
-impl NexusGpuDeviceInstallationBounds {
-    /// Creates explicit stream, worker, and execution-lane bounds.
-    pub const fn new(stream_pool_size: usize, worker_count: usize, lane_count: usize) -> Self {
-        Self { stream_pool_size, worker_count, lane_count }
-    }
-}
-
-impl NexusGpuDeviceProfile {
-    /// Starts a profile with automatic capacity discovery and one active
-    /// attempt.  Callers may override any device-local bound below.
-    pub fn new(device_ordinal: usize) -> Self {
-        // Project engine-owned defaults instead of carrying a second root
-        // definition. Memory ownership is supplied when this profile is
-        // lowered to the engine config and does not affect these defaults.
-        let defaults = GpuBackendDeviceConfig::new(device_ordinal, GpuMemoryOwnership::WholeDeviceExclusive);
-        Self {
-            device_ordinal: defaults.device_ordinal(),
-            memory_limit: defaults.memory_limit(),
-            backend_reserve_bytes: defaults.backend_reserve_bytes(),
-            cache_cap_bytes: 0,
-            attempt_floor_bytes: defaults.attempt_floor_bytes(),
-            // Source work is a device-local controller capacity, not an
-            // execution/session tuning default. Keep the profile concrete
-            // from construction so changing execution prefetch never changes
-            // its stream or worker envelope.
-            source_work_per_attempt: defaults.source_work_per_attempt(),
-            max_active_attempts: defaults.max_active_attempts(),
-            installation_bounds: None,
-            device_capabilities: defaults.device_capabilities().clone(),
-            install_telemetry: defaults.install_telemetry(),
-        }
-    }
-
-    pub fn with_memory_limit(mut self, memory_limit: GpuDeviceMemoryLimit) -> Self {
-        self.memory_limit = memory_limit;
-        self
-    }
-
-    pub fn with_backend_reserve_bytes(mut self, backend_reserve_bytes: u64) -> Self {
-        self.backend_reserve_bytes = backend_reserve_bytes;
-        self
-    }
-
-    /// A zero cap disables resident caching.
-    pub fn with_cache_cap_bytes(mut self, cache_cap_bytes: u64) -> Self {
-        self.cache_cap_bytes = cache_cap_bytes;
-        self
-    }
-
-    pub fn with_attempt_floor_bytes(mut self, attempt_floor_bytes: Option<u64>) -> Self {
-        self.attempt_floor_bytes = attempt_floor_bytes;
-        self
-    }
-
-    pub fn with_source_work_per_attempt(mut self, source_work_per_attempt: usize) -> Self {
-        self.source_work_per_attempt = source_work_per_attempt;
-        self
-    }
-
-    pub fn with_max_active_attempts(mut self, max_active_attempts: usize) -> Self {
-        self.max_active_attempts = max_active_attempts;
-        self
-    }
-
-    pub fn with_installation_bounds(mut self, bounds: NexusGpuDeviceInstallationBounds) -> Self {
-        self.installation_bounds = Some(bounds);
-        self
-    }
-
-    pub fn with_device_capabilities(mut self, device_capabilities: DeviceCapabilities) -> Self {
-        self.device_capabilities = device_capabilities;
-        self
-    }
-
-    pub fn with_telemetry(mut self, install_telemetry: bool) -> Self {
-        self.install_telemetry = install_telemetry;
-        self
-    }
-
-    pub fn device_ordinal(&self) -> usize {
-        self.device_ordinal
-    }
-
-    pub fn memory_limit(&self) -> GpuDeviceMemoryLimit {
-        self.memory_limit
-    }
-
-    pub fn backend_reserve_bytes(&self) -> u64 {
-        self.backend_reserve_bytes
-    }
-
-    pub fn attempt_floor_bytes(&self) -> Option<u64> {
-        self.attempt_floor_bytes
-    }
-
-    pub fn source_work_per_attempt(&self) -> usize {
-        self.source_work_per_attempt
-    }
-
-    pub fn max_active_attempts(&self) -> usize {
-        self.max_active_attempts
-    }
-
-    pub fn installation_bounds(&self) -> Option<NexusGpuDeviceInstallationBounds> {
-        self.installation_bounds
-    }
-
-    pub fn device_capabilities(&self) -> &DeviceCapabilities {
-        &self.device_capabilities
-    }
-
-    pub fn install_telemetry(&self) -> bool {
-        self.install_telemetry
-    }
-
-    pub(crate) fn engine_config(&self, memory_ownership: GpuMemoryOwnership) -> GpuBackendDeviceConfig {
-        let mut device = GpuBackendDeviceConfig::new(self.device_ordinal, memory_ownership)
-            .with_memory_limit(self.memory_limit)
-            .with_device_capabilities(self.device_capabilities.clone())
-            .with_backend_reserve_bytes(self.backend_reserve_bytes)
-            .with_cache_cap_bytes(self.cache_cap_bytes)
-            .with_source_work_per_attempt(self.source_work_per_attempt)
-            .with_max_active_attempts(self.max_active_attempts)
-            .with_telemetry(self.install_telemetry);
-        if let Some(floor) = self.attempt_floor_bytes {
-            device = device.with_attempt_floor_bytes(floor);
-        }
-        if let Some(bounds) = self.installation_bounds {
-            device = device.with_installation_bounds(bounds.stream_pool_size, bounds.worker_count, bounds.lane_count);
-        }
-        device
-    }
-
-    pub fn cache_cap_bytes(&self) -> u64 {
-        self.cache_cap_bytes
-    }
 }
 
 /// Queue-only policy for the shared admission queue.
@@ -377,6 +202,18 @@ impl NexusGpuBackend {
     /// records achieve quiescence, or until `timeout` elapses.
     pub fn close_and_wait(&self, timeout: Duration) -> Result<GpuBackendCloseSnapshot> {
         self.core.close_and_wait(timeout).map_err(|error| {
+            Error::from_native("datafusion_nexus.backend.close", "failed to close GPU backend before timeout", error)
+        })
+    }
+
+    /// Asynchronous canonical shutdown path for embedded owners.
+    ///
+    /// Initiates backend shutdown and waits for GPU-resource and observation
+    /// quiescence without blocking the calling async executor worker, or
+    /// until `timeout` elapses. It shares the close coordinator and returns
+    /// the same snapshot contract as [`Self::close_and_wait`].
+    pub async fn close_and_wait_async(&self, timeout: Duration) -> Result<GpuBackendCloseSnapshot> {
+        self.core.close_and_wait_async(timeout).await.map_err(|error| {
             Error::from_native("datafusion_nexus.backend.close", "failed to close GPU backend before timeout", error)
         })
     }
@@ -619,9 +456,7 @@ fn validated_backend_construction(
     let service_config = backend_query_execution_config(&execution_config)?;
     let queue_bounds = backend_queue_bounds(&queue_policy);
     let controller = GpuBackendControllerDraft::new(service_config, queue_bounds);
-    let engine_devices =
-        devices.iter().map(|device| device.profile().engine_config(device.memory_ownership())).collect::<Vec<_>>();
-    let core_draft = GpuBackendCoreDraft::new(engine_devices, controller, nongds_deployment());
+    let core_draft = GpuBackendCoreDraft::new(devices.clone(), controller, nongds_deployment());
     core_draft.validate().map_err(|error| {
         Error::from_native(
             "datafusion_nexus.backend.gpu_core",
@@ -660,30 +495,34 @@ impl InstalledTestGpuBackend {
         device_profile: NexusGpuDeviceProfile,
         queue_policy: NexusGpuQueuePolicy,
     ) -> Self {
-        Self::with_config_and_final_plan_requirements(native_execution_config, device_profile, queue_policy, [])
+        Self::with_config_and_datafusion_cpu_policy(
+            native_execution_config,
+            device_profile,
+            queue_policy,
+            DataFusionCpuExecutionPolicy::Allow,
+        )
     }
 
-    /// Builds a serialized real backend with explicit final-plan requirements.
-    /// This keeps integration tests on the same frozen backend-installation
-    /// path as production cells that add a final-plan gate.
-    pub(crate) fn with_config_and_final_plan_requirements(
+    /// Builds a serialized real backend with an explicit completed-plan
+    /// DataFusion CPU policy. This keeps integration tests on the same frozen
+    /// backend-installation path as production cells that add a final-plan gate.
+    pub(crate) fn with_config_and_datafusion_cpu_policy(
         native_execution_config: NexusNativeExecutionConfig,
         device_profile: NexusGpuDeviceProfile,
         queue_policy: NexusGpuQueuePolicy,
-        final_plan_requirements: impl IntoIterator<Item = FinalPlanRequirement>,
+        datafusion_cpu_execution_policy: DataFusionCpuExecutionPolicy,
     ) -> Self {
         static SERIAL: Mutex<()> = Mutex::new(());
 
         let serial = SERIAL.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let device = NexusGpuDeviceConfig::new(device_profile, GpuMemoryOwnership::WholeDeviceExclusive);
-        let mut builder = NexusGpuBackend::builder()
+        let backend = NexusGpuBackend::builder()
             .with_native_execution_config(native_execution_config)
+            .with_datafusion_cpu_execution_policy(datafusion_cpu_execution_policy)
             .devices([device])
-            .queue_policy(queue_policy);
-        for requirement in final_plan_requirements {
-            builder = builder.with_final_plan_requirement(requirement);
-        }
-        let backend = builder.build().expect("test backend configuration must be valid");
+            .queue_policy(queue_policy)
+            .build()
+            .expect("test backend configuration must be valid");
         Self { backend: Some(backend), _serial: serial }
     }
 
@@ -747,16 +586,11 @@ impl NexusGpuBackendBuilder {
         self
     }
 
-    /// Require each completed backend-installed physical plan to satisfy this
-    /// native execution constraint.
-    pub fn with_final_plan_requirement(mut self, requirement: FinalPlanRequirement) -> Self {
-        self.optimizer_config = self.optimizer_config.with_final_plan_requirement(requirement);
+    /// Set the completed-plan DataFusion CPU policy enforced after native
+    /// rewriting for every backend-installed physical plan.
+    pub fn with_datafusion_cpu_execution_policy(mut self, policy: DataFusionCpuExecutionPolicy) -> Self {
+        self.optimizer_config = self.optimizer_config.with_datafusion_cpu_execution_policy(policy);
         self
-    }
-
-    /// Reject backend-installed physical plans that retain DataFusion CPU execution.
-    pub fn with_no_datafusion_cpu_requirement(self) -> Self {
-        self.with_final_plan_requirement(FinalPlanRequirement::NoDataFusionCpu)
     }
 
     /// Replaces the canonical execution settings copied into admitted plans.
@@ -802,7 +636,6 @@ fn resolve_device_configs(configured_devices: Vec<NexusGpuDeviceConfig>) -> Resu
 
     let mut by_ordinal = BTreeMap::new();
     for device in configured_devices {
-        validate_device_profile(device.profile())?;
         let device_ordinal = device.device_ordinal();
         if by_ordinal.insert(device_ordinal, device).is_some() {
             return Err(invalid_backend_config(
@@ -814,36 +647,6 @@ fn resolve_device_configs(configured_devices: Vec<NexusGpuDeviceConfig>) -> Resu
         }
     }
     Ok(by_ordinal.into_values().collect())
-}
-
-fn validate_device_profile(profile: &NexusGpuDeviceProfile) -> Result<()> {
-    validate_positive_usize("device_profiles.max_active_attempts", profile.max_active_attempts())?;
-    if let Some(floor) = profile.attempt_floor_bytes()
-        && floor == 0
-    {
-        return Err(invalid_backend_config(
-            "device_profiles.attempt_floor_bytes",
-            "must be greater than zero when configured",
-        )
-        .with_fact("device_ordinal", profile.device_ordinal()));
-    }
-    if profile.source_work_per_attempt() == 0 {
-        return Err(invalid_backend_config("device_profiles.source_work_per_attempt", "must be greater than zero")
-            .with_fact("device_ordinal", profile.device_ordinal()));
-    }
-    if let Some(bounds) = profile.installation_bounds() {
-        for (field, value) in [
-            ("device_profiles.stream_pool_size", bounds.stream_pool_size),
-            ("device_profiles.worker_count", bounds.worker_count),
-            ("device_profiles.lane_count", bounds.lane_count),
-        ] {
-            if value == 0 {
-                return Err(invalid_backend_config(field, "must be greater than zero")
-                    .with_fact("device_ordinal", profile.device_ordinal()));
-            }
-        }
-    }
-    Ok(())
 }
 
 fn backend_query_execution_config(execution_config: &NexusNativeExecutionConfig) -> Result<QueryExecutionConfig> {

@@ -165,16 +165,16 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
     let service = runtime_test_service_with_profiles(
         QueryExecutionConfig::default(),
         QueueBounds::default(),
-        vec![runtime_test_device_profile_with_limits(
-            0,
-            128 * 1024 * 1024,
-            8 * 1024 * 1024,
-            8,
-            24,
-            8,
-            8,
-        )
-        .with_cache_cap_bytes(CACHE_CAP_BYTES)],
+        vec![GpuBackendDeviceConfig::new(
+            GpuBackendDeviceProfile::new(0)
+                .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 128 * 1024 * 1024 })
+                .with_attempt_floor_bytes(8 * 1024 * 1024)
+                .with_source_work_per_attempt(2)
+                .with_max_active_attempts(8)
+                .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(24, 8, 8))
+                .with_cache_cap_bytes(CACHE_CAP_BYTES),
+            GpuMemoryOwnership::WholeDeviceExclusive,
+        )],
     )
     .expect("cache-enabled runtime service");
     let edge_schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![
@@ -196,7 +196,7 @@ fn cache_enabled_pagerank_promotes_one_graph_into_the_ledger_owned_domain() {
         None,
     );
     let attempt_owner = observed_attempt.owner;
-    let completion = observed_attempt.completion;
+    let completion = observed_attempt.completion.completion();
     let attempt_handle = attempt_owner.handle();
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");

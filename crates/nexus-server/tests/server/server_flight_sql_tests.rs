@@ -90,7 +90,7 @@ fn build_injected_test_backend(config: &mut ServerConfig) -> NexusGpuBackend {
                 .with_memory_limit(GpuDeviceMemoryLimit::Explicit {
                     limit_bytes: INJECTED_BACKEND_TEST_DEVICE_BUDGET_BYTES,
                 })
-                .with_attempt_floor_bytes(Some(INJECTED_BACKEND_TEST_DEVICE_BUDGET_BYTES))
+                .with_attempt_floor_bytes(INJECTED_BACKEND_TEST_DEVICE_BUDGET_BYTES)
         })
         .collect();
     config.native_optimizer_config =

@@ -2,8 +2,8 @@ use std::time::{Duration, Instant};
 
 use nexus_query_engine::runtime::{
     DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
-    GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus,
-    QueryExecutionConfig, QueueBounds,
+    GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuDeviceMemoryLimit,
+    GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryExecutionConfig, QueueBounds,
 };
 
 const DEVICE_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
@@ -18,11 +18,14 @@ fn nongds_deployment() -> DeploymentIoCapability {
 }
 
 fn device(ordinal: usize) -> GpuBackendDeviceConfig {
-    GpuBackendDeviceConfig::new(ordinal, GpuMemoryOwnership::WholeDeviceExclusive)
-        .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: DEVICE_LIMIT_BYTES })
-        .with_attempt_floor_bytes(DEVICE_FLOOR_BYTES)
-        .with_max_active_attempts(1)
-        .with_installation_bounds(2, 1, 1)
+    GpuBackendDeviceConfig::new(
+        GpuBackendDeviceProfile::new(ordinal)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: DEVICE_LIMIT_BYTES })
+            .with_attempt_floor_bytes(DEVICE_FLOOR_BYTES)
+            .with_max_active_attempts(1)
+            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(2, 1, 1)),
+        GpuMemoryOwnership::WholeDeviceExclusive,
+    )
 }
 
 #[test]

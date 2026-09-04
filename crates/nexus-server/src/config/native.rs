@@ -5,7 +5,7 @@ use super::{
     file::ServerNativeFileConfig,
     *,
 };
-use crate::planner::FinalPlanRequirement;
+use crate::planner::DataFusionCpuExecutionPolicy;
 
 /// Maximum source row groups planned into one native bounded source chunk.
 pub const NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV: &str = "NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK";
@@ -170,15 +170,15 @@ pub(super) fn native_optimizer_config(
             .map(|mode| NativeConfigValue::new(mode, raw.field))
     })
     .transpose()?;
-    let final_plan_requirement = optional_native_string(
+    let datafusion_cpu_execution_policy = optional_native_string(
         values,
         NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV,
         "native.final_plan_requirement",
         file.final_plan_requirement.as_deref(),
     )
     .map(|raw| {
-        parse_final_plan_requirement(raw.field, &raw.value)
-            .map(|requirement| NativeConfigValue::new(requirement, raw.field))
+        parse_datafusion_cpu_execution_policy(raw.field, &raw.value)
+            .map(|policy| NativeConfigValue::new(policy, raw.field))
     })
     .transpose()?;
     for (field, zero) in [
@@ -217,8 +217,8 @@ pub(super) fn native_optimizer_config(
     }
 
     let mut optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(execution_config);
-    if let Some(requirement) = final_plan_requirement {
-        optimizer_config = optimizer_config.with_final_plan_requirement(requirement.value);
+    if let Some(policy) = datafusion_cpu_execution_policy {
+        optimizer_config = optimizer_config.with_datafusion_cpu_execution_policy(policy.value);
     }
     Ok(optimizer_config)
 }
@@ -300,9 +300,12 @@ pub(super) fn parse_statistical_aggregate_execution_mode(
     }
 }
 
-pub(super) fn parse_final_plan_requirement(field: &'static str, raw: &str) -> Result<FinalPlanRequirement> {
+pub(super) fn parse_datafusion_cpu_execution_policy(
+    field: &'static str,
+    raw: &str,
+) -> Result<DataFusionCpuExecutionPolicy> {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "no_datafusion_cpu" => Ok(FinalPlanRequirement::NoDataFusionCpu),
+        "no_datafusion_cpu" => Ok(DataFusionCpuExecutionPolicy::Reject),
         other => Err(ServerError::invalid_config(field, format!("must be `no_datafusion_cpu`, got `{other}`"))),
     }
 }

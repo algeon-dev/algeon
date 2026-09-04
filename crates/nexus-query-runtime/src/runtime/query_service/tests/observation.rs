@@ -517,7 +517,7 @@ fn snapshot_sweep_preserves_attempt_binding_primary_failure_after_waiter_consume
     let admission = snapshot.join().expect("snapshot reporter does not panic").expect("snapshot succeeds");
     assert_eq!(admission.queued_queries, 0);
 
-    let report = attempt.completion.wait_timeout(Duration::from_secs(1)).expect("queue sweep seals the attempt report");
+    let report = attempt.completion.completion().wait_timeout(Duration::from_secs(1)).expect("queue sweep seals the attempt report");
     assert!(matches!(
         &report.outcome,
         RuntimeTerminalOutcome::Failed { error_code, .. } if *error_code == AttemptFailureCode::ServiceOverloaded

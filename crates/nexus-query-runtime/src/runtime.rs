@@ -48,8 +48,8 @@ pub use attempt_domain::AttemptAllocationDomain;
 pub use backend_core::GpuBackendFaultInjector;
 pub use backend_core::{
     GpuBackendCloseSnapshot, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreBuilder, GpuBackendCoreDraft,
-    GpuBackendCoreIdentity, GpuBackendDeviceConfig, GpuBackendDeviceStartupRecord, GpuBackendSession,
-    GpuDeviceMemoryLimit, GpuMemoryFraction, GpuMemoryOwnership,
+    GpuBackendCoreIdentity, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile,
+    GpuBackendDeviceStartupRecord, GpuBackendSession, GpuDeviceMemoryLimit, GpuMemoryFraction, GpuMemoryOwnership,
 };
 #[doc(hidden)]
 pub use backend_core::{GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe};

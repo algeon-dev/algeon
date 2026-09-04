@@ -279,7 +279,9 @@ mod tests {
     use datafusion::{datasource::MemTable, prelude::SessionContext};
 
     use super::*;
-    use crate::{backend::InstalledTestGpuBackend, native_exec::QueryAdmissionSource};
+    use crate::{
+        backend::InstalledTestGpuBackend, native_exec::QueryAdmissionSource, planner::DataFusionCpuExecutionPolicy,
+    };
 
     fn admission_source(backend: &InstalledTestGpuBackend) -> QueryAdmissionSource {
         backend
@@ -317,7 +319,8 @@ mod tests {
 
     #[test]
     fn cugraph_subplanning_omits_final_plan_requirement_rule() {
-        let optimizer_config = NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement();
+        let optimizer_config = NexusNativeOptimizerConfig::default()
+            .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject);
         let state = SessionStateBuilder::new().with_nexus_native(optimizer_config.clone()).build();
         let nested =
             session_state_with_native_execution_config(&state, optimizer_config.native_execution_config().clone())
@@ -330,7 +333,8 @@ mod tests {
 
     #[test]
     fn cugraph_subplanning_plans_single_group_scans_for_declared_orderings() {
-        let optimizer_config = NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement();
+        let optimizer_config = NexusNativeOptimizerConfig::default()
+            .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject);
         let state = SessionStateBuilder::new().with_nexus_native(optimizer_config.clone()).build();
         let nested =
             session_state_with_native_execution_config(&state, optimizer_config.native_execution_config().clone())
@@ -342,7 +346,8 @@ mod tests {
 
     #[test]
     fn cugraph_subplanning_preserves_parent_catalog_relations() {
-        let optimizer_config = NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement();
+        let optimizer_config = NexusNativeOptimizerConfig::default()
+            .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject);
         let state =
             SessionStateBuilder::new_with_default_features().with_nexus_native(optimizer_config.clone()).build();
         let ctx = SessionContext::new_with_state(state);

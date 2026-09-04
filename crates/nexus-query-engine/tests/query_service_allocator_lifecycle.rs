@@ -5,8 +5,9 @@ use nexus_query_engine::{
     error::QueryErrorCode,
     runtime::{
         DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore, GpuBackendCoreDraft,
-        GpuBackendDeviceConfig, GpuExecutionJobKind, GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus,
-        QueryAdmissionRequest, QueryExecutionConfig, QueueBounds, S3SourceStorageProfile, SourceStorageProfile,
+        GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile, GpuExecutionJobKind,
+        GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig,
+        QueueBounds, S3SourceStorageProfile, SourceStorageProfile,
     },
 };
 
@@ -35,10 +36,17 @@ fn backend_draft_with_limits_and_queue_bounds(
     let source_work_per_attempt = 1;
     let stream_pool_size = max_active_attempts.saturating_mul(1 + source_work_per_attempt).max(1);
     let controller = GpuBackendControllerDraft::new(config, queue_bounds);
-    let device = GpuBackendDeviceConfig::new(device_ordinal, GpuMemoryOwnership::WholeDeviceExclusive)
-        .with_source_work_per_attempt(source_work_per_attempt)
-        .with_max_active_attempts(max_active_attempts)
-        .with_installation_bounds(stream_pool_size, max_active_attempts, max_active_attempts);
+    let device = GpuBackendDeviceConfig::new(
+        GpuBackendDeviceProfile::new(device_ordinal)
+            .with_source_work_per_attempt(source_work_per_attempt)
+            .with_max_active_attempts(max_active_attempts)
+            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(
+                stream_pool_size,
+                max_active_attempts,
+                max_active_attempts,
+            )),
+        GpuMemoryOwnership::WholeDeviceExclusive,
+    );
     GpuBackendCoreDraft::new(vec![device], controller, non_gds_deployment())
 }
 

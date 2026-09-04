@@ -17,8 +17,8 @@ use crate::{
         RuntimePlanExecutionLifecycle, RuntimeTerminalOutcome, RuntimeTraceId, StreamLeaseLifecycleState,
     },
     runtime::{
-        DeviceResourceEnvelope, DeviceResourceProfile, GdsDriverProbeStatus, KvikioCompatModeStatus,
-        NvidiaFsProbeStatus,
+        DeviceResourceEnvelope, DeviceResourceProfile, GdsDriverProbeStatus, GpuBackendDeviceInstallationBounds,
+        GpuBackendDeviceProfile, KvikioCompatModeStatus, NvidiaFsProbeStatus,
     },
 };
 

@@ -2,7 +2,7 @@
 use std::path::PathBuf;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 
-use datafusion_nexus::planner::FinalPlanRequirement;
+use datafusion_nexus::planner::DataFusionCpuExecutionPolicy;
 #[cfg(feature = "iceberg")]
 use datafusion_nexus::table_format::{self, TableFormatLakehouseCachePolicy};
 #[cfg(feature = "iceberg")]

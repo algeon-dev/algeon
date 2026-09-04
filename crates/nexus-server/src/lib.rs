@@ -806,10 +806,8 @@ fn validate_injected_session_matches_server_config(
     config: &ServerConfig,
 ) -> Result<()> {
     validate_injected_session_backend_binding(backend.is_session_state_bound(&ctx.state()))?;
-    let requires_single_partition = config
-        .native_optimizer_config
-        .final_plan_requirements()
-        .contains(&crate::planner::FinalPlanRequirement::NoDataFusionCpu);
+    let requires_single_partition = config.native_optimizer_config.datafusion_cpu_execution_policy()
+        == crate::planner::DataFusionCpuExecutionPolicy::Reject;
     let target_partitions = ctx.state().config_options().execution.target_partitions;
     if requires_single_partition && target_partitions != 1 {
         return Err(ServerError::builder_validation(

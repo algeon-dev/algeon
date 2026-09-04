@@ -23,6 +23,8 @@ use super::{
     QueryService, QueryServiceInner,
 };
 #[cfg(test)]
+use crate::runtime::backend_core::GpuBackendDeviceProfile;
+#[cfg(test)]
 use crate::runtime::gpu::GpuInventory;
 use crate::runtime::{
     CacheFillByteBudget, DeploymentIoCapability, DeviceLedger, GpuDeviceMemoryLimit, GpuMemoryOwnership,
@@ -79,7 +81,12 @@ impl QueryService {
     ) -> Result<Self> {
         let device_profiles = device_ordinals
             .into_iter()
-            .map(|device_ordinal| GpuBackendDeviceConfig::new(device_ordinal, GpuMemoryOwnership::WholeDeviceExclusive))
+            .map(|device_ordinal| {
+                GpuBackendDeviceConfig::new(
+                    GpuBackendDeviceProfile::new(device_ordinal),
+                    GpuMemoryOwnership::WholeDeviceExclusive,
+                )
+            })
             .collect();
         Self::new_with_device_profiles_and_deployment_for_test(
             config,
@@ -534,9 +541,10 @@ mod construction_tests {
             ReservationKind::OperatorOutput,
             "test_operator_contract",
         )]);
-        let device = GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)
-            .with_device_capabilities(capabilities.clone())
-            .with_telemetry(false);
+        let device = GpuBackendDeviceConfig::new(
+            GpuBackendDeviceProfile::new(0).with_device_capabilities(capabilities.clone()).with_telemetry(false),
+            GpuMemoryOwnership::WholeDeviceExclusive,
+        );
 
         let registry = device_registry_config(vec![0], &[device]).unwrap();
 

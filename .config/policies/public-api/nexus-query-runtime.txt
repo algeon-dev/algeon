@@ -53,7 +53,7 @@ pub nexus_query_runtime::attempt::AttemptBackendCountersSnapshot::completion_que
 pub nexus_query_runtime::attempt::AttemptBackendCountersSnapshot::completion_queue_pushed: u64
 pub nexus_query_runtime::attempt::AttemptBackendCountersSnapshot::reports_ready: u64
 pub struct nexus_query_runtime::attempt::AttemptBegin
-pub nexus_query_runtime::attempt::AttemptBegin::completion: nexus_query_runtime::attempt::AttemptCompletion
+pub nexus_query_runtime::attempt::AttemptBegin::completion: nexus_query_runtime::attempt::AttemptCompletionFactory
 pub nexus_query_runtime::attempt::AttemptBegin::owner: nexus_query_runtime::attempt::AttemptOwner
 impl core::fmt::Debug for nexus_query_runtime::attempt::AttemptBegin
 pub fn nexus_query_runtime::attempt::AttemptBegin::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
@@ -69,7 +69,6 @@ pub struct nexus_query_runtime::attempt::AttemptCompletion
 impl nexus_query_runtime::attempt::AttemptCompletion
 pub fn nexus_query_runtime::attempt::AttemptCompletion::is_ready(&self) -> bool
 pub fn nexus_query_runtime::attempt::AttemptCompletion::try_report(&self) -> core::option::Option<alloc::sync::Arc<nexus_query_runtime::observability::QueryAttemptReport>>
-pub fn nexus_query_runtime::attempt::AttemptCompletion::uncounted(&self) -> Self
 pub fn nexus_query_runtime::attempt::AttemptCompletion::wait_timeout(&self, core::time::Duration) -> core::option::Option<alloc::sync::Arc<nexus_query_runtime::observability::QueryAttemptReport>>
 impl core::clone::Clone for nexus_query_runtime::attempt::AttemptCompletion
 pub fn nexus_query_runtime::attempt::AttemptCompletion::clone(&self) -> Self
@@ -80,6 +79,14 @@ pub type nexus_query_runtime::attempt::AttemptCompletion::Output = alloc::sync::
 pub fn nexus_query_runtime::attempt::AttemptCompletion::poll(core::pin::Pin<&mut Self>, &mut core::task::wake::Context<'_>) -> core::task::poll::Poll<Self::Output>
 impl core::ops::drop::Drop for nexus_query_runtime::attempt::AttemptCompletion
 pub fn nexus_query_runtime::attempt::AttemptCompletion::drop(&mut self)
+pub struct nexus_query_runtime::attempt::AttemptCompletionFactory
+impl nexus_query_runtime::attempt::AttemptCompletionFactory
+pub fn nexus_query_runtime::attempt::AttemptCompletionFactory::completion(&self) -> nexus_query_runtime::attempt::AttemptCompletion
+pub fn nexus_query_runtime::attempt::AttemptCompletionFactory::try_report(&self) -> core::option::Option<alloc::sync::Arc<nexus_query_runtime::observability::QueryAttemptReport>>
+impl core::clone::Clone for nexus_query_runtime::attempt::AttemptCompletionFactory
+pub fn nexus_query_runtime::attempt::AttemptCompletionFactory::clone(&self) -> Self
+impl core::fmt::Debug for nexus_query_runtime::attempt::AttemptCompletionFactory
+pub fn nexus_query_runtime::attempt::AttemptCompletionFactory::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct nexus_query_runtime::attempt::AttemptCompletionQueue
 impl nexus_query_runtime::attempt::AttemptCompletionQueue
 pub fn nexus_query_runtime::attempt::AttemptCompletionQueue::drain(&self, usize) -> alloc::vec::Vec<alloc::sync::Arc<nexus_query_runtime::observability::QueryAttemptReport>>
@@ -2377,9 +2384,6 @@ pub nexus_query_runtime::runtime::GpuBackendCoreIdentity::resource_core: u64
 pub nexus_query_runtime::runtime::GpuBackendCoreIdentity::resource_generation: u64
 pub struct nexus_query_runtime::runtime::GpuBackendDeviceConfig
 impl nexus_query_runtime::runtime::GpuBackendDeviceConfig
-pub const nexus_query_runtime::runtime::GpuBackendDeviceConfig::DEFAULT_ATTEMPT_FLOOR_BYTES: core::option::Option<u64>
-pub const nexus_query_runtime::runtime::GpuBackendDeviceConfig::DEFAULT_MAX_ACTIVE_ATTEMPTS: usize
-pub const nexus_query_runtime::runtime::GpuBackendDeviceConfig::DEFAULT_SOURCE_WORK_PER_ATTEMPT: usize
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::attempt_floor_bytes(&self) -> core::option::Option<u64>
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::backend_reserve_bytes(&self) -> u64
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::cache_cap_bytes(&self) -> u64
@@ -2390,19 +2394,42 @@ pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::lane_count(&self) -
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::max_active_attempts(&self) -> usize
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::memory_limit(&self) -> nexus_query_runtime::runtime::GpuDeviceMemoryLimit
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::memory_ownership(&self) -> nexus_query_runtime::runtime::GpuMemoryOwnership
-pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::new(usize, nexus_query_runtime::runtime::GpuMemoryOwnership) -> Self
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::new(nexus_query_runtime::runtime::GpuBackendDeviceProfile, nexus_query_runtime::runtime::GpuMemoryOwnership) -> Self
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::profile(&self) -> &nexus_query_runtime::runtime::GpuBackendDeviceProfile
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::source_work_per_attempt(&self) -> usize
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::stream_pool_size(&self) -> usize
-pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::with_attempt_floor_bytes(self, u64) -> Self
-pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::with_backend_reserve_bytes(self, u64) -> Self
-pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::with_cache_cap_bytes(self, u64) -> Self
-pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::with_device_capabilities(self, DeviceCapabilities) -> Self
-pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::with_installation_bounds(self, usize, usize, usize) -> Self
-pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::with_max_active_attempts(self, usize) -> Self
-pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::with_memory_limit(self, nexus_query_runtime::runtime::GpuDeviceMemoryLimit) -> Self
-pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::with_source_work_per_attempt(self, usize) -> Self
-pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::with_telemetry(self, bool) -> Self
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::worker_count(&self) -> usize
+#[non_exhaustive] pub struct nexus_query_runtime::runtime::GpuBackendDeviceInstallationBounds
+pub nexus_query_runtime::runtime::GpuBackendDeviceInstallationBounds::lane_count: usize
+pub nexus_query_runtime::runtime::GpuBackendDeviceInstallationBounds::stream_pool_size: usize
+pub nexus_query_runtime::runtime::GpuBackendDeviceInstallationBounds::worker_count: usize
+impl nexus_query_runtime::runtime::GpuBackendDeviceInstallationBounds
+pub const fn nexus_query_runtime::runtime::GpuBackendDeviceInstallationBounds::new(usize, usize, usize) -> Self
+pub struct nexus_query_runtime::runtime::GpuBackendDeviceProfile
+impl nexus_query_runtime::runtime::GpuBackendDeviceProfile
+pub const nexus_query_runtime::runtime::GpuBackendDeviceProfile::DEFAULT_ATTEMPT_FLOOR_BYTES: core::option::Option<u64>
+pub const nexus_query_runtime::runtime::GpuBackendDeviceProfile::DEFAULT_MAX_ACTIVE_ATTEMPTS: usize
+pub const nexus_query_runtime::runtime::GpuBackendDeviceProfile::DEFAULT_SOURCE_WORK_PER_ATTEMPT: usize
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::attempt_floor_bytes(&self) -> core::option::Option<u64>
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::backend_reserve_bytes(&self) -> u64
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::cache_cap_bytes(&self) -> u64
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::device_capabilities(&self) -> &DeviceCapabilities
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::device_ordinal(&self) -> usize
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::install_telemetry(&self) -> bool
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::installation_bounds(&self) -> core::option::Option<nexus_query_runtime::runtime::GpuBackendDeviceInstallationBounds>
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::max_active_attempts(&self) -> usize
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::memory_limit(&self) -> nexus_query_runtime::runtime::GpuDeviceMemoryLimit
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::new(usize) -> Self
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::source_work_per_attempt(&self) -> usize
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::with_attempt_floor_bytes(self, u64) -> Self
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::with_backend_reserve_bytes(self, u64) -> Self
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::with_cache_cap_bytes(self, u64) -> Self
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::with_device_capabilities(self, DeviceCapabilities) -> Self
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::with_installation_bounds(self, nexus_query_runtime::runtime::GpuBackendDeviceInstallationBounds) -> Self
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::with_max_active_attempts(self, usize) -> Self
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::with_memory_limit(self, nexus_query_runtime::runtime::GpuDeviceMemoryLimit) -> Self
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::with_source_work_per_attempt(self, usize) -> Self
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::with_telemetry(self, bool) -> Self
 pub struct nexus_query_runtime::runtime::GpuBackendDeviceStartupRecord
 pub nexus_query_runtime::runtime::GpuBackendDeviceStartupRecord::backend_health_generation: u64
 pub nexus_query_runtime::runtime::GpuBackendDeviceStartupRecord::backend_reserve_bytes: u64

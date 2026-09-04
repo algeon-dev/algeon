@@ -23,7 +23,7 @@ use super::{
 };
 use crate::{
     error::{DataFusionErrorExt, Error, ErrorCode, ErrorSourceDiagnostics},
-    planner::NexusNativeOptimizerConfig,
+    planner::{DataFusionCpuExecutionPolicy, NexusNativeOptimizerConfig},
     session::installed_nexus_native_optimizer_config,
 };
 
@@ -130,14 +130,15 @@ pub(super) fn validated_under(state: &SessionState, config: &ValidationOptimizer
         source_chunk_planning_mode: execution.source_chunk_planning_mode(),
         statistical_aggregate_execution_mode: execution.statistical_aggregate_execution_mode(),
     };
+    let final_plan_requirements = match optimizer_config.datafusion_cpu_execution_policy() {
+        DataFusionCpuExecutionPolicy::Allow => Vec::new(),
+        DataFusionCpuExecutionPolicy::Reject => vec!["no_datafusion_cpu".to_string()],
+    };
     let optimizer_fingerprint_input = format!(
-        "native_optimizer_rule=installed;{rule_names};session_options={stable_policy:?};native_optimizer_options={:?};native_plan_cost_options={:?};final_plan_requirements={:?}",
+        "native_optimizer_rule=installed;{rule_names};session_options={stable_policy:?};native_optimizer_options={:?};native_plan_cost_options={:?};final_plan_requirements={final_plan_requirements:?}",
         optimizer_config.native_optimizer_options(),
         optimizer_config.native_plan_cost_options(),
-        optimizer_config.final_plan_requirements(),
     );
-    let final_plan_requirements =
-        optimizer_config.final_plan_requirements().iter().map(|requirement| requirement.as_str().to_string()).collect();
     QueryGpuValidatedUnder {
         optimizer_config_source: config.optimizer_config_source.to_string(),
         native_optimizer_rule_installed: true,

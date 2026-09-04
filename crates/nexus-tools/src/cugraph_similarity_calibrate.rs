@@ -28,7 +28,8 @@ use nexus_query_engine::{
         GraphEdgeColumnBindings, GraphSimilarityParams, GraphVertexPairInput, QueryPlanBuilder,
     },
     runtime::{
-        ExecutionContext, GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership, QueryExecutionConfig,
+        ExecutionContext, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds, GpuBackendDeviceProfile,
+        GpuDeviceMemoryLimit, GpuMemoryOwnership, QueryExecutionConfig,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
     source::GpuResidentSource,
@@ -116,10 +117,13 @@ pub fn run(args: Vec<String>) -> ToolResult<()> {
     let args = parse_args(args)?;
     let calibration_input = calibration_input(&args)?;
     let service_config = QueryExecutionConfig::default();
-    let device = GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)
-        .with_memory_limit(GpuDeviceMemoryLimit::default())
-        .with_max_active_attempts(1)
-        .with_installation_bounds(2, 1, 1);
+    let device = GpuBackendDeviceConfig::new(
+        GpuBackendDeviceProfile::new(0)
+            .with_memory_limit(GpuDeviceMemoryLimit::default())
+            .with_max_active_attempts(1)
+            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(2, 1, 1)),
+        GpuMemoryOwnership::WholeDeviceExclusive,
+    );
     let backend = ToolGpuBackend::build(service_config, device)?;
     let result = (|| -> ToolResult<()> {
         let query_handle = backend.session().admit_query()?;

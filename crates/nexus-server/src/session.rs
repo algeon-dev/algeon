@@ -60,10 +60,8 @@ pub(crate) fn cugraph_sql_config(config: &crate::config::CugraphServerConfig) ->
 /// but does not change optimizer or execution settings beyond what the
 /// configured final plan requirement implies (see below).
 pub fn build_session_config(config: &ServerConfig) -> crate::error::Result<SessionConfig> {
-    let gpu_only = config
-        .native_optimizer_config
-        .final_plan_requirements()
-        .contains(&crate::planner::FinalPlanRequirement::NoDataFusionCpu);
+    let gpu_only = config.native_optimizer_config.datafusion_cpu_execution_policy()
+        == crate::planner::DataFusionCpuExecutionPolicy::Reject;
     SessionConfig::from_env()
         .map(enable_session_discovery)
         .map(|session_config| {

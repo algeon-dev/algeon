@@ -27,6 +27,7 @@ use datafusion_nexus::{
     },
     error::DataFusionErrorExt,
     native_exec::NexusNativeExecutionConfig,
+    planner::DataFusionCpuExecutionPolicy,
     session::NexusSessionStateBuilderExt,
 };
 use futures::StreamExt as _;
@@ -1015,14 +1016,14 @@ pub(super) fn build_backend(profile: &RunProfile) -> ToolResult<NexusGpuBackend>
         // final plan that retains any DataFusion CPU operator fails planning
         // with a structured FinalPlanRequirementUnsatisfied rather than
         // silently falling back.
-        .with_no_datafusion_cpu_requirement()
+        .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject)
         .queue_policy(queue)
         .devices(profile.backend.device_profiles.iter().map(|device| {
             let p = NexusGpuDeviceProfile::new(device.ordinal)
                 .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: device.memory_limit_bytes })
                 .with_backend_reserve_bytes(device.backend_reserve_bytes)
                 .with_cache_cap_bytes(device.cache_cap_bytes)
-                .with_attempt_floor_bytes(Some(device.attempt_floor_bytes))
+                .with_attempt_floor_bytes(device.attempt_floor_bytes)
                 .with_source_work_per_attempt(device.source_work_per_attempt)
                 .with_max_active_attempts(device.max_active_attempts)
                 .with_telemetry(device.install_telemetry)

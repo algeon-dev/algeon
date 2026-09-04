@@ -518,7 +518,7 @@ fn attempt_bound_queued_close_seals_one_terminal_report_without_admission() {
         None,
     );
     let attempt_owner = attempt.owner;
-    let completion = attempt.completion;
+    let completion = attempt.completion.completion();
     let attempt_handle = attempt_owner.handle();
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");

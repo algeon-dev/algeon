@@ -30,7 +30,7 @@ use crate::{
     final_plan_observation::observe_final_plan,
     native_exec::{NexusNativeExec, NexusNativeExecutionConfig},
     native_report::FinalPlanDisposition,
-    planner::NexusNativeOptimizerConfig,
+    planner::{DataFusionCpuExecutionPolicy, NexusNativeOptimizerConfig},
     report::{CandidateOutcome, GpuCandidate, NativeCandidateCostEvidence, PlanningReport},
     session::NexusSessionStateBuilderExt,
 };
@@ -327,8 +327,10 @@ fn candidate_outcomes_retain_shape_families_for_unsupported_candidates() {
 }
 
 #[tokio::test]
-async fn validate_query_preserves_the_installed_final_plan_requirement() {
-    let ctx = validation_context(bounded_optimizer_config().with_no_datafusion_cpu_requirement());
+async fn validate_query_preserves_the_installed_final_plan_policy() {
+    let ctx = validation_context(
+        bounded_optimizer_config().with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
+    );
     let coverage = validate_query(&ctx, "SELECT random() AS r").await.unwrap();
 
     let rejection = coverage.rejection().expect("rejection");
@@ -371,7 +373,7 @@ async fn validate_query_with_installed_rule_and_unsupported_candidate_produces_c
 async fn validate_query_metadata_uses_effective_session_optimizer_options() {
     let optimizer_config = NexusNativeOptimizerConfig::default()
         .with_native_execution_config(test_execution_config())
-        .with_no_datafusion_cpu_requirement();
+        .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject);
     let mut session_config = SessionConfig::new();
     // The deleted pipeline-mode session key is rejected; the single bounded
     // path projects the canonical execution-mode label.
@@ -611,14 +613,16 @@ mod cugraph {
         composed_exec_with_child(cugraph, input_name)
     }
 
-    fn assert_no_datafusion_cpu_requirement_rejects_mixed_plan(plan: Arc<dyn ExecutionPlan>) {
+    fn assert_reject_cpu_policy_rejects_mixed_plan(plan: Arc<dyn ExecutionPlan>) {
         assert_eq!(classify_final_plan(plan.as_ref()), FinalPlanDisposition::Mixed);
         let rule = NexusFinalPlanRequirementRule::new(
-            NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement(),
+            NexusNativeOptimizerConfig::default()
+                .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
         );
 
-        let error =
-            rule.optimize(plan, &ConfigOptions::default()).expect_err("the requirement must reject a mixed final plan");
+        let error = rule
+            .optimize(plan, &ConfigOptions::default())
+            .expect_err("the reject policy must reject a mixed final plan");
         let error = error.find_nexus_error().expect("typed adapter error");
 
         assert_eq!(error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
@@ -636,26 +640,27 @@ mod cugraph {
     }
 
     #[test]
-    fn no_datafusion_cpu_requirement_rejects_composed_cugraph_cpu_edge_path() {
-        assert_no_datafusion_cpu_requirement_rejects_mixed_plan(composed_cugraph_plan(memory_edge_source()));
+    fn reject_cpu_policy_rejects_composed_cugraph_cpu_edge_path() {
+        assert_reject_cpu_policy_rejects_mixed_plan(composed_cugraph_plan(memory_edge_source()));
     }
 
     #[test]
-    fn no_datafusion_cpu_requirement_accepts_nested_cooperative_cugraph_input() {
+    fn reject_cpu_policy_accepts_nested_cooperative_cugraph_input() {
         let inner: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(native_edge_exec()));
         let nested: Arc<dyn ExecutionPlan> = Arc::new(CooperativeExec::new(inner));
         let plan = composed_cugraph_plan(nested);
         assert_eq!(classify_final_plan(plan.as_ref()), FinalPlanDisposition::Native);
         let rule = NexusFinalPlanRequirementRule::new(
-            NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement(),
+            NexusNativeOptimizerConfig::default()
+                .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
         );
         rule.optimize(plan, &ConfigOptions::default())
-            .expect("the requirement must accept a recursively native graph input");
+            .expect("the reject policy must accept a recursively native graph input");
     }
 
     #[test]
-    fn no_datafusion_cpu_requirement_rejects_cugraph_composed_child_with_cpu_producer() {
-        assert_no_datafusion_cpu_requirement_rejects_mixed_plan(cugraph_exec(composed_cugraph_edge_plan()));
+    fn reject_cpu_policy_rejects_cugraph_composed_child_with_cpu_producer() {
+        assert_reject_cpu_policy_rejects_mixed_plan(cugraph_exec(composed_cugraph_edge_plan()));
     }
 
     #[test]

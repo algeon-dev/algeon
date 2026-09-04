@@ -256,10 +256,12 @@ fn build_backend(config: &HarnessConfig) -> Result<NexusGpuBackend, Box<dyn Erro
     };
     let admission = NexusGpuQueuePolicy::default().with_max_queue_wait(Duration::from_millis(config.max_queue_wait_ms));
     let devices = config.device_ordinals.iter().copied().map(|ordinal| {
-        let profile = NexusGpuDeviceProfile::new(ordinal)
+        let mut profile = NexusGpuDeviceProfile::new(ordinal)
             .with_memory_limit(memory_limit)
-            .with_attempt_floor_bytes(config.attempt_floor_bytes)
             .with_max_active_attempts(config.max_active_attempts_per_device);
+        if let Some(attempt_floor_bytes) = config.attempt_floor_bytes {
+            profile = profile.with_attempt_floor_bytes(attempt_floor_bytes);
+        }
         NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive)
     });
     let builder = NexusGpuBackend::builder()

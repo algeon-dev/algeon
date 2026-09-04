@@ -7,7 +7,7 @@ use datafusion::{
 };
 use nexus_query_engine::{admission::QueryPlanCapabilityProof, metrics::QueryId};
 
-use super::{FinalPlanDisposition, FinalPlanRequirement, NexusNativeOptimizerConfig, classify_final_plan};
+use super::{DataFusionCpuExecutionPolicy, FinalPlanDisposition, NexusNativeOptimizerConfig, classify_final_plan};
 use crate::{
     attempt::NexusAttemptExtension,
     error::{Error, ErrorCode},
@@ -40,11 +40,11 @@ pub use capability_envelope::{
 };
 use mixed::is_certified_mixed_execution_plan;
 
-/// Internal optimizer-rule identity for completed-plan requirements.
+/// Internal optimizer-rule identity for the completed-plan DataFusion CPU policy.
 pub const NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME: &str = "datafusion_nexus_final_plan_requirement";
 
-/// Enforces configured requirements against the exact physical plan produced by
-/// the preceding native rewrite and leaf-guard rules.
+/// Enforces the configured DataFusion CPU policy against the exact physical
+/// plan produced by the preceding native rewrite and leaf-guard rules.
 #[derive(Debug, Clone)]
 pub struct NexusFinalPlanRequirementRule {
     config: NexusNativeOptimizerConfig,
@@ -75,7 +75,7 @@ impl PhysicalOptimizerRule for NexusFinalPlanRequirementRule {
         plan: Arc<dyn ExecutionPlan>,
         _config: &ConfigOptions,
     ) -> DataFusionResult<Arc<dyn ExecutionPlan>> {
-        if self.config.final_plan_requirements().is_empty() {
+        if self.config.datafusion_cpu_execution_policy() == DataFusionCpuExecutionPolicy::Allow {
             return Ok(plan);
         }
         let disposition = classify_final_plan(plan.as_ref());
@@ -84,19 +84,10 @@ impl PhysicalOptimizerRule for NexusFinalPlanRequirementRule {
         // so it satisfies the no-CPU-execution contract without being
         // misclassified as a native workload.
         let feature_disabled_terminal = crate::cugraph_sql::is_feature_disabled_execution_plan(plan.as_ref());
-        for requirement in self.config.final_plan_requirements() {
-            if *requirement == FinalPlanRequirement::NoDataFusionCpu
-                && disposition != FinalPlanDisposition::Native
-                && !feature_disabled_terminal
-            {
-                return Err(final_plan_requirement_error(
-                    plan.as_ref(),
-                    disposition,
-                    *requirement,
-                    self.planning_report().as_ref(),
-                )
-                .into());
-            }
+        if disposition != FinalPlanDisposition::Native && !feature_disabled_terminal {
+            return Err(
+                final_plan_requirement_error(plan.as_ref(), disposition, self.planning_report().as_ref()).into()
+            );
         }
         Ok(plan)
     }
@@ -113,7 +104,6 @@ impl PhysicalOptimizerRule for NexusFinalPlanRequirementRule {
 fn final_plan_requirement_error(
     plan: &dyn ExecutionPlan,
     disposition: FinalPlanDisposition,
-    requirement: FinalPlanRequirement,
     report: Option<&PlanningReport>,
 ) -> Error {
     let rejection = report.and_then(first_native_not_supported);
@@ -131,7 +121,7 @@ fn final_plan_requirement_error(
         "datafusion_nexus.planner.final_plan_requirement",
         message,
     )
-    .with_fact("requirement", requirement.as_str())
+    .with_fact("requirement", "no_datafusion_cpu")
     .with_fact("observed_final_plan_disposition", disposition.as_str())
     .with_fact("terminal_plan_disposition", "rejected")
     .with_fact("physical_plan_root", plan.name());
@@ -196,8 +186,8 @@ pub struct NativePlanningDiagnostics {
 /// The rule is reusable across sessions when callers want to inspect
 /// [`last_planning_diagnostics`](Self::last_planning_diagnostics). Session
 /// insertion deduplicates by the public rule names in [`crate::session`].
-/// Candidate misses leave the original DataFusion plan intact. Optional
-/// completed-plan requirements run in a later rule after native planning has
+/// Candidate misses leave the original DataFusion plan intact. A reject
+/// DataFusion CPU policy runs in a later rule after native planning has
 /// completed.
 #[derive(Debug)]
 pub struct NexusNativePhysicalOptimizerRule {
@@ -636,15 +626,16 @@ mod tests {
     }
 
     #[test]
-    fn no_datafusion_cpu_requirement_rejects_the_exact_datafusion_final_plan() {
+    fn reject_datafusion_cpu_policy_rejects_the_exact_datafusion_final_plan() {
         let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
         let rule = NexusFinalPlanRequirementRule::new(
-            NexusNativeOptimizerConfig::default().with_no_datafusion_cpu_requirement(),
+            NexusNativeOptimizerConfig::default()
+                .with_datafusion_cpu_execution_policy(DataFusionCpuExecutionPolicy::Reject),
         );
 
         let error = rule
             .optimize(plan, &ConfigOptions::default())
-            .expect_err("the requirement must reject a CPU-only final plan");
+            .expect_err("the reject policy must reject a CPU-only final plan");
         let error = error.find_nexus_error().expect("typed adapter error");
 
         assert_eq!(error.code(), ErrorCode::FinalPlanRequirementUnsatisfied);
@@ -655,7 +646,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_final_plan_requirement_set_returns_the_original_plan_without_replanning() {
+    fn allow_datafusion_cpu_policy_returns_the_original_plan_without_replanning() {
         let plan: Arc<dyn ExecutionPlan> = Arc::new(EmptyExec::new(Arc::new(Schema::empty())));
         let rule = NexusFinalPlanRequirementRule::new(NexusNativeOptimizerConfig::default());
 

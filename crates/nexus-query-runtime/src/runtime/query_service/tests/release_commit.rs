@@ -40,7 +40,7 @@ async fn cleanup_complete_without_report_ready_cannot_admit_replacement() {
         None,
     );
     let attempt_owner = attempt.owner;
-    let completion = attempt.completion;
+    let completion = attempt.completion.completion();
     let attempt_handle = attempt_owner.handle();
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
@@ -149,7 +149,7 @@ fn unterminalized_admitted_release_commits_fallback_before_report() {
         None,
     );
     let attempt_owner = attempt.owner;
-    let completion = attempt.completion;
+    let completion = attempt.completion.completion();
     let attempt_handle = attempt_owner.handle();
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
@@ -201,7 +201,7 @@ async fn unterminalized_release_resolves_fallback_before_gpu_cleanup_starts() {
         None,
     );
     let attempt_owner = attempt.owner;
-    let completion = attempt.completion;
+    let completion = attempt.completion.completion();
     let attempt_handle = attempt_owner.handle();
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
@@ -344,7 +344,7 @@ fn residual_terminal_domain_usage_quarantines_before_report_and_capacity_release
         None,
     );
     let attempt_owner = attempt.owner;
-    let completion = attempt.completion;
+    let completion = attempt.completion.completion();
     let attempt_handle = attempt_owner.handle();
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
@@ -455,7 +455,7 @@ fn admitted_finalizer_transfers_once_and_publishes_no_pending_capacity() {
         None,
     );
     let attempt_owner = attempt.owner;
-    let completion = attempt.completion;
+    let completion = attempt.completion.completion();
     let attempt_handle = attempt_owner.handle();
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
@@ -567,7 +567,7 @@ fn device_local_cleanup_fault_seals_retry_on_a_frozen_eligible_alternate() {
         None,
     );
     let attempt_owner = attempt.owner;
-    let completion = attempt.completion;
+    let completion = attempt.completion.completion();
     let attempt_handle = attempt_owner.handle();
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
@@ -643,7 +643,7 @@ fn duplicate_root_cleanup_handoff_marks_backend_unhealthy_before_capacity_releas
         None,
     );
     let attempt_owner = attempt.owner;
-    let completion = attempt.completion;
+    let completion = attempt.completion.completion();
     let attempt_handle = attempt_owner.handle();
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");
@@ -848,7 +848,7 @@ fn oom_release_projects_truthful_resource_evidence() {
         None,
     );
     let attempt_owner = attempt.owner;
-    let completion = attempt.completion;
+    let completion = attempt.completion.completion();
     let attempt_handle = attempt_owner.handle();
     attempt_handle.record_planning_started().expect("planning starts");
     attempt_handle.record_planning_finished().expect("planning finishes");

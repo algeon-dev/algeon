@@ -7,9 +7,9 @@ pub use nexus_query_engine::{
 use crate::{
     error::Result,
     runtime::{
-        DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendDeviceConfig, GpuDeviceMemoryLimit, GpuMemoryOwnership,
-        KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryAdmissionRequest, QueryExecutionConfig, QueryService,
-        QueueBounds,
+        DeploymentIoCapability, GdsDriverProbeStatus, GpuBackendDeviceConfig, GpuBackendDeviceInstallationBounds,
+        GpuBackendDeviceProfile, GpuDeviceMemoryLimit, GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus,
+        QueryAdmissionRequest, QueryExecutionConfig, QueryService, QueueBounds,
     },
 };
 
@@ -19,12 +19,19 @@ fn try_guaranteed_runtime_test_service_with_concurrency(max_active_attempts: usi
     let max_active_attempts = max_active_attempts.max(1);
     let attempt_floor_bytes =
         (CAPACITY_BYTES / u64::try_from(max_active_attempts.saturating_mul(8)).unwrap_or(u64::MAX)).max(1);
-    let profile = GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)
-        .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: CAPACITY_BYTES })
-        .with_attempt_floor_bytes(attempt_floor_bytes)
-        .with_source_work_per_attempt(2)
-        .with_max_active_attempts(max_active_attempts)
-        .with_installation_bounds(max_active_attempts.saturating_mul(3), max_active_attempts, max_active_attempts);
+    let profile = GpuBackendDeviceConfig::new(
+        GpuBackendDeviceProfile::new(0)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: CAPACITY_BYTES })
+            .with_attempt_floor_bytes(attempt_floor_bytes)
+            .with_source_work_per_attempt(2)
+            .with_max_active_attempts(max_active_attempts)
+            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(
+                max_active_attempts.saturating_mul(3),
+                max_active_attempts,
+                max_active_attempts,
+            )),
+        GpuMemoryOwnership::WholeDeviceExclusive,
+    );
     let deployment = DeploymentIoCapability::from_probe_inputs(
         NvidiaFsProbeStatus::DriverMissing,
         KvikioCompatModeStatus::Unset,
@@ -57,23 +64,6 @@ fn runtime_test_service_with_profiles(
             GdsDriverProbeStatus::ProbeUnimplemented,
         ),
     )
-}
-
-fn runtime_test_device_profile_with_limits(
-    device_ordinal: usize,
-    capacity_bytes: u64,
-    attempt_floor_bytes: u64,
-    max_active_attempts: usize,
-    stream_pool_size: usize,
-    worker_count: usize,
-    worker_lane_count: usize,
-) -> GpuBackendDeviceConfig {
-    GpuBackendDeviceConfig::new(device_ordinal, GpuMemoryOwnership::WholeDeviceExclusive)
-        .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: capacity_bytes })
-        .with_attempt_floor_bytes(attempt_floor_bytes)
-        .with_source_work_per_attempt(2)
-        .with_max_active_attempts(max_active_attempts)
-        .with_installation_bounds(stream_pool_size, worker_count, worker_lane_count)
 }
 
 include!("cross_attempt_gpu_resident.rs");

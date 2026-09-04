@@ -22,15 +22,15 @@ fn default_config_selects_all_tpch_queries() {
 }
 
 #[test]
-fn native_planning_uses_the_strict_final_plan_requirement_frozen_in_benchmark_config() {
+fn native_planning_uses_the_strict_final_plan_policy_frozen_in_benchmark_config() {
     let config = NativeTpchBenchmarkConfig::default();
     let resources = NativeTpchRuntimeResources::unavailable();
 
     let optimizer = execution::native_optimizer_config(&config, &resources);
 
     assert_eq!(
-        optimizer.final_plan_requirements(),
-        &[datafusion_nexus::planner::FinalPlanRequirement::NoDataFusionCpu]
+        optimizer.datafusion_cpu_execution_policy(),
+        datafusion_nexus::planner::DataFusionCpuExecutionPolicy::Reject
     );
 }
 

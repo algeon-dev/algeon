@@ -484,12 +484,19 @@ fn runtime_test_device_profile_with_limits(
     worker_count: usize,
     worker_lane_count: usize,
 ) -> GpuBackendDeviceConfig {
-    GpuBackendDeviceConfig::new(device_ordinal, GpuMemoryOwnership::WholeDeviceExclusive)
-        .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: capacity_bytes })
-        .with_attempt_floor_bytes(attempt_floor_bytes)
-        .with_source_work_per_attempt(2)
-        .with_max_active_attempts(max_active_attempts)
-        .with_installation_bounds(stream_pool_size, worker_count, worker_lane_count)
+    GpuBackendDeviceConfig::new(
+        GpuBackendDeviceProfile::new(device_ordinal)
+            .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: capacity_bytes })
+            .with_attempt_floor_bytes(attempt_floor_bytes)
+            .with_source_work_per_attempt(2)
+            .with_max_active_attempts(max_active_attempts)
+            .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(
+                stream_pool_size,
+                worker_count,
+                worker_lane_count,
+            )),
+        GpuMemoryOwnership::WholeDeviceExclusive,
+    )
 }
 fn wait_for_queued_len(service: &AdmissionTestController, expected: usize) {
     let deadline = Instant::now() + Duration::from_secs(1);

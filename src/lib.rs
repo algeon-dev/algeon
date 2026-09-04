@@ -1,36 +1,13 @@
-//! DataFusion adapter for native GPU execution.
+//! Embedded adapter from DataFusion to native GPU execution.
 //!
-//! Embedded applications normally enter through:
-//!
-//! 1. Build one process-scoped [`backend::NexusGpuBackend`] and install it on
-//!    each caller-owned DataFusion session with
-//!    [`backend::NexusGpuBackend::install_on`].
-//! 2. Run each query through [`backend::NexusGpuBackend::begin_attempt`] so
-//!    planning, admission, execution, and the terminal report share one
-//!    invocation lifecycle.
-//!
-//! Strict production policy can enforce that no DataFusion CPU execution
-//! remains in the final physical plan by configuring
-//! [`planner::NexusNativeOptimizerConfig::with_no_datafusion_cpu_requirement`].
-//!
-//! Optional query diagnostic coverage can be inspected ahead of execution via
-//! [`gpu_coverage::validate_query`], which clones planning state and performs
-//! an isolated planning-only pass without beginning an execution attempt or
-//! acquiring admission.
-//!
-//! Public diagnostics separate three decision layers with different owners
-//! and cardinalities:
-//!
-//! - Candidate decisions ([`report::CandidateOutcome`], one row per optimizer
-//!   candidate) explain why a candidate was selected, deferred, or rejected;
-//!   [`report::CandidateOutcomeKind`] owns the stable projection labels.
-//! - Final-plan coverage ([`gpu_coverage::QueryGpuPlanningOutcome`], at most
-//!   one executable plan per validation) describes whether the completed plan
-//!   runs on DataFusion, native, or both, or why planning produced no
-//!   executable plan at all.
-//! - Attempt disposition ([`attempt`], one row per sealed execution attempt)
-//!   records how a started attempt terminated. It is owned by the runtime and
-//!   never re-derived from plan-time types.
+//! The canonical lifecycle is [`backend::NexusGpuBackend`], then session
+//! installation, then [`attempt::NexusAttempt`]: the builder assembles the
+//! immutable device envelope, [`session`] installs the native optimizer on a
+//! caller-owned session builder, and each attempt plans and executes one
+//! invocation before publishing one terminal report. Strict production policy
+//! can enforce that no DataFusion CPU execution remains in the final physical
+//! plan by configuring
+//! [`planner::NexusNativeOptimizerConfig::with_datafusion_cpu_execution_policy`].
 //!
 //! ```no_run
 //! use std::time::Duration;
@@ -45,6 +22,9 @@
 //! use futures::TryStreamExt;
 //!
 //! # async fn run() -> Result<(), Box<dyn std::error::Error>> {
+//! // Ordinal `0` is the first process-visible CUDA device.
+//! // `WholeDeviceExclusive` promises process-wide allocator ownership; it
+//! // does not allocate device memory by itself.
 //! let device = NexusGpuDeviceConfig::new(
 //!     NexusGpuDeviceProfile::new(0),
 //!     GpuMemoryOwnership::WholeDeviceExclusive,
@@ -54,26 +34,32 @@
 //! let ctx = SessionContext::new_with_state(state);
 //!
 //! let attempt = backend.begin_attempt(AttemptOptions::default())?;
+//! // Take the completion receiver before planning so the terminal report is
+//! // observable even when planning itself fails.
 //! let completion = attempt.completion();
 //! let stream = attempt.sql(&ctx, "SELECT 1 AS value").await?;
 //! let _batches = stream.try_collect::<Vec<_>>().await?;
-//! let _report = completion.await;
+//! let terminal = completion.await;
+//! println!("terminal outcome: {:?}", terminal.outcome);
 //!
-//! backend.close_and_wait(Duration::from_secs(10))?;
+//! // Async shutdown waits for GPU-resource and observation quiescence without
+//! // blocking the executor worker.
+//! backend.close_and_wait_async(Duration::from_secs(10)).await?;
 //! # Ok(())
 //! # }
 //! ```
 //!
-//! Deployment features are `cugraph`, `cuvs`, `iceberg`, and `nvml`. The
-//! `bench-support` and `server-internal` features expose workspace-internal
-//! support surfaces and are not ordinary application choices.
+//! Applications start from [`backend`], install sessions through [`session`],
+//! and execute through [`attempt`]. Planning-only diagnosis lives in
+//! [`gpu_coverage`]; runtime exporter projection lives in [`observability`].
 //!
-//! DataFusion-specific planning belongs here. DataFusion-free native IR,
-//! runtime policy, capability admission, and native
-//! [`nexus_query_engine::plan::QueryPlan`] execution live in the engine crate.
-//! Public diagnostics and configuration are grouped under [`attempt`],
-//! [`capability`], [`gpu_coverage`], [`native_report`], [`observability`],
-//! and [`report`].
+//! Optional engines change plan classification only while enabled: with the
+//! `cugraph` feature off, cuGraph table functions fail closed with a typed
+//! capability error; with `cuvs` off, cuVS planner calls fail closed; with
+//! `iceberg` off, Iceberg providers are unavailable; with `nvml` off, NVML
+//! telemetry reads report unavailable. The `bench-support`,
+//! `server-internal`, and `qualification` features are internal harnesses, not
+//! application choices.
 
 #[cfg(test)]
 extern crate self as datafusion_nexus;

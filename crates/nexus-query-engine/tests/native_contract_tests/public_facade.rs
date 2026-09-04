@@ -9,8 +9,8 @@ use nexus_query_engine::{
     plan::QueryPlan,
     runtime::{
         DeploymentIoCapability, ExecutionContext, GdsDriverProbeStatus, GpuBackendControllerDraft, GpuBackendCore,
-        GpuBackendCoreDraft, GpuBackendDeviceConfig, GpuMemoryOwnership, KvikioCompatModeStatus, NvidiaFsProbeStatus,
-        QueryExecutionConfig, QueueBounds,
+        GpuBackendCoreDraft, GpuBackendDeviceConfig, GpuBackendDeviceProfile, GpuMemoryOwnership,
+        KvikioCompatModeStatus, NvidiaFsProbeStatus, QueryExecutionConfig, QueueBounds,
         resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
     },
     source::{LocalParquetSource, validate_local_parquet_source},
@@ -28,7 +28,7 @@ fn canonical_engine_paths_expose_intentional_contract_groups() {
     );
     let controller = GpuBackendControllerDraft::new(QueryExecutionConfig::default(), QueueBounds::default());
     let draft = GpuBackendCoreDraft::new(
-        vec![GpuBackendDeviceConfig::new(0, GpuMemoryOwnership::WholeDeviceExclusive)],
+        vec![GpuBackendDeviceConfig::new(GpuBackendDeviceProfile::new(0), GpuMemoryOwnership::WholeDeviceExclusive)],
         controller,
         deployment,
     );

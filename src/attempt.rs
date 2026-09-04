@@ -1,7 +1,10 @@
 //! Explicit execution-attempt adapter boundary.
 //!
-//! Attempt disposition is runtime-owned: one [`QueryAttemptReport`] per sealed
-//! attempt records whether the attempt obtained a plan and how it terminated.
+//! One [`NexusAttempt`] crosses exactly these terminal states: it begins
+//! admitted or rejected, plans at most once into one result stream, then
+//! seals with one immutable [`QueryAttemptReport`]. Disposition is
+//! runtime-owned: the report records whether the attempt obtained a plan and
+//! how it terminated, and the engine owns every attempt number behind it.
 //! [`AttemptDisposition`] never shares an enum with plan-time coverage because
 //! the runtime must not depend on DataFusion adapter types, and `Unplanned`
 //! describes attempt lifecycle, not physical-plan shape. The adapter maps a
@@ -34,7 +37,10 @@ use datafusion::{
 };
 use futures::{FutureExt, Stream, future::BoxFuture};
 use nexus_query_engine::{
-    attempt::{AttemptAdmissionBinding, AttemptAdmissionRejection, AttemptHandle, AttemptOwner, BeginAttemptRequest},
+    attempt::{
+        AttemptAdmissionBinding, AttemptAdmissionRejection, AttemptCompletionFactory, AttemptHandle, AttemptOwner,
+        BeginAttemptRequest,
+    },
     observability::AttemptFailureSummary,
 };
 pub use nexus_query_engine::{
@@ -264,12 +270,16 @@ impl ExtensionOptions for NexusAttemptExtension {
 
 /// Owner of one adapter invocation attempt.
 ///
-/// The terminalization authority moves into the result stream when execution
-/// begins; until then the attempt itself commits planning outcomes.
+/// One attempt executes one invocation into one result stream. The
+/// terminalization authority moves into that stream when execution begins;
+/// until then the attempt itself commits planning outcomes. A second
+/// [`sql`](Self::sql), [`execute_dataframe`](Self::execute_dataframe), or
+/// [`execute_physical_plan`](Self::execute_physical_plan) call finds no
+/// authority left and fails instead of running again.
 pub struct NexusAttempt {
     owner: Mutex<Option<AttemptOwner>>,
     state: Arc<AttemptExecutionState>,
-    completion: AttemptCompletion,
+    completion_factory: AttemptCompletionFactory,
     session: nexus_query_engine::runtime::GpuBackendSession,
 }
 
@@ -311,10 +321,10 @@ impl NexusGpuBackend {
             sealed_graph_claim_calibration: Mutex::new(None),
             sealed_native_execution: Mutex::new(None),
         });
-        // The attempt object is a factory, not a receiver: the begin
-        // completion is dropped here so only caller-held receivers count
-        // toward the abandoned-report decision.
-        let completion = begin.completion.uncounted();
+        // The attempt object holds the minting factory, not a receiver, so
+        // only caller-held receivers count toward the abandoned-report
+        // decision.
+        let completion_factory = begin.completion;
         let metrics_state = Arc::clone(&state);
         begin.owner.register_sealed_report_sink(move |report| {
             metrics_state.publish_sealed_metrics(&report);
@@ -322,12 +332,14 @@ impl NexusGpuBackend {
         Ok(NexusAttempt {
             owner: Mutex::new(Some(begin.owner)),
             state,
-            completion,
+            completion_factory,
             session: self.session_capability().clone(),
         })
     }
 
-    /// Drains reports whose completion receivers were all dropped.
+    /// Drains up to `max` reports whose completion receivers were all
+    /// dropped before publication. Drained reports leave the queue; the
+    /// backend retains no copy.
     pub fn take_abandoned_attempt_reports(&self, max: usize) -> Vec<Arc<QueryAttemptReport>> {
         self.session_capability().take_abandoned_attempt_reports(max)
     }
@@ -354,7 +366,7 @@ impl NexusAttempt {
     /// Receivers created after publication can still read the immutable report, but
     /// will not undo an already-routed abandoned report.
     pub fn completion(&self) -> AttemptCompletion {
-        self.completion.clone()
+        self.completion_factory.completion()
     }
 
     /// Returns the immutable graph claim-versus-peak snapshot after this
@@ -382,9 +394,9 @@ impl NexusAttempt {
     /// snapshot that embeds it without a detached completion task.
     pub fn register_sealed_report_observer<F>(&self, observer: F)
     where F: Fn(Option<Arc<QueryAttemptReport>>, SealedRuntimeObservationSnapshot) + Send + Sync + 'static {
-        let completion = self.completion.uncounted();
+        let factory = self.completion_factory.clone();
         self.state.admission_binding.register_seal_observer(move |snapshot| {
-            let report = completion.try_report();
+            let report = factory.try_report();
             if report.is_none() {
                 // `AttemptOwner::finish_with_footer` publishes the report
                 // before the owner exposes this sealed snapshot. Keep the
@@ -513,7 +525,7 @@ impl NexusAttempt {
         })
     }
 
-    /// Plans and executes SQL in one invocation.
+    /// Plans and executes SQL in this attempt's single invocation.
     pub fn sql<'a>(
         &'a self,
         ctx: &'a SessionContext,
@@ -522,9 +534,10 @@ impl NexusAttempt {
         self.plan_sql(ctx, sql).map(move |plan| plan.and_then(|plan| self.execute_physical_plan(plan, ctx)))
     }
 
-    /// Plans and executes an existing `DataFrame` in one invocation. The
-    /// frame's logical plan is replanned inside the invocation-local session
-    /// state so native fragments bind this attempt's admission handle.
+    /// Plans and executes an existing `DataFrame` in this attempt's single
+    /// invocation. The frame's logical plan is replanned inside the
+    /// invocation-local session state so native fragments bind this attempt's
+    /// admission handle.
     pub async fn execute_dataframe(&self, df: DataFrame) -> DataFusionResult<AttemptStream> {
         if self.cancellation().check("datafusion_nexus.attempt.execute_dataframe").is_err() {
             return Err(self.cancelled_error("datafusion_nexus.attempt.execute_dataframe"));
@@ -566,7 +579,8 @@ impl NexusAttempt {
         }
     }
 
-    /// Executes an already-optimized physical plan under this attempt.
+    /// Executes an already-optimized physical plan in this attempt's single
+    /// invocation.
     pub fn execute_physical_plan(
         &self,
         plan: Arc<dyn ExecutionPlan>,
@@ -924,18 +938,18 @@ mod tests {
         cugraph_sql::CugraphSqlConfig,
         error::ErrorCode,
         native_exec::NexusNativeExecutionConfig,
-        planner::FinalPlanRequirement,
+        planner::DataFusionCpuExecutionPolicy,
         session::NexusSessionStateBuilderExt,
     };
 
     #[tokio::test]
     async fn feature_disabled_cugraph_rejection_stays_typed_through_an_attempt_stream() {
-        let backend = InstalledTestGpuBackend::with_config_and_final_plan_requirements(
+        let backend = InstalledTestGpuBackend::with_config_and_datafusion_cpu_policy(
             NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 2, 3, 1),
             NexusGpuDeviceProfile::new(0)
                 .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 }),
             NexusGpuQueuePolicy::default(),
-            [FinalPlanRequirement::NoDataFusionCpu],
+            DataFusionCpuExecutionPolicy::Reject,
         );
         let builder = backend
             .backend()

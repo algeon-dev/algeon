@@ -1337,7 +1337,7 @@ mod tests {
             None,
         );
         let owner = attempt.owner;
-        let completion = attempt.completion;
+        let completion = attempt.completion.completion();
         let (observation_owner, finalizer_slot) = owner.admission_binding().into_parts();
         let query_completion =
             QueryCompletion::new(Some(observation_owner), Some(finalizer_slot), None, None, None, None);

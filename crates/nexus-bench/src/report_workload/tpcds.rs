@@ -196,7 +196,7 @@ pub(crate) fn build_tpcds_gpu_backend(
         device_memory_limit,
         source_work_per_attempt,
         1,
-        None,
+        datafusion_nexus::planner::DataFusionCpuExecutionPolicy::Allow,
     )
     .map_err(|error| datafusion::error::DataFusionError::External(Box::new(error)).into())
 }
