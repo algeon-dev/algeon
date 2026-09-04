@@ -17,7 +17,6 @@ COMPONENTS = {
     "cugraph-nexus-sys": ROOT / "components/cugraph/cugraph-nexus-sys",
 }
 SNAPSHOT_CRATES = {"cudf-nexus": "cudf", "cugraph-nexus": "cugraph"}
-ALLOWED_BASES = {"nexus_production", "cross_component", "safety_abi_semantic"}
 
 
 def fail(message: str) -> None:
@@ -84,59 +83,64 @@ def source_contracts() -> None:
                     fail(f"{path.relative_to(ROOT)} reintroduces forbidden architecture token {pattern}")
 
 
-def surface_inventory(snapshot_dir: Path) -> None:
-    policy = tomllib.loads(POLICY.read_text())
+def surface_inventory(snapshot_dir: Path, policy_path: Path = POLICY) -> None:
+    policy = tomllib.loads(policy_path.read_text())
     if policy.get("version") != 1:
-        fail(f"{POLICY.relative_to(ROOT)} must declare version = 1")
+        fail(f"{policy_path} must declare version = 1")
 
-    inventory: dict[tuple[str, str], dict[str, str]] = {}
-    for entry in policy.get("surface", []):
-        crate = entry.get("crate")
-        namespace = entry.get("namespace")
-        key = (crate, namespace)
-        if key in inventory:
-            fail(f"duplicate surface inventory entry: {crate}:{namespace}")
-        if entry.get("decision") != "keep":
-            fail(f"settled surface inventory entries must be keep: {crate}:{namespace}")
-        if entry.get("basis") not in ALLOWED_BASES:
-            fail(f"invalid surface basis for {crate}:{namespace}")
-        caller = ROOT / entry.get("caller", "")
-        if not caller.exists():
-            fail(f"surface caller evidence does not exist for {crate}:{namespace}: {caller}")
-        inventory[key] = entry
+    surfaces = policy.get("surfaces")
+    if not isinstance(surfaces, dict):
+        fail(f"{policy_path} must define a [surfaces] table")
+
+    unknown_crates = set(surfaces.keys()) - set(SNAPSHOT_CRATES.keys())
+    if unknown_crates:
+        fail(f"unknown crates in surface policy: {', '.join(sorted(unknown_crates))}")
+
+    missing_crates = set(SNAPSHOT_CRATES.keys()) - set(surfaces.keys())
+    if missing_crates:
+        fail(f"missing crates in surface policy: {', '.join(sorted(missing_crates))}")
+
+    mod_pattern = re.compile(r"^pub mod ([A-Za-z_][A-Za-z0-9_]*)::([A-Za-z_][A-Za-z0-9_]*)")
 
     for crate, rust_name in SNAPSHOT_CRATES.items():
+        declared = surfaces.get(crate)
+        if not isinstance(declared, list) or not all(isinstance(x, str) for x in declared):
+            fail(f"{crate} namespaces must be a list of strings")
+
+        seen_declared = set()
+        for ns in declared:
+            if ns in seen_declared:
+                fail(f"duplicate approved namespace in {crate}: {ns}")
+            seen_declared.add(ns)
+
         snapshot = snapshot_dir / f"{crate}.txt"
         if not snapshot.is_file():
             fail(f"missing component public API snapshot: {snapshot}")
-        seen: set[str] = set()
-        path_pattern = re.compile(rf"\b{rust_name}(?:::(?P<namespace>[A-Za-z_][A-Za-z0-9_]*))?")
-        for line_number, line in enumerate(snapshot.read_text().splitlines(), 1):
-            match = path_pattern.search(line)
-            if match is None:
-                fail(f"{snapshot}:{line_number} has no {rust_name} API path")
-            candidate = match.group("namespace") or "root"
-            if line.startswith(f"pub mod {rust_name}::") or (crate, candidate) in inventory:
-                namespace = candidate
-            else:
-                namespace = "root"
-            if (crate, namespace) not in inventory:
-                fail(f"{snapshot}:{line_number} has unclassified namespace {crate}:{namespace}")
-            seen.add(namespace)
-        declared = {namespace for declared_crate, namespace in inventory if declared_crate == crate}
-        missing = sorted(declared - seen)
-        if missing:
-            fail(f"surface inventory has empty namespaces for {crate}: {', '.join(missing)}")
+
+        actual: set[str] = set()
+        for line in snapshot.read_text().splitlines():
+            match = mod_pattern.match(line)
+            if match and match.group(1) == rust_name:
+                actual.add(match.group(2))
+
+        unapproved = sorted(actual - seen_declared)
+        if unapproved:
+            fail(f"unapproved top-level namespaces for {crate}: {', '.join(unapproved)}")
+
+        stale = sorted(seen_declared - actual)
+        if stale:
+            fail(f"stale approved top-level namespaces for {crate}: {', '.join(stale)}")
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print("usage: check_native_component_architecture.py PUBLIC_API_SNAPSHOT_DIR", file=sys.stderr)
+    if len(sys.argv) not in (2, 3):
+        print("usage: check_native_component_architecture.py PUBLIC_API_SNAPSHOT_DIR [POLICY_FILE]", file=sys.stderr)
         return 2
     try:
         manifest_contracts()
         source_contracts()
-        surface_inventory(Path(sys.argv[1]))
+        policy_path = Path(sys.argv[2]) if len(sys.argv) == 3 else POLICY
+        surface_inventory(Path(sys.argv[1]), policy_path)
     except (OSError, tomllib.TOMLDecodeError, ValueError) as error:
         print(f"ERROR: {error}", file=sys.stderr)
         return 1

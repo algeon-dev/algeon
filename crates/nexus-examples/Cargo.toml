@@ -70,6 +70,6 @@ test = false
 required-features = ["otlp-metrics"]
 
 [[test]]
-name = "otlp_metrics_exporter"
-path = "tests/otlp_metrics_exporter.rs"
+name = "otlp_metrics_exporter_cpu"
+path = "tests/otlp_metrics_exporter_cpu.rs"
 required-features = ["otlp-metrics"]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CPU packaging policy, canonical build, and provenance helper."""
+"""Controlled clean-build and CPU artifact payload policy helper."""
 
 from __future__ import annotations
 
@@ -20,8 +20,9 @@ from typing import Any, Mapping, Sequence
 
 
 ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_POLICY = ROOT / "config" / "cpu-packaging.toml"
+DEFAULT_POLICY = ROOT / ".config" / "policies" / "cpu-packaging.toml"
 SERVER_BINARY = "datafusion_nexus_server"
+MANIFEST_SCHEMA_VERSION = 1
 
 
 class PolicyError(RuntimeError):
@@ -49,12 +50,7 @@ def load_policy(path: Path) -> dict[str, Any]:
     cpu = policy.get("cpu")
     if not isinstance(clean, dict) or not isinstance(cpu, dict):
         raise PolicyError("policy requires clean_environment and cpu")
-    for list_name in (
-        "pass_through",
-        "explicit_inputs",
-        "forbidden_exact",
-        "forbidden_patterns",
-    ):
+    for list_name in ("pass_through", "explicit_inputs"):
         value = clean.get(list_name)
         if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
             raise PolicyError(f"clean_environment.{list_name} must be a non-empty-string list")
@@ -89,7 +85,8 @@ def load_policy(path: Path) -> dict[str, Any]:
     }
     missing = required - cpu.keys()
     if missing:
-        raise PolicyError(f"cpu is missing: {', '.join(sorted(missing))}")
+        missing_str = ", ".join(sorted(missing))
+        raise PolicyError(f"cpu is missing: {missing_str}")
     for key in required - {"rustflags"}:
         if not isinstance(cpu[key], str) or not cpu[key]:
             raise PolicyError(f"cpu.{key} must be a non-empty string")
@@ -102,12 +99,30 @@ def load_policy(path: Path) -> dict[str, Any]:
     return policy
 
 
+def artifact_affecting_fingerprint(policy: Mapping[str, Any]) -> str:
+    cpu = policy["cpu"]
+    projection = {
+        "cpu": {
+            "baseline": cpu["baseline"],
+            "target_triple": cpu["target_triple"],
+            "rustflags": list(cpu["rustflags"]),
+            "cargo_profile": cpu["cargo_profile"],
+            "artifact_dir": cpu["artifact_dir"],
+            "image_arch": cpu["image_arch"],
+        },
+        "fixed_build_environment": dict(sorted(policy["clean_environment"]["fixed_build_environment"].items())),
+        "tool_version_commands": dict(sorted(policy["clean_environment"]["tool_version_commands"].items())),
+    }
+    encoded = json.dumps(projection, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def canonical_features(raw: str) -> list[str]:
     features = [feature.strip() for feature in raw.split(",") if feature.strip()]
     if not features:
         raise PolicyError("packaging features must not be empty")
     if "server" in features:
-        raise PolicyError("the nexus-server package has no 'server' feature")
+        raise PolicyError("the nexus-server package has no server feature")
     if any(not re.fullmatch(r"[A-Za-z0-9_-]+", feature) for feature in features):
         raise PolicyError(f"invalid Cargo feature list: {raw!r}")
     return sorted(set(features))
@@ -123,27 +138,6 @@ def cpu_snapshot(cpu: Mapping[str, Any]) -> dict[str, Any]:
         "image_arch": cpu["image_arch"],
         "deployment_requirement": cpu["deployment_requirement"],
     }
-
-
-def ambient_overrides(policy: Mapping[str, Any], environment: Mapping[str, str]) -> list[str]:
-    clean = policy["clean_environment"]
-    forbidden = set(clean["forbidden_exact"])
-    patterns = [re.compile(pattern, re.IGNORECASE) for pattern in clean["forbidden_patterns"]]
-    rejected = []
-    for name in environment:
-        upper = name.upper()
-        if upper in forbidden or any(pattern.search(upper) for pattern in patterns):
-            rejected.append(name)
-    return sorted(rejected)
-
-
-def reject_ambient_overrides(policy: Mapping[str, Any]) -> None:
-    rejected = ambient_overrides(policy, os.environ)
-    if rejected:
-        raise PolicyError(
-            "ambient codegen/config override variables are forbidden for CPU packaging: "
-            + ", ".join(rejected)
-        )
 
 
 def parse_explicit_env(policy: Mapping[str, Any], values: Sequence[str]) -> dict[str, str]:
@@ -227,10 +221,19 @@ def atomic_json(path: Path, value: Mapping[str, Any]) -> None:
     temporary.replace(path)
 
 
-def create_build_provenance(
+def load_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        raise PolicyError(f"cannot load JSON {path}: {error}") from error
+    if not isinstance(value, dict):
+        raise PolicyError(f"JSON {path} must contain an object")
+    return value
+
+
+def create_build_record(
     *,
-    policy_path: Path,
-    cpu: Mapping[str, Any],
+    policy: Mapping[str, Any],
     features: Sequence[str],
     binary: Path,
     output: Path,
@@ -243,16 +246,16 @@ def create_build_provenance(
 ) -> dict[str, Any]:
     if not binary.is_file():
         raise PolicyError(f"canonical Cargo build did not produce {binary}")
-    provenance = {
-        "provenance_kind": "canonical-build-artifact",
+    record = {
+        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "record_kind": "canonical-build-record",
         "created_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
-        "policy_sha256": sha256_file(policy_path),
-        "helper_sha256": sha256_file(Path(__file__).resolve()),
+        "policy_fingerprint": artifact_affecting_fingerprint(policy),
         "fixed_build_environment": dict(
-            sorted(load_policy(policy_path)["clean_environment"]["fixed_build_environment"].items())
+            sorted(policy["clean_environment"]["fixed_build_environment"].items())
         ),
         "fixed_tool_versions": dict(fixed_tool_versions),
-        "cpu": cpu_snapshot(cpu),
+        "cpu": cpu_snapshot(policy["cpu"]),
         "features": list(features),
         "feature_string": ",".join(features),
         "binary_name": SERVER_BINARY,
@@ -262,105 +265,35 @@ def create_build_provenance(
         "cargo_version": run_text([cargo_path, "--version"], cwd=cwd, environment=environment),
         "cargo_command": list(cargo_command),
     }
-    atomic_json(output, provenance)
-    return provenance
+    atomic_json(output, record)
+    return record
 
 
-def load_json(path: Path) -> dict[str, Any]:
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise PolicyError(f"cannot load provenance {path}: {error}") from error
-    if not isinstance(value, dict):
-        raise PolicyError(f"provenance {path} must contain a JSON object")
-    return value
-
-
-def verify_build_provenance(
+def verify_build_record(
     *,
-    policy_path: Path,
     policy: Mapping[str, Any],
-    cpu: Mapping[str, Any],
     features: Sequence[str],
     binary: Path,
-    provenance_path: Path,
+    record_path: Path,
 ) -> dict[str, Any]:
-    provenance = load_json(provenance_path)
-    expected = {
-        "provenance_kind": "canonical-build-artifact",
-        "policy_sha256": sha256_file(policy_path),
-        "helper_sha256": sha256_file(Path(__file__).resolve()),
-        "fixed_build_environment": dict(
-            sorted(policy["clean_environment"]["fixed_build_environment"].items())
-        ),
-        "cpu": cpu_snapshot(cpu),
-        "features": list(features),
-        "feature_string": ",".join(features),
-        "binary_name": SERVER_BINARY,
-    }
-    for key, value in expected.items():
-        if provenance.get(key) != value:
-            raise PolicyError(f"build provenance mismatch for {key}: expected {value!r}")
-    for key in ("rustc_version", "rustc_vv", "cargo_version", "cargo_command"):
-        if not provenance.get(key):
-            raise PolicyError(f"build provenance is missing {key}")
-    tool_versions = provenance.get("fixed_tool_versions")
-    expected_tools = set(policy["clean_environment"]["tool_version_commands"])
-    if not isinstance(tool_versions, dict) or set(tool_versions) != expected_tools:
-        raise PolicyError("build provenance fixed_tool_versions do not match policy tools")
-    if not all(isinstance(version, str) and version for version in tool_versions.values()):
-        raise PolicyError("build provenance contains an empty fixed tool version")
+    record = load_json(record_path)
+    if record.get("schema_version") != MANIFEST_SCHEMA_VERSION:
+        raise PolicyError(f"build record schema_version mismatch: {record.get('schema_version')}")
+    expected_fingerprint = artifact_affecting_fingerprint(policy)
+    if record.get("policy_fingerprint") != expected_fingerprint:
+        raise PolicyError(
+            f"policy_fingerprint mismatch: record={record.get('policy_fingerprint')!r}, current={expected_fingerprint}"
+        )
+    if record.get("features") != list(features):
+        raise PolicyError(f"features mismatch: record={record.get('features')!r}, requested={list(features)!r}")
+    if record.get("binary_name") != SERVER_BINARY:
+        raise PolicyError(f"binary name mismatch: {record.get('binary_name')!r}")
     if not binary.is_file():
         raise PolicyError(f"canonical artifact is missing: {binary}")
     actual_hash = sha256_file(binary)
-    if provenance.get("binary_sha256") != actual_hash:
-        raise PolicyError(
-            f"canonical artifact hash mismatch: provenance={provenance.get('binary_sha256')!r}, actual={actual_hash}"
-        )
-    return provenance
-
-
-def write_labels(path: Path, provenance: Mapping[str, Any]) -> None:
-    cpu = provenance["cpu"]
-    values = {
-        "binary_sha256": provenance["binary_sha256"],
-        "cpu_baseline": cpu["baseline"],
-        "cpu_arch": cpu["image_arch"],
-        "cpu_target": cpu["target_triple"],
-    }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("".join(f"{key}={values[key]}\n" for key in sorted(values)), encoding="utf-8")
-
-
-def parse_labels(path: Path) -> dict[str, str]:
-    labels: dict[str, str] = {}
-    try:
-        lines = path.read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError) as error:
-        raise PolicyError(f"cannot load provenance labels {path}: {error}") from error
-    for line in lines:
-        if not line or "=" not in line:
-            raise PolicyError(f"malformed provenance label line: {line!r}")
-        key, value = line.split("=", 1)
-        if key in labels or not key or not value:
-            raise PolicyError(f"malformed or duplicate provenance label: {key!r}")
-        labels[key] = value
-    return labels
-
-
-def verify_staged_labels(provenance: Mapping[str, Any], labels: Mapping[str, str]) -> None:
-    cpu = provenance.get("cpu", {})
-    expected = {
-        "binary_sha256": provenance.get("binary_sha256"),
-        "cpu_baseline": cpu.get("baseline"),
-        "cpu_arch": cpu.get("image_arch"),
-        "cpu_target": cpu.get("target_triple"),
-    }
-    if provenance.get("provenance_kind") != "staged-image-artifact":
-        raise PolicyError("image provenance must describe a staged-image-artifact")
-    for key, value in expected.items():
-        if labels.get(key) != value:
-            raise PolicyError(f"provenance label mismatch for {key}: expected {value!r}")
+    if record.get("binary_sha256") != actual_hash:
+        raise PolicyError(f"canonical artifact hash mismatch: record={record.get('binary_sha256')!r}, actual={actual_hash}")
+    return record
 
 
 def command_describe(args: argparse.Namespace) -> None:
@@ -374,15 +307,10 @@ def command_describe(args: argparse.Namespace) -> None:
         "CPU_IMAGE_ARCH": cpu["image_arch"],
         "CPU_DEPLOYMENT_REQUIREMENT": cpu["deployment_requirement"],
         "CPU_RUSTFLAGS_JSON": json.dumps(cpu["rustflags"], separators=(",", ":")),
+        "CPU_POLICY_FINGERPRINT": artifact_affecting_fingerprint(policy),
     }
     for key, value in values.items():
         print(f"{key}={shlex.quote(value)}")
-
-
-def command_check_env(args: argparse.Namespace) -> None:
-    policy = load_policy(args.policy)
-    reject_ambient_overrides(policy)
-    print("OK: ambient packaging environment contains no codegen/config overrides.")
 
 
 def command_normalize_features(args: argparse.Namespace) -> None:
@@ -393,7 +321,6 @@ def command_build(args: argparse.Namespace) -> None:
     policy_path = args.policy.resolve()
     policy = load_policy(policy_path)
     cpu = policy["cpu"]
-    reject_ambient_overrides(policy)
     features = canonical_features(args.features)
     explicit = parse_explicit_env(policy, args.explicit_env)
 
@@ -443,13 +370,12 @@ def command_build(args: argparse.Namespace) -> None:
             raise PolicyError(f"canonical Cargo build failed: {error}") from error
 
         binary = cargo_target_dir / target / cpu["cargo_profile"] / SERVER_BINARY
-        provenance_path = binary.with_name(binary.name + ".cpu-provenance.json")
-        create_build_provenance(
-            policy_path=policy_path,
-            cpu=cpu,
+        record_path = binary.with_name(binary.name + ".build-record.json")
+        create_build_record(
+            policy=policy,
             features=features,
             binary=binary,
-            output=provenance_path,
+            output=record_path,
             cargo_command=command,
             cargo_path=cargo_path,
             rustc_path=rustc_path,
@@ -458,78 +384,116 @@ def command_build(args: argparse.Namespace) -> None:
             fixed_tool_versions=fixed_tool_versions,
         )
     print(f"==> canonical artifact: {binary}")
-    print(f"==> build provenance: {provenance_path}")
+    print(f"==> build record: {record_path}")
 
 
 def command_verify_build(args: argparse.Namespace) -> None:
     policy_path = args.policy.resolve()
     policy = load_policy(policy_path)
-    cpu = policy["cpu"]
     features = canonical_features(args.features)
-    verify_build_provenance(
-        policy_path=policy_path,
+    verify_build_record(
         policy=policy,
-        cpu=cpu,
         features=features,
         binary=args.binary.resolve(),
-        provenance_path=args.provenance.resolve(),
+        record_path=args.record.resolve(),
     )
-    print("OK: canonical build artifact hash and provenance match the selected policy.")
+    print("OK: canonical build artifact hash and record match the selected policy.")
 
 
-def command_stage(args: argparse.Namespace) -> None:
+def command_create_manifest(args: argparse.Namespace) -> None:
     policy_path = args.policy.resolve()
     policy = load_policy(policy_path)
-    cpu = policy["cpu"]
-    features = canonical_features(args.features)
-    build = verify_build_provenance(
-        policy_path=policy_path,
-        policy=policy,
-        cpu=cpu,
-        features=features,
-        binary=args.source_binary.resolve(),
-        provenance_path=args.build_provenance.resolve(),
-    )
-    staged_binary = args.staged_binary.resolve()
-    if not staged_binary.is_file():
-        raise PolicyError(f"staged binary is missing: {staged_binary}")
-    provenance = dict(build)
-    provenance.update(
-        {
-            "provenance_kind": "staged-image-artifact",
-            "created_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
-            "source_binary_sha256": build["binary_sha256"],
-            "binary_sha256": sha256_file(staged_binary),
-        }
-    )
-    atomic_json(args.output.resolve(), provenance)
-    write_labels(args.labels_output.resolve(), provenance)
-    verify_staged_labels(provenance, parse_labels(args.labels_output.resolve()))
-    print(f"==> staged provenance: {args.output.resolve()}")
-    print(f"==> Docker label inputs: {args.labels_output.resolve()}")
+    dist_dir = args.dist_dir.resolve()
+    record_path = args.build_record.resolve()
+    record = load_json(record_path)
 
+    expected_fingerprint = artifact_affecting_fingerprint(policy)
+    if record.get("policy_fingerprint") != expected_fingerprint:
+        raise PolicyError("build record policy fingerprint does not match current policy")
 
-def command_verify_image_inputs(args: argparse.Namespace) -> None:
-    provenance_path = args.provenance.resolve()
-    provenance = load_json(provenance_path)
-    labels = parse_labels(args.labels.resolve())
-    verify_staged_labels(provenance, labels)
-    expected_cli = {
-        "cpu_baseline": args.baseline,
-        "cpu_arch": args.arch,
-        "cpu_target": args.target,
-        "binary_sha256": args.binary_sha256,
+    output_path = args.output.resolve()
+    files: dict[str, str] = {}
+    for entry in sorted(dist_dir.rglob("*")):
+        if entry.is_file() and entry != output_path:
+            rel_path = str(entry.relative_to(dist_dir))
+            files[rel_path] = sha256_file(entry)
+
+    staged_binary_rel = f"bin/{SERVER_BINARY}"
+    if staged_binary_rel not in files:
+        raise PolicyError(f"staged binary {staged_binary_rel} missing from dist")
+
+    manifest = {
+        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "manifest_kind": "cpu-payload-manifest",
+        "created_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
+        "policy_fingerprint": expected_fingerprint,
+        "cpu": record["cpu"],
+        "features": record["features"],
+        "feature_string": record["feature_string"],
+        "binary_name": SERVER_BINARY,
+        "binary_sha256": files[staged_binary_rel],
+        "source_binary_sha256": record["binary_sha256"],
+        "files": files,
     }
-    for key, value in expected_cli.items():
-        if value is not None and labels.get(key) != value:
-            raise PolicyError(f"Docker build input mismatch for {key}: expected {labels.get(key)!r}, got {value!r}")
-    if args.provenance_sha256 is not None:
-        actual = sha256_file(provenance_path)
-        if args.provenance_sha256 != actual:
-            raise PolicyError(
-                f"Docker build input mismatch for provenance sha256: expected {actual}, got {args.provenance_sha256}"
-            )
-    print("OK: provenance, label inputs, binary hash, and Docker build inputs agree.")
+    atomic_json(output_path, manifest)
+    print(f"==> payload manifest: {output_path}")
+
+
+def command_verify_manifest(args: argparse.Namespace) -> None:
+    policy_path = args.policy.resolve()
+    policy = load_policy(policy_path)
+    dist_dir = args.dist_dir.resolve()
+    manifest_path = args.manifest.resolve()
+    manifest = load_json(manifest_path)
+
+    if manifest.get("schema_version") != MANIFEST_SCHEMA_VERSION:
+        raise PolicyError(f"manifest schema_version mismatch: {manifest.get('schema_version')}")
+
+    expected_fingerprint = artifact_affecting_fingerprint(policy)
+    if manifest.get("policy_fingerprint") != expected_fingerprint:
+        raise PolicyError(
+            f"policy_fingerprint mismatch: manifest={manifest.get('policy_fingerprint')!r}, current={expected_fingerprint}"
+        )
+
+    files = manifest.get("files")
+    if not isinstance(files, dict) or not files:
+        raise PolicyError("manifest contains no files")
+
+    actual_files = {
+        str(entry.relative_to(dist_dir))
+        for entry in dist_dir.rglob("*")
+        if entry.is_file() and entry.resolve() != manifest_path.resolve()
+    }
+    expected_files = set(files.keys())
+    if actual_files != expected_files:
+        extra = sorted(actual_files - expected_files)
+        missing = sorted(expected_files - actual_files)
+        raise PolicyError(f"staged payload file inventory mismatch: extra={extra}, missing={missing}")
+
+    for rel_path, expected_hash in files.items():
+        file_path = dist_dir / rel_path
+        if not file_path.is_file():
+            raise PolicyError(f"staged payload file missing: {rel_path}")
+        actual_hash = sha256_file(file_path)
+        if actual_hash != expected_hash:
+            raise PolicyError(f"hash mismatch for {rel_path}: expected {expected_hash}, got {actual_hash}")
+
+    staged_binary_rel = f"bin/{SERVER_BINARY}"
+    if files.get(staged_binary_rel) != manifest.get("binary_sha256"):
+        raise PolicyError("binary_sha256 does not match staged binary file hash")
+
+    cpu = manifest["cpu"]
+    manifest_sha256 = sha256_file(manifest_path)
+    values = {
+        "CPU_BASELINE": cpu["baseline"],
+        "CPU_IMAGE_ARCH": cpu["image_arch"],
+        "CPU_TARGET_TRIPLE": cpu["target_triple"],
+        "CPU_BINARY_SHA256": manifest["binary_sha256"],
+        "CPU_MANIFEST_SHA256": manifest_sha256,
+    }
+    for key, value in values.items():
+        print(f"{key}={shlex.quote(value)}")
+    print("OK: payload manifest and staged file hashes match policy.", file=sys.stderr)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -539,9 +503,6 @@ def parser() -> argparse.ArgumentParser:
 
     describe = subparsers.add_parser("describe")
     describe.set_defaults(function=command_describe)
-
-    check_env = subparsers.add_parser("check-env")
-    check_env.set_defaults(function=command_check_env)
 
     features = subparsers.add_parser("normalize-features")
     features.add_argument("--features", required=True)
@@ -554,30 +515,23 @@ def parser() -> argparse.ArgumentParser:
     build.add_argument("--explicit-env", action="append", default=[])
     build.set_defaults(function=command_build)
 
-    verify = subparsers.add_parser("verify-build")
-    verify.add_argument("--features", required=True)
-    verify.add_argument("--binary", type=Path, required=True)
-    verify.add_argument("--provenance", type=Path, required=True)
-    verify.set_defaults(function=command_verify_build)
+    verify_build = subparsers.add_parser("verify-build")
+    verify_build.add_argument("--features", required=True)
+    verify_build.add_argument("--binary", type=Path, required=True)
+    verify_build.add_argument("--record", type=Path, required=True)
+    verify_build.set_defaults(function=command_verify_build)
 
-    stage = subparsers.add_parser("stage")
-    stage.add_argument("--features", required=True)
-    stage.add_argument("--source-binary", type=Path, required=True)
-    stage.add_argument("--staged-binary", type=Path, required=True)
-    stage.add_argument("--build-provenance", type=Path, required=True)
-    stage.add_argument("--output", type=Path, required=True)
-    stage.add_argument("--labels-output", type=Path, required=True)
-    stage.set_defaults(function=command_stage)
+    create_manifest = subparsers.add_parser("create-manifest")
+    create_manifest.add_argument("--dist-dir", type=Path, required=True)
+    create_manifest.add_argument("--build-record", type=Path, required=True)
+    create_manifest.add_argument("--output", type=Path, required=True)
+    create_manifest.set_defaults(function=command_create_manifest)
 
-    image = subparsers.add_parser("verify-image-inputs")
-    image.add_argument("--provenance", type=Path, required=True)
-    image.add_argument("--labels", type=Path, required=True)
-    image.add_argument("--baseline")
-    image.add_argument("--arch")
-    image.add_argument("--target")
-    image.add_argument("--binary-sha256")
-    image.add_argument("--provenance-sha256")
-    image.set_defaults(function=command_verify_image_inputs)
+    verify_manifest = subparsers.add_parser("verify-manifest")
+    verify_manifest.add_argument("--manifest", type=Path, required=True)
+    verify_manifest.add_argument("--dist-dir", type=Path, required=True)
+    verify_manifest.set_defaults(function=command_verify_manifest)
+
     return result
 
 

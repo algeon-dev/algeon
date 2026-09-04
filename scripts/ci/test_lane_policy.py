@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the test-lane catalog, nextest inventory, and generated overrides."""
+"""Validate the test-lane exceptions, nextest inventory, and scheduling overrides."""
 
 from __future__ import annotations
 
@@ -16,10 +16,17 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CATALOG = ROOT / ".config" / "policies" / "test-lanes.toml"
 DEFAULT_NEXTEST = ROOT / ".config" / "nextest.toml"
-GENERATED_BEGIN = "# BEGIN GENERATED TEST-LANE OVERRIDES — scripts/ci/test_lane_policy.py"
-GENERATED_END = "# END GENERATED TEST-LANE OVERRIDES — scripts/ci/test_lane_policy.py"
 FULL_ID = re.compile(r"^[a-z0-9_-]+(?:::(?:bin/)?[A-Za-z0-9_-]+)?$")
 TARGET_KINDS = frozenset({"lib", "test", "bin"})
+
+GPU_LIB_PACKAGES = frozenset({
+    "cudf-nexus",
+    "cugraph-nexus",
+    "cuvs-nexus",
+    "datafusion-nexus",
+    "nexus-query-runtime",
+    "nexus-server",
+})
 
 
 class LanePolicyError(RuntimeError):
@@ -38,33 +45,19 @@ def target_kind_for_id(binary_id: str) -> str:
 
 
 @dataclass(frozen=True)
-class LaneEntry:
+class ExceptionEntry:
     binary_id: str
     lane: str
-    reason: str
     resource_class: str | None
-    binary_name_override: str | None = None
+    reason: str | None
 
     @property
     def package(self) -> str:
         return self.binary_id.split("::", 1)[0]
 
     @property
-    def binary_name(self) -> str:
-        if self.binary_name_override is not None:
-            return self.binary_name_override
-        if "::" not in self.binary_id:
-            return self.package.replace("-", "_")
-        target = self.binary_id.split("::", 1)[1]
-        return target.removeprefix("bin/")
-
-    @property
     def target_kind(self) -> str:
         return target_kind_for_id(self.binary_id)
-
-    @property
-    def target_key(self) -> tuple[str, str, str]:
-        return (self.package, self.binary_name, self.target_kind)
 
 
 @dataclass(frozen=True)
@@ -93,37 +86,36 @@ def _load_toml(path: Path, description: str) -> dict[str, Any]:
     return value
 
 
-def load_catalog(path: Path) -> list[LaneEntry]:
-    catalog = _load_toml(path, "test-lane catalog")
-    if set(catalog) != {"binary"}:
-        raise LanePolicyError("test-lane catalog top-level keys must be exactly binary")
-    raw_entries = catalog["binary"]
+def load_catalog(path: Path) -> dict[str, ExceptionEntry]:
+    catalog = _load_toml(path, "test-lane exception policy")
+    if set(catalog) != {"exception"}:
+        raise LanePolicyError("test-lane policy top-level keys must be exactly exception")
+    raw_entries = catalog["exception"]
     if not isinstance(raw_entries, list) or not raw_entries:
-        raise LanePolicyError("test-lane catalog binary must be a non-empty array of tables")
+        raise LanePolicyError("test-lane policy exception must be a non-empty array of tables")
 
-    entries: list[LaneEntry] = []
-    seen_ids: set[str] = set()
-    seen_targets: dict[tuple[str, str, str], str] = {}
+    entries: dict[str, ExceptionEntry] = {}
     for index, raw in enumerate(raw_entries):
-        location = f"binary[{index}]"
+        location = f"exception[{index}]"
         if not isinstance(raw, dict):
             raise LanePolicyError(f"{location} must be a table")
-        allowed = {"id", "lane", "reason", "resource_class", "binary_name"}
+        allowed = {"id", "lane", "resource_class", "reason"}
         unknown = set(raw) - allowed
         if unknown:
-            raise LanePolicyError(f"{location} has unknown keys: {', '.join(sorted(unknown))}")
-        for required in ("id", "lane", "reason"):
+            raise LanePolicyError(f"{location} has unknown keys: {", ".join(sorted(unknown))}")
+        for required in ("id", "lane"):
             if not isinstance(raw.get(required), str) or not raw[required].strip():
                 raise LanePolicyError(f"{location}.{required} must be a non-empty string")
 
         binary_id = raw["id"]
         lane = raw["lane"]
-        reason = raw["reason"].strip()
         resource_class = raw.get("resource_class")
-        binary_name_override = raw.get("binary_name")
+        reason = raw.get("reason")
+        if reason is not None and (not isinstance(reason, str) or not reason.strip()):
+            raise LanePolicyError(f"{location}.reason must be a non-empty string")
         if not FULL_ID.fullmatch(binary_id):
             raise LanePolicyError(f"{location}.id is not a complete nextest binary id: {binary_id!r}")
-        if binary_id in seen_ids:
+        if binary_id in entries:
             raise LanePolicyError(f"duplicate catalog binary id: {binary_id}")
         if lane not in {"cpu", "gpu"}:
             raise LanePolicyError(f"{location}.lane must be cpu or gpu")
@@ -131,27 +123,20 @@ def load_catalog(path: Path) -> list[LaneEntry]:
             raise LanePolicyError(f"CPU entry {binary_id} must not declare resource_class")
         if lane == "gpu" and resource_class not in {"shared", "exclusive"}:
             raise LanePolicyError(f"GPU entry {binary_id} requires resource_class=shared or exclusive")
-        if binary_name_override is not None and (
-            not isinstance(binary_name_override, str)
-            or not binary_name_override.strip()
-            or any(char in binary_name_override for char in "\t\r\n")
-        ):
-            raise LanePolicyError(f"{location}.binary_name must be a non-empty single-line string")
 
-        entry = LaneEntry(binary_id, lane, reason, resource_class, binary_name_override)
-        previous = seen_targets.get(entry.target_key)
-        if previous is not None:
-            raise LanePolicyError(
-                "catalog target collision "
-                f"{entry.package!r}/{entry.binary_name!r} kind={entry.target_kind}: {previous} and {binary_id}"
-            )
-        seen_ids.add(binary_id)
-        seen_targets[entry.target_key] = binary_id
-        entries.append(entry)
+        entries[binary_id] = ExceptionEntry(binary_id, lane, resource_class, reason)
 
-    if not any(entry.resource_class == "exclusive" for entry in entries):
-        raise LanePolicyError("catalog must declare at least one exclusive GPU binary")
-    return sorted(entries, key=lambda entry: entry.binary_id)
+    return entries
+
+
+def infer_lane_from_name(binary_name: str) -> tuple[str, str | None] | None:
+    if binary_name.endswith("_gpu_exclusive"):
+        return ("gpu", "exclusive")
+    if binary_name.endswith("_gpu"):
+        return ("gpu", "shared")
+    if binary_name.endswith("_cpu"):
+        return ("cpu", None)
+    return None
 
 
 def _object_without_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -213,183 +198,120 @@ def load_inventory(path: Path) -> list[InventoryBinary]:
     return sorted(records, key=lambda record: record.binary_id)
 
 
-def merge_inventories(inventories: list[list[InventoryBinary]]) -> list[InventoryBinary]:
-    """Union one or more nextest inventories.
-
-    Matching binary-id + binary-name + target-kind triples from distinct inventories coalesce so
-    the harness can validate default-member and explicit bench surfaces both
-    before and after bench leaves default-members. Conflicting names fail closed.
-    """
-    if not inventories:
-        raise InventoryError("at least one nextest JSON inventory is required")
-
-    by_id: dict[str, InventoryBinary] = {}
-    seen_targets: dict[tuple[str, str, str], str] = {}
-    for records in inventories:
-        for record in records:
-            existing = by_id.get(record.binary_id)
-            if existing is not None:
-                if (existing.binary_name, existing.target_kind) != (record.binary_name, record.target_kind):
-                    raise LanePolicyError(
-                        "conflicting binary metadata for "
-                        f"{record.binary_id}: "
-                        f"{existing.binary_name!r}/{existing.target_kind} vs "
-                        f"{record.binary_name!r}/{record.target_kind}"
-                    )
-                continue
-            previous = seen_targets.get(record.target_key)
-            if previous is not None:
-                raise LanePolicyError(
-                    "test-binary target collision "
-                    f"{record.package!r}/{record.binary_name!r} kind={record.target_kind}: "
-                    f"{previous} and {record.binary_id}"
-                )
-            by_id[record.binary_id] = record
-            seen_targets[record.target_key] = record.binary_id
-
-    if not by_id:
-        raise InventoryError("nextest JSON inventory contained no test binaries")
-    return sorted(by_id.values(), key=lambda record: record.binary_id)
-
-
-def filter_expression(entry: LaneEntry) -> str:
-    if "::" not in entry.binary_id:
-        return f"(package({entry.package}) & kind(lib))"
-    return f"(package({entry.package}) & kind({entry.target_kind}) & binary({entry.binary_name}))"
-
-
-def filter_block(entries: list[LaneEntry]) -> str:
-    expressions = [filter_expression(entry) for entry in entries]
-    return "\n| ".join(expressions)
-
-
-def generated_overrides(entries: list[LaneEntry]) -> str:
-    shared = [entry for entry in entries if entry.lane == "gpu" and entry.resource_class == "shared"]
-    exclusive = [entry for entry in entries if entry.lane == "gpu" and entry.resource_class == "exclusive"]
-    if not shared or not exclusive:
-        raise LanePolicyError("generated overrides require both shared and exclusive GPU entries")
-
-    # Exclusive tests must also not overlap the shared GPU group when the
-    # whole suite runs in one invocation (e.g. a bare `cargo nextest run`).
-    # A test-group cap only serializes within the group, so the exclusive
-    # override reserves the entire test-thread pool — the only nextest
-    # mechanism that excludes across groups.
-    blocks = [
-        ("default", "gpu", shared, []),
-        ("default", "gpu-exclusive", exclusive, ['threads-required = "num-test-threads"']),
-    ]
-    lines = [
-        GENERATED_BEGIN,
-        "# Source: .config/policies/test-lanes.toml. Do not edit this section by hand.",
-        "# Regenerate: python3 scripts/ci/test_lane_policy.py generate-nextest --write",
-    ]
-    for profile, group, group_entries, extra_lines in blocks:
-        lines.extend(
-            [
-                "",
-                f"[[profile.{profile}.overrides]]",
-                "filter = '''",
-                filter_block(group_entries),
-                "'''",
-                f'test-group = "{group}"',
-                *extra_lines,
-            ]
-        )
-    lines.extend([GENERATED_END, ""])
-    return "\n".join(lines)
-
-
-def generated_section(text: str) -> str:
-    if text.count(GENERATED_BEGIN) != 1 or text.count(GENERATED_END) != 1:
-        raise LanePolicyError("nextest config must contain exactly one generated override marker pair")
-    start = text.index(GENERATED_BEGIN)
-    end = text.index(GENERATED_END, start) + len(GENERATED_END)
-    if end < len(text) and text[end] == "\n":
-        end += 1
-    return text[start:end]
-
-
-def check_nextest(catalog: list[LaneEntry], path: Path) -> None:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as error:
-        raise LanePolicyError(f"cannot read nextest config {path}: {error}") from error
-    _load_toml(path, "nextest config")
-    expected = generated_overrides(catalog)
-    actual = generated_section(text)
-    if actual != expected:
-        raise LanePolicyError(
-            "generated nextest overrides drifted from .config/policies/test-lanes.toml; run "
-            "`python3 scripts/ci/test_lane_policy.py generate-nextest --write`"
-        )
-
-
-def write_nextest(catalog: list[LaneEntry], path: Path) -> None:
-    try:
-        text = path.read_text(encoding="utf-8")
-    except (OSError, UnicodeError) as error:
-        raise LanePolicyError(f"cannot read nextest config {path}: {error}") from error
-    old = generated_section(text)
-    new = generated_overrides(catalog)
-    path.write_text(text.replace(old, new, 1), encoding="utf-8")
-
-
-def validate_inventory(catalog: list[LaneEntry], inventory: list[InventoryBinary], *, narrow: bool) -> list[str]:
-    catalog_by_id = {entry.binary_id: entry for entry in catalog}
+def validate_inventory(
+    catalog: dict[str, ExceptionEntry],
+    inventory: list[InventoryBinary],
+) -> dict[str, tuple[str, str | None]]:
     inventory_by_id = {record.binary_id: record for record in inventory}
     problems: list[str] = []
-    for binary_id in sorted(inventory_by_id.keys() - catalog_by_id.keys()):
-        problems.append(f"unclassified test binary: {binary_id}")
-    stale = sorted(catalog_by_id.keys() - inventory_by_id.keys())
-    if stale and not narrow:
-        problems.extend(f"stale all-feature catalog entry: {binary_id}" for binary_id in stale)
-    for binary_id in sorted(catalog_by_id.keys() & inventory_by_id.keys()):
-        expected_name = catalog_by_id[binary_id].binary_name
-        actual_name = inventory_by_id[binary_id].binary_name
-        if expected_name != actual_name:
-            problems.append(
-                f"binary-name mismatch for {binary_id}: catalog derives {expected_name!r}, inventory reports {actual_name!r}"
-            )
-        expected_kind = catalog_by_id[binary_id].target_kind
-        actual_kind = inventory_by_id[binary_id].target_kind
-        if expected_kind != actual_kind:
-            problems.append(
-                f"target-kind mismatch for {binary_id}: catalog derives {expected_kind!r}, inventory reports {actual_kind!r}"
-            )
+
+    stale = sorted(catalog.keys() - inventory_by_id.keys())
+    if stale:
+        for binary_id in stale:
+            problems.append(f"stale exception entry: {binary_id}")
+
+    assigned: dict[str, tuple[str, str | None]] = {}
+    for binary in inventory:
+        inferred = infer_lane_from_name(binary.binary_name)
+        exception = catalog.get(binary.binary_id)
+
+        if inferred is not None and exception is not None:
+            exc_lane = (exception.lane, exception.resource_class)
+            if inferred != exc_lane:
+                problems.append(
+                    f"conflicting lane for {binary.binary_id}: "
+                    f"target suffix implies {inferred[0]}/{inferred[1]}, "
+                    f"exception declares {exc_lane[0]}/{exc_lane[1]}"
+                )
+            else:
+                problems.append(
+                    f"redundant exception entry for {binary.binary_id}: "
+                    f"target name already has canonical suffix"
+                )
+        elif inferred is None and exception is None:
+            problems.append(f"unclassified test binary: {binary.binary_id}")
+        elif exception is not None:
+            assigned[binary.binary_id] = (exception.lane, exception.resource_class)
+        else:
+            assert inferred is not None
+            assigned[binary.binary_id] = inferred
+
     if problems:
         raise LanePolicyError("\n".join(problems))
-    return stale
+    return assigned
+
+
+def check_nextest(path: Path) -> None:
+    config = _load_toml(path, "nextest config")
+    test_groups = config.get("test-groups", {})
+    gpu_group = test_groups.get("gpu", {})
+    if gpu_group.get("max-threads") != "num-cpus":
+        raise LanePolicyError(
+            f"nextest config test-groups.gpu.max-threads must be num-cpus, got {gpu_group.get(max-threads)!r}"
+        )
+    gpu_exclusive_group = test_groups.get("gpu-exclusive", {})
+    if gpu_exclusive_group.get("max-threads") != 1:
+        raise LanePolicyError(
+            f"nextest config test-groups.gpu-exclusive.max-threads must be 1, got {gpu_exclusive_group.get(max-threads)!r}"
+        )
+
+    overrides = config.get("profile", {}).get("default", {}).get("overrides", [])
+    if not isinstance(overrides, list):
+        raise LanePolicyError("nextest config profile.default.overrides must be an array of tables")
+
+    gpu_override = None
+    exclusive_override = None
+    for override in overrides:
+        group = override.get("test-group")
+        if group == "gpu":
+            gpu_override = override
+        elif group == "gpu-exclusive":
+            exclusive_override = override
+
+    if gpu_override is None:
+        raise LanePolicyError("nextest config missing override for test-group gpu")
+    if exclusive_override is None:
+        raise LanePolicyError("nextest config missing override for test-group gpu-exclusive")
+
+    gpu_filter = gpu_override.get("filter", "")
+    if "/_gpu$/" not in gpu_filter:
+        raise LanePolicyError("nextest gpu group filter must include binary(/_gpu$/)")
+    for target in ("root_gpu_tests", "native_exec_tests"):
+        if f"binary({target})" not in gpu_filter:
+            raise LanePolicyError(f"nextest gpu group filter must include binary({target})")
+    for pkg in GPU_LIB_PACKAGES:
+        if f"package({pkg})" not in gpu_filter:
+            raise LanePolicyError(f"nextest gpu group filter must include package({pkg})")
+
+    exclusive_filter = exclusive_override.get("filter", "")
+    if "/_gpu_exclusive$/" not in exclusive_filter:
+        raise LanePolicyError("nextest gpu-exclusive filter must include binary(/_gpu_exclusive$/)")
+    if exclusive_override.get("threads-required") != "num-test-threads":
+        raise LanePolicyError("nextest gpu-exclusive override must declare threads-required = num-test-threads")
 
 
 def command_check_catalog(args: argparse.Namespace) -> None:
     entries = load_catalog(args.catalog)
-    cpu = sum(entry.lane == "cpu" for entry in entries)
-    shared = sum(entry.resource_class == "shared" for entry in entries)
-    exclusive = sum(entry.resource_class == "exclusive" for entry in entries)
-    print(f"OK: catalog has {len(entries)} binaries (cpu={cpu}, gpu_shared={shared}, gpu_exclusive={exclusive}).")
+    cpu = sum(entry.lane == "cpu" for entry in entries.values())
+    shared = sum(entry.resource_class == "shared" for entry in entries.values())
+    exclusive = sum(entry.resource_class == "exclusive" for entry in entries.values())
+    print(f"OK: exception catalog has {len(entries)} binaries (cpu={cpu}, gpu_shared={shared}, gpu_exclusive={exclusive}).")
+
+
+def command_check_nextest(args: argparse.Namespace) -> None:
+    check_nextest(args.nextest)
+    print("OK: nextest configuration matches test-lane scheduling policy.")
 
 
 def command_validate(args: argparse.Namespace) -> None:
     entries = load_catalog(args.catalog)
-    check_nextest(entries, args.nextest)
-    inventory = merge_inventories([load_inventory(path) for path in args.inventory])
-    stale = validate_inventory(entries, inventory, narrow=args.feature_mode == "narrow")
-    if stale:
-        print("WARN: catalog binaries absent from explicit narrower feature inventory:", file=sys.stderr)
-        for binary_id in stale:
-            print(f"  - {binary_id}", file=sys.stderr)
-    print(f"OK: all {len(inventory)} live test binaries are cataloged exactly once.")
-
-
-def command_generate(args: argparse.Namespace) -> None:
-    entries = load_catalog(args.catalog)
-    if args.check:
-        check_nextest(entries, args.nextest)
-        print("OK: generated nextest overrides match .config/policies/test-lanes.toml.")
-    else:
-        write_nextest(entries, args.nextest)
-        check_nextest(entries, args.nextest)
-        print(f"WROTE: regenerated test-lane overrides in {args.nextest}.")
+    check_nextest(args.nextest)
+    inventory = load_inventory(args.inventory)
+    assigned = validate_inventory(entries, inventory)
+    cpu = sum(lane == "cpu" for lane, _ in assigned.values())
+    shared = sum(res == "shared" for _, res in assigned.values())
+    exclusive = sum(res == "exclusive" for _, res in assigned.values())
+    print(f"OK: all {len(inventory)} live test binaries classified (cpu={cpu}, gpu_shared={shared}, gpu_exclusive={exclusive}).")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -401,22 +323,17 @@ def build_parser() -> argparse.ArgumentParser:
     catalog = subparsers.add_parser("check-catalog")
     catalog.set_defaults(function=command_check_catalog)
 
+    nextest = subparsers.add_parser("check-nextest")
+    nextest.set_defaults(function=command_check_nextest)
+
     validate = subparsers.add_parser("validate-inventory")
     validate.add_argument(
         "--inventory",
         type=Path,
         required=True,
-        action="append",
-        help="nextest binaries-only JSON inventory; repeat to union multiple package surfaces",
+        help="nextest binaries-only JSON inventory",
     )
-    validate.add_argument("--feature-mode", choices=("all", "narrow"), required=True)
     validate.set_defaults(function=command_validate)
-
-    generate = subparsers.add_parser("generate-nextest")
-    mode = generate.add_mutually_exclusive_group(required=True)
-    mode.add_argument("--check", action="store_true")
-    mode.add_argument("--write", action="store_true")
-    generate.set_defaults(function=command_generate)
     return parser
 
 

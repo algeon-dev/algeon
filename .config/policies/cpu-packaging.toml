@@ -1,9 +1,9 @@
 # Repository-owned clean-build and CPU artifact policy.
+#
+# Controlled clean build: The canonical Cargo subprocess is launched with env -i
+# semantics. Only allowlisted toolchain/location variables enter the build.
 
 [clean_environment]
-# The canonical Cargo subprocess is launched with env -i semantics. Only these
-# toolchain/location inputs are copied from the caller; codegen flag variables
-# are never passed through.
 pass_through = [
   "PATH",
   "HOME",
@@ -26,39 +26,6 @@ explicit_inputs = [
   "CUGRAPH_CMAKE_BUILD_DIR",
 ]
 
-# Presence is rejected regardless of spelling inside the value. This is an
-# allowlisted clean-build contract, not a denylist of known-unsafe CPU names.
-forbidden_exact = [
-  "RUSTFLAGS",
-  "CARGO_ENCODED_RUSTFLAGS",
-  "CARGO_BUILD_RUSTFLAGS",
-  "CARGO_BUILD_TARGET",
-  "CARGO_TARGET_DIR",
-  "RUSTC",
-  "RUSTC_BOOTSTRAP",
-  "RUSTC_WRAPPER",
-  "RUSTC_WORKSPACE_WRAPPER",
-  "CARGO_BUILD_RUSTC",
-  "CARGO_BUILD_RUSTC_WRAPPER",
-  "CARGO_INCREMENTAL",
-  "CPPFLAGS",
-  "LDFLAGS",
-  "NVCCFLAGS",
-  "CUDAFLAGS",
-  "CMAKE_TOOLCHAIN_FILE",
-  "CMAKE_PROJECT_INCLUDE",
-  "CMAKE_PROJECT_TOP_LEVEL_INCLUDES",
-]
-forbidden_patterns = [
-  "^CARGO_TARGET_.*_(RUSTFLAGS|LINKER)$",
-  "^CARGO_PROFILE_.*$",
-  "(^|_)(CFLAGS|CXXFLAGS)($|_)",
-  "^CMAKE_(C|CXX|CUDA|ASM)_FLAGS($|_)",
-]
-
-# Compiler/tool selection is policy-owned. Ambient values with these names are
-# ignored and replaced before Cargo starts, so a command such as
-# `CC="gcc -march=native"` cannot enter the canonical build.
 [clean_environment.fixed_build_environment]
 CC = "/usr/bin/gcc-14"
 CXX = "/usr/bin/g++-14"

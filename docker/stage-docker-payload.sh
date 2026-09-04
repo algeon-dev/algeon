@@ -51,20 +51,17 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 DIST_DIR="${CPU_PACKAGE_DIST_DIR:-$SCRIPT_DIR/dist}"
-POLICY_FILE="$REPO_ROOT/.config/policies/cpu-packaging.toml"
 POLICY_HELPER="$REPO_ROOT/scripts/build/cpu_packaging_policy.py"
 CPU_PACKAGE_TARGET_ROOT="${CPU_PACKAGE_TARGET_ROOT:-$REPO_ROOT/target/cpu-packaging}"
-FEATURES="$(python3 "$POLICY_HELPER" --policy "$POLICY_FILE" normalize-features \
+FEATURES="$(python3 "$POLICY_HELPER" normalize-features \
     --features "${FEATURES:-iceberg,cugraph,cuvs,nvml}")"
 
-eval "$(python3 "$POLICY_HELPER" --policy "$POLICY_FILE" describe)"
+eval "$(python3 "$POLICY_HELPER" describe)"
 
 case "${SKIP_CARGO_BUILD-0}" in
     0 | 1) SKIP_CARGO_BUILD="${SKIP_CARGO_BUILD-0}" ;;
     *) echo "ERROR: SKIP_CARGO_BUILD must be 0 or 1, got '${SKIP_CARGO_BUILD}'." >&2; exit 2 ;;
 esac
-
-python3 "$POLICY_HELPER" --policy "$POLICY_FILE" check-env
 
 CUDF_INSTALL_DIR="${CUDF_INSTALL_DIR:-$REPO_ROOT/target/native/cudf-install}"
 CUVS_INSTALL_DIR="${CUVS_INSTALL_DIR:-$REPO_ROOT/target/native/cuvs-install}"
@@ -93,7 +90,7 @@ cd "$REPO_ROOT"
 # command line.
 CARGO_BUILD_ROOT="$CPU_PACKAGE_TARGET_ROOT/$CPU_ARTIFACT_DIR"
 BINARY="$CARGO_BUILD_ROOT/$CPU_TARGET_TRIPLE/$CPU_CARGO_PROFILE/datafusion_nexus_server"
-BUILD_PROVENANCE="$BINARY.cpu-provenance.json"
+BUILD_RECORD="$BINARY.build-record.json"
 
 if [[ "$SKIP_CARGO_BUILD" == "0" ]]; then
     echo "==> Building canonical datafusion_nexus_server artifact ..."
@@ -107,21 +104,21 @@ if [[ "$SKIP_CARGO_BUILD" == "0" ]]; then
     if [[ $want_cugraph -eq 1 ]]; then
         explicit_native_env+=(--explicit-env "CUGRAPH_CMAKE_BUILD_DIR=$CUGRAPH_CMAKE_BUILD_DIR")
     fi
-    python3 "$POLICY_HELPER" --policy "$POLICY_FILE" build \
+    python3 "$POLICY_HELPER" build \
         --features "$FEATURES" \
         --target-root "$CPU_PACKAGE_TARGET_ROOT" \
         --manifest "$REPO_ROOT/crates/nexus-server/Cargo.toml" \
         "${explicit_native_env[@]}"
 else
     echo "==> SKIP_CARGO_BUILD=1 — verifying canonical artifact before reuse"
-    python3 "$POLICY_HELPER" --policy "$POLICY_FILE" verify-build \
+    python3 "$POLICY_HELPER" verify-build \
         --features "$FEATURES" \
         --binary "$BINARY" \
-        --provenance "$BUILD_PROVENANCE"
+        --record "$BUILD_RECORD"
 fi
 
 [[ -f "$BINARY" ]] || { echo "ERROR: canonical artifact $BINARY not found." >&2; exit 1; }
-[[ -f "$BUILD_PROVENANCE" ]] || { echo "ERROR: build provenance $BUILD_PROVENANCE not found." >&2; exit 1; }
+[[ -f "$BUILD_RECORD" ]] || { echo "ERROR: build record $BUILD_RECORD not found." >&2; exit 1; }
 
 # ── 2. Reset staging dir ────────────────────────────────────────────────────
 echo "==> Resetting $DIST_DIR ..."
@@ -436,25 +433,15 @@ echo "==> Validating staged loader closure with readelf + ldd"
 validate_loader_closure
 echo "OK: staged loader closure passed."
 
-# ── 9. Provenance + manifest ────────────────────────────────────────────────
-python3 "$POLICY_HELPER" --policy "$POLICY_FILE" stage \
-    --features "$FEATURES" \
-    --source-binary "$BINARY" \
-    --staged-binary "$DIST_DIR/bin/datafusion_nexus_server" \
-    --build-provenance "$BUILD_PROVENANCE" \
-    --output "$DIST_DIR/cpu-provenance.json" \
-    --labels-output "$DIST_DIR/cpu-provenance.labels"
+# ── 9. Manifest ─────────────────────────────────────────────────────────────
+python3 "$POLICY_HELPER" create-manifest \
+    --dist-dir "$DIST_DIR" \
+    --build-record "$BUILD_RECORD" \
+    --output "$DIST_DIR/payload-manifest.json"
 
-CPU_BINARY_SHA256=$(awk -F= '$1 == "binary_sha256" { print $2 }' "$DIST_DIR/cpu-provenance.labels")
-CPU_PROVENANCE_SHA256=$(sha256sum "$DIST_DIR/cpu-provenance.json" | awk '{print $1}')
-python3 "$POLICY_HELPER" verify-image-inputs \
-    --provenance "$DIST_DIR/cpu-provenance.json" \
-    --labels "$DIST_DIR/cpu-provenance.labels" \
-    --baseline "$CPU_BASELINE" \
-    --arch "$CPU_IMAGE_ARCH" \
-    --target "$CPU_TARGET_TRIPLE" \
-    --binary-sha256 "$CPU_BINARY_SHA256" \
-    --provenance-sha256 "$CPU_PROVENANCE_SHA256"
+python3 "$POLICY_HELPER" verify-manifest \
+    --dist-dir "$DIST_DIR" \
+    --manifest "$DIST_DIR/payload-manifest.json" >/dev/null
 
 echo ""
 echo "==> Staged payload ($(du -sh "$DIST_DIR" | cut -f1) total):"

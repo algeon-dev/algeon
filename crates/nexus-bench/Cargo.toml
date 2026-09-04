@@ -133,5 +133,5 @@ name = "tpcds_three_way_bench"
 test = false
 
 [[test]]
-name = "iceberg_bin_tests"
+name = "iceberg_bin_tests_cpu"
 required-features = ["iceberg"]

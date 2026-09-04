@@ -293,7 +293,7 @@ cargo nextest run -p nexus-query-engine --all-features --test native_contract_te
 
 # Targeted GPU tests (must be serialized)
 flock /tmp/cudf-gpu.lock cargo nextest run -p datafusion-nexus --all-features --test native_exec_tests
-flock /tmp/cudf-gpu.lock cargo nextest run -p nexus-query-engine --all-features --test query_service_allocator_lifecycle
+flock /tmp/cudf-gpu.lock cargo nextest run -p nexus-query-engine --all-features --test gpu_allocator_exclusive_tests_gpu_exclusive
 ```
 
 ### Full Pre-Merge Validation
@@ -306,9 +306,8 @@ bash scripts/check_all.sh
 
 - `bash scripts/check_all.sh --fast` and `--lane <LANE>` are partial edit-loop
   helpers and do not constitute full pre-merge validation.
-- `.config/policies/test-lanes.toml` is the sole source of lane admission. After
-  modifying it, regenerate nextest configuration:
-  `python3 scripts/ci/test_lane_policy.py generate-nextest --write`.
+- `.config/policies/test-lanes.toml` is the sole source of lane exceptions. Validate it with:
+  `python3 scripts/ci/test_lane_policy.py check-catalog`.
 - Do not add external-service E2E tests (such as live Iceberg REST/Glue catalogs)
   to default Cargo test targets; run them explicitly via
   `cargo run -p nexus-tools --all-features`

@@ -1,3 +1,4 @@
+#[path = "source_contract_support_cpu.rs"]
 mod source_contract_support;
 
 use source_contract_support::contains_normalized;

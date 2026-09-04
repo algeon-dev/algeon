@@ -1,190 +1,32 @@
 version = 1
 
-[[surface]]
-crate = "cudf-nexus"
-namespace = "root"
-decision = "keep"
-basis = "nexus_production"
-caller = "crates/nexus-query-engine/src"
-
-[[surface]]
-crate = "cudf-nexus"
-namespace = "core"
-decision = "keep"
-basis = "safety_abi_semantic"
-caller = "crates/nexus-query-engine/src"
-
-[[surface]]
-crate = "cudf-nexus"
-namespace = "device"
-decision = "keep"
-basis = "nexus_production"
-caller = "crates/nexus-query-runtime/src/runtime"
-
-[[surface]]
-crate = "cudf-nexus"
-namespace = "frame"
-decision = "keep"
-basis = "nexus_production"
-caller = "crates/nexus-query-engine/src"
-
-[[surface]]
-crate = "cudf-nexus"
-namespace = "hash"
-decision = "keep"
-basis = "safety_abi_semantic"
-caller = "components/cudf/cudf-nexus/src/ops"
-
-[[surface]]
-crate = "cudf-nexus"
-namespace = "interop"
-decision = "keep"
-basis = "cross_component"
-caller = "components/cugraph/cugraph-nexus/src/cudf_interop"
-
-[[surface]]
-crate = "cudf-nexus"
-namespace = "io"
-decision = "keep"
-basis = "nexus_production"
-caller = "crates/nexus-query-engine/src/exec/source"
-
-[[surface]]
-crate = "cudf-nexus"
-namespace = "ops"
-decision = "keep"
-basis = "nexus_production"
-caller = "crates/nexus-query-engine/src/exec"
-
-[[surface]]
-crate = "cudf-nexus"
-namespace = "runtime"
-decision = "keep"
-basis = "nexus_production"
-caller = "crates/nexus-query-runtime/src/runtime"
-
-[[surface]]
-crate = "cugraph-nexus"
-namespace = "root"
-decision = "keep"
-basis = "nexus_production"
-caller = "crates/nexus-query-engine/src/exec/graph_algorithm"
-
-[[surface]]
-crate = "cugraph-nexus"
-namespace = "array"
-decision = "keep"
-basis = "nexus_production"
-caller = "crates/nexus-query-engine/src/exec/graph_algorithm"
-
-[[surface]]
-crate = "cugraph-nexus"
-namespace = "centrality"
-decision = "keep"
-basis = "nexus_production"
-caller = "crates/nexus-query-engine/src/exec/graph_algorithm/centrality.rs"
-
-[[surface]]
-crate = "cugraph-nexus"
-namespace = "community"
-decision = "keep"
-basis = "nexus_production"
-caller = "crates/nexus-query-engine/src/exec/graph_algorithm/community.rs"
-
-[[surface]]
-crate = "cugraph-nexus"
-namespace = "cudf_interop"
-decision = "keep"
-basis = "cross_component"
-caller = "crates/nexus-query-engine/src/exec/graph_algorithm/build.rs"
-
-[[surface]]
-crate = "cugraph-nexus"
-namespace = "error"
-decision = "keep"
-basis = "safety_abi_semantic"
-caller = "crates/nexus-query-planning/src/error.rs"
-
-[[surface]]
-crate = "cugraph-nexus"
-namespace = "graph"
-decision = "keep"
-basis = "nexus_production"
-caller = "crates/nexus-query-engine/src/exec/graph_algorithm"
-
-[[surface]]
-crate = "cugraph-nexus"
-namespace = "handle"
-decision = "keep"
-basis = "safety_abi_semantic"
-caller = "components/cugraph/cugraph-nexus/src"
-
-[[surface]]
-crate = "cugraph-nexus"
-namespace = "labeling"
-decision = "keep"
-basis = "nexus_production"
-caller = "crates/nexus-query-engine/src/exec/graph_algorithm"
-
-[[surface]]
-crate = "cugraph-nexus"
-namespace = "layout"
-decision = "keep"
-basis = "nexus_production"
-caller = "crates/nexus-query-engine/src/exec/graph_algorithm/layout.rs"
-
-[[surface]]
-crate = "cugraph-nexus"
-namespace = "params"
-decision = "keep"
-basis = "safety_abi_semantic"
-caller = "crates/nexus-query-engine/src/exec/graph_algorithm"
-
-[[surface]]
-crate = "cugraph-nexus"
-namespace = "random"
-decision = "keep"
-basis = "safety_abi_semantic"
-caller = "components/cugraph/cugraph-nexus/src"
-
-[[surface]]
-crate = "cugraph-nexus"
-namespace = "sampling"
-decision = "keep"
-basis = "nexus_production"
-caller = "crates/nexus-query-engine/src/exec/graph_algorithm"
-
-[[surface]]
-crate = "cugraph-nexus"
-namespace = "similarity"
-decision = "keep"
-basis = "nexus_production"
-caller = "crates/nexus-query-engine/src/exec/graph_algorithm/similarity.rs"
-
-[[surface]]
-crate = "cugraph-nexus"
-namespace = "structure"
-decision = "keep"
-basis = "nexus_production"
-caller = "crates/nexus-query-engine/src/exec/graph_algorithm/structure.rs"
-
-[[surface]]
-crate = "cugraph-nexus"
-namespace = "traversal"
-decision = "keep"
-basis = "nexus_production"
-caller = "crates/nexus-query-engine/src/exec/graph_algorithm/traversal.rs"
-
-[[surface]]
-crate = "cugraph-nexus"
-namespace = "tree"
-decision = "keep"
-basis = "nexus_production"
-caller = "crates/nexus-query-engine/src/exec/graph_algorithm"
-
-[[surface]]
-crate = "cugraph-nexus"
-namespace = "types"
-decision = "keep"
-basis = "safety_abi_semantic"
-caller = "crates/nexus-query-engine/src/exec/graph_algorithm"
+[surfaces]
+cudf-nexus = [
+  "core",
+  "device",
+  "frame",
+  "hash",
+  "interop",
+  "io",
+  "ops",
+  "runtime",
+]
+cugraph-nexus = [
+  "array",
+  "centrality",
+  "community",
+  "cudf_interop",
+  "error",
+  "graph",
+  "handle",
+  "labeling",
+  "layout",
+  "params",
+  "random",
+  "sampling",
+  "similarity",
+  "structure",
+  "traversal",
+  "tree",
+  "types",
+]

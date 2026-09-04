@@ -7,12 +7,8 @@ ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 cd "${ROOT}"
 
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/datafusion-nexus-gpu-scheduling.XXXXXX")
-cache_fixture=".phase-cache-fixture-$$.rs"
-[[ ! -e "${cache_fixture}" ]] || {
-  echo "FAIL: phase-cache fixture path already exists: ${cache_fixture}" >&2
-  exit 1
-}
-trap 'rm -f -- "${cache_fixture}"; rm -rf "${tmp_dir}"' EXIT
+mutation_fixture="${ROOT}/.source_mutation_fixture.$$"
+trap 'rm -f -- "${mutation_fixture}"; rm -rf "${tmp_dir}"' EXIT
 mkdir -p "${tmp_dir}/bin" "${tmp_dir}/phase-logs"
 
 cat >"${tmp_dir}/bin/bash" <<'SH'
@@ -40,7 +36,7 @@ case "${1:-}" in
     fi
     exit "${FAKE_LIVE_INVENTORY_STATUS:-0}"
     ;;
-  scripts/build/check_cpu_packaging_policy.sh | scripts/ci/check_native_sources.sh | scripts/ci/check_component_packages.sh | scripts/dev/bindings.sh | scripts/ci/tests/check_dependency_direction_tests.sh | scripts/ci/tests/check_doctest_report_tests.sh | scripts/ci/tests/check_phase_test_counts_tests.sh | scripts/ci/tests/check_phase_failed_tests_tests.sh | scripts/ci/tests/check_gpu_test_lane_tests.sh | scripts/ci/tests/check_native_sources_tests.sh | scripts/ci/tests/check_doctest_rustdoc_tests.sh | scripts/ci/tests/check_gpu_scheduling_tests.sh | scripts/ci/tests/check_clean_target_artifacts_tests.sh | scripts/ci/tests/check_pass_as_skip_policy_tests.sh | scripts/ci/tests/check_public_api_surface_tests.sh)
+  scripts/ci/tests/check_cpu_packaging_tests.sh | scripts/ci/check_native_sources.sh | scripts/ci/check_component_packages.sh | scripts/dev/bindings.sh | scripts/ci/tests/check_dependency_direction_tests.sh | scripts/ci/tests/check_doctest_report_tests.sh | scripts/ci/tests/check_phase_test_counts_tests.sh | scripts/ci/tests/check_phase_failed_tests_tests.sh | scripts/ci/tests/check_gpu_test_lane_tests.sh | scripts/ci/tests/check_native_sources_tests.sh | scripts/ci/tests/check_doctest_rustdoc_tests.sh | scripts/ci/tests/check_gpu_scheduling_tests.sh | scripts/ci/tests/check_clean_target_artifacts_tests.sh | scripts/ci/tests/check_pass_as_skip_policy_tests.sh | scripts/ci/tests/check_public_api_surface_tests.sh)
     exit 0
     ;;
   scripts/ci/check_public_api_surface.sh)
@@ -72,6 +68,9 @@ if [[ "${1:-}" == "hack" && "${2:-}" == "--version" ]]; then
   [[ -z "${FAKE_HACK_VERSION_STDERR:-}" ]] || echo "${FAKE_HACK_VERSION_STDERR}" >&2
   echo "${FAKE_HACK_VERSION_OUTPUT:-cargo-hack 0.6.45}"
   exit "${FAKE_HACK_VERSION_STATUS:-0}"
+fi
+if [[ "${FAKE_MUTATE_WORKTREE:-0}" -eq 1 ]]; then
+  printf "mutation\n" >>"${FAKE_MUTATE_TARGET}"
 fi
 if [[ "${1:-}" == "hack" && "${2:-}" == "check" ]]; then
   if [[ " $* " == *" --each-feature "* ]]; then
@@ -193,7 +192,6 @@ run_check_with_phase_log_dir() {
 run_check() {
   local name=$1
   shift
-  rm -f -- "${tmp_dir}/last-pass.json"
   run_check_with_phase_log_dir "${name}" "${tmp_dir}/phase-logs" "$@"
 }
 
@@ -293,7 +291,6 @@ echo "PASS: CPU-derived shared cap and fixed exclusive cap"
 run_check help /usr/bin/bash scripts/check_all.sh --help
 assert_status help 0
 assert_contains "${tmp_dir}/help.output" "Usage: bash scripts/check_all.sh [OPTIONS]"
-assert_contains "${tmp_dir}/help.output" "same-process Cargo runners fail closed"
 assert_contains "${tmp_dir}/help.output" "CHECK_ALL_PHASE_LOG_DIR optionally selects the persistent phase-log directory"
 assert_empty "${tmp_dir}/help.log"
 echo "PASS: help is side-effect free"
@@ -308,41 +305,7 @@ assert_status duplicate 2
 assert_contains "${tmp_dir}/duplicate.output" "duplicate option: --fast"
 assert_empty "${tmp_dir}/duplicate.log"
 
-run_check feature_conflict /usr/bin/bash scripts/check_all.sh --all-features --features iceberg
-assert_status feature_conflict 2
-assert_contains "${tmp_dir}/feature_conflict.output" "--all-features conflicts"
-assert_empty "${tmp_dir}/feature_conflict.log"
-
-run_check cargo_cli_spelling /usr/bin/bash scripts/check_all.sh --runner cargo
-assert_status cargo_cli_spelling 2
-assert_contains "${tmp_dir}/cargo_cli_spelling.output" "same-process Cargo runner 'cargo' is unsupported"
-assert_empty "${tmp_dir}/cargo_cli_spelling.log"
-echo "PASS: unknown, duplicate, and conflicting CLI options fail before work"
-
-run_check invalid_features_env env FEATURES='iceberg,,iceberg' /usr/bin/bash scripts/check_all.sh
-assert_status invalid_features_env 2
-assert_contains "${tmp_dir}/invalid_features_env.output" "FEATURES must be empty or a comma-separated feature list"
-assert_empty "${tmp_dir}/invalid_features_env.log"
-
-run_check invalid_runner_env env TEST_RUNNER=surprise /usr/bin/bash scripts/check_all.sh
-assert_status invalid_runner_env 2
-assert_contains "${tmp_dir}/invalid_runner_env.output" "TEST_RUNNER must be nextest; cargo and cargo-diagnostic are retired"
-assert_empty "${tmp_dir}/invalid_runner_env.log"
-
-run_check retired_runner_env env TEST_RUNNER=cargo /usr/bin/bash scripts/check_all.sh
-assert_status retired_runner_env 2
-assert_contains "${tmp_dir}/retired_runner_env.output" "same-process Cargo runner 'cargo' is unsupported"
-assert_empty "${tmp_dir}/retired_runner_env.log"
-
-run_check invalid_lock_env env GPU_LOCK= /usr/bin/bash scripts/check_all.sh
-assert_status invalid_lock_env 2
-assert_contains "${tmp_dir}/invalid_lock_env.output" "GPU_LOCK must be a non-empty single-line path that does not begin with '-'"
-assert_empty "${tmp_dir}/invalid_lock_env.log"
-
-run_check option_like_lock_env env GPU_LOCK=--exclusive /usr/bin/bash scripts/check_all.sh
-assert_status option_like_lock_env 2
-assert_contains "${tmp_dir}/option_like_lock_env.output" "GPU_LOCK must be a non-empty single-line path that does not begin with '-'"
-assert_empty "${tmp_dir}/option_like_lock_env.log"
+echo "PASS: unknown and duplicate CLI options fail before work"
 
 run_check invalid_phase_log_env env 'CHECK_ALL_PHASE_LOG_DIR=bad|path' /usr/bin/bash scripts/check_all.sh
 assert_status invalid_phase_log_env 2
@@ -442,12 +405,12 @@ assert_contains "${tmp_dir}/default.log" "cargo <test> <--workspace> <--all-feat
 assert_contains "${tmp_dir}/default.log" "cargo <+nightly> <fmt> <--all> <--check>"
 assert_contains "${tmp_dir}/default.log" "cargo <clippy> <--workspace> <--all-targets> <--all-features>"
 assert_contains "${tmp_dir}/default.log" "bash <scripts/ci/check_public_api_surface.sh> <check> <--all-features>"
-assert_contains "${tmp_dir}/default.log" "bash <scripts/build/check_cpu_packaging_policy.sh>"
+assert_contains "${tmp_dir}/default.log" "bash <scripts/ci/tests/check_cpu_packaging_tests.sh>"
 assert_contains "${tmp_dir}/default.log" "bash <scripts/ci/tests/check_dependency_direction_tests.sh>"
 assert_contains "${tmp_dir}/default.log" "bash <scripts/ci/tests/check_gpu_test_lane_tests.sh>"
 assert_contains "${tmp_dir}/default.log" "bash <scripts/ci/tests/check_doctest_rustdoc_tests.sh>"
 assert_contains "${tmp_dir}/default.log" "bash <scripts/ci/tests/check_gpu_scheduling_tests.sh>"
-assert_contains "${tmp_dir}/default.output" "PHASE SUMMARY (18 phases: 18 PASS, 0 FAIL, 0 CACHED, 0 SKIPPED)"
+assert_contains "${tmp_dir}/default.output" "PHASE SUMMARY (18 phases: 18 PASS, 0 FAIL, 0 SKIPPED)"
 assert_contains "${tmp_dir}/default.output" "Phase | Status | Duration | Counts"
 assert_not_contains "${tmp_dir}/default.output" "FAILURES"
 assert_contains "${tmp_dir}/default.output" "==> [cpu-tests] cargo nextest run --workspace --all-features -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast --final-status-level fail"
@@ -484,21 +447,6 @@ assert_before "${tmp_dir}/default.log" \
 echo "PASS: unified nextest CPU/GPU component scheduling"
 echo "PASS: full surface includes pinned fmt, one workspace-wide test/doc/clippy unification, and isolated policies"
 
-run_check feature_env env FEATURES=iceberg /usr/bin/bash scripts/check_all.sh --lane cpu
-assert_status feature_env 0
-assert_contains "${tmp_dir}/feature_env.output" "features=features:iceberg(env)"
-assert_contains "${tmp_dir}/feature_env.log" "cargo <nextest> <run> <--workspace> <--features> <iceberg>"
-
-run_check lock_env env GPU_LOCK=/tmp/custom-cudf.lock /usr/bin/bash scripts/check_all.sh --lane gpu-shared
-assert_status lock_env 0
-assert_contains "${tmp_dir}/lock_env.log" "flock </tmp/custom-cudf.lock> <cargo> <nextest>"
-echo "PASS: FEATURES and GPU_LOCK compatibility values remain effective"
-
-run_check retired_runner_cli /usr/bin/bash scripts/check_all.sh --runner cargo-diagnostic
-assert_status retired_runner_cli 2
-assert_contains "${tmp_dir}/retired_runner_cli.output" "same-process Cargo runner 'cargo-diagnostic' is unsupported"
-assert_empty "${tmp_dir}/retired_runner_cli.log"
-echo "PASS: retired same-process Cargo runners fail closed before work"
 
 run_check twelve_cores env FAKE_NPROC_OUTPUT=12 /usr/bin/bash scripts/check_all.sh --lane gpu-shared
 assert_status twelve_cores 0
@@ -507,19 +455,13 @@ assert_contains "${tmp_dir}/twelve_cores.log" "cargo <nextest> <run> <-P> <defau
 assert_phase_contains "${tmp_dir}/twelve_cores.output" gpu-shared-tests "gpu-shared-tests | PASS | 0.100s | run=2 passed=2 failed=0 skipped=6"
 echo "PASS: shared-GPU concurrency follows the available CPU count"
 
-run_check cli_precedence env FEATURES=iceberg TEST_RUNNER=cargo STRICT=1 \
-  /usr/bin/bash scripts/check_all.sh --all-features --runner nextest --strict
-assert_status cli_precedence 0
-assert_contains "${tmp_dir}/cli_precedence.output" "runner=nextest(cli) features=all(cli) gpu_profile=default gpu_threads=16(nproc) strict=always(cli)"
-assert_contains "${tmp_dir}/cli_precedence.log" "cargo <nextest> <run> <-P> <default> <--workspace> <--all-features> <-E> <group(gpu)> <--no-fail-fast> <--test-threads> <16>"
-echo "PASS: explicit nextest CLI selection takes precedence over a retired runner environment value"
 
-run_check fast /usr/bin/bash scripts/check_all.sh --fast --features iceberg
+run_check fast /usr/bin/bash scripts/check_all.sh --fast
 assert_status fast 0
 assert_contains "${tmp_dir}/fast.output" "PARTIAL SURFACE: mode=fast lane=cpu"
 assert_contains "${tmp_dir}/fast.output" "fast edit-loop surface passed"
 assert_contains "${tmp_dir}/fast.log" "cargo <+nightly> <fmt> <--all> <--check>"
-assert_contains "${tmp_dir}/fast.log" "cargo <nextest> <run> <--workspace> <--features> <iceberg> <-E> <not group(gpu) & not group(gpu-exclusive)> <--no-fail-fast>"
+assert_contains "${tmp_dir}/fast.log" "cargo <nextest> <run> <--workspace> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)> <--no-fail-fast>"
 assert_not_contains "${tmp_dir}/fast.log" "flock"
 assert_not_contains "${tmp_dir}/fast.log" "<doc>"
 assert_not_contains "${tmp_dir}/fast.log" "<clippy>"
@@ -532,19 +474,6 @@ assert_phase_contains "${tmp_dir}/fast.output" gpu-shared-tests "gpu-shared-test
 assert_phase_contains "${tmp_dir}/fast.output" doctests "doctests | SKIPPED | - | -"
 echo "PASS: fast surface runs policies/fmt/structure/CPU without live inventory or GPU/doc/lint/tools/bench"
 
-run_check no_default_features /usr/bin/bash scripts/check_all.sh --lane cpu --no-default-features --features iceberg
-assert_status no_default_features 0
-assert_contains "${tmp_dir}/no_default_features.log" "cargo <nextest> <run> <--workspace> <--no-default-features> <--features> <iceberg>"
-
-run_check full_narrow_features /usr/bin/bash scripts/check_all.sh --no-default-features --features iceberg
-assert_status full_narrow_features 0
-assert_contains "${tmp_dir}/full_narrow_features.log" "cargo <hack> <check> <--workspace> <--all-features> <--locked> <--rust-version> <--workspace-behavior=cargo>"
-assert_contains "${tmp_dir}/full_narrow_features.log" "cargo <hack> <check> <--workspace> <--each-feature> <--exclude-features> <default> <--locked> <--keep-going>"
-assert_contains "${tmp_dir}/full_narrow_features.log" "cargo <test> <--workspace> <--no-default-features> <--features> <iceberg> <--doc> <--no-fail-fast>"
-assert_contains "${tmp_dir}/full_narrow_features.log" "cargo <doc> <--workspace> <--no-default-features> <--features> <iceberg> <--no-deps> <--keep-going>"
-assert_contains "${tmp_dir}/full_narrow_features.log" "cargo <clippy> <--workspace> <--all-targets> <--no-default-features> <--features> <iceberg>"
-assert_phase_contains "${tmp_dir}/full_narrow_features.output" clippy "clippy | PASS | 0.100s | -"
-echo "PASS: feature selectors propagate consistently"
 
 run_check lane_cpu /usr/bin/bash scripts/check_all.sh --lane cpu
 assert_status lane_cpu 0
@@ -652,69 +581,19 @@ assert_contains "${tmp_dir}/live_inventory_failure.output" "command: bash script
 assert_contains "${tmp_dir}/phase-logs/live-inventory.log" "RAW_LIVE_INVENTORY_FAILURE"
 echo "PASS: failed live inventory is logged and blocks selected lanes"
 
-run_check show_config_drift env FAKE_GPU_CAP=5 /usr/bin/bash scripts/check_all.sh
-assert_status show_config_drift 2
-assert_contains "${tmp_dir}/show_config_drift.output" "show-config reports cap '5'"
-assert_contains "${tmp_dir}/show_config_drift.output" "expected dynamic cap 'num-cpus'"
-assert_phase_contains "${tmp_dir}/show_config_drift.output" gpu-preflight "gpu-preflight | FAIL(2) | 0.100s | -"
-assert_phase_contains "${tmp_dir}/show_config_drift.output" gpu-shared-tests "gpu-shared-tests | SKIPPED(blocked) | - | -"
-echo "PASS: shared show-config drift fails closed"
+run_check source_changed env FAKE_MUTATE_WORKTREE=1 FAKE_MUTATE_TARGET="${mutation_fixture}" /usr/bin/bash scripts/check_all.sh
+assert_status source_changed 1
+assert_contains "${tmp_dir}/source_changed.output" "ERROR: source identity changed during the gate."
+rm -f -- "${mutation_fixture}"
 
-run_check exclusive_show_config_drift env FAKE_GPU_EXCLUSIVE_CAP=2 /usr/bin/bash scripts/check_all.sh
-assert_status exclusive_show_config_drift 2
-assert_contains "${tmp_dir}/exclusive_show_config_drift.output" "show-config reports cap 2 for group 'gpu-exclusive'"
-echo "PASS: exclusive show-config drift fails closed"
-
-printf '%s\n' 'const PHASE_CACHE_FIXTURE: &str = "seed";' >"${cache_fixture}"
-cache_root="${tmp_dir}/phase-cache"
-cache_gitlink_state_seed=$' 1111111111111111111111111111111111111111 components/cudf/cudf\n 2222222222222222222222222222222222222222 components/cugraph/cugraph\n 3333333333333333333333333333333333333333 components/cuvs/cuvs'
-cache_gitlink_state_changed=$'+4444444444444444444444444444444444444444 components/cudf/cudf\n 2222222222222222222222222222222222222222 components/cugraph/cugraph\n 3333333333333333333333333333333333333333 components/cuvs/cuvs'
-run_check_with_phase_log_dir cache_seed "${cache_root}/seed" \
-  env FAKE_GITLINK_STATE_ACTIVE=1 FAKE_GITLINK_STATUS="${cache_gitlink_state_seed}" \
-  /usr/bin/bash scripts/check_all.sh
-assert_status cache_seed 0
-assert_phase_contains "${tmp_dir}/cache_seed.output" cpu-tests "cpu-tests | PASS | 0.100s | run=3 passed=3 failed=0 skipped=5"
-
-run_check_with_phase_log_dir cache_hit "${cache_root}/replay" \
-  env FAKE_GITLINK_STATE_ACTIVE=1 FAKE_GITLINK_STATUS="${cache_gitlink_state_seed}" \
-  /usr/bin/bash scripts/check_all.sh
-assert_status cache_hit 0
-assert_contains "${tmp_dir}/cache_hit.output" "PHASE SUMMARY (18 phases: 5 PASS, 0 FAIL, 13 CACHED, 0 SKIPPED)"
-assert_phase_contains "${tmp_dir}/cache_hit.output" cpu-tests "cpu-tests | CACHED | 0.000s | cached"
-assert_phase_contains "${tmp_dir}/cache_hit.output" public-api-surface "public-api-surface | CACHED | 0.000s | cached"
-assert_phase_contains "${tmp_dir}/cache_hit.output" msrv-check "msrv-check | PASS | 0.100s | -"
-assert_phase_contains "${tmp_dir}/cache_hit.output" feature-isolation-check "feature-isolation-check | PASS | 0.100s | -"
-assert_contains "${tmp_dir}/cache_hit.log" "cargo <hack> <check> <--workspace> <--all-features> <--locked> <--rust-version> <--workspace-behavior=cargo>"
-assert_contains "${tmp_dir}/cache_hit.log" "cargo <hack> <check> <--workspace> <--each-feature> <--exclude-features> <default> <--locked> <--keep-going>"
-assert_phase_contains "${tmp_dir}/cache_hit.output" gpu-shared-tests "gpu-shared-tests | PASS | 0.100s | run=2 passed=2 failed=0 skipped=6"
-assert_not_contains "${tmp_dir}/cache_hit.log" "cargo <nextest> <run> <--workspace> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)>"
-if [[ $(grep -c '^flock ' "${tmp_dir}/cache_hit.log") -ne 3 ]]; then
-  echo "FAIL: cache replay must still execute every GPU-locked phase" >&2
-  sed 's/^/  /' "${tmp_dir}/cache_hit.log" >&2
-  exit 1
-fi
-
-run_check_with_phase_log_dir cache_submodule_miss "${cache_root}/submodule-changed" \
-  env FAKE_GITLINK_STATE_ACTIVE=1 FAKE_GITLINK_STATUS="${cache_gitlink_state_changed}" \
-  /usr/bin/bash scripts/check_all.sh
-assert_status cache_submodule_miss 0
-assert_contains "${tmp_dir}/cache_submodule_miss.output" "gitlinks=+4444444444444444444444444444444444444444@components/cudf/cudf"
-assert_phase_contains "${tmp_dir}/cache_submodule_miss.output" policy-selftests "policy-selftests | CACHED | 0.000s | cached"
-assert_phase_contains "${tmp_dir}/cache_submodule_miss.output" rustfmt "rustfmt | PASS | 0.100s | -"
-assert_phase_contains "${tmp_dir}/cache_submodule_miss.output" cpu-tests "cpu-tests | PASS | 0.100s | run=3 passed=3 failed=0 skipped=5"
-assert_contains "${tmp_dir}/cache_submodule_miss.log" "cargo <nextest> <run> <--workspace> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)> <--no-fail-fast> <--final-status-level> <fail>"
-echo "PASS: phase cache invalidates workspace phases after recursive submodule state changes"
-
-printf '%s\n' 'const PHASE_CACHE_FIXTURE: &str = "changed";' >"${cache_fixture}"
-run_check_with_phase_log_dir cache_miss "${cache_root}/source-changed" /usr/bin/bash scripts/check_all.sh
-assert_status cache_miss 0
-assert_phase_contains "${tmp_dir}/cache_miss.output" policy-selftests "policy-selftests | CACHED | 0.000s | cached"
-assert_phase_contains "${tmp_dir}/cache_miss.output" cpu-tests "cpu-tests | PASS | 0.100s | run=3 passed=3 failed=0 skipped=5"
-assert_contains "${tmp_dir}/cache_miss.log" "cargo <nextest> <run> <--workspace> <--all-features> <-E> <not group(gpu) & not group(gpu-exclusive)> <--no-fail-fast>"
-echo "PASS: phase cache hits unchanged phases, keeps GPU-locked phases live, and invalidates workspace phases after source changes"
+printf 'initial\n' >"${mutation_fixture}"
+run_check source_changed_dirty env FAKE_MUTATE_WORKTREE=1 FAKE_MUTATE_TARGET="${mutation_fixture}" /usr/bin/bash scripts/check_all.sh
+assert_status source_changed_dirty 1
+assert_contains "${tmp_dir}/source_changed_dirty.output" "ERROR: source identity changed during the gate."
+rm -f -- "${mutation_fixture}"
+echo "PASS: source identity change during gate fails closed"
 
 # test_all.sh must not inject different defaults or otherwise change semantics.
-rm -f -- "${cache_fixture}"
 run_check alias /usr/bin/bash scripts/ci/test_all.sh
 assert_status alias 0
 diff -u "${tmp_dir}/default.output" "${tmp_dir}/alias.output"

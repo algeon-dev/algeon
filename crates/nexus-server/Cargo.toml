@@ -59,24 +59,24 @@ tempfile = { workspace = true }
 name = "datafusion_nexus_server"
 
 [[test]]
-name = "server_tests"
-path = "tests/server_tests.rs"
+name = "server_tests_gpu"
+path = "tests/server_tests_gpu.rs"
 
 [[test]]
-name = "server_config_tests"
-path = "tests/server_config_tests.rs"
+name = "server_config_tests_cpu"
+path = "tests/server_config_tests_cpu.rs"
 
 [[test]]
-name = "server_iceberg_tests"
-path = "tests/server_iceberg_tests.rs"
+name = "server_iceberg_tests_cpu"
+path = "tests/server_iceberg_tests_cpu.rs"
 required-features = ["iceberg"]
 
 [[test]]
-name = "server_cugraph_tests"
-path = "tests/server_cugraph_tests.rs"
+name = "server_cugraph_tests_gpu"
+path = "tests/server_cugraph_tests_gpu.rs"
 required-features = ["cugraph"]
 
 [[test]]
-name = "server_cuvs_tests"
-path = "tests/server_cuvs_tests.rs"
+name = "server_cuvs_tests_gpu"
+path = "tests/server_cuvs_tests_gpu.rs"
 required-features = ["cuvs"]

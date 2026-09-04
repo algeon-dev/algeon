@@ -50,28 +50,28 @@ async-trait = { workspace = true }
 # autotests = false above: every tests/*.rs harness must be registered here
 # explicitly — unregistered files are silently ignored by cargo.
 [[test]]
-name = "gpu_backend_shared_tests"
-path = "tests/gpu_backend_shared_tests.rs"
+name = "gpu_backend_shared_tests_gpu"
+path = "tests/gpu_backend_shared_tests_gpu.rs"
 
 [[test]]
-name = "gpu_allocator_exclusive_tests"
-path = "tests/gpu_allocator_exclusive_tests.rs"
+name = "gpu_allocator_exclusive_tests_gpu_exclusive"
+path = "tests/gpu_allocator_exclusive_tests_gpu_exclusive.rs"
 
 [[test]]
 name = "native_contract_tests"
 path = "tests/native_contract_tests.rs"
 
 [[test]]
-name = "native_execution_tests"
-path = "tests/native_execution_tests.rs"
+name = "native_execution_tests_gpu"
+path = "tests/native_execution_tests_gpu.rs"
 required-features = ["test-hooks"]
 
 [[test]]
-name = "native_pipeline_execution_tests"
-path = "tests/native_pipeline_execution_tests.rs"
+name = "native_pipeline_execution_tests_gpu"
+path = "tests/native_pipeline_execution_tests_gpu.rs"
 
 [[test]]
-name = "runtime_execution_integration_tests"
+name = "runtime_execution_integration_tests_gpu"
 path = "src/execution_integration_tests/gpu_resident.rs"
 required-features = ["cugraph", "test-hooks"]
 

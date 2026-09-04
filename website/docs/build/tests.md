@@ -220,14 +220,12 @@ is the single admission source: every live pre-merge-admitted nextest binary
 in the selected workspace surface has one CPU or GPU entry, every GPU entry is
 `shared` or `exclusive`, and every entry records a reason.
 `scripts/ci/check_gpu_test_lane.sh` (run by `check_all.sh`) fails closed on
-missing, duplicate, stale, or malformed entries and on generated nextest drift.
-After editing the catalog, regenerate the scheduling overrides:
+unclassified, conflicting, stale, or malformed entries and invalid nextest scheduling.
+Validate the policy catalog with:
 
 ```bash
-python3 scripts/ci/test_lane_policy.py generate-nextest --write
+python3 scripts/ci/test_lane_policy.py check-catalog
 ```
-
-Do not edit the generated override section in `.config/nextest.toml` directly.
 
 ## Build-support policy
 

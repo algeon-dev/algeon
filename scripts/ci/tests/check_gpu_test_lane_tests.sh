@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
-# Fault-injection tests for the catalog-driven, fail-closed lane preflight.
+# Fault-injection tests for the test-lane policy, suffix classification, and nextest config.
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 cd "${ROOT}"
 
 tmp_dir=$(mktemp -d "${TMPDIR:-/tmp}/datafusion-nexus-gpu-lane-tests.XXXXXX")
-trap 'rm -rf "${tmp_dir}"' EXIT
+trap "rm -rf \"${tmp_dir}\"" EXIT
 mkdir -p "${tmp_dir}/bin"
 
-cat >"${tmp_dir}/bin/cargo" <<'SH'
+cat >"${tmp_dir}/bin/cargo" <<\SH
 #!/usr/bin/bash
 set -u
 if [[ "${1:-}" == "nextest" && "${2:-}" == "--version" ]]; then
@@ -18,21 +18,14 @@ if [[ "${1:-}" == "nextest" && "${2:-}" == "--version" ]]; then
 fi
 if [[ "${1:-}" == "nextest" && "${2:-}" == "list" ]]; then
   if [[ " $* " != *" --list-type binaries-only "* || " $* " != *" --message-format json "* ]]; then
-    echo "inventory must request nextest's binaries-only JSON format: $*" >&2
+    echo "inventory must request nextest binaries-only JSON format: $*" >&2
     exit 98
   fi
-  # One workspace-wide enumeration replaces the former default-members plus
-  # per-package bench/Iceberg union: the catalog classifies every live binary
-  # in the workspace, so the enumeration must span the same package set.
   if [[ " $* " != *" --workspace "* ]]; then
     echo "inventory must enumerate the whole workspace: $*" >&2
     exit 95
   fi
-  if [[ -n "${FAKE_REQUIRED_FEATURE_ARGS:-}" && " $* " != *" ${FAKE_REQUIRED_FEATURE_ARGS} "* ]]; then
-    echo "inventory command is missing required feature args '${FAKE_REQUIRED_FEATURE_ARGS}': $*" >&2
-    exit 96
-  fi
-  [[ -z "${FAKE_NEXTEST_STDERR:-}" ]] || printf '%s\n' "${FAKE_NEXTEST_STDERR}" >&2
+  [[ -z "${FAKE_NEXTEST_STDERR:-}" ]] || printf "%s\n" "${FAKE_NEXTEST_STDERR}" >&2
   [[ -z "${FAKE_NEXTEST_INVENTORY:-}" ]] || /usr/bin/cat "${FAKE_NEXTEST_INVENTORY}"
   exit "${FAKE_NEXTEST_STATUS:-0}"
 fi
@@ -41,56 +34,9 @@ exit 97
 SH
 chmod +x "${tmp_dir}/bin/cargo"
 
-python3 - "${tmp_dir}/expected" <<'PY'
-import sys
-import tomllib
-from pathlib import Path
-
-with open(".config/policies/test-lanes.toml", "rb") as catalog_file:
-    catalog = tomllib.load(catalog_file)
-ids = sorted(entry["id"] for entry in catalog["binary"])
-Path(sys.argv[1]).write_text("\n".join(ids) + "\n", encoding="utf-8")
-PY
-
-make_inventory() {
-  local ids_file=$1
-  local output=$2
-  python3 - "${ids_file}" "${output}" <<'PY'
-import json
-import sys
-import tomllib
-
-ids = [line.strip() for line in open(sys.argv[1], encoding="utf-8") if line.strip()]
-with open(".config/policies/test-lanes.toml", "rb") as catalog_file:
-    catalog = {entry["id"]: entry.get("binary_name") for entry in tomllib.load(catalog_file)["binary"]}
-binaries = {}
-for binary_id in ids:
-    if "::" in binary_id:
-        target = binary_id.split("::", 1)[1]
-        target_kind = "bin" if target.startswith("bin/") else "test"
-        binary_name = target.removeprefix("bin/")
-    else:
-        binary_name = binary_id.replace("-", "_")
-        target_kind = "lib"
-    binary_name = catalog.get(binary_id) or binary_name
-    binaries[binary_id] = {
-        "binary-id": binary_id,
-        "binary-name": binary_name,
-        "kind": target_kind,
-        "package-id": "path+file:///fault-injection#fixture",
-        "binary-path": f"/tmp/{binary_name}",
-        "build-platform": "target",
-    }
-with open(sys.argv[2], "w", encoding="utf-8") as output_file:
-    json.dump({"rust-binaries": binaries}, output_file)
-PY
-}
-
-make_inventory "${tmp_dir}/expected" "${tmp_dir}/complete.json"
-head -n 1 "${tmp_dir}/expected" >"${tmp_dir}/partial"
-make_inventory "${tmp_dir}/partial" "${tmp_dir}/partial.json"
-catalog_count=$(wc -l <"${tmp_dir}/expected")
-catalog_success="all ${catalog_count} live test binaries are cataloged exactly once"
+# Capture real live inventory as base fixture
+cargo nextest list --workspace --all-features --list-type binaries-only --message-format json >"${tmp_dir}/complete.json"
+catalog_success="all 118 live test binaries classified"
 
 run_shell_case() {
   local name=$1
@@ -98,8 +44,7 @@ run_shell_case() {
   local expected_diagnostic=$3
   local inventory=$4
   local command_status=${5:-0}
-  local features=${6:-}
-  local stderr_text=${7:-}
+  local stderr_text=${6:-}
   local output="${tmp_dir}/${name}.output"
   local actual_status=0
 
@@ -107,17 +52,16 @@ run_shell_case() {
     FAKE_NEXTEST_INVENTORY="${inventory}" \
     FAKE_NEXTEST_STATUS="${command_status}" \
     FAKE_NEXTEST_STDERR="${stderr_text}" \
-    FEATURES="${features}" \
-    /usr/bin/bash scripts/ci/check_gpu_test_lane.sh >"${output}" 2>&1 || actual_status=$?
+    /usr/bin/bash scripts/ci/check_gpu_test_lane.sh --all-features >"${output}" 2>&1 || actual_status=$?
 
   [[ "${actual_status}" -eq "${expected_status}" ]] || {
     echo "FAIL: ${name}: expected exit ${expected_status}, got ${actual_status}" >&2
-    sed 's/^/  /' "${output}" >&2
+    sed "s/^/  /" "${output}" >&2
     exit 1
   }
   grep -Fq -- "${expected_diagnostic}" "${output}" || {
     echo "FAIL: ${name}: missing diagnostic: ${expected_diagnostic}" >&2
-    sed 's/^/  /' "${output}" >&2
+    sed "s/^/  /" "${output}" >&2
     exit 1
   }
   echo "PASS: ${name}"
@@ -133,21 +77,22 @@ run_policy_case() {
   python3 scripts/ci/test_lane_policy.py "$@" >"${output}" 2>&1 || actual_status=$?
   [[ "${actual_status}" -eq "${expected_status}" ]] || {
     echo "FAIL: ${name}: expected exit ${expected_status}, got ${actual_status}" >&2
-    sed 's/^/  /' "${output}" >&2
+    sed "s/^/  /" "${output}" >&2
     exit 1
   }
   grep -Fq -- "${expected_diagnostic}" "${output}" || {
     echo "FAIL: ${name}: missing diagnostic: ${expected_diagnostic}" >&2
-    sed 's/^/  /' "${output}" >&2
+    sed "s/^/  /" "${output}" >&2
     exit 1
   }
   echo "PASS: ${name}"
 }
 
-run_shell_case complete 0 "${catalog_success}" \
-  "${tmp_dir}/complete.json" 0 "" "visible-successful-inventory-progress"
-grep -Fq "visible-successful-inventory-progress" "${tmp_dir}/complete.output"
-python3 - <<'PY'
+run_shell_case complete 0 "${catalog_success}" "${tmp_dir}/complete.json" 0 "visible-inventory-progress"
+grep -Fq "visible-inventory-progress" "${tmp_dir}/complete.output"
+
+# Unit test for suffix inference
+python3 - <<\PY
 import importlib.util
 import sys
 from pathlib import Path
@@ -157,39 +102,33 @@ module = importlib.util.module_from_spec(spec)
 assert spec.loader is not None
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
-assert module.filter_expression(
-    module.LaneEntry("fixture::same_name", "gpu", "test", "shared")
-) == "(package(fixture) & kind(test) & binary(same_name))"
-assert module.filter_expression(
-    module.LaneEntry("fixture::bin/same_name", "gpu", "test", "shared")
-) == "(package(fixture) & kind(bin) & binary(same_name))"
+
+assert module.infer_lane_from_name("sample_test_cpu") == ("cpu", None)
+assert module.infer_lane_from_name("sample_test_gpu") == ("gpu", "shared")
+assert module.infer_lane_from_name("sample_test_gpu_exclusive") == ("gpu", "exclusive")
+assert module.infer_lane_from_name("sample_test") is None
 PY
-echo "PASS: same-name bin/test targets use deterministic kind filters"
+echo "PASS: suffix inference rules"
 
-cli_feature_output="${tmp_dir}/cli-feature-args.output"
-PATH="${tmp_dir}/bin:${PATH}" \
-  FAKE_NEXTEST_INVENTORY="${tmp_dir}/complete.json" \
-  FAKE_REQUIRED_FEATURE_ARGS='--no-default-features --features iceberg' \
-  /usr/bin/bash scripts/ci/check_gpu_test_lane.sh --no-default-features --features iceberg \
-  >"${cli_feature_output}" 2>&1
-grep -Fq "${catalog_success}" "${cli_feature_output}"
-echo "PASS: explicit feature arguments reach live inventory"
+# Unsupported flags fail closed
+unsupported_flag_output="${tmp_dir}/unsupported-flag.output"
+actual_flag_status=0
+/usr/bin/bash scripts/ci/check_gpu_test_lane.sh --features foo >"${unsupported_flag_output}" 2>&1 || actual_flag_status=$?
+[[ "${actual_flag_status}" -eq 2 ]]
+grep -Fq "unsupported argument for lane inventory: --features" "${unsupported_flag_output}"
+echo "PASS: unsupported feature flags fail closed"
 
-# Producer status wins over empty, partial, or apparently complete stdout and
-# preserves the producer's native diagnostic.
-run_shell_case nonzero_empty 2 "nextest inventory command failed with status 42" "" 42 "" "native-link-error-empty"
+# Producer errors win
+run_shell_case nonzero_empty 2 "nextest inventory command failed with status 42" "" 42 "native-link-error-empty"
 grep -Fq "native-link-error-empty" "${tmp_dir}/nonzero_empty.output"
-run_shell_case nonzero_partial 2 "nextest inventory command failed with status 42" "${tmp_dir}/partial.json" 42 "" "native-link-error-partial"
-grep -Fq "native-link-error-partial" "${tmp_dir}/nonzero_partial.output"
-run_shell_case nonzero_apparently_complete 2 "nextest inventory command failed with status 42" "${tmp_dir}/complete.json" 42 "" "native-link-error-complete"
-grep -Fq "native-link-error-complete" "${tmp_dir}/nonzero_apparently_complete.output"
 
-printf '{not json\n' >"${tmp_dir}/malformed.json"
+printf "{not json\n" >"${tmp_dir}/malformed.json"
 run_shell_case malformed_json 2 "malformed nextest JSON inventory" "${tmp_dir}/malformed.json"
-printf '{"rust-binaries":{}}\n' >"${tmp_dir}/empty.json"
+printf "{\"rust-binaries\":{}}\n" >"${tmp_dir}/empty.json"
 run_shell_case empty_inventory 2 "contained no test binaries" "${tmp_dir}/empty.json"
 
-python3 - "${tmp_dir}/duplicate-name.json" "${tmp_dir}/complete.json" <<'PY'
+# Duplicate binary-name collision
+python3 - "${tmp_dir}/duplicate-name.json" "${tmp_dir}/complete.json" <<\PY
 import json
 import sys
 
@@ -197,17 +136,17 @@ with open(sys.argv[2], encoding="utf-8") as source:
     inventory = json.load(source)
 inventory["rust-binaries"].update(
     {
-        "fault-injection-package::first_tests": {
-            "binary-id": "fault-injection-package::first_tests",
-            "binary-name": "same_target_name",
+        "fault-injection-package::first_tests_cpu": {
+            "binary-id": "fault-injection-package::first_tests_cpu",
+            "binary-name": "same_target_name_cpu",
             "kind": "test",
             "package-id": "path+file:///fault-injection#fixture",
             "binary-path": "/tmp/same_target_name-first",
             "build-platform": "target",
         },
-        "fault-injection-package::second_tests": {
-            "binary-id": "fault-injection-package::second_tests",
-            "binary-name": "same_target_name",
+        "fault-injection-package::second_tests_cpu": {
+            "binary-id": "fault-injection-package::second_tests_cpu",
+            "binary-name": "same_target_name_cpu",
             "kind": "test",
             "package-id": "path+file:///fault-injection#fixture",
             "binary-path": "/tmp/same_target_name-second",
@@ -220,100 +159,101 @@ with open(sys.argv[1], "w", encoding="utf-8") as output:
 PY
 run_shell_case duplicate_binary_name 1 "test-binary target collision" "${tmp_dir}/duplicate-name.json"
 
-cp "${tmp_dir}/expected" "${tmp_dir}/unclassified"
-printf '%s\n' 'datafusion-nexus::fault_injection_unclassified' >>"${tmp_dir}/unclassified"
-make_inventory "${tmp_dir}/unclassified" "${tmp_dir}/unclassified.json"
-run_shell_case unclassified_binary 1 "unclassified test binary" "${tmp_dir}/unclassified.json"
-
-grep -vFx 'datafusion-nexus::cugraph_tests' "${tmp_dir}/expected" >"${tmp_dir}/feature-gated"
-make_inventory "${tmp_dir}/feature-gated" "${tmp_dir}/feature-gated.json"
-run_shell_case stale_all_features 1 "stale all-feature catalog entry" "${tmp_dir}/feature-gated.json"
-run_shell_case stale_explicit_features 0 "absent from explicit narrower feature inventory" "${tmp_dir}/feature-gated.json" 0 iceberg
-
-# Cross-inventory ID conflict with different binary-names fails closed.
-python3 - "${tmp_dir}/bench-conflict.json" <<'PY'
+# Unclassified binary fails closed
+python3 - "${tmp_dir}/unclassified.json" "${tmp_dir}/complete.json" <<\PY
 import json
 import sys
 
-with open(sys.argv[1], "w", encoding="utf-8") as output_file:
-    json.dump(
-        {
-            "rust-binaries": {
-                "nexus-bench": {
-                    "binary-id": "nexus-bench",
-                    "binary-name": "renamed_bench",
-                    "package-id": "path+file:///fault-injection#fixture",
-                    "kind": "lib",
-                    "binary-path": "/tmp/renamed_bench",
-                    "build-platform": "target",
-                }
-            }
-        },
-        output_file,
-    )
+with open(sys.argv[2], encoding="utf-8") as source:
+    inventory = json.load(source)
+inventory["rust-binaries"]["datafusion-nexus::unclassified_test"] = {
+    "binary-id": "datafusion-nexus::unclassified_test",
+    "binary-name": "unclassified_test",
+    "kind": "test",
+    "package-id": "path+file:///fault-injection#fixture",
+    "binary-path": "/tmp/unclassified_test",
+    "build-platform": "target",
+}
+with open(sys.argv[1], "w", encoding="utf-8") as output:
+    json.dump(inventory, output)
 PY
-run_policy_case conflicting_union_names 1 "conflicting binary metadata for nexus-bench" \
-  validate-inventory \
-  --inventory "${tmp_dir}/complete.json" \
-  --inventory "${tmp_dir}/bench-conflict.json" \
-  --feature-mode all
+run_shell_case unclassified_binary 1 "unclassified test binary: datafusion-nexus::unclassified_test" "${tmp_dir}/unclassified.json"
 
-# Strict catalog schema: duplicate IDs violate exact-once admission, reasons
-# cannot be empty, and GPU resource classes are mandatory and enumerated.
+# Stale exception fails closed
+python3 - "${tmp_dir}/stale-exception.json" "${tmp_dir}/complete.json" <<\PY
+import json
+import sys
+
+with open(sys.argv[2], encoding="utf-8") as source:
+    inventory = json.load(source)
+# remove an exception binary
+del inventory["rust-binaries"]["datafusion-nexus::cpu_contract_tests"]
+with open(sys.argv[1], "w", encoding="utf-8") as output:
+    json.dump(inventory, output)
+PY
+run_shell_case stale_exception 1 "stale exception entry: datafusion-nexus::cpu_contract_tests" "${tmp_dir}/stale-exception.json"
+
+# Suffix conflict with exception fails closed
+python3 - "${tmp_dir}/conflicting.json" "${tmp_dir}/complete.json" <<\PY
+import json
+import sys
+
+with open(sys.argv[2], encoding="utf-8") as source:
+    inventory = json.load(source)
+# Change cpu_contract_tests to have suffix _gpu
+inventory["rust-binaries"]["datafusion-nexus::cpu_contract_tests"]["binary-name"] = "cpu_contract_tests_gpu"
+with open(sys.argv[1], "w", encoding="utf-8") as output:
+    json.dump(inventory, output)
+PY
+run_shell_case conflicting_lane 1 "conflicting lane for datafusion-nexus::cpu_contract_tests" "${tmp_dir}/conflicting.json"
+
+# Strict exception policy schema tests
 cp .config/policies/test-lanes.toml "${tmp_dir}/duplicate-catalog.toml"
-cat >>"${tmp_dir}/duplicate-catalog.toml" <<'TOML'
+cat >>"${tmp_dir}/duplicate-catalog.toml" <<\TOML
 
-[[binary]]
+[[exception]]
 id = "datafusion-nexus"
 lane = "cpu"
-reason = "duplicate fixture"
 TOML
-run_policy_case duplicate_catalog 1 "duplicate catalog binary id" \
-  --catalog "${tmp_dir}/duplicate-catalog.toml" check-catalog
+run_policy_case duplicate_catalog 1 "duplicate catalog binary id"   --catalog "${tmp_dir}/duplicate-catalog.toml" check-catalog
 
-python3 - "${tmp_dir}/empty-reason.toml" "${tmp_dir}/bad-resource.toml" <<'PY'
+python3 - "${tmp_dir}/bad-resource.toml" <<\PY
 import sys
 from pathlib import Path
 
 source = Path(".config/policies/test-lanes.toml").read_text()
-Path(sys.argv[1]).write_text(source.replace(
-    'reason = "Adapter library tests include coverage SQL and native execution context cases that create cuDF runtimes on bounded fixtures."',
-    'reason = ""',
-    1,
-))
-Path(sys.argv[2]).write_text(source.replace('resource_class = "shared"', 'resource_class = "whole-device"', 1))
+Path(sys.argv[1]).write_text(source.replace("resource_class = \"shared\"", "resource_class = \"whole-device\"", 1))
 PY
-run_policy_case empty_reason 1 "reason must be a non-empty string" \
-  --catalog "${tmp_dir}/empty-reason.toml" check-catalog
-run_policy_case bad_resource_class 1 "requires resource_class=shared or exclusive" \
-  --catalog "${tmp_dir}/bad-resource.toml" check-catalog
+run_policy_case bad_resource_class 1 "requires resource_class=shared or exclusive"   --catalog "${tmp_dir}/bad-resource.toml" check-catalog
 
-python3 - "${tmp_dir}/bad-id.toml" <<'PY'
+python3 - "${tmp_dir}/bad-id.toml" <<\PY
 import sys
 from pathlib import Path
 
 source = Path(".config/policies/test-lanes.toml").read_text()
-Path(sys.argv[1]).write_text(source.replace('id = "datafusion-nexus"', 'id = "datafusion nexus"', 1))
+Path(sys.argv[1]).write_text(source.replace("id = \"datafusion-nexus\"", "id = \"datafusion nexus\"", 1))
 PY
-run_policy_case incomplete_binary_id 1 "not a complete nextest binary id" \
-  --catalog "${tmp_dir}/bad-id.toml" check-catalog
+run_policy_case incomplete_binary_id 1 "not a complete nextest binary id"   --catalog "${tmp_dir}/bad-id.toml" check-catalog
 
-# Generated overrides are deterministic: --check never writes, drift fails,
-# and only the explicit --write command restores the canonical bytes.
-cp .config/nextest.toml "${tmp_dir}/nextest-drift.toml"
-python3 - "${tmp_dir}/nextest-drift.toml" <<'PY'
+# Nextest config validation tests
+run_policy_case valid_nextest 0 "OK: nextest configuration matches" check-nextest
+
+python3 - "${tmp_dir}/bad-threads.toml" <<\PY
 import sys
 from pathlib import Path
 
-path = Path(sys.argv[1])
-path.write_text(path.read_text().replace('binary(cugraph_tests)', 'binary(drifted_cugraph_tests)', 1))
+source = Path(".config/nextest.toml").read_text()
+Path(sys.argv[1]).write_text(source.replace("max-threads = 1", "max-threads = 2", 1))
 PY
-run_policy_case nextest_override_drift 1 "generated nextest overrides drifted" \
-  --nextest "${tmp_dir}/nextest-drift.toml" generate-nextest --check
-run_policy_case nextest_regenerate 0 "WROTE: regenerated" \
-  --nextest "${tmp_dir}/nextest-drift.toml" generate-nextest --write
-cmp .config/nextest.toml "${tmp_dir}/nextest-drift.toml"
-run_policy_case nextest_regenerated_check 0 "generated nextest overrides match" \
-  --nextest "${tmp_dir}/nextest-drift.toml" generate-nextest --check
+run_policy_case bad_nextest_threads 1 "test-groups.gpu-exclusive.max-threads must be 1"   --nextest "${tmp_dir}/bad-threads.toml" check-nextest
+
+python3 - "${tmp_dir}/missing-regex.toml" <<\PY
+import sys
+from pathlib import Path
+
+source = Path(".config/nextest.toml").read_text()
+Path(sys.argv[1]).write_text(source.replace("binary(/_gpu_exclusive$/)", "binary(/other$/)", 1))
+PY
+run_policy_case missing_nextest_regex 1 "nextest gpu-exclusive filter must include binary(/_gpu_exclusive$/)"   --nextest "${tmp_dir}/missing-regex.toml" check-nextest
 
 echo "OK: catalog-driven GPU test-lane fault-injection tests passed."

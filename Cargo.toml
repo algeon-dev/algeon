@@ -199,18 +199,18 @@ sha2 = { workspace = true }
 tempfile = { workspace = true }
 
 [[test]]
-name = "iceberg_tests"
+name = "iceberg_tests_gpu"
 required-features = ["iceberg"]
 
 [[test]]
-name = "cugraph_tests"
+name = "cugraph_tests_gpu"
 required-features = ["cugraph"]
 
 [[test]]
 name = "root_gpu_tests"
 
 [[test]]
-name = "p6_device_identity_tests"
+name = "p6_device_identity_tests_gpu_exclusive"
 required-features = ["nvml"]
 
 [[test]]
@@ -223,11 +223,11 @@ name = "native_exec_tests"
 name = "native_planning_tests"
 
 [[test]]
-name = "native_runtime_pruning_tests"
+name = "native_runtime_pruning_tests_gpu"
 
 [[test]]
-name = "native_tpcds_parity_tests"
+name = "native_tpcds_parity_tests_gpu"
 required-features = ["bench-support"]
 
 [[test]]
-name = "rapids_build_support_tests"
+name = "rapids_build_support_tests_cpu"
