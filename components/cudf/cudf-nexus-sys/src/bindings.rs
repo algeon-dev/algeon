@@ -113,6 +113,8 @@ pub type cudf_hash_join_handle = *mut cudf_hash_join_handle_state;
 pub type cudf_conditional_full_join_size_data_handle = *mut cudf_conditional_full_join_size_data_handle_state;
 #[doc = " Opaque handle to retained libcudf mixed-join output-size data."]
 pub type cudf_mixed_join_size_data_handle = *mut cudf_mixed_join_size_data_handle_state;
+#[doc = " Owning cumulative mixed left semi/anti membership state."]
+pub type cudf_mixed_left_join_state_handle = *mut cudf_mixed_left_join_state_handle_state;
 #[doc = " Number of fixed slots retained by every device-memory-manager allocator\n event ring. The producer path never allocates or waits for a reader."]
 pub type _bindgen_ty_7 = core::ffi::c_uint;
 pub type _bindgen_ty_8 = core::ffi::c_uint;
@@ -436,6 +438,11 @@ pub struct cudf_conditional_full_join_size_data_handle_state {
 #[repr(C)]
 #[derive(Debug)]
 pub struct cudf_mixed_join_size_data_handle_state {
+    _unused: [u8; 0],
+}
+#[repr(C)]
+#[derive(Debug)]
+pub struct cudf_mixed_left_join_state_handle_state {
     _unused: [u8; 0],
 }
 #[doc = " Bounds of one fixed allocator-event ring at a point in time."]
@@ -2165,6 +2172,46 @@ unsafe extern "C" {
         include_nulls: i32,
         exec_options: *const cudf_exec_options_t,
     ) -> cudf_status_t;
+    #[doc = " Retain logical-left equality and conditional views and build the equality index.\n Left device storage must outlive the state. The predicate owner is retained.\n All subsequent execution calls must use the same device, stream, and MR.\n Partial construction is cleaned on failure and `out` remains NULL."]
+    pub fn cudf_mixed_left_join_state_create_ex(
+        left_equality: cudf_table_view_handle,
+        left_conditional: cudf_table_view_handle,
+        predicate: cudf_ast_expression_handle,
+        null_equality: cudf_null_equality_t,
+        out: *mut cudf_mixed_left_join_state_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+    #[doc = " Add matches from one right batch. Right storage is borrowed until stream completion.\n Rejects calls after seal. No output rows are produced during consume."]
+    pub fn cudf_mixed_left_join_state_consume_ex(
+        state: cudf_mixed_left_join_state_handle,
+        right_equality: cudf_table_view_handle,
+        right_conditional: cudf_table_view_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+    #[doc = " Declare right EOF and select LEFT_SEMI or LEFT_ANTI output. Rejects repeated sealing."]
+    pub fn cudf_mixed_left_join_state_seal_ex(
+        state: cudf_mixed_left_join_state_handle,
+        kind: cudf_join_kind_t,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+    #[doc = " Exact selected left rows; valid only after seal."]
+    pub fn cudf_mixed_left_join_state_output_size(
+        state: cudf_mixed_left_join_state_handle,
+        out: *mut usize,
+    ) -> cudf_status_t;
+    #[doc = " Retained state bytes, excluding borrowed inputs and output gather maps."]
+    pub fn cudf_mixed_left_join_state_device_allocated_size(
+        state: cudf_mixed_left_join_state_handle,
+        out: *mut usize,
+    ) -> cudf_status_t;
+    #[doc = " Exact-size INT32 left indices, valid only after seal. Caller owns output on success."]
+    pub fn cudf_mixed_left_join_state_materialize_indices_ex(
+        state: cudf_mixed_left_join_state_handle,
+        out: *mut cudf_column_handle,
+        options: *const cudf_exec_options_t,
+    ) -> cudf_status_t;
+    #[doc = " Consume ownership. Failure quarantines the handle and must not be retried."]
+    pub fn cudf_mixed_left_join_state_destroy(state: cudf_mixed_left_join_state_handle) -> cudf_status_t;
     #[doc = " Inner join with explicit execution context.\n\n `options` must name an explicit valid device and non-NULL stream/MR.\n `options->mr` must outlive both returned tables."]
     pub fn cudf_inner_join_ex(
         left_keys: cudf_table_view_handle,

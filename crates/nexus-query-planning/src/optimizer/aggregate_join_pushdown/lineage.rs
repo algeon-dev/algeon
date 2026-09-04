@@ -375,15 +375,22 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn join_side_introduces_nulls(
 pub(in crate::optimizer::aggregate_join_pushdown) fn rewritten_join_key_after_preagg(
     key: &JoinKey,
     preagg_side: JoinSide,
+    group_columns: &[PreAggregateColumn],
 ) -> JoinKey {
+    let source = join_key_for_side(key, preagg_side);
+    let output_name = &group_columns
+        .iter()
+        .find(|column| column.source_name == source.name())
+        .expect("every preaggregated join key has a retained group column")
+        .output_name;
     match preagg_side {
         JoinSide::Left => JoinKey::new(
-            ColumnRef::input(0, key.left.display_name(), key.left.display_name()),
+            ColumnRef::input(0, output_name, key.left.display_name()),
             ColumnRef::input(1, key.right.name(), key.right.display_name()),
         ),
         JoinSide::Right => JoinKey::new(
             ColumnRef::input(0, key.left.name(), key.left.display_name()),
-            ColumnRef::input(1, key.right.display_name(), key.right.display_name()),
+            ColumnRef::input(1, output_name, key.right.display_name()),
         ),
     }
 }

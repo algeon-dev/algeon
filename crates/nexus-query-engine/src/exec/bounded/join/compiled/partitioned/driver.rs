@@ -1,10 +1,10 @@
 use super::{
-    BTreeMap, BoundedExecutionAttempt, BoundedJoinSideFrame, ExecutionContext, JoinNode, JoinSide, JoinType,
-    KeyedHashJoinStrategyOptions, MemoryControlPolicy, NodeId, PartitionedJoinPartitionOutput, PartitionedJoinRowRange,
-    PartitionedJoinSide, QueryError, QueryMetrics, ResidentGpuFrame, Result, RetryFacts, execution_overrides,
-    hash_partition_join_side, join_keys_for_side, partition_row_range, partitioned_join_reusable_rejected_reason,
-    probe_side, release_bounded_join_side_frame, release_partitioned_join_side, release_streamed_join_outputs_reverse,
-    side_metric, slice_partition_join_side_range,
+    BTreeMap, BoundedExecutionAttempt, BoundedJoinSideFrame, ExecutionContext, GpuDataFrame, JoinNode, JoinSide,
+    JoinType, KeyedHashJoinStrategyOptions, MemoryControlPolicy, NodeId, PartitionedJoinPartitionOutput,
+    PartitionedJoinRowRange, PartitionedJoinSide, QueryError, QueryMetrics, ResidentGpuFrame, Result, RetryFacts,
+    VecDeque, execution_overrides, hash_partition_join_side, join_keys_for_side, observe_device_memory_bytes,
+    partition_row_range, partitioned_join_reusable_rejected_reason, probe_side, release_bounded_join_side_frame,
+    release_partitioned_join_side, release_streamed_join_outputs_reverse, side_metric, slice_partition_join_side_range,
 };
 
 // Retry subdivision constants are deliberately fixed because they describe the
@@ -87,6 +87,97 @@ pub(super) struct PartitionedJoinOutputSummary {
 struct PartitionedJoinRetryPolicy {
     max_attempts: usize,
     min_probe_rows: usize,
+}
+
+pub(super) struct PartitionedJoinProbeChunk {
+    input: BoundedJoinSideFrame,
+    // Queue ranges, not allocated children, so a recovered chunk can be
+    // consumed before its sibling needs device memory.
+    pending: VecDeque<(PartitionedJoinRowRange, usize)>,
+}
+
+impl PartitionedJoinProbeChunk {
+    pub(super) fn new(input: BoundedJoinSideFrame) -> Self {
+        let range = PartitionedJoinRowRange { offset: 0, len: input.frame.num_rows() };
+        Self { input, pending: VecDeque::from([(range, 1)]) }
+    }
+
+    pub(super) fn is_drained(&self) -> bool {
+        self.pending.is_empty()
+    }
+
+    pub(super) fn next_partitioned(
+        &mut self,
+        execution: &mut BoundedExecutionAttempt<'_>,
+        plan: PartitionedJoinDriverPlan<'_>,
+        keys: &[String],
+    ) -> Result<Option<(PartitionedJoinSide, u64, u64)>> {
+        let policy = partitioned_join_retry_policy(execution.context());
+        while let Some((range, attempt)) = self.pending.pop_front() {
+            execution.context().check_cancellation("nexus_query_engine.exec.bounded.partitioned_join_probe_retry")?;
+            match self.partition_range(execution, plan, keys, range) {
+                Ok(output) => return Ok(Some(output)),
+                Err(error) if crate::exec::retry::is_retryable_resource_error(&error) => {
+                    record_partitioned_join_retry_error(&error, execution.metrics_mut());
+                    let action = if attempt >= policy.max_attempts {
+                        "retry_attempts_exhausted"
+                    } else if let Some((first, second)) = split_partitioned_join_row_range(range, policy.min_probe_rows)
+                    {
+                        crate::exec::retry::backoff_before_retry(
+                            execution.context(),
+                            "nexus_query_engine.exec.bounded.partitioned_join_probe_partition_retry",
+                        )?;
+                        self.pending.push_front((second, attempt + 1));
+                        self.pending.push_front((first, attempt + 1));
+                        continue;
+                    } else {
+                        "probe_partition_min_rows_reached"
+                    };
+                    return Err(RetryFacts::new()
+                        .with_retry_action(action)
+                        .with_resume_boundary("partitioned_join_probe")
+                        .attach_to_error(error)
+                        .with_fact_if_absent("node_id", plan.node_id)
+                        .with_fact_if_absent("build_side", plan.node.spec.build_side)
+                        .with_fact_if_absent("retry_attempt", attempt)
+                        .with_fact_if_absent("max_retry_attempts", policy.max_attempts)
+                        .with_fact_if_absent("probe_chunk_rows", range.len)
+                        .with_fact_if_absent("probe_chunk_offset", range.offset)
+                        .with_fact_if_absent("min_retry_probe_rows", policy.min_probe_rows));
+                },
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(None)
+    }
+
+    fn partition_range(
+        &self,
+        execution: &mut BoundedExecutionAttempt<'_>,
+        plan: PartitionedJoinDriverPlan<'_>,
+        keys: &[String],
+        range: PartitionedJoinRowRange,
+    ) -> Result<(PartitionedJoinSide, u64, u64)> {
+        let side = probe_side(plan.node.spec.build_side);
+        let overrides_lease = execution_overrides(execution.context())?;
+        let overrides = overrides_lease.overrides();
+        let frame = if range.offset == 0 && range.len == self.input.frame.num_rows() {
+            self.input.frame.clone()
+        } else {
+            self.input.frame.with_execution(&overrides).slice(range.offset, range.len).map_err(|error| {
+                QueryError::from_cudf(
+                    "nexus_query_engine.bounded.join.hash_partition_probe_slice",
+                    "failed to slice the hash-partition probe retry input",
+                    error,
+                )
+                .with_fact("side", side)
+            })?
+        };
+        let bytes = observe_device_memory_bytes(&GpuDataFrame::new(frame.clone()), execution.metrics_mut())?;
+        let input = BoundedJoinSideFrame { frame, rows: range.len as u64, bytes };
+        let partitioned = hash_partition_join_side(execution, side, input, keys, plan.partition_count, &overrides)?;
+        Ok((partitioned, range.len as u64, bytes))
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -616,17 +707,7 @@ fn split_partitioned_join_probe_work(
         JoinSide::Left => work.left,
         JoinSide::Right => work.right,
     };
-    if probe_range.len <= min_probe_rows {
-        return None;
-    }
-    let left_len = probe_range.len / 2;
-    let right_len = probe_range.len.saturating_sub(left_len);
-    if left_len == 0 || right_len == 0 {
-        return None;
-    }
-
-    let left_probe = PartitionedJoinRowRange { offset: probe_range.offset, len: left_len };
-    let right_probe = PartitionedJoinRowRange { offset: probe_range.offset.saturating_add(left_len), len: right_len };
+    let (left_probe, right_probe) = split_partitioned_join_row_range(probe_range, min_probe_rows)?;
     let mut left_work = work;
     let mut right_work = work;
     match probe {
@@ -640,6 +721,25 @@ fn split_partitioned_join_probe_work(
         },
     }
     Some((left_work, right_work))
+}
+
+fn split_partitioned_join_row_range(
+    range: PartitionedJoinRowRange,
+    min_probe_rows: usize,
+) -> Option<(PartitionedJoinRowRange, PartitionedJoinRowRange)> {
+    if range.len <= min_probe_rows {
+        return None;
+    }
+    let left_len = range.len / 2;
+    let right_len = range.len.saturating_sub(left_len);
+    if left_len == 0 || right_len == 0 {
+        return None;
+    }
+
+    Some((
+        PartitionedJoinRowRange { offset: range.offset, len: left_len },
+        PartitionedJoinRowRange { offset: range.offset.saturating_add(left_len), len: right_len },
+    ))
 }
 
 fn can_repartition_partitioned_join_work(work: PartitionedJoinWorkSlice) -> bool {

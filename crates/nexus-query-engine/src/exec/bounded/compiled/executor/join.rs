@@ -62,7 +62,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 let stream = self.apply_dynamic_filters_to_source_stream(stream)?;
                 self.execute_join_build_from_leaf_stream(task, node_id, node, stream)
             } else if let CompiledGpuResourcePayload::ResidentFrameStream(stream) = &input_payload.payload {
-                let stream = stream.alias_eager(node_id, "compiled_join_build_stream_alias")?;
+                let stream = stream.alias(node_id, "compiled_join_build_stream_alias")?;
                 self.execute_join_build_from_frame_stream(task, node_id, node, stream)
             } else if matches!(input_payload.payload, CompiledGpuResourcePayload::PendingJoinLeafLocalParquetSource(_))
             {
@@ -280,7 +280,7 @@ impl CompiledGpuTaskExecutor<'_> {
                         .with_fact("plan_node_id", node_id)
                         .with_fact("resident_resource_id", input));
                 }
-                let stream = match stream.alias_eager(node_id, "compiled_join_probe_stream_alias") {
+                let stream = match stream.alias(node_id, "compiled_join_probe_stream_alias") {
                     Ok(stream) => stream,
                     Err(error) => {
                         return Err(error);
@@ -336,7 +336,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 .with_fact("plan_node_id", node_id)
                 .with_fact("pipeline_task_kind", task.kind().as_str())
         })?;
-        let resource = if self.join_materialize_output_can_preserve_stream(task.id(), output) {
+        let resource = if self.output_can_preserve_frame_stream(task.id(), output) {
             match execute_bounded_compiled_join_materialize_preserving_stream(&mut self.execution, node_id, node, probe)
                 .map_err(|error| attach_task_facts(error, task, node_id))?
             {

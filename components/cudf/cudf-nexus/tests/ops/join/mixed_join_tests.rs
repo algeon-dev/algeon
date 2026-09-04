@@ -18,6 +18,100 @@ use crate::common::{
 
 const JOIN_NO_MATCH: i32 = i32::MIN;
 
+#[test]
+fn mixed_left_state_preserves_duplicate_rows_and_late_residual_matches() {
+    let rt = Runtime::new().unwrap();
+    let probe_rt = Runtime::builder().with_stream(cudf::runtime::CudaStream::new().unwrap()).build().unwrap();
+    let left = DataFrame::from_series([
+        ("key", rt.series(&[1i32, 1, 1, 2, 3]).unwrap()),
+        ("value", rt.series(&[5i32, 5, 9, 2, 7]).unwrap()),
+    ])
+    .unwrap();
+    let options = DataFrameMixedJoinOptions::new()
+        .on(["key"])
+        .left_predicate_columns(["value"])
+        .right_predicate_columns(["value"]);
+    let ctx = ExecutionOverrides::new();
+    for anti in [false, true] {
+        let mut state =
+            cudf::DataFrameMixedLeftJoinState::new_in(&left, left_less_than_right(), options.clone(), &ctx).unwrap();
+        let retained = state.device_allocated_size_bytes().unwrap();
+        assert!(retained >= left.num_rows() * 8);
+        for (keys, values) in [(&[1i32, 2][..], &[4i32, 3][..]), (&[][..], &[][..]), (&[1, 1][..], &[6, 6][..])] {
+            let batch = DataFrame::from_series([
+                ("key", probe_rt.series(keys).unwrap()),
+                ("value", probe_rt.series(values).unwrap()),
+            ])
+            .unwrap();
+            state.consume_in(&batch, &ctx).unwrap();
+            drop(batch);
+            assert_eq!(state.device_allocated_size_bytes().unwrap(), retained);
+        }
+        let finalized = state.seal_in(anti, &ctx).unwrap();
+        let expected = if anti { vec![2, 4] } else { vec![0, 1, 3] };
+        assert_eq!(finalized.output_size(), expected.len());
+        assert_eq!(finalized.gather_map_reservation_size_bytes().unwrap(), expected.len() * 4);
+        let indices = finalized.materialize_indices_in(&ctx).unwrap();
+        drop(finalized);
+        assert_eq!(sorted_dataframe_join_indices(&indices), expected);
+    }
+}
+
+#[test]
+fn mixed_left_state_nulls_empty_inputs_and_zero_batches_obey_semi_anti_semantics() {
+    let rt = Runtime::new().unwrap();
+    let ctx = ExecutionOverrides::new();
+    let left = DataFrame::from_series([
+        ("key", rt.series_opt(&[None, Some(1i32), Some(2), Some(3)]).unwrap()),
+        ("value", rt.series_opt(&[Some(1i32), None, Some(1), Some(5)]).unwrap()),
+    ])
+    .unwrap();
+    let right = DataFrame::from_series([
+        ("key", rt.series_opt(&[None, Some(1i32), Some(2), Some(3)]).unwrap()),
+        ("value", rt.series_opt(&[Some(2i32), Some(8), None, Some(6)]).unwrap()),
+    ])
+    .unwrap();
+    for nulls in [NullEquality::Equal, NullEquality::Unequal] {
+        for anti in [false, true] {
+            for consume in [false, true] {
+                let options = DataFrameMixedJoinOptions::new()
+                    .on(["key"])
+                    .left_predicate_columns(["value"])
+                    .right_predicate_columns(["value"])
+                    .null_equality(nulls);
+                let mut state =
+                    cudf::DataFrameMixedLeftJoinState::new_in(&left, left_less_than_right(), options, &ctx).unwrap();
+                if consume {
+                    state.consume_in(&right, &ctx).unwrap();
+                }
+                let expected: Vec<i32> = (0..4)
+                    .filter(|row| {
+                        let matched = consume && (*row == 3 || (*row == 0 && nulls == NullEquality::Equal));
+                        matched != anti
+                    })
+                    .collect();
+                let finalized = state.seal_in(anti, &ctx).unwrap();
+                assert_eq!(sorted_dataframe_join_indices(&finalized.materialize_indices_in(&ctx).unwrap()), expected);
+            }
+        }
+    }
+    let empty = DataFrame::from_series([
+        ("key", rt.series(&[] as &[i32]).unwrap()),
+        ("value", rt.series(&[] as &[i32]).unwrap()),
+    ])
+    .unwrap();
+    for anti in [false, true] {
+        let options = DataFrameMixedJoinOptions::new()
+            .on(["key"])
+            .left_predicate_columns(["value"])
+            .right_predicate_columns(["value"]);
+        let mut state =
+            cudf::DataFrameMixedLeftJoinState::new_in(&empty, left_less_than_right(), options, &ctx).unwrap();
+        state.consume_in(&right, &ctx).unwrap();
+        assert!(state.seal_in(anti, &ctx).unwrap().materialize_indices_in(&ctx).unwrap().is_empty());
+    }
+}
+
 fn i32_table(values: &[i32]) -> Table {
     Table::from_columns(vec![column_from_slice(values).unwrap()]).unwrap()
 }

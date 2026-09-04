@@ -278,6 +278,26 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
         "q21 should lower its NOT EXISTS branch to a right-build native left-anti residual join"
     );
 
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(result.plans[0].clone(), &Default::default());
+    for build_side in [NativeJoinSide::Right, NativeJoinSide::Left] {
+        let mut nodes = optimized.plan.nodes().to_vec();
+        for node in &mut nodes {
+            if let PlanNode::Join(join) = &mut node.kind
+                && matches!(join.spec.join_type, NativeJoinType::LeftSemi | NativeJoinType::LeftAnti)
+                && join.spec.residual_predicate.is_some()
+            {
+                join.spec.build_side = build_side;
+            }
+        }
+        let plan = QueryPlan::from_rewritten_parts(nodes, optimized.plan.root_id(), optimized.plan.sink().clone())
+            .with_rewrite_state_from(&optimized.plan);
+        let analysis = plan.capability_analysis();
+        assert!(
+            analysis.admits_bounded_join(),
+            "the complete optimized q21 pipeline must admit {build_side:?}-build residual semi/anti joins: {analysis:?}\n{plan}"
+        );
+    }
+
     fs::remove_dir_all(dir).unwrap();
 }
 

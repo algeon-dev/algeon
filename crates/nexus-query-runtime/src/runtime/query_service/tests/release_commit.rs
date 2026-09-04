@@ -472,6 +472,152 @@ fn release_commit_gates_are_scoped_to_their_handles() {
     second_release.join().expect("second release thread completes");
 }
 
+/// Different explicit caps remain independently committed while their GPU
+/// jobs overlap. A failed first attempt may enter cleaning without releasing
+/// the second attempt's grant, and the first grant remains fenced until its
+/// envelope cleanup completes.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn overlapping_different_caps_isolate_failure_and_cleaning_release() {
+    const FIRST_CAP_BYTES: u64 = 8 * 1024 * 1024;
+    const SECOND_CAP_BYTES: u64 = 12 * 1024 * 1024;
+
+    let service = try_guaranteed_runtime_test_service_with_concurrency(2)
+        .expect("runtime-backed service for overlapping cap isolation");
+    let first_owner =
+        RuntimeObservationOwner::new("overlap-first", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let second_owner =
+        RuntimeObservationOwner::new("overlap-second", None, RuntimeObservationConfig::bounded(32, 32 * 1024));
+    let first = service
+        .admit_query_with_request(
+            QueryAdmissionRequest::new()
+                .with_query_cap_bytes(FIRST_CAP_BYTES)
+                .with_runtime_observation_owner(first_owner.clone()),
+        )
+        .expect("first explicit cap admits");
+    let second = service
+        .admit_query_with_request(
+            QueryAdmissionRequest::new()
+                .with_query_cap_bytes(SECOND_CAP_BYTES)
+                .with_runtime_observation_owner(second_owner.clone()),
+        )
+        .expect("second explicit cap admits");
+    assert_eq!(first.device_budget_bytes(), FIRST_CAP_BYTES);
+    assert_eq!(second.device_budget_bytes(), SECOND_CAP_BYTES);
+
+    let first_context = first.acquire_context().expect("first context");
+    let second_context = second.acquire_context().expect("second context");
+    let first_executor = first.gpu_executor().expect("first GPU executor");
+    let second_executor = second.gpu_executor().expect("second GPU executor");
+    let entered = Arc::new(tokio::sync::Barrier::new(3));
+    let (first_release_tx, first_release_rx) = tokio::sync::oneshot::channel();
+    let (second_release_tx, second_release_rx) = tokio::sync::oneshot::channel();
+    let first_job = tokio::spawn(first_executor.run_observed_scoped(
+        GpuExecutionJobKind::QueryExecution,
+        first_context.context().runtime_observation().clone(),
+        {
+            let entered = Arc::clone(&entered);
+            move |_scope| async move {
+                entered.wait().await;
+                first_release_rx.await.expect("first job release signal");
+            }
+        },
+    ));
+    let second_job = tokio::spawn(second_executor.run_observed_scoped(
+        GpuExecutionJobKind::QueryExecution,
+        second_context.context().runtime_observation().clone(),
+        {
+            let entered = Arc::clone(&entered);
+            move |_scope| async move {
+                entered.wait().await;
+                second_release_rx.await.expect("second job release signal");
+            }
+        },
+    ));
+    tokio::time::timeout(Duration::from_secs(10), entered.wait())
+        .await
+        .expect("both different-cap GPU jobs overlap at the barrier");
+
+    let overlapping = service.device_ledger_reports().expect("overlap ledger report");
+    let [overlapping] = overlapping.as_slice() else {
+        panic!("expected one device ledger during overlap");
+    };
+    assert_eq!(overlapping.active_attempts, 2);
+    assert_eq!(overlapping.live_grants_bytes, FIRST_CAP_BYTES + SECOND_CAP_BYTES);
+    assert!(overlapping.grants.iter().any(|grant| grant.grant_bytes == FIRST_CAP_BYTES));
+    assert!(overlapping.grants.iter().any(|grant| grant.grant_bytes == SECOND_CAP_BYTES));
+
+    first_release_tx.send(()).expect("first job remains controllable after overlap");
+    first_job.await.expect("first job joins").expect("first GPU job completes");
+    drop(first_executor);
+    drop(second_executor);
+    drop(first_context);
+    first_owner.record_terminal_outcome(RuntimeTerminalOutcome::Failed {
+        error_code: AttemptFailureCode::CudfTemporaryFailure,
+        error_status: AttemptFailureStatus::Temporary,
+    });
+
+    // The release gate is after report sealing and before the envelope drops
+    // its lane and grant. This is the cleaning window in which capacity must
+    // remain committed to the failed attempt.
+    let first_gate = first.lifetime.arm_envelope_release_gate();
+    let first_release = std::thread::spawn(move || {
+        first.finish();
+        drop(first);
+    });
+    wait_until(
+        Instant::now() + Duration::from_secs(10),
+        || first_gate.entered(),
+        "failed first attempt reaches envelope cleaning gate",
+    );
+    let cleaning = service.device_ledger_reports().expect("cleaning ledger report");
+    let [cleaning] = cleaning.as_slice() else {
+        panic!("expected one device ledger while first attempt cleans");
+    };
+    assert_eq!(cleaning.active_attempts, 2, "cleaning first attempt still owns its active lane");
+    assert_eq!(cleaning.live_grants_bytes, FIRST_CAP_BYTES + SECOND_CAP_BYTES);
+    assert!(first_owner.sealed_snapshot().is_some(), "failed attempt report seals before envelope release");
+    assert!(
+        service
+            .try_admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(FIRST_CAP_BYTES))
+            .expect("third admission probe")
+            .is_none(),
+        "cleaning attempt still consumes its lane and cap",
+    );
+
+    first_gate.open();
+    first_release.join().expect("first release completes");
+    wait_until(
+        Instant::now() + Duration::from_secs(10),
+        || {
+            service.device_ledger_reports().ok().is_some_and(|reports| {
+                reports.first().is_some_and(|report| {
+                    report.active_attempts == 1
+                        && report.live_grants_bytes == SECOND_CAP_BYTES
+                        && report.grants.len() == 1
+                        && report.grants[0].grant_bytes == SECOND_CAP_BYTES
+                })
+            })
+        },
+        "first failed grant releases without touching second grant",
+    );
+
+    second_release_tx.send(()).expect("second job release signal");
+    second_job.await.expect("second job joins").expect("second GPU job completes");
+    drop(second_context);
+    second.finish();
+    drop(second);
+    wait_until(
+        Instant::now() + Duration::from_secs(10),
+        || {
+            service.device_ledger_reports().ok().is_some_and(|reports| {
+                reports.first().is_some_and(|report| report.active_attempts == 0 && report.grants.is_empty())
+            })
+        },
+        "second grant releases after its job and cleanup finish",
+    );
+    service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("overlapping cap isolation service drains");
+}
+
 /// Residual attempt-domain state closes device admission before report
 /// publication, and the leaking attempt retains its grant until the report is
 /// allowed to seal.

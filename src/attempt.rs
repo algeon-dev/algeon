@@ -125,6 +125,7 @@ struct AttemptExecutionState {
     admission_rejection: AttemptAdmissionRejection,
     admission_binding: AttemptAdmissionBinding,
     query_id: Option<AttemptQueryId>,
+    query_cap_bytes: Option<u64>,
     cancellation: AttemptCancellation,
     ticket: Mutex<Option<Arc<crate::native_exec::admission::QueryAdmissionTicket>>>,
     /// The one elected native root that may receive the fixed-cardinality
@@ -213,6 +214,7 @@ impl NexusAttemptExtension {
             admission_rejection: self.state.admission_rejection.clone(),
             admission_binding: self.state.admission_binding.clone(),
             cancellation: self.state.cancellation.clone(),
+            requested_query_cap_bytes: self.state.query_cap_bytes,
         }
     }
 
@@ -292,6 +294,23 @@ impl std::fmt::Debug for NexusAttempt {
 impl NexusGpuBackend {
     /// Begins an attempt after validating opaque caller correlation fields.
     pub fn begin_attempt(&self, options: AttemptOptions) -> Result<NexusAttempt> {
+        self.begin_attempt_with_cap(options, None)
+    }
+
+    /// Begins an attempt that requests an exact immutable query memory cap.
+    ///
+    /// The cap is carried through the attempt-bound admission ticket and
+    /// passed to query-service admission for every native execution round.
+    /// Admission rejects a cap that cannot fit instead of resizing it.
+    pub fn begin_attempt_with_query_cap_bytes(
+        &self,
+        options: AttemptOptions,
+        query_cap_bytes: u64,
+    ) -> Result<NexusAttempt> {
+        self.begin_attempt_with_cap(options, Some(query_cap_bytes))
+    }
+
+    fn begin_attempt_with_cap(&self, options: AttemptOptions, query_cap_bytes: Option<u64>) -> Result<NexusAttempt> {
         let query_id = options.query_id.map(AttemptQueryId::new).transpose().map_err(|error| {
             Error::from_native("datafusion_nexus.attempt.begin", "invalid attempt query correlation", error)
         })?;
@@ -315,6 +334,7 @@ impl NexusGpuBackend {
             admission_rejection: begin.owner.admission_rejection(),
             admission_binding: begin.owner.admission_binding(),
             query_id: state_query_id,
+            query_cap_bytes,
             cancellation: begin.owner.cancellation(),
             ticket: Mutex::new(None),
             sealed_metrics_target: Mutex::new(None),
@@ -618,6 +638,7 @@ impl NexusAttempt {
                         admission_rejection: self.state.admission_rejection.clone(),
                         admission_binding: self.state.admission_binding.clone(),
                         cancellation: self.state.cancellation.clone(),
+                        requested_query_cap_bytes: self.state.query_cap_bytes,
                     },
                     donor.metrics_capture(),
                 )

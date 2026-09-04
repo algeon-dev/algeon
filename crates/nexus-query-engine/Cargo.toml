@@ -54,6 +54,7 @@ nexus-query-runtime = { workspace = true }
 object_store = { workspace = true }
 parquet = { workspace = true, features = ["arrow"] }
 serde_json = { workspace = true }
+serde = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 
 [build-dependencies]

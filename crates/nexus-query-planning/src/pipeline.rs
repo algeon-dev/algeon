@@ -8,6 +8,7 @@
 mod compile;
 mod display;
 mod model;
+mod shadow;
 mod validate;
 
 pub use compile::compile_pipeline;
@@ -15,4 +16,8 @@ pub use model::{
     CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,
     PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentLifetime, ResidentResource,
     ResidentResourceId, SinkBoundary, SinkBoundaryKind,
+};
+pub use shadow::{
+    ShadowBytes, ShadowMemoryModels, ShadowPipelineEstimate, ShadowResourceLifetime, ShadowResourceModel,
+    ShadowTaskEnvelope,
 };

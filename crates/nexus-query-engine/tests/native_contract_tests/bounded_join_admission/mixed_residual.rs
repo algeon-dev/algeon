@@ -26,12 +26,14 @@ fn bounded_multi_join_admits_mixed_keyed_residual_inner_left_semi_and_left_anti(
             vec![JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload")],
         ),
     ] {
-        let plan = mixed_residual_multi_join_plan(join_type, JoinSide::Right, projection);
+        for build_side in [JoinSide::Right, JoinSide::Left] {
+            let plan = mixed_residual_multi_join_plan(join_type, build_side, projection.clone());
 
-        assert!(!plan.capability_analysis().admits_root_join());
-        assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
-        assert!(plan.capability_analysis().admits_closed_multi_join_subgraph());
-        assert!(unsupported_facts(&plan).is_none());
+            assert!(!plan.capability_analysis().admits_root_join());
+            assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
+            assert!(plan.capability_analysis().admits_closed_multi_join_subgraph());
+            assert!(unsupported_facts(&plan).is_none());
+        }
     }
 
     let plan = mixed_residual_multi_join_plan(
@@ -94,8 +96,8 @@ fn bounded_multi_join_rejects_invalid_mixed_residual_semi_anti_with_explicit_blo
         (
             JoinType::LeftSemi,
             JoinSide::Left,
-            vec![JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload")],
-            "multi_join_mixed_keyed_residual_semi_anti_requires_right_build_side",
+            vec![JoinOutputColumn::right(ColumnRef::input(1, "right_payload", "right_payload"), "right_payload")],
+            "multi_join_mixed_keyed_residual_semi_anti_requires_left_only_projection",
         ),
         (
             JoinType::LeftAnti,

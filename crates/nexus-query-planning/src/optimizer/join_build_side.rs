@@ -268,10 +268,17 @@ pub fn optimize_join_build_side_selection(
 }
 
 fn join_build_side_selection_supported(join: &crate::plan::JoinNode) -> bool {
-    join.spec.join_type == JoinType::Inner
-        && !join.spec.keys.is_empty()
-        && !join.spec.output_projection.is_empty()
-        && join.spec.build_artifact_id.is_none()
+    if join.spec.keys.is_empty() || join.spec.output_projection.is_empty() || join.spec.build_artifact_id.is_some() {
+        return false;
+    }
+    match join.spec.join_type {
+        JoinType::Inner => true,
+        JoinType::LeftSemi | JoinType::LeftAnti => {
+            join.spec.residual_predicate.is_some()
+                && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left)
+        },
+        JoinType::Left | JoinType::Full | JoinType::Cross | JoinType::LeftMark => false,
+    }
 }
 
 fn select_build_side(

@@ -2,11 +2,11 @@ use std::{collections::BTreeSet, sync::Arc};
 
 use arrow::datatypes::{Schema, SchemaRef};
 use datafusion::{
-    common::{JoinSide as DataFusionJoinSide, NullEquality, stats::Precision},
+    common::{JoinSide as DataFusionJoinSide, NullEquality},
     logical_expr::JoinType,
     physical_expr::{PhysicalExpr, expressions::Column},
     physical_plan::{
-        ExecutionPlan, StatisticsArgs, StatisticsContext,
+        ExecutionPlan,
         joins::{NestedLoopJoinExec, PartitionMode},
     },
 };
@@ -14,9 +14,9 @@ use nexus_query_engine::{
     datatypes::{is_supported_list_carry_type, is_timestamp_with_timezone},
     expr::{ColumnRef as NativeColumnRef, Expr as NativeExpr},
     plan::{
-        AdvisoryOutputStatistics, AdvisoryStatistic, AdvisoryStatisticsProvenance, JoinKey as NativeJoinKey,
-        JoinNullEquality as NativeJoinNullEquality, JoinSide as NativeJoinSide, JoinSpec as NativeJoinSpec,
-        JoinType as NativeJoinType, QueryPlanBuilder as NativeQueryPlanBuilder,
+        AdvisoryOutputStatistics, JoinKey as NativeJoinKey, JoinNullEquality as NativeJoinNullEquality,
+        JoinSide as NativeJoinSide, JoinSpec as NativeJoinSpec, JoinType as NativeJoinType,
+        QueryPlanBuilder as NativeQueryPlanBuilder,
     },
 };
 
@@ -629,21 +629,7 @@ pub(super) fn lower_cross_join_input(
 /// statistics is the same as no estimate because the signal is advisory and
 /// must never gate lowering.
 fn datafusion_join_advisory_output_statistics(join: &dyn ExecutionPlan) -> Option<AdvisoryOutputStatistics> {
-    let statistics = StatisticsContext::new().compute(join, &StatisticsArgs::new()).ok()?;
-    let statistics = AdvisoryOutputStatistics {
-        rows: lower_advisory_statistic(statistics.num_rows),
-        bytes: lower_advisory_statistic(statistics.total_byte_size),
-        provenance: AdvisoryStatisticsProvenance::FrontendPlannerEstimate,
-    };
-    (!statistics.is_absent()).then_some(statistics)
-}
-
-fn lower_advisory_statistic(precision: Precision<usize>) -> AdvisoryStatistic {
-    match precision {
-        Precision::Exact(value) => AdvisoryStatistic::Exact(value as u64),
-        Precision::Inexact(value) => AdvisoryStatistic::Inexact(value as u64),
-        Precision::Absent => AdvisoryStatistic::Absent,
-    }
+    super::advisory::output_statistics(join).filter(|statistics| !statistics.is_absent())
 }
 
 fn native_join_build_side(canonical: CanonicalJoin, key_count: usize, has_residual: bool) -> NativeJoinSide {

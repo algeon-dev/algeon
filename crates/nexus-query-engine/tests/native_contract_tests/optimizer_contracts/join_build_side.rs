@@ -29,6 +29,118 @@ fn native_optimizer_flips_inner_keyed_residual_join_to_build_smaller_estimated_l
 }
 
 #[test]
+fn native_optimizer_flips_left_semi_keyed_residual_join_to_small_left_build_side() {
+    let plan = estimated_semi_anti_residual_join_plan(
+        JoinType::LeftSemi,
+        JoinSide::Right,
+        16 * 1024 * 1024,
+        100_000,
+        256 * 1024 * 1024,
+        10_000_000,
+    );
+
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    assert_eq!(result.diagnostics.join_build_side_selection.considered_count, 1);
+    assert_eq!(result.diagnostics.join_build_side_selection.applied_count, 1);
+    let candidate = &result.diagnostics.join_build_side_selection.candidates[0];
+    assert_eq!(candidate.before_build_side, JoinSide::Right);
+    assert_eq!(candidate.after_build_side, Some(JoinSide::Left));
+    assert!(candidate.applied);
+
+    let PlanNode::Join(join) = &result.plan.root_node().kind else {
+        panic!("optimized root should remain the left-semi residual join");
+    };
+    assert_eq!(join.spec.join_type, JoinType::LeftSemi);
+    assert!(join.spec.residual_predicate.is_some());
+    assert!(join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left));
+    assert_eq!(join.spec.build_side, JoinSide::Left);
+}
+
+#[test]
+fn native_optimizer_flips_left_anti_keyed_residual_join_to_small_left_build_side() {
+    let plan = estimated_semi_anti_residual_join_plan(
+        JoinType::LeftAnti,
+        JoinSide::Right,
+        16 * 1024 * 1024,
+        100_000,
+        256 * 1024 * 1024,
+        10_000_000,
+    );
+
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    assert_eq!(result.diagnostics.join_build_side_selection.considered_count, 1);
+    assert_eq!(result.diagnostics.join_build_side_selection.applied_count, 1);
+    let candidate = &result.diagnostics.join_build_side_selection.candidates[0];
+    assert_eq!(candidate.before_build_side, JoinSide::Right);
+    assert_eq!(candidate.after_build_side, Some(JoinSide::Left));
+    assert!(candidate.applied);
+
+    let PlanNode::Join(join) = &result.plan.root_node().kind else {
+        panic!("optimized root should remain the left-anti residual join");
+    };
+    assert_eq!(join.spec.join_type, JoinType::LeftAnti);
+    assert!(join.spec.residual_predicate.is_some());
+    assert!(join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left));
+    assert_eq!(join.spec.build_side, JoinSide::Left);
+}
+
+#[test]
+fn join_build_side_selection_keeps_residual_semi_anti_join_when_sizes_do_not_improve_it() {
+    for join_type in [JoinType::LeftSemi, JoinType::LeftAnti] {
+        let plan = estimated_semi_anti_residual_join_plan(
+            join_type,
+            JoinSide::Right,
+            256 * 1024 * 1024,
+            10_000_000,
+            256 * 1024 * 1024,
+            10_000_000,
+        );
+
+        let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+
+        assert_eq!(result.change, NativeOptimizerChange::Unchanged, "{join_type}");
+        let candidate = result
+            .diagnostics
+            .join_build_side_selection
+            .candidates
+            .iter()
+            .find(|candidate| candidate.before_build_side == JoinSide::Right)
+            .expect("residual semi/anti join should be considered");
+        assert_eq!(candidate.after_build_side, None);
+        assert!(!candidate.applied);
+        assert_eq!(candidate.rejected_reason, Some(JoinBuildSideSelectionRejectedReason::NoBetterBuildSide));
+        let PlanNode::Join(join) = &result.plan.root_node().kind else {
+            panic!("optimized root should remain the residual semi/anti join");
+        };
+        assert_eq!(join.spec.build_side, JoinSide::Right);
+    }
+}
+
+#[test]
+fn disabled_native_optimizer_keeps_residual_semi_anti_join_build_side_selection_off() {
+    for join_type in [JoinType::LeftSemi, JoinType::LeftAnti] {
+        let plan = estimated_semi_anti_residual_join_plan(
+            join_type,
+            JoinSide::Right,
+            16 * 1024 * 1024,
+            100_000,
+            256 * 1024 * 1024,
+            10_000_000,
+        );
+
+        let result = optimize_query_plan(plan.clone(), &NativeOptimizerOptions::disabled());
+
+        assert_eq!(result.plan, plan, "{join_type}");
+        assert_eq!(result.change, NativeOptimizerChange::Unchanged, "{join_type}");
+        assert!(result.diagnostics.join_build_side_selection.is_empty(), "{join_type}");
+    }
+}
+
+#[test]
 fn native_optimizer_disabled_keeps_default_inner_equi_join_build_side() {
     let plan = estimated_inner_equi_join_plan(16 * 1024 * 1024, 256 * 1024 * 1024);
 
@@ -916,6 +1028,52 @@ fn estimated_inner_residual_join_plan(
         ])
         .with_build_side(build_side),
         output_schema,
+    );
+    builder.finish_gpu_resident(join)
+}
+
+fn estimated_semi_anti_residual_join_plan(
+    join_type: JoinType,
+    build_side: JoinSide,
+    left_bytes: u64,
+    left_rows: u64,
+    right_bytes: u64,
+    right_rows: u64,
+) -> nexus_query_engine::plan::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(estimated_local_source_with_fields(
+        "left_semi_anti_residual",
+        &["left_key", "left_payload"],
+        left_bytes,
+        left_rows,
+    ));
+    let right = builder.add_source(estimated_local_source_with_fields(
+        "right_semi_anti_residual",
+        &["right_key", "right_payload"],
+        right_bytes,
+        right_rows,
+    ));
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            join_type,
+            vec![JoinKey::new(
+                ColumnRef::input(0, "left_key", "left_key"),
+                ColumnRef::input(1, "right_key", "right_key"),
+            )],
+        )
+        .with_residual_predicate(Expr::binary(
+            Expr::input_column(0, "left_payload", "left_payload"),
+            BinaryOp::Gt,
+            Expr::input_column(1, "right_payload", "right_payload"),
+        ))
+        .with_output_projection(vec![
+            JoinOutputColumn::left(ColumnRef::input(0, "left_key", "left_key"), "left_key"),
+            JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload"),
+        ])
+        .with_build_side(build_side),
+        schema(&["left_key", "left_payload"]),
     );
     builder.finish_gpu_resident(join)
 }

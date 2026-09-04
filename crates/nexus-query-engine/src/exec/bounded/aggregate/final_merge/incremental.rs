@@ -1,4 +1,8 @@
-use std::time::{Duration, Instant};
+use std::{
+    collections::VecDeque,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use super::{
     AggregateExecutionStage, AggregateExecutionStrategy, AggregateNode, ArrowSchemaRef, BoundedExecutionAttempt,
@@ -13,7 +17,10 @@ use super::{
     partition_final_merge_partial, partitioned_aggregate_partition_count, reduce_merge_fan_in,
     release_partials_reverse,
 };
-use crate::exec::bounded::{BoundedPartitionTargetPolicy, ResidentGpuFrame};
+use crate::exec::bounded::{
+    BoundedPartitionTargetPolicy, ResidentGpuFrame,
+    compiled::{ResidentFrameStreamPayload, ResidentFrameStreamSource},
+};
 
 /// Whether a compiled aggregate over a partial stream should merge its partials
 /// incrementally into group-key-aligned partition states instead of retaining
@@ -43,9 +50,8 @@ pub(in crate::exec::bounded::aggregate) fn should_execute_incremental_partitione
 /// pending slices and each merge copies at most twice the partition it folds.
 /// Raw slices are first merged among themselves and the result is then merged
 /// with the partition's earlier merged state, mirroring the levels of the
-/// whole-set merge. The final output is the per-partition finalized
-/// projection, concatenated, so the caller-visible contract equals the
-/// whole-set partitioned merge.
+/// whole-set merge. Finalized partitions can be pulled independently;
+/// consumers requiring a single frame concatenate them in partition order.
 pub(in crate::exec::bounded::aggregate) struct CompiledIncrementalPartitionedMerge<'a> {
     node_id: NodeId,
     aggregate: &'a AggregateNode,
@@ -147,9 +153,26 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
 
     /// Merges everything still pending and returns the finalized output.
     pub(in crate::exec::bounded::aggregate) fn finish(
-        mut self,
+        self,
         execution: &mut BoundedExecutionAttempt<'_>,
     ) -> Result<ResidentGpuFrame> {
+        let node_id = self.node_id;
+        let frames = self.finish_partitions(execution, false)?.into_remaining_frames_owned(execution)?;
+        concatenate_partitioned_final_merge_outputs(execution, node_id, frames)
+    }
+
+    pub(in crate::exec::bounded::aggregate) fn finish_stream(
+        self,
+        execution: &mut BoundedExecutionAttempt<'_>,
+    ) -> Result<ResidentFrameStreamPayload> {
+        self.finish_partitions(execution, true)
+    }
+
+    fn finish_partitions(
+        mut self,
+        execution: &mut BoundedExecutionAttempt<'_>,
+        streamed_output: bool,
+    ) -> Result<ResidentFrameStreamPayload> {
         if self.partial_count == 0 {
             return execute_compiled_bounded_aggregate_from_empty_input(
                 execution,
@@ -157,7 +180,8 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
                 self.aggregate,
                 self.input_schema,
                 self.output_schema,
-            );
+            )
+            .map(|frame| ResidentFrameStreamPayload::new(vec![frame]));
         }
         // A single partial needs no merge, exactly as the whole-set path
         // projects it directly without recording a merge attempt.
@@ -169,14 +193,15 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
                 self.input_schema,
                 self.output_schema,
                 partial,
-            );
+            )
+            .map(|frame| ResidentFrameStreamPayload::new(vec![frame]));
         }
         if !self.pending_raw.is_empty() {
             self.partition_pending_raw(execution)?;
         }
         let partition_count = self.partition_count.unwrap_or(1);
         let timer = Instant::now();
-        let mut finalized = Vec::with_capacity(partition_count);
+        let mut partitions = VecDeque::with_capacity(partition_count);
         let mut non_empty_partition_count = 0usize;
         for partition_index in 0..partition_count {
             self.flush_partition(execution, partition_index)?;
@@ -185,29 +210,22 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
             };
             debug_assert!(self.merged[partition_index].is_empty(), "flush leaves one merged state per partition");
             non_empty_partition_count += 1;
-            let frame = execute_compiled_final_aggregate_projection(
-                execution,
-                self.aggregate,
-                self.input_schema,
-                self.output_schema,
-                merged,
-            )?;
-            finalized.push(CommittedPartial { frame: frame.frame, device_bytes: frame.device_bytes });
+            partitions.push_back(merged);
         }
-        if finalized.is_empty() {
+        if partitions.is_empty() {
             return execute_compiled_bounded_aggregate_from_empty_input(
                 execution,
                 self.node_id,
                 self.aggregate,
                 self.input_schema,
                 self.output_schema,
-            );
+            )
+            .map(|frame| ResidentFrameStreamPayload::new(vec![frame]));
         }
         execution.metrics_mut().record_final_merge_attempt(self.max_partition_fan_in.max(1));
         execution.metrics_mut().record_final_merge_level();
-        let merged = concatenate_partitioned_final_merge_outputs(execution, self.node_id, finalized)?;
         let elapsed = self.merge_time.saturating_add(timer.elapsed());
-        let output_rows = merged.frame.num_rows() as u64;
+        let output_rows = partitions.iter().map(|partial| partial.frame.num_rows() as u64).sum();
         record_compiled_partitioned_final_merge_strategy(
             execution.context(),
             self.node_id,
@@ -225,8 +243,24 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
             decision.facts.insert("partitioned_merge_incremental".to_string(), "true".to_string());
             decision.facts.insert("partitioned_merge_incremental_partials".to_string(), self.partial_count.to_string());
             decision.facts.insert("partitioned_merge_incremental_flushes".to_string(), self.flush_count.to_string());
+            decision.facts.insert("partitioned_merge_streamed_finalization".to_string(), streamed_output.to_string());
         }
-        Ok(ResidentGpuFrame { frame: merged.frame, device_bytes: merged.device_bytes })
+        let retained_bytes = partitions.iter().map(CommittedPartial::device_bytes).sum();
+        Ok(ResidentFrameStreamPayload::from_producer(
+            // The allocator cap bounds each eventual output; retained partial
+            // bytes are observed separately and never used as an allocation veto.
+            execution.device_budget_bytes(),
+            retained_bytes,
+            output_rows,
+            self.output_schema.fields().len(),
+            Box::new(PartitionedFinalAggregateStream {
+                node_id: self.node_id,
+                aggregate: self.aggregate.clone(),
+                input_schema: Arc::clone(self.input_schema),
+                output_schema: Arc::clone(self.output_schema),
+                partitions,
+            }),
+        ))
     }
 
     /// Partition count from the first batch: its partial bytes scaled to the
@@ -412,6 +446,53 @@ impl<'a> CompiledIncrementalPartitionedMerge<'a> {
         self.flush_count += 1;
         self.max_partition_fan_in = self.max_partition_fan_in.max(fan_in);
         Ok(())
+    }
+}
+
+struct PartitionedFinalAggregateStream {
+    node_id: NodeId,
+    aggregate: AggregateNode,
+    input_schema: ArrowSchemaRef,
+    output_schema: ArrowSchemaRef,
+    partitions: VecDeque<CommittedPartial>,
+}
+
+impl ResidentFrameStreamSource for PartitionedFinalAggregateStream {
+    fn alias(&self) -> Option<Box<dyn ResidentFrameStreamSource>> {
+        Some(Box::new(Self {
+            node_id: self.node_id,
+            aggregate: self.aggregate.clone(),
+            input_schema: Arc::clone(&self.input_schema),
+            output_schema: Arc::clone(&self.output_schema),
+            partitions: self
+                .partitions
+                .iter()
+                .map(|partial| CommittedPartial { frame: partial.frame.clone(), device_bytes: partial.device_bytes() })
+                .collect(),
+        }))
+    }
+
+    fn next_frame(&mut self, execution: &mut BoundedExecutionAttempt<'_>) -> Option<Result<ResidentGpuFrame>> {
+        let partial = self.partitions.pop_front()?;
+        Some(
+            execution
+                .context()
+                .check_cancellation("nexus_query_engine.aggregate.final_partition")
+                .and_then(|()| {
+                    execute_compiled_final_aggregate_projection(
+                        execution,
+                        &self.aggregate,
+                        &self.input_schema,
+                        &self.output_schema,
+                        partial,
+                    )
+                })
+                .map_err(|error| error.with_fact("node_id", self.node_id)),
+        )
+    }
+
+    fn retained_device_bytes(&self) -> u64 {
+        self.partitions.iter().map(CommittedPartial::device_bytes).sum()
     }
 }
 

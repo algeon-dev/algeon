@@ -88,6 +88,8 @@ pub(in crate::native) struct NormalizedNativeAggregateRoot<'a> {
     pub(in crate::native) input: NormalizedNativeInput<'a>,
     pub(in crate::native) pre_aggregate_projection: Option<&'a ProjectionExec>,
     pub(in crate::native) aggregate: &'a AggregateExec,
+    /// Whole final output statistics, before peeling a distributed partial/final pair.
+    pub(in crate::native) statistics_output: &'a AggregateExec,
     /// True when `aggregate` is a safe partial side of a DataFusion
     /// partial/final pair. Lowering may then accept partial aggregate state
     /// layouts, but only after the safety predicates below have matched them.
@@ -318,6 +320,8 @@ impl NormalizedNativeLimit<'_> {
 #[derive(Debug, Clone)]
 pub(in crate::native) struct NormalizedNativeAggregate<'a> {
     pub(in crate::native) aggregate: &'a AggregateExec,
+    /// Whole final output statistics, before peeling a distributed partial/final pair.
+    pub(in crate::native) statistics_output: &'a AggregateExec,
     /// Mirrors root aggregate semantics: true only for a validated partial
     /// aggregate from a distributed final/partial pair.
     pub(in crate::native) aggregate_allows_partial: bool,

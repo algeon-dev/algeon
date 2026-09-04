@@ -130,12 +130,12 @@ fn bounded_context_executes_wide_global_final_merge_without_partitioned_path() {
     fs::remove_dir_all(dir).unwrap();
 }
 
-#[test]
-fn bounded_native_query_merges_high_cardinality_partials_incrementally_under_the_query_cap() {
-    let dir = unique_temp_dir("nexus-query-engine-bounded-incremental-partitioned-merge");
-    let path = dir.join("input.parquet");
-    let row_groups = 32;
-    let rows_per_row_group = 131_072;
+fn incremental_partitioned_merge_builder(
+    dir: &Path,
+    row_groups: usize,
+    rows_per_row_group: usize,
+) -> (QueryPlanBuilder, nexus_query_engine::plan::NodeId, Arc<Schema>) {
+    let path = dir.join(format!("input-{row_groups}.parquet"));
     let input_schema = write_unique_key_row_grouped_parquet(&path, row_groups, rows_per_row_group);
     let aggregated_schema = Arc::new(Schema::new(vec![
         Field::new("key", DataType::Int64, false),
@@ -192,8 +192,33 @@ fn bounded_native_query_merges_high_cardinality_partials_incrementally_under_the
         .with_build_side(JoinSide::Right),
         Arc::clone(&join_schema),
     );
-    let aggregate = builder.add_aggregate(join, aggregate, aggregated_schema);
-    let plan = builder.finish_with_host_sink(aggregate);
+    let aggregate = builder.add_aggregate(join, aggregate, Arc::clone(&aggregated_schema));
+    (builder, aggregate, aggregated_schema)
+}
+
+fn incremental_partitioned_merge_plans(
+    dir: &Path,
+    row_groups: usize,
+    rows_per_row_group: usize,
+) -> (QueryPlan, QueryPlan) {
+    let (mut builder, aggregate, aggregated_schema) =
+        incremental_partitioned_merge_builder(dir, row_groups, rows_per_row_group);
+    let plan = builder.clone().finish_with_host_sink(aggregate);
+    let sort = builder.add_sort(
+        aggregate,
+        SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]),
+        Arc::clone(&aggregated_schema),
+    );
+    let limit = builder.add_limit(sort, LimitSpec::new(5, Some(10)), aggregated_schema);
+    (plan, builder.finish_with_host_sink(limit))
+}
+
+#[test]
+fn bounded_native_query_merges_high_cardinality_partials_incrementally_under_the_query_cap() {
+    let dir = unique_temp_dir("nexus-query-engine-bounded-incremental-partitioned-merge");
+    let row_groups = 32;
+    let rows_per_row_group = 131_072;
+    let (plan, _) = incremental_partitioned_merge_plans(&dir, row_groups, rows_per_row_group);
 
     // Every row group keeps all of its rows as partial state (about 160 MiB in
     // total across SUM, COUNT, and AVG state). Retaining every partial beside
@@ -241,5 +266,232 @@ fn bounded_native_query_merges_high_cardinality_partials_incrementally_under_the
             && averages.value(row) == (keys.value(row) % 7) as f64
     }));
 
+    // The larger state selects more hash partitions without changing policy.
+    // Its 512 MiB final output cannot coexist with a full concatenation under
+    // this cap, while each finalized partition fits beside the retained state.
+    let (eager_plan, streamed_plan) = incremental_partitioned_merge_plans(&dir, 128, rows_per_row_group);
+    let cap = 960 * 1024 * 1024;
+    let streamed_context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: cap,
+        max_source_chunk_bytes: 8 * 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 3,
+        min_retry_chunk_row_groups: 1,
+    });
+    let admitted = streamed_context.admit_plan(&streamed_plan).unwrap();
+    let outcome = execute_query_plan_direct(
+        admitted.context.context(),
+        QueryExecutionRequest::new(&streamed_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
+    );
+    let (output, metrics, _) = outcome.into_parts();
+    let output = output.unwrap();
+    let usage = admitted.attempt_allocation_domain_usage().unwrap().unwrap();
+    assert!(usage.peak_bytes <= cap, "{usage:?}");
+    assert_eq!(usage.current_bytes, 0, "all partition state must be released after host output: {usage:?}");
+    assert_eq!(usage.current_allocations, 0);
+    assert!(
+        metrics.aggregate_strategy_decisions.iter().any(|decision| decision
+            .facts
+            .get("partitioned_merge_streamed_finalization")
+            .map(String::as_str)
+            == Some("true"))
+    );
+    let QueryOutput::HostArrow(batch) = output else { panic!("host top-k output") };
+    assert_eq!(batch.num_rows(), 10);
+    for row in 0..10 {
+        let key = (row + 5) as i64;
+        assert_eq!(int64_array(&batch, 0).value(row), key);
+        assert_eq!(int64_array(&batch, 1).value(row), key % 7);
+        assert_eq!(int64_array(&batch, 2).value(row), 1);
+        assert_eq!(float64_array(&batch, 3).value(row), (key % 7) as f64);
+    }
+    admitted.finish();
+    drop(admitted);
+
+    let admitted = streamed_context.admit_plan(&eager_plan).unwrap();
+    let outcome = execute_query_plan_direct(
+        admitted.context.context(),
+        QueryExecutionRequest::new(&eager_plan).with_gpu_inputs(&GpuResidentInputMap::new()),
+    );
+    let (output, _, _) = outcome.into_parts();
+    let error = output.err().expect("full final-output concatenation exceeds the same cap");
+    assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded);
+    assert_eq!(error.operation(), "nexus_query_engine.final_merge.partitioned_output_concat");
+    assert_attempt_domain_released(admitted.context.context());
+    admitted.finish();
+
     fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn compiled_final_aggregate_fanout_keeps_independent_consumers_and_releases_shared_state() {
+    let dir = unique_temp_dir("nexus-query-engine-final-aggregate-fanout");
+    let (mut builder, aggregate, schema) = incremental_partitioned_merge_builder(&dir, 128, 131_072);
+    let projected = builder.add_projection(
+        aggregate,
+        schema
+            .fields()
+            .iter()
+            .map(|field| ProjectionOutput::new(Expr::column(field.name()), field.as_ref().clone()))
+            .collect(),
+    );
+    let filtered = builder.add_filter(
+        projected,
+        Expr::binary(Expr::column("count_value"), BinaryOp::Gt, Expr::literal(LiteralValue::Int64(0))),
+        Arc::clone(&schema),
+    );
+    let left_sort = builder.add_sort(
+        filtered,
+        SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]),
+        Arc::clone(&schema),
+    );
+    let left = builder.add_limit(left_sort, LimitSpec::new(5, Some(10)), Arc::clone(&schema));
+    let right_sort = builder.add_sort(
+        projected,
+        SortSpec::new(vec![SortExpr::new(Expr::column("key"), false, false)]),
+        Arc::clone(&schema),
+    );
+    let right = builder.add_limit(right_sort, LimitSpec::new(15, Some(10)), Arc::clone(&schema));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("left_key", DataType::Int64, false),
+        Field::new("right_key", DataType::Int64, false),
+        Field::new("left_sum", DataType::Int64, true),
+        Field::new("right_sum", DataType::Int64, true),
+        Field::new("left_avg", DataType::Float64, true),
+        Field::new("right_avg", DataType::Float64, true),
+    ]));
+    let joined = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                nexus_query_engine::expr::ColumnRef::input(0, "count_value", "count_value"),
+                nexus_query_engine::expr::ColumnRef::input(1, "count_value", "count_value"),
+            )],
+        )
+        .with_build_side(JoinSide::Right)
+        .with_output_projection(vec![
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "key", "key"), "left_key"),
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "key", "key"), "right_key"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "sum_value", "sum_value"), "left_sum"),
+            JoinOutputColumn::right(
+                nexus_query_engine::expr::ColumnRef::input(1, "sum_value", "sum_value"),
+                "right_sum",
+            ),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "avg_value", "avg_value"), "left_avg"),
+            JoinOutputColumn::right(
+                nexus_query_engine::expr::ColumnRef::input(1, "avg_value", "avg_value"),
+                "right_avg",
+            ),
+        ]),
+        output_schema,
+    );
+    let plan = builder.finish_with_host_sink(joined);
+    let pipeline = nexus_query_engine::pipeline::compile_pipeline(&plan, &plan.capability_analysis()).unwrap();
+    let scheduler = nexus_query_engine::exec::CompiledPipelineScheduler::new(&pipeline).unwrap();
+    let cap = 960 * 1024 * 1024;
+    let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {
+        device_budget_bytes: cap,
+        max_source_chunk_bytes: 8 * 1024 * 1024,
+        max_row_groups_per_chunk: 1,
+        max_retry_attempts: 3,
+        min_retry_chunk_row_groups: 1,
+    });
+    let admitted = context.admit_plan_for_compiled_executor_test(&plan).unwrap();
+    let gpu_inputs = GpuResidentInputMap::new();
+    let mut metrics = QueryMetrics::default();
+    let (state, batch) = {
+        let mut executor = nexus_query_engine::exec::CompiledGpuTaskExecutor::new(
+            &admitted,
+            &plan,
+            &pipeline,
+            &gpu_inputs,
+            &mut metrics,
+            None,
+        )
+        .unwrap();
+        let state = scheduler.run(&mut executor).unwrap();
+        (state, executor.take_host_output().unwrap())
+    };
+    assert_eq!(state.live_resource_count(), 0);
+    assert_eq!(batch.num_rows(), 100);
+    let mut pairs = std::collections::BTreeSet::new();
+    for row in 0..batch.num_rows() {
+        let left = int64_array(&batch, 0).value(row);
+        let right = int64_array(&batch, 1).value(row);
+        assert_eq!(int64_array(&batch, 2).value(row), left % 7);
+        assert_eq!(int64_array(&batch, 3).value(row), right % 7);
+        assert_eq!(float64_array(&batch, 4).value(row), (left % 7) as f64);
+        assert_eq!(float64_array(&batch, 5).value(row), (right % 7) as f64);
+        pairs.insert((left, right));
+    }
+    let expected = (5..15).flat_map(|left| (15..25).map(move |right| (left, right))).collect();
+    assert_eq!(pairs, expected);
+    let usage = admitted.attempt_allocation_domain_usage().unwrap().unwrap();
+    assert!(usage.peak_bytes <= cap, "{usage:?}");
+    assert_eq!((usage.current_bytes, usage.current_allocations), (0, 0), "{usage:?}");
+    admitted.finish();
+    drop(admitted);
+
+    let admitted = context.admit_plan_for_compiled_executor_test(&plan).unwrap();
+    let mut cancellation_metrics = QueryMetrics::default();
+    let (result, retained_at_cancel) = {
+        let mut executor = nexus_query_engine::exec::CompiledGpuTaskExecutor::new(
+            &admitted,
+            &plan,
+            &pipeline,
+            &gpu_inputs,
+            &mut cancellation_metrics,
+            None,
+        )
+        .unwrap();
+        let mut cancel_after_consumer =
+            CancelAfterFinalAggregateConsumer { executor: &mut executor, context: &admitted, retained_at_cancel: None };
+        let result = scheduler.run(&mut cancel_after_consumer);
+        (result, cancel_after_consumer.retained_at_cancel)
+    };
+    let error = result.err().expect("cancellation stops before the remaining consumer");
+    assert_eq!(error.code(), QueryErrorCode::Cancelled);
+    let retained = retained_at_cancel.expect("one consumer must finish before cancellation");
+    assert!(retained >= 128 * 131_072 * 8, "the remaining consumer still owns all group keys: {retained}");
+    assert_attempt_domain_released(admitted.context.context());
+    admitted.finish();
+    fs::remove_dir_all(dir).unwrap();
+}
+
+struct CancelAfterFinalAggregateConsumer<'a, 'execution> {
+    executor: &'a mut nexus_query_engine::exec::CompiledGpuTaskExecutor<'execution>,
+    context: &'a ExecutionContext,
+    retained_at_cancel: Option<u64>,
+}
+
+impl nexus_query_engine::exec::CompiledTaskExecutor for CancelAfterFinalAggregateConsumer<'_, '_> {
+    type Resource = nexus_query_engine::exec::CompiledGpuResource;
+
+    fn execute_task(
+        &mut self,
+        task: &nexus_query_engine::pipeline::PipelineTask,
+        state: &mut nexus_query_engine::exec::CompiledPipelineState<Self::Resource>,
+    ) -> nexus_query_engine::error::Result<nexus_query_engine::exec::CompiledTaskOutput<Self::Resource>> {
+        let output = self.executor.execute_task(task, state)?;
+        if task.kind() == nexus_query_engine::pipeline::PipelineTaskKind::FinalSort && self.retained_at_cancel.is_none()
+        {
+            self.retained_at_cancel = Some(self.context.attempt_allocation_domain_usage()?.unwrap().current_bytes);
+            self.context.cancellation().cancel();
+        }
+        Ok(output)
+    }
+
+    fn release_resource(
+        &mut self,
+        resource: nexus_query_engine::pipeline::ResidentResourceId,
+        payload: Self::Resource,
+    ) -> nexus_query_engine::error::Result<()> {
+        self.executor.release_resource(resource, payload)
+    }
+
+    fn cleanup_after_error(&mut self) -> nexus_query_engine::error::Result<()> {
+        self.executor.cleanup_after_error()
+    }
 }

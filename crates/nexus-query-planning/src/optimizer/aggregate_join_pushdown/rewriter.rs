@@ -407,8 +407,15 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
                 )
             });
 
-        let new_join =
-            self.rewritten_join_after_preagg(lineage, join, preagg_side, preagg_id, &preagg_measure_states, join_type);
+        let new_join = self.rewritten_join_after_preagg(
+            lineage,
+            join,
+            preagg_side,
+            preagg_id,
+            &preagg_group_columns,
+            &preagg_measure_states,
+            join_type,
+        );
         let join_schema = new_join_output_schema(
             aggregate,
             aggregate_facts.output_schema.as_ref(),
@@ -453,12 +460,17 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
         Ok(final_aggregate_id)
     }
 
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "group lookup identity and measure output lineage are distinct planning inputs"
+    )]
     pub(in crate::optimizer::aggregate_join_pushdown) fn rewritten_join_after_preagg(
         &self,
         lineage: &AggregateJoinLineage,
         join: &JoinNode,
         preagg_side: JoinSide,
         preagg_id: NodeId,
+        preagg_group_columns: &[PreAggregateColumn],
         preagg_measure_states: &[PreAggregateMeasureState],
         join_type: JoinType,
     ) -> JoinNode {
@@ -467,8 +479,12 @@ impl<'a> AggregateJoinPushdownRewriter<'a> {
             JoinSide::Left => [preagg_id, join.inputs[join_side_index(other_side)]],
             JoinSide::Right => [join.inputs[join_side_index(other_side)], preagg_id],
         };
-        let keys =
-            join.spec.keys.iter().map(|key| rewritten_join_key_after_preagg(key, preagg_side)).collect::<Vec<_>>();
+        let keys = join
+            .spec
+            .keys
+            .iter()
+            .map(|key| rewritten_join_key_after_preagg(key, preagg_side, preagg_group_columns))
+            .collect::<Vec<_>>();
         let state_count = preagg_measure_states.iter().map(|measure| measure.state_columns.len()).sum::<usize>();
         let mut output_projection = Vec::with_capacity(lineage.group_columns.len() + state_count);
         for group in &lineage.group_columns {

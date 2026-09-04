@@ -304,6 +304,7 @@ fn normalize_sort_stack<'a>(
             input: native_input,
             pre_aggregate_projection,
             aggregate: aggregate_peel.aggregate,
+            statistics_output: aggregate,
             aggregate_allows_partial: aggregate_peel.aggregate_allows_partial,
             aggregate_output_schema: aggregate_peel.aggregate_output_schema,
             post_aggregate_projection,
@@ -443,6 +444,7 @@ fn normalize_global_aggregate_stack<'a>(
             input: native_input,
             pre_aggregate_projection,
             aggregate: aggregate_peel.aggregate,
+            statistics_output: aggregate,
             aggregate_allows_partial: aggregate_peel.aggregate_allows_partial,
             aggregate_output_schema: aggregate_peel.aggregate_output_schema,
             post_aggregate_projection,
@@ -765,6 +767,7 @@ fn normalize_native_input(
         let input = normalize_native_input(aggregate_peel.aggregate.input().as_ref(), candidate, false)?;
         return Ok(NormalizedNativeInput::Aggregate(NormalizedNativeAggregate {
             aggregate: aggregate_peel.aggregate,
+            statistics_output: aggregate,
             aggregate_allows_partial: aggregate_peel.aggregate_allows_partial,
             aggregate_output_schema: aggregate_peel.aggregate_output_schema,
             input: Box::new(input),

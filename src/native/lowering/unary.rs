@@ -183,6 +183,7 @@ pub(super) fn add_projection_node_with_input(
         })
         .collect::<Result<Vec<_>, CapabilityReason>>()?;
     let node = builder.add_projection(input.node, projection_outputs(expressions, &schema)?);
+    super::advisory::attach(builder, node, &schema, projection);
     Ok(LoweredNativeInput::with_bindings(node, schema, bindings))
 }
 

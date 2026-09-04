@@ -111,6 +111,8 @@ pub(super) struct AttemptRecord {
     pub(super) item_id: String,
     pub(super) family: WorkloadFamily,
     pub(super) work_units: u64,
+    /// Cap assigned by the arrival trace before query-service admission.
+    pub(super) requested_query_cap_bytes: u64,
     pub(super) scheduled_offset_ms: f64,
     pub(super) submit_offset_ms: f64,
     pub(super) submit_delay_ms: f64,

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use super::*;
 
 #[test]
-fn bounded_mixed_residual_semi_anti_root_support_requires_left_only_right_build_orientation() {
+fn bounded_mixed_residual_semi_anti_root_support_requires_left_only_projection() {
     let left_schema = Arc::new(Schema::new(vec![
         Field::new("id", DataType::Int32, false),
         Field::new("left_payload", DataType::Int32, false),
@@ -52,15 +52,8 @@ fn bounded_mixed_residual_semi_anti_root_support_requires_left_only_right_build_
         JoinSide::Left,
         vec![JoinOutputColumn::left(ColumnRef::input(0, "left_payload", "left_payload"), "left_payload")],
     );
-    assert!(!plan.capability_analysis().admits_root_join());
-    let facts = unsupported_facts(&plan).expect("unsupported mixed anti root shape should produce facts");
-    assert_rejection_facts_are_family_free(&facts, "mixed_anti_root_left_build");
-    assert_eq!(
-        facts.get("bounded_join_rejection_reason").map(String::as_str),
-        Some("unsupported_join_node_capability")
-    );
-    assert_eq!(facts.get("bounded_join_rejection_scope").map(String::as_str), Some("node"));
-    assert_eq!(facts.get("bounded_join_rejection_category").map(String::as_str), Some("unsupported_node_operator"));
+    assert!(plan.capability_analysis().admits_root_join());
+    assert!(unsupported_facts(&plan).is_none());
 }
 
 #[test]

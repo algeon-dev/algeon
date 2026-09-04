@@ -176,6 +176,9 @@ pub(crate) struct AttemptTicketBinding {
     pub(crate) admission_rejection: nexus_query_engine::attempt::AttemptAdmissionRejection,
     pub(crate) admission_binding: AttemptAdmissionBinding,
     pub(crate) cancellation: AttemptCancellation,
+    /// Exact cap supplied by the invocation owner, if any. It is copied into
+    /// every query-service admission request for this attempt.
+    pub(crate) requested_query_cap_bytes: Option<u64>,
 }
 
 pub(crate) fn task_context_with_query_admission_ticket(
@@ -722,7 +725,12 @@ impl QueryAdmissionTicket {
             disarmed: false,
             observation: observation.clone(),
         };
-        let request = QueryAdmissionRequest::new().with_execution_cancellation(cancellation.clone());
+        let request = QueryAdmissionRequest::new();
+        let request = match self.attempt.as_ref().and_then(|binding| binding.requested_query_cap_bytes) {
+            Some(query_cap_bytes) => request.with_query_cap_bytes(query_cap_bytes),
+            None => request,
+        };
+        let request = request.with_execution_cancellation(cancellation.clone());
         let request = match self.attempt_capability_evidence_for_rebind() {
             Some(evidence) => request.with_query_plan_capability_evidence(evidence),
             None => request,

@@ -9,8 +9,9 @@ use super::{
 use crate::{
     expr::{BinaryOp, ColumnQualifier, ColumnRef, Expr, LiteralValue},
     plan::{
-        JoinKey, JoinNode, JoinOutputColumn, JoinSide, JoinType, NodeId, PlanFacts, PlanNode, ProjectionNode,
-        ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior, estimated_output_bytes, estimated_output_rows,
+        AdvisoryOutputStatistics, AdvisoryStatistic, JoinKey, JoinNode, JoinOutputColumn, JoinSide, JoinType, NodeId,
+        PlanFacts, PlanNode, ProjectionNode, ProjectionOutput, QueryNode, QueryPlan, SchemaBehavior,
+        estimated_output_bytes, estimated_output_rows,
     },
 };
 
@@ -499,6 +500,13 @@ impl<'a> JoinFilterReassociationRewriter<'a> {
         let filter_join_new = self.build_filter_join(filtered_child_new, filtering_new, join, preserved_side, &lineage);
 
         let mut rebuilt_crossed = crossed_join.clone();
+        // Reassociation preserves the parent's row multiplicity, while the
+        // rebuilt intermediate carries different columns. The crossed join's
+        // old statistics describe a different rowset and must not survive.
+        rebuilt_crossed.spec.advisory_output_statistics = join.spec.advisory_output_statistics.and_then(|statistics| {
+            let statistics = AdvisoryOutputStatistics { bytes: AdvisoryStatistic::Absent, ..statistics };
+            (!statistics.is_absent()).then_some(statistics)
+        });
         rebuilt_crossed.inputs =
             [self.rewrite_subtree(crossed_join.inputs[0]), self.rewrite_subtree(crossed_join.inputs[1])];
         rebuilt_crossed.inputs[join_side_index(lineage.filtered_side)] = filter_join_new;

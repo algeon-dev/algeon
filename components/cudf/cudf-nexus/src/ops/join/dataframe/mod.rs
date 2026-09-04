@@ -50,6 +50,8 @@ mod cross;
 mod filter;
 mod hash;
 mod mixed;
+mod mixed_left;
+pub use mixed_left::{DataFrameMixedLeftJoinFinalized, DataFrameMixedLeftJoinState};
 
 struct MixedDataFrameJoinTables<'a> {
     left_equality: TempTableView<'a>,

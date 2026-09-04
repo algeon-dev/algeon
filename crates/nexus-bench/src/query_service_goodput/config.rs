@@ -1,6 +1,9 @@
 use std::{error::Error, path::PathBuf, str::FromStr, time::Duration};
 
-use super::workload::{MixEntry, parse_mix};
+use super::{
+    cap::CapAssignment,
+    workload::{MixEntry, parse_mix},
+};
 
 pub(super) const ENV_MODE: &str = "NEXUS_GOODPUT_MODE";
 pub(super) const ENV_MIX: &str = "NEXUS_GOODPUT_MIX";
@@ -20,6 +23,7 @@ const ENV_SEED: &str = "NEXUS_GOODPUT_SEED";
 const ENV_DEVICE_ORDINALS: &str = "NEXUS_GOODPUT_DEVICE_ORDINALS";
 const ENV_DEVICE_CAPACITY_BYTES: &str = "NEXUS_GOODPUT_DEVICE_CAPACITY_BYTES";
 const ENV_QUERY_CAP_BYTES: &str = "NEXUS_GOODPUT_QUERY_CAP_BYTES";
+const ENV_REQUEST_CAP_MANIFEST: &str = "NEXUS_GOODPUT_REQUEST_CAP_MANIFEST";
 const ENV_MAX_ACTIVE_ATTEMPTS: &str = "NEXUS_GOODPUT_MAX_ACTIVE_ATTEMPTS";
 const ENV_MAX_QUEUED_ATTEMPTS: &str = "NEXUS_GOODPUT_MAX_QUEUED_ATTEMPTS";
 const ENV_MAX_QUEUE_WAIT_MS: &str = "NEXUS_GOODPUT_MAX_QUEUE_WAIT_MS";
@@ -107,6 +111,8 @@ pub(super) struct GoodputConfig {
     pub(super) device_ordinals: Vec<usize>,
     pub(super) device_capacity_bytes: u64,
     pub(super) query_cap_bytes: u64,
+    pub(super) request_cap_manifest: Option<PathBuf>,
+    pub(super) cap_assignment: CapAssignment,
     pub(super) max_active_attempts: usize,
     pub(super) max_queued_attempts: usize,
     pub(super) max_queue_wait: Duration,
@@ -145,6 +151,9 @@ impl GoodputConfig {
             other => return Err(format!("{ENV_POOL_STATE} must be cold or hot, got {other}").into()),
         };
         let device_capacity_bytes = env_parse(ENV_DEVICE_CAPACITY_BYTES, 0_u64)?;
+        let request_cap_manifest = env_path(ENV_REQUEST_CAP_MANIFEST);
+        let cap_assignment =
+            request_cap_manifest.as_deref().map(CapAssignment::from_path).transpose()?.unwrap_or_default();
         let config = Self {
             mode,
             mix: parse_mix(&env_required(ENV_MIX)?)?,
@@ -164,6 +173,8 @@ impl GoodputConfig {
             device_ordinals: parse_device_ordinals(&env_string(ENV_DEVICE_ORDINALS, "0"))?,
             device_capacity_bytes,
             query_cap_bytes: env_parse(ENV_QUERY_CAP_BYTES, 0_u64)?,
+            request_cap_manifest,
+            cap_assignment,
             max_active_attempts: env_parse(ENV_MAX_ACTIVE_ATTEMPTS, 1_usize)?,
             max_queued_attempts: env_parse(ENV_MAX_QUEUED_ATTEMPTS, 32_usize)?,
             max_queue_wait: Duration::from_millis(env_parse(ENV_MAX_QUEUE_WAIT_MS, 300_000_u64)?),
@@ -197,6 +208,7 @@ impl GoodputConfig {
         if self.query_cap_bytes > self.device_capacity_bytes {
             return Err(format!("{ENV_QUERY_CAP_BYTES} must not exceed {ENV_DEVICE_CAPACITY_BYTES}").into());
         }
+        self.cap_assignment.validate(self.device_capacity_bytes)?;
         if self.max_active_attempts == 0 {
             return Err(format!("{ENV_MAX_ACTIVE_ATTEMPTS} must be greater than zero").into());
         }

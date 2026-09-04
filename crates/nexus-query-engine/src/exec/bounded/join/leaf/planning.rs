@@ -1,9 +1,9 @@
 use super::{
     BoundedJoinLeafLocalParquetSourceStream, ExecutionContext, LocalParquetSource, MemoryControlPolicy, NodeId,
-    QueryError, QueryErrorCode, QueryMetrics, Result, SourceAdjacentAggregateChunkCapHints, SourceChunkPlanningPolicy,
-    SourceTaskMemoryModel, annotate_join_leaf_source_chunk_batching_reasons,
-    apply_source_adjacent_aggregate_chunk_caps, plan_local_parquet_source_chunks_with_execution_context,
-    record_bounded_parquet_source_metrics, unsupported_bounded_shape, validate_local_parquet_source,
+    QueryMetrics, Result, SourceAdjacentAggregateChunkCapHints, SourceChunkPlanningPolicy, SourceTaskMemoryModel,
+    annotate_join_leaf_source_chunk_batching_reasons, apply_source_adjacent_aggregate_chunk_caps,
+    plan_local_parquet_source_chunks_with_execution_context, record_bounded_parquet_source_metrics,
+    unsupported_bounded_shape, validate_local_parquet_source,
 };
 
 pub(in crate::exec::bounded) fn plan_bounded_join_leaf_local_parquet_source_stream(
@@ -87,14 +87,6 @@ fn plan_bounded_local_parquet_source_stream(
     );
     for chunk in &chunk_plan.chunks {
         metrics.record_source_chunk_planned(chunk.row_group_count() as u64);
-    }
-    if chunk_plan.chunks.is_empty() {
-        return Err(QueryError::new(
-            QueryErrorCode::InvalidPlan,
-            "nexus_query_engine.bounded.join.source",
-            "bounded join leaf local parquet source requires at least one planned source chunk",
-        )
-        .with_fact("source_node_id", node_id));
     }
     record_bounded_parquet_source_metrics(source, &chunk_plan, metrics);
     let (max_attempts, min_retry_chunk_row_groups) = join_source_retry_policy(context);

@@ -46,6 +46,7 @@ use nexus_workloads::{tpcds::describe_tpcds_dataset, tpch::describe_tpch_dataset
 
 mod arrival;
 mod calibration;
+mod cap;
 mod config;
 mod execution;
 mod record;
@@ -193,8 +194,9 @@ async fn calibrate(
     items: &[WorkloadItem],
     identity: &CalibrationIdentity,
 ) -> Result<(), Box<dyn Error>> {
+    let calibration_caps = config.cap_assignment.calibration_caps(items, config.query_cap_bytes)?;
     let mut rows = Vec::with_capacity(items.len());
-    for item in items {
+    for (item, &calibration_cap) in items.iter().zip(&calibration_caps) {
         let ctx = session_for(sessions, item)?;
         let mut latencies = Vec::with_capacity(config.calibration_reps);
         let mut peaks = Vec::with_capacity(config.calibration_reps);
@@ -202,7 +204,8 @@ async fn calibrate(
         let mut output_rows = 0_usize;
         let mut output_fingerprint = String::new();
         for rep in 0..(config.calibration_warmup_reps + config.calibration_reps) {
-            let outcome = run_attempt(backend, ctx, config, item, format!("calibrate-{}-{rep}", item.id)).await;
+            let outcome =
+                run_attempt(backend, ctx, config, item, calibration_cap, format!("calibrate-{}-{rep}", item.id)).await;
             let facts = ReportFacts::from(outcome.report.as_deref());
             if outcome.error_message.is_some() || facts.terminal_outcome != "succeeded" {
                 return Err(format!(
@@ -257,6 +260,9 @@ async fn calibrate(
     header.insert("graph_dataset".to_string(), config.graph_dataset.clone());
     header.insert("device_capacity_bytes".to_string(), config.device_capacity_bytes.to_string());
     header.insert("query_cap_bytes".to_string(), config.query_cap_bytes.to_string());
+    header.insert("request_cap_manifest".to_string(), request_cap_manifest_label(config));
+    header.insert("request_cap_assignment".to_string(), config.cap_assignment.descriptor());
+    header.insert("calibration_caps".to_string(), calibration_caps_descriptor(items, &calibration_caps));
     header.insert("pool_state".to_string(), "hot".to_string());
     header.insert("reps".to_string(), config.calibration_reps.to_string());
     header.insert("source_identity".to_string(), config.source_identity.clone());
@@ -264,6 +270,17 @@ async fn calibrate(
     store.write_to(&config.slo_path)?;
     eprintln!("[goodput] wrote calibration to {}", config.slo_path.display());
     Ok(())
+}
+
+fn request_cap_manifest_label(config: &GoodputConfig) -> String {
+    config
+        .request_cap_manifest
+        .as_deref()
+        .map_or_else(|| "none".to_string(), |path| path.to_string_lossy().into_owned())
+}
+
+fn calibration_caps_descriptor(items: &[WorkloadItem], caps: &[u64]) -> String {
+    items.iter().zip(caps).map(|(item, cap)| format!("{}={cap}", item.id)).collect::<Vec<_>>().join("+")
 }
 
 async fn measure(
@@ -309,9 +326,15 @@ async fn measure(
         tasks.push(tokio::spawn(async move {
             let due = origin + arrival.offset;
             tokio::time::sleep_until(tokio::time::Instant::from_std(due)).await;
-            let outcome =
-                run_attempt(&backend, &ctx, &config, &item, format!("goodput-{}-{}", config.group, arrival.sequence))
-                    .await;
+            let outcome = run_attempt(
+                &backend,
+                &ctx,
+                &config,
+                &item,
+                arrival.requested_query_cap_bytes,
+                format!("goodput-{}-{}", config.group, arrival.sequence),
+            )
+            .await;
             (arrival, item, outcome)
         }));
     }
@@ -545,6 +568,7 @@ fn build_record(
         item_id: item.id.clone(),
         family: item.family,
         work_units: item.work_units,
+        requested_query_cap_bytes: arrival.requested_query_cap_bytes,
         scheduled_offset_ms,
         submit_offset_ms,
         submit_delay_ms: (submit_offset_ms - scheduled_offset_ms).max(0.0),

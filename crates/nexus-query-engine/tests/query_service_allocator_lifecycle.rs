@@ -238,7 +238,8 @@ async fn canonical_default_allocator_admits_a_hard_query_domain() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn same_device_attempts_have_distinct_grant_domain_stream_lane_and_job_identities() {
-    const QUERY_CAP_BYTES: u64 = 64 * 1024 * 1024;
+    const FIRST_QUERY_CAP_BYTES: u64 = 64 * 1024 * 1024;
+    const SECOND_QUERY_CAP_BYTES: u64 = 32 * 1024 * 1024;
 
     let device = DeviceId::current().unwrap();
     let core = GpuBackendCore::builder(backend_draft_with_limits_and_queue_bounds(
@@ -261,14 +262,20 @@ async fn same_device_attempts_have_distinct_grant_domain_stream_lane_and_job_ide
     assert_eq!(startup.worker_count, 2);
 
     let first = Arc::new(
-        session.admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(QUERY_CAP_BYTES)).unwrap(),
+        session
+            .admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(FIRST_QUERY_CAP_BYTES))
+            .unwrap(),
     );
     let second = Arc::new(
-        session.admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(QUERY_CAP_BYTES)).unwrap(),
+        session
+            .admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(SECOND_QUERY_CAP_BYTES))
+            .unwrap(),
     );
     assert_eq!(first.device_ordinal(), device.ordinal());
     assert_eq!(second.device_ordinal(), device.ordinal());
     assert_ne!(first.admission_request_id(), second.admission_request_id());
+    assert_eq!(first.device_budget_bytes(), FIRST_QUERY_CAP_BYTES);
+    assert_eq!(second.device_budget_bytes(), SECOND_QUERY_CAP_BYTES);
 
     let ledger_reports = session.device_ledger_reports().unwrap();
     let [ledger] = ledger_reports.as_slice() else {
@@ -277,6 +284,7 @@ async fn same_device_attempts_have_distinct_grant_domain_stream_lane_and_job_ide
     assert_eq!(ledger.device_ordinal, device.ordinal());
     assert_eq!(ledger.max_active_attempts, 2);
     assert_eq!(ledger.active_attempts, 2);
+    assert_eq!(ledger.live_grants_bytes, FIRST_QUERY_CAP_BYTES + SECOND_QUERY_CAP_BYTES);
     assert_eq!(ledger.grants.len(), 2);
     let grant_id = |request_id| {
         ledger
@@ -289,6 +297,14 @@ async fn same_device_attempts_have_distinct_grant_domain_stream_lane_and_job_ide
     let first_grant_id = grant_id(first.admission_request_id());
     let second_grant_id = grant_id(second.admission_request_id());
     assert_ne!(first_grant_id, second_grant_id, "simultaneous attempts must own distinct immutable grants");
+    assert_eq!(
+        ledger.grants.iter().find(|grant| grant.grant_id == first_grant_id).expect("first grant row").grant_bytes,
+        FIRST_QUERY_CAP_BYTES,
+    );
+    assert_eq!(
+        ledger.grants.iter().find(|grant| grant.grant_id == second_grant_id).expect("second grant row").grant_bytes,
+        SECOND_QUERY_CAP_BYTES,
+    );
 
     let first_context = first.acquire_context().unwrap();
     let second_context = second.acquire_context().unwrap();
@@ -311,7 +327,7 @@ async fn same_device_attempts_have_distinct_grant_domain_stream_lane_and_job_ide
     // can create the root stream/domain envelope, and no lane has been released.
     assert!(
         session
-            .try_admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(QUERY_CAP_BYTES))
+            .try_admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(FIRST_QUERY_CAP_BYTES))
             .unwrap()
             .is_none(),
         "two live attempts must exhaust exactly the two configured attempt lanes",

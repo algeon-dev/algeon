@@ -60,3 +60,21 @@ owner's synchronization and sharing it concurrently is not allowed.
 they retain no ownership or mutable Rust state; their underlying CUDA/RMM
 objects must still outlive all uses. Higher-level owner types define the rest
 of the thread-safety policy.
+
+## Cumulative mixed left membership
+
+`cudf_mixed_left_join_state` retains the AST owner and borrowed logical-left
+views; callers retain left device storage and AST literal scalar owners until
+destruction. Right batches are borrowed only through completion of `consume`.
+The safe DataFrame wrapper retains a frame clone and the complete AST, and
+uses execution completion fences to order batch release across streams.
+Mutation requires exclusive access; this state is `Send` but not `Sync`.
+
+Construction, consumption, sealing, and materialization require the original
+device, stream and MR. Native state buffers and preprocessing retain the
+statistics resource reference, whose box outlives them and forwards allocation
+to that MR. Temporary AST/preprocessing buffers release on the same stream.
+Sealing is one way: native consumption and repeated sealing reject a sealed
+state. The safe API consumes its mutable owner into a finalized owner; only
+that owner exposes exact output rows and materialization. Gather-map outputs
+retain the original execution domain independently of state destruction.

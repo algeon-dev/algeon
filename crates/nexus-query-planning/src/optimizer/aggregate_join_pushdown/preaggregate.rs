@@ -33,10 +33,12 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn push_unique_preagg_group_co
     output_name: &str,
     input_schema: &SchemaRef,
 ) -> Result<(), AggregateJoinPushdownRejectedReason> {
-    if let Some(existing) = columns.iter().find(|column| column.output_name == output_name) {
-        if existing.source_name == source_name {
-            return Ok(());
-        }
+    // A join key needs the source identity already grouped, regardless of its
+    // display label. Its rewritten lookup uses that retained output alias.
+    if columns.iter().any(|column| column.source_name == source_name) {
+        return Ok(());
+    }
+    if columns.iter().any(|column| column.output_name == output_name) {
         return Err(AggregateJoinPushdownRejectedReason::ConflictingPreAggregateOutputName);
     }
     input_schema.field_with_name(source_name).map_err(|_| AggregateJoinPushdownRejectedReason::MissingInputField)?;
@@ -199,7 +201,12 @@ pub(in crate::optimizer::aggregate_join_pushdown) fn measure_input_projection_ou
         return Err(AggregateJoinPushdownRejectedReason::UnsupportedAggregateExpression);
     }
     let mut outputs = Vec::with_capacity(group_columns.len() + measure_input_aliases.len());
+    let mut projected_sources = BTreeSet::new();
     for column in group_columns {
+        // Multiple observable group aliases may read the same physical source.
+        if !projected_sources.insert(column.source_name.as_str()) {
+            continue;
+        }
         let field = measure_input_schema
             .field_with_name(column.source_name.as_str())
             .map_err(|_| AggregateJoinPushdownRejectedReason::MissingInputField)?

@@ -23,11 +23,34 @@ use crate::error::{QueryError, QueryErrorCode, Result};
 #[derive(Debug, Clone, Default)]
 pub struct QueryPlanBuilder {
     nodes: Vec<QueryNode>,
+    advisory_outputs: Vec<super::AdvisoryOutputBinding>,
 }
 
 impl QueryPlanBuilder {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Attaches a diagnostic frontend volume to an existing native occurrence.
+    /// Conflicting frontend occurrences interned to one native node become unknown.
+    pub fn set_advisory_output(&mut self, binding: super::AdvisoryOutputBinding) {
+        assert_eq!(
+            self.node(binding.node).output_schema(),
+            &binding.schema,
+            "advisory output schema must match its native occurrence"
+        );
+        if let Some(existing) = self.advisory_outputs.iter_mut().find(|value| value.node == binding.node) {
+            if existing != &binding {
+                existing.invalidate(super::AdvisoryUnknownReason::ConflictingOccurrences);
+            }
+        } else {
+            self.advisory_outputs.push(binding);
+        }
+    }
+
+    /// Returns the diagnostic frontend volume attached to an occurrence.
+    pub fn advisory_output(&self, node: NodeId) -> Option<&super::AdvisoryOutputBinding> {
+        self.advisory_outputs.iter().find(|binding| binding.node == node)
     }
 
     /// Adds a source node and returns its stable id.
@@ -103,10 +126,29 @@ impl QueryPlanBuilder {
             return input;
         }
         let output_ordering = self.node(input).facts.output_ordering.clone();
-        self.push(
+        let node = self.push(
             PlanNode::Limit(LimitNode { input, spec }),
             PlanFacts::device(output_schema, SchemaBehavior::PreservesInput).with_output_ordering(output_ordering),
-        )
+        );
+        if let Some(mut binding) = self.advisory_output(input).cloned() {
+            binding.node = node;
+            binding.schema = Arc::clone(self.node(node).output_schema());
+            let limit_rows = |rows: u64| {
+                let remaining = rows.saturating_sub(spec.skip as u64);
+                spec.fetch.map_or(remaining, |fetch| remaining.min(fetch as u64))
+            };
+            binding.statistics.rows = match binding.statistics.rows {
+                super::AdvisoryStatistic::Exact(rows) => super::AdvisoryStatistic::Exact(limit_rows(rows)),
+                super::AdvisoryStatistic::Inexact(rows) => super::AdvisoryStatistic::Inexact(limit_rows(rows)),
+                super::AdvisoryStatistic::Absent => super::AdvisoryStatistic::Absent,
+            };
+            binding.statistics.bytes = super::AdvisoryStatistic::Absent;
+            if binding.statistics.rows.value().is_some() {
+                binding.unknown_reason = Some(super::AdvisoryUnknownReason::LimitBytesUnavailable);
+            }
+            self.set_advisory_output(binding);
+        }
+        node
     }
 
     /// Adds a join node with explicit left and right inputs.
@@ -242,6 +284,7 @@ impl QueryPlanBuilder {
         assert_eq!(sink.input(), root, "query plan sink must consume the root node");
         QueryPlan {
             nodes: self.nodes,
+            advisory_outputs: self.advisory_outputs,
             root,
             sink,
             deferred_host_sink_schema: None,
