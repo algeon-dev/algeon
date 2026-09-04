@@ -33,7 +33,6 @@ use crate::{
     planner::NexusNativeOptimizerConfig,
     report::{CandidateOutcome, GpuCandidate, NativeCandidateCostEvidence, PlanningReport},
     session::NexusSessionStateBuilderExt,
-    session_config::DataFusionNexusSessionConfig,
 };
 
 fn test_execution_config() -> NexusNativeExecutionConfig {
@@ -374,10 +373,6 @@ async fn validate_query_metadata_uses_effective_session_optimizer_options() {
         .with_native_execution_config(test_execution_config())
         .with_no_datafusion_cpu_requirement();
     let mut session_config = SessionConfig::new();
-    session_config
-        .options_mut()
-        .extensions
-        .insert(DataFusionNexusSessionConfig::from_optimizer_config(&optimizer_config));
     // The deleted pipeline-mode session key is rejected; the single bounded
     // path projects the canonical execution-mode label.
     assert!(session_config.options_mut().set("datafusion_nexus.native.pipeline_execution_mode", "adaptive").is_err());

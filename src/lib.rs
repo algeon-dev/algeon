@@ -73,7 +73,7 @@
 //! [`nexus_query_engine::plan::QueryPlan`] execution live in the engine crate.
 //! Public diagnostics and configuration are grouped under [`attempt`],
 //! [`capability`], [`gpu_coverage`], [`native_report`], [`observability`],
-//! [`report`], and [`session_config`].
+//! and [`report`].
 
 #[cfg(test)]
 extern crate self as datafusion_nexus;
@@ -99,6 +99,5 @@ mod physical_plan;
 pub mod planner;
 pub mod report;
 pub mod session;
-pub mod session_config;
 pub mod source_cardinality;
 pub mod table_format;

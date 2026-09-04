@@ -7,8 +7,6 @@ use std::{
     },
 };
 
-#[cfg(feature = "cuvs")]
-use datafusion::prelude::SessionConfig;
 use datafusion::{
     common::{DFSchema, config::Dialect, tree_node::TreeNodeRecursion},
     execution::{SessionStateBuilder, context::TaskContext},
@@ -36,8 +34,6 @@ use datafusion_nexus::{
     native_exec::NexusNativeExecutionConfig,
     session::NexusSessionStateBuilderExt,
 };
-#[cfg(feature = "cuvs")]
-use datafusion_nexus::{planner::NexusNativeOptimizerConfig, session_config::DataFusionNexusSessionConfig};
 use nexus_query_engine::plan::{
     CUVS_ID_TYPES, CuvsOperation as NativeCuvsOperation, canonicalize_cuvs_options,
     vector_brute_force_knn_output_schema, vector_kmeans_output_schema, vector_pca_output_schema,
@@ -523,12 +519,7 @@ async fn unified_gpu_metadata_is_relation_aware_and_projects_the_canonical_regis
 #[cfg(feature = "cuvs")]
 #[tokio::test]
 async fn unified_gpu_metadata_reports_bounded_cuvs_as_unavailable() {
-    let optimizer_config = NexusNativeOptimizerConfig::default()
-        .with_native_execution_config(NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1));
-    let mut config = SessionConfig::new();
-    config.options_mut().extensions.insert(DataFusionNexusSessionConfig::from_optimizer_config(&optimizer_config));
-    let state =
-        SessionStateBuilder::new_with_default_features().with_config(config).try_with_cuvs_sql().unwrap().build();
+    let state = SessionStateBuilder::new_with_default_features().try_with_cuvs_sql().unwrap().build();
     let ctx = SessionContext::new_with_state(state);
     let listed = ctx
         .sql(&format!(

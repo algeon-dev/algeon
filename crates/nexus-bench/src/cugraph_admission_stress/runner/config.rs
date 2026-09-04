@@ -17,7 +17,6 @@ const ENV_ATTEMPT_FLOOR_BYTES: &str = "NEXUS_CUGRAPH_ADMISSION_ATTEMPT_FLOOR_BYT
 const ENV_MAX_QUEUE_WAIT_MS: &str = "NEXUS_CUGRAPH_ADMISSION_MAX_QUEUE_WAIT_MS";
 const ENV_BUDGET_FRACTION: &str = "NEXUS_CUGRAPH_ADMISSION_BUDGET_FRACTION";
 const ENV_DEVICE_BUDGET_BYTES: &str = "NEXUS_CUGRAPH_ADMISSION_DEVICE_BUDGET_BYTES";
-const ENV_RAW_INPUT_EDGES: &str = "NEXUS_CUGRAPH_ADMISSION_RAW_INPUT_EDGES";
 const ENV_SAMPLE_INTERVAL_MS: &str = "NEXUS_CUGRAPH_ADMISSION_SAMPLE_INTERVAL_MS";
 const ENV_QUERY_TIMEOUT_MS: &str = "NEXUS_CUGRAPH_ADMISSION_QUERY_TIMEOUT_MS";
 const ENV_OUT_DIR: &str = "NEXUS_CUGRAPH_ADMISSION_OUT_DIR";
@@ -51,7 +50,6 @@ impl HarnessConfig {
             max_queue_wait_ms: env_parse(ENV_MAX_QUEUE_WAIT_MS, 60_000)?,
             budget_fraction: parse_optional_f64(ENV_BUDGET_FRACTION)?,
             device_budget_bytes: parse_optional_u64(ENV_DEVICE_BUDGET_BYTES)?,
-            raw_input_edges: parse_optional_u64(ENV_RAW_INPUT_EDGES)?,
             sample_interval_ms: env_parse(ENV_SAMPLE_INTERVAL_MS, 100)?,
             query_timeout_ms: env_parse(ENV_QUERY_TIMEOUT_MS, 600_000)?,
             out_dir,

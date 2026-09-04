@@ -638,8 +638,12 @@ fn pagerank_python_cugraph_reports_edge_normalize_in_graph_reservation() {
     let fixture_dir = unique_temp_dir("pagerank-normalization-source-lifetime");
     let edge_path = fixture_dir.join("edges.parquet");
     DataFrame::from_record_batch(&fixture_runtime, &edge_batch).unwrap().write_parquet(&edge_path).unwrap();
+    let edge_file_size = fs::metadata(&edge_path).unwrap().len();
     let local_source = LocalParquetSource::from_files(
-        vec![LocalParquetFile::new(&edge_path)],
+        vec![LocalParquetFile::new(&edge_path)
+            .with_stable_id(format!("local:{}:mtime=2026-08-05T00:00:00Z", edge_path.display()))
+            .with_file_size_bytes(edge_file_size)
+            .with_row_group_rows(vec![u64::try_from(edge_batch.num_rows()).unwrap()])],
         Arc::clone(&edge_schema),
         vec!["src".to_string(), "dst".to_string()],
     );

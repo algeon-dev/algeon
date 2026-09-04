@@ -195,11 +195,6 @@ impl NexusNativeExecutionConfig {
         self.query_admission_ticket.as_ref().map(Arc::clone)
     }
 
-    /// Returns whether execution is bound to a QueryService admission handle.
-    pub(crate) fn has_query_service_handle(&self) -> bool {
-        self.query_service_handle.is_some()
-    }
-
     pub fn has_query_admission_authority(&self) -> bool {
         self.query_service_handle.is_some()
             || self.query_admission_source.is_some()

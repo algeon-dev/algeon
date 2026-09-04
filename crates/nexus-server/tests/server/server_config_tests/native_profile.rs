@@ -1,5 +1,5 @@
 #[test]
-fn server_native_config_option_descriptors_cover_toml_env_and_session_keys() {
+fn server_native_config_option_descriptors_cover_toml_and_env_keys() {
     let expected = [
         ("native.max_source_chunk_bytes", NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV),
         ("native.max_row_groups_per_chunk", NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV),
@@ -18,17 +18,6 @@ fn server_native_config_option_descriptors_cover_toml_env_and_session_keys() {
             .unwrap_or_else(|| panic!("missing descriptor for {toml_field}"));
         assert_eq!(option.env_var, env_var);
     }
-
-    let session_keys = DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS
-        .iter()
-        .map(|option| option.full_key())
-        .filter(|key| key.starts_with("datafusion_nexus.native."))
-        .collect::<BTreeSet<_>>();
-    let server_session_keys = NEXUS_SERVER_NATIVE_CONFIG_OPTIONS
-        .iter()
-        .filter_map(|option| option.session_key.map(str::to_string))
-        .collect::<BTreeSet<_>>();
-    assert_eq!(server_session_keys, session_keys);
 }
 
 #[test]
@@ -48,15 +37,15 @@ fn server_config_accepts_bounded_native_profile() {
         (NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "8".to_string()),
     ]);
     let config = server_config_with_default_device_profile(env).unwrap();
-    let projection = DataFusionNexusSessionConfig::from_optimizer_config(&config.native_optimizer_config);
+    let native = config.native_optimizer_config.native_execution_config();
     assert_eq!(
         config.gpu_device_profiles[0].memory_limit(),
         datafusion_nexus::backend::GpuDeviceMemoryLimit::default()
     );
-    assert_eq!(projection.native_max_source_chunk_bytes(), 512);
-    assert_eq!(projection.native_max_row_groups_per_chunk(), 8);
+    assert_eq!(native.max_source_chunk_bytes(), 512);
+    assert_eq!(native.max_row_groups_per_chunk(), 8);
     assert_eq!(
-        projection.native_max_retry_attempts(),
+        native.max_retry_attempts(),
         datafusion_nexus::native_exec::NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_RETRY_ATTEMPTS
     );
 }
@@ -65,10 +54,10 @@ fn server_config_accepts_bounded_native_profile() {
 fn server_config_accepts_independent_source_chunk_limits() {
     let env = BTreeMap::from([(NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "512".to_string())]);
     let config = server_config_with_default_device_profile(env).unwrap();
-    let projection = DataFusionNexusSessionConfig::from_optimizer_config(&config.native_optimizer_config);
-    assert_eq!(projection.native_max_source_chunk_bytes(), 512);
+    let native = config.native_optimizer_config.native_execution_config();
+    assert_eq!(native.max_source_chunk_bytes(), 512);
     assert_eq!(
-        projection.native_max_row_groups_per_chunk(),
+        native.max_row_groups_per_chunk(),
         datafusion_nexus::native_exec::NexusNativeExecutionConfig::DEFAULT_BOUNDED_MAX_ROW_GROUPS_PER_CHUNK
     );
 }
@@ -129,10 +118,10 @@ max_retry_attempts = 5
     );
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     assert_eq!(config.queue_policy.max_queued_attempts(), 2);
-    let projection = DataFusionNexusSessionConfig::from_optimizer_config(&config.native_optimizer_config);
-    assert_eq!(projection.native_max_source_chunk_bytes(), 512);
-    assert_eq!(projection.native_max_row_groups_per_chunk(), 8);
-    assert_eq!(projection.native_max_retry_attempts(), 5);
+    let native = config.native_optimizer_config.native_execution_config();
+    assert_eq!(native.max_source_chunk_bytes(), 512);
+    assert_eq!(native.max_row_groups_per_chunk(), 8);
+    assert_eq!(native.max_retry_attempts(), 5);
 }
 
 #[test]

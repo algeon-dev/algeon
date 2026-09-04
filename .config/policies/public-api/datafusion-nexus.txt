@@ -1026,6 +1026,10 @@ pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::graph_memory_c
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::host_output_memory_pool_accounting(&self) -> bool
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::keyed_hash_join_strategy_options(&self) -> nexus_query_planning::capability::join::KeyedHashJoinStrategyOptions
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::lakehouse_cache_fill_config(&self) -> &nexus_query_runtime::runtime::cache_fill::LakehouseCacheFillConfig
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::max_retry_attempts(&self) -> usize
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::max_row_groups_per_chunk(&self) -> usize
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::max_source_chunk_bytes(&self) -> u64
+pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::max_source_reads_in_flight(&self) -> usize
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::memory_control_policy(&self) -> nexus_query_planning::execution_contracts::MemoryControlPolicy
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::query_id(&self) -> core::option::Option<&nexus_query_planning::correlation::QueryId>
 pub fn datafusion_nexus::native_exec::NexusNativeExecutionConfig::runtime_observation_config(&self) -> nexus_query_runtime::observability::recorder::RuntimeObservationConfig
@@ -1942,7 +1946,6 @@ pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::native_execution_c
 pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::native_optimizer_options(&self) -> &nexus_query_planning::optimizer::NativeOptimizerOptions
 pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::native_plan_cost_options(&self) -> &nexus_query_planning::plan::preference::NativePlanCostOptions
 pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::statistical_aggregate_execution_mode(&self) -> nexus_query_planning::mode::StatisticalAggregateExecutionMode
-pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::with_datafusion_config_options(&self, &datafusion_common::config::ConfigOptions) -> datafusion_common::error::Result<Self>
 pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::with_final_plan_requirement(self, datafusion_nexus::planner::FinalPlanRequirement) -> Self
 pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::with_native_execution_config(self, datafusion_nexus::native_exec::NexusNativeExecutionConfig) -> Self
 pub fn datafusion_nexus::planner::NexusNativeOptimizerConfig::with_native_optimizer_options(self, nexus_query_planning::optimizer::NativeOptimizerOptions) -> Self
@@ -2070,44 +2073,6 @@ pub fn datafusion::execution::session_state::SessionStateBuilder::try_with_cugra
 pub fn datafusion::execution::session_state::SessionStateBuilder::try_with_cuvs_sql(self) -> datafusion_common::error::Result<Self>
 pub fn datafusion::execution::session_state::SessionStateBuilder::with_nexus_native(self, datafusion_nexus::planner::NexusNativeOptimizerConfig) -> Self
 pub fn datafusion::execution::session_state::SessionStateBuilder::with_nexus_native_rule(self, alloc::sync::Arc<datafusion_nexus::planner::NexusNativePhysicalOptimizerRule>) -> Self
-pub fn datafusion_nexus::session::install_nexus_native_rule_with_session_config(datafusion::execution::session_state::SessionStateBuilder, alloc::sync::Arc<datafusion_nexus::planner::NexusNativePhysicalOptimizerRule>, datafusion_nexus::session_config::DataFusionNexusSessionConfig) -> datafusion_common::error::Result<datafusion::execution::session_state::SessionStateBuilder>
-pub mod datafusion_nexus::session_config
-pub use datafusion_nexus::session_config::SourceChunkPlanningMode
-pub use datafusion_nexus::session_config::StatisticalAggregateExecutionMode
-#[non_exhaustive] pub struct datafusion_nexus::session_config::DataFusionNexusSessionConfig
-impl datafusion_nexus::session_config::DataFusionNexusSessionConfig
-pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::apply_to_optimizer_config(&self, datafusion_nexus::planner::NexusNativeOptimizerConfig) -> datafusion_common::error::Result<datafusion_nexus::planner::NexusNativeOptimizerConfig>
-pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::from_optimizer_config(&datafusion_nexus::planner::NexusNativeOptimizerConfig) -> Self
-pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::frozen_for_backend_admission(self) -> Self
-pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_max_retry_attempts(&self) -> usize
-pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_max_row_groups_per_chunk(&self) -> usize
-pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_max_source_chunk_bytes(&self) -> u64
-pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_max_source_reads_in_flight(&self) -> usize
-pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_source_chunk_planning_mode(&self) -> nexus_query_planning::execution_contracts::SourceChunkPlanningMode
-pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::native_statistical_aggregate_execution_mode(&self) -> nexus_query_planning::mode::StatisticalAggregateExecutionMode
-pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::request_graph_raw_input_edges(&self) -> core::option::Option<u64>
-pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::set_request_graph_raw_input_edges(&mut self, core::option::Option<u64>)
-pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::with_request_graph_raw_input_edges(self, core::option::Option<u64>) -> Self
-impl core::default::Default for datafusion_nexus::session_config::DataFusionNexusSessionConfig
-pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::default() -> Self
-impl datafusion_common::config::ConfigExtension for datafusion_nexus::session_config::DataFusionNexusSessionConfig
-pub const datafusion_nexus::session_config::DataFusionNexusSessionConfig::PREFIX: &'static str
-impl datafusion_common::config::ExtensionOptions for datafusion_nexus::session_config::DataFusionNexusSessionConfig
-pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::as_any(&self) -> &dyn core::any::Any
-pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::as_any_mut(&mut self) -> &mut dyn core::any::Any
-pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::cloned(&self) -> alloc::boxed::Box<dyn datafusion_common::config::ExtensionOptions>
-pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::entries(&self) -> alloc::vec::Vec<datafusion_common::config::ConfigEntry>
-pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfig::set(&mut self, &str, &str) -> datafusion_common::error::Result<()>
-#[non_exhaustive] pub struct datafusion_nexus::session_config::DataFusionNexusSessionConfigOption
-pub datafusion_nexus::session_config::DataFusionNexusSessionConfigOption::bounded_only: bool
-pub datafusion_nexus::session_config::DataFusionNexusSessionConfigOption::description: &'static str
-pub datafusion_nexus::session_config::DataFusionNexusSessionConfigOption::key: &'static str
-pub datafusion_nexus::session_config::DataFusionNexusSessionConfigOption::value_type: &'static str
-impl datafusion_nexus::session_config::DataFusionNexusSessionConfigOption
-pub fn datafusion_nexus::session_config::DataFusionNexusSessionConfigOption::full_key(&self) -> alloc::string::String
-pub const datafusion_nexus::session_config::DATAFUSION_NEXUS_CONFIG_PREFIX: &str
-pub const datafusion_nexus::session_config::DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS: &[datafusion_nexus::session_config::DataFusionNexusSessionConfigOption]
-pub fn datafusion_nexus::session_config::optimizer_config_with_datafusion_options(&datafusion_nexus::planner::NexusNativeOptimizerConfig, &datafusion_common::config::ConfigOptions) -> datafusion_common::error::Result<datafusion_nexus::planner::NexusNativeOptimizerConfig>
 pub mod datafusion_nexus::source_cardinality
 pub const datafusion_nexus::source_cardinality::SOURCE_UNIQUE_KEYS_METADATA_KEY: &str
 pub fn datafusion_nexus::source_cardinality::schema_with_source_unique_keys(&arrow_schema::schema::Schema, &[&[&str]]) -> arrow_schema::schema::Schema

@@ -1,11 +1,8 @@
-use datafusion::{common::config::ExtensionOptions, execution::SessionStateBuilder, prelude::SessionConfig};
+use datafusion::execution::SessionStateBuilder;
 use nexus_query_engine::{optimizer::NativeOptimizerOptions, plan::NativePlanCostOptions};
 
 use super::*;
-use crate::{
-    planner::FinalPlanRequirement, session::installed_nexus_native_optimizer_config,
-    session_config::DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS,
-};
+use crate::{planner::FinalPlanRequirement, session::installed_nexus_native_optimizer_config};
 
 fn backend_builder(device_ordinals: &[usize]) -> NexusGpuBackendBuilder {
     let devices = device_ordinals.iter().copied().map(|ordinal| {
@@ -263,27 +260,31 @@ fn backend_builder_preserves_full_optimizer_config_and_requirements() {
 }
 
 #[test]
-fn backend_install_freezes_native_session_keys() {
+fn backend_install_installs_optimizer_rule_matching_backend_config() {
     let backend = validated(bounded_backend_builder(&[0])).unwrap();
     let state =
         super::install_backend_optimizer_config(SessionStateBuilder::new(), &backend.optimizer_config).unwrap().build();
-    let extension = state
-        .config_options()
-        .extensions
-        .get::<DataFusionNexusSessionConfig>()
-        .expect("backend install must register datafusion-nexus session config");
-    assert!(extension.is_backend_admission_frozen());
-
-    for option in DATAFUSION_NEXUS_SESSION_CONFIG_OPTIONS {
-        let mut extension = extension.clone();
-        if option.key.starts_with("request.") {
-            extension.set(option.key, "1").unwrap();
-            continue;
-        }
-        let error = extension.set(option.key, "1").unwrap_err();
-        assert!(error.to_string().contains(&option.full_key()));
-        assert!(error.to_string().contains("query-service admission"));
-    }
+    let installed = installed_nexus_native_optimizer_config(&state).unwrap();
+    assert_eq!(installed.final_plan_requirements(), backend.optimizer_config.final_plan_requirements());
+    assert_eq!(installed.native_optimizer_options(), backend.optimizer_config.native_optimizer_options());
+    assert_eq!(installed.native_plan_cost_options(), backend.optimizer_config.native_plan_cost_options());
+    assert_eq!(
+        installed.native_execution_config().max_source_chunk_bytes(),
+        backend.optimizer_config.native_execution_config().max_source_chunk_bytes()
+    );
+    assert_eq!(
+        installed.native_execution_config().max_row_groups_per_chunk(),
+        backend.optimizer_config.native_execution_config().max_row_groups_per_chunk()
+    );
+    assert_eq!(
+        installed.native_execution_config().max_retry_attempts(),
+        backend.optimizer_config.native_execution_config().max_retry_attempts()
+    );
+    assert_eq!(
+        installed.native_execution_config().max_source_reads_in_flight(),
+        backend.optimizer_config.native_execution_config().max_source_reads_in_flight()
+    );
+    assert!(!state.config_options().entries().iter().any(|entry| entry.key.starts_with("datafusion_nexus.")));
 }
 
 #[test]
@@ -332,23 +333,6 @@ fn backend_session_binding_predicate_rejects_sessions_from_another_backend() {
         !second.backend().is_session_state_bound(&first_state),
         "a session installed by another backend is not bound"
     );
-}
-
-#[test]
-fn backend_install_rejects_conflicting_preexisting_session_extension() {
-    let backend = validated(bounded_backend_builder(&[0])).unwrap();
-    let mut config = SessionConfig::new();
-    config
-        .options_mut()
-        .extensions
-        .insert(DataFusionNexusSessionConfig::from_optimizer_config(&NexusNativeOptimizerConfig::default()));
-    let error = super::install_backend_optimizer_config(
-        SessionStateBuilder::new().with_config(config),
-        &backend.optimizer_config,
-    )
-    .unwrap_err();
-    assert_eq!(error.code(), ErrorCode::InvalidRequest);
-    assert_eq!(error.fact_value("reason"), Some("session_config_conflicts_with_backend_admission"));
 }
 
 #[test]

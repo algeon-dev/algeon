@@ -61,8 +61,6 @@ pub struct NexusServerNativeConfigOption {
     pub value_type: &'static str,
     /// Server-side scope for this option.
     pub scope: ServerNativeConfigScope,
-    /// Matching DataFusion session key when this is also session-scoped.
-    pub session_key: Option<&'static str>,
     /// Human-readable operator description.
     pub description: &'static str,
 }
@@ -78,7 +76,6 @@ pub const NEXUS_SERVER_NATIVE_CONFIG_OPTIONS: &[NexusServerNativeConfigOption] =
         env_var: NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
         value_type: "positive integer bytes",
         scope: ServerNativeConfigScope::BoundedExecution,
-        session_key: Some("datafusion_nexus.native.max_source_chunk_bytes"),
         description: "Maximum source bytes planned into one native bounded source chunk.",
     },
     NexusServerNativeConfigOption {
@@ -86,7 +83,6 @@ pub const NEXUS_SERVER_NATIVE_CONFIG_OPTIONS: &[NexusServerNativeConfigOption] =
         env_var: NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV,
         value_type: "positive integer",
         scope: ServerNativeConfigScope::BoundedExecution,
-        session_key: Some("datafusion_nexus.native.max_row_groups_per_chunk"),
         description: "Maximum source row groups planned into one native bounded source chunk.",
     },
     NexusServerNativeConfigOption {
@@ -94,7 +90,6 @@ pub const NEXUS_SERVER_NATIVE_CONFIG_OPTIONS: &[NexusServerNativeConfigOption] =
         env_var: NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
         value_type: "positive integer",
         scope: ServerNativeConfigScope::BoundedExecution,
-        session_key: Some("datafusion_nexus.native.max_retry_attempts"),
         description: "Maximum bounded retry attempts.",
     },
     NexusServerNativeConfigOption {
@@ -102,7 +97,6 @@ pub const NEXUS_SERVER_NATIVE_CONFIG_OPTIONS: &[NexusServerNativeConfigOption] =
         env_var: NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV,
         value_type: "positive integer",
         scope: ServerNativeConfigScope::BoundedExecution,
-        session_key: Some("datafusion_nexus.native.max_source_reads_in_flight"),
         description: "Maximum active native source reads allowed per bounded query.",
     },
     NexusServerNativeConfigOption {
@@ -110,7 +104,6 @@ pub const NEXUS_SERVER_NATIVE_CONFIG_OPTIONS: &[NexusServerNativeConfigOption] =
         env_var: NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
         value_type: "enum: conservative|local_parquet_throughput",
         scope: ServerNativeConfigScope::BoundedExecution,
-        session_key: Some("datafusion_nexus.native.source_chunk_planning_mode"),
         description: "Bounded source chunk planning mode.",
     },
     NexusServerNativeConfigOption {
@@ -118,7 +111,6 @@ pub const NEXUS_SERVER_NATIVE_CONFIG_OPTIONS: &[NexusServerNativeConfigOption] =
         env_var: NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV,
         value_type: "enum: datafusion_exact_host_welford|gpu_native_tolerant",
         scope: ServerNativeConfigScope::NativeExecution,
-        session_key: Some("datafusion_nexus.native.statistical_aggregate_execution_mode"),
         description: "Floating statistical aggregate execution contract.",
     },
     NexusServerNativeConfigOption {
@@ -126,7 +118,6 @@ pub const NEXUS_SERVER_NATIVE_CONFIG_OPTIONS: &[NexusServerNativeConfigOption] =
         env_var: NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV,
         value_type: "enum: no_datafusion_cpu",
         scope: ServerNativeConfigScope::NativeExecution,
-        session_key: None,
         description: "Completed-plan requirement enforced after native rewriting.",
     },
 ];

@@ -47,7 +47,7 @@ use super::{CugraphBfsSource, CugraphBfsSourceVertex};
 #[cfg(feature = "cugraph")]
 use crate::{
     cugraph_sql::CugraphAlgoExec, native_exec::NexusNativeExecutionConfig,
-    session::session_state_with_native_execution_config, session_config::DataFusionNexusSessionConfig,
+    session::session_state_with_native_execution_config,
 };
 
 #[cfg(feature = "cugraph")]
@@ -105,8 +105,7 @@ impl TableProvider for CugraphAlgoTableProvider {
             .ok_or_else(|| plan_error(format!("No table named '{}' for cuGraph edge source", spec.table_name)))?;
         let vertex_domain = validate_edge_source_schema(&spec, &provider.schema())?;
         resolve_vertex_output_schema(&mut spec, &vertex_domain);
-        let native_execution_config =
-            native_execution_config_with_request_options(session_state, self.native_execution_config.clone());
+        let native_execution_config = self.native_execution_config.clone();
         // This nested state lowers the edge/predicate relations only.  The
         // outer cuGraph root owns admission after footer metadata is hydrated;
         // allowing this nested optimizer to bind a ticket would leave a
@@ -161,17 +160,6 @@ fn project_cugraph_scan(
         })
         .collect::<Result<Vec<_>>>()?;
     ProjectionExec::try_new(expressions, producer).map(|projection| Arc::new(projection) as Arc<dyn ExecutionPlan>)
-}
-
-#[cfg(feature = "cugraph")]
-fn native_execution_config_with_request_options(
-    session_state: &SessionState,
-    native_execution_config: NexusNativeExecutionConfig,
-) -> NexusNativeExecutionConfig {
-    let Some(session_config) = session_state.config_options().extensions.get::<DataFusionNexusSessionConfig>() else {
-        return native_execution_config;
-    };
-    session_config.apply_graph_memory_calibration_request_options(native_execution_config)
 }
 
 /// Feature-off table provider. It retains the parser-derived output schema but
@@ -610,32 +598,4 @@ fn validate_predicate_source_schema(
         }
     }
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    #[cfg(feature = "cugraph")]
-    use datafusion::execution::SessionStateBuilder;
-
-    #[cfg(feature = "cugraph")]
-    use super::*;
-
-    #[cfg(feature = "cugraph")]
-    #[test]
-    fn native_execution_config_with_request_options_reads_graph_calibration() {
-        let mut builder = SessionStateBuilder::new();
-        let session_config = builder.config().get_or_insert_with(Default::default);
-        let mut nexus_config = DataFusionNexusSessionConfig::default();
-        nexus_config.set_request_graph_raw_input_edges(Some(45_564_149));
-        session_config.options_mut().extensions.insert(nexus_config);
-        let state = builder.build();
-
-        let execution_config = native_execution_config_with_request_options(
-            &state,
-            NexusNativeExecutionConfig::bounded(1024, 512, 1, 3, 1),
-        );
-
-        let graph_calibration = execution_config.graph_memory_calibration_override();
-        assert_eq!(graph_calibration.raw_input_edges, Some(45_564_149));
-    }
 }

@@ -25,7 +25,6 @@ use crate::{
     error::{DataFusionErrorExt, Error, ErrorCode, ErrorSourceDiagnostics},
     planner::NexusNativeOptimizerConfig,
     session::installed_nexus_native_optimizer_config,
-    session_config::DataFusionNexusSessionConfig,
 };
 
 #[derive(Debug, Clone)]
@@ -95,19 +94,22 @@ pub(super) fn optimizer_config_for_validation(state: &SessionState) -> crate::er
             .with_fact("reason", "native_optimizer_rule_not_installed"));
         },
     };
-    let effective_config = config.with_datafusion_config_options(state.config_options()).map_err(|error| {
-        Error::new(
-            ErrorCode::DataFusionPlanning,
-            "datafusion_nexus.gpu_coverage.validation_config",
-            "failed to apply the cloned session's datafusion-nexus options for GPU coverage validation",
-        )
-        .with_source(error)
-    })?;
     Ok(ValidationOptimizerConfig {
         optimizer_config_source: "installed_session_rule",
-        optimizer_config: config,
-        effective_optimizer_config: effective_config,
+        optimizer_config: config.clone(),
+        effective_optimizer_config: config,
     })
+}
+
+#[derive(Debug)]
+#[expect(dead_code, reason = "fields read through derived Debug format for fingerprint")]
+struct StableNativeValidationPolicy {
+    max_source_chunk_bytes: u64,
+    max_row_groups_per_chunk: usize,
+    max_retry_attempts: usize,
+    max_source_reads_in_flight: usize,
+    source_chunk_planning_mode: nexus_query_engine::runtime::SourceChunkPlanningMode,
+    statistical_aggregate_execution_mode: nexus_query_engine::mode::StatisticalAggregateExecutionMode,
 }
 
 pub(super) fn validated_under(state: &SessionState, config: &ValidationOptimizerConfig) -> QueryGpuValidatedUnder {
@@ -119,9 +121,17 @@ pub(super) fn validated_under(state: &SessionState, config: &ValidationOptimizer
     // turn the plan-time configuration fingerprint into a per-call
     // nonce. Project only the stable session/planner options that
     // affect validation and lowering.
-    let session_options = DataFusionNexusSessionConfig::from_optimizer_config(optimizer_config);
+    let execution = optimizer_config.native_execution_config();
+    let stable_policy = StableNativeValidationPolicy {
+        max_source_chunk_bytes: execution.max_source_chunk_bytes(),
+        max_row_groups_per_chunk: execution.max_row_groups_per_chunk(),
+        max_retry_attempts: execution.max_retry_attempts(),
+        max_source_reads_in_flight: execution.max_source_reads_in_flight(),
+        source_chunk_planning_mode: execution.source_chunk_planning_mode(),
+        statistical_aggregate_execution_mode: execution.statistical_aggregate_execution_mode(),
+    };
     let optimizer_fingerprint_input = format!(
-        "native_optimizer_rule=installed;{rule_names};session_options={session_options:?};native_optimizer_options={:?};native_plan_cost_options={:?};final_plan_requirements={:?}",
+        "native_optimizer_rule=installed;{rule_names};session_options={stable_policy:?};native_optimizer_options={:?};native_plan_cost_options={:?};final_plan_requirements={:?}",
         optimizer_config.native_optimizer_options(),
         optimizer_config.native_plan_cost_options(),
         optimizer_config.final_plan_requirements(),

@@ -1556,12 +1556,7 @@ fn graph_memory_estimates_for_plan_with_resident_rows(
         let PlanNode::GraphAlgorithm(graph) = &node.kind else {
             continue;
         };
-        let Some(mut input) = graph_memory_model_input_for_plan_node_with_resident_rows(
-            plan,
-            graph,
-            calibration_override,
-            resident_rows,
-        )?
+        let Some(mut input) = graph_memory_model_input_for_plan_node_with_resident_rows(plan, graph, resident_rows)?
         else {
             continue;
         };
@@ -1719,18 +1714,18 @@ pub fn graph_memory_model_input_for_plan_node(
     graph: &crate::plan::GraphAlgorithmNode,
     calibration_override: GraphMemoryCalibrationOverride,
 ) -> Result<Option<GraphMemoryModelInput>> {
-    graph_memory_model_input_for_plan_node_with_resident_rows(plan, graph, calibration_override, &HashMap::new())
+    let Some(input) = graph_memory_model_input_for_plan_node_with_resident_rows(plan, graph, &HashMap::new())? else {
+        return Ok(None);
+    };
+    Ok(Some(calibration_override.apply_to_input(input)))
 }
 
 fn graph_memory_model_input_for_plan_node_with_resident_rows(
     plan: &QueryPlan,
     graph: &crate::plan::GraphAlgorithmNode,
-    calibration_override: GraphMemoryCalibrationOverride,
     resident_rows: &HashMap<String, u64>,
 ) -> Result<Option<GraphMemoryModelInput>> {
-    let Some(edge_counts) =
-        graph_plan_edge_counts(plan, graph.input, calibration_override.raw_input_edges, resident_rows)?
-    else {
+    let Some(edge_counts) = graph_plan_edge_counts(plan, graph.input, resident_rows)? else {
         return Ok(None);
     };
     let input_schema =
@@ -1985,7 +1980,7 @@ fn hard_row_upper_bound_with_resident_rows(
             Some((rows, GraphPairCardinalitySource::PlanHardUpperBound))
         },
         PlanNode::GraphAlgorithm(graph) => {
-            let edge_counts = graph_plan_edge_counts(plan, graph.input, None, resident_rows).ok().flatten()?;
+            let edge_counts = graph_plan_edge_counts(plan, graph.input, resident_rows).ok().flatten()?;
             let vertex_upper_bound =
                 edge_counts.graph_vertex_upper_bound.or_else(|| edge_counts.input_edges.checked_mul(2))?;
             let pair_rows = if graph.spec.algorithm.is_similarity() {
@@ -2102,16 +2097,14 @@ struct GraphPlanEdgeCounts {
 fn graph_plan_edge_counts(
     plan: &QueryPlan,
     graph_input: NodeId,
-    configured_raw_input_edges: Option<u64>,
     resident_rows: &HashMap<String, u64>,
 ) -> Result<Option<GraphPlanEdgeCounts>> {
     let Some(node) = plan.node(graph_input) else {
         return Ok(None);
     };
     if let PlanNode::EdgeNormalize(edge_normalize) = &node.kind {
-        let Some(raw_input_edges) = hard_row_upper_bound_with_resident_rows(plan, edge_normalize.input, resident_rows)
-            .map(|(rows, _)| rows)
-            .or(configured_raw_input_edges)
+        let Some(raw_input_edges) =
+            hard_row_upper_bound_with_resident_rows(plan, edge_normalize.input, resident_rows).map(|(rows, _)| rows)
         else {
             return Ok(None);
         };
@@ -2121,14 +2114,13 @@ fn graph_plan_edge_counts(
             graph_vertex_upper_bound: graph_vertex_upper_bound_for_plan_node(plan, edge_normalize.input),
         }));
     }
-    let Some(input_edges) = hard_row_upper_bound_with_resident_rows(plan, graph_input, resident_rows)
-        .map(|(rows, _)| rows)
-        .or(configured_raw_input_edges)
+    let Some(input_edges) =
+        hard_row_upper_bound_with_resident_rows(plan, graph_input, resident_rows).map(|(rows, _)| rows)
     else {
         return Ok(None);
     };
     Ok(Some(GraphPlanEdgeCounts {
-        raw_input_edges: configured_raw_input_edges,
+        raw_input_edges: None,
         input_edges,
         graph_vertex_upper_bound: graph_vertex_upper_bound_for_plan_node(plan, graph_input),
     }))

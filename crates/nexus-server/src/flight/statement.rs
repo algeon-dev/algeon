@@ -165,17 +165,9 @@ impl DatafusionNexusFlightSqlService {
             self.native_optimizer_config.clone().with_native_execution_config(execution_config.clone());
         // Retain the native rule so we can read its `last_report` for the
         // planning-report log after physical optimization runs.
-        let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone()));
-        let mut session_extension = DataFusionNexusSessionConfig::from_optimizer_config(&optimizer_config);
-        if optimizer_config.native_execution_config().has_query_admission_authority() {
-            session_extension = session_extension.frozen_for_backend_admission();
-        }
-        let builder = install_nexus_native_rule_with_session_config(
-            SessionStateBuilder::new_from_existing(self.ctx.state()),
-            Arc::clone(&native_rule),
-            session_extension,
-        )
-        .expect("server query planning should install a session config derived from the same optimizer config");
+        let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
+        let builder =
+            SessionStateBuilder::new_from_existing(self.ctx.state()).with_nexus_native_rule(Arc::clone(&native_rule));
         let builder = if let Some(cugraph_sql_config) = &self.cugraph_sql_config {
             builder
                 .try_with_cugraph_sql(cugraph_sql_config.clone().with_native_execution_config(execution_config))

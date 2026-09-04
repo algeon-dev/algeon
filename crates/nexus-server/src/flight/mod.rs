@@ -65,7 +65,7 @@ use crate::{
     adapter_error::{DataFusionErrorExt, Error, ErrorCode, ErrorLogDiagnostics},
     adapter_session::{
         NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
-        NexusSessionStateBuilderExt, install_nexus_native_rule_with_session_config,
+        NexusSessionStateBuilderExt,
     },
     cugraph_sql::CugraphSqlConfig,
     gpu_coverage::{ExplainGpuOutputMode, parse_explain_gpu, validate_query},
@@ -75,7 +75,6 @@ use crate::{
         ServerInternalNativeObservationActivityFactory as NativeObservationActivityFactory,
     },
     planner::{NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME, NexusNativeOptimizerConfig, NexusNativePhysicalOptimizerRule},
-    session_config::DataFusionNexusSessionConfig,
 };
 
 mod correlation;
