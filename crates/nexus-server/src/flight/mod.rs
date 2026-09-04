@@ -67,8 +67,11 @@ use crate::{
         NEXUS_NATIVE_COUNT_ONLY_PHYSICAL_OPTIMIZER_RULE_NAME, NEXUS_NATIVE_PHYSICAL_OPTIMIZER_RULE_NAME,
         NexusSessionStateBuilderExt,
     },
-    gpu_coverage::{ExplainGpuOutputMode, parse_explain_gpu, validate_query},
-    gpu_coverage_sql::{coverage_batch, coverage_schema},
+    gpu_coverage::{
+        ExplainGpuOutputMode, parse_explain_gpu,
+        server_internal::{coverage_batch, coverage_schema},
+        validate_query,
+    },
     native_exec::{
         ServerInternalNativeMetricsCapture as NativeMetricsCapture,
         ServerInternalNativeObservationActivityFactory as NativeObservationActivityFactory,

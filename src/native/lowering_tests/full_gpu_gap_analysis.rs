@@ -1,7 +1,7 @@
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-enum GpuCoverageSqlFeature {
+enum GpuGapFeature {
     AggregateFilter,
     AggregateFunction,
     Window,
@@ -17,34 +17,34 @@ enum ExpectedGpuCoverageOutcome {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct GpuCoverageSqlCase {
+struct GpuGapCase {
     id: &'static str,
-    feature: GpuCoverageSqlFeature,
+    feature: GpuGapFeature,
     sql: &'static str,
     expected: ExpectedGpuCoverageOutcome,
 }
 
-const AGGREGATE_FILTER_CASES: &[GpuCoverageSqlCase] = &[
-    GpuCoverageSqlCase {
+const AGGREGATE_FILTER_CASES: &[GpuGapCase] = &[
+    GpuGapCase {
         id: "aggregate_filter_sum",
-        feature: GpuCoverageSqlFeature::AggregateFilter,
+        feature: GpuGapFeature::AggregateFilter,
         sql: "SELECT key, SUM(payload) FILTER (WHERE flag) AS s FROM bench GROUP BY key",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
     // TRY_CAST(string AS int) is admitted natively (Utf8/LargeUtf8/Utf8View →
     // any signed/unsigned integer); the resulting nullable predicate is a
     // valid aggregate FILTER expression.
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "aggregate_filter_try_cast",
-        feature: GpuCoverageSqlFeature::AggregateFilter,
+        feature: GpuGapFeature::AggregateFilter,
         sql: "SELECT key, SUM(payload) FILTER (WHERE TRY_CAST(name AS INT) > 0) AS s FROM bench GROUP BY key",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
 ];
 
-const AGGREGATE_FUNCTION_CASES: &[GpuCoverageSqlCase] = &[GpuCoverageSqlCase {
+const AGGREGATE_FUNCTION_CASES: &[GpuGapCase] = &[GpuGapCase {
     id: "aggregate_approx_distinct",
-    feature: GpuCoverageSqlFeature::AggregateFunction,
+    feature: GpuGapFeature::AggregateFunction,
     sql: "SELECT APPROX_DISTINCT(name) AS distinct_names FROM bench",
     expected: ExpectedGpuCoverageOutcome::NotSupported {
         reason: CapabilityReason::UnsupportedOperator,
@@ -52,35 +52,35 @@ const AGGREGATE_FUNCTION_CASES: &[GpuCoverageSqlCase] = &[GpuCoverageSqlCase {
     },
 }];
 
-const WINDOW_CASES: &[GpuCoverageSqlCase] = &[
-    GpuCoverageSqlCase {
+const WINDOW_CASES: &[GpuGapCase] = &[
+    GpuGapCase {
         id: "window_lag",
-        feature: GpuCoverageSqlFeature::Window,
+        feature: GpuGapFeature::Window,
         sql: "SELECT id, LAG(payload) OVER (PARTITION BY key ORDER BY id) AS prev_payload FROM bench",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "window_lag_offset_default",
-        feature: GpuCoverageSqlFeature::Window,
+        feature: GpuGapFeature::Window,
         sql: "SELECT id, LAG(payload, 2, 0) OVER (PARTITION BY key ORDER BY id) AS prev_payload \
               FROM bench",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "window_lead",
-        feature: GpuCoverageSqlFeature::Window,
+        feature: GpuGapFeature::Window,
         sql: "SELECT id, LEAD(payload) OVER (PARTITION BY key ORDER BY id) AS next_payload FROM bench",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "window_row_number",
-        feature: GpuCoverageSqlFeature::Window,
+        feature: GpuGapFeature::Window,
         sql: "SELECT id, ROW_NUMBER() OVER (PARTITION BY key ORDER BY payload) AS rn FROM bench",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "window_bounded_sum",
-        feature: GpuCoverageSqlFeature::Window,
+        feature: GpuGapFeature::Window,
         sql: "SELECT id, SUM(payload) OVER (PARTITION BY key ORDER BY id ROWS BETWEEN 1 PRECEDING AND CURRENT ROW) AS s FROM bench",
         expected: ExpectedGpuCoverageOutcome::NotSupported {
             reason: CapabilityReason::UnsupportedOperator,
@@ -89,22 +89,22 @@ const WINDOW_CASES: &[GpuCoverageSqlCase] = &[
     },
 ];
 
-const SCALAR_EXPRESSION_CASES: &[GpuCoverageSqlCase] = &[
+const SCALAR_EXPRESSION_CASES: &[GpuGapCase] = &[
     // TRY_CAST(string AS integer) is admitted natively. DataFusion projection
     // pushdown collapses the cast into the DataSourceExec projection; the
     // adapter still recognises it as a supported try-cast.
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "try_cast_string_to_int",
-        feature: GpuCoverageSqlFeature::ScalarExpression,
+        feature: GpuGapFeature::ScalarExpression,
         sql: "SELECT id, TRY_CAST(name AS INT) AS maybe_int FROM bench",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
     // TRY_CAST to a non-integer target (Float64) remains unsupported until
     // libcudf grows a string→float null-on-failure primitive; the structured
     // reject category still pins the unsupported type pair.
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "try_cast_string_to_float",
-        feature: GpuCoverageSqlFeature::ScalarExpression,
+        feature: GpuGapFeature::ScalarExpression,
         sql: "SELECT id, TRY_CAST(name AS DOUBLE) AS maybe_float FROM bench",
         expected: ExpectedGpuCoverageOutcome::NotSupported {
             reason: CapabilityReason::UnsupportedExpression,
@@ -114,174 +114,174 @@ const SCALAR_EXPRESSION_CASES: &[GpuCoverageSqlCase] = &[
     // TRY_CAST whose source is not a string column (here a numeric column)
     // also stays unsupported in v1 — the lower-level primitive is
     // string→integer only.
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "try_cast_int_to_int",
-        feature: GpuCoverageSqlFeature::ScalarExpression,
+        feature: GpuGapFeature::ScalarExpression,
         sql: "SELECT id, TRY_CAST(payload AS SMALLINT) AS narrowed FROM bench",
         expected: ExpectedGpuCoverageOutcome::NotSupported {
             reason: CapabilityReason::UnsupportedExpression,
             unsupported_category: "expression_try_cast_int64_to_int16",
         },
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "integer_to_timestamp_cast",
-        feature: GpuCoverageSqlFeature::ScalarExpression,
+        feature: GpuGapFeature::ScalarExpression,
         sql: "SELECT id, CAST(payload AS TIMESTAMP) AS ts FROM bench",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "sqrt_scalar_function",
-        feature: GpuCoverageSqlFeature::ScalarExpression,
+        feature: GpuGapFeature::ScalarExpression,
         sql: "SELECT id, sqrt(score) AS root_score FROM bench",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "string_concat_operator",
-        feature: GpuCoverageSqlFeature::ScalarExpression,
+        feature: GpuGapFeature::ScalarExpression,
         sql: "SELECT id, name || '-x' AS label FROM bench",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "is_distinct_from",
-        feature: GpuCoverageSqlFeature::ScalarExpression,
+        feature: GpuGapFeature::ScalarExpression,
         sql: "SELECT id FROM bench WHERE name IS DISTINCT FROM 'alpha'",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
 ];
 
-const ROOT_SOURCE_CASES: &[GpuCoverageSqlCase] = &[
-    GpuCoverageSqlCase {
+const ROOT_SOURCE_CASES: &[GpuGapCase] = &[
+    GpuGapCase {
         id: "offset_without_limit",
-        feature: GpuCoverageSqlFeature::RootSource,
+        feature: GpuGapFeature::RootSource,
         sql: "SELECT id, payload FROM bench OFFSET 2",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "explain_query",
-        feature: GpuCoverageSqlFeature::RootSource,
+        feature: GpuGapFeature::RootSource,
         sql: "EXPLAIN SELECT id FROM bench WHERE key = 10",
         expected: ExpectedGpuCoverageOutcome::NotSupported {
             reason: CapabilityReason::UnsupportedOperator,
             unsupported_category: "operator_explain",
         },
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "literal_only_projection",
-        feature: GpuCoverageSqlFeature::RootSource,
+        feature: GpuGapFeature::RootSource,
         sql: "SELECT 1 AS one",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "values_table",
-        feature: GpuCoverageSqlFeature::RootSource,
+        feature: GpuGapFeature::RootSource,
         sql: "SELECT a, b FROM (VALUES (1, 10), (2, 20)) AS t(a, b)",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
 ];
 
-const EXISTING_COVERAGE_CASES: &[GpuCoverageSqlCase] = &[
-    GpuCoverageSqlCase {
+const EXISTING_COVERAGE_CASES: &[GpuGapCase] = &[
+    GpuGapCase {
         id: "filter_projection",
-        feature: GpuCoverageSqlFeature::ExistingCoverage,
+        feature: GpuGapFeature::ExistingCoverage,
         sql: "SELECT id, payload + 1 AS payload_plus FROM bench WHERE key = 10",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "grouped_aggregate_order_limit",
-        feature: GpuCoverageSqlFeature::ExistingCoverage,
+        feature: GpuGapFeature::ExistingCoverage,
         sql: "SELECT key, SUM(payload) AS s FROM bench GROUP BY key ORDER BY s DESC, key ASC LIMIT 2",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "having_after_aggregate",
-        feature: GpuCoverageSqlFeature::ExistingCoverage,
+        feature: GpuGapFeature::ExistingCoverage,
         sql: "SELECT key, SUM(payload) AS s FROM bench GROUP BY key HAVING SUM(payload) > 10",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "self_hash_join_aggregate",
-        feature: GpuCoverageSqlFeature::ExistingCoverage,
+        feature: GpuGapFeature::ExistingCoverage,
         sql: "SELECT b.key, COUNT(*) AS rows FROM bench b JOIN bench s ON b.key = s.key GROUP BY b.key",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "left_join",
-        feature: GpuCoverageSqlFeature::ExistingCoverage,
+        feature: GpuGapFeature::ExistingCoverage,
         sql: "SELECT b.id, s.payload AS matched_payload FROM bench b LEFT JOIN bench s ON b.key = s.key",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "non_equi_inner_join",
-        feature: GpuCoverageSqlFeature::ExistingCoverage,
+        feature: GpuGapFeature::ExistingCoverage,
         sql: "SELECT b.id, s.id AS sid FROM bench b JOIN bench s ON b.payload < s.payload",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "union_all",
-        feature: GpuCoverageSqlFeature::ExistingCoverage,
+        feature: GpuGapFeature::ExistingCoverage,
         sql: "SELECT key FROM bench WHERE flag UNION ALL SELECT key FROM bench WHERE payload > 10",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "count_distinct",
-        feature: GpuCoverageSqlFeature::ExistingCoverage,
+        feature: GpuGapFeature::ExistingCoverage,
         sql: "SELECT COUNT(DISTINCT name) AS distinct_names FROM bench",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "avg_distinct",
-        feature: GpuCoverageSqlFeature::ExistingCoverage,
+        feature: GpuGapFeature::ExistingCoverage,
         sql: "SELECT AVG(DISTINCT payload) AS avg_payload FROM bench",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "rank_window",
-        feature: GpuCoverageSqlFeature::ExistingCoverage,
+        feature: GpuGapFeature::ExistingCoverage,
         sql: "SELECT id, RANK() OVER (PARTITION BY key ORDER BY payload) AS r FROM bench",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "starts_with_like_rewrite",
-        feature: GpuCoverageSqlFeature::ExistingCoverage,
+        feature: GpuGapFeature::ExistingCoverage,
         sql: "SELECT id FROM bench WHERE starts_with(name, 'a')",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "regexp_replace",
-        feature: GpuCoverageSqlFeature::ExistingCoverage,
+        feature: GpuGapFeature::ExistingCoverage,
         sql: "SELECT id, regexp_replace(name, 'a', 'x') AS rewritten_name FROM bench",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "order_limit_offset",
-        feature: GpuCoverageSqlFeature::ExistingCoverage,
+        feature: GpuGapFeature::ExistingCoverage,
         sql: "SELECT id, payload FROM bench ORDER BY payload ASC NULLS LAST LIMIT 2 OFFSET 1",
         expected: ExpectedGpuCoverageOutcome::NotSupported {
             reason: CapabilityReason::NativeOrderedOutputUnsupported,
             unsupported_category: "operator_ordering",
         },
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "intersect_rewrite",
-        feature: GpuCoverageSqlFeature::ExistingCoverage,
+        feature: GpuGapFeature::ExistingCoverage,
         sql: "SELECT key FROM bench WHERE flag INTERSECT SELECT key FROM bench WHERE payload > 10",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "except_rewrite",
-        feature: GpuCoverageSqlFeature::ExistingCoverage,
+        feature: GpuGapFeature::ExistingCoverage,
         sql: "SELECT key FROM bench EXCEPT SELECT key FROM bench WHERE flag",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "exists_rewrite",
-        feature: GpuCoverageSqlFeature::ExistingCoverage,
+        feature: GpuGapFeature::ExistingCoverage,
         sql: "SELECT id FROM bench b WHERE EXISTS (SELECT 1 FROM bench s WHERE s.key = b.key AND s.flag)",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
-    GpuCoverageSqlCase {
+    GpuGapCase {
         id: "rollup",
-        feature: GpuCoverageSqlFeature::ExistingCoverage,
+        feature: GpuGapFeature::ExistingCoverage,
         sql: "SELECT key, SUM(payload) AS s FROM bench GROUP BY ROLLUP(key)",
         expected: ExpectedGpuCoverageOutcome::Selected,
     },
@@ -293,7 +293,7 @@ async fn full_gpu_gap_analysis_sql_planning_coverage_is_stable() {
     let path = dir.join("bench.parquet");
     write_full_gpu_gap_analysis_parquet_file(&path);
 
-    for case in gpu_coverage_sql_cases() {
+    for case in gpu_gap_cases() {
         let plan = sql_plan(&path, direct_friendly_sql_session_config(), case.sql).await;
         let lowering = lower_physical_plan_to_native(Arc::clone(&plan));
         assert_planning_report(&case, &lowering);
@@ -323,21 +323,21 @@ async fn full_gpu_gap_analysis_sql_planning_coverage_is_stable() {
 
 #[test]
 fn full_gpu_gap_analysis_sql_fixtures_are_grouped_by_feature() {
-    let groups = gpu_coverage_sql_cases().iter().map(|case| case.feature).collect::<BTreeSet<_>>();
+    let groups = gpu_gap_cases().iter().map(|case| case.feature).collect::<BTreeSet<_>>();
     assert_eq!(
         groups,
         BTreeSet::from([
-            GpuCoverageSqlFeature::AggregateFilter,
-            GpuCoverageSqlFeature::AggregateFunction,
-            GpuCoverageSqlFeature::Window,
-            GpuCoverageSqlFeature::ScalarExpression,
-            GpuCoverageSqlFeature::RootSource,
-            GpuCoverageSqlFeature::ExistingCoverage,
+            GpuGapFeature::AggregateFilter,
+            GpuGapFeature::AggregateFunction,
+            GpuGapFeature::Window,
+            GpuGapFeature::ScalarExpression,
+            GpuGapFeature::RootSource,
+            GpuGapFeature::ExistingCoverage,
         ])
     );
 }
 
-fn gpu_coverage_sql_cases() -> Vec<GpuCoverageSqlCase> {
+fn gpu_gap_cases() -> Vec<GpuGapCase> {
     [
         AGGREGATE_FILTER_CASES,
         AGGREGATE_FUNCTION_CASES,
@@ -352,7 +352,7 @@ fn gpu_coverage_sql_cases() -> Vec<GpuCoverageSqlCase> {
     .collect()
 }
 
-fn assert_planning_report(case: &GpuCoverageSqlCase, lowering: &NativeLoweringResult) {
+fn assert_planning_report(case: &GpuGapCase, lowering: &NativeLoweringResult) {
     assert_eq!(lowering.candidate_count(), 1, "{} outcomes={:?}", case.id, lowering.report.outcomes());
     match case.expected {
         ExpectedGpuCoverageOutcome::Selected => {
@@ -375,7 +375,7 @@ fn assert_planning_report(case: &GpuCoverageSqlCase, lowering: &NativeLoweringRe
     }
 }
 
-fn assert_native_ir_details(case: &GpuCoverageSqlCase, lowering: &NativeLoweringResult) {
+fn assert_native_ir_details(case: &GpuGapCase, lowering: &NativeLoweringResult) {
     match case.id {
         "window_row_number" => {
             let plan = lowering.plans.first().expect("row_number case should lower to a native plan");

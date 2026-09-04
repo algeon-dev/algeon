@@ -22,7 +22,7 @@ use nexus_query_engine::runtime::{
     resident::{GpuDataFrame, GpuResidentInputMap, GpuResultHandle},
 };
 
-use super::producer::{
+use super::{
     execute_gpu_resident_producer_with_context, gpu_resident_producer, prepare_gpu_resident_producer_for_execution,
 };
 use crate::error::{Error, ErrorCode};
@@ -369,7 +369,7 @@ mod tests {
     use super::*;
     use crate::{
         error::DataFusionErrorExt,
-        native_exec::producer::{GpuResidentProducer, register_gpu_resident_producer_discovery},
+        native_exec::{GpuResidentProducer, register_gpu_resident_producer_discovery},
     };
 
     #[derive(Debug)]

@@ -9,15 +9,11 @@ use arrow::{
 };
 use datafusion::{
     catalog::{Session, TableFunction, TableFunctionImpl, TableProvider},
-    common::{DataFusionError, Result, ScalarValue, tree_node::TreeNodeRecursion},
+    common::{DataFusionError, Result, ScalarValue},
     datasource::{MemTable, TableType},
-    execution::{
-        SessionState,
-        context::{SessionContext, TaskContext},
-    },
+    execution::{SessionState, context::SessionContext},
     logical_expr::Expr,
-    physical_expr::PhysicalExpr,
-    physical_plan::{DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, SendableRecordBatchStream},
+    physical_plan::ExecutionPlan,
 };
 
 use crate::{
@@ -27,18 +23,13 @@ use crate::{
         QueryGpuPlanningOutcome, coverage_validator_recursion_error, gpu_coverage_validation_in_progress,
         validate_query,
     },
+    physical_plan::cpu_physical_boundary,
     planner::FinalPlanDisposition,
 };
 
 /// Return the SQL table function that exposes [`validate_query`].
 pub(crate) fn gpu_coverage_table_function() -> Arc<TableFunction> {
     Arc::new(TableFunction::new(NEXUS_EXPLAIN_COVERAGE_FUNCTION.to_string(), Arc::new(GpuCoverageTableFunction)))
-}
-
-/// Register [`NEXUS_EXPLAIN_COVERAGE_FUNCTION`] on an existing DataFusion context.
-pub fn register_gpu_coverage_udtf(ctx: &SessionContext) {
-    let function = gpu_coverage_table_function();
-    ctx.register_udtf(function.name(), Arc::clone(function.function()));
 }
 
 #[derive(Debug)]
@@ -89,60 +80,6 @@ impl TableProvider for GpuCoverageProvider {
         )?;
         let input = table.scan(state, projection, filters, limit).await?;
         Ok(cpu_physical_boundary(input))
-    }
-}
-
-pub(crate) fn cpu_physical_boundary(input: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
-    Arc::new(DataFusionCpuBoundaryExec::new(input))
-}
-
-#[derive(Debug)]
-struct DataFusionCpuBoundaryExec {
-    input: Arc<dyn ExecutionPlan>,
-    properties: Arc<PlanProperties>,
-}
-
-impl DataFusionCpuBoundaryExec {
-    fn new(input: Arc<dyn ExecutionPlan>) -> Self {
-        Self { properties: Arc::clone(input.properties()), input }
-    }
-}
-
-impl DisplayAs for DataFusionCpuBoundaryExec {
-    fn fmt_as(&self, _: DisplayFormatType, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "DataFusionCpuBoundaryExec")
-    }
-}
-
-impl ExecutionPlan for DataFusionCpuBoundaryExec {
-    fn name(&self) -> &str {
-        "DataFusionCpuBoundaryExec"
-    }
-
-    fn properties(&self) -> &Arc<PlanProperties> {
-        &self.properties
-    }
-
-    fn apply_expressions(
-        &self,
-        _f: &mut dyn FnMut(&Arc<dyn PhysicalExpr>) -> Result<TreeNodeRecursion>,
-    ) -> Result<TreeNodeRecursion> {
-        Ok(TreeNodeRecursion::Continue)
-    }
-
-    fn children(&self) -> Vec<&Arc<dyn ExecutionPlan>> {
-        vec![&self.input]
-    }
-
-    fn with_new_children(self: Arc<Self>, children: Vec<Arc<dyn ExecutionPlan>>) -> Result<Arc<dyn ExecutionPlan>> {
-        let [input] = children.try_into().map_err(|children: Vec<Arc<dyn ExecutionPlan>>| {
-            DataFusionError::Internal(format!("coverage CPU boundary expected one child, got {}", children.len()))
-        })?;
-        Ok(Arc::new(Self::new(input)))
-    }
-
-    fn execute(&self, partition: usize, task_context: Arc<TaskContext>) -> Result<SendableRecordBatchStream> {
-        self.input.execute(partition, task_context)
     }
 }
 
@@ -317,7 +254,7 @@ fn usize_to_i64(value: usize, field: &'static str) -> Result<i64> {
     i64::try_from(value).map_err(|_| {
         Error::new(
             ErrorCode::Internal,
-            "datafusion_nexus.gpu_coverage_sql.row",
+            "datafusion_nexus.gpu_coverage.sql.row",
             "coverage row count exceeded Int64 range",
         )
         .with_fact("field", field)
@@ -326,7 +263,7 @@ fn usize_to_i64(value: usize, field: &'static str) -> Result<i64> {
 }
 
 fn plan_error(message: impl Into<String>) -> DataFusionError {
-    Error::new(ErrorCode::InvalidRequest, "datafusion_nexus.gpu_coverage_sql.plan", message).into()
+    Error::new(ErrorCode::InvalidRequest, "datafusion_nexus.gpu_coverage.sql.plan", message).into()
 }
 
 fn strings(values: Vec<String>) -> ArrayRef {
@@ -493,5 +430,19 @@ mod tests {
         assert_eq!(json["planning_outcome"]["status"], "rejected");
         assert!(json["planning_outcome"]["final_plan"].is_null());
         assert_eq!(json["planning_outcome"]["rejection"]["reason_code"], "coverage_validator_recursion_unsupported");
+    }
+
+    #[tokio::test]
+    async fn coverage_table_function_physical_plan_applies_cpu_boundary() {
+        let backend = InstalledTestGpuBackend::new();
+        let state = backend.install_on(SessionStateBuilder::new_with_default_features()).unwrap().build();
+        let ctx = SessionContext::new_with_state(state);
+        let df = ctx.sql("SELECT * FROM nexus_explain_coverage('SELECT 1')").await.unwrap();
+        let plan = df.create_physical_plan().await.unwrap();
+        assert!(
+            plan.downcast_ref::<crate::physical_plan::DataFusionCpuBoundaryExec>().is_some(),
+            "expected DataFusionCpuBoundaryExec at physical root, got {}",
+            plan.name()
+        );
     }
 }

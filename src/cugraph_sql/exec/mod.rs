@@ -76,21 +76,17 @@ use super::{
 use crate::{
     error::{Error, ErrorCode},
     native_exec::{
-        NativeExecutionMetricsCapture, NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig,
-        NexusNativeGpuProducerExec, NexusNativeMetrics,
+        GpuResidentProducer, NativeExecutionMetricsCapture, NexusNativeComposedExec, NexusNativeExec,
+        NexusNativeExecutionConfig, NexusNativeGpuProducerExec, NexusNativeMetrics,
         admission::task_context_with_query_admission_ticket,
+        execute_gpu_resident_producer_with_context, gpu_resident_producer as native_gpu_resident_producer,
+        gpu_resident_producer_hard_output_row_upper_bound, gpu_resident_producer_input_name,
         graph::{
             GraphAdmissionModelAsk, GraphBfsFollowerOutcome, GraphBfsFollowerRoute, GraphBfsLeader,
             GraphBfsPublishedResult, GraphBfsSingleflightJoin, GraphBfsSingleflightKey, GraphExecutionPlan,
             register_graph_execution_plan_discovery,
         },
-        producer::{
-            GpuResidentProducer, execute_gpu_resident_producer_with_context,
-            gpu_resident_producer as native_gpu_resident_producer, gpu_resident_producer_hard_output_row_upper_bound,
-            gpu_resident_producer_input_name, prepare_gpu_resident_producer_for_execution,
-            register_gpu_resident_producer_discovery,
-        },
-        run_gpu_execution_task,
+        prepare_gpu_resident_producer_for_execution, register_gpu_resident_producer_discovery, run_gpu_execution_task,
     },
 };
 

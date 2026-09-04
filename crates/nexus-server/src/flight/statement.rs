@@ -74,7 +74,9 @@ impl DatafusionNexusFlightSqlService {
             match node {
                 LogicalPlan::TableScan(scan)
                     if table_reference_is_information_schema(&scan.table_name)
-                        || ::datafusion_nexus::gpu_functions::is_builtin_gpu_metadata_table_source(&scan.source) =>
+                        || ::datafusion_nexus::gpu_functions::server_internal::is_builtin_gpu_metadata_table_source(
+                            &scan.source,
+                        ) =>
                 {
                     saw_metadata_scan = true;
                 },

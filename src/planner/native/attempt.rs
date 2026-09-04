@@ -21,7 +21,7 @@ use crate::{
     error::{Error, ErrorCode},
     native_exec::{
         NexusNativeComposedExec, NexusNativeExec, NexusNativeExecutionConfig, NexusNativeGpuProducerExec,
-        producer::{gpu_resident_producer_input_name, rewrite_gpu_resident_producer_for_subsumed_composed_consumer},
+        gpu_resident_producer_input_name, rewrite_gpu_resident_producer_for_subsumed_composed_consumer,
     },
     report::{CandidateOutcome, GpuCandidate, NativeCandidateCostEvidence, PlanningReport},
 };

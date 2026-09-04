@@ -29,7 +29,7 @@ use crate::native_exec::NexusNativeExecutionConfig;
 use crate::{
     cugraph_sql::{CugraphGpuFunctionFamily, CugraphSqlConfig, cugraph_table_functions},
     cuvs_sql::{CuvsGpuFunctionFamily, CuvsQueryPlanner, cuvs_gpu_function_availability, cuvs_relation_planner},
-    gpu_coverage_sql::gpu_coverage_table_function,
+    gpu_coverage::gpu_coverage_table_function,
     gpu_functions::{GpuFunctionCatalog, install_gpu_function_family},
     planner::{
         NEXUS_FINAL_PLAN_REQUIREMENT_RULE_NAME, NexusFinalPlanRequirementRule, NexusNativeOptimizerConfig,

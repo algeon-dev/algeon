@@ -28,6 +28,7 @@ use nexus_query_engine::{
 };
 
 use super::{
+    GpuResidentProducer,
     admission::query_admission_ticket_from_task_context,
     common::{
         NATIVE_NEXUS_COMPOSED_EXEC_HOST_OUTPUT_MEMORY_CONSUMER, NativeHostOutputCursor, conservative_properties,
@@ -35,14 +36,13 @@ use super::{
         native_query_runtime_error, properties_with_equivalence, run_gpu_execution_task, write_native_plan_tree,
     },
     config::NexusNativeExecutionConfig,
+    execute_gpu_resident_producer_with_context, gpu_resident_producer_input_name,
     metrics::{
         GraphClaimCalibrationCapture, NativeExecutionMetricsCapture, NexusNativeMetrics, SealedAttemptMetricsTarget,
     },
-    producer::{
-        GpuResidentProducer, execute_gpu_resident_producer_with_context, gpu_resident_producer_input_name,
-        prepare_gpu_resident_producer_for_execution, prepared_gpu_resident_producer_admission_tickets,
-        register_gpu_resident_producer_discovery,
-    },
+    prepare_gpu_resident_producer_for_execution,
+    producer::prepared_gpu_resident_producer_admission_tickets,
+    register_gpu_resident_producer_discovery,
 };
 use crate::{
     attempt::NexusAttemptExtension,
@@ -52,9 +52,15 @@ use crate::{
 
 /// DataFusion wrapper for composed native execution with GPU-resident producer fragments.
 ///
-/// The wrapper executes producer children into `GpuResultHandle`s, maps those handles into a
-/// `GpuResidentInputMap`, then runs a host-sink native consumer plan that materializes the final
-/// result as Arrow for DataFusion.
+/// Created by Nexus physical optimizer and adapter composition. The public type
+/// identity is exposed for [`ExecutionPlan`] inspection, downcasting, metrics
+/// collection, and plan diagnostics.
+///
+/// Construction remains crate-private: constructors validate host sinks, child
+/// producer relationships, equivalence properties, and admission-bound execution
+/// configuration. The wrapper executes producer children into GPU-resident handles,
+/// maps those handles into an input map, and executes a host-sink native consumer
+/// plan that materializes the final result as Arrow for DataFusion streaming.
 #[derive(Debug, Clone)]
 pub struct NexusNativeComposedExec {
     plan: QueryPlan,
@@ -785,13 +791,17 @@ impl ExecutionPlan for NexusNativeComposedExec {
     }
 }
 
-/// GPU-resident form of a relational native consumer with accelerator
-/// producer children.
+/// Composed GPU-resident native fragment producer with nested GPU-resident producer inputs.
 ///
-/// This is an internal composition boundary. It cannot stream Arrow through
-/// [`ExecutionPlan::execute`]; an outer GPU-resident consumer must
-/// prepare it before native admission and execute it with the same native
-/// context used by the final accelerator operation.
+/// Created by Nexus physical optimizer and adapter composition. The public type
+/// identity is exposed for [`ExecutionPlan`] inspection, downcasting, metrics
+/// collection, and plan diagnostics.
+///
+/// Construction remains crate-private: constructors validate GPU-resident sinks,
+/// nested producer children, equivalence properties, GPU-resident input names,
+/// and admission-bound execution configuration. This node produces device-resident
+/// intermediate data and cannot directly stream Arrow through
+/// [`ExecutionPlan::execute`].
 #[derive(Debug, Clone)]
 pub struct NexusNativeComposedGpuProducerExec {
     input_name: String,

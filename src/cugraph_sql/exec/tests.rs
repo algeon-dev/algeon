@@ -64,7 +64,7 @@ use crate::{
     error::{DataFusionErrorExt, ErrorCode},
     native_exec::{
         GraphClaimCalibrationCapture, SealedAttemptMetricsTarget, admission::QueryAdmissionTicket,
-        producer::gpu_resident_producer_unique_output_key, query_admission_ticket_from_task_context,
+        gpu_resident_producer_unique_output_key, query_admission_ticket_from_task_context,
     },
     native_report::NativeDataFusionExecutionMetrics,
     session::NexusSessionStateBuilderExt,
@@ -844,7 +844,7 @@ fn graph_producer_unique_key_contract_comes_from_the_parameterized_graph_output(
         NexusNativeExecutionConfig::bounded_default(),
     )
     .expect("path BFS producer should build");
-    assert!(crate::native_exec::producer::gpu_resident_producer(&path_bfs).is_some());
+    assert!(crate::native_exec::gpu_resident_producer(&path_bfs).is_some());
     assert_eq!(
         gpu_resident_producer_unique_output_key(&path_bfs),
         Some(std::collections::BTreeSet::from(["path_index".to_string()])),
@@ -1503,7 +1503,7 @@ fn string_pagerank_bfs_and_bfs_path_are_gpu_producers_with_unique_key_contracts(
         NexusNativeExecutionConfig::bounded_default(),
     )
     .expect("string PageRank should build as a GPU-resident graph execution");
-    assert!(crate::native_exec::producer::gpu_resident_producer(&pagerank).is_some());
+    assert!(crate::native_exec::gpu_resident_producer(&pagerank).is_some());
 
     let logical = CugraphAlgoExec::try_new(
         bfs_utf8_spec(),
@@ -1514,7 +1514,7 @@ fn string_pagerank_bfs_and_bfs_path_are_gpu_producers_with_unique_key_contracts(
         NexusNativeExecutionConfig::bounded_default(),
     )
     .expect("logical BFS should build as a GPU-resident graph execution");
-    assert!(crate::native_exec::producer::gpu_resident_producer(&logical).is_some());
+    assert!(crate::native_exec::gpu_resident_producer(&logical).is_some());
 
     let numeric_path = CugraphAlgoExec::try_new(
         bfs_utf8_path_spec(),
@@ -1525,7 +1525,7 @@ fn string_pagerank_bfs_and_bfs_path_are_gpu_producers_with_unique_key_contracts(
         NexusNativeExecutionConfig::bounded_default(),
     )
     .expect("logical BFS path should build as a GPU-resident graph execution");
-    assert!(crate::native_exec::producer::gpu_resident_producer(&numeric_path).is_some());
+    assert!(crate::native_exec::gpu_resident_producer(&numeric_path).is_some());
     assert_eq!(
         gpu_resident_producer_unique_output_key(&numeric_path),
         Some(std::collections::BTreeSet::from(["path_index".to_string()])),
@@ -1556,7 +1556,7 @@ fn malformed_logical_bfs_mapping_fails_closed_at_gpu_boundaries() {
     let plan = &exec as &dyn ExecutionPlan;
 
     assert!(
-        crate::native_exec::producer::gpu_resident_producer(plan).is_none(),
+        crate::native_exec::gpu_resident_producer(plan).is_none(),
         "mapping validation errors must not classify a malformed BFS as a GPU producer"
     );
     let rejection = crate::native_exec::graph::GraphExecutionPlan::gpu_resident_output_rejection(&exec)
@@ -2401,7 +2401,7 @@ fn cugraph_algo_exec_registers_frontend_neutral_execution_spis() {
         .expect("cuGraph exec should register its execution SPIs");
     let plan = &exec as &dyn ExecutionPlan;
 
-    let producer = crate::native_exec::producer::gpu_resident_producer(plan)
+    let producer = crate::native_exec::gpu_resident_producer(plan)
         .expect("registered producer discovery should recognize cuGraph execution");
     assert_eq!(producer.gpu_result_input_name(), exec.gpu_result_input_name);
 

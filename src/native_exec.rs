@@ -33,7 +33,7 @@ pub(crate) mod graph;
 mod host;
 pub(crate) mod lakehouse;
 mod metrics;
-pub mod producer;
+mod producer;
 
 pub(crate) use common::run_gpu_execution_task;
 
@@ -53,6 +53,12 @@ pub(crate) use self::{
     admission::{QueryAdmissionSource, plan_is_query_admission_wrapped, wrap_plan_with_query_admission_ticket},
     metrics::{
         NativeExecutionMetricsCapture, NativeRuntimeObservation, NexusNativeMetrics, SealedAttemptMetricsTarget,
+    },
+    producer::{
+        GpuResidentProducer, execute_gpu_resident_producer_with_context, gpu_resident_producer,
+        gpu_resident_producer_hard_output_row_upper_bound, gpu_resident_producer_input_name,
+        gpu_resident_producer_unique_output_key, prepare_gpu_resident_producer_for_execution,
+        register_gpu_resident_producer_discovery, rewrite_gpu_resident_producer_for_subsumed_composed_consumer,
     },
 };
 pub use self::{

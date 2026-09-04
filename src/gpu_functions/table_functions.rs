@@ -19,7 +19,7 @@ use serde_json::{Map, Value};
 use super::{GpuCallRequest, GpuCallValidation, GpuFunctionCatalog, GpuFunctionDescriptor};
 use crate::{
     error::{Error, ErrorCode},
-    gpu_coverage_sql::cpu_physical_boundary,
+    physical_plan::cpu_physical_boundary,
 };
 
 /// Unified GPU function discovery table-function name.
@@ -113,6 +113,7 @@ struct GpuMetadataProvider {
 }
 
 /// Whether `source` is backed by a built-in GPU metadata table function.
+#[cfg_attr(not(feature = "server-internal"), allow(dead_code))]
 pub fn is_builtin_gpu_metadata_table_source(source: &Arc<dyn TableSource>) -> bool {
     source_as_provider(source).is_ok_and(|provider| provider.as_ref().type_id() == TypeId::of::<GpuMetadataProvider>())
 }
@@ -509,5 +510,22 @@ mod tests {
         let code = batches[0].column(0).as_any().downcast_ref::<StringArray>().unwrap();
         assert_eq!(code.value(0), "unknown_function");
         assert!(!code.is_null(0));
+    }
+
+    #[tokio::test]
+    async fn gpu_metadata_table_function_physical_plan_applies_cpu_boundary() {
+        let mut state_builder = SessionStateBuilder::new();
+        let functions = state_builder.table_functions().get_or_insert_with(Default::default);
+        for function in gpu_metadata_table_functions(catalog()) {
+            functions.insert(function.name().to_string(), function);
+        }
+        let ctx = SessionContext::new_with_state(state_builder.build());
+        let df = ctx.sql("SELECT * FROM gpu_list_functions()").await.unwrap();
+        let plan = df.create_physical_plan().await.unwrap();
+        assert!(
+            plan.downcast_ref::<crate::physical_plan::DataFusionCpuBoundaryExec>().is_some(),
+            "expected DataFusionCpuBoundaryExec at physical root, got {}",
+            plan.name()
+        );
     }
 }
