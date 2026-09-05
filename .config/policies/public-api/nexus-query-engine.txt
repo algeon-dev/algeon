@@ -36,6 +36,7 @@ pub use nexus_query_engine::chunk::plan_local_parquet_source_chunks
 pub use nexus_query_engine::chunk::plan_local_parquet_source_chunks_with_execution_context
 pub use nexus_query_engine::chunk::plan_local_parquet_source_chunks_with_metadata_cache
 pub use nexus_query_engine::chunk::plan_source_chunk_batches
+pub use nexus_query_engine::chunk::plan_source_chunk_batches_with_row_cap
 pub mod nexus_query_engine::exec
 pub mod nexus_query_engine::exec::output
 pub enum nexus_query_engine::exec::output::QueryOutput
@@ -73,3 +74,10 @@ pub fn nexus_query_engine::exec::preflight_bounded_query_plan(&nexus_query_plann
 pub fn nexus_query_engine::exec::preflight_query_plan(&nexus_query_planning::plan::core::QueryPlan) -> nexus_query_planning::error::Result<()>
 pub mod nexus_query_engine::harness
 pub use nexus_query_engine::harness::StableFnv1a64
+pub mod nexus_query_engine::shadow
+pub struct nexus_query_engine::shadow::NativeShadowEstimate
+pub nexus_query_engine::shadow::NativeShadowEstimate::collection_elapsed_ns: u64
+pub nexus_query_engine::shadow::NativeShadowEstimate::frontend_outputs: alloc::vec::Vec<serde_json::value::Value>
+pub nexus_query_engine::shadow::NativeShadowEstimate::pipeline: nexus_query_planning::pipeline::shadow::ShadowPipelineEstimate
+pub fn nexus_query_engine::shadow::estimate_compiled_pipeline(&nexus_query_planning::plan::core::QueryPlan, &nexus_query_planning::pipeline::model::CompiledPipeline) -> nexus_query_planning::error::Result<nexus_query_engine::shadow::NativeShadowEstimate>
+pub fn nexus_query_engine::shadow::frontend_output_records(&nexus_query_planning::plan::core::QueryPlan) -> alloc::vec::Vec<serde_json::value::Value>

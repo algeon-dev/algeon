@@ -221,7 +221,8 @@ impl Facts {
     /// Retained entries for query-caller-visible capture (query stats).
     ///
     /// Combines the log-safe operational projection with the explicitly
-    /// caller-visible schema details from [`CLIENT_SCHEMA_DETAIL_FACT_KEYS`].
+    /// caller-visible schema details from the crate-private
+    /// `CLIENT_SCHEMA_DETAIL_FACT_KEYS` allowlist.
     /// Detail values are raw caller schema identifiers: they are sanitized
     /// and bounded exactly like log-safe values, but their presence here is
     /// an explicit per-key disclosure choice, not a general log-safety claim.

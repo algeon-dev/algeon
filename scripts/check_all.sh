@@ -685,8 +685,13 @@ if [[ "${lane}" != policy ]]; then
 fi
 
 if [[ "${mode}" == full ]]; then
-  PHASE_COMMAND[doctests]="flock ${GPU_LOCK} cargo test --workspace --all-features --doc --no-fail-fast"
-  run_phase doctests doctest - "${GPU_LOCK}"     flock "${GPU_LOCK}" cargo test --workspace --all-features --doc --no-fail-fast || true
+  # Doctest binaries are the one harness cargo builds without the component
+  # build scripts' rpath link args, so the loader needs the installed native
+  # libraries on its search path explicitly. rustdoc runs each binary from its
+  # own temporary directory, so these entries must be absolute.
+  doctest_library_path="${ROOT}/target/native/cudf-install/lib:${ROOT}/target/native/cuvs-install/lib:${ROOT}/target/native/cugraph-install/lib:${ROOT}/target/native/cugraph-build${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+  PHASE_COMMAND[doctests]="LD_LIBRARY_PATH=${doctest_library_path} flock ${GPU_LOCK} cargo test --workspace --all-features --doc --no-fail-fast"
+  run_phase doctests doctest - "${GPU_LOCK}"     env "LD_LIBRARY_PATH=${doctest_library_path}" flock "${GPU_LOCK}" cargo test --workspace --all-features --doc --no-fail-fast || true
   PHASE_COMMAND[rustdoc]="RUSTDOCFLAGS='${DOC_RUSTDOCFLAGS}' cargo doc --workspace --all-features --no-deps --keep-going"
   run_phase rustdoc none - - rustdoc_command || true
   rustdoc_summary="command_status=${PHASE_EXIT[rustdoc]} warnings=denied"
