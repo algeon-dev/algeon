@@ -135,16 +135,27 @@ impl QueryPlan {
             .with_dynamic_filter_state_from(source)
             .with_keyed_hash_join_strategy_options(source.keyed_hash_join_strategy_options);
         rewritten.deferred_host_sink_schema = source.deferred_host_sink_schema.clone();
-        let mut unchanged = vec![false; rewritten.node_count()];
-        for node in rewritten.nodes() {
+        rewritten.with_advisory_outputs_from(source)
+    }
+
+    /// Returns this plan with the source plan's frontend advisory volumes,
+    /// invalidating every binding whose node or dependency changed.
+    ///
+    /// Advisory volumes are diagnostic only, so a rewrite that preserves no
+    /// other state still carries them; they never reach capability, admission,
+    /// execution identity, or any plan decision.
+    #[doc(hidden)]
+    pub fn with_advisory_outputs_from(mut self, source: &Self) -> Self {
+        let mut unchanged = vec![false; self.node_count()];
+        for node in self.nodes() {
             unchanged[node.id.index()] =
                 source.node(node.id) == Some(node) && node.input_ids().iter().all(|input| unchanged[input.index()]);
         }
-        rewritten.advisory_outputs = source
+        self.advisory_outputs = source
             .advisory_outputs
             .iter()
             .filter_map(|binding| {
-                let node = rewritten.node(binding.node)?;
+                let node = self.node(binding.node)?;
                 let mut binding = binding.clone();
                 if !unchanged[node.id.index()] {
                     binding.invalidate(super::AdvisoryUnknownReason::RewrittenSubtree);
@@ -153,7 +164,7 @@ impl QueryPlan {
                 Some(binding)
             })
             .collect();
-        rewritten
+        self
     }
 
     /// Returns this plan with keyed-hash join strategy options copied from

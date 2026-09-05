@@ -21,7 +21,8 @@ pub fn optimize_scalar_aggregate_from_grouped_aggregate(plan: QueryPlan) -> Shar
     let mut rewriter = ScalarAggregateDerivationRewriter::new(&plan, discovery.rewrites);
     let new_root = rewriter.rewrite_subtree(root);
     let rewritten_plan = rewrite::finish_rewritten_plan(rewriter.nodes, new_root, &sink)
-        .with_keyed_hash_join_strategy_options_from(&plan);
+        .with_keyed_hash_join_strategy_options_from(&plan)
+            .with_advisory_outputs_from(&plan);
     SharedSubplanMaterializationResult {
         plan: rewritten_plan,
         change: super::NativeOptimizerChange::Changed,

@@ -261,7 +261,8 @@ pub fn optimize_join_build_side_selection(
     let root = plan.root_id();
     JoinBuildSideSelectionResult {
         plan: rewrite::finish_rewritten_plan(nodes, root, plan.sink())
-            .with_keyed_hash_join_strategy_options_from(&plan),
+            .with_keyed_hash_join_strategy_options_from(&plan)
+            .with_advisory_outputs_from(&plan),
         change,
         diagnostics,
     }

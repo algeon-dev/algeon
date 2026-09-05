@@ -158,7 +158,8 @@ pub fn optimize_local_parquet_source_reuse(
     let mut rewriter = LocalParquetSourceReuseRewriter::new(&plan, discovery.rewrites);
     let new_root = rewriter.rewrite_subtree(plan.root_id());
     let rewritten_plan = rewrite::finish_rewritten_plan(rewriter.nodes, new_root, plan.sink())
-        .with_keyed_hash_join_strategy_options_from(&plan);
+        .with_keyed_hash_join_strategy_options_from(&plan)
+        .with_advisory_outputs_from(&plan);
     LocalParquetSourceReuseResult {
         plan: rewritten_plan,
         change: super::NativeOptimizerChange::Changed,

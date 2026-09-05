@@ -58,7 +58,16 @@ async fn shadow_estimate_composes_frontend_advisory_with_the_compiled_schedule()
     };
     let lowered = lower_physical_plan_to_native(Arc::clone(plan));
     assert_eq!(lowered.selected_count(), 1, "{:?}", lowered.report.outcomes());
-    let native = &lowered.plans[0];
+    assert!(!lowered.plans[0].advisory_outputs().is_empty(), "q03 lowering attaches frontend statistics");
+
+    // The estimate is composed over the schedule that actually executes, so the
+    // advisory volumes must survive the optimizer rewrites that produce it.
+    let native = &nexus_query_engine::optimizer::optimize_query_plan(
+        lowered.plans[0].clone(),
+        &nexus_query_engine::optimizer::NativeOptimizerOptions::default(),
+    )
+    .plan;
+    assert!(!native.advisory_outputs().is_empty(), "optimizer rewrites carry frontend statistics forward");
     let admission = bounded_pipeline_decision(native, StatisticalAggregateExecutionMode::default())
         .unwrap()
         .into_execution_admission()
@@ -70,7 +79,6 @@ async fn shadow_estimate_composes_frontend_advisory_with_the_compiled_schedule()
     assert_eq!(estimate.pipeline.envelopes.len(), pipeline.tasks().len());
     assert_eq!(estimate.pipeline.task_workspace.len(), pipeline.tasks().len());
     assert_eq!(estimate.pipeline.resources.len(), pipeline.resources().len());
-    assert!(!native.advisory_outputs().is_empty(), "q03 lowering attaches frontend statistics");
     assert_eq!(estimate.frontend_outputs.len(), native.advisory_outputs().len());
     for (binding, captured) in native.advisory_outputs().iter().zip(&estimate.frontend_outputs) {
         assert_eq!(captured["node"].as_u64(), Some(binding.node.index() as u64));

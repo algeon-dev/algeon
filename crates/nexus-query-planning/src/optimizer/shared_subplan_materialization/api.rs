@@ -83,7 +83,8 @@ pub fn optimize_shared_subplan_materialization_without_scalar_derivation(
     diagnostics.merge(rewriter.diagnostics);
     let changed = rewriter.changed;
     let rewritten_plan = rewrite::finish_rewritten_plan(rewriter.nodes, new_root, &sink)
-        .with_keyed_hash_join_strategy_options_from(&scalar_derivation.plan);
+        .with_keyed_hash_join_strategy_options_from(&scalar_derivation.plan)
+        .with_advisory_outputs_from(&scalar_derivation.plan);
     let change = if changed || scalar_derivation.change.changed() {
         super::NativeOptimizerChange::Changed
     } else {
