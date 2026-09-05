@@ -36,7 +36,6 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
         AggregateOverJoinSubplanInputsVariant::PostRootRepeatedProjection,
         AggregateOverJoinSubplanInputsVariant::PostRootRepeatedSort,
         AggregateOverJoinSubplanInputsVariant::RootOutputIncludesRight,
-        AggregateOverJoinSubplanInputsVariant::LimitAfterRoot,
         AggregateOverJoinSubplanInputsVariant::PreAggregateLeafWithNonSum,
     ] {
         let plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(variant);
@@ -55,6 +54,30 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline_
         assert_rejection_facts_are_family_free(&facts, "unsupported_aggregate_over_join_subplan_inputs");
         assert!(facts.contains_key("bounded_join_rejection_reason"), "{variant:?}");
     }
+
+    // A fetch limit after the root turns the tail into sort+fetch, which is the
+    // root TopK join/aggregate composition over the same keyless conditional and
+    // grouped-aggregate fragments. It stays outside this envelope's post-root
+    // stage contract but is executable and admitted by the root TopK envelope;
+    // capacity is the allocator's, enforced as a typed cap failure at runtime,
+    // not an admission gate.
+    let limit_after_root_plan = keyless_conditional_aggregate_over_join_subplan_inputs_plan(
+        AggregateOverJoinSubplanInputsVariant::LimitAfterRoot,
+    );
+    assert!(!limit_after_root_plan.capability_analysis().admits_root_join());
+    assert!(!limit_after_root_plan.capability_analysis().admits_single_join_post_root_pipeline());
+    assert!(!limit_after_root_plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
+    assert!(
+        !limit_after_root_plan
+            .capability_analysis()
+            .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline()
+    );
+    assert!(!limit_after_root_plan.capability_analysis().admits_closed_multi_join_subgraph());
+    let admission = bounded_pipeline_admission(&limit_after_root_plan)
+        .expect("bounded admission should not fail")
+        .expect("LimitAfterRoot should be admitted through the root TopK join/aggregate envelope");
+    assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
+    assert!(unsupported_facts(&limit_after_root_plan).is_none(), "LimitAfterRoot is admitted, not a support gap");
 }
 
 #[test]

@@ -342,6 +342,9 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(
     if variant.is_null_filtered_aggregate_fan_in() {
         return root_topk_null_filtered_aggregate_fan_in_plan(variant);
     }
+    if variant.is_aggregate_window_filter_topk() {
+        return root_topk_aggregate_window_filter_topk_plan(variant);
+    }
 
     let mut builder = QueryPlanBuilder::new();
     let small_exact_joined_aggregate_input =
@@ -583,6 +586,26 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(
         )
     } else if matches!(variant, RootTopKJoinAggregateVariant::SortFetchLeftSemiJoinInput) {
         semi_join(&mut builder, grouped_projection, customer)
+    } else if matches!(variant, RootTopKJoinAggregateVariant::SortFetchLeftSemiResidualJoinInput) {
+        builder.add_join(
+            grouped_projection,
+            customer,
+            JoinSpec::new(
+                JoinType::LeftSemi,
+                vec![JoinKey::new(ColumnRef::input(0, "k", "k"), ColumnRef::input(1, "k", "k"))],
+            )
+            .with_residual_predicate(Expr::binary(
+                Expr::input_column(0, "v", "v"),
+                BinaryOp::Gt,
+                Expr::input_column(1, "v", "v"),
+            ))
+            .with_output_projection(vec![
+                JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+            ])
+            .with_build_side(JoinSide::Right),
+            key_value_schema(),
+        )
     } else if matches!(variant, RootTopKJoinAggregateVariant::SortFetchLeftSemiWrongBuildSideJoinInput) {
         builder.add_join(
             grouped_projection,
@@ -728,6 +751,7 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(
         RootTopKJoinAggregateVariant::SortFetchHashJoinInput
             | RootTopKJoinAggregateVariant::SortFetchKeyedResidualJoinInput
             | RootTopKJoinAggregateVariant::SortFetchLeftSemiJoinInput
+            | RootTopKJoinAggregateVariant::SortFetchLeftSemiResidualJoinInput
             | RootTopKJoinAggregateVariant::SortFetchLeftSemiWrongBuildSideJoinInput
             | RootTopKJoinAggregateVariant::SortFetchLeftSemiRightOutputJoinInput
             | RootTopKJoinAggregateVariant::SortFetchLeftAntiJoinInput
@@ -838,6 +862,7 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(
         | RootTopKJoinAggregateVariant::SortFetchHashJoinInput
         | RootTopKJoinAggregateVariant::SortFetchKeyedResidualJoinInput
         | RootTopKJoinAggregateVariant::SortFetchLeftSemiJoinInput
+        | RootTopKJoinAggregateVariant::SortFetchLeftSemiResidualJoinInput
         | RootTopKJoinAggregateVariant::SortFetchLeftSemiWrongBuildSideJoinInput
         | RootTopKJoinAggregateVariant::SortFetchLeftSemiRightOutputJoinInput
         | RootTopKJoinAggregateVariant::SortFetchLeftAntiJoinInput
@@ -864,6 +889,13 @@ pub(crate) fn root_topk_join_aggregate_variant_plan(
             let limit = builder.add_limit(sort, LimitSpec::fetch(100), topk_schema);
             builder.finish_with_host_sink(limit)
         },
+        // Dispatched by `is_aggregate_window_filter_topk` before this function body
+        // runs; listed here only to keep this match exhaustive over the enum.
+        RootTopKJoinAggregateVariant::AggregateWindowFilterTopK
+        | RootTopKJoinAggregateVariant::AggregateWindowFilterTopKMissingInputSort
+        | RootTopKJoinAggregateVariant::CumulativeWindowFullOuterTopK => {
+            unreachable!("handled by root_topk_aggregate_window_filter_topk_plan")
+        },
     }
 }
 
@@ -876,10 +908,12 @@ pub(crate) enum RootTopKJoinAggregateVariant {
     /// Canonical root TopK shape: reduced source -> grouped aggregate fragment ->
     /// keyed root join -> projection -> sort(fetch).
     Admitted,
-    /// No source under the aggregate input carries a reduction proof.
+    /// No source under the aggregate input carries a reduction proof; scan size
+    /// is a capacity question owned by the allocator, so this stays admitted.
     MissingSourceReduction,
     /// A source reduction exists, but only on a branch unrelated to the grouped
-    /// aggregate input that bounds the TopK result.
+    /// aggregate input that bounds the TopK result; the branch a dynamic filter
+    /// lands on must not change admission.
     SourceReductionOutsideAggregateInput,
     // Shared-input fixtures distinguish harmless source reuse from computed
     // producer fanout that needs an explicit shared-subplan proof.
@@ -913,8 +947,8 @@ pub(crate) enum RootTopKJoinAggregateVariant {
     // Keyless/cross fixtures exercise the keyless-or-cross subcontract and the
     // narrower keyless outer-cross window subcontract.
     KeylessJoin,
-    /// Adds an unrelated scalar aggregate before the keyless join, so the source
-    /// reduction proof no longer bounds the relevant aggregate input.
+    /// Adds an unrelated scalar aggregate branch (over an unreduced fact scan)
+    /// before the keyless join; neither must break the keyless subcontract.
     KeylessJoinUnrelatedScalarAggregate,
     ProjectedCrossJoin,
     /// Bare keyless outer-cross is rejected; only the modeled window variant has
@@ -937,16 +971,36 @@ pub(crate) enum RootTopKJoinAggregateVariant {
     RankFilterWindowFinalProjection,
     WindowFullOuterLeftOnlyProjection,
     UnsortedRankWindow,
+    /// Grouped aggregate -> sort -> whole-partition aggregate window -> filter ->
+    /// final sort -> limit, with no projection reinserted before the final sort.
+    /// Pins that the window/aggregate composition this contract already admits
+    /// whenever an ORDER BY forces a projection into the chain (q47/q57/q89) is
+    /// admitted just as well when no such projection appears (q53/q63).
+    AggregateWindowFilterTopK,
+    /// Same composition as `AggregateWindowFilterTopK`, but the window is an
+    /// ordered rank fed directly from the (unsorted) aggregate instead of from a
+    /// `Sort`, and the join fragment uses the keyless conditional subcontract so
+    /// no generic envelope admits the plan. Pins that this near-miss keeps its
+    /// own `root_topk_join_aggregate_requires_ordered_window_input` diagnosis
+    /// rather than falling back to the generic pre-window rejection.
+    AggregateWindowFilterTopKMissingInputSort,
+    /// Two grouped-aggregate branches, each followed by a sort and a cumulative
+    /// window, joined by a keyed FULL OUTER join retaining both sides, then
+    /// projection -> sort -> cumulative window -> filter -> final sort -> limit,
+    /// with no projection between the final window/filter and the final sort.
+    CumulativeWindowFullOuterTopK,
     SortFetchHashJoinInput,
     SortFetchKeyedResidualJoinInput,
     SortFetchLeftSemiJoinInput,
+    SortFetchLeftSemiResidualJoinInput,
     SortFetchLeftSemiWrongBuildSideJoinInput,
     SortFetchLeftSemiRightOutputJoinInput,
     SortFetchLeftAntiJoinInput,
     SortFetchKeylessJoinInput,
     SortFetchProjectedCrossJoinInput,
-    // Sort-fetch join-aggregate fixtures. Only the reduced or exact-small cases
-    // have enough evidence to admit.
+    // Sort-fetch join-aggregate fixtures. Full-scan and large-exact variants
+    // admit alongside the reduced and exact-small ones: how much a plan reads is
+    // capacity, owned by the admitted grant's allocator.
     SortFetchSingleHashJoinAggregate,
     SortFetchSingleHashJoinAggregateSmallExact,
     SortFetchSingleHashJoinAggregateSourceAdjacentFilters,
@@ -984,6 +1038,15 @@ impl RootTopKJoinAggregateVariant {
                 | Self::SortFetchNullFilteredLeftAggregateFanInMissingBranchReduction
                 | Self::SortFetchNullFilteredLeftAggregateFanInFullBoundedReturnBuilds
                 | Self::SortFetchNullFilteredLeftAggregateFanInLargeReturnBuild
+        )
+    }
+
+    fn is_aggregate_window_filter_topk(self) -> bool {
+        matches!(
+            self,
+            Self::AggregateWindowFilterTopK
+                | Self::AggregateWindowFilterTopKMissingInputSort
+                | Self::CumulativeWindowFullOuterTopK
         )
     }
 }
@@ -1209,6 +1272,124 @@ fn grouped_aggregate_with_extra_key(
         Arc::clone(&schema),
     );
     builder.add_projection(grouped, projection_outputs(vec![Expr::column("k"), Expr::column("v")], key_value_schema()))
+}
+
+fn root_topk_aggregate_window_filter_topk_plan(
+    variant: RootTopKJoinAggregateVariant,
+) -> nexus_query_engine::plan::QueryPlan {
+    if matches!(variant, RootTopKJoinAggregateVariant::CumulativeWindowFullOuterTopK) {
+        return root_topk_cumulative_window_full_outer_topk_plan();
+    }
+    let missing_input_sort = matches!(variant, RootTopKJoinAggregateVariant::AggregateWindowFilterTopKMissingInputSort);
+
+    let mut builder = QueryPlanBuilder::new();
+    let fact = source(&mut builder, "root-topk-aggregate-window-filter-fact");
+    let date = source(&mut builder, "root-topk-aggregate-window-filter-date");
+    let store = source(&mut builder, "root-topk-aggregate-window-filter-store");
+    let fact_date = join(&mut builder, fact, date, "fact_date");
+    let fact_store = if missing_input_sort {
+        // The near-miss fixture keeps its join fragment on the keyless conditional
+        // subcontract, which the root TopK envelope models but the generic closed
+        // multi-join subtree does not. Otherwise the whole plan is admitted by the
+        // generic envelope and the window near-miss never projects a rejection.
+        builder.add_join(
+            fact_date,
+            store,
+            JoinSpec::new(JoinType::Inner, vec![])
+                .with_residual_predicate(Expr::binary(
+                    Expr::input_column(0, "k", "k"),
+                    BinaryOp::LtEq,
+                    Expr::input_column(1, "k", "k"),
+                ))
+                .with_output_projection(vec![
+                    JoinOutputColumn::left(ColumnRef::input(0, "k", "k"), "k"),
+                    JoinOutputColumn::left(ColumnRef::input(0, "v", "v"), "v"),
+                ])
+                .with_build_side(JoinSide::Right),
+            key_value_schema(),
+        )
+    } else {
+        join(&mut builder, fact_date, store, "fact_store")
+    };
+    let grouped = grouped_aggregate(&mut builder, fact_store);
+
+    let (filter, filter_schema) = if missing_input_sort {
+        // Ordered window fed directly from the aggregate, without an input sort:
+        // pins that this near-miss keeps its own `requires_ordered_window_input`
+        // diagnosis instead of the generic pre-window rejection.
+        let window = rank_window(&mut builder, grouped);
+        let schema = rank_window_schema();
+        let filter = builder.add_filter(
+            window,
+            Expr::binary(Expr::column("rank"), BinaryOp::Gt, Expr::literal(LiteralValue::UInt64(0))),
+            Arc::clone(&schema),
+        );
+        (filter, schema)
+    } else {
+        let sorted = builder.add_sort(
+            grouped,
+            SortSpec::new(vec![SortExpr::new(Expr::column("k"), false, false)]),
+            key_value_schema(),
+        );
+        let window = unordered_aggregate_window(&mut builder, sorted);
+        let schema = unordered_aggregate_window_schema();
+        let filter = builder.add_filter(
+            window,
+            Expr::binary(Expr::column("window_v"), BinaryOp::Gt, Expr::literal(LiteralValue::Int64(0))),
+            Arc::clone(&schema),
+        );
+        (filter, schema)
+    };
+    let sort = builder.add_sort(
+        filter,
+        SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)]),
+        Arc::clone(&filter_schema),
+    );
+    let limit = builder.add_limit(sort, LimitSpec::fetch(100), filter_schema);
+    builder.finish_with_host_sink(limit)
+}
+
+fn root_topk_cumulative_window_full_outer_topk_plan() -> nexus_query_engine::plan::QueryPlan {
+    let mut builder = QueryPlanBuilder::new();
+    let left = cumulative_window_grouped_aggregate_branch(&mut builder, "root-topk-cumulative-full-outer-left");
+    let right = cumulative_window_grouped_aggregate_branch(&mut builder, "root-topk-cumulative-full-outer-right");
+    let full_outer = full_join(&mut builder, left, right, FullJoinOutput::BothSides);
+    let projected = project_key_value(&mut builder, full_outer);
+    let sorted = builder.add_sort(
+        projected,
+        SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)]),
+        key_value_schema(),
+    );
+    let window = cumulative_aggregate_window(&mut builder, sorted);
+    let schema = cumulative_aggregate_window_schema();
+    let filter = builder.add_filter(
+        window,
+        Expr::binary(Expr::column("window_v"), BinaryOp::Gt, Expr::literal(LiteralValue::Int64(0))),
+        Arc::clone(&schema),
+    );
+    let final_sort = builder.add_sort(
+        filter,
+        SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)]),
+        Arc::clone(&schema),
+    );
+    let limit = builder.add_limit(final_sort, LimitSpec::fetch(100), schema);
+    builder.finish_with_host_sink(limit)
+}
+
+fn cumulative_window_grouped_aggregate_branch(
+    builder: &mut QueryPlanBuilder,
+    label: &str,
+) -> nexus_query_engine::plan::NodeId {
+    let fact = source(builder, &format!("{label}-fact"));
+    let date = source(builder, &format!("{label}-date"));
+    let fact_date = join(builder, fact, date, "fact_date");
+    let grouped = grouped_aggregate(builder, fact_date);
+    let sorted = builder.add_sort(
+        grouped,
+        SortSpec::new(vec![SortExpr::new(Expr::column("v"), true, false)]),
+        key_value_schema(),
+    );
+    cumulative_aggregate_window(builder, sorted)
 }
 
 #[expect(dead_code, reason = "shared across test binaries; not all path-includes call this constructor")]
@@ -1448,24 +1629,34 @@ fn scalar_key_value_aggregate(
     )
 }
 
-fn rank_window_project_key_value(
+fn rank_window(
     builder: &mut QueryPlanBuilder,
     input: nexus_query_engine::plan::NodeId,
 ) -> nexus_query_engine::plan::NodeId {
-    let window_schema = Arc::new(Schema::new(vec![
-        Field::new("k", DataType::Int32, false),
-        Field::new("v", DataType::Int64, true),
-        Field::new("rank", DataType::UInt64, false),
-    ]));
-    let window = builder.add_window(
+    builder.add_window(
         input,
         WindowSpec::new(
             vec![Expr::column("k")],
             vec![SortExpr::new(Expr::column("v"), true, false)],
             vec![WindowFunction::Rank { alias: "rank".to_string() }],
         ),
-        window_schema,
-    );
+        rank_window_schema(),
+    )
+}
+
+fn rank_window_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int32, false),
+        Field::new("v", DataType::Int64, true),
+        Field::new("rank", DataType::UInt64, false),
+    ]))
+}
+
+fn rank_window_project_key_value(
+    builder: &mut QueryPlanBuilder,
+    input: nexus_query_engine::plan::NodeId,
+) -> nexus_query_engine::plan::NodeId {
+    let window = rank_window(builder, input);
     project_key_value(builder, window)
 }
 
@@ -1484,24 +1675,34 @@ fn sorted_rank_window_project_key_value(
     rank_window_project_key_value(builder, sort)
 }
 
-fn unordered_aggregate_window_project_key_value(
+fn unordered_aggregate_window(
     builder: &mut QueryPlanBuilder,
     input: nexus_query_engine::plan::NodeId,
 ) -> nexus_query_engine::plan::NodeId {
-    let window_schema = Arc::new(Schema::new(vec![
-        Field::new("k", DataType::Int32, false),
-        Field::new("v", DataType::Int64, true),
-        Field::new("window_v", DataType::Int64, true),
-    ]));
-    let window = builder.add_window(
+    builder.add_window(
         input,
         WindowSpec::new(
             vec![Expr::column("k")],
             vec![],
             vec![WindowFunction::aggregate(AggregateFunction::Sum, Expr::column("v"), "window_v")],
         ),
-        window_schema,
-    );
+        unordered_aggregate_window_schema(),
+    )
+}
+
+fn unordered_aggregate_window_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int32, false),
+        Field::new("v", DataType::Int64, true),
+        Field::new("window_v", DataType::Int64, true),
+    ]))
+}
+
+fn unordered_aggregate_window_project_key_value(
+    builder: &mut QueryPlanBuilder,
+    input: nexus_query_engine::plan::NodeId,
+) -> nexus_query_engine::plan::NodeId {
+    let window = unordered_aggregate_window(builder, input);
     project_key_value(builder, window)
 }
 
@@ -1524,6 +1725,29 @@ fn unordered_global_aggregate_window_project_key_value(
         window_schema,
     );
     project_key_value(builder, window)
+}
+
+fn cumulative_aggregate_window(
+    builder: &mut QueryPlanBuilder,
+    input: nexus_query_engine::plan::NodeId,
+) -> nexus_query_engine::plan::NodeId {
+    builder.add_window(
+        input,
+        WindowSpec::new(
+            vec![Expr::column("k")],
+            vec![SortExpr::new(Expr::column("v"), true, false)],
+            vec![WindowFunction::cumulative_aggregate(AggregateFunction::Sum, Expr::column("v"), "window_v")],
+        ),
+        cumulative_aggregate_window_schema(),
+    )
+}
+
+fn cumulative_aggregate_window_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int32, false),
+        Field::new("v", DataType::Int64, true),
+        Field::new("window_v", DataType::Int64, true),
+    ]))
 }
 
 fn rank_filter_window_project_key_value(

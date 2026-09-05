@@ -7,17 +7,13 @@ use super::{
     join_node_with_missing_reason, node_kind_for_fact, node_operator_fact, peel_resident_unary_chain_for_capability,
     sort_input_with_missing_reason,
 };
-use crate::{
-    dynamic_filter::{DynamicFilterConsumer, DynamicFilterConsumerReductionStage},
-    plan::{WindowFrame, WindowNode, column_evidence::plan_node_is_unique_on},
-    source::{LocalParquetSource, PredicateDisposition},
-};
+use crate::plan::{WindowFrame, WindowNode, column_evidence::plan_node_is_unique_on};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RootTopKJoinSubcontract {
     KeyedHash,
     KeyedResidualMixed,
-    KeyedFilteredSemi,
+    KeyedLeftOnlySemiAnti,
     KeylessConditional,
     KeylessOuterCrossWindow,
     ProjectedCross,
@@ -55,7 +51,19 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
             plan.node(post_root_candidate_id).map(|node| &node.kind),
             Some(PlanNode::Aggregate(aggregate)) if !aggregate.spec.group_exprs.is_empty()
         );
-    if !has_post_root_projection && !direct_sort_fetch_join_input_candidate && !direct_sort_fetch_aggregate_candidate {
+    // A window between the final top-k sort and the join/aggregate fragment is the
+    // same composition this contract already admits whenever an ORDER BY expression
+    // happens to force a projection into that chain. Candidacy only lets the
+    // recognizer proceed: the window is still gated by its node capability (frame,
+    // function, partition keys, dtypes) and by the ordered-window input-sort barrier
+    // contract below, so unsupported windows keep their own structured rejection.
+    let direct_sort_fetch_window_candidate = !has_post_root_projection
+        && matches!(plan.node(post_root_candidate_id).map(|node| &node.kind), Some(PlanNode::Window(_)));
+    if !has_post_root_projection
+        && !direct_sort_fetch_join_input_candidate
+        && !direct_sort_fetch_aggregate_candidate
+        && !direct_sort_fetch_window_candidate
+    {
         if let Some(rejection) = unmodeled_sort_fetch_hash_subcontract_rejection(
             plan,
             &root_reachable,
@@ -121,9 +129,6 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
         ));
     }
     let mut keyless_or_cross_join_ids = Vec::new();
-    let mut keyed_filtered_semi_join_ids = Vec::new();
-    let mut left_output_bounded_join_ids = Vec::new();
-    let mut window_full_outer_join_ids = Vec::new();
     let mut keyless_outer_cross_window_join_ids = Vec::new();
     let sort_fetch_hash_join_aggregate_subcontract = direct_sort_fetch_aggregate_candidate;
     for join_id in &join_ids {
@@ -165,30 +170,13 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
             RootTopKJoinSubcontract::KeylessOuterCrossWindow => {
                 keyless_outer_cross_window_join_ids.push(*join_id);
             },
-            RootTopKJoinSubcontract::KeyedFilteredSemi => {
-                keyed_filtered_semi_join_ids.push(*join_id);
-                if join.spec.join_type == JoinType::LeftAnti {
-                    left_output_bounded_join_ids.push(*join_id);
-                }
-            },
-            RootTopKJoinSubcontract::KeyedHash | RootTopKJoinSubcontract::KeyedResidualMixed => {
-                if allow_left_output_bounded_join && join.spec.join_type == JoinType::Left {
-                    left_output_bounded_join_ids.push(*join_id);
-                }
-            },
-        }
-        if allow_window_keyed_full_outer {
-            window_full_outer_join_ids.push(*join_id);
+            RootTopKJoinSubcontract::KeyedLeftOnlySemiAnti
+            | RootTopKJoinSubcontract::KeyedHash
+            | RootTopKJoinSubcontract::KeyedResidualMixed => {},
         }
     }
     keyless_or_cross_join_ids.sort_unstable();
     keyless_or_cross_join_ids.dedup();
-    keyed_filtered_semi_join_ids.sort_unstable();
-    keyed_filtered_semi_join_ids.dedup();
-    left_output_bounded_join_ids.sort_unstable();
-    left_output_bounded_join_ids.dedup();
-    window_full_outer_join_ids.sort_unstable();
-    window_full_outer_join_ids.dedup();
     keyless_outer_cross_window_join_ids.sort_unstable();
     keyless_outer_cross_window_join_ids.dedup();
 
@@ -213,29 +201,12 @@ pub(in crate::capability) fn root_topk_join_aggregate_shape_decision(
                 window_ids.is_empty(),
             )?
         };
-    let aggregate_input_reachable = aggregate_input_reachable_nodes(plan, aggregate_id)?;
-    if root_topk_aggregate_requires_source_reduction(
-        plan,
-        aggregate_id,
-        aggregate_projection_id,
-        &keyless_or_cross_join_ids,
-    )? && !aggregate_topk_bounds_root_join_input
-    {
-        require_root_topk_source_reduction_evidence(
-            plan,
-            &aggregate_input_reachable,
-            aggregate_id,
-            direct_sort_fetch_aggregate_candidate,
-        )?;
-    }
-    require_root_topk_keyless_grouped_aggregate_source_reduction(plan, &keyless_or_cross_join_ids)?;
-    if !left_output_bounded_join_ids.is_empty() {
-        require_root_topk_all_joined_grouped_aggregates_source_reduction(
-            plan,
-            &root_reachable,
-            &left_output_bounded_join_ids.iter().copied().collect(),
-        )?;
-    }
+    // No source-reduction evidence is required to admit this envelope. Executability is
+    // proven by node, edge, join-capability and subcontract facts plus the schedule and
+    // lifetime invariants; how much work the plan reads is a capacity question owned by
+    // the admitted grant's allocator, which reports a typed cap failure at its source.
+    // The removed gate also accepted a selected-bytes threshold and row-group pruning on
+    // unrelated branches, i.e. an estimate-derived veto that no execution strategy reads.
 
     Ok(RootTopKJoinAggregateShape {
         root_join_id,
@@ -770,13 +741,19 @@ fn require_supported_root_topk_join(
         {
             Ok(RootTopKJoinSubcontract::KeyedResidualMixed)
         },
-        Some(JoinExecutionCapability::KeyedFilteredSemiAnti)
+        // A keyed semi/anti join emits left-only output whether or not it also
+        // carries a residual predicate: the filtered path executes the equi-only
+        // form and the mixed keyed/residual path executes the residual form. Both
+        // are proven executable by `join_node_execution_capability`, so the top-k
+        // envelope keys on the left-only output invariant instead of repeating a
+        // per-strategy join-type rule that silently excluded the residual form.
+        Some(JoinExecutionCapability::KeyedFilteredSemiAnti | JoinExecutionCapability::KeyedResidualMixed)
             if (join.spec.join_type == JoinType::LeftSemi
                 || (allow_left_output_bounded_join && join.spec.join_type == JoinType::LeftAnti))
                 && join.spec.build_side == JoinSide::Right
                 && join.spec.output_projection.iter().all(|column| column.side == JoinSide::Left) =>
         {
-            Ok(RootTopKJoinSubcontract::KeyedFilteredSemi)
+            Ok(RootTopKJoinSubcontract::KeyedLeftOnlySemiAnti)
         },
         Some(JoinExecutionCapability::KeylessConditional(_)) => Ok(RootTopKJoinSubcontract::KeylessConditional),
         Some(JoinExecutionCapability::ProjectedCross) => Ok(RootTopKJoinSubcontract::ProjectedCross),
@@ -1077,29 +1054,6 @@ fn aggregate_input_has_local_parquet_source(reachable: &BTreeSet<NodeId>, plan: 
         .any(|node_id| matches!(plan.node(node_id).map(|node| &node.kind), Some(PlanNode::Source(source)) if matches!(source.as_ref(), SourceNode::LocalParquet(_))))
 }
 
-fn root_topk_aggregate_requires_source_reduction(
-    plan: &QueryPlan,
-    aggregate_id: NodeId,
-    aggregate_projection_id: NodeId,
-    keyless_or_cross_join_ids: &[NodeId],
-) -> Result<bool, CapabilityDecision> {
-    let Some(PlanNode::Aggregate(aggregate)) = plan.node(aggregate_id).map(|node| &node.kind) else {
-        return Err(CapabilityDecision::rejected(
-            "root_topk_join_aggregate_missing_grouped_aggregate",
-            [("aggregate_id", aggregate_id.to_string())],
-        ));
-    };
-    if !aggregate.spec.group_exprs.is_empty() {
-        return Ok(true);
-    }
-    Ok(!root_topk_scalar_aggregate_feeds_keyless_or_cross_join(
-        plan,
-        aggregate_id,
-        aggregate_projection_id,
-        keyless_or_cross_join_ids,
-    )?)
-}
-
 fn root_topk_scalar_aggregate_feeds_keyless_or_cross_join(
     plan: &QueryPlan,
     aggregate_id: NodeId,
@@ -1166,350 +1120,4 @@ fn root_topk_grouped_aggregate_feeds_keyless_conditional_join(
         }
     }
     Ok(false)
-}
-
-fn require_root_topk_keyless_grouped_aggregate_source_reduction(
-    plan: &QueryPlan,
-    keyless_or_cross_join_ids: &[NodeId],
-) -> Result<(), CapabilityDecision> {
-    let mut aggregate_ids = BTreeSet::new();
-    for join_id in keyless_or_cross_join_ids {
-        let Some(PlanNode::Join(join)) = plan.node(*join_id).map(|node| &node.kind) else {
-            return Err(CapabilityDecision::rejected(
-                "root_topk_join_aggregate_missing_node",
-                [("node_id", join_id.to_string()), ("role", "keyless_or_cross_join".to_string())],
-            ));
-        };
-        if !matches!(join_node_execution_capability(join), Some(JoinExecutionCapability::KeylessConditional(_))) {
-            continue;
-        }
-        for input in join.inputs {
-            let Some((producer_id, _chain_ids)) = peel_resident_unary_chain_for_capability(plan, input) else {
-                return Err(CapabilityDecision::rejected(
-                    "root_topk_join_aggregate_missing_node",
-                    [
-                        ("node_id", input.to_string()),
-                        ("role", "keyless_conditional_grouped_aggregate_input".to_string()),
-                    ],
-                ));
-            };
-            if matches!(
-                plan.node(producer_id).map(|node| &node.kind),
-                Some(PlanNode::Aggregate(aggregate)) if !aggregate.spec.group_exprs.is_empty()
-            ) {
-                aggregate_ids.insert(producer_id);
-            }
-        }
-    }
-
-    for aggregate_id in aggregate_ids {
-        let aggregate_input_reachable = aggregate_input_reachable_nodes(plan, aggregate_id)?;
-        require_root_topk_source_reduction_evidence(plan, &aggregate_input_reachable, aggregate_id, false)?;
-    }
-    Ok(())
-}
-
-fn aggregate_input_reachable_nodes(
-    plan: &QueryPlan,
-    aggregate_id: NodeId,
-) -> Result<BTreeSet<NodeId>, CapabilityDecision> {
-    let Some(PlanNode::Aggregate(aggregate)) = plan.node(aggregate_id).map(|node| &node.kind) else {
-        return Err(CapabilityDecision::rejected(
-            "root_topk_join_aggregate_missing_grouped_aggregate",
-            [("aggregate_id", aggregate_id.to_string())],
-        ));
-    };
-    collect_reachable_node_ids_from(plan, aggregate.input)
-}
-
-fn require_root_topk_source_reduction_evidence(
-    plan: &QueryPlan,
-    aggregate_input_reachable: &BTreeSet<NodeId>,
-    aggregate_id: NodeId,
-    require_joined_branch_local_reduction: bool,
-) -> Result<(), CapabilityDecision> {
-    let has_joined_aggregate_input = aggregate_input_reachable
-        .iter()
-        .any(|node_id| matches!(plan.node(*node_id).map(|node| &node.kind), Some(PlanNode::Join(_))));
-    if has_joined_aggregate_input
-        && root_topk_joined_aggregate_input_has_branch_local_source_reduction(plan, aggregate_id, &BTreeSet::new())?
-    {
-        return Ok(());
-    }
-    if require_joined_branch_local_reduction && has_joined_aggregate_input {
-        return Err(root_topk_source_reduction_rejection(plan, aggregate_input_reachable, aggregate_id));
-    }
-    for route in plan.dynamic_filter_routes() {
-        if route.consumer_reduction_stage() != DynamicFilterConsumerReductionStage::SourceReader {
-            continue;
-        }
-        let DynamicFilterConsumer::LocalParquetSource { source_node_id } = &route.consumer else {
-            continue;
-        };
-        if aggregate_input_reachable.contains(source_node_id) {
-            return Ok(());
-        }
-    }
-    if root_topk_direct_local_parquet_aggregate_input_has_source_reduction(plan, aggregate_id)? {
-        return Ok(());
-    }
-    for source_id in aggregate_input_reachable.iter().copied() {
-        let Some(PlanNode::Source(source)) = plan.node(source_id).map(|node| &node.kind) else {
-            continue;
-        };
-        let SourceNode::LocalParquet(source) = source.as_ref() else {
-            continue;
-        };
-        if source
-            .diagnostics
-            .selected_row_group_stats
-            .as_ref()
-            .is_some_and(|stats| stats.selected_row_groups < stats.total_row_groups)
-        {
-            return Ok(());
-        }
-    }
-    Err(root_topk_source_reduction_rejection(plan, aggregate_input_reachable, aggregate_id))
-}
-
-fn require_root_topk_all_joined_grouped_aggregates_source_reduction(
-    plan: &QueryPlan,
-    root_reachable: &BTreeSet<NodeId>,
-    left_output_bounded_join_ids: &BTreeSet<NodeId>,
-) -> Result<(), CapabilityDecision> {
-    for node_id in root_reachable {
-        let Some(PlanNode::Aggregate(aggregate)) = plan.node(*node_id).map(|node| &node.kind) else {
-            continue;
-        };
-        if aggregate.spec.group_exprs.is_empty() {
-            continue;
-        }
-        let aggregate_input_reachable = collect_reachable_node_ids_from(plan, aggregate.input)?;
-        if !aggregate_input_reachable
-            .iter()
-            .any(|input_id| matches!(plan.node(*input_id).map(|node| &node.kind), Some(PlanNode::Join(_))))
-        {
-            continue;
-        }
-        if root_topk_joined_aggregate_input_has_branch_local_source_reduction(
-            plan,
-            *node_id,
-            left_output_bounded_join_ids,
-        )? {
-            continue;
-        }
-        return Err(root_topk_source_reduction_rejection(plan, &aggregate_input_reachable, *node_id));
-    }
-    Ok(())
-}
-
-fn root_topk_source_reduction_rejection(
-    plan: &QueryPlan,
-    aggregate_input_reachable: &BTreeSet<NodeId>,
-    aggregate_id: NodeId,
-) -> CapabilityDecision {
-    CapabilityDecision::rejected(
-        "root_topk_join_aggregate_requires_source_reduction_evidence",
-        [
-            ("aggregate_id", aggregate_id.to_string()),
-            ("dynamic_filter_route_count", plan.dynamic_filter_routes().len().to_string()),
-            ("aggregate_input_node_count", aggregate_input_reachable.len().to_string()),
-        ],
-    )
-}
-
-fn root_topk_direct_local_parquet_aggregate_input_has_source_reduction(
-    plan: &QueryPlan,
-    aggregate_id: NodeId,
-) -> Result<bool, CapabilityDecision> {
-    let Some(PlanNode::Aggregate(aggregate)) = plan.node(aggregate_id).map(|node| &node.kind) else {
-        return Err(CapabilityDecision::rejected(
-            "root_topk_join_aggregate_missing_grouped_aggregate",
-            [("aggregate_id", aggregate_id.to_string())],
-        ));
-    };
-    root_topk_direct_local_parquet_pipeline_has_source_reduction(plan, aggregate.input, false, &mut BTreeSet::new())
-}
-
-fn root_topk_joined_aggregate_input_has_branch_local_source_reduction(
-    plan: &QueryPlan,
-    aggregate_id: NodeId,
-    left_output_bounded_join_ids: &BTreeSet<NodeId>,
-) -> Result<bool, CapabilityDecision> {
-    let Some(PlanNode::Aggregate(aggregate)) = plan.node(aggregate_id).map(|node| &node.kind) else {
-        return Err(CapabilityDecision::rejected(
-            "root_topk_join_aggregate_missing_grouped_aggregate",
-            [("aggregate_id", aggregate_id.to_string())],
-        ));
-    };
-    root_topk_joined_pipeline_has_branch_local_source_reduction(
-        plan,
-        aggregate.input,
-        false,
-        left_output_bounded_join_ids,
-        &mut BTreeSet::new(),
-    )
-}
-
-fn root_topk_joined_pipeline_has_branch_local_source_reduction(
-    plan: &QueryPlan,
-    node_id: NodeId,
-    has_source_adjacent_filter: bool,
-    left_output_bounded_join_ids: &BTreeSet<NodeId>,
-    visited: &mut BTreeSet<(NodeId, bool)>,
-) -> Result<bool, CapabilityDecision> {
-    if !visited.insert((node_id, has_source_adjacent_filter)) {
-        return Err(CapabilityDecision::rejected(
-            "root_topk_source_reduction_pipeline_cycle",
-            [("node_id", node_id.to_string())],
-        ));
-    }
-    let result = match plan.node(node_id).map(|node| &node.kind) {
-        Some(PlanNode::Projection(projection)) => root_topk_joined_pipeline_has_branch_local_source_reduction(
-            plan,
-            projection.input,
-            has_source_adjacent_filter,
-            left_output_bounded_join_ids,
-            visited,
-        ),
-        Some(PlanNode::Filter(filter)) => root_topk_joined_pipeline_has_branch_local_source_reduction(
-            plan,
-            filter.input,
-            true,
-            left_output_bounded_join_ids,
-            visited,
-        ),
-        Some(PlanNode::Aggregate(aggregate)) => root_topk_joined_pipeline_has_branch_local_source_reduction(
-            plan,
-            aggregate.input,
-            false,
-            left_output_bounded_join_ids,
-            visited,
-        ),
-        Some(PlanNode::Join(join)) => {
-            let [left, right] = join.inputs;
-            let left_reduced = root_topk_joined_pipeline_has_branch_local_source_reduction(
-                plan,
-                left,
-                false,
-                left_output_bounded_join_ids,
-                visited,
-            )?;
-            if left_output_bounded_join_ids.contains(&node_id) {
-                return Ok(left_reduced);
-            }
-            let right_reduced = root_topk_joined_pipeline_has_branch_local_source_reduction(
-                plan,
-                right,
-                false,
-                left_output_bounded_join_ids,
-                visited,
-            )?;
-            Ok(left_reduced && right_reduced)
-        },
-        Some(PlanNode::Source(source)) => {
-            if let SourceNode::LocalParquet(source) = source.as_ref() {
-                Ok(root_topk_local_parquet_source_has_reduction(plan, node_id, source, has_source_adjacent_filter))
-            } else {
-                Ok(false)
-            }
-        },
-        Some(
-            PlanNode::Window(_)
-            | PlanNode::Sort(_)
-            | PlanNode::Limit(_)
-            | PlanNode::Union(_)
-            | PlanNode::EdgeNormalize(_)
-            | PlanNode::GraphAlgorithm(_)
-            | PlanNode::VectorAlgorithm(_),
-        )
-        | None => Ok(false),
-    };
-    visited.remove(&(node_id, has_source_adjacent_filter));
-    result
-}
-
-fn root_topk_local_parquet_source_has_reduction(
-    plan: &QueryPlan,
-    source_id: NodeId,
-    source: &LocalParquetSource,
-    has_source_adjacent_filter: bool,
-) -> bool {
-    has_source_adjacent_filter
-        || plan.dynamic_filter_routes().iter().any(|route| {
-            route.consumer_reduction_stage() == DynamicFilterConsumerReductionStage::SourceReader
-                && matches!(&route.consumer, DynamicFilterConsumer::LocalParquetSource { source_node_id } if *source_node_id == source_id)
-        })
-        || (source.diagnostics.predicate_disposition == PredicateDisposition::ReaderPushdown
-            && source
-                .reader_predicate
-                .as_ref()
-                .is_some_and(|predicate| source.reader_predicate_is_supported(predicate)))
-        || source
-            .diagnostics
-            .selected_row_group_stats
-            .as_ref()
-            .is_some_and(|stats| stats.selected_row_groups < stats.total_row_groups)
-        || source
-            .diagnostics
-            .selected_row_group_stats
-            .as_ref()
-            .and_then(|stats| stats.selected_source_bytes())
-            .or(source.diagnostics.known_bytes)
-            .is_some_and(|bytes| {
-                bytes <= plan
-                    .keyed_hash_join_strategy_options()
-                    .small_one_shot_probe_bytes_threshold()
-            })
-}
-
-fn root_topk_direct_local_parquet_pipeline_has_source_reduction(
-    plan: &QueryPlan,
-    node_id: NodeId,
-    has_source_adjacent_filter: bool,
-    visited: &mut BTreeSet<NodeId>,
-) -> Result<bool, CapabilityDecision> {
-    if !visited.insert(node_id) {
-        return Err(CapabilityDecision::rejected(
-            "root_topk_source_reduction_pipeline_cycle",
-            [("node_id", node_id.to_string())],
-        ));
-    }
-    let result = match plan.node(node_id).map(|node| &node.kind) {
-        Some(PlanNode::Projection(projection)) => root_topk_direct_local_parquet_pipeline_has_source_reduction(
-            plan,
-            projection.input,
-            has_source_adjacent_filter,
-            visited,
-        ),
-        Some(PlanNode::Filter(filter)) => {
-            root_topk_direct_local_parquet_pipeline_has_source_reduction(plan, filter.input, true, visited)
-        },
-        Some(PlanNode::Source(source)) => {
-            if let SourceNode::LocalParquet(source) = source.as_ref() {
-                Ok(has_source_adjacent_filter
-                    || (source.diagnostics.predicate_disposition == PredicateDisposition::ReaderPushdown
-                        && source
-                            .reader_predicate
-                            .as_ref()
-                            .is_some_and(|predicate| source.reader_predicate_is_supported(predicate))))
-            } else {
-                Ok(false)
-            }
-        },
-        Some(
-            PlanNode::Aggregate(_)
-            | PlanNode::Join(_)
-            | PlanNode::Window(_)
-            | PlanNode::Sort(_)
-            | PlanNode::Limit(_)
-            | PlanNode::Union(_)
-            | PlanNode::EdgeNormalize(_)
-            | PlanNode::GraphAlgorithm(_)
-            | PlanNode::VectorAlgorithm(_),
-        )
-        | None => Ok(false),
-    };
-    visited.remove(&node_id);
-    result
 }

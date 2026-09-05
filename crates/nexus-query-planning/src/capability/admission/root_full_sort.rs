@@ -72,10 +72,18 @@ pub(in crate::capability) fn analyze_root_full_sort_join_aggregate_admission(
             consumer_id: shape.aggregate_projection_id,
         });
     }
-    if matches!(shape.subcontract, RootFullSortJoinAggregateSubcontract::SharedAggregateFanout) {
+    if matches!(
+        shape.subcontract,
+        RootFullSortJoinAggregateSubcontract::SharedAggregateFanout
+            | RootFullSortJoinAggregateSubcontract::SharedResidentFanout
+    ) {
+        // For SharedAggregateFanout the proof already forces shared_producer_ids ==
+        // shared_aggregate_producer_ids, so this is equivalent to the prior aggregate-only
+        // wiring for that class; SharedResidentFanout additionally covers its join/projection
+        // members, each of which the engine retains until its last consumer releases it.
         required.extend(
             shape
-                .shared_aggregate_producer_ids
+                .shared_producer_ids
                 .iter()
                 .copied()
                 .map(|producer| InvariantSelector::SharedResidentSubplan { producer }),
@@ -179,6 +187,9 @@ pub(in crate::capability::admission) fn root_full_sort_subcontract_has_cardinali
         },
         RootFullSortJoinAggregateSubcontract::SharedAggregateFanout => {
             root_full_sort_shared_aggregate_fanout_has_cardinality_proof(plan, shape)
+        },
+        RootFullSortJoinAggregateSubcontract::SharedResidentFanout => {
+            root_full_sort_shared_resident_fanout_has_cardinality_proof(plan, shape)
         },
         RootFullSortJoinAggregateSubcontract::UnsupportedSharedOrFanout => false,
     }
@@ -335,6 +346,29 @@ pub(in crate::capability::admission) fn root_full_sort_shared_aggregate_fanout_h
             Some(PlanNode::Aggregate(aggregate)) if !aggregate.spec.group_exprs.is_empty()
         )
     })
+}
+
+pub(in crate::capability::admission) fn root_full_sort_shared_resident_fanout_has_cardinality_proof(
+    plan: &QueryPlan,
+    shape: &RootFullSortJoinAggregateShape,
+) -> bool {
+    if !shape.unsupported_shared_producer_ids.is_empty()
+        || !shape.keyless_or_cross_join_ids.is_empty()
+        || shape.shared_producer_ids.is_empty()
+        || !shape.shared_join_producer_ids.iter().all(|node_id| shape.join_ids.contains(node_id))
+    {
+        return false;
+    }
+    if shape.shared_aggregate_producer_ids.is_empty() {
+        return true;
+    }
+    // Every consumer re-derives the identical shared producer rowset (occurrence
+    // semantics), which is exactly what an equivalent duplicated-subtree plan would
+    // compute; a mixed-in shared aggregate must still clear the same consumer-chain
+    // obligation SharedAggregateFanout proves.
+    !shape.shared_aggregate_consumer_join_ids.is_empty()
+        && shape.shared_aggregate_consumer_join_ids.iter().all(|join_id| shape.join_ids.contains(join_id))
+        && root_full_sort_all_shared_aggregate_consumers_feed_joins(plan, shape)
 }
 
 pub(in crate::capability::admission) fn root_full_sort_keyless_shared_aggregate_fanout_has_cardinality_proof(
@@ -547,7 +581,8 @@ pub(in crate::capability::admission) fn root_full_sort_join_capability_satisfies
                 matches!(capability, JoinExecutionCapability::KeyedHash | JoinExecutionCapability::KeyedResidualMixed)
             }
         },
-        RootFullSortJoinAggregateSubcontract::RepeatedProjectionFanout => {
+        RootFullSortJoinAggregateSubcontract::RepeatedProjectionFanout
+        | RootFullSortJoinAggregateSubcontract::SharedResidentFanout => {
             matches!(capability, JoinExecutionCapability::KeyedHash | JoinExecutionCapability::KeyedResidualMixed)
                 || root_full_sort_keyed_filtered_semi_anti_satisfies_grouped_aggregate_subcontract(join, capability)
         },
@@ -591,6 +626,7 @@ pub(in crate::capability::admission) fn root_full_sort_unsupported_subcontract_r
             ("shared_producer_node_ids", node_ids_fact(&shape.shared_producer_ids)),
             ("shared_projection_producer_node_ids", node_ids_fact(&shape.shared_projection_producer_ids)),
             ("shared_aggregate_producer_node_ids", node_ids_fact(&shape.shared_aggregate_producer_ids)),
+            ("shared_join_producer_node_ids", node_ids_fact(&shape.shared_join_producer_ids)),
             ("unsupported_shared_producer_node_ids", node_ids_fact(&shape.unsupported_shared_producer_ids)),
             ("shared_aggregate_consumer_join_node_ids", node_ids_fact(&shape.shared_aggregate_consumer_join_ids)),
             ("aggregate_id", shape.aggregate_id.to_string()),
