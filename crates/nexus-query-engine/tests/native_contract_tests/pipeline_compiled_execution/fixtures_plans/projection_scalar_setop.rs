@@ -798,37 +798,97 @@ pub(super) fn projection_root_setop_chained_dedup_scalar_plan() -> QueryPlan {
 }
 
 #[test]
-fn projection_scalar_setop_admits_chained_except_distinct_dedup_scalar() {
-    // Pins change E: `projection_scalar_setop_setop_dedup_scalar_has_contract`'s
-    // recursive probe-side proof (`projection_scalar_setop_anti_probe_input_is_dedup_proven`)
-    // admits a CHAIN of EXCEPT DISTINCTs, not just a single one. Without change E
-    // this rejects with `projection_scalar_setop_contract_not_implemented`,
-    // because the second anti join's probe side is the first anti join itself,
-    // which the old direct-aggregate check did not recognize as dedup-proven.
-    let plan = projection_root_setop_chained_dedup_scalar_plan();
-    let analysis = plan.capability_analysis();
-
-    assert!(analysis.admits_projection_scalar_setop_pipeline(), "{analysis:#?}");
-    let admission = bounded_pipeline_admission(&plan)
-        .unwrap()
-        .expect("chained EXCEPT DISTINCT dedup-scalar pipeline should be admitted");
-    assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::ProjectionScalarSetop);
+fn composed_pipeline_keeps_scalar_fanout_cardinality_as_node_facts() {
+    // The retired scalar-fanout cardinality proof survives as node facts, not
+    // a plan-family reason: every bounded driver (literal row, scan limit,
+    // max rows, fetch ≤ 1) records at most one output row on its own node,
+    // and the scalar aggregates record theirs.
+    for (label, plan) in [
+        ("one-row-driver", projection_root_scalar_fanout_one_row_driver_plan()),
+        ("scan-limit-driver", projection_root_scalar_fanout_scan_limit_driver_plan()),
+        ("max-rows-driver", projection_root_scalar_fanout_max_rows_driver_plan()),
+        ("limit-driver", projection_root_scalar_fanout_limit_driver_plan()),
+    ] {
+        let analysis = plan.capability_analysis();
+        assert!(
+            analysis.nodes.iter().any(|node| node.max_output_rows == Some(1)),
+            "{label} should keep a one-row node fact"
+        );
+        assert!(
+            bounded_pipeline_admission(&plan).unwrap().is_some(),
+            "{label} scalar fanout stays executable through the composed pipeline"
+        );
+    }
 }
 
 #[test]
-fn projection_scalar_setop_rejects_non_dedup_left_anti_probe_input() {
-    // Verifies the pre-existing negative boundary that change E's recursive
-    // probe-side proof must still respect: a left-anti join whose probe side is
-    // a duplicate-preserving (EXCEPT ALL-shaped) subtree, not a dedup aggregate
-    // or another dedup-proven anti join, is rejected.
-    let plan = projection_root_setop_dedup_scalar_non_dedup_left_anti_input_plan();
+fn composed_pipeline_rejects_scalar_fanout_anti_join_at_node() {
+    // The old plan-family cardinality proof rejected the anti-join fan-out
+    // variant; now the join node capability owns the rejection while the
+    // scalar aggregates keep their one-row facts.
+    let plan = projection_root_scalar_fanout_unsupported_join_plan();
     let analysis = plan.capability_analysis();
+    assert!(analysis.nodes.iter().any(|node| node.max_output_rows == Some(1)));
+    let projection = bounded_pipeline_rejection_projection(&plan)
+        .unwrap()
+        .expect("anti-join fan-out should project a rejection");
+    assert!(
+        matches!(projection.owner, nexus_query_engine::capability::CapabilityRejectionOwner::Node(_)),
+        "anti-join fan-out should reject on the node, got {:?}",
+        projection.owner
+    );
+    assert_eq!(projection.reason, "unsupported_join_node_capability");
+}
 
-    assert!(!analysis.admits_projection_scalar_setop_pipeline());
-    let nexus_query_engine::capability::CapabilityDecision::Rejected { reason, .. } =
-        &analysis.projection_scalar_setop_admission
-    else {
-        panic!("non-dedup left-anti probe input should reject projection scalar/setop admission");
-    };
-    assert_eq!(*reason, "projection_scalar_setop_contract_not_implemented");
+#[test]
+fn composed_pipeline_rejects_non_dedup_left_anti_build_input() {
+    // Mirror of the probe-side proof: an anti build against a distinct
+    // aggregate claims EXCEPT DISTINCT over EXCEPT ALL multiplicity, so the
+    // build edge requires a group-only dedup aggregate.
+    let plan = projection_root_setop_distinct_aggregate_plan();
+    let projection = bounded_pipeline_rejection_projection(&plan)
+        .unwrap()
+        .expect("distinct-aggregate anti build should project a rejection");
+    assert!(
+        matches!(projection.owner, nexus_query_engine::capability::CapabilityRejectionOwner::Edge { .. }),
+        "distinct-aggregate build should reject on the edge, got {:?}",
+        projection.owner
+    );
+    assert_eq!(projection.reason, "left_anti_build_requires_dedup_aggregate");
+    assert!(projection.facts.contains_key("producer_aggregate_state"));
+}
+
+#[test]
+fn composed_pipeline_admits_chained_except_distinct_dedup_scalar() {
+    // The setop-dedup proof moved off the plan-family recognizer: aggregate
+    // nodes carry `aggregate_state`, and each LeftAnti input edge checks it. A
+    // CHAIN of EXCEPT DISTINCTs stays admitted because every build is a
+    // group-only dedup aggregate and every probe is dedup-proven.
+    let plan = projection_root_setop_chained_dedup_scalar_plan();
+    let admission = bounded_pipeline_admission(&plan)
+        .unwrap()
+        .expect("chained EXCEPT DISTINCT dedup-scalar pipeline should be admitted");
+    assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::ComposedPipeline);
+}
+
+#[test]
+fn composed_pipeline_rejects_non_dedup_left_anti_probe_input() {
+    // The recursive probe-side proof must still respect its negative boundary:
+    // a left-anti join whose probe side is a duplicate-preserving (EXCEPT
+    // ALL-shaped) subtree, not a dedup aggregate or another dedup-proven anti
+    // join, is rejected on the probe edge.
+    let plan = projection_root_setop_dedup_scalar_non_dedup_left_anti_input_plan();
+    let projection = bounded_pipeline_rejection_projection(&plan)
+        .unwrap()
+        .expect("non-dedup left-anti probe input should project a rejection");
+    assert!(
+        matches!(
+            projection.owner,
+            nexus_query_engine::capability::CapabilityRejectionOwner::Edge { .. }
+        ),
+        "non-dedup probe input should reject on the edge, got {:?}",
+        projection.owner
+    );
+    assert_eq!(projection.reason, "left_anti_probe_requires_dedup_proven_input");
+    assert!(projection.facts.contains_key("producer_aggregate_state"));
 }

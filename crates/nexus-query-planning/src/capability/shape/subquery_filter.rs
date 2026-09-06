@@ -80,7 +80,6 @@ pub(in crate::capability) fn multi_join_resident_grouped_aggregate_subquery_filt
     }
 
     Ok(MultiJoinResidentGroupedAggregateSubqueryFilterShape {
-        final_sort_id,
         root_join_id,
         grouped_aggregate_id,
         grouped_aggregate_projection_id,

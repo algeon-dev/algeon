@@ -4,7 +4,8 @@
 //! match their position in the corresponding vector. Builders do not validate
 //! cross-references; call [`CompiledPipeline::validate`] before execution.
 
-use crate::{capability::CompiledJoinExecutionStrategy, plan::NodeId};
+pub use crate::capability::AggregateExecutionStage;
+use crate::{capability::CompiledJoinExecutionStrategy, expr::SortExpr, plan::NodeId};
 
 /// Mode-agnostic compiled graph for a native query DAG.
 ///
@@ -12,7 +13,7 @@ use crate::{capability::CompiledJoinExecutionStrategy, plan::NodeId};
 /// boundaries. The capability-first bounded executor consumes it. Task, edge,
 /// barrier, and resource ids are local index spaces owned by one compiled graph
 /// and are validated for topological consistency before use.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CompiledPipeline {
     tasks: Vec<PipelineTask>,
     edges: Vec<PipelineEdge>,
@@ -140,6 +141,7 @@ pub struct PipelineTask {
     accepted_input_form: AcceptedInputForm,
     sort_strategy: Option<SortStrategy>,
     plan_join_strategy: Option<CompiledJoinExecutionStrategy>,
+    aggregate_stage: Option<AggregateExecutionStage>,
 }
 
 impl PipelineTask {
@@ -159,6 +161,7 @@ impl PipelineTask {
             accepted_input_form: AcceptedInputForm::Frame,
             sort_strategy: None,
             plan_join_strategy: None,
+            aggregate_stage: None,
         }
     }
 
@@ -194,6 +197,12 @@ impl PipelineTask {
     /// Record the plan-derived join strategy selected for this join task.
     pub fn with_plan_join_strategy(mut self, plan_join_strategy: CompiledJoinExecutionStrategy) -> Self {
         self.plan_join_strategy = Some(plan_join_strategy);
+        self
+    }
+
+    /// Record the aggregate execution stage this task runs.
+    pub fn with_aggregate_stage(mut self, aggregate_stage: AggregateExecutionStage) -> Self {
+        self.aggregate_stage = Some(aggregate_stage);
         self
     }
 
@@ -238,6 +247,15 @@ impl PipelineTask {
     /// refine it from observed build facts before running the kernel.
     pub fn plan_join_strategy(&self) -> Option<CompiledJoinExecutionStrategy> {
         self.plan_join_strategy
+    }
+
+    /// Aggregate execution stage, set on [`PipelineTaskKind::Aggregate`].
+    ///
+    /// Compiled aggregate tasks always run [`AggregateExecutionStage::Single`]:
+    /// partial state never crosses a compiled edge, it is merged inside the
+    /// task.
+    pub fn aggregate_stage(&self) -> Option<AggregateExecutionStage> {
+        self.aggregate_stage
     }
 }
 
@@ -513,7 +531,7 @@ impl PipelineBarrierKind {
 }
 
 /// A resident device resource and its symbolic lifetime.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ResidentResource {
     id: ResidentResourceId,
     producer: PipelineTaskId,
@@ -521,6 +539,7 @@ pub struct ResidentResource {
     lifetime: ResidentLifetime,
     data_form: ResidentDataForm,
     sharing: ResourceSharing,
+    ordering: Option<ResourceOrdering>,
 }
 
 impl ResidentResource {
@@ -539,13 +558,19 @@ impl ResidentResource {
     ) -> Self {
         let sharing =
             if consumers.len() > 1 { ResourceSharing::SharedImmutableFrame } else { ResourceSharing::SingleConsume };
-        Self { id, producer, consumers, lifetime, data_form: ResidentDataForm::Frame, sharing }
+        Self { id, producer, consumers, lifetime, data_form: ResidentDataForm::Frame, sharing, ordering: None }
     }
 
     /// Record the payload form and sharing mode resolved for this resource.
     pub fn with_consumption(mut self, data_form: ResidentDataForm, sharing: ResourceSharing) -> Self {
         self.data_form = data_form;
         self.sharing = sharing;
+        self
+    }
+
+    /// Record the row ordering this resource's rows are known to carry.
+    pub fn with_ordering(mut self, ordering: Option<ResourceOrdering>) -> Self {
+        self.ordering = ordering;
         self
     }
 
@@ -581,6 +606,60 @@ impl ResidentResource {
     /// How this resource's consumers read it.
     pub fn sharing(&self) -> ResourceSharing {
         self.sharing
+    }
+
+    /// Row ordering this resource's rows are known to carry, if any.
+    pub fn ordering(&self) -> Option<&ResourceOrdering> {
+        self.ordering.as_ref()
+    }
+}
+
+/// Ordering a resource's rows are known to carry, and over what extent.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResourceOrdering {
+    keys: Vec<SortExpr>,
+    scope: OrderingScope,
+}
+
+impl ResourceOrdering {
+    /// Ordering keys in precedence order, with direction and null placement.
+    pub fn keys(&self) -> &[SortExpr] {
+        &self.keys
+    }
+
+    /// Extent the key ordering holds over.
+    pub fn scope(&self) -> OrderingScope {
+        self.scope
+    }
+
+    /// Ordering that holds over every row of the producer.
+    pub fn global(keys: Vec<SortExpr>) -> Self {
+        Self { keys, scope: OrderingScope::Global }
+    }
+
+    /// Ordering that holds only within each emitted chunk.
+    pub fn per_chunk(keys: Vec<SortExpr>) -> Self {
+        Self { keys, scope: OrderingScope::PerChunk }
+    }
+}
+
+/// Extent a recorded row ordering holds over.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum OrderingScope {
+    /// Rows are ordered only within each emitted chunk; chunks in sequence
+    /// are not ordered relative to each other.
+    PerChunk,
+    /// Every row of the producer is ordered relative to every other row.
+    Global,
+}
+
+impl OrderingScope {
+    /// Stable diagnostic label for this ordering scope.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PerChunk => "per_chunk",
+            Self::Global => "global",
+        }
     }
 }
 

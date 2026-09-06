@@ -427,7 +427,10 @@ fn bounded_vector_structural_rejections_do_not_report_a_memory_preflight_blocker
             .expect("bounded admission should classify vector plan");
         assert!(decision.admission().is_none());
         let projection = decision.rejection_projection().expect("vector plan should have a bounded rejection");
-        assert_eq!(projection.reason, "root_join_admission_requires_sink_root_join");
+        // The compiler owns vector coverage: it reports the structural
+        // refusal itself instead of an incidental envelope verdict, and the
+        // refusal carries no memory-sizing blocker facts.
+        assert_eq!(projection.reason, "compiled_pipeline_graph_not_constructible");
         assert!(!projection.facts.contains_key("memory_boundary"));
         assert!(!projection.facts.contains_key("required_contract"));
     }

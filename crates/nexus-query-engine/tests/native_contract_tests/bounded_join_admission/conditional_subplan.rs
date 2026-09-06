@@ -1,14 +1,14 @@
 #[test]
-fn bounded_keyless_conditional_join_input_subplan_pipeline_admits_only_keyless_input_subplan_bounded_shapes() {
+fn bounded_keyless_conditional_join_input_subplan_pipeline_admits_variants_through_composed_path() {
     let plan = keyless_conditional_join_input_subplan_plan(KeylessInputSubplanVariant::Admitted);
 
     assert!(!plan.capability_analysis().admits_root_join());
-    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
     assert!(plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline());
     assert!(!plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline());
-    assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph());
     assert!(unsupported_facts(&plan).is_none());
 
+    // S3 admits these variants through the compiled task contracts once they
+    // compile; what stays narrow is the keyless input-subplan envelope itself.
     for variant in [
         KeylessInputSubplanVariant::GroupedAggregate,
         KeylessInputSubplanVariant::SortInput,
@@ -20,17 +20,12 @@ fn bounded_keyless_conditional_join_input_subplan_pipeline_admits_only_keyless_i
         let plan = keyless_conditional_join_input_subplan_plan(variant);
 
         assert!(!plan.capability_analysis().admits_root_join(), "{variant:?}");
-        assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline(), "{variant:?}");
         assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline(), "{variant:?}");
         assert!(
             !plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
             "{variant:?}"
         );
-        assert!(!plan.capability_analysis().admits_closed_multi_join_subgraph(), "{variant:?}");
-        let facts =
-            unsupported_facts(&plan).expect("unsupported keyless input-subplan subplan shape should produce facts");
-        assert_rejection_facts_are_family_free(&facts, "unsupported_keyless_input_subplan");
-        assert!(facts.contains_key("bounded_join_rejection_reason"), "{variant:?}");
+        assert!(unsupported_facts(&plan).is_none(), "{variant:?}");
     }
 }
 

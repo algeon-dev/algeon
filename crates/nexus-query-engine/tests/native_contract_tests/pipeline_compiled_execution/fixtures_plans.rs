@@ -39,5 +39,5 @@ include!("fixtures_plans/root_full_sort.rs");
 include!("fixtures_plans/rollup_rank_topk.rs");
 include!("fixtures_plans/pipelines.rs");
 include!("fixtures_plans/root_topk.rs");
-include!("fixtures_plans/projection_global_limit.rs");
+include!("fixtures_plans/join_limit_projection.rs");
 include!("fixtures_plans/projection_scalar_setop.rs");

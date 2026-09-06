@@ -218,6 +218,61 @@ fn execute_query_plan_runs_join_sort_limit_filter_through_admission() {
 }
 
 #[test]
+fn execute_query_plan_applies_limit_offset_once_through_fused_topk() {
+    // ORDER BY right_value DESC LIMIT 1 OFFSET 1 over the join keeps (2, 200):
+    // the fused top-k applies skip+fetch, and the limit pass-through drops the
+    // marker without applying it again.
+    let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
+    let dir = unique_temp_dir("nexus-query-engine-compiled-sort-limit-offset");
+    let left_path = dir.join("left.parquet");
+    let right_path = dir.join("right.parquet");
+    write_join_parquets(&left_path, &right_path);
+
+    let plan = root_join_sort_limit_offset_data_plan(&left_path, &right_path);
+    let analysis = plan.capability_analysis();
+    let pipeline = compile_pipeline(&plan, &analysis).expect("join sort limit offset plan should compile");
+    assert_eq!(
+        compiled_bounded_query_plan_support(&plan, &analysis, &pipeline)
+            .expect("plan-aware support check should not fail"),
+        CompiledBoundedPipelineSupport::Supported
+    );
+
+    let sort_task =
+        pipeline.tasks().iter().find(|task| task.kind() == PipelineTaskKind::FinalSort).expect("one sort task");
+    assert!(
+        matches!(sort_task.sort_strategy(), Some(nexus_query_engine::pipeline::SortStrategy::FusedTopK { .. })),
+        "sort feeding a skip+fetch limit fuses into top-k, got {:?}",
+        sort_task.sort_strategy()
+    );
+
+    let decision = bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default())
+        .expect("bounded admission should not error");
+    let admission = decision.admission().expect("join sort limit offset is an executable composition");
+    assert_eq!(
+        admission.pipeline(),
+        &pipeline,
+        "execution and reporting must share the pipeline the admitted candidate compiled"
+    );
+
+    let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
+    let context = compiled_executor_context(shared_runtime(runtime), &plan);
+    let mut metrics = QueryMetrics::default();
+    let gpu_inputs = GpuResidentInputMap::new();
+    let (state, batch) = {
+        let mut executor =
+            CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics, None).unwrap();
+        let state = scheduler.run(&mut executor).expect("join sort limit offset should execute");
+        let output = executor.take_host_output().expect("compiled host sink should materialize");
+        (state, output)
+    };
+
+    assert_eq!(state.live_resource_count(), 0);
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(int32_values(&batch, 0), vec![Some(2)]);
+    assert_eq!(int32_values(&batch, 1), vec![Some(200)]);
+}
+
+#[test]
 fn compiled_gpu_executor_streams_grouped_aggregate_join_build_input_source() {
     let runtime = cudf::Runtime::new().expect("compiled GPU execution test requires a CUDA runtime");
     let dir = unique_temp_dir("nexus-query-engine-compiled-aggregate-join-input-stream");
@@ -775,7 +830,6 @@ fn execute_query_plan_routes_root_hash_join_aggregate_through_compiled_pipeline(
     write_single_join_post_root_parquets(&customers_path, &orders_path);
     let plan = single_join_post_root_aggregate_data_plan(&customers_path, &orders_path);
     let analysis = plan.capability_analysis();
-    assert!(analysis.admits_single_join_post_root_pipeline());
     let pipeline = compile_pipeline(&plan, &analysis).expect("single-join aggregate plan should compile");
     assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 1);
     assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, 0);
@@ -893,7 +947,6 @@ fn execute_query_plan_routes_single_join_post_root_graph_through_compiled_pipeli
     write_single_join_post_root_parquets(&customers_path, &orders_path);
     let plan = single_join_post_root_aggregate_sort_limit_data_plan(&customers_path, &orders_path);
     let analysis = plan.capability_analysis();
-    assert!(analysis.admits_single_join_post_root_pipeline());
     let pipeline = compile_pipeline(&plan, &analysis).expect("single-join post-root plan should compile");
     assert_eq!(
         compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
@@ -925,7 +978,6 @@ fn execute_query_plan_routes_simple_multi_join_tree_through_compiled_pipeline() 
     write_multi_join_parquets(&a_path, &b_path, &c_path);
     let plan = simple_multi_join_plan(&a_path, &b_path, &c_path);
     let analysis = plan.capability_analysis();
-    assert!(analysis.admits_closed_multi_join_subgraph());
     let pipeline = compile_pipeline(&plan, &analysis).expect("simple multi-join plan should compile");
     assert_eq!(
         compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
@@ -958,7 +1010,6 @@ fn execute_query_plan_streams_residual_one_shot_probe_from_prior_join() {
     write_residual_stream_join_parquets(&a_path, &b_path, &c_path);
     let plan = residual_one_shot_frame_stream_multi_join_plan(&a_path, &b_path, &c_path);
     let analysis = plan.capability_analysis();
-    assert!(analysis.admits_closed_multi_join_subgraph());
     let pipeline = compile_pipeline(&plan, &analysis).expect("residual stream multi-join plan should compile");
     assert_eq!(
         compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),

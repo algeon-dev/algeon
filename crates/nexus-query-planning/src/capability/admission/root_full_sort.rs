@@ -83,10 +83,7 @@ pub(in crate::capability) fn analyze_root_full_sort_join_aggregate_admission(
         );
         required.extend(root_full_sort_shared_scalar_aggregate_derivation_invariants(plan, &shape));
     }
-    required.extend([
-        InvariantSelector::PostRootStageOrder { root_join_id: shape.root_join_id },
-        InvariantSelector::FinalBarrierOrder { sort_id: shape.final_sort_id },
-    ]);
+    required.push(InvariantSelector::PostRootStageOrder { root_join_id: shape.root_join_id });
     if shape.join_ids.len() > 1 {
         required.extend([
             InvariantSelector::TopologicalBuildProbeSchedule,

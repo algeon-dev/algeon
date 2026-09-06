@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use super::{
     AggregateExpr, AggregateFunction, AggregateSpec, Expr, GroupingSetsSpec, JoinExecutionCapability, JoinNode,
     JoinSide, KeyedHashJoinStrategyDecision, LimitNode, NodeId, PlanNode, QueryNode, QueryPlan, SourceNode,
+    aggregate::aggregate_state_contract,
     expr::{
         expression_rejection_decision, validate_aggregate_expr_capability, validate_column_expr_capability,
         validate_general_expr_capability, validate_join_residual_expr_capability,
@@ -28,7 +29,42 @@ pub(super) fn analyze_node(plan: &QueryPlan, node: &QueryNode) -> NodeCapability
     let operator = node_operator(kind);
     let executable = node_executable_decision(plan, node);
     let produced_properties = produced_properties(node);
-    NodeCapability { node_id, operator, executable, produced_properties }
+    let aggregate_state = match kind {
+        PlanNode::Aggregate(aggregate) => aggregate_state_contract(&aggregate.spec),
+        _ => None,
+    };
+    let max_output_rows = node_max_output_rows(kind);
+    NodeCapability { node_id, operator, executable, produced_properties, aggregate_state, max_output_rows }
+}
+
+/// Rows a node emits at most, when the operator alone bounds it: a scalar
+/// aggregate (no groups and no grouping sets) emits one row; a limit with
+/// fetch ≤ 1 emits at most one; a source with a ≤1 scan/max bound or a ≤1-row
+/// literal emits at most one. Anything else is unbounded from the operator
+/// alone; the compiler tracks tighter bounds per resource where it can prove
+/// them.
+fn node_max_output_rows(kind: &PlanNode) -> Option<u64> {
+    match kind {
+        PlanNode::Aggregate(aggregate)
+            if aggregate.spec.group_exprs.is_empty() && aggregate.spec.grouping_sets.is_none() =>
+        {
+            Some(1)
+        },
+        PlanNode::Limit(limit) => limit.spec.fetch.filter(|fetch| *fetch <= 1).map(|fetch| fetch as u64),
+        PlanNode::Source(source) => match source.as_ref() {
+            SourceNode::LocalParquet(source) => source
+                .scan_limit
+                .filter(|limit| *limit <= 1)
+                .map(|limit| limit as u64)
+                .or_else(|| source.max_rows.filter(|rows| *rows <= 1).map(|rows| rows as u64)),
+            SourceNode::LiteralBatch(source) => {
+                let rows = source.row_count();
+                (rows <= 1).then_some(rows as u64)
+            },
+            SourceNode::GpuResident(_) => None,
+        },
+        _ => None,
+    }
 }
 
 pub(super) fn node_operator(kind: &PlanNode) -> NodeOperator {

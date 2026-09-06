@@ -132,8 +132,6 @@ fn bounded_native_query_executes_serial_aggregate_multi_join_distinct_count_spin
     );
     let plan = builder.finish_with_host_sink(sort);
     assert!(!plan.capability_analysis().admits_root_join());
-    assert!(!plan.capability_analysis().admits_single_join_post_root_pipeline());
-    assert!(plan.capability_analysis().admits_closed_multi_join_subgraph());
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();

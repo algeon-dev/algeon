@@ -3,9 +3,12 @@
 //! This module is the public vocabulary for local node, edge, and subgraph
 //! capabilities. Rejection reasons and fact keys are report-facing stable strings;
 //! add new labels instead of reusing old whole-plan family names.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use super::{AggregateFunction, AggregateStrategyCapability, GraphAlgorithm, JoinSide, JoinType, NodeId};
+use super::{
+    AggregateFunction, AggregateStrategyCapability, GraphAlgorithm, JoinSide, JoinType, NodeId,
+    aggregate::AggregateStateContract,
+};
 use crate::plan::{EdgeDedupStrategy, EdgeWeightCombiner};
 
 /// The most local graph scope that owns a capability decision.
@@ -131,6 +134,12 @@ pub struct NodeCapability {
     pub executable: CapabilityDecision,
     /// Properties this node makes available to consumers.
     pub produced_properties: Vec<ProducedProperty>,
+    /// Aggregate state contract, set on aggregate nodes with a classifiable
+    /// spec; edges consult it instead of re-deriving setop/dedup proofs.
+    pub aggregate_state: Option<AggregateStateContract>,
+    /// Rows this node emits at most, when the operator alone bounds it
+    /// (scalar aggregate, ≤1 fetch limit, ≤1 bounded source).
+    pub max_output_rows: Option<u64>,
 }
 
 /// Native operator shape captured without naming a whole bounded family.
@@ -472,6 +481,11 @@ pub enum SubgraphInvariantKind {
     },
     /// The reachable join region below the root is closed over supported join,
     /// projection, filter, and source nodes.
+    ///
+    /// Retired in Step S3: multi-join aggregate scope is decided by the
+    /// compiled `Aggregate`/`JoinBuild`/`JoinProbe`/`JoinMaterialize` task
+    /// contracts, not by a plan-shape invariant. The variant stays so
+    /// downstream exhaustive matches keep compiling.
     ClosedJoinSubtree {
         /// Root join of the closed resident join region.
         root_join_id: NodeId,
@@ -509,6 +523,10 @@ pub enum SubgraphInvariantKind {
         join_id: NodeId,
     },
     /// A root projection is bounded by its immediate fetch-bearing limit input.
+    ///
+    /// Retired in Step S1: the limit/projection hand-off is decided by the
+    /// compiled `Limit`/`Unary` task contracts, not by a plan-shape invariant.
+    /// The variant stays so downstream exhaustive matches keep compiling.
     LimitBoundedProjection,
     /// A floating statistical aggregate participates in a join pipeline whose
     /// final output is a full sort; capability-envelope admission needs an explicit
@@ -734,10 +752,6 @@ pub struct CapabilityAnalysis {
     pub aggregate_strategies: Vec<AggregateStrategyCapability>,
     /// Capability root-join compiled-envelope admission.
     pub root_join_admission: CapabilityDecision,
-    /// Capability single-join post-root compiled-envelope admission.
-    pub single_join_post_root_pipeline_admission: CapabilityDecision,
-    /// Capability closed multi-join compiled-envelope admission.
-    pub closed_multi_join_subgraph_admission: CapabilityDecision,
     /// Capability multi-join aggregate/top-k compiled-envelope admission.
     pub multi_join_aggregate_over_join_subplan_topk_admission: CapabilityDecision,
     /// Capability root top-k join/aggregate envelope admission.
@@ -746,10 +760,6 @@ pub struct CapabilityAnalysis {
     pub root_full_sort_join_aggregate_admission: CapabilityDecision,
     /// Capability exact statistical join/final-full-sort envelope admission.
     pub exact_statistical_join_final_full_sort_admission: CapabilityDecision,
-    /// Capability projection-root/global-limit envelope admission.
-    pub projection_global_limit_admission: CapabilityDecision,
-    /// Capability projection-root scalar/setop envelope admission.
-    pub projection_scalar_setop_admission: CapabilityDecision,
     /// Capability mixed keyed/residual resident-aggregate compiled-envelope admission.
     pub mixed_keyed_residual_join_resident_grouped_aggregate_input_admission: CapabilityDecision,
     /// Capability hash-join resident-aggregate post-join/top-k envelope admission.
@@ -766,6 +776,13 @@ pub struct CapabilityAnalysis {
     pub multi_join_resident_grouped_aggregate_subquery_filter_admission: CapabilityDecision,
     /// Capability union compiled-envelope admission.
     pub union_pipeline_admission: CapabilityDecision,
+    /// Sink-reachable node ids of the analyzed plan.
+    ///
+    /// Local rejections on nodes, edges, and invariants outside this set never
+    /// veto admission: the compiler emits no task for them, so they cannot
+    /// break execution. A malformed plan whose reachability walk fails records
+    /// every node here, preserving the unfiltered behavior for that case.
+    pub(crate) reachable_node_ids: BTreeSet<NodeId>,
 }
 
 impl CapabilityAnalysis {
@@ -782,17 +799,8 @@ impl CapabilityAnalysis {
         if let Some(projection) = self.first_local_rejection_projection() {
             return CapabilityEnvelopeAdmission::Rejected { projection };
         }
-        if let Some(projection) = self.projection_global_limit_rejection_projection() {
-            return CapabilityEnvelopeAdmission::Rejected { projection };
-        }
         if let Some(envelope) = self.selected_specialized_capability_envelope() {
             return CapabilityEnvelopeAdmission::Admitted { envelope };
-        }
-        if let Some(projection) = self.projection_scalar_setop_rejection_projection() {
-            return CapabilityEnvelopeAdmission::Rejected { projection };
-        }
-        if let Some(projection) = self.root_full_sort_join_aggregate_rejection_projection() {
-            return CapabilityEnvelopeAdmission::Rejected { projection };
         }
         if let Some(envelope) = self.selected_generic_capability_envelope() {
             return CapabilityEnvelopeAdmission::Admitted { envelope };
@@ -812,28 +820,12 @@ impl CapabilityAnalysis {
         }
     }
 
-    /// Returns whether the generic closed multi-join capability evidence is satisfied.
-    ///
-    /// This inspection helper reports generic coverage only. Executable
-    /// capability-envelope admission still goes through `capability_envelope_admission()`.
-    pub fn admits_closed_multi_join_subgraph(&self) -> bool {
-        admission_is_satisfied(&self.closed_multi_join_subgraph_admission)
-    }
-
     /// Returns whether the generic root-join capability evidence is satisfied.
     ///
     /// This inspection helper reports generic coverage only. Executable
     /// capability-envelope admission still goes through `capability_envelope_admission()`.
     pub fn admits_root_join(&self) -> bool {
         admission_is_satisfied(&self.root_join_admission)
-    }
-
-    /// Returns whether the generic single-join post-root capability evidence is satisfied.
-    ///
-    /// This inspection helper reports generic coverage only. Executable
-    /// capability-envelope admission still goes through `capability_envelope_admission()`.
-    pub fn admits_single_join_post_root_pipeline(&self) -> bool {
-        admission_is_satisfied(&self.single_join_post_root_pipeline_admission)
     }
 
     /// Returns whether the capability multi-join aggregate/top-k envelope is admitted.
@@ -849,16 +841,6 @@ impl CapabilityAnalysis {
     /// Returns whether the capability root full-sort join/aggregate envelope is admitted.
     pub fn admits_root_full_sort_join_aggregate_pipeline(&self) -> bool {
         self.admits_selected_capability_envelope(CapabilityEnvelope::RootFullSortJoinAggregate)
-    }
-
-    /// Returns whether the capability projection/global-limit envelope is admitted.
-    pub fn admits_projection_global_limit_pipeline(&self) -> bool {
-        self.admits_selected_capability_envelope(CapabilityEnvelope::ProjectionGlobalLimit)
-    }
-
-    /// Returns whether the capability projection scalar/setop envelope is admitted.
-    pub fn admits_projection_scalar_setop_pipeline(&self) -> bool {
-        self.admits_selected_capability_envelope(CapabilityEnvelope::ProjectionScalarSetop)
     }
 
     /// Returns whether the capability mixed keyed/residual aggregate-input envelope is admitted.
@@ -953,7 +935,6 @@ impl CapabilityAnalysis {
                 &self.exact_statistical_join_final_full_sort_admission,
             ),
             (CapabilityEnvelope::RootFullSortJoinAggregate, &self.root_full_sort_join_aggregate_admission),
-            (CapabilityEnvelope::ProjectionGlobalLimit, &self.projection_global_limit_admission),
             (
                 CapabilityEnvelope::MixedKeyedResidualJoinResidentGroupedAggregateInput,
                 &self.mixed_keyed_residual_join_resident_grouped_aggregate_input_admission,
@@ -975,7 +956,6 @@ impl CapabilityAnalysis {
                 CapabilityEnvelope::MultiJoinResidentGroupedAggregateSubqueryFilter,
                 &self.multi_join_resident_grouped_aggregate_subquery_filter_admission,
             ),
-            (CapabilityEnvelope::ProjectionScalarSetop, &self.projection_scalar_setop_admission),
             (CapabilityEnvelope::UnionPipeline, &self.union_pipeline_admission),
         ]
         .into_iter()
@@ -983,18 +963,15 @@ impl CapabilityAnalysis {
     }
 
     fn selected_generic_capability_envelope(&self) -> Option<CapabilityEnvelope> {
-        [
-            (CapabilityEnvelope::RootJoin, &self.root_join_admission),
-            (CapabilityEnvelope::SingleJoinPostRootPipeline, &self.single_join_post_root_pipeline_admission),
-            (CapabilityEnvelope::ClosedMultiJoinSubgraph, &self.closed_multi_join_subgraph_admission),
-        ]
-        .into_iter()
-        .find_map(|(envelope, decision)| (*decision == CapabilityDecision::Satisfied).then_some(envelope))
+        [(CapabilityEnvelope::RootJoin, &self.root_join_admission)]
+            .into_iter()
+            .find_map(|(envelope, decision)| (*decision == CapabilityDecision::Satisfied).then_some(envelope))
     }
 
     pub(crate) fn first_local_rejection_projection(&self) -> Option<CapabilityRejectionProjection> {
         self.nodes
             .iter()
+            .filter(|node| self.reachable_node_ids.contains(&node.node_id))
             .find_map(|node| {
                 Some(capability_rejection_projection(
                     CapabilityRejectionOwner::Node(node.node_id),
@@ -1005,26 +982,38 @@ impl CapabilityAnalysis {
                 ))
             })
             .or_else(|| {
-                self.edges.iter().find_map(|edge| {
-                    Some(capability_rejection_projection(
-                        CapabilityRejectionOwner::Edge { producer: edge.producer, consumer: edge.consumer },
-                        CapabilityScope::Edge,
-                        "edge_capability",
-                        edge.decision.rejection_reason()?,
-                        edge.decision.rejection_facts()?,
-                    ))
-                })
+                self.edges
+                    .iter()
+                    .filter(|edge| {
+                        self.reachable_node_ids.contains(&edge.producer)
+                            && match edge.consumer {
+                                EdgeConsumer::Node(consumer) => self.reachable_node_ids.contains(&consumer),
+                                EdgeConsumer::Sink(_) => true,
+                            }
+                    })
+                    .find_map(|edge| {
+                        Some(capability_rejection_projection(
+                            CapabilityRejectionOwner::Edge { producer: edge.producer, consumer: edge.consumer },
+                            CapabilityScope::Edge,
+                            "edge_capability",
+                            edge.decision.rejection_reason()?,
+                            edge.decision.rejection_facts()?,
+                        ))
+                    })
             })
             .or_else(|| {
-                self.invariants.iter().find_map(|invariant| {
-                    Some(capability_rejection_projection(
-                        CapabilityRejectionOwner::Invariant(invariant.invariant_id),
-                        CapabilityScope::Subgraph,
-                        "subgraph_capability",
-                        invariant.decision.rejection_reason()?,
-                        invariant.decision.rejection_facts()?,
-                    ))
-                })
+                self.invariants
+                    .iter()
+                    .filter(|invariant| invariant.nodes.iter().all(|node| self.reachable_node_ids.contains(node)))
+                    .find_map(|invariant| {
+                        Some(capability_rejection_projection(
+                            CapabilityRejectionOwner::Invariant(invariant.invariant_id),
+                            CapabilityScope::Subgraph,
+                            "subgraph_capability",
+                            invariant.decision.rejection_reason()?,
+                            invariant.decision.rejection_facts()?,
+                        ))
+                    })
             })
     }
 
@@ -1040,8 +1029,6 @@ impl CapabilityAnalysis {
         }
         [
             ("root_join_admission", &self.root_join_admission),
-            ("single_join_post_root_pipeline_admission", &self.single_join_post_root_pipeline_admission),
-            ("closed_multi_join_subgraph_admission", &self.closed_multi_join_subgraph_admission),
             (
                 "multi_join_aggregate_over_join_subplan_topk_admission",
                 &self.multi_join_aggregate_over_join_subplan_topk_admission,
@@ -1054,8 +1041,6 @@ impl CapabilityAnalysis {
                 "hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission",
                 &self.hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_admission,
             ),
-            ("projection_global_limit_admission", &self.projection_global_limit_admission),
-            ("projection_scalar_setop_admission", &self.projection_scalar_setop_admission),
             (
                 "rollup_rank_topk_after_aggregate_join_pushdown_admission",
                 &self.rollup_rank_topk_after_aggregate_join_pushdown_admission,
@@ -1086,47 +1071,6 @@ impl CapabilityAnalysis {
             ))
         })
     }
-
-    fn root_full_sort_join_aggregate_rejection_projection(&self) -> Option<CapabilityRejectionProjection> {
-        if !root_full_sort_join_aggregate_rejection_projects_before_root_join(
-            &self.root_full_sort_join_aggregate_admission,
-        ) {
-            return None;
-        }
-        Some(capability_rejection_projection(
-            CapabilityRejectionOwner::Admission("root_full_sort_join_aggregate_admission"),
-            CapabilityScope::Subgraph,
-            "admission_capability",
-            self.root_full_sort_join_aggregate_admission.rejection_reason()?,
-            self.root_full_sort_join_aggregate_admission.rejection_facts()?,
-        ))
-    }
-
-    fn projection_global_limit_rejection_projection(&self) -> Option<CapabilityRejectionProjection> {
-        if !projection_global_limit_rejection_projects_before_root_join(&self.projection_global_limit_admission) {
-            return None;
-        }
-        Some(capability_rejection_projection(
-            CapabilityRejectionOwner::Admission("projection_global_limit_admission"),
-            CapabilityScope::Subgraph,
-            "admission_capability",
-            self.projection_global_limit_admission.rejection_reason()?,
-            self.projection_global_limit_admission.rejection_facts()?,
-        ))
-    }
-
-    fn projection_scalar_setop_rejection_projection(&self) -> Option<CapabilityRejectionProjection> {
-        if !projection_scalar_setop_rejection_projects_before_root_join(&self.projection_scalar_setop_admission) {
-            return None;
-        }
-        Some(capability_rejection_projection(
-            CapabilityRejectionOwner::Admission("projection_scalar_setop_admission"),
-            CapabilityScope::Subgraph,
-            "admission_capability",
-            self.projection_scalar_setop_admission.rejection_reason()?,
-            self.projection_scalar_setop_admission.rejection_facts()?,
-        ))
-    }
 }
 
 fn root_topk_join_aggregate_rejection_projects_before_root_join(decision: &CapabilityDecision) -> bool {
@@ -1149,31 +1093,6 @@ fn root_topk_join_aggregate_rejection_projects_before_root_join(decision: &Capab
                 | "root_topk_join_aggregate_rejects_keyless_outer_cross_subcontract"
                 | "root_topk_join_aggregate_rejects_unsupported_distinct_state"
         )
-    )
-}
-
-fn root_full_sort_join_aggregate_rejection_projects_before_root_join(decision: &CapabilityDecision) -> bool {
-    matches!(decision.rejection_reason(), Some("root_full_sort_join_aggregate_rejects_unsupported_subcontract"))
-}
-
-fn projection_global_limit_rejection_projects_before_root_join(decision: &CapabilityDecision) -> bool {
-    matches!(
-        decision.rejection_reason(),
-        Some(
-            "projection_global_limit_rejects_distinct_or_dedup_aggregate"
-                | "projection_global_limit_rejects_unsupported_distinct_or_dedup_aggregate"
-                | "projection_global_limit_requires_fetch_limit"
-                | "projection_global_limit_requires_join_fragment"
-                | "projection_global_limit_requires_non_sort_limit_input"
-                | "projection_global_limit_requires_supported_join_fragment"
-        )
-    )
-}
-
-fn projection_scalar_setop_rejection_projects_before_root_join(decision: &CapabilityDecision) -> bool {
-    matches!(
-        decision.rejection_reason(),
-        Some("projection_scalar_setop_rejects_distinct_aggregate" | "projection_scalar_setop_contract_not_implemented")
     )
 }
 
