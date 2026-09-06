@@ -945,7 +945,12 @@ pub fn keyless_outer_cross_join_capable(join: &JoinNode) -> bool {
 
 #[doc(hidden)]
 pub fn keyed_residual_mixed_join_capable(join: &JoinNode) -> bool {
-    if join.spec.keys.is_empty() || join.spec.residual_predicate.is_none() || join.spec.output_projection.is_empty() {
+    // Null-aware anti semantics are implemented only by the filtered semi/anti strategy.
+    if join.spec.keys.is_empty()
+        || join.spec.residual_predicate.is_none()
+        || join.spec.output_projection.is_empty()
+        || join.spec.null_aware
+    {
         return false;
     }
 
@@ -1065,6 +1070,26 @@ mod tests {
 
         assert!(!one_shot_equi_join_supported(&join));
         assert_eq!(join_node_execution_capability(&join), Some(JoinExecutionCapability::KeyedResidualMixed));
+    }
+
+    #[test]
+    fn null_aware_anti_join_executes_only_on_the_filtered_strategy() {
+        let mut join = single_use_join(JoinType::LeftAnti);
+        join.spec = join
+            .spec
+            .with_output_projection(vec![JoinOutputColumn::left(
+                ColumnRef::input(0, "left_value", "left_value"),
+                "left_value",
+            )])
+            .with_null_aware(true);
+        assert_eq!(join_node_execution_capability(&join), Some(JoinExecutionCapability::KeyedFilteredSemiAnti));
+
+        join.spec = join.spec.with_residual_predicate(Expr::binary(
+            Expr::column("left_value"),
+            BinaryOp::Gt,
+            Expr::column("right_value"),
+        ));
+        assert_eq!(join_node_execution_capability(&join), None);
     }
 
     #[test]

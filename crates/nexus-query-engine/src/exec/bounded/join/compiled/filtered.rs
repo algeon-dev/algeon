@@ -6,10 +6,11 @@ use super::{
     GpuFilteredJoinBuildHandle, JoinNode, JoinSide, JoinType, NodeId, QueryError, QueryMetrics, ResidentGpuFrame,
     Result, attach_budget_token_failure_facts, execution_budget_token_for_boundary, execution_overrides,
     join_index_error, join_side_output_upper_bound_bytes, keyed_filtered_semi_anti_join_capable, lower_null_equality,
-    materialize_left_only_join_output_projection, materialize_mark_join_output_projection, observe_device_memory_bytes,
-    prepare_bounded_join_side_input_from_resident_frame, prepare_bounded_join_side_input_from_shared_frame,
-    projected_input_columns, projected_output_columns_for_retained_sizing, release_bounded_join_side_frame,
-    unsupported_bounded_shape, validate_executable_join_subset,
+    materialize_left_only_join_output_projection, materialize_mark_join_output_projection, null_aware_anti_probe,
+    null_aware_anti_probe_input, observe_device_memory_bytes, prepare_bounded_join_side_input_from_resident_frame,
+    prepare_bounded_join_side_input_from_shared_frame, projected_input_columns,
+    projected_output_columns_for_retained_sizing, release_bounded_join_side_frame, unsupported_bounded_shape,
+    validate_executable_join_subset,
 };
 
 pub(super) fn execute_compiled_filtered_join_build_from_frame(
@@ -75,6 +76,7 @@ fn build_filtered_join_artifact(
     let FilteredJoinBuildSetup { left_keys, right_keys, left_columns, .. } = setup;
     let input_build_rows = build.rows;
     let input_build_bytes = build.bytes;
+    let null_aware_probe = null_aware_anti_probe(node, &build.frame, &right_keys)?;
     let build = deduplicate_filtered_join_build_keys(execution, node_id, build, &right_keys)?;
     let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
@@ -110,8 +112,25 @@ fn build_filtered_join_artifact(
         input_build_bytes,
         filtered_join,
         hash_table_bytes,
+        null_aware_probe,
         timer,
     })
+}
+
+fn null_aware_anti_probe_side(
+    execution: &mut BoundedExecutionAttempt<'_>,
+    build: &BoundedCompiledFilteredJoinBuildState,
+    probe: BoundedJoinSideFrame,
+    overrides: &ExecutionOverrides<'_>,
+) -> Result<BoundedJoinSideFrame> {
+    let Some(frame) = null_aware_anti_probe_input(&probe.frame, &build.left_keys, build.null_aware_probe, overrides)?
+    else {
+        return Ok(probe);
+    };
+    let bytes = observe_device_memory_bytes(&GpuDataFrame::new(frame.clone()), execution.metrics_mut())?;
+    let rows = frame.num_rows() as u64;
+    release_bounded_join_side_frame(probe);
+    Ok(BoundedJoinSideFrame { frame, rows, bytes })
 }
 
 fn deduplicate_filtered_join_build_keys(
@@ -174,6 +193,7 @@ pub(super) fn execute_compiled_filtered_join_probe_from_frame(
         prepare_bounded_join_side_input_from_shared_frame(execution, input, &build.left_columns, JoinSide::Left)?;
     let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
+    let probe = null_aware_anti_probe_side(execution, &build, probe, &overrides)?;
     let (probe_state, probe_state_bytes) = begin_filtered_join_probe_state(
         execution,
         node,
@@ -195,6 +215,7 @@ pub(super) fn execute_compiled_filtered_join_probe_from_resident_frame(
         prepare_bounded_join_side_input_from_resident_frame(execution, input, &build.left_columns, JoinSide::Left)?;
     let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
+    let probe = null_aware_anti_probe_side(execution, &build, probe, &overrides)?;
     let (probe_state, probe_state_bytes) = begin_filtered_join_probe_state(
         execution,
         node,
@@ -248,6 +269,7 @@ pub(super) fn execute_compiled_filtered_join_probe_chunk_from_resident_frame(
         prepare_bounded_join_side_input_from_resident_frame(execution, input, &build.left_columns, JoinSide::Left)?;
     let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
+    let probe = null_aware_anti_probe_side(execution, build, probe, &overrides)?;
     let (probe_state, probe_state_bytes) = begin_filtered_join_probe_state(
         execution,
         node,

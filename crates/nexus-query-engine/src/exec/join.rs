@@ -8,7 +8,7 @@ use cudf::{
 use super::{
     ArrowDataType, BinaryOp, ExecutionContext, ExecutionOverrides, ExecutionScratch, Expr, GpuDataFrame,
     GpuHashJoinBuildHandle, HashJoinCacheKey, JoinNode, LiteralValue, NodeId, QueryError, QueryErrorCode, QueryMetrics,
-    Result, execution_overrides, observe_device_memory_bytes, timestamp_unit_to_cudf_resolution,
+    Result, col, execution_overrides, observe_device_memory_bytes, timestamp_unit_to_cudf_resolution,
 };
 use crate::{
     metrics::{JoinOperatorMetrics, OperatorMetrics},
@@ -161,6 +161,8 @@ pub(super) fn execute_join(
     let overrides_lease = execution_overrides(context)?;
     let overrides = overrides_lease.overrides();
     let timer = Instant::now();
+    let null_aware_probe = null_aware_anti_probe(node, &right, &right_keys)?;
+    let left = null_aware_anti_probe_input(&left, &left_keys, null_aware_probe, &overrides)?.unwrap_or(left);
     let input = JoinIndexInput {
         context,
         left: &left,
@@ -422,6 +424,75 @@ pub(super) fn lower_null_equality(null_equality: JoinNullEquality) -> CudfNullEq
         JoinNullEquality::NullsDoNotMatch => CudfNullEquality::Unequal,
         JoinNullEquality::NullsMatch => CudfNullEquality::Equal,
     }
+}
+
+/// How a null-aware `LeftAnti` join (SQL `NOT IN`) restricts its left probe
+/// input before an ordinary anti join. The decision depends only on the
+/// complete right input, so every probe chunk applies the same rewrite.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum NullAwareAntiProbe {
+    /// Not null-aware, or the right input is empty: `x NOT IN (empty)` holds for every row.
+    Unchanged,
+    /// A NULL right key makes every comparison unknown, so no left row qualifies.
+    Empty,
+    /// A non-empty right input without NULL keys: a NULL left key is unknown and drops out.
+    DropNullKeys,
+}
+
+pub(super) fn null_aware_anti_probe(
+    node: &JoinNode,
+    right: &DataFrame,
+    right_keys: &[String],
+) -> Result<NullAwareAntiProbe> {
+    if !node.spec.null_aware || right.num_rows() == 0 {
+        return Ok(NullAwareAntiProbe::Unchanged);
+    }
+    if frame_has_null_key(right, right_keys)? {
+        Ok(NullAwareAntiProbe::Empty)
+    } else {
+        Ok(NullAwareAntiProbe::DropNullKeys)
+    }
+}
+
+/// Returns the restricted left probe input, or `None` when it is unchanged.
+pub(super) fn null_aware_anti_probe_input(
+    left: &DataFrame,
+    left_keys: &[String],
+    probe: NullAwareAntiProbe,
+    overrides: &ExecutionOverrides<'_>,
+) -> Result<Option<DataFrame>> {
+    let output = match probe {
+        NullAwareAntiProbe::Unchanged => return Ok(None),
+        NullAwareAntiProbe::Empty => left.with_execution(overrides).slice(0, 0),
+        NullAwareAntiProbe::DropNullKeys if !frame_has_null_key(left, left_keys)? => return Ok(None),
+        NullAwareAntiProbe::DropNullKeys => left
+            .with_execution(overrides)
+            .filter_all(left_keys.iter().map(|key| col(key.as_str()).is_not_null()).collect::<Vec<_>>()),
+    };
+    output.map(Some).map_err(|error| {
+        QueryError::from_cudf(
+            "nexus_query_engine.join.null_aware_anti_probe",
+            "failed to restrict the null-aware anti join probe input",
+            error,
+        )
+    })
+}
+
+fn frame_has_null_key(frame: &DataFrame, keys: &[String]) -> Result<bool> {
+    for key in keys {
+        let series = frame.series(key).map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.join.null_aware_anti_probe",
+                "failed to inspect null-aware anti join key nulls",
+                error,
+            )
+            .with_fact("column", key.as_str())
+        })?;
+        if series.null_count() > 0 {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub(super) fn probe_side(build_side: JoinSide) -> JoinSide {

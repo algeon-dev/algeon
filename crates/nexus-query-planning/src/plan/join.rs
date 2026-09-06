@@ -47,6 +47,12 @@ pub struct JoinSpec {
     pub output_projection: Vec<JoinOutputColumn>,
     /// Null matching behavior for equality keys.
     pub null_equality: JoinNullEquality,
+    /// Whether a `LeftAnti` join has SQL `NOT IN` null semantics.
+    ///
+    /// A NULL key on the right input empties the output, and a non-empty right
+    /// input also drops left rows whose key is NULL. Only single-key `LeftAnti`
+    /// joins may set it.
+    pub null_aware: bool,
     /// Input chosen to build reusable/hash state.
     ///
     /// This is a physical execution choice. It does not redefine which input is
@@ -114,6 +120,7 @@ impl JoinSpec {
             residual_predicate: None,
             output_projection: Vec::new(),
             null_equality: JoinNullEquality::NullsDoNotMatch,
+            null_aware: false,
             build_side: JoinSide::Right,
             datafusion_order_preserved_side: JoinSide::Right,
             build_artifact_id: None,
@@ -139,6 +146,12 @@ impl JoinSpec {
     /// Sets null matching behavior for equality keys.
     pub fn with_null_equality(mut self, null_equality: JoinNullEquality) -> Self {
         self.null_equality = null_equality;
+        self
+    }
+
+    /// Sets SQL `NOT IN` null semantics for a single-key `LeftAnti` join.
+    pub fn with_null_aware(mut self, null_aware: bool) -> Self {
+        self.null_aware = null_aware;
         self
     }
 

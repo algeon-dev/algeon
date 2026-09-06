@@ -3,7 +3,7 @@ use std::sync::Arc;
 use arrow::{
     array::{Int32Array, Int64Array},
     compute::SortOptions as ArrowSortOptions,
-    datatypes::{DataType, Field},
+    datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
 };
 use datafusion::{
@@ -226,6 +226,48 @@ pub(super) fn root_left_anti_join_plan(left: &std::path::Path, right: &std::path
     )
 }
 
+/// Builds the same root `LeftAnti` `HashJoinExec` shape as
+/// [`root_left_anti_join_plan`] but with `null_aware = true`. `right` is the
+/// already-built right input, so a case can pass a plain scan or one wrapped
+/// in a `FilterExec`.
+pub(super) fn root_null_aware_left_anti_join_plan(
+    left: &std::path::Path,
+    right: Arc<dyn ExecutionPlan>,
+) -> Arc<dyn ExecutionPlan> {
+    let left = parquet_scan(left);
+    let left_schema = left.schema();
+    let right_schema = right.schema();
+    Arc::new(
+        HashJoinExec::try_new(
+            left,
+            right,
+            vec![(col("key", &left_schema).unwrap(), col("key", &right_schema).unwrap())],
+            None,
+            &datafusion::logical_expr::JoinType::LeftAnti,
+            None,
+            PartitionMode::CollectLeft,
+            NullEquality::NullEqualsNothing,
+            true,
+        )
+        .unwrap(),
+    )
+}
+
+/// Wraps a parquet scan in a `FilterExec` that drops every row through a
+/// predicate row-group pruning cannot statically resolve at planning time, so
+/// the right input becomes empty only at execution.
+pub(super) fn filter_scan_to_empty_at_runtime(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
+    let schema = scan.schema();
+    let predicate = binary(
+        binary(col("key", &schema).unwrap(), Operator::Plus, lit(1i32), &schema).unwrap(),
+        Operator::Gt,
+        lit(100i32),
+        &schema,
+    )
+    .unwrap();
+    Arc::new(FilterExec::try_new(predicate, scan).unwrap())
+}
+
 pub(super) fn root_nested_loop_join_plan(left: &std::path::Path, right: &std::path::Path) -> Arc<dyn ExecutionPlan> {
     let left = parquet_scan(left);
     let right = parquet_scan(right);
@@ -409,6 +451,41 @@ pub(super) use super::support_core::{
     write_ilike_parquet_file_with_labels, write_join_left_parquet_file, write_join_right_parquet_file,
     write_parquet_file,
 };
+
+pub(super) fn null_aware_anti_join_left_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![Field::new("key", DataType::Int32, true), Field::new("payload", DataType::Int32, false)]))
+}
+
+pub(super) fn write_null_aware_anti_join_left_parquet_file(path: &std::path::Path) {
+    let schema = null_aware_anti_join_left_schema();
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![Some(1), Some(2), None, Some(4)])),
+            Arc::new(Int32Array::from(vec![10, 20, 30, 40])),
+        ],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
+
+pub(super) fn null_aware_anti_join_right_schema() -> Arc<Schema> {
+    Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, true),
+        Field::new("right_payload", DataType::Int32, false),
+    ]))
+}
+
+pub(super) fn write_null_aware_anti_join_right_parquet_file(path: &std::path::Path, keys: Vec<Option<i32>>) {
+    let schema = null_aware_anti_join_right_schema();
+    let payloads = (0..keys.len() as i32).collect::<Vec<_>>();
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![Arc::new(Int32Array::from(keys)), Arc::new(Int32Array::from(payloads))],
+    )
+    .unwrap();
+    write_batch(path, schema, batch);
+}
 
 pub(super) fn ilike_filter_over_scan(scan: Arc<dyn ExecutionPlan>) -> Arc<dyn ExecutionPlan> {
     ilike_filter_over_scan_with_pattern(scan, "al%".to_string())

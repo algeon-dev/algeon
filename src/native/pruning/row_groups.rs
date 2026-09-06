@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use arrow::datatypes::DataType;
 use datafusion::parquet::schema::types::SchemaDescriptor;
-use nexus_query_engine::parquet_stats::leaf_column_statistics;
+use nexus_query_engine::parquet_stats::{integer_statistics_range, leaf_column_chunk, leaf_column_statistics};
 
 use super::{
     BinaryExpr, CastExpr, Column, FileReader, FileScanConfig, FileSource, FilterExec, InListExpr, IsNotNullExpr,
@@ -286,12 +286,12 @@ fn row_group_may_satisfy_atom(
 ) -> Option<bool> {
     match atom {
         RowGroupPruningAtom::Comparison { column_index, op, literal } => {
-            let statistics = leaf_column_statistics(row_group, schema, *column_index)?;
-            row_group_may_satisfy_comparison(statistics, *op, literal)
+            let column = leaf_column_chunk(row_group, schema, *column_index)?;
+            row_group_may_satisfy_comparison(column, *op, literal)
         },
         RowGroupPruningAtom::InList { column_index, literals } => {
-            let statistics = leaf_column_statistics(row_group, schema, *column_index)?;
-            row_group_may_satisfy_in_list(statistics, literals)
+            let column = leaf_column_chunk(row_group, schema, *column_index)?;
+            row_group_may_satisfy_in_list(column, literals)
         },
         RowGroupPruningAtom::IsNull { column_index } => {
             let statistics = leaf_column_statistics(row_group, schema, *column_index)?;
@@ -305,13 +305,16 @@ fn row_group_may_satisfy_atom(
     }
 }
 
-fn row_group_may_satisfy_in_list(statistics: &Statistics, literals: &[PruningLiteral]) -> Option<bool> {
+fn row_group_may_satisfy_in_list(
+    column: &parquet::file::metadata::ColumnChunkMetaData,
+    literals: &[PruningLiteral],
+) -> Option<bool> {
     if literals.is_empty() {
         return Some(false);
     }
     let mut saw_unknown = false;
     for literal in literals {
-        match row_group_may_satisfy_comparison(statistics, Operator::Eq, literal) {
+        match row_group_may_satisfy_comparison(column, Operator::Eq, literal) {
             Some(true) => return Some(true),
             Some(false) => {},
             None => saw_unknown = true,
@@ -320,19 +323,18 @@ fn row_group_may_satisfy_in_list(statistics: &Statistics, literals: &[PruningLit
     Some(saw_unknown)
 }
 
-fn row_group_may_satisfy_comparison(statistics: &Statistics, op: Operator, literal: &PruningLiteral) -> Option<bool> {
+fn row_group_may_satisfy_comparison(
+    column: &parquet::file::metadata::ColumnChunkMetaData,
+    op: Operator,
+    literal: &PruningLiteral,
+) -> Option<bool> {
+    let statistics = column.statistics()?;
     match statistics {
-        Statistics::Int32(stats) => {
-            let min = i64::from(*stats.min_opt()?);
-            let max = i64::from(*stats.max_opt()?);
-            let PruningLiteral::Int64(literal) = literal else {
-                return None;
-            };
-            Some(int_range_may_satisfy(min, max, op, *literal))
-        },
-        Statistics::Int64(stats) => {
-            let min = *stats.min_opt()?;
-            let max = *stats.max_opt()?;
+        // A UInt64 range above `i64::MAX` does not fit the i64 comparison, so the row group is unknown.
+        Statistics::Int32(_) | Statistics::Int64(_) => {
+            let range = integer_statistics_range(column)?;
+            let min = i64::try_from(range.min).ok()?;
+            let max = i64::try_from(range.max).ok()?;
             let PruningLiteral::Int64(literal) = literal else {
                 return None;
             };

@@ -765,11 +765,11 @@ pub fn dynamic_filter_i64_values(array: &dyn Array) -> Option<Vec<Option<i64>>> 
         },
         DataType::UInt64 => {
             let array = array.as_any().downcast_ref::<UInt64Array>()?;
-            Some(
-                (0..array.len())
-                    .map(|row| (!array.is_null(row)).then(|| i64::try_from(array.value(row)).ok()).flatten())
-                    .collect(),
-            )
+            // An unrepresentable value is not a null: dropping it would shrink the keyset,
+            // so reject the whole array and let the caller skip the filter.
+            (0..array.len())
+                .map(|row| if array.is_null(row) { Some(None) } else { i64::try_from(array.value(row)).ok().map(Some) })
+                .collect()
         },
         _ => None,
     }
@@ -1123,6 +1123,12 @@ mod tests {
     fn dynamic_filter_execution_options_accept_zero_threshold_overrides() {
         DynamicFilterExecutionOptions::default().with_max_build_rows(0).validate().unwrap();
         DynamicFilterExecutionOptions::default().with_large_local_parquet_range_producer_rows(0).validate().unwrap();
+    }
+
+    #[test]
+    fn dynamic_filter_i64_values_rejects_uint64_beyond_i64_max() {
+        let array = UInt64Array::from(vec![Some(1), None, Some(u64::MAX)]);
+        assert_eq!(dynamic_filter_i64_values(&array), None);
     }
 
     #[test]
