@@ -215,7 +215,7 @@ impl Expr {
 
     /// Replace null values with a scalar. Name: `fillna` (matches `Series::fillna`).
     pub fn fillna(self, value: impl IntoLit) -> Expr {
-        let lit_value = match value.into_expr() {
+        let lit_value = match value.into_lit() {
             Expr::Literal(lv) => lv,
             _ => unreachable!("IntoLit always produces Expr::Literal"),
         };
@@ -967,7 +967,7 @@ impl IntoExpr for Expr {
 // overlapping implementations of `IntoExpr` and refuse to compile.
 impl<T: IntoLit> IntoExpr for T {
     fn into_expr(self) -> Expr {
-        IntoLit::into_expr(self)
+        self.into_lit()
     }
 }
 

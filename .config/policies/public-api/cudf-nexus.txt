@@ -207,14 +207,6 @@ impl core::ops::drop::Drop for cudf::core::Column
 pub fn cudf::core::Column::drop(&mut self)
 impl cudf::IntoSeries for cudf::core::Column
 pub fn cudf::core::Column::into_series(self) -> cudf::core::error::Result<cudf::Series>
-impl rapids_interop::traits::TryBorrowColumnView for cudf::core::Column
-pub fn cudf::core::Column::try_borrow_column_view(&self) -> core::result::Result<rapids_interop::borrowed::BorrowedColumnView<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryIntoOwnedDeviceColumnTransfer for cudf::core::Column
-pub fn cudf::core::Column::try_into_owned_device_column_transfer(self) -> core::result::Result<rapids_interop::owned::OwnedColumnTransfer, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareDeviceColumnExport for cudf::core::Column
-pub fn cudf::core::Column::try_prepare_device_column_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareHostColumnExport for cudf::core::Column
-pub fn cudf::core::Column::try_prepare_host_column_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'static>, rapids_interop::types::InteropError>
 pub struct cudf::core::column::ColumnView<'a>
 impl cudf::core::column::ColumnView<'_>
 pub fn cudf::core::column::ColumnView<'_>::isin(&self, &cudf::core::column::ColumnView<'_>) -> cudf::core::error::Result<cudf::core::Column>
@@ -244,12 +236,6 @@ impl core::fmt::Debug for cudf::core::column::ColumnView<'_>
 pub fn cudf::core::column::ColumnView<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::drop::Drop for cudf::core::column::ColumnView<'_>
 pub fn cudf::core::column::ColumnView<'_>::drop(&mut self)
-impl rapids_interop::traits::TryBorrowColumnView for cudf::core::column::ColumnView<'_>
-pub fn cudf::core::column::ColumnView<'_>::try_borrow_column_view(&self) -> core::result::Result<rapids_interop::borrowed::BorrowedColumnView<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareDeviceColumnExport for cudf::core::column::ColumnView<'_>
-pub fn cudf::core::column::ColumnView<'_>::try_prepare_device_column_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareHostColumnExport for cudf::core::column::ColumnView<'_>
-pub fn cudf::core::column::ColumnView<'_>::try_prepare_host_column_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'static>, rapids_interop::types::InteropError>
 pub struct cudf::core::column::DeviceBuffer
 impl cudf::core::DeviceBuffer
 pub fn cudf::core::DeviceBuffer::as_mut_ptr(&mut self) -> cudf::core::error::Result<*mut std::os::raw::c_void>
@@ -963,14 +949,6 @@ impl core::marker::Send for cudf::core::Table
 impl core::marker::Sync for cudf::core::Table
 impl core::ops::drop::Drop for cudf::core::Table
 pub fn cudf::core::Table::drop(&mut self)
-impl rapids_interop::traits::TryBorrowTableView for cudf::core::Table
-pub fn cudf::core::Table::try_borrow_table_view(&self) -> core::result::Result<rapids_interop::borrowed::BorrowedTableView<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryIntoOwnedDeviceTableTransfer for cudf::core::Table
-pub fn cudf::core::Table::try_into_owned_device_table_transfer(self) -> core::result::Result<rapids_interop::owned::OwnedTableTransfer, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareDeviceTableExport for cudf::core::Table
-pub fn cudf::core::Table::try_prepare_device_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareHostTableExport for cudf::core::Table
-pub fn cudf::core::Table::try_prepare_host_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'static>, rapids_interop::types::InteropError>
 pub struct cudf::core::table::TableView<'a>
 impl cudf::core::table::TableView<'_>
 pub fn cudf::core::table::TableView<'_>::try_borrow_table_view(&self) -> core::result::Result<rapids_interop::borrowed::BorrowedTableView<'_>, rapids_interop::types::InteropError>
@@ -987,12 +965,6 @@ impl core::fmt::Debug for cudf::core::table::TableView<'_>
 pub fn cudf::core::table::TableView<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::ops::drop::Drop for cudf::core::table::TableView<'_>
 pub fn cudf::core::table::TableView<'_>::drop(&mut self)
-impl rapids_interop::traits::TryBorrowTableView for cudf::core::table::TableView<'_>
-pub fn cudf::core::table::TableView<'_>::try_borrow_table_view(&self) -> core::result::Result<rapids_interop::borrowed::BorrowedTableView<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareDeviceTableExport for cudf::core::table::TableView<'_>
-pub fn cudf::core::table::TableView<'_>::try_prepare_device_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareHostTableExport for cudf::core::table::TableView<'_>
-pub fn cudf::core::table::TableView<'_>::try_prepare_host_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'static>, rapids_interop::types::InteropError>
 pub mod cudf::core::types
 #[repr(i32)] pub enum cudf::core::types::NullEquality
 pub cudf::core::types::NullEquality::Equal = 0
@@ -1438,14 +1410,6 @@ impl core::ops::drop::Drop for cudf::core::Column
 pub fn cudf::core::Column::drop(&mut self)
 impl cudf::IntoSeries for cudf::core::Column
 pub fn cudf::core::Column::into_series(self) -> cudf::core::error::Result<cudf::Series>
-impl rapids_interop::traits::TryBorrowColumnView for cudf::core::Column
-pub fn cudf::core::Column::try_borrow_column_view(&self) -> core::result::Result<rapids_interop::borrowed::BorrowedColumnView<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryIntoOwnedDeviceColumnTransfer for cudf::core::Column
-pub fn cudf::core::Column::try_into_owned_device_column_transfer(self) -> core::result::Result<rapids_interop::owned::OwnedColumnTransfer, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareDeviceColumnExport for cudf::core::Column
-pub fn cudf::core::Column::try_prepare_device_column_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareHostColumnExport for cudf::core::Column
-pub fn cudf::core::Column::try_prepare_host_column_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'static>, rapids_interop::types::InteropError>
 pub struct cudf::core::DataType
 impl cudf::core::types::DataType
 pub fn cudf::core::types::DataType::fixed_point(cudf::core::types::TypeId, i32) -> cudf::core::error::Result<Self>
@@ -1592,14 +1556,6 @@ impl core::marker::Send for cudf::core::Table
 impl core::marker::Sync for cudf::core::Table
 impl core::ops::drop::Drop for cudf::core::Table
 pub fn cudf::core::Table::drop(&mut self)
-impl rapids_interop::traits::TryBorrowTableView for cudf::core::Table
-pub fn cudf::core::Table::try_borrow_table_view(&self) -> core::result::Result<rapids_interop::borrowed::BorrowedTableView<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryIntoOwnedDeviceTableTransfer for cudf::core::Table
-pub fn cudf::core::Table::try_into_owned_device_table_transfer(self) -> core::result::Result<rapids_interop::owned::OwnedTableTransfer, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareDeviceTableExport for cudf::core::Table
-pub fn cudf::core::Table::try_prepare_device_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareHostTableExport for cudf::core::Table
-pub fn cudf::core::Table::try_prepare_host_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'static>, rapids_interop::types::InteropError>
 pub struct cudf::core::ValidatedFloat32DeviceBuffer<'a>
 impl cudf::core::ValidatedFloat32DeviceBuffer<'_>
 pub fn cudf::core::ValidatedFloat32DeviceBuffer<'_>::as_ptr(&self) -> cudf::core::error::Result<*const std::os::raw::c_void>
@@ -1876,14 +1832,6 @@ impl core::fmt::Debug for cudf::DataFrame
 pub fn cudf::DataFrame::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for cudf::DataFrame
 pub fn cudf::DataFrame::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl rapids_interop::traits::TryBorrowTableView for cudf::DataFrame
-pub fn cudf::DataFrame::try_borrow_table_view(&self) -> core::result::Result<rapids_interop::borrowed::BorrowedTableView<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryIntoOwnedDeviceTableTransfer for cudf::DataFrame
-pub fn cudf::DataFrame::try_into_owned_device_table_transfer(self) -> core::result::Result<rapids_interop::owned::OwnedTableTransfer, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareDeviceTableExport for cudf::DataFrame
-pub fn cudf::DataFrame::try_prepare_device_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareHostTableExport for cudf::DataFrame
-pub fn cudf::DataFrame::try_prepare_host_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'static>, rapids_interop::types::InteropError>
 pub struct cudf::frame::dataframe::DataFrameColumnInfo
 pub cudf::frame::dataframe::DataFrameColumnInfo::data_type: cudf::core::types::DataType
 pub cudf::frame::dataframe::DataFrameColumnInfo::memory_accounting: core::option::Option<cudf::frame::dataframe::ColumnMemoryAccounting>
@@ -3333,14 +3281,6 @@ pub type cudf::Series::Output = core::result::Result<cudf::Series, cudf::core::e
 pub fn cudf::Series::not(self) -> Self::Output
 impl cudf::IntoSeries for cudf::Series
 pub fn cudf::Series::into_series(self) -> cudf::core::error::Result<cudf::Series>
-impl rapids_interop::traits::TryBorrowColumnView for cudf::Series
-pub fn cudf::Series::try_borrow_column_view(&self) -> core::result::Result<rapids_interop::borrowed::BorrowedColumnView<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryIntoOwnedDeviceColumnTransfer for cudf::Series
-pub fn cudf::Series::try_into_owned_device_column_transfer(self) -> core::result::Result<rapids_interop::owned::OwnedColumnTransfer, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareDeviceColumnExport for cudf::Series
-pub fn cudf::Series::try_prepare_device_column_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareHostColumnExport for cudf::Series
-pub fn cudf::Series::try_prepare_host_column_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'static>, rapids_interop::types::InteropError>
 pub struct cudf::frame::series::SeriesPreparedScalarReduction<'a>
 impl<'a> cudf::SeriesPreparedScalarReduction<'a>
 pub fn cudf::SeriesPreparedScalarReduction<'a>::aggregation(&self) -> &cudf::ops::reduction::ReduceAgg
@@ -3546,14 +3486,6 @@ impl core::fmt::Debug for cudf::DataFrame
 pub fn cudf::DataFrame::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for cudf::DataFrame
 pub fn cudf::DataFrame::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl rapids_interop::traits::TryBorrowTableView for cudf::DataFrame
-pub fn cudf::DataFrame::try_borrow_table_view(&self) -> core::result::Result<rapids_interop::borrowed::BorrowedTableView<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryIntoOwnedDeviceTableTransfer for cudf::DataFrame
-pub fn cudf::DataFrame::try_into_owned_device_table_transfer(self) -> core::result::Result<rapids_interop::owned::OwnedTableTransfer, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareDeviceTableExport for cudf::DataFrame
-pub fn cudf::DataFrame::try_prepare_device_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareHostTableExport for cudf::DataFrame
-pub fn cudf::DataFrame::try_prepare_host_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'static>, rapids_interop::types::InteropError>
 pub struct cudf::frame::Series
 impl cudf::Series
 pub fn cudf::Series::abs(&self) -> cudf::core::error::Result<cudf::Series>
@@ -4444,14 +4376,6 @@ pub type cudf::Series::Output = core::result::Result<cudf::Series, cudf::core::e
 pub fn cudf::Series::not(self) -> Self::Output
 impl cudf::IntoSeries for cudf::Series
 pub fn cudf::Series::into_series(self) -> cudf::core::error::Result<cudf::Series>
-impl rapids_interop::traits::TryBorrowColumnView for cudf::Series
-pub fn cudf::Series::try_borrow_column_view(&self) -> core::result::Result<rapids_interop::borrowed::BorrowedColumnView<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryIntoOwnedDeviceColumnTransfer for cudf::Series
-pub fn cudf::Series::try_into_owned_device_column_transfer(self) -> core::result::Result<rapids_interop::owned::OwnedColumnTransfer, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareDeviceColumnExport for cudf::Series
-pub fn cudf::Series::try_prepare_device_column_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareHostColumnExport for cudf::Series
-pub fn cudf::Series::try_prepare_host_column_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'static>, rapids_interop::types::InteropError>
 pub trait cudf::frame::HostColumnData: cudf::frame::series::host_column_data::private::Sealed
 pub fn cudf::frame::HostColumnData::create_column_in_runtime(&cudf::Runtime, &[Self]) -> cudf::core::error::Result<cudf::core::Column> where Self: core::marker::Sized
 pub fn cudf::frame::HostColumnData::create_column_nullable_in_runtime(&cudf::Runtime, &[Self], &[bool]) -> cudf::core::error::Result<cudf::core::Column> where Self: core::marker::Sized
@@ -4621,12 +4545,6 @@ pub fn cudf::interop::frame::PartitionedDataFrameExport::try_into_owned_transfer
 pub fn cudf::interop::frame::PartitionedDataFrameExport::try_into_owned_transfer_with_release_synchronization(self, rapids_interop::contract::ReleaseSynchronization) -> core::result::Result<(rapids_interop::partitioned::PartitionedOwnedTableTransfer, cudf::interop::runtime_release::PartitionedOwnedTableTransferReleaser), rapids_interop::types::InteropError>
 pub fn cudf::interop::frame::PartitionedDataFrameExport::try_prepare_device_partitioned_table_export(&self) -> core::result::Result<rapids_interop::partitioned::PartitionedPreparedTableExport<'_>, rapids_interop::types::InteropError>
 pub fn cudf::interop::frame::PartitionedDataFrameExport::try_prepare_host_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'static>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryIntoOwnedDevicePartitionedTableTransfer for cudf::interop::frame::PartitionedDataFrameExport
-pub fn cudf::interop::frame::PartitionedDataFrameExport::try_into_owned_device_partitioned_table_transfer(self) -> core::result::Result<rapids_interop::partitioned::PartitionedOwnedTableTransfer, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareDevicePartitionedTableExport for cudf::interop::frame::PartitionedDataFrameExport
-pub fn cudf::interop::frame::PartitionedDataFrameExport::try_prepare_device_partitioned_table_export(&self) -> core::result::Result<rapids_interop::partitioned::PartitionedPreparedTableExport<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareHostTableExport for cudf::interop::frame::PartitionedDataFrameExport
-pub fn cudf::interop::frame::PartitionedDataFrameExport::try_prepare_host_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'static>, rapids_interop::types::InteropError>
 pub mod cudf::interop::runtime_release
 pub enum cudf::interop::runtime_release::TransferCompletionAuthority<'a>
 pub cudf::interop::runtime_release::TransferCompletionAuthority::CrossDeviceEvent
@@ -4666,12 +4584,6 @@ pub fn cudf::interop::frame::PartitionedDataFrameExport::try_into_owned_transfer
 pub fn cudf::interop::frame::PartitionedDataFrameExport::try_into_owned_transfer_with_release(self) -> core::result::Result<(rapids_interop::partitioned::PartitionedOwnedTableTransfer, cudf::interop::runtime_release::PartitionedOwnedTableTransferReleaser), rapids_interop::types::InteropError>
 pub fn cudf::interop::frame::PartitionedDataFrameExport::try_into_owned_transfer_with_release_synchronization(self, rapids_interop::contract::ReleaseSynchronization) -> core::result::Result<(rapids_interop::partitioned::PartitionedOwnedTableTransfer, cudf::interop::runtime_release::PartitionedOwnedTableTransferReleaser), rapids_interop::types::InteropError>
 pub fn cudf::interop::frame::PartitionedDataFrameExport::try_prepare_device_partitioned_table_export(&self) -> core::result::Result<rapids_interop::partitioned::PartitionedPreparedTableExport<'_>, rapids_interop::types::InteropError>
-pub fn cudf::interop::frame::PartitionedDataFrameExport::try_prepare_host_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'static>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryIntoOwnedDevicePartitionedTableTransfer for cudf::interop::frame::PartitionedDataFrameExport
-pub fn cudf::interop::frame::PartitionedDataFrameExport::try_into_owned_device_partitioned_table_transfer(self) -> core::result::Result<rapids_interop::partitioned::PartitionedOwnedTableTransfer, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareDevicePartitionedTableExport for cudf::interop::frame::PartitionedDataFrameExport
-pub fn cudf::interop::frame::PartitionedDataFrameExport::try_prepare_device_partitioned_table_export(&self) -> core::result::Result<rapids_interop::partitioned::PartitionedPreparedTableExport<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareHostTableExport for cudf::interop::frame::PartitionedDataFrameExport
 pub fn cudf::interop::frame::PartitionedDataFrameExport::try_prepare_host_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'static>, rapids_interop::types::InteropError>
 pub struct cudf::interop::PartitionedLocalTableResult
 impl cudf::interop::PartitionedLocalTableResult
@@ -5662,13 +5574,13 @@ pub fn cudf::Expr::into_expr(self) -> cudf::Expr
 impl<T: cudf::ops::expr::IntoLit> cudf::ops::expr::IntoExpr for T
 pub fn T::into_expr(self) -> cudf::Expr
 pub trait cudf::ops::expr::IntoLit
-pub fn cudf::ops::expr::IntoLit::into_expr(self) -> cudf::Expr
+pub fn cudf::ops::expr::IntoLit::into_lit(self) -> cudf::Expr
 impl cudf::ops::expr::IntoLit for &str
-pub fn &str::into_expr(self) -> cudf::Expr
+pub fn &str::into_lit(self) -> cudf::Expr
 impl cudf::ops::expr::IntoLit for alloc::string::String
-pub fn alloc::string::String::into_expr(self) -> cudf::Expr
+pub fn alloc::string::String::into_lit(self) -> cudf::Expr
 impl<T: cudf::core::types::CudfType + core::marker::Send + core::marker::Sync> cudf::ops::expr::IntoLit for T
-pub fn T::into_expr(self) -> cudf::Expr
+pub fn T::into_lit(self) -> cudf::Expr
 pub fn cudf::ops::expr::col(impl core::convert::Into<alloc::string::String>) -> cudf::Expr
 pub fn cudf::ops::expr::concat(alloc::vec::Vec<cudf::Expr>) -> cudf::Expr
 pub fn cudf::ops::expr::dataframe_expression_allocation_preflight_for_metadata(usize, &[cudf::ops::expr::DataFrameExpressionInputColumn], &[(alloc::string::String, cudf::Expr)], bool) -> cudf::core::error::Result<cudf::ops::expr::DataFrameExpressionAllocationPreflight>
@@ -7918,14 +7830,6 @@ impl core::fmt::Debug for cudf::DataFrame
 pub fn cudf::DataFrame::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 impl core::fmt::Display for cudf::DataFrame
 pub fn cudf::DataFrame::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
-impl rapids_interop::traits::TryBorrowTableView for cudf::DataFrame
-pub fn cudf::DataFrame::try_borrow_table_view(&self) -> core::result::Result<rapids_interop::borrowed::BorrowedTableView<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryIntoOwnedDeviceTableTransfer for cudf::DataFrame
-pub fn cudf::DataFrame::try_into_owned_device_table_transfer(self) -> core::result::Result<rapids_interop::owned::OwnedTableTransfer, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareDeviceTableExport for cudf::DataFrame
-pub fn cudf::DataFrame::try_prepare_device_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareHostTableExport for cudf::DataFrame
-pub fn cudf::DataFrame::try_prepare_host_table_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedTableExport<'static>, rapids_interop::types::InteropError>
 pub struct cudf::DataFrameConditionalFullJoinSizeData<'a>
 impl cudf::DataFrameConditionalFullJoinSizeData<'_>
 pub fn cudf::DataFrameConditionalFullJoinSizeData<'_>::device_allocated_size_bytes(&self) -> cudf::core::error::Result<usize>
@@ -9572,14 +9476,6 @@ pub type cudf::Series::Output = core::result::Result<cudf::Series, cudf::core::e
 pub fn cudf::Series::not(self) -> Self::Output
 impl cudf::IntoSeries for cudf::Series
 pub fn cudf::Series::into_series(self) -> cudf::core::error::Result<cudf::Series>
-impl rapids_interop::traits::TryBorrowColumnView for cudf::Series
-pub fn cudf::Series::try_borrow_column_view(&self) -> core::result::Result<rapids_interop::borrowed::BorrowedColumnView<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryIntoOwnedDeviceColumnTransfer for cudf::Series
-pub fn cudf::Series::try_into_owned_device_column_transfer(self) -> core::result::Result<rapids_interop::owned::OwnedColumnTransfer, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareDeviceColumnExport for cudf::Series
-pub fn cudf::Series::try_prepare_device_column_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'_>, rapids_interop::types::InteropError>
-impl rapids_interop::traits::TryPrepareHostColumnExport for cudf::Series
-pub fn cudf::Series::try_prepare_host_column_export(&self) -> core::result::Result<rapids_interop::prepared::PreparedColumnExport<'static>, rapids_interop::types::InteropError>
 pub struct cudf::SeriesPreparedReplaceWithBackrefs
 impl cudf::ops::strings::SeriesPreparedReplaceWithBackrefs
 pub fn cudf::ops::strings::SeriesPreparedReplaceWithBackrefs::execute(self) -> cudf::core::error::Result<cudf::Series>

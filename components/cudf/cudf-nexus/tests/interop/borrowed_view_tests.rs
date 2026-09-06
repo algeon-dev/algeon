@@ -1,18 +1,10 @@
 use cudf::{
-    DataFrame, Runtime, TypeId,
-    core::{Column, Table},
-    frame::dataframe::JsonReadOptions,
-    ops::dictionary,
-    testing::prelude::*,
+    DataFrame, Runtime, TypeId, core::Table, frame::dataframe::JsonReadOptions, ops::dictionary, testing::prelude::*,
 };
-use rapids_interop::{ColumnLayout, NullMaskKind, TryBorrowColumnView, TryBorrowTableView, TypeId as InteropTypeId};
-use static_assertions::assert_impl_all;
+use rapids_interop::{ColumnLayout, NullMaskKind, TypeId as InteropTypeId};
 use tempfile::TempDir;
 
 use crate::common::column_from_slice;
-
-assert_impl_all!(Column: TryBorrowColumnView);
-assert_impl_all!(Table: TryBorrowTableView);
 
 fn read_json_dataframe(filename: &str, rows: &str) -> DataFrame {
     let dir = TempDir::new().unwrap();

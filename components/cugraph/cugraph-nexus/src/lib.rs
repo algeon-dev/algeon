@@ -71,7 +71,7 @@ pub mod types;
 // ═══════════════════════════════════════════════════════════════════════════
 
 // Arrays
-pub use array::{DeviceArray, DeviceArrayView, DeviceBuffer};
+pub use array::{DeviceArray, DeviceArrayView};
 // Error handling
 pub use error::{AllocationFailureSource, AllocationSource, Error, ErrorKind, ErrorStatus};
 // Graph construction and type-state

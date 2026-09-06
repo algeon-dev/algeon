@@ -54,8 +54,6 @@ pub use recorder::{
 };
 #[doc(hidden)]
 pub use recorder::{QueryCleanupSealDelivery, in_runtime_observation_delivery};
-#[doc(hidden)]
-pub use runtime_observation::LogicalRetainedBytes;
 pub use runtime_observation::{
     AdmissionLifecycleState, AdmissionRequestId, BarrierDefinitionRow, CompiledEdgeRow, GpuJobLifecycleState,
     JobDefinitionRow, ObservationSequence, PlanEdgeRow, PlanExecutionBoundaryKind, PlanExecutionId, PlanNodeRow,

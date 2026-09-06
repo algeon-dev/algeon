@@ -619,11 +619,7 @@ pub(crate) async fn run_query_with_registered_native_tables(
         sql.clone(),
         diagnostics,
         planning_row.outcome,
-        planning_row
-            .reason_code
-            .as_deref()
-            .and_then(CapabilityReason::from_code)
-            .map(|reason| reason.code().to_string()),
+        planning_row.reason_code.as_deref().and_then(table_format_capability_reason_code).map(str::to_string),
         planning_row.final_disposition,
         staging_summary,
         None,

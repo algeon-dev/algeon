@@ -315,6 +315,7 @@ struct TestLeaseBackend {
     activation_calls: Arc<AtomicUsize>,
     activation_drop_calls: Arc<AtomicUsize>,
     fail_activation: bool,
+    fail_completion: bool,
     drop_calls: Arc<AtomicUsize>,
     witness_state: Arc<TestWitnessState>,
 }
@@ -329,6 +330,7 @@ impl TestLeaseBackend {
                 activation_calls: Arc::new(AtomicUsize::new(0)),
                 activation_drop_calls: Arc::new(AtomicUsize::new(0)),
                 fail_activation: false,
+                fail_completion: false,
                 drop_calls: Arc::clone(&drop_calls),
                 witness_state: Arc::clone(&witness_state),
             }),
@@ -345,6 +347,7 @@ impl TestLeaseBackend {
                 activation_calls: Arc::new(AtomicUsize::new(0)),
                 activation_drop_calls: Arc::new(AtomicUsize::new(0)),
                 fail_activation: false,
+                fail_completion: false,
                 drop_calls: Arc::clone(&drop_calls),
                 witness_state: Arc::new(TestWitnessState::default()),
             }),
@@ -363,6 +366,7 @@ impl TestLeaseBackend {
                 activation_calls: Arc::clone(&activation_calls),
                 activation_drop_calls: Arc::clone(&activation_drop_calls),
                 fail_activation: false,
+                fail_completion: false,
                 drop_calls: Arc::clone(&drop_calls),
                 witness_state: Arc::new(TestWitnessState::default()),
             }),
@@ -380,10 +384,27 @@ impl TestLeaseBackend {
                 activation_calls: Arc::clone(&activation_calls),
                 activation_drop_calls: Arc::new(AtomicUsize::new(0)),
                 fail_activation: true,
+                fail_completion: false,
                 drop_calls: Arc::new(AtomicUsize::new(0)),
                 witness_state: Arc::new(TestWitnessState::default()),
             }),
             activation_calls,
+        )
+    }
+
+    fn completion_failure(behavior: IncompleteDropBehavior) -> (LeaseBackend, Arc<AtomicUsize>) {
+        let drop_calls = Arc::new(AtomicUsize::new(0));
+        (
+            LeaseBackend::new(Self {
+                behavior,
+                activation_calls: Arc::new(AtomicUsize::new(0)),
+                activation_drop_calls: Arc::new(AtomicUsize::new(0)),
+                fail_activation: false,
+                fail_completion: true,
+                drop_calls: Arc::clone(&drop_calls),
+                witness_state: Arc::new(TestWitnessState::default()),
+            }),
+            drop_calls,
         )
     }
 }
@@ -425,6 +446,9 @@ impl ActiveLeaseBackend for TestLeaseBackend {
         _export: &LeaseExportContext,
         completion: CompletionBinding,
     ) -> rapids_interop::Result<LeaseCompletionResult> {
+        if self.fail_completion {
+            return Err(InteropError::new(InteropErrorKind::ReadinessUnavailable, "test completion failure"));
+        }
         Ok(match completion {
             CompletionBinding::SynchronousByReturn => LeaseCompletionResult::FallbackSynchronized,
             CompletionBinding::SameDeviceStream { .. } => {
@@ -2339,6 +2363,30 @@ fn prepared_column_export_explicit_completion_required_reports_behavior_without_
         .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
         .unwrap();
     assert_eq!(reacquired.complete(), Ok(LeaseCompletionResult::FallbackSynchronized));
+}
+
+#[test]
+fn prepared_column_export_completion_failure_runs_drop_fallback_only_when_guaranteed() {
+    for (behavior, expected_drop_calls) in
+        [(IncompleteDropBehavior::GuaranteedFallback, 1), (IncompleteDropBehavior::ExplicitCompletionRequired, 0)]
+    {
+        let (backend, drop_calls) = TestLeaseBackend::completion_failure(behavior);
+        let export = PreparedColumnExport::try_new(
+            fixed_width_column(1, 10, 3, 0),
+            vec![device_binding(10, 0x6000, 12, 0)],
+            prepared_readiness(),
+            prepared_diagnostics(),
+        )
+        .unwrap()
+        .with_lease_backend(backend);
+
+        let lease =
+            export.try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, same_device_completion()).unwrap();
+        let err = lease.complete().unwrap_err();
+
+        assert_eq!(err.kind(), InteropErrorKind::ReadinessUnavailable);
+        assert_eq!(drop_calls.load(Ordering::SeqCst), expected_drop_calls, "{behavior:?}");
+    }
 }
 
 #[test]

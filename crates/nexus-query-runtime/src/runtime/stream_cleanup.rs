@@ -28,7 +28,22 @@ pub(super) const STREAM_CLEANUP_SUPERVISOR_BUILD_OPERATION: &str = "nexus_query_
 
 type StreamCleanupCallback = Box<dyn FnOnce(StreamCleanupOutcome) + Send>;
 
-trait ServiceStreamTestProbe: Send + Sync {
+/// Fault-injection hooks for cleanup-supervisor unit tests. Outside
+/// `cfg(test)` the slot carries no state and every hook is a constant no-op.
+#[derive(Clone, Default)]
+pub(super) struct ServiceStreamTestProbeSlot {
+    #[cfg(test)]
+    probe: Arc<Mutex<Option<Arc<TestServiceStreamProbe>>>>,
+}
+
+impl std::fmt::Debug for ServiceStreamTestProbeSlot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("ServiceStreamTestProbeSlot").finish_non_exhaustive()
+    }
+}
+
+#[cfg(not(test))]
+impl ServiceStreamTestProbeSlot {
     fn fail_next_supervisor_spawn(&self) -> bool {
         false
     }
@@ -44,81 +59,55 @@ trait ServiceStreamTestProbe: Send + Sync {
     }
     fn notify_shutdown_send_failure(&self) {}
     fn notify_join_waiter(&self) {}
-    #[cfg(test)]
-    fn as_test_probe(&self) -> Option<&TestServiceStreamProbe> {
-        None
-    }
 }
 
-struct NoopServiceStreamTestProbe;
-
-impl ServiceStreamTestProbe for NoopServiceStreamTestProbe {}
-
-#[derive(Clone)]
-pub(super) struct ServiceStreamTestProbeSlot {
-    probe: Arc<Mutex<Arc<dyn ServiceStreamTestProbe>>>,
-}
-
-impl std::fmt::Debug for ServiceStreamTestProbeSlot {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("ServiceStreamTestProbeSlot").finish_non_exhaustive()
-    }
-}
-
-impl Default for ServiceStreamTestProbeSlot {
-    fn default() -> Self {
-        Self { probe: Arc::new(Mutex::new(Arc::new(NoopServiceStreamTestProbe))) }
-    }
-}
-
+#[cfg(test)]
 impl ServiceStreamTestProbeSlot {
-    fn current(&self) -> Arc<dyn ServiceStreamTestProbe> {
-        Arc::clone(&self.probe.lock().unwrap_or_else(std::sync::PoisonError::into_inner))
+    fn current(&self) -> Option<Arc<TestServiceStreamProbe>> {
+        self.probe.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     fn fail_next_supervisor_spawn(&self) -> bool {
-        self.current().fail_next_supervisor_spawn()
+        self.current().is_some_and(|probe| probe.fail_next_supervisor_spawn())
     }
     fn force_next_cleanup_enqueue_fallback(&self) -> bool {
-        self.current().force_next_cleanup_enqueue_fallback()
+        self.current().is_some_and(|probe| probe.force_next_cleanup_enqueue_fallback())
     }
     fn force_next_synchronization_failure(&self) -> bool {
-        self.current().force_next_synchronization_failure()
+        self.current().is_some_and(|probe| probe.force_next_synchronization_failure())
     }
     fn pause_before_worker_outcome(&self) {
-        self.current().pause_before_worker_outcome();
+        if let Some(probe) = self.current() {
+            probe.pause_before_worker_outcome();
+        }
     }
     fn panic_after_worker_outcome(&self) -> bool {
-        self.current().panic_after_worker_outcome()
+        self.current().is_some_and(|probe| probe.panic_after_worker_outcome())
     }
     fn notify_shutdown_send_failure(&self) {
-        self.current().notify_shutdown_send_failure();
+        if let Some(probe) = self.current() {
+            probe.notify_shutdown_send_failure();
+        }
     }
     fn notify_join_waiter(&self) {
-        self.current().notify_join_waiter();
-    }
-
-    #[cfg(test)]
-    pub(super) fn with_test_probe<T>(&self, action: impl FnOnce(&TestServiceStreamProbe) -> T) -> T {
-        let current = self.current();
-        if let Some(probe) = current.as_test_probe() {
-            return action(probe);
+        if let Some(probe) = self.current() {
+            probe.notify_join_waiter();
         }
-        let concrete_probe = Arc::new(TestServiceStreamProbe::default());
-        let probe: Arc<dyn ServiceStreamTestProbe> = concrete_probe.clone();
-        *self.probe.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = probe;
-        action(&concrete_probe)
     }
 
-    #[cfg(test)]
+    pub(super) fn with_test_probe<T>(&self, action: impl FnOnce(&TestServiceStreamProbe) -> T) -> T {
+        let probe =
+            Arc::clone(self.probe.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert_default());
+        action(&probe)
+    }
+
     pub(super) fn install_for_next_pool(probe: Arc<TestServiceStreamProbe>) {
         NEXT_POOL_TEST_PROBE.with(|slot| *slot.borrow_mut() = Some(probe));
     }
 
-    #[cfg(test)]
     pub(super) fn install_next_pool_probe(&self) {
         let probe = NEXT_POOL_TEST_PROBE.with(|slot| slot.borrow_mut().take());
-        if let Some(probe) = probe {
+        if probe.is_some() {
             *self.probe.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = probe;
         }
     }
@@ -142,7 +131,7 @@ pub(super) struct TestServiceStreamProbe {
 }
 
 #[cfg(test)]
-impl ServiceStreamTestProbe for TestServiceStreamProbe {
+impl TestServiceStreamProbe {
     fn fail_next_supervisor_spawn(&self) -> bool {
         self.fail_next_supervisor_spawn.swap(false, Ordering::AcqRel)
     }
@@ -170,9 +159,6 @@ impl ServiceStreamTestProbe for TestServiceStreamProbe {
         if let Some(sender) = self.join_waiter.lock().unwrap().take() {
             let _ = sender.send(());
         }
-    }
-    fn as_test_probe(&self) -> Option<&TestServiceStreamProbe> {
-        Some(self)
     }
 }
 type StreamCleanupTailCallback = Box<dyn FnOnce() + Send>;

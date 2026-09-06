@@ -239,6 +239,18 @@ DATAFUSION_PATH = re.compile(r"\bdatafusion(?:_[A-Za-z_][A-Za-z0-9_]*)?\s*::")
 DATAFUSION_ROOT_IMPORT = re.compile(
     r"\b(?:use|extern\s+crate)\s+datafusion(?:_[A-Za-z_][A-Za-z0-9_]*)?\b"
 )
+OBSERVABILITY_MODULE = "observability"
+RUNTIME_MODULE = "runtime"
+IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+ROOTED_PATH = re.compile(r"(?<![A-Za-z0-9_:])(?:crate|self|super)(?:\s*::\s*[A-Za-z_][A-Za-z0-9_]*)+")
+USE_DECLARATION = re.compile(r"\buse\s+(?P<tree>[^;]*);")
+USE_TREE_TOKEN = re.compile(r"::|[{},*]|[A-Za-z_][A-Za-z0-9_]*")
+INLINE_MODULE = re.compile(r"\bmod\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*\{")
+CHAR_BRACE_LITERAL = re.compile(r"'\\?[{}]'")
+PATH_ATTRIBUTE_MODULE = re.compile(
+    r'#\s*\[\s*path\s*=\s*"(?P<path>[^"]+)"\s*\]\s*(?:#\s*\[[^\]]*\]\s*)*'
+    r"(?:pub(?:\s*\([^)]*\))?\s+)?mod\s+(?P<name>[A-Za-z_][A-Za-z0-9_]*)\s*;"
+)
 
 
 def line_number(text: str, offset: int) -> int:
@@ -313,6 +325,128 @@ def source_import_violations(path: Path, layer: str) -> list[str]:
     return result
 
 
+def rust_module_path(source_root: Path, path: Path) -> list[str]:
+    parts = list(path.relative_to(source_root).with_suffix("").parts)
+    if parts[-1] == "mod":
+        parts.pop()
+    return parts
+
+
+def observability_module_paths(source_root: Path) -> dict[Path, list[str]]:
+    files = source_files([source_root / f"{OBSERVABILITY_MODULE}.rs", source_root / OBSERVABILITY_MODULE])
+    modules = {path.resolve(): rust_module_path(source_root, path) for path in files}
+    for path in files:
+        text = path.read_text(encoding="utf-8")
+        masked = mask_rust_non_code(text)
+        for match in PATH_ATTRIBUTE_MODULE.finditer(text):
+            target = (path.parent / match.group("path")).resolve()
+            if masked[match.start()] == "#" and target in modules:
+                modules[target] = [*modules[path.resolve()], match.group("name")]
+    return modules
+
+
+def inline_module_spans(masked: str) -> list[tuple[int, int, str]]:
+    code = CHAR_BRACE_LITERAL.sub(lambda match: " " * len(match.group(0)), masked)
+    spans = []
+    for match in INLINE_MODULE.finditer(code):
+        depth = 0
+        for index in range(match.end() - 1, len(code)):
+            if code[index] == "{":
+                depth += 1
+            elif code[index] == "}":
+                depth -= 1
+                if depth == 0:
+                    spans.append((match.end(), index, match.group("name")))
+                    break
+    return spans
+
+
+def use_tree_paths(tokens: list[tuple[str, int]]) -> list[list[tuple[str, int]]]:
+    paths: list[list[tuple[str, int]]] = []
+
+    def parse(index: int, prefix: list[tuple[str, int]]) -> int:
+        segments = list(prefix)
+        while index < len(tokens):
+            token = tokens[index][0]
+            if token == "{":
+                index += 1
+                while index < len(tokens) and tokens[index][0] != "}":
+                    index = index + 1 if tokens[index][0] == "," else parse(index, segments)
+                return index + 1
+            if token in (",", "}"):
+                break
+            if token == "as":
+                index += 2
+                continue
+            if token not in ("::", "*"):
+                segments.append(tokens[index])
+            index += 1
+        paths.append(segments)
+        return index
+
+    index = 0
+    while index < len(tokens):
+        index = index + 1 if tokens[index][0] in (",", "}") else parse(index, [])
+    return paths
+
+
+def crate_root_segment(module: list[str], segments: list[tuple[str, int]]) -> tuple[str, int] | None:
+    """Returns the segment naming a crate-root item when a rooted path reaches the crate root."""
+    names = [name for name, _ in segments]
+    if not names or names[0] not in ("crate", "self", "super"):
+        return None
+    index = 1
+    if names[0] != "crate":
+        resolved = list(module)
+        index = 1 if names[0] == "self" else 0
+        while index < len(names) and names[index] == "super":
+            if not resolved:
+                return None
+            resolved.pop()
+            index += 1
+        if resolved:
+            return None
+    return segments[index] if index < len(segments) else None
+
+
+def observability_runtime_violations(source_root: Path) -> list[str]:
+    """Source-level `observability -> runtime` check for the runtime crate.
+
+    `crate`, `self`, and `super` paths in expressions, types, and nested use
+    trees resolve against each file's module path, including `#[path]` module
+    declarations and inline modules. Macro expansion and re-exports are not
+    resolved.
+    """
+    violations = []
+    for path, module in sorted(observability_module_paths(source_root).items()):
+        text = path.read_text(encoding="utf-8")
+        masked = mask_rust_non_code(text)
+        lines = text.splitlines()
+        spans = inline_module_spans(masked)
+        candidates = [
+            [(name.group(0), match.start() + name.start()) for name in IDENTIFIER.finditer(match.group(0))]
+            for match in ROOTED_PATH.finditer(masked)
+        ]
+        for statement in USE_DECLARATION.finditer(masked):
+            tokens = [
+                (token.group(0), statement.start("tree") + token.start())
+                for token in USE_TREE_TOKEN.finditer(statement.group("tree"))
+            ]
+            candidates.extend(use_tree_paths(tokens))
+        numbers = set()
+        for segments in candidates:
+            if not segments:
+                continue
+            scope = [*module, *(name for start, end, name in spans if start <= segments[0][1] < end)]
+            target = crate_root_segment(scope, segments)
+            if target is not None and target[0] == RUNTIME_MODULE:
+                numbers.add(line_number(masked, target[1]))
+        for number in sorted(numbers):
+            snippet = lines[number - 1].strip() if 0 < number <= len(lines) else RUNTIME_MODULE
+            violations.append(f"observability -> runtime: {path}:{number}: {snippet}")
+    return violations
+
+
 def source_files(roots: list[Path]) -> list[Path]:
     files: set[Path] = set()
     for root in roots:
@@ -323,11 +457,7 @@ def source_files(roots: list[Path]) -> list[Path]:
     return sorted(files)
 
 
-def package_roots(
-    root: Path,
-    by_name: dict[str, dict[str, object]],
-    package_name: str,
-) -> list[Path]:
+def package_directory(root: Path, by_name: dict[str, dict[str, object]], package_name: str) -> Path:
     package = by_name.get(package_name)
     if package is None:
         raise ContractError(f"required workspace package is missing: {package_name}")
@@ -337,7 +467,16 @@ def package_roots(
     manifest = Path(manifest_path)
     if not manifest.is_absolute():
         manifest = root / manifest
-    package_root = manifest.resolve().parent
+    return manifest.resolve().parent
+
+
+def package_roots(
+    root: Path,
+    by_name: dict[str, dict[str, object]],
+    package_name: str,
+) -> list[Path]:
+    package_root = package_directory(root, by_name, package_name)
+    package = by_name[package_name]
     roots = [package_root / "src", package_root / "tests"]
     targets = package.get("targets", [])
     if not isinstance(targets, list):
@@ -364,6 +503,7 @@ def check_sources(root: Path, metadata: dict[str, object]) -> list[str]:
         violations.extend(source_import_violations(path, "planning"))
     for path in source_files(runtime_roots):
         violations.extend(source_import_violations(path, "runtime"))
+    violations.extend(observability_runtime_violations(package_directory(root, by_name, RUNTIME_PACKAGE) / "src"))
 
     for component in COMPONENT_PACKAGES:
         roots = package_roots(root, by_name, component)

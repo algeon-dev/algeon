@@ -53,7 +53,6 @@ use projection::{prepared_column_projection_from_view, prepared_host_column_proj
 use rapids_interop::{
     OwnedColumnTransfer, OwnedTableTransfer, OwnedTableTransferParts, PartitionedOwnedTableTransfer,
     PartitionedOwnedTableTransferPartition, ReleaseContract, ReleaseSynchronization, TransferCompletionRule,
-    TryIntoOwnedDeviceColumnTransfer, TryIntoOwnedDevicePartitionedTableTransfer, TryIntoOwnedDeviceTableTransfer,
 };
 use runtime_release::*;
 pub use table::{PartitionedLocalTableResult, PartitionedLocalTableResults};
@@ -61,8 +60,6 @@ mod prepared {
     pub use rapids_interop::{
         ExportDiagnostics, ExportProfile, InteropError, InteropErrorKind, PartitionedPreparedTableExport,
         PartitionedPreparedTablePartition, PreparedColumnExport, PreparedTableExport, ProducerReadiness,
-        TryPrepareDeviceColumnExport, TryPrepareDevicePartitionedTableExport, TryPrepareDeviceTableExport,
-        TryPrepareHostColumnExport, TryPrepareHostTableExport,
     };
 }
 pub use runtime_lease::cuda_explicit_completion_required_lease_backend;

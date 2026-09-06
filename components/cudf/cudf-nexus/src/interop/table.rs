@@ -148,8 +148,13 @@ impl TableView<'_> {
     /// profile accepts the current fixed-width, `STRING`, `LIST`, `STRUCT`,
     /// and `DICTIONARY32` semantic slice and preserves the table execution
     /// binding.
+    ///
+    /// The descriptor borrows `self` and must not outlive that borrow. Returns an
+    /// [`InteropError`] when the execution binding of `self`'s runtime domain is
+    /// unavailable or when a column's type or layout falls outside the borrowed
+    /// compatibility profile.
     pub fn try_borrow_table_view(&self) -> Result<BorrowedTableView<'_>, InteropError> {
-        <Self as TryBorrowTableView>::try_borrow_table_view(self)
+        borrow_table_view_from_table_view(self, "interop::TableView::try_borrow_table_view")
     }
 
     /// Project this low-level borrowed table view into the shared RAPIDS
@@ -157,8 +162,19 @@ impl TableView<'_> {
     ///
     /// The returned export is producer-rooted. Consumers activate read access
     /// later via [`PreparedTableExport::try_activate_read_lease`].
+    ///
+    /// The export describes `self`'s device buffers without taking ownership, so
+    /// it cannot outlive that borrow. Returns an [`InteropError`] when a column's
+    /// layout falls outside the prepared device profile, its buffers are not on a
+    /// CUDA device, or the execution binding or producer readiness of `self`'s
+    /// runtime domain is unavailable.
     pub fn try_prepare_device_table_export(&self) -> Result<PreparedTableExport<'_>, InteropError> {
-        <Self as TryPrepareDeviceTableExport>::try_prepare_device_table_export(self)
+        prepare_table_export_from_view(
+            self,
+            self.execution_domain(),
+            None,
+            "interop::TableView::try_prepare_device_table_export",
+        )
     }
 
     /// Project this low-level borrowed table view into the shared RAPIDS
@@ -166,8 +182,12 @@ impl TableView<'_> {
     ///
     /// This materializes each supported top-level column to owned host-visible
     /// bytes and therefore is not zero-copy.
+    ///
+    /// The `'static` export owns retained host copies and does not borrow `self`.
+    /// Returns an [`InteropError`] when a column's type or layout is not
+    /// supported by host export or its data cannot be copied to host memory.
     pub fn try_prepare_host_table_export(&self) -> Result<PreparedTableExport<'static>, InteropError> {
-        <Self as TryPrepareHostTableExport>::try_prepare_host_table_export(self)
+        prepare_host_table_export_from_view(self, None, "interop::TableView::try_prepare_host_table_export")
     }
 
     /// Project this low-level borrowed table view into the shared RAPIDS
@@ -183,29 +203,6 @@ impl TableView<'_> {
         let operation = "interop::TableView::try_prepare_device_table_export_with_event";
         let (default_device, readiness) = prepared_device_event_readiness(operation, self.execution_domain(), event)?;
         prepare_table_export_from_view_with_readiness(self, None, operation, default_device, readiness)
-    }
-}
-
-impl TryBorrowTableView for TableView<'_> {
-    fn try_borrow_table_view(&self) -> Result<BorrowedTableView<'_>, InteropError> {
-        borrow_table_view_from_table_view(self, "interop::TableView::try_borrow_table_view")
-    }
-}
-
-impl TryPrepareDeviceTableExport for TableView<'_> {
-    fn try_prepare_device_table_export(&self) -> Result<PreparedTableExport<'_>, InteropError> {
-        prepare_table_export_from_view(
-            self,
-            self.execution_domain(),
-            None,
-            "interop::TableView::try_prepare_device_table_export",
-        )
-    }
-}
-
-impl TryPrepareHostTableExport for TableView<'_> {
-    fn try_prepare_host_table_export(&self) -> Result<PreparedTableExport<'static>, InteropError> {
-        prepare_host_table_export_from_view(self, None, "interop::TableView::try_prepare_host_table_export")
     }
 }
 
@@ -298,8 +295,13 @@ impl Table {
     /// descriptor remains borrowed-only, does not transfer ownership, and is
     /// limited to the current borrowed compatibility profile's fixed-width,
     /// `STRING`, `LIST`, `STRUCT`, and `DICTIONARY32` support.
+    ///
+    /// The descriptor borrows `self` and must not outlive that borrow. Returns an
+    /// [`InteropError`] when the execution binding of `self`'s runtime domain is
+    /// unavailable or when a column's type or layout falls outside the borrowed
+    /// compatibility profile.
     pub fn try_borrow_table_view(&self) -> Result<BorrowedTableView<'_>, InteropError> {
-        <Self as TryBorrowTableView>::try_borrow_table_view(self)
+        borrow_table_view_from_table(self, "interop::Table::try_borrow_table_view")
     }
 
     /// Project this owned low-level table into the shared RAPIDS prepared
@@ -311,8 +313,16 @@ impl Table {
     /// Borrowed interop is also available directly on [`crate::core::Table`]
     /// via [`crate::core::Table::try_borrow_table_view`] when you need the
     /// borrowed compatibility descriptor instead of a prepared export.
+    ///
+    /// The export describes `self`'s device buffers without taking ownership, so
+    /// it cannot outlive that borrow. Returns an [`InteropError`] when a column's
+    /// layout falls outside the prepared device profile, its buffers are not on a
+    /// CUDA device, or the execution binding or producer readiness of `self`'s
+    /// runtime domain is unavailable.
     pub fn try_prepare_device_table_export(&self) -> Result<PreparedTableExport<'_>, InteropError> {
-        <Self as TryPrepareDeviceTableExport>::try_prepare_device_table_export(self)
+        let operation = "interop::Table::try_prepare_device_table_export";
+        let view = self.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+        prepare_table_export_from_view(&view, self.execution_domain(), None, operation)
     }
 
     /// Move this owned low-level table into a producer-rooted shared prepared
@@ -332,14 +342,27 @@ impl Table {
     ///
     /// This materializes each supported top-level column to owned host-visible
     /// bytes and therefore is not zero-copy.
+    ///
+    /// The `'static` export owns retained host copies and does not borrow `self`.
+    /// Returns an [`InteropError`] when a column's type or layout is not
+    /// supported by host export or its data cannot be copied to host memory.
     pub fn try_prepare_host_table_export(&self) -> Result<PreparedTableExport<'static>, InteropError> {
-        <Self as TryPrepareHostTableExport>::try_prepare_host_table_export(self)
+        let operation = "interop::Table::try_prepare_host_table_export";
+        let view = self.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
+        prepare_host_table_export_from_view(&view, None, operation)
     }
 
     /// Move this owned table into the shared RAPIDS owned device transfer
     /// profile.
+    ///
+    /// Consumes `self`: on success the transfer root owns the device buffers
+    /// under the default owned-transfer release contract, and on error `self`
+    /// has already been consumed. Returns an [`InteropError`] when a column's
+    /// layout falls outside the owned device transfer profile, its buffers are
+    /// not on a CUDA device, or the execution binding or producer readiness of
+    /// `self`'s runtime domain is unavailable.
     pub fn try_into_owned_transfer(self) -> Result<OwnedTableTransfer, InteropError> {
-        <Self as TryIntoOwnedDeviceTableTransfer>::try_into_owned_device_table_transfer(self)
+        transfer_from_owned_table(self, "interop::Table::try_into_owned_device_table_transfer")
     }
 
     /// Move this owned table into the shared RAPIDS owned device transfer
@@ -397,33 +420,5 @@ impl Table {
         let operation = "interop::Table::try_into_prepared_device_table_export_with_event";
         let readiness = prepared_device_event_readiness(operation, self.execution_domain(), event)?.1;
         prepare_into_owned_table_root_with_readiness(self, None, operation, readiness, Some(event.clone()))
-    }
-}
-
-impl TryBorrowTableView for Table {
-    fn try_borrow_table_view(&self) -> Result<BorrowedTableView<'_>, InteropError> {
-        borrow_table_view_from_table(self, "interop::Table::try_borrow_table_view")
-    }
-}
-
-impl TryPrepareDeviceTableExport for Table {
-    fn try_prepare_device_table_export(&self) -> Result<PreparedTableExport<'_>, InteropError> {
-        let operation = "interop::Table::try_prepare_device_table_export";
-        let view = self.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        prepare_table_export_from_view(&view, self.execution_domain(), None, operation)
-    }
-}
-
-impl TryPrepareHostTableExport for Table {
-    fn try_prepare_host_table_export(&self) -> Result<PreparedTableExport<'static>, InteropError> {
-        let operation = "interop::Table::try_prepare_host_table_export";
-        let view = self.view().map_err(|error| map_cudf_error(InteropErrorKind::InvalidView, operation, error))?;
-        prepare_host_table_export_from_view(&view, None, operation)
-    }
-}
-
-impl TryIntoOwnedDeviceTableTransfer for Table {
-    fn try_into_owned_device_table_transfer(self) -> Result<OwnedTableTransfer, InteropError> {
-        transfer_from_owned_table(self, "interop::Table::try_into_owned_device_table_transfer")
     }
 }

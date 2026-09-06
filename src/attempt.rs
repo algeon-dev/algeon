@@ -877,12 +877,48 @@ pub mod server_internal {
     use super::{NexusAttempt, commit_adapter_error, disposition_for};
     use crate::{error::Error, planner::classify_final_plan};
 
+    /// Server hooks for attempt phases before, or instead of, a result stream.
+    ///
+    /// An attempt commits one terminal outcome. While [`NexusAttempt`] still
+    /// holds its terminalization authority, the committing hooks below commit
+    /// through it; once that authority has moved into a result stream they
+    /// commit nothing and the stream is the only committer. The attempt owner
+    /// rejects a later terminal commit with `DoubleTerminalization`, which
+    /// these hooks ignore, so the first committed outcome stands.
     pub trait NexusAttemptServerExt {
+        /// Records that planning started and returns a session context bound to
+        /// this attempt.
+        ///
+        /// Fails, after committing the matching terminal outcome, when the
+        /// attempt is already cancelled or past its deadline, or when the
+        /// backend is closing.
         fn planning_context(&self, ctx: &SessionContext) -> DataFusionResult<SessionContext>;
+
+        /// Commits the terminal outcome for a DataFusion planning error.
+        ///
+        /// An effective cancellation or deadline takes precedence over `error`.
+        /// Otherwise a Nexus error carried by `error` is committed as by
+        /// [`planning_failed_adapter`](Self::planning_failed_adapter), and any
+        /// other error commits a text-free DataFusion fallback summary.
         fn planning_failed(&self, error: &DataFusionError);
+
+        /// Commits the terminal outcome for a Nexus adapter planning error.
+        ///
+        /// An effective cancellation or deadline takes precedence over `error`.
+        /// Otherwise a `Cancelled` error commits `Cancelled`, an error whose
+        /// source is a native query error commits that error, and any other
+        /// error commits a text-free DataFusion fallback summary.
         fn planning_failed_adapter(&self, error: &Error);
+
+        /// Records the final physical plan's execution disposition and the end
+        /// of planning without committing a terminal outcome.
         fn physical_planning_finished(&self, plan: &dyn ExecutionPlan);
+
+        /// Cancels the attempt's cancellation token and commits `Cancelled`.
         fn cancel_before_stream(&self);
+
+        /// Commits `Succeeded` for a request that finishes without a result
+        /// stream.
         fn complete_without_result_stream(&self);
     }
 

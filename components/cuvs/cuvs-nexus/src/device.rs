@@ -10,11 +10,26 @@ use crate::{
     resources::CuvsResources,
 };
 
+/// Element type of a cuVS device buffer or tensor.
+///
+/// Implemented for `f32`, `i32`, and `i64`. The set is closed: the supertrait
+/// [`CudfType`] is sealed, so downstream crates cannot implement it for their
+/// own types, and the orphan rule prevents them from implementing this trait
+/// for other foreign types.
 pub trait DeviceElement: CudfType + Copy + 'static {
+    /// DLPack type code used, with [`DLPACK_BITS`](Self::DLPACK_BITS) and one
+    /// lane, to describe tensors of this element to cuVS.
     const DLPACK_CODE: u8;
+    /// DLPack element width in bits.
     const DLPACK_BITS: u8;
+    /// RAPIDS interop type a prepared cuDF column must carry to be read as a
+    /// tensor of this element.
     const INTEROP_TYPE: rapids_interop::TypeId;
 
+    /// Returns whether host values are valid native cuVS input.
+    ///
+    /// `f32` requires every value to be finite; the integer implementations
+    /// accept every value.
     fn valid_native_input(_values: &[Self]) -> bool {
         true
     }

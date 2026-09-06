@@ -39,9 +39,23 @@ use super::{
 use crate::error::{Error, ErrorCode};
 
 /// Crate-internal device-resident producer contract used by composed native execution.
+///
+/// A producer's output stays on the GPU and is bound into a composed native
+/// consumer's input map instead of streaming Arrow batches. Its capability
+/// evidence and row bound describe that output; they are not memory estimates
+/// and must not become a predicted-usage admission veto, a second reservation,
+/// or a per-operator grant.
 pub(crate) trait GpuResidentProducer: Send + Sync {
+    /// Name that binds this output in the consumer's GPU-resident input map. It
+    /// matches the consumer plan's GPU-resident source name.
     fn gpu_result_input_name(&self) -> &str;
 
+    /// Capability evidence for this producer's output.
+    ///
+    /// Composed admission aggregates it with the consumer's evidence and binds
+    /// the output occurrence to the evidence's last execution scope. The
+    /// default error makes composed admission reject a producer that cannot
+    /// describe its output.
     fn gpu_result_capability_evidence(
         &self,
     ) -> DataFusionResult<nexus_query_engine::admission::AttemptCapabilityEvidence> {
@@ -51,6 +65,10 @@ pub(crate) trait GpuResidentProducer: Send + Sync {
         )))
     }
 
+    /// Guaranteed upper bound on output rows, or `None` when no bound is known.
+    ///
+    /// `Some(n)` must hold for every execution because consumers treat it as
+    /// hard cardinality evidence; `None` must not be replaced by an estimate.
     fn hard_output_row_upper_bound(&self) -> Option<u64> {
         None
     }
@@ -61,6 +79,12 @@ pub(crate) trait GpuResidentProducer: Send + Sync {
         None
     }
 
+    /// Rewrites this producer so it also performs a consumer plan it subsumes.
+    ///
+    /// Called when a composed plan has this producer as its only GPU-resident
+    /// input. `Ok(Some(producer))` replaces this producer and reduces the
+    /// consumer to passing the replacement's output to the host sink;
+    /// `Ok(None)` leaves both unchanged.
     fn rewrite_subsumed_composed_consumer(
         &self,
         _consumer_plan: &QueryPlan,
@@ -87,6 +111,15 @@ pub(crate) trait GpuResidentProducer: Send + Sync {
         Box::pin(async move { Ok(plan) })
     }
 
+    /// Executes the prepared producer within `native_context` and returns
+    /// [`gpu_result_input_name`](Self::gpu_result_input_name) with the
+    /// GPU-resident output handle.
+    ///
+    /// Callers invoke this on the plan returned by
+    /// [`prepare_execution_plan`](Self::prepare_execution_plan), after
+    /// acquiring the admitted native context for the whole composed island;
+    /// the output belongs to that context. Current producers expose one output
+    /// partition and reject any `partition` other than 0.
     fn execute_gpu_result_with_context<'a>(
         &'a self,
         native_context: &'a ExecutionContext,

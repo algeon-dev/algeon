@@ -758,7 +758,7 @@ impl<'a> ColumnView<'a> {
     ///
     /// This is an advanced raw-pointer helper for code that already knows how
     /// to consume a device pointer + length pair. For external cross-crate
-    /// interop, prefer [`rapids_interop::TryBorrowColumnView`], which preserves
+    /// interop, prefer [`Self::try_borrow_column_view`], which preserves
     /// null-mask and execution-binding semantics in addition to the data
     /// pointer.
     ///

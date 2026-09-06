@@ -212,60 +212,50 @@ impl FactKeyName {
     }
 }
 
-/// Sealed trait implemented only for the concrete value types of each
-/// `FactKey<T>`. This is how typed key/value pairing is enforced at compile
-/// time.
-pub(crate) trait IntoFactValue: sealed::Sealed {
+/// Converts the value type of a `FactKey<T>` into a stored fact value.
+///
+/// Key/value pairing is enforced by `FactKey<T>` and by `Error::with_fact`,
+/// which accepts only a value of the key's type.
+pub(crate) trait IntoFactValue {
     fn into_fact_value(self) -> FactValue;
 }
 
-mod sealed {
-    pub trait Sealed {}
-}
-
-impl sealed::Sealed for &'static str {}
 impl IntoFactValue for &'static str {
     fn into_fact_value(self) -> FactValue {
         FactValue::Str(Cow::Borrowed(self))
     }
 }
 
-impl sealed::Sealed for String {}
 impl IntoFactValue for String {
     fn into_fact_value(self) -> FactValue {
         FactValue::Str(Cow::Owned(self))
     }
 }
 
-impl sealed::Sealed for Cow<'static, str> {}
 impl IntoFactValue for Cow<'static, str> {
     fn into_fact_value(self) -> FactValue {
         FactValue::Str(self)
     }
 }
 
-impl sealed::Sealed for usize {}
 impl IntoFactValue for usize {
     fn into_fact_value(self) -> FactValue {
         FactValue::Usize(self)
     }
 }
 
-impl sealed::Sealed for i64 {}
 impl IntoFactValue for i64 {
     fn into_fact_value(self) -> FactValue {
         FactValue::I64(self)
     }
 }
 
-impl sealed::Sealed for u64 {}
 impl IntoFactValue for u64 {
     fn into_fact_value(self) -> FactValue {
         FactValue::U64(self)
     }
 }
 
-impl sealed::Sealed for TypeId {}
 impl IntoFactValue for TypeId {
     fn into_fact_value(self) -> FactValue {
         FactValue::TypeId(self)
@@ -277,7 +267,6 @@ impl IntoFactValue for TypeId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct DeviceIdFact(pub(crate) i32);
 
-impl sealed::Sealed for DeviceIdFact {}
 impl IntoFactValue for DeviceIdFact {
     fn into_fact_value(self) -> FactValue {
         FactValue::DeviceId(self.0)

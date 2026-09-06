@@ -68,19 +68,85 @@ for name, package_root in packages:
     (source_root / "lib.rs").write_text("pub fn clean() {}\n", encoding="utf-8")
 
 source_targets = {
-    "planning-runtime": ("nexus-query-planning", "use nexus_query_runtime::Marker;\n"),
-    "planning-runtime-module": ("nexus-query-planning", "use crate::{observability::Marker};\n"),
-    "planning-engine": ("nexus-query-planning", "use nexus_query_engine::exec::Marker;\n"),
-    "runtime-engine": ("nexus-query-runtime", "use nexus_query_engine::exec::Marker;\n"),
-    "component-engine": ("cudf-nexus", "use nexus_query_engine::Marker;\n"),
-    "component-engine-root": ("cudf-nexus", "use nexus_query_engine;\n"),
-    "planning-datafusion": ("nexus-query-planning", "use datafusion::physical_plan::ExecutionPlan;\n"),
-    "runtime-datafusion": ("nexus-query-runtime", "extern crate datafusion_common;\n"),
+    "planning-runtime": [("nexus-query-planning", "src/lib.rs", "use nexus_query_runtime::Marker;\n")],
+    "planning-runtime-module": [("nexus-query-planning", "src/lib.rs", "use crate::{observability::Marker};\n")],
+    "planning-engine": [("nexus-query-planning", "src/lib.rs", "use nexus_query_engine::exec::Marker;\n")],
+    "runtime-engine": [("nexus-query-runtime", "src/lib.rs", "use nexus_query_engine::exec::Marker;\n")],
+    "component-engine": [("cudf-nexus", "src/lib.rs", "use nexus_query_engine::Marker;\n")],
+    "component-engine-root": [("cudf-nexus", "src/lib.rs", "use nexus_query_engine;\n")],
+    "planning-datafusion": [("nexus-query-planning", "src/lib.rs", "use datafusion::physical_plan::ExecutionPlan;\n")],
+    "runtime-datafusion": [("nexus-query-runtime", "src/lib.rs", "extern crate datafusion_common;\n")],
+    "observability-runtime-use": [
+        ("nexus-query-runtime", "src/observability/mod.rs", "use crate::runtime::ExecutionContext;\n"),
+    ],
+    "observability-runtime-qualified": [
+        (
+            "nexus-query-runtime",
+            "src/observability/stage.rs",
+            "pub fn stage(_context: &crate::runtime::ExecutionContext) {}\n",
+        ),
+    ],
+    "observability-runtime-nested-use": [
+        (
+            "nexus-query-runtime",
+            "src/observability/stage.rs",
+            "use crate::{\n    observability::Marker,\n    runtime::{\n        ExecutionContext,\n    },\n};\n",
+        ),
+    ],
+    "observability-runtime-super": [
+        ("nexus-query-runtime", "src/observability/mod.rs", "use super::runtime::ExecutionContext;\n"),
+    ],
+    "observability-runtime-nested-super": [
+        (
+            "nexus-query-runtime",
+            "src/observability/report/row.rs",
+            "pub type Context = super::super::super::runtime::ExecutionContext;\n",
+        ),
+    ],
+    "observability-file-runtime": [
+        (
+            "nexus-query-runtime",
+            "src/observability.rs",
+            "pub(crate) use crate::runtime::ExecutionContext as Context;\n",
+        ),
+    ],
+    "runtime-observability-allowed": [
+        ("nexus-query-runtime", "src/observability/mod.rs", "pub struct RuntimeObservationHandle;\n"),
+        ("nexus-query-runtime", "src/runtime/context.rs", "use crate::observability::RuntimeObservationHandle;\n"),
+    ],
+    "observability-runtime-non-code": [
+        (
+            "nexus-query-runtime",
+            "src/observability/mod.rs",
+            "// use crate::runtime::ExecutionContext;\n"
+            "/* crate::runtime::ExecutionContext */\n"
+            'pub const PATH: &str = "crate::runtime::ExecutionContext";\n',
+        ),
+    ],
+    "observability-inline-module": [
+        ("nexus-query-runtime", "src/observability/mod.rs", "mod runtime;\nmod stage;\n"),
+        ("nexus-query-runtime", "src/observability/runtime.rs", "pub struct Row;\n"),
+        (
+            "nexus-query-runtime",
+            "src/observability/stage.rs",
+            "#[cfg(test)]\nmod tests {\n    use super::super::runtime::Row;\n}\n",
+        ),
+    ],
+    "observability-path-module": [
+        ("nexus-query-runtime", "src/observability/mod.rs", "mod recorder;\nmod runtime;\n"),
+        ("nexus-query-runtime", "src/observability/runtime.rs", "pub struct Row;\n"),
+        (
+            "nexus-query-runtime",
+            "src/observability/recorder.rs",
+            '#[cfg(test)]\n#[path = "recorder_tests.rs"]\nmod tests;\n',
+        ),
+        ("nexus-query-runtime", "src/observability/recorder_tests.rs", "use super::super::runtime::Row;\n"),
+    ],
 }
-if source_case in source_targets:
-    package_name, contents = source_targets[source_case]
-    package_root = dict(packages)[package_name]
-    (package_root / "src/lib.rs").write_text(contents, encoding="utf-8")
+for package_name, relative_path, contents in source_targets.get(source_case, []):
+    target = dict(packages)[package_name] / relative_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(contents, encoding="utf-8")
 
 dependencies = {name: [] for name, _ in packages}
 if edge_from and edge_to:
@@ -162,5 +228,16 @@ run_case source-planning-datafusion 1 "planning -> DataFusion" planning-datafusi
 run_case source-runtime-datafusion 1 "runtime -> DataFusion" runtime-datafusion "" ""
 run_case cargo-planning-datafusion 1 "planning -> DataFusion" planning-datafusion-cargo "" ""
 run_case cargo-runtime-datafusion 1 "runtime -> DataFusion" runtime-datafusion-cargo "" ""
+
+run_case source-observability-runtime-use 1 "observability -> runtime" observability-runtime-use "" ""
+run_case source-observability-runtime-qualified 1 "observability -> runtime" observability-runtime-qualified "" ""
+run_case source-observability-runtime-nested-use 1 "stage.rs:3: runtime::{" observability-runtime-nested-use "" ""
+run_case source-observability-runtime-super 1 "observability -> runtime" observability-runtime-super "" ""
+run_case source-observability-runtime-nested-super 1 "observability -> runtime" observability-runtime-nested-super "" ""
+run_case source-observability-file-runtime 1 "observability -> runtime" observability-file-runtime "" ""
+run_case source-runtime-observability-allowed 0 "dependency direction contracts OK" runtime-observability-allowed "" ""
+run_case source-observability-runtime-non-code 0 "dependency direction contracts OK" observability-runtime-non-code "" ""
+run_case source-observability-inline-module 0 "dependency direction contracts OK" observability-inline-module "" ""
+run_case source-observability-path-module 0 "dependency direction contracts OK" observability-path-module "" ""
 
 printf 'dependency direction fault-injection tests OK\n'
