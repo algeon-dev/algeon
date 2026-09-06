@@ -5,7 +5,7 @@ use std::{
 };
 
 use arrow::{
-    array::{Float64Array, Int32Array, Int64Array},
+    array::{Float64Array, Int32Array, Int64Array, StringArray},
     compute::SortOptions as ArrowSortOptions,
     datatypes::{DataType, Field, Schema},
     record_batch::RecordBatch,
@@ -44,6 +44,7 @@ use datafusion_nexus::{
     report::{GpuCandidate, PlanningReport},
     session::NexusSessionStateBuilderExt,
 };
+use nexus_query_engine::mode::StatisticalAggregateExecutionMode;
 use nexus_workloads::tpch::{
     TPCH_QUERY_COUNT, tiny_tpch_dataset_metadata, tpch_query_ids, write_tiny_tpch_parquet_dataset,
 };
@@ -475,6 +476,61 @@ async fn native_datafusion_planning_report_summarizes_session_optimizer_outcomes
     assert!(text.contains("\tselected\tnone\tnone\t"));
     assert!(text.contains("\tfalse\tnone\t"));
     assert!(text.contains("\tNexusNativeExec\tnative\t1\t0\tfalse"));
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
+async fn exact_statistical_aggregate_mode_keeps_aggregates_outside_the_host_kernel_on_datafusion() {
+    let dir = unique_temp_dir("datafusion-nexus-exact-statistical-aggregate-planning");
+    let path = dir.join("input.parquet");
+    let schema = Arc::new(Schema::new(vec![
+        Field::new("key", DataType::Int32, false),
+        Field::new("label", DataType::Utf8, false),
+        Field::new("m00", DataType::Float64, false),
+    ]));
+    let batch = RecordBatch::try_new(
+        Arc::clone(&schema),
+        vec![
+            Arc::new(Int32Array::from(vec![1, 1, 2, 2])),
+            Arc::new(StringArray::from(vec!["a", "b", "c", "d"])),
+            Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0, 5.0])),
+        ],
+    )
+    .unwrap();
+    let mut writer = ArrowWriter::try_new(File::create(&path).unwrap(), schema, None).unwrap();
+    writer.write(&batch).unwrap();
+    writer.close().unwrap();
+    let sql = "SELECT key, MIN(label) AS first_label, STDDEV_SAMP(m00) AS m00_stddev FROM bench GROUP BY key";
+    let planning_report = |query_id: &'static str, mode: StatisticalAggregateExecutionMode| {
+        let optimizer_config = NexusNativeOptimizerConfig::default()
+            .with_native_execution_config(NexusNativeExecutionConfig::bounded(
+                256 * 1024 * 1024,
+                64 * 1024 * 1024,
+                1,
+                3,
+                1,
+            ))
+            .with_statistical_aggregate_execution_mode(mode);
+        native_datafusion_planning_report_with_optimizer_config(
+            query_id,
+            &path,
+            sql,
+            direct_friendly_sql_session_config(),
+            optimizer_config,
+        )
+    };
+
+    let tolerant = planning_report("tolerant", StatisticalAggregateExecutionMode::GpuNativeTolerant).await;
+    assert_eq!(tolerant.rows.len(), 1);
+    assert_eq!(tolerant.rows[0].final_disposition, Some(FinalPlanDisposition::Native));
+
+    let exact = planning_report("exact", StatisticalAggregateExecutionMode::DataFusionExactHostWelford).await;
+    assert_eq!(exact.rows.len(), 1);
+    let exact_row = &exact.rows[0];
+    assert_eq!(exact_row.outcome, Some(CandidateOutcomeKind::NotSupported));
+    assert_eq!(exact_row.reason_code.as_deref(), Some("unsupported_type"));
+    assert_eq!(exact_row.final_disposition, Some(FinalPlanDisposition::DataFusion));
 
     fs::remove_dir_all(dir).unwrap();
 }

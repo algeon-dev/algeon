@@ -1,4 +1,5 @@
 use std::{
+    cmp::Ordering,
     collections::{BTreeMap, hash_map::Entry},
     sync::Arc,
     time::Instant,
@@ -19,6 +20,9 @@ use super::{
         add_aggregate_strategy_execution_option_facts, add_partial_aggregate_input_evidence_facts, reduction_ratio_ppm,
     },
     *,
+};
+use crate::prepared::{
+    DataFusionExactHostAccumulator, datafusion_exact_host_accumulator, datafusion_exact_host_group_key_supported,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -73,88 +77,203 @@ impl HostGroupLookupKey {
     }
 }
 
-#[derive(Debug, Clone)]
-enum HostAggregateState {
-    Count { count: u64 },
-    Sum { sum: f64, seen: bool },
-    Min { value: f64, seen: bool },
-    Max { value: f64, seen: bool },
-    Avg { sum: f64, count: u64 },
-    FloatingStatistical { function: AggregateFunction, count: u64, mean: f64, m2: f64 },
+/// One non-null aggregate input value; integer inputs never pass through `f64`.
+#[derive(Debug, Clone, Copy)]
+enum HostValue {
+    Signed(i64),
+    Unsigned(u64),
+    Float(f64),
+    /// A value that only `COUNT` reads.
+    Counted,
 }
 
-impl HostAggregateState {
-    fn new(function: AggregateFunction) -> Self {
-        match function {
-            AggregateFunction::Count | AggregateFunction::NUnique => Self::Count { count: 0 },
-            AggregateFunction::Sum => Self::Sum { sum: 0.0, seen: false },
-            AggregateFunction::Min => Self::Min { value: 0.0, seen: false },
-            AggregateFunction::Max => Self::Max { value: 0.0, seen: false },
-            AggregateFunction::Avg => Self::Avg { sum: 0.0, count: 0 },
-            AggregateFunction::Median => unreachable!("median is not executed by the host-exact aggregate path"),
-            function @ (AggregateFunction::StddevSamp
-            | AggregateFunction::StddevPop
-            | AggregateFunction::VarSamp
-            | AggregateFunction::VarPop) => Self::FloatingStatistical { function, count: 0, mean: 0.0, m2: 0.0 },
+impl HostValue {
+    fn signed(self) -> i64 {
+        match self {
+            Self::Signed(value) => value,
+            other => unreachable!("signed accumulator received {other:?}"),
         }
     }
 
-    fn update(&mut self, value: Option<f64>) {
+    fn unsigned(self) -> u64 {
         match self {
-            Self::Count { count } => {
-                if value.is_some() {
-                    *count += 1;
-                }
+            Self::Unsigned(value) => value,
+            other => unreachable!("unsigned accumulator received {other:?}"),
+        }
+    }
+
+    fn float(self) -> f64 {
+        match self {
+            Self::Float(value) => value,
+            other => unreachable!("float accumulator received {other:?}"),
+        }
+    }
+
+    /// DataFusion casts AVG, STDDEV, and VAR inputs to `Float64` before
+    /// accumulating; `as f64` is the same conversion.
+    fn as_f64(self) -> f64 {
+        match self {
+            Self::Signed(value) => value as f64,
+            Self::Unsigned(value) => value as f64,
+            Self::Float(value) => value,
+            Self::Counted => unreachable!("numeric accumulator received a count-only value"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum HostAggregateState {
+    Count { count: u64 },
+    Signed { value: i64, seen: bool },
+    Unsigned { value: u64, seen: bool },
+    Float { value: f64, seen: bool },
+    Avg { sum: f64, count: u64 },
+    Welford { function: AggregateFunction, count: u64, mean: f64, m2: f64 },
+}
+
+impl HostAggregateState {
+    fn new(accumulator: DataFusionExactHostAccumulator, function: AggregateFunction, grouped: bool) -> Self {
+        use DataFusionExactHostAccumulator as Accumulator;
+        match accumulator {
+            Accumulator::Count => Self::Count { count: 0 },
+            Accumulator::SignedSum | Accumulator::SignedMin | Accumulator::SignedMax => {
+                Self::Signed { value: 0, seen: false }
             },
-            Self::Sum { sum, seen } => {
-                if let Some(value) = value {
-                    *sum += value;
-                    *seen = true;
-                }
+            Accumulator::UnsignedSum | Accumulator::UnsignedMin | Accumulator::UnsignedMax => {
+                Self::Unsigned { value: 0, seen: false }
             },
-            Self::Min { value: current, seen } => {
-                if let Some(value) = value {
-                    if !*seen || value < *current {
-                        *current = value;
-                    }
-                    *seen = true;
-                }
+            // DataFusion's grouped primitive MIN/MAX starts every group at the
+            // finite type bound, so a group holding only an infinity on the
+            // far side keeps that bound. Its global accumulator starts from
+            // the first value.
+            Accumulator::FloatMin if grouped => Self::Float { value: f64::MAX, seen: false },
+            Accumulator::FloatMax if grouped => Self::Float { value: f64::MIN, seen: false },
+            Accumulator::FloatSum | Accumulator::FloatMin | Accumulator::FloatMax => {
+                Self::Float { value: 0.0, seen: false }
             },
-            Self::Max { value: current, seen } => {
-                if let Some(value) = value {
-                    if !*seen || value > *current {
-                        *current = value;
-                    }
-                    *seen = true;
-                }
+            Accumulator::Avg => Self::Avg { sum: 0.0, count: 0 },
+            Accumulator::Welford => Self::Welford { function, count: 0, mean: 0.0, m2: 0.0 },
+        }
+    }
+
+    fn update(&mut self, accumulator: DataFusionExactHostAccumulator, grouped: bool, input: HostValue) {
+        use DataFusionExactHostAccumulator as Accumulator;
+        match (self, accumulator) {
+            (Self::Count { count }, Accumulator::Count) => *count += 1,
+            (Self::Signed { value, seen }, Accumulator::SignedSum) => {
+                *value = value.wrapping_add(input.signed());
+                *seen = true;
             },
-            Self::Avg { sum, count } => {
-                if let Some(value) = value {
-                    *sum += value;
-                    *count += 1;
+            (Self::Signed { value, seen }, Accumulator::SignedMin) => {
+                let input = input.signed();
+                if !*seen || input < *value {
+                    *value = input;
                 }
+                *seen = true;
             },
-            Self::FloatingStatistical { count, mean, m2, .. } => {
-                if let Some(value) = value {
-                    let new_count = *count + 1;
-                    let delta1 = value - *mean;
-                    let new_mean = delta1 / new_count as f64 + *mean;
-                    let delta2 = value - new_mean;
-                    *m2 += delta1 * delta2;
-                    *mean = new_mean;
-                    *count = new_count;
+            (Self::Signed { value, seen }, Accumulator::SignedMax) => {
+                let input = input.signed();
+                if !*seen || input > *value {
+                    *value = input;
                 }
+                *seen = true;
             },
+            (Self::Unsigned { value, seen }, Accumulator::UnsignedSum) => {
+                *value = value.wrapping_add(input.unsigned());
+                *seen = true;
+            },
+            (Self::Unsigned { value, seen }, Accumulator::UnsignedMin) => {
+                let input = input.unsigned();
+                if !*seen || input < *value {
+                    *value = input;
+                }
+                *seen = true;
+            },
+            (Self::Unsigned { value, seen }, Accumulator::UnsignedMax) => {
+                let input = input.unsigned();
+                if !*seen || input > *value {
+                    *value = input;
+                }
+                *seen = true;
+            },
+            (Self::Float { value, seen }, Accumulator::FloatSum) => {
+                *value += input.float();
+                *seen = true;
+            },
+            // Grouped DataFusion MIN/MAX replaces the current value whenever
+            // the comparison is unordered, so NaN placement matters; global
+            // MIN/MAX uses IEEE 754 total order, where positive NaN is greatest.
+            (Self::Float { value, seen }, Accumulator::FloatMin) => {
+                let input = input.float();
+                let replace = if grouped {
+                    matches!(input.partial_cmp(value), Some(Ordering::Less) | None)
+                } else {
+                    !*seen || input.total_cmp(value).is_lt()
+                };
+                if replace {
+                    *value = input;
+                }
+                *seen = true;
+            },
+            (Self::Float { value, seen }, Accumulator::FloatMax) => {
+                let input = input.float();
+                let replace = if grouped {
+                    matches!(input.partial_cmp(value), Some(Ordering::Greater) | None)
+                } else {
+                    !*seen || input.total_cmp(value).is_gt()
+                };
+                if replace {
+                    *value = input;
+                }
+                *seen = true;
+            },
+            (Self::Avg { sum, count }, Accumulator::Avg) => {
+                *sum += input.as_f64();
+                *count += 1;
+            },
+            (Self::Welford { count, mean, m2, .. }, Accumulator::Welford) => {
+                let value = input.as_f64();
+                let new_count = *count + 1;
+                let delta1 = value - *mean;
+                let new_mean = delta1 / new_count as f64 + *mean;
+                let delta2 = value - new_mean;
+                *m2 += delta1 * delta2;
+                *mean = new_mean;
+                *count = new_count;
+            },
+            (state, accumulator) => unreachable!("{accumulator:?} does not update {state:?}"),
+        }
+    }
+
+    fn evaluate_i32(&self) -> Option<i32> {
+        match self {
+            Self::Signed { value, seen } => {
+                seen.then(|| i32::try_from(*value).expect("Int32 MIN/MAX state only holds Int32 input values"))
+            },
+            state => unreachable!("Int32 output does not read {state:?}"),
+        }
+    }
+
+    fn evaluate_i64(&self) -> Option<i64> {
+        match self {
+            Self::Count { count } => Some(*count as i64),
+            Self::Signed { value, seen } => seen.then_some(*value),
+            state => unreachable!("Int64 output does not read {state:?}"),
+        }
+    }
+
+    fn evaluate_u64(&self) -> Option<u64> {
+        match self {
+            Self::Unsigned { value, seen } => seen.then_some(*value),
+            state => unreachable!("UInt64 output does not read {state:?}"),
         }
     }
 
     fn evaluate_f64(&self) -> Option<f64> {
         match self {
-            Self::Count { count } => Some(*count as f64),
-            Self::Sum { sum, seen } => seen.then_some(*sum),
-            Self::Min { value, seen } | Self::Max { value, seen } => seen.then_some(*value),
-            Self::Avg { sum, count } => (*count > 0).then_some(*sum / *count as f64),
-            Self::FloatingStatistical { function, count, m2, .. } => {
+            Self::Float { value, seen } => seen.then_some(*value),
+            Self::Avg { sum, count } => (*count > 0).then(|| *sum / *count as f64),
+            Self::Welford { function, count, m2, .. } => {
                 let ddof = function.statistical_ddof().expect("statistical state must carry ddof") as u64;
                 if *count <= ddof {
                     None
@@ -167,13 +286,7 @@ impl HostAggregateState {
                     }
                 }
             },
-        }
-    }
-
-    fn evaluate_i64(&self) -> Option<i64> {
-        match self {
-            Self::Count { count } => Some(*count as i64),
-            _ => self.evaluate_f64().map(|value| value as i64),
+            state => unreachable!("Float64 output does not read {state:?}"),
         }
     }
 }
@@ -243,13 +356,6 @@ pub(in crate::exec) fn execute_datafusion_exact_host_aggregate_batch(
     metrics: &mut QueryMetrics,
     extra_strategy_facts: Option<&BTreeMap<&'static str, String>>,
 ) -> Result<RecordBatch> {
-    if spec.aggr_exprs.iter().any(|expr| expr.function == AggregateFunction::Median) {
-        return Err(QueryError::new(
-            QueryErrorCode::UnsupportedOperator,
-            "nexus_query_engine.aggregate.floating_statistical_exact.median",
-            "DataFusion-exact statistical aggregate path does not support median aggregate expressions",
-        ));
-    }
     let key_columns = spec
         .group_exprs
         .iter()
@@ -258,12 +364,27 @@ pub(in crate::exec) fn execute_datafusion_exact_host_aggregate_batch(
     let aggregate_columns = spec.aggr_exprs.iter().map(aggregate_input_column).collect::<Result<Vec<_>>>()?;
     let key_accessors =
         key_columns.iter().map(|(input_name, _)| HostKeyColumn::new(batch, input_name)).collect::<Result<Vec<_>>>()?;
+    let batch_schema = batch.schema();
+    for ((input_name, _), output_field) in key_columns.iter().zip(output_schema.fields()) {
+        let input_type =
+            batch_schema.field_with_name(input_name).expect("group key accessor resolved this column").data_type();
+        if !datafusion_exact_host_group_key_supported(input_type, output_field.data_type()) {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedType,
+                "nexus_query_engine.aggregate.floating_statistical_exact.key_output",
+                "DataFusion-exact statistical aggregate path does not support this group key output type",
+            )
+            .with_fact("column", input_name.as_str())
+            .with_fact("input_data_type", format!("{input_type:?}"))
+            .with_fact("output_data_type", format!("{:?}", output_field.data_type())));
+        }
+    }
     let mut aggregate_input_slots = Vec::<usize>::with_capacity(aggregate_columns.len());
     let mut unique_aggregate_inputs = Vec::<HostAggregateInput>::new();
-    for input in aggregate_columns {
-        let slot = unique_aggregate_inputs.iter().position(|existing| existing == &input).unwrap_or_else(|| {
+    for input in &aggregate_columns {
+        let slot = unique_aggregate_inputs.iter().position(|existing| existing == input).unwrap_or_else(|| {
             let slot = unique_aggregate_inputs.len();
-            unique_aggregate_inputs.push(input);
+            unique_aggregate_inputs.push(input.clone());
             slot
         });
         aggregate_input_slots.push(slot);
@@ -272,6 +393,45 @@ pub(in crate::exec) fn execute_datafusion_exact_host_aggregate_batch(
         .iter()
         .map(|input| HostAggregateInputAccessor::new(batch, input))
         .collect::<Result<Vec<_>>>()?;
+    let accumulators = spec
+        .aggr_exprs
+        .iter()
+        .zip(&aggregate_columns)
+        .enumerate()
+        .map(|(index, (expr, input))| {
+            let input_type = match input {
+                HostAggregateInput::Column(name) => Some(
+                    batch_schema
+                        .field_with_name(name)
+                        .expect("aggregate input accessor resolved this column")
+                        .data_type(),
+                ),
+                HostAggregateInput::NonNullLiteral | HostAggregateInput::NullLiteral => None,
+            };
+            let output_type = output_schema.fields().get(key_columns.len() + index).map(|field| field.data_type());
+            output_type
+                .and_then(|output_type| datafusion_exact_host_accumulator(expr, input_type, output_type))
+                .ok_or_else(|| {
+                    QueryError::new(
+                        QueryErrorCode::UnsupportedType,
+                        "nexus_query_engine.aggregate.floating_statistical_exact.accumulator",
+                        "DataFusion-exact statistical aggregate path has no exact accumulator for this aggregate",
+                    )
+                    .with_fact("function", expr.function.as_str())
+                    .with_fact("alias", expr.alias.as_str())
+                    .with_fact("input_data_type", format!("{input_type:?}"))
+                    .with_fact("output_data_type", format!("{output_type:?}"))
+                })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let grouped = !key_columns.is_empty();
+    let new_group_states = || {
+        spec.aggr_exprs
+            .iter()
+            .zip(&accumulators)
+            .map(|(expr, accumulator)| HostAggregateState::new(*accumulator, expr.function, grouped))
+            .collect::<Vec<_>>()
+    };
     let row_count = batch.num_rows();
     let mut group_indices = fast_hash_map_with_capacity::<HostGroupLookupKey, usize>(row_count.min(1_048_576));
     let mut groups = Vec::<HostAggregateGroup>::new();
@@ -285,35 +445,27 @@ pub(in crate::exec) fn execute_datafusion_exact_host_aggregate_batch(
                 let index = groups.len();
                 let key = entry.key().clone();
                 entry.insert(index);
-                groups.push(HostAggregateGroup {
-                    key,
-                    aggregates: spec.aggr_exprs.iter().map(|expr| HostAggregateState::new(expr.function)).collect(),
-                });
+                groups.push(HostAggregateGroup { key, aggregates: new_group_states() });
                 index
             },
         };
         for (value, accessor) in aggregate_input_values.iter_mut().zip(&aggregate_accessors) {
             *value = accessor.value(row);
         }
-        for (aggregate_index, expr) in spec.aggr_exprs.iter().enumerate() {
-            let value = aggregate_input_values[aggregate_input_slots[aggregate_index]];
-            let state = groups[group_index]
+        for (aggregate_index, accumulator) in accumulators.iter().enumerate() {
+            let Some(value) = aggregate_input_values[aggregate_input_slots[aggregate_index]] else {
+                continue;
+            };
+            groups[group_index]
                 .aggregates
                 .get_mut(aggregate_index)
-                .expect("aggregate state index should match aggregate expression index");
-            if matches!(expr.function, AggregateFunction::Count | AggregateFunction::NUnique) {
-                state.update(value.map(|_| 1.0));
-            } else {
-                state.update(value);
-            }
+                .expect("aggregate state index should match aggregate expression index")
+                .update(*accumulator, grouped, value);
         }
     }
 
-    if key_columns.is_empty() && groups.is_empty() {
-        groups.push(HostAggregateGroup {
-            key: HostGroupLookupKey::Empty,
-            aggregates: spec.aggr_exprs.iter().map(|expr| HostAggregateState::new(expr.function)).collect(),
-        });
+    if !grouped && groups.is_empty() {
+        groups.push(HostAggregateGroup { key: HostGroupLookupKey::Empty, aggregates: new_group_states() });
     }
 
     let mut arrays = Vec::<ArrayRef>::with_capacity(output_schema.fields().len());
@@ -322,7 +474,7 @@ pub(in crate::exec) fn execute_datafusion_exact_host_aggregate_batch(
             arrays.push(host_key_output_array(&groups, output_index, field.data_type(), &key_accessors[output_index])?);
         } else {
             let aggregate_index = output_index - key_columns.len();
-            arrays.push(host_aggregate_output_array(&groups, aggregate_index, field.data_type())?);
+            arrays.push(host_aggregate_output_array(&groups, aggregate_index, field.data_type()));
         }
     }
     record_datafusion_exact_floating_statistical_aggregate_strategy_decision(
@@ -503,6 +655,136 @@ mod tests {
         );
         assert_eq!(facts.get("filtered_input_unsupported_stateful_merge").map(String::as_str), Some("true"));
     }
+
+    fn run_exact_host_aggregate(spec: &AggregateSpec, batch: &RecordBatch, output_fields: Vec<Field>) -> RecordBatch {
+        let context = ExecutionContext::builder().build().expect("execution context builds");
+        let output_schema = Arc::new(Schema::new(output_fields));
+        let mut metrics = QueryMetrics::default();
+        execute_datafusion_exact_host_aggregate_batch(&context, None, spec, batch, &output_schema, &mut metrics, None)
+            .expect("exact host aggregate executes")
+    }
+
+    fn output_column<T: 'static>(batch: &RecordBatch, index: usize) -> &T {
+        batch.column(index).as_any().downcast_ref::<T>().expect("output column has the declared type")
+    }
+
+    #[test]
+    fn exact_host_integer_aggregates_keep_datafusion_integer_semantics() {
+        let beyond_f64_integers = (1_i64 << 53) + 1;
+        let input_schema = Arc::new(Schema::new(vec![
+            Field::new("key", ArrowDataType::Int32, false),
+            Field::new("amount", ArrowDataType::Int64, false),
+            Field::new("quantity", ArrowDataType::Int32, false),
+            Field::new("units", ArrowDataType::UInt64, false),
+            Field::new("label", ArrowDataType::Utf8, true),
+            Field::new("price", ArrowDataType::Float64, false),
+        ]));
+        let batch = RecordBatch::try_new(
+            input_schema,
+            vec![
+                Arc::new(Int32Array::from(vec![1, 1, 2, 2])),
+                Arc::new(Int64Array::from(vec![beyond_f64_integers, 2, i64::MAX, 1])),
+                Arc::new(Int32Array::from(vec![7, -3, i32::MIN, 5])),
+                Arc::new(UInt64Array::from(vec![u64::MAX, 2, 1, 1])),
+                Arc::new(StringArray::from(vec![Some("a"), None, Some("b"), Some("c")])),
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0, 5.0])),
+            ],
+        )
+        .unwrap();
+        let spec = AggregateSpec::new(
+            vec![Expr::column("key")],
+            vec![
+                AggregateExpr::new(AggregateFunction::Sum, Expr::column("amount"), "amount_sum"),
+                AggregateExpr::new(AggregateFunction::Max, Expr::column("amount"), "amount_max"),
+                AggregateExpr::new(AggregateFunction::Min, Expr::column("quantity"), "quantity_min"),
+                AggregateExpr::new(AggregateFunction::Sum, Expr::column("units"), "units_sum"),
+                AggregateExpr::new(AggregateFunction::Count, Expr::column("label"), "label_count"),
+                AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("price"), "price_stddev"),
+            ],
+        );
+
+        let output = run_exact_host_aggregate(
+            &spec,
+            &batch,
+            vec![
+                Field::new("key", ArrowDataType::Int32, false),
+                Field::new("amount_sum", ArrowDataType::Int64, true),
+                Field::new("amount_max", ArrowDataType::Int64, true),
+                Field::new("quantity_min", ArrowDataType::Int32, true),
+                Field::new("units_sum", ArrowDataType::UInt64, true),
+                Field::new("label_count", ArrowDataType::Int64, false),
+                Field::new("price_stddev", ArrowDataType::Float64, true),
+            ],
+        );
+
+        assert_eq!(output_column::<Int32Array>(&output, 0).values().as_ref(), &[1, 2]);
+        // DataFusion sums signed and unsigned integers with wrapping arithmetic.
+        assert_eq!(output_column::<Int64Array>(&output, 1).values().as_ref(), &[beyond_f64_integers + 2, i64::MIN]);
+        assert_eq!(output_column::<Int64Array>(&output, 2).values().as_ref(), &[beyond_f64_integers, i64::MAX]);
+        assert_eq!(output_column::<Int32Array>(&output, 3).values().as_ref(), &[-3, i32::MIN]);
+        assert_eq!(output_column::<UInt64Array>(&output, 4).values().as_ref(), &[1, 2]);
+        assert_eq!(output_column::<Int64Array>(&output, 5).values().as_ref(), &[1, 2]);
+        assert_eq!(output_column::<Float64Array>(&output, 6).values().as_ref(), &[0.5_f64.sqrt(), 2.0_f64.sqrt()]);
+    }
+
+    #[test]
+    fn exact_host_float_min_max_follow_datafusion_nan_ordering() {
+        let min_max = |group_exprs: Vec<Expr>| {
+            AggregateSpec::new(
+                group_exprs,
+                vec![
+                    AggregateExpr::new(AggregateFunction::Min, Expr::column("value"), "value_min"),
+                    AggregateExpr::new(AggregateFunction::Max, Expr::column("value"), "value_max"),
+                ],
+            )
+        };
+        let value_fields = || {
+            vec![
+                Field::new("value_min", ArrowDataType::Float64, true),
+                Field::new("value_max", ArrowDataType::Float64, true),
+            ]
+        };
+        let bits = |array: &Float64Array| array.iter().map(|value| value.map(f64::to_bits)).collect::<Vec<_>>();
+        let expected = |values: &[f64]| values.iter().map(|value| Some(value.to_bits())).collect::<Vec<_>>();
+
+        // Grouped DataFusion MIN/MAX starts each group at the finite type bound
+        // and replaces the current value on any unordered comparison.
+        let grouped_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("key", ArrowDataType::Int32, false),
+                Field::new("value", ArrowDataType::Float64, true),
+            ])),
+            vec![
+                Arc::new(Int32Array::from(vec![1, 1, 1, 2, 3, 3, 4, 4])),
+                Arc::new(Float64Array::from(vec![
+                    Some(1.0),
+                    Some(f64::NAN),
+                    Some(2.0),
+                    Some(f64::NEG_INFINITY),
+                    Some(-0.0),
+                    Some(0.0),
+                    Some(f64::INFINITY),
+                    None,
+                ])),
+            ],
+        )
+        .unwrap();
+        let mut grouped_fields = vec![Field::new("key", ArrowDataType::Int32, false)];
+        grouped_fields.extend(value_fields());
+        let grouped = run_exact_host_aggregate(&min_max(vec![Expr::column("key")]), &grouped_batch, grouped_fields);
+        assert_eq!(bits(output_column(&grouped, 1)), expected(&[2.0, f64::NEG_INFINITY, -0.0, f64::MAX]));
+        assert_eq!(bits(output_column(&grouped, 2)), expected(&[2.0, f64::MIN, -0.0, f64::INFINITY]));
+
+        // Global DataFusion MIN/MAX uses IEEE 754 total order.
+        let global_batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new("value", ArrowDataType::Float64, true)])),
+            vec![Arc::new(Float64Array::from(vec![1.0, f64::NAN, 2.0]))],
+        )
+        .unwrap();
+        let global = run_exact_host_aggregate(&min_max(Vec::new()), &global_batch, value_fields());
+        assert_eq!(bits(output_column(&global, 0)), expected(&[1.0]));
+        assert!(output_column::<Float64Array>(&global, 1).value(0).is_nan());
+    }
 }
 
 fn aggregate_group_key_exprs_for_metrics(spec: &AggregateSpec) -> String {
@@ -562,7 +844,7 @@ enum HostAggregateInput {
 }
 
 enum HostAggregateInputAccessor<'a> {
-    Column(HostNumericColumn<'a>),
+    Column(HostAggregateColumn<'a>),
     NonNullLiteral,
     NullLiteral,
 }
@@ -570,16 +852,16 @@ enum HostAggregateInputAccessor<'a> {
 impl<'a> HostAggregateInputAccessor<'a> {
     fn new(batch: &'a RecordBatch, input: &HostAggregateInput) -> Result<Self> {
         match input {
-            HostAggregateInput::Column(name) => HostNumericColumn::new(batch, name).map(Self::Column),
+            HostAggregateInput::Column(name) => HostAggregateColumn::new(batch, name).map(Self::Column),
             HostAggregateInput::NonNullLiteral => Ok(Self::NonNullLiteral),
             HostAggregateInput::NullLiteral => Ok(Self::NullLiteral),
         }
     }
 
-    fn value(&self, row: usize) -> Option<f64> {
+    fn value(&self, row: usize) -> Option<HostValue> {
         match self {
             Self::Column(column) => column.value(row),
-            Self::NonNullLiteral => Some(1.0),
+            Self::NonNullLiteral => Some(HostValue::Counted),
             Self::NullLiteral => None,
         }
     }
@@ -805,14 +1087,17 @@ impl<'a> HostKeyColumn<'a> {
     }
 }
 
-enum HostNumericColumn<'a> {
+enum HostAggregateColumn<'a> {
     Int32(&'a Int32Array),
     Int64(&'a Int64Array),
     UInt64(&'a UInt64Array),
     Float64(&'a Float64Array),
+    /// Any other input type; accumulator selection admits it only for `COUNT`,
+    /// which reads validity alone.
+    Counted(&'a ArrayRef),
 }
 
-impl<'a> HostNumericColumn<'a> {
+impl<'a> HostAggregateColumn<'a> {
     fn new(batch: &'a RecordBatch, column: &str) -> Result<Self> {
         let array = batch.column(batch.schema().index_of(column).map_err(|error| {
             QueryError::new(
@@ -823,35 +1108,30 @@ impl<'a> HostNumericColumn<'a> {
             .with_fact("column", column)
             .with_source(error)
         })?);
-        match array.data_type() {
+        Ok(match array.data_type() {
             ArrowDataType::Int32 => {
-                Ok(Self::Int32(array.as_any().downcast_ref::<Int32Array>().expect("validated Int32Array")))
+                Self::Int32(array.as_any().downcast_ref::<Int32Array>().expect("validated Int32Array"))
             },
             ArrowDataType::Int64 => {
-                Ok(Self::Int64(array.as_any().downcast_ref::<Int64Array>().expect("validated Int64Array")))
+                Self::Int64(array.as_any().downcast_ref::<Int64Array>().expect("validated Int64Array"))
             },
             ArrowDataType::UInt64 => {
-                Ok(Self::UInt64(array.as_any().downcast_ref::<UInt64Array>().expect("validated UInt64Array")))
+                Self::UInt64(array.as_any().downcast_ref::<UInt64Array>().expect("validated UInt64Array"))
             },
             ArrowDataType::Float64 => {
-                Ok(Self::Float64(array.as_any().downcast_ref::<Float64Array>().expect("validated Float64Array")))
+                Self::Float64(array.as_any().downcast_ref::<Float64Array>().expect("validated Float64Array"))
             },
-            data_type => Err(QueryError::new(
-                QueryErrorCode::UnsupportedType,
-                "nexus_query_engine.aggregate.floating_statistical_exact.value",
-                "DataFusion-exact stddev aggregate requires numeric aggregate inputs",
-            )
-            .with_fact("column", column)
-            .with_fact("data_type", format!("{data_type:?}"))),
-        }
+            _ => Self::Counted(array),
+        })
     }
 
-    fn value(&self, row: usize) -> Option<f64> {
+    fn value(&self, row: usize) -> Option<HostValue> {
         match self {
-            Self::Int32(array) => (!array.is_null(row)).then(|| array.value(row) as f64),
-            Self::Int64(array) => (!array.is_null(row)).then(|| array.value(row) as f64),
-            Self::UInt64(array) => (!array.is_null(row)).then(|| array.value(row) as f64),
-            Self::Float64(array) => (!array.is_null(row)).then(|| array.value(row)),
+            Self::Int32(array) => (!array.is_null(row)).then(|| HostValue::Signed(i64::from(array.value(row)))),
+            Self::Int64(array) => (!array.is_null(row)).then(|| HostValue::Signed(array.value(row))),
+            Self::UInt64(array) => (!array.is_null(row)).then(|| HostValue::Unsigned(array.value(row))),
+            Self::Float64(array) => (!array.is_null(row)).then(|| HostValue::Float(array.value(row))),
+            Self::Counted(array) => (!array.is_null(row)).then_some(HostValue::Counted),
         }
     }
 }
@@ -952,25 +1232,13 @@ fn host_aggregate_output_array(
     groups: &[HostAggregateGroup],
     aggregate_index: usize,
     data_type: &ArrowDataType,
-) -> Result<ArrayRef> {
+) -> ArrayRef {
+    let states = groups.iter().map(|group| &group.aggregates[aggregate_index]);
     match data_type {
-        ArrowDataType::Int64 => Ok(Arc::new(Int64Array::from(
-            groups
-                .iter()
-                .map(|group| group.aggregates.get(aggregate_index).and_then(HostAggregateState::evaluate_i64))
-                .collect::<Vec<_>>(),
-        ))),
-        ArrowDataType::Float64 => Ok(Arc::new(Float64Array::from(
-            groups
-                .iter()
-                .map(|group| group.aggregates.get(aggregate_index).and_then(HostAggregateState::evaluate_f64))
-                .collect::<Vec<_>>(),
-        ))),
-        data_type => Err(QueryError::new(
-            QueryErrorCode::UnsupportedType,
-            "nexus_query_engine.aggregate.floating_statistical_exact.aggregate_output",
-            "DataFusion-exact stddev aggregate does not support this aggregate output type",
-        )
-        .with_fact("data_type", format!("{data_type:?}"))),
+        ArrowDataType::Int32 => Arc::new(states.map(HostAggregateState::evaluate_i32).collect::<Int32Array>()),
+        ArrowDataType::Int64 => Arc::new(states.map(HostAggregateState::evaluate_i64).collect::<Int64Array>()),
+        ArrowDataType::UInt64 => Arc::new(states.map(HostAggregateState::evaluate_u64).collect::<UInt64Array>()),
+        ArrowDataType::Float64 => Arc::new(states.map(HostAggregateState::evaluate_f64).collect::<Float64Array>()),
+        data_type => unreachable!("exact host accumulator selection admitted aggregate output type {data_type:?}"),
     }
 }

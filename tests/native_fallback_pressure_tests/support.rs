@@ -127,7 +127,17 @@ pub(super) async fn native_datafusion_planning_report_with_session(
     let optimizer_config = NexusNativeOptimizerConfig::default().with_native_execution_config(
         NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1),
     );
-    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config.clone()));
+    native_datafusion_planning_report_with_optimizer_config(query_id, path, sql, session_config, optimizer_config).await
+}
+
+pub(super) async fn native_datafusion_planning_report_with_optimizer_config(
+    query_id: &str,
+    path: &std::path::Path,
+    sql: &str,
+    session_config: SessionConfig,
+    optimizer_config: NexusNativeOptimizerConfig,
+) -> NativeDataFusionPlanningReport {
+    let native_rule = Arc::new(NexusNativePhysicalOptimizerRule::new(optimizer_config));
     let state = SessionStateBuilder::new_with_default_features()
         .with_config(session_config)
         .with_nexus_native_rule(Arc::clone(&native_rule))

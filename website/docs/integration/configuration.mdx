@@ -97,13 +97,21 @@ Native settings are accepted both under `[native]` and through the environment:
 | `max_retry_attempts` | `NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS` | `3` |
 | `max_source_reads_in_flight` | `NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT` | `2` |
 | `source_chunk_planning_mode` | `NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE` | `conservative` |
-| `statistical_aggregate_execution_mode` | `NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE` | `datafusion_exact_host_welford` |
+| `statistical_aggregate_execution_mode` | `NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE` | `gpu_native_tolerant` |
 | `final_plan_requirement` | `NEXUS_SERVER_FINAL_PLAN_REQUIREMENT` | unset |
 
 `source_chunk_planning_mode` also accepts `local_parquet_throughput`.
-Statistical aggregates can use `gpu_native_tolerant` when exact DataFusion
-Welford bits are not required. The only final-plan requirement is
-`no_datafusion_cpu`.
+
+`statistical_aggregate_execution_mode` controls the `stddev` and `var`
+aggregate family. The default, `gpu_native_tolerant`, keeps them on the GPU,
+but its results are not guaranteed to match DataFusion exactly: floating-point
+bits can differ, and precision degrades when values are large relative to
+their spread. Set `datafusion_exact_host_welford` when results must match
+DataFusion. That mode copies the aggregate input to host memory, and a query
+whose group keys or other aggregates in the same `GROUP BY` it cannot evaluate
+exactly is not rewritten to native execution.
+
+The only final-plan requirement is `no_datafusion_cpu`.
 
 Native settings carry no device-budget planning placeholder. Device capacity
 is owned solely by the ordinal-keyed [`[[admission.device_profiles]]`](#admission)

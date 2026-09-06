@@ -11,6 +11,8 @@ mod scope;
 mod shared;
 mod support;
 
+#[doc(hidden)]
+pub use bounded::statistical_aggregate_execution_mode_rejection;
 pub use bounded::{BoundedPipelineAdmission, BoundedPipelineDecision, bounded_pipeline_decision};
 pub use diagnostics::{bounded_join_modeled_facts, bounded_join_unsupported_shape_facts};
 #[doc(hidden)]

@@ -8,6 +8,7 @@ use datafusion::{
     physical_expr::EquivalenceProperties,
     physical_plan::ExecutionPlan,
 };
+use nexus_query_engine::capability::CapabilityRejectionCategory;
 
 use super::{
     NativeCapabilityContractDiagnostics,
@@ -181,6 +182,26 @@ fn replace_lowered_root_or_keep_plan(
         .single_selected_candidate()
         .cloned()
         .ok_or_else(|| native_candidate_error("native rewrite has no rewritten candidate"))?;
+
+    if let Some(rejection) = nexus_query_engine::admission::statistical_aggregate_execution_mode_rejection(
+        &native_plan,
+        native_execution_config.statistical_aggregate_execution_mode(),
+    ) {
+        let capability_reason = match rejection.category {
+            CapabilityRejectionCategory::UnsupportedArrowDtype => CapabilityReason::UnsupportedType,
+            _ => CapabilityReason::UnsupportedOperator,
+        };
+        let report =
+            native_execution_rejection_report_for_candidate(candidate.clone(), capability_reason, &lowering.report);
+        return Ok(NativeOptimizationAttempt {
+            plan,
+            report,
+            native_optimizer,
+            source_diagnostics: lowering.source_diagnostics,
+            capability_contract: rejected_plan_contract_diagnostics(&native_plan, candidate, native_execution_config)?,
+            rewritten: false,
+        });
+    }
 
     if native_execution_boundary_is_rejected(&native_plan, native_execution_config)? {
         let report = native_execution_rejection_report_for_candidate(
