@@ -336,7 +336,7 @@ mod tests {
 
         let devices = config.resolve_gpu_devices().expect("server device mapping must resolve");
         let profile = devices[0].profile();
-        assert_eq!(profile.max_active_attempts(), 1);
+        assert_eq!(profile.max_active_attempts(), 2);
         assert_eq!(profile.device_ordinal(), 0);
         assert_eq!(profile.memory_limit(), crate::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: 3072 });
         assert_eq!(profile.default_query_limit_bytes(), None);
@@ -456,7 +456,7 @@ mod tests {
         assert!(payload.contains("# datafusion_nexus_admission_stats=1\n"), "{payload}");
         assert!(payload.contains("# backend=query_service\n"), "{payload}");
         assert!(payload.contains("# device_profile_count=1\n"), "{payload}");
-        assert!(payload.contains("# device_0_max_active_attempts=1\n"), "{payload}");
+        assert!(payload.contains("# device_0_max_active_attempts=2\n"), "{payload}");
         assert!(payload.contains("# device_0_default_query_limit_bytes=536870912\n"), "{payload}");
         assert!(
             payload.contains("[backend_metrics]\nbackend_generation\tgeneration\tconfigured_devices\n"),

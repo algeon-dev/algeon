@@ -22,13 +22,15 @@ where
     run_with_uncached_cugraph_graph(context, edges, options, operation, f)
 }
 
-/// Executes an eligible graph through the per-device resident-cache domain.
+/// Executes an eligible graph through the admitted attempt domain.
 ///
-/// A parked cuGraph graph is bound to the cache runtime that owns its native
-/// allocations, so a hit must execute on that runtime and copy only its final
-/// dataframe into the admitted attempt domain. The cache runtime's temporary
-/// results are dropped before its checkout pin is released; consequently the
-/// ledger transaction continues to describe retained graph bytes only.
+/// A parked cuGraph graph keeps its storage in the cache runtime that owns
+/// its native allocations, but a hit resumes it under the attempt runtime:
+/// the attempt stream waits on the park event, and algorithm workspace,
+/// auxiliary streams, and outputs allocate through the attempt binding, so
+/// they charge to the borrower's grant — never to the cache share. Only the
+/// final dataframe is retained into the attempt domain, and the graph is
+/// re-parked before the checkout returns to the cache.
 #[cfg(feature = "cugraph")]
 pub(super) fn run_with_accounted_resident_cugraph_graph<T, F>(
     context: &ExecutionContext,
@@ -66,16 +68,7 @@ where
     context.check_cancellation(operation)?;
 
     if let Some(checkout) = cache.checkout::<T>(&resident_key, None)? {
-        return run_checked_out_resident_graph(
-            context,
-            &attempt_runtime,
-            cache,
-            checkout,
-            edges,
-            options,
-            operation,
-            f,
-        );
+        return run_checked_out_resident_graph(context, &attempt_runtime, cache, checkout, operation, f);
     }
 
     // Reservation is derived from the same snapshot projected by sealed
@@ -252,17 +245,11 @@ where
 }
 
 #[cfg(feature = "cugraph")]
-#[expect(
-    clippy::too_many_arguments,
-    reason = "native cuDF/cuGraph/cuVS call parameters stay explicit at the FFI boundary"
-)]
 fn run_checked_out_resident_graph<T, F>(
     context: &ExecutionContext,
     attempt_runtime: &cudf::Runtime,
     cache: crate::runtime::cache::resident_graph::GpuResidentGraphCache,
     mut checkout: crate::runtime::cache::resident_graph::GpuResidentGraphCheckout<T>,
-    edges: DataFrame,
-    options: cugraph::cudf_interop::TableGraphOptions,
     operation: &'static str,
     f: F,
 ) -> Result<GraphAlgorithmExecutionResult>
@@ -275,44 +262,39 @@ where
     ) -> Result<GraphAlgorithmExecutionResult>,
 {
     context.check_cancellation(operation)?;
-    let Some(execution_reservation) = cache.begin_execution_reservation()? else {
-        // Return the parked graph before the uncached fallback so this miss on
-        // executable capacity cannot strand a resident entry or its charge.
-        drop(checkout);
-        return run_with_uncached_cugraph_graph(context, edges, options, operation, f);
-    };
     // A resident checkout is exclusive, so its scope ring can be bounded to
     // this attempt until the graph is returned to the cache.
     let mut cache_scope_correlation = context.begin_cache_scope_allocator_correlation(checkout.allocation_scope());
-    enum ExecutionReservationDisposition {
-        Release(Result<GraphAlgorithmExecutionResult>),
-    }
-    // Scope this work so every cache-runtime owner (including the runtime
+    // Scope this work so every attempt-runtime owner (including the runtime
     // clone on early failures) has dropped before the scope fence below. A
     // failed re-park consumes and drops the graph, but cannot return a
     // checkout; its correlation guard must therefore discard rather than
     // claim terminal allocator evidence from a drop path.
+    //
+    // Execution enters on the attempt binding, so workspace and outputs
+    // charge to the borrower's grant: an undersized grant fails closed in the
+    // attempt domain instead of borrowing cache capacity.
     let execution = {
-        let cache_runtime = checkout.runtime();
+        let attempt_handle_runtime = std::sync::Arc::new(attempt_runtime.clone());
         (|| {
-            let handle = cugraph::ResourceHandle::for_runtime(std::sync::Arc::clone(&cache_runtime)).map_err(
+            let handle = cugraph::ResourceHandle::for_runtime(std::sync::Arc::clone(&attempt_handle_runtime)).map_err(
                 map_cugraph_error(
                     "nexus_query_engine.graph_algorithm.resident_cache.resource_handle",
-                    "failed to bind cuGraph to the resident-cache runtime",
+                    "failed to bind cuGraph to the admitted attempt runtime",
                 ),
             )?;
             let entered = handle.enter(operation).map_err(map_cugraph_error(
                 "nexus_query_engine.graph_algorithm.resident_cache.enter",
-                "failed to enter the resident-cache cuGraph runtime",
+                "failed to enter the admitted attempt cuGraph runtime",
             ))?;
             let parked = checkout.take_parked();
-            let mut graph = parked.resume(&entered).map_err(map_cugraph_error(
+            let mut graph = parked.resume_under(&entered).map_err(map_cugraph_error(
                 "nexus_query_engine.graph_algorithm.resident_cache.resume_graph",
-                "failed to resume a resident-cache cuGraph graph",
+                "failed to resume a resident-cache cuGraph graph under the attempt runtime",
             ))?;
-            let outcome = f(cache_runtime.as_ref(), &entered, &mut graph)
+            let outcome = f(attempt_runtime, &entered, &mut graph)
                 .and_then(|outcome| copy_graph_result_into_attempt(outcome, attempt_runtime));
-            match graph.park(&entered).map_err(map_cugraph_error(
+            match graph.park_under(&entered).map_err(map_cugraph_error(
                 "nexus_query_engine.graph_algorithm.resident_cache.repark_graph",
                 "failed to re-park a resident-cache cuGraph graph",
             )) {
@@ -327,14 +309,12 @@ where
         Err(error) => {
             // The failed path has no parked graph to return, so it must never
             // close an exact cache-scope window. It still fences the private
-            // stream before releasing the transient reservation.
+            // stream before failing closed.
             if let Err(scope_error) = checkout.synchronize_scope() {
                 let cache_error = cache.close().err();
                 let close_error = cache.close_admission_for_scope_retirement_fence().err();
                 return Err(cache_error.or(close_error).unwrap_or(scope_error));
             }
-            let release = execution_reservation.release_after_destroy();
-            let _ = release;
             return Err(error);
         },
     };
@@ -390,35 +370,21 @@ where
     }
 
     let return_result = checkout.return_parked(reparked);
-    let result = match outcome {
+    // The closure has dropped the attempt-runtime handle, entered context,
+    // graph result, and every attempt-domain temporary allocation; the
+    // checkout scope fence above already proved the cache storage charge.
+    match outcome {
         Err(primary) => {
             let _ = return_result;
-            ExecutionReservationDisposition::Release(Err(primary))
+            // The scope fence, health proof, and re-park all completed
+            // before this primary graph error is returned.
+            Err(primary.with_graph_cache_scope_peak_bytes(cache_scope_peak_bytes))
         },
-        Ok(outcome) => ExecutionReservationDisposition::Release(return_result.map(|()| outcome)),
-    };
-
-    // The closure has dropped the cache-runtime handle, entered context, graph
-    // result, and every temporary allocation before this releases its ledger
-    // reservation. On an error, a failed release remains fail-closed while
-    // the original execution error stays the caller-visible cause.
-    match result {
-        ExecutionReservationDisposition::Release(outcome) => {
-            let release = execution_reservation.release_after_destroy();
-            match outcome {
-                Ok(mut outcome) => {
-                    outcome.cache_scope_peak_bytes = Some(cache_scope_peak_bytes);
-                    release.map(|()| outcome)
-                },
-                Err(error) => {
-                    let _ = release;
-                    // The scope fence, health proof, and re-park all completed
-                    // before this primary graph error is returned, so this is
-                    // a direct cache-runtime peak for the failed execution.
-                    Err(error.with_graph_cache_scope_peak_bytes(cache_scope_peak_bytes))
-                },
-            }
-        },
+        Ok(outcome) => return_result.map(|()| {
+            let mut outcome = outcome;
+            outcome.cache_scope_peak_bytes = Some(cache_scope_peak_bytes);
+            outcome
+        }),
     }
 }
 

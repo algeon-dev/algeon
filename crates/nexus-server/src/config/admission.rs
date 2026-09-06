@@ -129,7 +129,7 @@ fn profile_from_file(raw: &super::file::ServerAdmissionDeviceProfileFileConfig) 
     }
     // Start from the root projection of engine defaults and apply only values
     // explicitly selected by the server file. This must not restate device
-    // controller defaults such as the automatic query limit, one active attempt, or
+    // controller defaults such as the automatic query limit, two active attempts, or
     // one source-work slot.
     let mut profile = NexusGpuDeviceProfile::new(raw.device_ordinal);
     if let Some(limit_bytes) = raw.memory_limit_bytes {

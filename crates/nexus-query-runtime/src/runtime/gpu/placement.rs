@@ -194,13 +194,13 @@ pub(crate) fn snapshot_placement_candidates(
         let query_cap_bytes = request.requested_query_cap_bytes.unwrap_or_else(|| {
             snapshot
                 .default_query_limit_bytes
-                .min(snapshot.managed_capacity_bytes.saturating_sub(snapshot.frozen_resident_bytes))
+                .min(snapshot.query_share_bytes.saturating_sub(snapshot.frozen_resident_bytes))
         });
         let can_ever_fit_query_cap = snapshot.can_ever_fit_query_cap(request.requested_query_cap_bytes);
         let admitted_cap = snapshot.admissible_query_cap_bytes(request.requested_query_cap_bytes);
         let spare_capacity_bytes = admitted_cap.map_or(0, |cap| {
             snapshot
-                .managed_capacity_bytes
+                .query_share_bytes
                 .saturating_sub(snapshot.frozen_resident_bytes)
                 .saturating_sub(snapshot.live_grants_bytes)
                 .saturating_sub(cap)

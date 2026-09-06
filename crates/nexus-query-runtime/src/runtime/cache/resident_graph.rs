@@ -279,20 +279,18 @@ impl GpuResidentGraphCache {
         self.inner.allocation_domain.device()
     }
 
-    /// The largest conservative graph reservation still permitted by the one
-    /// ledger-owned aggregate cap. This is derived from the ledger snapshot;
-    /// the graph cache never keeps a second byte counter.
+    /// The largest conservative graph reservation still permitted by the
+    /// ledger-owned cache share (`K`). This is derived from the ledger
+    /// snapshot; the graph cache never keeps a second byte counter. Live
+    /// query grants never participate: cache eviction owns only `K`, and the
+    /// query-share bound independently keeps the combined commitment within
+    /// `M`, so either admission order promises identical capacity.
     #[doc(hidden)]
     pub fn available_reservation_bytes(&self) -> Result<u64> {
         let snapshot = self.inner.ledger.snapshot()?;
         let charged_cache_bytes =
             snapshot.cache_evictable_resident_bytes.saturating_add(snapshot.cache_pinned_in_use_bytes);
-        let cache_remaining = self.inner.ledger.profile().cache_cap_bytes.saturating_sub(charged_cache_bytes);
-        let managed_remaining = snapshot
-            .managed_capacity_bytes
-            .saturating_sub(snapshot.live_grants_bytes)
-            .saturating_sub(charged_cache_bytes);
-        Ok(cache_remaining.min(managed_remaining))
+        Ok(self.inner.ledger.profile().cache_cap_bytes.saturating_sub(charged_cache_bytes))
     }
 
     /// Reserves the remaining proven-safe cache capacity for one graph

@@ -259,7 +259,7 @@ impl QueryService {
             }
             open_device_count += 1;
             maximum_resident_capacity = maximum_resident_capacity
-                .max(snapshot.managed_capacity_bytes.saturating_sub(snapshot.frozen_resident_bytes));
+                .max(snapshot.query_share_bytes.saturating_sub(snapshot.frozen_resident_bytes));
             can_ever_fit |= snapshot.can_ever_fit_query_cap(requested_query_cap_bytes);
         }
         // A fully closed fleet is a health failure, not an impossible cap. Let
@@ -562,7 +562,7 @@ impl QueryService {
                 ordinal,
                 query_cap_bytes,
                 spare_capacity_bytes: snapshot
-                    .managed_capacity_bytes
+                    .query_share_bytes
                     .saturating_sub(snapshot.frozen_resident_bytes)
                     .saturating_sub(snapshot.live_grants_bytes)
                     .saturating_sub(query_cap_bytes),

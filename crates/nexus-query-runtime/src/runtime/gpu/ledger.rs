@@ -3,20 +3,24 @@
 //! One [`DeviceLedger`] owns admission accounting for exactly one CUDA device:
 //! an immutable [`DeviceResourceProfile`] plus a mutable, versioned state of
 //! active or cleaning attempt grants, frozen resident charges, device
-//! admission health, and cache-internal accounting. Cache accounting remains
-//! diagnostic state and is not part of query admission.
+//! admission health, and cache-internal accounting.
 //!
-//! The admission equation is normative:
+//! The capacity contract splits the frozen managed capacity `M` into a cache
+//! share `K` (`cache_cap_bytes`) and a query share `Q = M - K`. Query
+//! admission and cache eviction each own one share, so no admission order can
+//! promise the same bytes twice. The admission equation is normative:
 //!
 //! ```text
+//! R + Σ Gᵢ <= Q            (frozen residents + live grants fit the query share)
+//! C <= K                   (cache charges fit the cache share)
 //! active_attempts + 1 <= max_active_attempts
-//! resident_bytes + live_grants + query_cap <= managed_capacity
+//! new admission: R + Σ Gᵢ + Gnew <= Q
 //! ```
 //!
 //! The query cap is explicit or is resolved inside the admission transaction
-//! as `min(default_query_limit, managed_capacity - resident_bytes)`. It is
+//! as `min(default_query_limit, query_share - resident_bytes)`. It is
 //! never inferred from a planner estimate and never clamped to transient free
-//! capacity.
+//! capacity left by other live grants.
 
 use std::{
     cell::Cell,
@@ -64,6 +68,10 @@ pub struct LedgerSnapshot {
     pub device_ordinal: usize,
     pub sequence: u64,
     pub managed_capacity_bytes: u64,
+    /// Cache share `K` carved out of the managed capacity.
+    pub cache_cap_bytes: u64,
+    /// Query share `Q = M - K` promisable to grants plus frozen residents.
+    pub query_share_bytes: u64,
     pub default_query_limit_bytes: u64,
     pub max_active_attempts: usize,
     pub active_attempts: usize,
@@ -106,9 +114,14 @@ impl LedgerSnapshot {
     }
 
     /// Resolves and checks one query cap against this atomic snapshot.
+    ///
+    /// The check is `R + Σ Gᵢ + Gnew <= Q`: frozen residents plus live
+    /// grants plus the candidate grant must fit the query share. The cache
+    /// share never participates, so filling the cache cannot shrink query
+    /// admission and admitting queries cannot spend cache bytes.
     pub fn admissible_query_cap_bytes(&self, requested_cap_bytes: Option<u64>) -> Option<u64> {
         self.active_attempts.checked_add(1).filter(|active| *active <= self.max_active_attempts)?;
-        let resident_capacity = self.managed_capacity_bytes.checked_sub(self.frozen_resident_bytes)?;
+        let resident_capacity = self.query_share_bytes.checked_sub(self.frozen_resident_bytes)?;
         let query_cap = requested_cap_bytes.unwrap_or_else(|| self.default_query_limit_bytes.min(resident_capacity));
         if query_cap == 0 {
             return None;
@@ -116,14 +129,14 @@ impl LedgerSnapshot {
         self.frozen_resident_bytes
             .checked_add(self.live_grants_bytes)?
             .checked_add(query_cap)
-            .filter(|total| *total <= self.managed_capacity_bytes)
+            .filter(|total| *total <= self.query_share_bytes)
             .map(|_| query_cap)
     }
 
-    /// Whether this snapshot's resident ownership leaves enough configured
+    /// Whether this snapshot's resident ownership leaves enough query-share
     /// capacity for the requested cap, ignoring active attempts.
     pub fn can_ever_fit_query_cap(&self, requested_cap_bytes: Option<u64>) -> bool {
-        let Some(resident_capacity) = self.managed_capacity_bytes.checked_sub(self.frozen_resident_bytes) else {
+        let Some(resident_capacity) = self.query_share_bytes.checked_sub(self.frozen_resident_bytes) else {
             return false;
         };
         let cap = requested_cap_bytes.unwrap_or_else(|| self.default_query_limit_bytes.min(resident_capacity));
@@ -154,10 +167,11 @@ pub struct DeviceLedgerReport {
     pub auxiliary_worker_slots_available: usize,
     /// Worker slots committed by active attempts at this report's sequence.
     pub worker_depth: usize,
-    /// Managed bytes not currently covered by live grants or resident domains.
+    /// Query-share bytes not currently covered by live grants or frozen
+    /// residents (`Q - R - Σ Gᵢ`). Cache charges never participate.
     pub available_bytes: u64,
-    /// Immediately grantable bytes: managed minus live grants minus
-    /// cache-internal evictable charges.
+    /// Immediately grantable query-share bytes, projected from the same
+    /// snapshot as `available_bytes` (`Q - R - Σ Gᵢ`).
     pub free_bytes: u64,
     /// Cache-internal evictable accounting, reported separately from active
     /// grants and pinned cache bytes.
@@ -377,15 +391,20 @@ impl DeviceLedger {
         let max_active_attempts = max_active_attempts.max(1);
         let source_work = 1usize;
         let slots = max_active_attempts.saturating_mul(2).max(max_active_attempts);
+        let default_query_limit_bytes = DeviceResourceProfile::derive_default_query_limit_bytes(
+            device_ordinal,
+            managed_capacity_bytes,
+            0,
+            max_active_attempts,
+        )
+        .expect("test ledger profile must resolve");
         let profile = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
             device_ordinal,
             device_capabilities: DeviceCapabilities::default(),
             configured_limit_bytes: managed_capacity_bytes,
             headroom_bytes: 0,
             backend_reserve_bytes: 0,
-            default_query_limit_bytes: (managed_capacity_bytes
-                / u64::try_from(max_active_attempts).unwrap_or(1).max(8))
-            .max(1),
+            default_query_limit_bytes,
             max_active_attempts,
             source_work_per_attempt: source_work,
             stream_pool_size: slots,
@@ -548,6 +567,8 @@ impl DeviceLedger {
             device_ordinal: profile.device_ordinal,
             sequence: state.sequence,
             managed_capacity_bytes: profile.managed_capacity_bytes,
+            cache_cap_bytes: profile.cache_cap_bytes,
+            query_share_bytes: profile.query_share_bytes(),
             default_query_limit_bytes: profile.default_query_limit_bytes,
             max_active_attempts: profile.max_active_attempts,
             active_attempts,
@@ -601,11 +622,11 @@ impl DeviceLedger {
             auxiliary_worker_slots_available: snapshot.auxiliary_worker_slots_available,
             worker_depth: snapshot.worker_depth,
             available_bytes: snapshot
-                .managed_capacity_bytes
+                .query_share_bytes
                 .saturating_sub(snapshot.live_grants_bytes)
                 .saturating_sub(snapshot.frozen_resident_bytes),
             free_bytes: snapshot
-                .managed_capacity_bytes
+                .query_share_bytes
                 .saturating_sub(snapshot.live_grants_bytes)
                 .saturating_sub(snapshot.frozen_resident_bytes),
             evictable_bytes: state.evictable_bytes,
@@ -770,6 +791,12 @@ impl DeviceLedger {
     }
 
     /// Attempts to charge bytes retained by an evictable cache.
+    ///
+    /// Cache eviction owns only the cache share (`C <= K`): the check never
+    /// consults live query grants or frozen residents, so cache-first and
+    /// query-first admission orders promise identical capacity. The query
+    /// share bound (`R + Σ Gᵢ <= Q`) independently keeps the combined
+    /// commitment within `M`.
     #[doc(hidden)]
     pub fn try_reserve_evictable_bytes(&self, bytes: u64) -> Result<bool> {
         if bytes == 0 {
@@ -778,7 +805,6 @@ impl DeviceLedger {
         let mut state = self.lock_state("try_reserve_evictable_bytes")?;
         if state.evictable_bytes.saturating_add(state.pinned_bytes).saturating_add(bytes)
             > self.inner.profile.cache_cap_bytes
-            || self.free_bytes_locked(&state) < bytes
         {
             return Ok(false);
         }
@@ -894,16 +920,6 @@ impl DeviceLedger {
     pub fn evictable_bytes(&self) -> Result<u64> {
         let state = self.lock_state("evictable_bytes")?;
         Ok(state.evictable_bytes)
-    }
-
-    fn free_bytes_locked(&self, state: &DeviceLedgerState) -> u64 {
-        self.inner.profile.managed_capacity_bytes.saturating_sub(
-            state
-                .live_grants_bytes()
-                .saturating_add(state.frozen_resident_bytes)
-                .saturating_add(state.evictable_bytes)
-                .saturating_add(state.pinned_bytes),
-        )
     }
 }
 
@@ -1312,24 +1328,37 @@ impl MemoryGrant {
             return Ok(None);
         }
         self.add_resident_owner_bytes(bytes)?;
-        Ok(Some(self.new_resident_owner_lease(bytes)))
+        Ok(Some(self.new_resident_owner_lease(bytes)?))
     }
 
-    fn new_resident_owner_lease(&self, bytes: u64) -> ResidentOwnerLease {
+    fn new_resident_owner_lease(&self, bytes: u64) -> Result<ResidentOwnerLease> {
         let owner_id = self.inner.next_resident_owner_id.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.inner
             .resident_owner_allocations
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(owner_id, Arc::from([]));
-        ResidentOwnerLease {
+        // The derived owner shares only the grant's backend service
+        // generation, never its query anchor: residents outlive their
+        // attempt, and retaining the query epoch would stall report
+        // publication and the frozen-resident handoff. The generation still
+        // cannot be torn down and reused while any alias retains GPU bytes.
+        // Derived owners never mint a second ledger or a second generation.
+        let resource_epoch = self
+            .resource_epoch
+            .as_ref()
+            .map(|epoch| {
+                epoch.service_generation_only("nexus_query_engine.runtime.gpu.memory_grant.new_resident_owner_lease")
+            })
+            .transpose()?;
+        Ok(ResidentOwnerLease {
             inner: Arc::new(ResidentOwnerLeaseInner {
-                grant: MemoryGrant { inner: Arc::clone(&self.inner), resource_epoch: None },
+                grant: MemoryGrant { inner: Arc::clone(&self.inner), resource_epoch },
                 bytes,
                 owner_id,
                 completion_stream: Mutex::new(None),
             }),
-        }
+        })
     }
 
     pub(crate) fn published_resident_owner_count(&self) -> usize {
@@ -1399,6 +1428,25 @@ impl ResidentOwnerLease {
     #[doc(hidden)]
     pub fn belongs_to(&self, grant: &MemoryGrant) -> bool {
         self.inner.grant.identity_key() == grant.identity_key()
+    }
+
+    /// Whether this owner shares its grant's backend generation lease.
+    ///
+    /// A leased owner keeps the device generation alive until its GPU bytes
+    /// are released. Grants admitted straight from a ledger, without a query
+    /// service epoch, have no generation to share.
+    #[doc(hidden)]
+    pub fn has_resource_epoch(&self) -> bool {
+        self.inner.grant.resource_epoch.is_some()
+    }
+
+    /// Whether this owner also retains its query anchor.
+    ///
+    /// Resident owners must never retain it: the query epoch has to retire
+    /// for the attempt report and the frozen-resident handoff to publish.
+    #[doc(hidden)]
+    pub fn retains_query_anchor(&self) -> bool {
+        self.inner.grant.resource_epoch.as_ref().is_some_and(|epoch| epoch.has_query_anchor())
     }
 
     #[doc(hidden)]

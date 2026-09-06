@@ -344,3 +344,200 @@ fn cache_residency_remains_separate_from_fixed_query_grants() {
     assert_eq!(ledger.snapshot().unwrap().live_grants_bytes, 100);
     assert!(!ledger.try_admit(request(2), Some(601)).unwrap().is_some());
 }
+
+const CONTRACT_GIB: u64 = 1024 * 1024 * 1024;
+
+/// The contract fixture from the bounded-concurrency plan: `M = 24 GiB`,
+/// `K = 8 GiB`, `N = 2`, so `Q = 16 GiB` and the derived default is 8 GiB.
+fn contract_profile() -> DeviceResourceProfile {
+    cache_profile(24 * CONTRACT_GIB, 8 * CONTRACT_GIB, 2, 8 * CONTRACT_GIB)
+}
+
+#[test]
+fn derived_default_grants_admit_two_parallel_attempts_and_queue_the_third() {
+    let ledger = DeviceLedger::new(contract_profile());
+    let snapshot = ledger.snapshot().unwrap();
+    assert_eq!(snapshot.managed_capacity_bytes, 24 * CONTRACT_GIB);
+    assert_eq!(snapshot.cache_cap_bytes, 8 * CONTRACT_GIB);
+    assert_eq!(snapshot.query_share_bytes, 16 * CONTRACT_GIB);
+    assert_eq!(snapshot.default_query_limit_bytes, 8 * CONTRACT_GIB);
+
+    let first = ledger.try_admit(request(1), None).unwrap().expect("first default grant admits");
+    assert_eq!(first.budget_bytes(), 8 * CONTRACT_GIB);
+    let second = ledger.try_admit(request(2), None).unwrap().expect("second default grant admits");
+    assert_eq!(second.budget_bytes(), 8 * CONTRACT_GIB);
+    assert!(ledger.try_admit(request(3), None).unwrap().is_none(), "third default grant queues");
+    assert!(ledger.try_admit(request(4), Some(1)).unwrap().is_none(), "no byte fits once Q is committed");
+
+    assert!(ledger.try_reserve_evictable_bytes(8 * CONTRACT_GIB).unwrap(), "cache fills its own share");
+    let snapshot = ledger.snapshot().unwrap();
+    assert_eq!(snapshot.cache_evictable_resident_bytes, 8 * CONTRACT_GIB);
+    assert!(
+        snapshot.frozen_resident_bytes
+            + snapshot.live_grants_bytes
+            + snapshot.cache_evictable_resident_bytes
+            + snapshot.cache_pinned_in_use_bytes
+            <= snapshot.managed_capacity_bytes,
+        "grants plus cache never overcommit the device"
+    );
+    let report = ledger.report().unwrap();
+    assert_eq!(report.available_bytes, 0);
+    assert_eq!(report.free_bytes, 0);
+}
+
+#[test]
+fn explicit_large_grants_serialize_without_spending_cache_bytes() {
+    let ledger = DeviceLedger::new(contract_profile());
+    assert!(ledger.try_reserve_evictable_bytes(8 * CONTRACT_GIB).unwrap(), "cache fills first");
+
+    let first = ledger.try_admit(request(1), Some(12 * CONTRACT_GIB)).unwrap().expect("first 12 GiB admits into Q");
+    assert_eq!(first.budget_bytes(), 12 * CONTRACT_GIB);
+    assert!(
+        ledger.try_admit(request(2), Some(12 * CONTRACT_GIB)).unwrap().is_none(),
+        "second 12 GiB waits: 24 GiB of grants exceed Q = 16 GiB, and a full cache changes nothing"
+    );
+    assert_eq!(ledger.snapshot().unwrap().live_grants_bytes, 12 * CONTRACT_GIB);
+
+    drop(first);
+    let second = ledger.try_admit(request(2), Some(12 * CONTRACT_GIB)).unwrap().expect("second admits after release");
+    assert_eq!(second.budget_bytes(), 12 * CONTRACT_GIB);
+}
+
+#[test]
+fn cache_and_query_orders_promise_identical_capacity() {
+    // Cache-first and query-first admission must agree: the cache owns only
+    // `K` and queries own only `Q`, so neither order promises the same bytes
+    // twice. `M = 10_000, K = 4_000, Q = 6_000`, default `5_000`, `N = 2`.
+    let cache_first = DeviceLedger::new(cache_profile(10_000, 5_000, 2, 4_000));
+    assert!(cache_first.try_reserve_evictable_bytes(4_000).unwrap());
+    let first = cache_first.try_admit(request(1), None).unwrap().expect("first default admits");
+    assert_eq!(first.budget_bytes(), 5_000);
+    assert!(
+        cache_first.try_admit(request(2), None).unwrap().is_none(),
+        "second default queues: 10_000 of grants exceed Q = 6_000"
+    );
+
+    let query_first = DeviceLedger::new(cache_profile(10_000, 5_000, 2, 4_000));
+    let only = query_first.try_admit(request(1), None).unwrap().expect("first default admits");
+    assert_eq!(only.budget_bytes(), 5_000);
+    assert!(
+        query_first.try_reserve_evictable_bytes(4_000).unwrap(),
+        "cache still fills its own share beside a live grant"
+    );
+    assert!(
+        query_first.try_admit(request(2), None).unwrap().is_none(),
+        "query-first order queues exactly like cache-first order"
+    );
+}
+
+#[test]
+fn explicit_caps_beyond_the_query_share_queue_instead_of_clamping() {
+    let ledger = DeviceLedger::new(cache_profile(1_000, 700, 2, 300));
+    assert_eq!(ledger.snapshot().unwrap().query_share_bytes, 700);
+    assert!(!ledger.snapshot().unwrap().can_ever_fit_query_cap(Some(800)));
+    assert!(
+        ledger.try_admit(request(1), Some(800)).unwrap().is_none(),
+        "an 800-byte cap never fits Q = 700 even though M = 1_000 has room"
+    );
+    let fits = ledger.try_admit(request(1), Some(700)).unwrap().expect("Q-exact cap admits");
+    assert_eq!(fits.budget_bytes(), 700);
+}
+
+#[test]
+fn frozen_resident_returns_grant_minus_resident_in_query_share_terms() {
+    let ledger = DeviceLedger::new(cache_profile(16 * CONTRACT_GIB, 8 * CONTRACT_GIB, 2, 8 * CONTRACT_GIB));
+    let grant = ledger.try_admit(request(1), Some(8 * CONTRACT_GIB)).unwrap().expect("grant admits");
+    let owner = grant.retain_resident_owner(3 * CONTRACT_GIB).unwrap().expect("resident owner");
+    grant.freeze_resident(3 * CONTRACT_GIB).unwrap();
+    drop(owner);
+
+    let snapshot = ledger.snapshot().unwrap();
+    assert_eq!(snapshot.active_attempts, 0);
+    assert_eq!(snapshot.live_grants_bytes, 0);
+    assert_eq!(snapshot.frozen_resident_bytes, 3 * CONTRACT_GIB);
+
+    // Only `G - R` returns: the frozen 3 GiB stays committed while the grant
+    // lives, so the report projects `Q - R = 5 GiB` of headroom.
+    let report = ledger.report().unwrap();
+    assert_eq!(report.frozen_resident_bytes, 3 * CONTRACT_GIB);
+    assert_eq!(report.available_bytes, 5 * CONTRACT_GIB);
+    assert_eq!(report.free_bytes, 5 * CONTRACT_GIB);
+
+    drop(grant);
+    let released = ledger.snapshot().unwrap();
+    assert_eq!(released.frozen_resident_bytes, 0);
+    assert_eq!(released.live_grants_bytes, 0);
+}
+
+#[test]
+fn failed_attempt_capacity_returns_only_after_cleanup_while_survivors_hold_theirs() {
+    use std::sync::{Arc, Barrier};
+
+    // M = 1_000, K = 400, Q = 600, N = 3, default 300: two defaults exactly
+    // fill the query share beside a full cache.
+    let ledger = Arc::new(DeviceLedger::new(cache_profile(1_000, 300, 3, 400)));
+    assert!(ledger.try_reserve_evictable_bytes(400).unwrap(), "cache fills first");
+    let survivor = ledger.try_admit(request(1), None).unwrap().expect("survivor admits");
+    let failing = ledger.try_admit(request(2), None).unwrap().expect("failing attempt admits");
+    assert!(
+        ledger.try_admit(request(3), None).unwrap().is_none(),
+        "900 of grants exceed Q = 600 even though M still shows room"
+    );
+
+    // Delayed cleanup holds the failed attempt's whole grant: barriers, not
+    // sleeps, prove the capacity is not reissued until the grant drops.
+    let entered = Arc::new(Barrier::new(2));
+    let release = Arc::new(Barrier::new(2));
+    let cleanup = std::thread::spawn({
+        let entered = Arc::clone(&entered);
+        let release = Arc::clone(&release);
+        move || {
+            entered.wait();
+            release.wait();
+            drop(failing);
+        }
+    });
+    entered.wait();
+    assert!(
+        ledger.try_admit(request(4), None).unwrap().is_none(),
+        "cleanup holds its capacity until the grant actually drops"
+    );
+    assert_eq!(ledger.snapshot().unwrap().live_grants_bytes, 600);
+    release.wait();
+    cleanup.join().unwrap();
+
+    let replacement = ledger.try_admit(request(5), None).unwrap().expect("capacity returns after cleanup");
+    assert_eq!(replacement.budget_bytes(), 300);
+    assert_eq!(survivor.budget_bytes(), 300, "the surviving attempt is never disturbed");
+    let snapshot = ledger.snapshot().unwrap();
+    assert_eq!(snapshot.live_grants_bytes, 600);
+    assert_eq!(snapshot.cache_evictable_resident_bytes, 400, "the full cache survives beside both grants");
+}
+
+#[test]
+fn resident_owners_share_the_grant_generation_lease() {
+    use std::sync::Arc;
+
+    use crate::runtime::context::{QueryResourceEpoch, QueryServiceEpoch, QueryServiceResourceEpoch};
+
+    let ledger = DeviceLedger::new(profile(1_000, 800, 2));
+    let grant = ledger.try_admit(request(1), Some(300)).unwrap().expect("grant admits");
+    let unleased = grant.retain_resident_owner(100).unwrap().expect("unleased owner");
+    assert!(!unleased.has_resource_epoch());
+
+    let service_epoch = QueryServiceEpoch::new(None);
+    let query_epoch = QueryResourceEpoch::new(None);
+    let anchor = query_epoch.acquire(Arc::new(()), "test.resident_lease").unwrap();
+    let epoch = QueryServiceResourceEpoch::acquire(&service_epoch, Some(&anchor), "test.resident_lease").unwrap();
+    assert!(epoch.has_query_anchor());
+    let leased_grant = grant.with_resource_epoch(epoch);
+    let owner = leased_grant.retain_resident_owner(100).unwrap().expect("leased owner");
+    assert!(owner.has_resource_epoch(), "resident owners hold the backend generation lease");
+    assert!(
+        !owner.retains_query_anchor(),
+        "resident owners must not retain the query anchor under test or the report handoff stalls"
+    );
+    let derived = owner.retain_derived_owner(50).unwrap().expect("derived owner");
+    assert!(derived.has_resource_epoch(), "aliases share the one generation lease");
+    assert!(!derived.retains_query_anchor());
+}

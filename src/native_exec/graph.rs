@@ -6,14 +6,19 @@
 //!
 //! Exact-request singleflight for expensive BFS calls.
 //!
-//! This holds only a transient host result until its followers consume it. The
-//! graph identity is a coalescing key, not a device-resident cache claim; the
-//! resident cache owns any retained device allocation separately.
+//! This holds only a transient published result until its joined followers
+//! consume it. The graph identity is a coalescing key, not a
+//! device-resident cache claim; the resident cache owns any retained device
+//! allocation separately.
 //!
 //! libcugraph multi-source BFS produces one nearest-source forest, not one
 //! independent result per source. Serving coalescing therefore groups only
 //! requests with identical traversal semantics and publishes the completed
-//! host result to followers.
+//! result to followers. A GPU-resident publication borrows the leader
+//! attempt's attached domain members while followers copy it, so the leader
+//! rendezvouses with its joined followers before it may release: publication
+//! resolves the generation, and the leader waits until every joined follower
+//! has copied or dropped the handoff.
 
 use std::sync::{Mutex, OnceLock};
 #[cfg(feature = "cugraph")]
@@ -22,7 +27,7 @@ use std::{
     fmt,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     },
     time::Duration,
 };
@@ -43,7 +48,7 @@ use nexus_query_engine::{
     runtime::{ExecutionCancellation, cache_observation_fingerprint, resident::GpuResultHandle},
 };
 #[cfg(feature = "cugraph")]
-use tokio::sync::watch;
+use tokio::sync::{Notify, watch};
 
 #[cfg(feature = "cugraph")]
 use crate::error::{Error, ErrorCode, Result};
@@ -259,6 +264,7 @@ impl GraphBfsSingleflight {
                 correlation_fingerprint,
                 receiver,
                 completed: false,
+                handoff_settled: AtomicBool::new(false),
             }));
         }
 
@@ -327,9 +333,22 @@ impl GraphBfsSingleflight {
         let sender = {
             let mut state = self.inner.state.lock().map_err(|_error| state_poisoned_error(key.device_ordinal))?;
             let published = matches!(&result, PublishedResult::Ready(_));
+            let gpu_handoff_followers = match &result {
+                PublishedResult::Ready(publication) if publication.kind() == GraphBfsPublicationKind::Gpu => state
+                    .groups
+                    .get(key)
+                    .and_then(|groups| groups.iter().find(|group| group.generation == generation))
+                    .map(|group| group.participants.saturating_sub(1)),
+                _ => None,
+            };
             let sender = remove_group(&mut state, key, generation).map(|group| group.sender);
             if published && sender.is_some() {
                 state.record_event(key, correlation_fingerprint, generation, "leader_published");
+            }
+            if let Some(follower_count) = gpu_handoff_followers.filter(|count| *count > 0) {
+                state
+                    .gpu_handoff_drains
+                    .insert((key.clone(), generation), Arc::new(GpuHandoffDrain::new(follower_count)));
             }
             sender
         };
@@ -337,6 +356,36 @@ impl GraphBfsSingleflight {
             sender.send_replace(result);
         }
         Ok(())
+    }
+
+    /// Clones the GPU handoff drain for a published generation, if the leader
+    /// published a GPU-resident result to joined followers. Host publications
+    /// never create one: host batches need no leader device attachment.
+    fn handoff_drain(&self, key: &GraphBfsSingleflightKey, generation: u64) -> Result<Option<Arc<GpuHandoffDrain>>> {
+        let state = self.inner.state.lock().map_err(|_error| state_poisoned_error(key.device_ordinal))?;
+        Ok(state.gpu_handoff_drains.get(&(key.clone(), generation)).cloned())
+    }
+
+    /// Signals one joined follower's copy settlement for a GPU handoff drain.
+    /// Every joined follower signals exactly once, on copy or on drop, so the
+    /// drain reaches zero and is removed however each follower settles.
+    /// Followers of host publications or retried generations find no drain
+    /// and are unaffected.
+    fn signal_handoff_copy_settled(&self, key: &GraphBfsSingleflightKey, generation: u64) {
+        let Ok(mut state) = self.inner.state.lock() else {
+            eprintln!("[datafusion-nexus] warning: failed to signal poisoned BFS singleflight GPU handoff drain");
+            return;
+        };
+        let drained = match state.gpu_handoff_drains.get(&(key.clone(), generation)) {
+            Some(drain) => {
+                drain.signal_copy_settled();
+                drain.remaining.load(Ordering::Acquire) == 0
+            },
+            None => false,
+        };
+        if drained {
+            state.gpu_handoff_drains.remove(&(key.clone(), generation));
+        }
     }
 
     fn participant_count(&self, key: &GraphBfsSingleflightKey, generation: u64) -> Result<usize> {
@@ -423,6 +472,7 @@ struct SingleflightInner {
 #[derive(Debug, Default)]
 struct SingleflightState {
     groups: HashMap<GraphBfsSingleflightKey, Vec<SingleflightGroup>>,
+    gpu_handoff_drains: HashMap<(GraphBfsSingleflightKey, u64), Arc<GpuHandoffDrain>>,
     next_generation: u64,
     next_event_sequence: u64,
     recent_events: VecDeque<GraphBfsSingleflightEventSnapshot>,
@@ -593,6 +643,54 @@ pub(crate) enum GraphBfsSingleflightJoin {
     Follower(GraphBfsFollower),
 }
 
+/// Rendezvous for one GPU-resident publication's joined followers.
+///
+/// The published frame borrows the leader attempt's attached domain members:
+/// follower copies read leader-domain columns through the leader's member
+/// attachment, and the leader's terminal cleanup fails closed on residual
+/// domain usage. The drain counts the generation's joined followers down to
+/// zero as each one copies or drops the handoff; the leader waits on it after
+/// publishing and before returning, so leader teardown cannot race a follower
+/// copy. Publication resolves the generation, therefore no request can join
+/// afterwards and the count only decreases.
+#[cfg(feature = "cugraph")]
+#[derive(Debug)]
+pub(crate) struct GpuHandoffDrain {
+    remaining: AtomicUsize,
+    notify: Notify,
+}
+
+#[cfg(feature = "cugraph")]
+impl GpuHandoffDrain {
+    fn new(follower_count: usize) -> Self {
+        Self { remaining: AtomicUsize::new(follower_count), notify: Notify::new() }
+    }
+
+    async fn wait_until_drained(&self, cancellation: &ExecutionCancellation) -> Result<()> {
+        loop {
+            if self.remaining.load(Ordering::Acquire) == 0 {
+                return Ok(());
+            }
+            if let Err(error) = cancellation.check(OPERATION) {
+                return Err(Error::from_native(
+                    OPERATION,
+                    "cancelled while waiting for joined BFS followers to copy the GPU handoff",
+                    error,
+                ));
+            }
+            tokio::select! {
+                () = self.notify.notified() => {},
+                () = tokio::time::sleep(Duration::from_millis(5)) => {},
+            }
+        }
+    }
+
+    fn signal_copy_settled(&self) {
+        self.remaining.fetch_sub(1, Ordering::AcqRel);
+        self.notify.notify_waiters();
+    }
+}
+
 #[cfg(feature = "cugraph")]
 pub(crate) struct GraphBfsLeader {
     coordinator: GraphBfsSingleflight,
@@ -621,6 +719,25 @@ impl GraphBfsLeader {
 
     pub(crate) fn has_followers(&self) -> Result<bool> {
         self.coordinator.participant_count(&self.key, self.generation).map(|count| count > 1)
+    }
+
+    /// Clones this generation's GPU handoff drain after publishing a
+    /// GPU-resident result. Returns `None` for host publications and for
+    /// generations without joined followers, which need no rendezvous.
+    pub(crate) fn handoff_drain(&self) -> Result<Option<Arc<GpuHandoffDrain>>> {
+        self.coordinator.handoff_drain(&self.key, self.generation)
+    }
+
+    /// Waits until every joined follower has copied or dropped the published
+    /// GPU handoff before the leader may return. The leader attempt's domain
+    /// members stay attached across this wait, so follower copies cannot race
+    /// leader teardown.
+    pub(crate) async fn wait_for_handoff_drain(
+        &self,
+        drain: &GpuHandoffDrain,
+        cancellation: &ExecutionCancellation,
+    ) -> Result<()> {
+        drain.wait_until_drained(cancellation).await
     }
 
     pub(crate) fn publish(&mut self, result: GraphBfsPublishedResult) -> Result<()> {
@@ -670,6 +787,7 @@ pub(crate) struct GraphBfsFollower {
     correlation_fingerprint: Option<String>,
     receiver: watch::Receiver<PublishedResult>,
     completed: bool,
+    handoff_settled: AtomicBool,
 }
 
 #[cfg(feature = "cugraph")]
@@ -682,6 +800,18 @@ impl GraphBfsFollower {
 
     pub(crate) fn record_copy(&self) {
         self.coordinator.record_follower_copy(&self.key, self.generation, self.correlation_fingerprint.clone());
+        self.signal_handoff_settled();
+    }
+
+    /// Settles this follower's share of a GPU handoff drain exactly once.
+    /// Copy and drop both settle: whichever happens first releases the
+    /// leader, and a follower of a host publication or a retried generation
+    /// finds no drain and only flips its local flag.
+    fn signal_handoff_settled(&self) {
+        if self.handoff_settled.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        self.coordinator.signal_handoff_copy_settled(&self.key, self.generation);
     }
 
     pub(crate) async fn wait(&mut self, cancellation: &ExecutionCancellation) -> Result<GraphBfsFollowerOutcome> {
@@ -716,6 +846,10 @@ impl GraphBfsFollower {
 #[cfg(feature = "cugraph")]
 impl Drop for GraphBfsFollower {
     fn drop(&mut self) {
+        // A follower that never copied (error, retry, or cancellation) still
+        // holds a drain share when its generation published a GPU handoff;
+        // settling on drop keeps the leader's rendezvous exact.
+        self.signal_handoff_settled();
         self.coordinator.leave_follower(&self.key, self.generation, !self.completed);
     }
 }
@@ -954,6 +1088,84 @@ mod tests {
             assert_eq!(
                 GraphBfsFollowerRoute::for_host_follower(GraphBfsPublicationKind::Gpu),
                 GraphBfsFollowerRoute::MaterializeGpu,
+            );
+        }
+
+        #[tokio::test]
+        async fn gpu_handoff_drain_waits_until_every_follower_settles() {
+            let drain = Arc::new(GpuHandoffDrain::new(2));
+            let waiter = Arc::clone(&drain);
+            let settled = tokio::spawn(async move { waiter.wait_until_drained(&ExecutionCancellation::new()).await });
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            assert!(!settled.is_finished(), "the leader waits while followers still hold the handoff");
+            drain.signal_copy_settled();
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            assert!(!settled.is_finished(), "one outstanding follower still holds the leader");
+            drain.signal_copy_settled();
+            settled.await.expect("drain wait does not panic").expect("a settled handoff releases the leader");
+        }
+
+        #[test]
+        fn gpu_handoff_drain_releases_the_leader_exactly_once_per_follower() {
+            let coordinator = GraphBfsSingleflight::new(4);
+            let join_key = key(1);
+            let GraphBfsSingleflightJoin::Leader(leader) = coordinator.join(join_key.clone()).unwrap() else {
+                panic!("first request must lead")
+            };
+            let GraphBfsSingleflightJoin::Follower(first) = coordinator.join(join_key.clone()).unwrap() else {
+                panic!("second request must follow")
+            };
+            let GraphBfsSingleflightJoin::Follower(second) = coordinator.join(join_key.clone()).unwrap() else {
+                panic!("third request must follow")
+            };
+            // A GPU publication to two joined followers opens one drain counting both.
+            coordinator
+                .inner
+                .state
+                .lock()
+                .unwrap()
+                .gpu_handoff_drains
+                .insert((join_key.clone(), leader.generation), Arc::new(GpuHandoffDrain::new(2)));
+            let remaining = || {
+                leader
+                    .handoff_drain()
+                    .map(|drain| drain.map(|drain| drain.remaining.load(Ordering::Acquire)).unwrap_or(0))
+                    .unwrap()
+            };
+
+            first.record_copy();
+            assert_eq!(remaining(), 1, "one follower copy settles one drain share");
+            first.record_copy();
+            assert_eq!(remaining(), 1, "a duplicate copy must not over-release the leader");
+            drop(second);
+            assert!(
+                leader.handoff_drain().unwrap().is_none(),
+                "a follower that never copies still releases the leader on drop"
+            );
+        }
+
+        #[tokio::test]
+        async fn host_publication_creates_no_handoff_drain() {
+            let coordinator = GraphBfsSingleflight::new(4);
+            let GraphBfsSingleflightJoin::Leader(mut leader) = coordinator.join(key(1)).unwrap() else {
+                panic!("first request must lead")
+            };
+            let GraphBfsSingleflightJoin::Follower(mut follower) = coordinator.join(key(1)).unwrap() else {
+                panic!("second request must follow")
+            };
+
+            leader.publish(empty_result()).unwrap();
+            assert!(leader.handoff_drain().unwrap().is_none(), "host publications need no leader rendezvous");
+            assert!(matches!(
+                follower.wait(&ExecutionCancellation::new()).await.unwrap(),
+                GraphBfsFollowerOutcome::Ready(_)
+            ));
+            follower.record_copy();
+            drop(follower);
+            drop(leader);
+            assert!(
+                coordinator.inner.state.lock().unwrap().gpu_handoff_drains.is_empty(),
+                "host generations leave no drain behind"
             );
         }
 

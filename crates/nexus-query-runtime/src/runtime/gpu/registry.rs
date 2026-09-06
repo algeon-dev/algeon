@@ -242,35 +242,8 @@ impl DeviceRegistry {
                 .with_fact("device_ordinal", *ordinal)
                 .with_fact("reason", "missing_device_profile")
             })?;
-            let capacity_bytes = managed_capacity_bytes(*ordinal, &facts, profile)?;
-            let configured_limit_bytes =
-                capacity_bytes.checked_add(profile.backend_reserve_bytes).ok_or_else(|| {
-                    QueryError::new(
-                        QueryErrorCode::InvalidPlan,
-                        "nexus_query_engine.gpu.device_registry.capacity",
-                        "configured capacity overflowed",
-                    )
-                    .with_fact("device_ordinal", *ordinal)
-                    .with_fact("field", "backend_reserve_bytes")
-                    .with_fact("reason", "configured_capacity_overflow")
-                })?;
-            // An unresolved query limit is the complete managed capacity for
-            // this device. Explicit limits are validated by the immutable
-            // resource-profile resolver below.
-            let default_query_limit_bytes = profile.default_query_limit_bytes.unwrap_or(capacity_bytes);
-            let resource_profile = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
-                device_ordinal: *ordinal,
-                device_capabilities: profile.device_capabilities.clone(),
-                configured_limit_bytes,
-                headroom_bytes: 0,
-                backend_reserve_bytes: profile.backend_reserve_bytes,
-                default_query_limit_bytes,
-                max_active_attempts: profile.max_active_attempts,
-                source_work_per_attempt: profile.source_work_per_attempt,
-                stream_pool_size: profile.stream_pool_size,
-                worker_job_capacity: profile.worker_job_capacity,
-                cache_cap_bytes: profile.cache_cap_bytes(),
-            })?;
+            let resource_profile =
+                resolve_resource_profile(*ordinal, profile, managed_capacity_bytes(*ordinal, &facts, profile)?)?;
             if profile.lane_count < resource_profile.max_active_attempts {
                 return Err(QueryError::new(
                     QueryErrorCode::InvalidPlan,
@@ -295,8 +268,12 @@ impl DeviceRegistry {
         Ok(ResolvedDeviceInstallPlans { plans: discovered, device_ordinals: ordinals, max_ordinal })
     }
 
-    /// Installs a previously frozen complete plan set. No hardware discovery
-    /// or automatic-capacity resolution is permitted in this phase.
+    /// Installs a previously frozen complete plan set. Device discovery stays
+    /// frozen: this phase performs no new device selection and no
+    /// automatic-capacity policy resolution. It does take one live free-bytes
+    /// snapshot per device to freeze the managed capacity (`M`) against
+    /// post-install reality — the manager installation itself consumes device
+    /// memory that pre-install facts cannot see.
     #[doc(hidden)]
     pub fn install_resolved(
         resolved: ResolvedDeviceInstallPlans,
@@ -304,6 +281,7 @@ impl DeviceRegistry {
         probe: Option<&dyn GpuBackendConstructionProbe>,
         construction_journal: Option<&Arc<ConstructionResourceJournal>>,
         backend_metrics: Option<&BackendMetricsStore>,
+        inventory: &dyn GpuInventory,
     ) -> Result<Self> {
         let _owner_generation = owner.generation();
         let telemetry_device_ordinals = resolved.telemetry_device_ordinals();
@@ -386,6 +364,46 @@ impl DeviceRegistry {
                 engine_health_identity,
             });
             checkpoint(probe, GpuBackendConstructionCheckpoint::AfterMemoryManager { device_ordinal: ordinal })?;
+        }
+
+        // Freeze managed capacity against post-install live free bytes. No
+        // query object exists yet, so this snapshot sees only the backend's
+        // own installation footprint plus external pressure. Own idle pool
+        // backing is added back so reinstalling over a warm pool cannot
+        // shrink the budget every generation. The frozen `M` only ever moves
+        // down; re-resolution revalidates the cache share, the default grant,
+        // and the parallelism target, failing closed when the static config
+        // no longer fits post-install reality.
+        let mut managed = managed;
+        for target in managed.iter_mut() {
+            let ordinal = target.device.ordinal();
+            let live = inventory.facts(ordinal)?;
+            if live.device != ordinal {
+                return Err(QueryError::new(
+                    QueryErrorCode::InvalidPlan,
+                    "nexus_query_engine.gpu.device_registry.device",
+                    "GPU inventory facts must describe the requested device",
+                )
+                .with_fact("device_ordinal", ordinal)
+                .with_fact("facts_device_ordinal", live.device)
+                .with_fact("reason", "inventory_device_mismatch"));
+            }
+            let free_now = live.free_bytes;
+            let pool_reserved =
+                target.mr_manager.pool_usage().map(|usage| usage.reserved_current_bytes).map_err(|error| {
+                    QueryError::from_cudf(
+                        "nexus_query_engine.gpu.device_registry.memory_manager",
+                        "failed to read pool backing while freezing managed capacity",
+                        error,
+                    )
+                    .with_fact("device_ordinal", ordinal)
+                })?;
+            let effective_free = free_now.saturating_add(pool_reserved);
+            let planned = target.discovered.resource_profile.managed_capacity_bytes;
+            if effective_free < planned {
+                target.discovered.resource_profile =
+                    resolve_resource_profile(ordinal, &target.discovered.profile, effective_free)?;
+            }
         }
 
         let resource_profiles =
@@ -564,6 +582,55 @@ fn bind_engine_device_health(
         device_health_generation: persistent.device_health_generation,
         backend_health_generation,
         memory_manager_installation_generation: installation_generation,
+    })
+}
+
+/// Resolves the immutable resource profile for one device from a managed
+/// capacity (`M`). The pre-install call validates the configured capacity;
+/// the post-install capacity freeze reuses it with a smaller `M` when live
+/// free bytes prove the static budget no longer fits.
+fn resolve_resource_profile(
+    device_ordinal: usize,
+    profile: &DeviceRegistryInstallProfile,
+    capacity_bytes: u64,
+) -> Result<DeviceResourceProfile> {
+    let configured_limit_bytes = capacity_bytes.checked_add(profile.backend_reserve_bytes).ok_or_else(|| {
+        QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.gpu.device_registry.capacity",
+            "configured capacity overflowed",
+        )
+        .with_fact("device_ordinal", device_ordinal)
+        .with_fact("field", "backend_reserve_bytes")
+        .with_fact("reason", "configured_capacity_overflow")
+    })?;
+    // An unresolved query limit derives from the service parallelism
+    // target: `floor((M - K) / N)`, so configuring `N` alone yields
+    // a parallel-safe default. Explicit limits are validated by the
+    // immutable resource-profile resolver below.
+    let default_query_limit_bytes = profile.default_query_limit_bytes.map_or_else(
+        || {
+            DeviceResourceProfile::derive_default_query_limit_bytes(
+                device_ordinal,
+                capacity_bytes,
+                profile.cache_cap_bytes(),
+                profile.max_active_attempts,
+            )
+        },
+        Ok,
+    )?;
+    DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+        device_ordinal,
+        device_capabilities: profile.device_capabilities.clone(),
+        configured_limit_bytes,
+        headroom_bytes: 0,
+        backend_reserve_bytes: profile.backend_reserve_bytes,
+        default_query_limit_bytes,
+        max_active_attempts: profile.max_active_attempts,
+        source_work_per_attempt: profile.source_work_per_attempt,
+        stream_pool_size: profile.stream_pool_size,
+        worker_job_capacity: profile.worker_job_capacity,
+        cache_cap_bytes: profile.cache_cap_bytes(),
     })
 }
 
@@ -1141,8 +1208,13 @@ mod tests {
         .unwrap();
         assert_eq!(plans.plans()[0].resource_profile.managed_capacity_bytes, 800);
         assert_eq!(plans.plans()[1].resource_profile.managed_capacity_bytes, 1_800);
-        assert_eq!(plans.plans()[0].resource_profile.default_query_limit_bytes, 800);
-        assert_eq!(plans.plans()[1].resource_profile.default_query_limit_bytes, 1_800);
+        // An unspecified default derives from the parallelism target as
+        // `floor((M - K) / N)`, never the whole managed capacity: with no
+        // frozen residents the profile admits `N` default grants.
+        assert_eq!(plans.plans()[0].resource_profile.query_share_bytes(), 800);
+        assert_eq!(plans.plans()[1].resource_profile.query_share_bytes(), 1_800);
+        assert_eq!(plans.plans()[0].resource_profile.default_query_limit_bytes, 400);
+        assert_eq!(plans.plans()[1].resource_profile.default_query_limit_bytes, 900);
 
         let explicit = DeviceRegistry::resolve_install_plans(
             &inventory,
@@ -1164,6 +1236,49 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.fact_value("device_ordinal"), Some("1"));
         assert_eq!(error.fact_value("reason"), Some("default_query_limit_exceeds_managed_capacity"));
+    }
+
+    #[test]
+    fn capacity_freeze_reresolves_the_contract_instead_of_silently_clamping() {
+        let profile = |default_query_limit_bytes| DeviceRegistryInstallProfile {
+            stream_pool_size: 4,
+            device_capabilities: DeviceCapabilities::default(),
+            max_active_attempts: 2,
+            capacity_policy: DeviceRegistryCapacityPolicy::Automatic {
+                headroom_bytes: 0,
+                fallback_bytes: 1,
+                fraction: None,
+            },
+            backend_reserve_bytes: 0,
+            cache_cap_bytes: 8,
+            default_query_limit_bytes,
+            source_work_per_attempt: 1,
+            worker_job_capacity: 4,
+            lane_count: 2,
+            install_telemetry: true,
+            memory_partition: DeviceRegistryMemoryPartition::WholeDevice,
+        };
+
+        // M = 24, K = 8, N = 2, explicit default 8.
+        let resolved = resolve_resource_profile(0, &profile(Some(8)), 24).unwrap();
+        assert_eq!(resolved.managed_capacity_bytes, 24);
+        assert_eq!(resolved.query_share_bytes(), 16);
+
+        // Freezing at 16 keeps the explicit default: it still fits Q = 8.
+        let frozen = resolve_resource_profile(0, &profile(Some(8)), 16).unwrap();
+        assert_eq!(frozen.managed_capacity_bytes, 16);
+        assert_eq!(frozen.query_share_bytes(), 8);
+        assert_eq!(frozen.default_query_limit_bytes, 8);
+
+        // Freezing at 15 fails closed: the explicit default no longer fits
+        // Q = 7, and the freeze must not clamp it silently.
+        let too_small = resolve_resource_profile(0, &profile(Some(8)), 15).unwrap_err();
+        assert_eq!(too_small.fact_value("reason"), Some("default_query_limit_exceeds_managed_capacity"));
+
+        // An unspecified default follows the frozen M down: floor((20-8)/2).
+        let rederived = resolve_resource_profile(0, &profile(None), 20).unwrap();
+        assert_eq!(rederived.managed_capacity_bytes, 20);
+        assert_eq!(rederived.default_query_limit_bytes, 6);
     }
 
     #[test]

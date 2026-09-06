@@ -36,10 +36,11 @@ fn heterogeneous_device_active_limits_are_not_collapsed_to_the_largest_cap() {
         QueryExecutionConfig::default(),
         QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(250) },
     );
-    // Concurrency needs a query cap that leaves room for `max_active_attempts`
-    // simultaneous grants: the ledger equation is what binds, so a
-    // device-sized default limit would cap every device at one active attempt
-    // no matter what `max_active_attempts` says.
+    // Each device carries an explicit per-device cap here so the two devices
+    // can use different parallelism targets in one backend. Without an
+    // explicit cap the install derives `floor((M - K) / N)` from the
+    // parallelism target alone, which already leaves room for
+    // `max_active_attempts` simultaneous grants.
     let device = |device_ordinal, max_active_attempts: usize| {
         GpuBackendDeviceConfig::new(
             GpuBackendDeviceProfile::new(device_ordinal)

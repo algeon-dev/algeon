@@ -166,6 +166,78 @@ fn shared_sliced_nested_and_empty_resident_outputs_pass_owner_attestation() {
     });
 }
 
+/// A retained GPU result keeps the backend generation alive: close must
+/// surface pending cleanup instead of false quiescence, and completes only
+/// after the final owner releases.
+#[test]
+fn close_with_retained_gpu_result_waits_for_release_instead_of_claiming_quiescence() {
+    let service = try_guaranteed_runtime_test_service().expect("runtime-backed service for resident output");
+    let backend_lifecycle = BackendLifecycle::new();
+    let attempt = AttemptOwner::begin(
+        BeginAttemptRequest {
+            observation: RuntimeObservationConfig::bounded(32, 32 * 1024),
+            ..BeginAttemptRequest::default()
+        },
+        backend_lifecycle.try_begin_observation().expect("attempt observation permit"),
+        std::sync::Arc::new(AttemptBackendCounters::default()),
+        None,
+    );
+    let attempt_owner = attempt.owner;
+    let completion = attempt.completion.completion();
+    let attempt_handle = attempt_owner.handle();
+    attempt_handle.record_planning_started().expect("planning starts");
+    attempt_handle.record_planning_finished().expect("planning finishes");
+    attempt_handle.set_disposition(AttemptDisposition::Native).expect("native disposition");
+    attempt_handle.record_admission_requested().expect("admission requested");
+    let admitted = service
+        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_binding(attempt_owner.admission_binding()))
+        .expect("admission");
+    let context = admitted.acquire_context().expect("attempt context");
+    let runtime = context.context().shared_runtime().expect("attempt runtime");
+    let schema = std::sync::Arc::new(arrow::datatypes::Schema::new(vec![arrow::datatypes::Field::new(
+        "value",
+        arrow::datatypes::DataType::Int32,
+        false,
+    )]));
+    let batch = arrow::record_batch::RecordBatch::try_new(
+        std::sync::Arc::clone(&schema),
+        vec![std::sync::Arc::new(arrow::array::Int32Array::from(vec![1, 2, 3]))],
+    )
+    .unwrap();
+    let frame = cudf::DataFrame::from_record_batch(runtime.as_ref(), &batch).unwrap();
+    let frame = crate::runtime::resident::GpuDataFrame::new(frame);
+    let bytes = frame.device_allocated_size_bytes().expect("resident output bytes");
+    let owner = context.context().retain_resident_output_owner(bytes).expect("resident owner");
+    let result =
+        crate::runtime::resident::GpuResultHandle::new_with_resident_owner(context.context(), frame, schema, owner)
+            .expect("resident result");
+    drop(runtime);
+    drop(context);
+    attempt_handle
+        .record_admitted(AttemptAdmissionFact {
+            admission_sequence: admitted.admission_sequence(),
+            admission_wait_ns: admitted.admission_wait().as_nanos().try_into().unwrap_or(u64::MAX),
+            device_ordinal: admitted.device_ordinal(),
+            grant_bytes: admitted.device_budget_bytes(),
+        })
+        .expect("attempt admission fact");
+    attempt_handle.record_physical_execution_started().expect("physical execution starts");
+    attempt_handle.record_gpu_execution_started().expect("GPU execution starts");
+    attempt_owner.commit_terminal(RuntimeTerminalOutcome::Succeeded).expect("terminal outcome");
+
+    admitted.finish();
+    drop(admitted);
+    wait_until(Instant::now() + Duration::from_secs(10), || completion.is_ready(), "retained resident report");
+    let report = completion.try_report().expect("published attempt report");
+    assert_eq!(report.cleanup_failure_count, 0, "retained resident output");
+
+    let timeout = service.close_and_wait_for_quiescence(Duration::from_secs(1)).unwrap_err();
+    assert_eq!(timeout.fact_value("reason"), Some("query_service_resource_epoch_timeout"));
+
+    drop(result);
+    service.close_and_wait_for_quiescence(Duration::from_secs(10)).expect("close completes after release");
+}
+
 /// Cleanup-complete without report-ready cannot admit a replacement, and the
 /// published report precedes any visible capacity reuse.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -685,6 +685,15 @@ impl GpuResultHandle {
         self.graph_residency.as_deref()
     }
 
+    /// Attach the producer scope proven by the frame this handle was copied
+    /// from. Singleflight followers reuse the leader's scope claim, which the
+    /// follower's own admission evidence re-verifies before use.
+    #[doc(hidden)]
+    pub fn with_producer_execution_scope(mut self, scope: impl Into<Arc<str>>) -> Self {
+        self.producer_execution_scope = Some(scope.into());
+        self
+    }
+
     #[doc(hidden)]
     pub fn producer_execution_scope(&self) -> Option<&str> {
         self.producer_execution_scope.as_deref()

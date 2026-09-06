@@ -745,6 +745,85 @@ async fn cugraph_sql_gpu_filtered_local_parquet_hits_and_bfs_use_materialized_ed
 }
 
 #[tokio::test]
+async fn cugraph_sql_gpu_overlapping_same_key_bfs_share_one_traversal() {
+    const DEVICE_CAPACITY_BYTES: u64 = 256 * 1024 * 1024;
+    const VERTICES: i64 = 60_000;
+    const BFS_SQL: &str = "SELECT COUNT(*) AS reached, SUM(distance) AS total \
+         FROM cugraph_bfs('overlap_edges', 0, 'src', 'dst', NULL, '{\"output_mode\": \"normalized\"}')";
+
+    // Parquet edges (not a MemTable) so the planner attaches graph residency
+    // and mints a singleflight key: a directed cycle plus antipodal chords
+    // where every vertex is reachable from 0, large enough that two
+    // barrier-released queries overlap inside one generation.
+    let dir = unique_temp_dir("datafusion-nexus-cugraph-overlap-same-key-bfs");
+    let path = dir.join("overlap_edges.parquet");
+    write_overlap_cycle_chord_edges(&path, VERTICES);
+
+    let profile = datafusion_nexus::backend::NexusGpuDeviceProfile::new(0)
+        .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: DEVICE_CAPACITY_BYTES })
+        .with_max_active_attempts(2)
+        .with_installation_bounds(datafusion_nexus::backend::NexusGpuDeviceInstallationBounds::new(8, 8, 2));
+    let device = NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
+    let backend = NexusGpuBackend::builder().devices([device]).build().unwrap();
+    let state = backend
+        .install_on(SessionStateBuilder::new_with_default_features())
+        .unwrap()
+        .try_with_cugraph_sql(CugraphSqlConfig::default())
+        .expect("install cuGraph SQL")
+        .build();
+    let ctx = SessionContext::new_with_state(state);
+    ctx.register_parquet("overlap_edges", path.to_str().unwrap(), ParquetReadOptions::default()).await.unwrap();
+
+    // Sequential baseline fixes the expected aggregate.
+    let baseline = ctx.sql(BFS_SQL).await.unwrap().collect().await.expect("sequential BFS baseline succeeds");
+
+    // Release both queries at the same barrier instant so the second joins
+    // the first's singleflight generation instead of leading its own. Each
+    // round is an independent race between the follower copy and leader
+    // teardown; repeating rounds keeps a single lost race from escaping as a
+    // pass, and the first lost race quarantines the device so later rounds
+    // fail fast instead of passing independently.
+    for round in 0..8 {
+        let barrier = Arc::new(tokio::sync::Barrier::new(3));
+        let leader_barrier = Arc::clone(&barrier);
+        let follower_barrier = Arc::clone(&barrier);
+        let leader_ctx = ctx.clone();
+        let follower_ctx = ctx.clone();
+        let leader_task = tokio::spawn(async move {
+            leader_barrier.wait().await;
+            leader_ctx.sql(BFS_SQL).await.unwrap().collect().await
+        });
+        let follower_task = tokio::spawn(async move {
+            follower_barrier.wait().await;
+            follower_ctx.sql(BFS_SQL).await.unwrap().collect().await
+        });
+        barrier.wait().await;
+        let leader_batches = leader_task
+            .await
+            .expect("leader task joins")
+            .unwrap_or_else(|error| panic!("overlapped BFS leader succeeds in round {round}: {error}"));
+        let follower_batches = follower_task
+            .await
+            .expect("follower task joins")
+            .unwrap_or_else(|error| panic!("overlapped BFS follower succeeds in round {round}: {error}"));
+        assert_eq!(leader_batches, baseline, "overlapped leader matches its sequential baseline");
+        assert_eq!(follower_batches, baseline, "singleflight follower matches its sequential baseline");
+    }
+
+    // Engagement is asserted, not assumed: every round must coalesce exactly
+    // one traversal and one follower copy, otherwise the race above never ran
+    // and the parity assertions prove nothing.
+    let snapshot = backend.cugraph_bfs_singleflight_snapshot();
+    assert_eq!(snapshot.eligible_requests, 17, "baseline plus eight rounds join singleflight");
+    assert_eq!(snapshot.physical_traversals, 9, "each round shares one traversal");
+    assert_eq!(snapshot.follower_copies, 8, "each round produces one follower copy");
+    assert!(snapshot.peak_width >= 2, "barrier-released queries join one generation");
+
+    drop_session_context_on_blocking_thread(ctx).await;
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[tokio::test]
 async fn cugraph_sql_gpu_filtered_local_parquet_executes_under_the_fixed_cap_and_releases_the_grant() {
     const DEVICE_CAPACITY_BYTES: u64 = 128 * 1024 * 1024;
     const ACTIVE_EDGE_ROWS: usize = 600_000;

@@ -475,7 +475,13 @@ fn validated_backend_construction(
     let service_config = backend_query_execution_config(&execution_config)?;
     let queue_bounds = backend_queue_bounds(&queue_policy);
     let controller = GpuBackendControllerDraft::new(service_config, queue_bounds);
-    let core_draft = GpuBackendCoreDraft::new(devices.clone(), controller, nongds_deployment());
+    let mut core_draft = GpuBackendCoreDraft::new(devices.clone(), controller, nongds_deployment());
+    // Mirror `build()`: derive unset installation bounds from the profile
+    // before validating, otherwise a default profile with more than one
+    // active slot fails its own dry run on constructor placeholders.
+    core_draft.normalize_installation_bounds().map_err(|error| {
+        backend_core_build_error("invalid ownership-enforcing GPU backend core configuration", error)
+    })?;
     core_draft.validate().map_err(|error| {
         backend_core_build_error("invalid ownership-enforcing GPU backend core configuration", error)
     })?;

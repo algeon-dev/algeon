@@ -259,7 +259,7 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
     void finish() noexcept
     {
       if (resource_ == nullptr) { return; }
-      resource_->in_flight_operations_.fetch_sub(1, std::memory_order_acq_rel);
+      resource_->in_flight_operations_.fetch_sub(1, std::memory_order_seq_cst);
       resource_ = nullptr;
     }
 

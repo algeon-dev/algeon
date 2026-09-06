@@ -44,7 +44,7 @@ export NEXUS_SERVER_GPU_DEVICES=0
 flock /tmp/cudf-gpu.lock bash scripts/dev/run_server.sh
 ```
 
-The profile above uses automatic device capacity, one active attempt, one
+The profile above uses automatic device capacity, two active attempts, one
 source-work slot, no resident GPU cache, and engine-derived installation
 bounds. For a production deployment, set explicit limits only where the
 deployment needs them.

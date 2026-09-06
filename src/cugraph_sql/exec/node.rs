@@ -446,14 +446,22 @@ impl CugraphAlgoExec {
                         .await
                     {
                         Ok((input_name, handle)) => {
-                            let publication: Result<()> = (|| {
+                            let publication: Result<()> = async {
                                 if leader.has_followers()? {
                                     leader.publish(GraphBfsPublishedResult::gpu(handle.clone()))?;
+                                    // The published frame borrows this attempt's attached domain
+                                    // members until every joined follower has copied or dropped
+                                    // the handoff. Waiting here keeps leader teardown ordered
+                                    // after the last follower copy.
+                                    if let Some(drain) = leader.handoff_drain()? {
+                                        leader.wait_for_handoff_drain(&drain, native_context.cancellation()).await?;
+                                    }
                                 } else {
                                     leader.complete_without_result()?;
                                 }
                                 Ok(())
-                            })();
+                            }
+                            .await;
                             if let Err(error) = publication {
                                 leader.fail();
                                 return Err(error);
@@ -476,7 +484,37 @@ impl CugraphAlgoExec {
                                 .record_bfs_singleflight_follower(follower.leader_attempt_id());
                             match GraphBfsFollowerRoute::for_gpu_follower(result.kind()) {
                                 GraphBfsFollowerRoute::HandoffGpu => {
-                                    let handle = result.gpu_handle().expect("GPU route requires a GPU publication");
+                                    let published = result.gpu_handle().expect("GPU route requires a GPU publication");
+                                    // The published handle is retained by the leader's grant: returning it
+                                    // directly would fail bound refinement with another attempt's lease.
+                                    // Materialize through host staging and re-upload so the follower retains
+                                    // its own grant owner, mirroring the host-follower materialization route.
+                                    // The download completes the leader's device work before the follower
+                                    // re-uploads. The scope claim travels with the copy; the follower's
+                                    // own admission evidence re-verifies it before use.
+                                    let producer_scope = published.producer_execution_scope().map(str::to_owned);
+                                    let metrics = NexusNativeMetrics::new_with_capture(
+                                        &self.metrics,
+                                        partition,
+                                        self.metrics_capture.clone(),
+                                    );
+                                    let mut graph_metrics = GraphExecutionMetrics::new(&metrics);
+                                    let output = materialize_gpu_output_eagerly(
+                                        published,
+                                        task_context.as_ref(),
+                                        native_context.cancellation().clone(),
+                                        self.host_boundary_config.max_output_staging_bytes(),
+                                        None,
+                                        &mut graph_metrics,
+                                    )?;
+                                    graph_metrics.finish(Ok(()))?;
+                                    let (batches, _) = output.shared_parts();
+                                    let (handle, _) =
+                                        self.upload_follower_output(native_context, batches.as_slice())?;
+                                    let handle = match producer_scope {
+                                        Some(scope) => handle.with_producer_execution_scope(scope),
+                                        None => handle,
+                                    };
                                     follower.record_copy();
                                     self.record_bfs_singleflight_gpu_result_follower_metrics(
                                         partition,
@@ -490,17 +528,8 @@ impl CugraphAlgoExec {
                                 GraphBfsFollowerRoute::UploadHost => {
                                     let batches =
                                         result.host_batches().expect("host upload route requires host batches");
-                                    let schema = self.schema();
-                                    let frame = record_batches_to_gpu(native_context, Arc::clone(&schema), batches)?;
-                                    let output_device_bytes = frame.device_allocated_size_bytes().ok();
-                                    let handle =
-                                        GpuResultHandle::new(native_context, frame, schema).map_err(|error| {
-                                            DataFusionError::from(Error::from_native(
-                                                "datafusion_nexus.cugraph_sql.bfs_singleflight_follower",
-                                                "failed to bind the coalesced BFS follower output",
-                                                error,
-                                            ))
-                                        })?;
+                                    let (handle, output_device_bytes) =
+                                        self.upload_follower_output(native_context, batches)?;
                                     follower.record_copy();
                                     self.record_bfs_singleflight_gpu_follower_metrics(
                                         partition,
@@ -521,6 +550,43 @@ impl CugraphAlgoExec {
                 },
             }
         }
+    }
+
+    /// Uploads one joined follower's copy of the published BFS result into
+    /// its own admitted grant.
+    ///
+    /// Every follower route pays for its own device memory: the publication
+    /// belongs to the leader's attempt, so returning it directly would fail
+    /// bound refinement with another attempt's lease. Retaining the upload
+    /// under this attempt's resident owner is what makes it an ordinary
+    /// executor-published output; without that owner bound refinement sees an
+    /// ownerless handle and drops the attempt.
+    fn upload_follower_output(
+        &self,
+        native_context: &ExecutionContext,
+        batches: &[RecordBatch],
+    ) -> Result<(GpuResultHandle, Option<u64>)> {
+        let schema = self.schema();
+        let frame = record_batches_to_gpu(native_context, Arc::clone(&schema), batches)?;
+        let output_device_bytes = frame.device_allocated_size_bytes().ok();
+        let resident_owner =
+            native_context.retain_resident_output_owner(output_device_bytes.unwrap_or(0)).map_err(|error| {
+                DataFusionError::from(Error::from_native(
+                    "datafusion_nexus.cugraph_sql.bfs_singleflight_follower",
+                    "failed to retain the BFS follower output copy",
+                    error,
+                ))
+            })?;
+        let handle = GpuResultHandle::new_with_resident_owner(native_context, frame, schema, resident_owner).map_err(
+            |error| {
+                DataFusionError::from(Error::from_native(
+                    "datafusion_nexus.cugraph_sql.bfs_singleflight_follower",
+                    "failed to bind the BFS follower output copy",
+                    error,
+                ))
+            },
+        )?;
+        Ok((handle, output_device_bytes))
     }
 
     pub(super) fn record_bfs_singleflight_gpu_follower_metrics(

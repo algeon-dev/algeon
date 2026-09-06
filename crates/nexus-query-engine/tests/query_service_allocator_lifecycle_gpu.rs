@@ -390,6 +390,98 @@ async fn same_device_attempts_have_distinct_grant_domain_stream_lane_and_job_ide
     assert!(close.observation_quiescent);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn derived_default_caps_overlap_two_attempts_without_per_query_tuning() {
+    let device = DeviceId::current().unwrap();
+    let core = GpuBackendCore::builder(backend_draft_with_limits_and_queue_bounds(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 3, max_wait: Duration::from_secs(10) },
+        2,
+    ))
+    .build()
+    .unwrap();
+    let session = core.session_capability();
+
+    let [startup] = core.device_startup_records() else {
+        panic!("expected one startup record for the single configured device");
+    };
+    assert_eq!(startup.device_ordinal, device.ordinal());
+    assert_eq!(startup.max_active_attempts, 2);
+    let query_share = startup.resource_profile.query_share_bytes();
+    let derived = startup.resource_profile.default_query_limit_bytes;
+    assert_eq!(derived, query_share / 2, "setting only N derives floor(Q / N) end to end");
+    assert!(derived > 0, "a parallel service always derives a usable default grant");
+
+    // No per-query caps: both defaults admit from the parallelism target alone.
+    let first = Arc::new(session.admit_query().unwrap());
+    let second = Arc::new(session.admit_query().unwrap());
+    assert_eq!(first.device_ordinal(), device.ordinal());
+    assert_eq!(second.device_ordinal(), device.ordinal());
+    assert_eq!(first.device_budget_bytes(), derived);
+    assert_eq!(second.device_budget_bytes(), derived);
+
+    let ledger_reports = session.device_ledger_reports().unwrap();
+    let [ledger] = ledger_reports.as_slice() else {
+        panic!("expected one device ledger for the single configured device");
+    };
+    assert_eq!(ledger.active_attempts, 2);
+    assert_eq!(ledger.live_grants_bytes, derived.saturating_mul(2));
+    assert!(
+        session.try_admit_query_with_request(QueryAdmissionRequest::new()).unwrap().is_none(),
+        "two derived defaults fill the lanes and the query share; a third queues"
+    );
+
+    let first_context = first.acquire_context().unwrap();
+    let second_context = second.acquire_context().unwrap();
+    let entered = Arc::new(tokio::sync::Barrier::new(3));
+    let release = Arc::new(tokio::sync::Barrier::new(3));
+    let spawn_job = |handle: Arc<nexus_query_engine::runtime::QueryHandle>,
+                     observation: nexus_query_engine::observability::RuntimeObservationHandle| {
+        let entered = Arc::clone(&entered);
+        let release = Arc::clone(&release);
+        tokio::spawn(async move {
+            handle
+                .gpu_executor()
+                .unwrap()
+                .run_observed_scoped(GpuExecutionJobKind::QueryExecution, observation, move |scope| async move {
+                    entered.wait().await;
+                    release.wait().await;
+                    scope
+                })
+                .await
+                .unwrap()
+        })
+    };
+    let first_job = spawn_job(Arc::clone(&first), first_context.context().runtime_observation().clone());
+    let second_job = spawn_job(Arc::clone(&second), second_context.context().runtime_observation().clone());
+    tokio::time::timeout(Duration::from_secs(10), entered.wait())
+        .await
+        .expect("both default-cap GPU jobs must overlap without per-query tuning");
+
+    let pool_reports = session.gpu_execution_pool_reports().unwrap();
+    let [pool] = pool_reports.as_slice() else {
+        panic!("expected one worker pool for the single configured device");
+    };
+    assert_eq!(pool.active_query_jobs, 2);
+
+    tokio::time::timeout(Duration::from_secs(10), release.wait())
+        .await
+        .expect("both default-cap GPU jobs must reach the release barrier");
+    first_job.await.unwrap();
+    second_job.await.unwrap();
+
+    drop(first_context);
+    drop(second_context);
+    first.finish();
+    second.finish();
+    drop(first);
+    drop(second);
+    drop(session);
+    let close = core.close_and_wait(Duration::from_secs(10)).unwrap();
+    assert!(close.gpu_resource_quiescent);
+    assert!(close.observation_quiescent);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn backend_clone_sessions_share_identity_ledger_worker_pools_and_startup_records() {
     let device = DeviceId::current().unwrap();
