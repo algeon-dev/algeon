@@ -4,7 +4,6 @@ use cudf::{ops::copying, testing::prelude::*};
 
 use crate::common::{column_from_slice, null_scalar, scalar};
 
-#[test]
 fn shift_forward_with_null_fill() {
     let col = column_from_slice(&[10i32, 20, 30, 40]).unwrap();
     let cv = col.testing_view().unwrap();
@@ -19,7 +18,6 @@ fn shift_forward_with_null_fill() {
     assert_eq!(host, vec![None, Some(10), Some(20), Some(30)]);
 }
 
-#[test]
 fn shift_backward_with_value_fill() {
     let col = column_from_slice(&[10i32, 20, 30, 40]).unwrap();
     let cv = col.testing_view().unwrap();
@@ -31,7 +29,6 @@ fn shift_backward_with_value_fill() {
     assert_eq!(host, vec![30, 40, -1, -1]);
 }
 
-#[test]
 fn shift_zero_offset_is_identity() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let cv = col.testing_view().unwrap();
@@ -42,7 +39,6 @@ fn shift_zero_offset_is_identity() {
     assert_eq!(sv.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
-#[test]
 fn shift_offset_exceeding_length_yields_all_fill() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let cv = col.testing_view().unwrap();
@@ -55,7 +51,6 @@ fn shift_offset_exceeding_length_yields_all_fill() {
     assert_eq!(shifted_backward.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![99, 99, 99]);
 }
 
-#[test]
 fn shift_dtype_mismatch_rejects_with_structured_error() {
     let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let cv = col.testing_view().unwrap();
@@ -66,4 +61,15 @@ fn shift_dtype_mismatch_rejects_with_structured_error() {
     let dump = format!("{err:?}");
     assert!(dump.contains("shift_fill_value"), "missing resource fact: {dump}");
     assert!(dump.contains("dtype_mismatch"), "missing reason: {dump}");
+}
+
+#[test]
+fn shift_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("shift_forward_with_null_fill", shift_forward_with_null_fill),
+        ("shift_backward_with_value_fill", shift_backward_with_value_fill),
+        ("shift_zero_offset_is_identity", shift_zero_offset_is_identity),
+        ("shift_offset_exceeding_length_yields_all_fill", shift_offset_exceeding_length_yields_all_fill),
+        ("shift_dtype_mismatch_rejects_with_structured_error", shift_dtype_mismatch_rejects_with_structured_error),
+    ]);
 }

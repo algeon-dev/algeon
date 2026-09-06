@@ -275,7 +275,6 @@ impl Drop for BlockingBindingExtension {
     }
 }
 
-#[test]
 fn binding_extension_is_shared_only_by_the_exact_execution_binding() {
     let base = sample_runtime();
     let same_binding = base.with_retained_lifetime(Arc::new(())).unwrap();
@@ -345,7 +344,6 @@ fn binding_extension_cold_n_way_initialization_runs_factory_exactly_once() {
     assert!(leases.iter().all(|lease| leases[0].same_generation(lease)));
 }
 
-#[test]
 fn runtime_retaining_binding_extension_drops_without_a_cycle() {
     let drops = Arc::new(AtomicUsize::new(0));
     let runtime = sample_runtime();
@@ -485,7 +483,6 @@ fn different_binding_extension_execution_gates_do_not_serialize() {
     worker.join().expect("different binding worker");
 }
 
-#[test]
 fn binding_extension_factory_error_is_retryable() {
     let runtime = sample_runtime();
     let first = runtime.get_or_try_init_binding_extension(
@@ -502,7 +499,6 @@ fn binding_extension_factory_error_is_retryable() {
     drop(retry);
 }
 
-#[test]
 fn binding_extension_reentrancy_and_execution_poison_fail_closed() {
     let runtime = Arc::new(sample_runtime());
     let outer = runtime
@@ -548,7 +544,6 @@ fn binding_extension_reentrancy_and_execution_poison_fail_closed() {
     assert!(still_poisoned.to_string().contains("binding_extension_execution_gate_poisoned"));
 }
 
-#[test]
 fn binding_extension_poisoned_use_gate_still_admits_value_opaque_teardown() {
     let runtime = sample_runtime();
     let lease = runtime
@@ -684,7 +679,6 @@ fn binding_extension_factory_cross_type_cycle_returns_instead_of_deadlocking() {
     drop(worker_b.join().expect("factory cycle B worker"));
 }
 
-#[test]
 fn binding_extension_factory_can_read_live_and_initialize_vacant_different_types() {
     let runtime = Arc::new(sample_runtime());
     let live = runtime
@@ -758,7 +752,6 @@ fn binding_extension_destructor_cross_type_cycle_returns_instead_of_deadlocking(
     drop_b.join().expect("destructor cycle B worker");
 }
 
-#[test]
 fn binding_extension_same_thread_destructor_reinitialization_is_rejected() {
     let runtime = Arc::new(sample_runtime());
     let observed = Arc::new(Mutex::new(None));
@@ -775,7 +768,6 @@ fn binding_extension_same_thread_destructor_reinitialization_is_rejected() {
     assert!(error.to_string().contains("nested_binding_extension_destruction"));
 }
 
-#[test]
 fn binding_extension_factory_panic_poisons_lifecycle() {
     let runtime = sample_runtime();
     let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -796,7 +788,6 @@ fn binding_extension_factory_panic_poisons_lifecycle() {
     assert!(error.to_string().contains("binding_extension_factory_panicked"));
 }
 
-#[test]
 fn binding_extension_hot_churn_reuses_one_type_slot() {
     let runtime = sample_runtime();
     let factory_calls = Arc::new(AtomicUsize::new(0));
@@ -815,7 +806,6 @@ fn binding_extension_hot_churn_reuses_one_type_slot() {
     assert_eq!(factory_calls.load(Ordering::SeqCst), 100);
 }
 
-#[test]
 fn retained_lifetime_add_unions_distinct_tokens_without_duplicate_growth() {
     let base = sample_runtime();
     assert_eq!(base.testing_retained_lifetime_count(), 0);
@@ -840,7 +830,6 @@ fn retained_lifetime_add_unions_distinct_tokens_without_duplicate_growth() {
     assert_eq!(drops_b.load(Ordering::SeqCst), 1);
 }
 
-#[test]
 fn retained_lifetime_inherit_unions_input_and_source_tokens_without_duplicate_growth() {
     let (token_a, drops_a) = retained_lifetime_sentinel();
     let (token_b, drops_b) = retained_lifetime_sentinel();
@@ -866,7 +855,6 @@ fn retained_lifetime_inherit_unions_input_and_source_tokens_without_duplicate_gr
     assert_eq!(drops_b.load(Ordering::SeqCst), 1);
 }
 
-#[test]
 fn retained_lifetime_survives_runtime_clone_and_derived_runtime_until_last_owner_drops() {
     let (sentinel, drops) = retained_lifetime_sentinel();
     let source = sample_runtime().with_retained_lifetime(sentinel).unwrap();
@@ -881,7 +869,6 @@ fn retained_lifetime_survives_runtime_clone_and_derived_runtime_until_last_owner
     assert_eq!(drops.load(Ordering::SeqCst), 1);
 }
 
-#[test]
 fn retained_lifetime_survives_runtime_output_domain_clone_until_output_drop() {
     let (sentinel, drops) = retained_lifetime_sentinel();
     let runtime = sample_runtime().with_retained_lifetime(sentinel).unwrap();
@@ -894,7 +881,6 @@ fn retained_lifetime_survives_runtime_output_domain_clone_until_output_drop() {
     assert_eq!(drops.load(Ordering::SeqCst), 1);
 }
 
-#[test]
 fn retained_lifetime_survives_borrowed_override_until_output_drop() {
     let (sentinel, drops) = retained_lifetime_sentinel();
     let runtime = sample_runtime().with_retained_lifetime(sentinel).unwrap();
@@ -919,7 +905,6 @@ fn retained_lifetime_survives_borrowed_override_until_output_drop() {
     assert_eq!(drops.load(Ordering::SeqCst), 1);
 }
 
-#[test]
 fn runtime_affinity_survives_derived_overrides_and_outputs_without_counting_outputs_as_runtime_leases() {
     let base = Arc::new(sample_runtime());
     let affinity_id = base.affinity_id();
@@ -951,7 +936,6 @@ fn runtime_affinity_survives_derived_overrides_and_outputs_without_counting_outp
     assert!(!affinity_anchor.is_alive());
 }
 
-#[test]
 fn independent_runtimes_have_distinct_affinity_and_companions_adopt_affinity_not_owner_lease() {
     let base = Arc::new(sample_runtime());
     let independent = Arc::new(sample_runtime());
@@ -970,7 +954,6 @@ fn independent_runtimes_have_distinct_affinity_and_companions_adopt_affinity_not
     assert!(companion.affinity_anchor().is_alive());
 }
 
-#[test]
 fn host_record_batch_import_and_export_are_observable_boundaries() {
     let _observation_lock = lock_event_observation();
     let runtime = sample_runtime();
@@ -1019,7 +1002,6 @@ fn host_record_batch_import_and_export_are_observable_boundaries() {
     assert_eq!(int32_array(&exported, 1).values().as_ref(), &[10, 20, 30, 40]);
 }
 
-#[test]
 fn runtime_boundary_observer_receives_opt_in_observations() {
     let _observation_lock = lock_event_observation();
     let observed = Arc::new(Mutex::new(Vec::new()));
@@ -1050,7 +1032,6 @@ fn runtime_boundary_observer_receives_opt_in_observations() {
     assert!(observations[1].synchronized_for_host);
 }
 
-#[test]
 fn dataframe_query_stage_memory_observation_is_explicit_and_observable() {
     let _observation_lock = lock_event_observation();
     let observed = Arc::new(Mutex::new(Vec::new()));
@@ -1085,7 +1066,6 @@ fn dataframe_query_stage_memory_observation_is_explicit_and_observable() {
     assert_eq!(memory.reservation_bytes, None);
 }
 
-#[test]
 fn query_execution_context_packages_runtime_handles_for_query_operations() {
     let _observation_lock = lock_event_observation();
     // Keep these as distinct same-device runtimes so the test proves the query
@@ -1120,7 +1100,6 @@ fn query_execution_context_packages_runtime_handles_for_query_operations() {
     assert_eq!(filtered_placement.memory_resource_debug, query_runtime.memory_resource().testing_raw_handle_value());
 }
 
-#[test]
 fn gpu_record_batch_wraps_frame_schema_and_keeps_host_materialization_explicit() {
     let _observation_lock = lock_event_observation();
     let runtime = sample_runtime();
@@ -1156,7 +1135,6 @@ fn gpu_record_batch_wraps_frame_schema_and_keeps_host_materialization_explicit()
     assert_eq!(mapped_schema.len(), 2);
 }
 
-#[test]
 fn host_batch_cursor_materializes_bounded_chunks_without_losing_rows_or_schema() {
     let runtime = sample_runtime();
     let host = sample_record_batch();
@@ -1182,7 +1160,6 @@ fn host_batch_cursor_materializes_bounded_chunks_without_losing_rows_or_schema()
     assert_eq!(cursor.remaining_rows(), 0);
 }
 
-#[test]
 fn host_batch_cursor_exports_one_schema_preserving_batch_for_an_empty_gpu_result() {
     let _observation_lock = lock_event_observation();
     let runtime = sample_runtime();
@@ -1272,7 +1249,6 @@ fn host_batch_cursor_rejects_four_concurrent_oversized_utf8_rows_before_d2h_and_
     assert!(small_cursor.next_batch().unwrap().is_none());
 }
 
-#[test]
 fn host_batch_cursor_hard_ceiling_is_inclusive_and_preparation_is_copy_free() {
     let _observation_lock = lock_event_observation();
     let runtime = sample_runtime();
@@ -1324,7 +1300,6 @@ fn host_batch_cursor_hard_ceiling_is_inclusive_and_preparation_is_copy_free() {
     assert!(testing::arrow::last_arrow_host_boundary_observation_for_test().is_none());
 }
 
-#[test]
 fn host_batch_cursor_estimates_final_string_layouts_before_d2h() {
     let runtime = sample_runtime();
     let values = (0..32).map(|index| (index != 7).then_some("twenty-byte-string!!")).collect::<Vec<_>>();
@@ -1358,7 +1333,6 @@ fn host_batch_cursor_estimates_final_string_layouts_before_d2h() {
     assert!(estimates[1] < estimates[2], "Utf8View must account for one 16-byte view per row");
 }
 
-#[test]
 fn host_batch_cursor_estimates_large_list_string_offsets_validity_and_children() {
     let runtime = sample_runtime();
     let mut builder = LargeListBuilder::new(LargeStringBuilder::with_capacity(8, 256));
@@ -1391,7 +1365,6 @@ fn host_batch_cursor_estimates_large_list_string_offsets_validity_and_children()
     assert!(actual <= estimate, "LargeList<LargeUtf8>: actual={actual} estimate={estimate}");
 }
 
-#[test]
 fn host_batch_cursor_materializes_lists_with_zero_active_string_children() {
     let runtime = sample_runtime();
 
@@ -1433,7 +1406,6 @@ fn host_batch_cursor_materializes_lists_with_zero_active_string_children() {
     }
 }
 
-#[test]
 fn host_batch_cursor_estimates_numeric_list_and_fixed_size_list_buffers() {
     let runtime = sample_runtime();
     let list_item = Arc::new(Field::new("item", ArrowDataType::Int64, false));
@@ -1504,7 +1476,6 @@ fn host_batch_cursor_estimates_numeric_list_and_fixed_size_list_buffers() {
     assert!(record_batch_buffer_memory_size(&materialized) <= estimate);
 }
 
-#[test]
 fn host_batch_cursor_estimates_bit_packed_boolean_list_values() {
     let runtime = sample_runtime();
     let item = Arc::new(Field::new("item", ArrowDataType::Boolean, true));
@@ -1533,7 +1504,6 @@ fn host_batch_cursor_estimates_bit_packed_boolean_list_values() {
     assert!(record_batch_buffer_memory_size(&materialized) <= estimate);
 }
 
-#[test]
 fn fixed_size_list_structural_proof_is_bounded_and_reused_by_cursor_slices() {
     let runtime = sample_runtime();
     let item = Arc::new(Field::new("item", ArrowDataType::Float32, false));
@@ -1581,7 +1551,6 @@ fn fixed_size_list_structural_proof_is_bounded_and_reused_by_cursor_slices() {
     assert!(testing::boundary::last_boundary_observation_for_test().is_none());
 }
 
-#[test]
 fn fixed_size_list_float32_export_retains_proof_binding_range_and_lease_root() {
     let runtime = sample_runtime();
     let gpu = fixed_size_list_float32_gpu_batch(
@@ -1621,7 +1590,6 @@ fn fixed_size_list_float32_export_retains_proof_binding_range_and_lease_root() {
     lease.complete().unwrap();
 }
 
-#[test]
 fn fixed_size_list_direct_pack_copies_only_active_child_once_on_target_runtime() {
     let _event_observation = lock_event_observation();
     let producer_runtime = sample_runtime();
@@ -1669,7 +1637,6 @@ fn fixed_size_list_direct_pack_copies_only_active_child_once_on_target_runtime()
     assert_eq!(packed.into_column().to_vec::<f32>().unwrap(), vec![3.0, 4.0, 5.0, 6.0]);
 }
 
-#[test]
 fn fixed_size_list_float32_export_rejects_non_finite_active_child_values() {
     for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
         let runtime = sample_runtime();
@@ -1694,7 +1661,6 @@ fn fixed_size_list_float32_export_rejects_non_finite_active_child_values() {
     }
 }
 
-#[test]
 fn fixed_size_list_float32_finite_validation_covers_only_the_active_child_range() {
     let runtime = sample_runtime();
     let item = Arc::new(Field::new("item", ArrowDataType::Float32, false));
@@ -1716,7 +1682,6 @@ fn fixed_size_list_float32_finite_validation_covers_only_the_active_child_range(
     assert_eq!(validated.finite_observation().rows, 2);
 }
 
-#[test]
 fn fixed_size_list_float32_export_rejects_detached_foreign_proof_identity() {
     let runtime = sample_runtime();
     let producer = fixed_size_list_float32_gpu_batch(&runtime, vec![Some(1.0), Some(2.0), Some(3.0), Some(4.0)]);
@@ -1734,7 +1699,6 @@ fn fixed_size_list_float32_export_rejects_detached_foreign_proof_identity() {
     assert_eq!(error.detail_value("reason"), Some("fixed_size_list_proof_identity_mismatch"));
 }
 
-#[test]
 fn fixed_size_list_float32_export_rejects_null_child_values() {
     let runtime = sample_runtime();
     let gpu = fixed_size_list_float32_gpu_batch(&runtime, vec![Some(1.0), None, Some(3.0), Some(4.0)]);
@@ -1747,7 +1711,6 @@ fn fixed_size_list_float32_export_rejects_null_child_values() {
     assert_eq!(error.detail_value("reason"), Some("null_vector_value"));
 }
 
-#[test]
 fn fixed_size_list_float32_export_rejects_null_vector_rows() {
     let runtime = sample_runtime();
     let item = Arc::new(Field::new("item", ArrowDataType::Float32, false));
@@ -1770,7 +1733,6 @@ fn fixed_size_list_float32_export_rejects_null_vector_rows() {
     assert_eq!(error.detail_value("reason"), Some("null_vector_row"));
 }
 
-#[test]
 fn uniform_list_float32_arrow_ingress_exports_exact_proof_range_and_lease_root() {
     let runtime = sample_runtime();
     let gpu = uniform_list_float32_gpu_batch(
@@ -1811,7 +1773,6 @@ fn uniform_list_float32_arrow_ingress_exports_exact_proof_range_and_lease_root()
     lease.complete().unwrap();
 }
 
-#[test]
 fn uniform_list_direct_pack_reorders_active_child_with_one_target_allocation() {
     let producer_runtime = sample_runtime();
     let full = uniform_list_float32_gpu_batch(
@@ -1842,7 +1803,6 @@ fn uniform_list_direct_pack_reorders_active_child_with_one_target_allocation() {
     assert_eq!(packed.into_column().to_vec::<f32>().unwrap(), vec![3.0, 5.0, 4.0, 6.0]);
 }
 
-#[test]
 fn uniform_list_float32_export_fails_closed_when_empty_dimension_is_unavailable() {
     let runtime = sample_runtime();
     let gpu = uniform_list_float32_gpu_batch(&runtime, vec![0], vec![], None);
@@ -1860,7 +1820,6 @@ fn uniform_list_float32_export_fails_closed_when_empty_dimension_is_unavailable(
     assert!(testing::boundary::last_boundary_observation_for_test().is_none());
 }
 
-#[test]
 fn uniform_list_float32_export_rejects_zero_width_and_ragged_rows() {
     let runtime = sample_runtime();
     let zero_width = uniform_list_float32_gpu_batch(&runtime, vec![0, 0, 0], vec![], None);
@@ -1891,7 +1850,6 @@ fn uniform_list_float32_export_rejects_zero_width_and_ragged_rows() {
     assert_eq!(error.detail_value("maximum_row_width"), Some("3"));
 }
 
-#[test]
 fn uniform_list_float32_export_rejects_root_and_child_nulls() {
     let runtime = sample_runtime();
     let root_null = uniform_list_float32_gpu_batch(
@@ -1915,7 +1873,6 @@ fn uniform_list_float32_export_rejects_root_and_child_nulls() {
     assert_eq!(error.detail_value("reason"), Some("null_vector_value"));
 }
 
-#[test]
 fn uniform_list_float32_export_rejects_non_finite_active_child_values() {
     for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
         let runtime = sample_runtime();
@@ -1945,7 +1902,6 @@ fn uniform_list_float32_export_rejects_non_finite_active_child_values() {
     }
 }
 
-#[test]
 fn uniform_list_float32_export_covers_only_the_sliced_active_child_range() {
     let runtime = sample_runtime();
     let full = uniform_list_float32_gpu_batch(
@@ -1966,7 +1922,6 @@ fn uniform_list_float32_export_covers_only_the_sliced_active_child_range() {
     assert_eq!(validated.finite_observation().rows, 4);
 }
 
-#[test]
 fn uniform_list_float32_export_rejects_foreign_offset_proof_identity() {
     let runtime = sample_runtime();
     let producer =
@@ -1985,7 +1940,6 @@ fn uniform_list_float32_export_rejects_foreign_offset_proof_identity() {
     assert_eq!(error.detail_value("reason"), Some("uniform_list_proof_identity_mismatch"));
 }
 
-#[test]
 fn host_batch_cursor_decimal32_and_decimal64_limits_use_decimal128_destination_width() {
     let runtime = sample_runtime();
     for (storage_type, source_width) in [(TypeId::Decimal32, 4usize), (TypeId::Decimal64, 8usize)] {
@@ -2042,7 +1996,6 @@ fn host_batch_cursor_decimal32_and_decimal64_limits_use_decimal128_destination_w
     }
 }
 
-#[test]
 fn host_batch_cursor_rejects_oversized_nested_list_row_before_d2h() {
     let runtime = sample_runtime();
     let value = "n".repeat(16 * 1024 * 1024);
@@ -2062,7 +2015,6 @@ fn host_batch_cursor_rejects_oversized_nested_list_row_before_d2h() {
     assert!(testing::arrow::last_arrow_host_boundary_observation_for_test().is_none());
 }
 
-#[test]
 fn materialized_host_chunk_does_not_retain_gpu_or_runtime_backing() {
     let runtime = sample_runtime();
     let affinity_anchor = runtime.affinity_anchor();
@@ -2090,7 +2042,6 @@ fn materialized_host_chunk_does_not_retain_gpu_or_runtime_backing() {
     assert_eq!(materialized.num_rows(), host.num_rows(), "the detached host chunk remains usable");
 }
 
-#[test]
 fn gpu_record_batch_host_materialization_uses_stored_arrow_schema_contract() {
     let runtime = sample_runtime();
     let schema = Arc::new(
@@ -2151,7 +2102,6 @@ fn arrow_host_testing_counts_cross_threads_and_keeps_last_observation_thread_loc
     assert!(testing::arrow::last_arrow_host_boundary_observation_for_test().is_none());
 }
 
-#[test]
 fn gpu_record_batch_rejects_incompatible_external_schema_before_materialization() {
     let runtime = sample_runtime();
     let df = DataFrame::from_record_batch(&runtime, &sample_record_batch()).unwrap();
@@ -2191,7 +2141,6 @@ fn gpu_record_batch_rejects_incompatible_external_schema_before_materialization(
     assert_eq!(wrong_count.detail_value("resource"), Some("column_name_count"));
 }
 
-#[test]
 fn query_style_chain_keeps_one_override_until_host_materialization() {
     let _observation_lock = lock_event_observation();
     let data_runtime = sample_runtime();
@@ -2245,7 +2194,6 @@ fn query_style_chain_keeps_one_override_until_host_materialization() {
     assert_eq!(int32_array(&exported, 2).values().as_ref(), &[22, 33, 44]);
 }
 
-#[test]
 fn explicit_runtime_relocation_is_an_observable_boundary() {
     let _observation_lock = lock_event_observation();
     let source_runtime = sample_runtime();
@@ -2265,7 +2213,6 @@ fn explicit_runtime_relocation_is_an_observable_boundary() {
     assert_eq!(relocated.placement(), target_runtime.placement());
 }
 
-#[test]
 fn arrow_c_device_export_and_import_are_observable_boundaries() {
     let _observation_lock = lock_event_observation();
     let producer_runtime = sample_runtime();
@@ -2296,7 +2243,6 @@ fn arrow_c_device_export_and_import_are_observable_boundaries() {
     assert_eq!(imported.placement(), consumer_runtime.placement());
 }
 
-#[test]
 fn prepared_interop_lease_activation_is_an_observable_boundary() {
     let _observation_lock = lock_event_observation();
     let observed = Arc::new(Mutex::new(Vec::new()));
@@ -2326,7 +2272,6 @@ fn prepared_interop_lease_activation_is_an_observable_boundary() {
     lease.complete().unwrap();
 }
 
-#[test]
 fn owned_transfer_export_is_an_observable_boundary() {
     let _observation_lock = lock_event_observation();
     let runtime = sample_runtime();
@@ -2345,4 +2290,218 @@ fn owned_transfer_export_is_an_observable_boundary() {
     assert!(!observation.synchronized_for_host);
     assert_eq!(transfer.table().num_rows(), 4);
     assert_eq!(transfer.table().columns().len(), 2);
+}
+
+#[test]
+fn query_backend_contract_tests_cases() {
+    crate::common::run_named_cases(&[
+        (
+            "binding_extension_is_shared_only_by_the_exact_execution_binding",
+            binding_extension_is_shared_only_by_the_exact_execution_binding,
+        ),
+        (
+            "runtime_retaining_binding_extension_drops_without_a_cycle",
+            runtime_retaining_binding_extension_drops_without_a_cycle,
+        ),
+        ("binding_extension_factory_error_is_retryable", binding_extension_factory_error_is_retryable),
+        (
+            "binding_extension_reentrancy_and_execution_poison_fail_closed",
+            binding_extension_reentrancy_and_execution_poison_fail_closed,
+        ),
+        (
+            "binding_extension_poisoned_use_gate_still_admits_value_opaque_teardown",
+            binding_extension_poisoned_use_gate_still_admits_value_opaque_teardown,
+        ),
+        (
+            "binding_extension_factory_can_read_live_and_initialize_vacant_different_types",
+            binding_extension_factory_can_read_live_and_initialize_vacant_different_types,
+        ),
+        (
+            "binding_extension_same_thread_destructor_reinitialization_is_rejected",
+            binding_extension_same_thread_destructor_reinitialization_is_rejected,
+        ),
+        ("binding_extension_factory_panic_poisons_lifecycle", binding_extension_factory_panic_poisons_lifecycle),
+        ("binding_extension_hot_churn_reuses_one_type_slot", binding_extension_hot_churn_reuses_one_type_slot),
+        (
+            "retained_lifetime_add_unions_distinct_tokens_without_duplicate_growth",
+            retained_lifetime_add_unions_distinct_tokens_without_duplicate_growth,
+        ),
+        (
+            "retained_lifetime_inherit_unions_input_and_source_tokens_without_duplicate_growth",
+            retained_lifetime_inherit_unions_input_and_source_tokens_without_duplicate_growth,
+        ),
+        (
+            "retained_lifetime_survives_runtime_clone_and_derived_runtime_until_last_owner_drops",
+            retained_lifetime_survives_runtime_clone_and_derived_runtime_until_last_owner_drops,
+        ),
+        (
+            "retained_lifetime_survives_runtime_output_domain_clone_until_output_drop",
+            retained_lifetime_survives_runtime_output_domain_clone_until_output_drop,
+        ),
+        (
+            "retained_lifetime_survives_borrowed_override_until_output_drop",
+            retained_lifetime_survives_borrowed_override_until_output_drop,
+        ),
+        (
+            "runtime_affinity_survives_derived_overrides_and_outputs_without_counting_outputs_as_runtime_leases",
+            runtime_affinity_survives_derived_overrides_and_outputs_without_counting_outputs_as_runtime_leases,
+        ),
+        (
+            "independent_runtimes_have_distinct_affinity_and_companions_adopt_affinity_not_owner_lease",
+            independent_runtimes_have_distinct_affinity_and_companions_adopt_affinity_not_owner_lease,
+        ),
+        (
+            "host_record_batch_import_and_export_are_observable_boundaries",
+            host_record_batch_import_and_export_are_observable_boundaries,
+        ),
+        (
+            "runtime_boundary_observer_receives_opt_in_observations",
+            runtime_boundary_observer_receives_opt_in_observations,
+        ),
+        (
+            "dataframe_query_stage_memory_observation_is_explicit_and_observable",
+            dataframe_query_stage_memory_observation_is_explicit_and_observable,
+        ),
+        (
+            "query_execution_context_packages_runtime_handles_for_query_operations",
+            query_execution_context_packages_runtime_handles_for_query_operations,
+        ),
+        (
+            "gpu_record_batch_wraps_frame_schema_and_keeps_host_materialization_explicit",
+            gpu_record_batch_wraps_frame_schema_and_keeps_host_materialization_explicit,
+        ),
+        (
+            "host_batch_cursor_materializes_bounded_chunks_without_losing_rows_or_schema",
+            host_batch_cursor_materializes_bounded_chunks_without_losing_rows_or_schema,
+        ),
+        (
+            "host_batch_cursor_exports_one_schema_preserving_batch_for_an_empty_gpu_result",
+            host_batch_cursor_exports_one_schema_preserving_batch_for_an_empty_gpu_result,
+        ),
+        (
+            "host_batch_cursor_hard_ceiling_is_inclusive_and_preparation_is_copy_free",
+            host_batch_cursor_hard_ceiling_is_inclusive_and_preparation_is_copy_free,
+        ),
+        (
+            "host_batch_cursor_estimates_final_string_layouts_before_d2h",
+            host_batch_cursor_estimates_final_string_layouts_before_d2h,
+        ),
+        (
+            "host_batch_cursor_estimates_large_list_string_offsets_validity_and_children",
+            host_batch_cursor_estimates_large_list_string_offsets_validity_and_children,
+        ),
+        (
+            "host_batch_cursor_materializes_lists_with_zero_active_string_children",
+            host_batch_cursor_materializes_lists_with_zero_active_string_children,
+        ),
+        (
+            "host_batch_cursor_estimates_numeric_list_and_fixed_size_list_buffers",
+            host_batch_cursor_estimates_numeric_list_and_fixed_size_list_buffers,
+        ),
+        (
+            "host_batch_cursor_estimates_bit_packed_boolean_list_values",
+            host_batch_cursor_estimates_bit_packed_boolean_list_values,
+        ),
+        (
+            "fixed_size_list_structural_proof_is_bounded_and_reused_by_cursor_slices",
+            fixed_size_list_structural_proof_is_bounded_and_reused_by_cursor_slices,
+        ),
+        (
+            "fixed_size_list_float32_export_retains_proof_binding_range_and_lease_root",
+            fixed_size_list_float32_export_retains_proof_binding_range_and_lease_root,
+        ),
+        (
+            "fixed_size_list_direct_pack_copies_only_active_child_once_on_target_runtime",
+            fixed_size_list_direct_pack_copies_only_active_child_once_on_target_runtime,
+        ),
+        (
+            "fixed_size_list_float32_export_rejects_non_finite_active_child_values",
+            fixed_size_list_float32_export_rejects_non_finite_active_child_values,
+        ),
+        (
+            "fixed_size_list_float32_finite_validation_covers_only_the_active_child_range",
+            fixed_size_list_float32_finite_validation_covers_only_the_active_child_range,
+        ),
+        (
+            "fixed_size_list_float32_export_rejects_detached_foreign_proof_identity",
+            fixed_size_list_float32_export_rejects_detached_foreign_proof_identity,
+        ),
+        (
+            "fixed_size_list_float32_export_rejects_null_child_values",
+            fixed_size_list_float32_export_rejects_null_child_values,
+        ),
+        (
+            "fixed_size_list_float32_export_rejects_null_vector_rows",
+            fixed_size_list_float32_export_rejects_null_vector_rows,
+        ),
+        (
+            "uniform_list_float32_arrow_ingress_exports_exact_proof_range_and_lease_root",
+            uniform_list_float32_arrow_ingress_exports_exact_proof_range_and_lease_root,
+        ),
+        (
+            "uniform_list_direct_pack_reorders_active_child_with_one_target_allocation",
+            uniform_list_direct_pack_reorders_active_child_with_one_target_allocation,
+        ),
+        (
+            "uniform_list_float32_export_fails_closed_when_empty_dimension_is_unavailable",
+            uniform_list_float32_export_fails_closed_when_empty_dimension_is_unavailable,
+        ),
+        (
+            "uniform_list_float32_export_rejects_zero_width_and_ragged_rows",
+            uniform_list_float32_export_rejects_zero_width_and_ragged_rows,
+        ),
+        (
+            "uniform_list_float32_export_rejects_root_and_child_nulls",
+            uniform_list_float32_export_rejects_root_and_child_nulls,
+        ),
+        (
+            "uniform_list_float32_export_rejects_non_finite_active_child_values",
+            uniform_list_float32_export_rejects_non_finite_active_child_values,
+        ),
+        (
+            "uniform_list_float32_export_covers_only_the_sliced_active_child_range",
+            uniform_list_float32_export_covers_only_the_sliced_active_child_range,
+        ),
+        (
+            "uniform_list_float32_export_rejects_foreign_offset_proof_identity",
+            uniform_list_float32_export_rejects_foreign_offset_proof_identity,
+        ),
+        (
+            "host_batch_cursor_decimal32_and_decimal64_limits_use_decimal128_destination_width",
+            host_batch_cursor_decimal32_and_decimal64_limits_use_decimal128_destination_width,
+        ),
+        (
+            "host_batch_cursor_rejects_oversized_nested_list_row_before_d2h",
+            host_batch_cursor_rejects_oversized_nested_list_row_before_d2h,
+        ),
+        (
+            "materialized_host_chunk_does_not_retain_gpu_or_runtime_backing",
+            materialized_host_chunk_does_not_retain_gpu_or_runtime_backing,
+        ),
+        (
+            "gpu_record_batch_host_materialization_uses_stored_arrow_schema_contract",
+            gpu_record_batch_host_materialization_uses_stored_arrow_schema_contract,
+        ),
+        (
+            "gpu_record_batch_rejects_incompatible_external_schema_before_materialization",
+            gpu_record_batch_rejects_incompatible_external_schema_before_materialization,
+        ),
+        (
+            "query_style_chain_keeps_one_override_until_host_materialization",
+            query_style_chain_keeps_one_override_until_host_materialization,
+        ),
+        (
+            "explicit_runtime_relocation_is_an_observable_boundary",
+            explicit_runtime_relocation_is_an_observable_boundary,
+        ),
+        (
+            "arrow_c_device_export_and_import_are_observable_boundaries",
+            arrow_c_device_export_and_import_are_observable_boundaries,
+        ),
+        (
+            "prepared_interop_lease_activation_is_an_observable_boundary",
+            prepared_interop_lease_activation_is_an_observable_boundary,
+        ),
+        ("owned_transfer_export_is_an_observable_boundary", owned_transfer_export_is_an_observable_boundary),
+    ]);
 }

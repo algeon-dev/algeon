@@ -1,7 +1,7 @@
 ---
 sidebar_position: 5
 sidebar_label: Tests
-description: The single full gate, what it runs and prints, the partial edit loops, feature flags, and the maintainer diagnostics behind the harness.
+description: The single full gate, what it runs and prints, the partial edit loop, feature flags, and the maintainer diagnostics behind the harness.
 ---
 
 # Tests
@@ -10,118 +10,110 @@ Before you start:
 
 - The [build shell](./from-source.md#2-configure-the-build-shell) is
   configured and all three native layers plus the Rust workspace are built.
-- `cargo-nextest` 0.9.140 and `cargo-hack` 0.6.45 are installed
+- `cargo-nextest` 0.9.144 and `cargo-hack` 0.6.45 are installed
   ([Prerequisites](./prerequisites.md#rust-toolchain-and-test-runner)). The
-  gate checks both versions and exits with status 2 before any work if they
-  differ.
-- Nothing else is using the GPU. The gate serializes its own GPU phases with
-  `flock /tmp/cudf-gpu.lock`; a benchmark, a running Flight SQL server, or
-  another checkout's gate holding that lock blocks it until they finish.
+  full gate checks both versions and exits with status 2 before any work if
+  they differ; `--fast` checks only `cargo-nextest`.
+- Nothing else is using the GPU. GPU tests take `/tmp/cudf-gpu.lock` through
+  nextest's run-wrapper (shared for the `gpu` test group, exclusive for
+  `gpu-exclusive`); a benchmark, a running Flight SQL server, or another
+  checkout's gate holding that lock blocks a GPU test until it is free.
 
 ## The full gate
 
-Run it bare from the checkout root. Do not wrap it in `flock`: it takes
-`/tmp/cudf-gpu.lock` itself for every GPU phase, so an outer hold deadlocks it.
+Run it bare from the checkout root. Do not wrap it in `flock`: its test phase
+takes `/tmp/cudf-gpu.lock` itself through the same nextest run-wrapper, so an
+outer hold deadlocks it.
 
 ```bash
 bash scripts/check_all.sh
 ```
 
-With no arguments it runs, in order: isolated policy self-tests, native-source
-and checked-bindings verification, extracted component package checks, a
-docs.rs-native-free workspace compile check, `msrv-check`, `feature-isolation-check`, nightly
-`rustfmt --check`, lane-catalog structure checks, live nextest inventory, GPU
-scheduling preflight, the CPU nextest lane, the shared-GPU and exclusive-GPU
-nextest lanes, doctests, strict rustdoc, public API surface snapshots, and
-clippy with `-D warnings`. Every Cargo phase uses `--all-features`; the one
-exception is `feature-isolation-check`, described under
+With no arguments it starts every phase at once, in four groups:
+
+- **policy** — rustfmt, native-source verification, checked bindings, and the
+  policy self-test scripts, run independently in parallel.
+- **tests** — `cargo nt -P gate` runs the full workspace under the `gate`
+  nextest profile, then doctests run through the GPU lock wrapper.
+- **static** — clippy with `-D warnings`, then strict rustdoc, then the public
+  API surface snapshot, in sequence.
+- **hygiene** — the six feature-isolation shards plus their union check,
+  `msrv-check`, a docs.rs native-free compile check, and the component-package
+  check, each in its own target directory.
+
+Hygiene never blocks tests. Every Cargo phase uses `--workspace
+--all-features`; the one exception is feature-isolation, described under
 [Harness internals](#harness-internals).
 
 ### What success looks like
 
-Every run prints a `CHECK CONFIG` line, then raw phase output, then a compact
-phase table with one row per phase (effective command, wall time, status,
-fail-closed test counts where applicable, GPU cap and lock, and the path of
-that phase's combined-output log). A passing full run ends with:
+Each phase logs to `target/check-all/run.*/<phase>.log`; `target/check-all/latest`
+symlinks the newest run. That directory's `summary.tsv` (`phase`, `status`,
+`started`, `duration`, `log`, with `gate` itself as the first row) is
+rewritten every time a phase starts or finishes — poll it to watch a gate
+started under `nohup`. A passing full run ends with:
 
 ```text
-OK: canonical full pre-merge surface passed.
+OK: full pre-merge gate passed.
 ```
 
-Partial modes end with `OK: ... PARTIAL: full pre-merge validation was not
-run.` and never satisfy the pre-merge requirement.
+`--fast` ends with `OK: fast checks passed. PARTIAL: this is not full
+pre-merge validation.` and never satisfies the pre-merge requirement.
 
 ### On failure
 
-The run continues past a failed phase, then prints a `FAILURES` section that
-repeats each failed phase's command, log path, and, for test lanes, the failed
-test names. Logs are kept in a unique `target/check-all/run.*` directory; set
-`CHECK_ALL_PHASE_LOG_DIR` to a dedicated directory when automation needs a
-predictable path. The script exits non-zero after:
+The run continues past a failed phase, prints each phase's status and
+duration, then lists the failed phases with their log paths. For a failed
+`tests` or `cpu-tests` phase it also prints that phase's nextest summary and
+the exact rerun command, `cargo nt -P gate -R latest` for `tests` or
+`cargo nt -E 'not group(gpu) & not group(gpu-exclusive)' -R latest` for
+`cpu-tests`. The script exits non-zero after:
 
 ```text
-FAIL: canonical full pre-merge surface reported problems.
+FAIL: full pre-merge gate reported problems.
 ```
 
-- A native-library or CUDA-architecture failure in the GPU lanes is usually a
-  stale or mismatched prefix: see [Troubleshooting](./troubleshooting.md).
-- A single failing harness is fastest to iterate on with the
+- A native-library or CUDA-architecture failure in the `tests` phase is
+  usually a stale or mismatched prefix: see [Troubleshooting](./troubleshooting.md).
+- A single failing phase is fastest to iterate on with the
   [targeted edit loops](#targeted-edit-loops) below, then rerun the full gate.
 - An exit with status 2 before any phase is an argument, environment, or
   tool-version error; the message names the exact fix.
+- `cargo nextest replay` replays a stored run's per-test results without
+  rerunning anything, for a closer look at what a run produced.
 
-## Partial edit loops
+## Partial edit loop
 
-`--fast` runs the policy self-tests, native-source check, nightly `rustfmt
---check`, the lane-structure checks, and the CPU nextest lane. It skips
-`msrv-check`, `feature-isolation-check`, live inventory, every GPU lane,
-doctests, rustdoc, public API snapshots, and clippy:
+`--fast` runs rustfmt, the native-source check, the policy self-test scripts,
+and the CPU nextest tests (`cargo nt -E 'not group(gpu) & not
+group(gpu-exclusive)'`). It skips `msrv-check`, feature-isolation, every GPU
+test, doctests, rustdoc, the public API snapshot, and clippy:
 
 ```bash
 bash scripts/check_all.sh --fast
 ```
 
-`--lane` runs one test lane (or all three) with only its required preflight;
-it never runs the compile-only checks, doctests, rustdoc, or clippy. GPU
-selections keep the global lock. `--lane policy` runs the policy, format, and
-structure checks without any test lane.
-
-```bash
-bash scripts/check_all.sh --lane cpu
-bash scripts/check_all.sh --lane gpu            # shared then exclusive
-bash scripts/check_all.sh --lane gpu-shared
-bash scripts/check_all.sh --lane gpu-exclusive
-bash scripts/check_all.sh --lane policy
-bash scripts/check_all.sh --lane all
-```
-
-`--fast` and `--lane` conflict; any other option, a duplicate option, or an
-unknown lane exits with status 2. Feature selection is not an option: the
-gate always uses `--all-features`.
+Any option other than `--fast`, or a duplicate option, exits with status 2.
+Feature selection is not an option: the gate always uses `--all-features`.
 
 ### Targeted edit loops
 
-Select one package and one harness while keeping the workspace's all-feature
-artifact graph:
+`.config/nextest.toml` is the only test-lane source, and every command below
+selects with a `cargo nt` filterset — never `-p`, which resolves features
+differently and rebuilds:
 
 ```bash
-# One CPU adapter planning harness.
-cargo nextest run -p datafusion-nexus --all-features \
-  --test native_planning_tests
-
-# CPU adapter contracts (errors, policy reports, public facade, table-format).
-cargo nextest run -p datafusion-nexus --all-features \
-  --test cpu_contract_tests
-
-# Pure native-engine contract harness.
-cargo nextest run -p nexus-query-engine --all-features \
-  --test native_contract_tests
+cargo nt -E 'package(<package>)'                              # what you changed
+cargo nt -E 'rdeps(<package>)'                                # everything downstream
+cargo nt -E 'binary_id(<package>::<target>) & test(<name>)'   # one test
+cargo nt -E 'not group(gpu) & not group(gpu-exclusive)'       # CPU only
+cargo nt -E '<same filterset>' -R latest                      # rerun only failures
 ```
 
-A bare `cargo nextest run` does not take the cross-consumer GPU lock. Run GPU
-harnesses through `bash scripts/check_all.sh --lane gpu-shared` or
-`--lane gpu-exclusive`, or wrap the direct command in
-`flock /tmp/cudf-gpu.lock`.
+A rerun must repeat the exact filterset used originally: with a different (or
+missing) `-E`, nextest treats binaries the earlier filter skipped as new and
+reruns the whole suite. After a gate failure, `cargo nt -P gate -R latest`
+reruns only what that run left failed or unfinished.
 
 Never use plain `cargo test` for the workspace's non-doc tests: libtest runs a
 binary's cases as threads, and serial threads cannot restore the engine's
@@ -204,7 +196,7 @@ policy, and source chunk profile. See the
 
 Nothing below is needed to build, validate, or ship a change. It documents
 how the harness reaches its verdicts, for people changing the harness, the
-lane catalog, or a build script.
+nextest configuration, or a build script.
 
 ### Harness internals
 
@@ -217,80 +209,120 @@ files are grouped by responsibility, and the directory map is maintained in
 data lives in `.config/policies/`; tool configuration such as
 `.config/nextest.toml` stays at its tool-defined path.
 
-The three nextest lanes are equivalent to:
+Test scheduling lives entirely in `.config/nextest.toml`:
 
-```bash
-AVAILABLE_CPU_CORES=$(nproc)
-cargo nextest run --workspace --all-features \
-  -E 'not group(gpu) & not group(gpu-exclusive)' --no-fail-fast
-flock /tmp/cudf-gpu.lock \
-  cargo nextest run -P default --workspace --all-features \
-  -E 'group(gpu)' --no-fail-fast --test-threads "${AVAILABLE_CPU_CORES}"
-flock /tmp/cudf-gpu.lock \
-  cargo nextest run -P default --workspace --all-features \
-  -E 'group(gpu-exclusive)' --no-fail-fast --test-threads 1
+```toml
+[test-groups]
+gpu = { max-threads = 8 }
+gpu-exclusive = { max-threads = 1 }
 ```
 
-The shared `gpu` test group in `.config/nextest.toml` uses
-`max-threads = "num-cpus"`; the harness validates the positive integer from
-`nproc`, confirms with `nextest show-config` that the dynamic cap is still in
-force, and passes the value explicitly. The `gpu-exclusive` group keeps
-`max-threads = 1` for binaries that mutate process-global allocator state or
-need whole-device isolation. The outer `flock` serializes each GPU lane against
-other GPU consumers; the inner cap and the two separate invocations solve a
-different problem, and the same lock convention applies to the GPU test
-binaries under `components/*`.
+The NVIDIA driver serializes CUDA context creation, so on one GPU test
+throughput peaks around 4–8 concurrent processes; `gpu` caps at 8.
+`gpu-exclusive` tests run alone and last (`priority = -100`), reserved for
+binaries that observe or occupy the whole device or need multiple GPUs —
+nextest's one-process-per-test isolation already covers ordinary
+process-global state, so exclusivity is for tests that need the *device* to
+themselves, not just the process.
 
-Lane membership is binary-level and explicit.
-`.config/policies/test-lanes.toml` is the single admission source: every live
-pre-merge-admitted nextest binary has one CPU or GPU entry, every GPU entry
-is `shared` or `exclusive`, and every entry records a reason.
-`scripts/ci/check_gpu_test_lane.sh` (the `live-inventory` phase) fails closed
-on unclassified, conflicting, stale, or malformed entries. Keep the catalog
-complete when adding test binaries; without a component-local runtime
-backstop, a misclassified CPU test is not rejected at CUDA-runtime creation.
-Validate the catalog alone with:
+Because every test process pays for its own CUDA context, the cudf-nexus
+contract binaries `semantic_contracts_gpu`, `execution_contracts_gpu`, and
+`interop_contracts_gpu` group small tests into one table per file: the test
+functions are plain `fn`s, and a single `#[test] fn <file_stem>_cases` passes
+them to `common::run_named_cases`, which runs each case on the thread's shared
+test runtime and fails once, naming every failing case. Add a new case to its
+file's table. Keep a test as its own `#[test]` only when it arms one-shot
+native fault injection, installs process-global or device-safety state, spawns
+threads, is `#[should_panic]`, or uses a device other than 0. A table is run
+like any test, for example
+`cargo nt -E 'binary_id(cudf-nexus::semantic_contracts_gpu) & test(expr_tests_cases)'`.
+
+Every test binary lands in exactly one of:
+
+- **CPU, opt-in** — a `_cpu` target-name suffix, or a `binary_id` listed in
+  the CPU override in `.config/nextest.toml`. To move a binary onto CPU, add
+  its `binary_id` (from `cargo nextest show-config test-groups`, or a
+  `binary_id(...)` filterset) to that override list; an unlisted binary
+  defaults into `gpu`, so a misclassification is only slower, never a
+  scheduling hazard.
+- **`gpu-exclusive`** — any target whose name ends `_gpu_exclusive`.
+- **`gpu`** — every remaining test, matched last.
+
+`scripts/ci/nextest_gpu_lock.sh` is the run-wrapper nextest invokes for every
+test (`[scripts.wrapper.gpu-lock]`, applied through
+`[[profile.default.scripts]]`). It reads `NEXTEST_TEST_GROUP` and takes
+`/tmp/cudf-gpu.lock` shared for `gpu`, exclusive for `gpu-exclusive`, and
+nothing for an ungrouped CPU test; if a file descriptor under `/proc/$$/fd`
+already points at the lock (an ancestor `flock`), it execs straight through
+instead of re-locking. It prints `nextest_gpu_lock: waiting for <mode>
+/tmp/cudf-gpu.lock` when a test blocks on another holder, so a stalled run
+reads as a lock wait rather than a hang. Its self-test is:
 
 ```bash
-python3 scripts/ci/test_lane_policy.py check-catalog
+bash scripts/ci/tests/check_nextest_gpu_lock_tests.sh
 ```
 
-The two compile-only phases do not run tests, contact external services, or
-take the GPU lock. `msrv-check` uses the workspace's declared Rust version:
+Inspect a binary's group, or a test's resolved filterset, with:
+
+```bash
+cargo nextest show-config test-groups
+```
+
+The `default` profile is quiet (only `FAIL`/`RETRY`/`SLOW` lines, failure
+output held to the end) and stops after 20 failures; GPU tests time out after
+5 minutes including lock waits, CPU tests after 2. The `gate` profile
+disables fail-fast, writes JUnit to `target/nextest/gate/junit.xml`, raises
+the GPU timeout to 20 minutes, and caps the whole run at a 90-minute global
+timeout, since a gate's exclusive tests may wait for another run's shared GPU
+tests to drain.
+
+`-R latest` reruns, `cargo nextest replay`, and any other `nextest store`
+command need recording enabled once per machine in nextest's own user config
+(not this repository's) — see
+[Prerequisites](./prerequisites.md#rust-toolchain-and-test-runner).
+
+The two compile-only hygiene phases do not run tests, contact external
+services, or take the GPU lock. `msrv-check` uses the workspace's declared
+Rust version:
 
 ```bash
 cargo hack check --workspace --all-features --locked --rust-version --workspace-behavior=cargo
 ```
 
-`feature-isolation-check` is the one repository-owned exception to the
-all-features rule; it proves each package's no-feature and non-default feature
+Feature-isolation is the one repository-owned exception to the all-features
+rule; it proves each package's no-feature and non-default feature
 configurations compile and proves nothing about tests:
 
 ```bash
 cargo hack check --workspace --each-feature --exclude-features default --locked --keep-going
 ```
 
-Doctests are GPU-capable until a mechanical classifier proves otherwise, so
-they run as a third locked command:
+`scripts/check_all.sh` runs that exact matrix as six package shards
+(`FEATURE_ISOLATION_SHARDS`), each in its own target directory, then fails
+the phase closed unless the union of commands the shards actually ran matches
+the canonical command's own `--print-command-list` output.
+
+Doctests run as a separate command through the same GPU lock wrapper, since
+rustdoc does not build through nextest:
 
 ```bash
-flock /tmp/cudf-gpu.lock \
+NEXTEST_TEST_GROUP=gpu scripts/ci/nextest_gpu_lock.sh /tmp/cudf-gpu.lock \
+  env LD_LIBRARY_PATH="target/native/cudf-install/lib:target/native/cuvs-install/lib:target/native/cugraph-install/lib:target/native/cugraph-build" \
   cargo test --workspace --all-features --doc --no-fail-fast
 ```
 
-The harness parses each `Doc-tests` result and reports exact per-harness and
-aggregate counts; `executed` is `passed + failed + measured`, an actual zero is
-reported as `executed=0`, and missing, duplicate, malformed, or inconsistent
-harness output fails closed. The same fail-closed counting applies to the
-nextest lanes' phase-table counts.
+rustdoc does not pass the build scripts' rpath link arguments to doctest
+binaries, and runs them from temporary directories, so the loader needs
+absolute native library directories.
 
 Rustdoc is always strict: the harness appends `-D warnings` after any
 caller-provided `RUSTDOCFLAGS`, so an earlier `-A warnings` cannot weaken it.
 
 `scripts/build/rapids.rs` is the std-only build-script support included by the
 root adapter, `nexus-query-engine`, server, benchmark, tools, and examples
-packages. Its isolated policy suite runs as one of the policy self-tests and
-can be run alone; it neither loads nor modifies the real RAPIDS libraries:
+packages. Its isolated policy suite runs as part of the policy phase's
+self-test scripts and can be run alone; it neither loads nor modifies the
+real RAPIDS libraries:
 
 ```bash
 bash scripts/build/check_build_support.sh

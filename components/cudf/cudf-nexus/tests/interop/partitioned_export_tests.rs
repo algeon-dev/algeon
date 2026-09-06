@@ -100,7 +100,6 @@ fn wait_for_condition(timeout: Duration, mut predicate: impl FnMut() -> bool) {
     assert!(predicate(), "condition was not met within {:?}", timeout);
 }
 
-#[test]
 fn partitioned_dataframe_export_groups_columns_by_retained_provenance_in_first_appearance_order() {
     let _observation_lock = lock_event_observation();
     let left = column_from_slice(&[1i32, 2, 3]).unwrap().testing_rebind_execution_domain_explicit(7001).unwrap();
@@ -136,7 +135,6 @@ fn partitioned_dataframe_export_groups_columns_by_retained_provenance_in_first_a
     assert_eq!(second.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
-#[test]
 fn partitioned_dataframe_export_partition_wrapper_activates_directly() {
     let _observation_lock = lock_event_observation();
     let left = column_from_slice(&[1i32, 2, 3]).unwrap().testing_rebind_execution_domain_explicit(7003).unwrap();
@@ -221,7 +219,6 @@ fn partitioned_prepared_table_export_imports_one_local_table_per_partition_runti
     assert_eq!(second_view.column(0).unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
-#[test]
 fn partitioned_prepared_table_export_import_rejects_runtime_count_mismatch_with_stable_contract() {
     let left_runtime = Runtime::builder().build().unwrap();
     let right_runtime = Runtime::builder().build().unwrap();
@@ -290,7 +287,6 @@ fn partitioned_prepared_table_export_import_rejects_runtime_on_wrong_device_for_
     assert_eq!(interop_error_context_value(&err, "runtime_device"), None);
 }
 
-#[test]
 fn partitioned_dataframe_export_prepare_host_table_export_returns_one_host_visible_root() {
     let left = column_from_slice(&[1i32, 2, 3]).unwrap().testing_rebind_execution_domain_explicit(7101).unwrap();
     let right = column_from_slice(&[4i32, 5, 6]).unwrap().testing_rebind_execution_domain_explicit(7102).unwrap();
@@ -311,7 +307,6 @@ fn partitioned_dataframe_export_prepare_host_table_export_returns_one_host_visib
     assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
 }
 
-#[test]
 fn partitioned_dataframe_export_owned_transfer_returns_one_partition_per_retained_provenance() {
     let left = column_from_slice(&[1i32, 2, 3]).unwrap().testing_rebind_execution_domain_explicit(7201).unwrap();
     let middle = column_from_slice(&[10i32, 20, 30]).unwrap().testing_rebind_execution_domain_explicit(7202).unwrap();
@@ -335,7 +330,6 @@ fn partitioned_dataframe_export_owned_transfer_returns_one_partition_per_retaine
     assert_eq!(transfer.partitions()[1].transfer().columns().len(), 1);
 }
 
-#[test]
 fn partitioned_dataframe_export_runtime_release_owned_transfer_preserves_async_contract_per_partition() {
     let left_runtime = Runtime::builder().build().unwrap();
     let right_runtime = Runtime::builder().build().unwrap();
@@ -369,7 +363,6 @@ fn partitioned_dataframe_export_runtime_release_owned_transfer_preserves_async_c
     assert_eq!(releaser_partitions[1].top_level_column_indices(), &[1]);
 }
 
-#[test]
 fn partitioned_dataframe_export_runtime_release_synchronization_preserves_blocking_signal_contract_per_partition() {
     let left_runtime = Runtime::builder().build().unwrap();
     let right_runtime = Runtime::builder().build().unwrap();
@@ -513,7 +506,6 @@ fn partitioned_dataframe_export_runtime_release_import_and_release_remain_mutual
     assert_eq!(right_import_err.kind(), InteropErrorKind::ProfileUnsupported);
 }
 
-#[test]
 fn ordinary_dataframe_rejects_mixed_provenance_but_partitioned_export_accepts_it() {
     // Ordinary DataFrame rejects mixed provenance at construction time.
     let left = column_from_slice(&[1i32, 2, 3]).unwrap().testing_rebind_execution_domain_explicit(7301).unwrap();
@@ -533,7 +525,6 @@ fn ordinary_dataframe_rejects_mixed_provenance_but_partitioned_export_accepts_it
     assert_eq!(prepared.partitions().len(), 2, "mixed provenance should produce two partitions");
 }
 
-#[test]
 fn partitioned_dataframe_export_rejects_duplicate_names_in_wide_schema() {
     let names: Vec<String> = (0..12).map(|idx| if idx == 11 { "c3".to_string() } else { format!("c{idx}") }).collect();
     let columns: Vec<Column> = (0..12)
@@ -553,7 +544,6 @@ fn partitioned_dataframe_export_rejects_duplicate_names_in_wide_schema() {
     assert_duplicate_name_error(&err, "c3");
 }
 
-#[test]
 fn partitioned_dataframe_export_rejects_name_count_mismatch_with_canonical_context() {
     let column = column_from_slice(&[1i32, 2]).unwrap();
 
@@ -577,7 +567,6 @@ fn partitioned_dataframe_export_rejects_name_count_mismatch_with_canonical_conte
     assert_eq!(error_context_value(&err, "columns_count").as_deref(), None);
 }
 
-#[test]
 fn partitioned_dataframe_export_rejects_row_count_mismatch_with_canonical_facts() {
     let left = column_from_slice(&[1i32, 2, 3]).unwrap();
     let right = column_from_slice(&[10i32, 20]).unwrap();
@@ -599,4 +588,21 @@ fn partitioned_dataframe_export_rejects_row_count_mismatch_with_canonical_facts(
     assert_eq!(err.detail_value("column_index"), None);
     assert_eq!(err.detail_value("actual_rows"), None);
     assert_eq!(err.detail_value("expected_rows"), None);
+}
+
+#[test]
+fn partitioned_export_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("partitioned_dataframe_export_groups_columns_by_retained_provenance_in_first_appearance_order", partitioned_dataframe_export_groups_columns_by_retained_provenance_in_first_appearance_order),
+        ("partitioned_dataframe_export_partition_wrapper_activates_directly", partitioned_dataframe_export_partition_wrapper_activates_directly),
+        ("partitioned_prepared_table_export_import_rejects_runtime_count_mismatch_with_stable_contract", partitioned_prepared_table_export_import_rejects_runtime_count_mismatch_with_stable_contract),
+        ("partitioned_dataframe_export_prepare_host_table_export_returns_one_host_visible_root", partitioned_dataframe_export_prepare_host_table_export_returns_one_host_visible_root),
+        ("partitioned_dataframe_export_owned_transfer_returns_one_partition_per_retained_provenance", partitioned_dataframe_export_owned_transfer_returns_one_partition_per_retained_provenance),
+        ("partitioned_dataframe_export_runtime_release_owned_transfer_preserves_async_contract_per_partition", partitioned_dataframe_export_runtime_release_owned_transfer_preserves_async_contract_per_partition),
+        ("partitioned_dataframe_export_runtime_release_synchronization_preserves_blocking_signal_contract_per_partition", partitioned_dataframe_export_runtime_release_synchronization_preserves_blocking_signal_contract_per_partition),
+        ("ordinary_dataframe_rejects_mixed_provenance_but_partitioned_export_accepts_it", ordinary_dataframe_rejects_mixed_provenance_but_partitioned_export_accepts_it),
+        ("partitioned_dataframe_export_rejects_duplicate_names_in_wide_schema", partitioned_dataframe_export_rejects_duplicate_names_in_wide_schema),
+        ("partitioned_dataframe_export_rejects_name_count_mismatch_with_canonical_context", partitioned_dataframe_export_rejects_name_count_mismatch_with_canonical_context),
+        ("partitioned_dataframe_export_rejects_row_count_mismatch_with_canonical_facts", partitioned_dataframe_export_rejects_row_count_mismatch_with_canonical_facts),
+    ]);
 }

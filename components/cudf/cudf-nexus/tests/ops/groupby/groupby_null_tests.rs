@@ -24,7 +24,6 @@ fn df_with_nullable_values() -> DataFrame {
 // Sum with null values in value column
 // ===========================================================================
 
-#[test]
 fn test_groupby_sum_skips_nulls_in_values() {
     let df = df_with_nullable_values();
     // key=1: [10, null] -> sum=10 (skip null)
@@ -43,7 +42,6 @@ fn test_groupby_sum_skips_nulls_in_values() {
 // Min / Max with null values
 // ===========================================================================
 
-#[test]
 fn test_groupby_min_skips_nulls() {
     let df = df_with_nullable_values();
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Min)]).unwrap();
@@ -58,7 +56,6 @@ fn test_groupby_min_skips_nulls() {
     assert_eq!(pairs, vec![(Some(1), Some(10)), (Some(2), Some(30))]);
 }
 
-#[test]
 fn test_groupby_max_skips_nulls() {
     let df = df_with_nullable_values();
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Max)]).unwrap();
@@ -77,7 +74,6 @@ fn test_groupby_max_skips_nulls() {
 // Mean with null values
 // ===========================================================================
 
-#[test]
 fn test_groupby_mean_skips_nulls() {
     let df = df_with_nullable_values();
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Mean)]).unwrap();
@@ -97,7 +93,6 @@ fn test_groupby_mean_skips_nulls() {
 // Count with include_nulls vs exclude_nulls
 // ===========================================================================
 
-#[test]
 fn test_groupby_count_excludes_nulls_by_default() {
     let df = df_with_nullable_values();
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Count { include_nulls: false })]).unwrap();
@@ -112,7 +107,6 @@ fn test_groupby_count_excludes_nulls_by_default() {
     assert_eq!(pairs, vec![(1, 1), (2, 2)]);
 }
 
-#[test]
 fn test_groupby_count_includes_nulls_when_requested() {
     let df = df_with_nullable_values();
     let result = df.groupby(["key"]).agg(&[AggSpec::new("value", GroupByAgg::Count { include_nulls: true })]).unwrap();
@@ -131,7 +125,6 @@ fn test_groupby_count_includes_nulls_when_requested() {
 // All-null group
 // ===========================================================================
 
-#[test]
 fn test_groupby_sum_all_null_group() {
     // key: [1, 1, 2], value: [null, null, 10]
     let keys = column_from_slice(&[1i32, 1, 2]).unwrap();
@@ -155,7 +148,6 @@ fn test_groupby_sum_all_null_group() {
     assert_eq!(pairs[1], (2, Some(10)));
 }
 
-#[test]
 fn test_groupby_min_all_null_group() {
     // key: [1, 1, 2], value: [null, null, 10]
     let keys = column_from_slice(&[1i32, 1, 2]).unwrap();
@@ -183,7 +175,6 @@ fn test_groupby_min_all_null_group() {
 // Null keys in GroupBy
 // ===========================================================================
 
-#[test]
 fn test_groupby_null_keys_excluded_by_default() {
     // key: [1, null, 1, 2], value: [10, 20, 30, 40]
     let keys = column_from_slice_nullable(&[1i32, 0, 1, 2], &[true, false, true, true]).unwrap();
@@ -206,7 +197,6 @@ fn test_groupby_null_keys_excluded_by_default() {
     assert_eq!(pairs, vec![(Some(1), Some(40)), (Some(2), Some(40))]);
 }
 
-#[test]
 fn test_groupby_null_keys_included_when_requested() {
     use cudf::GroupByOptions;
 
@@ -230,4 +220,20 @@ fn test_groupby_null_keys_included_when_requested() {
     // Should have groups for key=1, key=2, and key=null
     let null_key_count = key_data.iter().filter(|k| k.is_none()).count();
     assert_eq!(null_key_count, 1);
+}
+
+#[test]
+fn groupby_null_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_groupby_sum_skips_nulls_in_values", test_groupby_sum_skips_nulls_in_values),
+        ("test_groupby_min_skips_nulls", test_groupby_min_skips_nulls),
+        ("test_groupby_max_skips_nulls", test_groupby_max_skips_nulls),
+        ("test_groupby_mean_skips_nulls", test_groupby_mean_skips_nulls),
+        ("test_groupby_count_excludes_nulls_by_default", test_groupby_count_excludes_nulls_by_default),
+        ("test_groupby_count_includes_nulls_when_requested", test_groupby_count_includes_nulls_when_requested),
+        ("test_groupby_sum_all_null_group", test_groupby_sum_all_null_group),
+        ("test_groupby_min_all_null_group", test_groupby_min_all_null_group),
+        ("test_groupby_null_keys_excluded_by_default", test_groupby_null_keys_excluded_by_default),
+        ("test_groupby_null_keys_included_when_requested", test_groupby_null_keys_included_when_requested),
+    ]);
 }

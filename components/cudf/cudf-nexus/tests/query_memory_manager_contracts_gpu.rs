@@ -59,8 +59,10 @@ fn next_budget_lifetime_test_id() -> u64 {
 fn assert_send_sync<T: Send + Sync>() {}
 
 /// The per-device memory manager and its CUDA async pool are process-global,
-/// so pool usage observed through [`DeviceMemoryManager::pool_usage`] is
-/// shared mutable state across this binary's parallel test threads.
+/// so pool usage observed through [`DeviceMemoryManager::pool_usage`] would be
+/// shared mutable state if tests ever shared a process (e.g. under
+/// `cargo test`); nextest runs each test in its own process, so this guard is
+/// a no-op there and only matters for that shared-process case.
 ///
 /// Tests that allocate, free, or trim through the shared device pool hold the
 /// shared guard (they may run concurrently with each other). Tests that

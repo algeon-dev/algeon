@@ -178,7 +178,6 @@ fn assert_output_name(expr: Expr, expected: Option<&str>) {
 // col / lit basics
 // ===========================================================================
 
-#[test]
 fn col_resolves_existing_column() {
     let df = xy_df();
     let result = eval(col("x"), &df);
@@ -186,14 +185,12 @@ fn col_resolves_existing_column() {
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
-#[test]
 fn col_missing_column_errors() {
     let df = xy_df();
     let err = col("zzz").eval(&df).unwrap_err();
     assert_eq!(err.kind(), ErrorKind::NotFound);
 }
 
-#[test]
 fn lit_i32_broadcasts() {
     let df = xy_df();
     let result = eval(lit(42i32).alias("c"), &df);
@@ -201,7 +198,6 @@ fn lit_i32_broadcasts() {
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![42, 42, 42]);
 }
 
-#[test]
 fn into_lit_and_into_expr_resolve_unambiguously_after_glob_import() {
     // `cudf::ops::expr` glob-exports both `IntoLit` and `IntoExpr`; a numeric
     // literal's `into_expr` must still resolve to a single method.
@@ -213,7 +209,6 @@ fn into_lit_and_into_expr_resolve_unambiguously_after_glob_import() {
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![5, 5, 5]);
 }
 
-#[test]
 fn lit_f64_broadcasts() {
     let df = xy_df();
     let result = eval(lit(3.25f64).alias("pi"), &df);
@@ -221,7 +216,6 @@ fn lit_f64_broadcasts() {
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![3.25, 3.25, 3.25]);
 }
 
-#[test]
 fn lit_string_broadcasts() {
     let df = xy_df();
     let result = eval(lit("hello").alias("s"), &df);
@@ -229,7 +223,6 @@ fn lit_string_broadcasts() {
     assert_eq!(result.dtype().unwrap().id(), TypeId::String);
 }
 
-#[test]
 fn lit_null_broadcasts_typed_nulls() {
     let df = xy_df();
     let result = eval(lit_null(TypeId::Int32).alias("missing"), &df);
@@ -239,7 +232,6 @@ fn lit_null_broadcasts_typed_nulls() {
     assert_eq!(result.null_count(), 3);
 }
 
-#[test]
 fn lit_decimal32_raw_broadcasts_dtype_scale_and_raw_values() {
     let df = xy_df();
     let result = eval(lit_decimal32_raw(12_345, -2).alias("amount"), &df);
@@ -250,7 +242,6 @@ fn lit_decimal32_raw_broadcasts_dtype_scale_and_raw_values() {
     assert_eq!(host_export_i32_values(&result), vec![12_345, 12_345, 12_345]);
 }
 
-#[test]
 fn lit_decimal64_raw_broadcasts_dtype_scale_and_raw_values() {
     let df = xy_df();
     let result = eval(lit_decimal64_raw(-98_765_432, -4).alias("amount"), &df);
@@ -261,7 +252,6 @@ fn lit_decimal64_raw_broadcasts_dtype_scale_and_raw_values() {
     assert_eq!(host_export_i64_values(&result), vec![-98_765_432, -98_765_432, -98_765_432]);
 }
 
-#[test]
 fn lit_decimal128_raw_broadcasts_dtype_scale_and_raw_values() {
     let df = xy_df();
     let raw = 123_456_789_012_345_678_901i128;
@@ -273,7 +263,6 @@ fn lit_decimal128_raw_broadcasts_dtype_scale_and_raw_values() {
     assert_eq!(host_export_i128_values(&result), vec![raw, raw, raw]);
 }
 
-#[test]
 fn binary_expr_aligns_mixed_decimal_storage_before_arithmetic() {
     let discount = crate::common::series("discount", &[5i64, 25])
         .unwrap()
@@ -287,7 +276,6 @@ fn binary_expr_aligns_mixed_decimal_storage_before_arithmetic() {
     assert_eq!(host_export_i128_values(&result), vec![-400, -2400]);
 }
 
-#[test]
 fn lit_timestamp_raw_broadcasts_dtype_and_raw_values() {
     let df = xy_df();
     let result = eval(lit_timestamp_raw(1_700_000_123_456, TimestampResolution::Microseconds).alias("ts"), &df);
@@ -298,7 +286,6 @@ fn lit_timestamp_raw_broadcasts_dtype_and_raw_values() {
     assert_eq!(host_export_i64_values(&result), vec![1_700_000_123_456; 3]);
 }
 
-#[test]
 fn lit_duration_raw_broadcasts_dtype_and_raw_values() {
     let df = xy_df();
     let result = eval(lit_duration_raw(-42_000_000, TimestampResolution::Nanoseconds).alias("duration"), &df);
@@ -309,7 +296,6 @@ fn lit_duration_raw_broadcasts_dtype_and_raw_values() {
     assert_eq!(host_export_i64_values(&result), vec![-42_000_000; 3]);
 }
 
-#[test]
 fn raw_literals_eval_in_use_resolved_override_domain_for_allocations() {
     let source_rt = Runtime::builder().build().unwrap();
     let override_rt = Runtime::builder().build().unwrap();
@@ -342,7 +328,6 @@ fn raw_literals_eval_in_use_resolved_override_domain_for_allocations() {
     assert_eq!(host_export_i64_values(&duration), vec![-42_000_000; 3]);
 }
 
-#[test]
 fn alias_sets_output_name_without_materializing_series_metadata() {
     let df = xy_df();
     let expr = col("x").alias("renamed");
@@ -357,57 +342,48 @@ fn alias_sets_output_name_without_materializing_series_metadata() {
 // Arithmetic operators
 // ===========================================================================
 
-#[test]
 fn add_col_col() {
     let df = xy_df();
     assert_eq!(eval_i32((col("x") + col("y")).alias("sum"), &df), vec![11, 22, 33]);
 }
 
-#[test]
 fn add_col_lit() {
     let df = xy_df();
     assert_eq!(eval_i32((col("x") + lit(100i32)).alias("plus"), &df), vec![110, 120, 130]);
 }
 
-#[test]
 fn add_col_scalar_without_lit() {
     let df = xy_df();
     assert_eq!(eval_i32((col("x") + 100i32).alias("plus"), &df), vec![110, 120, 130]);
 }
 
-#[test]
 fn add_scalar_lhs_without_lit() {
     let df = xy_df();
     assert_eq!(eval_i32((100i32 + col("x")).alias("plus"), &df), vec![110, 120, 130]);
 }
 
-#[test]
 fn compound_expr_add_mul() {
     let df = xy_df();
     // (x + y) * lit(2)
     assert_eq!(eval_i32(((col("x") + col("y")) * lit(2i32)).alias("r"), &df), vec![22, 44, 66]);
 }
 
-#[test]
 fn sub_col_col() {
     let df = xy_df();
     assert_eq!(eval_i32((col("x") - col("y")).alias("diff"), &df), vec![9, 18, 27]);
 }
 
-#[test]
 fn mul_col_col() {
     let df = xy_df();
     assert_eq!(eval_i32((col("x") * col("y")).alias("prod"), &df), vec![10, 40, 90]);
 }
 
-#[test]
 fn div_col_col() {
     let df = xy_df();
     // cuDF integer division: 10/1=10, 20/2=10, 30/3=10
     assert_eq!(eval_i32((col("x") / col("y")).alias("quot"), &df), vec![10, 10, 10]);
 }
 
-#[test]
 fn binary_expr_decimal128_div_with_explicit_type_preserves_fractional_scale() {
     let df = decimal128_pair_df_from_arrow(
         "numerator",
@@ -432,7 +408,6 @@ fn binary_expr_decimal128_div_with_explicit_type_preserves_fractional_scale() {
     assert_arrow_decimal128_column(&ratio_frame, "ratio", &[25_000_000, 50_000_000], 8);
 }
 
-#[test]
 fn with_columns_with_budget_decimal128_div_with_explicit_type_materializes_fractional_arrow_output() {
     let df = decimal128_pair_df_from_arrow(
         "numerator",
@@ -462,13 +437,11 @@ fn with_columns_with_budget_decimal128_div_with_explicit_type_materializes_fract
     assert_arrow_decimal128_column(result, "ratio", &[25_000_000, 50_000_000], 8);
 }
 
-#[test]
 fn rem_col_lit() {
     let df = xy_df(); // x = [10, 20, 30]
     assert_eq!(eval_i32((col("x") % lit(3i32)).alias("mod3"), &df), vec![1, 2, 0]);
 }
 
-#[test]
 fn binary_expr_type_error_preserves_eval_operation_and_operator_detail() {
     let df = xy_df();
 
@@ -479,13 +452,11 @@ fn binary_expr_type_error_preserves_eval_operation_and_operator_detail() {
     assert_eq!(err.detail_value("operator"), Some("add"));
 }
 
-#[test]
 fn neg_expr() {
     let df = xy_df(); // x = [10, 20, 30]
     assert_eq!(eval_i32((-col("x")).alias("neg"), &df), vec![-10, -20, -30]);
 }
 
-#[test]
 fn bitand_bool() {
     let a = crate::common::series::<bool>("a", &[true, true, false, false]).unwrap();
     let b = crate::common::series::<bool>("b", &[true, false, true, false]).unwrap();
@@ -495,7 +466,6 @@ fn bitand_bool() {
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, false, false]);
 }
 
-#[test]
 fn bitand_bool_scalar_lhs_without_lit() {
     let df = bool_df("b", &[true, false, true, false]);
     let result = eval((true & col("b")).alias("and"), &df);
@@ -503,7 +473,6 @@ fn bitand_bool_scalar_lhs_without_lit() {
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, true, false]);
 }
 
-#[test]
 fn bitor_bool() {
     let a = crate::common::series::<bool>("a", &[true, true, false, false]).unwrap();
     let b = crate::common::series::<bool>("b", &[true, false, true, false]).unwrap();
@@ -513,51 +482,43 @@ fn bitor_bool() {
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, true, true, false]);
 }
 
-#[test]
 fn pow_builder() {
     let df = f64_df("x", &[2.0, 3.0, 4.0]);
     assert_eq!(eval_f64(col("x").pow(lit(2.0f64)).alias("sq"), &df), vec![4.0, 9.0, 16.0]);
 }
 
-#[test]
 fn pow_builder_scalar_without_lit() {
     let df = f64_df("x", &[2.0, 3.0, 4.0]);
     assert_eq!(eval_f64(col("x").pow(2.0f64).alias("sq"), &df), vec![4.0, 9.0, 16.0]);
 }
 
-#[test]
 fn floor_div_builder() {
     let df = xy_df(); // x = [10, 20, 30]
     assert_eq!(eval_i32(col("x").floor_div(lit(3i32)).alias("fd"), &df), vec![3, 6, 10]);
 }
 
-#[test]
 fn abs_builder() {
     let df = i32_df("v", &[-5, 0, 7]);
     assert_eq!(eval_i32(col("v").abs().alias("a"), &df), vec![5, 0, 7]);
 }
 
-#[test]
 fn sqrt_builder() {
     let df = f64_df("v", &[4.0, 9.0, 16.0]);
     assert_eq!(eval_f64(col("v").sqrt().alias("r"), &df), vec![2.0, 3.0, 4.0]);
 }
 
-#[test]
 fn ceil_floor_builder() {
     let df = f64_df("v", &[1.2, 2.7, -0.5]);
     assert_eq!(eval_f64(col("v").ceil().alias("c"), &df), vec![2.0, 3.0, 0.0]);
     assert_eq!(eval_f64(col("v").floor().alias("f"), &df), vec![1.0, 2.0, -1.0]);
 }
 
-#[test]
 fn round_builder_uses_half_up_semantics() {
     let df = f64_df("v", &[1.235, 2.225, -1.235, -2.225]);
 
     assert_eq!(eval_f64(col("v").round(2).alias("r"), &df), vec![1.24, 2.23, -1.24, -2.23]);
 }
 
-#[test]
 fn round_builder_supports_decimal128() {
     let df = decimal128_df_from_arrow("amount", vec![Some(12345), Some(12344), Some(-12345)], 20, 3);
 
@@ -571,7 +532,6 @@ fn round_builder_supports_decimal128() {
 // Comparisons
 // ===========================================================================
 
-#[test]
 fn gt_lit_produces_bool() {
     let df = xy_df();
     let result = eval(col("x").gt(lit(15i32)).alias("big"), &df);
@@ -579,7 +539,6 @@ fn gt_lit_produces_bool() {
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, true, true]);
 }
 
-#[test]
 fn gt_scalar_without_lit_produces_bool() {
     let df = xy_df();
     let result = eval(col("x").gt(15i32).alias("big"), &df);
@@ -587,7 +546,6 @@ fn gt_scalar_without_lit_produces_bool() {
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, true, true]);
 }
 
-#[test]
 fn eq_col_col() {
     let x = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
     let y = crate::common::series::<i32>("b", &[1, 99, 3]).unwrap();
@@ -596,13 +554,11 @@ fn eq_col_col() {
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
-#[test]
 fn lt_lit_with_alias() {
     let df = xy_df();
     assert_eq!(eval_bool(col("x").lt(lit(25i32)).alias("small"), &df), vec![true, true, false]);
 }
 
-#[test]
 fn ne_col_col() {
     let x = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
     let y = crate::common::series::<i32>("b", &[1, 99, 3]).unwrap();
@@ -611,14 +567,12 @@ fn ne_col_col() {
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }
 
-#[test]
 fn ge_and_le() {
     let df = xy_df();
     assert_eq!(eval_bool(col("x").ge(lit(20i32)).alias("ge20"), &df), vec![false, true, true]);
     assert_eq!(eval_bool(col("x").le(lit(20i32)).alias("le20"), &df), vec![true, true, false]);
 }
 
-#[test]
 fn timestamp_days_literal_comparison_matches_tpch_date_filter_shape() {
     let shipdate = crate::common::series("shipdate", &[18_262i32, 18_263, 18_264])
         .unwrap()
@@ -635,7 +589,6 @@ fn timestamp_days_literal_comparison_matches_tpch_date_filter_shape() {
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, false]);
 }
 
-#[test]
 fn timestamp_days_plus_duration_expr_preserves_timestamp_resolution() {
     let shipdate = crate::common::series("shipdate", &[18_262i32, 18_263, 18_264])
         .unwrap()
@@ -651,7 +604,6 @@ fn timestamp_days_plus_duration_expr_preserves_timestamp_resolution() {
     assert_eq!(host_export_i32_values(&result), vec![18_267, 18_268, 18_269]);
 }
 
-#[test]
 fn timestamp_days_datetime_offset_adds_calendrical_months() {
     let shipdate = crate::common::series("shipdate", &[18_262i32, 18_293, 18_322])
         .unwrap()
@@ -667,7 +619,6 @@ fn timestamp_days_datetime_offset_adds_calendrical_months() {
     assert_eq!(host_export_i32_values(&result), vec![18_295, 18_324, 18_355]);
 }
 
-#[test]
 fn timestamp_days_datetime_offset_rejects_non_exact_duration_resolution() {
     let shipdate = crate::common::series("shipdate", &[18_262i32])
         .unwrap()
@@ -686,7 +637,6 @@ fn timestamp_days_datetime_offset_rejects_non_exact_duration_resolution() {
     assert_eq!(err.detail_value("nanoseconds"), Some("1"));
 }
 
-#[test]
 fn datetime_offset_zero_interval_still_rejects_non_timestamp_input() {
     let df = i32_df("x", &[1, 2, 3]);
 
@@ -698,7 +648,6 @@ fn datetime_offset_zero_interval_still_rejects_non_timestamp_input() {
     assert_eq!(err.detail_value("expected_family"), Some("timestamp"));
 }
 
-#[test]
 fn timestamp_expr_datetime_namespace_extracts_components() {
     let dates = crate::common::series("ts", &[0i32, 31, 365])
         .unwrap()
@@ -718,7 +667,6 @@ fn timestamp_expr_datetime_namespace_extracts_components() {
 // Unary ops
 // ===========================================================================
 
-#[test]
 fn is_null_expr() {
     let df = nullable_i32_df("v", &[1, 0, 3], &[true, false, true]);
     let result = eval(col("v").is_null().alias("nulls"), &df);
@@ -726,13 +674,11 @@ fn is_null_expr() {
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![false, true, false]);
 }
 
-#[test]
 fn is_not_null_expr() {
     let df = nullable_i32_df("v", &[1, 0, 3], &[true, false, true]);
     assert_eq!(eval_bool(col("v").is_not_null().alias("valid"), &df), vec![true, false, true]);
 }
 
-#[test]
 fn cast_i32_to_f64() {
     let df = xy_df();
     let result = eval(col("x").cast(TypeId::Float64).alias("xf"), &df);
@@ -740,7 +686,6 @@ fn cast_i32_to_f64() {
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
-#[test]
 fn cast_f64_to_i64_truncates_and_preserves_nulls() {
     let df = nullable_f64_df("x", &[1.9, -1.9, 0.0], &[true, true, false]);
 
@@ -750,7 +695,6 @@ fn cast_f64_to_i64_truncates_and_preserves_nulls() {
     assert_eq!(result.to_optional_vec::<i64>().unwrap(), vec![Some(1), Some(-1), None]);
 }
 
-#[test]
 fn cast_f64_to_i64_rejects_nan_and_unrepresentable_values() {
     let df = f64_df("x", &[f64::NAN, f64::INFINITY, 1.0e40]);
 
@@ -759,7 +703,6 @@ fn cast_f64_to_i64_rejects_nan_and_unrepresentable_values() {
     assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
 }
 
-#[test]
 fn dataframe_cast_column_f64_to_i64_uses_checked_semantics() {
     let df = nullable_f64_df("x", &[1.9, -1.9, 0.0], &[true, true, false]);
 
@@ -773,7 +716,6 @@ fn dataframe_cast_column_f64_to_i64_uses_checked_semantics() {
     assert_eq!(err.code(), ErrorCode::ValueOutOfRange);
 }
 
-#[test]
 fn cast_decimal128_to_f64_uses_decimal_scale() {
     let df = decimal128_df_from_arrow("amount", vec![Some(12345), Some(-678), None], 20, 2);
 
@@ -783,7 +725,6 @@ fn cast_decimal128_to_f64_uses_decimal_scale() {
     assert_eq!(result.to_optional_vec::<f64>().unwrap(), vec![Some(123.45), Some(-6.78), None]);
 }
 
-#[test]
 fn filter_expr_falls_back_to_boolean_mask_for_cast_predicates() {
     let df = xy_df();
 
@@ -793,7 +734,6 @@ fn filter_expr_falls_back_to_boolean_mask_for_cast_predicates() {
     assert_eq!(filtered.series("y").unwrap().to_vec_strict::<i32>().unwrap(), vec![2, 3]);
 }
 
-#[test]
 fn not_operator() {
     let df = bool_df("mask", &[true, false, true]);
     assert_eq!(eval_bool((!col("mask")).alias("inv"), &df), vec![false, true, false]);
@@ -803,7 +743,6 @@ fn not_operator() {
 // DataFrame::with_columns
 // ===========================================================================
 
-#[test]
 fn with_columns_adds_new_column() {
     let df = xy_df();
     let df2 = df.with_columns([(col("x") + col("y")).alias("sum")]).unwrap();
@@ -813,7 +752,6 @@ fn with_columns_adds_new_column() {
     assert_eq!(sum.to_vec_strict::<i32>().unwrap(), vec![11, 22, 33]);
 }
 
-#[test]
 fn with_columns_replaces_existing() {
     let df = xy_df();
     let df2 = df.with_columns([(col("x") * lit(2i32)).alias("x")]).unwrap();
@@ -822,7 +760,6 @@ fn with_columns_replaces_existing() {
     assert_eq!(x.to_vec_strict::<i32>().unwrap(), vec![20, 40, 60]);
 }
 
-#[test]
 fn with_columns_multiple_exprs() {
     let df = xy_df();
     let df2 = df.with_columns([(col("x") + lit(1i32)).alias("x1"), (col("y") * lit(10i32)).alias("y10")]).unwrap();
@@ -831,7 +768,6 @@ fn with_columns_multiple_exprs() {
     assert_eq!(df2.series("y10").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
-#[test]
 fn with_columns_named_pair_allows_binary_expr_without_alias() {
     let df = xy_df();
     let df2 = df.with_columns([("x1", col("x") + 1i32)]).unwrap();
@@ -839,14 +775,12 @@ fn with_columns_named_pair_allows_binary_expr_without_alias() {
     assert_eq!(df2.series("x1").unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 21, 31]);
 }
 
-#[test]
 fn with_columns_named_pair_allows_if_else_without_alias() {
     let df = i32_df("x", &[1, 2, 3]);
     let df2 = df.with_columns([("big", when(col("x").gt(1i32)).then(100i32).otherwise(0i32))]).unwrap();
     assert_eq!(df2.series("big").unwrap().to_vec_strict::<i32>().unwrap(), vec![0, 100, 100]);
 }
 
-#[test]
 fn with_columns_named_pair_overrides_inner_alias() {
     let df = xy_df();
     let df2 = df.with_columns([("x1", (col("x") + 1i32).alias("ignored"))]).unwrap();
@@ -855,7 +789,6 @@ fn with_columns_named_pair_overrides_inner_alias() {
     assert_eq!(df2.series("x1").unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 21, 31]);
 }
 
-#[test]
 fn with_columns_named_pair_overrides_inherited_output_name() {
     let df = xy_df();
     let df2 = df.with_columns([("x_copy", col("x").cast(TypeId::Float64))]).unwrap();
@@ -864,7 +797,6 @@ fn with_columns_named_pair_overrides_inherited_output_name() {
     assert_eq!(df2.series("x_copy").unwrap().dtype().unwrap().id(), TypeId::Float64);
 }
 
-#[test]
 fn with_columns_no_alias_errors() {
     let df = xy_df();
     // (col + lit) has no alias and is not a bare col() — should error.
@@ -880,7 +812,6 @@ fn with_columns_no_alias_errors() {
     );
 }
 
-#[test]
 fn with_columns_sees_original_state() {
     let df = xy_df(); // x = [10,20,30], y = [1,2,3]
     // Both expressions see the original x, even though the first replaces x.
@@ -891,7 +822,6 @@ fn with_columns_sees_original_state() {
     assert_eq!(xp.to_vec_strict::<i32>().unwrap(), vec![11, 21, 31]);
 }
 
-#[test]
 fn with_columns_bare_col_uses_column_name() {
     let df = xy_df();
     // Bare col("x") has output_name = Some("x"), so it should work without .alias().
@@ -903,32 +833,26 @@ fn with_columns_bare_col_uses_column_name() {
 // Output name propagation for single-input nodes
 // ===========================================================================
 
-#[test]
 fn output_name_propagates_through_cast() {
     assert_output_name(col("x").cast(TypeId::Float64), Some("x"));
 }
 
-#[test]
 fn output_name_propagates_through_is_null() {
     assert_output_name(col("x").is_null(), Some("x"));
 }
 
-#[test]
 fn output_name_propagates_through_is_not_null() {
     assert_output_name(col("x").is_not_null(), Some("x"));
 }
 
-#[test]
 fn output_name_propagates_through_unary_op() {
     assert_output_name(col("x").abs(), Some("x"));
 }
 
-#[test]
 fn output_name_propagates_through_log() {
     assert_output_name(col("x").log(), Some("x"));
 }
 
-#[test]
 fn with_columns_cast_no_alias_needed() {
     let df = xy_df();
     let df2 = df.with_columns([col("x").cast(TypeId::Float64)]).unwrap();
@@ -936,14 +860,12 @@ fn with_columns_cast_no_alias_needed() {
     assert_eq!(df2.series("x").unwrap().dtype().unwrap().id(), TypeId::Float64);
 }
 
-#[test]
 fn with_columns_is_null_no_alias_needed() {
     let df = nullable_i32_df("v", &[1, 0, 3], &[true, false, true]);
     let df2 = df.with_columns([col("v").is_null()]).unwrap();
     assert_eq!(df2.series("v").unwrap().dtype().unwrap().id(), TypeId::Bool8);
 }
 
-#[test]
 fn in_list_expression_evaluates_literal_membership_with_nulls() {
     let df = nullable_i32_df("v", &[1, 0, 3, 4], &[true, false, true, true]);
 
@@ -954,7 +876,6 @@ fn in_list_expression_evaluates_literal_membership_with_nulls() {
     assert_eq!(result.to_optional_vec::<bool>().unwrap(), vec![Some(false), None, Some(true), Some(false)]);
 }
 
-#[test]
 fn in_list_expression_rejects_empty_haystack() {
     let df = i32_df("v", &[1, 2, 3]);
 
@@ -965,7 +886,6 @@ fn in_list_expression_rejects_empty_haystack() {
     assert_eq!(err.detail_value("reason"), Some("empty_in_list"));
 }
 
-#[test]
 fn is_not_in_list_expression_propagates_nulls_for_all_null_input() {
     let df = nullable_i32_df("v", &[0, 0, 0], &[false, false, false]);
 
@@ -974,7 +894,6 @@ fn is_not_in_list_expression_propagates_nulls_for_all_null_input() {
     assert_eq!(result.to_optional_vec::<bool>().unwrap(), vec![None, None, None]);
 }
 
-#[test]
 fn is_not_in_list_expression_propagates_nulls_for_all_null_haystack() {
     let df = nullable_i32_df("v", &[1, 0, 3], &[true, false, true]);
 
@@ -983,7 +902,6 @@ fn is_not_in_list_expression_propagates_nulls_for_all_null_haystack() {
     assert_eq!(result.to_optional_vec::<bool>().unwrap(), vec![None, None, None]);
 }
 
-#[test]
 fn eval_unary_op_display_omits_input_name() {
     let df = xy_df();
     let result = eval(col("x").abs(), &df);
@@ -991,7 +909,6 @@ fn eval_unary_op_display_omits_input_name() {
     assert!(!output.contains("x"), "expr unary output should not expose schema names: {}", output);
 }
 
-#[test]
 fn log_expr() {
     let df = f64_df("x", &[1.0, std::f64::consts::E, std::f64::consts::E * std::f64::consts::E]);
     let result = eval(col("x").log().alias("ln_x"), &df);
@@ -1003,7 +920,6 @@ fn log_expr() {
     assert!((values[2] - 2.0).abs() < 1e-10);
 }
 
-#[test]
 fn eval_fillna_display_omits_input_name() {
     let df = nullable_i32_df("v", &[1, 0, 3], &[true, false, true]);
     let result = eval(col("v").fillna(99i32), &df);
@@ -1011,19 +927,16 @@ fn eval_fillna_display_omits_input_name() {
     assert!(!output.contains("v"), "expr fillna output should not expose schema names: {}", output);
 }
 
-#[test]
 fn eval_cumsum_preserves_name() {
     let df = i32_df("x", &[1, 2, 3]);
     let _result = eval(col("x").cumsum(), &df);
 }
 
-#[test]
 fn eval_reduce_has_no_implicit_name() {
     let df = i32_df("x", &[10, 20, 30]);
     let _result = eval(col("x").agg().sum(), &df);
 }
 
-#[test]
 fn eval_string_op_returns_values() {
     let df = str_df("s", &["Hello", "WORLD"]);
     let _result = eval(col("s").str().lower(), &df);
@@ -1033,7 +946,6 @@ fn eval_string_op_returns_values() {
 // Null fill and cumulative expressions
 // ===========================================================================
 
-#[test]
 fn fillna_scalar_replaces_nulls() {
     let df = nullable_i32_df("v", &[1, 0, 3], &[true, false, true]);
     let result = eval(col("v").fillna(0i32).alias("filled"), &df);
@@ -1041,12 +953,10 @@ fn fillna_scalar_replaces_nulls() {
     assert_eq!(result.null_count(), 0);
 }
 
-#[test]
 fn fillna_scalar_preserves_output_name() {
     assert_output_name(col("v").fillna(0i32), Some("v"));
 }
 
-#[test]
 fn fillna_with_column_path() {
     let v = crate::common::nullable_series::<i32>("v", &[1, 0, 3], &[true, false, true]).unwrap();
     let backup = crate::common::series::<i32>("backup", &[10, 20, 30]).unwrap();
@@ -1056,18 +966,15 @@ fn fillna_with_column_path() {
     assert_eq!(result.null_count(), 0);
 }
 
-#[test]
 fn fillna_with_preserves_output_name() {
     assert_output_name(col("v").fillna_with(col("backup")), Some("v"));
 }
 
-#[test]
 fn ffill_expr() {
     let df = nullable_i32_df("v", &[1, 0, 3, 0], &[true, false, true, false]);
     assert_eq!(eval_i32(col("v").ffill().alias("ff"), &df), vec![1, 1, 3, 3]);
 }
 
-#[test]
 fn bfill_expr() {
     let df = nullable_i32_df("v", &[0, 0, 3, 0], &[false, false, true, false]);
     let result = eval(col("v").bfill().alias("bf"), &df);
@@ -1077,37 +984,31 @@ fn bfill_expr() {
     assert_eq!(vals, vec![Some(3), Some(3), Some(3), None]);
 }
 
-#[test]
 fn cumsum_expr() {
     // cumsum output type for i32 is i32 (scan preserves type)
     let df = i32_df("x", &[1, 2, 3, 4]);
     assert_eq!(eval_i32(col("x").cumsum().alias("cs"), &df), vec![1, 3, 6, 10]);
 }
 
-#[test]
 fn cummin_expr() {
     let df = i32_df("x", &[3, 1, 4, 1]);
     assert_eq!(eval_i32(col("x").cummin().alias("cm"), &df), vec![3, 1, 1, 1]);
 }
 
-#[test]
 fn cummax_expr() {
     let df = i32_df("x", &[1, 3, 2, 5]);
     assert_eq!(eval_i32(col("x").cummax().alias("cm"), &df), vec![1, 3, 3, 5]);
 }
 
-#[test]
 fn cumprod_expr() {
     let df = i32_df("x", &[1, 2, 3, 4]);
     assert_eq!(eval_i32(col("x").cumprod().alias("cp"), &df), vec![1, 2, 6, 24]);
 }
 
-#[test]
 fn cumsum_preserves_output_name() {
     assert_output_name(col("x").cumsum(), Some("x"));
 }
 
-#[test]
 fn with_columns_fillna_no_alias_needed() {
     let df = nullable_i32_df("v", &[1, 0, 3], &[true, false, true]);
     let df2 = df.with_columns([col("v").fillna(99i32)]).unwrap();
@@ -1115,7 +1016,6 @@ fn with_columns_fillna_no_alias_needed() {
     assert_eq!(df2.series("v").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 99, 3]);
 }
 
-#[test]
 fn with_columns_cumsum_no_alias_needed() {
     let df = i32_df("x", &[1, 2, 3]);
     let df2 = df.with_columns([col("x").cumsum()]).unwrap();
@@ -1126,7 +1026,6 @@ fn with_columns_cumsum_no_alias_needed() {
 // Aggregation expressions with broadcast results
 // ===========================================================================
 
-#[test]
 fn agg_sum() {
     let df = i32_df("x", &[10, 20, 30]);
     let result = eval(col("x").agg().sum().alias("s"), &df);
@@ -1135,7 +1034,6 @@ fn agg_sum() {
     assert_eq!(result.to_vec_strict::<i64>().unwrap(), vec![60, 60, 60]);
 }
 
-#[test]
 fn agg_mean() {
     let df = i32_df("x", &[10, 20, 30]);
     let result = eval(col("x").agg().mean().alias("m"), &df);
@@ -1143,14 +1041,12 @@ fn agg_mean() {
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![20.0, 20.0, 20.0]);
 }
 
-#[test]
 fn agg_min_max() {
     let df = i32_df("x", &[10, 20, 30]);
     assert_eq!(eval_i32(col("x").agg().min().alias("mn"), &df), vec![10, 10, 10]);
     assert_eq!(eval_i32(col("x").agg().max().alias("mx"), &df), vec![30, 30, 30]);
 }
 
-#[test]
 fn agg_std_var() {
     let df = f64_df("x", &[2.0, 4.0, 6.0]);
     let std_r = eval(col("x").agg().std(1).alias("s"), &df);
@@ -1164,7 +1060,6 @@ fn agg_std_var() {
     assert!((var_vals[0] - 4.0).abs() < 1e-10);
 }
 
-#[test]
 fn agg_median() {
     let df = i32_df("x", &[10, 20, 30]);
     let result = eval(col("x").agg().median().alias("med"), &df);
@@ -1172,20 +1067,17 @@ fn agg_median() {
     assert_eq!(result.to_vec_strict::<f64>().unwrap(), vec![20.0, 20.0, 20.0]);
 }
 
-#[test]
 fn agg_any_all() {
     let df = bool_df("f", &[true, false, true]);
     assert_eq!(eval_bool(col("f").agg().any().alias("a"), &df), vec![true, true, true]);
     assert_eq!(eval_bool(col("f").agg().all().alias("b"), &df), vec![false, false, false]);
 }
 
-#[test]
 fn agg_product() {
     let df = i32_df("x", &[2, 3, 5]);
     assert_eq!(eval_i32(col("x").agg().product().alias("p"), &df), vec![30, 30, 30]);
 }
 
-#[test]
 fn agg_sum_string_reports_expr_reduce_operation_on_type_error() {
     let df = str_df("s", &["a", "b"]);
     let err = col("s").agg().sum().alias("total").eval(&df).unwrap_err();
@@ -1197,12 +1089,10 @@ fn agg_sum_string_reports_expr_reduce_operation_on_type_error() {
     assert_eq!(crate::common::error_context_value(&err, "input_type").as_deref(), None);
 }
 
-#[test]
 fn reduce_requires_explicit_output_name() {
     assert_output_name(col("x").agg().sum(), None);
 }
 
-#[test]
 fn pct_pattern() {
     let df = f64_df("x", &[10.0, 20.0, 30.0]);
     // (x / x.agg().sum()) should give each row's fraction of total.
@@ -1212,7 +1102,6 @@ fn pct_pattern() {
     assert!((vals[2] - 30.0 / 60.0).abs() < 1e-10);
 }
 
-#[test]
 fn with_columns_rejects_unaliased_reduce() {
     let df = i32_df("x", &[10, 20, 30]);
     let err = df.with_columns([col("x").agg().sum()]).unwrap_err();
@@ -1227,7 +1116,6 @@ fn with_columns_rejects_unaliased_reduce() {
     );
 }
 
-#[test]
 fn with_columns_reduce_requires_alias_or_explicit_name() {
     let df = i32_df("x", &[10, 20, 30]);
     let df2 = df.with_columns([("x_total", col("x").agg().sum())]).unwrap();
@@ -1238,7 +1126,6 @@ fn with_columns_reduce_requires_alias_or_explicit_name() {
 // String expressions
 // ===========================================================================
 
-#[test]
 fn str_lower_expr() {
     let df = str_df("s", &["Hello", "WORLD", "Foo"]);
     let result = eval(col("s").str().lower().alias("lo"), &df);
@@ -1246,14 +1133,12 @@ fn str_lower_expr() {
     assert_eq!(result.len(), 3);
 }
 
-#[test]
 fn str_upper_expr() {
     let df = str_df("s", &["Hello", "world", "Foo"]);
     let result = eval(col("s").str().upper().alias("up"), &df);
     assert_eq!(result.dtype().unwrap().id(), TypeId::String);
 }
 
-#[test]
 fn str_strip_expr() {
     let df = str_df("s", &["  hi  ", " lo", "ok "]);
     let stripped = eval(col("s").str().strip().alias("st"), &df);
@@ -1264,19 +1149,16 @@ fn str_strip_expr() {
     assert_eq!(r.dtype().unwrap().id(), TypeId::String);
 }
 
-#[test]
 fn str_len_expr() {
     let df = str_df("s", &["ab", "cde", "f"]);
     assert_eq!(eval_i32(col("s").str().len().alias("n"), &df), vec![2, 3, 1]);
 }
 
-#[test]
 fn str_byte_count_expr() {
     let df = str_df("s", &["ab", "cde", "f"]);
     assert_eq!(eval_i32(col("s").str().byte_count().alias("n"), &df), vec![2, 3, 1]);
 }
 
-#[test]
 fn str_contains_expr() {
     let df = str_df("s", &["foobar", "baz", "foo"]);
     let result = eval(col("s").str().contains("foo").alias("has"), &df);
@@ -1284,7 +1166,6 @@ fn str_contains_expr() {
     assert_eq!(result.to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
-#[test]
 fn str_like_expr() {
     let df = str_df("s", &["abc", "axc", "abbc", "literal%"]);
     let result = eval(col("s").str().like("a_c").alias("matches"), &df);
@@ -1295,7 +1176,6 @@ fn str_like_expr() {
     assert_eq!(escaped.to_vec_strict::<bool>().unwrap(), vec![false, false, false, true]);
 }
 
-#[test]
 fn str_slice_expr() {
     let df = str_df("s", &["abcdef", "\u{4F60}\u{597D}\u{4E16}\u{754C}"]);
     let result = eval(col("s").str().slice(StringSliceOptions::new(Some(1), Some(3))).alias("part"), &df);
@@ -1303,24 +1183,20 @@ fn str_slice_expr() {
     assert_eq!(result.to_strings_strict().unwrap(), vec!["bc".to_string(), "\u{597D}\u{4E16}".to_string()]);
 }
 
-#[test]
 fn str_startswith_expr() {
     let df = str_df("s", &["abc", "bca", "axy"]);
     assert_eq!(eval_bool(col("s").str().starts_with("a").alias("sw"), &df), vec![true, false, true]);
 }
 
-#[test]
 fn str_endswith_expr() {
     let df = str_df("s", &["abc", "bca", "xya"]);
     assert_eq!(eval_bool(col("s").str().ends_with("a").alias("ew"), &df), vec![false, true, true]);
 }
 
-#[test]
 fn str_preserves_output_name() {
     assert_output_name(col("s").str().lower(), Some("s"));
 }
 
-#[test]
 fn with_columns_str_lower_no_alias() {
     let df = str_df("s", &["Hello", "WORLD"]);
     let df2 = df.with_columns([col("s").str().lower()]).unwrap();
@@ -1331,7 +1207,6 @@ fn with_columns_str_lower_no_alias() {
 // Conditional expressions
 // ===========================================================================
 
-#[test]
 fn when_then_otherwise_basic() {
     let df = i32_df("x", &[1, 2, 3]);
     assert_eq!(
@@ -1340,13 +1215,11 @@ fn when_then_otherwise_basic() {
     );
 }
 
-#[test]
 fn when_then_otherwise_scalar_literals_without_lit() {
     let df = i32_df("x", &[1, 2, 3]);
     assert_eq!(eval_i32(when(col("x").gt(1i32)).then(100i32).otherwise(0i32).alias("out"), &df), vec![0, 100, 100]);
 }
 
-#[test]
 fn when_then_otherwise_column_branches() {
     let x = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
     let y = crate::common::series::<i32>("y", &[1, 2, 3]).unwrap();
@@ -1356,7 +1229,6 @@ fn when_then_otherwise_column_branches() {
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 2, 30]);
 }
 
-#[test]
 fn when_then_otherwise_with_nulls_in_condition() {
     // libcudf copy_if_else: null mask positions produce the false_val
     let cond = crate::common::nullable_series::<bool>("c", &[true, false, false], &[true, false, true]).unwrap();
@@ -1370,7 +1242,6 @@ fn when_then_otherwise_with_nulls_in_condition() {
     assert_eq!(result.to_vec_strict::<i32>().unwrap(), vec![10, 2, 3]);
 }
 
-#[test]
 fn when_then_otherwise_string_branches() {
     let df = i32_df("age", &[20, 10, 30]);
     let result =
@@ -1380,12 +1251,10 @@ fn when_then_otherwise_string_branches() {
     assert_eq!(result.to_strings_strict().unwrap(), vec!["adult", "minor", "adult"]);
 }
 
-#[test]
 fn if_else_output_name_is_none() {
     assert_output_name(when(col("x").gt(lit(1i32))).then(lit(100i32)).otherwise(lit(0i32)), None);
 }
 
-#[test]
 fn if_else_requires_alias_in_with_columns() {
     let df = i32_df("x", &[1, 2, 3]);
     let err = df.with_columns([when(col("x").gt(lit(1i32))).then(lit(100i32)).otherwise(lit(0i32))]).unwrap_err();
@@ -1400,7 +1269,6 @@ fn if_else_requires_alias_in_with_columns() {
     );
 }
 
-#[test]
 fn if_else_with_alias_in_with_columns() {
     let df = i32_df("x", &[1, 2, 3]);
     let df2 =
@@ -1408,7 +1276,6 @@ fn if_else_with_alias_in_with_columns() {
     assert_eq!(df2.series("big").unwrap().to_vec_strict::<i32>().unwrap(), vec![0, 100, 100]);
 }
 
-#[test]
 fn when_then_otherwise_composite() {
     let df = i32_df("age", &[25, 12, 18]);
     let df2 = df
@@ -1417,4 +1284,218 @@ fn when_then_otherwise_composite() {
     assert_eq!(df2.series("category").unwrap().dtype().unwrap().id(), TypeId::String);
     assert_eq!(df2.series("category").unwrap().len(), 3);
     assert_eq!(df2.series("category").unwrap().to_strings_strict().unwrap(), vec!["adult", "minor", "adult"]);
+}
+
+#[test]
+fn expr_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("col_resolves_existing_column", col_resolves_existing_column),
+        ("col_missing_column_errors", col_missing_column_errors),
+        ("lit_i32_broadcasts", lit_i32_broadcasts),
+        (
+            "into_lit_and_into_expr_resolve_unambiguously_after_glob_import",
+            into_lit_and_into_expr_resolve_unambiguously_after_glob_import,
+        ),
+        ("lit_f64_broadcasts", lit_f64_broadcasts),
+        ("lit_string_broadcasts", lit_string_broadcasts),
+        ("lit_null_broadcasts_typed_nulls", lit_null_broadcasts_typed_nulls),
+        (
+            "lit_decimal32_raw_broadcasts_dtype_scale_and_raw_values",
+            lit_decimal32_raw_broadcasts_dtype_scale_and_raw_values,
+        ),
+        (
+            "lit_decimal64_raw_broadcasts_dtype_scale_and_raw_values",
+            lit_decimal64_raw_broadcasts_dtype_scale_and_raw_values,
+        ),
+        (
+            "lit_decimal128_raw_broadcasts_dtype_scale_and_raw_values",
+            lit_decimal128_raw_broadcasts_dtype_scale_and_raw_values,
+        ),
+        (
+            "binary_expr_aligns_mixed_decimal_storage_before_arithmetic",
+            binary_expr_aligns_mixed_decimal_storage_before_arithmetic,
+        ),
+        ("lit_timestamp_raw_broadcasts_dtype_and_raw_values", lit_timestamp_raw_broadcasts_dtype_and_raw_values),
+        ("lit_duration_raw_broadcasts_dtype_and_raw_values", lit_duration_raw_broadcasts_dtype_and_raw_values),
+        (
+            "raw_literals_eval_in_use_resolved_override_domain_for_allocations",
+            raw_literals_eval_in_use_resolved_override_domain_for_allocations,
+        ),
+        (
+            "alias_sets_output_name_without_materializing_series_metadata",
+            alias_sets_output_name_without_materializing_series_metadata,
+        ),
+        ("add_col_col", add_col_col),
+        ("add_col_lit", add_col_lit),
+        ("add_col_scalar_without_lit", add_col_scalar_without_lit),
+        ("add_scalar_lhs_without_lit", add_scalar_lhs_without_lit),
+        ("compound_expr_add_mul", compound_expr_add_mul),
+        ("sub_col_col", sub_col_col),
+        ("mul_col_col", mul_col_col),
+        ("div_col_col", div_col_col),
+        (
+            "binary_expr_decimal128_div_with_explicit_type_preserves_fractional_scale",
+            binary_expr_decimal128_div_with_explicit_type_preserves_fractional_scale,
+        ),
+        (
+            "with_columns_with_budget_decimal128_div_with_explicit_type_materializes_fractional_arrow_output",
+            with_columns_with_budget_decimal128_div_with_explicit_type_materializes_fractional_arrow_output,
+        ),
+        ("rem_col_lit", rem_col_lit),
+        (
+            "binary_expr_type_error_preserves_eval_operation_and_operator_detail",
+            binary_expr_type_error_preserves_eval_operation_and_operator_detail,
+        ),
+        ("neg_expr", neg_expr),
+        ("bitand_bool", bitand_bool),
+        ("bitand_bool_scalar_lhs_without_lit", bitand_bool_scalar_lhs_without_lit),
+        ("bitor_bool", bitor_bool),
+        ("pow_builder", pow_builder),
+        ("pow_builder_scalar_without_lit", pow_builder_scalar_without_lit),
+        ("floor_div_builder", floor_div_builder),
+        ("abs_builder", abs_builder),
+        ("sqrt_builder", sqrt_builder),
+        ("ceil_floor_builder", ceil_floor_builder),
+        ("round_builder_uses_half_up_semantics", round_builder_uses_half_up_semantics),
+        ("round_builder_supports_decimal128", round_builder_supports_decimal128),
+        ("gt_lit_produces_bool", gt_lit_produces_bool),
+        ("gt_scalar_without_lit_produces_bool", gt_scalar_without_lit_produces_bool),
+        ("eq_col_col", eq_col_col),
+        ("lt_lit_with_alias", lt_lit_with_alias),
+        ("ne_col_col", ne_col_col),
+        ("ge_and_le", ge_and_le),
+        (
+            "timestamp_days_literal_comparison_matches_tpch_date_filter_shape",
+            timestamp_days_literal_comparison_matches_tpch_date_filter_shape,
+        ),
+        (
+            "timestamp_days_plus_duration_expr_preserves_timestamp_resolution",
+            timestamp_days_plus_duration_expr_preserves_timestamp_resolution,
+        ),
+        (
+            "timestamp_days_datetime_offset_adds_calendrical_months",
+            timestamp_days_datetime_offset_adds_calendrical_months,
+        ),
+        (
+            "timestamp_days_datetime_offset_rejects_non_exact_duration_resolution",
+            timestamp_days_datetime_offset_rejects_non_exact_duration_resolution,
+        ),
+        (
+            "datetime_offset_zero_interval_still_rejects_non_timestamp_input",
+            datetime_offset_zero_interval_still_rejects_non_timestamp_input,
+        ),
+        (
+            "timestamp_expr_datetime_namespace_extracts_components",
+            timestamp_expr_datetime_namespace_extracts_components,
+        ),
+        ("is_null_expr", is_null_expr),
+        ("is_not_null_expr", is_not_null_expr),
+        ("cast_i32_to_f64", cast_i32_to_f64),
+        ("cast_f64_to_i64_truncates_and_preserves_nulls", cast_f64_to_i64_truncates_and_preserves_nulls),
+        (
+            "cast_f64_to_i64_rejects_nan_and_unrepresentable_values",
+            cast_f64_to_i64_rejects_nan_and_unrepresentable_values,
+        ),
+        (
+            "dataframe_cast_column_f64_to_i64_uses_checked_semantics",
+            dataframe_cast_column_f64_to_i64_uses_checked_semantics,
+        ),
+        ("cast_decimal128_to_f64_uses_decimal_scale", cast_decimal128_to_f64_uses_decimal_scale),
+        (
+            "filter_expr_falls_back_to_boolean_mask_for_cast_predicates",
+            filter_expr_falls_back_to_boolean_mask_for_cast_predicates,
+        ),
+        ("not_operator", not_operator),
+        ("with_columns_adds_new_column", with_columns_adds_new_column),
+        ("with_columns_replaces_existing", with_columns_replaces_existing),
+        ("with_columns_multiple_exprs", with_columns_multiple_exprs),
+        (
+            "with_columns_named_pair_allows_binary_expr_without_alias",
+            with_columns_named_pair_allows_binary_expr_without_alias,
+        ),
+        ("with_columns_named_pair_allows_if_else_without_alias", with_columns_named_pair_allows_if_else_without_alias),
+        ("with_columns_named_pair_overrides_inner_alias", with_columns_named_pair_overrides_inner_alias),
+        (
+            "with_columns_named_pair_overrides_inherited_output_name",
+            with_columns_named_pair_overrides_inherited_output_name,
+        ),
+        ("with_columns_no_alias_errors", with_columns_no_alias_errors),
+        ("with_columns_sees_original_state", with_columns_sees_original_state),
+        ("with_columns_bare_col_uses_column_name", with_columns_bare_col_uses_column_name),
+        ("output_name_propagates_through_cast", output_name_propagates_through_cast),
+        ("output_name_propagates_through_is_null", output_name_propagates_through_is_null),
+        ("output_name_propagates_through_is_not_null", output_name_propagates_through_is_not_null),
+        ("output_name_propagates_through_unary_op", output_name_propagates_through_unary_op),
+        ("output_name_propagates_through_log", output_name_propagates_through_log),
+        ("with_columns_cast_no_alias_needed", with_columns_cast_no_alias_needed),
+        ("with_columns_is_null_no_alias_needed", with_columns_is_null_no_alias_needed),
+        (
+            "in_list_expression_evaluates_literal_membership_with_nulls",
+            in_list_expression_evaluates_literal_membership_with_nulls,
+        ),
+        ("in_list_expression_rejects_empty_haystack", in_list_expression_rejects_empty_haystack),
+        (
+            "is_not_in_list_expression_propagates_nulls_for_all_null_input",
+            is_not_in_list_expression_propagates_nulls_for_all_null_input,
+        ),
+        (
+            "is_not_in_list_expression_propagates_nulls_for_all_null_haystack",
+            is_not_in_list_expression_propagates_nulls_for_all_null_haystack,
+        ),
+        ("eval_unary_op_display_omits_input_name", eval_unary_op_display_omits_input_name),
+        ("log_expr", log_expr),
+        ("eval_fillna_display_omits_input_name", eval_fillna_display_omits_input_name),
+        ("eval_cumsum_preserves_name", eval_cumsum_preserves_name),
+        ("eval_reduce_has_no_implicit_name", eval_reduce_has_no_implicit_name),
+        ("eval_string_op_returns_values", eval_string_op_returns_values),
+        ("fillna_scalar_replaces_nulls", fillna_scalar_replaces_nulls),
+        ("fillna_scalar_preserves_output_name", fillna_scalar_preserves_output_name),
+        ("fillna_with_column_path", fillna_with_column_path),
+        ("fillna_with_preserves_output_name", fillna_with_preserves_output_name),
+        ("ffill_expr", ffill_expr),
+        ("bfill_expr", bfill_expr),
+        ("cumsum_expr", cumsum_expr),
+        ("cummin_expr", cummin_expr),
+        ("cummax_expr", cummax_expr),
+        ("cumprod_expr", cumprod_expr),
+        ("cumsum_preserves_output_name", cumsum_preserves_output_name),
+        ("with_columns_fillna_no_alias_needed", with_columns_fillna_no_alias_needed),
+        ("with_columns_cumsum_no_alias_needed", with_columns_cumsum_no_alias_needed),
+        ("agg_sum", agg_sum),
+        ("agg_mean", agg_mean),
+        ("agg_min_max", agg_min_max),
+        ("agg_std_var", agg_std_var),
+        ("agg_median", agg_median),
+        ("agg_any_all", agg_any_all),
+        ("agg_product", agg_product),
+        (
+            "agg_sum_string_reports_expr_reduce_operation_on_type_error",
+            agg_sum_string_reports_expr_reduce_operation_on_type_error,
+        ),
+        ("reduce_requires_explicit_output_name", reduce_requires_explicit_output_name),
+        ("pct_pattern", pct_pattern),
+        ("with_columns_rejects_unaliased_reduce", with_columns_rejects_unaliased_reduce),
+        ("with_columns_reduce_requires_alias_or_explicit_name", with_columns_reduce_requires_alias_or_explicit_name),
+        ("str_lower_expr", str_lower_expr),
+        ("str_upper_expr", str_upper_expr),
+        ("str_strip_expr", str_strip_expr),
+        ("str_len_expr", str_len_expr),
+        ("str_byte_count_expr", str_byte_count_expr),
+        ("str_contains_expr", str_contains_expr),
+        ("str_like_expr", str_like_expr),
+        ("str_slice_expr", str_slice_expr),
+        ("str_startswith_expr", str_startswith_expr),
+        ("str_endswith_expr", str_endswith_expr),
+        ("str_preserves_output_name", str_preserves_output_name),
+        ("with_columns_str_lower_no_alias", with_columns_str_lower_no_alias),
+        ("when_then_otherwise_basic", when_then_otherwise_basic),
+        ("when_then_otherwise_scalar_literals_without_lit", when_then_otherwise_scalar_literals_without_lit),
+        ("when_then_otherwise_column_branches", when_then_otherwise_column_branches),
+        ("when_then_otherwise_with_nulls_in_condition", when_then_otherwise_with_nulls_in_condition),
+        ("when_then_otherwise_string_branches", when_then_otherwise_string_branches),
+        ("if_else_output_name_is_none", if_else_output_name_is_none),
+        ("if_else_requires_alias_in_with_columns", if_else_requires_alias_in_with_columns),
+        ("if_else_with_alias_in_with_columns", if_else_with_alias_in_with_columns),
+        ("when_then_otherwise_composite", when_then_otherwise_composite),
+    ]);
 }

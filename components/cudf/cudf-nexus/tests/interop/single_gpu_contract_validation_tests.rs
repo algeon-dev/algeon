@@ -97,7 +97,6 @@ impl MockSingleGpuGraphInput {
     }
 }
 
-#[test]
 fn single_gpu_prepared_export_supports_graph_construction_shaped_consumption() {
     let _event_lock = common::lock_event_observation();
     let producer_runtime = Runtime::builder().build().unwrap();
@@ -115,7 +114,6 @@ fn single_gpu_prepared_export_supports_graph_construction_shaped_consumption() {
     assert_eq!(graph_input.dst_ptr, dst_ptr);
 }
 
-#[test]
 fn single_gpu_prepared_export_fallback_import_can_run_algorithm_and_handoff_result() {
     let producer_runtime = Runtime::builder().build().unwrap();
     let edges = sample_edge_list(&producer_runtime);
@@ -153,4 +151,18 @@ fn single_gpu_prepared_export_fallback_import_can_run_algorithm_and_handoff_resu
     assert_eq!(handed_off.column_names(), vec!["src", "out_degree"]);
     assert_eq!(sorted_out_degree_rows(&handed_off), vec![(1, 2), (2, 2), (3, 1)]);
     assert_eq!(handed_off.testing_execution_domain_stream_value(), handoff_runtime.stream().testing_raw_handle_value());
+}
+
+#[test]
+fn single_gpu_contract_validation_tests_cases() {
+    crate::common::run_named_cases(&[
+        (
+            "single_gpu_prepared_export_supports_graph_construction_shaped_consumption",
+            single_gpu_prepared_export_supports_graph_construction_shaped_consumption,
+        ),
+        (
+            "single_gpu_prepared_export_fallback_import_can_run_algorithm_and_handoff_result",
+            single_gpu_prepared_export_fallback_import_can_run_algorithm_and_handoff_result,
+        ),
+    ]);
 }

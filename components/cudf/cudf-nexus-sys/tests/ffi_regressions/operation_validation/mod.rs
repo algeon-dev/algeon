@@ -3,9 +3,8 @@ use std::os::raw::c_void;
 use crate::{
     helpers::*,
     support::{
-        CurrentDeviceRestore, NO_SYNC_RECORDED, OwnedMemoryResource, OwnedStream, current_device, last_error_message,
-        last_exec_mr_raw, last_exec_stream_value, last_exec_sync_stream_value, lock_shim_state, reset_exec_observation,
-        set_current_device, stream_value, visible_device_count,
+        NO_SYNC_RECORDED, OwnedMemoryResource, OwnedStream, current_device, last_error_message, last_exec_mr_raw,
+        last_exec_stream_value, last_exec_sync_stream_value, lock_shim_state, reset_exec_observation, stream_value,
     },
 };
 

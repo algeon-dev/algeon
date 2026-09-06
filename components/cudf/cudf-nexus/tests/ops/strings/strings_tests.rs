@@ -12,7 +12,6 @@ use cudf::{DataType, ExecutionOverrides, StringSliceOptions, StripSide, TypeId, 
 // Case conversion
 // ===========================================================================
 
-#[test]
 fn test_str_lower() {
     let s = crate::common::series("s", &["Hello", "WORLD", "Foo123"]).unwrap();
     let result = s.str().lower().unwrap();
@@ -20,7 +19,6 @@ fn test_str_lower() {
     assert_eq!(vals, vec!["hello", "world", "foo123"]);
 }
 
-#[test]
 fn test_str_upper() {
     let s = crate::common::series("s", &["Hello", "world", "Foo123"]).unwrap();
     let result = s.str().upper().unwrap();
@@ -28,7 +26,6 @@ fn test_str_upper() {
     assert_eq!(vals, vec!["HELLO", "WORLD", "FOO123"]);
 }
 
-#[test]
 fn test_str_lower_display_omits_input_name() {
     let s = crate::common::series("col", &["ABC"]).unwrap();
     let result = s.str().lower().unwrap();
@@ -36,7 +33,6 @@ fn test_str_lower_display_omits_input_name() {
     assert!(!output.contains("col"), "lower output should not expose schema names: {}", output);
 }
 
-#[test]
 fn test_str_upper_preserves_nulls() {
     let s = crate::common::nullable_series("s", &["hello", "x", "world"], &[true, false, true]).unwrap();
     let result = s.str().upper().unwrap();
@@ -44,7 +40,6 @@ fn test_str_upper_preserves_nulls() {
     assert_eq!(vals, vec![Some("HELLO".to_string()), None, Some("WORLD".to_string())]);
 }
 
-#[test]
 fn test_str_lower_empty() {
     let s = crate::common::series::<&str>("s", &[]).unwrap();
     let result = s.str().lower().unwrap();
@@ -55,7 +50,6 @@ fn test_str_lower_empty() {
 // Contains
 // ===========================================================================
 
-#[test]
 fn test_str_contains_basic() {
     let s = crate::common::series("s", &["hello world", "goodbye", "hello there"]).unwrap();
     let result = s.str().contains("hello").unwrap();
@@ -63,7 +57,6 @@ fn test_str_contains_basic() {
     assert_eq!(vals, vec![true, false, true]);
 }
 
-#[test]
 fn test_str_contains_empty_pattern_matches_all() {
     let s = crate::common::series("s", &["abc", "def"]).unwrap();
     let result = s.str().contains("").unwrap();
@@ -71,7 +64,6 @@ fn test_str_contains_empty_pattern_matches_all() {
     assert_eq!(vals, vec![true, true]);
 }
 
-#[test]
 fn test_str_contains_preserves_nulls() {
     let s = crate::common::nullable_series("s", &["hello", "x", "world"], &[true, false, true]).unwrap();
     let result = s.str().contains("hello").unwrap();
@@ -79,7 +71,6 @@ fn test_str_contains_preserves_nulls() {
     assert_eq!(vals, vec![Some(true), None, Some(false)]);
 }
 
-#[test]
 fn test_str_contains_display_omits_input_name() {
     let s = crate::common::series("col", &["abc"]).unwrap();
     let result = s.str().contains("a").unwrap();
@@ -91,7 +82,6 @@ fn test_str_contains_display_omits_input_name() {
 // SQL LIKE
 // ===========================================================================
 
-#[test]
 fn test_str_like_sql_wildcards_empty_pattern_escape_and_nulls() {
     let s = crate::common::nullable_series(
         "s",
@@ -126,7 +116,6 @@ fn test_str_like_sql_wildcards_empty_pattern_escape_and_nulls() {
     );
 }
 
-#[test]
 fn test_str_like_escape_rejects_multi_character_escape() {
     let s = crate::common::series("s", &["a_c"]).unwrap();
     let err = s.str().like_escape("a//_c", "//").unwrap_err();
@@ -137,7 +126,6 @@ fn test_str_like_escape_rejects_multi_character_escape() {
 // Starts with / ends with
 // ===========================================================================
 
-#[test]
 fn test_str_startswith_basic() {
     let s = crate::common::series("s", &["hello", "help", "world"]).unwrap();
     let result = s.str().starts_with("hel").unwrap();
@@ -145,7 +133,6 @@ fn test_str_startswith_basic() {
     assert_eq!(vals, vec![true, true, false]);
 }
 
-#[test]
 fn test_str_endswith_basic() {
     let s = crate::common::series("s", &["hello", "fellow", "world"]).unwrap();
     let result = s.str().ends_with("llo").unwrap();
@@ -153,7 +140,6 @@ fn test_str_endswith_basic() {
     assert_eq!(vals, vec![true, false, false]);
 }
 
-#[test]
 fn test_str_startswith_preserves_nulls() {
     let s = crate::common::nullable_series("s", &["hello", "x", "world"], &[true, false, true]).unwrap();
     let result = s.str().starts_with("hel").unwrap();
@@ -161,7 +147,6 @@ fn test_str_startswith_preserves_nulls() {
     assert_eq!(vals, vec![Some(true), None, Some(false)]);
 }
 
-#[test]
 fn test_str_endswith_preserves_nulls() {
     let s = crate::common::nullable_series("s", &["hello", "x", "world"], &[true, false, true]).unwrap();
     let result = s.str().ends_with("rld").unwrap();
@@ -173,7 +158,6 @@ fn test_str_endswith_preserves_nulls() {
 // Slice strings
 // ===========================================================================
 
-#[test]
 fn test_str_slice_zero_based_unicode_open_ended_step_and_nulls() {
     let s = crate::common::nullable_series(
         "s",
@@ -202,14 +186,12 @@ fn test_str_slice_zero_based_unicode_open_ended_step_and_nulls() {
     );
 }
 
-#[test]
 fn test_str_slice_rejects_zero_step() {
     let s = crate::common::series("s", &["abc"]).unwrap();
     let err = s.str().slice(StringSliceOptions::new(None, None).with_step(0)).unwrap_err();
     assert_eq!(err.code(), cudf::ErrorCode::ForeignInvalidArgument);
 }
 
-#[test]
 fn test_str_like_and_slice_in_use_explicit_execution_context() {
     let data_rt = crate::common::sample_runtime();
     let ctx_rt = crate::common::sample_runtime();
@@ -236,7 +218,6 @@ fn test_str_like_and_slice_in_use_explicit_execution_context() {
 // Strip
 // ===========================================================================
 
-#[test]
 fn test_str_strip_whitespace() {
     let s = crate::common::series(
         "s",
@@ -253,7 +234,6 @@ fn test_str_strip_whitespace() {
     assert_eq!(vals, vec!["hello", "world", "foo"]);
 }
 
-#[test]
 fn test_str_lstrip_whitespace() {
     let s = crate::common::series("s", &["  hello  ", "\tworld"]).unwrap();
     let result = s.str().lstrip().unwrap();
@@ -261,7 +241,6 @@ fn test_str_lstrip_whitespace() {
     assert_eq!(vals, vec!["hello  ", "world"]);
 }
 
-#[test]
 fn test_str_rstrip_whitespace() {
     let s = crate::common::series("s", &["  hello  ", "world\t"]).unwrap();
     let result = s.str().rstrip().unwrap();
@@ -269,7 +248,6 @@ fn test_str_rstrip_whitespace() {
     assert_eq!(vals, vec!["  hello", "world"]);
 }
 
-#[test]
 fn test_str_strip_specific_chars() {
     let s = crate::common::series("s", &["xxhelloxx", "xworld"]).unwrap();
     let result = s.str().strip_chars(StripSide::Both, "x").unwrap();
@@ -277,7 +255,6 @@ fn test_str_strip_specific_chars() {
     assert_eq!(vals, vec!["hello", "world"]);
 }
 
-#[test]
 fn test_str_strip_preserves_nulls() {
     let s = crate::common::nullable_series("s", &["  hi  ", "x", "  there  "], &[true, false, true]).unwrap();
     let result = s.str().strip().unwrap();
@@ -285,7 +262,6 @@ fn test_str_strip_preserves_nulls() {
     assert_eq!(vals, vec![Some("hi".to_string()), None, Some("there".to_string())]);
 }
 
-#[test]
 fn test_str_strip_display_omits_input_name() {
     let s = crate::common::series("col", &[" abc "]).unwrap();
     let result = s.str().strip().unwrap();
@@ -297,7 +273,6 @@ fn test_str_strip_display_omits_input_name() {
 // String length
 // ===========================================================================
 
-#[test]
 fn test_str_len_basic() {
     let s = crate::common::series("s", &["hello", "hi", ""]).unwrap();
     let result = s.str().len().unwrap();
@@ -305,7 +280,6 @@ fn test_str_len_basic() {
     assert_eq!(vals, vec![5, 2, 0]);
 }
 
-#[test]
 fn test_str_len_utf8() {
     // Multi-byte characters: each CJK character is 1 character but 3 bytes
     let s = crate::common::series("s", &["abc", "\u{4F60}\u{597D}"]).unwrap(); // "你好"
@@ -314,7 +288,6 @@ fn test_str_len_utf8() {
     assert_eq!(vals, vec![3, 2]); // character count, not byte count
 }
 
-#[test]
 fn test_str_byte_count_utf8() {
     let s = crate::common::series("s", &["abc", "\u{4F60}\u{597D}"]).unwrap();
     let result = s.str().byte_count().unwrap();
@@ -322,7 +295,6 @@ fn test_str_byte_count_utf8() {
     assert_eq!(vals, vec![3, 6]); // byte count: 3 bytes per CJK char
 }
 
-#[test]
 fn test_str_len_preserves_nulls() {
     let s = crate::common::nullable_series("s", &["hello", "x", "world"], &[true, false, true]).unwrap();
     let result = s.str().len().unwrap();
@@ -330,14 +302,12 @@ fn test_str_len_preserves_nulls() {
     assert_eq!(vals, vec![Some(5), None, Some(5)]);
 }
 
-#[test]
 fn test_str_len_empty() {
     let s = crate::common::series::<&str>("s", &[]).unwrap();
     let result = s.str().len().unwrap();
     assert!(result.is_empty());
 }
 
-#[test]
 fn test_str_len_display_omits_input_name() {
     let s = crate::common::series("col", &["abc"]).unwrap();
     let result = s.str().len().unwrap();
@@ -349,7 +319,6 @@ fn test_str_len_display_omits_input_name() {
 // replace_with_backrefs size preflight
 // ===========================================================================
 
-#[test]
 fn test_replace_with_backrefs_output_size_matches_executed_column() {
     use cudf::{DataFrame, REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT, ops::expr::col};
 
@@ -375,7 +344,6 @@ fn test_replace_with_backrefs_output_size_matches_executed_column() {
 // prepared replace_with_backrefs prepare / execute
 // ===========================================================================
 
-#[test]
 fn test_prepared_replace_with_backrefs_semantics_and_facts() {
     let s = crate::common::nullable_series(
         "s",
@@ -408,7 +376,6 @@ fn test_prepared_replace_with_backrefs_semantics_and_facts() {
     );
 }
 
-#[test]
 fn test_prepared_replace_with_backrefs_empty_and_expanding_capture() {
     let empty = crate::common::series::<&str>("s", &[]).unwrap();
     let prepared = empty.str().prepare_replace_with_backrefs(r"(a)", r"x\1y").unwrap();
@@ -423,7 +390,6 @@ fn test_prepared_replace_with_backrefs_empty_and_expanding_capture() {
     assert_eq!(out.to_strings_strict().unwrap(), vec!["X1Y", "zz", "X99Y"]);
 }
 
-#[test]
 fn test_replace_with_backrefs_preflight_exact_budget_covers_prepare_and_execute() {
     use cudf::{ExecutionBudgetRequest, Runtime};
 
@@ -466,7 +432,6 @@ fn test_replace_with_backrefs_preflight_exact_budget_covers_prepare_and_execute(
     }
 }
 
-#[test]
 fn test_prepared_replace_with_backrefs_exact_execute_budget_and_drop_balance() {
     use cudf::{ExecutionBudgetRequest, Runtime};
 
@@ -514,7 +479,6 @@ fn test_prepared_replace_with_backrefs_exact_execute_budget_and_drop_balance() {
 // try_to_integers (SQL TRY_CAST string -> integer)
 // ===========================================================================
 
-#[test]
 fn test_str_try_to_integers_int32_parses_valid_rejects_invalid() {
     // Valid, valid, parse-failure (alpha), overflow (> i32::MAX), negative.
     let s = crate::common::series("s", &["42", "0", "abc", "2147483648", "-17"]).unwrap();
@@ -523,14 +487,12 @@ fn test_str_try_to_integers_int32_parses_valid_rejects_invalid() {
     assert_eq!(result.to_optional_vec::<i32>().unwrap(), vec![Some(42), Some(0), None, None, Some(-17)]);
 }
 
-#[test]
 fn test_str_try_to_integers_propagates_input_nulls() {
     let s = crate::common::nullable_series("s", &["123", "x", "45"], &[true, false, true]).unwrap();
     let result = s.str().try_to_integers(&DataType::new(TypeId::Int32)).unwrap();
     assert_eq!(result.to_optional_vec::<i32>().unwrap(), vec![Some(123), None, Some(45)]);
 }
 
-#[test]
 fn test_str_try_to_integers_target_type_overflow_yields_null() {
     // 200 fits in UInt8; 256 overflows; -1 is rejected for an unsigned target.
     let s = crate::common::series("s", &["200", "256", "-1"]).unwrap();
@@ -538,7 +500,6 @@ fn test_str_try_to_integers_target_type_overflow_yields_null() {
     assert_eq!(result.to_optional_vec::<u8>().unwrap(), vec![Some(200), None, None]);
 }
 
-#[test]
 fn test_str_try_to_integers_empty_input() {
     let s = crate::common::series::<&str>("s", &[]).unwrap();
     let result = s.str().try_to_integers(&DataType::new(TypeId::Int64)).unwrap();
@@ -546,14 +507,12 @@ fn test_str_try_to_integers_empty_input() {
     assert_eq!(result.dtype().unwrap().id(), TypeId::Int64);
 }
 
-#[test]
 fn test_str_try_to_integers_rejects_non_integer_target_type() {
     let s = crate::common::series("s", &["1.5"]).unwrap();
     let err = s.str().try_to_integers(&DataType::new(TypeId::Float64)).expect_err("Float64 target must be rejected");
     assert!(format!("{err}").contains("integral"), "error should mention integral target: {err}");
 }
 
-#[test]
 fn test_expr_try_cast_dispatches_to_strings_try_to_integers() {
     use cudf::{DataFrame, ops::expr::col};
 
@@ -565,7 +524,6 @@ fn test_expr_try_cast_dispatches_to_strings_try_to_integers() {
     assert_eq!(series.to_optional_vec::<i32>().unwrap(), vec![Some(7), None, Some(11)]);
 }
 
-#[test]
 fn test_expr_try_cast_unsupported_pair_returns_error() {
     use cudf::{DataFrame, ops::expr::col};
 
@@ -575,4 +533,88 @@ fn test_expr_try_cast_unsupported_pair_returns_error() {
         .with_columns(vec![col("s").try_cast(TypeId::Float64).alias("v")])
         .expect_err("Float64 target must be rejected by TRY_CAST expr");
     assert!(format!("{err}").contains("STRING"), "error should mention STRING source: {err}");
+}
+
+#[test]
+fn strings_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_str_lower", test_str_lower),
+        ("test_str_upper", test_str_upper),
+        ("test_str_lower_display_omits_input_name", test_str_lower_display_omits_input_name),
+        ("test_str_upper_preserves_nulls", test_str_upper_preserves_nulls),
+        ("test_str_lower_empty", test_str_lower_empty),
+        ("test_str_contains_basic", test_str_contains_basic),
+        ("test_str_contains_empty_pattern_matches_all", test_str_contains_empty_pattern_matches_all),
+        ("test_str_contains_preserves_nulls", test_str_contains_preserves_nulls),
+        ("test_str_contains_display_omits_input_name", test_str_contains_display_omits_input_name),
+        (
+            "test_str_like_sql_wildcards_empty_pattern_escape_and_nulls",
+            test_str_like_sql_wildcards_empty_pattern_escape_and_nulls,
+        ),
+        ("test_str_like_escape_rejects_multi_character_escape", test_str_like_escape_rejects_multi_character_escape),
+        ("test_str_startswith_basic", test_str_startswith_basic),
+        ("test_str_endswith_basic", test_str_endswith_basic),
+        ("test_str_startswith_preserves_nulls", test_str_startswith_preserves_nulls),
+        ("test_str_endswith_preserves_nulls", test_str_endswith_preserves_nulls),
+        (
+            "test_str_slice_zero_based_unicode_open_ended_step_and_nulls",
+            test_str_slice_zero_based_unicode_open_ended_step_and_nulls,
+        ),
+        ("test_str_slice_rejects_zero_step", test_str_slice_rejects_zero_step),
+        (
+            "test_str_like_and_slice_in_use_explicit_execution_context",
+            test_str_like_and_slice_in_use_explicit_execution_context,
+        ),
+        ("test_str_strip_whitespace", test_str_strip_whitespace),
+        ("test_str_lstrip_whitespace", test_str_lstrip_whitespace),
+        ("test_str_rstrip_whitespace", test_str_rstrip_whitespace),
+        ("test_str_strip_specific_chars", test_str_strip_specific_chars),
+        ("test_str_strip_preserves_nulls", test_str_strip_preserves_nulls),
+        ("test_str_strip_display_omits_input_name", test_str_strip_display_omits_input_name),
+        ("test_str_len_basic", test_str_len_basic),
+        ("test_str_len_utf8", test_str_len_utf8),
+        ("test_str_byte_count_utf8", test_str_byte_count_utf8),
+        ("test_str_len_preserves_nulls", test_str_len_preserves_nulls),
+        ("test_str_len_empty", test_str_len_empty),
+        ("test_str_len_display_omits_input_name", test_str_len_display_omits_input_name),
+        (
+            "test_replace_with_backrefs_output_size_matches_executed_column",
+            test_replace_with_backrefs_output_size_matches_executed_column,
+        ),
+        (
+            "test_prepared_replace_with_backrefs_semantics_and_facts",
+            test_prepared_replace_with_backrefs_semantics_and_facts,
+        ),
+        (
+            "test_prepared_replace_with_backrefs_empty_and_expanding_capture",
+            test_prepared_replace_with_backrefs_empty_and_expanding_capture,
+        ),
+        (
+            "test_replace_with_backrefs_preflight_exact_budget_covers_prepare_and_execute",
+            test_replace_with_backrefs_preflight_exact_budget_covers_prepare_and_execute,
+        ),
+        (
+            "test_prepared_replace_with_backrefs_exact_execute_budget_and_drop_balance",
+            test_prepared_replace_with_backrefs_exact_execute_budget_and_drop_balance,
+        ),
+        (
+            "test_str_try_to_integers_int32_parses_valid_rejects_invalid",
+            test_str_try_to_integers_int32_parses_valid_rejects_invalid,
+        ),
+        ("test_str_try_to_integers_propagates_input_nulls", test_str_try_to_integers_propagates_input_nulls),
+        (
+            "test_str_try_to_integers_target_type_overflow_yields_null",
+            test_str_try_to_integers_target_type_overflow_yields_null,
+        ),
+        ("test_str_try_to_integers_empty_input", test_str_try_to_integers_empty_input),
+        (
+            "test_str_try_to_integers_rejects_non_integer_target_type",
+            test_str_try_to_integers_rejects_non_integer_target_type,
+        ),
+        (
+            "test_expr_try_cast_dispatches_to_strings_try_to_integers",
+            test_expr_try_cast_dispatches_to_strings_try_to_integers,
+        ),
+        ("test_expr_try_cast_unsupported_pair_returns_error", test_expr_try_cast_unsupported_pair_returns_error),
+    ]);
 }

@@ -26,7 +26,6 @@ fn sample_df() -> DataFrame {
 // clone() produces shared columns
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_clone_shares_all_columns() {
     let df = sample_df();
     let copied = df.clone();
@@ -37,7 +36,6 @@ fn test_clone_shares_all_columns() {
     assert_eq!(device_ptr(&df, "flag"), device_ptr(&copied, "flag"));
 }
 
-#[test]
 fn test_clone_both_dfs_independently_readable() {
     let df = sample_df();
     let copied = df.clone();
@@ -53,7 +51,6 @@ fn test_clone_both_dfs_independently_readable() {
     assert_eq!(copied.series("flag").unwrap().to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
-#[test]
 fn test_clone_preserves_schema() {
     let df = sample_df();
     let copied = df.clone();
@@ -67,7 +64,6 @@ fn test_clone_preserves_schema() {
 // select() shares subset of columns
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_select_shares_selected_columns() {
     let df = sample_df();
     let selected = df.select(["id", "flag"]).unwrap();
@@ -77,7 +73,6 @@ fn test_select_shares_selected_columns() {
     assert_eq!(device_ptr(&df, "flag"), device_ptr(&selected, "flag"));
 }
 
-#[test]
 fn test_select_original_still_usable() {
     let df = sample_df();
     let selected = df.select(["score"]).unwrap();
@@ -93,7 +88,6 @@ fn test_select_original_still_usable() {
     assert_eq!(selected.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![10.0, 20.0, 30.0]);
 }
 
-#[test]
 fn test_select_reorder_shares_columns() {
     let df = sample_df();
     let reordered = df.select(["flag", "id"]).unwrap();
@@ -103,7 +97,6 @@ fn test_select_reorder_shares_columns() {
     assert_eq!(device_ptr(&df, "flag"), device_ptr(&reordered, "flag"));
 }
 
-#[test]
 fn test_select_memory_effect_reports_retained_owner_aliases() {
     let df = sample_df();
     let selected = df.select(["flag", "id"]).unwrap();
@@ -130,7 +123,6 @@ fn test_select_memory_effect_reports_retained_owner_aliases() {
     assert_eq!(output_columns[1].identity, selected_identity.columns[1].identity);
 }
 
-#[test]
 fn test_empty_select_memory_effect_reports_zero_column_alias() {
     let df = sample_df();
     let effect = df.select_memory_effect(std::iter::empty::<&str>()).unwrap();
@@ -142,7 +134,6 @@ fn test_empty_select_memory_effect_reports_zero_column_alias() {
     assert!(output_columns.is_empty());
 }
 
-#[test]
 fn test_select_as_allows_multiple_output_aliases_for_one_owner() {
     let df = sample_df();
     let selected = df.select_as([("score", "sum_score"), ("score", "min_score")]).unwrap();
@@ -159,7 +150,6 @@ fn test_select_as_allows_multiple_output_aliases_for_one_owner() {
     assert_eq!(output_columns[1].output_name, "min_score");
 }
 
-#[test]
 fn test_select_as_rejects_duplicate_output_names() {
     let df = sample_df();
     let error = df.select_as([("id", "duplicate"), ("score", "duplicate")]).expect_err("output names remain unique");
@@ -170,7 +160,6 @@ fn test_select_as_rejects_duplicate_output_names() {
 // rename() shares all column data
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_rename_shares_all_column_data() {
     let df = sample_df();
     let renamed = df.rename_column("id", "identifier").unwrap();
@@ -183,7 +172,6 @@ fn test_rename_shares_all_column_data() {
     assert_eq!(device_ptr(&df, "flag"), device_ptr(&renamed, "flag"));
 }
 
-#[test]
 fn test_rename_original_unchanged() {
     let df = sample_df();
     let renamed = df.rename_column("score", "points").unwrap();
@@ -201,7 +189,6 @@ fn test_rename_original_unchanged() {
 // with_column() only allocates for the new/replaced column
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_with_column_unchanged_columns_shared() {
     let df = sample_df();
     let new_col = column_from_slice(&[100i32, 200, 300]).unwrap();
@@ -213,7 +200,6 @@ fn test_with_column_unchanged_columns_shared() {
     assert_eq!(device_ptr(&df, "flag"), device_ptr(&result, "flag"));
 }
 
-#[test]
 fn test_with_column_replaced_column_has_new_allocation() {
     let df = sample_df();
     let original_score_ptr = device_ptr(&df, "score");
@@ -229,7 +215,6 @@ fn test_with_column_replaced_column_has_new_allocation() {
     assert_eq!(device_ptr(&df, "flag"), device_ptr(&result, "flag"));
 }
 
-#[test]
 fn test_with_column_replaced_column_has_correct_data() {
     let df = sample_df();
     let new_score = column_from_slice(&[99.0f64, 88.0, 77.0]).unwrap();
@@ -245,7 +230,6 @@ fn test_with_column_replaced_column_has_correct_data() {
 // Multiple clone() calls don't OOM (zero-cost sharing)
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_many_clones_are_zero_cost() {
     let df = sample_df();
 
@@ -265,7 +249,6 @@ fn test_many_clones_are_zero_cost() {
     assert_eq!(device_ptr(&df, "id"), device_ptr(&copies[999], "id"));
 }
 
-#[test]
 fn test_many_clones_readable_after_original_dropped() {
     let copies: Vec<DataFrame> = {
         let df = sample_df();
@@ -285,7 +268,6 @@ fn test_many_clones_readable_after_original_dropped() {
 // Combined operations preserve sharing where expected
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_clone_then_select_shares_columns() {
     let df = sample_df();
     let copied = df.clone();
@@ -296,7 +278,6 @@ fn test_clone_then_select_shares_columns() {
     assert_eq!(device_ptr(&df, "id"), device_ptr(&selected, "id"));
 }
 
-#[test]
 fn test_rename_then_select_shares_columns() {
     let df = sample_df();
     let renamed = df.rename_column("id", "identifier").unwrap();
@@ -307,7 +288,6 @@ fn test_rename_then_select_shares_columns() {
     assert_eq!(device_ptr(&df, "flag"), device_ptr(&selected, "flag"));
 }
 
-#[test]
 fn test_with_column_then_clone_shares_new_and_old() {
     let df = sample_df();
     let new_col = column_from_slice(&[100i32, 200, 300]).unwrap();
@@ -322,7 +302,6 @@ fn test_with_column_then_clone_shares_new_and_old() {
     assert_eq!(device_ptr(&with_extra, "extra"), device_ptr(&copied, "extra"));
 }
 
-#[test]
 fn test_chained_renames_share_all_data() {
     let df = sample_df();
     let r1 = df.rename_column("id", "a").unwrap();
@@ -335,7 +314,6 @@ fn test_chained_renames_share_all_data() {
     assert_eq!(device_ptr(&df, "flag"), device_ptr(&r3, "c"));
 }
 
-#[test]
 fn test_select_subset_then_with_column_shares_retained() {
     let df = sample_df();
     let selected = df.select(["id", "score"]).unwrap();
@@ -345,4 +323,41 @@ fn test_select_subset_then_with_column_shares_retained() {
     // "id" and "score" are shared all the way through.
     assert_eq!(device_ptr(&df, "id"), device_ptr(&result, "id"));
     assert_eq!(device_ptr(&df, "score"), device_ptr(&result, "score"));
+}
+
+#[test]
+fn arc_sharing_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_clone_shares_all_columns", test_clone_shares_all_columns),
+        ("test_clone_both_dfs_independently_readable", test_clone_both_dfs_independently_readable),
+        ("test_clone_preserves_schema", test_clone_preserves_schema),
+        ("test_select_shares_selected_columns", test_select_shares_selected_columns),
+        ("test_select_original_still_usable", test_select_original_still_usable),
+        ("test_select_reorder_shares_columns", test_select_reorder_shares_columns),
+        (
+            "test_select_memory_effect_reports_retained_owner_aliases",
+            test_select_memory_effect_reports_retained_owner_aliases,
+        ),
+        (
+            "test_empty_select_memory_effect_reports_zero_column_alias",
+            test_empty_select_memory_effect_reports_zero_column_alias,
+        ),
+        (
+            "test_select_as_allows_multiple_output_aliases_for_one_owner",
+            test_select_as_allows_multiple_output_aliases_for_one_owner,
+        ),
+        ("test_select_as_rejects_duplicate_output_names", test_select_as_rejects_duplicate_output_names),
+        ("test_rename_shares_all_column_data", test_rename_shares_all_column_data),
+        ("test_rename_original_unchanged", test_rename_original_unchanged),
+        ("test_with_column_unchanged_columns_shared", test_with_column_unchanged_columns_shared),
+        ("test_with_column_replaced_column_has_new_allocation", test_with_column_replaced_column_has_new_allocation),
+        ("test_with_column_replaced_column_has_correct_data", test_with_column_replaced_column_has_correct_data),
+        ("test_many_clones_are_zero_cost", test_many_clones_are_zero_cost),
+        ("test_many_clones_readable_after_original_dropped", test_many_clones_readable_after_original_dropped),
+        ("test_clone_then_select_shares_columns", test_clone_then_select_shares_columns),
+        ("test_rename_then_select_shares_columns", test_rename_then_select_shares_columns),
+        ("test_with_column_then_clone_shares_new_and_old", test_with_column_then_clone_shares_new_and_old),
+        ("test_chained_renames_share_all_data", test_chained_renames_share_all_data),
+        ("test_select_subset_then_with_column_shares_retained", test_select_subset_then_with_column_shares_retained),
+    ]);
 }

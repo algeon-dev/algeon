@@ -6,7 +6,6 @@ use crate::common::{
     last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
 };
 
-#[test]
 fn test_contains_basic_i32() {
     let haystack = column_from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
     let needles = column_from_slice(&[20i32, 40, 60, 80]).unwrap();
@@ -19,7 +18,6 @@ fn test_contains_basic_i32() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, true, false, false]);
 }
 
-#[test]
 fn test_contains_all_match() {
     let haystack = column_from_slice(&[1i32, 2, 3]).unwrap();
     let needles = column_from_slice(&[3i32, 1, 2]).unwrap();
@@ -32,7 +30,6 @@ fn test_contains_all_match() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, true, true]);
 }
 
-#[test]
 fn test_contains_no_match() {
     let haystack = column_from_slice(&[1i32, 2, 3]).unwrap();
     let needles = column_from_slice(&[4i32, 5, 6]).unwrap();
@@ -45,7 +42,6 @@ fn test_contains_no_match() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, false, false]);
 }
 
-#[test]
 fn test_contains_empty_needles() {
     let haystack = column_from_slice(&[1i32, 2, 3]).unwrap();
     let needles = column_from_slice(&[] as &[i32]).unwrap();
@@ -58,7 +54,6 @@ fn test_contains_empty_needles() {
     assert_eq!(rv.len().unwrap(), 0);
 }
 
-#[test]
 fn test_contains_empty_haystack() {
     let haystack = column_from_slice(&[] as &[i32]).unwrap();
     let needles = column_from_slice(&[1i32, 2]).unwrap();
@@ -71,7 +66,6 @@ fn test_contains_empty_haystack() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, false]);
 }
 
-#[test]
 fn test_contains_with_duplicates_in_haystack() {
     let haystack = column_from_slice(&[1i32, 1, 2, 2, 3]).unwrap();
     let needles = column_from_slice(&[1i32, 3, 4]).unwrap();
@@ -84,7 +78,6 @@ fn test_contains_with_duplicates_in_haystack() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, true, false]);
 }
 
-#[test]
 fn test_contains_float64() {
     let haystack = column_from_slice(&[1.0f64, 2.0, 3.0]).unwrap();
     let needles = column_from_slice(&[2.0f64, 4.0]).unwrap();
@@ -97,7 +90,6 @@ fn test_contains_float64() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false]);
 }
 
-#[test]
 fn test_contains_succeeds_with_mixed_domains_and_uses_haystack_provenance() {
     let _event_observation = crate::common::lock_event_observation();
     let haystack = explicit_i32_column(&[10, 20, 30, 40], 910);
@@ -123,7 +115,6 @@ fn test_contains_succeeds_with_mixed_domains_and_uses_haystack_provenance() {
 // ColumnView::isin
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_isin_i32_some_matches() {
     let col = column_from_slice(&[1i32, 2, 3, 4, 5]).unwrap();
     let values = column_from_slice(&[2i32, 4]).unwrap();
@@ -136,7 +127,6 @@ fn test_isin_i32_some_matches() {
     assert_eq!(mv.to_vec::<bool>().unwrap(), vec![false, true, false, true, false]);
 }
 
-#[test]
 fn test_isin_succeeds_with_mixed_domains() {
     let _event_observation = crate::common::lock_event_observation();
     let col = explicit_i32_column(&[1, 2, 3, 4, 5], 912);
@@ -161,7 +151,6 @@ fn test_isin_succeeds_with_mixed_domains() {
     assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
 
-#[test]
 fn test_isin_string_column() {
     let col = column_from_strs(&["apple", "banana", "cherry"]).unwrap();
     let values = column_from_strs(&["banana", "date"]).unwrap();
@@ -174,7 +163,6 @@ fn test_isin_string_column() {
     assert_eq!(mv.to_vec::<bool>().unwrap(), vec![false, true, false]);
 }
 
-#[test]
 fn test_isin_no_matches() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let values = column_from_slice(&[10i32, 20]).unwrap();
@@ -187,7 +175,6 @@ fn test_isin_no_matches() {
     assert_eq!(mv.to_vec::<bool>().unwrap(), vec![false, false, false]);
 }
 
-#[test]
 fn test_isin_all_matches() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let values = column_from_slice(&[3i32, 1, 2]).unwrap();
@@ -200,7 +187,6 @@ fn test_isin_all_matches() {
     assert_eq!(mv.to_vec::<bool>().unwrap(), vec![true, true, true]);
 }
 
-#[test]
 fn test_isin_empty_values() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let values = column_from_slice(&[] as &[i32]).unwrap();
@@ -214,7 +200,6 @@ fn test_isin_empty_values() {
     assert_eq!(mv.to_vec::<bool>().unwrap(), vec![false, false, false]);
 }
 
-#[test]
 fn test_isin_column_with_nulls() {
     let col = column_from_slice_nullable(&[1i32, 0, 3, 0], &[true, false, true, false]).unwrap();
     let values = column_from_slice(&[1i32, 3]).unwrap();
@@ -235,7 +220,6 @@ fn test_isin_column_with_nulls() {
     assert_eq!(mv.to_vec::<bool>().unwrap(), vec![true, false, true, false]);
 }
 
-#[test]
 fn test_isin_empty_column() {
     let col = column_from_slice(&[] as &[i32]).unwrap();
     let values = column_from_slice(&[1i32, 2]).unwrap();
@@ -248,7 +232,6 @@ fn test_isin_empty_column() {
     assert_eq!(mv.len().unwrap(), 0);
 }
 
-#[test]
 fn test_isin_type_mismatch_error_has_operation_context() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let values = column_from_slice(&[1.0f64, 2.0]).unwrap();
@@ -265,4 +248,30 @@ fn test_isin_type_mismatch_error_has_operation_context() {
     assert_eq!(err.operation(), "column_view::isin");
     assert_eq!(error_context_value(&err, "left_type_id").as_deref(), Some("int32"));
     assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("float64"));
+}
+
+#[test]
+fn search_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_contains_basic_i32", test_contains_basic_i32),
+        ("test_contains_all_match", test_contains_all_match),
+        ("test_contains_no_match", test_contains_no_match),
+        ("test_contains_empty_needles", test_contains_empty_needles),
+        ("test_contains_empty_haystack", test_contains_empty_haystack),
+        ("test_contains_with_duplicates_in_haystack", test_contains_with_duplicates_in_haystack),
+        ("test_contains_float64", test_contains_float64),
+        (
+            "test_contains_succeeds_with_mixed_domains_and_uses_haystack_provenance",
+            test_contains_succeeds_with_mixed_domains_and_uses_haystack_provenance,
+        ),
+        ("test_isin_i32_some_matches", test_isin_i32_some_matches),
+        ("test_isin_succeeds_with_mixed_domains", test_isin_succeeds_with_mixed_domains),
+        ("test_isin_string_column", test_isin_string_column),
+        ("test_isin_no_matches", test_isin_no_matches),
+        ("test_isin_all_matches", test_isin_all_matches),
+        ("test_isin_empty_values", test_isin_empty_values),
+        ("test_isin_column_with_nulls", test_isin_column_with_nulls),
+        ("test_isin_empty_column", test_isin_empty_column),
+        ("test_isin_type_mismatch_error_has_operation_context", test_isin_type_mismatch_error_has_operation_context),
+    ]);
 }

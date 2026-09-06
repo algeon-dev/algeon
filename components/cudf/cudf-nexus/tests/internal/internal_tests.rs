@@ -20,7 +20,6 @@ use crate::common::{assert_duplicate_name_error, assert_missing_column_error, co
 // These operations internally build table views from temporary column views.
 // ---------------------------------------------------------------------------
 
-#[test]
 fn filter_preserves_row_and_column_counts() {
     // filter internally uses build_table_view / TempTableView infrastructure.
     let ids = crate::common::series::<i32>("ids", &[1, 2, 3, 4, 5]).unwrap();
@@ -36,7 +35,6 @@ fn filter_preserves_row_and_column_counts() {
     assert_eq!(filtered.column_names(), vec!["id", "val"], "schema names preserved");
 }
 
-#[test]
 fn sort_preserves_schema_names_and_lengths() {
     // sort internally resolves column names and builds table views.
     let names_col = crate::common::series::<i32>("a", &[3, 1, 2]).unwrap();
@@ -55,7 +53,6 @@ fn sort_preserves_schema_names_and_lengths() {
     assert_eq!(a_vals, vec![1, 2, 3]);
 }
 
-#[test]
 fn reassembly_after_drop_duplicates_preserves_schema() {
     // drop_duplicates internally uses resolve + reassemble helpers.
     let a = crate::common::series::<i32>("x", &[1, 1, 2, 2, 3]).unwrap();
@@ -77,7 +74,6 @@ fn reassembly_after_drop_duplicates_preserves_schema() {
 // resolve helpers — column name resolution errors
 // ---------------------------------------------------------------------------
 
-#[test]
 fn sort_with_missing_column_returns_error() {
     // resolve_column_names should produce a clear error for unknown columns.
     let a = crate::common::series::<i32>("a", &[1, 2, 3]).unwrap();
@@ -91,7 +87,6 @@ fn sort_with_missing_column_returns_error() {
 // reassemble helpers — from_table_with_names via join
 // ---------------------------------------------------------------------------
 
-#[test]
 fn join_reassembly_preserves_schema_names() {
     // join internally uses reassembly helpers to rebuild DataFrames.
     let left_key = crate::common::series::<i32>("key", &[1, 2, 3]).unwrap();
@@ -111,7 +106,6 @@ fn join_reassembly_preserves_schema_names() {
     assert_eq!(joined.column_names(), vec!["key", "lval", "rval"]);
 }
 
-#[test]
 fn reassembly_name_count_mismatch_uses_canonical_count_contract() {
     let table = cudf::core::Table::from_columns(vec![column_from_slice(&[1i32, 2]).unwrap()]).unwrap();
 
@@ -142,7 +136,6 @@ fn reassembly_name_count_mismatch_uses_canonical_count_contract() {
 // validate_no_duplicate_names — exercised via DataFrame constructors
 // ---------------------------------------------------------------------------
 
-#[test]
 fn from_series_rejects_duplicate_names() {
     let a = crate::common::series::<i32>("a", &[1]).unwrap();
     let b = crate::common::series::<i32>("b", &[2]).unwrap();
@@ -151,10 +144,26 @@ fn from_series_rejects_duplicate_names() {
     assert_duplicate_name_error(&err, "x");
 }
 
-#[test]
 fn dataframe_new_rejects_duplicate_names() {
     let c1 = column_from_slice(&[1i32]).unwrap();
     let c2 = column_from_slice(&[2i32]).unwrap();
     let err = crate::common::dataframe_from_columns(vec!["dup".into(), "dup".into()], vec![c1, c2]).unwrap_err();
     assert_duplicate_name_error(&err, "dup");
+}
+
+#[test]
+fn internal_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("filter_preserves_row_and_column_counts", filter_preserves_row_and_column_counts),
+        ("sort_preserves_schema_names_and_lengths", sort_preserves_schema_names_and_lengths),
+        ("reassembly_after_drop_duplicates_preserves_schema", reassembly_after_drop_duplicates_preserves_schema),
+        ("sort_with_missing_column_returns_error", sort_with_missing_column_returns_error),
+        ("join_reassembly_preserves_schema_names", join_reassembly_preserves_schema_names),
+        (
+            "reassembly_name_count_mismatch_uses_canonical_count_contract",
+            reassembly_name_count_mismatch_uses_canonical_count_contract,
+        ),
+        ("from_series_rejects_duplicate_names", from_series_rejects_duplicate_names),
+        ("dataframe_new_rejects_duplicate_names", dataframe_new_rejects_duplicate_names),
+    ]);
 }

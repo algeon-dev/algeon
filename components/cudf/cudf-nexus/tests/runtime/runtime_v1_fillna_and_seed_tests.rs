@@ -49,7 +49,6 @@ fn obs_current_device_resource() -> *mut c_void {
 /// Left DataFrame in domain A, fill series in domain B, target runtime C.
 /// Explicit placement makes the target runtime step visible before
 /// `fillna_with_series` runs.
-#[test]
 fn df_fillna_after_copy_into_runtime_places_inputs_in_target_runtime() {
     let rt_a = sample_runtime();
     let rt_b = sample_runtime();
@@ -81,7 +80,6 @@ fn df_fillna_after_copy_into_runtime_places_inputs_in_target_runtime() {
 /// v2 semantics: mixed-domain fillna_with_series succeeds via the default
 /// path (without `_with_runtime`). Output provenance follows the input
 /// DataFrame (primary input for replace-nulls).
-#[test]
 fn df_fillna_with_series_succeeds_with_mixed_domains_default_path() {
     let rt_a = sample_runtime();
     let rt_b = sample_runtime();
@@ -108,7 +106,6 @@ fn df_fillna_with_series_succeeds_with_mixed_domains_default_path() {
 }
 
 /// Both inputs already in the same runtime — no copy needed.
-#[test]
 fn df_fillna_after_copy_into_runtime_same_domain_works() {
     let rt = sample_runtime();
     let df = DataFrame::from_series([
@@ -132,7 +129,6 @@ fn df_fillna_after_copy_into_runtime_same_domain_works() {
 
 /// Same as the DataFrame test but at the Series level.
 /// Explicit placement makes the target runtime step visible.
-#[test]
 fn series_fillna_after_copy_into_runtime_places_inputs_in_target_runtime() {
     let rt_a = sample_runtime();
     let rt_b = sample_runtime();
@@ -160,7 +156,6 @@ fn series_fillna_after_copy_into_runtime_places_inputs_in_target_runtime() {
 /// v2 semantics: mixed-domain Series::fillna_with_series succeeds via the
 /// default path (without `_with_runtime`). Output provenance follows the
 /// input series (primary input for replace-nulls).
-#[test]
 fn series_fillna_with_series_succeeds_with_mixed_domains_default_path() {
     let rt_a = sample_runtime();
     let rt_b = sample_runtime();
@@ -187,7 +182,6 @@ fn series_fillna_with_series_succeeds_with_mixed_domains_default_path() {
 
 /// An empty column created via `Runtime::empty_column` carries the runtime's
 /// explicit domain instead of relying on any implicit fallback.
-#[test]
 fn runtime_empty_column_retains_explicit_domain() {
     let rt = sample_runtime();
     obs_reset();
@@ -202,7 +196,6 @@ fn runtime_empty_column_retains_explicit_domain() {
 
 /// A `Runtime::empty_column` result can be added to an explicit-domain
 /// DataFrame via `with_column` without mixed-domain rejection.
-#[test]
 fn runtime_empty_column_in_dataframe_no_mixed_domain_error() {
     let rt = sample_runtime();
     let df = DataFrame::from_series([("id", rt.series(&[1i32; 0]).unwrap())]).unwrap();
@@ -220,7 +213,6 @@ fn runtime_empty_column_in_dataframe_no_mixed_domain_error() {
 
 /// `Runtime::column_from_device_ptr` tags the result with the runtime's
 /// explicit domain.
-#[test]
 fn runtime_column_from_device_ptr_retains_explicit_domain() {
     let rt = sample_runtime();
 
@@ -238,7 +230,6 @@ fn runtime_column_from_device_ptr_retains_explicit_domain() {
 
 /// `Runtime::column_from_device_ptr` routes through the `_ex` FFI shim,
 /// which records the explicit stream in the observation hooks.
-#[test]
 fn runtime_column_from_device_ptr_uses_ex_ffi() {
     let rt = sample_runtime();
     let expected_stream = rt.stream().testing_raw_handle_value();
@@ -256,4 +247,37 @@ fn runtime_column_from_device_ptr_uses_ex_ffi() {
     // The observation hook should have recorded the runtime's MR (not default).
     assert_ne!(obs_last_mr() as usize, default_mr);
     assert_eq!(col.testing_execution_domain_mr_value(), rt.memory_resource().testing_raw_handle_value());
+}
+
+#[test]
+fn runtime_v1_fillna_and_seed_tests_cases() {
+    crate::common::run_named_cases(&[
+        (
+            "df_fillna_after_copy_into_runtime_places_inputs_in_target_runtime",
+            df_fillna_after_copy_into_runtime_places_inputs_in_target_runtime,
+        ),
+        (
+            "df_fillna_with_series_succeeds_with_mixed_domains_default_path",
+            df_fillna_with_series_succeeds_with_mixed_domains_default_path,
+        ),
+        ("df_fillna_after_copy_into_runtime_same_domain_works", df_fillna_after_copy_into_runtime_same_domain_works),
+        (
+            "series_fillna_after_copy_into_runtime_places_inputs_in_target_runtime",
+            series_fillna_after_copy_into_runtime_places_inputs_in_target_runtime,
+        ),
+        (
+            "series_fillna_with_series_succeeds_with_mixed_domains_default_path",
+            series_fillna_with_series_succeeds_with_mixed_domains_default_path,
+        ),
+        ("runtime_empty_column_retains_explicit_domain", runtime_empty_column_retains_explicit_domain),
+        (
+            "runtime_empty_column_in_dataframe_no_mixed_domain_error",
+            runtime_empty_column_in_dataframe_no_mixed_domain_error,
+        ),
+        (
+            "runtime_column_from_device_ptr_retains_explicit_domain",
+            runtime_column_from_device_ptr_retains_explicit_domain,
+        ),
+        ("runtime_column_from_device_ptr_uses_ex_ffi", runtime_column_from_device_ptr_uses_ex_ffi),
+    ]);
 }

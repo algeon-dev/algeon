@@ -63,7 +63,6 @@ impl ActiveLeaseBackend for TestBackend {
     }
 }
 
-#[test]
 fn interop_lease_backend_surface_smoke() {
     let export = LeaseExportContext::new(None, LeaseReadiness::HostVisible);
     let wrapped = LeaseBackend::new(TestBackend);
@@ -87,7 +86,6 @@ fn interop_lease_backend_surface_smoke() {
     );
 }
 
-#[test]
 fn interop_shared_authority_surface_smoke() {
     let stream = CudaStream::new().unwrap();
     let event = CudaEvent::new().unwrap();
@@ -104,7 +102,6 @@ fn interop_shared_authority_surface_smoke() {
     );
 }
 
-#[test]
 fn interop_high_level_adapter_surface_smoke() {
     type DataFrameBorrowedImport = for<'a, 'b> fn(
         &'a BorrowedTableView<'b>,
@@ -167,7 +164,6 @@ fn interop_high_level_adapter_surface_smoke() {
     );
 }
 
-#[test]
 fn interop_low_level_adapter_surface_smoke() {
     fn assert_column_borrowed_export(
         _f: for<'a> fn(&'a Column) -> std::result::Result<BorrowedColumnView<'a>, InteropError>,
@@ -212,4 +208,14 @@ fn interop_low_level_adapter_surface_smoke() {
     assert_table_prepared_export(Table::try_prepare_device_table_export);
     assert_table_prepared_root_export(Table::try_into_prepared_device_table_export);
     assert_table_device_arrow_export_with_deep_copy(Table::try_prepare_device_arrow_export_with_deep_copy);
+}
+
+#[test]
+fn surface_smoke_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("interop_lease_backend_surface_smoke", interop_lease_backend_surface_smoke),
+        ("interop_shared_authority_surface_smoke", interop_shared_authority_surface_smoke),
+        ("interop_high_level_adapter_surface_smoke", interop_high_level_adapter_surface_smoke),
+        ("interop_low_level_adapter_surface_smoke", interop_low_level_adapter_surface_smoke),
+    ]);
 }

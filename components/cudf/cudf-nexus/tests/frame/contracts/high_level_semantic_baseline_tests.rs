@@ -32,7 +32,6 @@ fn sample_df() -> DataFrame {
 // ===========================================================================
 
 /// `series()` returns an owned `Series` with correct metadata.
-#[test]
 fn df_series_returns_owned_series() {
     let df = sample_df();
     let s = df.series("id").unwrap();
@@ -42,7 +41,6 @@ fn df_series_returns_owned_series() {
 }
 
 /// Two `series()` calls return Series backed by the same GPU buffer.
-#[test]
 fn df_series_shares_device_pointer() {
     let df = sample_df();
     let ptr1 = df.series("id").unwrap().as_column().device_data_ptr().unwrap();
@@ -53,7 +51,6 @@ fn df_series_shares_device_pointer() {
 
 /// `series()` produces an owned value that can outlive the DataFrame.
 /// This proves it is worker-thread portable.
-#[test]
 fn df_series_outlives_dataframe() {
     let s = {
         let df = sample_df();
@@ -67,7 +64,6 @@ fn df_series_outlives_dataframe() {
 
 /// Two `series()` calls for the same column produce Series with the
 /// same device pointer — proving Arc-sharing (zero GPU copy).
-#[test]
 fn df_series_two_calls_share_arc() {
     let df = sample_df();
     let s1 = df.series("id").unwrap();
@@ -84,7 +80,6 @@ fn df_series_two_calls_share_arc() {
 // ===========================================================================
 
 /// `get()` returns `None` on miss, `Some(Series)` on hit.
-#[test]
 fn df_get_probe_access() {
     let df = sample_df();
     assert!(df.get("nonexistent").unwrap().is_none());
@@ -126,7 +121,6 @@ fn df_get_preserves_missing_column_vs_reconstruction_failure() {
 }
 
 /// `contains()` returns `true` for existing columns, `false` otherwise.
-#[test]
 fn df_contains_check() {
     let df = sample_df();
     assert!(df.contains("id"));
@@ -135,7 +129,6 @@ fn df_contains_check() {
 }
 
 /// `iter_series()` yields series in schema order without copying.
-#[test]
 fn df_iter_series_preserves_schema_order_and_shares_gpu_data() {
     let df = sample_df();
     let items: Vec<_> = df.iter_series().collect::<cudf::Result<Vec<_>>>().unwrap();
@@ -172,7 +165,6 @@ fn df_iter_series_yields_per_item_errors_without_reordering() {
 // ===========================================================================
 
 /// `to_table()` produces a new table with independent GPU memory.
-#[test]
 fn df_to_table_deep_copies() {
     let df = sample_df();
     let table = df.to_table_copy().unwrap();
@@ -192,7 +184,6 @@ fn df_to_table_deep_copies() {
 }
 
 /// `to_table()` does not consume the DataFrame — source remains usable.
-#[test]
 fn df_to_table_source_still_usable() {
     let df = sample_df();
     let _table = df.to_table_copy().unwrap();
@@ -208,7 +199,6 @@ fn df_to_table_source_still_usable() {
 
 /// When the DataFrame is the sole owner of all columns (Arc strong
 /// count == 1), `into_table()` can unwrap without copying.
-#[test]
 fn df_into_table_unique_owner_no_extra_copy() {
     let df = crate::common::dataframe_from_columns(vec!["a".into()], vec![column_from_slice(&[1i32, 2, 3]).unwrap()])
         .unwrap();
@@ -225,7 +215,6 @@ fn df_into_table_unique_owner_no_extra_copy() {
 
 /// When the DataFrame shares columns (Arc strong count > 1),
 /// `into_table()` must deep-copy the shared columns.
-#[test]
 fn df_into_table_shared_columns_deep_copies() {
     let df = sample_df();
 
@@ -249,7 +238,6 @@ fn df_into_table_shared_columns_deep_copies() {
 }
 
 /// `into_table()` consumes the DataFrame — data values are preserved.
-#[test]
 fn df_into_table_values_preserved() {
     let df = sample_df();
     let (table, names) = df.try_into_table().unwrap();
@@ -265,7 +253,6 @@ fn df_into_table_values_preserved() {
 // ===========================================================================
 
 /// `filter(&Series)` produces a new GPU allocation.
-#[test]
 fn filter_allocates_new_gpu_data() {
     let df = sample_df();
     let original_ptr = device_ptr(&df, "id");
@@ -278,7 +265,6 @@ fn filter_allocates_new_gpu_data() {
 }
 
 /// `sort_values` produces consistent results across calls.
-#[test]
 fn sort_values_consistent_results() {
     let df1 = sample_df();
     let df2 = sample_df();
@@ -293,7 +279,6 @@ fn sort_values_consistent_results() {
 }
 
 /// `select` is schema-only and Arc-shares selected columns.
-#[test]
 fn select_shares_arc() {
     let df = sample_df();
     let original_ptr = device_ptr(&df, "id");
@@ -305,7 +290,6 @@ fn select_shares_arc() {
 }
 
 /// `rename_column` is a pure schema rewrite that Arc-shares columns.
-#[test]
 fn rename_column_shares_arc() {
     let df = sample_df();
     let original_ptr = device_ptr(&df, "id");
@@ -322,7 +306,6 @@ fn rename_column_shares_arc() {
 
 /// `Series::as_column()` returns a `Column` reference that points to the
 /// same device data across repeated access.
-#[test]
 fn series_as_column_same_device_ptr_on_repeated_access() {
     let s = crate::common::series::<i32>("x", &[1, 2]).unwrap();
     let col = s.as_column();
@@ -331,7 +314,6 @@ fn series_as_column_same_device_ptr_on_repeated_access() {
 }
 
 /// `Series::as_column()` returns `&Column` — a direct borrow.
-#[test]
 fn series_column_returns_ref() {
     let s = crate::common::series::<i32>("c", &[1, 2, 3]).unwrap();
     let col_ref: &Column = s.as_column();
@@ -340,7 +322,6 @@ fn series_column_returns_ref() {
 
 /// `Series::into_inner()` consumes the Series and returns the `Arc<Column>`.
 /// A clone of the Series shares the same device data.
-#[test]
 fn series_into_inner_shares_arc() {
     let s = crate::common::series::<i32>("c", &[1, 2, 3]).unwrap();
 
@@ -354,7 +335,6 @@ fn series_into_inner_shares_arc() {
 }
 
 /// `Series::arc()` returns a cloned `Arc<Column>` without consuming the Series.
-#[test]
 fn series_arc_accessor_shares_arc_without_consuming() {
     let s = crate::common::series::<i32>("c", &[1, 2, 3]).unwrap();
 
@@ -374,7 +354,6 @@ fn series_arc_accessor_shares_arc_without_consuming() {
 // ===========================================================================
 
 /// `Series::clone()` is a cheap Arc bump — same device pointer.
-#[test]
 fn series_clone_shares_gpu_data() {
     let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
     let cloned = s.clone();
@@ -389,7 +368,6 @@ fn series_clone_shares_gpu_data() {
 // ===========================================================================
 
 /// `filter()` with a Series mask produces a new GPU allocation.
-#[test]
 fn df_filter_gpu_allocates() {
     let df = sample_df();
     let mask = crate::common::series::<bool>("mask", &[true, false, true]).unwrap();
@@ -403,7 +381,6 @@ fn df_filter_gpu_allocates() {
 }
 
 /// `head()` / `tail()` / `slice()` all produce new GPU allocations.
-#[test]
 fn df_slicing_ops_gpu_allocate() {
     let df = sample_df();
     let original_ptr = device_ptr(&df, "id");
@@ -419,7 +396,6 @@ fn df_slicing_ops_gpu_allocate() {
 }
 
 /// GPU-allocating unary ops on Series produce new columns.
-#[test]
 fn series_ops_gpu_allocate() {
     let s = crate::common::series::<i32>("v", &[1, 2, 3]).unwrap();
     let original_ptr = s.as_column().device_data_ptr().unwrap();
@@ -431,4 +407,37 @@ fn series_ops_gpu_allocate() {
     let added = s.add_scalar(10i32).unwrap();
     let add_ptr = added.as_column().device_data_ptr().unwrap();
     assert_ne!(original_ptr, add_ptr, "add_scalar must allocate new column");
+}
+
+#[test]
+fn high_level_semantic_baseline_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("df_series_returns_owned_series", df_series_returns_owned_series),
+        ("df_series_shares_device_pointer", df_series_shares_device_pointer),
+        ("df_series_outlives_dataframe", df_series_outlives_dataframe),
+        ("df_series_two_calls_share_arc", df_series_two_calls_share_arc),
+        ("df_get_probe_access", df_get_probe_access),
+        ("df_contains_check", df_contains_check),
+        (
+            "df_iter_series_preserves_schema_order_and_shares_gpu_data",
+            df_iter_series_preserves_schema_order_and_shares_gpu_data,
+        ),
+        ("df_to_table_deep_copies", df_to_table_deep_copies),
+        ("df_to_table_source_still_usable", df_to_table_source_still_usable),
+        ("df_into_table_unique_owner_no_extra_copy", df_into_table_unique_owner_no_extra_copy),
+        ("df_into_table_shared_columns_deep_copies", df_into_table_shared_columns_deep_copies),
+        ("df_into_table_values_preserved", df_into_table_values_preserved),
+        ("filter_allocates_new_gpu_data", filter_allocates_new_gpu_data),
+        ("sort_values_consistent_results", sort_values_consistent_results),
+        ("select_shares_arc", select_shares_arc),
+        ("rename_column_shares_arc", rename_column_shares_arc),
+        ("series_as_column_same_device_ptr_on_repeated_access", series_as_column_same_device_ptr_on_repeated_access),
+        ("series_column_returns_ref", series_column_returns_ref),
+        ("series_into_inner_shares_arc", series_into_inner_shares_arc),
+        ("series_arc_accessor_shares_arc_without_consuming", series_arc_accessor_shares_arc_without_consuming),
+        ("series_clone_shares_gpu_data", series_clone_shares_gpu_data),
+        ("df_filter_gpu_allocates", df_filter_gpu_allocates),
+        ("df_slicing_ops_gpu_allocate", df_slicing_ops_gpu_allocate),
+        ("series_ops_gpu_allocate", series_ops_gpu_allocate),
+    ]);
 }

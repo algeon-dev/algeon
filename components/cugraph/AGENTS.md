@@ -57,8 +57,7 @@ scripts/build/build_libcugraph.sh
 cargo clippy -p cugraph-nexus -p cugraph-nexus-sys \
   --all-targets --all-features -- -D warnings
 cargo +nightly fmt --all --check
-flock /tmp/cudf-gpu.lock cargo nextest run \
-  -p cugraph-nexus -p cugraph-nexus-sys --all-features --no-fail-fast
+cargo nt -E 'package(cugraph-nexus) | package(cugraph-nexus-sys)'
 ```
 
 Run focused checks first, then broaden validation with the change's blast

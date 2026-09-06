@@ -50,7 +50,6 @@ fn assert_column_exec_contract(column: &Column, expected_id: u64, expected_strea
     assert_eq!(column.testing_execution_domain_mr_value(), expected_mr);
 }
 
-#[test]
 fn helper_constructors_seed_explicit_runtime_domain() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let expected_id = col.testing_execution_domain_id();
@@ -72,7 +71,6 @@ fn helper_constructors_seed_explicit_runtime_domain() {
     assert_eq!(df.series("id").unwrap().as_column().testing_execution_domain_id(), expected_id);
 }
 
-#[test]
 fn private_pool_teardown_fences_its_registered_stream_before_resource_release() {
     let _event_observation = lock_event_observation();
     let runtime = Runtime::builder().with_pool_memory_resource(16 * 1024 * 1024, None).build().unwrap();
@@ -95,7 +93,6 @@ fn private_pool_teardown_fences_its_registered_stream_before_resource_release() 
     );
 }
 
-#[test]
 fn private_pool_adaptor_teardown_inherits_the_registered_stream_fence() {
     let _event_observation = lock_event_observation();
     let pool = DeviceMemoryResource::pool(16 * 1024 * 1024, None).unwrap();
@@ -118,7 +115,6 @@ fn private_pool_adaptor_teardown_inherits_the_registered_stream_fence() {
     drop(pool);
 }
 
-#[test]
 fn borrowed_override_preserves_workflow_and_allocates_distinct_bundle_identity() {
     let data_rt = sample_runtime();
     let ctx_rt = sample_runtime();
@@ -149,7 +145,6 @@ fn borrowed_override_preserves_workflow_and_allocates_distinct_bundle_identity()
     assert!(right_domain.contains(&format!("memory_resource={}", sorted_placement.memory_resource_debug)));
 }
 
-#[test]
 fn deep_copy_and_from_table_preserve_explicit_domain_identity() {
     let column = explicit_i32_column(&[1, 2, 3], 41);
     let expected_stream = column.testing_execution_domain_stream_value();
@@ -183,7 +178,6 @@ fn deep_copy_and_from_table_preserve_explicit_domain_identity() {
     assert_eq!(df.series("b").unwrap().as_column().testing_execution_domain_id(), 43);
 }
 
-#[test]
 fn dataframe_and_table_construction_reject_mixed_domain_columns() {
     let left = explicit_i32_column(&[1, 2, 3], 100);
     let right = explicit_i32_column(&[4, 5, 6], 200);
@@ -212,7 +206,6 @@ fn dataframe_and_table_construction_reject_mixed_domain_columns() {
     assert_eq!(err.fact_value(FactKeyName::RightDevice), Some(&FactValue::DeviceId(0)));
 }
 
-#[test]
 fn dataframe_with_column_rejects_mixed_provenance_with_canonical_context() {
     let df = DataFrame::from_series([("id", explicit_i32_series("id", &[1, 2, 3], 300))]).unwrap();
     let foreign = explicit_i32_series("value", &[10, 20, 30], 301);
@@ -234,7 +227,6 @@ fn dataframe_with_column_rejects_mixed_provenance_with_canonical_context() {
     assert_eq!(err.detail_value("series_device"), None);
 }
 
-#[test]
 fn representative_high_level_ops_preserve_explicit_domain_identity() {
     let df = DataFrame::from_series([
         ("id", explicit_i32_series("id", &[3, 1, 2], 55)),
@@ -252,7 +244,6 @@ fn representative_high_level_ops_preserve_explicit_domain_identity() {
     assert_eq!(filled.to_vec_strict::<i32>().unwrap(), vec![30, 99, 10, 99]);
 }
 
-#[test]
 fn host_materialization_and_io_paths_sync_retained_stream() {
     let _event_observation = lock_event_observation();
     let numeric = explicit_i32_series("id", &[1, 2, 3], 60);
@@ -278,7 +269,6 @@ fn host_materialization_and_io_paths_sync_retained_stream() {
     assert_eq!(last_sync_stream_value(), df.testing_execution_domain_stream_value());
 }
 
-#[test]
 fn unary_binary_and_reduction_families_use_primary_input_exec_contract() {
     let _event_observation = lock_event_observation();
     let input = explicit_i32_column(&[-3, 0, 5], 140);
@@ -324,7 +314,6 @@ fn unary_binary_and_reduction_families_use_primary_input_exec_contract() {
     assert_eq!(last_sync_stream_value(), input_stream);
 }
 
-#[test]
 fn binary_op_reverse_fences_cross_stream_input_after_enqueue() {
     // After a consuming operation returns, every cross-stream input's retained
     // stream must wait on the consumer's
@@ -354,7 +343,6 @@ fn binary_op_reverse_fences_cross_stream_input_after_enqueue() {
     assert_eq!(added.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![7, 20, 35]);
 }
 
-#[test]
 fn sort_filter_and_gather_families_use_data_provenance_for_mixed_domains() {
     let _event_observation = lock_event_observation();
     let values = Table::from_columns(vec![explicit_i32_column(&[30, 10, 20], 150)]).unwrap();
@@ -402,7 +390,6 @@ fn sort_filter_and_gather_families_use_data_provenance_for_mixed_domains() {
     assert_eq!(last_sync_stream_value(), values_stream);
 }
 
-#[test]
 fn concatenate_join_and_groupby_families_use_first_or_keys_provenance() {
     let _event_observation = lock_event_observation();
     let first = Table::from_columns(vec![explicit_i32_column(&[1, 2], 170)]).unwrap();
@@ -476,7 +463,6 @@ fn concatenate_join_and_groupby_families_use_first_or_keys_provenance() {
     assert_eq!(last_sync_stream_value(), keys_stream);
 }
 
-#[test]
 fn dictionary_and_search_families_keep_primary_domain_contract() {
     let _event_observation = lock_event_observation();
     let runtime = sample_runtime();
@@ -514,7 +500,6 @@ fn dictionary_and_search_families_keep_primary_domain_contract() {
     assert_eq!(last_sync_stream_value(), dict_stream);
 }
 
-#[test]
 fn replace_family_uses_input_domain_and_orders_replacement_domain() {
     let _event_observation = lock_event_observation();
     let input = explicit_nullable_i32_series("input", &[1, 0, 3], &[true, false, true], 220);
@@ -536,4 +521,67 @@ fn replace_family_uses_input_domain_and_orders_replacement_domain() {
     reset_sync_observation();
     assert_eq!(filled.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![1, 20, 3]);
     assert_eq!(last_sync_stream_value(), input_stream);
+}
+
+#[test]
+fn execution_domain_contract_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("helper_constructors_seed_explicit_runtime_domain", helper_constructors_seed_explicit_runtime_domain),
+        (
+            "private_pool_teardown_fences_its_registered_stream_before_resource_release",
+            private_pool_teardown_fences_its_registered_stream_before_resource_release,
+        ),
+        (
+            "private_pool_adaptor_teardown_inherits_the_registered_stream_fence",
+            private_pool_adaptor_teardown_inherits_the_registered_stream_fence,
+        ),
+        (
+            "borrowed_override_preserves_workflow_and_allocates_distinct_bundle_identity",
+            borrowed_override_preserves_workflow_and_allocates_distinct_bundle_identity,
+        ),
+        (
+            "deep_copy_and_from_table_preserve_explicit_domain_identity",
+            deep_copy_and_from_table_preserve_explicit_domain_identity,
+        ),
+        (
+            "dataframe_and_table_construction_reject_mixed_domain_columns",
+            dataframe_and_table_construction_reject_mixed_domain_columns,
+        ),
+        (
+            "dataframe_with_column_rejects_mixed_provenance_with_canonical_context",
+            dataframe_with_column_rejects_mixed_provenance_with_canonical_context,
+        ),
+        (
+            "representative_high_level_ops_preserve_explicit_domain_identity",
+            representative_high_level_ops_preserve_explicit_domain_identity,
+        ),
+        (
+            "host_materialization_and_io_paths_sync_retained_stream",
+            host_materialization_and_io_paths_sync_retained_stream,
+        ),
+        (
+            "unary_binary_and_reduction_families_use_primary_input_exec_contract",
+            unary_binary_and_reduction_families_use_primary_input_exec_contract,
+        ),
+        (
+            "binary_op_reverse_fences_cross_stream_input_after_enqueue",
+            binary_op_reverse_fences_cross_stream_input_after_enqueue,
+        ),
+        (
+            "sort_filter_and_gather_families_use_data_provenance_for_mixed_domains",
+            sort_filter_and_gather_families_use_data_provenance_for_mixed_domains,
+        ),
+        (
+            "concatenate_join_and_groupby_families_use_first_or_keys_provenance",
+            concatenate_join_and_groupby_families_use_first_or_keys_provenance,
+        ),
+        (
+            "dictionary_and_search_families_keep_primary_domain_contract",
+            dictionary_and_search_families_keep_primary_domain_contract,
+        ),
+        (
+            "replace_family_uses_input_domain_and_orders_replacement_domain",
+            replace_family_uses_input_domain_and_orders_replacement_domain,
+        ),
+    ]);
 }

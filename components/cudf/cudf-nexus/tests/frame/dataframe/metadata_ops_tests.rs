@@ -26,7 +26,6 @@ fn sample_df() -> DataFrame {
 // without_columns: removes correct columns, preserves others
 // ===========================================================================
 
-#[test]
 fn test_without_columns_removes_single_column() {
     let df = sample_df();
     let result = df.without_columns(["score"]).unwrap();
@@ -36,7 +35,6 @@ fn test_without_columns_removes_single_column() {
     assert_eq!(result.num_rows(), 3);
 }
 
-#[test]
 fn test_without_columns_removes_multiple_columns() {
     let df = sample_df();
     let result = df.without_columns(["id", "flag"]).unwrap();
@@ -45,7 +43,6 @@ fn test_without_columns_removes_multiple_columns() {
     assert_eq!(result.column_names(), &["score"]);
 }
 
-#[test]
 fn test_without_columns_preserves_arc_sharing_for_retained_columns() {
     let df = sample_df();
     let id_ptr = device_ptr(&df, "id");
@@ -57,7 +54,6 @@ fn test_without_columns_preserves_arc_sharing_for_retained_columns() {
     assert_eq!(flag_ptr, device_ptr(&result, "flag"));
 }
 
-#[test]
 fn test_without_columns_nonexistent_column_returns_error() {
     let df = sample_df();
     let result = df.without_columns(["nonexistent"]);
@@ -67,7 +63,6 @@ fn test_without_columns_nonexistent_column_returns_error() {
     assert_missing_column_error(&err, "nonexistent");
 }
 
-#[test]
 fn test_without_columns_duplicate_name_returns_canonical_duplicate_error() {
     let df = sample_df();
 
@@ -78,7 +73,6 @@ fn test_without_columns_duplicate_name_returns_canonical_duplicate_error() {
     assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("2"));
 }
 
-#[test]
 fn test_without_columns_all_columns_preserves_row_count() {
     let df = sample_df();
     let result = df.without_columns(["id", "score", "flag"]).unwrap();
@@ -87,7 +81,6 @@ fn test_without_columns_all_columns_preserves_row_count() {
     assert_eq!(result.num_rows(), 3);
 }
 
-#[test]
 fn test_without_columns_preserves_column_order() {
     let df = sample_df();
     let result = df.without_columns(["score"]).unwrap();
@@ -96,7 +89,6 @@ fn test_without_columns_preserves_column_order() {
     assert_eq!(result.column_names(), &["id", "flag"]);
 }
 
-#[test]
 fn test_without_columns_original_dataframe_still_reads_excluded_column() {
     let df = sample_df();
     let result = df.without_columns(["score"]).unwrap();
@@ -109,7 +101,6 @@ fn test_without_columns_original_dataframe_still_reads_excluded_column() {
 // rename_columns: multi-column rename
 // ===========================================================================
 
-#[test]
 fn test_rename_columns_single_pair() {
     let df = sample_df();
     let result = df.rename_columns([("id", "identifier")]).unwrap();
@@ -118,7 +109,6 @@ fn test_rename_columns_single_pair() {
     assert_eq!(result.num_rows(), 3);
 }
 
-#[test]
 fn test_rename_columns_multiple_pairs() {
     let df = sample_df();
     let result = df.rename_columns([("id", "a"), ("score", "b"), ("flag", "c")]).unwrap();
@@ -126,7 +116,6 @@ fn test_rename_columns_multiple_pairs() {
     assert_eq!(result.column_names(), &["a", "b", "c"]);
 }
 
-#[test]
 fn test_rename_columns_preserves_arc_sharing() {
     let df = sample_df();
     let id_ptr = device_ptr(&df, "id");
@@ -140,7 +129,6 @@ fn test_rename_columns_preserves_arc_sharing() {
     assert_eq!(flag_ptr, device_ptr(&result, "flag"));
 }
 
-#[test]
 fn test_rename_columns_nonexistent_source_returns_error() {
     let df = sample_df();
     let result = df.rename_columns([("nonexistent", "x")]);
@@ -149,7 +137,6 @@ fn test_rename_columns_nonexistent_source_returns_error() {
     assert_missing_column_error(&result.unwrap_err(), "nonexistent");
 }
 
-#[test]
 fn test_rename_columns_duplicate_target_returns_error() {
     let df = sample_df();
     // Both "id" and "score" renamed to the same target
@@ -160,7 +147,6 @@ fn test_rename_columns_duplicate_target_returns_error() {
     assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("3"));
 }
 
-#[test]
 fn test_rename_columns_target_conflicts_with_existing_unrenamed_column() {
     let df = sample_df();
     // Rename "id" to "flag" — but "flag" already exists and is not being renamed
@@ -170,7 +156,6 @@ fn test_rename_columns_target_conflicts_with_existing_unrenamed_column() {
     assert_eq!(err.operation(), "dataframe::rename_columns");
 }
 
-#[test]
 fn test_rename_columns_duplicate_source_returns_canonical_duplicate_error() {
     let df = sample_df();
 
@@ -181,7 +166,6 @@ fn test_rename_columns_duplicate_source_returns_canonical_duplicate_error() {
     assert_eq!(error_context_value(&err, "column_name_count").as_deref(), Some("2"));
 }
 
-#[test]
 fn test_rename_columns_swap_is_allowed() {
     let df = sample_df();
     // Swap "id" and "flag" names — both are being renamed, so no conflict
@@ -196,7 +180,6 @@ fn test_rename_columns_swap_is_allowed() {
     assert_eq!(original_flag_ptr, device_ptr(&result, "id"));
 }
 
-#[test]
 fn test_rename_columns_empty_iterator() {
     let df = sample_df();
     let result = df.rename_columns(std::iter::empty::<(&str, &str)>()).unwrap();
@@ -204,7 +187,6 @@ fn test_rename_columns_empty_iterator() {
     assert_eq!(result.column_names(), df.column_names());
 }
 
-#[test]
 fn test_select_accepts_iterators() {
     let df = sample_df();
     let result = df.select(vec!["flag", "id"]).unwrap();
@@ -213,7 +195,6 @@ fn test_select_accepts_iterators() {
     assert_eq!(result.num_rows(), 3);
 }
 
-#[test]
 fn test_select_empty_preserves_row_count() {
     let df = sample_df();
     let result = df.select(std::iter::empty::<&str>()).unwrap();
@@ -222,7 +203,6 @@ fn test_select_empty_preserves_row_count() {
     assert_eq!(result.num_rows(), 3);
 }
 
-#[test]
 fn test_select_wide_projection_reorders_columns_without_copying() {
     let pairs: Vec<(String, Series)> = (0..16)
         .map(|idx| {
@@ -241,7 +221,6 @@ fn test_select_wide_projection_reorders_columns_without_copying() {
     assert_eq!(device_ptr(&df, "c3"), device_ptr(&selected, "c3"));
 }
 
-#[test]
 fn test_select_is_metadata_only_no_execution_or_device_copy() {
     let df = sample_df();
     let id_ptr = device_ptr(&df, "id");
@@ -263,7 +242,6 @@ fn test_select_is_metadata_only_no_execution_or_device_copy() {
 // with_column: accepts both Column and Series via Into<Series>
 // ===========================================================================
 
-#[test]
 fn test_with_column_adds_new_column() {
     let df = sample_df();
     let extra = crate::common::series::<i64>("extra", &[100, 200, 300]).unwrap();
@@ -275,7 +253,6 @@ fn test_with_column_adds_new_column() {
     assert_eq!(result.num_rows(), 3);
 }
 
-#[test]
 fn test_with_column_replaces_existing_column() {
     let df = sample_df();
     let new_score = crate::common::series::<f64>("new_score", &[99.0, 88.0, 77.0]).unwrap();
@@ -286,7 +263,6 @@ fn test_with_column_replaces_existing_column() {
     assert_eq!(result.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![99.0, 88.0, 77.0]);
 }
 
-#[test]
 fn test_with_column_preserves_arc_sharing_for_unchanged() {
     let df = sample_df();
     let id_ptr = device_ptr(&df, "id");
@@ -299,7 +275,6 @@ fn test_with_column_preserves_arc_sharing_for_unchanged() {
     assert_eq!(flag_ptr, device_ptr(&result, "flag"));
 }
 
-#[test]
 fn test_with_column_shares_arc_from_input_series() {
     let df = sample_df();
     let extra = crate::common::series::<i64>("extra", &[100, 200, 300]).unwrap();
@@ -312,7 +287,6 @@ fn test_with_column_shares_arc_from_input_series() {
     assert!(Arc::ptr_eq(&extra_arc, &result_series.into_inner()));
 }
 
-#[test]
 fn test_with_column_row_count_mismatch_returns_error() {
     let df = sample_df(); // 3 rows
     let wrong_len = crate::common::series::<i32>("x", &[1, 2]).unwrap(); // 2 rows
@@ -333,7 +307,6 @@ fn test_with_column_row_count_mismatch_returns_error() {
 // assign: adds/replaces multiple columns
 // ===========================================================================
 
-#[test]
 fn test_assign_adds_multiple_new_columns() {
     let df = sample_df();
     let a = crate::common::series::<i32>("a", &[10, 20, 30]).unwrap();
@@ -346,7 +319,6 @@ fn test_assign_adds_multiple_new_columns() {
     assert!(result.column_names().contains(&"b"));
 }
 
-#[test]
 fn test_assign_replaces_existing_column() {
     let df = sample_df();
     let new_score = crate::common::series::<f64>("s", &[99.0, 88.0, 77.0]).unwrap();
@@ -357,7 +329,6 @@ fn test_assign_replaces_existing_column() {
     assert_eq!(result.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![99.0, 88.0, 77.0]);
 }
 
-#[test]
 fn test_assign_mix_of_add_and_replace() {
     let df = sample_df();
     let new_id = crate::common::series::<i32>("x", &[10, 20, 30]).unwrap();
@@ -369,7 +340,6 @@ fn test_assign_mix_of_add_and_replace() {
     assert_eq!(result.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
-#[test]
 fn test_assign_preserves_arc_sharing_for_unchanged() {
     let df = sample_df();
     let id_ptr = device_ptr(&df, "id");
@@ -382,7 +352,6 @@ fn test_assign_preserves_arc_sharing_for_unchanged() {
     assert_eq!(flag_ptr, device_ptr(&result, "flag"));
 }
 
-#[test]
 fn test_assign_shares_arc_from_input_series() {
     let df = sample_df();
     let extra = crate::common::series::<i64>("extra", &[100, 200, 300]).unwrap();
@@ -394,7 +363,6 @@ fn test_assign_shares_arc_from_input_series() {
     assert!(Arc::ptr_eq(&extra_arc, &result_series.into_inner()));
 }
 
-#[test]
 fn test_assign_row_count_mismatch_returns_error() {
     let df = sample_df(); // 3 rows
     let wrong = crate::common::series::<i32>("x", &[1]).unwrap(); // 1 row
@@ -411,7 +379,6 @@ fn test_assign_row_count_mismatch_returns_error() {
     assert_eq!(error_context_value(&err, "expected_rows").as_deref(), Some("3"));
 }
 
-#[test]
 fn test_assign_empty_iterator_returns_same_schema() {
     let df = sample_df();
     let result = df.assign(std::iter::empty::<(&str, Series)>()).unwrap();
@@ -420,7 +387,6 @@ fn test_assign_empty_iterator_returns_same_schema() {
     assert_eq!(result.num_rows(), df.num_rows());
 }
 
-#[test]
 fn test_assign_duplicate_names_last_wins() {
     let df = sample_df();
     let first = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
@@ -432,7 +398,6 @@ fn test_assign_duplicate_names_last_wins() {
     assert_eq!(result.series("extra").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
-#[test]
 fn test_assign_on_zero_column_frame_preserves_logical_row_count() {
     let df = sample_df().without_columns(["id", "score", "flag"]).unwrap();
     let replacement = crate::common::series::<i32>("replacement", &[7, 8, 9]).unwrap();
@@ -444,7 +409,6 @@ fn test_assign_on_zero_column_frame_preserves_logical_row_count() {
     assert_eq!(result.series("replacement").unwrap().to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
 }
 
-#[test]
 fn test_assign_on_zero_column_frame_rejects_row_count_mismatch() {
     let df = sample_df().without_columns(["id", "score", "flag"]).unwrap();
     let wrong = crate::common::series::<i32>("replacement", &[7, 8]).unwrap();
@@ -461,7 +425,6 @@ fn test_assign_on_zero_column_frame_rejects_row_count_mismatch() {
     assert_eq!(error_context_value(&err, "expected_rows").as_deref(), Some("3"));
 }
 
-#[test]
 fn test_assign_on_truly_empty_dataframe_seeds_row_count_from_first_column() {
     let rt = Runtime::new().unwrap();
     let df = rt.empty_dataframe();
@@ -478,7 +441,6 @@ fn test_assign_on_truly_empty_dataframe_seeds_row_count_from_first_column() {
 // Combined operations: verify Arc sharing chains
 // ===========================================================================
 
-#[test]
 fn test_without_columns_then_assign_preserves_sharing() {
     let df = sample_df();
     let id_ptr = device_ptr(&df, "id");
@@ -490,7 +452,6 @@ fn test_without_columns_then_assign_preserves_sharing() {
     assert_eq!(id_ptr, device_ptr(&result, "id"));
 }
 
-#[test]
 fn test_rename_columns_then_without_columns_preserves_sharing() {
     let df = sample_df();
     let score_ptr = device_ptr(&df, "score");
@@ -501,7 +462,6 @@ fn test_rename_columns_then_without_columns_preserves_sharing() {
     assert_eq!(score_ptr, device_ptr(&result, "score"));
 }
 
-#[test]
 fn test_with_series_then_rename_columns_preserves_sharing() {
     let df = sample_df();
     let extra = crate::common::series::<i64>("extra", &[100, 200, 300]).unwrap();
@@ -514,7 +474,6 @@ fn test_with_series_then_rename_columns_preserves_sharing() {
     assert!(Arc::ptr_eq(&extra_arc, &bonus_series.into_inner()));
 }
 
-#[test]
 fn test_with_column_on_zero_column_frame_preserves_logical_row_count() {
     let df = sample_df().select(std::iter::empty::<&str>()).unwrap();
     let values = crate::common::series::<i32>("values", &[11, 22, 33]).unwrap();
@@ -526,7 +485,6 @@ fn test_with_column_on_zero_column_frame_preserves_logical_row_count() {
     assert_eq!(result.series("values").unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 22, 33]);
 }
 
-#[test]
 fn test_with_column_on_zero_column_frame_rejects_row_count_mismatch() {
     let df = sample_df().select(std::iter::empty::<&str>()).unwrap();
     let values = crate::common::series::<i32>("values", &[11, 22]).unwrap();
@@ -537,7 +495,6 @@ fn test_with_column_on_zero_column_frame_rejects_row_count_mismatch() {
     assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidInput);
 }
 
-#[test]
 fn test_with_column_on_zero_column_frame_from_drop_rejects_row_count_mismatch() {
     let df = sample_df().without_columns(["id", "score", "flag"]).unwrap();
     let values = crate::common::series::<i32>("values", &[11, 22]).unwrap();
@@ -548,7 +505,6 @@ fn test_with_column_on_zero_column_frame_from_drop_rejects_row_count_mismatch() 
     assert_eq!(result.unwrap_err().kind(), ErrorKind::InvalidInput);
 }
 
-#[test]
 fn test_with_column_on_truly_empty_dataframe_seeds_row_count_from_first_column() {
     let rt = Runtime::new().unwrap();
     let df = rt.empty_dataframe();
@@ -559,4 +515,105 @@ fn test_with_column_on_truly_empty_dataframe_seeds_row_count_from_first_column()
     assert_eq!(result.num_columns(), 1);
     assert_eq!(result.num_rows(), 2);
     assert_eq!(result.series("values").unwrap().to_vec_strict::<i32>().unwrap(), vec![11, 22]);
+}
+
+#[test]
+fn metadata_ops_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_without_columns_removes_single_column", test_without_columns_removes_single_column),
+        ("test_without_columns_removes_multiple_columns", test_without_columns_removes_multiple_columns),
+        (
+            "test_without_columns_preserves_arc_sharing_for_retained_columns",
+            test_without_columns_preserves_arc_sharing_for_retained_columns,
+        ),
+        (
+            "test_without_columns_nonexistent_column_returns_error",
+            test_without_columns_nonexistent_column_returns_error,
+        ),
+        (
+            "test_without_columns_duplicate_name_returns_canonical_duplicate_error",
+            test_without_columns_duplicate_name_returns_canonical_duplicate_error,
+        ),
+        ("test_without_columns_all_columns_preserves_row_count", test_without_columns_all_columns_preserves_row_count),
+        ("test_without_columns_preserves_column_order", test_without_columns_preserves_column_order),
+        (
+            "test_without_columns_original_dataframe_still_reads_excluded_column",
+            test_without_columns_original_dataframe_still_reads_excluded_column,
+        ),
+        ("test_rename_columns_single_pair", test_rename_columns_single_pair),
+        ("test_rename_columns_multiple_pairs", test_rename_columns_multiple_pairs),
+        ("test_rename_columns_preserves_arc_sharing", test_rename_columns_preserves_arc_sharing),
+        ("test_rename_columns_nonexistent_source_returns_error", test_rename_columns_nonexistent_source_returns_error),
+        ("test_rename_columns_duplicate_target_returns_error", test_rename_columns_duplicate_target_returns_error),
+        (
+            "test_rename_columns_target_conflicts_with_existing_unrenamed_column",
+            test_rename_columns_target_conflicts_with_existing_unrenamed_column,
+        ),
+        (
+            "test_rename_columns_duplicate_source_returns_canonical_duplicate_error",
+            test_rename_columns_duplicate_source_returns_canonical_duplicate_error,
+        ),
+        ("test_rename_columns_swap_is_allowed", test_rename_columns_swap_is_allowed),
+        ("test_rename_columns_empty_iterator", test_rename_columns_empty_iterator),
+        ("test_select_accepts_iterators", test_select_accepts_iterators),
+        ("test_select_empty_preserves_row_count", test_select_empty_preserves_row_count),
+        (
+            "test_select_wide_projection_reorders_columns_without_copying",
+            test_select_wide_projection_reorders_columns_without_copying,
+        ),
+        (
+            "test_select_is_metadata_only_no_execution_or_device_copy",
+            test_select_is_metadata_only_no_execution_or_device_copy,
+        ),
+        ("test_with_column_adds_new_column", test_with_column_adds_new_column),
+        ("test_with_column_replaces_existing_column", test_with_column_replaces_existing_column),
+        ("test_with_column_preserves_arc_sharing_for_unchanged", test_with_column_preserves_arc_sharing_for_unchanged),
+        ("test_with_column_shares_arc_from_input_series", test_with_column_shares_arc_from_input_series),
+        ("test_with_column_row_count_mismatch_returns_error", test_with_column_row_count_mismatch_returns_error),
+        ("test_assign_adds_multiple_new_columns", test_assign_adds_multiple_new_columns),
+        ("test_assign_replaces_existing_column", test_assign_replaces_existing_column),
+        ("test_assign_mix_of_add_and_replace", test_assign_mix_of_add_and_replace),
+        ("test_assign_preserves_arc_sharing_for_unchanged", test_assign_preserves_arc_sharing_for_unchanged),
+        ("test_assign_shares_arc_from_input_series", test_assign_shares_arc_from_input_series),
+        ("test_assign_row_count_mismatch_returns_error", test_assign_row_count_mismatch_returns_error),
+        ("test_assign_empty_iterator_returns_same_schema", test_assign_empty_iterator_returns_same_schema),
+        ("test_assign_duplicate_names_last_wins", test_assign_duplicate_names_last_wins),
+        (
+            "test_assign_on_zero_column_frame_preserves_logical_row_count",
+            test_assign_on_zero_column_frame_preserves_logical_row_count,
+        ),
+        (
+            "test_assign_on_zero_column_frame_rejects_row_count_mismatch",
+            test_assign_on_zero_column_frame_rejects_row_count_mismatch,
+        ),
+        (
+            "test_assign_on_truly_empty_dataframe_seeds_row_count_from_first_column",
+            test_assign_on_truly_empty_dataframe_seeds_row_count_from_first_column,
+        ),
+        ("test_without_columns_then_assign_preserves_sharing", test_without_columns_then_assign_preserves_sharing),
+        (
+            "test_rename_columns_then_without_columns_preserves_sharing",
+            test_rename_columns_then_without_columns_preserves_sharing,
+        ),
+        (
+            "test_with_series_then_rename_columns_preserves_sharing",
+            test_with_series_then_rename_columns_preserves_sharing,
+        ),
+        (
+            "test_with_column_on_zero_column_frame_preserves_logical_row_count",
+            test_with_column_on_zero_column_frame_preserves_logical_row_count,
+        ),
+        (
+            "test_with_column_on_zero_column_frame_rejects_row_count_mismatch",
+            test_with_column_on_zero_column_frame_rejects_row_count_mismatch,
+        ),
+        (
+            "test_with_column_on_zero_column_frame_from_drop_rejects_row_count_mismatch",
+            test_with_column_on_zero_column_frame_from_drop_rejects_row_count_mismatch,
+        ),
+        (
+            "test_with_column_on_truly_empty_dataframe_seeds_row_count_from_first_column",
+            test_with_column_on_truly_empty_dataframe_seeds_row_count_from_first_column,
+        ),
+    ]);
 }

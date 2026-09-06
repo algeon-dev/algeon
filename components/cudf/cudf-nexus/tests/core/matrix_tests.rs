@@ -9,7 +9,6 @@ use cudf::{
 
 use crate::common::{last_exec_mr_value, last_exec_stream_value, last_sync_stream_value, reset_exec_observation};
 
-#[test]
 fn direct_interleave_columns_uses_the_public_reshape_surface() {
     let runtime = Runtime::new().unwrap();
     let first = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -22,7 +21,6 @@ fn direct_interleave_columns_uses_the_public_reshape_surface() {
     assert_eq!(interleaved.to_vec::<i32>().unwrap(), vec![1, 10, 2, 20, 3, 30]);
 }
 
-#[test]
 fn row_major_pack_interleaves_columns_on_target_runtime() {
     let input_runtime = Runtime::new().unwrap();
     let output_runtime = Runtime::new().unwrap();
@@ -49,7 +47,6 @@ fn row_major_pack_interleaves_columns_on_target_runtime() {
     assert_eq!(validated.as_ptr().unwrap(), validated.as_ptr().unwrap());
 }
 
-#[test]
 fn column_major_pack_concatenates_columns() {
     let runtime = Runtime::new().unwrap();
     let first = runtime.column_from_slice(&[1.0f32, 2.0, 3.0]).unwrap();
@@ -63,7 +60,6 @@ fn column_major_pack_concatenates_columns() {
     assert_eq!(matrix.into_column().to_vec::<f32>().unwrap(), vec![1.0, 2.0, 3.0, 10.0, 20.0, 30.0]);
 }
 
-#[test]
 fn pack_rejects_empty_input() {
     let runtime = Runtime::new().unwrap();
     let error = runtime
@@ -75,7 +71,6 @@ fn pack_rejects_empty_input() {
     assert_eq!(error.detail_value("reason"), Some("empty_input"));
 }
 
-#[test]
 fn pack_rejects_non_float32_column_with_index_and_types() {
     let runtime = Runtime::new().unwrap();
     let first = runtime.column_from_slice(&[1.0f32, 2.0]).unwrap();
@@ -90,7 +85,6 @@ fn pack_rejects_non_float32_column_with_index_and_types() {
     assert_eq!(error.fact_value(FactKeyName::RightTypeId), Some(&FactValue::TypeId(TypeId::Float32)));
 }
 
-#[test]
 fn pack_rejects_row_count_mismatch() {
     let runtime = Runtime::new().unwrap();
     let first = runtime.column_from_slice(&[1.0f32, 2.0]).unwrap();
@@ -105,7 +99,6 @@ fn pack_rejects_row_count_mismatch() {
     assert_eq!(error.fact_value(FactKeyName::ActualRows), Some(&FactValue::Usize(1)));
 }
 
-#[test]
 fn pack_rejects_null_feature_values() {
     let runtime = Runtime::new().unwrap();
     let column = runtime.column_from_slice_nullable(&[1.0f32, 0.0, 3.0], &[true, false, true]).unwrap();
@@ -119,7 +112,6 @@ fn pack_rejects_null_feature_values() {
     assert_eq!(error.detail_value("reason"), Some("null_feature_value"));
 }
 
-#[test]
 fn pack_preserves_non_null_nan_and_infinity_for_separate_value_validation() {
     let runtime = Runtime::new().unwrap();
     let column = runtime.column_from_slice(&[f32::NAN, f32::INFINITY, f32::NEG_INFINITY]).unwrap();
@@ -131,7 +123,6 @@ fn pack_preserves_non_null_nan_and_infinity_for_separate_value_validation() {
     assert_eq!(values[2], f32::NEG_INFINITY);
 }
 
-#[test]
 fn finite_validation_rejects_nan_and_both_infinities() {
     for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
         let runtime = Runtime::new().unwrap();
@@ -163,7 +154,6 @@ fn finite_validation_rejects_nan_and_both_infinities() {
     }
 }
 
-#[test]
 fn finite_validation_covers_multi_column_gpu_packed_output() {
     let runtime = Runtime::new().unwrap();
     let first = runtime.column_from_slice(&[1.0f32, 2.0]).unwrap();
@@ -176,7 +166,6 @@ fn finite_validation_covers_multi_column_gpu_packed_output() {
     assert_eq!(error.detail_value("validated_values"), Some("4"));
 }
 
-#[test]
 fn finite_validation_accepts_empty_matrix_with_bounded_scalar_proof() {
     let runtime = Runtime::new().unwrap();
     let empty = runtime.column_from_slice::<f32>(&[]).unwrap();
@@ -191,7 +180,6 @@ fn finite_validation_accepts_empty_matrix_with_bounded_scalar_proof() {
     assert_eq!(validated.observation().memory.downloaded_bytes, Some(std::mem::size_of::<i32>()));
 }
 
-#[test]
 fn finite_validation_uses_exact_binding_and_never_publishes_arrow_host_boundary() {
     let runtime = Runtime::new().unwrap();
     let first = runtime.column_from_slice(&[1.0f32, 2.0, 3.0]).unwrap();
@@ -224,4 +212,37 @@ fn finite_validation_uses_exact_binding_and_never_publishes_arrow_host_boundary(
     assert_eq!(observation.memory.downloaded_bytes, Some(std::mem::size_of::<i32>()));
     assert_eq!(cudf::testing::boundary::last_boundary_observation_for_test(), Some(observation));
     assert!(cudf::testing::arrow::last_arrow_host_boundary_observation_for_test().is_none());
+}
+
+#[test]
+fn matrix_tests_cases() {
+    crate::common::run_named_cases(&[
+        (
+            "direct_interleave_columns_uses_the_public_reshape_surface",
+            direct_interleave_columns_uses_the_public_reshape_surface,
+        ),
+        ("row_major_pack_interleaves_columns_on_target_runtime", row_major_pack_interleaves_columns_on_target_runtime),
+        ("column_major_pack_concatenates_columns", column_major_pack_concatenates_columns),
+        ("pack_rejects_empty_input", pack_rejects_empty_input),
+        ("pack_rejects_non_float32_column_with_index_and_types", pack_rejects_non_float32_column_with_index_and_types),
+        ("pack_rejects_row_count_mismatch", pack_rejects_row_count_mismatch),
+        ("pack_rejects_null_feature_values", pack_rejects_null_feature_values),
+        (
+            "pack_preserves_non_null_nan_and_infinity_for_separate_value_validation",
+            pack_preserves_non_null_nan_and_infinity_for_separate_value_validation,
+        ),
+        ("finite_validation_rejects_nan_and_both_infinities", finite_validation_rejects_nan_and_both_infinities),
+        (
+            "finite_validation_covers_multi_column_gpu_packed_output",
+            finite_validation_covers_multi_column_gpu_packed_output,
+        ),
+        (
+            "finite_validation_accepts_empty_matrix_with_bounded_scalar_proof",
+            finite_validation_accepts_empty_matrix_with_bounded_scalar_proof,
+        ),
+        (
+            "finite_validation_uses_exact_binding_and_never_publishes_arrow_host_boundary",
+            finite_validation_uses_exact_binding_and_never_publishes_arrow_host_boundary,
+        ),
+    ]);
 }

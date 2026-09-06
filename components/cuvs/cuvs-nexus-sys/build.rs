@@ -68,6 +68,9 @@ fn cuda_toolkit() -> Result<CudaToolkit, String> {
         }
     }
 
+    // Tracked only here: an unconditional PATH dependency would rebuild on
+    // every shell difference even when a CUDA selector decides the toolkit.
+    println!("cargo::rerun-if-env-changed=PATH");
     if let Some(path) = env::var_os("PATH") {
         for directory in env::split_paths(&path) {
             let nvcc = directory.join("nvcc");
@@ -175,7 +178,6 @@ fn main() {
         "CUVS_RS_SKIP_STALENESS_CHECK",
         "CUVS_RS_ENFORCE_STALENESS_CHECK",
         "CUVS_ENFORCE_STALENESS_CHECK",
-        "PATH",
     ] {
         println!("cargo::rerun-if-env-changed={name}");
     }

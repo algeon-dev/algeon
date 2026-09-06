@@ -36,47 +36,38 @@ use crate::common::{column_from_slice, column_from_strs, sample_df};
 
 fn assert_send_sync<T: Send + Sync>() {}
 
-#[test]
 fn dataframe_is_send_sync() {
     assert_send_sync::<DataFrame>();
 }
 
-#[test]
 fn series_is_send_sync() {
     assert_send_sync::<Series>();
 }
 
-#[test]
 fn column_is_send_sync() {
     assert_send_sync::<Column>();
 }
 
-#[test]
 fn table_is_send_sync() {
     assert_send_sync::<Table>();
 }
 
-#[test]
 fn scalar_is_send_sync() {
     assert_send_sync::<Scalar>();
 }
 
-#[test]
 fn cuda_stream_is_send_sync() {
     assert_send_sync::<CudaStream>();
 }
 
-#[test]
 fn cuda_event_is_send_sync() {
     assert_send_sync::<CudaEvent>();
 }
 
-#[test]
 fn device_memory_resource_is_send_sync() {
     assert_send_sync::<DeviceMemoryResource>();
 }
 
-#[test]
 fn device_inventory_reports_nonzero_memory_and_sm_count() {
     let device = DeviceId::DEFAULT;
 
@@ -90,7 +81,6 @@ fn device_inventory_reports_nonzero_memory_and_sm_count() {
     assert!(!pci_bus_id.is_empty());
 }
 
-#[test]
 fn cuda_event_can_record_wait_and_synchronize() {
     let stream = CudaStream::new().unwrap();
     let event = CudaEvent::new().unwrap();
@@ -528,4 +518,20 @@ async fn timeout_on_spawn_blocking_is_safe() {
             // this branch documents the contract: timeout doesn't crash.
         },
     }
+}
+
+#[test]
+fn runtime_contract_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("dataframe_is_send_sync", dataframe_is_send_sync),
+        ("series_is_send_sync", series_is_send_sync),
+        ("column_is_send_sync", column_is_send_sync),
+        ("table_is_send_sync", table_is_send_sync),
+        ("scalar_is_send_sync", scalar_is_send_sync),
+        ("cuda_stream_is_send_sync", cuda_stream_is_send_sync),
+        ("cuda_event_is_send_sync", cuda_event_is_send_sync),
+        ("device_memory_resource_is_send_sync", device_memory_resource_is_send_sync),
+        ("device_inventory_reports_nonzero_memory_and_sm_count", device_inventory_reports_nonzero_memory_and_sm_count),
+        ("cuda_event_can_record_wait_and_synchronize", cuda_event_can_record_wait_and_synchronize),
+    ]);
 }

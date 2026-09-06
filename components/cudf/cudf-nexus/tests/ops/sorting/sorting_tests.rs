@@ -14,7 +14,6 @@ use crate::common::{
     last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
 };
 
-#[test]
 fn test_sort_ascending() {
     let col = column_from_slice(&[3i32, 1, 2]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
@@ -26,7 +25,6 @@ fn test_sort_ascending() {
     assert_eq!(result, vec![1, 2, 3]);
 }
 
-#[test]
 fn test_sort_descending() {
     let col = column_from_slice(&[1i32, 3, 2]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
@@ -38,7 +36,6 @@ fn test_sort_descending() {
     assert_eq!(result, vec![3, 2, 1]);
 }
 
-#[test]
 fn test_sort_multi_column() {
     // Sort by col0 ascending, then col1 descending.
     let c0 = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
@@ -55,7 +52,6 @@ fn test_sort_multi_column() {
     assert_eq!(col1, vec![30, 10, 40, 20]);
 }
 
-#[test]
 fn test_sort_with_nulls() {
     let col = column_from_slice_nullable(&[3i32, 1, 2], &[true, false, true]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
@@ -69,7 +65,6 @@ fn test_sort_with_nulls() {
     assert!(!validity[0]);
 }
 
-#[test]
 fn test_sort_by_key() {
     let keys = column_from_slice(&[3i32, 1, 2]).unwrap();
     let vals = column_from_slice(&[30.0f64, 10.0, 20.0]).unwrap();
@@ -85,7 +80,6 @@ fn test_sort_by_key() {
     assert_eq!(result, vec![10.0, 20.0, 30.0]);
 }
 
-#[test]
 fn test_sort_by_key_descending_null_placement() {
     let keys = column_from_slice_nullable(&[0i32, 2, 3, 0, 1], &[false, true, true, false, true]).unwrap();
     let value_keys = column_from_slice_nullable(&[0i32, 2, 3, 0, 1], &[false, true, true, false, true]).unwrap();
@@ -113,7 +107,6 @@ fn test_sort_by_key_descending_null_placement() {
     assert_eq!(nulls_last_view.column(1).unwrap().to_vec::<i32>().unwrap()[..3], [30, 20, 50]);
 }
 
-#[test]
 fn test_sorted_order() {
     let col = column_from_slice(&[30i32, 10, 20]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
@@ -125,7 +118,6 @@ fn test_sorted_order() {
     assert_eq!(result, vec![1, 2, 0]);
 }
 
-#[test]
 fn test_sort_rejects_mismatched_column_order_len() {
     let c0 = column_from_slice(&[3i32, 1, 2]).unwrap();
     let c1 = column_from_slice(&[30i32, 10, 20]).unwrap();
@@ -146,7 +138,6 @@ fn test_sort_rejects_mismatched_column_order_len() {
     assert_eq!(error_context_value(&err, "num_keys").as_deref(), None);
 }
 
-#[test]
 fn test_is_sorted_rejects_mismatched_null_precedence_len() {
     let c0 = column_from_slice(&[3i32, 1, 2]).unwrap();
     let c1 = column_from_slice(&[30i32, 10, 20]).unwrap();
@@ -168,7 +159,6 @@ fn test_is_sorted_rejects_mismatched_null_precedence_len() {
     assert_eq!(error_context_value(&err, "num_keys").as_deref(), None);
 }
 
-#[test]
 fn test_sort_error_contains_operation_context() {
     let col = column_from_slice(&[3i32, 1, 2]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
@@ -186,7 +176,6 @@ fn test_sort_error_contains_operation_context() {
     assert_eq!(error_context_value(&err, "num_keys").as_deref(), None);
 }
 
-#[test]
 fn test_testing_hook_locks_sort_key_count_limit_contract() {
     let err = cudf::testing::sorting::trigger_sort_key_count_limit_error_for_test().unwrap_err();
 
@@ -204,7 +193,6 @@ fn test_testing_hook_locks_sort_key_count_limit_contract() {
     assert_eq!(error_context_value(&err, "num_keys").as_deref(), None);
 }
 
-#[test]
 fn test_is_sorted() {
     let sorted_col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let sorted_table = Table::from_columns(vec![sorted_col]).unwrap();
@@ -217,7 +205,6 @@ fn test_is_sorted() {
     assert!(!sorting::is_sorted(&uv, None, None).unwrap());
 }
 
-#[test]
 fn test_sort_by_key_succeeds_with_mixed_domains_and_uses_values_provenance() {
     let values = Table::from_columns(vec![explicit_i32_column(&[30, 10, 20], 960)]).unwrap();
     let keys = Table::from_columns(vec![explicit_i32_column(&[3, 1, 2], 961)]).unwrap();
@@ -238,7 +225,6 @@ fn test_sort_by_key_succeeds_with_mixed_domains_and_uses_values_provenance() {
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
-#[test]
 fn test_stable_sort_by_key_succeeds_with_mixed_domains_and_uses_values_provenance() {
     let values = Table::from_columns(vec![explicit_i32_column(&[40, 10, 20, 30], 962)]).unwrap();
     let keys = Table::from_columns(vec![explicit_i32_column(&[1, 0, 1, 1], 963)]).unwrap();
@@ -258,4 +244,36 @@ fn test_stable_sort_by_key_succeeds_with_mixed_domains_and_uses_values_provenanc
     reset_sync_observation();
     assert_eq!(sorted.testing_view().unwrap().column(0).unwrap().to_vec::<i32>().unwrap(), vec![10, 40, 20, 30]);
     assert_eq!(last_sync_stream_value(), expected_stream);
+}
+
+#[test]
+fn sorting_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_sort_ascending", test_sort_ascending),
+        ("test_sort_descending", test_sort_descending),
+        ("test_sort_multi_column", test_sort_multi_column),
+        ("test_sort_with_nulls", test_sort_with_nulls),
+        ("test_sort_by_key", test_sort_by_key),
+        ("test_sort_by_key_descending_null_placement", test_sort_by_key_descending_null_placement),
+        ("test_sorted_order", test_sorted_order),
+        ("test_sort_rejects_mismatched_column_order_len", test_sort_rejects_mismatched_column_order_len),
+        (
+            "test_is_sorted_rejects_mismatched_null_precedence_len",
+            test_is_sorted_rejects_mismatched_null_precedence_len,
+        ),
+        ("test_sort_error_contains_operation_context", test_sort_error_contains_operation_context),
+        (
+            "test_testing_hook_locks_sort_key_count_limit_contract",
+            test_testing_hook_locks_sort_key_count_limit_contract,
+        ),
+        ("test_is_sorted", test_is_sorted),
+        (
+            "test_sort_by_key_succeeds_with_mixed_domains_and_uses_values_provenance",
+            test_sort_by_key_succeeds_with_mixed_domains_and_uses_values_provenance,
+        ),
+        (
+            "test_stable_sort_by_key_succeeds_with_mixed_domains_and_uses_values_provenance",
+            test_stable_sort_by_key_succeeds_with_mixed_domains_and_uses_values_provenance,
+        ),
+    ]);
 }

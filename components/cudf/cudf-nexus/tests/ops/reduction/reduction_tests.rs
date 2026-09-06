@@ -17,7 +17,6 @@ fn assert_ddof_range_validation_error(err: &cudf::Error, operation: &str, expect
     assert_eq!(error_context_value(err, "ddof").as_deref(), Some(expected_ddof.to_string().as_str()));
 }
 
-#[test]
 fn test_reduce_sum() {
     let col = column_from_slice(&[1i32, 2, 3, 4]).unwrap();
     let view = col.testing_view().unwrap();
@@ -27,7 +26,6 @@ fn test_reduce_sum() {
     assert_eq!(result.value::<i64>().unwrap(), 10);
 }
 
-#[test]
 fn test_reduce_min() {
     let col = column_from_slice(&[5i32, 1, 3]).unwrap();
     let view = col.testing_view().unwrap();
@@ -37,7 +35,6 @@ fn test_reduce_min() {
     assert_eq!(result.value::<i32>().unwrap(), 1);
 }
 
-#[test]
 fn test_reduce_max() {
     let col = column_from_slice(&[5i32, 1, 3]).unwrap();
     let view = col.testing_view().unwrap();
@@ -47,7 +44,6 @@ fn test_reduce_max() {
     assert_eq!(result.value::<i32>().unwrap(), 5);
 }
 
-#[test]
 fn test_reduce_mean() {
     let col = column_from_slice(&[2.0f64, 4.0, 6.0]).unwrap();
     let view = col.testing_view().unwrap();
@@ -57,7 +53,6 @@ fn test_reduce_mean() {
     assert!((result.value::<f64>().unwrap() - 4.0).abs() < 1e-10);
 }
 
-#[test]
 fn test_reduce_product() {
     let col = column_from_slice(&[2i32, 3, 4]).unwrap();
     let view = col.testing_view().unwrap();
@@ -67,7 +62,6 @@ fn test_reduce_product() {
     assert_eq!(result.value::<i64>().unwrap(), 24);
 }
 
-#[test]
 fn test_scan_inclusive_sum() {
     let col = column_from_slice(&[1i32, 2, 3, 4]).unwrap();
     let view = col.testing_view().unwrap();
@@ -78,7 +72,6 @@ fn test_scan_inclusive_sum() {
     assert_eq!(values, vec![1, 3, 6, 10]);
 }
 
-#[test]
 fn test_scan_exclusive_sum() {
     let col = column_from_slice(&[1i32, 2, 3, 4]).unwrap();
     let view = col.testing_view().unwrap();
@@ -89,7 +82,6 @@ fn test_scan_exclusive_sum() {
     assert_eq!(values, vec![0, 1, 3, 6]);
 }
 
-#[test]
 fn test_reduce_ddof_above_i32_max_contains_context() {
     let col = column_from_slice(&[1.0f64, 2.0, 3.0]).unwrap();
     let view = col.testing_view().unwrap();
@@ -105,7 +97,6 @@ fn test_reduce_ddof_above_i32_max_contains_context() {
     );
 }
 
-#[test]
 fn test_minmax() {
     let col = column_from_slice(&[5i32, 1, 3, 7, 2]).unwrap();
     let view = col.testing_view().unwrap();
@@ -117,7 +108,6 @@ fn test_minmax() {
     assert_eq!(max_scalar.value::<i32>().unwrap(), 7);
 }
 
-#[test]
 fn test_reduce_decimal_scalar_dtype_preserves_scale() {
     let dt = DataType::fixed_point(TypeId::Decimal128, -2).unwrap();
     let series = crate::common::series::<i32>("x", &[100, 200, 300]).unwrap().astype(dt).unwrap();
@@ -126,4 +116,20 @@ fn test_reduce_decimal_scalar_dtype_preserves_scale() {
     let result = reduction::reduce(&view, &ReduceAgg::Min, &dt).unwrap();
 
     assert_eq!(result.data_type().unwrap(), dt);
+}
+
+#[test]
+fn reduction_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_reduce_sum", test_reduce_sum),
+        ("test_reduce_min", test_reduce_min),
+        ("test_reduce_max", test_reduce_max),
+        ("test_reduce_mean", test_reduce_mean),
+        ("test_reduce_product", test_reduce_product),
+        ("test_scan_inclusive_sum", test_scan_inclusive_sum),
+        ("test_scan_exclusive_sum", test_scan_exclusive_sum),
+        ("test_reduce_ddof_above_i32_max_contains_context", test_reduce_ddof_above_i32_max_contains_context),
+        ("test_minmax", test_minmax),
+        ("test_reduce_decimal_scalar_dtype_preserves_scale", test_reduce_decimal_scalar_dtype_preserves_scale),
+    ]);
 }

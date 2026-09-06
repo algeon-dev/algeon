@@ -423,7 +423,6 @@ fn assert_exec_options_copy_validation_error(
 // ===========================================================================
 
 /// Default cudf_sys::ExecutionContext has null stream and null mr.
-#[test]
 fn execution_context_default_has_null_handles() {
     let ctx = cudf_sys::ExecutionContext::default();
     let raw = ctx.raw();
@@ -433,7 +432,6 @@ fn execution_context_default_has_null_handles() {
 }
 
 /// cudf_sys::ExecutionContext stores a non-null stream handle.
-#[test]
 fn execution_context_with_stream_stores_handle() {
     let stream = CudaStream::new().expect("failed to create stream");
     let borrowed = stream.as_borrowed_sys();
@@ -444,7 +442,6 @@ fn execution_context_with_stream_stores_handle() {
 }
 
 /// cudf_sys::ExecutionContext stores a non-null memory-resource handle.
-#[test]
 fn execution_context_with_mr_stores_handle() {
     let mr = DeviceMemoryResource::cuda().expect("failed to create mr");
     let borrowed = mr.as_borrowed_sys();
@@ -455,7 +452,6 @@ fn execution_context_with_mr_stores_handle() {
 }
 
 /// cudf_sys::ExecutionContext is Copy — copying produces an identical struct.
-#[test]
 fn execution_context_is_copy() {
     let stream = CudaStream::new().expect("failed to create stream");
     let borrowed = stream.as_borrowed_sys();
@@ -473,7 +469,6 @@ fn execution_context_is_copy() {
 /// `cudf_exec_options_t` contains raw pointers. The public safe-layer
 /// `cudf::ExecutionOverrides` has its own `Send + Sync` contract coverage in the
 /// `runtime_v1_public_api_tests` suite.
-#[test]
 fn execution_context_send_sync_status_documented() {
     // cudf_exec_options_t contains *mut c_void, so the low-level FFI builder
     // remains !Send + !Sync. This test documents that status quo.
@@ -483,7 +478,6 @@ fn execution_context_send_sync_status_documented() {
 }
 
 /// struct_size is correctly initialized.
-#[test]
 fn execution_context_struct_size_is_correct() {
     let ctx = cudf_sys::ExecutionContext::default();
     assert_eq!(
@@ -505,7 +499,6 @@ fn execution_context_struct_size_is_correct() {
 
 /// `cudf_column_copy_ex` with an explicit stream records that stream in the
 /// observation hook, not the process-global default.
-#[test]
 fn column_copy_ex_uses_explicit_stream() {
     let col = create_i32_column_raw(&[10, 20, 30]);
 
@@ -537,7 +530,6 @@ fn column_copy_ex_uses_explicit_stream() {
 
 /// `cudf_column_view_to_host_ex` with an explicit stream records that stream
 /// in the observation hook.
-#[test]
 fn column_to_host_ex_uses_explicit_stream() {
     let data: [i32; 3] = [100, 200, 300];
     let col = create_i32_column_raw(&data);
@@ -568,7 +560,6 @@ fn column_to_host_ex_uses_explicit_stream() {
 
 /// `cudf_column_view_to_host_ex` on a sliced view must copy from the sliced
 /// element offset, scaled by the element width — not by single bytes.
-#[test]
 fn column_to_host_ex_reads_sliced_view_from_element_offset() {
     let data: [i32; 6] = [10, 20, 30, 40, 50, 60];
     let col = create_i32_column_raw(&data);
@@ -599,7 +590,6 @@ fn column_to_host_ex_reads_sliced_view_from_element_offset() {
 
 /// `cudf_column_view_strings_to_host_ex` on a sliced STRING view must read
 /// the offsets child starting at the parent view's offset.
-#[test]
 fn strings_to_host_ex_accounts_for_sliced_parent_view_offset() {
     let strings = [c"aa", c"bbb", c"c", c"dddd"];
     let mut ptrs: Vec<*const c_char> = strings.iter().map(|s| s.as_ptr()).collect();
@@ -653,7 +643,6 @@ fn strings_to_host_ex_accounts_for_sliced_parent_view_offset() {
 
 /// `cudf_column_create_from_device_data_ex` with an explicit stream records
 /// that stream in the observation hook.
-#[test]
 fn column_from_device_data_ex_uses_explicit_stream() {
     let data: [i64; 4] = [1, 2, 3, 4];
     let src_col = create_i64_column_raw(&data);
@@ -709,7 +698,6 @@ fn column_from_device_data_ex_uses_explicit_stream() {
     destroy_column(src_col);
 }
 
-#[test]
 fn replace_nulls_scalar_ex_uses_explicit_stream() {
     let input = create_i32_nullable_column_raw(&[1, 0, 3], 0b0000_0101);
     let input_view = column_view_raw(input);
@@ -739,7 +727,6 @@ fn replace_nulls_scalar_ex_uses_explicit_stream() {
     destroy_column(input);
 }
 
-#[test]
 fn replace_nulls_column_ex_uses_explicit_stream() {
     let input = create_i32_nullable_column_raw(&[1, 0, 3], 0b0000_0101);
     let input_view = column_view_raw(input);
@@ -771,7 +758,6 @@ fn replace_nulls_column_ex_uses_explicit_stream() {
     destroy_column(input);
 }
 
-#[test]
 fn gather_ex_uses_explicit_stream_and_mr() {
     let table = create_single_column_table_raw(&[10, 20, 30]);
     let table_view = table_view_raw(table);
@@ -813,7 +799,6 @@ fn gather_ex_uses_explicit_stream_and_mr() {
     destroy_table(table);
 }
 
-#[test]
 fn apply_boolean_mask_ex_uses_explicit_stream_and_mr() {
     let table = create_single_column_table_raw(&[10, 20, 30]);
     let table_view = table_view_raw(table);
@@ -849,7 +834,6 @@ fn apply_boolean_mask_ex_uses_explicit_stream_and_mr() {
 
 /// Production `_ex` ops reject null options instead of falling back to ambient
 /// defaults.
-#[test]
 fn column_copy_ex_null_options_are_rejected() {
     let col = create_i32_column_raw(&[10, 20, 30]);
 
@@ -866,7 +850,6 @@ fn column_copy_ex_null_options_are_rejected() {
 
 /// Production `_ex` ops reject default `cudf_sys::ExecutionContext` values
 /// because they contain no explicit device, stream, or memory resource.
-#[test]
 fn column_copy_ex_default_context_is_rejected() {
     let col = create_i32_column_raw(&[1, 2, 3]);
 
@@ -884,7 +867,6 @@ fn column_copy_ex_default_context_is_rejected() {
 }
 
 /// Explicit memory resource is recorded by the observation hook.
-#[test]
 fn column_copy_ex_explicit_mr_is_observed() {
     let col = create_i32_column_raw(&[5, 10, 15]);
 
@@ -907,7 +889,6 @@ fn column_copy_ex_explicit_mr_is_observed() {
     destroy_column(col);
 }
 
-#[test]
 fn column_copy_from_view_ex_uses_explicit_stream_and_mr() {
     let col = create_i32_column_raw(&[5, 10, 15]);
     let view = column_view_raw(col);
@@ -933,7 +914,6 @@ fn column_copy_from_view_ex_uses_explicit_stream_and_mr() {
     destroy_column(col);
 }
 
-#[test]
 fn table_copy_ex_uses_explicit_stream_and_mr() {
     let table = create_single_column_table_raw(&[5, 10, 15]);
     let stream = CudaStream::new().expect("failed to create stream");
@@ -964,7 +944,6 @@ fn table_copy_ex_uses_explicit_stream_and_mr() {
 // routing below the current public `Runtime v1` surface.
 // ===========================================================================
 
-#[test]
 fn sort_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override() {
     let df = cudf::DataFrame::from_series([("id", explicit_i32_series("id", &[3, 1, 2], 501))]).unwrap();
 
@@ -983,7 +962,6 @@ fn sort_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retai
     assert_observed_sync_stream(explicit_stream);
 }
 
-#[test]
 fn sort_with_execution_context_accepts_runtime_seeded_inputs() {
     let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
     let df = cudf::DataFrame::from_series([("id", ids)]).unwrap();
@@ -999,7 +977,6 @@ fn sort_with_execution_context_accepts_runtime_seeded_inputs() {
     assert_dataframe_i32_values(&sorted, "id", &[1, 2, 3]);
 }
 
-#[test]
 fn sort_with_execution_context_on_explicit_domain_uses_explicit_memory_resource() {
     let df = cudf::DataFrame::from_series([("id", explicit_i32_series("id", &[3, 1, 2], 502))]).unwrap();
 
@@ -1015,7 +992,6 @@ fn sort_with_execution_context_on_explicit_domain_uses_explicit_memory_resource(
     assert_dataframe_mr_override(&sorted, 502, explicit_mr);
 }
 
-#[test]
 fn merge_with_execution_context_on_explicit_domains_uses_explicit_stream() {
     let left = cudf::DataFrame::from_series([
         ("id", explicit_i32_series("id", &[1, 2, 3], 503)),
@@ -1040,7 +1016,6 @@ fn merge_with_execution_context_on_explicit_domains_uses_explicit_stream() {
     assert_dataframe_stream_override(&joined, 503, explicit_stream);
 }
 
-#[test]
 fn groupby_with_execution_context_on_explicit_domain_uses_explicit_stream() {
     let df = cudf::DataFrame::from_series([
         ("key", explicit_i32_series("key", &[1, 1, 2, 2], 504)),
@@ -1061,7 +1036,6 @@ fn groupby_with_execution_context_on_explicit_domain_uses_explicit_stream() {
     assert_dataframe_stream_override(&result, 504, explicit_stream);
 }
 
-#[test]
 fn gather_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override() {
     let df = cudf::DataFrame::from_series([("id", explicit_i32_series("id", &[3, 1, 2], 505))]).unwrap();
     let indices = explicit_i32_series("gather", &[2, 0], 505);
@@ -1081,7 +1055,6 @@ fn gather_with_execution_context_on_explicit_domain_uses_explicit_stream_and_ret
     assert_observed_sync_stream(explicit_stream);
 }
 
-#[test]
 fn gather_with_execution_context_accepts_runtime_seeded_inputs() {
     let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
     let df = cudf::DataFrame::from_series([("id", ids)]).unwrap();
@@ -1098,7 +1071,6 @@ fn gather_with_execution_context_accepts_runtime_seeded_inputs() {
     assert_dataframe_i32_values(&gathered, "id", &[2, 3]);
 }
 
-#[test]
 fn filter_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override() {
     let df = cudf::DataFrame::from_series([("id", explicit_i32_series("id", &[3, 1, 2], 506))]).unwrap();
     let mask = explicit_bool_series("mask", &[true, false, true], 506);
@@ -1118,7 +1090,6 @@ fn filter_with_execution_context_on_explicit_domain_uses_explicit_stream_and_ret
     assert_observed_sync_stream(explicit_stream);
 }
 
-#[test]
 fn filter_with_execution_context_accepts_runtime_seeded_inputs() {
     let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
     let df = cudf::DataFrame::from_series([("id", ids)]).unwrap();
@@ -1144,7 +1115,6 @@ fn filter_with_execution_context_accepts_runtime_seeded_inputs() {
 
 /// Calling `Column::deep_copy()` without an override keeps using the source
 /// column's retained runtime stream.
-#[test]
 fn column_deep_copy_uses_source_runtime_stream_without_override() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let source_stream = col.testing_execution_domain_stream_value();
@@ -1159,7 +1129,6 @@ fn column_deep_copy_uses_source_runtime_stream_without_override() {
 /// Existing `DataFrame::sort_values` (no context) should produce correct
 /// results. This is the default-path baseline for
 /// `DataFrame::with_execution(&ctx).sort_values(...)`.
-#[test]
 fn sort_values_default_produces_correct_results() {
     let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
     let df = cudf::DataFrame::from_series([("id", ids)]).unwrap();
@@ -1173,7 +1142,6 @@ fn sort_values_default_produces_correct_results() {
 
 /// Existing `DataFrame::merge` (no context) should produce correct results.
 /// This is the default-path baseline for `DataFrame::with_execution(&ctx).merge(...)`.
-#[test]
 fn merge_default_produces_correct_results() {
     let left_ids = crate::common::series::<i32>("id", &[1, 2, 3]).unwrap();
     let left_vals = crate::common::series::<f64>("val", &[10.0, 20.0, 30.0]).unwrap();
@@ -1190,7 +1158,6 @@ fn merge_default_produces_correct_results() {
 
 /// Existing `GroupBy::agg` (no context) should produce correct results.
 /// This is the default-path baseline for `GroupBy::with_execution(&ctx).agg(...)`.
-#[test]
 fn groupby_agg_default_produces_correct_results() {
     let keys = crate::common::series::<i32>("key", &[1, 1, 2, 2]).unwrap();
     let vals = crate::common::series::<i64>("val", &[10, 20, 30, 40]).unwrap();
@@ -1209,7 +1176,6 @@ fn groupby_agg_default_produces_correct_results() {
 // ===========================================================================
 
 /// Column copy with an explicit pool memory resource records that resource.
-#[test]
 fn column_copy_ex_pool_mr_is_observed() {
     let col = create_i32_column_raw(&[42, 43, 44]);
 
@@ -1239,7 +1205,6 @@ fn column_copy_ex_pool_mr_is_observed() {
 }
 
 /// Column copy with both explicit stream AND memory resource.
-#[test]
 fn column_copy_ex_stream_and_mr_combined() {
     let col = create_i32_column_raw(&[7, 8, 9]);
 
@@ -1274,7 +1239,6 @@ fn column_copy_ex_stream_and_mr_combined() {
 // ===========================================================================
 
 /// CudaStream can be created and synchronized.
-#[test]
 fn cuda_stream_create_and_sync() {
     let stream = CudaStream::new().unwrap();
     stream.synchronize().unwrap();
@@ -1282,26 +1246,22 @@ fn cuda_stream_create_and_sync() {
 }
 
 /// CudaStream is accessible via the `cudf::runtime` module path (not re-exported at crate root).
-#[test]
 fn cuda_stream_accessible_via_module_path() {
     let stream = CudaStream::new().unwrap();
     stream.synchronize().unwrap();
 }
 
 /// DeviceMemoryResource can be created (cuda variant).
-#[test]
 fn device_memory_resource_create_cuda() {
     let _mr = DeviceMemoryResource::cuda().unwrap();
 }
 
 /// DeviceMemoryResource can be created (pool variant).
-#[test]
 fn device_memory_resource_create_pool() {
     let _mr = DeviceMemoryResource::pool(16 * 1024 * 1024, None).unwrap();
 }
 
 /// `CudaStream::as_borrowed_sys` preserves the sys-handle identity.
-#[test]
 fn cuda_stream_as_borrowed_sys_preserves_handle() {
     let stream = CudaStream::new().unwrap();
     let borrowed = stream.as_borrowed_sys();
@@ -1309,7 +1269,6 @@ fn cuda_stream_as_borrowed_sys_preserves_handle() {
 }
 
 /// `CudaEvent::as_borrowed_sys` preserves the sys-handle identity.
-#[test]
 fn cuda_event_as_borrowed_sys_preserves_handle() {
     let stream = CudaStream::new().unwrap();
     let event = CudaEvent::new().unwrap();
@@ -1320,7 +1279,6 @@ fn cuda_event_as_borrowed_sys_preserves_handle() {
 }
 
 /// `DeviceMemoryResource::as_borrowed_sys` preserves the sys-handle identity.
-#[test]
 fn device_memory_resource_as_borrowed_sys_preserves_handle() {
     let mr = DeviceMemoryResource::cuda().unwrap();
     let borrowed = mr.as_borrowed_sys();
@@ -1340,7 +1298,6 @@ fn device_memory_resource_as_borrowed_sys_preserves_handle() {
 
 /// A `cudf_exec_options_t` with `struct_size` smaller than the actual struct
 /// is rejected with `CUDF_ERROR_INVALID_OPERATION`.
-#[test]
 fn exec_options_struct_size_too_small_returns_error() {
     let mut opts = cudf_sys::cudf_exec_options_t::defaults();
     opts.struct_size = 8; // too small
@@ -1354,7 +1311,6 @@ fn exec_options_struct_size_too_small_returns_error() {
 
 /// A `cudf_exec_options_t` with unknown flag bits is rejected with
 /// `CUDF_ERROR_INVALID_OPERATION`.
-#[test]
 fn exec_options_unknown_flags_returns_error() {
     let mut opts = cudf_sys::cudf_exec_options_t::defaults();
     opts.flags = 0x8000_0000; // unknown bit
@@ -1368,7 +1324,6 @@ fn exec_options_unknown_flags_returns_error() {
 
 /// A `cudf_exec_options_t` with a non-zero reserved field is rejected with
 /// `CUDF_ERROR_INVALID_OPERATION`.
-#[test]
 fn exec_options_nonzero_reserved_returns_error() {
     let mut opts = cudf_sys::cudf_exec_options_t::defaults();
     opts.reserved[2] = 0xDEAD_BEEF;
@@ -1382,7 +1337,6 @@ fn exec_options_nonzero_reserved_returns_error() {
 
 /// A `cudf_exec_options_t` with an explicit device ordinal that does not exist
 /// is rejected as invalid before any execution observation occurs.
-#[test]
 fn exec_options_invalid_explicit_device_returns_error_without_side_effects() {
     let col = create_i32_column_raw(&[1, 2, 3]);
     let before = DeviceId::current().unwrap();
@@ -1415,7 +1369,6 @@ fn exec_options_invalid_explicit_device_returns_error_without_side_effects() {
 /// A `cudf_exec_options_t` constructed via `defaults()` is rejected for
 /// production `_ex` calls because it has no explicit device, stream, or memory
 /// resource.
-#[test]
 fn exec_options_defaults_are_rejected() {
     let col = create_i32_column_raw(&[1, 2, 3]);
 
@@ -1430,4 +1383,99 @@ fn exec_options_defaults_are_rejected() {
     assert!(out.is_null(), "output handle should remain null on validation error");
 
     destroy_column(col);
+}
+
+#[test]
+fn execution_context_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("execution_context_default_has_null_handles", execution_context_default_has_null_handles),
+        ("execution_context_with_stream_stores_handle", execution_context_with_stream_stores_handle),
+        ("execution_context_with_mr_stores_handle", execution_context_with_mr_stores_handle),
+        ("execution_context_is_copy", execution_context_is_copy),
+        ("execution_context_send_sync_status_documented", execution_context_send_sync_status_documented),
+        ("execution_context_struct_size_is_correct", execution_context_struct_size_is_correct),
+        ("column_copy_ex_uses_explicit_stream", column_copy_ex_uses_explicit_stream),
+        ("column_to_host_ex_uses_explicit_stream", column_to_host_ex_uses_explicit_stream),
+        (
+            "column_to_host_ex_reads_sliced_view_from_element_offset",
+            column_to_host_ex_reads_sliced_view_from_element_offset,
+        ),
+        (
+            "strings_to_host_ex_accounts_for_sliced_parent_view_offset",
+            strings_to_host_ex_accounts_for_sliced_parent_view_offset,
+        ),
+        ("column_from_device_data_ex_uses_explicit_stream", column_from_device_data_ex_uses_explicit_stream),
+        ("replace_nulls_scalar_ex_uses_explicit_stream", replace_nulls_scalar_ex_uses_explicit_stream),
+        ("replace_nulls_column_ex_uses_explicit_stream", replace_nulls_column_ex_uses_explicit_stream),
+        ("gather_ex_uses_explicit_stream_and_mr", gather_ex_uses_explicit_stream_and_mr),
+        ("apply_boolean_mask_ex_uses_explicit_stream_and_mr", apply_boolean_mask_ex_uses_explicit_stream_and_mr),
+        ("column_copy_ex_null_options_are_rejected", column_copy_ex_null_options_are_rejected),
+        ("column_copy_ex_default_context_is_rejected", column_copy_ex_default_context_is_rejected),
+        ("column_copy_ex_explicit_mr_is_observed", column_copy_ex_explicit_mr_is_observed),
+        ("column_copy_from_view_ex_uses_explicit_stream_and_mr", column_copy_from_view_ex_uses_explicit_stream_and_mr),
+        ("table_copy_ex_uses_explicit_stream_and_mr", table_copy_ex_uses_explicit_stream_and_mr),
+        (
+            "sort_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override",
+            sort_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override,
+        ),
+        (
+            "sort_with_execution_context_accepts_runtime_seeded_inputs",
+            sort_with_execution_context_accepts_runtime_seeded_inputs,
+        ),
+        (
+            "sort_with_execution_context_on_explicit_domain_uses_explicit_memory_resource",
+            sort_with_execution_context_on_explicit_domain_uses_explicit_memory_resource,
+        ),
+        (
+            "merge_with_execution_context_on_explicit_domains_uses_explicit_stream",
+            merge_with_execution_context_on_explicit_domains_uses_explicit_stream,
+        ),
+        (
+            "groupby_with_execution_context_on_explicit_domain_uses_explicit_stream",
+            groupby_with_execution_context_on_explicit_domain_uses_explicit_stream,
+        ),
+        (
+            "gather_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override",
+            gather_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override,
+        ),
+        (
+            "gather_with_execution_context_accepts_runtime_seeded_inputs",
+            gather_with_execution_context_accepts_runtime_seeded_inputs,
+        ),
+        (
+            "filter_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override",
+            filter_with_execution_context_on_explicit_domain_uses_explicit_stream_and_retains_override,
+        ),
+        (
+            "filter_with_execution_context_accepts_runtime_seeded_inputs",
+            filter_with_execution_context_accepts_runtime_seeded_inputs,
+        ),
+        (
+            "column_deep_copy_uses_source_runtime_stream_without_override",
+            column_deep_copy_uses_source_runtime_stream_without_override,
+        ),
+        ("sort_values_default_produces_correct_results", sort_values_default_produces_correct_results),
+        ("merge_default_produces_correct_results", merge_default_produces_correct_results),
+        ("groupby_agg_default_produces_correct_results", groupby_agg_default_produces_correct_results),
+        ("column_copy_ex_pool_mr_is_observed", column_copy_ex_pool_mr_is_observed),
+        ("column_copy_ex_stream_and_mr_combined", column_copy_ex_stream_and_mr_combined),
+        ("cuda_stream_create_and_sync", cuda_stream_create_and_sync),
+        ("cuda_stream_accessible_via_module_path", cuda_stream_accessible_via_module_path),
+        ("device_memory_resource_create_cuda", device_memory_resource_create_cuda),
+        ("device_memory_resource_create_pool", device_memory_resource_create_pool),
+        ("cuda_stream_as_borrowed_sys_preserves_handle", cuda_stream_as_borrowed_sys_preserves_handle),
+        ("cuda_event_as_borrowed_sys_preserves_handle", cuda_event_as_borrowed_sys_preserves_handle),
+        (
+            "device_memory_resource_as_borrowed_sys_preserves_handle",
+            device_memory_resource_as_borrowed_sys_preserves_handle,
+        ),
+        ("exec_options_struct_size_too_small_returns_error", exec_options_struct_size_too_small_returns_error),
+        ("exec_options_unknown_flags_returns_error", exec_options_unknown_flags_returns_error),
+        ("exec_options_nonzero_reserved_returns_error", exec_options_nonzero_reserved_returns_error),
+        (
+            "exec_options_invalid_explicit_device_returns_error_without_side_effects",
+            exec_options_invalid_explicit_device_returns_error_without_side_effects,
+        ),
+        ("exec_options_defaults_are_rejected", exec_options_defaults_are_rejected),
+    ]);
 }

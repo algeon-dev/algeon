@@ -224,7 +224,6 @@ fn recursive_supported_frame() -> DataFrame {
 mod lease_contracts {
     use super::*;
 
-    #[test]
     fn shared_synchronous_completion_falls_back_by_return() {
         let _observation_lock = lock_event_observation();
         let runtime = Runtime::builder().build().unwrap();
@@ -238,7 +237,6 @@ mod lease_contracts {
         assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
     }
 
-    #[test]
     fn shared_cross_device_completion_invalid_device_keeps_flat_cudf_summary() {
         let _observation_lock = lock_event_observation();
         reset_event_observation();
@@ -285,7 +283,6 @@ mod lease_contracts {
         assert!(err.context().iter().any(|(key, value)| *key == "device_count" && value == &device_count.to_string()));
     }
 
-    #[test]
     fn shared_stream_lease_orders_consumer_stream_and_returns_witness() {
         let _observation_lock = lock_event_observation();
         let producer_stream = CudaStream::new().unwrap();
@@ -322,7 +319,6 @@ mod lease_contracts {
         assert!(witness.is_ready().unwrap());
     }
 
-    #[test]
     fn shared_event_ready_stream_lease_waits_producer_event_before_consumer_stream() {
         let _observation_lock = lock_event_observation();
         let producer_stream = CudaStream::new().unwrap();
@@ -369,7 +365,6 @@ mod lease_contracts {
         witness.synchronize().unwrap();
     }
 
-    #[test]
     fn into_prepared_column_export_with_event_retains_the_readiness_event() {
         let _observation_lock = lock_event_observation();
         let producer_stream = CudaStream::new().unwrap();
@@ -406,7 +401,6 @@ mod lease_contracts {
         witness.synchronize().unwrap();
     }
 
-    #[test]
     fn into_prepared_table_export_with_event_retains_the_readiness_event() {
         let _observation_lock = lock_event_observation();
         let producer_stream = CudaStream::new().unwrap();
@@ -441,7 +435,6 @@ mod lease_contracts {
         witness.synchronize().unwrap();
     }
 
-    #[test]
     fn guaranteed_fallback_shared_drop_synchronizes_consumer_stream() {
         let _observation_lock = lock_event_observation();
         let producer_runtime = Runtime::builder().build().unwrap();
@@ -512,7 +505,6 @@ mod lease_contracts {
         assert_eq!(interop_error_context_value(&err, "event_device"), None);
     }
 
-    #[test]
     fn explicit_shared_backend_requires_explicit_completion_and_releases_guard_on_drop() {
         let _observation_lock = lock_event_observation();
         let producer_runtime = Runtime::builder().build().unwrap();
@@ -550,7 +542,6 @@ mod lease_contracts {
         assert_eq!(reacquired.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
     }
 
-    #[test]
     fn runtime_stream_lease_records_one_completion_event_and_returns_witness() {
         let _observation_lock = lock_event_observation();
         let producer_runtime = Runtime::builder().build().unwrap();
@@ -582,7 +573,6 @@ mod lease_contracts {
         assert_eq!(observed_raw_record_call_count_for_stream_raw(consumer_stream_raw), baseline_consumer_record + 1);
     }
 
-    #[test]
     fn runtime_custom_backend_complete_path_is_used() {
         let _observation_lock = lock_event_observation();
         struct CountingFallbackBackend {
@@ -638,7 +628,6 @@ mod lease_contracts {
         assert_eq!(complete_calls.load(Ordering::SeqCst), 1);
     }
 
-    #[test]
     fn runtime_explicit_backend_drop_does_not_synchronize_and_releases_guard() {
         let _observation_lock = lock_event_observation();
         let producer_runtime = Runtime::builder().build().unwrap();
@@ -682,7 +671,6 @@ mod lease_contracts {
         witness.synchronize().unwrap();
     }
 
-    #[test]
     fn shared_leases_can_overlap_and_reacquire_one_export_root() {
         let _observation_lock = lock_event_observation();
         let producer_runtime = Runtime::builder().build().unwrap();
@@ -822,12 +810,59 @@ mod lease_contracts {
         assert_eq!(observed_stream_wait_call_count_for_event_raw(consumer_event_raw), baseline_completion_wait + 1);
         witness.synchronize().unwrap();
     }
+
+    #[test]
+    fn prepared_export_tests_cases_lease_contracts() {
+        crate::common::run_named_cases(&[
+            ("shared_synchronous_completion_falls_back_by_return", shared_synchronous_completion_falls_back_by_return),
+            (
+                "shared_cross_device_completion_invalid_device_keeps_flat_cudf_summary",
+                shared_cross_device_completion_invalid_device_keeps_flat_cudf_summary,
+            ),
+            (
+                "shared_stream_lease_orders_consumer_stream_and_returns_witness",
+                shared_stream_lease_orders_consumer_stream_and_returns_witness,
+            ),
+            (
+                "shared_event_ready_stream_lease_waits_producer_event_before_consumer_stream",
+                shared_event_ready_stream_lease_waits_producer_event_before_consumer_stream,
+            ),
+            (
+                "into_prepared_column_export_with_event_retains_the_readiness_event",
+                into_prepared_column_export_with_event_retains_the_readiness_event,
+            ),
+            (
+                "into_prepared_table_export_with_event_retains_the_readiness_event",
+                into_prepared_table_export_with_event_retains_the_readiness_event,
+            ),
+            (
+                "guaranteed_fallback_shared_drop_synchronizes_consumer_stream",
+                guaranteed_fallback_shared_drop_synchronizes_consumer_stream,
+            ),
+            (
+                "explicit_shared_backend_requires_explicit_completion_and_releases_guard_on_drop",
+                explicit_shared_backend_requires_explicit_completion_and_releases_guard_on_drop,
+            ),
+            (
+                "runtime_stream_lease_records_one_completion_event_and_returns_witness",
+                runtime_stream_lease_records_one_completion_event_and_returns_witness,
+            ),
+            ("runtime_custom_backend_complete_path_is_used", runtime_custom_backend_complete_path_is_used),
+            (
+                "runtime_explicit_backend_drop_does_not_synchronize_and_releases_guard",
+                runtime_explicit_backend_drop_does_not_synchronize_and_releases_guard,
+            ),
+            (
+                "shared_leases_can_overlap_and_reacquire_one_export_root",
+                shared_leases_can_overlap_and_reacquire_one_export_root,
+            ),
+        ]);
+    }
 }
 
 mod device_export_contracts {
     use super::*;
 
-    #[test]
     fn projection_active_range_overflow_hook_uses_row_count_context() {
         let err = cudf::testing::interop::trigger_interop_projection_active_range_overflow_for_test().unwrap_err();
         let expected = usize::MAX.to_string();
@@ -844,7 +879,6 @@ mod device_export_contracts {
         assert_eq!(interop_error_context_value(&err, "len"), None);
     }
 
-    #[test]
     fn projection_negative_offset_hook_uses_offset_contract() {
         let err = cudf::testing::interop::trigger_interop_projection_negative_offset_for_test().unwrap_err();
 
@@ -862,7 +896,6 @@ mod device_export_contracts {
         assert_eq!(interop_error_context_value(&err, "offset"), Some("-1"));
     }
 
-    #[test]
     fn projection_missing_string_offsets_child_hook_uses_child_count_contract() {
         let err =
             cudf::testing::interop::trigger_interop_projection_missing_string_offsets_child_for_test().unwrap_err();
@@ -880,7 +913,6 @@ mod device_export_contracts {
         assert_eq!(interop_error_context_value(&err, "num_children"), None);
     }
 
-    #[test]
     fn projection_list_offsets_width_mismatch_hook_uses_layout_contract() {
         let err =
             cudf::testing::interop::trigger_interop_projection_list_offsets_width_mismatch_for_test().unwrap_err();
@@ -897,7 +929,6 @@ mod device_export_contracts {
         assert_eq!(interop_error_context_value(&err, "offsets_elem_size"), None);
     }
 
-    #[test]
     fn projection_dictionary_indices_width_mismatch_hook_uses_layout_contract() {
         let err = cudf::testing::interop::trigger_interop_projection_dictionary_indices_width_mismatch_for_test()
             .unwrap_err();
@@ -914,7 +945,6 @@ mod device_export_contracts {
         assert_eq!(interop_error_context_value(&err, "indices_elem_size"), None);
     }
 
-    #[test]
     fn projection_host_offsets_too_small_hook_uses_offsets_range_contract() {
         let err = cudf::testing::interop::trigger_interop_projection_host_offsets_too_small_for_test().unwrap_err();
 
@@ -931,7 +961,6 @@ mod device_export_contracts {
         assert_eq!(interop_error_context_value(&err, "offsets_len"), None);
     }
 
-    #[test]
     fn projection_missing_null_mask_hook_uses_null_mask_contract() {
         let err = cudf::testing::interop::trigger_interop_projection_missing_null_mask_for_test().unwrap_err();
 
@@ -945,7 +974,6 @@ mod device_export_contracts {
         assert_eq!(interop_error_context_value(&err, "row_count"), Some("3"));
     }
 
-    #[test]
     fn projection_struct_missing_child_hook_uses_child_count_contract() {
         let err = cudf::testing::interop::trigger_interop_projection_struct_missing_child_for_test().unwrap_err();
 
@@ -965,7 +993,6 @@ mod device_export_contracts {
         assert_eq!(interop_error_context_value(&err, "required_child_count"), Some("1"));
     }
 
-    #[test]
     fn interop_column_index_limit_hook_uses_shared_i32_limit_contract() {
         let err = cudf::testing::interop::trigger_interop_column_index_limit_for_test().unwrap_err();
         let expected_column_index = usize::MAX.to_string();
@@ -1026,7 +1053,6 @@ mod device_export_contracts {
         assert_eq!(rebind_err.code(), ErrorCode::CrossDeviceInputs);
     }
 
-    #[test]
     fn device_fixed_width_exports_preserve_metadata_validity_and_slice_offset() {
         let runtime = Runtime::builder().build().unwrap();
         let nullable = runtime.column_from_slice_nullable(&[10i32, 20, 30], &[true, false, true]).unwrap();
@@ -1071,7 +1097,6 @@ mod device_export_contracts {
         assert_eq!(binding(sliced_export.bindings(), values).bytes().base_ptr(), base_view.device_data_ptr().unwrap());
     }
 
-    #[test]
     fn owned_low_level_column_consuming_prepared_export_retains_owner() {
         let runtime = Runtime::builder().build().unwrap();
         let column = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -1087,7 +1112,6 @@ mod device_export_contracts {
         );
     }
 
-    #[test]
     fn borrowed_low_level_column_prepared_export_does_not_fabricate_owner_retention() {
         let runtime = Runtime::builder().build().unwrap();
         let column = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -1097,7 +1121,6 @@ mod device_export_contracts {
         assert!(export.clone_retained_owner().is_none());
     }
 
-    #[test]
     fn device_table_export_preserves_names_nullability_readiness_and_low_level_equivalence() {
         let runtime = Runtime::builder().build().unwrap();
         let ids = runtime.series(&[1i32, 2, 3]).unwrap();
@@ -1119,7 +1142,6 @@ mod device_export_contracts {
         assert_device_stream_readiness(frame_export.readiness(), expected_stream, runtime.device());
     }
 
-    #[test]
     fn owned_low_level_table_consuming_prepared_export_retains_owner() {
         let runtime = Runtime::builder().build().unwrap();
         let left = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -1137,7 +1159,6 @@ mod device_export_contracts {
         );
     }
 
-    #[test]
     fn borrowed_low_level_table_prepared_export_does_not_fabricate_owner_retention() {
         let runtime = Runtime::builder().build().unwrap();
         let left = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -1149,7 +1170,6 @@ mod device_export_contracts {
         assert!(export.clone_retained_owner().is_none());
     }
 
-    #[test]
     fn device_string_exports_preserve_binary_like_metadata_and_active_slice_span() {
         let runtime = Runtime::builder().build().unwrap();
         let strings = runtime.column_from_strs(&["alice", "bob"]).unwrap();
@@ -1205,7 +1225,6 @@ mod device_export_contracts {
         assert_eq!(data_binding.bytes().byte_len(), "zeroonetwo".len());
     }
 
-    #[test]
     fn device_recursive_nested_export_preserves_supported_projection_shape() {
         let frame = recursive_supported_frame();
         let export = frame.try_prepare_device_table_export().unwrap();
@@ -1289,12 +1308,85 @@ mod device_export_contracts {
             .unwrap();
         assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
     }
+
+    #[test]
+    fn prepared_export_tests_cases_device_export_contracts() {
+        crate::common::run_named_cases(&[
+            (
+                "projection_active_range_overflow_hook_uses_row_count_context",
+                projection_active_range_overflow_hook_uses_row_count_context,
+            ),
+            (
+                "projection_negative_offset_hook_uses_offset_contract",
+                projection_negative_offset_hook_uses_offset_contract,
+            ),
+            (
+                "projection_missing_string_offsets_child_hook_uses_child_count_contract",
+                projection_missing_string_offsets_child_hook_uses_child_count_contract,
+            ),
+            (
+                "projection_list_offsets_width_mismatch_hook_uses_layout_contract",
+                projection_list_offsets_width_mismatch_hook_uses_layout_contract,
+            ),
+            (
+                "projection_dictionary_indices_width_mismatch_hook_uses_layout_contract",
+                projection_dictionary_indices_width_mismatch_hook_uses_layout_contract,
+            ),
+            (
+                "projection_host_offsets_too_small_hook_uses_offsets_range_contract",
+                projection_host_offsets_too_small_hook_uses_offsets_range_contract,
+            ),
+            (
+                "projection_missing_null_mask_hook_uses_null_mask_contract",
+                projection_missing_null_mask_hook_uses_null_mask_contract,
+            ),
+            (
+                "projection_struct_missing_child_hook_uses_child_count_contract",
+                projection_struct_missing_child_hook_uses_child_count_contract,
+            ),
+            (
+                "interop_column_index_limit_hook_uses_shared_i32_limit_contract",
+                interop_column_index_limit_hook_uses_shared_i32_limit_contract,
+            ),
+            (
+                "device_fixed_width_exports_preserve_metadata_validity_and_slice_offset",
+                device_fixed_width_exports_preserve_metadata_validity_and_slice_offset,
+            ),
+            (
+                "owned_low_level_column_consuming_prepared_export_retains_owner",
+                owned_low_level_column_consuming_prepared_export_retains_owner,
+            ),
+            (
+                "borrowed_low_level_column_prepared_export_does_not_fabricate_owner_retention",
+                borrowed_low_level_column_prepared_export_does_not_fabricate_owner_retention,
+            ),
+            (
+                "device_table_export_preserves_names_nullability_readiness_and_low_level_equivalence",
+                device_table_export_preserves_names_nullability_readiness_and_low_level_equivalence,
+            ),
+            (
+                "owned_low_level_table_consuming_prepared_export_retains_owner",
+                owned_low_level_table_consuming_prepared_export_retains_owner,
+            ),
+            (
+                "borrowed_low_level_table_prepared_export_does_not_fabricate_owner_retention",
+                borrowed_low_level_table_prepared_export_does_not_fabricate_owner_retention,
+            ),
+            (
+                "device_string_exports_preserve_binary_like_metadata_and_active_slice_span",
+                device_string_exports_preserve_binary_like_metadata_and_active_slice_span,
+            ),
+            (
+                "device_recursive_nested_export_preserves_supported_projection_shape",
+                device_recursive_nested_export_preserves_supported_projection_shape,
+            ),
+        ]);
+    }
 }
 
 mod host_export_contracts {
     use super::*;
 
-    #[test]
     fn host_fixed_width_exports_materialize_active_range_and_pack_validity() {
         let runtime = Runtime::builder().build().unwrap();
 
@@ -1322,7 +1414,6 @@ mod host_export_contracts {
         assert_host_binding_bytes(nullable_export.bindings(), mask, expected_mask);
     }
 
-    #[test]
     fn host_table_export_is_host_visible_and_rejects_cuda_completion() {
         let runtime = Runtime::builder().build().unwrap();
         let ids = runtime.series(&[1i32, 2, 3]).unwrap();
@@ -1346,7 +1437,6 @@ mod host_export_contracts {
         assert_eq!(err.kind(), InteropErrorKind::ProfileUnsupported);
     }
 
-    #[test]
     fn host_string_exports_materialize_binary_like_bytes_rebase_slice_and_pack_validity() {
         let runtime = Runtime::builder().build().unwrap();
 
@@ -1385,7 +1475,6 @@ mod host_export_contracts {
         assert_host_binding_bytes(nullable_export.bindings(), mask, expected_mask);
     }
 
-    #[test]
     fn host_list_slice_export_rebases_offsets_and_child_range() {
         let frame = read_list_dataframe(
             "{\"lists\":[1,2]}
@@ -1422,7 +1511,6 @@ mod host_export_contracts {
         assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
     }
 
-    #[test]
     fn host_recursive_nested_export_materializes_supported_projections() {
         let frame = recursive_supported_frame();
         let export = frame.try_prepare_host_table_export().unwrap();
@@ -1517,5 +1605,31 @@ mod host_export_contracts {
             .try_activate_read_lease(ReadStartAuthority::SynchronousByReturn, CompletionAuthority::SynchronousByReturn)
             .unwrap();
         assert_eq!(lease.complete().unwrap(), LeaseCompletionResult::FallbackSynchronized);
+    }
+
+    #[test]
+    fn prepared_export_tests_cases_host_export_contracts() {
+        crate::common::run_named_cases(&[
+            (
+                "host_fixed_width_exports_materialize_active_range_and_pack_validity",
+                host_fixed_width_exports_materialize_active_range_and_pack_validity,
+            ),
+            (
+                "host_table_export_is_host_visible_and_rejects_cuda_completion",
+                host_table_export_is_host_visible_and_rejects_cuda_completion,
+            ),
+            (
+                "host_string_exports_materialize_binary_like_bytes_rebase_slice_and_pack_validity",
+                host_string_exports_materialize_binary_like_bytes_rebase_slice_and_pack_validity,
+            ),
+            (
+                "host_list_slice_export_rebases_offsets_and_child_range",
+                host_list_slice_export_rebases_offsets_and_child_range,
+            ),
+            (
+                "host_recursive_nested_export_materializes_supported_projections",
+                host_recursive_nested_export_materializes_supported_projections,
+            ),
+        ]);
     }
 }

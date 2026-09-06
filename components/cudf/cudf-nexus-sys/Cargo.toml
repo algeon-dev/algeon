@@ -47,10 +47,10 @@ name = "stream_provider_contract_cpu"
 name = "bindings_contract_cpu"
 
 [[test]]
-name = "memory_manager_static_partition_contract_gpu_exclusive"
+name = "memory_manager_static_partition_contract_gpu"
 
 [[test]]
-name = "memory_manager_old_options_abi_contract_gpu_exclusive"
+name = "memory_manager_old_options_abi_contract_gpu"
 
 [[test]]
 name = "build_link_contract"
@@ -69,7 +69,11 @@ name = "execution_context_contract_cpu"
 required-features = ["test-hooks"]
 
 [[test]]
-name = "ffi_regressions_gpu_exclusive"
+name = "ffi_multi_device_gpu_exclusive"
+required-features = ["test-hooks"]
+
+[[test]]
+name = "ffi_regressions_gpu"
 required-features = ["test-hooks"]
 
 [[test]]
@@ -81,11 +85,11 @@ name = "handle_destroy_provenance_contract_cpu"
 required-features = ["test-hooks"]
 
 [[test]]
-name = "hash_join_destroy_provenance_gpu_exclusive"
+name = "hash_join_destroy_provenance_gpu"
 required-features = ["test-hooks"]
 
 [[test]]
-name = "memory_resource_hooks_gpu_exclusive"
+name = "memory_resource_hooks_gpu"
 required-features = ["test-hooks"]
 
 [[test]]

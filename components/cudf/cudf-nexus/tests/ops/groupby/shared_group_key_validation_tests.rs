@@ -14,7 +14,6 @@ fn assert_empty_group_key_contract(err: &cudf::Error, operation: &str) {
     assert_eq!(error_context_value(err, "keys_count").as_deref(), Some("0"));
 }
 
-#[test]
 fn high_level_group_key_apis_share_empty_key_contract() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let values = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
@@ -26,4 +25,12 @@ fn high_level_group_key_apis_share_empty_key_contract() {
 
     assert_empty_group_key_contract(&groupby_err, "groupby::GroupBy::agg");
     assert_empty_group_key_contract(&cumcount_err, "dataframe::group_cumcount");
+}
+
+#[test]
+fn shared_group_key_validation_tests_cases() {
+    crate::common::run_named_cases(&[(
+        "high_level_group_key_apis_share_empty_key_contract",
+        high_level_group_key_apis_share_empty_key_contract,
+    )]);
 }

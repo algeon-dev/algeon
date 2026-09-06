@@ -6,7 +6,6 @@ use crate::common::{
     last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
 };
 
-#[test]
 fn test_boolean_mask_basic() {
     let col = column_from_slice(&[10i32, 20, 30, 40]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
@@ -23,7 +22,6 @@ fn test_boolean_mask_basic() {
     assert_eq!(result, vec![10, 30]);
 }
 
-#[test]
 fn test_boolean_mask_all_false() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
@@ -37,7 +35,6 @@ fn test_boolean_mask_all_false() {
     assert_eq!(fv.num_rows().unwrap(), 0);
 }
 
-#[test]
 fn test_boolean_mask_all_true() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
@@ -53,7 +50,6 @@ fn test_boolean_mask_all_true() {
     assert_eq!(result, vec![1, 2, 3]);
 }
 
-#[test]
 fn test_boolean_mask_multi_column() {
     let c0 = column_from_slice(&[1i32, 2, 3, 4]).unwrap();
     let c1 = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
@@ -74,7 +70,6 @@ fn test_boolean_mask_multi_column() {
     assert_eq!(col1, vec![20.0, 40.0]);
 }
 
-#[test]
 fn test_boolean_mask_succeeds_with_mixed_domains_and_uses_input_provenance() {
     let table = Table::from_columns(vec![explicit_i32_column(&[10, 20, 30], 920)]).unwrap();
     let mask = explicit_bool_column(&[true, false, true], 921);
@@ -95,7 +90,6 @@ fn test_boolean_mask_succeeds_with_mixed_domains_and_uses_input_provenance() {
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
-#[test]
 fn test_boolean_mask_rejects_non_bool_mask_with_canonical_type_contract() {
     let table = Table::from_columns(vec![column_from_slice(&[10i32, 20, 30]).unwrap()]).unwrap();
     let mask = column_from_slice(&[1i32, 0, 1]).unwrap();
@@ -109,7 +103,6 @@ fn test_boolean_mask_rejects_non_bool_mask_with_canonical_type_contract() {
     assert_eq!(error_context_value(&err, "right_type_id").as_deref(), Some("bool8"));
 }
 
-#[test]
 fn test_boolean_mask_rejects_wrong_length_mask_with_canonical_length_contract() {
     let table = Table::from_columns(vec![column_from_slice(&[10i32, 20, 30]).unwrap()]).unwrap();
     let mask = column_from_slice(&[true, false]).unwrap();
@@ -121,4 +114,26 @@ fn test_boolean_mask_rejects_wrong_length_mask_with_canonical_length_contract() 
     assert_eq!(err.operation(), "filter::apply_boolean_mask");
     assert_eq!(error_context_value(&err, "actual_rows").as_deref(), Some("2"));
     assert_eq!(error_context_value(&err, "expected_rows").as_deref(), Some("3"));
+}
+
+#[test]
+fn filter_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_boolean_mask_basic", test_boolean_mask_basic),
+        ("test_boolean_mask_all_false", test_boolean_mask_all_false),
+        ("test_boolean_mask_all_true", test_boolean_mask_all_true),
+        ("test_boolean_mask_multi_column", test_boolean_mask_multi_column),
+        (
+            "test_boolean_mask_succeeds_with_mixed_domains_and_uses_input_provenance",
+            test_boolean_mask_succeeds_with_mixed_domains_and_uses_input_provenance,
+        ),
+        (
+            "test_boolean_mask_rejects_non_bool_mask_with_canonical_type_contract",
+            test_boolean_mask_rejects_non_bool_mask_with_canonical_type_contract,
+        ),
+        (
+            "test_boolean_mask_rejects_wrong_length_mask_with_canonical_length_contract",
+            test_boolean_mask_rejects_wrong_length_mask_with_canonical_length_contract,
+        ),
+    ]);
 }

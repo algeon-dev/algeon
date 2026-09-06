@@ -2,7 +2,6 @@ use cudf::{ErrorCode, ErrorKind, core::Table, testing::prelude::*};
 
 use crate::common::{column_from_slice, error_context_value};
 
-#[test]
 fn test_dataframe_new_mismatched_column_lengths() {
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let c2 = column_from_slice(&[1.0f64, 2.0]).unwrap(); // length 2 vs 3
@@ -10,7 +9,6 @@ fn test_dataframe_new_mismatched_column_lengths() {
     assert!(result.is_err());
 }
 
-#[test]
 fn test_dataframe_series_miss_returns_err() {
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["a".to_string()], vec![c1]).unwrap();
@@ -18,7 +16,6 @@ fn test_dataframe_series_miss_returns_err() {
     assert!(result.is_err());
 }
 
-#[test]
 fn test_filter_mask_length_mismatch() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let mask = column_from_slice(&[true, false]).unwrap(); // length 2 vs 3
@@ -28,7 +25,6 @@ fn test_filter_mask_length_mismatch() {
     assert!(result.is_err());
 }
 
-#[test]
 fn test_parquet_read_nonexistent_file() {
     let rt = crate::common::sample_runtime();
     let options = cudf::io::parquet::ParquetTableReadOptions::builder()
@@ -39,7 +35,6 @@ fn test_parquet_read_nonexistent_file() {
     assert!(result.is_err());
 }
 
-#[test]
 fn test_concatenate_columns_type_mismatch() {
     let a = column_from_slice(&[1i32, 2]).unwrap();
     let b = column_from_slice(&[1.0f64, 2.0]).unwrap();
@@ -49,7 +44,6 @@ fn test_concatenate_columns_type_mismatch() {
     assert!(result.is_err());
 }
 
-#[test]
 fn test_concatenate_tables_column_count_mismatch() {
     let a = column_from_slice(&[1i32, 2]).unwrap();
     let b = column_from_slice(&[3i32, 4]).unwrap();
@@ -62,7 +56,6 @@ fn test_concatenate_tables_column_count_mismatch() {
     assert!(result.is_err());
 }
 
-#[test]
 fn test_dataframe_new_names_columns_count_mismatch() {
     let c1 = column_from_slice(&[1i32, 2, 3]).unwrap();
     let result = crate::common::dataframe_from_columns(vec!["a".to_string(), "b".to_string()], vec![c1]);
@@ -77,7 +70,6 @@ fn test_dataframe_new_names_columns_count_mismatch() {
     assert_eq!(error_context_value(&err, "columns_count").as_deref(), None);
 }
 
-#[test]
 fn test_dataframe_new_duplicate_names() {
     let c1 = column_from_slice(&[1i32, 2]).unwrap();
     let c2 = column_from_slice(&[3i32, 4]).unwrap();
@@ -85,4 +77,18 @@ fn test_dataframe_new_duplicate_names() {
     assert!(result.is_err());
     let err = result.unwrap_err();
     assert_eq!(err.kind(), ErrorKind::InvalidInput);
+}
+
+#[test]
+fn error_path_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_dataframe_new_mismatched_column_lengths", test_dataframe_new_mismatched_column_lengths),
+        ("test_dataframe_series_miss_returns_err", test_dataframe_series_miss_returns_err),
+        ("test_filter_mask_length_mismatch", test_filter_mask_length_mismatch),
+        ("test_parquet_read_nonexistent_file", test_parquet_read_nonexistent_file),
+        ("test_concatenate_columns_type_mismatch", test_concatenate_columns_type_mismatch),
+        ("test_concatenate_tables_column_count_mismatch", test_concatenate_tables_column_count_mismatch),
+        ("test_dataframe_new_names_columns_count_mismatch", test_dataframe_new_names_columns_count_mismatch),
+        ("test_dataframe_new_duplicate_names", test_dataframe_new_duplicate_names),
+    ]);
 }

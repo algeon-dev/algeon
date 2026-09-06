@@ -16,7 +16,6 @@ fn factorize_column(column: cudf::core::Column) -> (Series, Series) {
     (factorized.row_codes().as_series().clone(), factorized.codebook().keys().clone())
 }
 
-#[test]
 fn test_factorize_i32_with_duplicates() {
     let data = vec![429i32, 111, 213, 111, 213, 429, 213];
     let col = column_from_slice(&data).unwrap();
@@ -59,7 +58,6 @@ fn test_factorize_i32_with_duplicates() {
     assert_eq!(actual_uniques, expected_uniques);
 }
 
-#[test]
 fn test_factorize_string_column() {
     let strings: &[&str] = &["banana", "apple", "cherry", "apple", "banana"];
     let col = column_from_strs(strings).unwrap();
@@ -88,7 +86,6 @@ fn test_factorize_string_column() {
     }
 }
 
-#[test]
 fn test_factorize_with_nulls() {
     let data = vec![10i32, 20, 30, 20, 10];
     let validity = vec![true, false, true, true, false];
@@ -118,7 +115,6 @@ fn test_factorize_with_nulls() {
     }
 }
 
-#[test]
 fn test_factorize_empty_column() {
     let col = column_from_slice::<i32>(&[]).unwrap();
     reset_exec_observation();
@@ -141,7 +137,6 @@ fn test_factorize_empty_column() {
     );
 }
 
-#[test]
 fn test_factorize_single_element() {
     let col = column_from_slice(&[42i32]).unwrap();
     let (codes, uniques) = factorize_column(col);
@@ -159,7 +154,6 @@ fn test_factorize_single_element() {
     assert_eq!(uniques_host, vec![42]);
 }
 
-#[test]
 fn test_factorize_already_unique() {
     let data = vec![10i32, 20, 30, 40, 50];
     let col = column_from_slice(&data).unwrap();
@@ -180,7 +174,6 @@ fn test_factorize_already_unique() {
     assert_eq!(uniques_host, data);
 }
 
-#[test]
 fn test_factorize_f64_column() {
     let data = vec![3.25f64, 2.75, 3.25, 1.5, 2.75];
     let col = column_from_slice(&data).unwrap();
@@ -210,7 +203,6 @@ fn test_factorize_f64_column() {
     }
 }
 
-#[test]
 fn test_factorize_codes_are_owned_independent_of_input() {
     // Verify codes and uniques are owned (deep-copied), not borrowing from input.
     let (codes, uniques) = {
@@ -230,7 +222,6 @@ fn test_factorize_codes_are_owned_independent_of_input() {
 
 // --- DataFrame::factorize tests ---
 
-#[test]
 fn test_dataframe_factorize_by_name() {
     let col = column_from_slice(&[10i32, 20, 10, 30, 20]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["values".to_string()], vec![col]).unwrap();
@@ -243,7 +234,6 @@ fn test_dataframe_factorize_by_name() {
     assert_eq!(keys_view.len().unwrap(), 3);
 }
 
-#[test]
 fn test_dataframe_factorize_missing_column() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let df = crate::common::dataframe_from_columns(vec!["x".to_string()], vec![col]).unwrap();
@@ -252,7 +242,6 @@ fn test_dataframe_factorize_missing_column() {
     assert!(result.is_err());
 }
 
-#[test]
 fn test_factorize_row_codes_are_not_a_reusable_codebook_for_uniques() {
     let lookup_source = crate::common::series("lookup_source", &["b", "b", "a", "c"]).unwrap();
     let factorized = lookup_source.factorize().unwrap();
@@ -268,7 +257,6 @@ fn test_factorize_row_codes_are_not_a_reusable_codebook_for_uniques() {
     assert_ne!(wrong_lookup_values.to_vec_strict::<i32>().unwrap(), vec![0, 1, 2]);
 }
 
-#[test]
 fn test_factorize_uniques_support_safe_positional_codebook_round_trip() {
     let lookup_source = Series::from_column(column_from_strs(&["b", "a", "c", "a"]).unwrap()).unwrap();
     let factorized = lookup_source.factorize().unwrap();
@@ -283,7 +271,6 @@ fn test_factorize_uniques_support_safe_positional_codebook_round_trip() {
     );
 }
 
-#[test]
 fn test_factorize_retains_input_provenance_and_syncs_on_input_stream_end_to_end() {
     let input = column_from_slice(&[9i32, 7, 9, 8]).unwrap().testing_rebind_execution_domain_explicit(605).unwrap();
     let expected_stream = input.testing_execution_domain_stream_value();
@@ -314,7 +301,6 @@ fn test_factorize_retains_input_provenance_and_syncs_on_input_stream_end_to_end(
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
-#[test]
 fn test_testing_hook_locks_factorize_empty_row_code_dtype_contract() {
     let err = cudf::testing::factorization::trigger_factorize_empty_row_code_dtype_error_for_test().unwrap_err();
 
@@ -332,7 +318,6 @@ fn test_testing_hook_locks_factorize_empty_row_code_dtype_contract() {
     assert_eq!(error_context_value(&err, "row_code_type_id").as_deref(), None);
 }
 
-#[test]
 fn test_testing_hook_locks_codebook_key_count_limit_contract() {
     let err = cudf::testing::factorization::trigger_codebook_key_count_limit_error_for_test().unwrap_err();
     let expected = (i32::MAX as usize) + 1;
@@ -348,4 +333,40 @@ fn test_testing_hook_locks_codebook_key_count_limit_contract() {
     assert_eq!(error_context_value(&err, "reason").as_deref(), Some("exceeds_i32_max"));
     assert_eq!(error_context_value(&err, "remedy").as_deref(), Some("reduce size to fit within i32::MAX"));
     assert_eq!(error_context_value(&err, "len").as_deref(), None);
+}
+
+#[test]
+fn factorize_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_factorize_i32_with_duplicates", test_factorize_i32_with_duplicates),
+        ("test_factorize_string_column", test_factorize_string_column),
+        ("test_factorize_with_nulls", test_factorize_with_nulls),
+        ("test_factorize_empty_column", test_factorize_empty_column),
+        ("test_factorize_single_element", test_factorize_single_element),
+        ("test_factorize_already_unique", test_factorize_already_unique),
+        ("test_factorize_f64_column", test_factorize_f64_column),
+        ("test_factorize_codes_are_owned_independent_of_input", test_factorize_codes_are_owned_independent_of_input),
+        ("test_dataframe_factorize_by_name", test_dataframe_factorize_by_name),
+        ("test_dataframe_factorize_missing_column", test_dataframe_factorize_missing_column),
+        (
+            "test_factorize_row_codes_are_not_a_reusable_codebook_for_uniques",
+            test_factorize_row_codes_are_not_a_reusable_codebook_for_uniques,
+        ),
+        (
+            "test_factorize_uniques_support_safe_positional_codebook_round_trip",
+            test_factorize_uniques_support_safe_positional_codebook_round_trip,
+        ),
+        (
+            "test_factorize_retains_input_provenance_and_syncs_on_input_stream_end_to_end",
+            test_factorize_retains_input_provenance_and_syncs_on_input_stream_end_to_end,
+        ),
+        (
+            "test_testing_hook_locks_factorize_empty_row_code_dtype_contract",
+            test_testing_hook_locks_factorize_empty_row_code_dtype_contract,
+        ),
+        (
+            "test_testing_hook_locks_codebook_key_count_limit_contract",
+            test_testing_hook_locks_codebook_key_count_limit_contract,
+        ),
+    ]);
 }

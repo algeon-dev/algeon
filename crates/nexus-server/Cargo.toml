@@ -72,8 +72,12 @@ name = "server_tests_gpu"
 path = "tests/server_tests_gpu.rs"
 
 [[test]]
-name = "server_admission_concurrency_tests_gpu_exclusive"
-path = "tests/server_admission_concurrency_tests_gpu_exclusive.rs"
+name = "server_admission_concurrency_tests_gpu"
+path = "tests/server_admission_concurrency_tests_gpu.rs"
+
+[[test]]
+name = "server_device_pressure_tests_gpu_exclusive"
+path = "tests/server_device_pressure_tests_gpu_exclusive.rs"
 
 [[test]]
 name = "server_multi_gpu_tests_gpu_exclusive"

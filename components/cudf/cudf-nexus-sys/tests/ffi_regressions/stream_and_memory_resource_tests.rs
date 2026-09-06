@@ -1,8 +1,6 @@
 use std::{os::raw::c_void, ptr};
 
-use crate::support::{
-    CurrentDeviceRestore, OwnedEvent, OwnedStream, current_device, lock_shim_state, set_current_device,
-};
+use crate::support::{OwnedEvent, OwnedStream, current_device, lock_shim_state};
 
 #[test]
 fn test_stream_is_ready_null_out_rejected() {
@@ -136,31 +134,4 @@ fn test_memory_resource_cuda_create_destroy_smoke() {
 
     let status = unsafe { cudf_sys::cudf_memory_resource_destroy(mr, device) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
-}
-
-#[test]
-fn test_memory_resource_destroy_restores_current_device() {
-    let _shim_state = lock_shim_state();
-    let mut device_count = 0;
-    let status = unsafe { cudf_sys::cudf_cuda_get_device_count(&mut device_count) };
-    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
-    if device_count < 2 {
-        return;
-    }
-
-    let _restore = CurrentDeviceRestore::new();
-    set_current_device(0);
-
-    let mut mr: cudf_sys::cudf_memory_resource_handle = ptr::null_mut();
-    let status = unsafe { cudf_sys::cudf_memory_resource_create_pool(1 << 20, 1 << 24, &mut mr) };
-    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
-    assert!(!mr.is_null());
-
-    set_current_device(1);
-    let before_destroy = current_device();
-    assert_eq!(before_destroy, 1);
-
-    let status = unsafe { cudf_sys::cudf_memory_resource_destroy(mr, 0) };
-    assert_eq!(status, cudf_sys::CUDF_SUCCESS);
-    assert_eq!(current_device(), before_destroy);
 }

@@ -1,3 +1,6 @@
+//! Sweeps allocation failures across every allocation point of a query, so
+//! it runs alone.
+
 use cudf::{
     AggSpec, CudfErrorFailureSource, DataFrame, ErrorKind, GroupByAgg, MergeOptions, QueryMemoryDomain,
     QueryMemoryDomainOptions, Runtime, SortOptions,

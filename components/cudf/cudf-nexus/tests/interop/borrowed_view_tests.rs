@@ -15,7 +15,6 @@ fn read_json_dataframe(filename: &str, rows: &str) -> DataFrame {
         .unwrap()
 }
 
-#[test]
 fn column_view_borrow_preserves_fixed_width_metadata_and_explicit_binding() {
     let runtime = Runtime::builder().build().unwrap();
     let column = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -38,7 +37,6 @@ fn column_view_borrow_preserves_fixed_width_metadata_and_explicit_binding() {
     assert_eq!(execution.memory_resource().as_raw() as usize, expected_mr);
 }
 
-#[test]
 fn nullable_column_distinguishes_present_mask_with_zero_null_count() {
     let runtime = Runtime::builder().build().unwrap();
     let column = runtime.column_from_slice_nullable(&[10i32, 20, 30], &[false, true, true]).unwrap();
@@ -55,7 +53,6 @@ fn nullable_column_distinguishes_present_mask_with_zero_null_count() {
     }
 }
 
-#[test]
 fn sliced_column_view_preserves_offset_semantics() {
     let runtime = Runtime::builder().build().unwrap();
     let column = runtime.column_from_slice(&[11i32, 22, 33, 44]).unwrap();
@@ -70,7 +67,6 @@ fn sliced_column_view_preserves_offset_semantics() {
     assert_eq!(borrowed.data_ptr(), base.device_data_ptr().unwrap());
 }
 
-#[test]
 fn table_view_borrow_preserves_shape_and_explicit_execution_binding() {
     let runtime = Runtime::builder().build().unwrap();
     let a = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -92,7 +88,6 @@ fn table_view_borrow_preserves_shape_and_explicit_execution_binding() {
     assert_eq!(execution.memory_resource().as_raw() as usize, expected_mr);
 }
 
-#[test]
 fn owned_column_borrow_matches_underlying_column_view_projection() {
     let runtime = Runtime::builder().build().unwrap();
     let column = runtime.column_from_slice(&[5i32, 6, 7]).unwrap();
@@ -104,7 +99,6 @@ fn owned_column_borrow_matches_underlying_column_view_projection() {
     assert_eq!(borrowed_from_column, borrowed_from_view);
 }
 
-#[test]
 fn owned_table_borrow_matches_underlying_table_view_projection() {
     let runtime = Runtime::builder().build().unwrap();
     let a = runtime.column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -118,7 +112,6 @@ fn owned_table_borrow_matches_underlying_table_view_projection() {
     assert_eq!(borrowed_from_table, borrowed_from_view);
 }
 
-#[test]
 fn series_and_dataframe_convenience_producers_match_underlying_low_level_views() {
     let runtime = Runtime::builder().build().unwrap();
     let ids = runtime.series(&[1i32, 2, 3]).unwrap();
@@ -134,7 +127,6 @@ fn series_and_dataframe_convenience_producers_match_underlying_low_level_views()
     assert_eq!(frame_borrowed.columns()[1], vals.try_borrow_column_view().unwrap());
 }
 
-#[test]
 fn helper_built_column_view_borrow_uses_explicit_test_runtime_binding() {
     crate::common::with_test_runtime(|runtime| {
         let column = column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -151,7 +143,6 @@ fn helper_built_column_view_borrow_uses_explicit_test_runtime_binding() {
     });
 }
 
-#[test]
 fn helper_built_dataframe_borrow_uses_explicit_test_runtime_binding() {
     crate::common::with_test_runtime(|runtime| {
         let ids = crate::common::series("id", &[1i32, 2, 3]).unwrap();
@@ -169,7 +160,6 @@ fn helper_built_dataframe_borrow_uses_explicit_test_runtime_binding() {
     });
 }
 
-#[test]
 fn string_columns_borrow_as_binary_like_layouts() {
     let runtime = Runtime::builder().build().unwrap();
     let column = runtime.column_from_strs_nullable(&["zero", "one", "two"], &[true, false, true]).unwrap();
@@ -193,7 +183,6 @@ fn string_columns_borrow_as_binary_like_layouts() {
     }
 }
 
-#[test]
 fn dictionary_columns_borrow_with_recursive_string_keys() {
     let runtime = Runtime::builder().build().unwrap();
     let base = runtime.column_from_strs(&["beta", "alpha", "beta", "gamma"]).unwrap();
@@ -218,7 +207,6 @@ fn dictionary_columns_borrow_with_recursive_string_keys() {
     assert!(matches!(keys_column.layout(), ColumnLayout::BinaryLike { .. }));
 }
 
-#[test]
 fn list_columns_borrow_as_recursive_list_layouts() {
     let frame = read_json_dataframe(
         "borrowed_lists.jsonl",
@@ -257,7 +245,6 @@ fn list_columns_borrow_as_recursive_list_layouts() {
     assert_eq!(leaf_column.data_type().id(), InteropTypeId::Int64);
 }
 
-#[test]
 fn struct_columns_borrow_as_recursive_struct_layouts() {
     let frame = read_json_dataframe(
         "borrowed_structs.jsonl",
@@ -296,7 +283,6 @@ fn struct_columns_borrow_as_recursive_struct_layouts() {
     assert!(matches!(label.layout(), ColumnLayout::BinaryLike { .. }));
 }
 
-#[test]
 fn dataframe_borrow_supports_list_and_struct_columns() {
     let frame = read_json_dataframe(
         "borrowed_nested_frame.jsonl",
@@ -317,7 +303,6 @@ fn dataframe_borrow_supports_list_and_struct_columns() {
     assert!(matches!(borrowed.columns()[2].column().unwrap().layout(), ColumnLayout::FixedWidth { .. }));
 }
 
-#[test]
 fn nested_list_column_construction_is_rejected_before_interop() {
     let err = match crate::common::empty_column(cudf::TypeId::List) {
         Ok(_) => panic!("expected nested list column construction to fail"),
@@ -328,7 +313,6 @@ fn nested_list_column_construction_is_rejected_before_interop() {
     assert!(err.to_string().contains("nested types"));
 }
 
-#[test]
 fn nested_struct_series_construction_is_rejected_before_interop() {
     let err = match crate::common::empty_series("nested", cudf::TypeId::Struct) {
         Ok(_) => panic!("expected nested struct series construction to fail"),
@@ -337,4 +321,56 @@ fn nested_struct_series_construction_is_rejected_before_interop() {
 
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
     assert!(err.to_string().contains("nested types"));
+}
+
+#[test]
+fn borrowed_view_tests_cases() {
+    crate::common::run_named_cases(&[
+        (
+            "column_view_borrow_preserves_fixed_width_metadata_and_explicit_binding",
+            column_view_borrow_preserves_fixed_width_metadata_and_explicit_binding,
+        ),
+        (
+            "nullable_column_distinguishes_present_mask_with_zero_null_count",
+            nullable_column_distinguishes_present_mask_with_zero_null_count,
+        ),
+        ("sliced_column_view_preserves_offset_semantics", sliced_column_view_preserves_offset_semantics),
+        (
+            "table_view_borrow_preserves_shape_and_explicit_execution_binding",
+            table_view_borrow_preserves_shape_and_explicit_execution_binding,
+        ),
+        (
+            "owned_column_borrow_matches_underlying_column_view_projection",
+            owned_column_borrow_matches_underlying_column_view_projection,
+        ),
+        (
+            "owned_table_borrow_matches_underlying_table_view_projection",
+            owned_table_borrow_matches_underlying_table_view_projection,
+        ),
+        (
+            "series_and_dataframe_convenience_producers_match_underlying_low_level_views",
+            series_and_dataframe_convenience_producers_match_underlying_low_level_views,
+        ),
+        (
+            "helper_built_column_view_borrow_uses_explicit_test_runtime_binding",
+            helper_built_column_view_borrow_uses_explicit_test_runtime_binding,
+        ),
+        (
+            "helper_built_dataframe_borrow_uses_explicit_test_runtime_binding",
+            helper_built_dataframe_borrow_uses_explicit_test_runtime_binding,
+        ),
+        ("string_columns_borrow_as_binary_like_layouts", string_columns_borrow_as_binary_like_layouts),
+        ("dictionary_columns_borrow_with_recursive_string_keys", dictionary_columns_borrow_with_recursive_string_keys),
+        ("list_columns_borrow_as_recursive_list_layouts", list_columns_borrow_as_recursive_list_layouts),
+        ("struct_columns_borrow_as_recursive_struct_layouts", struct_columns_borrow_as_recursive_struct_layouts),
+        ("dataframe_borrow_supports_list_and_struct_columns", dataframe_borrow_supports_list_and_struct_columns),
+        (
+            "nested_list_column_construction_is_rejected_before_interop",
+            nested_list_column_construction_is_rejected_before_interop,
+        ),
+        (
+            "nested_struct_series_construction_is_rejected_before_interop",
+            nested_struct_series_construction_is_rejected_before_interop,
+        ),
+    ]);
 }

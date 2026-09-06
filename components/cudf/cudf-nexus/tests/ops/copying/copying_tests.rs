@@ -6,7 +6,6 @@ use crate::common::{
     last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation,
 };
 
-#[test]
 fn test_gather_basic() {
     let col = column_from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
@@ -22,7 +21,6 @@ fn test_gather_basic() {
     assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![50, 30, 10]);
 }
 
-#[test]
 fn test_gather_multi_column() {
     let c0 = column_from_slice(&[1i32, 2, 3, 4]).unwrap();
     let c1 = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
@@ -40,7 +38,6 @@ fn test_gather_multi_column() {
     assert_eq!(rv.column(1).unwrap().to_vec::<f64>().unwrap(), vec![40.0, 20.0]);
 }
 
-#[test]
 fn test_gather_identity() {
     // Gather in order → identical copy.
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -55,7 +52,6 @@ fn test_gather_identity() {
     assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
-#[test]
 fn test_gather_with_duplicates() {
     // Gather the same row multiple times.
     let col = column_from_slice(&[10i32, 20, 30]).unwrap();
@@ -70,7 +66,6 @@ fn test_gather_with_duplicates() {
     assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![20, 20, 20, 10]);
 }
 
-#[test]
 fn test_gather_empty_map() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
@@ -84,7 +79,6 @@ fn test_gather_empty_map() {
     assert_eq!(rv.num_rows().unwrap(), 0);
 }
 
-#[test]
 fn test_gather_out_of_bounds_nullify() {
     let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
@@ -105,7 +99,6 @@ fn test_gather_out_of_bounds_nullify() {
     assert!(validity[2]);
 }
 
-#[test]
 fn test_gather_unchecked_basic() {
     let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let table = Table::from_columns(vec![col]).unwrap();
@@ -121,7 +114,6 @@ fn test_gather_unchecked_basic() {
     assert_eq!(rv.column(0).unwrap().to_vec::<i32>().unwrap(), vec![30, 10]);
 }
 
-#[test]
 fn test_gather_succeeds_with_mixed_domains_and_uses_input_provenance() {
     let table = Table::from_columns(vec![explicit_i32_column(&[10, 20, 30], 930)]).unwrap();
     let gather_map = explicit_i32_column(&[2, 0], 931);
@@ -141,7 +133,6 @@ fn test_gather_succeeds_with_mixed_domains_and_uses_input_provenance() {
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
-#[test]
 fn test_scatter_writes_source_rows_into_target_and_supports_negative_indices() {
     let source = Table::from_columns(vec![column_from_slice(&[100i32, 200]).unwrap()]).unwrap();
     let target = Table::from_columns(vec![column_from_slice(&[10i32, 20, 30, 40]).unwrap()]).unwrap();
@@ -159,7 +150,6 @@ fn test_scatter_writes_source_rows_into_target_and_supports_negative_indices() {
     assert_eq!(result_view.column(0).unwrap().to_vec::<i32>().unwrap(), vec![10, 100, 30, 200]);
 }
 
-#[test]
 fn test_scatter_accepts_partial_scatter_map() {
     let source = Table::from_columns(vec![column_from_slice(&[100i32, 200, 999]).unwrap()]).unwrap();
     let target = Table::from_columns(vec![column_from_slice(&[10i32, 20, 30, 40]).unwrap()]).unwrap();
@@ -177,7 +167,6 @@ fn test_scatter_accepts_partial_scatter_map() {
     assert_eq!(result_view.column(0).unwrap().to_vec::<i32>().unwrap(), vec![10, 100, 30, 200]);
 }
 
-#[test]
 fn test_scatter_accepts_empty_scatter_map_as_target_copy() {
     let source = Table::from_columns(vec![column_from_slice(&[100i32, 200]).unwrap()]).unwrap();
     let target = Table::from_columns(vec![column_from_slice(&[10i32, 20, 30]).unwrap()]).unwrap();
@@ -195,7 +184,6 @@ fn test_scatter_accepts_empty_scatter_map_as_target_copy() {
     assert_eq!(result_view.column(0).unwrap().to_vec::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
-#[test]
 fn test_scatter_rejects_scatter_map_longer_than_source() {
     let source = Table::from_columns(vec![column_from_slice(&[100i32, 200]).unwrap()]).unwrap();
     let target = Table::from_columns(vec![column_from_slice(&[10i32, 20, 30]).unwrap()]).unwrap();
@@ -212,7 +200,6 @@ fn test_scatter_rejects_scatter_map_longer_than_source() {
     assert_eq!(err.detail_value("reason"), Some("scatter_map_too_long"));
 }
 
-#[test]
 fn test_scatter_rejects_null_scatter_map() {
     let source = Table::from_columns(vec![column_from_slice(&[100i32, 200]).unwrap()]).unwrap();
     let target = Table::from_columns(vec![column_from_slice(&[10i32, 20, 30]).unwrap()]).unwrap();
@@ -228,7 +215,6 @@ fn test_scatter_rejects_null_scatter_map() {
     assert_eq!(err.operation(), "copying::scatter");
 }
 
-#[test]
 fn test_scatter_rejects_out_of_bounds_scatter_map() {
     let source = Table::from_columns(vec![column_from_slice(&[100i32, 200]).unwrap()]).unwrap();
     let target = Table::from_columns(vec![column_from_slice(&[10i32, 20, 30]).unwrap()]).unwrap();
@@ -245,7 +231,6 @@ fn test_scatter_rejects_out_of_bounds_scatter_map() {
     assert_eq!(err.detail_value("reason"), Some("index_out_of_bounds"));
 }
 
-#[test]
 fn test_scatter_rejects_duplicate_scatter_map() {
     let source = Table::from_columns(vec![column_from_slice(&[100i32, 200]).unwrap()]).unwrap();
     let target = Table::from_columns(vec![column_from_slice(&[10i32, 20, 30]).unwrap()]).unwrap();
@@ -262,7 +247,6 @@ fn test_scatter_rejects_duplicate_scatter_map() {
     assert_eq!(err.detail_value("reason"), Some("duplicate_target_index"));
 }
 
-#[test]
 fn test_copy_if_else_basic() {
     let lhs = column_from_slice(&[10i32, 20, 30]).unwrap();
     let rhs = column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -277,7 +261,6 @@ fn test_copy_if_else_basic() {
     assert_eq!(result.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![10, 2, 30]);
 }
 
-#[test]
 fn test_copy_if_else_treats_null_mask_as_false() {
     let lhs = column_from_slice(&[10i32, 20, 30]).unwrap();
     let rhs = column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -292,7 +275,6 @@ fn test_copy_if_else_treats_null_mask_as_false() {
     assert_eq!(result.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![10, 2, 3]);
 }
 
-#[test]
 fn test_copy_if_else_succeeds_with_mixed_domains_and_uses_lhs_provenance() {
     let lhs = explicit_i32_column(&[10, 20, 30], 940);
     let rhs = explicit_i32_column(&[1, 2, 3], 941);
@@ -316,4 +298,40 @@ fn test_copy_if_else_succeeds_with_mixed_domains_and_uses_lhs_provenance() {
     reset_sync_observation();
     assert_eq!(result.testing_view().unwrap().to_vec::<i32>().unwrap(), vec![10, 2, 30]);
     assert_eq!(last_sync_stream_value(), expected_stream);
+}
+
+#[test]
+fn copying_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_gather_basic", test_gather_basic),
+        ("test_gather_multi_column", test_gather_multi_column),
+        ("test_gather_identity", test_gather_identity),
+        ("test_gather_with_duplicates", test_gather_with_duplicates),
+        ("test_gather_empty_map", test_gather_empty_map),
+        ("test_gather_out_of_bounds_nullify", test_gather_out_of_bounds_nullify),
+        ("test_gather_unchecked_basic", test_gather_unchecked_basic),
+        (
+            "test_gather_succeeds_with_mixed_domains_and_uses_input_provenance",
+            test_gather_succeeds_with_mixed_domains_and_uses_input_provenance,
+        ),
+        (
+            "test_scatter_writes_source_rows_into_target_and_supports_negative_indices",
+            test_scatter_writes_source_rows_into_target_and_supports_negative_indices,
+        ),
+        ("test_scatter_accepts_partial_scatter_map", test_scatter_accepts_partial_scatter_map),
+        (
+            "test_scatter_accepts_empty_scatter_map_as_target_copy",
+            test_scatter_accepts_empty_scatter_map_as_target_copy,
+        ),
+        ("test_scatter_rejects_scatter_map_longer_than_source", test_scatter_rejects_scatter_map_longer_than_source),
+        ("test_scatter_rejects_null_scatter_map", test_scatter_rejects_null_scatter_map),
+        ("test_scatter_rejects_out_of_bounds_scatter_map", test_scatter_rejects_out_of_bounds_scatter_map),
+        ("test_scatter_rejects_duplicate_scatter_map", test_scatter_rejects_duplicate_scatter_map),
+        ("test_copy_if_else_basic", test_copy_if_else_basic),
+        ("test_copy_if_else_treats_null_mask_as_false", test_copy_if_else_treats_null_mask_as_false),
+        (
+            "test_copy_if_else_succeeds_with_mixed_domains_and_uses_lhs_provenance",
+            test_copy_if_else_succeeds_with_mixed_domains_and_uses_lhs_provenance,
+        ),
+    ]);
 }

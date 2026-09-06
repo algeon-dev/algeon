@@ -6,7 +6,6 @@ use cudf::{
 };
 use strum::IntoEnumIterator;
 
-#[test]
 fn kind_projection_is_defined_for_every_public_error_code() {
     let codes: Vec<_> = ErrorCode::iter().collect();
     assert!(!codes.is_empty(), "ErrorCode::iter() must enumerate the public taxonomy");
@@ -28,7 +27,6 @@ fn kind_projection_is_defined_for_every_public_error_code() {
     }
 }
 
-#[test]
 fn status_projection_is_defined_for_every_public_error_code() {
     let codes: Vec<_> = ErrorCode::iter().collect();
     assert!(!codes.is_empty(), "ErrorCode::iter() must enumerate the public taxonomy");
@@ -41,13 +39,11 @@ fn status_projection_is_defined_for_every_public_error_code() {
     }
 }
 
-#[test]
 fn transient_io_failure_is_a_temporary_dependency_leaf() {
     assert_eq!(kind_for_code(ErrorCode::TransientIoFailure), ErrorKind::DependencyFailure);
     assert_eq!(status_for_code(ErrorCode::TransientIoFailure), ErrorStatus::Temporary);
 }
 
-#[test]
 fn deterministic_host_materialization_size_failures_are_permanent_resource_leaves() {
     for code in [ErrorCode::SizeOverflow, ErrorCode::HostMaterializationLimitExceeded] {
         assert_eq!(kind_for_code(code), ErrorKind::ResourceExhausted);
@@ -55,7 +51,6 @@ fn deterministic_host_materialization_size_failures_are_permanent_resource_leave
     }
 }
 
-#[test]
 fn ffi_io_status_promotes_only_known_cuda_copy_transients() {
     let transient = cudf::testing::core::ffi_io_status_error_for_test(
         "CUDA error encountered at: cudf/cpp/src/utilities/cuda_memcpy.cu:43: 1 cudaErrorInvalidValue invalid argument",
@@ -103,7 +98,6 @@ fn ffi_io_status_promotes_only_known_cuda_copy_transients() {
 // unit tests in `cudf-nexus/src/core/error/facts.rs` because the writer surface
 // is not downstream-visible, so the tests cannot live outside the crate.
 
-#[test]
 fn truthful_error_hook_exposes_typed_facts_without_string_parsing() {
     let err = cudf::testing::core::trigger_truthful_error_contract_for_test().unwrap_err();
 
@@ -116,7 +110,6 @@ fn truthful_error_hook_exposes_typed_facts_without_string_parsing() {
     assert_eq!(err.detail_values("detail").collect::<Vec<_>>(), vec!["alpha", "beta"]);
 }
 
-#[test]
 fn diagnostic_string_preserves_machine_fields_and_human_context() {
     let err = cudf::testing::core::trigger_truthful_error_contract_for_test().unwrap_err();
     let diagnostic = err.diagnostic_string();
@@ -137,7 +130,6 @@ fn diagnostic_string_preserves_machine_fields_and_human_context() {
     assert!(diagnostic.contains("source=\"root cause\""), "{diagnostic}");
 }
 
-#[test]
 fn reanchor_preserves_payload_and_records_call_chain_in_order() {
     let err = cudf::testing::core::trigger_truthful_error_contract_for_test().unwrap_err();
 
@@ -154,7 +146,6 @@ fn reanchor_preserves_payload_and_records_call_chain_in_order() {
     assert_eq!(std::error::Error::source(&err).map(std::string::ToString::to_string).as_deref(), Some("root cause"),);
 }
 
-#[test]
 fn detail_writer_panics_when_given_a_canonical_fact_snake_case_key() {
     let panic = catch_unwind(AssertUnwindSafe(cudf::testing::core::trigger_canonical_key_in_detail_path_for_test));
 
@@ -170,7 +161,6 @@ fn detail_writer_panics_when_given_a_canonical_fact_snake_case_key() {
     );
 }
 
-#[test]
 fn reanchor_does_not_deduplicate_same_operation_labels() {
     let err = cudf::testing::core::trigger_same_operation_reanchor_contract_for_test().unwrap_err();
 
@@ -178,7 +168,6 @@ fn reanchor_does_not_deduplicate_same_operation_labels() {
     assert_eq!(err.call_chain(), ["testing::truthful_error_contract::same", "testing::truthful_error_contract::same",],);
 }
 
-#[test]
 fn reanchor_if_needed_is_noop_when_operation_is_already_anchored() {
     let err = cudf::testing::core::trigger_reanchor_if_needed_same_operation_contract_for_test().unwrap_err();
 
@@ -187,7 +176,6 @@ fn reanchor_if_needed_is_noop_when_operation_is_already_anchored() {
     assert_eq!(err.message(), "reanchor_if_needed same operation");
 }
 
-#[test]
 fn if_absent_helpers_preserve_existing_payload_and_only_fill_missing_fields() {
     let err = cudf::testing::core::trigger_if_absent_error_annotation_contract_for_test().unwrap_err();
 
@@ -200,7 +188,6 @@ fn if_absent_helpers_preserve_existing_payload_and_only_fill_missing_fields() {
     assert_eq!(err.detail_values("reason").collect::<Vec<_>>(), vec!["missing_value"]);
 }
 
-#[test]
 fn with_column_helper_writes_the_canonical_column_name_fact() {
     let err = cudf::testing::core::trigger_with_column_error_annotation_contract_for_test().unwrap_err();
 
@@ -210,7 +197,6 @@ fn with_column_helper_writes_the_canonical_column_name_fact() {
     assert_eq!(err.detail_value("column_name"), None);
 }
 
-#[test]
 fn foreign_invariant_contract_helper_builds_the_canonical_error_shape() {
     let err = cudf::testing::error::foreign_invariant_violation_for_test();
 
@@ -230,7 +216,6 @@ fn foreign_invariant_contract_helper_builds_the_canonical_error_shape() {
     );
 }
 
-#[test]
 fn foreign_invariant_contract_annotation_only_fills_missing_details() {
     let err = cudf::testing::error::annotate_foreign_invariant_contract_if_absent_for_test();
 
@@ -245,4 +230,64 @@ fn foreign_invariant_contract_annotation_only_fills_missing_details() {
     assert_eq!(err.detail_values("resource").collect::<Vec<_>>(), vec!["existing_resource"]);
     assert_eq!(err.detail_values("reason").collect::<Vec<_>>(), vec!["missing_reason"]);
     assert_eq!(err.detail_values("remedy").collect::<Vec<_>>(), vec!["existing_remedy"]);
+}
+
+#[test]
+fn error_truthful_contract_tests_cases() {
+    crate::common::run_named_cases(&[
+        (
+            "kind_projection_is_defined_for_every_public_error_code",
+            kind_projection_is_defined_for_every_public_error_code,
+        ),
+        (
+            "status_projection_is_defined_for_every_public_error_code",
+            status_projection_is_defined_for_every_public_error_code,
+        ),
+        ("transient_io_failure_is_a_temporary_dependency_leaf", transient_io_failure_is_a_temporary_dependency_leaf),
+        (
+            "deterministic_host_materialization_size_failures_are_permanent_resource_leaves",
+            deterministic_host_materialization_size_failures_are_permanent_resource_leaves,
+        ),
+        (
+            "ffi_io_status_promotes_only_known_cuda_copy_transients",
+            ffi_io_status_promotes_only_known_cuda_copy_transients,
+        ),
+        (
+            "truthful_error_hook_exposes_typed_facts_without_string_parsing",
+            truthful_error_hook_exposes_typed_facts_without_string_parsing,
+        ),
+        (
+            "diagnostic_string_preserves_machine_fields_and_human_context",
+            diagnostic_string_preserves_machine_fields_and_human_context,
+        ),
+        (
+            "reanchor_preserves_payload_and_records_call_chain_in_order",
+            reanchor_preserves_payload_and_records_call_chain_in_order,
+        ),
+        (
+            "detail_writer_panics_when_given_a_canonical_fact_snake_case_key",
+            detail_writer_panics_when_given_a_canonical_fact_snake_case_key,
+        ),
+        ("reanchor_does_not_deduplicate_same_operation_labels", reanchor_does_not_deduplicate_same_operation_labels),
+        (
+            "reanchor_if_needed_is_noop_when_operation_is_already_anchored",
+            reanchor_if_needed_is_noop_when_operation_is_already_anchored,
+        ),
+        (
+            "if_absent_helpers_preserve_existing_payload_and_only_fill_missing_fields",
+            if_absent_helpers_preserve_existing_payload_and_only_fill_missing_fields,
+        ),
+        (
+            "with_column_helper_writes_the_canonical_column_name_fact",
+            with_column_helper_writes_the_canonical_column_name_fact,
+        ),
+        (
+            "foreign_invariant_contract_helper_builds_the_canonical_error_shape",
+            foreign_invariant_contract_helper_builds_the_canonical_error_shape,
+        ),
+        (
+            "foreign_invariant_contract_annotation_only_fills_missing_details",
+            foreign_invariant_contract_annotation_only_fills_missing_details,
+        ),
+    ]);
 }

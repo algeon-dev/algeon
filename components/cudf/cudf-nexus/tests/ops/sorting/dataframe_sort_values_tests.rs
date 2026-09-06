@@ -69,7 +69,6 @@ fn assert_budget_report_high_water(report: &cudf::ExecutionBudgetReport, lower_b
 // SortOptions defaults
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_sort_options_defaults() {
     let opts = SortOptions::new();
     assert!(opts.descending.is_empty(), "default descending should be empty (= all ascending)");
@@ -81,7 +80,6 @@ fn test_sort_options_defaults() {
 // SortOptions builder
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_sort_options_builder() {
     let opts =
         SortOptions::new().with_descending(vec![true, false]).with_nulls_first(vec![false, true]).with_stable(true);
@@ -95,7 +93,6 @@ fn test_sort_options_builder() {
 // sort_values — single column ascending (default)
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_sort_values_single_column_ascending() {
     let df = sample_df();
     let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
@@ -108,7 +105,6 @@ fn test_sort_values_single_column_ascending() {
 // sort_values — single column descending
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_sort_values_single_column_descending() {
     let df = sample_df();
     let sorted = df.sort_values(["score"], SortOptions::new().with_descending(vec![true])).unwrap();
@@ -120,7 +116,6 @@ fn test_sort_values_single_column_descending() {
 // sort_values — multi-column
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_sort_values_multi_column() {
     // Sort by id ascending, then score descending within each id group.
     let ids = crate::common::series::<i32>("id", &[2, 1, 2, 1]).unwrap();
@@ -133,7 +128,6 @@ fn test_sort_values_multi_column() {
     assert_eq!(sorted.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![30.0, 10.0, 40.0, 20.0]);
 }
 
-#[test]
 fn test_sort_values_multi_column_with_owned_string_keys() {
     let ids = crate::common::series::<i32>("id", &[2, 1, 2, 1]).unwrap();
     let scores = crate::common::series::<f64>("score", &[20.0, 10.0, 40.0, 30.0]).unwrap();
@@ -152,7 +146,6 @@ fn test_sort_values_multi_column_with_owned_string_keys() {
 // sort_values — stable sort preserves insertion order for ties
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_sort_values_stable_preserves_order() {
     // All ids are the same — stable sort should preserve original row order.
     let ids = crate::common::series::<i32>("id", &[1, 1, 1, 1]).unwrap();
@@ -169,7 +162,6 @@ fn test_sort_values_stable_preserves_order() {
 // sort_values — rejects mismatched descending length
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_sort_values_rejects_mismatched_descending_length() {
     let df = sample_df();
     // 1 sort key but 2 descending flags
@@ -189,7 +181,6 @@ fn test_sort_values_rejects_mismatched_descending_length() {
 // sort_values — rejects mismatched nulls_first length
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_sort_values_rejects_mismatched_nulls_first_length() {
     let df = sample_df();
     // 1 sort key but 3 nulls_first flags
@@ -209,7 +200,6 @@ fn test_sort_values_rejects_mismatched_nulls_first_length() {
 // sort_values — preserves schema
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_sort_values_preserves_schema() {
     let df = sample_df();
     let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
@@ -223,7 +213,6 @@ fn test_sort_values_preserves_schema() {
 // sort_values — nonexistent column returns error
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_sort_values_nonexistent_column() {
     let df = sample_df();
     let result = df.sort_values(["missing"], SortOptions::new());
@@ -237,7 +226,6 @@ fn test_sort_values_nonexistent_column() {
 // sort_values — empty descending vec means all ascending (defaults)
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_sort_values_empty_options_means_defaults() {
     let df = sample_df();
     // Empty descending + empty nulls_first → all ascending, nulls last.
@@ -255,7 +243,6 @@ fn test_sort_values_empty_options_means_defaults() {
 // sort_values — nulls_first controls null placement
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_sort_values_nulls_first() {
     let ids = column_from_slice_nullable(&[0i32, 2, 0, 1], &[false, true, false, true]);
     let vals = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]);
@@ -277,7 +264,6 @@ fn test_sort_values_nulls_first() {
     assert_eq!(id_vals[3], Some(2));
 }
 
-#[test]
 fn test_sort_values_descending_null_placement() {
     let ids = column_from_slice_nullable(&[0i32, 2, 3, 0, 1], &[false, true, true, false, true]);
     let vals = column_from_slice(&[10i32, 20, 30, 40, 50]);
@@ -304,7 +290,6 @@ fn test_sort_values_descending_null_placement() {
     assert_eq!(nulls_last.series("val").unwrap().to_vec_strict::<i32>().unwrap()[..3], [30, 20, 50]);
 }
 
-#[test]
 fn test_sort_values_default_places_nulls_last() {
     let ids = column_from_slice_nullable(&[0i32, 2, 0, 1], &[false, true, false, true]);
     let vals = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]);
@@ -327,7 +312,6 @@ fn test_sort_values_default_places_nulls_last() {
 // sort_values — with_stable(false) is the default (unstable sort)
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_sort_values_unstable_by_default() {
     let df = sample_df();
     // Default unstable sort should still produce correct ordering.
@@ -344,14 +328,12 @@ fn test_sort_values_unstable_by_default() {
 // sort_values with explicit ascending matches default
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_sort_values_explicit_ascending() {
     let df = sample_df();
     let sorted = df.sort_values(["id"], SortOptions::new().with_descending(vec![false])).unwrap();
     assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 1, 3, 4, 5]);
 }
 
-#[test]
 fn test_prepare_sort_values_single_key_matches_sort_values() {
     let df = sample_df();
     let options = SortOptions::new();
@@ -364,7 +346,6 @@ fn test_prepare_sort_values_single_key_matches_sort_values() {
     assert_i32_column_eq(&actual, &expected, "id");
 }
 
-#[test]
 fn test_prepare_sort_values_multi_key_descending_matches_sort_values() {
     let ids = crate::common::series::<i32>("id", &[2, 1, 2, 1]).unwrap();
     let scores = crate::common::series::<i32>("score", &[20, 10, 40, 30]).unwrap();
@@ -381,7 +362,6 @@ fn test_prepare_sort_values_multi_key_descending_matches_sort_values() {
     assert_i32_column_eq(&actual, &expected, "tag");
 }
 
-#[test]
 fn test_prepare_sort_values_descending_null_placement_matches_sort_values() {
     let ids = column_from_slice_nullable(&[0i32, 2, 3, 0, 1], &[false, true, true, false, true]);
     let vals = column_from_slice(&[10i32, 20, 30, 40, 50]);
@@ -400,7 +380,6 @@ fn test_prepare_sort_values_descending_null_placement_matches_sort_values() {
     assert_i32_column_eq(&actual, &expected, "val");
 }
 
-#[test]
 fn test_prepare_sort_values_stable_matches_sort_values_for_ties() {
     let ids = crate::common::series::<i32>("id", &[1, 1, 1, 1]).unwrap();
     let tags = crate::common::series::<i32>("tag", &[10, 20, 30, 40]).unwrap();
@@ -415,7 +394,6 @@ fn test_prepare_sort_values_stable_matches_sort_values_for_ties() {
     assert_i32_column_eq(&actual, &expected, "tag");
 }
 
-#[test]
 fn test_sorted_order_reservation_matches_retained_prepared_sort_allocation() {
     let df = sample_df();
     let prepared = df.prepare_sort_values(["id"], SortOptions::new()).unwrap();
@@ -426,7 +404,6 @@ fn test_sorted_order_reservation_matches_retained_prepared_sort_allocation() {
     assert_eq!(expected, prepared.output_rows() * std::mem::size_of::<i32>());
 }
 
-#[test]
 fn test_sorted_order_reservation_rejects_rows_above_cudf_size_type() {
     let output_rows = i32::MAX as usize + 1;
 
@@ -434,7 +411,6 @@ fn test_sorted_order_reservation_rejects_rows_above_cudf_size_type() {
         .expect_err("sorted-order reservation must reject rows above cudf::size_type");
 }
 
-#[test]
 fn test_prepared_sort_materialized_output_reservation_matches_actual_numeric_output() {
     let ids = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
     let vals = crate::common::series::<i32>("val", &[30, 10, 20]).unwrap();
@@ -448,7 +424,6 @@ fn test_prepared_sort_materialized_output_reservation_matches_actual_numeric_out
     assert_eq!(materialized.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
-#[test]
 fn test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order() {
     let df = sample_df();
     let token = with_test_runtime(|runtime| {
@@ -482,7 +457,6 @@ fn test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order
     );
 }
 
-#[test]
 fn test_prepare_sort_values_with_budget_stable_uses_token_and_matches_sort_values_for_ties() {
     let ids = crate::common::series::<i32>("id", &[1, 1, 1, 1]).unwrap();
     let tags = crate::common::series::<i32>("tag", &[10, 20, 30, 40]).unwrap();
@@ -522,7 +496,6 @@ fn test_prepare_sort_values_with_budget_stable_uses_token_and_matches_sort_value
     assert_eq!(outcome.report().retained_bytes(), Some(prepared.sorted_order_reservation_size_bytes().unwrap()));
 }
 
-#[test]
 fn test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator() {
     let df = sample_df();
     let prepared = {
@@ -562,7 +535,6 @@ fn test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator(
     );
 }
 
-#[test]
 fn test_prepare_sort_values_with_budget_reports_exceeded_budget_honestly() {
     let df = sample_df();
     let token = with_test_runtime(|runtime| {
@@ -582,4 +554,77 @@ fn test_prepare_sort_values_with_budget_reports_exceeded_budget_honestly() {
     assert_eq!(error_context_value(&err, "budget_current_bytes").as_deref(), Some("0"));
     assert_eq!(error_context_value(&err, "budget_failed_allocation_count").as_deref(), Some("1"));
     assert!(error_context_value(&err, "budget_largest_failed_allocation_bytes").is_some());
+}
+
+#[test]
+fn dataframe_sort_values_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_sort_options_defaults", test_sort_options_defaults),
+        ("test_sort_options_builder", test_sort_options_builder),
+        ("test_sort_values_single_column_ascending", test_sort_values_single_column_ascending),
+        ("test_sort_values_single_column_descending", test_sort_values_single_column_descending),
+        ("test_sort_values_multi_column", test_sort_values_multi_column),
+        ("test_sort_values_multi_column_with_owned_string_keys", test_sort_values_multi_column_with_owned_string_keys),
+        ("test_sort_values_stable_preserves_order", test_sort_values_stable_preserves_order),
+        (
+            "test_sort_values_rejects_mismatched_descending_length",
+            test_sort_values_rejects_mismatched_descending_length,
+        ),
+        (
+            "test_sort_values_rejects_mismatched_nulls_first_length",
+            test_sort_values_rejects_mismatched_nulls_first_length,
+        ),
+        ("test_sort_values_preserves_schema", test_sort_values_preserves_schema),
+        ("test_sort_values_nonexistent_column", test_sort_values_nonexistent_column),
+        ("test_sort_values_empty_options_means_defaults", test_sort_values_empty_options_means_defaults),
+        ("test_sort_values_nulls_first", test_sort_values_nulls_first),
+        ("test_sort_values_descending_null_placement", test_sort_values_descending_null_placement),
+        ("test_sort_values_default_places_nulls_last", test_sort_values_default_places_nulls_last),
+        ("test_sort_values_unstable_by_default", test_sort_values_unstable_by_default),
+        ("test_sort_values_explicit_ascending", test_sort_values_explicit_ascending),
+        (
+            "test_prepare_sort_values_single_key_matches_sort_values",
+            test_prepare_sort_values_single_key_matches_sort_values,
+        ),
+        (
+            "test_prepare_sort_values_multi_key_descending_matches_sort_values",
+            test_prepare_sort_values_multi_key_descending_matches_sort_values,
+        ),
+        (
+            "test_prepare_sort_values_descending_null_placement_matches_sort_values",
+            test_prepare_sort_values_descending_null_placement_matches_sort_values,
+        ),
+        (
+            "test_prepare_sort_values_stable_matches_sort_values_for_ties",
+            test_prepare_sort_values_stable_matches_sort_values_for_ties,
+        ),
+        (
+            "test_sorted_order_reservation_matches_retained_prepared_sort_allocation",
+            test_sorted_order_reservation_matches_retained_prepared_sort_allocation,
+        ),
+        (
+            "test_sorted_order_reservation_rejects_rows_above_cudf_size_type",
+            test_sorted_order_reservation_rejects_rows_above_cudf_size_type,
+        ),
+        (
+            "test_prepared_sort_materialized_output_reservation_matches_actual_numeric_output",
+            test_prepared_sort_materialized_output_reservation_matches_actual_numeric_output,
+        ),
+        (
+            "test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order",
+            test_prepare_sort_values_with_budget_applies_token_and_reports_retained_order,
+        ),
+        (
+            "test_prepare_sort_values_with_budget_stable_uses_token_and_matches_sort_values_for_ties",
+            test_prepare_sort_values_with_budget_stable_uses_token_and_matches_sort_values_for_ties,
+        ),
+        (
+            "test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator",
+            test_prepared_sort_materialize_with_budget_reports_output_size_and_allocator,
+        ),
+        (
+            "test_prepare_sort_values_with_budget_reports_exceeded_budget_honestly",
+            test_prepare_sort_values_with_budget_reports_exceeded_budget_honestly,
+        ),
+    ]);
 }

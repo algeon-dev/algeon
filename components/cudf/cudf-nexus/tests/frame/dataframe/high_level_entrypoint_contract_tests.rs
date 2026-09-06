@@ -29,7 +29,6 @@ fn sample_df() -> DataFrame {
 // 1. gather(&Series)
 // ===========================================================================
 
-#[test]
 fn test_gather_with_series() {
     let df = sample_df(); // id: 10,20,30,40,50
     let indices = crate::common::unnamed_series::<i32>(&[0, 2, 4]).unwrap();
@@ -43,7 +42,6 @@ fn test_gather_with_series() {
     );
 }
 
-#[test]
 fn test_gather_with_series_succeeds_with_mixed_domains_and_uses_dataframe_provenance() {
     let _event_observation = crate::common::lock_event_observation();
     let df_rt = sample_runtime();
@@ -77,7 +75,6 @@ fn test_gather_with_series_succeeds_with_mixed_domains_and_uses_dataframe_proven
 // 2. filter_isin(&str, &Series)
 // ===========================================================================
 
-#[test]
 fn test_filter_isin_with_series() {
     let df = sample_df(); // id: 10,20,30,40,50
     let values = crate::common::unnamed_series::<i32>(&[10, 30, 50]).unwrap();
@@ -89,7 +86,6 @@ fn test_filter_isin_with_series() {
     assert_eq!(ids, vec![10, 30, 50]);
 }
 
-#[test]
 fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_uses_dataframe_provenance() {
     let _event_observation = crate::common::lock_event_observation();
     let df_rt = sample_runtime();
@@ -113,7 +109,6 @@ fn test_filter_isin_with_series_succeeds_with_mixed_domains_and_uses_dataframe_p
     assert_eq!(last_sync_stream_value(), expected_exec_stream);
 }
 
-#[test]
 fn test_filter_isin_with_series_no_matches_preserves_schema() {
     let df = sample_df();
     let values = crate::common::unnamed_series::<i32>(&[99, 100]).unwrap();
@@ -123,7 +118,6 @@ fn test_filter_isin_with_series_no_matches_preserves_schema() {
     assert_eq!(result.column_names(), vec!["id", "score"]);
 }
 
-#[test]
 fn test_filter_isin_with_series_rejects_missing_column() {
     let df = sample_df();
     let values = crate::common::unnamed_series::<i32>(&[10]).unwrap();
@@ -136,7 +130,6 @@ fn test_filter_isin_with_series_rejects_missing_column() {
 // 3. fillna<T: CudfType>
 // ===========================================================================
 
-#[test]
 fn test_fillna_with_plain_value() {
     let ids =
         crate::common::unnamed_nullable_series::<i32>(&[10, 0, 30, 0, 50], &[true, false, true, false, true]).unwrap();
@@ -150,7 +143,6 @@ fn test_fillna_with_plain_value() {
     assert_eq!(filled.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![1.0, 2.0, 3.0, 4.0, 5.0]);
 }
 
-#[test]
 fn test_fillna_with_scalar_still_works() {
     let ids =
         crate::common::unnamed_nullable_series::<i32>(&[10, 0, 30, 0, 50], &[true, false, true, false, true]).unwrap();
@@ -165,7 +157,6 @@ fn test_fillna_with_scalar_still_works() {
     assert_eq!(filled.series("score").unwrap().to_vec_strict::<f64>().unwrap(), vec![1.0, 2.0, 3.0, 4.0, 5.0]);
 }
 
-#[test]
 fn test_fillna_rejects_missing_column() {
     let ids = crate::common::unnamed_series::<i32>(&[10, 20, 30]).unwrap();
     let df = DataFrame::from_series([("id", ids)]).unwrap();
@@ -178,7 +169,6 @@ fn test_fillna_rejects_missing_column() {
 // 4. factorize returns typed factorization results
 // ===========================================================================
 
-#[test]
 fn test_factorize_returns_typed_result() {
     let df = sample_df(); // id: 10,20,30,40,50
     let factorized = df.factorize("id").unwrap();
@@ -186,7 +176,6 @@ fn test_factorize_returns_typed_result() {
     assert_eq!(factorized.codebook().len(), 5); // all values are unique
 }
 
-#[test]
 fn test_with_encoded_and_decoded_column_workflows() {
     let df = DataFrame::from_series([("kind", crate::common::unnamed_series(&["b", "a", "c", "a"]).unwrap())]).unwrap();
     let codebook = df.codebook("kind").unwrap();
@@ -198,7 +187,6 @@ fn test_with_encoded_and_decoded_column_workflows() {
     assert_eq!(decoded.series("kind_roundtrip").unwrap().to_strings_strict().unwrap(), vec!["b", "a", "c", "a"]);
 }
 
-#[test]
 fn test_with_decoded_column_preserves_null_codes_as_null_values() {
     let df = DataFrame::from_series([(
         "kind",
@@ -216,7 +204,6 @@ fn test_with_decoded_column_preserves_null_codes_as_null_values() {
     );
 }
 
-#[test]
 fn test_with_execution_encoded_and_decoded_columns_use_borrowed_context_domain() {
     let _event_observation = crate::common::lock_event_observation();
     let df_runtime = sample_runtime();
@@ -255,7 +242,6 @@ fn test_with_execution_encoded_and_decoded_columns_use_borrowed_context_domain()
     assert_eq!(last_exec_mr_value(), expected_mr);
 }
 
-#[test]
 fn test_with_encoded_column_rejects_missing_input_column_with_canonical_context() {
     let df = DataFrame::from_series([("kind", crate::common::unnamed_series(&["b", "a", "c", "a"]).unwrap())]).unwrap();
     let codebook = df.codebook("kind").unwrap();
@@ -267,7 +253,6 @@ fn test_with_encoded_column_rejects_missing_input_column_with_canonical_context(
     assert_eq!(crate::common::error_context_value(&err, "input_column").as_deref(), None);
 }
 
-#[test]
 fn test_with_decoded_column_rejects_missing_input_column_with_canonical_context() {
     let df = DataFrame::from_series([("kind_id", crate::common::unnamed_series(&[1i32, 0, 2, 0]).unwrap())]).unwrap();
     let codebook = DataFrame::from_series([("kind", crate::common::unnamed_series(&["b", "a", "c"]).unwrap())])
@@ -286,7 +271,6 @@ fn test_with_decoded_column_rejects_missing_input_column_with_canonical_context(
 // 5. Advanced gather uses view() + low-level ops::copying
 // ===========================================================================
 
-#[test]
 fn test_advanced_gather_still_works_via_view_and_ops() {
     let df = sample_df(); // id: 10,20,30,40,50
     let indices = column_from_slice(&[0i32, 2, 4]).unwrap();
@@ -309,7 +293,6 @@ fn test_advanced_gather_still_works_via_view_and_ops() {
 // 6. Advanced filter_isin uses view() + low-level ops
 // ===========================================================================
 
-#[test]
 fn test_advanced_filter_isin_still_works_via_view_and_ops() {
     let df = sample_df(); // id: 10,20,30,40,50
     let values = column_from_slice(&[10i32, 30, 50]).unwrap();
@@ -334,7 +317,6 @@ fn test_advanced_filter_isin_still_works_via_view_and_ops() {
 // 7. runtime.sequence(start, step, len)
 // ===========================================================================
 
-#[test]
 fn test_runtime_sequence_creates_device_side_fixed_width_series() {
     let rt = sample_runtime();
 
@@ -342,7 +324,6 @@ fn test_runtime_sequence_creates_device_side_fixed_width_series() {
     assert_eq!(seq.to_vec_strict::<i32>().unwrap(), vec![0, 1, 2, 3, 4]);
 }
 
-#[test]
 fn test_runtime_sequence_uses_runtime_execution_domain() {
     let rt = sample_runtime();
 
@@ -350,4 +331,56 @@ fn test_runtime_sequence_uses_runtime_execution_domain() {
 
     assert_eq!(seq.as_column().testing_execution_domain_id(), rt.testing_execution_domain_id());
     assert_eq!(seq.to_vec_strict::<i32>().unwrap(), vec![3, 5, 7, 9]);
+}
+
+#[test]
+fn high_level_entrypoint_contract_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_gather_with_series", test_gather_with_series),
+        (
+            "test_gather_with_series_succeeds_with_mixed_domains_and_uses_dataframe_provenance",
+            test_gather_with_series_succeeds_with_mixed_domains_and_uses_dataframe_provenance,
+        ),
+        ("test_filter_isin_with_series", test_filter_isin_with_series),
+        (
+            "test_filter_isin_with_series_succeeds_with_mixed_domains_and_uses_dataframe_provenance",
+            test_filter_isin_with_series_succeeds_with_mixed_domains_and_uses_dataframe_provenance,
+        ),
+        (
+            "test_filter_isin_with_series_no_matches_preserves_schema",
+            test_filter_isin_with_series_no_matches_preserves_schema,
+        ),
+        ("test_filter_isin_with_series_rejects_missing_column", test_filter_isin_with_series_rejects_missing_column),
+        ("test_fillna_with_plain_value", test_fillna_with_plain_value),
+        ("test_fillna_with_scalar_still_works", test_fillna_with_scalar_still_works),
+        ("test_fillna_rejects_missing_column", test_fillna_rejects_missing_column),
+        ("test_factorize_returns_typed_result", test_factorize_returns_typed_result),
+        ("test_with_encoded_and_decoded_column_workflows", test_with_encoded_and_decoded_column_workflows),
+        (
+            "test_with_decoded_column_preserves_null_codes_as_null_values",
+            test_with_decoded_column_preserves_null_codes_as_null_values,
+        ),
+        (
+            "test_with_execution_encoded_and_decoded_columns_use_borrowed_context_domain",
+            test_with_execution_encoded_and_decoded_columns_use_borrowed_context_domain,
+        ),
+        (
+            "test_with_encoded_column_rejects_missing_input_column_with_canonical_context",
+            test_with_encoded_column_rejects_missing_input_column_with_canonical_context,
+        ),
+        (
+            "test_with_decoded_column_rejects_missing_input_column_with_canonical_context",
+            test_with_decoded_column_rejects_missing_input_column_with_canonical_context,
+        ),
+        ("test_advanced_gather_still_works_via_view_and_ops", test_advanced_gather_still_works_via_view_and_ops),
+        (
+            "test_advanced_filter_isin_still_works_via_view_and_ops",
+            test_advanced_filter_isin_still_works_via_view_and_ops,
+        ),
+        (
+            "test_runtime_sequence_creates_device_side_fixed_width_series",
+            test_runtime_sequence_creates_device_side_fixed_width_series,
+        ),
+        ("test_runtime_sequence_uses_runtime_execution_domain", test_runtime_sequence_uses_runtime_execution_domain),
+    ]);
 }

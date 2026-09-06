@@ -59,7 +59,6 @@ fn sorted_dataframe_triples(df: &DataFrame) -> Vec<(i32, i32, i32)> {
     triples
 }
 
-#[test]
 fn test_inner_join() {
     // Left: keys=[1,2,3], payload=[10,20,30]
     // Right: keys=[2,3,4], payload=[200,300,400]
@@ -104,7 +103,6 @@ fn test_inner_join() {
     assert_eq!(triples, vec![(2, 20, 200), (3, 30, 300)]);
 }
 
-#[test]
 fn test_left_join() {
     // Left: keys=[1,2,3], Right: keys=[2,4]
     // Left join preserves all left rows.
@@ -140,7 +138,6 @@ fn test_left_join() {
     assert_eq!(right_keys, vec![None, None, Some(2)]);
 }
 
-#[test]
 fn test_full_join() {
     // Left: keys=[1,2], Right: keys=[2,3]
     // Full join: rows for keys 1, 2, 3.
@@ -176,7 +173,6 @@ fn test_full_join() {
     assert_eq!(right_keys, vec![None, Some(2), Some(3)]);
 }
 
-#[test]
 fn test_cross_join_materializes_rows_in_libcudf_order() {
     let left_id = column_from_slice(&[1i32, 2]).unwrap();
     let left_val = column_from_slice(&[10i32, 20]).unwrap();
@@ -195,7 +191,6 @@ fn test_cross_join_materializes_rows_in_libcudf_order() {
     assert_eq!(view.column(2).unwrap().to_vec::<i32>().unwrap(), vec![100, 200, 300, 100, 200, 300]);
 }
 
-#[test]
 fn test_join_error_contains_operation_context() {
     let lk = column_from_slice(&[1i32, 2]).unwrap();
     let rk = column_from_slice(&[2i32, 3]).unwrap();
@@ -220,7 +215,6 @@ fn test_join_error_contains_operation_context() {
     assert!(err.details().iter().any(|(k, _)| *k == "null_equality"));
 }
 
-#[test]
 fn test_inner_join_multi_column_keys() {
     // Two key columns.
     let lk0 = column_from_slice(&[1i32, 1, 2]).unwrap();
@@ -263,7 +257,6 @@ fn test_inner_join_multi_column_keys() {
     assert_eq!(right_pairs, vec![(Some(1), Some(10)), (Some(2), Some(10))]);
 }
 
-#[test]
 fn test_join_domain_module_exports_documented_surface() {
     use cudf::ops::join::{JoinSides, JoinType, MergeOptions, NullEquality, full_join, inner_join, left_join};
 
@@ -309,7 +302,6 @@ fn test_join_domain_module_exports_documented_surface() {
     assert_eq!(opts.join_type(), JoinType::Left);
 }
 
-#[test]
 fn test_inner_join_succeeds_with_mixed_domains_and_uses_left_provenance() {
     let left_keys = Table::from_columns(vec![explicit_i32_column(&[1, 2, 3], 950)]).unwrap();
     let left_payload = Table::from_columns(vec![explicit_i32_column(&[10, 20, 30], 950)]).unwrap();
@@ -363,7 +355,6 @@ fn test_inner_join_succeeds_with_mixed_domains_and_uses_left_provenance() {
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
-#[test]
 fn test_inner_join_indices_with_duplicate_keys_returns_all_matching_pairs() {
     let left_keys = Table::from_columns(vec![column_from_slice(&[1i32, 2, 2, 3]).unwrap()]).unwrap();
     let right_keys = Table::from_columns(vec![column_from_slice(&[2i32, 2, 4]).unwrap()]).unwrap();
@@ -378,7 +369,6 @@ fn test_inner_join_indices_with_duplicate_keys_returns_all_matching_pairs() {
     assert_eq!(sorted_join_index_pairs(&indices), vec![(1, 0), (1, 1), (2, 0), (2, 1)]);
 }
 
-#[test]
 fn test_left_semi_join_indices_return_each_matching_left_row_once() {
     let left_keys = Table::from_columns(vec![column_from_slice(&[1i32, 2, 2, 3, 4]).unwrap()]).unwrap();
     let right_keys = Table::from_columns(vec![column_from_slice(&[2i32, 2, 4]).unwrap()]).unwrap();
@@ -393,7 +383,6 @@ fn test_left_semi_join_indices_return_each_matching_left_row_once() {
     assert_eq!(sorted_single_side_indices(&indices), vec![1, 2, 4]);
 }
 
-#[test]
 fn test_left_anti_join_indices_return_only_non_matching_left_rows() {
     let left_keys = Table::from_columns(vec![column_from_slice(&[1i32, 2, 2, 3, 4]).unwrap()]).unwrap();
     let right_keys = Table::from_columns(vec![column_from_slice(&[2i32, 4]).unwrap()]).unwrap();
@@ -408,7 +397,6 @@ fn test_left_anti_join_indices_return_only_non_matching_left_rows() {
     assert_eq!(sorted_single_side_indices(&indices), vec![0, 3]);
 }
 
-#[test]
 fn test_inner_join_indices_materialize_same_rows_as_dataframe_merge() {
     let rt = sample_runtime();
     let left = DataFrame::from_series([
@@ -450,7 +438,6 @@ fn test_inner_join_indices_materialize_same_rows_as_dataframe_merge() {
     assert_eq!(sorted_dataframe_triples(&assembled), sorted_dataframe_triples(&merged));
 }
 
-#[test]
 fn test_left_join_indices_with_duplicate_keys_preserves_unmatched_left_rows() {
     let left_keys = Table::from_columns(vec![column_from_slice(&[1i32, 2, 2, 3]).unwrap()]).unwrap();
     let right_keys = Table::from_columns(vec![column_from_slice(&[2i32, 2, 4]).unwrap()]).unwrap();
@@ -468,7 +455,6 @@ fn test_left_join_indices_with_duplicate_keys_preserves_unmatched_left_rows() {
     );
 }
 
-#[test]
 fn test_full_join_indices_with_duplicate_keys_preserves_unmatched_rows_from_both_sides() {
     let left_keys = Table::from_columns(vec![column_from_slice(&[1i32, 2, 2, 3]).unwrap()]).unwrap();
     let right_keys = Table::from_columns(vec![column_from_slice(&[2i32, 2, 4]).unwrap()]).unwrap();
@@ -486,7 +472,6 @@ fn test_full_join_indices_with_duplicate_keys_preserves_unmatched_rows_from_both
     );
 }
 
-#[test]
 fn test_inner_join_indices_honor_null_equality() {
     let left_keys =
         Table::from_columns(vec![column_from_slice_nullable(&[1i32, 0, 2, 0], &[true, false, true, false]).unwrap()])
@@ -511,7 +496,6 @@ fn test_inner_join_indices_honor_null_equality() {
     assert_eq!(sorted_join_index_pairs(&unequal), vec![(2, 1)]);
 }
 
-#[test]
 fn test_hash_join_supports_duplicate_build_keys_and_repeated_probes() {
     use cudf::ops::join::{HashJoin, HashJoinOptions};
 
@@ -528,7 +512,6 @@ fn test_hash_join_supports_duplicate_build_keys_and_repeated_probes() {
     assert_eq!(sorted_join_index_pairs(&second), vec![(0, JOIN_NO_MATCH), (1, 0), (1, 1)]);
 }
 
-#[test]
 fn test_hash_join_exact_size_matches_probe_indices() {
     use cudf::ops::join::{HashJoin, HashJoinOptions};
 
@@ -574,4 +557,51 @@ fn test_hash_join_supports_parallel_probes_from_cloned_handle() {
 
     assert_eq!(first.join().unwrap(), vec![(0, 0), (0, 1), (1, 2)]);
     assert_eq!(second.join().unwrap(), vec![(0, JOIN_NO_MATCH), (1, 0), (1, 1)]);
+}
+
+#[test]
+fn join_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_inner_join", test_inner_join),
+        ("test_left_join", test_left_join),
+        ("test_full_join", test_full_join),
+        ("test_cross_join_materializes_rows_in_libcudf_order", test_cross_join_materializes_rows_in_libcudf_order),
+        ("test_join_error_contains_operation_context", test_join_error_contains_operation_context),
+        ("test_inner_join_multi_column_keys", test_inner_join_multi_column_keys),
+        ("test_join_domain_module_exports_documented_surface", test_join_domain_module_exports_documented_surface),
+        (
+            "test_inner_join_succeeds_with_mixed_domains_and_uses_left_provenance",
+            test_inner_join_succeeds_with_mixed_domains_and_uses_left_provenance,
+        ),
+        (
+            "test_inner_join_indices_with_duplicate_keys_returns_all_matching_pairs",
+            test_inner_join_indices_with_duplicate_keys_returns_all_matching_pairs,
+        ),
+        (
+            "test_left_semi_join_indices_return_each_matching_left_row_once",
+            test_left_semi_join_indices_return_each_matching_left_row_once,
+        ),
+        (
+            "test_left_anti_join_indices_return_only_non_matching_left_rows",
+            test_left_anti_join_indices_return_only_non_matching_left_rows,
+        ),
+        (
+            "test_inner_join_indices_materialize_same_rows_as_dataframe_merge",
+            test_inner_join_indices_materialize_same_rows_as_dataframe_merge,
+        ),
+        (
+            "test_left_join_indices_with_duplicate_keys_preserves_unmatched_left_rows",
+            test_left_join_indices_with_duplicate_keys_preserves_unmatched_left_rows,
+        ),
+        (
+            "test_full_join_indices_with_duplicate_keys_preserves_unmatched_rows_from_both_sides",
+            test_full_join_indices_with_duplicate_keys_preserves_unmatched_rows_from_both_sides,
+        ),
+        ("test_inner_join_indices_honor_null_equality", test_inner_join_indices_honor_null_equality),
+        (
+            "test_hash_join_supports_duplicate_build_keys_and_repeated_probes",
+            test_hash_join_supports_duplicate_build_keys_and_repeated_probes,
+        ),
+        ("test_hash_join_exact_size_matches_probe_indices", test_hash_join_exact_size_matches_probe_indices),
+    ]);
 }

@@ -28,7 +28,6 @@ fn assert_ddof_range_validation_error(err: &cudf::Error, operation: &str, reques
 // GroupBy::agg with AggSpec — basic aggregations
 // ---------------------------------------------------------------------------
 
-#[test]
 fn groupby_sum() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
@@ -48,7 +47,6 @@ fn groupby_sum() {
     assert_eq!(pairs, vec![(1, 40), (2, 60)]);
 }
 
-#[test]
 fn groupby_mean() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
@@ -66,7 +64,6 @@ fn groupby_mean() {
     assert_eq!(pairs, vec![(1, 20.0), (2, 30.0)]);
 }
 
-#[test]
 fn groupby_count() {
     let keys = column_from_slice(&[1i32, 1, 2, 2, 2]).unwrap();
     let vals = column_from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
@@ -88,7 +85,6 @@ fn groupby_count() {
 // Output column naming: alias support
 // ---------------------------------------------------------------------------
 
-#[test]
 fn groupby_alias() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
@@ -106,7 +102,6 @@ fn groupby_alias() {
     assert_eq!(pairs, vec![(1, 40), (2, 60)]);
 }
 
-#[test]
 fn groupby_deterministic_naming_without_alias() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let prices = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
@@ -136,7 +131,6 @@ fn groupby_deterministic_naming_without_alias() {
 // Multi-column aggregation ordering
 // ---------------------------------------------------------------------------
 
-#[test]
 fn groupby_multi_column_agg_ordering() {
     let keys = column_from_slice(&[1i32, 1, 2, 2]).unwrap();
     let a = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
@@ -174,7 +168,6 @@ fn groupby_multi_column_agg_ordering() {
 // Error handling
 // ---------------------------------------------------------------------------
 
-#[test]
 fn groupby_missing_value_column() {
     let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
@@ -188,7 +181,6 @@ fn groupby_missing_value_column() {
     assert_missing_column_error(&err, "nonexistent");
 }
 
-#[test]
 fn groupby_missing_key_column() {
     let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
@@ -202,7 +194,6 @@ fn groupby_missing_key_column() {
     assert_missing_column_error(&err, "missing_key");
 }
 
-#[test]
 fn groupby_empty_agg_specs() {
     let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
@@ -222,7 +213,6 @@ fn groupby_empty_agg_specs() {
 // Shortcut methods: sum, mean, count
 // ---------------------------------------------------------------------------
 
-#[test]
 fn groupby_sum_shortcut() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
@@ -240,7 +230,6 @@ fn groupby_sum_shortcut() {
     assert_eq!(pairs, vec![(1, 40), (2, 60)]);
 }
 
-#[test]
 fn groupby_mean_shortcut() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = column_from_slice(&[10.0f64, 20.0, 30.0, 40.0]).unwrap();
@@ -258,7 +247,6 @@ fn groupby_mean_shortcut() {
     assert_eq!(pairs, vec![(1, 20.0), (2, 30.0)]);
 }
 
-#[test]
 fn groupby_count_shortcut() {
     let keys = column_from_slice(&[1i32, 1, 2, 2, 2]).unwrap();
     let vals = column_from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
@@ -276,7 +264,6 @@ fn groupby_count_shortcut() {
     assert_eq!(pairs, vec![(1, 2), (2, 3)]);
 }
 
-#[test]
 fn groupby_shortcut_handle_is_reusable() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
@@ -290,7 +277,6 @@ fn groupby_shortcut_handle_is_reusable() {
     assert_eq!(counted.column_names(), vec!["key", "value_count"]);
 }
 
-#[test]
 fn scoped_groupby_handle_is_reusable() {
     use cudf::{ExecutionOverrides, Runtime, runtime::CudaStream};
 
@@ -315,7 +301,6 @@ fn scoped_groupby_handle_is_reusable() {
 // Shortcut with multiple value columns
 // ---------------------------------------------------------------------------
 
-#[test]
 fn groupby_sum_shortcut_multi_columns() {
     let keys = column_from_slice(&[1i32, 1, 2, 2]).unwrap();
     let a = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
@@ -342,7 +327,6 @@ fn groupby_sum_shortcut_multi_columns() {
 // GroupByOptions: include_null_keys
 // ---------------------------------------------------------------------------
 
-#[test]
 fn groupby_with_options_include_null_keys() {
     use cudf::GroupByOptions;
 
@@ -365,7 +349,6 @@ fn groupby_with_options_include_null_keys() {
 // GroupByAgg::Median
 // ---------------------------------------------------------------------------
 
-#[test]
 fn groupby_median() {
     // keys: [1, 1, 1, 2, 2], values: [10.0, 20.0, 30.0, 100.0, 200.0]
     // key=1 median=20.0, key=2 median=150.0
@@ -385,7 +368,6 @@ fn groupby_median() {
     assert_eq!(pairs, vec![(Some(1), Some(20.0)), (Some(2), Some(150.0))]);
 }
 
-#[test]
 fn groupby_median_shortcut() {
     let keys = column_from_slice(&[1i32, 1, 1, 2, 2]).unwrap();
     let vals = column_from_slice(&[10.0f64, 20.0, 30.0, 100.0, 200.0]).unwrap();
@@ -407,7 +389,6 @@ fn groupby_median_shortcut() {
 // GroupByAgg::NUnique
 // ---------------------------------------------------------------------------
 
-#[test]
 fn groupby_nunique() {
     // keys: [1, 1, 1, 2, 2], values: [10, 10, 20, 30, 30]
     // key=1 nunique=2, key=2 nunique=1
@@ -427,7 +408,6 @@ fn groupby_nunique() {
     assert_eq!(pairs, vec![(1, 2), (2, 1)]);
 }
 
-#[test]
 fn groupby_nunique_shortcut() {
     let keys = column_from_slice(&[1i32, 1, 1, 2, 2]).unwrap();
     let vals = column_from_slice(&[10i32, 10, 20, 30, 30]).unwrap();
@@ -449,7 +429,6 @@ fn groupby_nunique_shortcut() {
 // GroupByAgg::Std
 // ---------------------------------------------------------------------------
 
-#[test]
 fn groupby_std_ddof1() {
     // keys: [1, 1, 2, 2], values: [10.0, 20.0, 100.0, 200.0]
     // key=1: std(ddof=1) = sqrt(((10-15)^2 + (20-15)^2) / 1) = sqrt(50) ≈ 7.0711
@@ -475,7 +454,6 @@ fn groupby_std_ddof1() {
     assert!((pairs[1].1 - 5000.0f64.sqrt()).abs() < 1e-6, "key=2 std mismatch: {}", pairs[1].1);
 }
 
-#[test]
 fn groupby_std_ddof0() {
     // key=1: std(ddof=0) = sqrt(((10-15)^2 + (20-15)^2) / 2) = sqrt(25) = 5.0
     // key=2: std(ddof=0) = sqrt(((100-150)^2 + (200-150)^2) / 2) = sqrt(2500) = 50.0
@@ -495,7 +473,6 @@ fn groupby_std_ddof0() {
     assert!((pairs[1].1 - 50.0).abs() < 1e-6, "key=2 std(ddof=0) mismatch: {}", pairs[1].1);
 }
 
-#[test]
 fn groupby_std_shortcut() {
     let keys = column_from_slice(&[1i32, 1, 2, 2]).unwrap();
     let vals = column_from_slice(&[10.0f64, 20.0, 100.0, 200.0]).unwrap();
@@ -516,7 +493,6 @@ fn groupby_std_shortcut() {
     assert!((pairs[1].1 - 5000.0f64.sqrt()).abs() < 1e-6);
 }
 
-#[test]
 fn groupby_rejects_ddof_above_i32_max_with_stable_contract() {
     let keys = column_from_slice(&[1i32, 1, 2, 2]).unwrap();
     let vals = column_from_slice(&[10.0f64, 20.0, 100.0, 200.0]).unwrap();
@@ -534,7 +510,6 @@ fn groupby_rejects_ddof_above_i32_max_with_stable_contract() {
 // GroupByAgg::Variance
 // ---------------------------------------------------------------------------
 
-#[test]
 fn groupby_variance_ddof1() {
     // key=1: var(ddof=1) = 50.0
     // key=2: var(ddof=1) = 5000.0
@@ -556,7 +531,6 @@ fn groupby_variance_ddof1() {
     assert!((pairs[1].1 - 5000.0).abs() < 1e-6, "key=2 var mismatch: {}", pairs[1].1);
 }
 
-#[test]
 fn groupby_variance_ddof0() {
     // key=1: var(ddof=0) = 25.0
     // key=2: var(ddof=0) = 2500.0
@@ -576,7 +550,6 @@ fn groupby_variance_ddof0() {
     assert!((pairs[1].1 - 2500.0).abs() < 1e-6, "key=2 var(ddof=0) mismatch: {}", pairs[1].1);
 }
 
-#[test]
 fn groupby_var_shortcut() {
     let keys = column_from_slice(&[1i32, 1, 2, 2]).unwrap();
     let vals = column_from_slice(&[10.0f64, 20.0, 100.0, 200.0]).unwrap();
@@ -601,7 +574,6 @@ fn groupby_var_shortcut() {
 // Extended naming — all GroupByAgg variants in a single groupby
 // ---------------------------------------------------------------------------
 
-#[test]
 fn groupby_all_agg_variants_naming() {
     let keys = column_from_slice(&[1i32, 1, 2, 2]).unwrap();
     let vals = column_from_slice(&[10.0f64, 20.0, 100.0, 200.0]).unwrap();
@@ -643,7 +615,6 @@ fn groupby_all_agg_variants_naming() {
 // Alias works with new variants
 // ---------------------------------------------------------------------------
 
-#[test]
 fn groupby_new_agg_alias() {
     let keys = column_from_slice(&[1i32, 1, 2, 2]).unwrap();
     let vals = column_from_slice(&[10.0f64, 20.0, 100.0, 200.0]).unwrap();
@@ -660,7 +631,6 @@ fn groupby_new_agg_alias() {
     assert_eq!(result.column_names(), vec!["key", "mid", "spread"]);
 }
 
-#[test]
 fn groupby_domain_module_exports_documented_surface() {
     use cudf::{
         core::Table,
@@ -679,4 +649,43 @@ fn groupby_domain_module_exports_documented_surface() {
     assert_eq!(result.keys.testing_view().unwrap().num_rows().unwrap(), 2);
     assert_eq!(result.results.len(), 1);
     assert_eq!(result.results[0].len(), 1);
+}
+
+#[test]
+fn high_level_groupby_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("groupby_sum", groupby_sum),
+        ("groupby_mean", groupby_mean),
+        ("groupby_count", groupby_count),
+        ("groupby_alias", groupby_alias),
+        ("groupby_deterministic_naming_without_alias", groupby_deterministic_naming_without_alias),
+        ("groupby_multi_column_agg_ordering", groupby_multi_column_agg_ordering),
+        ("groupby_missing_value_column", groupby_missing_value_column),
+        ("groupby_missing_key_column", groupby_missing_key_column),
+        ("groupby_empty_agg_specs", groupby_empty_agg_specs),
+        ("groupby_sum_shortcut", groupby_sum_shortcut),
+        ("groupby_mean_shortcut", groupby_mean_shortcut),
+        ("groupby_count_shortcut", groupby_count_shortcut),
+        ("groupby_shortcut_handle_is_reusable", groupby_shortcut_handle_is_reusable),
+        ("scoped_groupby_handle_is_reusable", scoped_groupby_handle_is_reusable),
+        ("groupby_sum_shortcut_multi_columns", groupby_sum_shortcut_multi_columns),
+        ("groupby_with_options_include_null_keys", groupby_with_options_include_null_keys),
+        ("groupby_median", groupby_median),
+        ("groupby_median_shortcut", groupby_median_shortcut),
+        ("groupby_nunique", groupby_nunique),
+        ("groupby_nunique_shortcut", groupby_nunique_shortcut),
+        ("groupby_std_ddof1", groupby_std_ddof1),
+        ("groupby_std_ddof0", groupby_std_ddof0),
+        ("groupby_std_shortcut", groupby_std_shortcut),
+        (
+            "groupby_rejects_ddof_above_i32_max_with_stable_contract",
+            groupby_rejects_ddof_above_i32_max_with_stable_contract,
+        ),
+        ("groupby_variance_ddof1", groupby_variance_ddof1),
+        ("groupby_variance_ddof0", groupby_variance_ddof0),
+        ("groupby_var_shortcut", groupby_var_shortcut),
+        ("groupby_all_agg_variants_naming", groupby_all_agg_variants_naming),
+        ("groupby_new_agg_alias", groupby_new_agg_alias),
+        ("groupby_domain_module_exports_documented_surface", groupby_domain_module_exports_documented_surface),
+    ]);
 }

@@ -35,8 +35,7 @@ remain canonical for every component.
 ```bash
 cargo clippy -p cudf-nexus -p cudf-nexus-sys -p rapids-interop --all-targets --all-features -- -D warnings
 cargo +nightly fmt --all --check
-flock /tmp/cudf-gpu.lock cargo nextest run \
-  -p cudf-nexus -p cudf-nexus-sys -p rapids-interop --all-features --no-fail-fast
+cargo nt -E 'package(cudf-nexus) | package(cudf-nexus-sys) | package(rapids-interop)'
 ```
 
 Use `scripts/dev/bindings.sh cudf [--check]` for the two checked-in binding

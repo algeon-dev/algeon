@@ -11,14 +11,12 @@ use crate::common::error_context_value;
 // DeviceBuffer lifecycle
 // ---------------------------------------------------------------------------
 
-#[test]
 fn new_allocates_requested_size() {
     let rt = Runtime::new().unwrap();
     let buf = rt.device_buffer(1024).unwrap();
     assert_eq!(buf.size_bytes().unwrap(), 1024);
 }
 
-#[test]
 fn new_zero_bytes_succeeds() {
     let rt = Runtime::new().unwrap();
     let buf = rt.device_buffer(0).unwrap();
@@ -26,7 +24,6 @@ fn new_zero_bytes_succeeds() {
     assert_eq!(buf.size_bytes().unwrap(), 0);
 }
 
-#[test]
 fn const_and_mut_pointers_are_non_null_for_non_empty_buffer() {
     let rt = Runtime::new().unwrap();
     let mut buf = rt.device_buffer(64).unwrap();
@@ -35,7 +32,6 @@ fn const_and_mut_pointers_are_non_null_for_non_empty_buffer() {
     assert_eq!(buf.as_mut_ptr().unwrap().cast_const(), const_ptr);
 }
 
-#[test]
 fn const_pointer_for_zero_size_succeeds_even_if_pointer_is_null() {
     let rt = Runtime::new().unwrap();
     let buf = rt.device_buffer(0).unwrap();
@@ -45,7 +41,6 @@ fn const_pointer_for_zero_size_succeeds_even_if_pointer_is_null() {
     assert!(buf.is_empty().unwrap());
 }
 
-#[test]
 fn device_buffer_reports_owning_runtime_binding() {
     let rt = Runtime::new().unwrap();
     let buf = rt.device_buffer(64).unwrap();
@@ -55,7 +50,6 @@ fn device_buffer_reports_owning_runtime_binding() {
     assert_eq!(buf.binding_id(), rt.binding_id());
 }
 
-#[test]
 fn float32_device_buffer_finite_proof_covers_the_exact_allocation_and_binding() {
     let rt = Runtime::new().unwrap();
     let buf = rt.device_buffer_from_host_data(&[1.0f32, 2.0, 3.0]).unwrap();
@@ -74,7 +68,6 @@ fn float32_device_buffer_finite_proof_covers_the_exact_allocation_and_binding() 
     assert_eq!(validated.observation().memory.downloaded_bytes, Some(std::mem::size_of::<i32>()));
 }
 
-#[test]
 fn float32_device_buffer_finite_proof_rejects_nan_and_infinities() {
     for invalid in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
         let rt = Runtime::new().unwrap();
@@ -95,7 +88,6 @@ fn float32_device_buffer_finite_proof_rejects_nan_and_infinities() {
     }
 }
 
-#[test]
 fn typed_device_buffer_validation_rejects_misaligned_allocation_size() {
     let rt = Runtime::new().unwrap();
     let buf = rt.device_buffer(3).unwrap();
@@ -106,7 +98,6 @@ fn typed_device_buffer_validation_rejects_misaligned_allocation_size() {
     assert_eq!(error.detail_value("reason"), Some("validation_buffer_size_misaligned"));
 }
 
-#[test]
 fn typed_device_buffer_validation_accepts_empty_allocation_with_bounded_proofs() {
     let rt = Runtime::new().unwrap();
     let buf = rt.device_buffer(0).unwrap();
@@ -122,7 +113,6 @@ fn typed_device_buffer_validation_accepts_empty_allocation_with_bounded_proofs()
     assert_eq!(range.observation().memory.downloaded_bytes, Some(std::mem::size_of::<i32>()));
 }
 
-#[test]
 fn int64_device_buffer_range_proof_covers_the_exact_allocation_and_binding() {
     let rt = Runtime::new().unwrap();
     let buf = rt.device_buffer_from_host_data(&[0i64, 2, 4]).unwrap();
@@ -140,7 +130,6 @@ fn int64_device_buffer_range_proof_covers_the_exact_allocation_and_binding() {
     assert_eq!(validated.observation().memory.downloaded_bytes, Some(std::mem::size_of::<i32>()));
 }
 
-#[test]
 fn int64_device_buffer_range_proof_rejects_both_bound_violations() {
     for values in [[-1i64, 0, 1], [0i64, 1, 3]] {
         let rt = Runtime::new().unwrap();
@@ -161,7 +150,6 @@ fn int64_device_buffer_range_proof_rejects_both_bound_violations() {
     }
 }
 
-#[test]
 fn int64_device_buffer_range_proof_rejects_empty_interval_before_execution() {
     let rt = Runtime::new().unwrap();
     let buf = rt.device_buffer_from_host_data(&[1i64]).unwrap();
@@ -172,7 +160,6 @@ fn int64_device_buffer_range_proof_rejects_empty_interval_before_execution() {
     assert_eq!(error.detail_value("reason"), Some("invalid_validation_range"));
 }
 
-#[test]
 fn from_host_data_creates_correct_size() {
     let rt = Runtime::new().unwrap();
     let data: &[i32] = &[1, 2, 3];
@@ -180,7 +167,6 @@ fn from_host_data_creates_correct_size() {
     assert_eq!(buf.size_bytes().unwrap(), 12); // 3 * 4 bytes
 }
 
-#[test]
 fn from_host_data_empty_slice() {
     let rt = Runtime::new().unwrap();
     let data: &[i32] = &[];
@@ -193,7 +179,6 @@ fn from_host_data_empty_slice() {
 // Zero-copy adoption — non-nullable
 // ---------------------------------------------------------------------------
 
-#[test]
 fn adopt_i32_roundtrip() {
     let rt = Runtime::new().unwrap();
     let data: &[i32] = &[10, 20, 30];
@@ -204,7 +189,6 @@ fn adopt_i32_roundtrip() {
     assert_eq!(view.to_vec::<i32>().unwrap(), vec![10, 20, 30]);
 }
 
-#[test]
 fn adopt_f64_roundtrip() {
     let rt = Runtime::new().unwrap();
     let data: &[f64] = &[1.5, 2.5, 3.5];
@@ -214,7 +198,6 @@ fn adopt_f64_roundtrip() {
     assert_eq!(view.to_vec::<f64>().unwrap(), vec![1.5, 2.5, 3.5]);
 }
 
-#[test]
 fn adopted_bool8_decodes_non_canonical_non_zero_bytes() {
     let rt = Runtime::new().unwrap();
     let buf = rt.device_buffer_from_host_data(&[0u8, 1, 2, 0xff]).unwrap();
@@ -223,7 +206,6 @@ fn adopted_bool8_decodes_non_canonical_non_zero_bytes() {
     assert_eq!(col.to_vec::<bool>().unwrap(), vec![false, true, true, true]);
 }
 
-#[test]
 fn adopted_nullable_bool8_never_materializes_null_slot_as_bool() {
     let rt = Runtime::new().unwrap();
     let data_buf = rt.device_buffer_from_host_data(&[0u8, 0xff, 2]).unwrap();
@@ -235,7 +217,6 @@ fn adopted_nullable_bool8_never_materializes_null_slot_as_bool() {
     assert_eq!(col.to_optional_vec::<bool>().unwrap(), vec![Some(false), None, Some(true)]);
 }
 
-#[test]
 fn adopt_proves_zero_copy() {
     let rt = Runtime::new().unwrap();
     let data: &[i32] = &[42, 99];
@@ -246,7 +227,6 @@ fn adopt_proves_zero_copy() {
     assert_eq!(view.device_data_ptr().unwrap(), original_ptr);
 }
 
-#[test]
 fn adopt_zero_elements() {
     let rt = Runtime::new().unwrap();
     let buf = rt.device_buffer(0).unwrap();
@@ -256,7 +236,6 @@ fn adopt_zero_elements() {
     assert!(view.is_empty().unwrap());
 }
 
-#[test]
 fn adopt_rejects_string_type() {
     let rt = Runtime::new().unwrap();
     let buf = rt.device_buffer(64).unwrap();
@@ -272,7 +251,6 @@ fn adopt_rejects_string_type() {
     assert_eq!(error_context_value(&err, "type_id").as_deref(), Some("string"));
 }
 
-#[test]
 fn runtime_adopt_i32_roundtrip_seeds_explicit_residency_without_copy() {
     let data: &[i32] = &[10, 20, 30];
     let rt = Runtime::new().unwrap();
@@ -290,7 +268,6 @@ fn runtime_adopt_i32_roundtrip_seeds_explicit_residency_without_copy() {
     assert_eq!(col.testing_execution_domain_stream_value(), rt.stream().testing_raw_handle_value());
 }
 
-#[test]
 fn adopt_rejects_size_mismatch() {
     // 12 bytes = 3 i32 elements, but claim 4 rows
     let rt = Runtime::new().unwrap();
@@ -312,7 +289,6 @@ fn adopt_rejects_size_mismatch() {
     assert_eq!(error_context_value(&err, "buffer_bytes").as_deref(), None);
 }
 
-#[test]
 fn adopt_rejects_row_count_exceeding_i32_max() {
     let rt = Runtime::new().unwrap();
     let buf = rt.device_buffer(0).unwrap();
@@ -333,7 +309,6 @@ fn adopt_rejects_row_count_exceeding_i32_max() {
 // Zero-copy adoption — nullable
 // ---------------------------------------------------------------------------
 
-#[test]
 fn adopt_nullable_with_nulls() {
     let rt = Runtime::new().unwrap();
     // Data: [10, 20, 30, 40] with validity [true, false, true, false] → null_count = 2
@@ -358,7 +333,6 @@ fn adopt_nullable_with_nulls() {
     assert_eq!(validity, vec![true, false, true, false]);
 }
 
-#[test]
 fn adopt_nullable_all_valid() {
     let rt = Runtime::new().unwrap();
     let data: &[i32] = &[1, 2, 3];
@@ -376,7 +350,6 @@ fn adopt_nullable_all_valid() {
     assert_eq!(view.to_vec::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
-#[test]
 fn runtime_adopt_nullable_roundtrip_seeds_explicit_residency_without_copy() {
     let data: &[i32] = &[10, 20, 30, 40];
     let mut mask = [0u8; 64];
@@ -398,7 +371,6 @@ fn runtime_adopt_nullable_roundtrip_seeds_explicit_residency_without_copy() {
     assert_eq!(col.testing_execution_domain_stream_value(), rt.stream().testing_raw_handle_value());
 }
 
-#[test]
 fn adopt_nullable_rejects_null_count_exceeding_row_count() {
     let rt = Runtime::new().unwrap();
     let data_buf = rt.device_buffer_from_host_data(&[1i32, 2]).unwrap();
@@ -412,7 +384,6 @@ fn adopt_nullable_rejects_null_count_exceeding_row_count() {
     assert_eq!(error_context_value(&err, "actual_rows").as_deref(), Some("5"));
 }
 
-#[test]
 fn adopt_nullable_rejects_null_count_exceeding_i32_max_with_stable_contract() {
     let rt = Runtime::new().unwrap();
     let data_buf = rt.device_buffer(0).unwrap();
@@ -436,7 +407,6 @@ fn adopt_nullable_rejects_null_count_exceeding_i32_max_with_stable_contract() {
     assert_eq!(error_context_value(&err, "null_count").as_deref(), Some(expected.as_str()));
 }
 
-#[test]
 fn adopt_nullable_rejects_mask_too_small() {
     // 4 rows need at least 1 byte of bitmask. Provide 0 bytes.
     let rt = Runtime::new().unwrap();
@@ -460,7 +430,6 @@ fn adopt_nullable_rejects_mask_too_small() {
     assert_eq!(error_context_value(&err, "min_required_bytes").as_deref(), None);
 }
 
-#[test]
 fn adopt_nullable_rejects_mask_smaller_than_cudf_allocation_size() {
     let rt = Runtime::new().unwrap();
     let data_buf = rt.device_buffer_from_host_data(&[1i32]).unwrap();
@@ -477,7 +446,6 @@ fn adopt_nullable_rejects_mask_smaller_than_cudf_allocation_size() {
     assert_eq!(error_context_value(&err, "row_count").as_deref(), Some("1"));
 }
 
-#[test]
 fn adopt_nullable_rejects_data_buffer_size_mismatch_with_stable_contract() {
     let rt = Runtime::new().unwrap();
     let data_buf = rt.device_buffer_from_host_data(&[1i32, 2, 3]).unwrap();
@@ -499,4 +467,90 @@ fn adopt_nullable_rejects_data_buffer_size_mismatch_with_stable_contract() {
     assert_eq!(error_context_value(&err, "expected_bytes").as_deref(), Some("16"));
     assert_eq!(error_context_value(&err, "row_count").as_deref(), Some("4"));
     assert_eq!(error_context_value(&err, "type_id").as_deref(), Some("int32"));
+}
+
+#[test]
+fn device_buffer_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("new_allocates_requested_size", new_allocates_requested_size),
+        ("new_zero_bytes_succeeds", new_zero_bytes_succeeds),
+        (
+            "const_and_mut_pointers_are_non_null_for_non_empty_buffer",
+            const_and_mut_pointers_are_non_null_for_non_empty_buffer,
+        ),
+        (
+            "const_pointer_for_zero_size_succeeds_even_if_pointer_is_null",
+            const_pointer_for_zero_size_succeeds_even_if_pointer_is_null,
+        ),
+        ("device_buffer_reports_owning_runtime_binding", device_buffer_reports_owning_runtime_binding),
+        (
+            "float32_device_buffer_finite_proof_covers_the_exact_allocation_and_binding",
+            float32_device_buffer_finite_proof_covers_the_exact_allocation_and_binding,
+        ),
+        (
+            "float32_device_buffer_finite_proof_rejects_nan_and_infinities",
+            float32_device_buffer_finite_proof_rejects_nan_and_infinities,
+        ),
+        (
+            "typed_device_buffer_validation_rejects_misaligned_allocation_size",
+            typed_device_buffer_validation_rejects_misaligned_allocation_size,
+        ),
+        (
+            "typed_device_buffer_validation_accepts_empty_allocation_with_bounded_proofs",
+            typed_device_buffer_validation_accepts_empty_allocation_with_bounded_proofs,
+        ),
+        (
+            "int64_device_buffer_range_proof_covers_the_exact_allocation_and_binding",
+            int64_device_buffer_range_proof_covers_the_exact_allocation_and_binding,
+        ),
+        (
+            "int64_device_buffer_range_proof_rejects_both_bound_violations",
+            int64_device_buffer_range_proof_rejects_both_bound_violations,
+        ),
+        (
+            "int64_device_buffer_range_proof_rejects_empty_interval_before_execution",
+            int64_device_buffer_range_proof_rejects_empty_interval_before_execution,
+        ),
+        ("from_host_data_creates_correct_size", from_host_data_creates_correct_size),
+        ("from_host_data_empty_slice", from_host_data_empty_slice),
+        ("adopt_i32_roundtrip", adopt_i32_roundtrip),
+        ("adopt_f64_roundtrip", adopt_f64_roundtrip),
+        ("adopted_bool8_decodes_non_canonical_non_zero_bytes", adopted_bool8_decodes_non_canonical_non_zero_bytes),
+        (
+            "adopted_nullable_bool8_never_materializes_null_slot_as_bool",
+            adopted_nullable_bool8_never_materializes_null_slot_as_bool,
+        ),
+        ("adopt_proves_zero_copy", adopt_proves_zero_copy),
+        ("adopt_zero_elements", adopt_zero_elements),
+        ("adopt_rejects_string_type", adopt_rejects_string_type),
+        (
+            "runtime_adopt_i32_roundtrip_seeds_explicit_residency_without_copy",
+            runtime_adopt_i32_roundtrip_seeds_explicit_residency_without_copy,
+        ),
+        ("adopt_rejects_size_mismatch", adopt_rejects_size_mismatch),
+        ("adopt_rejects_row_count_exceeding_i32_max", adopt_rejects_row_count_exceeding_i32_max),
+        ("adopt_nullable_with_nulls", adopt_nullable_with_nulls),
+        ("adopt_nullable_all_valid", adopt_nullable_all_valid),
+        (
+            "runtime_adopt_nullable_roundtrip_seeds_explicit_residency_without_copy",
+            runtime_adopt_nullable_roundtrip_seeds_explicit_residency_without_copy,
+        ),
+        (
+            "adopt_nullable_rejects_null_count_exceeding_row_count",
+            adopt_nullable_rejects_null_count_exceeding_row_count,
+        ),
+        (
+            "adopt_nullable_rejects_null_count_exceeding_i32_max_with_stable_contract",
+            adopt_nullable_rejects_null_count_exceeding_i32_max_with_stable_contract,
+        ),
+        ("adopt_nullable_rejects_mask_too_small", adopt_nullable_rejects_mask_too_small),
+        (
+            "adopt_nullable_rejects_mask_smaller_than_cudf_allocation_size",
+            adopt_nullable_rejects_mask_smaller_than_cudf_allocation_size,
+        ),
+        (
+            "adopt_nullable_rejects_data_buffer_size_mismatch_with_stable_contract",
+            adopt_nullable_rejects_data_buffer_size_mismatch_with_stable_contract,
+        ),
+    ]);
 }

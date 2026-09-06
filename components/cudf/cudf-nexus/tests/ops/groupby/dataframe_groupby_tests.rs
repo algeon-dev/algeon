@@ -60,7 +60,6 @@ fn assert_no_budget_error_details(err: &cudf::Error) {
 // Groupby aggregation
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_groupby_single_key_sum() {
     // keys: [1, 2, 1, 2], values: [10, 20, 30, 40]
     // Expected: key=1 → sum=40, key=2 → sum=60
@@ -91,7 +90,6 @@ fn test_groupby_single_key_sum() {
     assert_eq!(pairs, vec![(1, 40), (2, 60)]);
 }
 
-#[test]
 fn test_groupby_agg_with_budget_applies_token_reports_output_and_matches_agg() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
@@ -133,7 +131,6 @@ fn test_groupby_agg_with_budget_applies_token_reports_output_and_matches_agg() {
     );
 }
 
-#[test]
 fn test_prepare_sort_groupby_with_budget_reports_exact_group_facts_and_reuses_handle() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
@@ -212,7 +209,6 @@ fn test_prepare_sort_groupby_with_budget_reports_exact_group_facts_and_reuses_ha
     );
 }
 
-#[test]
 fn test_groupby_q17_avg_quantity_with_budget_reports_current_diagnostics() {
     let partkeys = column_from_slice(&[10i32, 20, 10, 20, 30]).unwrap();
     let quantities = column_from_slice(&[4.0f64, 10.0, 8.0, 30.0, 5.0]).unwrap();
@@ -247,7 +243,6 @@ fn test_groupby_q17_avg_quantity_with_budget_reports_current_diagnostics() {
     assert!(retained_bytes > 0, "groupby retained bytes are observed after execution, not preflighted");
 }
 
-#[test]
 fn test_groupby_agg_with_budget_reports_exceeded_budget_details() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
@@ -274,7 +269,6 @@ fn test_groupby_agg_with_budget_reports_exceeded_budget_details() {
     assert!(error_context_value(&err, "budget_largest_failed_allocation_bytes").is_some());
 }
 
-#[test]
 fn test_groupby_agg_with_budget_preserves_empty_specs_validation_without_budget_details() {
     let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
@@ -297,7 +291,6 @@ fn test_groupby_agg_with_budget_preserves_empty_specs_validation_without_budget_
     assert_no_budget_error_details(&err);
 }
 
-#[test]
 fn test_groupby_agg_with_budget_preserves_missing_column_validation_without_budget_details() {
     let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
@@ -319,7 +312,6 @@ fn test_groupby_agg_with_budget_preserves_missing_column_validation_without_budg
     assert_no_budget_error_details(&err);
 }
 
-#[test]
 fn test_groupby_agg_with_budget_preserves_empty_keys_validation_without_budget_details() {
     let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
@@ -369,7 +361,6 @@ fn test_groupby_agg_with_budget_preserves_foreign_output_invariant_without_budge
     assert_no_budget_error_details(&err);
 }
 
-#[test]
 fn test_groupby_rejects_empty_group_keys_with_stable_contract() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
@@ -386,7 +377,6 @@ fn test_groupby_rejects_empty_group_keys_with_stable_contract() {
     );
 }
 
-#[test]
 fn test_groupby_shortcuts_reject_empty_group_keys_with_stable_contract() {
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30, 40]).unwrap();
@@ -403,7 +393,6 @@ fn test_groupby_shortcuts_reject_empty_group_keys_with_stable_contract() {
     );
 }
 
-#[test]
 fn test_groupby_single_key_multiple_aggregations_same_column() {
     // keys: [1, 2, 1, 2], values: [10.0, 20.0, 30.0, 40.0]
     // Expected: key=1 → min=10, max=30; key=2 → min=20, max=40
@@ -438,7 +427,6 @@ fn test_groupby_single_key_multiple_aggregations_same_column() {
     assert_eq!(triples, vec![(1, 10.0, 30.0), (2, 20.0, 40.0)]);
 }
 
-#[test]
 fn test_groupby_multiple_keys() {
     // Two key columns: (k0, k1) with 4 unique combinations
     let k0 = column_from_slice(&[1i32, 1, 2, 2]).unwrap();
@@ -463,7 +451,6 @@ fn test_groupby_multiple_keys() {
     assert_eq!(names[2], "value_sum");
 }
 
-#[test]
 fn test_groupby_nonexistent_agg_column_returns_error() {
     let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
@@ -479,7 +466,6 @@ fn test_groupby_nonexistent_agg_column_returns_error() {
     assert_missing_column_error(&err, "nonexistent");
 }
 
-#[test]
 fn test_groupby_nonexistent_key_column_returns_error() {
     let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
@@ -495,7 +481,6 @@ fn test_groupby_nonexistent_key_column_returns_error() {
     assert_missing_column_error(&err, "missing_key");
 }
 
-#[test]
 fn test_groupby_result_column_naming_convention() {
     // Verify naming: "{column}_{aggregation}"
     let keys = column_from_slice(&[1i32, 2, 1, 2]).unwrap();
@@ -524,7 +509,6 @@ fn test_groupby_result_column_naming_convention() {
     assert_eq!(names[5], "price_max");
 }
 
-#[test]
 fn test_groupby_interleaved_multi_column_agg_ordering() {
     // Request order intentionally interleaves columns:
     //   a_sum, b_sum, a_min
@@ -591,7 +575,6 @@ fn test_groupby_high_level_rejects_negative_foreign_result_column_count_with_sta
     assert_eq!(error_context_value(&err, "out_total_columns").as_deref(), None);
 }
 
-#[test]
 fn test_groupby_no_aggregations_returns_error() {
     let keys = column_from_slice(&[1i32, 2, 1]).unwrap();
     let vals = column_from_slice(&[10i64, 20, 30]).unwrap();
@@ -609,7 +592,6 @@ fn test_groupby_no_aggregations_returns_error() {
     );
 }
 
-#[test]
 fn test_testing_hook_locks_groupby_result_group_index_out_of_bounds_contract() {
     let err = cudf::testing::groupby::trigger_groupby_result_group_index_out_of_bounds_for_test().unwrap_err();
 
@@ -629,7 +611,6 @@ fn test_testing_hook_locks_groupby_result_group_index_out_of_bounds_contract() {
     assert_eq!(error_context_value(&err, "group_count").as_deref(), Some("1"));
 }
 
-#[test]
 fn test_testing_hook_locks_groupby_result_column_index_out_of_bounds_contract() {
     let err = cudf::testing::groupby::trigger_groupby_result_column_index_out_of_bounds_for_test().unwrap_err();
 
@@ -651,7 +632,6 @@ fn test_testing_hook_locks_groupby_result_column_index_out_of_bounds_contract() 
     assert_eq!(error_context_value(&err, "result_column_count").as_deref(), Some("1"));
 }
 
-#[test]
 fn test_testing_hook_locks_groupby_duplicate_result_column_consumption_contract() {
     let err = cudf::testing::groupby::trigger_groupby_duplicate_result_column_consumption_for_test().unwrap_err();
 
@@ -669,4 +649,69 @@ fn test_testing_hook_locks_groupby_duplicate_result_column_consumption_contract(
     assert_eq!(error_context_value(&err, "request_index").as_deref(), Some("1"));
     assert_eq!(error_context_value(&err, "group_index").as_deref(), Some("0"));
     assert_eq!(error_context_value(&err, "agg_index").as_deref(), Some("0"));
+}
+
+#[test]
+fn dataframe_groupby_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_groupby_single_key_sum", test_groupby_single_key_sum),
+        (
+            "test_groupby_agg_with_budget_applies_token_reports_output_and_matches_agg",
+            test_groupby_agg_with_budget_applies_token_reports_output_and_matches_agg,
+        ),
+        (
+            "test_prepare_sort_groupby_with_budget_reports_exact_group_facts_and_reuses_handle",
+            test_prepare_sort_groupby_with_budget_reports_exact_group_facts_and_reuses_handle,
+        ),
+        (
+            "test_groupby_q17_avg_quantity_with_budget_reports_current_diagnostics",
+            test_groupby_q17_avg_quantity_with_budget_reports_current_diagnostics,
+        ),
+        (
+            "test_groupby_agg_with_budget_reports_exceeded_budget_details",
+            test_groupby_agg_with_budget_reports_exceeded_budget_details,
+        ),
+        (
+            "test_groupby_agg_with_budget_preserves_empty_specs_validation_without_budget_details",
+            test_groupby_agg_with_budget_preserves_empty_specs_validation_without_budget_details,
+        ),
+        (
+            "test_groupby_agg_with_budget_preserves_missing_column_validation_without_budget_details",
+            test_groupby_agg_with_budget_preserves_missing_column_validation_without_budget_details,
+        ),
+        (
+            "test_groupby_agg_with_budget_preserves_empty_keys_validation_without_budget_details",
+            test_groupby_agg_with_budget_preserves_empty_keys_validation_without_budget_details,
+        ),
+        (
+            "test_groupby_rejects_empty_group_keys_with_stable_contract",
+            test_groupby_rejects_empty_group_keys_with_stable_contract,
+        ),
+        (
+            "test_groupby_shortcuts_reject_empty_group_keys_with_stable_contract",
+            test_groupby_shortcuts_reject_empty_group_keys_with_stable_contract,
+        ),
+        (
+            "test_groupby_single_key_multiple_aggregations_same_column",
+            test_groupby_single_key_multiple_aggregations_same_column,
+        ),
+        ("test_groupby_multiple_keys", test_groupby_multiple_keys),
+        ("test_groupby_nonexistent_agg_column_returns_error", test_groupby_nonexistent_agg_column_returns_error),
+        ("test_groupby_nonexistent_key_column_returns_error", test_groupby_nonexistent_key_column_returns_error),
+        ("test_groupby_result_column_naming_convention", test_groupby_result_column_naming_convention),
+        ("test_groupby_interleaved_multi_column_agg_ordering", test_groupby_interleaved_multi_column_agg_ordering),
+        ("test_groupby_no_aggregations_returns_error", test_groupby_no_aggregations_returns_error),
+        (
+            "test_testing_hook_locks_groupby_result_group_index_out_of_bounds_contract",
+            test_testing_hook_locks_groupby_result_group_index_out_of_bounds_contract,
+        ),
+        (
+            "test_testing_hook_locks_groupby_result_column_index_out_of_bounds_contract",
+            test_testing_hook_locks_groupby_result_column_index_out_of_bounds_contract,
+        ),
+        (
+            "test_testing_hook_locks_groupby_duplicate_result_column_consumption_contract",
+            test_testing_hook_locks_groupby_duplicate_result_column_consumption_contract,
+        ),
+    ]);
 }

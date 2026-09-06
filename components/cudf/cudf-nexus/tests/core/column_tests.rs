@@ -7,7 +7,6 @@ use crate::common::{
     last_exec_mr_value, last_exec_stream_value, reset_exec_observation,
 };
 
-#[test]
 fn test_create_empty_column() {
     let col = crate::common::empty_column(TypeId::Int32).unwrap();
     let view = col.testing_view().unwrap();
@@ -16,7 +15,6 @@ fn test_create_empty_column() {
     assert_eq!(view.data_type().unwrap(), DataType::new(TypeId::Int32));
 }
 
-#[test]
 fn test_create_empty_decimal_column_preserves_scale() {
     let dtype = DataType::fixed_point(TypeId::Decimal64, -2).unwrap();
     let col = crate::common::empty_column(dtype).unwrap();
@@ -25,7 +23,6 @@ fn test_create_empty_decimal_column_preserves_scale() {
     assert_eq!(view.data_type().unwrap(), dtype);
 }
 
-#[test]
 fn test_create_i32_column() {
     let data = vec![1i32, 2, 3, 4, 5];
     let col = column_from_slice(&data).unwrap();
@@ -42,7 +39,6 @@ fn test_create_i32_column() {
     assert_eq!(host_data, data);
 }
 
-#[test]
 fn test_create_f64_column() {
     let data = vec![1.5f64, 2.5, 3.5];
     let col = column_from_slice(&data).unwrap();
@@ -131,7 +127,6 @@ fn test_column_view_null_count_metadata_failure_maps_to_invariant_violation() {
     );
 }
 
-#[test]
 fn test_nullable_column() {
     let data = vec![10i32, 20, 30, 40];
     let validity = vec![true, false, true, false];
@@ -150,7 +145,6 @@ fn test_nullable_column() {
     assert_eq!(mask, validity);
 }
 
-#[test]
 fn test_to_optional_vec_all_valid() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.testing_view().unwrap();
@@ -159,7 +153,6 @@ fn test_to_optional_vec_all_valid() {
     assert_eq!(host_data, vec![Some(1), Some(2), Some(3)]);
 }
 
-#[test]
 fn test_to_optional_vec_with_nulls() {
     let col = column_from_slice_nullable(&[10i32, 20, 30, 40], &[true, false, true, false]).unwrap();
     let view = col.testing_view().unwrap();
@@ -168,7 +161,6 @@ fn test_to_optional_vec_with_nulls() {
     assert_eq!(host_data, vec![Some(10), None, Some(30), None]);
 }
 
-#[test]
 fn test_to_optional_vec_bool_with_nulls() {
     let col = column_from_slice_nullable(&[true, false, true], &[true, false, true]).unwrap();
     let view = col.testing_view().unwrap();
@@ -177,7 +169,6 @@ fn test_to_optional_vec_bool_with_nulls() {
     assert_eq!(host_data, vec![Some(true), None, Some(true)]);
 }
 
-#[test]
 fn test_to_optional_vec_type_mismatch_error() {
     let col = column_from_slice(&[1.0f64, 2.0]).unwrap();
     let view = col.testing_view().unwrap();
@@ -191,7 +182,6 @@ fn test_to_optional_vec_type_mismatch_error() {
     assert_eq!(error_context_value(&err, "requested_type_id").as_deref(), None);
 }
 
-#[test]
 fn test_column_deep_copy() {
     let data = vec![100i64, 200, 300];
     let col = column_from_slice(&data).unwrap();
@@ -202,7 +192,6 @@ fn test_column_deep_copy() {
     assert_eq!(view.to_vec::<i64>().unwrap(), data);
 }
 
-#[test]
 fn test_type_mismatch_error() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.testing_view().unwrap();
@@ -212,7 +201,6 @@ fn test_type_mismatch_error() {
     assert_eq!(result.unwrap_err().kind(), cudf::ErrorKind::InvalidInput);
 }
 
-#[test]
 fn test_u8_column() {
     let data = vec![0u8, 128, 255];
     let col = column_from_slice(&data).unwrap();
@@ -220,7 +208,6 @@ fn test_u8_column() {
     assert_eq!(view.to_vec::<u8>().unwrap(), data);
 }
 
-#[test]
 fn test_mismatched_validity_length() {
     let data = vec![1i32, 2, 3];
     let validity = vec![true, false]; // wrong length
@@ -234,14 +221,12 @@ fn test_mismatched_validity_length() {
     assert_eq!(error_context_value(&err, "validity_len").as_deref(), None);
 }
 
-#[test]
 fn test_to_host_validity_none_for_non_nullable_column() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.testing_view().unwrap();
     assert!(view.to_host_validity().unwrap().is_none());
 }
 
-#[test]
 fn test_to_host_validity_for_sliced_nullable_column_is_normalized_to_slice() {
     let col =
         column_from_slice_nullable(&[10i32, 20, 30, 40, 50, 60], &[true, false, true, true, false, true]).unwrap();
@@ -251,7 +236,6 @@ fn test_to_host_validity_for_sliced_nullable_column_is_normalized_to_slice() {
     assert_eq!(validity, vec![false, true, true, false]);
 }
 
-#[test]
 fn test_testing_slice_view_uses_column_execution_domain_execution_resources() {
     let col = column_from_slice_nullable(&[10i32, 20, 30, 40], &[true, false, true, false]).unwrap();
     let expected_stream = col.testing_execution_domain_stream_value();
@@ -265,7 +249,6 @@ fn test_testing_slice_view_uses_column_execution_domain_execution_resources() {
     assert_eq!(sliced.null_count().unwrap(), 1);
 }
 
-#[test]
 fn test_to_vec_for_sliced_view_starts_at_sliced_element_offset() {
     let col = column_from_slice(&[10i32, 20, 30, 40, 50, 60]).unwrap();
     let sliced = col.testing_slice_view(2, 3).unwrap();
@@ -273,7 +256,6 @@ fn test_to_vec_for_sliced_view_starts_at_sliced_element_offset() {
     assert_eq!(sliced.to_vec::<i32>().unwrap(), vec![30, 40, 50]);
 }
 
-#[test]
 fn test_to_optional_vec_for_sliced_nullable_view_starts_at_sliced_element_offset() {
     let col =
         column_from_slice_nullable(&[10i32, 20, 30, 40, 50, 60], &[true, false, true, true, false, true]).unwrap();
@@ -282,7 +264,6 @@ fn test_to_optional_vec_for_sliced_nullable_view_starts_at_sliced_element_offset
     assert_eq!(sliced.to_optional_vec::<i32>().unwrap(), vec![None, Some(30), Some(40), None]);
 }
 
-#[test]
 fn test_to_host_null_mask_bytes_for_sliced_nullable_column_is_packed_to_active_range() {
     let col =
         column_from_slice_nullable(&[10i32, 20, 30, 40, 50, 60], &[true, false, true, true, false, true]).unwrap();
@@ -292,7 +273,6 @@ fn test_to_host_null_mask_bytes_for_sliced_nullable_column_is_packed_to_active_r
     assert_eq!(mask_bytes, vec![0b0000_0110]);
 }
 
-#[test]
 fn test_various_numeric_types() {
     // i8
     let col = column_from_slice(&[1i8, -1, 127]).unwrap();
@@ -320,7 +300,6 @@ fn test_various_numeric_types() {
     assert!((vals[2] - 3.125).abs() < 0.001);
 }
 
-#[test]
 fn test_device_data_ptr_i32() {
     let data = vec![10i32, 20, 30];
     let col = column_from_slice(&data).unwrap();
@@ -330,7 +309,6 @@ fn test_device_data_ptr_i32() {
     assert!(!ptr.is_null(), "device data pointer for i32 column must be non-null");
 }
 
-#[test]
 fn test_device_data_ptr_f64() {
     let data = vec![1.5f64, 2.5, 3.5];
     let col = column_from_slice(&data).unwrap();
@@ -340,7 +318,6 @@ fn test_device_data_ptr_f64() {
     assert!(!ptr.is_null(), "device data pointer for f64 column must be non-null");
 }
 
-#[test]
 fn test_device_data_ptr_consistent_with_to_vec() {
     // Two views of the same column should return the same device pointer.
     let col = column_from_slice(&[1i32, 2, 3, 4, 5]).unwrap();
@@ -352,14 +329,12 @@ fn test_device_data_ptr_consistent_with_to_vec() {
     assert_eq!(ptr1, ptr2, "same column should yield same device pointer");
 }
 
-#[test]
 fn test_offset_for_non_sliced_column() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.testing_view().unwrap();
     assert_eq!(view.offset().unwrap(), 0);
 }
 
-#[test]
 fn test_device_data_ptr_empty_column() {
     let col = column_from_slice::<i32>(&[]).unwrap();
     let view = col.testing_view().unwrap();
@@ -367,7 +342,6 @@ fn test_device_data_ptr_empty_column() {
     let _ptr = view.device_data_ptr().unwrap();
 }
 
-#[test]
 fn test_child_rejects_out_of_bounds_index_without_segfault() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.testing_view().unwrap();
@@ -384,7 +358,6 @@ fn test_child_rejects_out_of_bounds_index_without_segfault() {
     assert!(err.to_string().contains("out of bounds"), "unexpected error: {err}");
 }
 
-#[test]
 fn test_column_device_slice_type_mismatch_uses_canonical_type_context() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
 
@@ -401,7 +374,6 @@ fn test_column_device_slice_type_mismatch_uses_canonical_type_context() {
     assert_eq!(error_context_value(&err, "requested_type_id").as_deref(), None);
 }
 
-#[test]
 fn test_child_rejects_usize_indices_outside_i32_range() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.testing_view().unwrap();
@@ -415,7 +387,6 @@ fn test_child_rejects_usize_indices_outside_i32_range() {
     assert_eq!(error_context_value(&err, "num_children").as_deref(), Some("0"));
 }
 
-#[test]
 fn test_testing_slice_view_rejects_start_over_i32_max_with_row_range_contract() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
 
@@ -431,7 +402,6 @@ fn test_testing_slice_view_rejects_start_over_i32_max_with_row_range_contract() 
     assert_eq!(error_context_value(&err, "row_count").as_deref(), None);
 }
 
-#[test]
 fn test_testing_slice_view_rejects_row_count_over_i32_max_with_canonical_vocabulary() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let expected = usize::MAX.to_string();
@@ -447,7 +417,6 @@ fn test_testing_slice_view_rejects_row_count_over_i32_max_with_canonical_vocabul
     assert_eq!(error_context_value(&err, "length").as_deref(), None);
 }
 
-#[test]
 fn test_testing_slice_view_rejects_end_overflow_with_row_range_context() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let expected_end = ((1usize as u128) + (usize::MAX as u128)).to_string();
@@ -464,7 +433,6 @@ fn test_testing_slice_view_rejects_end_overflow_with_row_range_context() {
     assert_eq!(error_context_value(&err, "length").as_deref(), None);
 }
 
-#[test]
 fn test_fixed_width_host_byte_range_overflow_hook_uses_row_count_contract() {
     let err = cudf::testing::column::trigger_column_view_fixed_width_host_byte_range_overflow_for_test().unwrap_err();
     let expected = usize::MAX.to_string();
@@ -480,7 +448,6 @@ fn test_fixed_width_host_byte_range_overflow_hook_uses_row_count_contract() {
     assert_eq!(error_context_value(&err, "len").as_deref(), None);
 }
 
-#[test]
 fn test_core_domain_modules_export_documented_surface() {
     use cudf::core::{
         column::{Column as DomainColumn, ColumnView as DomainColumnView, DeviceSlice as DomainDeviceSlice},
@@ -510,19 +477,16 @@ fn test_core_domain_modules_export_documented_surface() {
     assert_cudf_type::<i32>();
 }
 
-#[test]
 fn test_device_slice_stays_under_core_domain_module() {
     let _: Option<cudf::core::column::DeviceSlice<'static>> = None;
 }
 
-#[test]
 fn test_device_slice_is_reexported_at_crate_root() {
     let _: Option<cudf::core::DeviceSlice<'static>> = None;
 }
 
 // --- DeviceSlice tests ---
 
-#[test]
 fn test_device_slice_i32() {
     let col = column_from_slice(&[10i32, 20, 30, 40, 50]).unwrap();
     let view = col.testing_view().unwrap();
@@ -535,7 +499,6 @@ fn test_device_slice_i32() {
     assert!(!slice.as_ptr().is_null());
 }
 
-#[test]
 fn test_device_slice_f64() {
     let col = column_from_slice(&[1.5f64, 2.5]).unwrap();
     let view = col.testing_view().unwrap();
@@ -546,7 +509,6 @@ fn test_device_slice_f64() {
     assert_eq!(slice.elem_size(), 8);
 }
 
-#[test]
 fn test_device_slice_type_mismatch() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.testing_view().unwrap();
@@ -555,7 +517,6 @@ fn test_device_slice_type_mismatch() {
     assert_eq!(err.kind(), cudf::ErrorKind::InvalidInput);
 }
 
-#[test]
 fn test_to_raw_bytes_rejects_non_byte_type_with_stable_contract() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.testing_view().unwrap();
@@ -570,7 +531,6 @@ fn test_to_raw_bytes_rejects_non_byte_type_with_stable_contract() {
     assert_eq!(error_context_value(&err, "actual_type_id").as_deref(), None);
 }
 
-#[test]
 fn test_to_fixed_width_host_bytes_rejects_string_type_with_stable_contract() {
     let col = crate::common::column_from_strs(&["alpha", "beta"]).unwrap();
     let view = col.testing_view().unwrap();
@@ -585,7 +545,6 @@ fn test_to_fixed_width_host_bytes_rejects_string_type_with_stable_contract() {
     assert_eq!(error_context_value(&err, "actual_type_id").as_deref(), None);
 }
 
-#[test]
 fn test_device_slice_split_at() {
     let col = column_from_slice(&[10i32, 20, 30, 40, 50, 60]).unwrap();
     let view = col.testing_view().unwrap();
@@ -605,7 +564,6 @@ fn test_device_slice_split_at() {
     assert_eq!(right.as_ptr(), expected_right);
 }
 
-#[test]
 fn test_device_slice_split_at_zero() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.testing_view().unwrap();
@@ -616,7 +574,6 @@ fn test_device_slice_split_at_zero() {
     assert_eq!(right.len(), 3);
 }
 
-#[test]
 fn test_device_slice_split_at_end() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.testing_view().unwrap();
@@ -637,7 +594,6 @@ fn test_device_slice_split_at_out_of_bounds() {
     slice.split_at(4); // should panic
 }
 
-#[test]
 fn test_device_slice_empty_column() {
     let col = column_from_slice::<i32>(&[]).unwrap();
     let view = col.testing_view().unwrap();
@@ -647,7 +603,6 @@ fn test_device_slice_empty_column() {
     assert!(slice.is_empty());
 }
 
-#[test]
 fn test_device_slice_from_dictionary_indices() {
     // Dictionary-encode and get the indices as a DeviceSlice — the exact
     // workflow that gpu-app needs.
@@ -672,7 +627,6 @@ fn test_device_slice_from_dictionary_indices() {
 
 // --- from_device_ptr tests ---
 
-#[test]
 fn test_from_device_ptr_i32_roundtrip() {
     // Create a column from host data, get its device pointer, then create a
     // new column from that device pointer. Verify the data survives the round-trip.
@@ -694,7 +648,6 @@ fn test_from_device_ptr_i32_roundtrip() {
     assert_eq!(host_data, original_data);
 }
 
-#[test]
 fn test_from_device_ptr_f64_roundtrip() {
     let original_data = vec![1.5f64, 2.5, 3.5, 4.5];
     let src_col = column_from_slice(&original_data).unwrap();
@@ -709,7 +662,6 @@ fn test_from_device_ptr_f64_roundtrip() {
     assert_eq!(host_data, original_data);
 }
 
-#[test]
 fn test_from_device_ptr_i64_roundtrip() {
     let original_data = vec![100i64, 200, 300];
     let src_col = column_from_slice(&original_data).unwrap();
@@ -724,7 +676,6 @@ fn test_from_device_ptr_i64_roundtrip() {
     assert_eq!(host_data, original_data);
 }
 
-#[test]
 fn test_from_device_ptr_independent_of_source() {
     // The new column should own its own memory — dropping the source should not
     // invalidate the new column (device-to-device copy, not zero-copy).
@@ -745,7 +696,6 @@ fn test_from_device_ptr_independent_of_source() {
     assert_eq!(host_data, original_data);
 }
 
-#[test]
 fn test_from_device_ptr_empty() {
     // Edge case: empty column (len = 0). The device pointer may be anything;
     // it should not be dereferenced.
@@ -761,7 +711,6 @@ fn test_from_device_ptr_empty() {
     assert_eq!(new_view.data_type().unwrap().id(), TypeId::Int32);
 }
 
-#[test]
 fn test_from_device_ptr_null_pointer_with_zero_len() {
     // Null pointer with len 0 should succeed (no data to copy).
     let new_col = unsafe { crate::common::column_from_device_ptr(std::ptr::null(), 0, TypeId::Int32).unwrap() };
@@ -770,7 +719,6 @@ fn test_from_device_ptr_null_pointer_with_zero_len() {
     assert_eq!(new_view.len().unwrap(), 0);
 }
 
-#[test]
 fn test_from_device_ptr_null_pointer_with_nonzero_len() {
     // Null pointer with len > 0 should fail.
     let result = unsafe { crate::common::column_from_device_ptr(std::ptr::null(), 5, TypeId::Int32) };
@@ -790,7 +738,6 @@ fn test_from_device_ptr_null_pointer_with_nonzero_len() {
     assert_eq!(error_context_value(&err, "type_id").as_deref(), Some("int32"));
 }
 
-#[test]
 fn test_from_device_ptr_various_types() {
     // i8
     let data_i8 = vec![1i8, -1, 127];
@@ -821,7 +768,6 @@ fn test_from_device_ptr_various_types() {
     assert_eq!(result, data_f32);
 }
 
-#[test]
 fn test_from_device_ptr_rejects_non_fixed_width_type() {
     // from_device_ptr must only accept fixed-width primitive types.
     let result = unsafe { crate::common::column_from_device_ptr(std::ptr::null(), 0, TypeId::String) };
@@ -841,7 +787,6 @@ fn test_from_device_ptr_rejects_non_fixed_width_type() {
 
 // --- crate::common::null_column() tests ---
 
-#[test]
 fn test_nulls_int32_empty() {
     let col = crate::common::null_column(TypeId::Int32, 0).unwrap();
     let view = col.testing_view().unwrap();
@@ -849,7 +794,6 @@ fn test_nulls_int32_empty() {
     assert_eq!(view.data_type().unwrap().id(), TypeId::Int32);
 }
 
-#[test]
 fn test_nulls_int64() {
     let col = crate::common::null_column(TypeId::Int64, 100).unwrap();
     let view = col.testing_view().unwrap();
@@ -859,7 +803,6 @@ fn test_nulls_int64() {
     assert!(validity.iter().all(|&v| !v));
 }
 
-#[test]
 fn test_nulls_float32() {
     let col = crate::common::null_column(TypeId::Float32, 50).unwrap();
     let view = col.testing_view().unwrap();
@@ -869,7 +812,6 @@ fn test_nulls_float32() {
     assert!(validity.iter().all(|&v| !v));
 }
 
-#[test]
 fn test_nulls_bool8() {
     let col = crate::common::null_column(TypeId::Bool8, 10).unwrap();
     let view = col.testing_view().unwrap();
@@ -877,7 +819,6 @@ fn test_nulls_bool8() {
     assert_eq!(view.null_count().unwrap(), 10);
 }
 
-#[test]
 fn test_nulls_string() {
     let col = crate::common::null_column(TypeId::String, 25).unwrap();
     let view = col.testing_view().unwrap();
@@ -886,7 +827,6 @@ fn test_nulls_string() {
     assert_eq!(view.data_type().unwrap().id(), TypeId::String);
 }
 
-#[test]
 fn test_nulls_decimal64_preserve_scale() {
     let dtype = DataType::fixed_point(TypeId::Decimal64, -2).unwrap();
     let col = crate::common::null_column(dtype, 5).unwrap();
@@ -896,7 +836,6 @@ fn test_nulls_decimal64_preserve_scale() {
     assert_eq!(view.data_type().unwrap(), dtype);
 }
 
-#[test]
 fn test_nulls_preserves_type() {
     for type_id in [
         TypeId::Int8,
@@ -914,7 +853,6 @@ fn test_nulls_preserves_type() {
     }
 }
 
-#[test]
 fn test_nulls_rejects_length_over_i32_max() {
     let result = crate::common::null_column(TypeId::Int8, (i32::MAX as usize) + 1);
     assert!(result.is_err());
@@ -932,7 +870,6 @@ fn test_nulls_rejects_length_over_i32_max() {
     assert_eq!(error_context_value(&err, "row_count").as_deref(), Some(expected.as_str()));
 }
 
-#[test]
 fn test_nulls_rejects_list_type_with_stable_contract() {
     let err = crate::common::null_column(TypeId::List, 5).expect_err("expected List null-column construction to fail");
 
@@ -945,4 +882,112 @@ fn test_nulls_rejects_list_type_with_stable_contract() {
         error_context_value(&err, "remedy").as_deref(),
         Some("use a fixed-width type or STRING when constructing an all-null column"),
     );
+}
+
+#[test]
+fn column_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_create_empty_column", test_create_empty_column),
+        ("test_create_empty_decimal_column_preserves_scale", test_create_empty_decimal_column_preserves_scale),
+        ("test_create_i32_column", test_create_i32_column),
+        ("test_create_f64_column", test_create_f64_column),
+        ("test_nullable_column", test_nullable_column),
+        ("test_to_optional_vec_all_valid", test_to_optional_vec_all_valid),
+        ("test_to_optional_vec_with_nulls", test_to_optional_vec_with_nulls),
+        ("test_to_optional_vec_bool_with_nulls", test_to_optional_vec_bool_with_nulls),
+        ("test_to_optional_vec_type_mismatch_error", test_to_optional_vec_type_mismatch_error),
+        ("test_column_deep_copy", test_column_deep_copy),
+        ("test_type_mismatch_error", test_type_mismatch_error),
+        ("test_u8_column", test_u8_column),
+        ("test_mismatched_validity_length", test_mismatched_validity_length),
+        ("test_to_host_validity_none_for_non_nullable_column", test_to_host_validity_none_for_non_nullable_column),
+        (
+            "test_to_host_validity_for_sliced_nullable_column_is_normalized_to_slice",
+            test_to_host_validity_for_sliced_nullable_column_is_normalized_to_slice,
+        ),
+        (
+            "test_testing_slice_view_uses_column_execution_domain_execution_resources",
+            test_testing_slice_view_uses_column_execution_domain_execution_resources,
+        ),
+        (
+            "test_to_vec_for_sliced_view_starts_at_sliced_element_offset",
+            test_to_vec_for_sliced_view_starts_at_sliced_element_offset,
+        ),
+        (
+            "test_to_optional_vec_for_sliced_nullable_view_starts_at_sliced_element_offset",
+            test_to_optional_vec_for_sliced_nullable_view_starts_at_sliced_element_offset,
+        ),
+        (
+            "test_to_host_null_mask_bytes_for_sliced_nullable_column_is_packed_to_active_range",
+            test_to_host_null_mask_bytes_for_sliced_nullable_column_is_packed_to_active_range,
+        ),
+        ("test_various_numeric_types", test_various_numeric_types),
+        ("test_device_data_ptr_i32", test_device_data_ptr_i32),
+        ("test_device_data_ptr_f64", test_device_data_ptr_f64),
+        ("test_device_data_ptr_consistent_with_to_vec", test_device_data_ptr_consistent_with_to_vec),
+        ("test_offset_for_non_sliced_column", test_offset_for_non_sliced_column),
+        ("test_device_data_ptr_empty_column", test_device_data_ptr_empty_column),
+        (
+            "test_child_rejects_out_of_bounds_index_without_segfault",
+            test_child_rejects_out_of_bounds_index_without_segfault,
+        ),
+        (
+            "test_column_device_slice_type_mismatch_uses_canonical_type_context",
+            test_column_device_slice_type_mismatch_uses_canonical_type_context,
+        ),
+        ("test_child_rejects_usize_indices_outside_i32_range", test_child_rejects_usize_indices_outside_i32_range),
+        (
+            "test_testing_slice_view_rejects_start_over_i32_max_with_row_range_contract",
+            test_testing_slice_view_rejects_start_over_i32_max_with_row_range_contract,
+        ),
+        (
+            "test_testing_slice_view_rejects_row_count_over_i32_max_with_canonical_vocabulary",
+            test_testing_slice_view_rejects_row_count_over_i32_max_with_canonical_vocabulary,
+        ),
+        (
+            "test_testing_slice_view_rejects_end_overflow_with_row_range_context",
+            test_testing_slice_view_rejects_end_overflow_with_row_range_context,
+        ),
+        (
+            "test_fixed_width_host_byte_range_overflow_hook_uses_row_count_contract",
+            test_fixed_width_host_byte_range_overflow_hook_uses_row_count_contract,
+        ),
+        ("test_core_domain_modules_export_documented_surface", test_core_domain_modules_export_documented_surface),
+        ("test_device_slice_stays_under_core_domain_module", test_device_slice_stays_under_core_domain_module),
+        ("test_device_slice_is_reexported_at_crate_root", test_device_slice_is_reexported_at_crate_root),
+        ("test_device_slice_i32", test_device_slice_i32),
+        ("test_device_slice_f64", test_device_slice_f64),
+        ("test_device_slice_type_mismatch", test_device_slice_type_mismatch),
+        (
+            "test_to_raw_bytes_rejects_non_byte_type_with_stable_contract",
+            test_to_raw_bytes_rejects_non_byte_type_with_stable_contract,
+        ),
+        (
+            "test_to_fixed_width_host_bytes_rejects_string_type_with_stable_contract",
+            test_to_fixed_width_host_bytes_rejects_string_type_with_stable_contract,
+        ),
+        ("test_device_slice_split_at", test_device_slice_split_at),
+        ("test_device_slice_split_at_zero", test_device_slice_split_at_zero),
+        ("test_device_slice_split_at_end", test_device_slice_split_at_end),
+        ("test_device_slice_empty_column", test_device_slice_empty_column),
+        ("test_device_slice_from_dictionary_indices", test_device_slice_from_dictionary_indices),
+        ("test_from_device_ptr_i32_roundtrip", test_from_device_ptr_i32_roundtrip),
+        ("test_from_device_ptr_f64_roundtrip", test_from_device_ptr_f64_roundtrip),
+        ("test_from_device_ptr_i64_roundtrip", test_from_device_ptr_i64_roundtrip),
+        ("test_from_device_ptr_independent_of_source", test_from_device_ptr_independent_of_source),
+        ("test_from_device_ptr_empty", test_from_device_ptr_empty),
+        ("test_from_device_ptr_null_pointer_with_zero_len", test_from_device_ptr_null_pointer_with_zero_len),
+        ("test_from_device_ptr_null_pointer_with_nonzero_len", test_from_device_ptr_null_pointer_with_nonzero_len),
+        ("test_from_device_ptr_various_types", test_from_device_ptr_various_types),
+        ("test_from_device_ptr_rejects_non_fixed_width_type", test_from_device_ptr_rejects_non_fixed_width_type),
+        ("test_nulls_int32_empty", test_nulls_int32_empty),
+        ("test_nulls_int64", test_nulls_int64),
+        ("test_nulls_float32", test_nulls_float32),
+        ("test_nulls_bool8", test_nulls_bool8),
+        ("test_nulls_string", test_nulls_string),
+        ("test_nulls_decimal64_preserve_scale", test_nulls_decimal64_preserve_scale),
+        ("test_nulls_preserves_type", test_nulls_preserves_type),
+        ("test_nulls_rejects_length_over_i32_max", test_nulls_rejects_length_over_i32_max),
+        ("test_nulls_rejects_list_type_with_stable_contract", test_nulls_rejects_list_type_with_stable_contract),
+    ]);
 }

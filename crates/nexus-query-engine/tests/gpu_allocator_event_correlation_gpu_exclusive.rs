@@ -1,3 +1,6 @@
+//! Establishes real physical device memory pressure to exercise overlapping
+//! query domains, so it runs alone.
+
 use std::{
     sync::{Arc, Barrier},
     time::{Duration, Instant},

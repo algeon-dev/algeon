@@ -59,7 +59,6 @@ fn sorted_i32_i64_rows(df: &DataFrame, left: &str, right: &str) -> Vec<(i32, i64
     rows
 }
 
-#[test]
 fn runtime_and_execution_context_are_public_and_send_sync() {
     assert_send_sync::<Runtime>();
     assert_send_sync::<ExecutionOverrides<'static>>();
@@ -68,7 +67,6 @@ fn runtime_and_execution_context_are_public_and_send_sync() {
     let _ctx = ExecutionOverrides::new().with_stream(rt.stream()).with_memory_resource(rt.memory_resource());
 }
 
-#[test]
 fn runtime_builder_and_factory_families_seed_runtime_exec_contracts() {
     let current_device = DeviceId::current().unwrap();
     let via_new = Runtime::new().unwrap();
@@ -161,7 +159,6 @@ fn runtime_builder_and_factory_families_seed_runtime_exec_contracts() {
     assert_eq!(empty_df.num_rows(), 0);
 }
 
-#[test]
 fn runtime_builder_pool_memory_resource_and_explicit_mr_setters_use_last_call_wins() {
     let device = DeviceId::current().unwrap();
 
@@ -194,7 +191,6 @@ fn runtime_builder_pool_memory_resource_and_explicit_mr_setters_use_last_call_wi
     );
 }
 
-#[test]
 fn device_memory_resource_explicit_device_constructors_report_requested_device() {
     let device = DeviceId::current().unwrap();
 
@@ -214,7 +210,6 @@ fn device_memory_resource_explicit_device_constructors_report_requested_device()
     );
 }
 
-#[test]
 fn dataframe_in_context_routes_representative_operation_families_through_context_exec() {
     let _event_observation = lock_event_observation();
     let data_rt = sample_runtime();
@@ -336,7 +331,6 @@ fn dataframe_in_context_routes_representative_operation_families_through_context
     assert_eq!(str_with_columns.series("has_a").unwrap().to_vec_strict::<bool>().unwrap(), vec![true, false, true]);
 }
 
-#[test]
 fn series_explicit_context_methods_route_representative_operation_families_through_context_exec() {
     let _event_observation = lock_event_observation();
     let data_rt = sample_runtime();
@@ -395,7 +389,6 @@ fn series_explicit_context_methods_route_representative_operation_families_throu
     assert_eq!(contains.to_optional_vec::<bool>().unwrap(), vec![Some(true), Some(false), None, Some(true)]);
 }
 
-#[test]
 fn explicit_context_methods_accept_runtime_seeded_dataframe_and_series() {
     let series = crate::common::series::<i32>("id", &[3, 1, 2]).unwrap();
     let df = DataFrame::from_series([("id", series.clone())]).unwrap();
@@ -411,7 +404,6 @@ fn explicit_context_methods_accept_runtime_seeded_dataframe_and_series() {
     assert_eq!(sorted_df.testing_execution_domain_kind(), "explicit");
 }
 
-#[test]
 fn explicit_runtime_operations_use_explicit_domain_only() {
     let rt = sample_runtime();
     let df = DataFrame::from_series([
@@ -426,7 +418,6 @@ fn explicit_runtime_operations_use_explicit_domain_only() {
     assert_eq!(sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![1, 2, 3]);
 }
 
-#[test]
 fn runtime_seeded_readers_use_runtime_stream() {
     let dir = TempDir::new().unwrap();
 
@@ -453,7 +444,6 @@ fn runtime_seeded_readers_use_runtime_stream() {
     assert_eq!(parquet_df.column_names(), vec!["id", "value"]);
 }
 
-#[test]
 fn write_options_and_runtime_overrides_use_expected_runtime() {
     let dir = TempDir::new().unwrap();
     let parquet_path = dir.path().join("runtime_write.parquet");
@@ -480,7 +470,6 @@ fn write_options_and_runtime_overrides_use_expected_runtime() {
     assert_eq!(last_sync_stream_value(), target_rt.stream().testing_raw_handle_value());
 }
 
-#[test]
 fn copy_into_runtime_preserves_target_residency_and_reuses_allocation_when_possible() {
     let source_rt = sample_runtime();
     let target_rt = sample_runtime();
@@ -522,7 +511,6 @@ fn copy_into_runtime_preserves_target_residency_and_reuses_allocation_when_possi
     assert_eq!(series_device_ptr(&reused), series_device_ptr(&copied_series));
 }
 
-#[test]
 fn in_context_override_and_copy_into_runtime_keep_distinct_mixed_domain_semantics() {
     let left_rt = sample_runtime();
     let right_rt = sample_runtime();
@@ -564,7 +552,6 @@ fn in_context_override_and_copy_into_runtime_keep_distinct_mixed_domain_semantic
     assert_eq!(merged_after_copy.series("score").unwrap().to_vec_strict::<i32>().unwrap(), vec![200, 300]);
 }
 
-#[test]
 fn schema_only_assign_after_copy_into_runtime_preserves_target_residency() {
     let base_rt = sample_runtime();
     let extra_rt = sample_runtime();
@@ -639,7 +626,6 @@ fn assert_budget_report_high_water(report: &cudf::ExecutionBudgetReport, retaine
     );
 }
 
-#[test]
 fn device_memory_resource_budget_tracking_usage_rejects_non_tracking_resource() {
     let mr = DeviceMemoryResource::cuda().unwrap();
     let err = mr.budget_tracking_usage().expect_err("plain CUDA MR should not expose budget tracking usage");
@@ -648,7 +634,6 @@ fn device_memory_resource_budget_tracking_usage_rejects_non_tracking_resource() 
     assert_eq!(err.operation(), "memory::device_memory_resource::budget_tracking_usage");
 }
 
-#[test]
 fn runtime_series_from_scalar_with_budget_reports_output_and_routes_allocator() {
     let runtime = sample_runtime();
     let scalar = runtime.scalar(42i32).unwrap();
@@ -688,7 +673,6 @@ fn runtime_series_from_scalar_with_budget_reports_output_and_routes_allocator() 
     assert!(usage.peak_aligned_bytes <= report.request().budget_bytes() as u64);
 }
 
-#[test]
 fn runtime_series_from_value_with_budget_reports_output_and_routes_allocator() {
     let runtime = sample_runtime();
     let token = runtime
@@ -722,7 +706,6 @@ fn runtime_series_from_value_with_budget_reports_output_and_routes_allocator() {
     assert_eq!(report.output_rows(), Some(4));
 }
 
-#[test]
 fn runtime_nulls_with_budget_reports_output_and_routes_allocator() {
     let runtime = sample_runtime();
     let token = runtime
@@ -751,7 +734,6 @@ fn runtime_nulls_with_budget_reports_output_and_routes_allocator() {
     assert_eq!(report.output_rows(), Some(4));
 }
 
-#[test]
 fn runtime_nulls_with_budget_decimal_scale_routes_allocator() {
     let runtime = sample_runtime();
     let token = runtime
@@ -775,7 +757,6 @@ fn runtime_nulls_with_budget_decimal_scale_routes_allocator() {
     assert_all_observed_exec_mrs_are_manager_mr(&token);
 }
 
-#[test]
 fn runtime_column_from_scalar_with_budget_reports_output_and_routes_allocator() {
     let runtime = sample_runtime();
     let scalar = runtime.scalar(42i32).unwrap();
@@ -803,7 +784,6 @@ fn runtime_column_from_scalar_with_budget_reports_output_and_routes_allocator() 
     assert_eq!(report.output_rows(), Some(4));
 }
 
-#[test]
 fn runtime_series_from_scalar_with_budget_reports_exceeded_budget_details() {
     let runtime = sample_runtime();
     let scalar = runtime.scalar(42i32).unwrap();
@@ -837,7 +817,6 @@ fn runtime_series_from_scalar_with_budget_reports_exceeded_budget_details() {
     assert!(error_context_value(&err, "budget_largest_failed_allocation_bytes").is_some());
 }
 
-#[test]
 fn runtime_series_from_value_with_budget_reports_exceeded_budget_details() {
     let runtime = sample_runtime();
     let token = runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("value_series")).unwrap();
@@ -859,7 +838,6 @@ fn runtime_series_from_value_with_budget_reports_exceeded_budget_details() {
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
 }
 
-#[test]
 fn runtime_nulls_with_budget_reports_exceeded_budget_details() {
     let runtime = sample_runtime();
     let token = runtime.execution_budget_token(ExecutionBudgetRequest::new(1).with_boundary("null_series")).unwrap();
@@ -878,7 +856,6 @@ fn runtime_nulls_with_budget_reports_exceeded_budget_details() {
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
 }
 
-#[test]
 fn runtime_column_from_scalar_with_budget_reports_exceeded_budget_details() {
     let runtime = sample_runtime();
     let scalar = runtime.scalar(42i32).unwrap();
@@ -899,4 +876,96 @@ fn runtime_column_from_scalar_with_budget_reports_exceeded_budget_details() {
     assert_eq!(error_context_value(&err, "budget_bytes").as_deref(), Some("1"));
     assert_eq!(error_context_value(&err, "budget_enforcement").as_deref(), Some("stream_bound_reservation"));
     assert_eq!(error_context_value(&err, "budget_status").as_deref(), Some("exceeded_or_lower_layer_rejected"));
+}
+
+#[test]
+fn runtime_v1_public_api_tests_cases() {
+    crate::common::run_named_cases(&[
+        (
+            "runtime_and_execution_context_are_public_and_send_sync",
+            runtime_and_execution_context_are_public_and_send_sync,
+        ),
+        (
+            "runtime_builder_and_factory_families_seed_runtime_exec_contracts",
+            runtime_builder_and_factory_families_seed_runtime_exec_contracts,
+        ),
+        (
+            "runtime_builder_pool_memory_resource_and_explicit_mr_setters_use_last_call_wins",
+            runtime_builder_pool_memory_resource_and_explicit_mr_setters_use_last_call_wins,
+        ),
+        (
+            "device_memory_resource_explicit_device_constructors_report_requested_device",
+            device_memory_resource_explicit_device_constructors_report_requested_device,
+        ),
+        (
+            "dataframe_in_context_routes_representative_operation_families_through_context_exec",
+            dataframe_in_context_routes_representative_operation_families_through_context_exec,
+        ),
+        (
+            "series_explicit_context_methods_route_representative_operation_families_through_context_exec",
+            series_explicit_context_methods_route_representative_operation_families_through_context_exec,
+        ),
+        (
+            "explicit_context_methods_accept_runtime_seeded_dataframe_and_series",
+            explicit_context_methods_accept_runtime_seeded_dataframe_and_series,
+        ),
+        ("explicit_runtime_operations_use_explicit_domain_only", explicit_runtime_operations_use_explicit_domain_only),
+        ("runtime_seeded_readers_use_runtime_stream", runtime_seeded_readers_use_runtime_stream),
+        (
+            "write_options_and_runtime_overrides_use_expected_runtime",
+            write_options_and_runtime_overrides_use_expected_runtime,
+        ),
+        (
+            "copy_into_runtime_preserves_target_residency_and_reuses_allocation_when_possible",
+            copy_into_runtime_preserves_target_residency_and_reuses_allocation_when_possible,
+        ),
+        (
+            "in_context_override_and_copy_into_runtime_keep_distinct_mixed_domain_semantics",
+            in_context_override_and_copy_into_runtime_keep_distinct_mixed_domain_semantics,
+        ),
+        (
+            "schema_only_assign_after_copy_into_runtime_preserves_target_residency",
+            schema_only_assign_after_copy_into_runtime_preserves_target_residency,
+        ),
+        (
+            "device_memory_resource_budget_tracking_usage_rejects_non_tracking_resource",
+            device_memory_resource_budget_tracking_usage_rejects_non_tracking_resource,
+        ),
+        (
+            "runtime_series_from_scalar_with_budget_reports_output_and_routes_allocator",
+            runtime_series_from_scalar_with_budget_reports_output_and_routes_allocator,
+        ),
+        (
+            "runtime_series_from_value_with_budget_reports_output_and_routes_allocator",
+            runtime_series_from_value_with_budget_reports_output_and_routes_allocator,
+        ),
+        (
+            "runtime_nulls_with_budget_reports_output_and_routes_allocator",
+            runtime_nulls_with_budget_reports_output_and_routes_allocator,
+        ),
+        (
+            "runtime_nulls_with_budget_decimal_scale_routes_allocator",
+            runtime_nulls_with_budget_decimal_scale_routes_allocator,
+        ),
+        (
+            "runtime_column_from_scalar_with_budget_reports_output_and_routes_allocator",
+            runtime_column_from_scalar_with_budget_reports_output_and_routes_allocator,
+        ),
+        (
+            "runtime_series_from_scalar_with_budget_reports_exceeded_budget_details",
+            runtime_series_from_scalar_with_budget_reports_exceeded_budget_details,
+        ),
+        (
+            "runtime_series_from_value_with_budget_reports_exceeded_budget_details",
+            runtime_series_from_value_with_budget_reports_exceeded_budget_details,
+        ),
+        (
+            "runtime_nulls_with_budget_reports_exceeded_budget_details",
+            runtime_nulls_with_budget_reports_exceeded_budget_details,
+        ),
+        (
+            "runtime_column_from_scalar_with_budget_reports_exceeded_budget_details",
+            runtime_column_from_scalar_with_budget_reports_exceeded_budget_details,
+        ),
+    ]);
 }

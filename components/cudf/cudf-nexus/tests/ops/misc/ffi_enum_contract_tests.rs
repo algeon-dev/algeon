@@ -4,7 +4,6 @@ use cudf::{
 };
 use cudf_sys::*;
 
-#[test]
 fn public_unary_operator_discriminants_match_ffi_contract() {
     let pairs = [
         (UnaryOperator::Sin as i32, CUDF_UNARY_SIN as i32),
@@ -38,7 +37,6 @@ fn public_unary_operator_discriminants_match_ffi_contract() {
     }
 }
 
-#[test]
 fn public_binary_operator_discriminants_match_ffi_contract() {
     let pairs = [
         (BinaryOperator::Add as i32, CUDF_BINARY_ADD as i32),
@@ -81,7 +79,6 @@ fn public_binary_operator_discriminants_match_ffi_contract() {
     }
 }
 
-#[test]
 fn public_auxiliary_enum_discriminants_match_ffi_contract() {
     let null_policy_pairs = [
         (NullPolicy::Exclude as i32, CUDF_NULL_POLICY_EXCLUDE as i32),
@@ -141,4 +138,22 @@ fn public_auxiliary_enum_discriminants_match_ffi_contract() {
     for (public_value, ffi_value) in nan_equality_pairs {
         assert_eq!(public_value, ffi_value);
     }
+}
+
+#[test]
+fn ffi_enum_contract_tests_cases() {
+    crate::common::run_named_cases(&[
+        (
+            "public_unary_operator_discriminants_match_ffi_contract",
+            public_unary_operator_discriminants_match_ffi_contract,
+        ),
+        (
+            "public_binary_operator_discriminants_match_ffi_contract",
+            public_binary_operator_discriminants_match_ffi_contract,
+        ),
+        (
+            "public_auxiliary_enum_discriminants_match_ffi_contract",
+            public_auxiliary_enum_discriminants_match_ffi_contract,
+        ),
+    ]);
 }

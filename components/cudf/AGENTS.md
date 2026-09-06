@@ -43,9 +43,7 @@ over libcudf. Query planning and runtime ownership follow the root
 cargo clippy -p cudf-nexus -p cudf-nexus-sys -p rapids-interop \
   --all-targets --all-features -- -D warnings
 cargo +nightly fmt --all --check
-flock /tmp/cudf-gpu.lock cargo nextest run \
-  -p cudf-nexus -p cudf-nexus-sys -p rapids-interop \
-  --all-features --no-fail-fast
+cargo nt -E 'package(cudf-nexus) | package(cudf-nexus-sys) | package(rapids-interop)'
 ```
 
 Run focused checks first, then broaden validation with the change's blast

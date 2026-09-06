@@ -2,13 +2,11 @@
 
 use cudf::{DataFrame, DeviceId, Runtime, SortOptions};
 
-#[test]
 fn runtime_device_accessor_returns_build_device() {
     let rt = Runtime::builder().with_device(DeviceId::new(0).unwrap()).build().unwrap();
     assert_eq!(rt.device(), DeviceId::new(0).unwrap());
 }
 
-#[test]
 fn dataframe_ops_with_device_runtime() {
     let _rt = Runtime::builder().with_device(DeviceId::new(0).unwrap()).build().unwrap();
 
@@ -20,4 +18,12 @@ fn dataframe_ops_with_device_runtime() {
     let sorted = df.sort_values(["id"], SortOptions::new()).unwrap();
     let result: Vec<i32> = sorted.series("id").unwrap().to_vec_strict::<i32>().unwrap();
     assert_eq!(result, vec![1, 1, 3, 4, 5]);
+}
+
+#[test]
+fn runtime_device_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("runtime_device_accessor_returns_build_device", runtime_device_accessor_returns_build_device),
+        ("dataframe_ops_with_device_runtime", dataframe_ops_with_device_runtime),
+    ]);
 }

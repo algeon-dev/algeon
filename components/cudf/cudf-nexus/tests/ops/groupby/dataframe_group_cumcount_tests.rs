@@ -12,7 +12,6 @@ fn assert_group_cumcount_validation_error(err: &cudf::Error, operation: &str, re
     assert_eq!(error_context_value(err, "remedy").as_deref(), Some(remedy));
 }
 
-#[test]
 fn group_cumcount_returns_zero_based_positions_for_each_sorted_group() {
     let runtime = sample_runtime();
     let edges = DataFrame::from_series([
@@ -33,7 +32,6 @@ fn group_cumcount_returns_zero_based_positions_for_each_sorted_group() {
     assert_eq!(rank.to_vec_strict::<i32>().unwrap(), vec![0, 1, 2, 0, 1, 0]);
 }
 
-#[test]
 fn group_cumcount_supports_multi_column_group_keys() {
     let runtime = sample_runtime();
     let df = DataFrame::from_series([
@@ -48,7 +46,6 @@ fn group_cumcount_supports_multi_column_group_keys() {
     assert_eq!(rank.to_vec_strict::<i32>().unwrap(), vec![0, 1, 0, 0, 1, 0]);
 }
 
-#[test]
 fn group_cumcount_rejects_empty_group_keys_with_stable_contract() {
     let runtime = sample_runtime();
     let df = DataFrame::from_series([
@@ -65,4 +62,19 @@ fn group_cumcount_rejects_empty_group_keys_with_stable_contract() {
         "empty_group_keys",
         "provide at least one group key column",
     );
+}
+
+#[test]
+fn dataframe_group_cumcount_tests_cases() {
+    crate::common::run_named_cases(&[
+        (
+            "group_cumcount_returns_zero_based_positions_for_each_sorted_group",
+            group_cumcount_returns_zero_based_positions_for_each_sorted_group,
+        ),
+        ("group_cumcount_supports_multi_column_group_keys", group_cumcount_supports_multi_column_group_keys),
+        (
+            "group_cumcount_rejects_empty_group_keys_with_stable_contract",
+            group_cumcount_rejects_empty_group_keys_with_stable_contract,
+        ),
+    ]);
 }

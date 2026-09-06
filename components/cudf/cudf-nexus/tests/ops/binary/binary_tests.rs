@@ -11,7 +11,6 @@ use crate::common::{
     last_exec_stream_value, last_sync_stream_value, reset_exec_observation, reset_sync_observation, scalar,
 };
 
-#[test]
 fn test_add_column_column() {
     let a = column_from_slice(&[1i32, 2, 3]).unwrap();
     let b = column_from_slice(&[10i32, 20, 30]).unwrap();
@@ -24,7 +23,6 @@ fn test_add_column_column() {
     assert_eq!(values, vec![11, 22, 33]);
 }
 
-#[test]
 fn test_mul_column_scalar() {
     let col = column_from_slice(&[2i32, 3, 4]).unwrap();
     let scalar = scalar(10i32).unwrap();
@@ -36,7 +34,6 @@ fn test_mul_column_scalar() {
     assert_eq!(values, vec![20, 30, 40]);
 }
 
-#[test]
 fn test_div_scalar_column() {
     let scalar = scalar(100.0f64).unwrap();
     let col = column_from_slice(&[2.0f64, 4.0, 5.0]).unwrap();
@@ -49,7 +46,6 @@ fn test_div_scalar_column() {
     assert_eq!(values, vec![50.0, 25.0, 20.0]);
 }
 
-#[test]
 fn test_comparison() {
     let a = column_from_slice(&[1i32, 2, 3]).unwrap();
     let b = column_from_slice(&[2i32, 2, 1]).unwrap();
@@ -62,7 +58,6 @@ fn test_comparison() {
     assert_eq!(values, vec![true, false, false]);
 }
 
-#[test]
 fn test_binary_operation_error_contains_operation_context() {
     let a = column_from_slice(&[1i32, 2, 3]).unwrap();
     let b = column_from_slice(&[10i32, 20]).unwrap(); // mismatched length
@@ -76,7 +71,6 @@ fn test_binary_operation_error_contains_operation_context() {
     assert!(err.details().iter().any(|(k, _)| *k == "operator"));
 }
 
-#[test]
 fn test_logical_and() {
     let a = column_from_slice(&[true, true, false, false]).unwrap();
     let b = column_from_slice(&[true, false, true, false]).unwrap();
@@ -90,7 +84,6 @@ fn test_logical_and() {
     assert_eq!(values, vec![true, false, false, false]);
 }
 
-#[test]
 fn test_null_logical_or_uses_sql_three_valued_logic() {
     // Rows pair LHS x RHS over {true, false, null}:
     //   (T,T) (T,F) (T,N) (F,T) (F,F) (F,N) (N,T) (N,F) (N,N)
@@ -114,7 +107,6 @@ fn test_null_logical_or_uses_sql_three_valued_logic() {
     );
 }
 
-#[test]
 fn test_null_logical_and_uses_sql_three_valued_logic() {
     // Rows pair LHS x RHS over {true, false, null}:
     //   (T,T) (T,F) (T,N) (F,T) (F,F) (F,N) (N,T) (N,F) (N,N)
@@ -138,7 +130,6 @@ fn test_null_logical_and_uses_sql_three_valued_logic() {
     );
 }
 
-#[test]
 fn test_mixed_domain_binary_operation_vv_uses_lhs_provenance() {
     let lhs = explicit_i32_column(&[1, 2, 3], 900);
     let rhs = explicit_i32_column(&[10, 20, 30], 901);
@@ -164,7 +155,6 @@ fn test_mixed_domain_binary_operation_vv_uses_lhs_provenance() {
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
-#[test]
 fn test_mixed_domain_binary_operation_vs_uses_column_provenance() {
     let lhs = explicit_i32_column(&[2, 3, 4], 902);
     let rhs = scalar(10i32).unwrap().testing_rebind_execution_domain_explicit(903).unwrap();
@@ -190,7 +180,6 @@ fn test_mixed_domain_binary_operation_vs_uses_column_provenance() {
     assert_eq!(last_sync_stream_value(), expected_stream);
 }
 
-#[test]
 fn test_mixed_domain_binary_operation_sv_uses_column_provenance() {
     let lhs = scalar(100i32).unwrap().testing_rebind_execution_domain_explicit(904).unwrap();
     let rhs = explicit_i32_column(&[2, 4, 5], 905);
@@ -220,7 +209,6 @@ fn test_mixed_domain_binary_operation_sv_uses_column_provenance() {
 // String comparison: column vs column
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_string_equal_vv() {
     let a = column_from_strs(&["foo", "bar", "baz"]).unwrap();
     let b = column_from_strs(&["foo", "bar", "qux"]).unwrap();
@@ -232,7 +220,6 @@ fn test_string_equal_vv() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, true, false]);
 }
 
-#[test]
 fn test_string_not_equal_vv() {
     let a = column_from_strs(&["foo", "bar", "baz"]).unwrap();
     let b = column_from_strs(&["foo", "bar", "qux"]).unwrap();
@@ -245,7 +232,6 @@ fn test_string_not_equal_vv() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, false, true]);
 }
 
-#[test]
 fn test_string_less_vv() {
     let a = column_from_strs(&["apple", "cherry", "banana"]).unwrap();
     let b = column_from_strs(&["banana", "banana", "banana"]).unwrap();
@@ -258,7 +244,6 @@ fn test_string_less_vv() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
 }
 
-#[test]
 fn test_string_greater_vv() {
     let a = column_from_strs(&["apple", "cherry", "banana"]).unwrap();
     let b = column_from_strs(&["banana", "banana", "banana"]).unwrap();
@@ -271,7 +256,6 @@ fn test_string_greater_vv() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
 }
 
-#[test]
 fn test_string_less_equal_vv() {
     let a = column_from_strs(&["apple", "banana", "cherry"]).unwrap();
     let b = column_from_strs(&["banana", "banana", "banana"]).unwrap();
@@ -285,7 +269,6 @@ fn test_string_less_equal_vv() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, true, false]);
 }
 
-#[test]
 fn test_string_greater_equal_vv() {
     let a = column_from_strs(&["apple", "banana", "cherry"]).unwrap();
     let b = column_from_strs(&["banana", "banana", "banana"]).unwrap();
@@ -303,7 +286,6 @@ fn test_string_greater_equal_vv() {
 // String comparison: column vs scalar
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_string_equal_vs() {
     let col = column_from_strs(&["active", "inactive", "active"]).unwrap();
     let scalar = crate::common::string_scalar("active").unwrap();
@@ -315,7 +297,6 @@ fn test_string_equal_vs() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, true]);
 }
 
-#[test]
 fn test_string_not_equal_vs() {
     let col = column_from_strs(&["active", "inactive", "active"]).unwrap();
     let scalar = crate::common::string_scalar("active").unwrap();
@@ -327,7 +308,6 @@ fn test_string_not_equal_vs() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
 }
 
-#[test]
 fn test_string_less_vs() {
     let col = column_from_strs(&["apple", "cherry", "banana"]).unwrap();
     let scalar = crate::common::string_scalar("banana").unwrap();
@@ -340,7 +320,6 @@ fn test_string_less_vs() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
 }
 
-#[test]
 fn test_string_greater_vs() {
     let col = column_from_strs(&["apple", "cherry", "banana"]).unwrap();
     let scalar = crate::common::string_scalar("banana").unwrap();
@@ -353,7 +332,6 @@ fn test_string_greater_vs() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
 }
 
-#[test]
 fn test_string_less_equal_vs() {
     let col = column_from_strs(&["apple", "banana", "cherry"]).unwrap();
     let scalar = crate::common::string_scalar("banana").unwrap();
@@ -366,7 +344,6 @@ fn test_string_less_equal_vs() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, true, false]);
 }
 
-#[test]
 fn test_string_greater_equal_vs() {
     let col = column_from_strs(&["apple", "banana", "cherry"]).unwrap();
     let scalar = crate::common::string_scalar("banana").unwrap();
@@ -383,7 +360,6 @@ fn test_string_greater_equal_vs() {
 // String edge cases
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_string_equal_empty() {
     let a = column_from_strs(&["", "hello", ""]).unwrap();
     let b = column_from_strs(&["", "", "hello"]).unwrap();
@@ -395,7 +371,6 @@ fn test_string_equal_empty() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
 }
 
-#[test]
 fn test_string_equal_case_sensitive() {
     let a = column_from_strs(&["Foo", "BAR", "baz"]).unwrap();
     let b = column_from_strs(&["foo", "bar", "baz"]).unwrap();
@@ -412,7 +387,6 @@ fn test_string_equal_case_sensitive() {
 // String arithmetic errors
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_string_add_vv_error() {
     let a = column_from_strs(&["foo", "bar"]).unwrap();
     let b = column_from_strs(&["baz", "qux"]).unwrap();
@@ -423,7 +397,6 @@ fn test_string_add_vv_error() {
     assert!(result.is_err());
 }
 
-#[test]
 fn test_string_sub_vs_error() {
     let col = column_from_strs(&["foo", "bar"]).unwrap();
     let scalar = crate::common::string_scalar("baz").unwrap();
@@ -437,7 +410,6 @@ fn test_string_sub_vs_error() {
 // BinaryOperator::is_comparison
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_is_comparison_true_for_comparison_ops() {
     assert!(BinaryOperator::Equal.is_comparison());
     assert!(BinaryOperator::NotEqual.is_comparison());
@@ -449,7 +421,6 @@ fn test_is_comparison_true_for_comparison_ops() {
     assert!(BinaryOperator::NullNotEquals.is_comparison());
 }
 
-#[test]
 fn test_is_comparison_false_for_arithmetic_ops() {
     assert!(!BinaryOperator::Add.is_comparison());
     assert!(!BinaryOperator::Sub.is_comparison());
@@ -520,42 +491,36 @@ fn assert_type_mismatch_facts(err: &cudf::Error, operation: &str, lhs: TypeId, r
     assert_eq!(err.detail_value("operator"), Some(operator_name(op)));
 }
 
-#[test]
 fn test_infer_same_type_arithmetic() {
     // Int32 + Int32 → Int32
     let dt = binary::infer_binary_output_type(TypeId::Int32, TypeId::Int32, BinaryOperator::Add).unwrap();
     assert_eq!(dt.id(), TypeId::Int32);
 }
 
-#[test]
 fn test_infer_int_float_promotion() {
     // Int32 + Float64 → Float64
     let dt = binary::infer_binary_output_type(TypeId::Int32, TypeId::Float64, BinaryOperator::Add).unwrap();
     assert_eq!(dt.id(), TypeId::Float64);
 }
 
-#[test]
 fn test_infer_float_float_promotion() {
     // Float32 + Float64 → Float64
     let dt = binary::infer_binary_output_type(TypeId::Float32, TypeId::Float64, BinaryOperator::Mul).unwrap();
     assert_eq!(dt.id(), TypeId::Float64);
 }
 
-#[test]
 fn test_infer_int_int_promotion() {
     // Int16 + Int32 → Int32
     let dt = binary::infer_binary_output_type(TypeId::Int16, TypeId::Int32, BinaryOperator::Add).unwrap();
     assert_eq!(dt.id(), TypeId::Int32);
 }
 
-#[test]
 fn test_infer_signed_unsigned_promotion() {
     // Int32 + UInt32 → Int64
     let dt = binary::infer_binary_output_type(TypeId::Int32, TypeId::UInt32, BinaryOperator::Add).unwrap();
     assert_eq!(dt.id(), TypeId::Int64);
 }
 
-#[test]
 fn test_infer_comparison_always_bool() {
     // Any comparison op → Bool8 regardless of input types
     let dt = binary::infer_binary_output_type(TypeId::Int32, TypeId::Float64, BinaryOperator::Less).unwrap();
@@ -565,7 +530,6 @@ fn test_infer_comparison_always_bool() {
     assert_eq!(dt.id(), TypeId::Bool8);
 }
 
-#[test]
 fn test_infer_string_comparison_bool() {
     // String + String comparison → Bool8
     let dt = binary::infer_binary_output_type(TypeId::String, TypeId::String, BinaryOperator::Equal).unwrap();
@@ -575,7 +539,6 @@ fn test_infer_string_comparison_bool() {
     assert_eq!(dt.id(), TypeId::Bool8);
 }
 
-#[test]
 fn test_infer_string_arithmetic_error() {
     // String + String arithmetic → error
     let result = binary::infer_binary_output_type(TypeId::String, TypeId::String, BinaryOperator::Add);
@@ -586,14 +549,12 @@ fn test_infer_string_arithmetic_error() {
     assert_eq!(err.operation(), "binary::infer_binary_output_type");
 }
 
-#[test]
 fn test_infer_string_int_arithmetic_error() {
     // String + Int arithmetic → error
     let result = binary::infer_binary_output_type(TypeId::String, TypeId::Int32, BinaryOperator::Add);
     assert!(result.is_err());
 }
 
-#[test]
 fn test_infer_non_numeric_error() {
     // Non-numeric types (List, Struct, etc.) → error
     let result = binary::infer_binary_output_type(TypeId::List, TypeId::Int32, BinaryOperator::Add);
@@ -603,14 +564,12 @@ fn test_infer_non_numeric_error() {
     assert!(result.is_err());
 }
 
-#[test]
 fn test_infer_bool_arithmetic() {
     // Bool8 + Bool8 → Bool8
     let dt = binary::infer_binary_output_type(TypeId::Bool8, TypeId::Bool8, BinaryOperator::LogicalAnd).unwrap();
     assert_eq!(dt.id(), TypeId::Bool8);
 }
 
-#[test]
 fn test_infer_error_context_keys() {
     // Canonical type ids are facts; operator remains a diagnostic detail.
     let err = binary::infer_binary_output_type(TypeId::String, TypeId::Int32, BinaryOperator::Add).unwrap_err();
@@ -622,13 +581,11 @@ fn test_infer_error_context_keys() {
     assert_eq!(err.detail_value("operator"), Some("add"));
 }
 
-#[test]
 fn test_infer_error_operator_detail_uses_stable_snake_case() {
     let err = binary::infer_binary_output_type(TypeId::String, TypeId::String, BinaryOperator::TrueDiv).unwrap_err();
     assert_eq!(err.detail_value("operator"), Some("true_div"));
 }
 
-#[test]
 fn test_infer_decimal_same_and_mixed_scale_add_sub_dtype() {
     let same = infer_dtype(decimal64(-2), decimal64(-2), BinaryOperator::Add);
     assert_eq!(same, decimal64(-2));
@@ -640,7 +597,6 @@ fn test_infer_decimal_same_and_mixed_scale_add_sub_dtype() {
     assert_eq!(mixed_sub, decimal64(-5));
 }
 
-#[test]
 fn test_infer_decimal_mul_div_scales_dtype() {
     let product = infer_dtype(decimal64(-2), decimal64(-4), BinaryOperator::Mul);
     assert_eq!(product, decimal64(-6));
@@ -649,7 +605,6 @@ fn test_infer_decimal_mul_div_scales_dtype() {
     assert_eq!(quotient, decimal64(-4));
 }
 
-#[test]
 fn test_infer_decimal_comparison_bool() {
     let type_dt = binary::infer_binary_output_type(TypeId::Decimal64, TypeId::Decimal64, BinaryOperator::Less).unwrap();
     assert_eq!(type_dt.id(), TypeId::Bool8);
@@ -658,7 +613,6 @@ fn test_infer_decimal_comparison_bool() {
     assert_eq!(dtype_dt, DataType::new(TypeId::Bool8));
 }
 
-#[test]
 fn test_infer_mixed_resolution_temporal_comparison_bool() {
     let timestamp_dt =
         binary::infer_binary_output_type(TypeId::TimestampDays, TypeId::TimestampSeconds, BinaryOperator::Less)
@@ -674,7 +628,6 @@ fn test_infer_mixed_resolution_temporal_comparison_bool() {
     assert_eq!(duration_dt.id(), TypeId::Bool8);
 }
 
-#[test]
 fn test_infer_temporal_typeid_rules() {
     let timestamp = TypeId::TimestampMicroseconds;
     let duration = TypeId::DurationMicroseconds;
@@ -701,7 +654,6 @@ fn test_infer_temporal_typeid_rules() {
     );
 }
 
-#[test]
 fn test_infer_decimal_float_arithmetic_rejected_with_type_facts_dtype() {
     let err = binary::infer_binary_output_dtype(decimal64(-2), DataType::new(TypeId::Float64), BinaryOperator::Add)
         .unwrap_err();
@@ -715,7 +667,6 @@ fn test_infer_decimal_float_arithmetic_rejected_with_type_facts_dtype() {
     );
 }
 
-#[test]
 fn test_infer_same_resolution_timestamp_duration_arithmetic_dtype() {
     let timestamp = DataType::new(TypeId::TimestampMicroseconds);
     let duration = DataType::new(TypeId::DurationMicroseconds);
@@ -725,7 +676,6 @@ fn test_infer_same_resolution_timestamp_duration_arithmetic_dtype() {
     assert_eq!(infer_dtype(timestamp, duration, BinaryOperator::Sub), timestamp);
 }
 
-#[test]
 fn test_infer_timestamp_timestamp_subtracts_to_matching_duration_dtype() {
     let timestamp = DataType::new(TypeId::TimestampNanoseconds);
     let duration = DataType::new(TypeId::DurationNanoseconds);
@@ -733,7 +683,6 @@ fn test_infer_timestamp_timestamp_subtracts_to_matching_duration_dtype() {
     assert_eq!(infer_dtype(timestamp, timestamp, BinaryOperator::Sub), duration);
 }
 
-#[test]
 fn test_infer_duration_integer_arithmetic_preserves_duration_dtype() {
     let duration = DataType::new(TypeId::DurationMilliseconds);
     let int = DataType::new(TypeId::Int32);
@@ -743,7 +692,6 @@ fn test_infer_duration_integer_arithmetic_preserves_duration_dtype() {
     assert_eq!(infer_dtype(duration, int, BinaryOperator::Div), duration);
 }
 
-#[test]
 fn test_infer_duration_modulo_rules_dtype() {
     let duration = DataType::new(TypeId::DurationMilliseconds);
     let int = DataType::new(TypeId::Int32);
@@ -780,7 +728,6 @@ fn test_infer_duration_modulo_rules_dtype() {
     );
 }
 
-#[test]
 fn test_infer_duration_float_arithmetic_rejected_dtype() {
     let err = binary::infer_binary_output_dtype(
         DataType::new(TypeId::DurationMilliseconds),
@@ -798,7 +745,6 @@ fn test_infer_duration_float_arithmetic_rejected_dtype() {
     );
 }
 
-#[test]
 fn test_infer_mixed_temporal_resolution_rejected_dtype() {
     let err = binary::infer_binary_output_dtype(
         DataType::new(TypeId::TimestampMicroseconds),
@@ -816,49 +762,42 @@ fn test_infer_mixed_temporal_resolution_rejected_dtype() {
     );
 }
 
-#[test]
 fn test_infer_uint8_uint16_promotion() {
     // UInt8 + UInt16 → UInt16 (wider unsigned)
     let dt = binary::infer_binary_output_type(TypeId::UInt8, TypeId::UInt16, BinaryOperator::Add).unwrap();
     assert_eq!(dt.id(), TypeId::UInt16);
 }
 
-#[test]
 fn test_infer_int8_uint8_promotion() {
     // Int8 + UInt8 → Int16 (signed + unsigned same width → next wider signed)
     let dt = binary::infer_binary_output_type(TypeId::Int8, TypeId::UInt8, BinaryOperator::Add).unwrap();
     assert_eq!(dt.id(), TypeId::Int16);
 }
 
-#[test]
 fn test_infer_int64_uint64_error() {
     // Int64 + UInt64 → error (no wider signed integer available)
     let result = binary::infer_binary_output_type(TypeId::Int64, TypeId::UInt64, BinaryOperator::Add);
     assert!(result.is_err());
 }
 
-#[test]
 fn test_infer_signed_wider_than_unsigned_keeps_signed() {
     // Int64 + UInt32 should stay Int64 (signed is strictly wider)
     let dt = binary::infer_binary_output_type(TypeId::Int64, TypeId::UInt32, BinaryOperator::Add).unwrap();
     assert_eq!(dt.id(), TypeId::Int64);
 }
 
-#[test]
 fn test_infer_float32_int64_promotion() {
     // Float32 + Int64 → Float32 (int promotes to float, then wider float wins)
     let dt = binary::infer_binary_output_type(TypeId::Float32, TypeId::Int64, BinaryOperator::Add).unwrap();
     assert_eq!(dt.id(), TypeId::Float32);
 }
 
-#[test]
 fn test_infer_non_numeric_comparison_is_bool() {
     // Any comparison op should infer Bool8, even for non-numeric pairs.
     let dt = binary::infer_binary_output_type(TypeId::List, TypeId::List, BinaryOperator::Equal).unwrap();
     assert_eq!(dt.id(), TypeId::Bool8);
 }
 
-#[test]
 fn test_infer_mixed_string_numeric_comparison_rejected() {
     let err = binary::infer_binary_output_type(TypeId::String, TypeId::Int32, BinaryOperator::Equal).unwrap_err();
     assert_type_mismatch_facts(
@@ -868,4 +807,101 @@ fn test_infer_mixed_string_numeric_comparison_rejected() {
         TypeId::Int32,
         BinaryOperator::Equal,
     );
+}
+
+#[test]
+fn binary_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_add_column_column", test_add_column_column),
+        ("test_mul_column_scalar", test_mul_column_scalar),
+        ("test_div_scalar_column", test_div_scalar_column),
+        ("test_comparison", test_comparison),
+        (
+            "test_binary_operation_error_contains_operation_context",
+            test_binary_operation_error_contains_operation_context,
+        ),
+        ("test_logical_and", test_logical_and),
+        ("test_null_logical_or_uses_sql_three_valued_logic", test_null_logical_or_uses_sql_three_valued_logic),
+        ("test_null_logical_and_uses_sql_three_valued_logic", test_null_logical_and_uses_sql_three_valued_logic),
+        (
+            "test_mixed_domain_binary_operation_vv_uses_lhs_provenance",
+            test_mixed_domain_binary_operation_vv_uses_lhs_provenance,
+        ),
+        (
+            "test_mixed_domain_binary_operation_vs_uses_column_provenance",
+            test_mixed_domain_binary_operation_vs_uses_column_provenance,
+        ),
+        (
+            "test_mixed_domain_binary_operation_sv_uses_column_provenance",
+            test_mixed_domain_binary_operation_sv_uses_column_provenance,
+        ),
+        ("test_string_equal_vv", test_string_equal_vv),
+        ("test_string_not_equal_vv", test_string_not_equal_vv),
+        ("test_string_less_vv", test_string_less_vv),
+        ("test_string_greater_vv", test_string_greater_vv),
+        ("test_string_less_equal_vv", test_string_less_equal_vv),
+        ("test_string_greater_equal_vv", test_string_greater_equal_vv),
+        ("test_string_equal_vs", test_string_equal_vs),
+        ("test_string_not_equal_vs", test_string_not_equal_vs),
+        ("test_string_less_vs", test_string_less_vs),
+        ("test_string_greater_vs", test_string_greater_vs),
+        ("test_string_less_equal_vs", test_string_less_equal_vs),
+        ("test_string_greater_equal_vs", test_string_greater_equal_vs),
+        ("test_string_equal_empty", test_string_equal_empty),
+        ("test_string_equal_case_sensitive", test_string_equal_case_sensitive),
+        ("test_string_add_vv_error", test_string_add_vv_error),
+        ("test_string_sub_vs_error", test_string_sub_vs_error),
+        ("test_is_comparison_true_for_comparison_ops", test_is_comparison_true_for_comparison_ops),
+        ("test_is_comparison_false_for_arithmetic_ops", test_is_comparison_false_for_arithmetic_ops),
+        ("test_infer_same_type_arithmetic", test_infer_same_type_arithmetic),
+        ("test_infer_int_float_promotion", test_infer_int_float_promotion),
+        ("test_infer_float_float_promotion", test_infer_float_float_promotion),
+        ("test_infer_int_int_promotion", test_infer_int_int_promotion),
+        ("test_infer_signed_unsigned_promotion", test_infer_signed_unsigned_promotion),
+        ("test_infer_comparison_always_bool", test_infer_comparison_always_bool),
+        ("test_infer_string_comparison_bool", test_infer_string_comparison_bool),
+        ("test_infer_string_arithmetic_error", test_infer_string_arithmetic_error),
+        ("test_infer_string_int_arithmetic_error", test_infer_string_int_arithmetic_error),
+        ("test_infer_non_numeric_error", test_infer_non_numeric_error),
+        ("test_infer_bool_arithmetic", test_infer_bool_arithmetic),
+        ("test_infer_error_context_keys", test_infer_error_context_keys),
+        (
+            "test_infer_error_operator_detail_uses_stable_snake_case",
+            test_infer_error_operator_detail_uses_stable_snake_case,
+        ),
+        (
+            "test_infer_decimal_same_and_mixed_scale_add_sub_dtype",
+            test_infer_decimal_same_and_mixed_scale_add_sub_dtype,
+        ),
+        ("test_infer_decimal_mul_div_scales_dtype", test_infer_decimal_mul_div_scales_dtype),
+        ("test_infer_decimal_comparison_bool", test_infer_decimal_comparison_bool),
+        ("test_infer_mixed_resolution_temporal_comparison_bool", test_infer_mixed_resolution_temporal_comparison_bool),
+        ("test_infer_temporal_typeid_rules", test_infer_temporal_typeid_rules),
+        (
+            "test_infer_decimal_float_arithmetic_rejected_with_type_facts_dtype",
+            test_infer_decimal_float_arithmetic_rejected_with_type_facts_dtype,
+        ),
+        (
+            "test_infer_same_resolution_timestamp_duration_arithmetic_dtype",
+            test_infer_same_resolution_timestamp_duration_arithmetic_dtype,
+        ),
+        (
+            "test_infer_timestamp_timestamp_subtracts_to_matching_duration_dtype",
+            test_infer_timestamp_timestamp_subtracts_to_matching_duration_dtype,
+        ),
+        (
+            "test_infer_duration_integer_arithmetic_preserves_duration_dtype",
+            test_infer_duration_integer_arithmetic_preserves_duration_dtype,
+        ),
+        ("test_infer_duration_modulo_rules_dtype", test_infer_duration_modulo_rules_dtype),
+        ("test_infer_duration_float_arithmetic_rejected_dtype", test_infer_duration_float_arithmetic_rejected_dtype),
+        ("test_infer_mixed_temporal_resolution_rejected_dtype", test_infer_mixed_temporal_resolution_rejected_dtype),
+        ("test_infer_uint8_uint16_promotion", test_infer_uint8_uint16_promotion),
+        ("test_infer_int8_uint8_promotion", test_infer_int8_uint8_promotion),
+        ("test_infer_int64_uint64_error", test_infer_int64_uint64_error),
+        ("test_infer_signed_wider_than_unsigned_keeps_signed", test_infer_signed_wider_than_unsigned_keeps_signed),
+        ("test_infer_float32_int64_promotion", test_infer_float32_int64_promotion),
+        ("test_infer_non_numeric_comparison_is_bool", test_infer_non_numeric_comparison_is_bool),
+        ("test_infer_mixed_string_numeric_comparison_rejected", test_infer_mixed_string_numeric_comparison_rejected),
+    ]);
 }

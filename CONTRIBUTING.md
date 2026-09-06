@@ -234,21 +234,23 @@ defined and maintained in the website documentation:
   `CUGRAPH_CMAKE_BUILD_DIR`, `CUVS_INSTALL_DIR`), native build order, and Rust
   workspace compilation.
 
-Always use `--all-features` in cargo commands. Feature unification ensures that
-the entire workspace dependency graph builds with a unified feature set and
-avoids unnecessary artifact rebuilds.
+Always use `--workspace --all-features` in cargo commands, and select tests
+with nextest filtersets rather than `-p`. Feature unification ensures that the
+entire workspace dependency graph builds with a unified feature set and avoids
+unnecessary artifact rebuilds. `cargo nt` is the workspace alias for
+`cargo nextest run --workspace --all-features`.
 
 Focused component validation uses the same commands for every native wrapper:
 
 ```bash
-cargo clippy -p <component-packages...> --all-targets --all-features -- -D warnings
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo +nightly fmt --all --check
-flock /tmp/cudf-gpu.lock cargo nextest run \
-  -p <component-packages...> --all-features --no-fail-fast
+cargo nt -E 'package(<component-packages...>)'
 ```
 
-The package groups are `cudf-nexus cudf-nexus-sys rapids-interop`,
-`cugraph-nexus cugraph-nexus-sys`, and `cuvs-nexus cuvs-nexus-sys`.
+The package groups are `package(cudf-nexus) | package(cudf-nexus-sys) |
+package(rapids-interop)`, `package(cugraph-nexus) | package(cugraph-nexus-sys)`,
+and `package(cuvs-nexus) | package(cuvs-nexus-sys)`.
 
 ## Testing & Validation
 
@@ -265,17 +267,20 @@ isolation fail closed or corrupt global state. Test execution must use
 
 ### GPU Serialization Lock
 
-Direct GPU commands must be serialized with `flock /tmp/cudf-gpu.lock`:
+GPU tests take `/tmp/cudf-gpu.lock` automatically through nextest's
+run-wrapper (`.config/nextest.toml`, `scripts/ci/nextest_gpu_lock.sh`): shared
+for the `gpu` group, exclusive for `gpu-exclusive`. A bare `cargo nt` already
+serializes correctly. Non-test GPU commands (benchmarks, servers, tools) still
+take the lock themselves:
 
 ```shell
-flock /tmp/cudf-gpu.lock cargo nextest run -p nexus-query-engine --all-features --lib
-flock /tmp/cudf-gpu.lock cargo nextest run -p datafusion-nexus --all-features --test root_gpu_tests
+flock /tmp/cudf-gpu.lock cargo run -p nexus-server --all-features --bin datafusion_nexus_server
 ```
 
 > [!IMPORTANT]
-> **Never wrap `scripts/check_all.sh` in `flock /tmp/cudf-gpu.lock`**.
-> `scripts/check_all.sh` manages GPU locks internally per phase. Wrapping the
-> script externally causes a self-deadlock. Run the script bare.
+> **Never wrap `cargo nt` or `scripts/check_all.sh` in `flock /tmp/cudf-gpu.lock`**.
+> They already take the lock through the nextest run-wrapper; an outer hold
+> self-deadlocks them. Run them bare.
 
 ### Targeted Edit Loops
 
@@ -286,14 +291,12 @@ Run focused checks first, then expand validation according to the blast radius:
 cargo +nightly fmt --all
 cargo clippy --workspace --all-targets --all-features
 
-# Fast CPU and planning loops
-cargo nextest run -p datafusion-nexus --all-features --test cpu_contract_tests
-cargo nextest run -p datafusion-nexus --all-features --test native_planning_tests
-cargo nextest run -p nexus-query-engine --all-features --test native_contract_tests
+# What you changed, then everything downstream
+cargo nt -E 'package(datafusion-nexus)'
+cargo nt -E 'rdeps(datafusion-nexus)'
 
-# Targeted GPU tests (must be serialized)
-flock /tmp/cudf-gpu.lock cargo nextest run -p datafusion-nexus --all-features --test native_exec_tests
-flock /tmp/cudf-gpu.lock cargo nextest run -p nexus-query-engine --all-features --test gpu_allocator_exclusive_tests_gpu_exclusive
+# Rerun only the failures (repeat the same -E, or skipped binaries rerun as new)
+cargo nt -E 'package(datafusion-nexus)' -R latest
 ```
 
 ### Full Pre-Merge Validation
@@ -304,10 +307,13 @@ flock /tmp/cudf-gpu.lock cargo nextest run -p nexus-query-engine --all-features 
 bash scripts/check_all.sh
 ```
 
-- `bash scripts/check_all.sh --fast` and `--lane <LANE>` are partial edit-loop
-  helpers and do not constitute full pre-merge validation.
-- `.config/policies/test-lanes.toml` is the sole source of lane exceptions. Validate it with:
-  `python3 scripts/ci/test_lane_policy.py check-catalog`.
+- `bash scripts/check_all.sh --fast` is a partial edit-loop helper (policy,
+  rustfmt, CPU tests) and does not constitute full pre-merge validation. The
+  full gate outlives a single terminal session: start it with `nohup` and poll
+  `target/check-all/latest/summary.tsv`.
+- `.config/nextest.toml` is the sole source of test-lane admission: CPU tests
+  are opt-in by a `_cpu` target suffix or a listed binary, `_gpu_exclusive`
+  targets run alone and last, and every other test runs in the `gpu` group.
 - Do not add external-service E2E tests (such as live Iceberg REST/Glue catalogs)
   to default Cargo test targets; run them explicitly via
   `cargo run -p nexus-tools --all-features`

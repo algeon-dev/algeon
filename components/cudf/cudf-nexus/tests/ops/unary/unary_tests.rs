@@ -8,7 +8,6 @@ use cudf::{
 
 use crate::common::{column_from_slice, column_from_slice_nullable, error_context_value};
 
-#[test]
 fn test_sqrt() {
     let col = column_from_slice(&[4.0f64, 9.0, 16.0]).unwrap();
     let view = col.testing_view().unwrap();
@@ -19,7 +18,6 @@ fn test_sqrt() {
     assert_eq!(values, vec![2.0, 3.0, 4.0]);
 }
 
-#[test]
 fn test_abs() {
     let col = column_from_slice(&[-3i32, 0, 5]).unwrap();
     let view = col.testing_view().unwrap();
@@ -30,7 +28,6 @@ fn test_abs() {
     assert_eq!(values, vec![3, 0, 5]);
 }
 
-#[test]
 fn test_negate() {
     let col = column_from_slice(&[1i32, -2, 3]).unwrap();
     let view = col.testing_view().unwrap();
@@ -41,7 +38,6 @@ fn test_negate() {
     assert_eq!(values, vec![-1, 2, -3]);
 }
 
-#[test]
 fn test_is_null() {
     let col = column_from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
     let view = col.testing_view().unwrap();
@@ -52,7 +48,6 @@ fn test_is_null() {
     assert_eq!(values, vec![false, true, false]);
 }
 
-#[test]
 fn test_is_valid() {
     let col = column_from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
     let view = col.testing_view().unwrap();
@@ -63,7 +58,6 @@ fn test_is_valid() {
     assert_eq!(values, vec![true, false, true]);
 }
 
-#[test]
 fn test_cast() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.testing_view().unwrap();
@@ -76,14 +70,12 @@ fn test_cast() {
     assert_eq!(values, vec![1.0, 2.0, 3.0]);
 }
 
-#[test]
 fn test_is_supported_cast() {
     let from = DataType::new(TypeId::Int32);
     let to = DataType::new(TypeId::Float64);
     assert!(unary::is_supported_cast(&from, &to).unwrap());
 }
 
-#[test]
 fn test_is_nan() {
     let col = column_from_slice(&[1.0f64, f64::NAN, 3.0]).unwrap();
     let view = col.testing_view().unwrap();
@@ -94,7 +86,6 @@ fn test_is_nan() {
     assert_eq!(values, vec![false, true, false]);
 }
 
-#[test]
 fn test_is_not_nan() {
     let col = column_from_slice(&[1.0f64, f64::NAN, 3.0]).unwrap();
     let view = col.testing_view().unwrap();
@@ -105,7 +96,6 @@ fn test_is_not_nan() {
     assert_eq!(values, vec![true, false, true]);
 }
 
-#[test]
 fn test_cast_error_contains_operation_context() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let view = col.testing_view().unwrap();
@@ -120,7 +110,6 @@ fn test_cast_error_contains_operation_context() {
     assert_eq!(error_context_value(&err, "output_type_scale").as_deref(), Some("0"));
 }
 
-#[test]
 fn test_trig_sin() {
     let col = column_from_slice(&[0.0f64]).unwrap();
     let view = col.testing_view().unwrap();
@@ -133,7 +122,6 @@ fn test_trig_sin() {
 
 // --- logical_not tests ---
 
-#[test]
 fn test_logical_not_basic() {
     let col = column_from_slice(&[true, false, true]).unwrap();
     let view = col.testing_view().unwrap();
@@ -144,7 +132,6 @@ fn test_logical_not_basic() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
 }
 
-#[test]
 fn test_logical_not_with_nulls() {
     let col = column_from_slice_nullable(&[true, false, true], &[true, true, false]).unwrap();
     let view = col.testing_view().unwrap();
@@ -161,7 +148,6 @@ fn test_logical_not_with_nulls() {
     assert!(!validity[2]);
 }
 
-#[test]
 fn test_logical_not_empty() {
     let col = column_from_slice::<bool>(&[]).unwrap();
     let view = col.testing_view().unwrap();
@@ -170,4 +156,24 @@ fn test_logical_not_empty() {
     let rv = result.testing_view().unwrap();
     assert_eq!(rv.len().unwrap(), 0);
     assert_eq!(rv.data_type().unwrap().id(), TypeId::Bool8);
+}
+
+#[test]
+fn unary_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_sqrt", test_sqrt),
+        ("test_abs", test_abs),
+        ("test_negate", test_negate),
+        ("test_is_null", test_is_null),
+        ("test_is_valid", test_is_valid),
+        ("test_cast", test_cast),
+        ("test_is_supported_cast", test_is_supported_cast),
+        ("test_is_nan", test_is_nan),
+        ("test_is_not_nan", test_is_not_nan),
+        ("test_cast_error_contains_operation_context", test_cast_error_contains_operation_context),
+        ("test_trig_sin", test_trig_sin),
+        ("test_logical_not_basic", test_logical_not_basic),
+        ("test_logical_not_with_nulls", test_logical_not_with_nulls),
+        ("test_logical_not_empty", test_logical_not_empty),
+    ]);
 }

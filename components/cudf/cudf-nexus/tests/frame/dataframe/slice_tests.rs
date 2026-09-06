@@ -15,7 +15,6 @@ fn sample_df() -> DataFrame {
 // head
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_head_basic() {
     let df = sample_df();
     let h = df.head(2).unwrap();
@@ -26,7 +25,6 @@ fn test_head_basic() {
     assert_eq!(h.series("val").unwrap().to_vec_strict::<f64>().unwrap(), vec![1.0, 2.0]);
 }
 
-#[test]
 fn test_head_zero_rows() {
     let df = sample_df();
     let h = df.head(0).unwrap();
@@ -36,7 +34,6 @@ fn test_head_zero_rows() {
     assert_eq!(h.column_names(), vec!["id", "val"]);
 }
 
-#[test]
 fn test_head_clamps_to_num_rows() {
     let df = sample_df();
     let h = df.head(100).unwrap();
@@ -45,7 +42,6 @@ fn test_head_clamps_to_num_rows() {
     assert_eq!(h.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20, 30, 40, 50]);
 }
 
-#[test]
 fn test_head_preserves_schema() {
     let df = sample_df();
     let h = df.head(3).unwrap();
@@ -58,7 +54,6 @@ fn test_head_preserves_schema() {
 // tail
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_tail_basic() {
     let df = sample_df();
     let t = df.tail(2).unwrap();
@@ -68,7 +63,6 @@ fn test_tail_basic() {
     assert_eq!(t.series("val").unwrap().to_vec_strict::<f64>().unwrap(), vec![4.0, 5.0]);
 }
 
-#[test]
 fn test_tail_clamps_to_num_rows() {
     let df = sample_df();
     let t = df.tail(100).unwrap();
@@ -77,7 +71,6 @@ fn test_tail_clamps_to_num_rows() {
     assert_eq!(t.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![10, 20, 30, 40, 50]);
 }
 
-#[test]
 fn test_tail_zero_rows() {
     let df = sample_df();
     let t = df.tail(0).unwrap();
@@ -86,7 +79,6 @@ fn test_tail_zero_rows() {
     assert_eq!(t.column_names(), vec!["id", "val"]);
 }
 
-#[test]
 fn test_tail_preserves_schema() {
     let df = sample_df();
     let t = df.tail(3).unwrap();
@@ -97,7 +89,6 @@ fn test_tail_preserves_schema() {
 // slice
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_slice_basic() {
     let df = sample_df();
     let s = df.slice(1, 2).unwrap();
@@ -107,7 +98,6 @@ fn test_slice_basic() {
     assert_eq!(s.series("val").unwrap().to_vec_strict::<f64>().unwrap(), vec![2.0, 3.0]);
 }
 
-#[test]
 fn test_slice_clamps_length() {
     let df = sample_df();
     // offset=3, length=100 → should clamp to rows 3..5
@@ -117,7 +107,6 @@ fn test_slice_clamps_length() {
     assert_eq!(s.series("id").unwrap().to_vec_strict::<i32>().unwrap(), vec![40, 50]);
 }
 
-#[test]
 fn test_slice_zero_length() {
     let df = sample_df();
     let s = df.slice(2, 0).unwrap();
@@ -126,7 +115,6 @@ fn test_slice_zero_length() {
     assert_eq!(s.column_names(), vec!["id", "val"]);
 }
 
-#[test]
 fn test_slice_preserves_schema() {
     let df = sample_df();
     let s = df.slice(0, 3).unwrap();
@@ -135,7 +123,6 @@ fn test_slice_preserves_schema() {
     assert_eq!(s.column_index("val"), Some(1));
 }
 
-#[test]
 fn test_slice_offset_at_end() {
     let df = sample_df();
     // offset == num_rows → empty result
@@ -144,7 +131,6 @@ fn test_slice_offset_at_end() {
     assert_eq!(s.column_names(), vec!["id", "val"]);
 }
 
-#[test]
 fn test_slice_offset_beyond_end() {
     let df = sample_df();
     // offset > num_rows → empty result
@@ -153,7 +139,6 @@ fn test_slice_offset_beyond_end() {
     assert_eq!(s.column_names(), vec!["id", "val"]);
 }
 
-#[test]
 fn test_slice_with_budget_reports_member_accounting_on_rejection() {
     let df = sample_df();
     let token = with_test_runtime(|runtime| {
@@ -172,7 +157,6 @@ fn test_slice_with_budget_reports_member_accounting_on_rejection() {
     assert_eq!(error_context_value(&err, "budget_failed_allocation_count").as_deref(), Some("1"));
 }
 
-#[test]
 fn test_testing_hook_locks_dataframe_row_range_start_limit_contract() {
     let err = cudf::testing::dataframe::trigger_dataframe_row_range_start_limit_error_for_test().unwrap_err();
 
@@ -187,7 +171,6 @@ fn test_testing_hook_locks_dataframe_row_range_start_limit_contract() {
     assert_eq!(error_context_value(&err, "end_row").as_deref(), None);
 }
 
-#[test]
 fn test_testing_hook_locks_dataframe_row_range_end_limit_contract() {
     let err = cudf::testing::dataframe::trigger_dataframe_row_range_end_limit_error_for_test().unwrap_err();
     let expected_end = (i32::MAX as usize).checked_add(1).unwrap().to_string();
@@ -203,7 +186,6 @@ fn test_testing_hook_locks_dataframe_row_range_end_limit_contract() {
     assert_eq!(error_context_value(&err, "end_row").as_deref(), Some(expected_end.as_str()));
 }
 
-#[test]
 fn test_testing_hook_locks_dataframe_row_range_overflow_contract() {
     let err = cudf::testing::dataframe::trigger_dataframe_row_range_overflow_error_for_test().unwrap_err();
     let expected_end = ((i32::MAX as u128) + (usize::MAX as u128)).to_string();
@@ -218,4 +200,40 @@ fn test_testing_hook_locks_dataframe_row_range_overflow_contract() {
     assert_eq!(error_context_value(&err, "start_row").as_deref(), Some(i32::MAX.to_string().as_str()));
     assert_eq!(error_context_value(&err, "end_row").as_deref(), Some(expected_end.as_str()));
     assert_eq!(error_context_value(&err, "length").as_deref(), None);
+}
+
+#[test]
+fn slice_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_head_basic", test_head_basic),
+        ("test_head_zero_rows", test_head_zero_rows),
+        ("test_head_clamps_to_num_rows", test_head_clamps_to_num_rows),
+        ("test_head_preserves_schema", test_head_preserves_schema),
+        ("test_tail_basic", test_tail_basic),
+        ("test_tail_clamps_to_num_rows", test_tail_clamps_to_num_rows),
+        ("test_tail_zero_rows", test_tail_zero_rows),
+        ("test_tail_preserves_schema", test_tail_preserves_schema),
+        ("test_slice_basic", test_slice_basic),
+        ("test_slice_clamps_length", test_slice_clamps_length),
+        ("test_slice_zero_length", test_slice_zero_length),
+        ("test_slice_preserves_schema", test_slice_preserves_schema),
+        ("test_slice_offset_at_end", test_slice_offset_at_end),
+        ("test_slice_offset_beyond_end", test_slice_offset_beyond_end),
+        (
+            "test_slice_with_budget_reports_member_accounting_on_rejection",
+            test_slice_with_budget_reports_member_accounting_on_rejection,
+        ),
+        (
+            "test_testing_hook_locks_dataframe_row_range_start_limit_contract",
+            test_testing_hook_locks_dataframe_row_range_start_limit_contract,
+        ),
+        (
+            "test_testing_hook_locks_dataframe_row_range_end_limit_contract",
+            test_testing_hook_locks_dataframe_row_range_end_limit_contract,
+        ),
+        (
+            "test_testing_hook_locks_dataframe_row_range_overflow_contract",
+            test_testing_hook_locks_dataframe_row_range_overflow_contract,
+        ),
+    ]);
 }

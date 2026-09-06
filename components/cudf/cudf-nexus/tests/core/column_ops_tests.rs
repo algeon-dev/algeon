@@ -47,7 +47,6 @@ fn assert_arrow_decimal128_column(frame: &DataFrame, name: &str, expected_raw_va
 // Arithmetic methods on Column
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_column_add_i32() {
     let a = column_from_slice(&[1i32, 2, 3]).unwrap();
     let b = column_from_slice(&[10i32, 20, 30]).unwrap();
@@ -57,7 +56,6 @@ fn test_column_add_i32() {
     assert_eq!(rv.to_vec::<i32>().unwrap(), vec![11, 22, 33]);
 }
 
-#[test]
 fn test_column_sub_i32() {
     let a = column_from_slice(&[10i32, 20, 30]).unwrap();
     let b = column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -66,7 +64,6 @@ fn test_column_sub_i32() {
     assert_eq!(rv.to_vec::<i32>().unwrap(), vec![9, 18, 27]);
 }
 
-#[test]
 fn test_column_mul_i32() {
     let a = column_from_slice(&[2i32, 3, 4]).unwrap();
     let b = column_from_slice(&[5i32, 6, 7]).unwrap();
@@ -75,7 +72,6 @@ fn test_column_mul_i32() {
     assert_eq!(rv.to_vec::<i32>().unwrap(), vec![10, 18, 28]);
 }
 
-#[test]
 fn test_column_div_i32() {
     let a = column_from_slice(&[10i32, 21, 35]).unwrap();
     let b = column_from_slice(&[2i32, 7, 5]).unwrap();
@@ -84,7 +80,6 @@ fn test_column_div_i32() {
     assert_eq!(rv.to_vec::<i32>().unwrap(), vec![5, 3, 7]);
 }
 
-#[test]
 fn test_column_true_div_i32() {
     let a = column_from_slice(&[1i32, 3, 7]).unwrap();
     let b = column_from_slice(&[2i32, 4, 2]).unwrap();
@@ -96,7 +91,6 @@ fn test_column_true_div_i32() {
     assert_eq!(values, vec![0.5, 0.75, 3.5]);
 }
 
-#[test]
 fn test_column_modulo_i32() {
     let a = column_from_slice(&[10i32, 21, 37]).unwrap();
     let b = column_from_slice(&[3i32, 7, 5]).unwrap();
@@ -105,7 +99,6 @@ fn test_column_modulo_i32() {
     assert_eq!(rv.to_vec::<i32>().unwrap(), vec![1, 0, 2]);
 }
 
-#[test]
 fn test_column_rem_alias_matches_modulo() {
     let a = column_from_slice(&[10i32, 21, 37]).unwrap();
     let b = column_from_slice(&[3i32, 7, 5]).unwrap();
@@ -114,7 +107,6 @@ fn test_column_rem_alias_matches_modulo() {
     assert_eq!(rv.to_vec::<i32>().unwrap(), vec![1, 0, 2]);
 }
 
-#[test]
 fn test_column_add_mixed_types() {
     // Int32 + Float64 → Float64
     let a = column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -126,7 +118,6 @@ fn test_column_add_mixed_types() {
     assert_eq!(values, vec![1.5, 3.5, 5.5]);
 }
 
-#[test]
 fn test_column_add_decimal64_same_scale_preserves_scale() {
     let a = crate::common::series("a", &[12_345i64, 20_000])
         .unwrap()
@@ -144,7 +135,6 @@ fn test_column_add_decimal64_same_scale_preserves_scale() {
     assert_eq!(host_export_i64_values(&result), vec![1_244_500, 1_950_000]);
 }
 
-#[test]
 fn test_column_binary_op_with_type() {
     // Explicit output type override
     let a = column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -155,7 +145,6 @@ fn test_column_binary_op_with_type() {
     assert_eq!(rv.to_vec::<i64>().unwrap(), vec![11, 22, 33]);
 }
 
-#[test]
 fn test_column_decimal128_div_binary_op_with_type_preserves_fractional_arrow_output() {
     let df = decimal128_pair_df_from_arrow(
         "numerator",
@@ -180,7 +169,6 @@ fn test_column_decimal128_div_binary_op_with_type_preserves_fractional_arrow_out
     assert_arrow_decimal128_column(&result, "ratio", &[25_000_000, 50_000_000], 8);
 }
 
-#[test]
 fn test_column_decimal128_div_scalar_binary_op_with_type_preserves_fractional_arrow_output() {
     let df = decimal128_pair_df_from_arrow(
         "numerator",
@@ -206,7 +194,6 @@ fn test_column_decimal128_div_scalar_binary_op_with_type_preserves_fractional_ar
     assert_arrow_decimal128_column(&result, "ratio", &[25_000_000, 75_000_000], 8);
 }
 
-#[test]
 fn test_scalar_decimal128_div_column_binary_operation_with_type_preserves_fractional_arrow_output() {
     let df = decimal128_pair_df_from_arrow(
         "unused",
@@ -229,7 +216,6 @@ fn test_scalar_decimal128_div_column_binary_operation_with_type_preserves_fracti
     assert_arrow_decimal128_column(&result, "ratio", &[25_000_000, 50_000_000], 8);
 }
 
-#[test]
 fn test_column_binary_op_error_operation_context() {
     let a = column_from_slice(&[1i32, 2, 3]).unwrap();
     let b = column_from_slice(&[10i32, 20]).unwrap(); // length mismatch
@@ -237,7 +223,6 @@ fn test_column_binary_op_error_operation_context() {
     assert_eq!(err.operation(), "column::binary_op");
 }
 
-#[test]
 fn test_column_binary_op_scalar_error_operation_context() {
     let col = column_from_strs(&["foo", "bar"]).unwrap();
     let scalar = crate::common::string_scalar("baz").unwrap();
@@ -245,7 +230,6 @@ fn test_column_binary_op_scalar_error_operation_context() {
     assert_eq!(err.operation(), "column::binary_op_scalar");
 }
 
-#[test]
 fn test_column_add_string_error() {
     let a = column_from_strs(&["foo", "bar"]).unwrap();
     let b = column_from_strs(&["baz", "qux"]).unwrap();
@@ -253,7 +237,6 @@ fn test_column_add_string_error() {
     assert_eq!(err.operation(), "column::add");
 }
 
-#[test]
 fn test_column_add_nullable() {
     let a = column_from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
     let b = column_from_slice(&[10i32, 20, 30]).unwrap();
@@ -269,7 +252,6 @@ fn test_column_add_nullable() {
     assert_eq!(values[2], 33);
 }
 
-#[test]
 fn test_column_floor_div_f64() {
     let a = column_from_slice(&[7.0f64, 10.0, 15.0]).unwrap();
     let b = column_from_slice(&[2.0f64, 3.0, 4.0]).unwrap();
@@ -284,7 +266,6 @@ fn test_column_floor_div_f64() {
 // Comparison methods on Column
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_column_eq_i32() {
     let a = column_from_slice(&[1i32, 2, 3]).unwrap();
     let b = column_from_slice(&[1i32, 5, 3]).unwrap();
@@ -294,7 +275,6 @@ fn test_column_eq_i32() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, true]);
 }
 
-#[test]
 fn test_column_ne_i32() {
     let a = column_from_slice(&[1i32, 2, 3]).unwrap();
     let b = column_from_slice(&[1i32, 5, 3]).unwrap();
@@ -304,7 +284,6 @@ fn test_column_ne_i32() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
 }
 
-#[test]
 fn test_column_lt_i32() {
     let a = column_from_slice(&[1i32, 5, 3]).unwrap();
     let b = column_from_slice(&[2i32, 2, 3]).unwrap();
@@ -313,7 +292,6 @@ fn test_column_lt_i32() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
 }
 
-#[test]
 fn test_column_gt_i32() {
     let a = column_from_slice(&[1i32, 5, 3]).unwrap();
     let b = column_from_slice(&[2i32, 2, 3]).unwrap();
@@ -322,7 +300,6 @@ fn test_column_gt_i32() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
 }
 
-#[test]
 fn test_column_le_i32() {
     let a = column_from_slice(&[1i32, 5, 3]).unwrap();
     let b = column_from_slice(&[2i32, 2, 3]).unwrap();
@@ -331,7 +308,6 @@ fn test_column_le_i32() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, true]);
 }
 
-#[test]
 fn test_column_ge_i32() {
     let a = column_from_slice(&[1i32, 5, 3]).unwrap();
     let b = column_from_slice(&[2i32, 2, 3]).unwrap();
@@ -340,7 +316,6 @@ fn test_column_ge_i32() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, true]);
 }
 
-#[test]
 fn test_column_eq_string() {
     let a = column_from_strs(&["foo", "bar", "baz"]).unwrap();
     let b = column_from_strs(&["foo", "qux", "baz"]).unwrap();
@@ -350,7 +325,6 @@ fn test_column_eq_string() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, true]);
 }
 
-#[test]
 fn test_column_lt_string() {
     let a = column_from_strs(&["apple", "cherry", "banana"]).unwrap();
     let b = column_from_strs(&["banana", "banana", "banana"]).unwrap();
@@ -359,7 +333,6 @@ fn test_column_lt_string() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
 }
 
-#[test]
 fn test_column_lt_mixed_numeric() {
     // Int32 < Float64 → Bool8
     let a = column_from_slice(&[1i32, 5, 3]).unwrap();
@@ -370,7 +343,6 @@ fn test_column_lt_mixed_numeric() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
 }
 
-#[test]
 fn test_column_comparison_nullable() {
     let a = column_from_slice_nullable(&[1i32, 2, 3], &[true, false, true]).unwrap();
     let b = column_from_slice(&[1i32, 2, 4]).unwrap();
@@ -386,7 +358,6 @@ fn test_column_comparison_nullable() {
 // Scalar arithmetic and comparison on Column
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_column_add_scalar_i32() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let scalar = scalar(10i32).unwrap();
@@ -396,7 +367,6 @@ fn test_column_add_scalar_i32() {
     assert_eq!(rv.to_vec::<i32>().unwrap(), vec![11, 12, 13]);
 }
 
-#[test]
 fn test_column_sub_scalar_i32() {
     let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let scalar = scalar(5i32).unwrap();
@@ -405,7 +375,6 @@ fn test_column_sub_scalar_i32() {
     assert_eq!(rv.to_vec::<i32>().unwrap(), vec![5, 15, 25]);
 }
 
-#[test]
 fn test_column_mul_scalar_mixed_types() {
     // Int32 * Float64 scalar → Float64
     let col = column_from_slice(&[2i32, 3, 4]).unwrap();
@@ -417,7 +386,6 @@ fn test_column_mul_scalar_mixed_types() {
     assert_eq!(values, vec![3.0, 4.5, 6.0]);
 }
 
-#[test]
 fn test_column_div_scalar_i32() {
     let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let scalar = scalar(5i32).unwrap();
@@ -426,7 +394,6 @@ fn test_column_div_scalar_i32() {
     assert_eq!(rv.to_vec::<i32>().unwrap(), vec![2, 4, 6]);
 }
 
-#[test]
 fn test_column_eq_scalar_i32() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let scalar = scalar(2i32).unwrap();
@@ -436,7 +403,6 @@ fn test_column_eq_scalar_i32() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, false]);
 }
 
-#[test]
 fn test_column_ne_scalar_i32() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let scalar = scalar(2i32).unwrap();
@@ -445,7 +411,6 @@ fn test_column_ne_scalar_i32() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, true]);
 }
 
-#[test]
 fn test_column_lt_scalar_i32() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let scalar = scalar(2i32).unwrap();
@@ -454,7 +419,6 @@ fn test_column_lt_scalar_i32() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
 }
 
-#[test]
 fn test_column_gt_scalar_i32() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let scalar = scalar(2i32).unwrap();
@@ -463,7 +427,6 @@ fn test_column_gt_scalar_i32() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, false, true]);
 }
 
-#[test]
 fn test_column_le_scalar_i32() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let scalar = scalar(2i32).unwrap();
@@ -472,7 +435,6 @@ fn test_column_le_scalar_i32() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, true, false]);
 }
 
-#[test]
 fn test_column_ge_scalar_i32() {
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
     let scalar = scalar(2i32).unwrap();
@@ -481,7 +443,6 @@ fn test_column_ge_scalar_i32() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![false, true, true]);
 }
 
-#[test]
 fn test_column_eq_scalar_string() {
     let col = column_from_strs(&["active", "inactive", "active"]).unwrap();
     let scalar = crate::common::string_scalar("active").unwrap();
@@ -491,7 +452,6 @@ fn test_column_eq_scalar_string() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, true]);
 }
 
-#[test]
 fn test_column_lt_scalar_string() {
     let col = column_from_strs(&["apple", "cherry", "banana"]).unwrap();
     let scalar = crate::common::string_scalar("banana").unwrap();
@@ -500,7 +460,6 @@ fn test_column_lt_scalar_string() {
     assert_eq!(rv.to_vec::<bool>().unwrap(), vec![true, false, false]);
 }
 
-#[test]
 fn test_column_add_scalar_string_error() {
     let col = column_from_strs(&["foo", "bar"]).unwrap();
     let scalar = crate::common::string_scalar("baz").unwrap();
@@ -508,7 +467,6 @@ fn test_column_add_scalar_string_error() {
     assert_eq!(err.operation(), "column::add_scalar");
 }
 
-#[test]
 fn test_column_add_scalar_null() {
     // Adding a null scalar should produce all-null output
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -519,7 +477,6 @@ fn test_column_add_scalar_null() {
     assert!(validity.iter().all(|&v| !v)); // all null
 }
 
-#[test]
 fn test_column_binary_op_scalar_with_type() {
     // Explicit output type override for scalar ops
     let col = column_from_slice(&[1i32, 2, 3]).unwrap();
@@ -534,7 +491,6 @@ fn test_column_binary_op_scalar_with_type() {
 // Operator overloading via std::ops
 // ---------------------------------------------------------------------------
 
-#[test]
 fn test_ops_add_column_f32_scalar() {
     let col = column_from_slice(&[1.0f32, 2.0, 3.0]).unwrap();
     let result = (&col + 1.0f32).unwrap();
@@ -542,7 +498,6 @@ fn test_ops_add_column_f32_scalar() {
     assert_eq!(rv.to_vec::<f32>().unwrap(), vec![2.0, 3.0, 4.0]);
 }
 
-#[test]
 fn test_ops_mul_column_f64_scalar() {
     let col = column_from_slice(&[1.0f64, 2.0, 3.0]).unwrap();
     let result = (&col * 100.0f64).unwrap();
@@ -550,7 +505,6 @@ fn test_ops_mul_column_f64_scalar() {
     assert_eq!(rv.to_vec::<f64>().unwrap(), vec![100.0, 200.0, 300.0]);
 }
 
-#[test]
 fn test_ops_sub_column_i32_scalar() {
     let col = column_from_slice(&[10i32, 20, 30]).unwrap();
     let result = (&col - 5i32).unwrap();
@@ -558,7 +512,6 @@ fn test_ops_sub_column_i32_scalar() {
     assert_eq!(rv.to_vec::<i32>().unwrap(), vec![5, 15, 25]);
 }
 
-#[test]
 fn test_ops_div_column_i64_scalar() {
     let col = column_from_slice(&[10i64, 20, 30]).unwrap();
     let result = (&col / 2i64).unwrap();
@@ -566,7 +519,6 @@ fn test_ops_div_column_i64_scalar() {
     assert_eq!(rv.to_vec::<i64>().unwrap(), vec![5, 10, 15]);
 }
 
-#[test]
 fn test_ops_column_scalar_supports_remaining_integer_types() {
     let u8_col = column_from_slice(&[1u8, 2, 3]).unwrap();
     let u16_col = column_from_slice(&[10u16, 20, 30]).unwrap();
@@ -594,7 +546,6 @@ fn test_ops_column_scalar_supports_remaining_integer_types() {
     assert_eq!(signed_div.testing_view().unwrap().to_vec::<i16>().unwrap(), vec![1, 2, 3]);
 }
 
-#[test]
 fn test_ops_add_column_column() {
     let a = column_from_slice(&[1i32, 2, 3]).unwrap();
     let b = column_from_slice(&[10i32, 20, 30]).unwrap();
@@ -603,7 +554,6 @@ fn test_ops_add_column_column() {
     assert_eq!(rv.to_vec::<i32>().unwrap(), vec![11, 22, 33]);
 }
 
-#[test]
 fn test_ops_mul_column_column() {
     let a = column_from_slice(&[2i32, 3, 4]).unwrap();
     let b = column_from_slice(&[5i32, 6, 7]).unwrap();
@@ -612,10 +562,78 @@ fn test_ops_mul_column_column() {
     assert_eq!(rv.to_vec::<i32>().unwrap(), vec![10, 18, 28]);
 }
 
-#[test]
 fn test_ops_chain() {
     let col = column_from_slice(&[1.0f32, 2.0, 3.0]).unwrap();
     let result = (&(&col * 100.0f32).unwrap() + 1.0f32).unwrap();
     let rv = result.testing_view().unwrap();
     assert_eq!(rv.to_vec::<f32>().unwrap(), vec![101.0, 201.0, 301.0]);
+}
+
+#[test]
+fn column_ops_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("test_column_add_i32", test_column_add_i32),
+        ("test_column_sub_i32", test_column_sub_i32),
+        ("test_column_mul_i32", test_column_mul_i32),
+        ("test_column_div_i32", test_column_div_i32),
+        ("test_column_true_div_i32", test_column_true_div_i32),
+        ("test_column_modulo_i32", test_column_modulo_i32),
+        ("test_column_rem_alias_matches_modulo", test_column_rem_alias_matches_modulo),
+        ("test_column_add_mixed_types", test_column_add_mixed_types),
+        ("test_column_add_decimal64_same_scale_preserves_scale", test_column_add_decimal64_same_scale_preserves_scale),
+        ("test_column_binary_op_with_type", test_column_binary_op_with_type),
+        (
+            "test_column_decimal128_div_binary_op_with_type_preserves_fractional_arrow_output",
+            test_column_decimal128_div_binary_op_with_type_preserves_fractional_arrow_output,
+        ),
+        (
+            "test_column_decimal128_div_scalar_binary_op_with_type_preserves_fractional_arrow_output",
+            test_column_decimal128_div_scalar_binary_op_with_type_preserves_fractional_arrow_output,
+        ),
+        (
+            "test_scalar_decimal128_div_column_binary_operation_with_type_preserves_fractional_arrow_output",
+            test_scalar_decimal128_div_column_binary_operation_with_type_preserves_fractional_arrow_output,
+        ),
+        ("test_column_binary_op_error_operation_context", test_column_binary_op_error_operation_context),
+        ("test_column_binary_op_scalar_error_operation_context", test_column_binary_op_scalar_error_operation_context),
+        ("test_column_add_string_error", test_column_add_string_error),
+        ("test_column_add_nullable", test_column_add_nullable),
+        ("test_column_floor_div_f64", test_column_floor_div_f64),
+        ("test_column_eq_i32", test_column_eq_i32),
+        ("test_column_ne_i32", test_column_ne_i32),
+        ("test_column_lt_i32", test_column_lt_i32),
+        ("test_column_gt_i32", test_column_gt_i32),
+        ("test_column_le_i32", test_column_le_i32),
+        ("test_column_ge_i32", test_column_ge_i32),
+        ("test_column_eq_string", test_column_eq_string),
+        ("test_column_lt_string", test_column_lt_string),
+        ("test_column_lt_mixed_numeric", test_column_lt_mixed_numeric),
+        ("test_column_comparison_nullable", test_column_comparison_nullable),
+        ("test_column_add_scalar_i32", test_column_add_scalar_i32),
+        ("test_column_sub_scalar_i32", test_column_sub_scalar_i32),
+        ("test_column_mul_scalar_mixed_types", test_column_mul_scalar_mixed_types),
+        ("test_column_div_scalar_i32", test_column_div_scalar_i32),
+        ("test_column_eq_scalar_i32", test_column_eq_scalar_i32),
+        ("test_column_ne_scalar_i32", test_column_ne_scalar_i32),
+        ("test_column_lt_scalar_i32", test_column_lt_scalar_i32),
+        ("test_column_gt_scalar_i32", test_column_gt_scalar_i32),
+        ("test_column_le_scalar_i32", test_column_le_scalar_i32),
+        ("test_column_ge_scalar_i32", test_column_ge_scalar_i32),
+        ("test_column_eq_scalar_string", test_column_eq_scalar_string),
+        ("test_column_lt_scalar_string", test_column_lt_scalar_string),
+        ("test_column_add_scalar_string_error", test_column_add_scalar_string_error),
+        ("test_column_add_scalar_null", test_column_add_scalar_null),
+        ("test_column_binary_op_scalar_with_type", test_column_binary_op_scalar_with_type),
+        ("test_ops_add_column_f32_scalar", test_ops_add_column_f32_scalar),
+        ("test_ops_mul_column_f64_scalar", test_ops_mul_column_f64_scalar),
+        ("test_ops_sub_column_i32_scalar", test_ops_sub_column_i32_scalar),
+        ("test_ops_div_column_i64_scalar", test_ops_div_column_i64_scalar),
+        (
+            "test_ops_column_scalar_supports_remaining_integer_types",
+            test_ops_column_scalar_supports_remaining_integer_types,
+        ),
+        ("test_ops_add_column_column", test_ops_add_column_column),
+        ("test_ops_mul_column_column", test_ops_mul_column_column),
+        ("test_ops_chain", test_ops_chain),
+    ]);
 }

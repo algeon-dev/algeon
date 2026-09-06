@@ -9,7 +9,6 @@ use cudf::{DataFrame, DataType, TypeId, ops::expr::col};
 // Series::astype — accepts DataType directly
 // ===========================================================================
 
-#[test]
 fn series_astype_accepts_datatype() {
     let s = crate::common::series::<i32>("x", &[100, 200, 300]).unwrap();
     let dt = DataType::fixed_point(TypeId::Decimal128, -2).unwrap();
@@ -17,7 +16,6 @@ fn series_astype_accepts_datatype() {
     assert_eq!(result.dtype().unwrap(), dt);
 }
 
-#[test]
 fn series_astype_accepts_typeid() {
     // Backward-compat: TypeId still works via Into<DataType>.
     let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
@@ -29,7 +27,6 @@ fn series_astype_accepts_typeid() {
 // Expr::cast — accepts DataType directly
 // ===========================================================================
 
-#[test]
 fn expr_cast_accepts_datatype() {
     let dt = DataType::fixed_point(TypeId::Decimal128, -2).unwrap();
     let expr = col("x").cast(dt).alias("x");
@@ -39,7 +36,6 @@ fn expr_cast_accepts_datatype() {
     assert_eq!(result.dtype().unwrap(), dt);
 }
 
-#[test]
 fn expr_cast_accepts_typeid() {
     // Backward-compat: TypeId still works via Into<DataType>.
     let expr = col("x").cast(TypeId::Float64).alias("xf");
@@ -54,7 +50,6 @@ fn expr_cast_accepts_typeid() {
 // Symmetry: series.astype(dt) == df.cast_column(col, dt)
 // ===========================================================================
 
-#[test]
 fn cast_symmetry() {
     let dt = DataType::new(TypeId::Float64);
     let s = crate::common::series::<i32>("x", &[1, 2, 3]).unwrap();
@@ -72,7 +67,6 @@ fn cast_symmetry() {
 // unary::is_supported_cast — already uses DataType (no change needed)
 // ===========================================================================
 
-#[test]
 fn is_supported_cast_uses_datatype() {
     let from = DataType::new(TypeId::Int32);
     let to = DataType::new(TypeId::Float64);
@@ -84,17 +78,29 @@ fn is_supported_cast_uses_datatype() {
 // From<TypeId> for DataType
 // ===========================================================================
 
-#[test]
 fn typeid_converts_to_datatype() {
     let dt: DataType = TypeId::Float64.into();
     assert_eq!(dt.id(), TypeId::Float64);
     assert_eq!(dt.scale(), 0);
 }
 
-#[test]
 fn typeid_converts_to_datatype_decimal() {
     // From<TypeId> gives scale 0; use DataType::fixed_point for explicit scale.
     let dt: DataType = TypeId::Decimal128.into();
     assert_eq!(dt.id(), TypeId::Decimal128);
     assert_eq!(dt.scale(), 0);
+}
+
+#[test]
+fn cast_consistency_tests_cases() {
+    crate::common::run_named_cases(&[
+        ("series_astype_accepts_datatype", series_astype_accepts_datatype),
+        ("series_astype_accepts_typeid", series_astype_accepts_typeid),
+        ("expr_cast_accepts_datatype", expr_cast_accepts_datatype),
+        ("expr_cast_accepts_typeid", expr_cast_accepts_typeid),
+        ("cast_symmetry", cast_symmetry),
+        ("is_supported_cast_uses_datatype", is_supported_cast_uses_datatype),
+        ("typeid_converts_to_datatype", typeid_converts_to_datatype),
+        ("typeid_converts_to_datatype_decimal", typeid_converts_to_datatype_decimal),
+    ]);
 }
