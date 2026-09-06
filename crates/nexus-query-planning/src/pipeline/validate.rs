@@ -18,24 +18,63 @@ use crate::{
 
 const OPERATION: &str = "nexus_query_engine.pipeline.validate";
 
-pub(super) fn validate_pipeline(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
-    let task_ids = validate_tasks(pipeline)?;
-    validate_edges(pipeline, &task_ids)?;
-    validate_barriers(pipeline, &task_ids)?;
-    let resource_ids = validate_resources(pipeline, &task_ids)?;
+/// A violated compiled-pipeline schedule contract.
+///
+/// `reason` is the stable snake-case name of the contract that failed, so
+/// admission can report the specific conflict instead of classifying the
+/// error by its operation string.
+#[derive(Debug)]
+pub(super) struct ScheduleRejection {
+    reason: &'static str,
+    error: QueryError,
+}
 
-    validate_task_dependencies(pipeline, &task_ids)?;
-    validate_task_graph_is_acyclic(pipeline)?;
-    validate_task_resource_references(pipeline, &resource_ids)?;
-    validate_resource_flow(pipeline)?;
-    validate_sink_output_lifetimes(pipeline)?;
-    validate_barrier_dominance(pipeline)?;
+impl ScheduleRejection {
+    pub(super) const fn reason(&self) -> &'static str {
+        self.reason
+    }
+
+    pub(super) const fn error(&self) -> &QueryError {
+        &self.error
+    }
+
+    pub(super) fn into_error(self) -> QueryError {
+        self.error
+    }
+}
+
+pub(super) fn validate_pipeline(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
+    validate_schedule(pipeline).map_err(ScheduleRejection::into_error)
+}
+
+pub(super) fn validate_schedule(pipeline: &CompiledPipeline) -> Result<(), ScheduleRejection> {
+    let task_ids = named("compiled_pipeline_task_identity_invalid", validate_tasks(pipeline))?;
+    named("compiled_pipeline_edge_identity_invalid", validate_edges(pipeline, &task_ids))?;
+    named("compiled_pipeline_barrier_identity_invalid", validate_barriers(pipeline, &task_ids))?;
+    let resource_ids = named("compiled_pipeline_resource_identity_invalid", validate_resources(pipeline, &task_ids))?;
+
+    named("compiled_pipeline_task_dependency_missing", validate_task_dependencies(pipeline, &task_ids))?;
+    named("compiled_pipeline_dependency_cycle", validate_task_graph_is_acyclic(pipeline))?;
+    named("compiled_pipeline_resource_reference_missing", validate_task_resource_references(pipeline, &resource_ids))?;
+    named("compiled_pipeline_resource_flow_invalid", validate_resource_flow(pipeline))?;
+    named("compiled_pipeline_sink_output_lifetime_invalid", validate_sink_output_lifetimes(pipeline))?;
+    named("compiled_pipeline_barrier_dominance_invalid", validate_barrier_dominance(pipeline))?;
+    named("compiled_pipeline_task_resource_arity_invalid", validate_task_resource_arity(pipeline))?;
+    named("compiled_pipeline_stage_boundary_incomplete", validate_stage_boundary_coverage(pipeline))?;
+    named("compiled_pipeline_join_build_before_probe_missing", validate_join_build_before_probe(pipeline))?;
 
     if !task_ids.contains(&pipeline.sink().input()) {
-        return Err(invalid("pipeline sink input task does not exist").with_fact("task_id", pipeline.sink().input()));
+        return Err(ScheduleRejection {
+            reason: "compiled_pipeline_sink_input_task_missing",
+            error: invalid("pipeline sink input task does not exist").with_fact("task_id", pipeline.sink().input()),
+        });
     }
 
     Ok(())
+}
+
+fn named<T>(reason: &'static str, result: crate::error::Result<T>) -> Result<T, ScheduleRejection> {
+    result.map_err(|error| ScheduleRejection { reason, error })
 }
 
 fn validate_tasks(pipeline: &CompiledPipeline) -> crate::error::Result<BTreeSet<PipelineTaskId>> {
@@ -508,6 +547,109 @@ fn validate_task_input_resource_consumers(pipeline: &CompiledPipeline) -> crate:
         }
     }
     Ok(())
+}
+
+/// Each task kind declares how many resident resources it consumes and
+/// produces; a schedule whose tasks disagree cannot be interpreted.
+fn validate_task_resource_arity(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
+    for task in pipeline.tasks() {
+        let inputs = task.input_resources().len();
+        let outputs = task.output_resources().len();
+        let satisfied = match task.kind() {
+            PipelineTaskKind::SourceRead
+            | PipelineTaskKind::GpuResidentSource
+            | PipelineTaskKind::LiteralBatchSource => inputs == 0 && outputs == 1,
+            PipelineTaskKind::Unary
+            | PipelineTaskKind::Aggregate
+            | PipelineTaskKind::Window
+            | PipelineTaskKind::FinalSort
+            | PipelineTaskKind::Limit
+            | PipelineTaskKind::EdgeNormalize => inputs == 1 && outputs == 1,
+            PipelineTaskKind::Union | PipelineTaskKind::GraphAlgorithm => inputs >= 1 && outputs == 1,
+            PipelineTaskKind::JoinBuild | PipelineTaskKind::JoinProbe => inputs == 1 && outputs == 0,
+            PipelineTaskKind::JoinMaterialize => inputs == 0 && outputs == 1,
+            PipelineTaskKind::SinkMaterialize => inputs == 1 && outputs == 0,
+        };
+        if !satisfied {
+            return Err(invalid("pipeline task resource arity does not match its task contract")
+                .with_fact("task_id", task.id())
+                .with_fact("task_kind", task.kind().as_str())
+                .with_fact("input_resource_count", inputs)
+                .with_fact("output_resource_count", outputs));
+        }
+    }
+    Ok(())
+}
+
+/// A blocking operator only produces a usable output once it has consumed its
+/// whole input, so its boundary barrier must gate every task that reads that
+/// output. The sink materialization edge is excluded: the sink boundary
+/// barrier gates the final output instead.
+fn validate_stage_boundary_coverage(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
+    for task in pipeline.tasks() {
+        let barrier_kind = match task.kind() {
+            PipelineTaskKind::Aggregate | PipelineTaskKind::Window => PipelineBarrierKind::AggregateBoundary,
+            PipelineTaskKind::FinalSort => PipelineBarrierKind::SortBoundary,
+            _ => continue,
+        };
+        let consumers = direct_data_consumers(pipeline, task.id());
+        let gated = pipeline.barriers().iter().any(|barrier| {
+            barrier.kind() == barrier_kind
+                && barrier.upstream_tasks() == [task.id()]
+                && consumers.iter().all(|consumer| barrier.downstream_tasks().contains(consumer))
+        });
+        if !gated {
+            return Err(invalid("pipeline blocking boundary does not gate every downstream consumer")
+                .with_fact("task_id", task.id())
+                .with_fact("task_kind", task.kind().as_str())
+                .with_fact("barrier_kind", barrier_kind.as_str())
+                .with_fact("downstream_consumer_count", consumers.len()));
+        }
+    }
+    Ok(())
+}
+
+/// A probe reads retained build state, so the build task must complete before
+/// it starts. The compiler emits the barrier from the join task group; this
+/// check proves the emitted schedule actually carries it.
+fn validate_join_build_before_probe(pipeline: &CompiledPipeline) -> crate::error::Result<()> {
+    for probe in pipeline.tasks().iter().filter(|task| task.kind() == PipelineTaskKind::JoinProbe) {
+        let build = pipeline
+            .tasks()
+            .iter()
+            .find(|task| task.kind() == PipelineTaskKind::JoinBuild && task.plan_node() == probe.plan_node());
+        let gated = build.is_some_and(|build| {
+            pipeline.barriers().iter().any(|barrier| {
+                barrier.kind() == PipelineBarrierKind::JoinBuildBeforeProbe
+                    && barrier.upstream_tasks() == [build.id()]
+                    && barrier.downstream_tasks().contains(&probe.id())
+            })
+        });
+        if !gated {
+            return Err(invalid("pipeline join probe is not gated by its build barrier")
+                .with_fact("probe_task", probe.id())
+                .with_fact("build_task", build.map_or_else(|| "none".to_string(), |build| build.id().to_string())));
+        }
+    }
+    Ok(())
+}
+
+fn direct_data_consumers(pipeline: &CompiledPipeline, task: PipelineTaskId) -> BTreeSet<PipelineTaskId> {
+    pipeline
+        .edges()
+        .iter()
+        .filter(|edge| {
+            edge.from() == task
+                && matches!(
+                    edge.kind(),
+                    PipelineEdgeKind::ResidentFrame
+                        | PipelineEdgeKind::SharedResidentProducer
+                        | PipelineEdgeKind::JoinBuildInput
+                        | PipelineEdgeKind::JoinProbeInput
+                )
+        })
+        .map(|edge| edge.to())
+        .collect()
 }
 
 fn validate_barrier_dominance(pipeline: &CompiledPipeline) -> crate::error::Result<()> {

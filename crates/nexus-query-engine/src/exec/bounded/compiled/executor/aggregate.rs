@@ -5,7 +5,8 @@ use crate::{
         ResidentGpuFrame,
         compiled::{
             helpers::{
-                attach_task_facts, invalid, plan_node, single_input_resource, single_output_resource, sort_node,
+                attach_task_facts, invalid, limit_node, plan_node, single_input_resource, single_output_resource,
+                sort_node,
             },
             resource::CompiledGpuResourcePayload,
         },
@@ -14,9 +15,8 @@ use crate::{
         execute_final_sort_node_from_committed_with_retry, execute_final_sort_node_from_frame_with_retry,
         execute_final_sort_node_from_stream_with_retry,
     },
-    pipeline::{PipelineTask, PipelineTaskKind, ResidentResourceId},
-    plan::{LimitNode, NodeId, PlanNode, QueryPlan, SortNode},
-    source::SourceNode,
+    pipeline::{PipelineTask, ResidentDataForm, SortStrategy},
+    plan::PlanNode,
 };
 
 impl CompiledGpuTaskExecutor<'_> {
@@ -28,7 +28,7 @@ impl CompiledGpuTaskExecutor<'_> {
         let node_id = plan_node(task)?;
         let input = single_input_resource(task)?;
         let output = single_output_resource(task)?;
-        let preserve_output_stream = self.output_can_preserve_frame_stream(task.id(), output);
+        let preserve_output_stream = self.resource_data_form(output) == ResidentDataForm::FrameStream;
         let node = self.plan.node(node_id).ok_or_else(|| {
             invalid("compiled aggregate task references a missing plan node")
                 .with_fact("compiled_task_id", task.id())
@@ -241,10 +241,11 @@ impl CompiledGpuTaskExecutor<'_> {
         let input = single_input_resource(task)?;
         let output = single_output_resource(task)?;
         let sort = sort_node(self.plan, task, node_id)?.clone();
-        if let Some((limit_node_id, limit)) = self.downstream_fused_limit(task, output)?
+        if let Some(SortStrategy::FusedTopK { limit_node: limit_node_id, .. }) = task.sort_strategy()
             && (state.can_consume_task_input_resource(task, input)
                 || matches!(state.resource_payload(input)?.payload, CompiledGpuResourcePayload::ResidentFrameStream(_)))
         {
+            let limit = limit_node(self.plan, task, limit_node_id)?.clone();
             let input_payload = if state.can_consume_task_input_resource(task, input) {
                 state.consume_task_input_resource(task, input)?.into_payload()
             } else {
@@ -294,108 +295,5 @@ impl CompiledGpuTaskExecutor<'_> {
         )
         .map_err(|error| attach_task_facts(error, task, node_id))?;
         Ok(CompiledTaskOutput::new(vec![(output, CompiledGpuResource::new(frame))]))
-    }
-
-    pub(super) fn downstream_fused_limit(
-        &self,
-        task: &PipelineTask,
-        output: ResidentResourceId,
-    ) -> Result<Option<(NodeId, LimitNode)>> {
-        let Some(resource) = self.pipeline.resources().iter().find(|resource| resource.id() == output) else {
-            return Ok(None);
-        };
-        let [consumer] = resource.consumers() else {
-            return Ok(None);
-        };
-        let Some(consumer_task) = self.pipeline.tasks().iter().find(|candidate| candidate.id() == *consumer) else {
-            return Err(invalid("compiled final sort output references a missing consumer task")
-                .with_fact("compiled_task_id", task.id())
-                .with_fact("resident_resource_id", output));
-        };
-        if consumer_task.kind() != PipelineTaskKind::Limit {
-            return Ok(None);
-        }
-        let limit_node_id = plan_node(consumer_task)?;
-        let Some(node) = self.plan.node(limit_node_id) else {
-            return Err(invalid("compiled final sort downstream limit references a missing plan node")
-                .with_fact("compiled_task_id", task.id())
-                .with_fact("limit_task_id", consumer_task.id())
-                .with_fact("plan_node_id", limit_node_id));
-        };
-        let PlanNode::Limit(limit) = &node.kind else {
-            return Err(invalid("compiled final sort downstream limit task does not reference a limit plan node")
-                .with_fact("compiled_task_id", task.id())
-                .with_fact("limit_task_id", consumer_task.id())
-                .with_fact("plan_node_id", limit_node_id));
-        };
-        if Some(limit.input) != task.plan_node() {
-            return Ok(None);
-        }
-        let sort_node_id = plan_node(task)?;
-        let sort = sort_node(self.plan, task, sort_node_id)?;
-        if !final_sort_limit_fusion_allowed(self.plan, sort) {
-            return Ok(None);
-        }
-        Ok(Some((limit_node_id, limit.clone())))
-    }
-}
-
-fn final_sort_limit_fusion_allowed(plan: &QueryPlan, sort: &SortNode) -> bool {
-    !matches!(
-        plan.node(sort.input).map(|node| &node.kind),
-        Some(PlanNode::Source(source)) if matches!(source.as_ref(), SourceNode::GpuResident(_))
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use std::sync::Arc;
-
-    use arrow::datatypes::{DataType, Field, Schema};
-
-    use super::final_sort_limit_fusion_allowed;
-    use crate::{
-        expr::{Expr, LimitSpec, SortExpr, SortSpec},
-        plan::{PlanNode, QueryPlanBuilder},
-        source::{GpuResidentSource, LocalParquetSource, SourceNode},
-    };
-
-    #[test]
-    fn final_sort_limit_fusion_excludes_only_direct_gpu_resident_sources() {
-        let schema = Arc::new(Schema::new(vec![Field::new("value", DataType::Int64, false)]));
-
-        let mut resident_builder = QueryPlanBuilder::new();
-        let resident = resident_builder
-            .add_source(SourceNode::GpuResident(GpuResidentSource::new("resident", Arc::clone(&schema))));
-        let resident_sort = resident_builder.add_sort(
-            resident,
-            SortSpec::new(vec![SortExpr::new(Expr::column("value"), false, false)]),
-            Arc::clone(&schema),
-        );
-        let resident_limit =
-            resident_builder.add_limit(resident_sort, LimitSpec::new(0, Some(100)), Arc::clone(&schema));
-        let resident_plan = resident_builder.finish_with_host_sink(resident_limit);
-        let PlanNode::Sort(resident_sort_node) = &resident_plan.node(resident_sort).unwrap().kind else {
-            panic!("resident sort node must remain a sort")
-        };
-        assert!(!final_sort_limit_fusion_allowed(&resident_plan, resident_sort_node));
-
-        let mut parquet_builder = QueryPlanBuilder::new();
-        let parquet = parquet_builder.add_source(SourceNode::LocalParquet(LocalParquetSource::new(
-            "/tmp/final-sort-limit-fusion.parquet",
-            Arc::clone(&schema),
-            vec!["value".to_owned()],
-        )));
-        let parquet_sort = parquet_builder.add_sort(
-            parquet,
-            SortSpec::new(vec![SortExpr::new(Expr::column("value"), false, false)]),
-            Arc::clone(&schema),
-        );
-        let parquet_limit = parquet_builder.add_limit(parquet_sort, LimitSpec::new(0, Some(100)), schema);
-        let parquet_plan = parquet_builder.finish_with_host_sink(parquet_limit);
-        let PlanNode::Sort(parquet_sort_node) = &parquet_plan.node(parquet_sort).unwrap().kind else {
-            panic!("Parquet sort node must remain a sort")
-        };
-        assert!(final_sort_limit_fusion_allowed(&parquet_plan, parquet_sort_node));
     }
 }

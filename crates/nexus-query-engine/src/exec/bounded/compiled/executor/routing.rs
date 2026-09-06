@@ -2,11 +2,11 @@ use std::collections::BTreeSet;
 
 use super::CompiledGpuTaskExecutor;
 use crate::{
-    admission::CompiledJoinExecutionStrategy,
-    capability::{keyed_hash_join_capable, keyed_residual_left_match_join_capable},
     exec::bounded::SourceAdjacentAggregateChunkCapHints,
-    pipeline::{PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentResourceId},
-    plan::{JoinSide, JoinType, NodeId, PlanNode},
+    pipeline::{
+        PipelineEdgeKind, PipelineTaskId, PipelineTaskKind, ResidentDataForm, ResidentResourceId, ResourceSharing,
+    },
+    plan::{NodeId, PlanNode},
     source::SourceNode,
 };
 
@@ -158,54 +158,23 @@ impl CompiledGpuTaskExecutor<'_> {
         None
     }
 
-    pub(super) fn resource_has_multiple_consumers(&self, resource: ResidentResourceId) -> bool {
+    /// The compiled contract for how this resource's consumers read it.
+    pub(super) fn resource_sharing(&self, resource: ResidentResourceId) -> ResourceSharing {
         self.pipeline
             .resources()
             .iter()
             .find(|candidate| candidate.id() == resource)
-            .is_some_and(|resource| resource.consumers().len() > 1)
+            .map_or(ResourceSharing::SingleConsume, |resource| resource.sharing())
     }
 
-    pub(super) fn shared_source_consumers_can_clone_source_stream(
-        &self,
-        task: PipelineTaskId,
-        resource: ResidentResourceId,
-    ) -> bool {
-        let Some(resource) = self.pipeline.resources().iter().find(|candidate| candidate.id() == resource) else {
-            return false;
-        };
-        if resource.consumers().len() <= 1 {
-            return true;
-        }
-        let mut feeds_aggregate = false;
-        let all_consumers_can_clone = resource.consumers().iter().all(|consumer| {
-            let Some(edge) = self.pipeline.edges().iter().find(|edge| {
-                edge.from() == task && edge.to() == *consumer && edge.resources().contains(&resource.id())
-            }) else {
-                return false;
-            };
-            match edge.kind() {
-                PipelineEdgeKind::JoinBuildInput | PipelineEdgeKind::JoinProbeInput => true,
-                PipelineEdgeKind::ResidentFrame | PipelineEdgeKind::SharedResidentProducer => {
-                    self.pipeline.tasks().iter().find(|candidate| candidate.id() == *consumer).is_some_and(
-                        |consumer_task| match consumer_task.kind() {
-                            PipelineTaskKind::Aggregate => {
-                                feeds_aggregate = true;
-                                true
-                            },
-                            PipelineTaskKind::Unary => {
-                                let unary_feeds_aggregate = self.task_feeds_aggregate_input(consumer_task.id());
-                                feeds_aggregate |= unary_feeds_aggregate;
-                                self.task_feeds_join_input(consumer_task.id()) || unary_feeds_aggregate
-                            },
-                            _ => false,
-                        },
-                    )
-                },
-                PipelineEdgeKind::Control | PipelineEdgeKind::BarrierOutput | PipelineEdgeKind::SinkInput => false,
-            }
-        });
-        all_consumers_can_clone && feeds_aggregate
+    /// The strongest payload form the compiled contract lets this resource
+    /// carry. The producer may still hand over a weaker one.
+    pub(super) fn resource_data_form(&self, resource: ResidentResourceId) -> ResidentDataForm {
+        self.pipeline
+            .resources()
+            .iter()
+            .find(|candidate| candidate.id() == resource)
+            .map_or(ResidentDataForm::Frame, |resource| resource.data_form())
     }
 
     pub(super) fn local_parquet_source_node_for_resource(&self, resource: ResidentResourceId) -> Option<NodeId> {
@@ -217,70 +186,8 @@ impl CompiledGpuTaskExecutor<'_> {
         })
     }
 
-    pub(super) fn output_can_preserve_frame_stream(&self, task: PipelineTaskId, resource: ResidentResourceId) -> bool {
-        let Some(first_resource) = self.pipeline.resources().iter().find(|candidate| candidate.id() == resource) else {
-            return false;
-        };
-        if first_resource.producer() != task {
-            return false;
-        }
-        let mut pending = vec![resource];
-        let mut visited = BTreeSet::new();
-        while let Some(current) = pending.pop() {
-            if !visited.insert(current) {
-                return false;
-            }
-            let Some(resource) = self.pipeline.resources().iter().find(|candidate| candidate.id() == current) else {
-                return false;
-            };
-            if resource.consumers().is_empty() {
-                return false;
-            }
-            for consumer in resource.consumers() {
-                let Some(consumer) = self.pipeline.tasks().iter().find(|candidate| candidate.id() == *consumer) else {
-                    return false;
-                };
-                match consumer.kind() {
-                    PipelineTaskKind::Aggregate => {},
-                    PipelineTaskKind::JoinProbe if self.join_probe_task_can_consume_frame_stream(consumer) => {},
-                    PipelineTaskKind::JoinBuild if self.join_build_task_can_consume_frame_stream(consumer) => {},
-                    PipelineTaskKind::FinalSort if self.final_sort_task_can_consume_frame_stream(consumer) => {},
-                    PipelineTaskKind::Unary => {
-                        let [next] = consumer.output_resources() else { return false };
-                        pending.push(*next);
-                    },
-                    _ => return false,
-                }
-            }
-        }
-        true
-    }
-
-    pub(super) fn final_sort_task_can_consume_frame_stream(&self, task: &PipelineTask) -> bool {
-        let [output] = task.output_resources() else {
-            return false;
-        };
-        self.downstream_fused_limit(task, *output).ok().flatten().is_some()
-    }
-
-    // A keyed-hash build consumes its input chunk by chunk (partition-wise
-    // once the strategy settles, concatenated otherwise), so its producer may
-    // stay a stream instead of materializing one frame.
-    pub(super) fn join_build_task_can_consume_frame_stream(&self, task: &PipelineTask) -> bool {
-        let Some(node_id) = task.plan_node() else {
-            return false;
-        };
-        let Some(node) = self.plan.node(node_id) else {
-            return false;
-        };
-        let PlanNode::Join(join) = &node.kind else {
-            return false;
-        };
-        keyed_hash_join_capable(join)
-    }
-
-    // The materialize task preserves chunks only when every downstream
-    // consumer can process a stream; other consumers require one frame.
+    // The materialize task preserves chunks only when the compiled contract
+    // lets its output stay a stream and one consumer owns it.
     pub(super) fn join_probe_output_consumed_as_stream(&self, node_id: NodeId) -> bool {
         let Some(materialize) = self
             .pipeline
@@ -293,39 +200,8 @@ impl CompiledGpuTaskExecutor<'_> {
         let [output] = materialize.output_resources() else {
             return false;
         };
-        self.output_can_preserve_frame_stream(materialize.id(), *output)
-            && !self.resource_has_multiple_consumers(*output)
-    }
-
-    pub(super) fn join_probe_task_can_consume_frame_stream(&self, task: &PipelineTask) -> bool {
-        let Some(node_id) = task.plan_node() else {
-            return false;
-        };
-        let Some(node) = self.plan.node(node_id) else {
-            return false;
-        };
-        let PlanNode::Join(join) = &node.kind else {
-            return false;
-        };
-        if join.spec.residual_predicate.is_some() {
-            if keyed_residual_left_match_join_capable(join)
-                && matches!(
-                    CompiledJoinExecutionStrategy::from_plan_join_node(self.plan, node_id, join),
-                    Ok(Some(CompiledJoinExecutionStrategy::MixedKeyedResidual))
-                )
-            {
-                return true;
-            }
-            return matches!(
-                CompiledJoinExecutionStrategy::from_plan_join_node(self.plan, node_id, join),
-                Ok(Some(CompiledJoinExecutionStrategy::OneShotEqui))
-            );
-        }
-        match join.spec.join_type {
-            JoinType::Inner | JoinType::LeftSemi | JoinType::LeftAnti | JoinType::LeftMark => true,
-            JoinType::Left => join.spec.build_side == JoinSide::Right,
-            JoinType::Full | JoinType::Cross => false,
-        }
+        self.resource_data_form(*output) == ResidentDataForm::FrameStream
+            && self.resource_sharing(*output) == ResourceSharing::SingleConsume
     }
 
     pub(super) fn task_feeds_any_join_input_through_unary_chain(&self, task: PipelineTaskId) -> bool {

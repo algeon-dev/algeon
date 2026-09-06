@@ -1,7 +1,7 @@
 use super::{
     CapabilityDecision, EdgeContract, InvariantSelector, NodeCapability, PlanNode, QueryPlan, SubgraphInvariant,
-    closed_multi_join_subgraph_structure_decision, collect_reachable_node_ids, first_reachable_edge_rejection,
-    first_reachable_node_rejection, multi_join_aggregate_over_join_subplan_topk_shape_decision,
+    closed_multi_join_subgraph_structure_decision, collect_reachable_node_ids,
+    multi_join_aggregate_over_join_subplan_topk_shape_decision, reachable_local_capability_rejection,
     root_join_shape_decision, single_join_post_root_pipeline_shape_decision, solved_invariant_decision,
 };
 
@@ -10,14 +10,7 @@ pub(in crate::capability) fn analyze_root_join_admission(
     nodes: &[NodeCapability],
     edges: &[EdgeContract],
 ) -> CapabilityDecision {
-    let reachable = match collect_reachable_node_ids(plan) {
-        Ok(reachable) => reachable,
-        Err(decision) => return decision,
-    };
-    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
-        return rejection;
-    }
-    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+    if let Some(rejection) = reachable_local_capability_rejection(plan, nodes, edges) {
         return rejection;
     }
     match root_join_shape_decision(plan) {
@@ -31,6 +24,9 @@ pub(in crate::capability) fn analyze_union_pipeline_admission(
     nodes: &[NodeCapability],
     edges: &[EdgeContract],
 ) -> CapabilityDecision {
+    if let Some(rejection) = reachable_local_capability_rejection(plan, nodes, edges) {
+        return rejection;
+    }
     let reachable = match collect_reachable_node_ids(plan) {
         Ok(reachable) => reachable,
         Err(decision) => return decision,
@@ -41,12 +37,6 @@ pub(in crate::capability) fn analyze_union_pipeline_admission(
             [("sink_input", plan.sink().input().to_string())],
         );
     }
-    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
-        return rejection;
-    }
-    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
-        return rejection;
-    }
     CapabilityDecision::Satisfied
 }
 
@@ -55,14 +45,7 @@ pub(in crate::capability) fn analyze_single_join_post_root_pipeline_admission(
     nodes: &[NodeCapability],
     edges: &[EdgeContract],
 ) -> CapabilityDecision {
-    let reachable = match collect_reachable_node_ids(plan) {
-        Ok(reachable) => reachable,
-        Err(decision) => return decision,
-    };
-    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
-        return rejection;
-    }
-    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+    if let Some(rejection) = reachable_local_capability_rejection(plan, nodes, edges) {
         return rejection;
     }
     match single_join_post_root_pipeline_shape_decision(plan) {
@@ -77,14 +60,7 @@ pub(in crate::capability) fn analyze_closed_multi_join_subgraph_admission(
     edges: &[EdgeContract],
     invariants: &[SubgraphInvariant],
 ) -> CapabilityDecision {
-    let reachable = match collect_reachable_node_ids(plan) {
-        Ok(reachable) => reachable,
-        Err(decision) => return decision,
-    };
-    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
-        return rejection;
-    }
-    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+    if let Some(rejection) = reachable_local_capability_rejection(plan, nodes, edges) {
         return rejection;
     }
     let structure_decision = closed_multi_join_subgraph_structure_decision(plan);
@@ -121,14 +97,7 @@ pub(in crate::capability) fn analyze_multi_join_aggregate_over_join_subplan_topk
     edges: &[EdgeContract],
     invariants: &[SubgraphInvariant],
 ) -> CapabilityDecision {
-    let reachable = match collect_reachable_node_ids(plan) {
-        Ok(reachable) => reachable,
-        Err(decision) => return decision,
-    };
-    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
-        return rejection;
-    }
-    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+    if let Some(rejection) = reachable_local_capability_rejection(plan, nodes, edges) {
         return rejection;
     }
     let shape = match multi_join_aggregate_over_join_subplan_topk_shape_decision(plan) {

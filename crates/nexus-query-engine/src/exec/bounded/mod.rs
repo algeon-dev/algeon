@@ -67,12 +67,15 @@ pub(in crate::exec::bounded) use source_batching_policy::BoundedSourceBatchingPo
 pub(super) fn execute_bounded_query_plan(
     context: &ExecutionContext,
     plan: &QueryPlan,
+    admission: Option<&crate::admission::BoundedPipelineAdmission>,
     gpu_inputs: &GpuResidentInputMap,
     metrics: &mut QueryMetrics,
     observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
 ) -> Result<QueryOutput> {
     context.check_cancellation("nexus_query_engine.exec.bounded.execute_query_plan")?;
-    if let Some(output) = try_execute_bounded_pipeline(context, plan, gpu_inputs, metrics, observation_scope)? {
+    if let Some(output) =
+        try_execute_bounded_pipeline(context, plan, admission, gpu_inputs, metrics, observation_scope)?
+    {
         return Ok(output);
     }
 
@@ -134,16 +137,17 @@ pub(super) fn execute_bounded_query_plan(
     }
 }
 
+/// Decides the executable plan once and hands the admitted artifact to the
+/// caller. Execution runs this same artifact instead of re-deriving it.
+///
+/// The decision runs on the plan as given. When it rejects, the
+/// caller-visible sink is attached as a diagnostic fact only; it never
+/// selects a second decision.
 pub(super) fn preflight_bounded_join_plan(
     plan: &QueryPlan,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
-) -> Result<()> {
+) -> Result<Option<crate::admission::BoundedPipelineAdmission>> {
     if plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Join(_))) {
-        // A frontend-owned incremental D2H cursor uses a GPU-resident physical
-        // sink, while capability diagnostics must describe the caller-visible
-        // host sink.
-        let rejection_contract_plan = plan.clone_with_caller_visible_sink_contract();
-        let plan = &rejection_contract_plan;
         let mut error = unsupported_bounded_shape(
             "bounded native join execution requires an executable compiled pipeline",
             "bounded_join_plan_shape_unsupported",
@@ -160,19 +164,28 @@ pub(super) fn preflight_bounded_join_plan(
             },
         };
         let Some(rejection_projection) = decision.rejection_projection() else {
-            return Ok(());
+            return Ok(decision.admission().cloned());
         };
         let facts =
             crate::admission::bounded_join_unsupported_shape_facts_with_projection(plan, Some(rejection_projection));
         for (key, value) in facts {
             error = error.with_fact(key, value);
         }
+        let caller_visible_sink = plan.clone_with_caller_visible_sink_contract();
+        error = error.with_fact("caller_visible_sink", caller_visible_sink_kind(&caller_visible_sink));
         return Err(error);
     }
 
-    Ok(())
+    Ok(None)
+}
+
+fn caller_visible_sink_kind(plan: &QueryPlan) -> &'static str {
+    match plan.sink() {
+        crate::plan::ResultSink::HostArrow { .. } => "host_arrow",
+        crate::plan::ResultSink::GpuResident { .. } => "gpu_resident",
+    }
 }
 
 fn reject_bounded_join_plan(context: &ExecutionContext, plan: &QueryPlan) -> Result<()> {
-    preflight_bounded_join_plan(plan, context.statistical_aggregate_execution_mode())
+    preflight_bounded_join_plan(plan, context.statistical_aggregate_execution_mode()).map(|_| ())
 }

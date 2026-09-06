@@ -13,7 +13,7 @@ use nexus_query_engine::capability::CapabilityRejectionCategory;
 use super::{
     NativeCapabilityContractDiagnostics,
     capability_envelope::{
-        accepted_plan_contract_diagnostics, capability_envelope_admission_is_rejected,
+        accepted_plan_contract_diagnostics, native_bounded_decision, native_execution_boundary_is_rejected_on_decision,
         rejected_plan_contract_diagnostics,
     },
 };
@@ -183,6 +183,11 @@ fn replace_lowered_root_or_keep_plan(
         .cloned()
         .ok_or_else(|| native_candidate_error("native rewrite has no rewritten candidate"))?;
 
+    // The bounded plan is decided once here. The boundary check and both
+    // contract-diagnostics branches below read this same decision instead of
+    // re-deriving it.
+    let bounded_decision = native_bounded_decision(&native_plan, native_execution_config)?;
+
     if let Some(rejection) = nexus_query_engine::admission::statistical_aggregate_execution_mode_rejection(
         &native_plan,
         native_execution_config.statistical_aggregate_execution_mode(),
@@ -198,12 +203,17 @@ fn replace_lowered_root_or_keep_plan(
             report,
             native_optimizer,
             source_diagnostics: lowering.source_diagnostics,
-            capability_contract: rejected_plan_contract_diagnostics(&native_plan, candidate, native_execution_config)?,
+            capability_contract: rejected_plan_contract_diagnostics(
+                &native_plan,
+                candidate,
+                native_execution_config,
+                bounded_decision.as_ref(),
+            )?,
             rewritten: false,
         });
     }
 
-    if native_execution_boundary_is_rejected(&native_plan, native_execution_config)? {
+    if native_execution_boundary_is_rejected_on_decision(bounded_decision.as_ref()) {
         let report = native_execution_rejection_report_for_candidate(
             candidate.clone(),
             CapabilityReason::NativeBoundedJoinUnsupported,
@@ -214,13 +224,23 @@ fn replace_lowered_root_or_keep_plan(
             report,
             native_optimizer,
             source_diagnostics: lowering.source_diagnostics,
-            capability_contract: rejected_plan_contract_diagnostics(&native_plan, candidate, native_execution_config)?,
+            capability_contract: rejected_plan_contract_diagnostics(
+                &native_plan,
+                candidate,
+                native_execution_config,
+                bounded_decision.as_ref(),
+            )?,
             rewritten: false,
         });
     }
 
     let datafusion_shape = candidate.shape.clone();
-    let capability_contract = accepted_plan_contract_diagnostics(&native_plan, candidate, native_execution_config)?;
+    let capability_contract = accepted_plan_contract_diagnostics(
+        &native_plan,
+        candidate,
+        native_execution_config,
+        bounded_decision.as_ref(),
+    )?;
     if let Some(deferred) = capability_contract.deferred_candidates.first()
         && !lowering.report.mark_selected_deferred(&deferred.candidate, deferred.planning_stage.clone())
     {
@@ -399,16 +419,6 @@ fn collect_gpu_resident_producer_children(
     for child in plan.children() {
         collect_gpu_resident_producer_children(child, required_inputs, producers);
     }
-}
-
-fn native_execution_boundary_is_rejected(
-    plan: &nexus_query_engine::plan::QueryPlan,
-    execution_config: &NexusNativeExecutionConfig,
-) -> DataFusionResult<bool> {
-    if !execution_config.memory_control_policy().is_bounded() || !plan.contains_join() {
-        return Ok(false);
-    }
-    capability_envelope_admission_is_rejected(plan, execution_config)
 }
 
 fn native_execution_cost_selection_report(

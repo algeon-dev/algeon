@@ -4,14 +4,14 @@ use super::{
     PlanNode, QueryPlan, SourceNode, generic_join_node, join_side_index, node_operator_fact,
     reachable_join_count_from_sink, root_join_with_post_root_stages,
     validate_bounded_join_subtree_with_preaggregate_leaves_rooted_at_join_for_capability,
-    validate_general_post_root_stages, validate_optional_projection_then_sort_post_root_stages,
+    validate_optional_projection_then_sort_post_root_stages,
 };
 use crate::plan::AggregateNode;
 
 pub(in crate::capability) fn keyless_conditional_join_input_subplan_shape_decision(
     plan: &QueryPlan,
 ) -> Result<KeylessConditionalJoinInputSubplanShape, CapabilityDecision> {
-    let (root_join_id, post_root_stages) = root_join_with_post_root_stages(plan, "keyless_input_subplan")?;
+    let (root_join_id, _) = root_join_with_post_root_stages(plan, "keyless_input_subplan")?;
     let root_join = generic_join_node(
         plan,
         root_join_id,
@@ -22,7 +22,6 @@ pub(in crate::capability) fn keyless_conditional_join_input_subplan_shape_decisi
         root_join,
         "keyless_conditional_input_subplan_requires_keyless_conditional_inner_join",
     )?;
-    validate_general_post_root_stages(plan, &post_root_stages, "keyless_conditional_input_subplan")?;
 
     let left_contains_subplan = validate_keyless_conditional_input_subplan_for_capability(
         plan,

@@ -67,10 +67,11 @@ pub fn nexus_query_engine::exec::output::QueryExecutionResult::output(&self) -> 
 pub struct nexus_query_engine::exec::QueryExecutionRequest<'a>
 impl<'a> nexus_query_engine::exec::QueryExecutionRequest<'a>
 pub const fn nexus_query_engine::exec::QueryExecutionRequest<'a>::new(&'a nexus_query_planning::plan::core::QueryPlan) -> Self
+pub const fn nexus_query_engine::exec::QueryExecutionRequest<'a>::with_bounded_admission(self, &'a nexus_query_planning::admission::bounded::BoundedPipelineAdmission) -> Self
 pub const fn nexus_query_engine::exec::QueryExecutionRequest<'a>::with_gpu_inputs(self, &'a nexus_query_runtime::runtime::resident::GpuResidentInputMap) -> Self
 pub fn nexus_query_engine::exec::execute_query_plan(&nexus_query_runtime::runtime::context::ExecutionContext, nexus_query_engine::exec::QueryExecutionRequest<'_>) -> nexus_query_engine::exec::output::QueryExecutionOutcome
 pub fn nexus_query_engine::exec::materialize_gpu_result_to_host(nexus_query_runtime::runtime::resident::GpuResultHandle, &mut nexus_query_runtime::metrics::QueryMetrics) -> nexus_query_planning::error::Result<arrow_array::record_batch::RecordBatch>
-pub fn nexus_query_engine::exec::preflight_bounded_query_plan(&nexus_query_planning::plan::core::QueryPlan, nexus_query_planning::mode::StatisticalAggregateExecutionMode) -> nexus_query_planning::error::Result<()>
+pub fn nexus_query_engine::exec::preflight_bounded_query_plan(&nexus_query_planning::plan::core::QueryPlan, nexus_query_planning::mode::StatisticalAggregateExecutionMode) -> nexus_query_planning::error::Result<core::option::Option<nexus_query_planning::admission::bounded::BoundedPipelineAdmission>>
 pub fn nexus_query_engine::exec::preflight_query_plan(&nexus_query_planning::plan::core::QueryPlan) -> nexus_query_planning::error::Result<()>
 pub mod nexus_query_engine::harness
 pub use nexus_query_engine::harness::StableFnv1a64

@@ -242,19 +242,25 @@ impl ExecutionPlan for NexusNativeExec {
             async move {
                 let unresolved_capability_evidence = AttemptCapabilityEvidence::for_query_plan(&plan);
                 let plan = super::lakehouse::resolve_query_plan(&execution_config, plan, task_context.as_ref()).await;
-                if execution_config.memory_control_policy().is_bounded() {
+                // The executable plan carries the deferred materialization sink;
+                // the preflight decides this same plan once and hands the
+                // artifact to execution instead of deciding again there.
+                let gpu_plan = plan.clone_with_deferred_host_materialization_sink();
+                let bounded_admission = if execution_config.memory_control_policy().is_bounded() {
                     nexus_query_engine::exec::preflight_bounded_query_plan(
-                        &plan,
+                        &gpu_plan,
                         execution_config.statistical_aggregate_execution_mode(),
                     )
                     .map_err(|error| {
                         DataFusionError::from(Error::from_native(
                             "datafusion_nexus.native_exec.bounded_preflight",
-                            "failed to preflight the resolved bounded native host plan before admission",
+                            "failed to preflight the resolved bounded native executable plan before admission",
                             error,
                         ))
-                    })?;
-                }
+                    })?
+                } else {
+                    None
+                };
                 if execution_config.lakehouse_footer_pruning()
                     && let Some(ticket) =
                         execution_config.query_admission_ticket_for_task_context(task_context.as_ref())
@@ -315,11 +321,16 @@ impl ExecutionPlan for NexusNativeExec {
                     "datafusion_nexus.native_exec.gpu_execution_pool",
                     move |gpu_stream_scope| async move {
                         let context = context_lease.context().with_runtime_gpu_stream_scope(gpu_stream_scope);
-                        let gpu_plan = plan.clone_with_deferred_host_materialization_sink();
                         let _elapsed_compute = metrics.baseline.elapsed_compute().timer();
                         // Once native execution starts, the attempt is terminal: errors are surfaced with stable
                         // facts by `native_query_runtime_error` and are not replayed through DataFusion.
-                        let outcome = execute_query_plan(&context, QueryExecutionRequest::new(&gpu_plan));
+                        // Execution checks the preflight artifact against the
+                        // executable plan instead of re-deriving it.
+                        let mut request = QueryExecutionRequest::new(&gpu_plan);
+                        if let Some(admission) = &bounded_admission {
+                            request = request.with_bounded_admission(admission);
+                        }
+                        let outcome = execute_query_plan(&context, request);
                         let output = metrics.finalize_query_outcome_for_deferred_host(outcome).map_err(|error| {
                             DataFusionError::from(native_query_runtime_error(
                                 "datafusion_nexus.native_exec.execute",

@@ -1,7 +1,8 @@
 use std::collections::BTreeSet;
 
 use super::{
-    CapabilityDecision, EdgeConsumer, EdgeContract, NodeCapability, NodeId, SubgraphInvariant, SubgraphInvariantKind,
+    CapabilityDecision, EdgeConsumer, EdgeContract, NodeCapability, NodeId, QueryPlan, SubgraphInvariant,
+    SubgraphInvariantKind, collect_reachable_node_ids,
 };
 
 pub(in crate::capability::admission) fn node_ids_fact(node_ids: &[NodeId]) -> String {
@@ -137,7 +138,7 @@ pub(in crate::capability::admission) fn solved_invariant_decision(
         .map(|invariant| &invariant.decision)
 }
 
-pub(in crate::capability) fn first_reachable_node_rejection(
+fn first_reachable_node_rejection(
     nodes: &[NodeCapability],
     reachable: &BTreeSet<NodeId>,
 ) -> Option<CapabilityDecision> {
@@ -154,10 +155,7 @@ pub(in crate::capability) fn first_reachable_node_rejection(
     })
 }
 
-pub(in crate::capability) fn first_reachable_edge_rejection(
-    edges: &[EdgeContract],
-    reachable: &BTreeSet<NodeId>,
-) -> Option<CapabilityDecision> {
+fn first_reachable_edge_rejection(edges: &[EdgeContract], reachable: &BTreeSet<NodeId>) -> Option<CapabilityDecision> {
     edges.iter().find_map(|edge| {
         if !reachable.contains(&edge.producer) {
             return None;
@@ -174,4 +172,22 @@ pub(in crate::capability) fn first_reachable_edge_rejection(
             _ => None,
         }
     })
+}
+
+/// Shared reachable node/edge precondition for a plan-shape analyzer: the
+/// sink-reachable subgraph must resolve, and no reachable node or edge may
+/// already be rejected, before the analyzer evaluates its own shape.
+pub(in crate::capability) fn reachable_local_capability_rejection(
+    plan: &QueryPlan,
+    nodes: &[NodeCapability],
+    edges: &[EdgeContract],
+) -> Option<CapabilityDecision> {
+    let reachable = match collect_reachable_node_ids(plan) {
+        Ok(reachable) => reachable,
+        Err(decision) => return Some(decision),
+    };
+    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
+        return Some(rejection);
+    }
+    first_reachable_edge_rejection(edges, &reachable)
 }

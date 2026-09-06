@@ -6,16 +6,19 @@
 //! operators.
 
 mod compile;
+mod contract;
 mod display;
 mod model;
 mod shadow;
 mod validate;
 
 pub use compile::compile_pipeline;
+pub(crate) use compile::{PipelineCompilation, compile_pipeline_outcome};
 pub use model::{
-    CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge, PipelineEdgeId,
-    PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentLifetime, ResidentResource,
-    ResidentResourceId, SinkBoundary, SinkBoundaryKind,
+    AcceptedInputForm, CompiledPipeline, PipelineBarrier, PipelineBarrierId, PipelineBarrierKind, PipelineEdge,
+    PipelineEdgeId, PipelineEdgeKind, PipelineTask, PipelineTaskId, PipelineTaskKind, ResidentDataForm,
+    ResidentLifetime, ResidentResource, ResidentResourceId, ResourceSharing, SinkBoundary, SinkBoundaryKind,
+    SortStrategy,
 };
 pub use shadow::{
     ShadowBytes, ShadowMemoryModels, ShadowPipelineEstimate, ShadowResourceLifetime, ShadowResourceModel,

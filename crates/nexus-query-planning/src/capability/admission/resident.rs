@@ -1,12 +1,11 @@
 use super::{
     CapabilityDecision, EdgeContract, InvariantSelector, NodeCapability, QueryPlan, SubgraphInvariant,
-    collect_reachable_node_ids, first_reachable_edge_rejection, first_reachable_node_rejection,
     hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_shape_decision,
     keyed_hash_join_resident_subplan_shape_decision,
     keyless_conditional_join_aggregate_over_join_subplan_inputs_shape_decision,
     keyless_conditional_join_input_subplan_shape_decision,
     mixed_keyed_residual_join_resident_grouped_aggregate_input_shape_decision,
-    multi_join_resident_grouped_aggregate_subquery_filter_shape_decision,
+    multi_join_resident_grouped_aggregate_subquery_filter_shape_decision, reachable_local_capability_rejection,
     rollup_rank_topk_after_aggregate_join_pushdown_shape_decision, solved_invariant_decision,
 };
 
@@ -16,14 +15,7 @@ pub(in crate::capability) fn analyze_mixed_keyed_residual_join_resident_grouped_
     edges: &[EdgeContract],
     invariants: &[SubgraphInvariant],
 ) -> CapabilityDecision {
-    let reachable = match collect_reachable_node_ids(plan) {
-        Ok(reachable) => reachable,
-        Err(decision) => return decision,
-    };
-    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
-        return rejection;
-    }
-    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+    if let Some(rejection) = reachable_local_capability_rejection(plan, nodes, edges) {
         return rejection;
     }
     let shape = match mixed_keyed_residual_join_resident_grouped_aggregate_input_shape_decision(plan) {
@@ -68,14 +60,7 @@ pub(in crate::capability) fn analyze_hash_join_resident_grouped_aggregate_input_
     edges: &[EdgeContract],
     invariants: &[SubgraphInvariant],
 ) -> CapabilityDecision {
-    let reachable = match collect_reachable_node_ids(plan) {
-        Ok(reachable) => reachable,
-        Err(decision) => return decision,
-    };
-    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
-        return rejection;
-    }
-    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+    if let Some(rejection) = reachable_local_capability_rejection(plan, nodes, edges) {
         return rejection;
     }
     let shape = match hash_join_resident_grouped_aggregate_input_post_join_aggregate_topk_shape_decision(plan) {
@@ -118,14 +103,7 @@ pub(in crate::capability) fn analyze_rollup_rank_topk_after_aggregate_join_pushd
     edges: &[EdgeContract],
     invariants: &[SubgraphInvariant],
 ) -> CapabilityDecision {
-    let reachable = match collect_reachable_node_ids(plan) {
-        Ok(reachable) => reachable,
-        Err(decision) => return decision,
-    };
-    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
-        return rejection;
-    }
-    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+    if let Some(rejection) = reachable_local_capability_rejection(plan, nodes, edges) {
         return rejection;
     }
     let shape = match rollup_rank_topk_after_aggregate_join_pushdown_shape_decision(plan) {
@@ -172,14 +150,7 @@ pub(in crate::capability) fn analyze_keyed_hash_join_resident_subplan_admission(
     edges: &[EdgeContract],
     invariants: &[SubgraphInvariant],
 ) -> CapabilityDecision {
-    let reachable = match collect_reachable_node_ids(plan) {
-        Ok(reachable) => reachable,
-        Err(decision) => return decision,
-    };
-    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
-        return rejection;
-    }
-    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+    if let Some(rejection) = reachable_local_capability_rejection(plan, nodes, edges) {
         return rejection;
     }
     let shape = match keyed_hash_join_resident_subplan_shape_decision(plan) {
@@ -222,14 +193,7 @@ pub(in crate::capability) fn analyze_keyless_conditional_join_input_subplan_admi
     edges: &[EdgeContract],
     invariants: &[SubgraphInvariant],
 ) -> CapabilityDecision {
-    let reachable = match collect_reachable_node_ids(plan) {
-        Ok(reachable) => reachable,
-        Err(decision) => return decision,
-    };
-    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
-        return rejection;
-    }
-    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+    if let Some(rejection) = reachable_local_capability_rejection(plan, nodes, edges) {
         return rejection;
     }
     let shape = match keyless_conditional_join_input_subplan_shape_decision(plan) {
@@ -272,14 +236,7 @@ pub(in crate::capability) fn analyze_keyless_conditional_join_aggregate_over_joi
     edges: &[EdgeContract],
     invariants: &[SubgraphInvariant],
 ) -> CapabilityDecision {
-    let reachable = match collect_reachable_node_ids(plan) {
-        Ok(reachable) => reachable,
-        Err(decision) => return decision,
-    };
-    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
-        return rejection;
-    }
-    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+    if let Some(rejection) = reachable_local_capability_rejection(plan, nodes, edges) {
         return rejection;
     }
     let shape = match keyless_conditional_join_aggregate_over_join_subplan_inputs_shape_decision(plan) {
@@ -337,14 +294,7 @@ pub(in crate::capability) fn analyze_multi_join_resident_grouped_aggregate_subqu
     edges: &[EdgeContract],
     invariants: &[SubgraphInvariant],
 ) -> CapabilityDecision {
-    let reachable = match collect_reachable_node_ids(plan) {
-        Ok(reachable) => reachable,
-        Err(decision) => return decision,
-    };
-    if let Some(rejection) = first_reachable_node_rejection(nodes, &reachable) {
-        return rejection;
-    }
-    if let Some(rejection) = first_reachable_edge_rejection(edges, &reachable) {
+    if let Some(rejection) = reachable_local_capability_rejection(plan, nodes, edges) {
         return rejection;
     }
     let shape = match multi_join_resident_grouped_aggregate_subquery_filter_shape_decision(plan) {

@@ -12,7 +12,7 @@ use crate::{
         execute_bounded_generic_projection, execute_bounded_generic_projection_from_frame,
         execute_bounded_generic_unary, execute_bounded_generic_unary_from_frame,
     },
-    pipeline::PipelineTask,
+    pipeline::{PipelineTask, ResourceSharing},
     plan::PlanNode,
 };
 
@@ -67,7 +67,7 @@ impl CompiledGpuTaskExecutor<'_> {
                         CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
                             let stream = self.apply_dynamic_filters_to_filter_stream(node_id, filter, stream)?;
                             let stream = map_filter_resident_frame_stream(node_id, stream, filter.clone());
-                            let stream = if self.resource_has_multiple_consumers(output) {
+                            let stream = if self.resource_sharing(output) != ResourceSharing::SingleConsume {
                                 stream.into_shared(&mut self.execution)?
                             } else {
                                 stream
@@ -98,7 +98,7 @@ impl CompiledGpuTaskExecutor<'_> {
                         let stream = stream.alias(node_id, "compiled_filter_stream_alias")?;
                         let stream = self.apply_dynamic_filters_to_filter_stream(node_id, filter, stream)?;
                         let stream = map_filter_resident_frame_stream(node_id, stream, filter.clone());
-                        let stream = if self.resource_has_multiple_consumers(output) {
+                        let stream = if self.resource_sharing(output) != ResourceSharing::SingleConsume {
                             stream.into_shared(&mut self.execution)?
                         } else {
                             stream
@@ -170,7 +170,7 @@ impl CompiledGpuTaskExecutor<'_> {
                         .map(CompiledGpuResource::new),
                         CompiledGpuResourcePayload::ResidentFrameStream(stream) => {
                             let stream = map_projection_resident_frame_stream(node_id, stream, projection.clone());
-                            let stream = if self.resource_has_multiple_consumers(output) {
+                            let stream = if self.resource_sharing(output) != ResourceSharing::SingleConsume {
                                 stream.into_shared(&mut self.execution)?
                             } else {
                                 stream
@@ -200,7 +200,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     } else if let CompiledGpuResourcePayload::ResidentFrameStream(stream) = &input_payload.payload {
                         let stream = stream.alias(node_id, "compiled_projection_stream_alias")?;
                         let stream = map_projection_resident_frame_stream(node_id, stream, projection.clone());
-                        let stream = if self.resource_has_multiple_consumers(output) {
+                        let stream = if self.resource_sharing(output) != ResourceSharing::SingleConsume {
                             stream.into_shared(&mut self.execution)?
                         } else {
                             stream
