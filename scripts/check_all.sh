@@ -501,15 +501,349 @@ run_phase() {
   [[ "${PHASE_STATUS[${id}]}" == PASS ]]
 }
 
+# --- Full-gate parallel schedule (full mode only) ---
+# Full mode overlaps phases that are independent by construction:
+# - Stage A: cargo-build-free checks (policy, sources, bindings, fmt, lanes).
+# - Stage B: isolated-target builds (component packages, native-free check,
+#   feature-isolation shards) against the main-target chain (live inventory,
+#   GPU preflight). Each side uses a disjoint CARGO_TARGET_DIR, so Cargo never
+#   serializes them on its target-dir lock.
+# - Stage C: main-target static checks (msrv, rustdoc, API surface, clippy)
+#   while the GPU lanes execute already-built test binaries. Nextest replay
+#   via --cargo-metadata/--binaries-metadata performs no Cargo build, so it
+#   holds no target-dir lock against the static chain.
+# Phase commands, per-phase logs, phases.tsv schema/row order, GPU flock
+# usage, and failure semantics are unchanged; only wall-clock overlap is
+# added. Non-full modes keep the legacy sequential path verbatim.
+declare -A PHASE_BG_PID PHASE_BG_RESULT
+
+# Partition of the canonical feature-isolation matrix
+# (cargo hack check --workspace --each-feature --exclude-features default
+# --locked --keep-going) into six package shards of ten checks each. The
+# union is verified against the canonical --print-command-list output on
+# every run; a new workspace member with no shard fails the phase closed.
+FEATURE_ISOLATION_SHARD_JOBS=6
+FEATURE_ISOLATION_SHARDS=(
+  "nexus-tools"
+  "datafusion-nexus nexus-workloads datafusion-facade-consumer rapids-interop"
+  "nexus-query-runtime nexus-query-planning"
+  "nexus-query-engine cudf-nexus cudf-nexus-sys nexus-build-support"
+  "nexus-iceberg nexus-server cugraph-nexus-sys"
+  "nexus-examples nexus-bench cugraph-nexus cuvs-nexus cuvs-nexus-sys"
+)
+
+# Background twin of run_phase: identical setup and accounting, but the
+# command output goes to the phase log file only (no console tee) and the
+# outcome is recorded in a result file for phase_collect to import. The
+# background subshell never touches PHASE_* arrays or phases.tsv, so parallel
+# phases cannot tear shared gate state.
+run_phase_bg() {
+  local id=$1
+  local count_kind=$2
+  local gpu_cap=$3
+  local lock_path=$4
+  shift 4
+  if [[ -z "${PHASE_COMMAND[${id}]:-}" || "${PHASE_COMMAND[${id}]}" == "-" ]]; then
+    PHASE_COMMAND["${id}"]="$*"
+  fi
+  local phase_log="${PHASE_LOG_DIR}/${id}.log"
+  : >"${phase_log}" || {
+    echo "ERROR: cannot create phase log '${phase_log}'." >&2
+    PHASE_STATUS["${id}"]='FAIL(log)'
+    PHASE_LOG["${id}"]=${phase_log}
+    status=1
+    return 1
+  }
+  PHASE_LOG["${id}"]=${phase_log}
+  PHASE_KIND["${id}"]=${count_kind}
+  PHASE_GPU_CAP["${id}"]=${gpu_cap}
+  PHASE_LOCK["${id}"]=${lock_path}
+  PHASE_STATUS["${id}"]=RUNNING
+  write_phase_state || {
+    echo "ERROR: cannot persist phase state in '${PHASE_LOG_DIR}'." >&2
+    PHASE_STATUS["${id}"]='FAIL(state)'
+    status=1
+    return 1
+  }
+  echo
+  echo "==> [${id}] ${PHASE_COMMAND[${id}]} (background)"
+  local result="${PHASE_LOG_DIR}/${id}.result"
+  PHASE_BG_RESULT["${id}"]=${result}
+  rm -f "${result}"
+  (
+    bg_phase_body "${id}" "${count_kind}" "${phase_log}" "${result}" "$@"
+  ) &
+  PHASE_BG_PID["${id}"]=$!
+}
+
+bg_phase_body() {
+  local id=$1
+  local count_kind=$2
+  local phase_log=$3
+  local result=$4
+  shift 4
+  local start end command_status=0
+  local bg_status bg_counts="-" bg_exit=0 bg_failed=0 bg_accounting_failed=0 bg_accounting_diag=""
+  start=$(phase_now_ms)
+  "$@" >>"${phase_log}" 2>&1 || command_status=$?
+  bg_exit=${command_status}
+  if [[ "${command_status}" -eq 0 ]]; then
+    bg_status=PASS
+  else
+    bg_status="FAIL(${command_status})"
+    bg_failed=1
+  fi
+  # Same accounting as run_phase; parser output is log-only (no console tee).
+  case "${count_kind}" in
+    none) ;;
+    literal:*) bg_counts=${count_kind#literal:} ;;
+    nextest | cargo)
+      local count_output count_status=0
+      count_output=$(python3 scripts/ci/phase_test_counts.py --kind "${count_kind}" --input "${phase_log}" 2>&1) || count_status=$?
+      if [[ "${count_status}" -eq 0 ]]; then
+        bg_counts=${count_output}
+        printf 'PHASE TEST COUNTS: %s\n' "${count_output}" >>"${phase_log}"
+      else
+        printf '%s\n' "${count_output}" >>"${phase_log}" 2>&1
+        bg_accounting_failed=1
+        bg_accounting_diag="test-count parser exited ${count_status}"
+      fi
+      ;;
+    *)
+      bg_accounting_failed=1
+      bg_accounting_diag="unknown count kind '${count_kind}'"
+      ;;
+  esac
+  if [[ "${bg_accounting_failed}" -eq 1 ]]; then
+    bg_counts=unavailable
+    if [[ "${bg_status}" == PASS ]]; then
+      bg_status='FAIL(accounting)'
+      bg_failed=1
+    fi
+  fi
+  end=$(phase_now_ms)
+  local bg_duration
+  bg_duration=$(phase_duration "${start}" "${end}")
+  {
+    printf 'bg_status=%q\n' "${bg_status}"
+    printf 'bg_duration=%q\n' "${bg_duration}"
+    printf 'bg_exit=%q\n' "${bg_exit}"
+    printf 'bg_counts=%q\n' "${bg_counts}"
+    printf 'bg_failed=%q\n' "${bg_failed}"
+    printf 'bg_accounting_failed=%q\n' "${bg_accounting_failed}"
+    printf 'bg_accounting_diag=%q\n' "${bg_accounting_diag}"
+  } >"${result}"
+  exit 0
+}
+
+# Import one background phase outcome into the parent gate state. A missing
+# result file (killed worker) fails the phase closed.
+phase_collect() {
+  local id=$1
+  local pid=${PHASE_BG_PID[${id}]:-}
+  local result=${PHASE_BG_RESULT[${id}]:-}
+  local wait_status=0
+  if [[ -n "${pid}" ]]; then
+    wait "${pid}" || wait_status=$?
+  fi
+  local bg_status="FAIL(collect:${wait_status})" bg_duration="-" bg_exit="${wait_status}"
+  local bg_counts=unavailable bg_failed=1 bg_accounting_failed=0 bg_accounting_diag=""
+  if [[ -n "${result}" && -f "${result}" ]]; then
+    # shellcheck disable=SC1090
+    source "${result}"
+  else
+    echo "ERROR: ${id} background result is missing (wait=${wait_status})." >&2
+  fi
+  PHASE_STATUS["${id}"]=${bg_status}
+  PHASE_DURATION["${id}"]=${bg_duration}
+  PHASE_EXIT["${id}"]=${bg_exit}
+  PHASE_COUNTS["${id}"]=${bg_counts}
+  if [[ "${bg_failed}" -eq 1 ]]; then
+    status=1
+  fi
+  if [[ "${bg_accounting_failed}" -eq 1 ]]; then
+    echo "ERROR: ${id} accounting failed: ${bg_accounting_diag}" >&2
+  fi
+  write_phase_state || {
+    echo "ERROR: cannot persist phase state in '${PHASE_LOG_DIR}'." >&2
+    PHASE_STATUS["${id}"]='FAIL(state)'
+    status=1
+    return 1
+  }
+  echo "==> [${id}] ${PHASE_STATUS[${id}]} ${PHASE_DURATION[${id}]}"
+  [[ "${PHASE_STATUS[${id}]}" == PASS ]]
+}
+
 run_isolated_policy_commands() {
   local policy_status=0
-  local script
+  local policy_tmp
+  policy_tmp=$(mktemp -d "${PHASE_LOG_DIR}/policy.XXXXXX") || {
+    echo "ERROR: cannot create policy scratch directory." >&2
+    return 1
+  }
+  local -a policy_pids=()
+  local -A policy_pid_script=()
+  local script safe pid job_status
+  # Every policy script works in its own mktemp scratch directory and only
+  # reads the repo (plus idempotent mold-probe cleanup), so they run together.
   for script in "${POLICY_SCRIPTS[@]}"; do
     echo
-    echo "--> ${script}"
-    bash "${script}" || policy_status=1
+    echo "--> ${script} (background)"
+    safe=${script//\//_}
+    ( bash "${script}" >"${policy_tmp}/${safe}.log" 2>&1 ) &
+    pid=$!
+    policy_pids+=("${pid}")
+    policy_pid_script["${pid}"]=${script}
   done
+  for pid in "${policy_pids[@]}"; do
+    job_status=0
+    wait "${pid}" || job_status=$?
+    script=${policy_pid_script["${pid}"]}
+    cat "${policy_tmp}/${script//\//_}.log"
+    if [[ "${job_status}" -ne 0 ]]; then
+      echo "--> ${script}: FAIL(${job_status})"
+      policy_status=1
+    else
+      echo "--> ${script}: PASS"
+    fi
+  done
+  rm -rf "${policy_tmp}"
   return "${policy_status}"
+}
+
+feature_isolation_shard() {
+  local shard=$1
+  shift
+  local -a args=()
+  local pkg
+  for pkg in "$@"; do
+    args+=(-p "${pkg}")
+  done
+  env "CARGO_TARGET_DIR=${ROOT}/target/check-all/feature-isolation-shard-${shard}" \
+    "CARGO_BUILD_JOBS=${FEATURE_ISOLATION_SHARD_JOBS}" \
+    cargo hack check "${args[@]}" --each-feature --exclude-features default --locked --keep-going
+}
+
+# Fail-closed union check: the sharded runs must execute exactly the checks
+# the canonical workspace-wide command would execute.
+verify_feature_isolation_union() {
+  local shard_tmp=$1
+  local expected_list actual_list
+  expected_list=$(cargo hack check --workspace --each-feature --exclude-features default --locked --keep-going --print-command-list 2>/dev/null | LC_ALL=C sort) || {
+    echo "ERROR: cannot enumerate canonical feature-isolation checks." >&2
+    return 1
+  }
+  [[ -n "${expected_list}" ]] || {
+    echo "ERROR: canonical feature-isolation enumeration is empty." >&2
+    return 1
+  }
+  actual_list=$(grep -h -o 'info: running `[^`]*`' "${shard_tmp}"/shard-*.log | sed 's/^info: running `//; s/`$//' | LC_ALL=C sort) || {
+    echo "ERROR: cannot collect sharded feature-isolation checks." >&2
+    return 1
+  }
+  if ! diff <(printf '%s\n' "${expected_list}") <(printf '%s\n' "${actual_list}") >"${shard_tmp}/union.diff" 2>&1; then
+    echo "ERROR: sharded feature-isolation checks do not match the canonical command." >&2
+    cat "${shard_tmp}/union.diff" >&2 || true
+    return 1
+  fi
+  echo "feature-isolation shard union matches the canonical command list."
+}
+
+run_feature_isolation_shards() {
+  local shard_status=0
+  local shard_tmp
+  shard_tmp=$(mktemp -d "${PHASE_LOG_DIR}/feature-shards.XXXXXX") || {
+    echo "ERROR: cannot create feature-shard scratch directory." >&2
+    return 1
+  }
+  local -a shard_pids=()
+  local entry index=0 pid job_status
+  for entry in "${FEATURE_ISOLATION_SHARDS[@]}"; do
+    echo
+    echo "--> feature-isolation shard ${index}: ${entry} (background)"
+    # Intentionally unquoted: each entry is a space-separated package list.
+    # shellcheck disable=SC2086
+    ( feature_isolation_shard "${index}" ${entry} >"${shard_tmp}/shard-${index}.log" 2>&1 ) &
+    shard_pids+=($!)
+    index=$((index + 1))
+  done
+  index=0
+  for pid in "${shard_pids[@]}"; do
+    job_status=0
+    wait "${pid}" || job_status=$?
+    cat "${shard_tmp}/shard-${index}.log"
+    if [[ "${job_status}" -ne 0 ]]; then
+      echo "--> feature-isolation shard ${index}: FAIL(${job_status})"
+      if [[ "${shard_status}" -eq 0 ]]; then
+        shard_status=${job_status}
+      fi
+    else
+      echo "--> feature-isolation shard ${index}: PASS"
+    fi
+    index=$((index + 1))
+  done
+  if ! verify_feature_isolation_union "${shard_tmp}"; then
+    if [[ "${shard_status}" -eq 0 ]]; then
+      shard_status=1
+    fi
+  fi
+  rm -rf "${shard_tmp}"
+  return "${shard_status}"
+}
+
+full_stage_a_launch() {
+  PHASE_COMMAND[policy-selftests]="${policy_selftest_count} isolated policy/orchestration scripts"
+  run_phase_bg policy-selftests "literal:checks=${policy_selftest_count}" - - run_isolated_policy_commands || true
+  run_phase_bg native-sources none - - bash scripts/ci/check_native_sources.sh || true
+  PHASE_COMMAND[checked-bindings]="scripts/dev/bindings.sh cudf --check + cugraph --check + cuvs --check"
+  run_phase_bg checked-bindings none - - checked_bindings_command || true
+  run_phase_bg rustfmt none - - cargo "+${RUSTFMT_TOOLCHAIN}" fmt --all --check || true
+  PHASE_COMMAND[lane-structure]="test_lane_policy.py check-catalog + check-nextest"
+  run_phase_bg lane-structure literal:checks=2 - - run_lane_structure_commands || true
+}
+
+full_stage_a_collect() {
+  phase_collect policy-selftests || true
+  phase_collect native-sources || true
+  phase_collect checked-bindings || true
+  phase_collect rustfmt || true
+  if ! phase_collect lane-structure; then
+    lane_safe=0
+  fi
+  return 0
+}
+
+full_stage_b_launch() {
+  run_phase_bg component-packages "literal:packages=8" - - bash scripts/ci/check_component_packages.sh || true
+  PHASE_COMMAND[native-free-check]="DOCS_RS=1 cargo check --workspace --all-targets --all-features --locked --target-dir target/native-free-check"
+  run_phase_bg native-free-check none - - env DOCS_RS=1 cargo check --workspace --all-targets --all-features --locked --target-dir target/native-free-check || true
+  PHASE_COMMAND[feature-isolation-check]="cargo hack check --workspace --each-feature --exclude-features default --locked --keep-going (6 package shards, isolated target dirs)"
+  run_phase_bg feature-isolation-check none - - run_feature_isolation_shards || true
+}
+
+full_stage_b_collect() {
+  phase_collect component-packages || true
+  phase_collect native-free-check || true
+  phase_collect feature-isolation-check || true
+  return 0
+}
+
+full_stage_c_static_launch() {
+  run_phase_bg msrv-check none - - cargo hack check --workspace --all-features --locked --rust-version --workspace-behavior=cargo || true
+  PHASE_COMMAND[rustdoc]="RUSTDOCFLAGS='${DOC_RUSTDOCFLAGS}' cargo doc --workspace --all-features --no-deps --keep-going"
+  run_phase_bg rustdoc none - - rustdoc_command || true
+  run_phase_bg public-api-surface literal:crates=8 - - bash scripts/ci/check_public_api_surface.sh check --all-features || true
+  PHASE_COMMAND[clippy]="cargo clippy --workspace --all-targets --all-features -- -D warnings"
+  run_phase_bg clippy none - - cargo clippy --workspace --all-targets --all-features -- -D warnings || true
+}
+
+full_stage_c_static_collect() {
+  phase_collect msrv-check || true
+  phase_collect rustdoc || true
+  rustdoc_summary="command_status=${PHASE_EXIT[rustdoc]} warnings=denied"
+  phase_collect public-api-surface || true
+  phase_collect clippy || true
+  return 0
 }
 
 run_lane_structure_commands() {
@@ -554,7 +888,9 @@ rustdoc_command() {
   RUSTDOCFLAGS="${DOC_RUSTDOCFLAGS}" cargo doc --workspace --all-features --no-deps --keep-going
 }
 
-if [[ "${mode}" == full || "${lane}" == policy || "${mode}" == fast ]]; then
+if [[ "${mode}" == full ]]; then
+  full_stage_a_launch
+elif [[ "${lane}" == policy || "${mode}" == fast ]]; then
   PHASE_COMMAND[policy-selftests]="${policy_selftest_count} isolated policy/orchestration scripts"
   run_phase policy-selftests "literal:checks=${policy_selftest_count}" - - run_isolated_policy_commands || true
   run_phase native-sources none - - bash scripts/ci/check_native_sources.sh || true
@@ -571,15 +907,8 @@ else
 fi
 
 if [[ "${mode}" == full ]]; then
-  PHASE_COMMAND[checked-bindings]="scripts/dev/bindings.sh cudf --check + cugraph --check + cuvs --check"
-  run_phase checked-bindings none - - checked_bindings_command || true
-  run_phase component-packages "literal:packages=8" - - bash scripts/ci/check_component_packages.sh || true
-  PHASE_COMMAND[native-free-check]="DOCS_RS=1 cargo check --workspace --all-targets --all-features --locked --target-dir target/native-free-check"
-  run_phase native-free-check none - - env DOCS_RS=1 cargo check --workspace --all-targets --all-features --locked --target-dir target/native-free-check || true
-  run_phase msrv-check none - - cargo hack check --workspace --all-features --locked     --rust-version --workspace-behavior=cargo || true
-  PHASE_COMMAND[feature-isolation-check]="CARGO_TARGET_DIR=target/check-all/feature-isolation cargo hack check --workspace --each-feature --exclude-features default --locked --keep-going"
-  run_phase feature-isolation-check none - - env CARGO_TARGET_DIR=target/check-all/feature-isolation \
-    cargo hack check --workspace --each-feature --exclude-features default --locked --keep-going || true
+  full_stage_a_collect
+  full_stage_b_launch
 fi
 
 if [[ "${lane}" != policy ]]; then
@@ -647,6 +976,10 @@ if [[ "${lane}" != policy ]]; then
       echo "==> GPU scheduling preflight: ${gpu_scheduling_summary}"
     fi
   fi
+  if [[ "${mode}" == full ]]; then
+    full_stage_b_collect
+    full_stage_c_static_launch
+  fi
   if [[ "${lane_safe}" -eq 1 ]]; then
     nextest_failure_mode=(--no-fail-fast)
     [[ "${mode}" != dev ]] || nextest_failure_mode=(--fail-fast)
@@ -676,6 +1009,9 @@ if [[ "${lane}" != policy ]]; then
       flock "${GPU_LOCK}" cargo nextest run -P "${GPU_NEXTEST_PROFILE}" "${reuse_args[@]}" \
       -E 'group(gpu-exclusive)' "${nextest_failure_mode[@]}" --test-threads "${GPU_EXCLUSIVE_CAP}" --final-status-level fail || true
   fi
+  if [[ "${mode}" == full ]]; then
+    full_stage_c_static_collect
+  fi
   if [[ "${lane_safe}" -eq 0 ]]; then
     [[ "${needs_cpu}" -eq 0 || "${PHASE_STATUS[cpu-tests]}" != SKIPPED ]] || PHASE_STATUS[cpu-tests]='SKIPPED(blocked)'
     [[ "${needs_shared_gpu}" -eq 0 || "${PHASE_STATUS[gpu-shared-tests]}" != SKIPPED ]] || PHASE_STATUS[gpu-shared-tests]='SKIPPED(blocked)'
@@ -692,12 +1028,13 @@ if [[ "${mode}" == full ]]; then
   doctest_library_path="${ROOT}/target/native/cudf-install/lib:${ROOT}/target/native/cuvs-install/lib:${ROOT}/target/native/cugraph-install/lib:${ROOT}/target/native/cugraph-build${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
   PHASE_COMMAND[doctests]="LD_LIBRARY_PATH=${doctest_library_path} flock ${GPU_LOCK} cargo test --workspace --all-features --doc --no-fail-fast"
   run_phase doctests doctest - "${GPU_LOCK}"     env "LD_LIBRARY_PATH=${doctest_library_path}" flock "${GPU_LOCK}" cargo test --workspace --all-features --doc --no-fail-fast || true
+  # msrv-check, rustdoc, public-api-surface, and clippy already ran in the
+  # Stage C static chain overlapping the GPU lanes; only their display strings
+  # and summaries are refreshed here. Doctests still run sequentially: they
+  # need the GPU lock and a quiescent main target directory.
   PHASE_COMMAND[rustdoc]="RUSTDOCFLAGS='${DOC_RUSTDOCFLAGS}' cargo doc --workspace --all-features --no-deps --keep-going"
-  run_phase rustdoc none - - rustdoc_command || true
   rustdoc_summary="command_status=${PHASE_EXIT[rustdoc]} warnings=denied"
-  run_phase public-api-surface literal:crates=8 - -     bash scripts/ci/check_public_api_surface.sh check --all-features || true
   PHASE_COMMAND[clippy]="cargo clippy --workspace --all-targets --all-features -- -D warnings"
-  run_phase clippy none - -     cargo clippy --workspace --all-targets --all-features -- -D warnings || true
 fi
 
 sanitize_phase_cell() {
