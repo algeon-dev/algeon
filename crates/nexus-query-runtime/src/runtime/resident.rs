@@ -25,10 +25,13 @@ use nexus_query_planning::{
     plan::{GraphResidencyDescriptor, JoinNullEquality},
 };
 
-use crate::runtime::{
-    DevicePlacement, ExecutionCancellation, ExecutionContext,
-    cache::local_parquet::GpuLocalParquetSourceCachePin,
-    gpu::ledger::{MemoryGrant, ResidentOwnerLease},
+use crate::{
+    native_error::cudf_query_error,
+    runtime::{
+        DevicePlacement, ExecutionCancellation, ExecutionContext,
+        cache::local_parquet::GpuLocalParquetSourceCachePin,
+        gpu::ledger::{MemoryGrant, ResidentOwnerLease},
+    },
 };
 
 /// Local lookup table for GPU-resident inputs consumed by a query.
@@ -82,7 +85,7 @@ fn resident_frame_column_evidence(
     let operation = "nexus_query_engine.admission.resident_evidence";
     let frame = handle.frame();
     let info = frame.info_with(InfoDetail::COLUMNS).map_err(|error| {
-        QueryError::from_cudf(operation, "failed to inspect the admitted resident frame", error)
+        cudf_query_error(operation, "failed to inspect the admitted resident frame", error)
             .with_fact("reason", "resident_column_metadata_unavailable")
     })?;
     let columns = info.columns.ok_or_else(|| {
@@ -124,7 +127,7 @@ fn resident_frame_column_evidence(
             .with_fact("physical_type", column.data_type.id()));
         }
         let series = frame.series(&column.name).map_err(|error| {
-            QueryError::from_cudf(operation, "failed to resolve an admitted resident column", error)
+            cudf_query_error(operation, "failed to resolve an admitted resident column", error)
                 .with_fact("reason", "resident_column_missing")
                 .with_fact("column", field.name())
         })?;
@@ -132,15 +135,15 @@ fn resident_frame_column_evidence(
             (0, 0)
         } else {
             let byte_counts = series.str().byte_count().map_err(|error| {
-                QueryError::from_cudf(operation, "failed to measure resident string value lengths", error)
+                cudf_query_error(operation, "failed to measure resident string value lengths", error)
                     .with_fact("column", field.name())
             })?;
             let chars_bytes = byte_counts.sum_value::<i64>().map_err(|error| {
-                QueryError::from_cudf(operation, "failed to sum resident string value lengths", error)
+                cudf_query_error(operation, "failed to sum resident string value lengths", error)
                     .with_fact("column", field.name())
             })?;
             let max_length = byte_counts.max_value::<i32>().map_err(|error| {
-                QueryError::from_cudf(operation, "failed to reduce resident string value lengths", error)
+                cudf_query_error(operation, "failed to reduce resident string value lengths", error)
                     .with_fact("column", field.name())
             })?;
             let chars_bytes = u64::try_from(chars_bytes.max(0)).map_err(|_| {
@@ -339,7 +342,7 @@ impl GpuDataFrame {
     /// Observed device allocation for the frame in bytes.
     pub fn device_allocated_size_bytes(&self) -> Result<u64> {
         let info = self.frame.info_with(InfoDetail::DEVICE_ALLOCATED).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.gpu_dataframe.device_memory",
                 "failed to observe native GPU dataframe memory",
                 error,
@@ -491,7 +494,7 @@ fn host_batch_prepare_error(error: cudf::Error) -> QueryError {
             ),
         ]
     });
-    let mut error = QueryError::from_cudf(
+    let mut error = cudf_query_error(
         "nexus_query_engine.host_batch_cursor.prepare",
         "failed to size bounded native output chunk before host materialization",
         error,
@@ -522,7 +525,7 @@ impl GpuHostBatchCursor {
     pub fn materialize_prepared_batch(&mut self, prepared: GpuPreparedHostBatch) -> Result<RecordBatch> {
         self.cancellation.check("nexus_query_engine.host_batch_cursor.materialize")?;
         let batch = self.cursor.materialize_prepared_batch(prepared.prepared).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.host_batch_cursor.materialize",
                 "failed to materialize bounded native output chunk to host Arrow",
                 error,
@@ -583,7 +586,7 @@ impl GpuResultHandle {
         if let Some(owner) = &resident_owner {
             owner.set_completion_stream(context.runtime()?.stream().clone())?;
             owner.set_backing_allocation_pointers(frame.backing_allocation_pointers().map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.gpu_result_handle",
                     "failed to identify the resident output's backing allocations",
                     error,
@@ -591,7 +594,7 @@ impl GpuResultHandle {
             })?);
         }
         let batch = GpuRecordBatch::new(frame, schema).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.gpu_result_handle",
                 "failed to bind native GPU result to its Arrow schema contract",
                 error,
@@ -663,7 +666,7 @@ impl GpuResultHandle {
     #[doc(hidden)]
     pub fn device_allocated_size_bytes(&self) -> Result<u64> {
         let info = self.batch.frame().info_with(InfoDetail::DEVICE_ALLOCATED).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.gpu_result_handle.device_memory",
                 "failed to observe native GPU result device memory",
                 error,
@@ -734,14 +737,10 @@ impl GpuResultHandle {
             .with_fact("reason", "local_parquet_cache_runtime_binding_not_independent"));
         }
         let frame = self.batch.frame().copy_into_runtime(allocation_lease.runtime()).map_err(|error| {
-            QueryError::from_cudf(
-                OPERATION,
-                "failed to copy attempt-owned local Parquet source into cache ownership",
-                error,
-            )
+            cudf_query_error(OPERATION, "failed to copy attempt-owned local Parquet source into cache ownership", error)
         })?;
         let batch = GpuRecordBatch::new(frame, Arc::clone(self.schema())).map_err(|error| {
-            QueryError::from_cudf(OPERATION, "failed to bind query-neutral local Parquet cache value", error)
+            cudf_query_error(OPERATION, "failed to bind query-neutral local Parquet cache value", error)
         })?;
         Ok(GpuLocalParquetCachedResult { batch, allocation_lease, device_placement: self.device_placement })
     }
@@ -764,7 +763,7 @@ impl GpuResultHandle {
     /// Materialize this GPU result to host Arrow.
     pub fn to_host_record_batch(&self) -> Result<RecordBatch> {
         self.batch.to_host_record_batch().map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.host_arrow.materialize",
                 "failed to materialize nexus native output to host Arrow",
                 error,
@@ -811,7 +810,7 @@ impl GpuResultHandle {
             producer_execution_scope: _,
         } = self;
         let cursor = batch.into_host_batch_cursor(config).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.host_batch_cursor.create",
                 "failed to create bounded native host-output cursor",
                 error,
@@ -888,7 +887,7 @@ impl GpuLocalParquetCachedResult {
     #[doc(hidden)]
     pub fn synchronize_for_destruction(&self) -> Result<()> {
         self.allocation_lease.runtime().synchronize().map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.gpu_local_parquet_source_cache.destroy",
                 "failed to synchronize the cache allocation lease before source-cache destruction",
                 error,
@@ -899,7 +898,7 @@ impl GpuLocalParquetCachedResult {
     #[doc(hidden)]
     pub fn device_allocated_size_bytes(&self) -> Result<u64> {
         let info = self.batch.frame().info_with(InfoDetail::DEVICE_ALLOCATED).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.gpu_local_parquet_source_cache.device_memory",
                 "failed to inspect cached local Parquet device memory",
                 error,
@@ -932,10 +931,10 @@ impl GpuLocalParquetCachedResult {
             .with_fact("query_device", query_runtime.device().ordinal()));
         }
         let frame = self.batch.frame().copy_into_runtime(&query_runtime).map_err(|error| {
-            QueryError::from_cudf(OPERATION, "failed to copy cached local Parquet source into current attempt", error)
+            cudf_query_error(OPERATION, "failed to copy cached local Parquet source into current attempt", error)
         })?;
         let batch = GpuRecordBatch::new(frame, Arc::clone(self.schema())).map_err(|error| {
-            QueryError::from_cudf(OPERATION, "failed to bind current-query local Parquet cache checkout", error)
+            cudf_query_error(OPERATION, "failed to bind current-query local Parquet cache checkout", error)
         })?;
         Ok(GpuResultHandle {
             batch,
@@ -971,7 +970,7 @@ fn strip_hidden_datafusion_order_columns(frame: GpuDataFrame, schema: &SchemaRef
         frame_names.iter().skip(expected_names.len()).all(|name| is_datafusion_order_column_name(name));
     if visible_prefix_matches && trailing_are_order_columns {
         let selected = raw.select(expected_names).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.gpu_result_handle",
                 "failed to strip hidden native DataFusion order columns before binding result schema",
                 error,
@@ -1038,7 +1037,7 @@ impl GpuFilteredJoinBuildHandle {
         }
         let device_allocated_size_bytes =
             filtered_join.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.gpu_filtered_join_build_handle",
                     "failed to observe nexus native reusable filtered join memory",
                     error,
@@ -1110,7 +1109,7 @@ impl GpuHashJoinBuildHandle {
         }
         let device_allocated_size_bytes =
             hash_join.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.gpu_hash_join_build_handle",
                     "failed to observe nexus native reusable hash join memory",
                     error,

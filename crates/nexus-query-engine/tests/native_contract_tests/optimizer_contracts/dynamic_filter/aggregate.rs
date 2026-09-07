@@ -21,7 +21,7 @@ fn native_optimizer_discovers_hash_join_dynamic_filter_route_through_aggregate_g
     );
     let plan = builder.finish_gpu_resident(join);
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -95,7 +95,7 @@ fn native_optimizer_keeps_join_backed_aggregate_keyset_route_without_large_keyse
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 2);
@@ -142,7 +142,7 @@ fn native_optimizer_discovers_dynamic_filter_consumer_below_aggregate_group_key(
         ..NativeOptimizerOptions::default()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 1);
@@ -200,7 +200,7 @@ fn native_optimizer_keeps_small_dimension_build_for_source_filter_below_aggregat
     );
     let plan = builder.finish_gpu_resident(join);
 
-    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default());
+    let result = optimize_query_plan(plan, &NativeOptimizerOptions::default(), rapids_analysis_context());
 
     let PlanNode::Join(join) = &result.plan.root_node().kind else {
         panic!("optimized root should remain the date join");

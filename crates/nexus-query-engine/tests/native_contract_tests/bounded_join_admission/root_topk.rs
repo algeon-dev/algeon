@@ -15,7 +15,7 @@ fn bounded_root_topk_join_aggregate_full_scan_below_grouped_aggregate_is_not_a_s
         RootTopKJoinAggregateVariant::SortFetchSingleHashJoinAggregateLargeFullScan,
     ] {
         let plan = root_topk_join_aggregate_variant_plan(variant);
-        let analysis = plan.capability_analysis();
+        let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
         assert!(
             analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -26,7 +26,7 @@ fn bounded_root_topk_join_aggregate_full_scan_below_grouped_aggregate_is_not_a_s
             .expect("bounded admission should not fail")
             .unwrap_or_else(|| panic!("{variant:?} root TopK pipeline should be admitted"));
         assert_eq!(admission.envelope(), nexus_query_engine::capability::CapabilityEnvelope::RootTopKJoinAggregate);
-        assert!(unsupported_facts(&plan).is_none(), "{variant:?}");
+        assert!(unsupported_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).is_none(), "{variant:?}");
     }
 }
 
@@ -37,7 +37,7 @@ fn bounded_root_topk_join_aggregate_reduction_on_unrelated_branch_does_not_gate_
     // all) must never change admission or results.
     let plan =
         root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::SourceReductionOutsideAggregateInput);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(
         analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -53,7 +53,7 @@ fn bounded_root_topk_join_aggregate_reduction_on_unrelated_branch_does_not_gate_
 #[test]
 fn bounded_root_topk_join_aggregate_allows_shared_source_reuse() {
     let plan = root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::SharedSourceFanout);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(
         analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -74,7 +74,7 @@ fn bounded_root_topk_join_aggregate_allows_shared_computed_fanout_with_explicit_
         (RootTopKJoinAggregateVariant::SmallExactSharedProjectionAggregateFanout, "projection"),
     ] {
         let plan = root_topk_join_aggregate_variant_plan(variant);
-        let analysis = plan.capability_analysis();
+        let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
         assert!(analysis.admits_root_topk_join_aggregate_pipeline(), "{variant:?}");
         let has_expected_shared_producer = analysis.invariants.iter().any(|invariant| {
@@ -119,7 +119,7 @@ fn bounded_root_topk_join_aggregate_allows_distinct_and_keyless_subcontracts() {
         RootTopKJoinAggregateVariant::ProjectedCrossJoin,
     ] {
         let plan = root_topk_join_aggregate_variant_plan(variant);
-        let analysis = plan.capability_analysis();
+        let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
         assert!(
             analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -135,10 +135,10 @@ fn bounded_root_topk_join_aggregate_allows_distinct_and_keyless_subcontracts() {
 #[test]
 fn bounded_root_topk_join_aggregate_allows_direct_grouped_sources_feeding_keyless_conditionals() {
     let plan = root_topk_keyless_conditional_direct_source_aggregates_plan(false);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(analysis.admits_root_topk_join_aggregate_pipeline());
-    assert!(nexus_query_engine::admission::bounded_join_modeled_facts(&plan).is_some());
+    assert!(nexus_query_engine::admission::bounded_join_modeled_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).is_some());
 }
 
 #[test]
@@ -148,7 +148,7 @@ fn bounded_root_topk_join_aggregate_admits_unreduced_direct_grouped_keyless_bran
     // never change admission or results, so a branch scanning its source in full
     // is not a support gap.
     let plan = root_topk_keyless_conditional_direct_source_aggregates_plan(true);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(
         analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -168,7 +168,7 @@ fn bounded_root_topk_join_aggregate_allows_sort_fetch_hash_join_input_subcontrac
         RootTopKJoinAggregateVariant::SortFetchKeyedResidualJoinInput,
     ] {
         let plan = root_topk_join_aggregate_variant_plan(variant);
-        let analysis = plan.capability_analysis();
+        let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
         assert!(
             analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -185,7 +185,7 @@ fn bounded_root_topk_join_aggregate_allows_sort_fetch_hash_join_input_subcontrac
 fn bounded_root_topk_join_aggregate_allows_keyed_left_semi_join_carrying_a_residual_predicate() {
     let plan =
         root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::SortFetchLeftSemiResidualJoinInput);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(
         analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -202,7 +202,7 @@ fn bounded_root_topk_join_aggregate_allows_keyed_left_semi_join_carrying_a_resid
 #[test]
 fn bounded_root_topk_allows_one_left_join_after_grouped_aggregate_topk() {
     let plan = root_topk_grouped_aggregate_input_left_join_plan();
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(
         analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -223,7 +223,7 @@ fn bounded_root_topk_join_aggregate_allows_whole_partition_window_filter_before_
     // whenever an ORDER BY expression happens to force a projection into that chain
     // (q47/q57/q89). q53/q63 hit this path because their ORDER BY uses plain columns.
     let plan = root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::AggregateWindowFilterTopK);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(
         analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -242,7 +242,7 @@ fn bounded_root_topk_join_aggregate_allows_cumulative_window_full_outer_before_f
     // join and followed by a second cumulative window/filter with no projection
     // before the final sort, is admitted through the same window candidacy path.
     let plan = root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::CumulativeWindowFullOuterTopK);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(
         analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -267,7 +267,7 @@ fn bounded_root_topk_join_aggregate_window_missing_input_sort_keeps_local_diagno
     let plan = root_topk_join_aggregate_variant_plan(
         RootTopKJoinAggregateVariant::AggregateWindowFilterTopKMissingInputSort,
     );
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(!analysis.admits_root_topk_join_aggregate_pipeline());
     let CapabilityDecision::Rejected { reason, .. } = &analysis.root_topk_join_aggregate_admission else {
@@ -292,7 +292,7 @@ fn bounded_root_topk_join_aggregate_sort_fetch_join_input_subcontract_excludes_k
         RootTopKJoinAggregateVariant::SortFetchProjectedCrossJoinInput,
     ] {
         let plan = root_topk_join_aggregate_variant_plan(variant);
-        let analysis = plan.capability_analysis();
+        let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
         assert!(analysis.admits_root_topk_join_aggregate_pipeline(), "{variant:?}");
     }
@@ -307,7 +307,7 @@ fn bounded_root_topk_join_aggregate_allows_sort_fetch_join_aggregate_subcontract
         RootTopKJoinAggregateVariant::SortFetchLeftSemiJoinInput,
     ] {
         let plan = root_topk_join_aggregate_variant_plan(variant);
-        let analysis = plan.capability_analysis();
+        let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
         assert!(
             analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -331,10 +331,9 @@ fn bounded_root_topk_join_aggregate_allows_null_filtered_aggregate_fan_in_subcon
     ] {
         let plan = nexus_query_engine::optimizer::optimize_query_plan(
             root_topk_join_aggregate_variant_plan(variant),
-            &nexus_query_engine::optimizer::NativeOptimizerOptions::default(),
-        )
+            &nexus_query_engine::optimizer::NativeOptimizerOptions::default(), nexus_query_engine::rapids_backend::rapids_analysis_context(),)
         .plan;
-        let analysis = plan.capability_analysis();
+        let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
         assert!(
             analysis.admits_root_topk_join_aggregate_pipeline(),
@@ -389,7 +388,7 @@ fn bounded_root_topk_join_aggregate_rejects_null_filtered_aggregate_fan_in_contr
         ),
     ] {
         let plan = root_topk_join_aggregate_variant_plan(variant);
-        let analysis = plan.capability_analysis();
+        let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
         assert!(!analysis.admits_root_topk_join_aggregate_pipeline(), "{variant:?}");
         let CapabilityDecision::Rejected { reason, .. } = &analysis.root_topk_join_aggregate_admission else {
@@ -417,10 +416,9 @@ fn bounded_root_topk_join_aggregate_rejects_optimized_null_filtered_unsafe_marke
     ] {
         let plan = nexus_query_engine::optimizer::optimize_query_plan(
             root_topk_join_aggregate_variant_plan(variant),
-            &nexus_query_engine::optimizer::NativeOptimizerOptions::default(),
-        )
+            &nexus_query_engine::optimizer::NativeOptimizerOptions::default(), nexus_query_engine::rapids_backend::rapids_analysis_context(),)
         .plan;
-        let analysis = plan.capability_analysis();
+        let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
         assert!(!analysis.admits_root_topk_join_aggregate_pipeline(), "{variant:?}");
         let CapabilityDecision::Rejected { reason, .. } = &analysis.root_topk_join_aggregate_admission else {
@@ -433,7 +431,7 @@ fn bounded_root_topk_join_aggregate_rejects_optimized_null_filtered_unsafe_marke
 #[test]
 fn bounded_root_topk_join_aggregate_shape_miss_reports_at_admission_level() {
     let plan = root_topk_join_aggregate_variant_plan(RootTopKJoinAggregateVariant::MissingGroupedAggregateFragment);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert!(!analysis.admits_root_topk_join_aggregate_pipeline());
     let CapabilityDecision::Rejected { reason, .. } = &analysis.root_topk_join_aggregate_admission else {
@@ -475,7 +473,7 @@ fn bounded_root_topk_join_aggregate_admission_stays_narrow() {
         RootTopKJoinAggregateVariant::SortFetchLeftAntiJoinInput,
     ] {
         let plan = root_topk_join_aggregate_variant_plan(variant);
-        let analysis = plan.capability_analysis();
+        let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
         assert!(!analysis.admits_root_topk_join_aggregate_pipeline(), "{variant:?}");
         let CapabilityDecision::Rejected { reason, .. } = &analysis.root_topk_join_aggregate_admission else {
@@ -624,7 +622,7 @@ fn compositional_join_build_input_form(
     nexus_query_engine::pipeline::ResidentDataForm,
     nexus_query_engine::pipeline::ResourceSharing,
 ) {
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let pipeline = nexus_query_engine::pipeline::compile_pipeline(plan, &analysis)
         .expect("compositional fixture should compile");
     let build = pipeline
@@ -659,7 +657,7 @@ fn bounded_compositional_admission_accepts_join_sort_limit_filter() {
     );
     let plan = builder.finish_with_host_sink(filter);
 
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let pipeline = nexus_query_engine::pipeline::compile_pipeline(&plan, &analysis)
         .expect("join sort limit filter should compile");
     let limit_task = pipeline
@@ -698,7 +696,7 @@ fn bounded_compositional_admission_accepts_join_sort_limit_filter() {
         .expect("bounded admission should not fail")
         .expect("join sort limit filter should be admitted");
     let _ = admission;
-    assert!(unsupported_facts(&plan).is_none(), "no post-limit rejection may remain");
+    assert!(unsupported_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).is_none(), "no post-limit rejection may remain");
 }
 
 #[test]
@@ -718,7 +716,7 @@ fn bounded_compositional_admission_accepts_join_limit_filter_without_sort() {
     bounded_pipeline_admission(&plan)
         .expect("bounded admission should not fail")
         .expect("join limit filter should be admitted");
-    assert!(unsupported_facts(&plan).is_none(), "no post-root limit rejection may remain");
+    assert!(unsupported_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).is_none(), "no post-root limit rejection may remain");
 }
 
 #[test]
@@ -818,7 +816,7 @@ fn bounded_compositional_admission_accepts_alias_projection_above_join() {
     let mut plain_builder = QueryPlanBuilder::new();
     let (plain_join, _) = compositional_inner_join_base(&mut plain_builder);
     let plain = plain_builder.finish_with_host_sink(plain_join);
-    let plain_tasks = nexus_query_engine::pipeline::compile_pipeline(&plain, &plain.capability_analysis())
+    let plain_tasks = nexus_query_engine::pipeline::compile_pipeline(&plain, &plain.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context()))
         .expect("plain join should compile")
         .tasks()
         .len();
@@ -829,7 +827,7 @@ fn bounded_compositional_admission_accepts_alias_projection_above_join() {
         .expect("bounded admission should not fail")
         .expect("alias projection above join should be admitted");
     let aliased_pipeline =
-        nexus_query_engine::pipeline::compile_pipeline(&aliased_plan, &aliased_plan.capability_analysis())
+        nexus_query_engine::pipeline::compile_pipeline(&aliased_plan, &aliased_plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context()))
             .expect("aliased join should compile");
     assert_eq!(aliased_pipeline.tasks().len(), plain_tasks + 1, "aliasing adds exactly one unary task");
     assert_eq!(
@@ -897,7 +895,7 @@ fn compositional_edge_normalize_plan() -> (nexus_query_engine::plan::QueryPlan, 
 fn bounded_compositional_support_rejects_graph_task_on_sink_path() {
     let (plan, edge_normalize) = compositional_edge_normalize_plan();
 
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let pipeline = nexus_query_engine::pipeline::compile_pipeline(&plan, &analysis)
         .expect("join edge-normalize plan should compile");
     let support = nexus_query_engine::admission::compiled_bounded_pipeline_support(&pipeline)
@@ -912,7 +910,7 @@ fn bounded_compositional_support_rejects_graph_task_on_sink_path() {
     let decision = nexus_query_engine::admission::bounded_pipeline_decision(
         &plan,
         nexus_query_engine::mode::StatisticalAggregateExecutionMode::default(),
-    )
+    nexus_query_engine::rapids_backend::rapids_analysis_context())
     .expect("bounded decision should not fail");
     assert!(decision.admission().is_none(), "join plus edge normalization must not be admitted");
 }
@@ -982,7 +980,7 @@ fn bounded_compositional_compile_rejects_shared_exclusive_consumer() {
     let union = builder.add_union(vec![edge_normalize, passthrough], triple_schema);
     let plan = builder.finish_with_host_sink(union);
 
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let error =
         nexus_query_engine::pipeline::compile_pipeline(&plan, &analysis).expect_err("shared exclusive input must not compile");
     let reason = error.fact_value("capability_reason").expect("compile rejection names its contract");
@@ -992,7 +990,7 @@ fn bounded_compositional_compile_rejects_shared_exclusive_consumer() {
     let decision = nexus_query_engine::admission::bounded_pipeline_decision(
         &plan,
         nexus_query_engine::mode::StatisticalAggregateExecutionMode::default(),
-    )
+    nexus_query_engine::rapids_backend::rapids_analysis_context())
     .expect("bounded decision should not fail");
     assert!(decision.admission().is_none(), "shared edge-normalize input must not be admitted");
 }

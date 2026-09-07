@@ -1,4 +1,4 @@
-use super::{DataFrame, QueryError, QueryErrorCode, Result};
+use super::{DataFrame, QueryError, QueryErrorCode, Result, cudf_query_error};
 
 #[derive(Debug, Clone, Copy)]
 pub(super) enum EdgeColumnRole {
@@ -9,7 +9,7 @@ pub(super) enum EdgeColumnRole {
 
 pub(super) fn validate_edge_column(frame: &DataFrame, column: &str, role: EdgeColumnRole) -> Result<cudf::DataType> {
     let series = frame.series(column).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.validate_edge_column",
             "failed to access cuGraph edge-list column",
             error,
@@ -26,7 +26,7 @@ pub(super) fn validate_edge_column(frame: &DataFrame, column: &str, role: EdgeCo
         .with_fact("null_count", series.null_count()));
     }
     let dtype = series.dtype().map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.validate_edge_column",
             "failed to inspect cuGraph edge-list column type",
             error,

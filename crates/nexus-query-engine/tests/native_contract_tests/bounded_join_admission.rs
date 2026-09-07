@@ -10,6 +10,7 @@ fn bounded_pipeline_admission(
     nexus_query_engine::admission::bounded_pipeline_decision(
         plan,
         nexus_query_engine::mode::StatisticalAggregateExecutionMode::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
     )?
     .into_execution_admission()
 }

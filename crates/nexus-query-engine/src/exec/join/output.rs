@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use cudf::{DataFrame, DataFrameCrossJoinOptions, DataFrameJoinIndices, ExecutionOverrides};
 
-use super::EquiJoinIndices;
+use super::{EquiJoinIndices, cudf_query_error};
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     exec::{append_datafusion_join_order_columns, join_input_columns_with_order, join_side_projection_with_order},
@@ -62,7 +62,7 @@ pub(in crate::exec) fn reorder_projected_cross_join_output(
 ) -> Result<DataFrame> {
     let output_order = projection.iter().map(|column| column.output_name.as_str()).collect::<Vec<_>>();
     output.select(output_order).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.join.projected_cross_output_order",
             "failed to reorder native projected cross join output",
             error,
@@ -104,13 +104,9 @@ pub(in crate::exec) fn select_join_input(
 ) -> Result<DataFrame> {
     let columns = join_input_columns_with_order(&frame, columns);
     frame.select(&columns).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.join.select_input",
-            "failed to select native join input columns",
-            error,
-        )
-        .with_fact("side", side)
-        .with_fact("columns", columns.join(","))
+        cudf_query_error("nexus_query_engine.join.select_input", "failed to select native join input columns", error)
+            .with_fact("side", side)
+            .with_fact("columns", columns.join(","))
     })
 }
 
@@ -152,7 +148,7 @@ pub(in crate::exec) fn materialize_join_output_projection(
             .with_fact("output_name", output.output_name.as_str())
         })?;
         let series = frame.series(output.column.name()).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.join.output_projection",
                 "failed to access native join output column",
                 error,
@@ -166,7 +162,7 @@ pub(in crate::exec) fn materialize_join_output_projection(
     append_datafusion_join_order_columns(&mut columns, left.as_ref(), right.as_ref(), join_type, preserved_side)?;
 
     DataFrame::from_series(columns).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.join.output_projection",
             "failed to construct native join output frame",
             error,
@@ -206,7 +202,7 @@ pub(in crate::exec) fn materialize_left_only_join_output_projection(
     let mut columns = Vec::with_capacity(projection.len());
     for output in projection {
         let series = left.series(output.column.name()).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.join.output_projection",
                 "failed to access native join output column",
                 error,
@@ -220,7 +216,7 @@ pub(in crate::exec) fn materialize_left_only_join_output_projection(
     append_datafusion_join_order_columns(&mut columns, Some(&left), None, join_type, JoinSide::Left)?;
 
     DataFrame::from_series(columns).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.join.output_projection",
             "failed to construct native join output frame",
             error,
@@ -252,7 +248,7 @@ pub(in crate::exec) fn materialize_mark_join_output_projection(
     // from a single retained provenance. This is a no-op when the probe is
     // already in the construction runtime's provenance.
     let probe = probe.copy_into_runtime(&runtime).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.join.mark_output",
             "failed to relocate probe frame into mark-output runtime",
             error,
@@ -264,29 +260,25 @@ pub(in crate::exec) fn materialize_mark_join_output_projection(
     // 2. Test membership against matching_indices (hash-set, O(N+M)).
     let mark_series = if matching_indices.is_empty() {
         let false_scalar = runtime.scalar(false).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.join.mark_output",
                 "failed to create false scalar for mark column",
                 error,
             )
         })?;
         runtime.series_from_scalar(&false_scalar, probe_rows).map_err(|error| {
-            QueryError::from_cudf(
-                "nexus_query_engine.join.mark_output",
-                "failed to create all-false mark series",
-                error,
-            )
+            cudf_query_error("nexus_query_engine.join.mark_output", "failed to create all-false mark series", error)
         })?
     } else {
         let probe_indices = runtime.sequence(0i32, 1i32, probe_rows).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.join.mark_output",
                 "failed to create sequential probe index series for mark column",
                 error,
             )
         })?;
         probe_indices.isin(matching_indices.indices()).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.join.mark_output",
                 "failed to compute mark column via isin membership test",
                 error,
@@ -297,7 +289,7 @@ pub(in crate::exec) fn materialize_mark_join_output_projection(
     let mut columns = Vec::with_capacity(projection.len() + 1);
     for output in projection {
         let series = probe.series(output.column.name()).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.join.mark_output",
                 "failed to access probe column for mark join output",
                 error,
@@ -310,7 +302,7 @@ pub(in crate::exec) fn materialize_mark_join_output_projection(
     columns.push((mark_column_name.to_string(), mark_series));
 
     DataFrame::from_series(columns).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.join.mark_output",
             "failed to construct native mark join output frame",
             error,
@@ -342,7 +334,7 @@ fn materialize_join_side_projection(
     }
 
     frame.with_execution(overrides).materialize_join_indices(indices, columns).map(Some).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.join.output_projection",
             "failed to materialize native join output columns",
             error,

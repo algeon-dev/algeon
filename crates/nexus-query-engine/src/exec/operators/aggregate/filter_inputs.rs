@@ -5,7 +5,8 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use super::{
     AggregateExpr, AggregateFunction, AggregateSpec, ArrowDataType, CaseWhen, DataFrame, ExecutionBudgetToken,
     ExecutionContext, Expr, Field, LiteralValue, QueryError, QueryErrorCode, QueryMetrics, Result, Schema,
-    aggregate_spec_has_filters, budgeted_value, execution_overrides, global_count_star_expr, lower_expr,
+    aggregate_spec_has_filters, budgeted_value, cudf_query_error, cudf_query_error_with_budget_details,
+    execution_overrides, global_count_star_expr, lower_expr,
 };
 
 pub(in crate::exec) fn prepare_filtered_aggregate_frame(
@@ -48,7 +49,7 @@ pub(in crate::exec) fn prepare_filtered_aggregate_frame(
         Some(token) => frame
             .with_columns_with_budget(expressions, token)
             .map_err(|error| {
-                QueryError::from_cudf_with_budget_details(
+                cudf_query_error_with_budget_details(
                     "nexus_query_engine.aggregate.filter_inputs",
                     "failed to materialize bounded native aggregate filter inputs",
                     error,
@@ -59,7 +60,7 @@ pub(in crate::exec) fn prepare_filtered_aggregate_frame(
             let overrides_lease = execution_overrides(context)?;
             let overrides = overrides_lease.overrides();
             frame.with_execution(&overrides).with_columns(expressions).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.aggregate.filter_inputs",
                     "failed to materialize native aggregate filter inputs",
                     error,

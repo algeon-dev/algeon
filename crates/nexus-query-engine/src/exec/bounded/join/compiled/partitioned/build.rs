@@ -2,9 +2,10 @@ use super::{
     BoundedCompiledPartitionedJoinBuildState, BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream,
     BoundedJoinSideFrame, BoundedPartitionRowPolicy, CompiledJoinExecutionStrategy, DataFrame, GpuDataFrame, JoinNode,
     JoinSide, KeyedHashJoinStrategyOptions, NodeId, PartitionedJoinSide, QueryError, QueryErrorCode,
-    ResidentFrameStreamPayload, ResidentGpuFrame, Result, compiled_join_input_columns, execution_overrides,
-    hash_partition_join_side, join_keys_for_side, materialize_bounded_join_leaf_local_parquet_source_stream,
-    observe_device_memory_bytes, partitioned_join_partition_count, partitioned_join_target_bytes_for_context,
+    ResidentFrameStreamPayload, ResidentGpuFrame, Result, compiled_join_input_columns, cudf_query_error,
+    execution_overrides, hash_partition_join_side, join_keys_for_side,
+    materialize_bounded_join_leaf_local_parquet_source_stream, observe_device_memory_bytes,
+    partitioned_join_partition_count, partitioned_join_target_bytes_for_context,
     prepare_bounded_join_side_input_from_resident_frame, release_bounded_join_side_frame,
     stream_bounded_join_leaf_local_parquet_source,
 };
@@ -268,7 +269,7 @@ fn concatenate_join_build_input_frames(
     let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
     let output = first.with_execution(&overrides).concat_many(&rest).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.bounded.join.build_input_concat",
             "failed to concatenate bounded join build input chunks",
             error,
@@ -324,7 +325,7 @@ impl PartitionedJoinBuildAccumulator {
         let overrides = overrides_lease.overrides();
         if self.empty_template.is_none() {
             let template = input.frame.with_execution(&overrides).slice(0, 0).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.bounded.join.build_partition_slice",
                     "failed to create an empty build partition template",
                     error,
@@ -351,7 +352,7 @@ impl PartitionedJoinBuildAccumulator {
                 continue;
             }
             let slice = frame.with_execution(&overrides).slice(start, len).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.bounded.join.build_partition_slice",
                     "failed to copy a build chunk partition into its partition accumulator",
                     error,
@@ -413,7 +414,7 @@ impl PartitionedJoinBuildAccumulator {
                         first.with_execution(&overrides).concat_many(&rest)
                     }
                     .map_err(|error| {
-                        QueryError::from_cudf(
+                        cudf_query_error(
                             "nexus_query_engine.bounded.join.build_partition_concat",
                             "failed to concatenate accumulated build partition slices",
                             error,

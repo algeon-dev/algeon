@@ -1,6 +1,6 @@
 use super::{
-    BoundedExecutionAttempt, GpuDataFrame, Instant, NodeId, QueryError, ResidentGpuFrame, Result, execution_overrides,
-    observe_device_memory_bytes,
+    BoundedExecutionAttempt, GpuDataFrame, Instant, NodeId, ResidentGpuFrame, Result, cudf_query_error,
+    execution_overrides, observe_device_memory_bytes,
 };
 
 pub(super) fn concatenate_join_source_chunks(
@@ -25,7 +25,7 @@ pub(super) fn concatenate_join_source_chunks(
     let output = match first_frame.with_execution(&overrides).concat_many(&rest_frame_refs) {
         Ok(output) => output,
         Err(error) => {
-            return Err(QueryError::from_cudf(
+            return Err(cudf_query_error(
                 "nexus_query_engine.bounded.join.source_concat",
                 "failed to concatenate bounded join leaf local parquet source chunks",
                 error,

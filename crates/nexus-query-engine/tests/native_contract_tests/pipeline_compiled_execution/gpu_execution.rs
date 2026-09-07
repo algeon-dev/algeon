@@ -17,7 +17,7 @@ fn compiled_gpu_executor_runs_root_hash_join_build_probe_materialize() {
 
     let compiled_plan = root_join_data_plan(&left_path, &right_path);
     let legacy_plan = root_join_data_plan(&left_path, &right_path);
-    let analysis = compiled_plan.capability_analysis();
+    let analysis = compiled_plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let pipeline = compile_pipeline(&compiled_plan, &analysis).expect("root join should compile");
     assert_eq!(
         compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
@@ -68,7 +68,7 @@ fn compiled_gpu_executor_runs_shared_source_hash_join_without_rereading() {
     write_self_join_parquet(&path);
 
     let plan = shared_source_self_join_data_plan(&path);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("shared-source self join should compile");
     assert_task_kind_count(&pipeline, PipelineTaskKind::SourceRead, 1);
     let shared_resource = pipeline
@@ -125,11 +125,15 @@ fn execute_query_plan_runs_grouped_aggregate_join_build_input_through_admission(
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
-    let plan =
-        optimize_query_plan(aggregate_join_build_input_data_plan(&left_path, &right_path), &optimizer_options).plan;
+    let plan = optimize_query_plan(
+        aggregate_join_build_input_data_plan(&left_path, &right_path),
+        &optimizer_options,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .plan;
     assert_eq!(plan.dynamic_filter_routes().len(), 1);
     assert!(matches!(plan.dynamic_filter_routes()[0].producer, DynamicFilterProducer::AggregateGroupKeys { .. }));
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("aggregate join input plan should compile");
     assert_eq!(
         compiled_bounded_query_plan_support(&plan, &analysis, &pipeline)
@@ -137,8 +141,12 @@ fn execute_query_plan_runs_grouped_aggregate_join_build_input_through_admission(
         CompiledBoundedPipelineSupport::Supported
     );
 
-    let decision = bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default())
-        .expect("bounded admission should not error");
+    let decision = bounded_pipeline_decision(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .expect("bounded admission should not error");
     let admission = decision.admission().expect("a grouped aggregate join-build input is an executable composition");
     assert_eq!(
         admission.pipeline(),
@@ -169,7 +177,7 @@ fn execute_query_plan_runs_join_sort_limit_filter_through_admission() {
     write_join_parquets(&left_path, &right_path);
 
     let plan = root_join_sort_limit_filter_data_plan(&left_path, &right_path);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("join sort limit filter plan should compile");
     assert_eq!(
         compiled_bounded_query_plan_support(&plan, &analysis, &pipeline)
@@ -177,8 +185,12 @@ fn execute_query_plan_runs_join_sort_limit_filter_through_admission() {
         CompiledBoundedPipelineSupport::Supported
     );
 
-    let decision = bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default())
-        .expect("bounded admission should not error");
+    let decision = bounded_pipeline_decision(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .expect("bounded admission should not error");
     let admission = decision.admission().expect("join sort limit filter is an executable composition");
     assert_eq!(
         admission.pipeline(),
@@ -229,7 +241,7 @@ fn execute_query_plan_applies_limit_offset_once_through_fused_topk() {
     write_join_parquets(&left_path, &right_path);
 
     let plan = root_join_sort_limit_offset_data_plan(&left_path, &right_path);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("join sort limit offset plan should compile");
     assert_eq!(
         compiled_bounded_query_plan_support(&plan, &analysis, &pipeline)
@@ -245,8 +257,12 @@ fn execute_query_plan_applies_limit_offset_once_through_fused_topk() {
         sort_task.sort_strategy()
     );
 
-    let decision = bounded_pipeline_decision(&plan, StatisticalAggregateExecutionMode::default())
-        .expect("bounded admission should not error");
+    let decision = bounded_pipeline_decision(
+        &plan,
+        StatisticalAggregateExecutionMode::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .expect("bounded admission should not error");
     let admission = decision.admission().expect("join sort limit offset is an executable composition");
     assert_eq!(
         admission.pipeline(),
@@ -284,9 +300,13 @@ fn compiled_gpu_executor_streams_grouped_aggregate_join_build_input_source() {
         join_build_side_selection: JoinBuildSideSelectionOptions::disabled(),
         ..NativeOptimizerOptions::default()
     };
-    let plan =
-        optimize_query_plan(aggregate_join_build_input_data_plan(&left_path, &right_path), &optimizer_options).plan;
-    let analysis = plan.capability_analysis();
+    let plan = optimize_query_plan(
+        aggregate_join_build_input_data_plan(&left_path, &right_path),
+        &optimizer_options,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .plan;
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("aggregate join input plan should compile");
     assert_eq!(
         compiled_bounded_query_plan_support(&plan, &analysis, &pipeline)
@@ -355,9 +375,10 @@ fn compiled_gpu_executor_streams_shared_source_for_join_build_and_grouped_aggreg
     let plan = optimize_query_plan(
         shared_source_join_build_and_aggregate_data_plan(&fact_path, &dim_path),
         &optimizer_options,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
     )
     .plan;
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("shared-source aggregate plan should compile");
     assert!(
         pipeline.debug_render().contains("kind=shared_resident_producer"),
@@ -413,7 +434,7 @@ fn execute_query_plan_routes_nonlinear_topk_and_subquery_filter_paths_through_co
         ),
         ("resident grouped-aggregate subquery filter", resident_grouped_aggregate_subquery_filter_plan(true)),
     ] {
-        let analysis = plan.capability_analysis();
+        let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
         let pipeline =
             compile_pipeline(&plan, &analysis).unwrap_or_else(|error| panic!("{label}: compile failed: {error}"));
         assert_eq!(
@@ -451,7 +472,7 @@ fn execute_query_plan_routes_root_hash_join_through_compiled_pipeline() {
     write_join_parquets(&left_path, &right_path);
 
     let plan = root_join_data_plan(&left_path, &right_path);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("root join should compile");
     let context = bounded_context(shared_runtime(runtime), &plan);
 
@@ -475,7 +496,11 @@ fn observed_compiled_root_join_records_registered_tasks_without_reservation_even
     let right_path = dir.join("right.parquet");
     write_join_parquets(&left_path, &right_path);
     let plan = root_join_data_plan(&left_path, &right_path);
-    let pipeline = compile_pipeline(&plan, &plan.capability_analysis()).expect("observed root join compiles");
+    let pipeline = compile_pipeline(
+        &plan,
+        &plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context()),
+    )
+    .expect("observed root join compiles");
     let (context, observation) = bounded_observed_context(shared_runtime(runtime), &plan);
 
     let outcome = nexus_query_engine::exec::execute_query_plan(
@@ -545,7 +570,7 @@ fn execute_query_plan_routes_keyless_root_join_strategy_through_compiled_pipelin
     let right_path = dir.join("right.parquet");
     write_join_parquets(&left_path, &right_path);
     let plan = keyless_root_join_data_plan(&left_path, &right_path);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     assert!(analysis.admits_root_join());
     let pipeline = compile_pipeline(&plan, &analysis).expect("keyless root join should compile");
     assert_eq!(
@@ -582,7 +607,7 @@ fn execute_query_plan_routes_root_hash_join_with_unary_inputs_through_compiled_p
     write_join_parquets(&left_path, &right_path);
 
     let plan = root_join_with_unary_inputs_data_plan(&left_path, &right_path);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("root join with unary inputs should compile");
     assert_eq!(
         compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
@@ -629,7 +654,7 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
     let right_path = dir.join("right.parquet");
     write_join_parquets(&left_path, &right_path);
     let plan = root_join_gpu_sink_data_plan(&left_path, &right_path);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     assert!(analysis.admits_root_join());
     let admission = bounded_pipeline_admission(&plan)
         .expect("bounded admission should not fail")
@@ -645,11 +670,19 @@ fn execute_query_plan_routes_gpu_resident_sink_join_through_compiled_pipeline() 
         "GPU sink should stay inside the compiled bounded envelope"
     );
     assert!(
-        nexus_query_engine::admission::bounded_join_modeled_facts(&plan).is_some(),
+        nexus_query_engine::admission::bounded_join_modeled_facts(
+            &plan,
+            nexus_query_engine::rapids_backend::rapids_analysis_context()
+        )
+        .is_some(),
         "GPU sink plans admitted by compiled execution must emit modeled bounded-join facts"
     );
     assert!(
-        nexus_query_engine::admission::bounded_join_unsupported_shape_facts(&plan).is_none(),
+        nexus_query_engine::admission::bounded_join_unsupported_shape_facts(
+            &plan,
+            nexus_query_engine::rapids_backend::rapids_analysis_context()
+        )
+        .is_none(),
         "GPU sink plans admitted by compiled execution must not emit unsupported bounded-join facts"
     );
     let mut passthrough_builder = QueryPlanBuilder::new();
@@ -699,16 +732,18 @@ fn bounded_artifact_binding_rejects_plan_pipeline_sink_mismatch() {
         Path::new("/tmp/compiled-sink-mismatch-right.parquet"),
     );
     let gpu_plan = plan.clone_with_gpu_resident_sink();
-    let host_admission = bounded_pipeline_decision(&plan, mode)
-        .expect("host-sink decision should not fail")
-        .admission()
-        .cloned()
-        .expect("host-sink root join should be admitted");
-    let gpu_admission = bounded_pipeline_decision(&gpu_plan, mode)
-        .expect("GPU-sink decision should not fail")
-        .admission()
-        .cloned()
-        .expect("GPU-sink root join should be admitted");
+    let host_admission =
+        bounded_pipeline_decision(&plan, mode, nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .expect("host-sink decision should not fail")
+            .admission()
+            .cloned()
+            .expect("host-sink root join should be admitted");
+    let gpu_admission =
+        bounded_pipeline_decision(&gpu_plan, mode, nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .expect("GPU-sink decision should not fail")
+            .admission()
+            .cloned()
+            .expect("GPU-sink root join should be admitted");
 
     assert!(host_admission.matches(&plan, mode));
     assert!(gpu_admission.matches(&gpu_plan, mode));
@@ -829,7 +864,7 @@ fn execute_query_plan_routes_root_hash_join_aggregate_through_compiled_pipeline(
     let orders_path = dir.join("orders.parquet");
     write_single_join_post_root_parquets(&customers_path, &orders_path);
     let plan = single_join_post_root_aggregate_data_plan(&customers_path, &orders_path);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("single-join aggregate plan should compile");
     assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 1);
     assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, 0);
@@ -861,7 +896,7 @@ fn execute_query_plan_sizes_compiled_stream_aggregate_string_group_keys_inside_r
     let orders_path = dir.join("orders.parquet");
     write_string_group_join_post_root_parquets(&customers_path, &orders_path);
     let plan = string_group_join_post_root_aggregate_data_plan(&customers_path, &orders_path);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("string grouped aggregate plan should compile");
     assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 1);
     assert_eq!(
@@ -914,7 +949,7 @@ fn execute_query_plan_routes_root_hash_join_final_sort_limit_through_compiled_pi
     let right_path = dir.join("right.parquet");
     write_join_parquets(&left_path, &right_path);
     let plan = root_join_sort_limit_data_plan(&left_path, &right_path);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("root join final-sort/limit plan should compile");
     assert_task_kind_count(&pipeline, PipelineTaskKind::Aggregate, 0);
     assert_task_kind_count(&pipeline, PipelineTaskKind::FinalSort, 1);
@@ -946,7 +981,7 @@ fn execute_query_plan_routes_single_join_post_root_graph_through_compiled_pipeli
     let orders_path = dir.join("orders.parquet");
     write_single_join_post_root_parquets(&customers_path, &orders_path);
     let plan = single_join_post_root_aggregate_sort_limit_data_plan(&customers_path, &orders_path);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("single-join post-root plan should compile");
     assert_eq!(
         compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
@@ -977,7 +1012,7 @@ fn execute_query_plan_routes_simple_multi_join_tree_through_compiled_pipeline() 
     let c_path = dir.join("c.parquet");
     write_multi_join_parquets(&a_path, &b_path, &c_path);
     let plan = simple_multi_join_plan(&a_path, &b_path, &c_path);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("simple multi-join plan should compile");
     assert_eq!(
         compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
@@ -1009,7 +1044,7 @@ fn execute_query_plan_streams_residual_one_shot_probe_from_prior_join() {
     let c_path = dir.join("c.parquet");
     write_residual_stream_join_parquets(&a_path, &b_path, &c_path);
     let plan = residual_one_shot_frame_stream_multi_join_plan(&a_path, &b_path, &c_path);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("residual stream multi-join plan should compile");
     assert_eq!(
         compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
@@ -1068,7 +1103,7 @@ fn execute_query_plan_streams_residual_one_shot_probe_from_leaf_local_source() {
     let c_path = dir.join("c.parquet");
     write_residual_stream_join_parquets(&a_path, &b_path, &c_path);
     let plan = residual_one_shot_leaf_stream_join_plan(&a_path, &c_path);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("residual leaf-stream join plan should compile");
     assert_eq!(
         compiled_bounded_pipeline_support(&pipeline).expect("support check should not fail"),
@@ -1143,7 +1178,7 @@ fn execute_query_plan_streams_residual_one_shot_right_probe_with_left_build() {
     let c_path = dir.join("c.parquet");
     write_residual_stream_join_parquets(&a_path, &b_path, &c_path);
     let plan = residual_one_shot_leaf_stream_left_build_join_plan(&a_path, &c_path);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let pipeline =
         compile_pipeline(&plan, &analysis).expect("left-build residual leaf-stream join plan should compile");
     assert_eq!(
@@ -1215,7 +1250,7 @@ fn compiled_host_sink_diagnostics_are_structured_without_legacy_routing_terms() 
     let right_path = dir.join("right.parquet");
     write_join_parquets(&left_path, &right_path);
     let plan = root_join_data_plan(&left_path, &right_path);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let pipeline = compile_pipeline(&plan, &analysis).expect("root join should compile");
     let context = bounded_context(shared_runtime(runtime), &plan);
     let gpu_inputs = nexus_query_engine::runtime::resident::GpuResidentInputMap::new();

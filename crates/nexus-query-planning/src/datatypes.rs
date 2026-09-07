@@ -1,74 +1,22 @@
-//! Arrow-to-cuDF datatype support policy.
+//! Arrow type and cast semantics for plan validation.
 //!
-//! These helpers define the native engine's admitted Arrow surface before a
-//! plan reaches cudf. Returning `false` or `None` means the query should be
-//! rejected by capability analysis rather than attempted at execution time.
+//! These helpers answer what the query language admits: which Arrow types a
+//! plan may carry, which casts it may insert or preserve, and how a type reads
+//! in a diagnostic. Whether an execution backend can represent a type is a
+//! separate question, asked through
+//! [`crate::backend::BackendCapabilities::supports_type`] — which is why the
+//! cast policy takes an [`crate::backend::AnalysisContext`] for the one branch
+//! that needs it.
 
 use std::collections::HashMap;
 
 use arrow::datatypes::{
     DECIMAL128_MAX_SCALE, DataType as ArrowDataType, Decimal32Type, Decimal64Type, Decimal128Type, Field, Fields,
-    TimeUnit, validate_decimal_precision_and_scale,
+    validate_decimal_precision_and_scale,
 };
-use cudf::{DataType as CudfDataType, TimestampResolution, TypeId};
 use parquet::arrow::PARQUET_FIELD_ID_META_KEY;
 
-/// Returns whether this Arrow type has a native cuDF physical representation.
-pub fn is_supported_arrow_type(data_type: &ArrowDataType) -> bool {
-    cudf_dtype_from_arrow_type(data_type).is_some()
-}
-
-/// Converts a supported Arrow type to its cuDF dtype.
-///
-/// Unsupported nested types and decimal shapes outside the native policy return
-/// `None`. Timezone-aware timestamps and supported list columns are admitted only
-/// as carry types; operator validation decides where their semantics are
-/// unsupported.
-pub fn cudf_dtype_from_arrow_type(data_type: &ArrowDataType) -> Option<CudfDataType> {
-    match data_type {
-        ArrowDataType::Boolean => Some(CudfDataType::new(TypeId::Bool8)),
-        ArrowDataType::Int8 => Some(CudfDataType::new(TypeId::Int8)),
-        ArrowDataType::Int16 => Some(CudfDataType::new(TypeId::Int16)),
-        ArrowDataType::Int32 => Some(CudfDataType::new(TypeId::Int32)),
-        ArrowDataType::Int64 => Some(CudfDataType::new(TypeId::Int64)),
-        ArrowDataType::UInt8 => Some(CudfDataType::new(TypeId::UInt8)),
-        ArrowDataType::UInt16 => Some(CudfDataType::new(TypeId::UInt16)),
-        ArrowDataType::UInt32 => Some(CudfDataType::new(TypeId::UInt32)),
-        ArrowDataType::UInt64 => Some(CudfDataType::new(TypeId::UInt64)),
-        ArrowDataType::Float32 => Some(CudfDataType::new(TypeId::Float32)),
-        ArrowDataType::Float64 => Some(CudfDataType::new(TypeId::Float64)),
-        ArrowDataType::Utf8 | ArrowDataType::LargeUtf8 | ArrowDataType::Utf8View => {
-            Some(CudfDataType::new(TypeId::String))
-        },
-        ArrowDataType::Decimal128(precision, scale) => is_supported_decimal128(*precision, *scale)
-            .then(|| CudfDataType::fixed_point(TypeId::Decimal128, arrow_decimal_scale_to_cudf_scale(*scale)).ok())
-            .flatten(),
-        ArrowDataType::Decimal32(precision, scale) => is_supported_decimal32(*precision, *scale)
-            .then(|| CudfDataType::fixed_point(TypeId::Decimal32, arrow_decimal_scale_to_cudf_scale(*scale)).ok())
-            .flatten(),
-        ArrowDataType::Decimal64(precision, scale) => is_supported_decimal64(*precision, *scale)
-            .then(|| CudfDataType::fixed_point(TypeId::Decimal64, arrow_decimal_scale_to_cudf_scale(*scale)).ok())
-            .flatten(),
-        ArrowDataType::Date32 => Some(CudfDataType::new(TypeId::TimestampDays)),
-        ArrowDataType::Date64 => Some(CudfDataType::new(TypeId::TimestampMilliseconds)),
-        ArrowDataType::Time32(unit) | ArrowDataType::Time64(unit) => {
-            Some(CudfDataType::new(timestamp_unit_to_cudf_resolution(unit).duration_type_id()))
-        },
-        ArrowDataType::Timestamp(unit, _) => Some(CudfDataType::new(timestamp_unit_to_cudf_resolution(unit).type_id())),
-        ArrowDataType::Duration(unit) => {
-            Some(CudfDataType::new(timestamp_unit_to_cudf_resolution(unit).duration_type_id()))
-        },
-        ArrowDataType::List(field) | ArrowDataType::LargeList(field) if is_supported_basic_list_child(field) => {
-            Some(CudfDataType::new(TypeId::List))
-        },
-        ArrowDataType::FixedSizeList(field, dimension)
-            if *dimension > 0 && is_supported_fixed_size_list_child(field) =>
-        {
-            Some(CudfDataType::new(TypeId::List))
-        },
-        _ => None,
-    }
-}
+use crate::backend::AnalysisContext;
 
 /// Returns whether this Arrow type is a timestamp carrying timezone metadata.
 pub fn is_timestamp_with_timezone(data_type: &ArrowDataType) -> bool {
@@ -277,21 +225,15 @@ pub fn arrow_decimal_scale_to_cudf_scale(scale: i8) -> i32 {
     -i32::from(scale)
 }
 
-/// Converts an Arrow temporal unit to the matching cuDF timestamp resolution.
-pub fn timestamp_unit_to_cudf_resolution(unit: &TimeUnit) -> TimestampResolution {
-    match unit {
-        TimeUnit::Second => TimestampResolution::Seconds,
-        TimeUnit::Millisecond => TimestampResolution::Milliseconds,
-        TimeUnit::Microsecond => TimestampResolution::Microseconds,
-        TimeUnit::Nanosecond => TimestampResolution::Nanoseconds,
-    }
-}
-
 /// Returns whether the native engine supports an explicit cast.
-pub fn is_supported_arrow_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
+pub fn is_supported_arrow_cast(
+    source_type: &ArrowDataType,
+    target_type: &ArrowDataType,
+    ctx: AnalysisContext<'_>,
+) -> bool {
     !is_narrow_decimal_carry_type(source_type)
         && !is_narrow_decimal_carry_type(target_type)
-        && (is_supported_arrow_implicit_cast(source_type, target_type)
+        && (is_supported_arrow_implicit_cast(source_type, target_type, ctx)
             || is_supported_decimal_to_float64_cast(source_type, target_type)
             || is_supported_numeric_to_decimal_cast(source_type, target_type)
             || is_supported_decimal_to_integral_cast(source_type, target_type)
@@ -299,8 +241,12 @@ pub fn is_supported_arrow_cast(source_type: &ArrowDataType, target_type: &ArrowD
 }
 
 /// Returns whether the native engine may insert or preserve an implicit cast.
-pub fn is_supported_arrow_implicit_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
-    (source_type == target_type && is_supported_arrow_type(source_type))
+pub fn is_supported_arrow_implicit_cast(
+    source_type: &ArrowDataType,
+    target_type: &ArrowDataType,
+    ctx: AnalysisContext<'_>,
+) -> bool {
+    (source_type == target_type && ctx.backend().supports_type(source_type))
         || is_supported_numeric_widening_cast(source_type, target_type)
         || is_supported_decimal_to_decimal_cast(source_type, target_type)
         || is_supported_string_cast(source_type, target_type)

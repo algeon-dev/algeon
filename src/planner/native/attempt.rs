@@ -125,8 +125,11 @@ fn replace_lowered_root_or_keep_plan(
         .ok_or_else(|| native_candidate_error("native rewrite has no rewritten candidate"))?;
     let optimizer_options = native_optimizer_options_for_execution(native_optimizer_options, native_execution_config)
         .map_err(DataFusionError::from)?;
-    let optimizer_result =
-        nexus_query_engine::optimizer::optimize_query_plan(lowering.plans[0].clone(), &optimizer_options);
+    let optimizer_result = nexus_query_engine::optimizer::optimize_query_plan(
+        lowering.plans[0].clone(),
+        &optimizer_options,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    );
     let native_optimizer = optimizer_result.diagnostics;
     let shared_resident_producers = optimizer_result.shared_resident_producers;
     let ordered_output_sort_needed = plan.properties().output_ordering().is_some()

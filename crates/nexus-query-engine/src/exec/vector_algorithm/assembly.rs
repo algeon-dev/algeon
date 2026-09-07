@@ -40,28 +40,26 @@ pub(in crate::exec) fn assemble_brute_force_knn_output(
         .with_fact("reason", "k_exceeds_uint64")
     })?;
     let output_ordinal = runtime.sequence(0_u64, 1_u64, output_rows).map_err(|error| {
-        QueryError::from_cudf(ASSEMBLY_OPERATION, "failed to construct kNN output ordinals on device", error)
+        cudf_query_error(ASSEMBLY_OPERATION, "failed to construct kNN output ordinals on device", error)
     })?;
     let query_ordinal = output_ordinal.div_scalar_in(k_u64, &execution).map_err(|error| {
-        QueryError::from_cudf(ASSEMBLY_OPERATION, "failed to derive kNN query ordinals on device", error)
+        cudf_query_error(ASSEMBLY_OPERATION, "failed to derive kNN query ordinals on device", error)
     })?;
     let query_gather_map = query_ordinal.astype_in(TypeId::Int32, &execution).map_err(|error| {
-        QueryError::from_cudf(ASSEMBLY_OPERATION, "failed to construct kNN query gather map on device", error)
+        cudf_query_error(ASSEMBLY_OPERATION, "failed to construct kNN query gather map on device", error)
     })?;
-    let query_id =
-        relation_id_series(&params.queries, queries, "queries")?.gather_in(&query_gather_map, &execution).map_err(
-            |error| QueryError::from_cudf(ASSEMBLY_OPERATION, "failed to gather kNN query ids on device", error),
-        )?;
+    let query_id = relation_id_series(&params.queries, queries, "queries")?
+        .gather_in(&query_gather_map, &execution)
+        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to gather kNN query ids on device", error))?;
 
     let neighbor_gather_map = neighbor_ordinals_i64.astype_in(TypeId::Int32, &execution).map_err(|error| {
-        QueryError::from_cudf(ASSEMBLY_OPERATION, "failed to construct kNN neighbor gather map on device", error)
+        cudf_query_error(ASSEMBLY_OPERATION, "failed to construct kNN neighbor gather map on device", error)
     })?;
-    let neighbor_id =
-        relation_id_series(&params.dataset, dataset, "dataset")?.gather_in(&neighbor_gather_map, &execution).map_err(
-            |error| QueryError::from_cudf(ASSEMBLY_OPERATION, "failed to gather kNN neighbor ids on device", error),
-        )?;
+    let neighbor_id = relation_id_series(&params.dataset, dataset, "dataset")?
+        .gather_in(&neighbor_gather_map, &execution)
+        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to gather kNN neighbor ids on device", error))?;
     let neighbor_ordinal = neighbor_ordinals_i64.astype_in(TypeId::UInt64, &execution).map_err(|error| {
-        QueryError::from_cudf(ASSEMBLY_OPERATION, "failed to cast kNN neighbor ordinals on device", error)
+        cudf_query_error(ASSEMBLY_OPERATION, "failed to cast kNN neighbor ordinals on device", error)
     })?;
 
     let unsorted = runtime
@@ -74,7 +72,7 @@ pub(in crate::exec) fn assemble_brute_force_knn_output(
             ("distance", distances_f32),
         ])
         .map_err(|error| {
-            QueryError::from_cudf(ASSEMBLY_OPERATION, "failed to assemble kNN relational output on device", error)
+            cudf_query_error(ASSEMBLY_OPERATION, "failed to assemble kNN relational output on device", error)
         })?;
     let descending_distance = matches!(params.metric, crate::plan::VectorDistanceMetric::InnerProduct);
     let sorted = unsorted
@@ -87,23 +85,19 @@ pub(in crate::exec) fn assemble_brute_force_knn_output(
                 .with_stable(true),
         )
         .map_err(|error| {
-            QueryError::from_cudf(
-                ASSEMBLY_OPERATION,
-                "failed to deterministically order kNN neighbors on device",
-                error,
-            )
+            cudf_query_error(ASSEMBLY_OPERATION, "failed to deterministically order kNN neighbors on device", error)
         })?;
     let rank = output_ordinal
         .rem_scalar_in(k_u64, &execution)
         .and_then(|rank| rank.astype_in(TypeId::UInt32, &execution))
-        .map_err(|error| QueryError::from_cudf(ASSEMBLY_OPERATION, "failed to derive kNN ranks on device", error))?;
+        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to derive kNN ranks on device", error))?;
     let output = sorted
         .with_column("rank", rank)
         .and_then(|output| {
             output.select(["query_ordinal", "query_id", "neighbor_ordinal", "neighbor_id", "rank", "distance"])
         })
         .map_err(|error| {
-            QueryError::from_cudf(ASSEMBLY_OPERATION, "failed to finalize kNN relational output schema", error)
+            cudf_query_error(ASSEMBLY_OPERATION, "failed to finalize kNN relational output schema", error)
         })?;
     Ok(GpuDataFrame::new(output))
 }
@@ -119,16 +113,16 @@ pub(in crate::exec) fn assemble_kmeans_output(
 
     let runtime = context.runtime()?;
     let row_ordinal = runtime.sequence(0_u64, 1_u64, input.num_rows()).map_err(|error| {
-        QueryError::from_cudf(ASSEMBLY_OPERATION, "failed to construct K-means row ordinals on device", error)
+        cudf_query_error(ASSEMBLY_OPERATION, "failed to construct K-means row ordinals on device", error)
     })?;
     let id = relation_id_series(binding, input, "input")?.copy_into_runtime(&runtime).map_err(|error| {
-        QueryError::from_cudf(ASSEMBLY_OPERATION, "failed to place K-means logical ids in the query runtime", error)
+        cudf_query_error(ASSEMBLY_OPERATION, "failed to place K-means logical ids in the query runtime", error)
     })?;
     let output = runtime
         .empty_dataframe()
         .assign([("row_ordinal", row_ordinal), ("id", id), ("cluster_id", labels_i32)])
         .map_err(|error| {
-            QueryError::from_cudf(ASSEMBLY_OPERATION, "failed to assemble K-means relational output on device", error)
+            cudf_query_error(ASSEMBLY_OPERATION, "failed to assemble K-means relational output on device", error)
         })?;
     GpuDataFrame::try_new_with_source_residency(output, input)
 }
@@ -151,17 +145,18 @@ pub(in crate::exec) fn assemble_pca_output(
 
     let runtime = context.runtime()?;
     let row_ordinal = runtime.sequence(0_u64, 1_u64, input.num_rows()).map_err(|error| {
-        QueryError::from_cudf(ASSEMBLY_OPERATION, "failed to construct PCA row ordinals on device", error)
+        cudf_query_error(ASSEMBLY_OPERATION, "failed to construct PCA row ordinals on device", error)
     })?;
     let id = relation_id_series(binding, input, "input")?.copy_into_runtime(&runtime).map_err(|error| {
-        QueryError::from_cudf(ASSEMBLY_OPERATION, "failed to place PCA logical ids in the query runtime", error)
+        cudf_query_error(ASSEMBLY_OPERATION, "failed to place PCA logical ids in the query runtime", error)
     })?;
-    let mut output = runtime.empty_dataframe().assign([("row_ordinal", row_ordinal), ("id", id)]).map_err(|error| {
-        QueryError::from_cudf(ASSEMBLY_OPERATION, "failed to initialize PCA relational output", error)
-    })?;
+    let mut output = runtime
+        .empty_dataframe()
+        .assign([("row_ordinal", row_ordinal), ("id", id)])
+        .map_err(|error| cudf_query_error(ASSEMBLY_OPERATION, "failed to initialize PCA relational output", error))?;
     for (component_index, component) in components_f32.iter().enumerate() {
         output = output.with_column(&format!("pc_{component_index}"), component.clone()).map_err(|error| {
-            QueryError::from_cudf(ASSEMBLY_OPERATION, "failed to append a PCA component on device", error)
+            cudf_query_error(ASSEMBLY_OPERATION, "failed to append a PCA component on device", error)
                 .with_fact("component_index", component_index)
         })?;
     }
@@ -183,7 +178,7 @@ fn relation_id_series(
         .with_fact("reason", "missing_logical_row_id_column"));
     };
     input.frame().series(column).map_err(|error| {
-        QueryError::from_cudf(ASSEMBLY_OPERATION, "failed to access vector relation logical ids", error)
+        cudf_query_error(ASSEMBLY_OPERATION, "failed to access vector relation logical ids", error)
             .with_fact("relation_role", relation_role)
             .with_fact("column", column)
     })
@@ -191,7 +186,7 @@ fn relation_id_series(
 
 fn require_series_contract(series: &Series, expected_type: TypeId, expected_rows: usize, output: &str) -> Result<()> {
     let actual_type = series.dtype().map_err(|error| {
-        QueryError::from_cudf(ASSEMBLY_OPERATION, "failed to inspect vector native output type", error)
+        cudf_query_error(ASSEMBLY_OPERATION, "failed to inspect vector native output type", error)
             .with_fact("output", output)
     })?;
     if actual_type.id() != expected_type || series.len() != expected_rows || series.null_count() != 0 {

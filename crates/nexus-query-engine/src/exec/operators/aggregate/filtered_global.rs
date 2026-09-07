@@ -7,6 +7,7 @@ use std::{
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
+    cudf_query_error, cudf_query_error_with_budget_details,
     filter_inputs::{aggregate_expr_input_type, filtered_aggregate_input_type, filtered_aggregate_value_expr},
     filtered_common::{
         add_segmented_budgeted_execution_stats, estimate_column_bytes, filtered_fixed_width_dtype_size,
@@ -176,7 +177,7 @@ pub(super) fn execute_segmented_filtered_global_aggregate_with_budget(
         output = output
             .select(output_schema.fields().iter().map(|field| field.name().as_str()).collect::<Vec<_>>())
             .map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.filtered_global_aggregate.select",
                     "failed to select segmented filtered global aggregate output columns",
                     error,
@@ -486,7 +487,7 @@ fn execute_segmented_filtered_global_partial_state(
         } else {
             frame.with_execution(&token.execution_overrides()).slice(offset, length).map_err(|error| {
                 attach_budget_token_failure_facts(
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.filtered_global_aggregate.slice",
                         "failed to slice input for segmented filtered global aggregate",
                         error,
@@ -597,7 +598,7 @@ fn execute_filtered_global_partial_state_for_chunk(
         })
         .collect::<Result<Vec<_>>>()?;
     let frame = DataFrame::from_series(ordered).map(GpuDataFrame::new).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.filtered_global_aggregate.partial_state",
             "failed to construct segmented filtered global aggregate partial state frame",
             error,
@@ -636,7 +637,7 @@ fn append_filtered_global_partial_segment(
     .into_frame();
     for field in partial_schema.fields() {
         let series = partial.series(field.name().as_str()).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.filtered_global_aggregate.partial_segment",
                 "failed to access segmented filtered global aggregate partial state column",
                 error,
@@ -677,7 +678,7 @@ fn prepare_filtered_global_predicates_for_chunk(
         frame = frame
             .with_columns_with_budget(predicate_expressions, token)
             .map_err(|error| {
-                QueryError::from_cudf_with_budget_details(
+                cudf_query_error_with_budget_details(
                     "nexus_query_engine.filtered_global_aggregate.filter_predicates",
                     "failed to materialize segmented filtered global aggregate predicates",
                     error,
@@ -736,7 +737,7 @@ fn prepare_filtered_global_partial_segment(
         frame = frame
             .with_columns_with_budget(masked_expressions, token)
             .map_err(|error| {
-                QueryError::from_cudf_with_budget_details(
+                cudf_query_error_with_budget_details(
                     "nexus_query_engine.filtered_global_aggregate.filter_inputs",
                     "failed to materialize segmented filtered global aggregate inputs",
                     error,
@@ -880,7 +881,7 @@ fn concat_partial_state_frames(
     let rest = partial_frames.iter().map(GpuDataFrame::frame).collect::<Vec<_>>();
     first.with_execution(&token.execution_overrides()).concat_many(&rest).map(GpuDataFrame::new).map_err(|error| {
         attach_budget_token_failure_facts(
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.filtered_global_aggregate.concat_partial_state",
                 "failed to concatenate segmented filtered global aggregate partial states",
                 error,

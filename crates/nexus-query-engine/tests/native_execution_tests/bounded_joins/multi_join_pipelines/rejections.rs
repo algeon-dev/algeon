@@ -74,8 +74,10 @@ fn bounded_native_multi_join_rejects_unsupported_mixed_residual_before_source_re
         second_join_schema,
     );
     let plan = builder.finish_with_host_sink(second_join);
-    assert!(!plan.capability_analysis().admits_root_join());
-    let analysis = plan.capability_analysis();
+    assert!(
+        !plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context()).admits_root_join()
+    );
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     // The LIKE residual is a node-local expression rejection on the second
     // join; no plan-family admission carries it anymore.
     let rejected_node = analysis

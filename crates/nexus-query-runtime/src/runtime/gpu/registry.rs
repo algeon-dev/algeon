@@ -14,9 +14,12 @@ use super::{
     DeviceCapabilities, DeviceContext, DeviceLedger, DeviceMemoryFailureReport, DeviceMemoryFailureTracker,
     DeviceOwnerToken, DeviceResourceEnvelope, DeviceResourceProfile, GpuInventory,
 };
-use crate::runtime::{
-    GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe, GpuMemoryFraction, ServiceStreamPool,
-    backend_core::ConstructionResourceJournal, backend_metrics::BackendMetricsStore,
+use crate::{
+    native_error::cudf_query_error,
+    runtime::{
+        GpuBackendConstructionCheckpoint, GpuBackendConstructionProbe, GpuMemoryFraction, ServiceStreamPool,
+        backend_core::ConstructionResourceJournal, backend_metrics::BackendMetricsStore,
+    },
 };
 
 /// Soft managed-capacity calculation for one installed device.
@@ -291,7 +294,7 @@ impl DeviceRegistry {
             .into_iter()
             .map(|plan| {
                 let device = cudf::DeviceId::new(plan.device_ordinal).map_err(|error| {
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.gpu.device_registry.device",
                         "failed to resolve CUDA device while installing registry",
                         error,
@@ -311,7 +314,7 @@ impl DeviceRegistry {
             checkpoint(probe, GpuBackendConstructionCheckpoint::BeforeMemoryManager { device_ordinal: ordinal })?;
             let installation_before =
                 cudf::DeviceMemoryManager::installation_state_for_device(device).map_err(|error| {
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.gpu.device_registry.memory_manager",
                         "failed to inspect the process device-manager installation before reuse",
                         error,
@@ -391,7 +394,7 @@ impl DeviceRegistry {
             let free_now = live.free_bytes;
             let pool_reserved =
                 target.mr_manager.pool_usage().map(|usage| usage.reserved_current_bytes).map_err(|error| {
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.gpu.device_registry.memory_manager",
                         "failed to read pool backing while freezing managed capacity",
                         error,
@@ -738,7 +741,7 @@ fn install_device_memory_manager(
                         .with_source(failure.into_error()));
                 }
 
-                let error = QueryError::from_cudf(
+                let error = cudf_query_error(
                     "nexus_query_engine.gpu.device_registry.memory_manager",
                     "failed to install or reuse the Nexus-owned device memory manager",
                     failure.into_error(),
@@ -927,7 +930,7 @@ fn validate_registry_config(config: &DeviceRegistryConfig) -> Result<()> {
         canonical_device_memory_manager_options(profile.memory_partition.allocation_limit_bytes(), None)
             .validate()
             .map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.gpu.device_registry.config",
                     "invalid per-device memory manager options",
                     error,

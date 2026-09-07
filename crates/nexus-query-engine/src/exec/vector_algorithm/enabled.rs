@@ -61,7 +61,7 @@ pub(in crate::exec) fn execute_vector_algorithm(
         .transpose()?;
     let runtime = context.shared_runtime()?;
     let resources = CuvsResources::for_runtime(runtime).map_err(|error| {
-        QueryError::from_cuvs(EXECUTE_OPERATION, "failed to create query-local cuVS resources", error)
+        cuvs_query_error(EXECUTE_OPERATION, "failed to create query-local cuVS resources", error)
             .with_fact("node_id", node_id)
             .with_fact("algorithm", node.spec.algorithm.as_str())
     })?;
@@ -143,10 +143,10 @@ fn execute_brute_force_knn(
         native_version,
         |dataset_tensor| {
             let packed_dataset_rows = dataset_tensor.rows().map_err(|error| {
-                QueryError::from_cuvs(EXECUTE_OPERATION, "failed to inspect the validated kNN dataset shape", error)
+                cuvs_query_error(EXECUTE_OPERATION, "failed to inspect the validated kNN dataset shape", error)
             })?;
             let dimension = dataset_tensor.columns().map_err(|error| {
-                QueryError::from_cuvs(EXECUTE_OPERATION, "failed to inspect the validated kNN dataset dimension", error)
+                cuvs_query_error(EXECUTE_OPERATION, "failed to inspect the validated kNN dataset dimension", error)
             })?;
             if packed_dataset_rows != dataset_rows {
                 return Err(QueryError::new(
@@ -178,10 +178,10 @@ fn execute_brute_force_knn(
                     .with_fact("query_dimension", query_dimension));
                 }
                 let neighbors = resources.runtime().series(&[] as &[i64]).map_err(|error| {
-                    QueryError::from_cudf(EXECUTE_OPERATION, "failed to construct empty kNN neighbor output", error)
+                    cudf_query_error(EXECUTE_OPERATION, "failed to construct empty kNN neighbor output", error)
                 })?;
                 let distances = resources.runtime().series(&[] as &[f32]).map_err(|error| {
-                    QueryError::from_cudf(EXECUTE_OPERATION, "failed to construct empty kNN distance output", error)
+                    cudf_query_error(EXECUTE_OPERATION, "failed to construct empty kNN distance output", error)
                 })?;
                 return observe_assembly(
                     context,
@@ -206,11 +206,7 @@ fn execute_brute_force_knn(
                 native_version,
                 |query_tensor| {
                     let query_rows = query_tensor.rows().map_err(|error| {
-                        QueryError::from_cuvs(
-                            EXECUTE_OPERATION,
-                            "failed to inspect the validated kNN query shape",
-                            error,
-                        )
+                        cuvs_query_error(EXECUTE_OPERATION, "failed to inspect the validated kNN query shape", error)
                     })?;
                     if query_rows != queries.num_rows() {
                         return Err(QueryError::new(
@@ -224,7 +220,7 @@ fn execute_brute_force_knn(
                         .with_fact("reason", "packed_row_count_mismatch"));
                     }
                     let query_dimension = query_tensor.columns().map_err(|error| {
-                        QueryError::from_cuvs(
+                        cuvs_query_error(
                             EXECUTE_OPERATION,
                             "failed to inspect the validated kNN query dimension",
                             error,
@@ -255,11 +251,7 @@ fn execute_brute_force_knn(
                         || {
                             context.check_cancellation("nexus_query_engine.vector_algorithm.before_index_build")?;
                             let index = BruteForceIndex::build(resources, dataset_tensor, metric).map_err(|error| {
-                                QueryError::from_cuvs(
-                                    NATIVE_OPERATION,
-                                    "failed to build the query-local kNN index",
-                                    error,
-                                )
+                                cuvs_query_error(NATIVE_OPERATION, "failed to build the query-local kNN index", error)
                             })?;
                             context.check_cancellation("nexus_query_engine.vector_algorithm.after_index_build")?;
                             Ok(index)
@@ -267,10 +259,10 @@ fn execute_brute_force_knn(
                     )?;
 
                     let mut neighbors = DeviceBuffer::<i64>::new(resources, output_rows).map_err(|error| {
-                        QueryError::from_cuvs(NATIVE_OPERATION, "failed to allocate kNN neighbor output", error)
+                        cuvs_query_error(NATIVE_OPERATION, "failed to allocate kNN neighbor output", error)
                     })?;
                     let mut distances = DeviceBuffer::<f32>::new(resources, output_rows).map_err(|error| {
-                        QueryError::from_cuvs(NATIVE_OPERATION, "failed to allocate kNN distance output", error)
+                        cuvs_query_error(NATIVE_OPERATION, "failed to allocate kNN distance output", error)
                     })?;
                     let query_bytes = matrix_bytes(query_rows, query_dimension, node_id, "queries")?;
                     let native_output_bytes = output_rows
@@ -291,9 +283,7 @@ fn execute_brute_force_knn(
                         || {
                             context.check_cancellation("nexus_query_engine.vector_algorithm.before_search")?;
                             index.search_into(query_tensor, params.k, &mut neighbors, &mut distances).map_err(
-                                |error| {
-                                    QueryError::from_cuvs(NATIVE_OPERATION, "failed to execute exact kNN search", error)
-                                },
+                                |error| cuvs_query_error(NATIVE_OPERATION, "failed to execute exact kNN search", error),
                             )?;
                             context.check_cancellation("nexus_query_engine.vector_algorithm.after_search")?;
                             Ok(())
@@ -301,16 +291,16 @@ fn execute_brute_force_knn(
                     )?;
 
                     let neighbors = Series::from_column(neighbors.into_column().map_err(|error| {
-                        QueryError::from_cuvs(EXECUTE_OPERATION, "failed to adopt kNN neighbor output", error)
+                        cuvs_query_error(EXECUTE_OPERATION, "failed to adopt kNN neighbor output", error)
                     })?)
                     .map_err(|error| {
-                        QueryError::from_cudf(EXECUTE_OPERATION, "failed to wrap kNN neighbor output", error)
+                        cudf_query_error(EXECUTE_OPERATION, "failed to wrap kNN neighbor output", error)
                     })?;
                     let distances = Series::from_column(distances.into_column().map_err(|error| {
-                        QueryError::from_cuvs(EXECUTE_OPERATION, "failed to adopt kNN distance output", error)
+                        cuvs_query_error(EXECUTE_OPERATION, "failed to adopt kNN distance output", error)
                     })?)
                     .map_err(|error| {
-                        QueryError::from_cudf(EXECUTE_OPERATION, "failed to wrap kNN distance output", error)
+                        cudf_query_error(EXECUTE_OPERATION, "failed to wrap kNN distance output", error)
                     })?;
 
                     observe_assembly(
@@ -403,7 +393,7 @@ fn execute_kmeans(
                             initial_centroids,
                         )
                         .map_err(|error| {
-                            QueryError::from_cuvs(NATIVE_OPERATION, "failed to fit query-local K-means", error)
+                            cuvs_query_error(NATIVE_OPERATION, "failed to fit query-local K-means", error)
                         })?;
                         context.check_cancellation("nexus_query_engine.vector_algorithm.after_kmeans_fit")?;
                         Ok(model)
@@ -454,7 +444,7 @@ fn execute_kmeans(
             };
 
             let mut labels = DeviceBuffer::<i32>::new(resources, input_rows).map_err(|error| {
-                QueryError::from_cuvs(NATIVE_OPERATION, "failed to allocate K-means assignment output", error)
+                cuvs_query_error(NATIVE_OPERATION, "failed to allocate K-means assignment output", error)
             })?;
             observe_native(
                 context,
@@ -475,18 +465,16 @@ fn execute_kmeans(
                 || {
                     context.check_cancellation("nexus_query_engine.vector_algorithm.before_kmeans_predict")?;
                     model.predict_into(input_tensor, &mut labels).map_err(|error| {
-                        QueryError::from_cuvs(NATIVE_OPERATION, "failed to predict K-means assignments", error)
+                        cuvs_query_error(NATIVE_OPERATION, "failed to predict K-means assignments", error)
                     })?;
                     context.check_cancellation("nexus_query_engine.vector_algorithm.after_kmeans_predict")?;
                     Ok(())
                 },
             )?;
             let labels = Series::from_column(labels.into_column().map_err(|error| {
-                QueryError::from_cuvs(EXECUTE_OPERATION, "failed to adopt K-means assignment output", error)
+                cuvs_query_error(EXECUTE_OPERATION, "failed to adopt K-means assignment output", error)
             })?)
-            .map_err(|error| {
-                QueryError::from_cudf(EXECUTE_OPERATION, "failed to wrap K-means assignment output", error)
-            })?;
+            .map_err(|error| cudf_query_error(EXECUTE_OPERATION, "failed to wrap K-means assignment output", error))?;
             observe_assembly(context, node_id, VectorAlgorithm::KMeans, resources, native_version, input_rows, || {
                 assemble_kmeans_output(context, input, &params.input, labels)
             })
@@ -541,10 +529,8 @@ fn execute_pca(
                 .with_fact("feature_dimension", dimension));
             }
             let input_bytes = matrix_bytes(input_rows, dimension, node_id, "input")?;
-            let mut outputs =
-                PcaOutputBuffers::new(resources, input_rows, dimension, params.n_components).map_err(|error| {
-                    QueryError::from_cuvs(NATIVE_OPERATION, "failed to allocate PCA device outputs", error)
-                })?;
+            let mut outputs = PcaOutputBuffers::new(resources, input_rows, dimension, params.n_components)
+                .map_err(|error| cuvs_query_error(NATIVE_OPERATION, "failed to allocate PCA device outputs", error))?;
             let transformed_bytes = matrix_bytes(input_rows, params.n_components, node_id, "pca_transformed_output")?;
             let fit = observe_native(
                 context,
@@ -560,14 +546,14 @@ fn execute_pca(
                 || {
                     context.check_cancellation("nexus_query_engine.vector_algorithm.before_pca_fit_transform")?;
                     let fit = fit_transform_owned(resources, &mut packed_input, &native_params, &mut outputs).map_err(
-                        |error| QueryError::from_cuvs(NATIVE_OPERATION, "failed to fit and transform PCA", error),
+                        |error| cuvs_query_error(NATIVE_OPERATION, "failed to fit and transform PCA", error),
                     )?;
                     context.check_cancellation("nexus_query_engine.vector_algorithm.after_pca_fit_transform")?;
                     Ok(fit)
                 },
             )?;
             let components = outputs.into_transformed_columns(fit).map_err(|error| {
-                QueryError::from_cuvs(EXECUTE_OPERATION, "failed to adopt PCA transformed device output", error)
+                cuvs_query_error(EXECUTE_OPERATION, "failed to adopt PCA transformed device output", error)
             })?;
             observe_assembly(context, node_id, VectorAlgorithm::Pca, resources, native_version, input_rows, || {
                 assemble_pca_output(context, input, &params.input, &components)
@@ -644,12 +630,12 @@ fn with_relation_tensor<T>(
         CuvsDenseVectorBinding::Columns(columns) => {
             let packed = (|| {
                 let selected = input.frame().select(columns.iter().map(String::as_str)).map_err(|error| {
-                    QueryError::from_cudf(PACK_OPERATION, "failed to select the kNN feature columns", error)
+                    cudf_query_error(PACK_OPERATION, "failed to select the kNN feature columns", error)
                         .with_fact("node_id", node_id)
                         .with_fact("relation_role", role)
                 })?;
                 let export = selected.try_prepare_device_table_export().map_err(|error| {
-                    QueryError::from_cudf_interop(
+                    cudf_interop_query_error(
                         PACK_OPERATION,
                         "failed to prepare one atomic kNN feature-table export",
                         format!("{:?}", error.kind()),
@@ -659,7 +645,7 @@ fn with_relation_tensor<T>(
                     .with_fact("relation_role", role)
                 })?;
                 resources.pack_prepared_float32_table(&export, MatrixLayout::RowMajor).map_err(|error| {
-                    QueryError::from_cuvs(PACK_OPERATION, "failed to pack the prepared kNN feature table", error)
+                    cuvs_query_error(PACK_OPERATION, "failed to pack the prepared kNN feature table", error)
                         .with_fact("node_id", node_id)
                         .with_fact("relation_role", role)
                 })
@@ -672,7 +658,7 @@ fn with_relation_tensor<T>(
                 },
             };
             let tensor = match packed.as_validated_tensor(resources).map_err(|error| {
-                QueryError::from_cuvs(PACK_OPERATION, "failed to bind the validated packed kNN matrix", error)
+                cuvs_query_error(PACK_OPERATION, "failed to bind the validated packed kNN matrix", error)
                     .with_fact("node_id", node_id)
                     .with_fact("relation_role", role)
             }) {
@@ -687,7 +673,7 @@ fn with_relation_tensor<T>(
         },
         CuvsDenseVectorBinding::VectorColumn(column) => {
             let batch = match GpuRecordBatch::new(input.frame().clone(), input_schema.clone()).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     PACK_OPERATION,
                     "failed to bind the vector relation to its FixedSizeList schema",
                     error,
@@ -721,7 +707,7 @@ fn with_relation_tensor<T>(
                 },
             };
             let validated = match batch.try_prepare_fixed_size_list_float32_export(field_index).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     PACK_OPERATION,
                     "failed to prove the FixedSizeList vector child range and finite values",
                     error,
@@ -737,7 +723,7 @@ fn with_relation_tensor<T>(
                 },
             };
             let lease = match resources.activate_validated_fixed_size_list_tensor(&validated).map_err(|error| {
-                QueryError::from_cuvs(PACK_OPERATION, "failed to activate the validated FixedSizeList tensor", error)
+                cuvs_query_error(PACK_OPERATION, "failed to activate the validated FixedSizeList tensor", error)
                     .with_fact("node_id", node_id)
                     .with_fact("relation_role", role)
                     .with_fact("column", column)
@@ -751,13 +737,9 @@ fn with_relation_tensor<T>(
             guard.finish(Some(input_rows as u64), Some(packed_bytes));
             let result = body(lease.tensor());
             let completion = lease.complete().and_then(|completion| completion.release()).map_err(|error| {
-                QueryError::from_cuvs(
-                    PACK_OPERATION,
-                    "failed to complete the FixedSizeList producer read lifetime",
-                    error,
-                )
-                .with_fact("node_id", node_id)
-                .with_fact("relation_role", role)
+                cuvs_query_error(PACK_OPERATION, "failed to complete the FixedSizeList producer read lifetime", error)
+                    .with_fact("node_id", node_id)
+                    .with_fact("relation_role", role)
             });
             match (result, completion) {
                 (Err(error), _) => Err(error),
@@ -838,12 +820,12 @@ fn with_owned_relation_matrix<T>(
         CuvsDenseVectorBinding::Columns(columns) => {
             let packed = (|| {
                 let selected = input.frame().select(columns.iter().map(String::as_str)).map_err(|error| {
-                    QueryError::from_cudf(PACK_OPERATION, "failed to select vector feature columns", error)
+                    cudf_query_error(PACK_OPERATION, "failed to select vector feature columns", error)
                         .with_fact("node_id", node_id)
                         .with_fact("relation_role", role)
                 })?;
                 let export = selected.try_prepare_device_table_export().map_err(|error| {
-                    QueryError::from_cudf_interop(
+                    cudf_interop_query_error(
                         PACK_OPERATION,
                         "failed to prepare one atomic vector feature-table export",
                         format!("{:?}", error.kind()),
@@ -853,7 +835,7 @@ fn with_owned_relation_matrix<T>(
                     .with_fact("relation_role", role)
                 })?;
                 resources.pack_prepared_float32_table(&export, layout).map_err(|error| {
-                    QueryError::from_cuvs(PACK_OPERATION, "failed to pack the prepared vector feature table", error)
+                    cuvs_query_error(PACK_OPERATION, "failed to pack the prepared vector feature table", error)
                         .with_fact("node_id", node_id)
                         .with_fact("relation_role", role)
                 })
@@ -868,7 +850,7 @@ fn with_owned_relation_matrix<T>(
         },
         CuvsDenseVectorBinding::VectorColumn(column) => {
             let batch = match GpuRecordBatch::new(input.frame().clone(), input_schema.clone()).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     PACK_OPERATION,
                     "failed to bind the vector relation to its FixedSizeList schema",
                     error,
@@ -901,7 +883,7 @@ fn with_owned_relation_matrix<T>(
                 },
             };
             let validated = match batch.try_prepare_fixed_size_list_float32_export(field_index).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     PACK_OPERATION,
                     "failed to prove the FixedSizeList vector child range and finite values",
                     error,
@@ -917,7 +899,7 @@ fn with_owned_relation_matrix<T>(
                 },
             };
             match resources.pack_validated_fixed_size_list_float32(&validated, layout).map_err(|error| {
-                QueryError::from_cuvs(
+                cuvs_query_error(
                     PACK_OPERATION,
                     "failed to pack the validated FixedSizeList vector child into an owned matrix",
                     error,
@@ -957,18 +939,14 @@ fn with_uniform_list_relation_tensor<T>(
     let column = uniform_list_vector_column(binding, node_id, role)?;
     context.check_cancellation("nexus_query_engine.vector_algorithm.before_pack")?;
     let batch = GpuRecordBatch::new(input.frame().clone(), input_schema.clone()).map_err(|error| {
-        QueryError::from_cudf(
-            PACK_OPERATION,
-            "failed to bind the vector relation to its variable-width List schema",
-            error,
-        )
-        .with_fact("node_id", node_id)
-        .with_fact("relation_role", role)
-        .with_fact("column", column)
+        cudf_query_error(PACK_OPERATION, "failed to bind the vector relation to its variable-width List schema", error)
+            .with_fact("node_id", node_id)
+            .with_fact("relation_role", role)
+            .with_fact("column", column)
     })?;
     let field_index = uniform_list_field_index(input_schema, column, node_id, role)?;
     let validated = batch.try_prepare_uniform_list_float32_export(field_index).map_err(|error| {
-        QueryError::from_cudf(PACK_OPERATION, "failed to prove uniform List vector offsets and finite values", error)
+        cudf_query_error(PACK_OPERATION, "failed to prove uniform List vector offsets and finite values", error)
             .with_fact("node_id", node_id)
             .with_fact("relation_role", role)
             .with_fact("column", column)
@@ -997,7 +975,7 @@ fn with_uniform_list_relation_tensor<T>(
         return Err(error);
     }
     let lease = match resources.activate_validated_uniform_list_tensor(&validated).map_err(|error| {
-        QueryError::from_cuvs(PACK_OPERATION, "failed to activate the validated uniform List tensor", error)
+        cuvs_query_error(PACK_OPERATION, "failed to activate the validated uniform List tensor", error)
             .with_fact("node_id", node_id)
             .with_fact("relation_role", role)
             .with_fact("column", column)
@@ -1011,7 +989,7 @@ fn with_uniform_list_relation_tensor<T>(
     guard.finish(Some(rows as u64), Some(packed_bytes));
     let result = body(lease.tensor());
     let completion = lease.complete().and_then(|completion| completion.release()).map_err(|error| {
-        QueryError::from_cuvs(PACK_OPERATION, "failed to complete the uniform List producer read lifetime", error)
+        cuvs_query_error(PACK_OPERATION, "failed to complete the uniform List producer read lifetime", error)
             .with_fact("node_id", node_id)
             .with_fact("relation_role", role)
             .with_fact("column", column)
@@ -1043,18 +1021,14 @@ fn with_owned_uniform_list_relation_matrix<T>(
     let column = uniform_list_vector_column(binding, node_id, role)?;
     context.check_cancellation("nexus_query_engine.vector_algorithm.before_pack")?;
     let batch = GpuRecordBatch::new(input.frame().clone(), input_schema.clone()).map_err(|error| {
-        QueryError::from_cudf(
-            PACK_OPERATION,
-            "failed to bind the vector relation to its variable-width List schema",
-            error,
-        )
-        .with_fact("node_id", node_id)
-        .with_fact("relation_role", role)
-        .with_fact("column", column)
+        cudf_query_error(PACK_OPERATION, "failed to bind the vector relation to its variable-width List schema", error)
+            .with_fact("node_id", node_id)
+            .with_fact("relation_role", role)
+            .with_fact("column", column)
     })?;
     let field_index = uniform_list_field_index(input_schema, column, node_id, role)?;
     let validated = batch.try_prepare_uniform_list_float32_export(field_index).map_err(|error| {
-        QueryError::from_cudf(PACK_OPERATION, "failed to prove uniform List vector offsets and finite values", error)
+        cudf_query_error(PACK_OPERATION, "failed to prove uniform List vector offsets and finite values", error)
             .with_fact("node_id", node_id)
             .with_fact("relation_role", role)
             .with_fact("column", column)
@@ -1082,7 +1056,7 @@ fn with_owned_uniform_list_relation_matrix<T>(
         return Err(error);
     }
     let packed = match resources.pack_validated_uniform_list_float32(&validated, layout).map_err(|error| {
-        QueryError::from_cuvs(
+        cuvs_query_error(
             PACK_OPERATION,
             "failed to pack the validated uniform List vector child into an owned matrix",
             error,
@@ -1145,7 +1119,7 @@ fn tensor_dimension(
     algorithm: &'static str,
 ) -> Result<usize> {
     tensor.columns().map_err(|error| {
-        QueryError::from_cuvs(
+        cuvs_query_error(
             EXECUTE_OPERATION,
             format!("failed to inspect the validated {algorithm} {role} feature dimension"),
             error,

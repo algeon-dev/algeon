@@ -1,9 +1,9 @@
 use std::time::Instant;
 
 use super::{
-    CommittedPartial, CudfSortOptions, FinalSortExecutor, GpuDataFrame, LimitNode, QueryError, Result,
-    estimated_limited_output_bytes, execute_limit_with_token, execution_overrides, final_sort_retained_bytes,
-    limit_keeps_all_rows, lower_sort_spec,
+    CommittedPartial, CudfSortOptions, FinalSortExecutor, GpuDataFrame, LimitNode, Result, cudf_query_error,
+    cudf_query_error_with_budget_details, estimated_limited_output_bytes, execute_limit_with_token,
+    execution_overrides, final_sort_retained_bytes, limit_keeps_all_rows, lower_sort_spec,
 };
 
 impl FinalSortExecutor<'_, '_> {
@@ -33,7 +33,7 @@ impl FinalSortExecutor<'_, '_> {
                     .clone()
                     .prepare_sort_values_with_budget(sort.columns.iter().map(String::as_str), options, &prepare_token)
                     .map_err(|error| {
-                        QueryError::from_cudf_with_budget_details(
+                        cudf_query_error_with_budget_details(
                             "nexus_query_engine.final_sort.prepare",
                             "failed to prepare bounded native final sort order",
                             error,
@@ -56,7 +56,7 @@ impl FinalSortExecutor<'_, '_> {
             let materialized_output_bytes = prepared_sort
                 .materialized_output_reservation_size_bytes_in(&materialize_overrides)
                 .map_err(|error| {
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.final_sort.materialize_size",
                         "failed to size bounded native final sort output",
                         error,
@@ -76,7 +76,7 @@ impl FinalSortExecutor<'_, '_> {
                 match prepared_sort
                     .materialize_with_budget(&materialize_token)
                     .map_err(|error| {
-                        QueryError::from_cudf_with_budget_details(
+                        cudf_query_error_with_budget_details(
                             "nexus_query_engine.final_sort.materialize",
                             "failed to materialize bounded native final sort output",
                             error,

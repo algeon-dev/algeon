@@ -152,10 +152,18 @@ pub(super) fn preflight_bounded_join_plan(
             "bounded native join execution requires an executable compiled pipeline",
             "bounded_join_plan_shape_unsupported",
         );
-        let decision = match crate::admission::bounded_pipeline_decision(plan, statistical_aggregate_execution_mode) {
+        let decision = match crate::admission::bounded_pipeline_decision(
+            plan,
+            statistical_aggregate_execution_mode,
+            crate::rapids_backend::rapids_analysis_context(),
+        ) {
             Ok(decision) => decision,
             Err(projection_error) => {
-                let mut facts = crate::admission::bounded_join_unsupported_shape_facts_with_projection(plan, None);
+                let mut facts = crate::admission::bounded_join_unsupported_shape_facts_with_projection(
+                    plan,
+                    None,
+                    crate::rapids_backend::rapids_analysis_context(),
+                );
                 crate::admission::insert_bounded_join_rejection_projection_error_facts(&mut facts, &projection_error);
                 for (key, value) in facts {
                     error = error.with_fact(key, value);
@@ -166,8 +174,11 @@ pub(super) fn preflight_bounded_join_plan(
         let Some(rejection_projection) = decision.rejection_projection() else {
             return Ok(decision.admission().cloned());
         };
-        let facts =
-            crate::admission::bounded_join_unsupported_shape_facts_with_projection(plan, Some(rejection_projection));
+        let facts = crate::admission::bounded_join_unsupported_shape_facts_with_projection(
+            plan,
+            Some(rejection_projection),
+            crate::rapids_backend::rapids_analysis_context(),
+        );
         for (key, value) in facts {
             error = error.with_fact(key, value);
         }

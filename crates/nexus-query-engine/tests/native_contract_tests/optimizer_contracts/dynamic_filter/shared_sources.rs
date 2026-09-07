@@ -6,7 +6,7 @@ fn native_optimizer_rejects_dynamic_filter_route_when_consumer_source_feeds_prod
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     let diagnostics = &result.diagnostics.dynamic_filter_route_discovery;
     assert!(diagnostics.candidates.iter().any(|candidate| {
@@ -25,7 +25,7 @@ fn native_optimizer_discovers_source_dynamic_filter_for_independent_repeated_con
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     let diagnostics = &result.diagnostics.dynamic_filter_route_discovery;
     assert_eq!(diagnostics.considered_count, 1);
@@ -43,7 +43,7 @@ fn native_optimizer_rejects_probe_dynamic_filter_when_consumer_lineage_crosses_s
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
     let diagnostics = &result.diagnostics.dynamic_filter_route_discovery;
 
     for branch_join in [first_branch_join, second_branch_join] {
@@ -78,7 +78,7 @@ fn native_optimizer_does_not_attach_branch_dynamic_filter_to_pre_split_shared_fi
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
     let diagnostics = &result.diagnostics.dynamic_filter_route_discovery;
 
     for branch_join in [first_branch_join, second_branch_join] {
@@ -121,7 +121,7 @@ fn native_optimizer_discovers_hash_join_build_to_probe_dynamic_filter_route_for_
         ..NativeOptimizerOptions::default()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -172,7 +172,7 @@ fn native_optimizer_discovers_hash_join_build_to_filter_dynamic_filter_route_for
         ..NativeOptimizerOptions::default()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -228,7 +228,7 @@ fn native_optimizer_rejects_join_probe_dynamic_filter_for_reused_local_source() 
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -257,7 +257,7 @@ fn native_optimizer_routes_q02_like_shared_partsupp_source_when_all_key_consumer
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(fixture.plan, &options);
+    let result = optimize_query_plan(fixture.plan, &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 1);
@@ -306,7 +306,7 @@ fn native_optimizer_rejects_q02_like_shared_source_filter_with_unconstrained_ext
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(fixture.plan, &options);
+    let result = optimize_query_plan(fixture.plan, &options, rapids_analysis_context());
 
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 0);
     let candidate = result
@@ -335,7 +335,7 @@ fn native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_is_
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(fixture.plan, &options);
+    let result = optimize_query_plan(fixture.plan, &options, rapids_analysis_context());
 
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 0);
     let candidate = result
@@ -362,7 +362,7 @@ fn native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_key_use
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(fixture.plan, &options);
+    let result = optimize_query_plan(fixture.plan, &options, rapids_analysis_context());
 
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 0);
     let candidate = result
@@ -389,7 +389,7 @@ fn native_optimizer_rejects_q02_like_shared_source_filter_when_aggregate_group_k
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(fixture.plan, &options);
+    let result = optimize_query_plan(fixture.plan, &options, rapids_analysis_context());
 
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 0);
     let candidate = result
@@ -417,7 +417,7 @@ fn native_optimizer_rejects_q02_like_shared_source_filter_when_constraint_uses_s
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(fixture.plan, &options);
+    let result = optimize_query_plan(fixture.plan, &options, rapids_analysis_context());
 
     let candidate = result
         .diagnostics
@@ -451,7 +451,7 @@ fn native_optimizer_rejects_q02_like_shared_source_filter_when_constrained_consu
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(fixture.plan, &options);
+    let result = optimize_query_plan(fixture.plan, &options, rapids_analysis_context());
 
     let candidate = result
         .diagnostics
@@ -522,7 +522,7 @@ fn native_optimizer_skips_join_probe_dynamic_filter_when_it_feeds_scalar_decimal
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -583,7 +583,7 @@ fn native_optimizer_skips_join_probe_dynamic_filter_when_filtered_join_feeds_sca
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -643,7 +643,7 @@ fn native_optimizer_keeps_join_probe_dynamic_filter_when_scalar_sum_is_not_decim
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -694,7 +694,7 @@ fn native_optimizer_skips_resident_join_probe_dynamic_filter_when_it_feeds_scala
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -745,7 +745,7 @@ fn native_optimizer_falls_back_to_branch_filter_dynamic_filter_for_reused_local_
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -806,7 +806,7 @@ fn native_optimizer_discovers_filter_dynamic_filter_route_through_direct_project
         ..NativeOptimizerOptions::default()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -865,7 +865,7 @@ fn native_optimizer_does_not_push_filter_dynamic_filter_below_limit() {
         ..NativeOptimizerOptions::default()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -911,7 +911,7 @@ fn native_optimizer_does_not_attach_source_dynamic_filter_below_limit() {
         ..NativeOptimizerOptions::default()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);
@@ -962,7 +962,7 @@ fn native_optimizer_does_not_attach_post_decode_dynamic_filter_to_shared_filter_
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.considered_count, 1);

@@ -16,6 +16,7 @@ use super::{
     },
 };
 use crate::{
+    backend::AnalysisContext,
     capability::{
         CapabilityAnalysis, CapabilityEnvelope, CapabilityRejectionCategory, CapabilityRejectionOwner,
         CapabilityRejectionProjection, CapabilityScope,
@@ -231,8 +232,9 @@ fn compiled_pipeline_coverage_gap(plan: &QueryPlan, rejection_projection: &Capab
 pub fn bounded_pipeline_decision(
     plan: &QueryPlan,
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
+    ctx: AnalysisContext<'_>,
 ) -> Result<BoundedPipelineDecision> {
-    let Some(admission) = capability_first_bounded_pipeline_admission(plan)? else {
+    let Some(admission) = capability_first_bounded_pipeline_admission(plan, ctx)? else {
         return Ok(BoundedPipelineDecision { admission: None, rejection_projection: None, execution_error: None });
     };
     if !plan.contains_graph_algorithm()

@@ -62,13 +62,24 @@ use nexus_query_engine::{
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
 fn bounded_pipeline_admission(plan: &QueryPlan) -> Result<Option<BoundedPipelineAdmission>> {
-    bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default())?.into_execution_admission()
+    bounded_pipeline_decision(
+        plan,
+        StatisticalAggregateExecutionMode::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )?
+    .into_execution_admission()
 }
 
 fn bounded_pipeline_rejection_projection(
     plan: &QueryPlan,
 ) -> Result<Option<nexus_query_engine::capability::CapabilityRejectionProjection>> {
-    Ok(bounded_pipeline_decision(plan, StatisticalAggregateExecutionMode::default())?.rejection_projection().cloned())
+    Ok(bounded_pipeline_decision(
+        plan,
+        StatisticalAggregateExecutionMode::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )?
+    .rejection_projection()
+    .cloned())
 }
 
 fn projection_outputs(expressions: Vec<Expr>, schema: Arc<Schema>) -> Vec<ProjectionOutput> {

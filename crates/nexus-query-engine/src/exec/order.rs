@@ -3,7 +3,7 @@ use std::{cell::Cell, sync::Arc, time::Instant};
 use arrow::datatypes::{DataType as ArrowDataType, Field, Schema, SchemaRef};
 use cudf::{DataFrame, SortOptions as CudfSortOptions};
 
-use super::{QueryMetrics, execution_overrides};
+use super::{QueryMetrics, cudf_query_error, execution_overrides};
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     naming::{DATAFUSION_ORDER_COLUMN_PREFIX, is_datafusion_order_column_name},
@@ -73,7 +73,7 @@ pub(in crate::exec) fn append_source_order_columns(
         return Ok(frame);
     }
     let frame = frame.copy_into_runtime(&context.runtime()?).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.datafusion_order.source",
             "failed to relocate native source frame before appending hidden order columns",
             error,
@@ -89,7 +89,7 @@ pub(in crate::exec) fn append_source_order_columns(
         .with_fact("major_ordinal", major_ordinal)
     })?;
     let major = context.runtime()?.sequence::<i64>(major, 0, rows).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.datafusion_order.source",
             "failed to materialize native source order major column",
             error,
@@ -97,7 +97,7 @@ pub(in crate::exec) fn append_source_order_columns(
         .with_fact("rows", rows)
     })?;
     let row = context.runtime()?.sequence::<i64>(0, 1, rows).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.datafusion_order.source",
             "failed to materialize native source order row column",
             error,
@@ -108,7 +108,7 @@ pub(in crate::exec) fn append_source_order_columns(
         .with_column(SOURCE_ORDER_MAJOR_COLUMN, major)
         .and_then(|frame| frame.with_column(SOURCE_ORDER_ROW_COLUMN, row))
         .map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.datafusion_order.source",
                 "failed to append hidden native source order columns",
                 error,
@@ -189,7 +189,7 @@ pub(in crate::exec) fn sort_by_datafusion_order_if_present(
         .with_execution(&overrides)
         .sort_values(order_columns.iter().map(String::as_str), CudfSortOptions::new().with_stable(true))
         .map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.datafusion_order.sort",
                 "failed to sort native stddev aggregate input by DataFusion order columns",
                 error,
@@ -223,7 +223,7 @@ fn append_side_order_columns(
         let output_name = format!("{DATAFUSION_ORDER_COLUMN_PREFIX}{next_index}");
         *next_index += 1;
         let series = frame.series(input_name.as_str()).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.datafusion_order.join",
                 "failed to access materialized native join order column",
                 error,

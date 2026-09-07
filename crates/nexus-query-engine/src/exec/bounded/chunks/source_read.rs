@@ -6,7 +6,7 @@ use super::{
     BoundedExecutionAttempt, BoundedSourceBatchingPolicy, ExecutionContext, GpuDataFrame, LocalParquetFile,
     LocalParquetSource, MemoryControlPolicy, NodeId, QueryError, QueryMetrics, ResidentGpuFrame, Result,
     ScheduledLocalParquetReadOutput, SourceChunk, apply_source_scan_limit_to_frame, chunk_retry_facts,
-    execution::source_chunk_batch_read_row_groups, execution_overrides, is_retryable_chunk_error,
+    cudf_query_error, execution::source_chunk_batch_read_row_groups, execution_overrides, is_retryable_chunk_error,
     observe_device_memory_bytes, plan_source_chunk_batches, read_local_parquet_chunk, read_local_parquet_chunk_batch,
     record_chunk_retry_error, source_budget::try_read_local_parquet_chunk_with_corrected_budget_after_error,
     split_retryable_chunk,
@@ -44,7 +44,7 @@ pub(in crate::exec::bounded) fn concatenate_source_read_outputs(
         let overrides = overrides_lease.overrides();
         let timer = Instant::now();
         let output = first_frame.with_execution(&overrides).concat_many(&rest_frame_refs).map_err(|error| {
-            QueryError::from_cudf(operation, message, error)
+            cudf_query_error(operation, message, error)
                 .with_fact("node_id", node_id)
                 .with_fact("chunk_count", chunk_count)
         })?;
@@ -443,7 +443,9 @@ fn generic_source_chunk_batching_supported(source: &LocalParquetSource) -> bool 
     source.partition_columns.is_empty()
         && !source.files.iter().any(LocalParquetFile::has_row_delete_files)
         && source.scan_limit.is_none()
-        && source.reader_predicate.as_ref().is_none_or(|predicate| source.reader_predicate_is_supported(predicate))
+        && source.reader_predicate.as_ref().is_none_or(|predicate| {
+            source.reader_predicate_is_supported(predicate, crate::rapids_backend::rapids_analysis_context())
+        })
 }
 
 fn singleton_source_chunk_batches(chunks: &[SourceChunk]) -> Vec<crate::chunk::SourceChunkBatch> {

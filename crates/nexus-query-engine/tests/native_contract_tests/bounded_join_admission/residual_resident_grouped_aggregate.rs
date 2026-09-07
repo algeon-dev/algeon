@@ -18,17 +18,32 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_capability
     ] {
         let plan = residual_resident_grouped_aggregate_input_plan(variant);
 
-        assert!(!plan.capability_analysis().admits_root_join(), "{variant:?}");
-        assert!(!plan.capability_analysis().admits_keyless_conditional_join_input_subplan_pipeline(), "{variant:?}");
         assert!(
-            !plan.capability_analysis().admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
+            !plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context()).admits_root_join(),
             "{variant:?}"
         );
         assert!(
-            !plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
+            !plan
+                .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+                .admits_keyless_conditional_join_input_subplan_pipeline(),
             "{variant:?}"
         );
-        assert!(unsupported_facts(&plan).is_none(), "{variant:?}");
+        assert!(
+            !plan
+                .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+                .admits_keyless_conditional_join_aggregate_over_join_subplan_inputs_pipeline(),
+            "{variant:?}"
+        );
+        assert!(
+            !plan
+                .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+                .admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
+            "{variant:?}"
+        );
+        assert!(
+            unsupported_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).is_none(),
+            "{variant:?}"
+        );
     }
 }
 
@@ -36,10 +51,11 @@ fn bounded_mixed_keyed_residual_join_resident_grouped_aggregate_input_capability
 fn bounded_mixed_residual_resident_grouped_aggregate_admission_uses_capability_evidence() {
     let plan =
         residual_resident_grouped_aggregate_input_plan(ResidualResidentGroupedAggregateInputVariant::BlockedFamily);
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
     assert_eq!(
-        plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
+        plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline(),
         analysis.admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline()
     );
     assert_eq!(
@@ -53,9 +69,13 @@ fn bounded_mixed_residual_resident_grouped_aggregate_preserves_node_failure_loca
     let plan = residual_resident_grouped_aggregate_input_plan(
         ResidualResidentGroupedAggregateInputVariant::UnsupportedResidualExpression,
     );
-    let analysis = plan.capability_analysis();
+    let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
 
-    assert!(!plan.capability_analysis().admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline());
+    assert!(
+        !plan
+            .capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context())
+            .admits_mixed_keyed_residual_join_resident_grouped_aggregate_input_pipeline()
+    );
     let CapabilityDecision::Rejected { reason, facts } =
         &analysis.mixed_keyed_residual_join_resident_grouped_aggregate_input_admission
     else {

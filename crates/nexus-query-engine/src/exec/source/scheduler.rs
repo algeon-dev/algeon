@@ -13,7 +13,8 @@ use parquet::file::reader::FileReader;
 
 use super::{
     BoundedExecutionAttempt, ExecutionContext, GpuDataFrame, LocalParquetSource, QueryError, QueryErrorCode,
-    QueryMetrics, Result, SourceChunk, attach_row_group_facts, parquet_chunk_path_fact, read_local_parquet_chunk,
+    QueryMetrics, Result, SourceChunk, attach_row_group_facts, cudf_query_error, parquet_chunk_path_fact,
+    read_local_parquet_chunk,
 };
 use crate::{
     exec::bounded::chunks::{record_chunk_retry_error, source_read_budget_correction_from_error},
@@ -490,7 +491,7 @@ impl ScheduledLocalParquetRead {
                 )
                 .and_then(|frame| {
                     thread_context.runtime()?.synchronize().map_err(|error| {
-                        QueryError::from_cudf(
+                        cudf_query_error(
                             "nexus_query_engine.source_scheduler.worker_sync",
                             "failed to synchronize scheduled source read worker stream",
                             error,

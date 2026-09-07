@@ -3974,9 +3974,6 @@ version = "0.1.0"
 dependencies = [
  "arrow",
  "blake3",
- "cudf-nexus",
- "cugraph-nexus",
- "cuvs-nexus",
  "fnv",
  "parquet",
  "serde",
@@ -4000,7 +3997,6 @@ dependencies = [
  "nexus-query-planning",
  "nvml-wrapper",
  "object_store",
- "parquet",
  "serde",
  "serde_json",
  "tokio",

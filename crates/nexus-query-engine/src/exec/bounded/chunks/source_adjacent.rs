@@ -22,11 +22,9 @@ pub(in crate::exec::bounded::chunks) fn bounded_source_adjacent_chunk_batching_e
         && bounded.source.partition_columns.is_empty()
         && !bounded.source.files.iter().any(LocalParquetFile::has_row_delete_files)
         && bounded.source.scan_limit.is_none()
-        && bounded
-            .source
-            .reader_predicate
-            .as_ref()
-            .is_none_or(|predicate| bounded.source.reader_predicate_is_supported(predicate))
+        && bounded.source.reader_predicate.as_ref().is_none_or(|predicate| {
+            bounded.source.reader_predicate_is_supported(predicate, crate::rapids_backend::rapids_analysis_context())
+        })
         && bounded_source_adjacent_chunk_batches(context, bounded, chunks).iter().any(|batch| batch.chunk_count() > 1)
 }
 

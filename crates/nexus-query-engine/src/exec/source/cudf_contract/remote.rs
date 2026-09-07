@@ -1,4 +1,4 @@
-use super::super::*;
+use super::super::{cudf_query_error_without_source, *};
 
 pub(in crate::exec::source) fn attach_cudf_remote_parquet_contract(
     context: &ExecutionContext,
@@ -12,7 +12,7 @@ pub(in crate::exec::source) fn attach_cudf_remote_parquet_contract(
     let profile = cudf_remote_parquet_profile(context, resolved_source)?;
     let read_mode = cudf::io::parquet::RemoteReadMode::RequireKvikio;
     let cudf_file = cudf_file.with_remote_parquet_contract(profile, read_mode).map_err(|error| {
-        QueryError::from_cudf_without_source(
+        cudf_query_error_without_source(
             operation,
             "failed to attach typed remote Parquet contract to cudf source file",
             &error,

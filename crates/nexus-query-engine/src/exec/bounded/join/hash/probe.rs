@@ -1,7 +1,7 @@
 use super::{
     BoundedExecutionAttempt, BoundedJoinSideFrame, BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState,
-    ExecutionOverrides, GpuDataFrame, Instant, JoinNode, JoinSide, JoinType, NodeId, QueryError, ResidentGpuFrame,
-    Result, execution_overrides, join_index_error, join_side_output_upper_bound_bytes_for_row_counts,
+    ExecutionOverrides, GpuDataFrame, Instant, JoinNode, JoinSide, JoinType, NodeId, ResidentGpuFrame, Result,
+    cudf_query_error, execution_overrides, join_index_error, join_side_output_upper_bound_bytes_for_row_counts,
     prepare_bounded_join_side_input_from_resident_frame, prepare_bounded_join_side_input_from_shared_frame,
     projected_output_columns_for_retained_sizing, release_bounded_join_side_frame, state::validate_root_hash_join,
     stream::materialize_bounded_root_hash_join_probe_stream,
@@ -67,7 +67,7 @@ pub(in crate::exec::bounded::join::hash) fn execute_bounded_root_hash_join_singl
         Ok(bytes) => bytes,
         Err(error) => {
             release_bounded_join_side_frame(probe);
-            return Err(QueryError::from_cudf(
+            return Err(cudf_query_error(
                 "nexus_query_engine.bounded.join.gather_map_bytes",
                 "failed to observe bounded native join gather-map memory",
                 error,
@@ -105,7 +105,7 @@ pub(in crate::exec::bounded::join::hash) fn execute_bounded_root_hash_join_multi
         Ok(bytes) => bytes,
         Err(error) => {
             release_bounded_join_side_frame(probe);
-            return Err(QueryError::from_cudf(
+            return Err(cudf_query_error(
                 "nexus_query_engine.bounded.join.gather_map_bytes",
                 "failed to observe bounded native join gather-map memory",
                 error,

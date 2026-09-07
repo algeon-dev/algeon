@@ -2,7 +2,10 @@
 
 use std::collections::BTreeSet;
 
-use super::{SourceChunk, SourceChunkPlanningPolicy, contiguous_row_group_position_range, row_group::RowGroupMetadata};
+use super::{
+    SourceChunk, SourceChunkPlanningPolicy, SourceReadSizing, contiguous_row_group_position_range,
+    row_group::RowGroupMetadata,
+};
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     plan::NodeId,
@@ -101,6 +104,7 @@ pub fn append_row_group_chunks(
     policy: SourceChunkPlanningPolicy,
     reader_decimal_types: &[ParquetReaderDecimalType],
     reader_decimal_types_footer_verified: bool,
+    sizing: SourceReadSizing<'_>,
     chunks: &mut Vec<SourceChunk>,
 ) {
     let max_row_groups = policy.effective_max_row_groups_per_chunk();
@@ -134,6 +138,7 @@ pub fn append_row_group_chunks(
                 policy,
                 reader_decimal_types,
                 reader_decimal_types_footer_verified,
+                sizing,
                 &mut current,
                 chunks,
             );
@@ -160,6 +165,7 @@ pub fn append_row_group_chunks(
         policy,
         reader_decimal_types,
         reader_decimal_types_footer_verified,
+        sizing,
         &mut current,
         chunks,
     );
@@ -176,6 +182,7 @@ pub fn push_pending_chunk(
     policy: SourceChunkPlanningPolicy,
     reader_decimal_types: &[ParquetReaderDecimalType],
     reader_decimal_types_footer_verified: bool,
+    sizing: SourceReadSizing<'_>,
     pending: &mut PendingChunk,
     chunks: &mut Vec<SourceChunk>,
 ) {
@@ -200,7 +207,7 @@ pub fn push_pending_chunk(
     .or(known_row_group_bytes)
     .or(estimated_chunk_bytes);
     let exact_source_read_preflight_bytes =
-        exact_source_read_preflight_bytes(source, known_row_count, source.is_zero_column_count_source());
+        exact_source_read_preflight_bytes(source, known_row_count, source.is_zero_column_count_source(), sizing);
     chunks.push(SourceChunk {
         source_node_id,
         chunk_index: chunks.len(),
@@ -265,14 +272,14 @@ pub fn exact_source_read_preflight_bytes(
     source: &LocalParquetSource,
     known_row_count: Option<u64>,
     zero_column_count: bool,
+    sizing: SourceReadSizing<'_>,
 ) -> Option<u64> {
     let row_count = if zero_column_count { 1 } else { known_row_count? };
     if zero_column_count {
-        return exact_source_read_required_budget_bytes(exact_fixed_width_column_upper_bound_bytes(
-            &arrow::datatypes::DataType::Int64,
-            false,
-            row_count,
-        )?);
+        return Some(exact_source_read_required_budget_bytes(
+            exact_fixed_width_column_upper_bound_bytes(&arrow::datatypes::DataType::Int64, false, row_count, sizing)?,
+            sizing,
+        ));
     }
     let mut seen = BTreeSet::new();
     let mut total = 0u64;
@@ -282,16 +289,15 @@ pub fn exact_source_read_preflight_bytes(
         }
         let field = source.schema.field_with_name(column).ok()?;
         let column_bytes =
-            exact_fixed_width_column_upper_bound_bytes(field.data_type(), field.is_nullable(), row_count)?;
+            exact_fixed_width_column_upper_bound_bytes(field.data_type(), field.is_nullable(), row_count, sizing)?;
         total = total.checked_add(column_bytes)?;
     }
-    exact_source_read_required_budget_bytes(total)
+    Some(exact_source_read_required_budget_bytes(total, sizing))
 }
 
 #[doc(hidden)]
-pub fn exact_source_read_required_budget_bytes(retained_output_bytes: u64) -> Option<u64> {
-    let minimum_budget = u64::try_from(cudf::DataFrame::minimum_parquet_source_read_budget_bytes()).ok()?;
-    Some(retained_output_bytes.max(minimum_budget))
+pub fn exact_source_read_required_budget_bytes(retained_output_bytes: u64, sizing: SourceReadSizing<'_>) -> u64 {
+    retained_output_bytes.max(sizing.minimum_read_budget_bytes())
 }
 
 #[doc(hidden)]
@@ -299,8 +305,11 @@ pub fn exact_fixed_width_column_upper_bound_bytes(
     data_type: &arrow::datatypes::DataType,
     nullable: bool,
     row_count: u64,
+    sizing: SourceReadSizing<'_>,
 ) -> Option<u64> {
-    crate::datatypes::cudf_dtype_from_arrow_type(data_type)?;
+    if !sizing.supports_type(data_type) {
+        return None;
+    }
     let element_size = crate::datatypes::arrow_fixed_width_byte_size(data_type)?;
     let data_bytes = row_count.checked_mul(element_size)?;
     let mask_bytes = if nullable { null_mask_allocation_size_bytes(row_count) } else { 0 };
@@ -409,6 +418,7 @@ pub fn zero_column_count_identity_chunk(
     policy: SourceChunkPlanningPolicy,
     reader_decimal_types: &[ParquetReaderDecimalType],
     reader_decimal_types_footer_verified: bool,
+    sizing: SourceReadSizing<'_>,
 ) -> SourceChunk {
     let mut chunk = single_all_row_groups_chunk(
         source_node_id,
@@ -424,7 +434,8 @@ pub fn zero_column_count_identity_chunk(
     chunk.known_row_count = Some(0);
     chunk.estimated_chunk_bytes = Some(0);
     chunk.estimated_source_read_bytes = Some(0);
-    chunk.exact_source_read_preflight_bytes = exact_source_read_preflight_bytes(source, chunk.known_row_count, true);
+    chunk.exact_source_read_preflight_bytes =
+        exact_source_read_preflight_bytes(source, chunk.known_row_count, true, sizing);
     chunk.size_estimate_based = false;
     chunk
 }

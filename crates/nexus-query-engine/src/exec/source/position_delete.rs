@@ -6,10 +6,10 @@ use super::{
     SourceChunk, SourceReadMode, acquire_lakehouse_cache_chunk_read_pin, acquire_lakehouse_cache_file_read_pin,
     append_source_order_columns, apply_source_scan_limit_to_frame, attach_row_group_facts,
     coerce_local_parquet_source_schema, col, cudf_error_for_chunk_read, cudf_local_parquet_source_chunk,
-    cudf_local_parquet_source_file_selection, empty_local_parquet_execution_frame, ensure_local_cache_parquet_chunk,
-    ensure_local_cache_parquet_file, execution_overrides, lit, parquet_chunk_path_fact, parquet_file_path_fact,
-    parquet_file_stable_id_fact, read_local_parquet_file, record_background_cache_chunk_fill_enqueue,
-    record_source_chunk_read_runtime,
+    cudf_local_parquet_source_file_selection, cudf_query_error, empty_local_parquet_execution_frame,
+    ensure_local_cache_parquet_chunk, ensure_local_cache_parquet_file, execution_overrides, lit,
+    parquet_chunk_path_fact, parquet_file_path_fact, parquet_file_stable_id_fact, read_local_parquet_file,
+    record_background_cache_chunk_fill_enqueue, record_source_chunk_read_runtime,
 };
 
 const ICEBERG_POSITION_DELETE_FILE_PATH_COLUMN: &str = "file_path";
@@ -80,7 +80,7 @@ pub(super) fn read_position_delete_parquet_source_as_chunks(
     let overrides = overrides_lease.overrides();
     let timer = Instant::now();
     let output = frame.with_execution(&overrides).concat_many(&other_frame_refs).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.local_parquet_source.position_delete_chunks_concat",
             "failed to concatenate native local parquet position-delete chunks",
             error,
@@ -234,7 +234,7 @@ pub(super) fn apply_position_deletes_to_data_file(
     let row_position_column = unique_position_delete_column_name(&frame);
     let timer = Instant::now();
     let row_positions = frame.row_positions().map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.local_parquet_source.position_deletes.row_positions",
             "failed to construct Iceberg position-delete row positions",
             error,
@@ -244,7 +244,7 @@ pub(super) fn apply_position_deletes_to_data_file(
         .with_fact("file_index", file_index)
     })?;
     frame = frame.with_column(row_position_column.as_str(), row_positions).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.local_parquet_source.position_deletes.row_positions",
             "failed to append Iceberg position-delete row positions",
             error,
@@ -255,7 +255,7 @@ pub(super) fn apply_position_deletes_to_data_file(
     })?;
     let row_position_expr = position_delete_row_position_expr(row_position_column.as_str(), row_position_range)?;
     frame = frame.with_execution(&overrides).with_columns([row_position_expr]).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.local_parquet_source.position_deletes.row_positions",
             "failed to normalize Iceberg position-delete row positions",
             error,
@@ -296,7 +296,7 @@ pub(super) fn apply_position_deletes_to_data_file(
             .filter_all(predicates)
             .and_then(|frame| frame.select([ICEBERG_POSITION_DELETE_POS_COLUMN]))
             .map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.local_parquet_source.position_deletes.filter",
                     "failed to filter Iceberg position-delete rows for the current data file",
                     error,
@@ -323,7 +323,7 @@ pub(super) fn apply_position_deletes_to_data_file(
                     .null_equality(cudf::NullEquality::Unequal),
             )
             .map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.local_parquet_source.position_deletes.apply",
                     "failed to apply Iceberg position deletes with nexus native anti join",
                     error,
@@ -355,7 +355,7 @@ pub(super) fn apply_position_deletes_to_data_file(
                     .null_equality(cudf::NullEquality::Equal),
             )
             .map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.local_parquet_source.equality_deletes.apply",
                     "failed to apply Iceberg equality deletes with nexus native anti join",
                     error,
@@ -371,7 +371,7 @@ pub(super) fn apply_position_deletes_to_data_file(
         .with_execution(&overrides)
         .sort_values([row_position_column.as_str()], CudfSortOptions::new().with_stable(true))
         .map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.local_parquet_source.position_deletes.order",
                 "failed to restore Iceberg data-file row order after applying position deletes",
                 error,
@@ -381,7 +381,7 @@ pub(super) fn apply_position_deletes_to_data_file(
             .with_fact("file_index", file_index)
         })?;
     frame = frame.without_columns([row_position_column.as_str()]).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.local_parquet_source.position_deletes.cleanup",
             "failed to remove Iceberg position-delete work column",
             error,
@@ -674,7 +674,7 @@ pub(super) fn read_equality_delete_file(
         )
     })?;
     frame.select(columns).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.local_parquet_source.equality_deletes.read",
             "failed to select Iceberg equality-delete key columns",
             error,

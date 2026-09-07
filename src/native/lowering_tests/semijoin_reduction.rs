@@ -41,7 +41,11 @@ async fn non_tpch_sql_in_subquery_semijoin_reduction_is_generic() {
         "pre-optimizer left-semi should still sit above an inner-join tree"
     );
 
-    let optimized = nexus_query_engine::optimizer::optimize_query_plan(direct_plan.clone(), &Default::default());
+    let optimized = nexus_query_engine::optimizer::optimize_query_plan(
+        direct_plan.clone(),
+        &Default::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    );
     assert_eq!(optimized.change, nexus_query_engine::optimizer::NativeOptimizerChange::Changed);
     assert_eq!(optimized.diagnostics.semijoin_reduction.considered_count, 1);
     assert_eq!(optimized.diagnostics.semijoin_reduction.applied_count, 1);

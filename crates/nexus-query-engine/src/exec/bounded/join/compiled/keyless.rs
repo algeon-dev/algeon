@@ -3,8 +3,8 @@ use std::time::Instant;
 use super::{
     BoundedExecutionAttempt, BoundedJoinSideFrame, CompiledJoinIndices, CompiledJoinMaterializationRequest,
     CompiledKeylessWork, DataFrame, ExecutionOverrides, JoinNode, JoinSide, KeylessConditionalJoinKind, NodeId,
-    QueryError, ResidentGpuFrame, Result, dataframe_predicate_join_options, execution_overrides, join_index_error,
-    lower_join_residual_predicate, materialize_compiled_indices_output, residual_input_columns,
+    ResidentGpuFrame, Result, cudf_query_error, dataframe_predicate_join_options, execution_overrides,
+    join_index_error, lower_join_residual_predicate, materialize_compiled_indices_output, residual_input_columns,
 };
 
 pub(super) fn execute_compiled_keyless_join_materialize(
@@ -29,7 +29,7 @@ pub(super) fn execute_compiled_keyless_join_materialize(
             .map_err(|error| join_index_error(error, node))?;
         let expected_output_rows = size_data.output_size() as u64;
         let size_data_bytes = size_data.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.bounded.join.conditional_full_size_data_bytes",
                 "failed to observe compiled conditional full join size-data memory",
                 error,

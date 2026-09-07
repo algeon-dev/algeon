@@ -9,7 +9,8 @@ use std::{
 use cudf::{DeviceId, DeviceMemoryManager, ErrorKind};
 use nexus_query_engine::{
     attempt::{AttemptBegin, AttemptCompletion, AttemptOwner, BeginAttemptRequest},
-    error::{QueryError, QueryErrorCode},
+    error::QueryErrorCode,
+    native_error::cudf_query_error,
     observability::{
         AttemptAdmissionFact, AttemptAllocatorEventSource, AttemptCapacityDisposition, AttemptCleanupDisposition,
         AttemptEvidenceProvenance, AttemptHealthTransition, QueryAttemptReport,
@@ -97,7 +98,7 @@ fn commit_allocation_failure(owner: &AttemptOwner, error: cudf::Error) {
         ErrorKind::ResourceExhausted,
         "physical pressure must exhaust the native allocator: {error:?}"
     );
-    let error = QueryError::from_cudf(
+    let error = cudf_query_error(
         "nexus_query_engine.gpu_allocator_event_correlation",
         "real framebuffer pressure rejected the query-domain allocation",
         error,

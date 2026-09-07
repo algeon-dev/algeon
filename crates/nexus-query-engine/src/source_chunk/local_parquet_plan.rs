@@ -4,6 +4,7 @@ use std::time::Duration;
 
 use nexus_query_planning::{
     chunk::{
+        SourceReadSizing,
         assembly::{
             append_row_group_chunks, planned_row_groups, single_all_row_groups_chunk, zero_column_count_identity_chunk,
         },
@@ -74,6 +75,15 @@ pub fn plan_local_parquet_source_chunks_with_metadata_cache(
     )
 }
 
+/// The backend inputs chunk planning consumes: the cuDF reader's minimum
+/// source-read budget and its Arrow type support.
+fn rapids_source_read_sizing() -> SourceReadSizing<'static> {
+    SourceReadSizing::new(
+        crate::rapids_backend::rapids_analysis_context(),
+        cudf::DataFrame::minimum_parquet_source_read_budget_bytes() as u64,
+    )
+}
+
 fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
     source_node_id: NodeId,
     source: &LocalParquetSource,
@@ -84,6 +94,7 @@ fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
     validate_chunk_planning_source(source)?;
     validate_chunk_planning_policy(policy)?;
 
+    let sizing = rapids_source_read_sizing();
     let mut chunks = Vec::new();
     let mut saw_metadata = false;
     let mut saw_missing_metadata = false;
@@ -133,11 +144,12 @@ fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
             policy,
             &reader_decimal_types,
             reader_decimal_types_footer_verified,
+            sizing,
             &mut chunks,
         );
     }
 
-    chunks = apply_source_scan_limit_to_chunks(source, chunks)?;
+    chunks = apply_source_scan_limit_to_chunks(source, chunks, sizing)?;
 
     if source.is_zero_column_count_source() && chunks.is_empty() {
         let (file_index, file) = source.files.iter().enumerate().next().ok_or_else(|| {
@@ -148,7 +160,17 @@ fn plan_local_parquet_source_chunks_with_metadata_cache_and_context(
             )
             .with_fact("reason", "empty_files")
         })?;
-        chunks.push(zero_column_count_identity_chunk(source_node_id, source, file, file_index, 0, policy, &[], false));
+        chunks.push(zero_column_count_identity_chunk(
+            source_node_id,
+            source,
+            file,
+            file_index,
+            0,
+            policy,
+            &[],
+            false,
+            sizing,
+        ));
     }
 
     if source.read_columns.is_empty()

@@ -6,9 +6,9 @@ use super::{
     AggregateExpr, AggregateFunction, AggregateSpec, ArrowDataType, AvgStateAliases, BinaryOp, CudfScalar, DataFrame,
     ExecutionBudgetToken, ExecutionContext, ExecutionOverrides, Expr, Field, GpuDataFrame, LiteralValue, QueryError,
     QueryErrorCode, QueryMetrics, ReduceAgg, Result, Schema, aggregate_expr_is_exact_nunique, aggregate_spec_has_avg,
-    budgeted_value, cudf_dtype_from_arrow_type, execution_overrides, global_count_star_expr,
-    global_valid_count_state_alias, lower_column_expr, lower_expr, validate_avg_output_fields,
-    validate_global_aggregate_capability,
+    budgeted_value, cudf_dtype_from_arrow_type, cudf_query_error, cudf_query_error_with_budget_details,
+    execution_overrides, global_count_star_expr, global_valid_count_state_alias, lower_column_expr, lower_expr,
+    validate_avg_output_fields, validate_global_aggregate_capability,
 };
 
 mod avg;
@@ -123,7 +123,7 @@ fn execute_global_aggregate_impl(
     }
     let mut output = DataFrame::from_series(columns.iter().map(|(name, series)| (name.as_str(), series.clone())))
         .map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.global_aggregate.output",
                 "failed to construct native global aggregate output frame",
                 error,
@@ -143,7 +143,7 @@ fn execute_global_aggregate_impl(
     };
     let expected_output_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.global_aggregate.select",
             "failed to select native global aggregate output columns",
             error,
@@ -168,7 +168,7 @@ fn reduce_global_aggregate_column_impl(
 ) -> Result<cudf::Series> {
     let input_column = lower_column_expr(&expr.expr, "nexus_query_engine.global_aggregate.lower_expr")?;
     let series = frame.series(input_column.as_str()).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.global_aggregate.input",
             "failed to access native global aggregate input column",
             error,
@@ -205,7 +205,7 @@ fn reduce_global_aggregate_column_impl(
             .with_fact("data_type", format!("{output_type:?}"))
         })?;
         let input_type = series.dtype().map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.global_aggregate.input_type",
                 "failed to inspect native global aggregate input column type",
                 error,
@@ -219,7 +219,7 @@ fn reduce_global_aggregate_column_impl(
             let casted = match token {
                 Some(token) => budgeted_value(
                     frame.cast_column_with_budget(input_column.as_str(), target_type, token).map_err(|error| {
-                        QueryError::from_cudf_with_budget_details(
+                        cudf_query_error_with_budget_details(
                             "nexus_query_engine.global_aggregate.cast_input",
                             "failed to cast bounded native global aggregate input column before reduction",
                             error,
@@ -232,7 +232,7 @@ fn reduce_global_aggregate_column_impl(
                     "nexus_query_engine.global_aggregate.cast_input",
                 ),
                 None => frame.cast_column(input_column.as_str(), target_type).map_err(|error| {
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.global_aggregate.cast_input",
                         "failed to cast native global aggregate input column before reduction",
                         error,
@@ -243,7 +243,7 @@ fn reduce_global_aggregate_column_impl(
                 })?,
             };
             casted.series(input_column.as_str()).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.global_aggregate.cast_input",
                     "failed to access casted native global aggregate input column",
                     error,
@@ -264,7 +264,7 @@ fn reduce_global_aggregate_column_impl(
             .runtime()?
             .series_from_scalar_with_budget(&scalar, 1, token)
             .map_err(|error| {
-                QueryError::from_cudf_with_budget_details(
+                cudf_query_error_with_budget_details(
                     "nexus_query_engine.global_aggregate.output",
                     "failed to construct bounded native global aggregate output column",
                     error,
@@ -274,7 +274,7 @@ fn reduce_global_aggregate_column_impl(
             })
             .map(|outcome| budgeted_value(outcome, metrics, "nexus_query_engine.global_aggregate.output")),
         None => context.runtime()?.series_from_scalar(&scalar, 1).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.global_aggregate.output",
                 "failed to construct native global aggregate output column",
                 error,
@@ -305,7 +305,7 @@ fn execute_scalar_reduction(
         },
     }
     .map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.global_aggregate.reduce",
             "failed to execute native global aggregate reduction",
             error,
@@ -337,7 +337,7 @@ fn execute_scalar_reduction_with_budget(
         },
     };
     let prepared = series.prepare_scalar_reduction(reduce_agg).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.global_aggregate.prepare_reduce",
             "failed to prepare native global aggregate reduction",
             error,
@@ -348,7 +348,7 @@ fn execute_scalar_reduction_with_budget(
     prepared
         .execute_with_budget(token)
         .map_err(|error| {
-            QueryError::from_cudf_with_budget_details(
+            cudf_query_error_with_budget_details(
                 "nexus_query_engine.global_aggregate.reduce",
                 "failed to execute bounded native global aggregate reduction",
                 error,
@@ -397,7 +397,7 @@ fn global_null_output_series_impl(
             .runtime()?
             .nulls_with_budget(dtype, 1, token)
             .map_err(|error| {
-                QueryError::from_cudf_with_budget_details(
+                cudf_query_error_with_budget_details(
                     "nexus_query_engine.global_aggregate.null_output",
                     "failed to construct bounded native global aggregate null output column",
                     error,
@@ -408,7 +408,7 @@ fn global_null_output_series_impl(
             })
             .map(|outcome| budgeted_value(outcome, metrics, "nexus_query_engine.global_aggregate.null_output")),
         None => context.runtime()?.nulls(dtype, 1).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.global_aggregate.null_output",
                 "failed to construct native global aggregate null output column",
                 error,
@@ -426,13 +426,13 @@ fn global_aggregate_frame_input_data_type(frame: &DataFrame, expr: &Expr) -> Res
 
 fn frame_column_arrow_data_type(frame: &DataFrame, column: &str, operation: &'static str) -> Result<ArrowDataType> {
     let series = frame.series(column).map_err(|error| {
-        QueryError::from_cudf(operation, "failed to access native column while inspecting its type", error)
+        cudf_query_error(operation, "failed to access native column while inspecting its type", error)
             .with_fact("column", column)
     })?;
     let dtype = series.dtype().map_err(|error| {
-        QueryError::from_cudf(operation, "failed to inspect native column type", error).with_fact("column", column)
+        cudf_query_error(operation, "failed to inspect native column type", error).with_fact("column", column)
     })?;
     cudf::interop::arrow_host::arrow_type_from_cudf_dtype(dtype).map_err(|error| {
-        QueryError::from_cudf(operation, "failed to map native column type to Arrow", error).with_fact("column", column)
+        cudf_query_error(operation, "failed to map native column type to Arrow", error).with_fact("column", column)
     })
 }

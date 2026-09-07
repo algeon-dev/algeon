@@ -20,6 +20,7 @@ use crate::{
         release_bounded_compiled_join_probe_state,
     },
     metrics::QueryMetrics,
+    native_error::cudf_query_error,
     pipeline::{CompiledPipeline, PipelineTask, PipelineTaskKind, ResidentResourceId, SinkBoundaryKind},
     plan::{NodeId, QueryPlan},
     runtime::{

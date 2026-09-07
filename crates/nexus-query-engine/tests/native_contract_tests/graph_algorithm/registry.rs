@@ -321,7 +321,7 @@ fn bfs_edge_id_predicates_require_primary_edge_id_binding() {
     let graph = builder.add_graph_algorithm(edges, spec);
     let plan = builder.finish_with_host_sink(graph);
 
-    let capability = plan.capability_analysis().nodes.into_iter().find(|node| node.node_id == plan.root_id()).unwrap();
+    let capability = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context()).nodes.into_iter().find(|node| node.node_id == plan.root_id()).unwrap();
     let CapabilityDecision::Rejected { facts, .. } = capability.executable else {
         panic!("expected graph capability rejection");
     };

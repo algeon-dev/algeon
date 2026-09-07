@@ -1,8 +1,8 @@
 use super::{
     BoundedExecutionAttempt, BoundedJoinSideFrame, BoundedRootHashJoinBuildState, BoundedRootHashJoinProbeState,
-    CommittedPartial, ExecutionOverrides, GpuDataFrame, Instant, JoinNode, JoinSide, NodeId, QueryError,
-    ResidentFrameStreamPayload, ResidentGpuFrame, Result, execution_overrides, join_side_output_upper_bound_bytes,
-    materialize_join_output_projection, observe_device_memory_bytes,
+    CommittedPartial, ExecutionOverrides, GpuDataFrame, Instant, JoinNode, JoinSide, NodeId,
+    ResidentFrameStreamPayload, ResidentGpuFrame, Result, cudf_query_error, execution_overrides,
+    join_side_output_upper_bound_bytes, materialize_join_output_projection, observe_device_memory_bytes,
     probe::reusable_hash_join_execution_strategy,
     projected_output_columns_for_retained_sizing, release_bounded_root_hash_join_build_state,
     reusable_hash_join_stream_target_output_bytes, side_metric,
@@ -273,7 +273,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_i
     let left_slice = match left_indices.indices().slice(offset, len) {
         Ok(slice) => cudf::DataFrameJoinIndices::from_series(slice),
         Err(error) => {
-            return Err(QueryError::from_cudf(
+            return Err(cudf_query_error(
                 "nexus_query_engine.bounded.join.reusable_hash_stream_left_indices",
                 "failed to slice reusable hash join left gather map",
                 error,
@@ -284,7 +284,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_i
     let right_slice = match right_indices.indices().slice(offset, len) {
         Ok(slice) => cudf::DataFrameJoinIndices::from_series(slice),
         Err(error) => {
-            return Err(QueryError::from_cudf(
+            return Err(cudf_query_error(
                 "nexus_query_engine.bounded.join.reusable_hash_stream_right_indices",
                 "failed to slice reusable hash join right gather map",
                 error,

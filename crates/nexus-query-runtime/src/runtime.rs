@@ -33,8 +33,6 @@ mod reservation;
 pub mod resident;
 mod service_stream;
 #[doc(hidden)]
-pub mod source_chunk;
-#[doc(hidden)]
 pub mod source_identity;
 mod stream_cleanup;
 #[cfg(test)]

@@ -1451,7 +1451,7 @@ mod tests {
             "cudf.test.log_diagnostics",
             "CUDF failure at: /home/customer/cudf/reader.cu:518: Parquet header parsing failed with code(s) 0x400",
         );
-        let native = nexus_query_engine::error::QueryError::from_cudf(
+        let native = nexus_query_engine::native_error::cudf_query_error(
             "nexus_query_engine.test.log_diagnostics",
             "failed to read bounded native local parquet source chunk with cudf",
             cudf,
@@ -1632,7 +1632,7 @@ mod tests {
                 cudf_allocation_error_for_test(code, failure_source, with_budget_scope),
             );
             assert_eq!(adapter.code(), expected_adapter, "adapter mismatch for case {index}");
-            let native = nexus_query_engine::error::QueryError::from_cudf(
+            let native = nexus_query_engine::native_error::cudf_query_error(
                 "nexus_query_engine.test.allocation_attribution",
                 "wrapped cudf failure",
                 cudf_allocation_error_for_test(code, failure_source, with_budget_scope),

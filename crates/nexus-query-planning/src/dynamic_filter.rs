@@ -14,6 +14,7 @@ use arrow::{
 use parquet::file::reader::{FileReader, SerializedFileReader};
 
 use crate::{
+    backend::AnalysisContext,
     error::{QueryError, QueryErrorCode, Result},
     expr::{BinaryOp, Expr, LiteralValue},
     optimizer::{DimensionKeyFilter, KeyRange, parent_counts},
@@ -784,8 +785,15 @@ pub fn apply_dynamic_filters_to_local_parquet_source(
     source: &LocalParquetSource,
     routes: &[&DynamicFilterRoute],
     filter_set: &DynamicFilterSet,
+    ctx: AnalysisContext<'_>,
 ) -> Result<LocalParquetSource> {
-    apply_dynamic_filters_to_local_parquet_source_with_reader_predicate_filter(source, routes, filter_set, |_, _| true)
+    apply_dynamic_filters_to_local_parquet_source_with_reader_predicate_filter(
+        source,
+        routes,
+        filter_set,
+        |_, _| true,
+        ctx,
+    )
 }
 
 #[doc(hidden)]
@@ -794,6 +802,7 @@ pub fn apply_dynamic_filters_to_local_parquet_source_with_reader_predicate_filte
     routes: &[&DynamicFilterRoute],
     filter_set: &DynamicFilterSet,
     mut should_merge_reader_predicate: impl FnMut(&DynamicFilterRoute, &DynamicFilter) -> bool,
+    ctx: AnalysisContext<'_>,
 ) -> Result<LocalParquetSource> {
     let mut source = source.clone();
     for route in routes {
@@ -804,7 +813,7 @@ pub fn apply_dynamic_filters_to_local_parquet_source_with_reader_predicate_filte
             continue;
         };
         let merge_reader_predicate = should_merge_reader_predicate(route, filter);
-        apply_dynamic_filter_to_source(&mut source, route, column, filter, merge_reader_predicate)?;
+        apply_dynamic_filter_to_source(&mut source, route, column, filter, merge_reader_predicate, ctx)?;
     }
     Ok(source)
 }
@@ -815,6 +824,7 @@ fn apply_dynamic_filter_to_source(
     column: &str,
     filter: &DynamicFilter,
     merge_reader_predicate: bool,
+    ctx: AnalysisContext<'_>,
 ) -> Result<()> {
     if matches!(filter, DynamicFilter::Empty) {
         mark_source_row_groups_empty(source);
@@ -830,8 +840,8 @@ fn apply_dynamic_filter_to_source(
             route.consumer_lowering,
             DynamicFilterConsumerLowering::ReaderPredicate | DynamicFilterConsumerLowering::MergedReaderPredicate
         )
-        && let Some(predicate) = dynamic_filter_reader_predicate(source, column, filter)
-        && source_reader_predicate_merge_is_supported(source, &predicate)
+        && let Some(predicate) = dynamic_filter_reader_predicate(source, column, filter, ctx)
+        && source_reader_predicate_merge_is_supported(source, &predicate, ctx)
     {
         merge_source_reader_predicate(source, predicate);
     }
@@ -951,12 +961,17 @@ fn contiguous_row_group_cover(row_groups: Vec<usize>) -> Vec<usize> {
     (first..=last).collect()
 }
 
-fn dynamic_filter_reader_predicate(source: &LocalParquetSource, column: &str, filter: &DynamicFilter) -> Option<Expr> {
+fn dynamic_filter_reader_predicate(
+    source: &LocalParquetSource,
+    column: &str,
+    filter: &DynamicFilter,
+    ctx: AnalysisContext<'_>,
+) -> Option<Expr> {
     if matches!(filter, DynamicFilter::HashSetContainsI64 { .. }) {
         return None;
     }
     let predicate = dynamic_filter_predicate_for_schema(source.schema.as_ref(), column, filter)?;
-    source.reader_predicate_is_supported(&predicate).then_some(predicate)
+    source.reader_predicate_is_supported(&predicate, ctx).then_some(predicate)
 }
 
 #[doc(hidden)]
@@ -965,11 +980,12 @@ pub fn dynamic_filter_reader_predicate_should_merge(
     column: &str,
     filter: &DynamicFilter,
     options: DynamicFilterExecutionOptions,
+    ctx: AnalysisContext<'_>,
 ) -> Result<bool> {
-    let Some(predicate) = dynamic_filter_reader_predicate(source, column, filter) else {
+    let Some(predicate) = dynamic_filter_reader_predicate(source, column, filter, ctx) else {
         return Ok(false);
     };
-    if !source_reader_predicate_merge_is_supported(source, &predicate) {
+    if !source_reader_predicate_merge_is_supported(source, &predicate, ctx) {
         return Ok(false);
     }
     let DynamicFilter::RangeI64 { min, max } = filter else {
@@ -1093,7 +1109,11 @@ fn merge_source_reader_predicate(source: &mut LocalParquetSource, predicate: Exp
     source.refresh_diagnostics();
 }
 
-fn source_reader_predicate_merge_is_supported(source: &LocalParquetSource, predicate: &Expr) -> bool {
+fn source_reader_predicate_merge_is_supported(
+    source: &LocalParquetSource,
+    predicate: &Expr,
+    ctx: AnalysisContext<'_>,
+) -> bool {
     if source.has_row_delete_files() {
         return false;
     }
@@ -1101,7 +1121,7 @@ fn source_reader_predicate_merge_is_supported(source: &LocalParquetSource, predi
         Some(existing) => Expr::binary(existing.clone(), BinaryOp::And, predicate.clone()),
         None => predicate.clone(),
     };
-    source.reader_predicate_is_supported(&predicate)
+    source.reader_predicate_is_supported(&predicate, ctx)
 }
 
 fn i64_literal_for_type(value: i64, data_type: &DataType) -> Option<LiteralValue> {

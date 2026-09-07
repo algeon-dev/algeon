@@ -7,9 +7,10 @@ use super::{
     GpuDataFrame, GroupByAgg, LoweredAggregate, QueryError, QueryErrorCode, QueryMetrics, Result,
     aggregate_spec_has_avg, aggregate_spec_has_floating_statistical_aggregate, budgeted_value,
     cast_count_output_columns, cast_count_output_columns_with_budget, cast_reduction_output_columns,
-    cast_reduction_output_columns_with_budget, cudf_dtype_from_arrow_type, execute_groupby_aggregate,
-    execute_groupby_aggregate_with_budget_observed, execution_overrides, finalize_avg_output_columns,
-    finalize_avg_output_columns_with_budget, lit, lit_null, lower_partial_aggregate_spec, validate_avg_output_fields,
+    cast_reduction_output_columns_with_budget, cudf_dtype_from_arrow_type, cudf_query_error,
+    cudf_query_error_with_budget_details, execute_groupby_aggregate, execute_groupby_aggregate_with_budget_observed,
+    execution_overrides, finalize_avg_output_columns, finalize_avg_output_columns_with_budget, lit, lit_null,
+    lower_partial_aggregate_spec, validate_avg_output_fields,
 };
 
 pub(super) fn execute_grouping_sets_aggregate(
@@ -61,7 +62,7 @@ pub(super) fn execute_grouping_sets_aggregate(
         None => cast_count_output_columns(output, spec, output_schema)?,
     };
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.aggregate.grouping_sets_select",
             "failed to select native grouping-sets aggregate output columns",
             error,
@@ -109,7 +110,7 @@ pub(super) fn execute_grouping_sets_partial_aggregate_with_budget(
     )?;
     output = cast_count_output_columns_with_budget(output, spec, aggregate_output_schema, token, metrics)?;
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.aggregate.grouping_sets_select_partial",
             "failed to select native partial grouping-sets aggregate output columns",
             error,
@@ -186,7 +187,7 @@ fn execute_grouping_sets_groupby(
         )?
         .select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>())
         .map_err(|error| {
-            QueryError::from_cudf(operation, "failed to select native grouping-set aggregate output columns", error)
+            cudf_query_error(operation, "failed to select native grouping-set aggregate output columns", error)
         })?;
         outputs.push(output);
     }
@@ -230,7 +231,7 @@ fn execute_prefix_rollup_grouping_sets_groupby(
     )?
     .select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>())
     .map_err(|error| {
-        QueryError::from_cudf(operation, "failed to select native prefix-rollup detail output columns", error)
+        cudf_query_error(operation, "failed to select native prefix-rollup detail output columns", error)
     })?;
     outputs_by_level[key_count] = Some(full_output);
 
@@ -257,7 +258,7 @@ fn execute_prefix_rollup_grouping_sets_groupby(
             )?
             .select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>())
             .map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     operation,
                     "failed to select native empty prefix-rollup grand-total output columns",
                     error,
@@ -314,7 +315,7 @@ fn execute_prefix_rollup_grouping_sets_groupby(
         )?
         .select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>())
         .map_err(|error| {
-            QueryError::from_cudf(operation, "failed to select native prefix-rollup aggregate output columns", error)
+            cudf_query_error(operation, "failed to select native prefix-rollup aggregate output columns", error)
         })?;
         outputs_by_level[level] = Some(output);
     }
@@ -541,11 +542,7 @@ fn empty_grand_total_grouping_set_frame(
     }
 
     DataFrame::from_series(columns.iter().map(|(name, series)| (name.as_str(), series.clone()))).map_err(|error| {
-        QueryError::from_cudf(
-            operation,
-            "failed to construct native empty grand-total grouping-set output frame",
-            error,
-        )
+        cudf_query_error(operation, "failed to construct native empty grand-total grouping-set output frame", error)
     })
 }
 
@@ -591,7 +588,7 @@ fn empty_grouping_set_null_series_with_type(
             .runtime()?
             .nulls_with_budget(dtype, 1, token)
             .map_err(|error| {
-                QueryError::from_cudf_with_budget_details(
+                cudf_query_error_with_budget_details(
                     operation,
                     "failed to construct bounded empty grand-total null column",
                     error,
@@ -601,7 +598,7 @@ fn empty_grouping_set_null_series_with_type(
             })
             .map(|outcome| budgeted_value(outcome, metrics, operation)),
         None => context.runtime()?.nulls(dtype, 1).map_err(|error| {
-            QueryError::from_cudf(operation, "failed to construct empty grand-total null column", error)
+            cudf_query_error(operation, "failed to construct empty grand-total null column", error)
                 .with_fact("column", column)
         }),
     }
@@ -650,7 +647,7 @@ where
             .runtime()?
             .series_from_value_with_budget(value, 1, token)
             .map_err(|error| {
-                QueryError::from_cudf_with_budget_details(
+                cudf_query_error_with_budget_details(
                     operation,
                     "failed to construct bounded empty grand-total zero column",
                     error,
@@ -661,11 +658,11 @@ where
             .map(|outcome| budgeted_value(outcome, metrics, operation)),
         None => {
             let scalar = context.runtime()?.scalar(value).map_err(|error| {
-                QueryError::from_cudf(operation, "failed to construct empty grand-total zero scalar", error)
+                cudf_query_error(operation, "failed to construct empty grand-total zero scalar", error)
                     .with_fact("column", column)
             })?;
             context.runtime()?.series_from_scalar(&scalar, 1).map_err(|error| {
-                QueryError::from_cudf(operation, "failed to construct empty grand-total zero column", error)
+                cudf_query_error(operation, "failed to construct empty grand-total zero column", error)
                     .with_fact("column", column)
             })
         },
@@ -791,7 +788,7 @@ fn complete_grouping_set_output(
         Some(token) => output
             .with_columns_with_budget(expressions, token)
             .map_err(|error| {
-                QueryError::from_cudf_with_budget_details(
+                cudf_query_error_with_budget_details(
                     operation,
                     "failed to complete bounded grouping-set aggregate output columns",
                     error,
@@ -802,7 +799,7 @@ fn complete_grouping_set_output(
             let overrides_lease = execution_overrides(context)?;
             let overrides = overrides_lease.overrides();
             output.with_execution(&overrides).with_columns(expressions).map_err(|error| {
-                QueryError::from_cudf(operation, "failed to complete grouping-set aggregate output columns", error)
+                cudf_query_error(operation, "failed to complete grouping-set aggregate output columns", error)
             })
         },
     }
@@ -839,7 +836,7 @@ fn with_grouping_id_column(
         Some(token) => frame
             .with_columns_with_budget(expressions, token)
             .map_err(|error| {
-                QueryError::from_cudf_with_budget_details(
+                cudf_query_error_with_budget_details(
                     operation,
                     "failed to set bounded prefix-rollup grouping-id column",
                     error,
@@ -849,9 +846,10 @@ fn with_grouping_id_column(
         None => {
             let overrides_lease = execution_overrides(context)?;
             let overrides = overrides_lease.overrides();
-            frame.with_execution(&overrides).with_columns(expressions).map_err(|error| {
-                QueryError::from_cudf(operation, "failed to set prefix-rollup grouping-id column", error)
-            })
+            frame
+                .with_execution(&overrides)
+                .with_columns(expressions)
+                .map_err(|error| cudf_query_error(operation, "failed to set prefix-rollup grouping-id column", error))
         },
     }
 }
@@ -998,7 +996,7 @@ fn prepare_grouping_set_frame(
         Some(token) => frame
             .with_columns_with_budget(expressions, token)
             .map_err(|error| {
-                QueryError::from_cudf_with_budget_details(
+                cudf_query_error_with_budget_details(
                     operation,
                     "failed to prepare bounded grouping-set aggregate columns",
                     error,
@@ -1008,9 +1006,10 @@ fn prepare_grouping_set_frame(
         None => {
             let overrides_lease = execution_overrides(context)?;
             let overrides = overrides_lease.overrides();
-            frame.with_execution(&overrides).with_columns(expressions).map_err(|error| {
-                QueryError::from_cudf(operation, "failed to prepare grouping-set aggregate columns", error)
-            })
+            frame
+                .with_execution(&overrides)
+                .with_columns(expressions)
+                .map_err(|error| cudf_query_error(operation, "failed to prepare grouping-set aggregate columns", error))
         },
     }
 }
@@ -1069,7 +1068,7 @@ fn concat_grouping_set_outputs(
             first.with_execution(&overrides).concat_many(&other_refs)
         },
     }
-    .map_err(|error| QueryError::from_cudf(operation, "failed to concatenate grouping-set aggregate outputs", error))
+    .map_err(|error| cudf_query_error(operation, "failed to concatenate grouping-set aggregate outputs", error))
 }
 
 #[cfg(test)]

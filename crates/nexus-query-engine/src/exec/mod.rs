@@ -71,6 +71,8 @@ use self::{
     util::*,
     vector_algorithm::*,
 };
+#[cfg(feature = "cuvs")]
+use crate::native_error::{cudf_interop_query_error, cuvs_query_error};
 use crate::{
     chunk::{
         SourceChunk, SourceChunkBatch, SourceChunkPlan, SourceChunkPlanningPolicy, SourceTaskMemoryModel,
@@ -82,6 +84,10 @@ use crate::{
     expr::{AggregateExpr, AggregateFunction, AggregateSpec, BinaryOp, CaseWhen, Expr, LimitSpec, LiteralValue},
     metrics::{QueryId, QueryMetrics, SourceReadRuntimeMetrics, TraceId},
     mode::StatisticalAggregateExecutionMode,
+    native_error::{
+        cudf_budget_exhaustion, cudf_query_error, cudf_query_error_with_budget_details,
+        cudf_query_error_without_source, cudf_query_error_without_source_with_budget_details,
+    },
     observability::{
         PlanEdgeRow, PlanExecutionId, PlanNodeRow, RuntimeExecutionObservationScope, RuntimePlanNodeId,
         RuntimeTerminalOutcome, RuntimeTopologyRecord,
@@ -110,7 +116,7 @@ use crate::{
 /// Frontends use this capability-first boundary before host work or native
 /// admission. Execution entrypoints call the same validation internally.
 pub fn preflight_query_plan(plan: &QueryPlan) -> Result<()> {
-    nexus_query_planning::validate_query_plan(plan)
+    nexus_query_planning::validate_query_plan(plan, crate::rapids_backend::rapids_analysis_context())
 }
 
 /// Decides the executable plan once and hands the admitted artifact to the
@@ -363,7 +369,7 @@ fn execute_query_plan_output(
     observation_scope: Option<&RuntimeExecutionObservationScope>,
 ) -> Result<Output> {
     context.check_cancellation("nexus_query_engine.exec.execute_query_plan")?;
-    validate_query_plan(plan)?;
+    validate_query_plan(plan, crate::rapids_backend::rapids_analysis_context())?;
     let context = context.with_admitted_gpu_inputs(plan, gpu_inputs)?;
     let context = &context;
     context.validate_admitted_plan_capabilities_with_gpu_inputs(plan, gpu_inputs)?;

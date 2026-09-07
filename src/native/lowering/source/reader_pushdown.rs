@@ -101,7 +101,8 @@ pub(super) fn supported_reader_pushdown_predicate(
     native_source: &NativeLocalParquetSource,
     allow_expr: impl Fn(&NativeExpr) -> bool,
 ) -> Option<SupportedReaderPushdownPredicate> {
-    if let Some(expr) = native_source.reader_predicate_supported_expression(predicate)
+    if let Some(expr) = native_source
+        .reader_predicate_supported_expression(predicate, nexus_query_engine::rapids_backend::rapids_analysis_context())
         && allow_expr(&expr)
     {
         return Some(SupportedReaderPushdownPredicate { expr, covers_predicate: true });
@@ -119,7 +120,8 @@ fn collect_supported_reader_pushdown_conjuncts(
     allow_expr: &impl Fn(&NativeExpr) -> bool,
     conjuncts: &mut Vec<NativeExpr>,
 ) {
-    if let Some(expr) = native_source.reader_predicate_supported_expression(predicate)
+    if let Some(expr) = native_source
+        .reader_predicate_supported_expression(predicate, nexus_query_engine::rapids_backend::rapids_analysis_context())
         && allow_expr(&expr)
     {
         conjuncts.push(expr);

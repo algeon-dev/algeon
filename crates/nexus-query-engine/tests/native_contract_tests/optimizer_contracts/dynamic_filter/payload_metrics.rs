@@ -2,8 +2,7 @@
 fn dynamic_filter_runtime_metrics_record_produced_skipped_and_applied_events() {
     let plan = optimize_query_plan(
         estimated_inner_join_plan(JoinSide::Right, 512 * 1024 * 1024, 10_000_000, 16 * 1024 * 1024, 100_000),
-        &NativeOptimizerOptions::default(),
-    )
+        &NativeOptimizerOptions::default(), rapids_analysis_context(),)
     .plan;
     let route = &plan.dynamic_filter_routes()[0];
     let filter = DynamicFilter::SmallInListI64 { values: vec![10, 20, 30], min: 10, max: 30 };
@@ -109,7 +108,7 @@ fn aggregate_group_key_dynamic_filter_uses_aggregate_output_column_before_projec
         ..NativeOptimizerOptions::default()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.diagnostics.dynamic_filter_route_discovery.route_count, 1);
     let route = &result.plan.dynamic_filter_routes()[0];
@@ -182,7 +181,7 @@ fn dynamic_filter_uses_hash_join_build_when_join_input_narrows_aggregate_keyset(
         ..NativeOptimizerOptions::default()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     let route = result
         .plan

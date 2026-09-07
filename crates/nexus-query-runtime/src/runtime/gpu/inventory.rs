@@ -2,8 +2,10 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use nexus_query_planning::error::{QueryError, Result};
+use nexus_query_planning::error::Result;
 use serde::Serialize;
+
+use crate::native_error::cudf_query_error;
 
 /// Availability of one live device-telemetry substrate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -157,7 +159,7 @@ pub struct NexusGpuInventory;
 impl GpuInventory for NexusGpuInventory {
     fn device_count(&self) -> Result<usize> {
         cudf::DeviceId::count().map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.gpu_inventory.device_count",
                 "failed to query CUDA device count",
                 error,
@@ -167,7 +169,7 @@ impl GpuInventory for NexusGpuInventory {
 
     fn facts(&self, device_ordinal: usize) -> Result<DeviceFacts> {
         let device = cudf::DeviceId::new(device_ordinal).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.gpu_inventory.device_id",
                 "failed to resolve CUDA device id while collecting inventory facts",
                 error,
@@ -175,7 +177,7 @@ impl GpuInventory for NexusGpuInventory {
             .with_fact("device_ordinal", device_ordinal)
         })?;
         let memory = device.available_memory().map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.gpu_inventory.memory",
                 "failed to query CUDA device memory inventory",
                 error,

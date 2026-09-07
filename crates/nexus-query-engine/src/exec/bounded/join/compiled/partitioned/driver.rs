@@ -2,9 +2,10 @@ use super::{
     BTreeMap, BoundedExecutionAttempt, BoundedJoinSideFrame, ExecutionContext, GpuDataFrame, JoinNode, JoinSide,
     JoinType, KeyedHashJoinStrategyOptions, MemoryControlPolicy, NodeId, PartitionedJoinPartitionOutput,
     PartitionedJoinRowRange, PartitionedJoinSide, QueryError, QueryMetrics, ResidentGpuFrame, Result, RetryFacts,
-    VecDeque, execution_overrides, hash_partition_join_side, join_keys_for_side, observe_device_memory_bytes,
-    partition_row_range, partitioned_join_reusable_rejected_reason, probe_side, release_bounded_join_side_frame,
-    release_partitioned_join_side, release_streamed_join_outputs_reverse, side_metric, slice_partition_join_side_range,
+    VecDeque, cudf_query_error, execution_overrides, hash_partition_join_side, join_keys_for_side,
+    observe_device_memory_bytes, partition_row_range, partitioned_join_reusable_rejected_reason, probe_side,
+    release_bounded_join_side_frame, release_partitioned_join_side, release_streamed_join_outputs_reverse, side_metric,
+    slice_partition_join_side_range,
 };
 
 // Retry subdivision constants are deliberately fixed because they describe the
@@ -165,7 +166,7 @@ impl PartitionedJoinProbeChunk {
             self.input.frame.clone()
         } else {
             self.input.frame.with_execution(&overrides).slice(range.offset, range.len).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.bounded.join.hash_partition_probe_slice",
                     "failed to slice the hash-partition probe retry input",
                     error,

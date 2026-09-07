@@ -11,7 +11,7 @@ use super::{
     AggregateStrategyCandidateRejection, AggregateStrategyCapabilityDecision, DataFrame, DropDuplicatesOptions,
     DuplicateKeepOption, ExecutionBudgetToken, ExecutionContext, Expr, NodeId, PartialAggregateInputEvidence,
     QueryError, QueryErrorCode, QueryMetrics, ReduceAgg, Result, SourceChunk, attach_budget_token_failure_facts,
-    budgeted_value,
+    budgeted_value, cudf_query_error, cudf_query_error_with_budget_details,
 };
 use crate::{
     capability::{AggregateStrategyExecutionOptions, aggregate_strategy_capability_decision},
@@ -540,7 +540,7 @@ pub(super) fn exact_single_key_cardinality_probe(
 ) -> Result<ExactSingleKeyCardinalityProbe> {
     let timer = Instant::now();
     let series = frame.series(key_column).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.aggregate.exact_single_key_cardinality_probe.input",
             "failed to access exact-cardinality probe key column",
             error,
@@ -550,7 +550,7 @@ pub(super) fn exact_single_key_cardinality_probe(
     let prepared = series
         .prepare_scalar_reduction(ReduceAgg::NUnique { null_policy: cudf::NullPolicy::Exclude })
         .map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.aggregate.exact_single_key_cardinality_probe.prepare_nunique",
                 "failed to prepare exact cardinality reduction for grouped aggregate key column",
                 error,
@@ -567,7 +567,7 @@ pub(super) fn exact_single_key_cardinality_probe(
             .with_strategy_label("nunique"),
     );
     let scalar = match prepared.execute_with_budget(token).map_err(|error| {
-        QueryError::from_cudf_with_budget_details(
+        cudf_query_error_with_budget_details(
             "nexus_query_engine.aggregate.exact_single_key_cardinality_probe.nunique",
             "failed to compute exact cardinality for grouped aggregate key column",
             error,
@@ -583,14 +583,14 @@ pub(super) fn exact_single_key_cardinality_probe(
         },
     };
     let non_null_distinct_count = if scalar.is_valid().map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.aggregate.exact_single_key_cardinality_probe.read_nunique",
             "failed to read exact cardinality scalar validity",
             error,
         )
     })? {
         let count = scalar.value::<i32>().map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.aggregate.exact_single_key_cardinality_probe.read_nunique",
                 "failed to read exact cardinality scalar value",
                 error,
@@ -630,7 +630,7 @@ pub(super) fn exact_grouped_key_cardinality_probe(
     let timer = Instant::now();
     let key_refs = key_columns.iter().map(String::as_str).collect::<Vec<_>>();
     let keys = frame.select(key_refs.clone()).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.aggregate.exact_grouped_key_cardinality_probe.input",
             "failed to project exact-cardinality probe key columns",
             error,
@@ -654,7 +654,7 @@ pub(super) fn exact_grouped_key_cardinality_probe(
         )
         .map_err(|error| {
             attach_budget_token_failure_facts(
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.aggregate.exact_grouped_key_cardinality_probe.distinct_keys",
                     "failed to compute exact grouped-key cardinality for partial aggregate",
                     error,

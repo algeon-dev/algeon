@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use super::{DataFrame, ExecutionContext, NodeId, QueryError, QueryMetrics, Result, col, execution_overrides};
+use super::{DataFrame, ExecutionContext, NodeId, QueryMetrics, Result, col, cudf_query_error, execution_overrides};
 use crate::{metrics::OperatorMetrics, plan::GraphEdgeColumnBindings};
 
 /// Which optional edge columns may gate null-row dropping for an operation.
@@ -33,7 +33,7 @@ pub(super) fn filter_null_edge_rows(
     let mut null_counts = Vec::new();
     for (role, column) in &columns {
         let series = frame.series(column).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.graph_algorithm.edge_null_filter",
                 "failed to inspect cuGraph edge-list column nulls",
                 error,
@@ -58,7 +58,7 @@ pub(super) fn filter_null_edge_rows(
     let overrides_lease = execution_overrides(context)?;
     let overrides = overrides_lease.overrides();
     let output = frame.with_execution(&overrides).filter_all(predicates).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.edge_null_filter",
             "failed to drop null cuGraph edge-list rows",
             error,

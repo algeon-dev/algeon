@@ -11,10 +11,10 @@ use super::{
     add_floating_statistical_aggregate_contract_facts, aggregate_spec_has_distinct, aggregate_spec_has_filters,
     aggregate_spec_has_floating_statistical_aggregate, aggregate_strategy_capability_decision, budgeted_value,
     cast_count_output_columns, cast_count_output_columns_with_budget, cast_reduction_output_columns,
-    cast_reduction_output_columns_with_budget, execute_groupby_aggregate,
-    execute_groupby_aggregate_with_budget_observed, execution_overrides, finalize_avg_output_columns,
-    finalize_avg_output_columns_with_budget, lower_aggregate_function, lower_aggregate_spec_keys, lower_column_expr,
-    lower_expr, record_grouped_aggregate_strategy_decision,
+    cast_reduction_output_columns_with_budget, cudf_query_error, cudf_query_error_with_budget_details,
+    execute_groupby_aggregate, execute_groupby_aggregate_with_budget_observed, execution_overrides,
+    finalize_avg_output_columns, finalize_avg_output_columns_with_budget, lower_aggregate_function,
+    lower_aggregate_spec_keys, lower_column_expr, lower_expr, record_grouped_aggregate_strategy_decision,
     record_single_grouped_aggregate_strategy_decision_with_metrics,
     select_partial_aggregate_strategy_decision_with_options,
 };
@@ -102,7 +102,7 @@ pub(super) fn execute_gpu_native_statistical_aggregate(
         frame
     } else {
         frame.with_execution(&overrides).with_columns(plan.pre_group_exprs).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.aggregate.statistical_moments.prepare",
                 "failed to prepare native statistical aggregate moment columns",
                 error,
@@ -123,7 +123,7 @@ pub(super) fn execute_gpu_native_statistical_aggregate(
     let finalize_timer = Instant::now();
     if !plan.final_exprs.is_empty() {
         output = output.with_execution(&overrides).with_columns(plan.final_exprs).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.aggregate.statistical_moments.finalize",
                 "failed to finalize native statistical aggregate output columns",
                 error,
@@ -135,7 +135,7 @@ pub(super) fn execute_gpu_native_statistical_aggregate(
     output = cast_count_output_columns(output, &spec, output_schema)?;
     output =
         output.select(plan.expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.aggregate.statistical_moments.select",
                 "failed to select native statistical aggregate output columns",
                 error,
@@ -200,7 +200,7 @@ pub(super) fn execute_gpu_native_statistical_aggregate_with_budget(
     } else {
         budgeted_value(
             frame.with_columns_with_budget(plan.pre_group_exprs, token).map_err(|error| {
-                QueryError::from_cudf_with_budget_details(
+                cudf_query_error_with_budget_details(
                     "nexus_query_engine.aggregate.statistical_moments.prepare",
                     "failed to prepare bounded native statistical aggregate moment columns",
                     error,
@@ -229,7 +229,7 @@ pub(super) fn execute_gpu_native_statistical_aggregate_with_budget(
     if !plan.final_exprs.is_empty() {
         output = budgeted_value(
             output.with_columns_with_budget(plan.final_exprs, token).map_err(|error| {
-                QueryError::from_cudf_with_budget_details(
+                cudf_query_error_with_budget_details(
                     "nexus_query_engine.aggregate.statistical_moments.finalize",
                     "failed to finalize bounded native statistical aggregate output columns",
                     error,
@@ -244,7 +244,7 @@ pub(super) fn execute_gpu_native_statistical_aggregate_with_budget(
     output = cast_count_output_columns_with_budget(output, &spec, output_schema, token, metrics)?;
     output =
         output.select(plan.expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.aggregate.statistical_moments.select",
                 "failed to select native statistical aggregate output columns",
                 error,
@@ -306,7 +306,7 @@ pub(in crate::exec) fn execute_gpu_native_statistical_partial_aggregate_with_bud
     } else {
         budgeted_value(
             frame.with_columns_with_budget(plan.pre_group_exprs, token).map_err(|error| {
-                QueryError::from_cudf_with_budget_details(
+                cudf_query_error_with_budget_details(
                     "nexus_query_engine.aggregate.statistical_moments.partial_prepare",
                     "failed to prepare bounded native statistical partial aggregate moment columns",
                     error,
@@ -405,7 +405,7 @@ pub(in crate::exec) fn execute_gpu_native_statistical_final_merge_with_budget(
     if !plan.final_exprs.is_empty() {
         output = budgeted_value(
             output.with_columns_with_budget(plan.final_exprs, token).map_err(|error| {
-                QueryError::from_cudf_with_budget_details(
+                cudf_query_error_with_budget_details(
                     "nexus_query_engine.aggregate.statistical_moments.final_merge_finalize",
                     "failed to finalize bounded native statistical final aggregate output columns",
                     error,
@@ -418,7 +418,7 @@ pub(in crate::exec) fn execute_gpu_native_statistical_final_merge_with_budget(
     output = finalize_avg_output_columns_with_budget(context, output, spec, output_schema, token, metrics)?;
     output =
         output.select(plan.expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.aggregate.statistical_moments.final_merge_select",
                 "failed to select native statistical final aggregate output columns",
                 error,

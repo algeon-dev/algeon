@@ -4,9 +4,9 @@ use arrow::datatypes::DataType as ArrowDataType;
 
 use super::{
     BoundedExecutionAttempt, DataFrame, GpuDataFrame, JoinOutputColumn, JoinOutputColumnUpperBoundInput, JoinSide,
-    NodeId, QueryError, QueryErrorCode, ResidentGpuFrame, Result, execution_budget_token_for_boundary,
-    join_input_columns_with_order, join_output_upper_bound_bytes, join_side_projection_with_order,
-    observe_device_memory_bytes, select_join_input,
+    NodeId, QueryError, QueryErrorCode, ResidentGpuFrame, Result, cudf_query_error,
+    execution_budget_token_for_boundary, join_input_columns_with_order, join_output_upper_bound_bytes,
+    join_side_projection_with_order, observe_device_memory_bytes, select_join_input,
 };
 
 pub(in crate::exec::bounded) struct BoundedJoinSideFrame {
@@ -198,7 +198,7 @@ fn join_output_upper_bound_column_for_frame_column(
     side: JoinSide,
 ) -> Result<JoinOutputColumnBound> {
     let series = frame.series(column).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.bounded.join.output_upper_bound",
             "failed to access join output source column for closed-form sizing",
             error,
@@ -208,7 +208,7 @@ fn join_output_upper_bound_column_for_frame_column(
         .with_fact("column", column)
     })?;
     let cudf_dtype = series.dtype().map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.bounded.join.output_upper_bound",
             "failed to inspect join output source column dtype for closed-form sizing",
             error,
@@ -219,7 +219,7 @@ fn join_output_upper_bound_column_for_frame_column(
     })?;
     if cudf_dtype.id() == cudf::TypeId::List {
         let input_column_bytes = u64::try_from(series.device_allocated_size_bytes().map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.bounded.join.output_upper_bound",
                 "failed to inspect list join output source bytes for closed-form sizing",
                 error,
@@ -239,7 +239,7 @@ fn join_output_upper_bound_column_for_frame_column(
         return Ok(JoinOutputColumnBound::List { input_column_bytes });
     }
     let data_type = cudf::interop::arrow_host::arrow_type_from_cudf_dtype(cudf_dtype).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.bounded.join.output_upper_bound",
             "failed to convert join output source column dtype for closed-form sizing",
             error,
@@ -287,7 +287,7 @@ fn max_string_byte_length_for_join_output_sizing(
     let series = match frame.series(column) {
         Ok(series) => series,
         Err(error) => {
-            return Err(QueryError::from_cudf(
+            return Err(cudf_query_error(
                 "nexus_query_engine.bounded.join.output_string_length_sizing",
                 "failed to access string join output source column for sizing",
                 error,
@@ -300,7 +300,7 @@ fn max_string_byte_length_for_join_output_sizing(
     let byte_counts = match series.str().byte_count_in(&token.execution_overrides()) {
         Ok(byte_counts) => byte_counts,
         Err(error) => {
-            return Err(QueryError::from_cudf(
+            return Err(cudf_query_error(
                 "nexus_query_engine.bounded.join.output_string_length_sizing",
                 "failed to compute string byte counts for join output sizing",
                 error,
@@ -313,7 +313,7 @@ fn max_string_byte_length_for_join_output_sizing(
     let max_len = match byte_counts.max_value_in::<i32>(&token.execution_overrides()) {
         Ok(max_len) => max_len,
         Err(error) => {
-            return Err(QueryError::from_cudf(
+            return Err(cudf_query_error(
                 "nexus_query_engine.bounded.join.output_string_length_sizing",
                 "failed to reduce string byte-count sizing column",
                 error,

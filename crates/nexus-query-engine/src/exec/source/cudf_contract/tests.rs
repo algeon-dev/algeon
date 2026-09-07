@@ -2,7 +2,10 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use super::{local::*, remote::*};
 use crate::{
-    exec::source::{ExecutionContext, LocalParquetFile, LocalParquetSource, QueryError, QueryErrorCode, SourceChunk},
+    exec::source::{
+        ExecutionContext, LocalParquetFile, LocalParquetSource, QueryError, QueryErrorCode, SourceChunk,
+        cudf_query_error_without_source,
+    },
     expr::{BinaryOp, Expr, LiteralValue},
 };
 
@@ -225,7 +228,7 @@ fn datasource_probe_cudf_failures_preserve_facts_without_source_text() {
     let cudf_error = cudf::io::parquet::probe_remote_parquet_datasource(&source, Some(4096))
         .expect_err("scoped profiles are rejected before datasource open");
 
-    let error = QueryError::from_cudf_without_source(
+    let error = cudf_query_error_without_source(
         "nexus_query_engine.test.probe",
         "failed to probe resolved remote Parquet datasource capability",
         &cudf_error,
@@ -390,7 +393,7 @@ fn remote_direct_contract_keeps_filter_only_predicate_attachable() {
         crate::expr::Expr::literal(crate::expr::LiteralValue::Boolean(true)),
     ));
     let predicate = source.reader_predicate.as_ref().expect("reader predicate set");
-    assert!(source.reader_predicate_is_supported(predicate));
+    assert!(source.reader_predicate_is_supported(predicate, crate::rapids_backend::rapids_analysis_context()));
 
     let (cudf_source, _cudf_chunk) =
         cudf_local_parquet_source_file_selection(&context, &source, &source.files[0], 0, 7)
@@ -435,7 +438,7 @@ fn remote_direct_chunk_batch_propagates_required_footer_fetch_failure_for_unveri
         .with_column_file_indices(vec![0], vec![0], vec![])
         .with_reader_predicate(predicate);
     let predicate = source.reader_predicate.as_ref().expect("reader predicate set");
-    assert!(source.reader_predicate_is_supported(predicate));
+    assert!(source.reader_predicate_is_supported(predicate, crate::rapids_backend::rapids_analysis_context()));
     assert!(source.reader_predicate_requires_source_contract(predicate));
     let file = &source.files[0];
     let chunk = SourceChunk {

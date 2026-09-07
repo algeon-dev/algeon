@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use super::{
     ArrowDataType, DataFrame, ExecutionContext, GpuDataFrame, LiteralValue, LocalParquetSource, QueryError,
-    QueryErrorCode, QueryMetrics, Result, timestamp_unit_to_cudf_resolution,
+    QueryErrorCode, QueryMetrics, Result, cudf_query_error, timestamp_unit_to_cudf_resolution,
 };
 
 pub(super) fn inject_partition_columns(
@@ -36,7 +36,7 @@ pub(super) fn inject_partition_columns(
                 .with_fact("partition_value", partition_value)
         })?;
         output = output.with_column(partition_column.name.as_str(), series).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.local_parquet_source.inject_partitions",
                 "failed to inject native parquet partition column",
                 error,
@@ -57,7 +57,7 @@ pub(super) fn partition_value_series(
     if let LiteralValue::Null(data_type) = value {
         let scalar = null_partition_value_scalar(context, data_type)?;
         return context.runtime()?.series_from_scalar(&scalar, rows).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.local_parquet_source.partition_value",
                 "failed to construct native parquet partition column",
                 error,
@@ -110,7 +110,7 @@ pub(super) fn partition_value_series(
         LiteralValue::Null(_) => unreachable!("typed null partition values are handled before scalar construction"),
     }
     .map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.local_parquet_source.partition_value",
             "failed to construct native parquet partition scalar",
             error,
@@ -118,7 +118,7 @@ pub(super) fn partition_value_series(
     })?;
 
     context.runtime()?.series_from_scalar(&scalar, rows).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.local_parquet_source.partition_value",
             "failed to construct native parquet partition column",
             error,
@@ -167,7 +167,7 @@ fn null_partition_value_scalar(context: &ExecutionContext, data_type: &ArrowData
     };
 
     scalar.map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.local_parquet_source.partition_value",
             "failed to construct native parquet partition null scalar",
             error,

@@ -1,8 +1,8 @@
 use super::{
     DataFrame, ExecutionContext, GpuDataFrame, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult, NodeId,
-    QueryError, QueryErrorCode, Result, bfs_params, col, empty_graph_result_frame, execution_overrides,
-    map_cugraph_error, normalize_graph_result_schema, project_edge_list, run_with_accounted_resident_cugraph_graph,
-    run_with_cugraph_graph, sssp_params, table_graph_options,
+    QueryError, QueryErrorCode, Result, bfs_params, col, cudf_query_error, empty_graph_result_frame,
+    execution_overrides, map_cugraph_error, normalize_graph_result_schema, project_edge_list,
+    run_with_accounted_resident_cugraph_graph, run_with_cugraph_graph, sssp_params, table_graph_options,
 };
 
 pub(super) fn execute_bfs(
@@ -376,7 +376,7 @@ where
     let overrides =
         cudf::ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
     let repeat = runtime.sequence(0_i32, 0_i32, rows).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.bfs_path",
             "failed to build BFS path scalar gather map",
             error,
@@ -384,7 +384,7 @@ where
     })?;
     let source = vertex.slice_in(0, 1, &overrides).and_then(|source| source.gather_in(&repeat, &overrides)).map_err(
         |error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.graph_algorithm.bfs_path",
                 "failed to materialize BFS path source column",
                 error,
@@ -395,18 +395,14 @@ where
         .slice_in(0, 1, &overrides)
         .and_then(|target| target.gather_in(&repeat, &overrides))
         .map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.graph_algorithm.bfs_path",
                 "failed to materialize BFS path target column",
                 error,
             )
         })?;
     let path_index = runtime.sequence(0_i64, 1_i64, rows).map_err(|error| {
-        QueryError::from_cudf(
-            "nexus_query_engine.graph_algorithm.bfs_path",
-            "failed to materialize BFS path index",
-            error,
-        )
+        cudf_query_error("nexus_query_engine.graph_algorithm.bfs_path", "failed to materialize BFS path index", error)
     })?;
     let distance = path_index.clone();
     DataFrame::from_series([
@@ -417,7 +413,7 @@ where
         ("distance", distance),
     ])
     .map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.bfs_path",
             "failed to assemble bounded BFS path frame",
             error,
@@ -620,7 +616,7 @@ fn align_include_edges(
             .with_execution(&overrides)
             .build_filtered_join(right_keys.iter().map(String::as_str), options)
             .map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.graph_algorithm.bfs_predicates",
                     "failed to build reusable BFS include_edges alignment",
                     error,
@@ -630,7 +626,7 @@ fn align_include_edges(
             })?;
         let probe = join.begin_left_semi_probe_in(edges, left_keys.iter().map(String::as_str), &overrides).map_err(
             |error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.graph_algorithm.bfs_predicates",
                     "failed to probe BFS include_edges alignment",
                     error,
@@ -640,7 +636,7 @@ fn align_include_edges(
             },
         )?;
         probe.materialize_indices_in(&overrides).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.graph_algorithm.bfs_predicates",
                 "failed to materialize BFS include_edges alignment indices",
                 error,
@@ -656,7 +652,7 @@ fn align_include_edges(
         .with_execution(&overrides)
         .materialize_join_indices(&indices, output_columns.iter().map(String::as_str))
         .map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.graph_algorithm.bfs_predicates",
                 "failed to align BFS include_edges predicate with the primary edge list",
                 error,
@@ -686,7 +682,7 @@ fn drop_null_include_edge_rows(
     right_keys: &[String],
 ) -> Result<(DataFrame, usize)> {
     let allowed_edges = frame.select(right_keys.iter().map(String::as_str)).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.bfs_predicates",
             "failed to project BFS include_edges predicate columns",
             error,
@@ -712,7 +708,7 @@ fn drop_null_include_edge_rows(
     let overrides_lease = execution_overrides(context)?;
     let overrides = overrides_lease.overrides();
     let filtered = allowed_edges.with_execution(&overrides).filter_all(predicates).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.bfs_predicates",
             "failed to drop null BFS include_edges predicate rows",
             error,
@@ -1097,7 +1093,7 @@ fn concrete_bfs_source_vertices(
 fn scalar_series<T>(runtime: &cudf::Runtime, value: T, role: &'static str) -> Result<cudf::Series>
 where T: cudf::CudfType {
     runtime.scalar(value).and_then(|scalar| runtime.series_from_scalar(&scalar, 1)).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
             "failed to materialize BFS endpoint scalar",
             error,
@@ -1116,14 +1112,14 @@ fn graph_vertex_domain_frame(
     let overrides =
         cudf::ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
     let domain = cudf::Series::concat_in(&[&source, &destination], &overrides).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
             "failed to build BFS graph vertex domain",
             error,
         )
     })?;
     DataFrame::from_series([("__vertex", domain)]).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
             "failed to bind BFS graph vertex domain",
             error,
@@ -1133,7 +1129,7 @@ fn graph_vertex_domain_frame(
 
 fn graph_edge_series_for_column(frame: &DataFrame, column: &str, role: &'static str) -> Result<cudf::Series> {
     frame.series(column).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
             "failed to access BFS graph domain column",
             error,
@@ -1146,7 +1142,7 @@ fn graph_edge_series_for_column(frame: &DataFrame, column: &str, role: &'static 
 fn graph_edge_id_domain_frame(edges: &DataFrame, edge_id_column: &str) -> Result<DataFrame> {
     let edge_ids = graph_edge_series_for_column(edges, edge_id_column, "include_edge_ids_domain")?;
     DataFrame::from_series([("__vertex", edge_ids)]).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
             "failed to bind BFS edge-id predicate domain",
             error,
@@ -1162,7 +1158,7 @@ fn valid_vertex_rows(
     role: &'static str,
 ) -> Result<usize> {
     let vertices = DataFrame::from_series([("__vertex", vertices.clone())]).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
             "failed to bind BFS endpoint vertex set",
             error,
@@ -1176,7 +1172,7 @@ fn valid_vertex_rows(
     let overrides =
         cudf::ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
     vertices.with_execution(&overrides).left_semi_join(domain, options).map(|frame| frame.num_rows()).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.bfs_endpoint_membership",
             "failed to test BFS endpoint graph membership",
             error,
@@ -1301,7 +1297,7 @@ fn predicate_series_for_column(
     role: &'static str,
 ) -> Result<cudf::Series> {
     frame.series(column).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.bfs_predicates",
             "failed to access BFS predicate column",
             error,
@@ -1320,7 +1316,7 @@ fn validate_predicate_series_dtype(
     vertex_type: cudf::TypeId,
 ) -> Result<()> {
     let dtype = series.dtype().map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.bfs_predicates",
             "failed to inspect BFS predicate column type",
             error,
@@ -1351,7 +1347,7 @@ fn predicate_column_slice<'a, T: cudf::CudfType>(
     series
         .map(|series| {
             series.as_column().device_slice::<T>().map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.graph_algorithm.bfs_predicates",
                     "failed to borrow BFS predicate column device slice",
                     error,
@@ -1406,7 +1402,7 @@ fn append_bfs_target_metadata_columns(
         return Ok(frame);
     }
     let frame = frame.copy_into_runtime(runtime).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.bfs_target_metadata",
             "failed to place BFS result in metadata runtime",
             error,
@@ -1424,7 +1420,7 @@ fn append_bfs_target_metadata_columns(
         .scalar(info.target_found)
         .and_then(|scalar| runtime.series_from_scalar(&scalar, row_count))
         .map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.graph_algorithm.bfs_target_metadata",
                 "failed to materialize BFS target_found metadata column",
                 error,
@@ -1435,7 +1431,7 @@ fn append_bfs_target_metadata_columns(
         None => runtime.nulls(cudf::DataType::new(cudf::TypeId::Int64), row_count),
     }
     .map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.bfs_target_metadata",
             "failed to materialize BFS target_distance metadata column",
             error,
@@ -1445,7 +1441,7 @@ fn append_bfs_target_metadata_columns(
         .with_column("target_found", target_found)
         .and_then(|frame| frame.with_column("target_distance", target_distance))
         .map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.graph_algorithm.bfs_target_metadata",
                 "failed to append BFS target metadata columns",
                 error,
@@ -1549,7 +1545,7 @@ fn sssp_source_vertex(
         .with_fact("column", &input.column)
     })?;
     let series = frame.frame().series(&input.column).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.sssp_source",
             "failed to resolve the SSSP source side-input column",
             error,
@@ -1568,14 +1564,14 @@ fn sssp_source_vertex(
     }
     match vertex_type {
         cudf::TypeId::Int32 => series.to_vec_strict::<i32>().map(|values| i64::from(values[0])).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.graph_algorithm.sssp_source",
                 "failed to read the encoded Int32 SSSP source",
                 error,
             )
         }),
         cudf::TypeId::Int64 => series.to_vec_strict::<i64>().map(|values| values[0]).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.graph_algorithm.sssp_source",
                 "failed to read the encoded Int64 SSSP source",
                 error,

@@ -2,8 +2,8 @@ use std::{sync::Arc, time::Instant};
 
 use super::{
     AggregateFunction, AggregateSpec, BoundedExecutionAttempt, BoundedPlan, BoundedUnaryStage, CommittedPartial,
-    ExecutionBudgetToken, ExecutionContext, GpuDataFrame, NodeId, QueryError, QueryMetrics, Result,
-    RuntimeResourceFacts, aggregate_spec_has_avg, cast_count_output_columns_with_budget, execute_aggregate_with_budget,
+    ExecutionBudgetToken, ExecutionContext, GpuDataFrame, NodeId, QueryMetrics, Result, RuntimeResourceFacts,
+    aggregate_spec_has_avg, cast_count_output_columns_with_budget, cudf_query_error, execute_aggregate_with_budget,
     execute_bounded_generic_unary_consuming_input, execute_filter_with_budget, execute_global_aggregate_with_budget,
     execute_groupby_aggregate_with_budget_observed, execute_limit, execute_projection_with_budget,
     execution_budget_token_for_boundary, execution_overrides, final_global_aggregate_spec,
@@ -159,7 +159,7 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate_projection(
     }
     .and_then(|frame| {
         frame.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.final_projection.select",
                 "failed to select bounded native final aggregate output columns",
                 error,
@@ -235,7 +235,7 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate(
     let aggregate = lower_final_aggregate_spec(&bounded.aggregate.0.spec)?;
     if !aggregate_spec_has_avg(&bounded.aggregate.0.spec) {
         validate_aggregate_output_names(
-            &aggregate,
+            &aggregate.output_names,
             bounded.aggregate.1,
             "nexus_query_engine.final_merge.validate",
             "final aggregate output names must match output schema fields",
@@ -265,7 +265,7 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate(
     output =
         cast_count_output_columns_with_budget(output, &bounded.aggregate.0.spec, bounded.aggregate.1, token, metrics)?;
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.final_merge.select",
             "failed to select bounded native final aggregate output columns",
             error,

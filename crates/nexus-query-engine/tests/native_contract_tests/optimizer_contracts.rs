@@ -2,7 +2,7 @@ use nexus_query_engine::{
     capability::KeyedHashJoinStrategyOptions,
     dynamic_filter::{
         DynamicFilter, DynamicFilterConsumer, DynamicFilterConsumerLowering, DynamicFilterConsumerReductionStage,
-        DynamicFilterExecutionOptions, DynamicFilterKind, DynamicFilterProducer,
+        DynamicFilterExecutionOptions, DynamicFilterId, DynamicFilterKind, DynamicFilterProducer, DynamicFilterRoute,
     },
     error::QueryErrorCode,
     metrics::DynamicFilterSourceSnapshot,
@@ -26,16 +26,19 @@ use nexus_query_engine::{
         SHARED_RESIDENT_EXTRACTION_RULE_NAME, SHARED_SUBPLAN_MATERIALIZATION_RULE_NAME, STREAM_FANOUT_REPLAY_RULE_NAME,
         SemijoinReductionAdmissionMode, SemijoinReductionCostSignal, SemijoinReductionDiagnostics,
         SemijoinReductionOptions, SemijoinReductionRejectedReason, SharedResidentExtractionDecision,
-        SharedResidentExtractionDiagnostics, SharedResidentExtractionReason, SharedSubplanMaterializationDiagnostics,
-        SharedSubplanMaterializationOptions, StreamFanoutReplayDiagnostics, StreamFanoutReplayOptions,
-        apply_dimension_derived_pruning_with_stats, discover_dimension_derived_pruning_requests, optimize_query_plan,
-        optimize_semijoin_reduction, seed_dimension_derived_reader_predicates,
+        SharedResidentExtractionDiagnostics, SharedResidentExtractionReason, SharedResidentPlan,
+        SharedSubplanMaterializationDiagnostics, SharedSubplanMaterializationOptions, StreamFanoutReplayDiagnostics,
+        StreamFanoutReplayOptions, apply_dimension_derived_pruning_with_stats,
+        discover_dimension_derived_pruning_requests, local_parquet_source,
+        optimize_dimension_derived_row_group_pruning, optimize_query_plan, optimize_semijoin_reduction,
+        optimize_shared_resident_extraction, seed_dimension_derived_reader_predicates,
     },
     plan::{
         AdvisoryOutputStatistics, AdvisoryStatistic, AdvisoryStatisticsProvenance, GraphAlgorithm,
         GraphAlgorithmParams, GraphAlgorithmSpec, GraphBfsEndpointPolicy, GraphBfsParams, GraphBfsPredicateInputs,
         GraphConstructionOptions, GraphEdgeColumnBindings, GraphPredicateInput, NodeId,
     },
+    rapids_backend::rapids_analysis_context,
     source::LocalParquetSource,
 };
 
@@ -56,3 +59,4 @@ include!("optimizer_contracts/outer_join_null_rejection.rs");
 include!("optimizer_contracts/join_filter_reassociation.rs");
 include!("optimizer_contracts/join_build_side.rs");
 include!("optimizer_contracts/semijoin_reduction.rs");
+include!("optimizer_contracts/shared_resident_extraction.rs");

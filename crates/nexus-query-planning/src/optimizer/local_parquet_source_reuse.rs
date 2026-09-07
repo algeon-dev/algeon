@@ -7,6 +7,7 @@ use arrow::datatypes::{DataType, Field, Schema};
 
 use super::{consumers_by_node, dynamic_filter as dynamic_filter_optimizer, rewrite};
 use crate::{
+    backend::AnalysisContext,
     dynamic_filter::DynamicFilterConsumer,
     error::{QueryError, QueryErrorCode},
     expr::{BinaryOp, CaseWhen, Expr},
@@ -137,6 +138,7 @@ pub fn optimize_local_parquet_source_reuse(
     plan: QueryPlan,
     options: &LocalParquetSourceReuseOptions,
     dynamic_filter_options: &dynamic_filter_optimizer::DynamicFilterRouteDiscoveryOptions,
+    ctx: AnalysisContext<'_>,
 ) -> LocalParquetSourceReuseResult {
     if !options.enabled {
         return LocalParquetSourceReuseResult {
@@ -146,7 +148,7 @@ pub fn optimize_local_parquet_source_reuse(
         };
     }
 
-    let discovery = discover_source_reuse_candidates(&plan, options, dynamic_filter_options);
+    let discovery = discover_source_reuse_candidates(&plan, options, dynamic_filter_options, ctx);
     if discovery.rewrites.is_empty() {
         return LocalParquetSourceReuseResult {
             plan,
@@ -176,6 +178,7 @@ fn discover_source_reuse_candidates(
     plan: &QueryPlan,
     options: &LocalParquetSourceReuseOptions,
     dynamic_filter_options: &dynamic_filter_optimizer::DynamicFilterRouteDiscoveryOptions,
+    ctx: AnalysisContext<'_>,
 ) -> SourceReuseDiscovery {
     let reachable = rewrite::sink_reachable_nodes(plan);
     let mut groups = BTreeMap::<SourceGroupKey, Vec<SourceVariant>>::new();
@@ -195,7 +198,7 @@ fn discover_source_reuse_candidates(
     }
 
     let dynamic_filter_routes_by_source = if groups.values().any(|variants| variants.len() >= 2) {
-        dynamic_filter_source_route_signatures(plan, dynamic_filter_options)
+        dynamic_filter_source_route_signatures(plan, dynamic_filter_options, ctx)
     } else {
         BTreeMap::new()
     };
@@ -301,11 +304,12 @@ fn source_reuse_would_widen_variant(variant: &SourceVariant, superset_read_colum
 fn dynamic_filter_source_route_signatures(
     plan: &QueryPlan,
     options: &dynamic_filter_optimizer::DynamicFilterRouteDiscoveryOptions,
+    ctx: AnalysisContext<'_>,
 ) -> BTreeMap<NodeId, BTreeSet<String>> {
     if !options.enabled {
         return BTreeMap::new();
     }
-    let result = dynamic_filter_optimizer::optimize_dynamic_filter_route_discovery(plan.clone(), options);
+    let result = dynamic_filter_optimizer::optimize_dynamic_filter_route_discovery(plan.clone(), options, ctx);
     let mut signatures = BTreeMap::<NodeId, BTreeSet<String>>::new();
     for route in result.plan.dynamic_filter_routes() {
         let DynamicFilterConsumer::LocalParquetSource { source_node_id } = &route.consumer else {

@@ -38,7 +38,7 @@ fn bounded_native_query_executes_root_mixed_inner_join_with_ordered_reservations
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.capability_analysis().admits_root_join());
+    assert!(plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -107,7 +107,7 @@ fn bounded_native_query_streams_chunked_probe_into_mixed_inner_residual_join() {
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.capability_analysis().admits_root_join());
+    assert!(plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
 
     let context = backend_context_with_grant(8 * 1024 * 1024 * 1024);
 
@@ -181,7 +181,7 @@ fn bounded_native_query_streams_right_probe_into_left_build_mixed_inner_residual
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.capability_analysis().admits_root_join());
+    assert!(plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
 
     let context = backend_context_with_grant(8 * 1024 * 1024 * 1024);
 
@@ -253,7 +253,7 @@ fn bounded_native_query_executes_root_mixed_left_join_with_unmatched_left_rows()
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.capability_analysis().admits_root_join());
+    assert!(plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();
@@ -329,7 +329,7 @@ fn bounded_native_query_executes_root_mixed_full_join_with_pair_reservations() {
         Arc::clone(&output_schema),
     );
     let plan = builder.finish_with_host_sink(join);
-    assert!(plan.capability_analysis().admits_root_join());
+    assert!(plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context()).admits_root_join());
 
     let context = bounded_join_execution_context(&runtime);
     let result = execute_query_plan(&context, &plan).unwrap();

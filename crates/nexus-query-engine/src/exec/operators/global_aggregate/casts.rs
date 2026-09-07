@@ -2,7 +2,7 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
     AggregateFunction, AggregateSpec, DataFrame, ExecutionBudgetToken, QueryError, QueryErrorCode, QueryMetrics,
-    Result, budgeted_value, cudf_dtype_from_arrow_type,
+    Result, budgeted_value, cudf_dtype_from_arrow_type, cudf_query_error, cudf_query_error_with_budget_details,
 };
 
 pub(in crate::exec) fn cast_count_output_columns(
@@ -52,7 +52,7 @@ fn cast_count_output_columns_impl(
             .with_fact("data_type", format!("{:?}", field.data_type()))
         })?;
         let actual_type = frame.series(expr.alias.as_str()).and_then(|series| series.dtype()).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.aggregate.cast_count",
                 "failed to inspect native count aggregate output column type",
                 error,
@@ -65,7 +65,7 @@ fn cast_count_output_columns_impl(
         frame = match token.as_mut() {
             Some((token, metrics)) => budgeted_value(
                 frame.cast_column_with_budget(expr.alias.as_str(), target_type, token).map_err(|error| {
-                    QueryError::from_cudf_with_budget_details(
+                    cudf_query_error_with_budget_details(
                         "nexus_query_engine.aggregate.cast_count",
                         "failed to cast bounded native count aggregate output column",
                         error,
@@ -77,7 +77,7 @@ fn cast_count_output_columns_impl(
                 "nexus_query_engine.aggregate.cast_count",
             ),
             None => frame.cast_column(expr.alias.as_str(), target_type).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.aggregate.cast_count",
                     "failed to cast native count aggregate output column",
                     error,
@@ -137,7 +137,7 @@ fn cast_reduction_output_columns_impl(
             .with_fact("data_type", format!("{:?}", field.data_type()))
         })?;
         let actual_type = frame.series(expr.alias.as_str()).and_then(|series| series.dtype()).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.aggregate.cast_reduction",
                 "failed to inspect native reduction output column type",
                 error,
@@ -150,7 +150,7 @@ fn cast_reduction_output_columns_impl(
         frame = match token.as_mut() {
             Some((token, metrics)) => budgeted_value(
                 frame.cast_column_with_budget(expr.alias.as_str(), target_type, token).map_err(|error| {
-                    QueryError::from_cudf_with_budget_details(
+                    cudf_query_error_with_budget_details(
                         "nexus_query_engine.aggregate.cast_reduction",
                         "failed to cast bounded native reduction output column",
                         error,
@@ -162,7 +162,7 @@ fn cast_reduction_output_columns_impl(
                 "nexus_query_engine.aggregate.cast_reduction",
             ),
             None => frame.cast_column(expr.alias.as_str(), target_type).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.aggregate.cast_reduction",
                     "failed to cast native reduction output column",
                     error,

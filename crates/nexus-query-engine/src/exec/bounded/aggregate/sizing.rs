@@ -25,8 +25,9 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use super::{
     AggregateFunction, AggregateNode, AggregateSpec, ArrowDataType, AvgStateAliases, BoundedExecutionAttempt, Expr,
     Field, GpuDataFrame, PartialAggregateShape, QueryError, QueryErrorCode, Result, avg_sum_state_data_type,
-    execution_budget_token_for_boundary, global_valid_count_state_alias, lower_column_expr, lower_named_column_expr,
-    lower_partial_aggregate_spec, partial_aggregate_upper_bound_bytes, partial_global_aggregate_output_schema,
+    cudf_query_error, execution_budget_token_for_boundary, global_valid_count_state_alias, lower_column_expr,
+    lower_named_column_expr, lower_partial_aggregate_spec, partial_aggregate_upper_bound_bytes,
+    partial_global_aggregate_output_schema,
 };
 use crate::materialization_sizing::JoinOutputColumnUpperBoundInput;
 
@@ -493,7 +494,7 @@ fn string_byte_length_stats_for_partial_sizing(
     let series = match input.frame().series(input_column) {
         Ok(series) => series,
         Err(error) => {
-            return Err(QueryError::from_cudf(
+            return Err(cudf_query_error(
                 "nexus_query_engine.bounded.aggregate.string_length_sizing",
                 "failed to access string input column for partial aggregate sizing",
                 error,
@@ -504,7 +505,7 @@ fn string_byte_length_stats_for_partial_sizing(
     let byte_counts = match series.str().byte_count_in(&token.execution_overrides()) {
         Ok(byte_counts) => byte_counts,
         Err(error) => {
-            return Err(QueryError::from_cudf(
+            return Err(cudf_query_error(
                 "nexus_query_engine.bounded.aggregate.string_length_sizing",
                 "failed to compute string byte counts for partial aggregate sizing",
                 error,
@@ -515,7 +516,7 @@ fn string_byte_length_stats_for_partial_sizing(
     let max_len = match byte_counts.max_value_in::<i32>(&token.execution_overrides()) {
         Ok(max_len) => max_len,
         Err(error) => {
-            return Err(QueryError::from_cudf(
+            return Err(cudf_query_error(
                 "nexus_query_engine.bounded.aggregate.string_length_sizing",
                 "failed to reduce string byte-count sizing column",
                 error,
@@ -526,7 +527,7 @@ fn string_byte_length_stats_for_partial_sizing(
     let total_bytes = match byte_counts.sum_value_in::<i64>(&token.execution_overrides()) {
         Ok(total_bytes) => total_bytes,
         Err(error) => {
-            return Err(QueryError::from_cudf(
+            return Err(cudf_query_error(
                 "nexus_query_engine.bounded.aggregate.string_length_sizing",
                 "failed to sum string byte-count sizing column",
                 error,

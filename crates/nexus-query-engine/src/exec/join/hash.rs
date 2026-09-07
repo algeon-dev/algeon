@@ -1,7 +1,7 @@
 use super::{
     DataFrame, DataFrameHashJoin, DataFrameHashJoinOptions, DataFrameHashJoinPairIndices, EquiJoinIndices,
     ExecutionContext, ExecutionOverrides, ExecutionScratch, GpuHashJoinBuildHandle, HashJoinCacheKey, JoinIndexInput,
-    JoinIndexResult, JoinNode, JoinSide, JoinType, QueryError, QueryErrorCode, QueryMetrics, Result,
+    JoinIndexResult, JoinNode, JoinSide, JoinType, QueryError, QueryErrorCode, QueryMetrics, Result, cudf_query_error,
     join_index_error_base, lower_null_equality,
 };
 
@@ -109,7 +109,7 @@ fn build_hash_join(
             DataFrameHashJoinOptions::new().null_equality(lower_null_equality(node.spec.null_equality)),
         )
         .map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.join.build_hash_join",
                 "failed to build nexus native reusable hash join",
                 error,

@@ -6,7 +6,7 @@ fn dimension_pruning_rejects_shared_target_lineage_before_mutating_source_row_gr
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options);
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -37,7 +37,7 @@ fn dimension_pruning_seeds_date_reader_predicate_from_aggregate_group_key_filter
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.dimension_derived_row_group_pruning;
@@ -169,7 +169,7 @@ fn dimension_pruning_traces_target_union_branch_aliases() {
         dimension_derived_row_group_pruning: DimensionDerivedRowGroupPruningOptions::default(),
         ..NativeOptimizerOptions::disabled()
     };
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let diagnostics = &result.diagnostics.dimension_derived_row_group_pruning;
@@ -296,7 +296,7 @@ fn dimension_pruning_reads_stats_from_leaf_for_nested_fact_schema() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let applied = result
@@ -429,7 +429,7 @@ fn dimension_pruning_derives_key_filter_from_string_not_like_part_predicate() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     let applied = result
@@ -502,7 +502,7 @@ fn dimension_pruning_does_not_trace_target_lineage_through_limit() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.diagnostics.dimension_derived_row_group_pruning.applied_count, 0);
@@ -537,7 +537,7 @@ fn dimension_pruning_seeded_plan_exposes_group_key_filter_discovery_request() {
 
     assert!(discover_dimension_derived_pruning_requests(&plan).is_empty());
 
-    let seeded = seed_dimension_derived_reader_predicates(plan);
+    let seeded = seed_dimension_derived_reader_predicates(plan, rapids_analysis_context());
     let requests = discover_dimension_derived_pruning_requests(&seeded);
 
     assert_eq!(requests.len(), 1);
@@ -559,7 +559,7 @@ fn dimension_pruning_does_not_seed_unsupported_reader_predicate() {
         ),
     );
 
-    let seeded = seed_dimension_derived_reader_predicates(plan.clone());
+    let seeded = seed_dimension_derived_reader_predicates(plan.clone(), rapids_analysis_context());
 
     assert_eq!(seeded, plan);
     assert!(discover_dimension_derived_pruning_requests(&seeded).is_empty());
@@ -653,7 +653,7 @@ fn dimension_pruning_does_not_seed_right_side_left_join_group_key_filter() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options);
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -678,7 +678,7 @@ fn dimension_pruning_does_not_seed_reader_predicate_through_shared_aggregate_sub
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options);
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context());
 
     assert_eq!(result.plan, plan);
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
@@ -1056,4 +1056,113 @@ fn estimated_date_source_with_day_predicate(name: &str, day: i32) -> SourceNode 
         LocalParquetSource::from_files(vec![file], source_schema, vec!["dim_key".to_string(), "day".to_string()])
             .with_reader_predicate(predicate),
     )
+}
+
+#[test]
+fn seed_dimension_derived_reader_predicates_preserves_dynamic_filter_routes() {
+    let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int64, true)]));
+    let file = LocalParquetFile::new("/tmp/test.parquet");
+    let source = LocalParquetSource::from_files(vec![file], Arc::clone(&schema), vec!["x".to_string()]);
+    let mut builder = QueryPlanBuilder::new();
+    let source_node_id = builder.add_source(SourceNode::LocalParquet(source));
+    let aggregate = builder.add_aggregate(
+        source_node_id,
+        AggregateSpec::new(vec![Expr::column("x")], Vec::new()),
+        Arc::clone(&schema),
+    );
+    let filter = builder.add_filter(
+        aggregate,
+        Expr::binary(Expr::column("x"), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(5))),
+        Arc::clone(&schema),
+    );
+    let route = test_dynamic_filter_route(source_node_id);
+    let execution = custom_dynamic_filter_execution_options();
+    let plan = builder
+        .finish_with_host_sink(filter)
+        .with_dynamic_filter_execution_options(execution)
+        .with_dynamic_filter_routes(vec![route.clone()]);
+
+    let result = seed_dimension_derived_reader_predicates(plan, rapids_analysis_context());
+
+    assert_eq!(result.dynamic_filter_routes(), &[route]);
+    assert_eq!(result.dynamic_filter_execution_options(), execution);
+    let source = local_parquet_source(&result, source_node_id).unwrap();
+    assert!(source.reader_predicate.as_ref().is_some_and(|predicate| {
+        *predicate == Expr::binary(Expr::column("x"), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(5)))
+    }));
+}
+
+#[test]
+fn optimize_dimension_derived_row_group_pruning_preserves_dynamic_filter_routes_when_pruning_applies() {
+    let dir = unique_contract_temp_dir("dimension-pruning-routes");
+    let fact_path = dir.join("fact.parquet");
+    let dim_path = dir.join("dim.parquet");
+    let schema = Arc::new(Schema::new(vec![Field::new("x", DataType::Int64, false)]));
+    write_i64_parquet(&fact_path, Arc::clone(&schema), &[0, 1, 5, 6, 10, 11], 2);
+    write_i64_parquet(&dim_path, Arc::clone(&schema), &[5], 1);
+
+    let mut builder = QueryPlanBuilder::new();
+    let dim = builder.add_source(SourceNode::LocalParquet(
+        LocalParquetSource::from_files(vec![LocalParquetFile::new(&dim_path)], Arc::clone(&schema), vec![
+            "x".to_string()
+        ])
+        .with_reader_predicate(Expr::binary(Expr::column("x"), BinaryOp::Eq, Expr::literal(LiteralValue::Int64(5)))),
+    ));
+    let fact = builder.add_source(SourceNode::LocalParquet(LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&fact_path)],
+        Arc::clone(&schema),
+        vec!["x".to_string()],
+    )));
+    let join = builder.add_join(
+        dim,
+        fact,
+        JoinSpec::new(JoinType::Inner, vec![JoinKey::new(ColumnRef::input(0, "x", "x"), ColumnRef::input(1, "x", "x"))])
+            .with_output_projection(vec![JoinOutputColumn::right(ColumnRef::input(1, "x", "x"), "x")]),
+        Arc::clone(&schema),
+    );
+    let route = test_dynamic_filter_route(fact);
+    let execution = custom_dynamic_filter_execution_options();
+    let plan = builder
+        .finish_with_host_sink(join)
+        .with_dynamic_filter_execution_options(execution)
+        .with_dynamic_filter_routes(vec![route.clone()]);
+
+    let result = optimize_dimension_derived_row_group_pruning(
+        plan,
+        &DimensionDerivedRowGroupPruningOptions::default(),
+        rapids_analysis_context(),
+    );
+
+    assert_eq!(result.change, NativeOptimizerChange::Changed);
+    assert_eq!(result.diagnostics.applied_count, 1);
+    assert_eq!(result.plan.dynamic_filter_routes(), &[route]);
+    assert_eq!(result.plan.dynamic_filter_execution_options(), execution);
+    let source = local_parquet_source(&result.plan, fact).unwrap();
+    assert_eq!(source.files[0].row_groups, Some(vec![1]));
+
+    fs::remove_dir_all(dir).expect("temporary dimension pruning directory should be removable");
+}
+
+fn test_dynamic_filter_route(source_node_id: NodeId) -> DynamicFilterRoute {
+    DynamicFilterRoute::new(
+        DynamicFilterId::new(0),
+        DynamicFilterProducer::AggregateGroupKeys { aggregate_node_id: source_node_id },
+        DynamicFilterConsumer::LocalParquetSource { source_node_id },
+        vec!["x".to_string()],
+        vec!["x".to_string()],
+        vec![DynamicFilterKind::Range],
+        DynamicFilterConsumerLowering::ReaderPredicate,
+    )
+}
+
+fn custom_dynamic_filter_execution_options() -> DynamicFilterExecutionOptions {
+    DynamicFilterExecutionOptions::default().with_max_build_rows(17)
+}
+
+fn write_i64_parquet(path: &Path, schema: Arc<Schema>, values: &[i64], row_group_rows: usize) {
+    let batch = RecordBatch::try_new(Arc::clone(&schema), vec![Arc::new(arrow::array::Int64Array::from(
+        values.to_vec(),
+    ))])
+    .expect("test record batch should be valid");
+    write_record_batch_parquet(path, schema, &batch, row_group_rows);
 }

@@ -84,6 +84,7 @@ pub(crate) async fn prune_native_query_plan(
         plan,
         LakehouseFooterPruningOptions::new(policy.max_target_files_across_requests()),
         &mut resolver,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
     )
     .await;
 

@@ -1,7 +1,7 @@
 use super::{
     BoundedExecutionAttempt, BoundedRootHashJoinBuildState, DataFrame, ExecutionOverrides, GpuDataFrame,
-    GpuHashJoinBuildHandle, Instant, JoinNode, JoinSide, QueryError, ResidentGpuFrame, Result, execution_overrides,
-    lower_null_equality, prepare_bounded_join_side_input_from_resident_frame,
+    GpuHashJoinBuildHandle, Instant, JoinNode, JoinSide, ResidentGpuFrame, Result, cudf_query_error,
+    execution_overrides, lower_null_equality, prepare_bounded_join_side_input_from_resident_frame,
     prepare_bounded_join_side_input_from_shared_frame, probe_side, projected_input_columns,
     state::validate_root_hash_join,
 };
@@ -121,7 +121,7 @@ pub(in crate::exec::bounded::join) fn build_bounded_hash_join(
     let hash_join = match build.with_execution(overrides).build_hash_join(build_keys, hash_options) {
         Ok(hash_join) => hash_join,
         Err(error) => {
-            return Err(QueryError::from_cudf(
+            return Err(cudf_query_error(
                 "nexus_query_engine.bounded.join.build_hash_join",
                 "failed to build bounded native reusable hash join",
                 error,

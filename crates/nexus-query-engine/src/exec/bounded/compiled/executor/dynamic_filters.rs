@@ -5,7 +5,7 @@ use cudf::DataFrame;
 
 use super::{
     super::{ResidentFrameStreamPayload, frame_stream::map_dynamic_filter_resident_frame_stream, helpers::invalid},
-    CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskExecutor,
+    CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineState, CompiledTaskExecutor, cudf_query_error,
 };
 use crate::{
     dynamic_filter::{
@@ -239,7 +239,7 @@ impl CompiledGpuTaskExecutor<'_> {
         let mut batches = Vec::with_capacity(producer_frames.len());
         for producer_frame in producer_frames {
             let selected_frame = producer_frame.select(&selected_columns).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.dynamic_filter.producer_projection",
                     "failed to select dynamic-filter producer key columns",
                     error,
@@ -318,7 +318,7 @@ impl CompiledGpuTaskExecutor<'_> {
             let mut filter = Some(DynamicFilter::Empty);
             for producer_frame in producer_frames {
                 let series = producer_frame.series(producer_column).map_err(|error| {
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.dynamic_filter.producer_range",
                         "failed to access dynamic-filter producer key column for range payload",
                         error,
@@ -1093,7 +1093,7 @@ fn dynamic_filter_range_reduction_error(
     reduction: &'static str,
     data_type: &arrow::datatypes::DataType,
 ) -> QueryError {
-    QueryError::from_cudf(
+    cudf_query_error(
         "nexus_query_engine.dynamic_filter.producer_range",
         "failed to reduce dynamic-filter producer key column to a range payload",
         error,

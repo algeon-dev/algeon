@@ -5,7 +5,7 @@ use super::{
     ExecutionBudgetToken, ExecutionContext, GpuDataFrame, Instant, MemoryControlPolicy, PartitionedFinalMergeTopK,
     PartitionedFinalMergeTopKStats, QueryError, QueryErrorCode, QueryMetrics, Result, RuntimeResourceFacts,
     aggregate_strategy_capability_decision, apply_partitioned_final_merge_topk, attach_budget_token_failure_facts,
-    concatenate_partitioned_final_merge_outputs, execute_compiled_bounded_aggregate_from_empty_input,
+    concatenate_partitioned_final_merge_outputs, cudf_query_error, execute_compiled_bounded_aggregate_from_empty_input,
     execute_final_aggregate, execute_final_aggregate_projection, execution_budget_token_for_boundary,
     final_merge_retry_facts, lower_final_aggregate_spec, observe_device_memory_bytes, partition_final_merge_partial,
     partitioned_final_merge_partition_count, partitioned_final_merge_topk_candidate,
@@ -372,7 +372,7 @@ fn merge_final_aggregate_partials(
     let overrides = token.execution_overrides();
     let concatenated = first_frame.with_execution(&overrides).concat_many(&other_frame_refs).map_err(|error| {
         attach_budget_token_failure_facts(
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.final_merge.concat_partials",
                 "failed to concatenate bounded native aggregate partials",
                 error,
@@ -537,7 +537,7 @@ fn merge_partitioned_final_aggregate_partials(
         let other_frame_refs = other_frames.iter().collect::<Vec<_>>();
         first_frame.with_execution(&token.execution_overrides()).concat_many(&other_frame_refs).map_err(|error| {
             attach_budget_token_failure_facts(
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.final_merge.partitioned_concat_partials",
                     "failed to concatenate partitioned final aggregate partials",
                     error,

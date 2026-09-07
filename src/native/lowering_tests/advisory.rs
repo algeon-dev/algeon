@@ -65,14 +65,19 @@ async fn shadow_estimate_composes_frontend_advisory_with_the_compiled_schedule()
     let native = &nexus_query_engine::optimizer::optimize_query_plan(
         lowered.plans[0].clone(),
         &nexus_query_engine::optimizer::NativeOptimizerOptions::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
     )
     .plan;
     assert!(!native.advisory_outputs().is_empty(), "optimizer rewrites carry frontend statistics forward");
-    let admission = bounded_pipeline_decision(native, StatisticalAggregateExecutionMode::default())
-        .unwrap()
-        .into_execution_admission()
-        .unwrap()
-        .expect("the lowered q03 join plan compiles to a bounded pipeline");
+    let admission = bounded_pipeline_decision(
+        native,
+        StatisticalAggregateExecutionMode::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .unwrap()
+    .into_execution_admission()
+    .unwrap()
+    .expect("the lowered q03 join plan compiles to a bounded pipeline");
     let pipeline = admission.pipeline();
 
     let estimate = estimate_compiled_pipeline(native, pipeline).unwrap();

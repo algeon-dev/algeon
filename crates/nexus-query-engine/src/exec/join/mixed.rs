@@ -1,7 +1,7 @@
 use super::{
     EquiJoinIndices, ExecutionScratch, JoinIndexInput, JoinIndexResult, JoinNode, JoinType, QueryError, QueryErrorCode,
-    QueryMetrics, Result, dataframe_mixed_join_options, dataframe_predicate_join_options, join_index_error,
-    lower_join_match_predicate, lower_join_residual_predicate,
+    QueryMetrics, Result, cudf_query_error, dataframe_mixed_join_options, dataframe_predicate_join_options,
+    join_index_error, lower_join_match_predicate, lower_join_residual_predicate,
 };
 
 pub(super) fn execute_mixed_join_indices(
@@ -37,7 +37,7 @@ pub(super) fn execute_mixed_join_indices(
             .map_err(|error| join_index_error(error, node))?;
             let size_data_bytes =
                 size_data.device_allocated_size_bytes().map(|bytes| bytes as u64).map_err(|error| {
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.join.mixed_size_data_bytes",
                         "failed to observe native mixed join size-data memory",
                         error,

@@ -7,6 +7,7 @@ use std::{
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
+    cudf_query_error, cudf_query_error_with_budget_details,
     filter_inputs::{filtered_aggregate_input_type, filtered_aggregate_value_expr},
     filtered_common::{
         add_segmented_budgeted_execution_stats, estimate_column_bytes, filtered_fixed_width_dtype_size,
@@ -289,7 +290,7 @@ pub(super) fn execute_segmented_filtered_grouped_aggregate_with_budget(
     output = cast_reduction_output_columns_with_budget(output, spec, output_schema, token, metrics)?;
     output = cast_count_output_columns_with_budget(output, spec, output_schema, token, metrics)?;
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.filtered_grouped_aggregate.select",
             "failed to select segmented filtered grouped aggregate output columns",
             error,
@@ -398,7 +399,7 @@ fn execute_segmented_filtered_grouped_partial_state(
         } else {
             frame.with_execution(&token.execution_overrides()).slice(offset, length).map_err(|error| {
                 attach_budget_token_failure_facts(
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.filtered_grouped_aggregate.slice",
                         "failed to slice input for segmented filtered grouped aggregate",
                         error,
@@ -499,7 +500,7 @@ fn execute_filtered_grouped_partial_segment(
     )?;
     let output =
         output.select(aggregate.output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.filtered_grouped_aggregate.partial_segment_select",
                 "failed to select segmented filtered grouped partial aggregate segment columns",
                 error,
@@ -527,7 +528,7 @@ fn merge_filtered_grouped_segment_frames(
             )
             .map_err(|error| {
                 attach_budget_token_failure_facts(
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.filtered_grouped_aggregate.merge_segments",
                         "failed to merge segmented filtered grouped aggregate partial states",
                         error,
@@ -538,7 +539,7 @@ fn merge_filtered_grouped_segment_frames(
     }
     let output_names = indexed_partial_grouped_output_names(spec, spec.aggr_exprs.iter().cloned().enumerate())?;
     let merged = merged.select(output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.filtered_grouped_aggregate.merge_select",
             "failed to select segmented filtered grouped merged partial state columns",
             error,
@@ -576,7 +577,7 @@ fn prepare_filtered_grouped_predicates_for_chunk(
         frame = frame
             .with_columns_with_budget(predicate_expressions, token)
             .map_err(|error| {
-                QueryError::from_cudf_with_budget_details(
+                cudf_query_error_with_budget_details(
                     "nexus_query_engine.filtered_grouped_aggregate.filter_predicates",
                     "failed to materialize segmented filtered grouped aggregate predicates",
                     error,
@@ -634,7 +635,7 @@ fn prepare_filtered_grouped_partial_segment(
         frame = frame
             .with_columns_with_budget(masked_expressions, token)
             .map_err(|error| {
-                QueryError::from_cudf_with_budget_details(
+                cudf_query_error_with_budget_details(
                     "nexus_query_engine.filtered_grouped_aggregate.filter_inputs",
                     "failed to materialize segmented filtered grouped aggregate inputs",
                     error,
@@ -711,7 +712,7 @@ fn concat_partial_state_frames(
     let rest = partial_frames.iter().map(GpuDataFrame::frame).collect::<Vec<_>>();
     first.with_execution(&token.execution_overrides()).concat_many(&rest).map(GpuDataFrame::new).map_err(|error| {
         attach_budget_token_failure_facts(
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.filtered_grouped_aggregate.concat_partial_state",
                 "failed to concatenate segmented filtered grouped aggregate partial states",
                 error,

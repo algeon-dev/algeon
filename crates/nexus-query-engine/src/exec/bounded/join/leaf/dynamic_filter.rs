@@ -31,7 +31,13 @@ pub(super) fn merged_reader_predicate_route_ids(
         let Some(column) = route.consumer_columns.first() else {
             continue;
         };
-        if dynamic_filter_reader_predicate_should_merge(source, column, filter, options)? {
+        if dynamic_filter_reader_predicate_should_merge(
+            source,
+            column,
+            filter,
+            options,
+            crate::rapids_backend::rapids_analysis_context(),
+        )? {
             ids.insert(route.id);
         }
     }

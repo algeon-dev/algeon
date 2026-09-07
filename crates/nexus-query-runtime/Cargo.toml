@@ -15,12 +15,11 @@ categories = ["database"]
 [package.metadata.docs.rs]
 default-target = "x86_64-unknown-linux-gnu"
 targets = []
-features = ["cugraph", "cuvs", "nvml"]
+features = ["cugraph", "nvml"]
 
 [features]
 default = []
 cugraph = ["dep:cugraph", "nexus-query-planning/cugraph"]
-cuvs = ["nexus-query-planning/cuvs"]
 nvml = ["dep:nvml-wrapper"]
 # Controlled device-quarantine qualification: closes admission on one live
 # device ledger through the same gate placement uses. No generic fault API.
@@ -42,7 +41,6 @@ getrandom = { workspace = true }
 nexus-query-planning = { workspace = true }
 nvml-wrapper = { version = "0.12.1", optional = true }
 object_store = { workspace = true }
-parquet = { workspace = true, features = ["arrow"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }

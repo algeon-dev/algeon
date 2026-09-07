@@ -67,7 +67,7 @@ fn plan_bounded_local_parquet_source_stream(
     chunk_cap_hints: Option<SourceAdjacentAggregateChunkCapHints>,
     metrics: &mut QueryMetrics,
 ) -> Result<BoundedJoinLeafLocalParquetSourceStream> {
-    validate_local_parquet_source(source)?;
+    validate_local_parquet_source(source, crate::rapids_backend::rapids_analysis_context())?;
     if source.has_position_delete_visible_scan_limit() {
         return Err(unsupported_bounded_shape(
             "bounded join leaf streaming does not own Iceberg position-delete visible-row scan-limit stopping",

@@ -4,6 +4,7 @@ use arrow::datatypes::{Field, Schema, SchemaRef as ArrowSchemaRef};
 
 use super::{rewrite, simple_projection_column_single_alias, source_target_policy::OptimizerSourceTargetPolicy};
 use crate::{
+    backend::AnalysisContext,
     error::{QueryError, QueryErrorCode},
     expr::{ColumnQualifier, ColumnRef, Expr},
     plan::{
@@ -270,7 +271,11 @@ pub enum SemijoinReductionRejectedReason {
 }
 
 /// Runs the semijoin-reduction pass.
-pub fn optimize_semijoin_reduction(plan: QueryPlan, options: &SemijoinReductionOptions) -> SemijoinReductionResult {
+pub fn optimize_semijoin_reduction(
+    plan: QueryPlan,
+    options: &SemijoinReductionOptions,
+    ctx: AnalysisContext<'_>,
+) -> SemijoinReductionResult {
     if !options.enabled {
         return SemijoinReductionResult {
             plan,
@@ -295,7 +300,7 @@ pub fn optimize_semijoin_reduction(plan: QueryPlan, options: &SemijoinReductionO
         return SemijoinReductionResult { plan, change: super::NativeOptimizerChange::Unchanged, diagnostics };
     }
 
-    match evaluate_admission_gate(&plan, &rewritten_plan, options.admission_mode) {
+    match evaluate_admission_gate(&plan, &rewritten_plan, options.admission_mode, ctx) {
         AdmissionGateDecision::Keep { decision, original_admitted, rewritten_admitted } => {
             record_admission_for_applied_candidates(&mut diagnostics, decision, original_admitted, rewritten_admitted);
             SemijoinReductionResult { plan: rewritten_plan, change: super::NativeOptimizerChange::Changed, diagnostics }
@@ -1115,6 +1120,7 @@ fn evaluate_admission_gate(
     original: &QueryPlan,
     rewritten: &QueryPlan,
     mode: SemijoinReductionAdmissionMode,
+    ctx: AnalysisContext<'_>,
 ) -> AdmissionGateDecision {
     match mode {
         SemijoinReductionAdmissionMode::NotEvaluated => AdmissionGateDecision::Keep {
@@ -1123,8 +1129,8 @@ fn evaluate_admission_gate(
             rewritten_admitted: None,
         },
         SemijoinReductionAdmissionMode::Bounded => mode_admission_gate_decision(
-            bounded_admitted(original),
-            bounded_admitted(rewritten),
+            bounded_admitted(original, ctx),
+            bounded_admitted(rewritten, ctx),
             SemijoinReductionAdmissionDecision::BoundedKept,
             SemijoinReductionAdmissionDecision::BoundedRejectedRewrite,
         ),
@@ -1145,8 +1151,12 @@ fn mode_admission_gate_decision(
     }
 }
 
-fn bounded_admitted(plan: &QueryPlan) -> Option<bool> {
-    match crate::admission::bounded_pipeline_decision(plan, crate::mode::StatisticalAggregateExecutionMode::default()) {
+fn bounded_admitted(plan: &QueryPlan, ctx: AnalysisContext<'_>) -> Option<bool> {
+    match crate::admission::bounded_pipeline_decision(
+        plan,
+        crate::mode::StatisticalAggregateExecutionMode::default(),
+        ctx,
+    ) {
         Ok(decision) => Some(decision.admission().is_some()),
         Err(_) => None,
     }

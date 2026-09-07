@@ -46,7 +46,7 @@ pub(super) fn execute_compiled_bounded_partitioned_aggregate_from_frame(
             .hash_partition_by(lowered_keys.key_columns.iter().map(String::as_str), partition_count)
             .map_err(|error| {
                 attach_budget_token_failure_facts(
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.bounded.aggregate.hash_partition",
                         "failed to hash-partition compiled bounded aggregate input",
                         error,
@@ -135,7 +135,7 @@ fn slice_compiled_aggregate_partition(
     let overrides_lease = execution_overrides(execution.context())?;
     let overrides = overrides_lease.overrides();
     let sliced = frame.with_execution(&overrides).slice(start, len).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.bounded.aggregate.hash_partition_slice",
             "failed to slice compiled bounded hash-partitioned aggregate input",
             error,

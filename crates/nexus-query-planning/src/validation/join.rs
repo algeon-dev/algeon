@@ -12,6 +12,7 @@ use super::{
     },
 };
 use crate::{
+    backend::AnalysisContext,
     datatypes::is_supported_arrow_cast,
     expr::{BinaryOp, ColumnQualifier, ColumnRef, DatePart, LiteralValue},
     plan::{JoinNode, JoinOutputColumn, JoinSide, JoinType},
@@ -24,6 +25,7 @@ pub fn validate_join_capability(
     right_schema: &SchemaRef,
     right_available: &BTreeSet<String>,
     output_schema: &SchemaRef,
+    ctx: AnalysisContext<'_>,
 ) -> Result<()> {
     if !matches!(
         join.spec.join_type,
@@ -149,32 +151,39 @@ pub fn validate_join_capability(
     for key in &join.spec.keys {
         validate_join_column_ref(&key.left, JoinSide::Left)?;
         validate_join_column_ref(&key.right, JoinSide::Right)?;
-        let left_type = validate_column(key.left.name(), left_schema, left_available)?;
-        let right_type = validate_column(key.right.name(), right_schema, right_available)?;
+        let left_type = validate_column(key.left.name(), left_schema, left_available, ctx)?;
+        let right_type = validate_column(key.right.name(), right_schema, right_available, ctx)?;
         require_timezone_free_operator_key(&left_type, "join left key")?;
         require_timezone_free_operator_key(&right_type, "join right key")?;
         require_comparable_types(&left_type, &right_type)?;
     }
     if let Some(predicate) = &join.spec.residual_predicate {
-        let predicate_type =
-            match validate_join_residual_expr(predicate, left_schema, left_available, right_schema, right_available) {
-                Ok(data_type) => data_type,
-                Err(_error) if join_residual_post_filter_supported(join) => validate_post_join_residual_expr(
-                    predicate,
-                    left_schema,
-                    left_available,
-                    right_schema,
-                    right_available,
-                )?,
-                Err(error) => return Err(error),
-            };
+        let predicate_type = match validate_join_residual_expr(
+            predicate,
+            left_schema,
+            left_available,
+            right_schema,
+            right_available,
+            ctx,
+        ) {
+            Ok(data_type) => data_type,
+            Err(_error) if join_residual_post_filter_supported(join) => validate_post_join_residual_expr(
+                predicate,
+                left_schema,
+                left_available,
+                right_schema,
+                right_available,
+                ctx,
+            )?,
+            Err(error) => return Err(error),
+        };
         require_boolean(&predicate_type, "join residual predicate")?;
         validate_join_residual_column_sides(predicate)?;
     }
 
     validate_join_type_projection(join)?;
     if let Some(mark_column_name) = mark_column_name {
-        validate_mark_join_output_projection(join, mark_column_name, left_schema, left_available, output_schema)?;
+        validate_mark_join_output_projection(join, mark_column_name, left_schema, left_available, output_schema, ctx)?;
     } else {
         validate_join_output_projection(
             &join.spec.output_projection,
@@ -183,6 +192,7 @@ pub fn validate_join_capability(
             right_schema,
             right_available,
             output_schema,
+            ctx,
         )?;
     }
     Ok(())
@@ -255,6 +265,7 @@ fn validate_join_output_projection(
     right_schema: &SchemaRef,
     right_available: &BTreeSet<String>,
     output_schema: &SchemaRef,
+    ctx: AnalysisContext<'_>,
 ) -> Result<()> {
     let output_names = projection.iter().map(|column| column.output_name.clone()).collect::<Vec<_>>();
     let schema_names = output_schema.fields().iter().map(|field| field.name().clone()).collect::<Vec<_>>();
@@ -274,7 +285,7 @@ fn validate_join_output_projection(
             JoinSide::Left => (left_schema, left_available),
             JoinSide::Right => (right_schema, right_available),
         };
-        let data_type = validate_column(output.column.name(), schema, available)?;
+        let data_type = validate_column(output.column.name(), schema, available, ctx)?;
         let expected = output_schema.field(index).data_type();
         if &data_type != expected {
             return Err(QueryError::new(
@@ -298,6 +309,7 @@ fn validate_mark_join_output_projection(
     left_schema: &SchemaRef,
     left_available: &BTreeSet<String>,
     output_schema: &SchemaRef,
+    ctx: AnalysisContext<'_>,
 ) -> Result<()> {
     let expected_output_count = join.spec.output_projection.len() + 1;
     if output_schema.fields().len() != expected_output_count {
@@ -311,7 +323,7 @@ fn validate_mark_join_output_projection(
     }
     for (index, output) in join.spec.output_projection.iter().enumerate() {
         validate_join_column_ref(&output.column, output.side)?;
-        let data_type = validate_column(output.column.name(), left_schema, left_available)?;
+        let data_type = validate_column(output.column.name(), left_schema, left_available, ctx)?;
         let schema_field = output_schema.field(index);
         if output.output_name != *schema_field.name() {
             return Err(QueryError::new(
@@ -458,11 +470,16 @@ fn validate_join_residual_expr(
     left_available: &BTreeSet<String>,
     right_schema: &SchemaRef,
     right_available: &BTreeSet<String>,
+    ctx: AnalysisContext<'_>,
 ) -> Result<ArrowDataType> {
     match expr {
         Expr::Column(column) => match column.qualifier() {
-            Some(ColumnQualifier::Input { index: 0 }) => validate_column(column.name(), left_schema, left_available),
-            Some(ColumnQualifier::Input { index: 1 }) => validate_column(column.name(), right_schema, right_available),
+            Some(ColumnQualifier::Input { index: 0 }) => {
+                validate_column(column.name(), left_schema, left_available, ctx)
+            },
+            Some(ColumnQualifier::Input { index: 1 }) => {
+                validate_column(column.name(), right_schema, right_available, ctx)
+            },
             qualifier => Err(QueryError::new(
                 QueryErrorCode::UnsupportedExpression,
                 "nexus_query_engine.join.validate_residual",
@@ -471,23 +488,23 @@ fn validate_join_residual_expr(
             .with_fact("column", column.name())
             .with_fact("qualifier", qualifier.map(ToString::to_string).unwrap_or_else(|| "none".to_string()))),
         },
-        Expr::Literal(value) => validate_literal(value),
+        Expr::Literal(value) => validate_literal(value, ctx),
         Expr::Not(expr) => {
             let data_type =
-                validate_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+                validate_join_residual_expr(expr, left_schema, left_available, right_schema, right_available, ctx)?;
             require_boolean(&data_type, "join residual NOT argument")?;
             Ok(ArrowDataType::Boolean)
         },
         Expr::IsNull(expr) | Expr::IsNotNull(expr) => {
             let data_type =
-                validate_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+                validate_join_residual_expr(expr, left_schema, left_available, right_schema, right_available, ctx)?;
             require_scalar_operator_value(&data_type, "join residual IS NULL input")?;
             Ok(ArrowDataType::Boolean)
         },
         Expr::Cast { expr, target_type } => {
             let source_type =
-                validate_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
-            if !is_supported_join_residual_ast_cast(&source_type, target_type) {
+                validate_join_residual_expr(expr, left_schema, left_available, right_schema, right_available, ctx)?;
+            if !is_supported_join_residual_ast_cast(&source_type, target_type, ctx) {
                 return Err(QueryError::new(
                     QueryErrorCode::UnsupportedExpression,
                     "nexus_query_engine.join.validate_residual",
@@ -507,30 +524,31 @@ fn validate_join_residual_expr(
                 left_available,
                 right_schema,
                 right_available,
+                ctx,
             )
         },
         Expr::Binary { left, op, right, .. } => {
             let left_type =
-                validate_join_residual_expr(left, left_schema, left_available, right_schema, right_available)?;
+                validate_join_residual_expr(left, left_schema, left_available, right_schema, right_available, ctx)?;
             let right_type =
-                validate_join_residual_expr(right, left_schema, left_available, right_schema, right_available)?;
+                validate_join_residual_expr(right, left_schema, left_available, right_schema, right_available, ctx)?;
             match op {
                 BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
                     require_arithmetic_type(&left_type, "join residual arithmetic left operand")?;
                     require_arithmetic_type(&right_type, "join residual arithmetic right operand")?;
-                    require_compatible_types(&left_type, &right_type, "join residual arithmetic operands")?;
+                    require_compatible_types(&left_type, &right_type, "join residual arithmetic operands", ctx)?;
                     Ok(left_type)
                 },
                 BinaryOp::Modulo => {
                     require_integral_type(&left_type, "join residual modulo left operand")?;
                     require_integral_type(&right_type, "join residual modulo right operand")?;
-                    require_compatible_types(&left_type, &right_type, "join residual modulo operands")?;
+                    require_compatible_types(&left_type, &right_type, "join residual modulo operands", ctx)?;
                     Ok(left_type)
                 },
                 BinaryOp::BitwiseAnd | BinaryOp::BitwiseOr | BinaryOp::BitwiseXor => {
                     require_integral_type(&left_type, "join residual bitwise left operand")?;
                     require_integral_type(&right_type, "join residual bitwise right operand")?;
-                    require_compatible_types(&left_type, &right_type, "join residual bitwise operands")?;
+                    require_compatible_types(&left_type, &right_type, "join residual bitwise operands", ctx)?;
                     Ok(left_type)
                 },
                 BinaryOp::ShiftLeft | BinaryOp::ShiftRight => Err(QueryError::new(
@@ -552,7 +570,7 @@ fn validate_join_residual_expr(
         },
         Expr::InList { expr, list, .. } => {
             let expr_type =
-                validate_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+                validate_join_residual_expr(expr, left_schema, left_available, right_schema, right_available, ctx)?;
             if list.is_empty() {
                 return Err(QueryError::new(
                     QueryErrorCode::UnsupportedExpression,
@@ -575,13 +593,13 @@ fn validate_join_residual_expr(
                         "native join residual IN list does not yet model SQL null-containing list semantics",
                     ));
                 }
-                let item_type = validate_literal(value)?;
-                require_compatible_types(&expr_type, &item_type, "join residual IN list value")?;
+                let item_type = validate_literal(value, ctx)?;
+                require_compatible_types(&expr_type, &item_type, "join residual IN list value", ctx)?;
             }
             Ok(ArrowDataType::Boolean)
         },
         Expr::Alias { expr, .. } => {
-            validate_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)
+            validate_join_residual_expr(expr, left_schema, left_available, right_schema, right_available, ctx)
         },
         Expr::TryCast { .. }
         | Expr::Like { .. }
@@ -619,11 +637,16 @@ fn validate_post_join_residual_expr(
     left_available: &BTreeSet<String>,
     right_schema: &SchemaRef,
     right_available: &BTreeSet<String>,
+    ctx: AnalysisContext<'_>,
 ) -> Result<ArrowDataType> {
     match expr {
         Expr::Column(column) => match column.qualifier() {
-            Some(ColumnQualifier::Input { index: 0 }) => validate_column(column.name(), left_schema, left_available),
-            Some(ColumnQualifier::Input { index: 1 }) => validate_column(column.name(), right_schema, right_available),
+            Some(ColumnQualifier::Input { index: 0 }) => {
+                validate_column(column.name(), left_schema, left_available, ctx)
+            },
+            Some(ColumnQualifier::Input { index: 1 }) => {
+                validate_column(column.name(), right_schema, right_available, ctx)
+            },
             qualifier => Err(QueryError::new(
                 QueryErrorCode::UnsupportedExpression,
                 "nexus_query_engine.join.validate_residual",
@@ -632,21 +655,33 @@ fn validate_post_join_residual_expr(
             .with_fact("column", column.name())
             .with_fact("qualifier", qualifier.map(ToString::to_string).unwrap_or_else(|| "none".to_string()))),
         },
-        Expr::Literal(value) => validate_literal(value),
+        Expr::Literal(value) => validate_literal(value, ctx),
         Expr::Not(expr) => {
-            let data_type =
-                validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            let data_type = validate_post_join_residual_expr(
+                expr,
+                left_schema,
+                left_available,
+                right_schema,
+                right_available,
+                ctx,
+            )?;
             require_boolean(&data_type, "post-join residual NOT argument")?;
             Ok(ArrowDataType::Boolean)
         },
         Expr::IsNull(expr) | Expr::IsNotNull(expr) => {
-            let data_type =
-                validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            let data_type = validate_post_join_residual_expr(
+                expr,
+                left_schema,
+                left_available,
+                right_schema,
+                right_available,
+                ctx,
+            )?;
             require_scalar_operator_value(&data_type, "post-join residual IS NULL input")?;
             Ok(ArrowDataType::Boolean)
         },
         Expr::Cast { expr, target_type } => {
-            validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available, ctx)?;
             Ok(target_type.clone())
         },
         Expr::Lower(expr) | Expr::Upper(expr) => validate_post_join_string_unary_expr(
@@ -656,30 +691,55 @@ fn validate_post_join_residual_expr(
             right_schema,
             right_available,
             "post-join residual string case input",
+            ctx,
         ),
         Expr::StringContains { expr, .. } | Expr::StartsWith { expr, .. } | Expr::EndsWith { expr, .. } => {
-            let data_type =
-                validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            let data_type = validate_post_join_residual_expr(
+                expr,
+                left_schema,
+                left_available,
+                right_schema,
+                right_available,
+                ctx,
+            )?;
             require_string(&data_type, "post-join residual string predicate input")?;
             Ok(ArrowDataType::Boolean)
         },
         Expr::StringLength { expr, output_type } => {
-            let data_type =
-                validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            let data_type = validate_post_join_residual_expr(
+                expr,
+                left_schema,
+                left_available,
+                right_schema,
+                right_available,
+                ctx,
+            )?;
             require_string(&data_type, "post-join residual string length input")?;
             require_integral_type(output_type, "post-join residual string length output")?;
             Ok(output_type.clone())
         },
         Expr::RegexpReplace { expr, output_type, .. } => {
-            let data_type =
-                validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            let data_type = validate_post_join_residual_expr(
+                expr,
+                left_schema,
+                left_available,
+                right_schema,
+                right_available,
+                ctx,
+            )?;
             require_string(&data_type, "post-join residual REGEXP_REPLACE input")?;
             require_string(output_type, "post-join residual REGEXP_REPLACE output")?;
             Ok(output_type.clone())
         },
         Expr::Extract { field, expr } => {
-            let data_type =
-                validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            let data_type = validate_post_join_residual_expr(
+                expr,
+                left_schema,
+                left_available,
+                right_schema,
+                right_available,
+                ctx,
+            )?;
             match field {
                 DatePart::Year | DatePart::Month | DatePart::Day => {
                     require_date_or_timestamp(&data_type, "post-join residual EXTRACT input")?;
@@ -699,21 +759,39 @@ fn validate_post_join_residual_expr(
             }
         },
         Expr::Abs(expr) => {
-            let data_type =
-                validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            let data_type = validate_post_join_residual_expr(
+                expr,
+                left_schema,
+                left_available,
+                right_schema,
+                right_available,
+                ctx,
+            )?;
             require_arithmetic_type(&data_type, "post-join residual ABS input")?;
             Ok(data_type)
         },
         Expr::Sqrt { expr, output_type } => {
-            let data_type =
-                validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            let data_type = validate_post_join_residual_expr(
+                expr,
+                left_schema,
+                left_available,
+                right_schema,
+                right_available,
+                ctx,
+            )?;
             require_arithmetic_type(&data_type, "post-join residual SQRT input")?;
             require_arithmetic_type(output_type, "post-join residual SQRT output")?;
             Ok(output_type.clone())
         },
         Expr::Round { expr, output_type, .. } => {
-            let data_type =
-                validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            let data_type = validate_post_join_residual_expr(
+                expr,
+                left_schema,
+                left_available,
+                right_schema,
+                right_available,
+                ctx,
+            )?;
             require_arithmetic_type(&data_type, "post-join residual ROUND input")?;
             require_arithmetic_type(output_type, "post-join residual ROUND output")?;
             Ok(output_type.clone())
@@ -728,8 +806,14 @@ fn validate_post_join_residual_expr(
             }
             let mut output_type = ArrowDataType::Utf8;
             for expr in exprs {
-                let data_type =
-                    validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+                let data_type = validate_post_join_residual_expr(
+                    expr,
+                    left_schema,
+                    left_available,
+                    right_schema,
+                    right_available,
+                    ctx,
+                )?;
                 require_string(&data_type, "post-join residual CONCAT input")?;
                 if data_type == ArrowDataType::Utf8View {
                     output_type = ArrowDataType::Utf8View;
@@ -748,24 +832,37 @@ fn validate_post_join_residual_expr(
                 left_available,
                 right_schema,
                 right_available,
+                ctx,
             )
         },
         Expr::Binary { left, op, right, output_type } => {
-            let left_type =
-                validate_post_join_residual_expr(left, left_schema, left_available, right_schema, right_available)?;
-            let right_type =
-                validate_post_join_residual_expr(right, left_schema, left_available, right_schema, right_available)?;
+            let left_type = validate_post_join_residual_expr(
+                left,
+                left_schema,
+                left_available,
+                right_schema,
+                right_available,
+                ctx,
+            )?;
+            let right_type = validate_post_join_residual_expr(
+                right,
+                left_schema,
+                left_available,
+                right_schema,
+                right_available,
+                ctx,
+            )?;
             match op {
                 BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide => {
                     require_arithmetic_type(&left_type, "post-join residual arithmetic left operand")?;
                     require_arithmetic_type(&right_type, "post-join residual arithmetic right operand")?;
-                    require_compatible_types(&left_type, &right_type, "post-join residual arithmetic operands")?;
+                    require_compatible_types(&left_type, &right_type, "post-join residual arithmetic operands", ctx)?;
                     Ok(output_type.clone().unwrap_or(left_type))
                 },
                 BinaryOp::Modulo => {
                     require_integral_type(&left_type, "post-join residual modulo left operand")?;
                     require_integral_type(&right_type, "post-join residual modulo right operand")?;
-                    require_compatible_types(&left_type, &right_type, "post-join residual modulo operands")?;
+                    require_compatible_types(&left_type, &right_type, "post-join residual modulo operands", ctx)?;
                     Ok(left_type)
                 },
                 BinaryOp::BitwiseAnd
@@ -775,7 +872,7 @@ fn validate_post_join_residual_expr(
                 | BinaryOp::ShiftRight => {
                     require_integral_type(&left_type, "post-join residual bitwise left operand")?;
                     require_integral_type(&right_type, "post-join residual bitwise right operand")?;
-                    require_compatible_types(&left_type, &right_type, "post-join residual bitwise operands")?;
+                    require_compatible_types(&left_type, &right_type, "post-join residual bitwise operands", ctx)?;
                     Ok(left_type)
                 },
                 BinaryOp::Eq | BinaryOp::NotEq | BinaryOp::Lt | BinaryOp::LtEq | BinaryOp::Gt | BinaryOp::GtEq => {
@@ -790,16 +887,34 @@ fn validate_post_join_residual_expr(
             }
         },
         Expr::IsDistinctFrom { left, right } | Expr::IsNotDistinctFrom { left, right } => {
-            let left_type =
-                validate_post_join_residual_expr(left, left_schema, left_available, right_schema, right_available)?;
-            let right_type =
-                validate_post_join_residual_expr(right, left_schema, left_available, right_schema, right_available)?;
+            let left_type = validate_post_join_residual_expr(
+                left,
+                left_schema,
+                left_available,
+                right_schema,
+                right_available,
+                ctx,
+            )?;
+            let right_type = validate_post_join_residual_expr(
+                right,
+                left_schema,
+                left_available,
+                right_schema,
+                right_available,
+                ctx,
+            )?;
             require_comparable_types(&left_type, &right_type)?;
             Ok(ArrowDataType::Boolean)
         },
         Expr::InList { expr, list, .. } => {
-            let expr_type =
-                validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+            let expr_type = validate_post_join_residual_expr(
+                expr,
+                left_schema,
+                left_available,
+                right_schema,
+                right_available,
+                ctx,
+            )?;
             if list.is_empty() {
                 return Err(QueryError::new(
                     QueryErrorCode::UnsupportedExpression,
@@ -822,8 +937,8 @@ fn validate_post_join_residual_expr(
                         "post-join residual IN list does not yet model SQL null-containing list semantics",
                     ));
                 }
-                let item_type = validate_literal(value)?;
-                require_compatible_types(&expr_type, &item_type, "post-join residual IN list value")?;
+                let item_type = validate_literal(value, ctx)?;
+                require_compatible_types(&expr_type, &item_type, "post-join residual IN list value", ctx)?;
             }
             Ok(ArrowDataType::Boolean)
         },
@@ -841,6 +956,7 @@ fn validate_post_join_residual_expr(
                 left_available,
                 right_schema,
                 right_available,
+                ctx,
             )?;
             for branch in branches {
                 let when_type = validate_post_join_residual_expr(
@@ -849,6 +965,7 @@ fn validate_post_join_residual_expr(
                     left_available,
                     right_schema,
                     right_available,
+                    ctx,
                 )?;
                 require_boolean(&when_type, "post-join residual CASE WHEN predicate")?;
                 let then_type = validate_post_join_residual_expr(
@@ -857,13 +974,14 @@ fn validate_post_join_residual_expr(
                     left_available,
                     right_schema,
                     right_available,
+                    ctx,
                 )?;
-                require_compatible_types(&else_type, &then_type, "post-join residual CASE branch result")?;
+                require_compatible_types(&else_type, &then_type, "post-join residual CASE branch result", ctx)?;
             }
             Ok(else_type)
         },
         Expr::Alias { expr, .. } => {
-            validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)
+            validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available, ctx)
         },
         Expr::TryCast { .. }
         | Expr::Like { .. }
@@ -894,8 +1012,10 @@ fn validate_post_join_string_unary_expr(
     right_schema: &SchemaRef,
     right_available: &BTreeSet<String>,
     context: &'static str,
+    ctx: AnalysisContext<'_>,
 ) -> Result<ArrowDataType> {
-    let data_type = validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available)?;
+    let data_type =
+        validate_post_join_residual_expr(expr, left_schema, left_available, right_schema, right_available, ctx)?;
     require_string(&data_type, context)?;
     Ok(data_type)
 }
@@ -938,6 +1058,10 @@ fn residual_expr_requires_post_filter(expr: &Expr) -> bool {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "expression/join residual validation threads the shared schema pair plus the backend context"
+)]
 fn validate_join_interval_binary_expr(
     left: &Expr,
     op: BinaryOp,
@@ -946,6 +1070,7 @@ fn validate_join_interval_binary_expr(
     left_available: &BTreeSet<String>,
     right_schema: &SchemaRef,
     right_available: &BTreeSet<String>,
+    ctx: AnalysisContext<'_>,
 ) -> Result<ArrowDataType> {
     let left_interval = expr_is_interval_literal(left);
     let right_interval = expr_is_interval_literal(right);
@@ -978,7 +1103,7 @@ fn validate_join_interval_binary_expr(
         left
     };
     let operand_type =
-        validate_join_residual_expr(operand, left_schema, left_available, right_schema, right_available)?;
+        validate_join_residual_expr(operand, left_schema, left_available, right_schema, right_available, ctx)?;
     if operand_type != ArrowDataType::Date32 {
         return Err(QueryError::new(
             QueryErrorCode::UnsupportedExpression,
@@ -990,6 +1115,10 @@ fn validate_join_interval_binary_expr(
     Ok(operand_type)
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "expression/join residual validation threads the shared schema pair plus the backend context"
+)]
 fn validate_post_join_interval_binary_expr(
     left: &Expr,
     op: BinaryOp,
@@ -998,6 +1127,7 @@ fn validate_post_join_interval_binary_expr(
     left_available: &BTreeSet<String>,
     right_schema: &SchemaRef,
     right_available: &BTreeSet<String>,
+    ctx: AnalysisContext<'_>,
 ) -> Result<ArrowDataType> {
     let left_interval = expr_is_interval_literal(left);
     let right_interval = expr_is_interval_literal(right);
@@ -1029,7 +1159,7 @@ fn validate_post_join_interval_binary_expr(
         left
     };
     let operand_type =
-        validate_post_join_residual_expr(operand, left_schema, left_available, right_schema, right_available)?;
+        validate_post_join_residual_expr(operand, left_schema, left_available, right_schema, right_available, ctx)?;
     require_date_or_timestamp(&operand_type, "post-join residual interval datetime operand")?;
     Ok(operand_type)
 }
@@ -1059,10 +1189,14 @@ fn validate_fixed_day_interval_literal(expr: &Expr) -> Result<()> {
     Ok(())
 }
 
-fn is_supported_join_residual_ast_cast(source_type: &ArrowDataType, target_type: &ArrowDataType) -> bool {
+fn is_supported_join_residual_ast_cast(
+    source_type: &ArrowDataType,
+    target_type: &ArrowDataType,
+    ctx: AnalysisContext<'_>,
+) -> bool {
     matches!(target_type, ArrowDataType::Int64 | ArrowDataType::UInt64 | ArrowDataType::Float64)
         && (is_numeric_type(source_type) || is_decimal_type(source_type))
-        && is_supported_arrow_cast(source_type, target_type)
+        && is_supported_arrow_cast(source_type, target_type, ctx)
 }
 
 #[cfg(test)]

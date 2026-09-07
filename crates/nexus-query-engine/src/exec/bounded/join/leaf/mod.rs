@@ -6,8 +6,8 @@ use super::{
     ProjectionNode, QueryError, QueryMetrics, ResidentGpuFrame, Result, SourceAdjacentAggregateChunkCapHints,
     SourceChunk, SourceChunkBatch, SourceChunkPlanningPolicy, SourceTaskMemoryModel,
     annotate_source_chunk_batching_reasons, apply_source_adjacent_aggregate_chunk_caps, chunk_retry_facts,
-    execute_bounded_generic_local_parquet_source, execute_filter_with_budget, execute_projection_with_budget,
-    execution_budget_token_for_boundary, execution_overrides, is_retryable_chunk_error,
+    cudf_query_error, execute_bounded_generic_local_parquet_source, execute_filter_with_budget,
+    execute_projection_with_budget, execution_budget_token_for_boundary, execution_overrides, is_retryable_chunk_error,
     join_leaf_prefetch_budget_bytes, observe_device_memory_bytes,
     plan_local_parquet_source_chunks_with_execution_context, plan_source_chunk_batches, read_gpu_resident_source,
     read_literal_batch_source, record_bounded_parquet_source_metrics, record_chunk_retry_error, split_retryable_chunk,
@@ -201,6 +201,7 @@ impl BoundedJoinLeafLocalParquetSourceStream {
             routes,
             filter_set,
             |route, _filter| merged_reader_predicate_routes.contains(&route.id),
+            crate::rapids_backend::rapids_analysis_context(),
         )?;
         let mut chunk_plan = plan_local_parquet_source_chunks_with_execution_context(
             self.node_id,
@@ -332,7 +333,7 @@ pub(in crate::exec::bounded) fn execute_bounded_join_leaf_source(
 ) -> Result<ResidentGpuFrame> {
     match source {
         crate::source::SourceNode::LocalParquet(source) => {
-            validate_local_parquet_source(source)?;
+            validate_local_parquet_source(source, crate::rapids_backend::rapids_analysis_context())?;
             if source.has_position_delete_visible_scan_limit() {
                 return execute_bounded_generic_local_parquet_source(execution, source, node_id);
             }

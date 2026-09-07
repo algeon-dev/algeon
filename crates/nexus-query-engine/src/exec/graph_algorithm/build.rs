@@ -1,6 +1,6 @@
 use super::{
     DataFrame, EdgeColumnRole, ExecutionContext, GraphAlgorithmExecutionResult, QueryError, QueryErrorCode, Result,
-    graph_build_range, map_cugraph_error, validate_edge_column,
+    cudf_query_error, graph_build_range, map_cugraph_error, validate_edge_column,
 };
 
 #[cfg(feature = "cugraph")]
@@ -98,7 +98,7 @@ pub(super) fn project_edge_list(
         selected.push(edge_id.as_str());
     }
     let edges = frame.select(selected).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.edge_projection",
             "failed to project cuGraph edge-list columns",
             error,

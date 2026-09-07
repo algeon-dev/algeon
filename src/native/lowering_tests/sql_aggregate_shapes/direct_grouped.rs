@@ -252,7 +252,11 @@ async fn direct_friendly_sql_typed_null_count_does_not_use_zero_column_count() {
     assert_eq!(source.diagnostics.projected_output_column_count, 0);
     assert_eq!(source.diagnostics.pure_filter_column_count, 1);
     assert_eq!(source.diagnostics.zero_column_count_disposition.as_str(), "not_required");
-    nexus_query_engine::source::validate_local_parquet_source(source).unwrap();
+    nexus_query_engine::source::validate_local_parquet_source(
+        source,
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    )
+    .unwrap();
     let aggregate_exprs = native_aggregate_exprs(&result.plans[0]);
     assert_eq!(aggregate_exprs.len(), 1);
     assert_eq!(aggregate_exprs[0].function, AggregateFunction::Count);

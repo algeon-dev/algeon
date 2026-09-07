@@ -1,4 +1,4 @@
-use super::{DataFrame, ExecutionContext, LocalParquetFile, LocalParquetSource, SourceChunk};
+use super::{DataFrame, ExecutionContext, LocalParquetFile, LocalParquetSource, SourceChunk, cudf_query_error};
 
 mod cache;
 mod maintenance;

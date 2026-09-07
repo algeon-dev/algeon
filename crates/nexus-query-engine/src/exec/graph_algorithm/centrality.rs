@@ -1,8 +1,8 @@
 use super::{
     DataFrame, ExecutionContext, GpuDataFrame, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult, NodeId,
-    QueryError, QueryErrorCode, Result, betweenness_centrality_params, edge_betweenness_centrality_params,
-    eigenvector_centrality_params, hits_params, katz_centrality_params, map_cugraph_error,
-    normalize_graph_result_schema, pagerank_params, personalized_pagerank_params, project_edge_list,
+    QueryError, QueryErrorCode, Result, betweenness_centrality_params, cudf_query_error,
+    edge_betweenness_centrality_params, eigenvector_centrality_params, hits_params, katz_centrality_params,
+    map_cugraph_error, normalize_graph_result_schema, pagerank_params, personalized_pagerank_params, project_edge_list,
     run_with_accounted_resident_cugraph_graph, run_with_cugraph_graph, table_graph_options,
 };
 
@@ -234,7 +234,7 @@ pub(super) fn execute_hits(
             ))?;
             let frame =
                 frame.rename_columns([("hub", "hub_score"), ("authority", "authority_score")]).map_err(|error| {
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.graph_algorithm.hits_result",
                         "failed to rename HITS score columns to the stable SQL schema",
                         error,
@@ -413,7 +413,7 @@ fn betweenness_i32_seeds(
             .collect(),
         crate::plan::GraphBetweennessSeeds::Input { input, .. } => {
             betweenness_input_series(input, side_inputs, cudf::TypeId::Int32)?.to_vec_strict::<i32>().map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.graph_algorithm.betweenness_seeds",
                     "failed to read encoded Int32 betweenness seeds",
                     error,
@@ -431,7 +431,7 @@ fn betweenness_i64_seeds(
         crate::plan::GraphBetweennessSeeds::I64(values) => Ok(values.clone()),
         crate::plan::GraphBetweennessSeeds::Input { input, .. } => {
             betweenness_input_series(input, side_inputs, cudf::TypeId::Int64)?.to_vec_strict::<i64>().map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.graph_algorithm.betweenness_seeds",
                     "failed to read encoded Int64 betweenness seeds",
                     error,
@@ -486,14 +486,14 @@ fn betweenness_input_series(
         .with_fact("column", &input.column)
     })?;
     let series = frame.frame().series(&input.column).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.betweenness_seeds",
             "failed to resolve the betweenness seed side-input column",
             error,
         )
     })?;
     let side_input_dtype = series.dtype().map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.betweenness_seeds",
             "failed to inspect the betweenness seed side-input dtype",
             error,
@@ -613,7 +613,7 @@ where W: cudf::CudfType + cugraph::types::CugraphElement {
         dtype => return Err(personalized_pagerank_unsupported_weight_dtype(dtype)),
     };
     let dtype = values.dtype().map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.personalized_pagerank",
             "failed to inspect personalized PageRank value dtype",
             error,
@@ -635,7 +635,7 @@ where W: cudf::CudfType + cugraph::types::CugraphElement {
     let overrides =
         cudf::ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
     values.astype_in(cudf::DataType::new(target), &overrides).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.personalized_pagerank",
             "failed to cast personalized PageRank values to the graph weight dtype",
             error,
@@ -648,7 +648,7 @@ where W: cudf::CudfType + cugraph::types::CugraphElement {
 
 fn personalization_series(frame: &DataFrame, column: &str, role: &'static str) -> Result<cudf::Series> {
     frame.series(column).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.personalized_pagerank",
             "failed to access personalized PageRank input column",
             error,
@@ -663,7 +663,7 @@ fn personalization_device_slice<'a, T: cudf::CudfType>(
     role: &'static str,
 ) -> Result<cudf::core::DeviceSlice<'a>> {
     series.as_column().device_slice::<T>().map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.graph_algorithm.personalized_pagerank",
             "failed to borrow personalized PageRank input device slice",
             error,

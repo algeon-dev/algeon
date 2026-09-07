@@ -6,7 +6,7 @@ use std::{
 use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use cudf::PreparedDataFrameGroupBy;
 
-use super::{groupby::rename_groupby_key_columns, *};
+use super::{cudf_query_error, cudf_query_error_with_budget_details, groupby::rename_groupby_key_columns, *};
 
 pub(in crate::exec::operators::aggregate) fn prepare_prepared_sort_groupby_with_budget(
     context: &ExecutionContext,
@@ -31,7 +31,7 @@ pub(in crate::exec::operators::aggregate) fn prepare_prepared_sort_groupby_with_
         .options(GroupByOptions::builder().include_null_keys(true).build())
         .prepare_sort_groupby_with_budget(token)
         .map_err(|error| {
-            QueryError::from_cudf_with_budget_details(
+            cudf_query_error_with_budget_details(
                 operation,
                 "failed to prepare bounded nexus native sort groupby",
                 error,
@@ -93,7 +93,7 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_singl
         crate::observability::RuntimeOperatorStageIdentity::new().with_input_rows(input_rows),
     );
     let mut output = match prepared.agg_with_budget(&aggregate.aggregations, token).map_err(|error| {
-        QueryError::from_cudf_with_budget_details(
+        cudf_query_error_with_budget_details(
             "nexus_query_engine.aggregate.execute_single.prepared_sort_groupby",
             "failed to execute bounded nexus native prepared sort groupby aggregate",
             error,
@@ -120,7 +120,7 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_singl
     output = cast_reduction_output_columns_with_budget(output, &spec, output_schema, token, metrics)?;
     output = cast_count_output_columns_with_budget(output, &spec, output_schema, token, metrics)?;
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.aggregate.prepared_sort_groupby.select_single",
             "failed to select native prepared sort groupby aggregate output columns",
             error,
@@ -195,7 +195,7 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_parti
         crate::observability::RuntimeOperatorStageIdentity::new().with_input_rows(input_rows),
     );
     let mut output = match prepared.agg_with_budget(&aggregate.aggregations, token).map_err(|error| {
-        QueryError::from_cudf_with_budget_details(
+        cudf_query_error_with_budget_details(
             "nexus_query_engine.aggregate.execute_partial.prepared_sort_groupby",
             "failed to execute bounded nexus native prepared sort groupby aggregate",
             error,
@@ -220,7 +220,7 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_parti
     )?;
     output = cast_count_output_columns_with_budget(output, &spec, aggregate_output_schema, token, metrics)?;
     output = output.select(aggregate.output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.aggregate.prepared_sort_groupby.select_partial",
             "failed to select native prepared sort groupby partial aggregate output columns",
             error,
@@ -296,7 +296,7 @@ pub(in crate::exec::operators::aggregate) fn execute_encoded_key_partial_aggrega
         let codebook = frame
             .series(key_column.as_str())
             .map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.aggregate.encoded_key_partial.codebook_input",
                     "failed to access encoded-key partial aggregate key column",
                     error,
@@ -305,7 +305,7 @@ pub(in crate::exec::operators::aggregate) fn execute_encoded_key_partial_aggrega
             .codebook_in(&overrides)
             .map_err(|error| {
                 attach_budget_token_failure_facts(
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.aggregate.encoded_key_partial.codebook",
                         "failed to build encoded-key partial aggregate codebook",
                         error,
@@ -318,7 +318,7 @@ pub(in crate::exec::operators::aggregate) fn execute_encoded_key_partial_aggrega
             .with_encoded_column(encoded_key_column.as_str(), key_column.as_str(), &codebook)
             .map_err(|error| {
                 attach_budget_token_failure_facts(
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.aggregate.encoded_key_partial.encode",
                         "failed to encode grouped aggregate key column",
                         error,
@@ -355,7 +355,7 @@ pub(in crate::exec::operators::aggregate) fn execute_encoded_key_partial_aggrega
             .with_decoded_column(output_key_name.as_str(), output_key_name.as_str(), codebook)
             .map_err(|error| {
                 attach_budget_token_failure_facts(
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.aggregate.encoded_key_partial.decode",
                         "failed to decode grouped aggregate key output column",
                         error,
@@ -368,7 +368,7 @@ pub(in crate::exec::operators::aggregate) fn execute_encoded_key_partial_aggrega
 
     output = cast_count_output_columns_with_budget(output, &spec, aggregate_output_schema, token, metrics)?;
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.aggregate.select_partial",
             "failed to select native encoded-key partial aggregate output columns",
             error,

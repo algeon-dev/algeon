@@ -9,7 +9,7 @@ fn count_non_null_pruning_rewrites_footer_proven_count_column_to_retained_carrie
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.count_non_null_column_pruning.considered_count, 1);
@@ -61,7 +61,7 @@ fn count_non_null_pruning_prunes_physical_read_columns_when_source_uses_logical_
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.count_non_null_column_pruning.applied_count, 1);
@@ -103,7 +103,7 @@ fn count_non_null_pruning_remaps_retained_synthetic_source_refs_and_partition_va
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan, &options);
+    let result = optimize_query_plan(plan, &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Changed);
     assert_eq!(result.diagnostics.count_non_null_column_pruning.applied_count, 1);
@@ -121,7 +121,7 @@ fn count_non_null_pruning_remaps_retained_synthetic_source_refs_and_partition_va
     let SourceNode::LocalParquet(source) = source.as_ref() else {
         panic!("expected local Parquet source");
     };
-    validate_local_parquet_source(source).unwrap();
+    validate_local_parquet_source(source, nexus_query_engine::rapids_backend::rapids_analysis_context()).unwrap();
     assert_eq!(source.read_columns, vec!["k"]);
     assert_eq!(source.read_column_file_indices, vec![0]);
     assert_eq!(source.projected_output_columns, vec!["k", "p1", "m1"]);
@@ -142,7 +142,7 @@ fn count_non_null_pruning_does_not_mutate_sources_when_no_count_rewrite_applies(
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options);
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -157,7 +157,7 @@ fn count_non_null_pruning_keeps_count_column_when_footer_proof_is_missing() {
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options);
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);
@@ -178,7 +178,7 @@ fn count_non_null_pruning_keeps_grouped_count_column_when_no_retained_non_null_c
         ..NativeOptimizerOptions::disabled()
     };
 
-    let result = optimize_query_plan(plan.clone(), &options);
+    let result = optimize_query_plan(plan.clone(), &options, rapids_analysis_context());
 
     assert_eq!(result.change, NativeOptimizerChange::Unchanged);
     assert_eq!(result.plan, plan);

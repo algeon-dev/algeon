@@ -129,6 +129,8 @@ mod attempt_lifecycle;
 pub(crate) mod bounded_join_admission;
 #[path = "native_contract_tests/bounded_join_sizing.rs"]
 mod bounded_join_sizing;
+#[path = "native_contract_tests/capability_first_pipeline_admission.rs"]
+mod capability_first_pipeline_admission;
 #[path = "native_contract_tests/dependency_direction.rs"]
 mod dependency_direction;
 #[path = "native_contract_tests/expr_contracts.rs"]
@@ -141,12 +143,16 @@ mod optimizer_contracts;
 mod partial_aggregate_sizing;
 #[path = "native_contract_tests/plan_contracts.rs"]
 mod plan_contracts;
+#[path = "native_contract_tests/plan_validation.rs"]
+mod plan_validation;
 #[path = "native_contract_tests/preference_contracts.rs"]
 mod preference_contracts;
 #[path = "native_contract_tests/public_facade.rs"]
 mod public_facade;
 #[path = "native_contract_tests/runtime_observability.rs"]
 mod runtime_observability;
+#[path = "native_contract_tests/shadow.rs"]
+mod shadow;
 #[path = "native_contract_tests/source_contracts.rs"]
 mod source_contracts;
 #[path = "native_contract_tests/type_support.rs"]

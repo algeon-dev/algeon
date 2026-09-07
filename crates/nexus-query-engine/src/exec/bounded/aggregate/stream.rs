@@ -2,10 +2,10 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
     AggregateNode, BoundedExecutionAttempt, BoundedJoinLeafLocalParquetSourceStream, BoundedPlan, CommittedPartial,
-    CompiledIncrementalPartitionedMerge, ExecutionContext, GpuDataFrame, MemoryControlPolicy, NodeId, QueryError,
+    CompiledIncrementalPartitionedMerge, ExecutionContext, GpuDataFrame, MemoryControlPolicy, NodeId,
     ResidentFrameStreamPayload, ResidentGpuFrame, Result, SourceChunk, aggregate_spec_has_distinct,
     aggregate_spec_has_floating_statistical_aggregate, aggregate_spec_has_median, aggregate_spec_requires_whole_input,
-    attach_budget_token_failure_facts, execute_aggregate_with_budget, execute_bounded_generic_unary,
+    attach_budget_token_failure_facts, cudf_query_error, execute_aggregate_with_budget, execute_bounded_generic_unary,
     execute_bounded_generic_unary_from_frame, execute_bounded_generic_union, execute_bounded_raw_source_chunk,
     execute_compiled_bounded_aggregate_consuming_frame, execute_compiled_bounded_aggregate_from_empty_input,
     execute_compiled_bounded_aggregate_from_frame, execute_compiled_bounded_final_aggregate_merge,
@@ -540,7 +540,7 @@ fn execute_compiled_bounded_distinct_aggregate_from_stream(
         let other_frame_refs = frames.iter().map(|frame| frame.frame.frame()).collect::<Vec<_>>();
         first_frame.with_execution(&token.execution_overrides()).concat_many(&other_frame_refs).map_err(|error| {
             attach_budget_token_failure_facts(
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.bounded.aggregate.distinct_stream_concat",
                     "failed to concatenate distinct aggregate stream inputs",
                     error,
@@ -782,7 +782,7 @@ fn split_compiled_aggregate_stream_frame(
     let left = match source_frame.with_execution(&overrides).slice(0, split_at) {
         Ok(left) => left,
         Err(error) => {
-            return Err(QueryError::from_cudf(
+            return Err(cudf_query_error(
                 "nexus_query_engine.bounded.aggregate.stream_frame_split",
                 "failed to split compiled aggregate stream frame",
                 error,
@@ -797,7 +797,7 @@ fn split_compiled_aggregate_stream_frame(
     let right = match source_frame.with_execution(&overrides).slice(split_at, right_len) {
         Ok(right) => right,
         Err(error) => {
-            return Err(QueryError::from_cudf(
+            return Err(cudf_query_error(
                 "nexus_query_engine.bounded.aggregate.stream_frame_split",
                 "failed to split compiled aggregate stream frame",
                 error,
@@ -876,7 +876,7 @@ pub(in crate::exec::bounded) fn execute_bounded_whole_input_aggregate_from_raw_c
         let other_frame_refs: Vec<_> = raw_frames.iter().map(|f| f.frame.frame()).collect();
         first_df.with_execution(&token.execution_overrides()).concat_many(&other_frame_refs).map_err(|error| {
             attach_budget_token_failure_facts(
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.bounded.distinct_aggregate.concat",
                     "failed to concatenate raw frames for bounded distinct aggregate",
                     error,

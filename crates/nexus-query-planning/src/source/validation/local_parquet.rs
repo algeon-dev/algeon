@@ -1,9 +1,8 @@
 use arrow::datatypes::{DataType as ArrowDataType, Field};
 
 use crate::{
-    datatypes::{
-        arrow_data_types_match_except_list_child_names, cudf_dtype_from_arrow_type, is_narrow_decimal_carry_type,
-    },
+    backend::AnalysisContext,
+    datatypes::{arrow_data_types_match_except_list_child_names, is_narrow_decimal_carry_type},
     error::{QueryError, QueryErrorCode, Result},
     expr::LiteralValue,
     source::{
@@ -19,7 +18,7 @@ use crate::{
 /// Checks file identity/path presence, partition value types, read-column
 /// requirements, row-count metadata for missing-column-only reads, and reader
 /// predicate support.
-pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> {
+pub fn validate_local_parquet_source(source: &LocalParquetSource, ctx: AnalysisContext<'_>) -> Result<()> {
     if source.files.is_empty() {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -185,7 +184,7 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
         .with_fact("reason", "row_deletes_reject_reader_predicate"));
     }
     if let Some(predicate) = &source.reader_predicate
-        && !source.reader_predicate_is_supported(predicate)
+        && !source.reader_predicate_is_supported(predicate, ctx)
     {
         return Err(QueryError::new(
             QueryErrorCode::InvalidPlan,
@@ -196,7 +195,7 @@ pub fn validate_local_parquet_source(source: &LocalParquetSource) -> Result<()> 
         .with_fact("predicate", predicate));
     }
 
-    validate_local_parquet_source_contract(source)?;
+    validate_local_parquet_source_contract(source, ctx)?;
     validate_count_star_probe_source(source)?;
     validate_output_schema_override_contract(source)?;
     validate_unique_key_columns(source)?;
@@ -453,7 +452,7 @@ fn validate_count_star_probe_source(source: &LocalParquetSource) -> Result<()> {
     Ok(())
 }
 
-fn validate_local_parquet_source_contract(source: &LocalParquetSource) -> Result<()> {
+fn validate_local_parquet_source_contract(source: &LocalParquetSource, ctx: AnalysisContext<'_>) -> Result<()> {
     let diagnostics = &source.diagnostics;
     if !diagnostics.rejected_features.is_empty() {
         let features =
@@ -522,7 +521,7 @@ fn validate_local_parquet_source_contract(source: &LocalParquetSource) -> Result
                 ));
             }
         },
-        SchemaMappingDisposition::MissingNullableColumns => validate_represented_missing_columns(source)?,
+        SchemaMappingDisposition::MissingNullableColumns => validate_represented_missing_columns(source, ctx)?,
         SchemaMappingDisposition::Rejected => {
             return Err(unsupported_source_contract_fact(
                 "schema_mapping",
@@ -572,7 +571,7 @@ fn validate_local_parquet_source_contract(source: &LocalParquetSource) -> Result
     Ok(())
 }
 
-fn validate_represented_missing_columns(source: &LocalParquetSource) -> Result<()> {
+fn validate_represented_missing_columns(source: &LocalParquetSource, ctx: AnalysisContext<'_>) -> Result<()> {
     if source.missing_columns.is_empty() {
         return Err(unsupported_source_contract_fact("schema_mapping", "diagnostic_missing_but_empty"));
     }
@@ -627,7 +626,7 @@ fn validate_represented_missing_columns(source: &LocalParquetSource) -> Result<(
             .with_fact("missing_column", missing_column.name.as_str())
             .with_fact("missing_type", format!("{:?}", missing_column.data_type)));
         }
-        if cudf_dtype_from_arrow_type(&missing_column.data_type).is_none() {
+        if !ctx.backend().supports_type(&missing_column.data_type) {
             return Err(QueryError::new(
                 QueryErrorCode::UnsupportedType,
                 "nexus_query_engine.local_parquet_source.validate",

@@ -32,6 +32,7 @@ use super::{
 use crate::observability::{RuntimeObservationConfig, RuntimeQueryId, RuntimeTraceId};
 use crate::{
     metrics::{QueryId, TraceId},
+    native_error::cudf_query_error,
     observability::{
         RuntimeObservationHandle, RuntimeObservationOwner, RuntimeObservationSession, RuntimeTerminalOutcome,
     },
@@ -492,7 +493,7 @@ impl ExecutionContextBuilder {
         let mut builder = cudf::Runtime::builder();
         if let Some(device_ordinal) = self.device_ordinal {
             let device = cudf::DeviceId::new(device_ordinal).map_err(|error| {
-                QueryError::from_cudf("nexus_query_engine.runtime.device", "failed to resolve CUDA device", error)
+                cudf_query_error("nexus_query_engine.runtime.device", "failed to resolve CUDA device", error)
             })?;
             builder = builder.with_device(device);
         }
@@ -510,7 +511,7 @@ impl ExecutionContextBuilder {
         }
 
         let runtime = builder.build().map_err(|error| {
-            QueryError::from_cudf("nexus_query_engine.runtime.build", "failed to initialize cudf runtime", error)
+            cudf_query_error("nexus_query_engine.runtime.build", "failed to initialize cudf runtime", error)
         })?;
         let service_stream_pool_size = self
             .service_stream_pool_size

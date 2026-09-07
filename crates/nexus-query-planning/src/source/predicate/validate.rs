@@ -8,9 +8,10 @@ use super::super::{
     reader_predicate_integer_literal_raw, reader_predicate_rescale_decimal_raw, reader_predicate_unsigned_literal_raw,
 };
 use crate::{
+    backend::AnalysisContext,
     datatypes::{
-        arrow_decimal_scale_to_cudf_scale, cudf_dtype_from_arrow_type, is_narrow_decimal_carry_type,
-        is_supported_arrow_type, is_supported_list_carry_type, is_timestamp_with_timezone,
+        arrow_decimal_scale_to_cudf_scale, is_narrow_decimal_carry_type, is_supported_list_carry_type,
+        is_timestamp_with_timezone,
     },
     expr::{Expr, LiteralValue},
 };
@@ -50,7 +51,11 @@ pub(in crate::source) fn reader_predicate_root_is_supported(expr: &Expr) -> bool
     }
 }
 
-pub(in crate::source) fn reader_predicate_expr_is_supported(source: &LocalParquetSource, expr: &Expr) -> bool {
+pub(in crate::source) fn reader_predicate_expr_is_supported(
+    source: &LocalParquetSource,
+    expr: &Expr,
+    ctx: AnalysisContext<'_>,
+) -> bool {
     match expr {
         Expr::Column(column) => {
             let Some(SourceColumnRef::File(file_index)) = source.source_column_ref(column.name()) else {
@@ -61,29 +66,29 @@ pub(in crate::source) fn reader_predicate_expr_is_supported(source: &LocalParque
                     .schema
                     .field_with_name(column.name())
                     .ok()
-                    .is_some_and(|field| reader_predicate_column_type_is_supported(field.data_type()))
+                    .is_some_and(|field| reader_predicate_column_type_is_supported(field.data_type(), ctx))
         },
         Expr::Literal(value) => reader_predicate_literal_is_supported(value),
         Expr::Not(inner) | Expr::IsNull(inner) | Expr::IsNotNull(inner) | Expr::Alias { expr: inner, .. } => {
-            reader_predicate_expr_is_supported(source, inner)
+            reader_predicate_expr_is_supported(source, inner, ctx)
         },
         Expr::Cast { expr, target_type } => {
             matches!(target_type, DataType::Int64 | DataType::UInt64 | DataType::Float64)
-                && reader_predicate_expr_is_supported(source, expr)
+                && reader_predicate_expr_is_supported(source, expr, ctx)
         },
         Expr::Binary { left, op, right, .. } => {
             reader_predicate_binary_operator_is_supported(*op)
-                && reader_predicate_expr_is_supported(source, left)
-                && reader_predicate_expr_is_supported(source, right)
-                && reader_predicate_binary_operand_types_are_supported(source, left, *op, right)
+                && reader_predicate_expr_is_supported(source, left, ctx)
+                && reader_predicate_expr_is_supported(source, right, ctx)
+                && reader_predicate_binary_operand_types_are_supported(source, left, *op, right, ctx)
         },
         Expr::InList { expr, list, .. } => {
             !list.is_empty()
-                && reader_predicate_expr_is_supported(source, expr)
-                && reader_predicate_in_list_literal_types_are_supported(source, expr, list)
-                && list
-                    .iter()
-                    .all(|value| matches!(value, Expr::Literal(_)) && reader_predicate_expr_is_supported(source, value))
+                && reader_predicate_expr_is_supported(source, expr, ctx)
+                && reader_predicate_in_list_literal_types_are_supported(source, expr, list, ctx)
+                && list.iter().all(|value| {
+                    matches!(value, Expr::Literal(_)) && reader_predicate_expr_is_supported(source, value, ctx)
+                })
         },
         // TRY_CAST is rejected from reader-predicate pushdown: null-on-failure
         // semantics interact differently with filter logic than strict CAST.
@@ -150,8 +155,8 @@ fn reader_predicate_operator_outputs_boolean(op: crate::expr::BinaryOp) -> bool 
     )
 }
 
-fn reader_predicate_column_type_is_supported(data_type: &DataType) -> bool {
-    is_supported_arrow_type(data_type)
+fn reader_predicate_column_type_is_supported(data_type: &DataType, ctx: AnalysisContext<'_>) -> bool {
+    ctx.backend().supports_type(data_type)
         && !is_timestamp_with_timezone(data_type)
         && !is_supported_list_carry_type(data_type)
         && !is_narrow_decimal_carry_type(data_type)
@@ -166,31 +171,38 @@ fn reader_predicate_binary_operand_types_are_supported(
     left: &Expr,
     op: crate::expr::BinaryOp,
     right: &Expr,
+    ctx: AnalysisContext<'_>,
 ) -> bool {
     use crate::expr::BinaryOp;
     if matches!(op, BinaryOp::And | BinaryOp::Or) {
         return true;
     }
-    reader_predicate_literal_matches_expr_type(source, left, right)
-        && reader_predicate_literal_matches_expr_type(source, right, left)
+    reader_predicate_literal_matches_expr_type(source, left, right, ctx)
+        && reader_predicate_literal_matches_expr_type(source, right, left, ctx)
 }
 
 fn reader_predicate_in_list_literal_types_are_supported(
     source: &LocalParquetSource,
     expr: &Expr,
     list: &[Expr],
+    ctx: AnalysisContext<'_>,
 ) -> bool {
-    list.iter().all(|value| reader_predicate_literal_matches_expr_type(source, value, expr))
+    list.iter().all(|value| reader_predicate_literal_matches_expr_type(source, value, expr, ctx))
 }
 
-fn reader_predicate_literal_matches_expr_type(source: &LocalParquetSource, literal: &Expr, typed_expr: &Expr) -> bool {
+fn reader_predicate_literal_matches_expr_type(
+    source: &LocalParquetSource,
+    literal: &Expr,
+    typed_expr: &Expr,
+    ctx: AnalysisContext<'_>,
+) -> bool {
     let Expr::Literal(value) = literal else {
         return true;
     };
     let Some(data_type) = reader_predicate_expr_type(source, typed_expr) else {
         return true;
     };
-    reader_predicate_literal_is_supported_for_type(value, &data_type)
+    reader_predicate_literal_is_supported_for_type(value, &data_type, ctx)
 }
 
 fn reader_predicate_expr_type(source: &LocalParquetSource, expr: &Expr) -> Option<DataType> {
@@ -227,8 +239,12 @@ fn reader_predicate_expr_type(source: &LocalParquetSource, expr: &Expr) -> Optio
     }
 }
 
-fn reader_predicate_literal_is_supported_for_type(value: &LiteralValue, data_type: &DataType) -> bool {
-    if !reader_predicate_literal_is_supported(value) || cudf_dtype_from_arrow_type(data_type).is_none() {
+fn reader_predicate_literal_is_supported_for_type(
+    value: &LiteralValue,
+    data_type: &DataType,
+    ctx: AnalysisContext<'_>,
+) -> bool {
+    if !reader_predicate_literal_is_supported(value) || !ctx.backend().supports_type(data_type) {
         return false;
     }
     match data_type {

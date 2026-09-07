@@ -2,8 +2,9 @@
 
 use super::{
     ExecutionContext, GraphAlgorithmExecutionInputs, GraphAlgorithmExecutionResult, NvtxRange, QueryError,
-    QueryErrorCode, Result, empty_graph_execution_result, map_cugraph_error, normalize_graph_result_schema,
-    project_edge_list, run_with_accounted_resident_cugraph_graph, similarity_params, table_graph_options,
+    QueryErrorCode, Result, cudf_query_error, empty_graph_execution_result, map_cugraph_error,
+    normalize_graph_result_schema, project_edge_list, run_with_accounted_resident_cugraph_graph, similarity_params,
+    table_graph_options,
 };
 
 pub(super) fn execute_similarity(
@@ -62,7 +63,7 @@ pub(super) fn execute_similarity(
                           graph: &mut cugraph::Graph<cugraph::Forward>| {
         let _vertex_pairs_range = NvtxRange::static_label(c"datafusion_nexus.cugraph_similarity.vertex_pairs");
         let first = pair_frame.series(&params.vertex_pairs.first_column).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.graph_algorithm.similarity_pairs",
                 "failed to resolve the first selected vertex-pair column",
                 error,
@@ -73,7 +74,7 @@ pub(super) fn execute_similarity(
             .with_fact("second_column", &params.vertex_pairs.second_column)
         })?;
         let second = pair_frame.series(&params.vertex_pairs.second_column).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.graph_algorithm.similarity_pairs",
                 "failed to resolve the second selected vertex-pair column",
                 error,

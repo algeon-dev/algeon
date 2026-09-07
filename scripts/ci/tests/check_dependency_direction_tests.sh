@@ -29,10 +29,13 @@ make_case() {
   local edge_from=$3
   local edge_to=$4
   local layer_packages=${5:-present}
+  local edge2_from=${6:-}
+  local edge2_to=${7:-}
   local case_root="${test_root}/${name}"
   local metadata_path="${case_root}/metadata.json"
   mkdir -p "${case_root}"
-  python3 - "${case_root}" "${metadata_path}" "${graph_source}" "${edge_from}" "${edge_to}" "${layer_packages}" <<'PY'
+  python3 - "${case_root}" "${metadata_path}" "${graph_source}" "${edge_from}" "${edge_to}" "${layer_packages}" \
+    "${edge2_from}" "${edge2_to}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -43,6 +46,8 @@ source_case = sys.argv[3]
 edge_from = sys.argv[4]
 edge_to = sys.argv[5]
 layer_packages = sys.argv[6]
+edge2_from = sys.argv[7] if len(sys.argv) > 7 else ""
+edge2_to = sys.argv[8] if len(sys.argv) > 8 else ""
 
 packages = []
 if layer_packages == "present":
@@ -58,6 +63,7 @@ packages.extend([
     ("cugraph-nexus-sys", case_root / "components/cugraph/cugraph-nexus-sys"),
     ("cuvs-nexus", case_root / "components/cuvs/cuvs-nexus"),
     ("cuvs-nexus-sys", case_root / "components/cuvs/cuvs-nexus-sys"),
+    ("helper-crate", case_root / "helpers/helper-crate"),
 ])
 ids = {name: f"path+file:///{name}#0.1.0" for name, _ in packages}
 for name, package_root in packages:
@@ -151,6 +157,8 @@ for package_name, relative_path, contents in source_targets.get(source_case, [])
 dependencies = {name: [] for name, _ in packages}
 if edge_from and edge_to:
     dependencies[edge_from].append(ids[edge_to])
+if edge2_from and edge2_to:
+    dependencies[edge2_from].append(ids[edge2_to])
 nodes = [{"id": ids[name], "deps": [{"pkg": target} for target in targets]} for name, targets in dependencies.items()]
 metadata_path.write_text(
     json.dumps(
@@ -188,8 +196,11 @@ run_case() {
   local edge_from=$5
   local edge_to=$6
   local layer_packages=${7:-present}
+  local edge2_from=${8:-}
+  local edge2_to=${9:-}
   local case_root metadata_path output status=0
-  mapfile -t case_paths < <(make_case "${name}" "${source_case}" "${edge_from}" "${edge_to}" "${layer_packages}")
+  mapfile -t case_paths < <(make_case "${name}" "${source_case}" "${edge_from}" "${edge_to}" "${layer_packages}" \
+    "${edge2_from}" "${edge2_to}")
   case_root=${case_paths[0]}
   metadata_path=${case_paths[1]}
   output="${test_root}/${name}.output"
@@ -239,5 +250,20 @@ run_case source-runtime-observability-allowed 0 "dependency direction contracts 
 run_case source-observability-runtime-non-code 0 "dependency direction contracts OK" observability-runtime-non-code "" ""
 run_case source-observability-inline-module 0 "dependency direction contracts OK" observability-inline-module "" ""
 run_case source-observability-path-module 0 "dependency direction contracts OK" observability-path-module "" ""
+
+# Planning's dependency closure, not just its declared edges: a helper crate
+# that pulls in a component, DataFusion, or a native sys crate is the way this
+# coupling reappears, and no direct-edge rule sees it.
+run_case closure-planning-helper-only 0 "dependency direction contracts OK" clean \
+  nexus-query-planning helper-crate present
+run_case closure-planning-transitive-component 1 \
+  "planning closure -> native component: nexus-query-planning resolves cudf-nexus" clean \
+  nexus-query-planning helper-crate present helper-crate cudf-nexus
+run_case closure-planning-transitive-sys 1 \
+  "planning closure -> native component: nexus-query-planning resolves cugraph-nexus-sys" clean \
+  nexus-query-planning helper-crate present helper-crate cugraph-nexus-sys
+run_case closure-planning-transitive-engine 1 \
+  "planning closure -> query layer: nexus-query-planning resolves nexus-query-engine" clean \
+  nexus-query-planning helper-crate present helper-crate nexus-query-engine
 
 printf 'dependency direction fault-injection tests OK\n'

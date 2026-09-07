@@ -527,11 +527,9 @@ fn source_adjacent_raw_source_batches(
     if !bounded.source.partition_columns.is_empty()
         || bounded.source.files.iter().any(LocalParquetFile::has_row_delete_files)
         || bounded.source.scan_limit.is_some()
-        || bounded
-            .source
-            .reader_predicate
-            .as_ref()
-            .is_some_and(|predicate| !bounded.source.reader_predicate_is_supported(predicate))
+        || bounded.source.reader_predicate.as_ref().is_some_and(|predicate| {
+            !bounded.source.reader_predicate_is_supported(predicate, crate::rapids_backend::rapids_analysis_context())
+        })
     {
         return singleton_source_chunk_batches(chunks);
     }
@@ -790,7 +788,7 @@ fn hash_partition_source_adjacent_raw_chunk(
                 .with_position_column(&partition_column)
                 .map_err(|error| {
                     attach_budget_token_failure_facts(
-                        QueryError::from_cudf(
+                        cudf_query_error(
                             "nexus_query_engine.bounded.aggregate.source_adjacent_partition_column",
                             "failed to add row-balanced source-adjacent aggregate partition column",
                             error,
@@ -813,7 +811,7 @@ fn hash_partition_source_adjacent_raw_chunk(
                 .hash_partition_by([partition_column.as_str()], partition_count)
                 .map_err(|error| {
                     attach_budget_token_failure_facts(
-                        QueryError::from_cudf(
+                        cudf_query_error(
                             "nexus_query_engine.bounded.aggregate.source_adjacent_hash_partition",
                             "failed to hash-partition source-adjacent aggregate input",
                             error,
@@ -830,7 +828,7 @@ fn hash_partition_source_adjacent_raw_chunk(
             .hash_partition_by(key_columns.iter().map(String::as_str), partition_count)
             .map_err(|error| {
                 attach_budget_token_failure_facts(
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.bounded.aggregate.source_adjacent_group_key_hash_partition",
                         "failed to hash-partition source-adjacent aggregate input by group keys",
                         error,
@@ -895,7 +893,7 @@ fn slice_source_adjacent_aggregate_partition(
     }
     let sliced = budgeted_value(
         frame.slice_with_budget(start, len, token).map_err(|error| {
-            QueryError::from_cudf_with_budget_details(
+            cudf_query_error_with_budget_details(
                 "nexus_query_engine.bounded.aggregate.source_adjacent_hash_partition_slice",
                 "failed to slice source-adjacent hash-partitioned aggregate input",
                 error,
@@ -910,7 +908,7 @@ fn slice_source_adjacent_aggregate_partition(
     let sliced = if let Some(output_columns) = output_columns {
         let output_refs = output_columns.iter().map(String::as_str).collect::<Vec<_>>();
         sliced.select(output_refs).map_err(|error| {
-            QueryError::from_cudf(
+            cudf_query_error(
                 "nexus_query_engine.bounded.aggregate.source_adjacent_hash_partition_select",
                 "failed to remove source-adjacent hash-partition helper column",
                 error,
@@ -1149,7 +1147,7 @@ fn split_source_adjacent_partition_aggregate_input(
         Ok(frame) => frame,
         Err(error) => {
             return Err(source_adjacent_partition_aggregate_error(
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.bounded.aggregate.source_adjacent_partition_split",
                     "failed to split source-adjacent partitioned aggregate input",
                     error,
@@ -1168,7 +1166,7 @@ fn split_source_adjacent_partition_aggregate_input(
         Ok(frame) => frame,
         Err(error) => {
             return Err(source_adjacent_partition_aggregate_error(
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.bounded.aggregate.source_adjacent_partition_split",
                     "failed to split source-adjacent partitioned aggregate input",
                     error,
@@ -1254,7 +1252,7 @@ fn concatenate_committed_frames(
         let other_refs = other_frames.iter().collect::<Vec<_>>();
         first_frame.with_execution(&token.execution_overrides()).concat_many(&other_refs).map_err(|error| {
             attach_budget_token_failure_facts(
-                QueryError::from_cudf(concat_operation, concat_message, error)
+                cudf_query_error(concat_operation, concat_message, error)
                     .with_fact("node_id", node_id)
                     .with_fact("partition", partition_index)
                     .with_fact("input_count", inputs.len() + 1),

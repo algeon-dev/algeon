@@ -6,9 +6,9 @@ use std::{
 use super::{
     BoundedExecutionAttempt, BoundedJoinSideFrame, ColumnQualifier, ColumnRef, CompiledJoinIndices, Expr, GpuDataFrame,
     JoinMaterializationTxn, JoinNode, JoinOutputColumn, JoinSide, NodeId, OneShotJoinChunkMetrics, QueryError,
-    QueryErrorCode, ResidentGpuFrame, Result, attach_budget_token_failure_facts, datafusion_order_columns,
-    execution_budget_token_for_boundary, execution_overrides, lower_expr, observe_device_memory_bytes, probe_side,
-    residual_input_columns, side_metric,
+    QueryErrorCode, ResidentGpuFrame, Result, attach_budget_token_failure_facts, cudf_query_error,
+    datafusion_order_columns, execution_budget_token_for_boundary, execution_overrides, lower_expr,
+    observe_device_memory_bytes, probe_side, residual_input_columns, side_metric,
 };
 
 #[expect(
@@ -113,7 +113,7 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
         Err(error) => {
             txn.rollback();
             return Err(attach_budget_token_failure_facts(
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.bounded.join.one_shot_residual_filter",
                     "failed to filter compiled one-shot residual join candidates",
                     error,
@@ -131,7 +131,7 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
         Ok(output) => output,
         Err(error) => {
             txn.rollback();
-            return Err(QueryError::from_cudf(
+            return Err(cudf_query_error(
                 "nexus_query_engine.bounded.join.one_shot_residual_output_projection",
                 "failed to project compiled one-shot residual join output columns",
                 error,

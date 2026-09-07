@@ -35,7 +35,11 @@ fn native_semijoin_reduction_keeps_row_parity_once_both_candidates_execute() {
     write_i32_parquet(&runtime, &keyset_path, Arc::clone(&keyset_schema), vec![("b_key", vec![2, 2, 4])]);
 
     let plan = semijoin_reduction_execution_plan(&a_path, &a_schema, &b_path, &b_schema, &keyset_path, &keyset_schema);
-    let optimizer_result = nexus_query_engine::optimizer::optimize_query_plan(plan.clone(), &Default::default());
+    let optimizer_result = nexus_query_engine::optimizer::optimize_query_plan(
+        plan.clone(),
+        &Default::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    );
     assert_eq!(optimizer_result.change, nexus_query_engine::optimizer::NativeOptimizerChange::Changed);
     assert_eq!(optimizer_result.diagnostics.semijoin_reduction.applied_count, 1);
 

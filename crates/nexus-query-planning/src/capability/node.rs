@@ -21,13 +21,13 @@ use super::{
     },
     one_shot_equi_join_supported, validate_local_parquet_source,
 };
-use crate::plan::UnionNode;
+use crate::{backend::AnalysisContext, plan::UnionNode};
 
-pub(super) fn analyze_node(plan: &QueryPlan, node: &QueryNode) -> NodeCapability {
+pub(super) fn analyze_node(plan: &QueryPlan, node: &QueryNode, ctx: AnalysisContext<'_>) -> NodeCapability {
     let node_id = node.id;
     let kind = &node.kind;
     let operator = node_operator(kind);
-    let executable = node_executable_decision(plan, node);
+    let executable = node_executable_decision(plan, node, ctx);
     let produced_properties = produced_properties(node);
     let aggregate_state = match kind {
         PlanNode::Aggregate(aggregate) => aggregate_state_contract(&aggregate.spec),
@@ -120,9 +120,9 @@ pub(super) fn source_format_capability(source: &SourceNode) -> SourceFormatCapab
     }
 }
 
-fn node_executable_decision(plan: &QueryPlan, node: &QueryNode) -> CapabilityDecision {
+fn node_executable_decision(plan: &QueryPlan, node: &QueryNode, ctx: AnalysisContext<'_>) -> CapabilityDecision {
     match &node.kind {
-        PlanNode::Source(source) => source_node_executable_decision(source),
+        PlanNode::Source(source) => source_node_executable_decision(source, ctx),
         PlanNode::Filter(filter) => expression_node_decision(
             node.id,
             "unsupported_filter_expression_capability",
@@ -152,7 +152,7 @@ fn node_executable_decision(plan: &QueryPlan, node: &QueryNode) -> CapabilityDec
         PlanNode::Window(window) => window_node_executable_decision(node.id, window),
         PlanNode::Sort(sort) => sort_node_executable_decision(node.id, sort),
         PlanNode::Limit(limit) => limit_node_executable_decision(plan, node.id, limit),
-        PlanNode::Join(join) => join_node_executable_decision(plan, node.id, join),
+        PlanNode::Join(join) => join_node_executable_decision(plan, node.id, join, ctx),
         PlanNode::Union(union) => union_node_executable_decision(plan, node.id, union),
         PlanNode::EdgeNormalize(edge_normalize) => {
             edge_normalize_node_executable_decision(plan, node.id, edge_normalize)
@@ -181,10 +181,10 @@ fn vector_algorithm_node_executable_decision(
     }
 }
 
-pub(super) fn source_node_executable_decision(source: &SourceNode) -> CapabilityDecision {
+pub(super) fn source_node_executable_decision(source: &SourceNode, ctx: AnalysisContext<'_>) -> CapabilityDecision {
     match source {
         SourceNode::LocalParquet(source) => validation_result_decision(
-            validate_local_parquet_source(source),
+            validate_local_parquet_source(source, ctx),
             "unsupported_local_parquet_source_capability",
             [("source_format", "local_parquet".to_string())],
         ),
@@ -194,7 +194,7 @@ pub(super) fn source_node_executable_decision(source: &SourceNode) -> Capability
         ),
         SourceNode::GpuResident(_) => CapabilityDecision::Satisfied,
         SourceNode::LiteralBatch(source) => validation_result_decision(
-            crate::source::validate_literal_batch_source(source),
+            crate::source::validate_literal_batch_source(source, ctx),
             "unsupported_literal_batch_source_capability",
             [("source_format", "literal_batch".to_string())],
         ),
@@ -517,7 +517,12 @@ fn limit_node_executable_decision(_plan: &QueryPlan, node_id: NodeId, limit: &Li
     CapabilityDecision::Satisfied
 }
 
-fn join_node_executable_decision(plan: &QueryPlan, node_id: NodeId, join: &JoinNode) -> CapabilityDecision {
+fn join_node_executable_decision(
+    plan: &QueryPlan,
+    node_id: NodeId,
+    join: &JoinNode,
+    ctx: AnalysisContext<'_>,
+) -> CapabilityDecision {
     let Some(output_schema) = plan.node(node_id).map(|node| node.output_schema()) else {
         return CapabilityDecision::rejected(
             "unsupported_join_node_capability",
@@ -537,7 +542,7 @@ fn join_node_executable_decision(plan: &QueryPlan, node_id: NodeId, join: &JoinN
         );
     };
     for (field_index, field) in output_schema.fields().iter().enumerate() {
-        if !crate::datatypes::is_supported_arrow_type(field.data_type()) {
+        if !ctx.backend().supports_type(field.data_type()) {
             return CapabilityDecision::rejected(
                 "unsupported_join_output_dtype",
                 [

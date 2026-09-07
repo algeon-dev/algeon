@@ -13,6 +13,14 @@ does not depend on `nexus-query-engine` execution.
   and cache identity.
 - `observability/` and `metrics/` project the single runtime observation
   snapshot and sealed attempt evidence.
+- `native_error.rs` owns the one cuDF-to-`QueryError` projection, so the
+  runtime and the engine classify a native failure identically.
+
+Source format parsing and chunk preparation are not here: Parquet footers and
+source chunk plans belong to `nexus-query-engine`. The runtime owns the
+resources those readers use — the object-store client registry, credential
+profiles, the I/O executor, queues, and cancellation — and does not need to
+understand row groups to own them.
 
 Runtime consumes the planning proof and refines deferred evidence inside the
 same immutable grant. It does not define another sizing model, scheduler ledger,

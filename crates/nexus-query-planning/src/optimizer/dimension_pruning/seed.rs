@@ -1,9 +1,12 @@
 use super::{
-    BinaryOp, ColumnRef, Expr, JoinNode, JoinSide, JoinType, LocalParquetSource, NodeId, PlanNode, QueryNode,
-    QueryPlan, SourceColumnRef, SourceNode, mutable_local_parquet_source, predicate_columns, rewrite,
+    AnalysisContext, BinaryOp, ColumnRef, Expr, JoinNode, JoinSide, JoinType, LocalParquetSource, NodeId, PlanNode,
+    QueryNode, QueryPlan, SourceColumnRef, SourceNode, mutable_local_parquet_source, predicate_columns, rewrite,
 };
 
-pub(super) fn seed_reader_predicates_from_group_key_filters(plan: QueryPlan) -> (QueryPlan, bool) {
+pub(super) fn seed_reader_predicates_from_group_key_filters(
+    plan: QueryPlan,
+    ctx: AnalysisContext<'_>,
+) -> (QueryPlan, bool) {
     let mut nodes = plan.nodes().to_vec();
     let parent_counts = rewrite::parent_counts(&plan);
     let mut changed = false;
@@ -21,6 +24,7 @@ pub(super) fn seed_reader_predicates_from_group_key_filters(plan: QueryPlan) -> 
                 conjunct.clone(),
                 false,
                 false,
+                ctx,
             );
         }
     }
@@ -39,8 +43,8 @@ pub(super) fn seed_reader_predicates_from_group_key_filters(plan: QueryPlan) -> 
 /// by adapter-side object-store pruning, where row-group statistics are not
 /// available inside `nexus-query-engine` but the seeded dimension predicate is
 /// still needed to derive a key range.
-pub fn seed_dimension_derived_reader_predicates(plan: QueryPlan) -> QueryPlan {
-    seed_reader_predicates_from_group_key_filters(plan).0
+pub fn seed_dimension_derived_reader_predicates(plan: QueryPlan, ctx: AnalysisContext<'_>) -> QueryPlan {
+    seed_reader_predicates_from_group_key_filters(plan, ctx).0
 }
 
 fn predicate_conjuncts(expr: &Expr) -> Vec<&Expr> {
@@ -54,6 +58,12 @@ fn predicate_conjuncts(expr: &Expr) -> Vec<&Expr> {
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each parameter is independent recursive-walk state (plan, parent_counts, the rewritten node buffer, \
+              cursor, carried predicate, two crossed-boundary flags, and the backend context); grouping them into a \
+              struct would not reduce the walk's real state count"
+)]
 fn push_filter_conjunct_to_reader_source(
     plan: &QueryPlan,
     parent_counts: &[usize],
@@ -62,6 +72,7 @@ fn push_filter_conjunct_to_reader_source(
     predicate: Expr,
     crossed_aggregate: bool,
     crossed_shared_path: bool,
+    ctx: AnalysisContext<'_>,
 ) -> bool {
     let Some(node) = plan.node(node_id) else {
         return false;
@@ -70,7 +81,9 @@ fn push_filter_conjunct_to_reader_source(
     match &node.kind {
         PlanNode::Source(source) => match source.as_ref() {
             SourceNode::LocalParquet(source)
-                if crossed_aggregate && !crossed_shared_path && seed_predicate_is_supported(source, &predicate) =>
+                if crossed_aggregate
+                    && !crossed_shared_path
+                    && seed_predicate_is_supported(source, &predicate, ctx) =>
             {
                 let Some(source) = mutable_local_parquet_source(nodes, node_id) else {
                     return false;
@@ -95,6 +108,7 @@ fn push_filter_conjunct_to_reader_source(
             predicate,
             crossed_aggregate,
             crossed_shared_path,
+            ctx,
         ),
         PlanNode::Projection(projection) => {
             remap_projection_predicate(&predicate, projection).is_some_and(|predicate| {
@@ -106,6 +120,7 @@ fn push_filter_conjunct_to_reader_source(
                     predicate,
                     crossed_aggregate,
                     crossed_shared_path,
+                    ctx,
                 )
             })
         },
@@ -119,6 +134,7 @@ fn push_filter_conjunct_to_reader_source(
                     predicate,
                     true,
                     crossed_shared_path,
+                    ctx,
                 )
             })
         },
@@ -135,6 +151,7 @@ fn push_filter_conjunct_to_reader_source(
                 predicate,
                 crossed_aggregate,
                 crossed_shared_path,
+                ctx,
             )
         }),
         PlanNode::Sort(sort) => push_filter_conjunct_to_reader_source(
@@ -145,6 +162,7 @@ fn push_filter_conjunct_to_reader_source(
             predicate,
             crossed_aggregate,
             crossed_shared_path,
+            ctx,
         ),
         PlanNode::Limit(_)
         | PlanNode::Window(_)
@@ -155,7 +173,7 @@ fn push_filter_conjunct_to_reader_source(
     }
 }
 
-fn seed_predicate_is_supported(source: &LocalParquetSource, predicate: &Expr) -> bool {
+fn seed_predicate_is_supported(source: &LocalParquetSource, predicate: &Expr, ctx: AnalysisContext<'_>) -> bool {
     if !predicate_is_reader_visible(source, predicate) {
         return false;
     }
@@ -163,7 +181,7 @@ fn seed_predicate_is_supported(source: &LocalParquetSource, predicate: &Expr) ->
         Some(existing) => Expr::binary(existing.clone(), BinaryOp::And, predicate.clone()),
         None => predicate.clone(),
     };
-    source.reader_predicate_is_supported(&combined)
+    source.reader_predicate_is_supported(&combined, ctx)
 }
 
 fn predicate_is_reader_visible(source: &LocalParquetSource, predicate: &Expr) -> bool {

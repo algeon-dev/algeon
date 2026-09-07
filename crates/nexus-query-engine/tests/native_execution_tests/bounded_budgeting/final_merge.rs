@@ -388,7 +388,11 @@ fn compiled_final_aggregate_fanout_keeps_independent_consumers_and_releases_shar
         output_schema,
     );
     let plan = builder.finish_with_host_sink(joined);
-    let pipeline = nexus_query_engine::pipeline::compile_pipeline(&plan, &plan.capability_analysis()).unwrap();
+    let pipeline = nexus_query_engine::pipeline::compile_pipeline(
+        &plan,
+        &plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context()),
+    )
+    .unwrap();
     let scheduler = nexus_query_engine::exec::CompiledPipelineScheduler::new(&pipeline).unwrap();
     let cap = 960 * 1024 * 1024;
     let context = backend_context_with_memory_control_policy(MemoryControlPolicy::Bounded {

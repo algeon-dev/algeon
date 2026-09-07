@@ -31,7 +31,11 @@ fn dimension_derived_row_group_pruning_uses_filtered_dimension_key_range() {
     write_record_batch_with_row_group_rows(&fact_path, Arc::clone(&fact_schema), fact_batch, 1);
 
     let plan = dimension_pruning_plan(&dim_path, &dim_schema, &fact_path, &fact_schema);
-    let optimizer_result = nexus_query_engine::optimizer::optimize_query_plan(plan, &Default::default());
+    let optimizer_result = nexus_query_engine::optimizer::optimize_query_plan(
+        plan,
+        &Default::default(),
+        nexus_query_engine::rapids_backend::rapids_analysis_context(),
+    );
 
     assert_eq!(optimizer_result.change, nexus_query_engine::optimizer::NativeOptimizerChange::Changed);
     assert_eq!(optimizer_result.diagnostics.dimension_derived_row_group_pruning.applied_count, 1);

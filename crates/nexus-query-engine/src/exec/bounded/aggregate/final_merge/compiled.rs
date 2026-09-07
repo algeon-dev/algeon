@@ -6,7 +6,7 @@ use super::{
     MemoryControlPolicy, NodeId, QueryError, QueryErrorCode, QueryMetrics, ResidentGpuFrame, Result,
     aggregate_spec_has_avg, aggregate_spec_has_global_final_state, aggregate_strategy_capability_decision,
     attach_budget_token_failure_facts, cast_count_output_columns_with_budget,
-    concatenate_partitioned_final_merge_outputs, execute_aggregate_with_budget,
+    concatenate_partitioned_final_merge_outputs, cudf_query_error, execute_aggregate_with_budget,
     execute_compiled_bounded_aggregate_from_empty_input, execute_global_aggregate_with_budget,
     execute_groupby_aggregate_with_budget_observed, execution_budget_token_for_boundary, execution_overrides,
     final_global_aggregate_spec, final_global_aggregate_state_output_schema, finalize_avg_output_columns_with_budget,
@@ -314,7 +314,7 @@ pub(super) fn merge_compiled_partitioned_final_aggregate_partial_refs(
         let other_frame_refs = other_frames.iter().collect::<Vec<_>>();
         first_frame.with_execution(&token.execution_overrides()).concat_many(&other_frame_refs).map_err(|error| {
             attach_budget_token_failure_facts(
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.compiled_final_merge.partitioned_concat_partials",
                     "failed to concatenate compiled partitioned final aggregate partials",
                     error,
@@ -368,7 +368,7 @@ fn merge_compiled_partitioned_final_aggregate_partials_consuming(
             Err(error) => {
                 release_partials_reverse(partials);
                 return Err(attach_budget_token_failure_facts(
-                    QueryError::from_cudf(
+                    cudf_query_error(
                         "nexus_query_engine.compiled_final_merge.partitioned_concat_partials",
                         "failed to concatenate compiled partitioned final aggregate partials",
                         error,
@@ -566,7 +566,7 @@ fn merge_compiled_final_aggregate_partials(
     let other_frame_refs = other_frames.iter().collect::<Vec<_>>();
     let concatenated = first_frame.with_execution(&token.execution_overrides()).concat_many(&other_frame_refs);
     let concatenated = concatenated.map(GpuDataFrame::new).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.bounded.aggregate.compiled_stream_concat_partials",
             "failed to concatenate compiled stream aggregate partials",
             error,
@@ -706,7 +706,7 @@ fn finalize_compiled_final_aggregate_output(
     result
         .and_then(|frame| {
             frame.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
-                QueryError::from_cudf(
+                cudf_query_error(
                     "nexus_query_engine.compiled_final_projection.select",
                     "failed to select bounded native compiled final aggregate output columns",
                     error,
@@ -774,7 +774,7 @@ fn execute_final_aggregate_for_plan(
     let aggregate = lower_final_aggregate_spec(&bounded.aggregate.spec)?;
     if !aggregate_spec_has_avg(&bounded.aggregate.spec) {
         validate_aggregate_output_names(
-            &aggregate,
+            &aggregate.output_names,
             bounded.output_schema,
             "nexus_query_engine.final_merge.validate",
             "final aggregate output names must match output schema fields",
@@ -804,7 +804,7 @@ fn execute_final_aggregate_for_plan(
     output =
         cast_count_output_columns_with_budget(output, &bounded.aggregate.spec, bounded.output_schema, token, metrics)?;
     output = output.select(expected_output_names.iter().map(String::as_str).collect::<Vec<_>>()).map_err(|error| {
-        QueryError::from_cudf(
+        cudf_query_error(
             "nexus_query_engine.final_merge.select",
             "failed to select bounded native final aggregate output columns",
             error,

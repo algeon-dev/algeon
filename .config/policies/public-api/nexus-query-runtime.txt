@@ -617,6 +617,13 @@ pub const nexus_query_runtime::metrics::BACKEND_METRIC_DESCRIPTORS: &[nexus_quer
 pub const nexus_query_runtime::metrics::QUERY_METRIC_DESCRIPTORS: &[nexus_query_runtime::metrics::MetricDescriptor]
 pub const fn nexus_query_runtime::metrics::backend_metric_descriptors() -> &'static [nexus_query_runtime::metrics::BackendMetricDescriptor]
 pub fn nexus_query_runtime::metrics::project_backend_duration_histogram(&nexus_query_runtime::metrics::BackendMetricDescriptor, u64) -> core::result::Result<nexus_query_runtime::metrics::BackendDurationHistogramProjection, nexus_query_runtime::metrics::BackendDurationProjectionError>
+pub mod nexus_query_runtime::native_error
+pub fn nexus_query_runtime::native_error::cudf_budget_exhaustion(&nexus_query_planning::error::QueryError) -> core::option::Option<&cudf::core::error::BudgetExhaustionDetail>
+pub fn nexus_query_runtime::native_error::cudf_query_error(&'static str, impl core::convert::Into<alloc::string::String>, cudf::core::error::Error) -> nexus_query_planning::error::QueryError
+pub fn nexus_query_runtime::native_error::cudf_query_error_with_budget_details(&'static str, impl core::convert::Into<alloc::string::String>, cudf::core::error::Error) -> nexus_query_planning::error::QueryError
+pub fn nexus_query_runtime::native_error::cudf_query_error_without_source(&'static str, impl core::convert::Into<alloc::string::String>, &cudf::core::error::Error) -> nexus_query_planning::error::QueryError
+pub fn nexus_query_runtime::native_error::cudf_query_error_without_source_with_budget_details(&'static str, impl core::convert::Into<alloc::string::String>, &cudf::core::error::Error) -> nexus_query_planning::error::QueryError
+pub fn nexus_query_runtime::native_error::query_error_code_for_cudf_error(&cudf::core::error::Error) -> nexus_query_planning::error::QueryErrorCode
 pub mod nexus_query_runtime::observability
 pub use nexus_query_runtime::observability::AttemptComposedScheduleOccurrence
 pub use nexus_query_runtime::observability::AttemptComposedScheduleProjection

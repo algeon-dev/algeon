@@ -36,9 +36,12 @@ use super::{
     gpu::{GpuInventory, LiveBackendLease, NexusGpuInventory, claim_live_backend, normalize_device_ordinals},
     observation_completion::ObservationCompletionExecutor,
 };
-use crate::attempt::{
-    AttemptBackendCounters, AttemptBackendCountersSnapshot, AttemptBegin, AttemptCompletionQueue, AttemptOwner,
-    BeginAttemptRequest,
+use crate::{
+    attempt::{
+        AttemptBackendCounters, AttemptBackendCountersSnapshot, AttemptBegin, AttemptCompletionQueue, AttemptOwner,
+        BeginAttemptRequest,
+    },
+    native_error::cudf_query_error,
 };
 
 const BUILD_OPERATION: &str = "nexus_query_engine.gpu_backend_core.build";
@@ -748,7 +751,7 @@ fn validate_device_config(device: &GpuBackendDeviceConfig) -> Result<()> {
     }
     let allocation_limit_bytes = native_allocation_limit_bytes(device)?;
     cudf::DeviceMemoryManagerOptions { allocation_limit_bytes, ..Default::default() }.validate().map_err(|error| {
-        QueryError::from_cudf(BUILD_OPERATION, "invalid per-device memory manager installation options", error)
+        cudf_query_error(BUILD_OPERATION, "invalid per-device memory manager installation options", error)
             .with_fact("field", "device_memory_manager_options")
             .with_fact("device_ordinal", device.profile.device_ordinal)
             .with_fact("reason", "invalid_device_memory_manager_options")
