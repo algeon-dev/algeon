@@ -6,50 +6,14 @@
   owning layer; do not add algorithm-specific fallback glue.
 - Keep changes scoped and preserve unrelated worktree edits, submodule state,
   generated build output, and native caches.
-- Preserve public behavior and contract tests unless the task changes them.
-- Grow the system in layers: start from the smallest version that works end to
-  end, and add each capability on top of a product that already works; never
-  trade a working product for unfinished complexity.
-- Prefer established, well-maintained libraries and the dependencies already in
-  the project over new implementations or packages; check a library's
-  documentation and types before assuming it lacks a capability.
-- Make architectural decisions for the long term; do not accept a stopgap that
-  only works for now and is meant to be replaced later.
-
-## Subtractive development
-
-- Prefer extending existing code over adding parallel paths and the smallest
-  change that fully solves the current requirement; net line count should
-  trend down or stay flat. About to add a second way to do something? Stop and
-  propose removing or consolidating the first.
-- Before writing new code for a non-trivial task, list the related existing
-  files and functions; for each, state whether it should be extended, replaced,
-  or left alone. Report before implementing.
-- Never add speculative abstractions, configuration, or "just in case"
-  fallbacks; every defensive branch must name a concrete scenario that actually
-  happens in this codebase, and delete any that cannot. Remove obsolete or
-  backward-compatibility paths not required by a contract in this file instead
-  of stacking new code on top.
-- Before committing, re-read your own diff for anything now duplicated,
-  superseded, unused, or overly defensive. Propose deletions as a separate
-  cleanup commit, or fold them in when the scope is small and safe.
-
-## Comments
-
-- Default to no comments. Never explain what the code does; if code needs a
-  comment to be understandable, rename things instead.
-- Comment only non-obvious rationale, invariants, safety constraints, external
-  quirks, or business rules the code cannot express.
-- Public API documentation describes observable contracts, not incidental
-  implementation details.
-- An explicit `drop()` in production code needs a one-line comment on why the
-  value cannot wait until end of scope (lock window, re-entrancy, `RefCell`
-  re-borrow); otherwise delete the `drop()`. Test code is exempt.
+- Before adding a dependency or replacement implementation, check existing
+  capabilities and types.
 
 ## Project boundaries
 
 `components/cugraph` provides service-facing Rust graph APIs over libcugraph.
-SQL planning and query execution belong in the root `datafusion-nexus` adapter.
+SQL planning, runtime admission, and query execution follow the root
+`datafusion-nexus` ownership map.
 
 - Safe graph, algorithm, result, and cuDF interop APIs belong in
   `cugraph-nexus/`; bindgen and native contract resolution belong in
@@ -60,7 +24,6 @@ SQL planning and query execution belong in the root `datafusion-nexus` adapter.
   selected compatible external prefix is supported.
 - Preserve the two component crates and their dependency direction inside the
   root workspace.
-- Linux only. MSRV is Rust 1.94; formatting requires nightly.
 
 ## Architecture contracts
 
@@ -98,26 +61,11 @@ flock /tmp/cudf-gpu.lock cargo nextest run \
 ```
 
 Run focused checks first, then broaden validation with the change's blast
-radius. Report exact native prefixes, loader paths, and GPU environment.
-
-## Writing tests
-
-- Prefer extending existing coverage at the behavior boundary before creating
-  new tests.
-- Add tests for realistic observable regressions, non-trivial invariants or
-  boundaries, and concrete bugs. Code changing or coverage increasing is not
-  sufficient justification by itself.
-- Do not test what the type system guarantees or mirror literals, mappings,
-  obvious control flow, implementation details, or removed features unless
-  absence is itself a contract.
-- For concurrency, prefer deterministic coordination or controlled scheduling
-  over sleeps when practical.
-- A new test must fail when the code under test is reverted; if it does not,
-  delete it.
+radius. Report exact native prefixes, loader paths, and GPU environment for
+native work.
 
 ## Testing and repository policy
 
-- Serialize every GPU test with `flock /tmp/cudf-gpu.lock`.
 - Cargo auto-build is enabled by default and may reconfigure
   `target/native/cugraph-build`; set `CUGRAPH_SYS_AUTO_BUILD=0` when only an existing
   native contract may be used. Keep the manual and Cargo paths aligned.
