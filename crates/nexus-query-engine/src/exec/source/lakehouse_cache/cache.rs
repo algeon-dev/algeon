@@ -529,6 +529,18 @@ fn ensure_local_cache_parquet_entry(
     chunk_index: Option<usize>,
 ) -> Result<()> {
     context.check_cancellation("nexus_query_engine.lakehouse_cache.ensure")?;
+    // Callers only reach this entry for `LocalCacheKvikio` reads, so a missing
+    // content identity means the cached bytes cannot be attributed to the current
+    // object: refuse to serve or fill rather than matching on size alone.
+    if resolved_source.content_identity.as_deref().is_none_or(str::is_empty) {
+        return Err(QueryError::new(
+            QueryErrorCode::InvalidPlan,
+            "nexus_query_engine.lakehouse_cache.content_identity",
+            "lakehouse cache reads and fills require a caller-provided content identity",
+        )
+        .with_fact("path", lakehouse_cache_path_fact(cache_path))
+        .with_fact("stable_id", lakehouse_cache_stable_id_fact(stable_id)));
+    }
     if complete_cache_file_matches_expected_size(cache_path, estimated_fetch_bytes) {
         return Ok(());
     }
@@ -650,6 +662,11 @@ fn enqueue_background_lakehouse_cache_entry_fill(
 ) -> Result<BackgroundLakehouseCacheFillEnqueue> {
     if resolved_source.lakehouse_cache_fill_mode != crate::source::LakehouseCacheFillMode::Background {
         return Ok(BackgroundLakehouseCacheFillEnqueue::Skipped("fill_disabled"));
+    }
+    // Without a content identity the fetched bytes cannot be attributed to the
+    // current object version, so the entry is never filled.
+    if resolved_source.content_identity.as_deref().is_none_or(str::is_empty) {
+        return Ok(BackgroundLakehouseCacheFillEnqueue::Skipped("missing_content_identity"));
     }
     let Some(cache_path) = resolved_source.lakehouse_cache_path.as_ref().map(PathBuf::from) else {
         return Ok(BackgroundLakehouseCacheFillEnqueue::Skipped("missing_cache_path"));

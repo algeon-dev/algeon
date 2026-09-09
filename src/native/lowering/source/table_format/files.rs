@@ -271,13 +271,20 @@ pub(super) fn table_format_native_parquet_file(
     }
     let resolved_source = match file.resolved_parquet_source.clone() {
         Some(resolved_source) => resolved_source,
-        None => resolve_table_format_parquet_source_with_metadata(
-            &file.location,
-            &file.read_capability,
-            &TableFormatParquetReadStrategyConfig::from_env(),
-            &TableFormatParquetSourceMetadata::from_size_and_row_count(file.size_bytes, file.row_count),
-        )
-        .map_err(|_error| CapabilityReason::IcebergObjectStoreReadUnsupported)?,
+        None => {
+            let mut metadata =
+                TableFormatParquetSourceMetadata::from_size_and_row_count(file.size_bytes, file.row_count);
+            if let Some(content_identity) = file.source_content_identity.as_ref() {
+                metadata = metadata.with_content_identity(content_identity.clone());
+            }
+            resolve_table_format_parquet_source_with_metadata(
+                &file.location,
+                &file.read_capability,
+                &TableFormatParquetReadStrategyConfig::from_env(),
+                &metadata,
+            )
+            .map_err(|_error| CapabilityReason::IcebergObjectStoreReadUnsupported)?
+        },
     };
     NativeLocalParquetFile::from_resolved_parquet_source(resolved_source)
         .map_err(|_error| CapabilityReason::IcebergObjectStoreReadUnsupported)

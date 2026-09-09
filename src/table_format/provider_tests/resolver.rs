@@ -42,7 +42,8 @@ fn table_format_parquet_resolver_reports_local_remote_and_cache_strategies() {
         credential_mode: CredentialMode::SharedProcessEnv,
         ..Default::default()
     };
-    let cache_metadata = TableFormatParquetSourceMetadata::default().with_size_bytes(4096);
+    let cache_metadata =
+        TableFormatParquetSourceMetadata::default().with_size_bytes(4096).with_content_identity("etag:abc123");
     let cache_path_probe = resolve_table_format_parquet_source_with_metadata(
         "s3://bucket/table/data.parquet",
         &TableFormatReadCapability::object_store("s3"),
@@ -80,10 +81,13 @@ fn table_format_parquet_resolver_selects_fill_before_read_for_local_cache_miss_p
         ..Default::default()
     };
 
-    let resolved = resolve_table_format_parquet_source(
+    let resolved = resolve_table_format_parquet_source_with_metadata(
         "s3://bucket/table/data.parquet",
         &TableFormatReadCapability::object_store("s3"),
         &cache_config,
+        &TableFormatParquetSourceMetadata::default()
+            .with_size_bytes(4096)
+            .with_content_identity("etag:abc123"),
     )
     .unwrap();
 
@@ -93,7 +97,7 @@ fn table_format_parquet_resolver_selects_fill_before_read_for_local_cache_miss_p
     assert_eq!(resolved.original_location, "s3://bucket/table/data.parquet");
     assert_eq!(resolved.lakehouse_cache_root.as_deref(), Some(cache_dir.path().to_str().unwrap()));
     assert_eq!(resolved.lakehouse_cache_max_bytes, Some(16 * 1024 * 1024));
-    assert!(resolved.reader_location().contains("/v1/s3/bucket/weak_content_unknown/"));
+    assert!(resolved.reader_location().contains("/v1/s3/bucket/etag_abc123/"));
     assert!(resolved.reader_location().contains("data.parquet__h"));
 }
 
@@ -158,7 +162,8 @@ fn table_format_parquet_resolver_scopes_local_cache_by_catalog_endpoint_without_
         credential_mode: CredentialMode::SharedProcessEnv,
         ..Default::default()
     };
-    let metadata = TableFormatParquetSourceMetadata::from_size_and_row_count(Some(4096), Some(12));
+    let metadata = TableFormatParquetSourceMetadata::from_size_and_row_count(Some(4096), Some(12))
+        .with_content_identity("etag:abc123");
     let resolved = resolve_table_format_parquet_source_with_metadata(
         "s3://bucket-a/table/data.parquet",
         &TableFormatReadCapability::object_store("s3"),
