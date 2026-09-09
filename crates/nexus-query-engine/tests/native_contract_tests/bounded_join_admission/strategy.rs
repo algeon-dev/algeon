@@ -24,7 +24,7 @@ fn plan_captured_keyed_hash_join_strategy_options_drive_admission_facts() {
         .with_small_reusable_hash_build_bytes_threshold(16 * 1024 * 1024 * 1024);
     let optimized = nexus_query_engine::optimizer::optimize_query_plan(
         large_keyed_join_strategy_plan(JoinType::Inner),
-        &NativeOptimizerOptions { keyed_hash_join_strategy: strategy_options, ..NativeOptimizerOptions::disabled() }, nexus_query_engine::rapids_backend::rapids_analysis_context(),);
+        &NativeOptimizerOptions { keyed_hash_join_strategy: strategy_options, ..NativeOptimizerOptions::disabled() }, nexus_query_engine::rapids_backend::rapids_analysis_context(),nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver());
     let plan = optimized.plan;
 
     let facts = modeled_facts(&plan, nexus_query_engine::rapids_backend::rapids_analysis_context()).expect("custom strategy thresholds should keep the join admitted");

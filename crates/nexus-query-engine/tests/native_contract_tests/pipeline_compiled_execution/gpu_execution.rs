@@ -129,6 +129,7 @@ fn execute_query_plan_runs_grouped_aggregate_join_build_input_through_admission(
         aggregate_join_build_input_data_plan(&left_path, &right_path),
         &optimizer_options,
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver(),
     )
     .plan;
     assert_eq!(plan.dynamic_filter_routes().len(), 1);
@@ -304,6 +305,7 @@ fn compiled_gpu_executor_streams_grouped_aggregate_join_build_input_source() {
         aggregate_join_build_input_data_plan(&left_path, &right_path),
         &optimizer_options,
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver(),
     )
     .plan;
     let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
@@ -376,6 +378,7 @@ fn compiled_gpu_executor_streams_shared_source_for_join_build_and_grouped_aggreg
         shared_source_join_build_and_aggregate_data_plan(&fact_path, &dim_path),
         &optimizer_options,
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver(),
     )
     .plan;
     let analysis = plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());

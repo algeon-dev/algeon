@@ -29,6 +29,13 @@ frames, or graph layouts. Arrow and pure-Rust Parquet metadata types stay.
   belongs to the layer that calls the component: `nexus_query_runtime::native_error`
   for cuDF, `nexus_query_engine::native_error` for cuVS.
 
+Planning performs no file or network I/O. It may *consume* Parquet footers and
+decoded rows, but whoever read them supplies them: `source::SourceFooterFacts`
+for footers the engine already loaded, and a `LocalParquetPruningResolver` (or
+the async `LakehouseFooterPruningResolver` for object storage) for the facts
+dimension-derived pruning needs. A missing fact makes the optimization skip; it
+never makes it guess.
+
 Runtime resource ownership does not live here. Planning produces proof and
 requirements but does not select a device, mint a grant, maintain a ledger, or
 observe an attempt.

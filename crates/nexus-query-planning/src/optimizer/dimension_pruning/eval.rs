@@ -1,59 +1,19 @@
-use std::fs::File;
-
 use super::{
-    Array, BinaryOp, BooleanArray, DataType, Date32Array, DimensionKeyAccumulator, DimensionKeyFilter, Expr,
-    FileReader, Float32Array, Float64Array, Int32Array, Int64Array, KeyRange, LargeStringArray, LiteralValue,
-    LocalParquetSource, NodeId, ParquetRecordBatchReaderBuilder, PlanNode, ProjectionMask, QueryPlan, RecordBatch,
-    SerializedFileReader, SourceNode, StringArray, StringViewArray, UInt32Array, UInt64Array,
+    Array, BinaryOp, BooleanArray, DataType, Date32Array, DimensionKeyFilter, Expr, Float32Array, Float64Array,
+    Int32Array, Int64Array, KeyRange, LargeStringArray, LiteralValue, LocalParquetPruningResolver, LocalParquetSource,
+    NodeId, PlanNode, QueryPlan, RecordBatch, SourceNode, StringArray, StringViewArray, UInt32Array, UInt64Array,
     aggregate_group_output_name, reader_projection_indices, reader_projection_indices_for_exprs,
-    remap_unqualified_columns, selected_or_all_row_groups,
+    remap_unqualified_columns,
 };
-
-pub(super) fn dimension_scan_admitted(source: &LocalParquetSource, max_dimension_rows: u64) -> bool {
-    let mut total_rows = 0u64;
-    for file in &source.files {
-        let Some(path) = file.location.as_local_path() else {
-            return false;
-        };
-        let Ok(reader) = SerializedFileReader::try_from(path) else {
-            return false;
-        };
-        let metadata = reader.metadata();
-        let row_groups = selected_or_all_row_groups(file, metadata.num_row_groups());
-        for row_group in row_groups {
-            let Some(row_group_metadata) = metadata.row_group(row_group).num_rows().try_into().ok() else {
-                return false;
-            };
-            total_rows = total_rows.saturating_add(row_group_metadata);
-            if total_rows > max_dimension_rows {
-                return false;
-            }
-        }
-    }
-    true
-}
 
 pub(super) fn derive_dimension_key_filter(
     source: &LocalParquetSource,
     key_column: &str,
+    resolver: &dyn LocalParquetPruningResolver,
 ) -> Option<Option<DimensionKeyFilter>> {
     let predicate = source.reader_predicate.as_ref()?;
-    let projection_indices = reader_projection_indices(source, key_column, predicate)?;
-    let mut accumulator = DimensionKeyAccumulator::default();
-    for source_file in &source.files {
-        let path = source_file.location.as_local_path()?;
-        let file = File::open(path).ok()?;
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file).ok()?;
-        let row_group_count = builder.metadata().num_row_groups();
-        let mask = ProjectionMask::roots(builder.parquet_schema(), projection_indices.iter().copied());
-        let row_groups = selected_or_all_row_groups(source_file, row_group_count);
-        let reader = builder.with_projection(mask).with_row_groups(row_groups).build().ok()?;
-        for batch in reader {
-            let batch = batch.ok()?;
-            accumulator.observe_batch(&batch, key_column, predicate)?;
-        }
-    }
-    Some(accumulator.finish())
+    let projection_indices = reader_projection_indices(source, key_column, predicate)?.into_iter().collect::<Vec<_>>();
+    resolver.dimension_key_filter(source, key_column, predicate, &projection_indices)
 }
 
 #[doc(hidden)]
@@ -62,8 +22,9 @@ pub fn derive_i64_expr_range_from_filtered_subtree(
     node_id: NodeId,
     expr: &Expr,
     max_rows: u64,
+    resolver: &dyn LocalParquetPruningResolver,
 ) -> Option<Option<KeyRange>> {
-    derive_i64_expr_range_from_filtered_subtree_inner(plan, node_id, expr.clone(), None, max_rows)
+    derive_i64_expr_range_from_filtered_subtree_inner(plan, node_id, expr.clone(), None, max_rows, resolver)
 }
 
 fn derive_i64_expr_range_from_filtered_subtree_inner(
@@ -72,6 +33,7 @@ fn derive_i64_expr_range_from_filtered_subtree_inner(
     expr: Expr,
     predicate: Option<Expr>,
     max_rows: u64,
+    resolver: &dyn LocalParquetPruningResolver,
 ) -> Option<Option<KeyRange>> {
     let node = plan.node(node_id)?;
     match &node.kind {
@@ -79,11 +41,11 @@ fn derive_i64_expr_range_from_filtered_subtree_inner(
             let SourceNode::LocalParquet(source) = source.as_ref() else {
                 return None;
             };
-            if !dimension_scan_admitted(source, max_rows) {
+            if !resolver.dimension_scan_admitted(source, max_rows) {
                 return None;
             }
             let predicate = combine_predicates(source.reader_predicate.clone(), predicate);
-            derive_i64_expr_range_from_local_parquet_source(source, &expr, predicate.as_ref())
+            derive_i64_expr_range_from_local_parquet_source(source, &expr, predicate.as_ref(), resolver)
         },
         PlanNode::Filter(filter) => derive_i64_expr_range_from_filtered_subtree_inner(
             plan,
@@ -91,11 +53,19 @@ fn derive_i64_expr_range_from_filtered_subtree_inner(
             expr,
             combine_predicates(predicate, Some(filter.predicate.clone())),
             max_rows,
+            resolver,
         ),
         PlanNode::Projection(projection) => {
             let expr = remap_projection_general_expr(&expr, projection)?;
             let predicate = remap_optional_projection_general_expr(predicate, projection)?;
-            derive_i64_expr_range_from_filtered_subtree_inner(plan, projection.input, expr, predicate, max_rows)
+            derive_i64_expr_range_from_filtered_subtree_inner(
+                plan,
+                projection.input,
+                expr,
+                predicate,
+                max_rows,
+                resolver,
+            )
         },
         PlanNode::Aggregate(aggregate) => {
             if aggregate.spec.grouping_sets.is_some() || !aggregate.spec.aggr_exprs.is_empty() {
@@ -103,10 +73,17 @@ fn derive_i64_expr_range_from_filtered_subtree_inner(
             }
             let expr = remap_aggregate_group_general_expr(&expr, aggregate)?;
             let predicate = remap_optional_aggregate_group_general_expr(predicate, aggregate)?;
-            derive_i64_expr_range_from_filtered_subtree_inner(plan, aggregate.input, expr, predicate, max_rows)
+            derive_i64_expr_range_from_filtered_subtree_inner(
+                plan,
+                aggregate.input,
+                expr,
+                predicate,
+                max_rows,
+                resolver,
+            )
         },
         PlanNode::Sort(sort) => {
-            derive_i64_expr_range_from_filtered_subtree_inner(plan, sort.input, expr, predicate, max_rows)
+            derive_i64_expr_range_from_filtered_subtree_inner(plan, sort.input, expr, predicate, max_rows, resolver)
         },
         PlanNode::Join(_)
         | PlanNode::Limit(_)
@@ -176,23 +153,36 @@ fn derive_i64_expr_range_from_local_parquet_source(
     source: &LocalParquetSource,
     expr: &Expr,
     predicate: Option<&Expr>,
+    resolver: &dyn LocalParquetPruningResolver,
 ) -> Option<Option<KeyRange>> {
-    let projection_indices = reader_projection_indices_for_exprs(source, expr, predicate)?;
-    let mut range = None;
-    for source_file in &source.files {
-        let path = source_file.location.as_local_path()?;
-        let file = File::open(path).ok()?;
-        let builder = ParquetRecordBatchReaderBuilder::try_new(file).ok()?;
-        let row_group_count = builder.metadata().num_row_groups();
-        let mask = ProjectionMask::roots(builder.parquet_schema(), projection_indices.iter().copied());
-        let row_groups = selected_or_all_row_groups(source_file, row_group_count);
-        let reader = builder.with_projection(mask).with_row_groups(row_groups).build().ok()?;
-        for batch in reader {
-            let batch = batch.ok()?;
-            observe_i64_expr_range_batch(&mut range, &batch, expr, predicate)?;
-        }
+    let projection_indices =
+        reader_projection_indices_for_exprs(source, expr, predicate)?.into_iter().collect::<Vec<_>>();
+    resolver.filtered_i64_expr_range(source, expr, predicate, &projection_indices)
+}
+
+/// Accumulates the inclusive `i64` range of one expression across decoded
+/// batches whose rows satisfy an optional predicate.
+///
+/// Planning decodes nothing itself. A resolver answering
+/// [`LocalParquetPruningResolver::filtered_i64_expr_range`] reads the rows and
+/// folds them through this accumulator, so every resolver derives the same
+/// range from the same rows.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct I64ExprRangeAccumulator {
+    range: Option<KeyRange>,
+}
+
+impl I64ExprRangeAccumulator {
+    /// Folds one decoded batch's qualifying `expr` values into the range, or
+    /// returns `None` when predicate or expression evaluation fails.
+    pub fn observe_batch(&mut self, batch: &RecordBatch, expr: &Expr, predicate: Option<&Expr>) -> Option<()> {
+        observe_i64_expr_range_batch(&mut self.range, batch, expr, predicate)
     }
-    Some(range)
+
+    /// Returns the accumulated range, or `None` when no row qualified.
+    pub fn finish(&self) -> Option<KeyRange> {
+        self.range
+    }
 }
 
 fn observe_i64_expr_range_batch(

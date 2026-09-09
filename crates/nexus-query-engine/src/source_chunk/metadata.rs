@@ -242,8 +242,10 @@ impl SourceMetadataCache {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(super) struct SourceMetadataLoadContext<'a> {
-    pub(super) execution_context: &'a ExecutionContext,
+#[doc(hidden)]
+pub struct SourceMetadataLoadContext<'a> {
+    #[doc(hidden)]
+    pub execution_context: &'a ExecutionContext,
 }
 
 #[derive(Debug, Clone)]
@@ -619,6 +621,24 @@ pub(super) fn read_parquet_metadata(
         reader_decimal_types,
         reader_decimal_types_footer_verified,
     })
+}
+
+/// Loads one footer slot per `source.files` entry, in order, through the
+/// shared footer cache.
+///
+/// A `None` slot means no footer is available for that file (a non-local file
+/// with no context, or a load miss), and callers that consume footers treat it
+/// as "skip the footer-dependent decision for this file" rather than an error.
+/// Reuses [`SourceMetadataCache::footer_metadata`] so this shares the same
+/// cache entries, requirement handling, and load-time accounting as ordinary
+/// chunk-planning footer loads instead of loading footers a second time.
+#[doc(hidden)]
+pub fn source_footer_metadata(
+    source: &LocalParquetSource,
+    cache: &mut SourceMetadataCache,
+    context: Option<&SourceMetadataLoadContext<'_>>,
+) -> Result<Vec<Option<Arc<ParquetMetaData>>>> {
+    source.files.iter().map(|file| Ok(cache.footer_metadata(source, file, context)?.metadata)).collect()
 }
 
 pub(super) fn source_file_needs_footer_metadata(source: &LocalParquetSource, file: &LocalParquetFile) -> bool {

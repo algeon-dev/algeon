@@ -81,6 +81,31 @@ source_targets = {
     "component-engine": [("cudf-nexus", "src/lib.rs", "use nexus_query_engine::Marker;\n")],
     "component-engine-root": [("cudf-nexus", "src/lib.rs", "use nexus_query_engine;\n")],
     "planning-datafusion": [("nexus-query-planning", "src/lib.rs", "use datafusion::physical_plan::ExecutionPlan;\n")],
+    "planning-file-open": [
+        ("nexus-query-planning", "src/lib.rs", "pub fn open() { let _ = std::fs::File::open(\"x\"); }\n"),
+    ],
+    "planning-parquet-reader": [
+        (
+            "nexus-query-planning",
+            "src/lib.rs",
+            "pub fn read(p: &std::path::Path) { let _ = SerializedFileReader::try_from(p); }\n",
+        ),
+    ],
+    "planning-object-store": [
+        ("nexus-query-planning", "src/lib.rs", "pub type Store = object_store::path::Path;\n"),
+    ],
+    "planning-io-non-code": [
+        (
+            "nexus-query-planning",
+            "src/lib.rs",
+            "// File::open and SerializedFileReader are not called here.\n"
+            'pub const NOTE: &str = "std::fs::read";\n'
+            "pub type Footer = parquet::file::metadata::ParquetMetaData;\n",
+        ),
+    ],
+    "runtime-file-open-allowed": [
+        ("nexus-query-runtime", "src/lib.rs", "pub fn open() { let _ = std::fs::File::open(\"x\"); }\n"),
+    ],
     "runtime-datafusion": [("nexus-query-runtime", "src/lib.rs", "extern crate datafusion_common;\n")],
     "observability-runtime-use": [
         ("nexus-query-runtime", "src/observability/mod.rs", "use crate::runtime::ExecutionContext;\n"),
@@ -238,6 +263,14 @@ run_case source-component-engine-root 1 "component -> engine" component-engine-r
 run_case source-planning-datafusion 1 "planning -> DataFusion" planning-datafusion "" ""
 run_case source-runtime-datafusion 1 "runtime -> DataFusion" runtime-datafusion "" ""
 run_case cargo-planning-datafusion 1 "planning -> DataFusion" planning-datafusion-cargo "" ""
+
+# Planning consumes footers and rows; it never reads them. Footer *types* stay
+# allowed, and the rule is planning's alone.
+run_case source-planning-file-open 1 "planning -> I/O" planning-file-open "" ""
+run_case source-planning-parquet-reader 1 "planning -> I/O" planning-parquet-reader "" ""
+run_case source-planning-object-store 1 "planning -> I/O" planning-object-store "" ""
+run_case source-planning-io-non-code 0 "dependency direction contracts OK" planning-io-non-code "" ""
+run_case source-runtime-file-open-allowed 0 "dependency direction contracts OK" runtime-file-open-allowed "" ""
 run_case cargo-runtime-datafusion 1 "runtime -> DataFusion" runtime-datafusion-cargo "" ""
 
 run_case source-observability-runtime-use 1 "observability -> runtime" observability-runtime-use "" ""

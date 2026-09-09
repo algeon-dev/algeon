@@ -38,6 +38,8 @@ pub use nexus_query_runtime::attempt;
 pub mod chunk;
 /// Arrow-to-cuDF datatype support and cast policy helpers.
 pub mod datatypes;
+/// Local-filesystem implementation of the planning dimension-pruning resolver contract.
+pub mod dimension_pruning;
 /// DataFusion-free dynamic-filter producer/consumer route IR.
 pub use nexus_query_planning::dynamic_filter;
 pub use nexus_query_planning::{contract_report, error};

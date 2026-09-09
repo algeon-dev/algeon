@@ -332,6 +332,15 @@ DATAFUSION_PATH = re.compile(r"\bdatafusion(?:_[A-Za-z_][A-Za-z0-9_]*)?\s*::")
 DATAFUSION_ROOT_IMPORT = re.compile(
     r"\b(?:use|extern\s+crate)\s+datafusion(?:_[A-Za-z_][A-Za-z0-9_]*)?\b"
 )
+# Planning consumes footers and decoded rows; it never obtains them. These are
+# the ways a Rust source file opens a file, a Parquet reader, or an object
+# store. `parquet::file::metadata` types stay allowed — reading them is not.
+PLANNING_IO = re.compile(
+    r"\bstd\s*::\s*fs\s*::"
+    r"|\bFile\s*::\s*(?:open|create)\b"
+    r"|\b(?:SerializedFileReader|ParquetRecordBatchReaderBuilder|ParquetRecordBatchStreamBuilder)\b"
+    r"|\bobject_store\s*::"
+)
 OBSERVABILITY_MODULE = "observability"
 RUNTIME_MODULE = "runtime"
 IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
@@ -410,6 +419,10 @@ def source_import_violations(path: Path, layer: str) -> list[str]:
     for pattern in (DATAFUSION_PATH, DATAFUSION_ROOT_IMPORT):
         for match in pattern.finditer(masked):
             add(f"{layer} -> DataFusion", match.start(), match.group(0).strip())
+
+    if layer == "planning":
+        for match in PLANNING_IO.finditer(masked):
+            add("planning -> I/O", match.start(), match.group(0).strip())
 
     result = []
     for rule, number, token in sorted(findings):

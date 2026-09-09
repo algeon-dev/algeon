@@ -4,7 +4,7 @@ use super::{
     BoundedJoinLeafSourceStreamDynamicFilterStage, DynamicFilter, DynamicFilterConsumerLowering,
     DynamicFilterExecutionOptions, DynamicFilterId, DynamicFilterRoute, DynamicFilterSet, DynamicFilterSourceSnapshot,
     FilterNode, GpuDataFrame, LocalParquetSource, NodeId, QueryMetrics, Result, SourceChunk, SourceChunkBatch,
-    dynamic_filter_predicate_for_schema, dynamic_filter_reader_predicate_should_merge,
+    SourceFooterFacts, dynamic_filter_predicate_for_schema, dynamic_filter_reader_predicate_should_merge,
 };
 
 pub(super) fn merged_reader_predicate_route_ids(
@@ -13,6 +13,7 @@ pub(super) fn merged_reader_predicate_route_ids(
     filter_set: &DynamicFilterSet,
     deferred_reader_predicate_routes: &BTreeSet<DynamicFilterId>,
     options: DynamicFilterExecutionOptions,
+    footers: SourceFooterFacts<'_>,
 ) -> Result<BTreeSet<DynamicFilterId>> {
     let mut ids = BTreeSet::new();
     for route in routes {
@@ -37,6 +38,7 @@ pub(super) fn merged_reader_predicate_route_ids(
             filter,
             options,
             crate::rapids_backend::rapids_analysis_context(),
+            footers,
         )? {
             ids.insert(route.id);
         }

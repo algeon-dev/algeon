@@ -18,6 +18,7 @@ use arrow::{
 
 mod deletes;
 mod diagnostics;
+mod footer_facts;
 mod location;
 mod parquet;
 mod predicate;
@@ -37,6 +38,7 @@ pub use diagnostics::{
     parquet_source_path_fact, parquet_source_stable_id_fact, redacted_object_store_path_diagnostic,
     redacted_path_diagnostic,
 };
+pub use footer_facts::SourceFooterFacts;
 pub use location::ParquetSourceLocation;
 pub use parquet::{
     GRAPH_SIMPLE_DIRECTED_EDGE_TOPOLOGY_PARQUET_METADATA_KEY, GRAPH_VERTEX_UPPER_BOUND_PARQUET_METADATA_KEY,

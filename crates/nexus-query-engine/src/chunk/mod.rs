@@ -18,11 +18,15 @@ mod tests;
 
 #[cfg(test)]
 pub(crate) use crate::source_chunk::metadata;
-pub(crate) use crate::source_chunk::metadata::{
-    footer_verified_object_store_reader_decimal_types,
-    footer_verified_object_store_reader_decimal_types_with_supplied_cache,
-};
 pub use crate::source_chunk::{
     SourceMetadataCache, plan_local_parquet_source_chunks, plan_local_parquet_source_chunks_with_execution_context,
     plan_local_parquet_source_chunks_with_metadata_cache,
+};
+pub(crate) use crate::source_chunk::{
+    SourceMetadataLoadContext,
+    metadata::{
+        footer_verified_object_store_reader_decimal_types,
+        footer_verified_object_store_reader_decimal_types_with_supplied_cache,
+    },
+    plan_local_parquet_source_chunks_with_metadata_cache_and_context, source_footer_metadata,
 };

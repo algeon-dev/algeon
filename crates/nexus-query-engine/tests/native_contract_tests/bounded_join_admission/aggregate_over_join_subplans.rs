@@ -145,6 +145,7 @@ fn bounded_keyless_conditional_join_aggregate_over_join_subplan_inputs_survives_
         plan,
         &nexus_query_engine::optimizer::NativeOptimizerOptions::default(),
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver(),
     );
 
     assert!(

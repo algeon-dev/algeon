@@ -32,6 +32,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         native_plan.clone(),
         &Default::default(),
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver(),
     );
     assert!(
         optimized_q2.diagnostics.join_filter_reassociation.applied_count >= 1,
@@ -79,6 +80,7 @@ async fn tpch_recent_bounded_topologies_expose_modeled_facts() {
         native_plan.clone(),
         &Default::default(),
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver(),
     );
     assert_eq!(
         optimized_q15
@@ -211,6 +213,7 @@ async fn tpch_q18_semijoin_reduction_pushes_filter_to_orders_subtree() {
         result.plans[0].clone(),
         &Default::default(),
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver(),
     );
 
     assert_eq!(optimized.change, nexus_query_engine::optimizer::NativeOptimizerChange::Changed);
@@ -264,6 +267,7 @@ async fn tpch_q18_late_left_semi_filter_stays_below_the_final_aggregate() {
         result.plans[0].clone(),
         &options,
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver(),
     );
 
     let pushdown = &optimized.diagnostics.aggregate_join_pushdown;
@@ -327,6 +331,7 @@ async fn tpch_q21_decorrelates_to_native_left_only_mixed_residual_joins() {
         result.plans[0].clone(),
         &Default::default(),
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver(),
     );
     for build_side in [NativeJoinSide::Right, NativeJoinSide::Left] {
         let mut nodes = optimized.plan.nodes().to_vec();
@@ -697,6 +702,7 @@ async fn tpch_q11_lowers_joined_grouped_and_scalar_aggregate_inputs_for_bounded_
         plan.clone(),
         &Default::default(),
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver(),
     );
     assert_q11_keyless_proof_admitted(&optimized.plan, "optimized q11");
     let aggregate_join_pushdown = &optimized.diagnostics.aggregate_join_pushdown;
@@ -878,6 +884,7 @@ async fn tpch_q13_lowers_left_join_filter_aggregates_and_final_sort() {
         plan.clone(),
         &Default::default(),
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver(),
     );
     let aggregate_join_pushdown = &optimized.diagnostics.aggregate_join_pushdown;
     assert_eq!(
@@ -961,6 +968,7 @@ async fn tpch_q16_lowers_multi_join_leaves_then_serial_aggregates_and_final_sort
         plan.clone(),
         &Default::default(),
         nexus_query_engine::rapids_backend::rapids_analysis_context(),
+        nexus_query_engine::dimension_pruning::local_dimension_pruning_resolver(),
     );
     assert!(
         optimized
