@@ -225,7 +225,7 @@ fn query_service_concurrent_budget_sum_never_exceeds_capacity() {
     let max_active_attempts_per_device = 4;
     let service = AdmissionTestController::new_with_ledger(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
         test_ledger(capacity_bytes, max_active_attempts_per_device, Default::default()),
     )
     .unwrap();
@@ -235,35 +235,35 @@ fn query_service_concurrent_budget_sum_never_exceeds_capacity() {
         .collect::<Vec<_>>();
 
     let admitted_budget_sum: u64 = handles.iter().map(AdmissionTestHandle::device_budget_bytes).sum();
-    assert_eq!(admitted_budget_sum, capacity_bytes);
+    let default_query_limit = first_memory_governor_report(&service).default_query_limit_bytes;
+    assert_eq!(admitted_budget_sum, default_query_limit * max_active_attempts_per_device as u64);
+    assert!(admitted_budget_sum <= capacity_bytes);
     assert!(service.try_admit_query().unwrap().is_none());
 }
 #[test]
-fn query_service_uses_variable_memory_governor_grants() {
+fn query_service_uses_fixed_default_query_caps() {
     let service = admission_test_service_with_profile(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
         100,
         10,
         4,
     );
 
     let first = service.try_admit_query().unwrap().expect("first query should admit");
-    let second = service.try_admit_query().unwrap().expect("second query should preserve remaining minima");
-    let third = service.try_admit_query().unwrap().expect("third query should admit minimum grant");
-    let fourth = service.try_admit_query().unwrap().expect("fourth query should admit minimum grant");
+    let second = service.try_admit_query().unwrap().expect("second fixed-cap query should admit");
+    let third = service.try_admit_query().unwrap().expect("third fixed-cap query should admit");
+    let fourth = service.try_admit_query().unwrap().expect("fourth fixed-cap query should admit");
 
-    // The normative equation reserves the configured floor for every
-    // unprotected empty slot: 100-10*3, then 100-70-10*2, then floors.
-    assert_eq!(first.device_budget_bytes(), 70);
+    assert_eq!(first.device_budget_bytes(), 10);
     assert_eq!(second.device_budget_bytes(), 10);
     assert_eq!(third.device_budget_bytes(), 10);
     assert_eq!(fourth.device_budget_bytes(), 10);
     assert!(service.try_admit_query().unwrap().is_none());
     let report = first_memory_governor_report(&service);
     assert_eq!(report.managed_capacity_bytes, 100);
-    assert_eq!(report.live_grants_bytes, 100);
-    assert_eq!(report.managed_capacity_bytes - report.live_grants_bytes, 0);
+    assert_eq!(report.live_grants_bytes, 40);
+    assert_eq!(report.managed_capacity_bytes - report.live_grants_bytes, 60);
 
     drop(first);
     assert_eq!(
@@ -274,26 +274,23 @@ fn query_service_uses_variable_memory_governor_grants() {
 }
 #[test]
 fn query_service_waiting_on_memory_grant_wakes_after_grant_release() {
-    // A request-level floor raise above the configured floor blocks until the
-    // active attempt's immutable grant returns to the ledger.
+    // Two explicit caps whose sum exceeds capacity serialize until the first
+    // immutable grant returns to the ledger.
     let service = admission_test_service_with_profile(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2) },
         250,
         1,
         2,
     );
-    let raised = requirement(150, Some(150));
     let active = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_requirement(raised.clone()))
+        .admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(150))
         .unwrap();
     let queued_service = service.clone();
     let (started_sender, started_receiver) = std::sync::mpsc::channel();
     let waiter = std::thread::spawn(move || {
         started_sender.send(()).unwrap();
-        queued_service
-            .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_requirement(raised.clone()))
-            .unwrap()
+        queued_service.admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(150)).unwrap()
     });
     started_receiver.recv_timeout(Duration::from_secs(1)).unwrap();
     wait_for_queued_len(&service, 1);
@@ -310,14 +307,13 @@ fn query_service_waiting_on_memory_grant_wakes_after_grant_release() {
 fn query_service_waiting_on_memory_grant_wakes_after_retained_grant_release() {
     let service = admission_test_service_with_profile(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2) },
         250,
         1,
         2,
     );
-    let raised = requirement(150, Some(150));
     let active = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_requirement(raised.clone()))
+        .admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(150))
         .unwrap();
     let retained_grant = active.memory_grant().unwrap();
     drop(active);
@@ -327,9 +323,7 @@ fn query_service_waiting_on_memory_grant_wakes_after_retained_grant_release() {
     let (started_sender, started_receiver) = std::sync::mpsc::channel();
     let waiter = std::thread::spawn(move || {
         started_sender.send(()).unwrap();
-        queued_service
-            .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_requirement(raised.clone()))
-            .unwrap()
+        queued_service.admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(150)).unwrap()
     });
     started_receiver.recv_timeout(Duration::from_secs(1)).unwrap();
     wait_for_queued_len(&service, 1);
@@ -340,23 +334,20 @@ fn query_service_waiting_on_memory_grant_wakes_after_retained_grant_release() {
 }
 #[test]
 fn query_admission_waiter_times_out_while_selected_but_memory_blocked() {
-    // Immutable ledger semantics: a same-floor attempt always fits (the
-    // equation preserves empty-slot floors), so a memory-blocked waiter
-    // requires a request-level floor raise above the configured floor.
+    // Two explicit caps whose sum exceeds capacity keep the second waiter
+    // selected but memory-blocked until its deadline.
     let service = admission_test_service_with_profile(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(20), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(20) },
         250,
         1,
         2,
     );
     let _active = service
-        .admit_query_with_request(QueryAdmissionRequest::new().with_attempt_requirement(requirement(150, Some(150))))
+        .admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(150))
         .unwrap();
     let mut waiter = service
-        .enqueue_admission_with_request(
-            QueryAdmissionRequest::new().with_attempt_requirement(requirement(150, Some(150))),
-        )
+        .enqueue_admission_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(150))
         .unwrap();
     service.expire_waiter(&mut waiter);
 
@@ -379,7 +370,7 @@ fn query_admission_waiter_times_out_while_selected_but_memory_blocked() {
 fn query_admission_waiter_timeout_reports_the_selected_device_requirement() {
     let service = QueryService::new_with_device_ordinals_and_deployment(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(2) },
         vec![0, 1],
         non_gds_deployment(),
     )
@@ -392,10 +383,9 @@ fn query_admission_waiter_timeout_reports_the_selected_device_requirement() {
 
     let mut waiter = service.enqueue_admission().expect("request enters the shared queue");
     let entries = DeviceAdmissionEntries::from([
-        (0, DeviceAdmissionEntry { requirement: requirement(111, Some(111)), admitted_reservation_envelope: None }),
-        (1, DeviceAdmissionEntry { requirement: requirement(222, Some(222)), admitted_reservation_envelope: None }),
+        (0, DeviceAdmissionEntry { requirement: requirement(111, Some(111)) }),
+        (1, DeviceAdmissionEntry { requirement: requirement(222, Some(222)) }),
     ]);
-    waiter.device_entries = entries.clone();
     {
         let mut state = service.inner.admission.lock().expect("admission state");
         state
@@ -413,8 +403,10 @@ fn query_admission_waiter_timeout_reports_the_selected_device_requirement() {
     let error = waiter.try_admit().expect_err("saturated ordinal one reports a memory-grant timeout");
 
     assert_eq!(error.fact_value("reason"), Some("memory_grant_wait_timeout"));
-    assert_eq!(error.fact_value("required_floor_bytes"), Some("222"));
-    assert_eq!(error.fact_value("soft_working_set_hint_bytes"), Some("222"));
+    assert_eq!(error.fact_value("requested_query_cap_bytes"), Some("0"));
+    assert_eq!(error.fact_value("device_frozen_resident_bytes"), Some("1:0"));
+    assert_eq!(error.fact_value("device_live_grants_bytes"), Some("1:222"));
+    assert_eq!(error.fact_value("device_admissible_query_cap_bytes"), Some("1:0"));
 
     active.finish();
     drop(active);
@@ -422,29 +414,88 @@ fn query_admission_waiter_timeout_reports_the_selected_device_requirement() {
 }
 
 #[test]
-fn query_service_work_conserving_admission_skips_memory_blocked_head() {
+fn query_service_fifo_keeps_younger_work_behind_memory_blocked_head() {
     let service = admission_test_service_with_profile(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
         300,
         10,
         2,
     );
-    let _active = service.admit_query().unwrap();
+    let active = service.admit_query().unwrap();
     let mut large = service
-        .enqueue_admission_with_request(
-            QueryAdmissionRequest::new().with_attempt_requirement(requirement(250, Some(250))),
-        )
+        .enqueue_admission_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(295))
         .unwrap();
     let mut small = service.enqueue_admission().unwrap();
 
     assert!(large.try_admit().unwrap().is_none());
-    let admitted_small = small.try_admit().unwrap().expect("small query should pass memory-blocked large query");
-    assert_eq!(admitted_small.device_budget_bytes(), 10);
-    assert_eq!(admitted_small.admission_sequence(), 2);
+    assert!(small.try_admit().unwrap().is_none(), "FIFO forbids the younger query from overtaking");
     let snapshot = service.admission_snapshot().unwrap();
-    assert_eq!(snapshot.active_queries, 2);
-    assert_eq!(snapshot.queued_queries, 1);
+    assert_eq!(snapshot.active_queries, 1);
+    assert_eq!(snapshot.queued_queries, 2);
+    drop(active);
+    let admitted_large = large.try_admit().unwrap().expect("oldest waiter admits first after capacity returns");
+    assert_eq!(admitted_large.device_budget_bytes(), 295);
+    assert!(small.try_admit().unwrap().is_none());
+}
+
+#[test]
+fn frozen_resident_growth_revalidates_and_rejects_an_impossible_waiter() {
+    let service = admission_test_service_with_profile(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
+        100,
+        10,
+        2,
+    );
+    let active = service
+        .admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(60))
+        .unwrap();
+    let grant = active.memory_grant().unwrap();
+    let mut waiter = service
+        .enqueue_admission_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(60))
+        .unwrap();
+
+    assert!(waiter.try_admit().unwrap().is_none());
+    grant.freeze_resident(50).unwrap();
+
+    let error = waiter.try_admit().expect_err("the new resident charge makes the explicit cap permanently impossible");
+    assert_eq!(error.code(), QueryErrorCode::QueryBudgetUnavailable);
+    assert_eq!(error.fact_value("reason"), Some("query_cap_exceeds_resident_capacity"));
+    assert_eq!(error.fact_value("requested_query_cap_bytes"), Some("60"));
+    drop(active);
+    drop(grant);
+}
+
+#[test]
+fn frozen_resident_release_revalidates_and_wakes_a_capacity_waiter() {
+    let service = admission_test_service_with_profile(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
+        100,
+        10,
+        2,
+    );
+    let resident_owner = service
+        .admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(50))
+        .unwrap();
+    let resident_grant = resident_owner.memory_grant().unwrap();
+    resident_grant.freeze_resident(30).unwrap();
+    drop(resident_owner);
+    let active = service
+        .admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(40))
+        .unwrap();
+    let mut waiter = service
+        .enqueue_admission_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(40))
+        .unwrap();
+
+    assert!(waiter.try_admit().unwrap().is_none());
+    drop(resident_grant);
+
+    let admitted = waiter.try_admit().unwrap().expect("resident release returns enough capacity to the oldest waiter");
+    assert_eq!(admitted.device_budget_bytes(), 40);
+    drop(active);
+    drop(admitted);
 }
 #[test]
 fn query_service_enqueued_waiter_counts_against_queue_limit_until_drop() {
@@ -463,7 +514,7 @@ fn query_service_enqueued_waiter_counts_against_queue_limit_until_drop() {
 fn query_service_sweeps_expired_unpolled_waiter_before_queue_and_try_admit_gates() {
     let service = admission_test_service_with_profile(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 1, max_wait: Duration::from_millis(10), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 1, max_wait: Duration::from_millis(10) },
         100,
         1,
         1,
@@ -479,7 +530,7 @@ fn query_service_sweeps_expired_unpolled_waiter_before_queue_and_try_admit_gates
     drop(active);
 
     let admitted = service.try_admit_query().unwrap().expect("expired stale waiter must not block try-admit");
-    assert_eq!(admitted.device_budget_bytes(), 100);
+    assert_eq!(admitted.device_budget_bytes(), 1);
     drop(stale_waiter);
 }
 #[test]
@@ -614,21 +665,9 @@ fn phase_d_pending_reservation_is_a_fifo_barrier_for_younger_queue_work() {
 
     let mut younger = service.enqueue_admission().expect("younger request enters the queue");
     let younger_id = younger.admission_request_id();
-    {
-        let mut state = service.service.inner.admission.lock().expect("admission state");
-        state
-            .queued
-            .iter_mut()
-            .find(|request| request.admission_request_id == younger_id)
-            .expect("younger request is queued")
-            .overtakes_remaining = 0;
-    }
     assert!(younger.try_admit().expect("younger waiter remains queued").is_none());
     assert_eq!(service.pending_preflight_len(), 1);
     assert_eq!(service.queued_len(), 1);
-    let state = service.service.inner.admission.lock().expect("admission state");
-    assert!(state.queued[0].protected_device.is_none(), "pending preflight blocks younger protection restore");
-    drop(state);
 
     pause.release();
     wait_for_pending_preflight_len(&service, 0);
@@ -799,7 +838,7 @@ fn phase_d_direct_owner_preflight_does_not_consume_commit_wait() {
     let max_wait = Duration::from_millis(20);
     let service = admission_test_service_with_profile(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 2, max_wait, max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 2, max_wait },
         64 * 1024 * 1024,
         8 * 1024 * 1024,
         1,
@@ -821,4 +860,31 @@ fn phase_d_direct_owner_preflight_does_not_consume_commit_wait() {
         .expect("idle direct admission succeeds");
 
     drop(admitted);
+}
+
+/// Waiter revalidation excludes closed devices from the impossible-cap
+/// decision, but a fully closed fleet stays a health failure. A closed
+/// device's capacity must never satisfy a cap, and its closure must never be
+/// reported as a budget rejection.
+#[test]
+fn closed_devices_leave_the_impossible_cap_decision_to_the_fleet_health_error() {
+    let service = admission_test_service_with_profile(
+        QueryExecutionConfig::default(),
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(30) },
+        100,
+        10,
+        2,
+    );
+    let ledger = service.service.inner.fallback_device_ledger.clone().expect("admission-only ledger");
+    ledger.close_admission("test closes the only compatible device").expect("device closes");
+
+    let error = service
+        .try_admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(80))
+        .expect_err("a closed fleet rejects admission");
+
+    assert_ne!(
+        error.code(),
+        QueryErrorCode::QueryBudgetUnavailable,
+        "a closed device is a health failure, not an impossible query cap: {error}"
+    );
 }

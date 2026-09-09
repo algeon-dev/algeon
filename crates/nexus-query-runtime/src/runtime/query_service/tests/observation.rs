@@ -218,19 +218,19 @@ async fn async_permanent_rejection_remains_terminal_rejected() {
     let owner =
         RuntimeObservationOwner::new("async-rejected-query", None, RuntimeObservationConfig::bounded(16, 16 * 1024));
 
-    // A requirement floor above every compatible device's capacity rejects
-    // permanently before enqueue.
+    // A requested cap above every compatible device's resident-adjusted
+    // capacity rejects permanently before enqueue.
     let error = service
         .admit_async_with_request(
             QueryAdmissionRequest::new()
-                .with_attempt_requirement(requirement(128 * 1024 * 1024, None))
+                .with_query_cap_bytes(128 * 1024 * 1024)
                 .with_runtime_observation_owner(owner.clone()),
         )
         .await
         .unwrap_err();
 
-    assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
-    assert_eq!(error.fact_value("reason"), Some("impossible_requirement"));
+    assert_eq!(error.code(), QueryErrorCode::QueryBudgetUnavailable);
+    assert_eq!(error.fact_value("reason"), Some("query_cap_exceeds_resident_capacity"));
     let events = observed_admission_events(&owner);
     assert_eq!(events.len(), 1);
     assert!(matches!(events[0].1, AdmissionLifecycleState::Rejected { .. }));
@@ -391,17 +391,17 @@ fn query_service_observes_pre_enqueue_rejection_without_reclassifying_error() {
     let error = service
         .enqueue_admission_with_request(
             QueryAdmissionRequest::new()
-                .with_attempt_requirement(requirement(128 * 1024 * 1024, None))
+                .with_query_cap_bytes(128 * 1024 * 1024)
                 .with_runtime_observation_owner(owner.clone()),
         )
         .expect_err("an impossible requirement rejects before enqueue");
 
-    assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
+    assert_eq!(error.code(), QueryErrorCode::QueryBudgetUnavailable);
     let events = observed_admission_events(&owner);
     assert_eq!(events.len(), 1);
     assert!(matches!(
         &events[0].1,
-        AdmissionLifecycleState::Rejected { reason } if reason == "impossible_requirement"
+        AdmissionLifecycleState::Rejected { reason } if reason == "query_cap_exceeds_resident_capacity"
     ));
     assert_eq!(service.admission_snapshot().expect("snapshot").queued_queries, 0);
 }

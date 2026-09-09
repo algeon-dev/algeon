@@ -3,7 +3,7 @@ use std::sync::Arc;
 use super::*;
 
 #[test]
-fn bounded_native_query_reports_reservation_failure_before_host_materialization() {
+fn bounded_native_query_does_not_gate_host_materialization_on_modeled_overlap() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-materialization-reservation-failure");
     let path = dir.join("input.parquet");
     let input_schema = write_single_row_group_final_sort_input_parquet(&path, 4096);
@@ -61,20 +61,14 @@ fn bounded_native_query_reports_reservation_failure_before_host_materialization(
 
     let constrained_context = backend_context_with_grant(constrained_budget);
 
-    let error = match execute_query_plan(&constrained_context, &plan) {
-        Ok(_) => panic!("bounded execution should fail the host materialization reservation"),
-        Err(error) => error,
+    let result = execute_query_plan(&constrained_context, &plan)
+        .expect("modeled host overlap must not gate cap-only execution when physical allocations fit");
+    assert_eq!(result.metrics().reservation_denied_count, 0);
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
     };
-    assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
-    assert_eq!(error.fact_value("memory_boundary"), Some("host_materialization"));
-    assert_eq!(error.fact_value("reservation_kind"), Some("materialization"));
-    assert_eq!(error.fact_value("node_id"), Some("n2"));
-    assert_eq!(error.fact_value("stage"), Some("materialization"));
-    assert_eq!(error.fact_value("attempt"), Some("1"));
-    assert_eq!(error.fact_value("max_attempts"), Some("1"));
-    assert_eq!(error.fact_value("resume_boundary"), Some("host_materialization"));
-    assert_eq!(error.fact_value("committed_chunks"), Some("1"));
-    assert_eq!(error.fact_value("committed_partials"), Some("1"));
+    assert_eq!(batch.num_rows(), 4096);
+    assert_eq!(batch.num_columns(), 32);
 
     fs::remove_dir_all(dir).unwrap();
 }

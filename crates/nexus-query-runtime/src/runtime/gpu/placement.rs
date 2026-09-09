@@ -11,20 +11,17 @@ use nexus_query_planning::{admission::AttemptRequirement, capability::Reservatio
 
 #[cfg(test)]
 use super::DeviceResourceEnvelope;
-use super::{DeviceLedger, DeviceRegistry, DeviceResourceProfile};
+use super::{DeviceRegistry, DeviceResourceProfile};
 
 /// Internal placement input derived from planner-owned capability evidence.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 #[doc(hidden)]
 pub struct PlacementRequest {
-    /// Explicit required attempt floor proven before admission.
-    ///
-    /// This is retained for callers that already resolved a floor. New
-    /// query-service placement supplies [`Self::attempt_requirement`] so a
-    /// zero request floor resolves against each candidate profile.
+    /// Explicit query cap. `None` lets each device resolve its configured
+    /// default against the same resident snapshot used for admission.
     #[doc(hidden)]
-    pub required_floor_bytes: u64,
+    pub requested_query_cap_bytes: Option<u64>,
     /// Device-independent requirement resolved once per candidate ledger.
     #[doc(hidden)]
     pub attempt_requirement: Option<AttemptRequirement>,
@@ -35,13 +32,17 @@ pub struct PlacementRequest {
 }
 
 impl PlacementRequest {
-    /// Creates a placement request for a required attempt floor.
+    /// Creates a placement request. Zero selects the configured default.
     #[doc(hidden)]
-    pub fn new(required_floor_bytes: u64) -> Self {
-        Self { required_floor_bytes, attempt_requirement: None, required_capabilities: Vec::new() }
+    pub fn new(query_cap_bytes: u64) -> Self {
+        Self {
+            requested_query_cap_bytes: (query_cap_bytes > 0).then_some(query_cap_bytes),
+            attempt_requirement: None,
+            required_capabilities: Vec::new(),
+        }
     }
 
-    /// Resolves a zero configured floor using the candidate device profile.
+    /// Retains capability evidence for device executability filtering.
     #[doc(hidden)]
     pub fn with_attempt_requirement(mut self, attempt_requirement: AttemptRequirement) -> Self {
         self.attempt_requirement = Some(attempt_requirement);
@@ -58,11 +59,9 @@ impl PlacementRequest {
         self
     }
 
-    #[doc(hidden)]
-    pub fn required_floor_bytes_for(&self, ledger: &DeviceLedger) -> Result<u64> {
-        self.attempt_requirement
-            .as_ref()
-            .map_or(Ok(self.required_floor_bytes), |requirement| ledger.required_floor_bytes_for(requirement))
+    pub fn with_requested_query_cap_bytes(mut self, requested_query_cap_bytes: Option<u64>) -> Self {
+        self.requested_query_cap_bytes = requested_query_cap_bytes;
+        self
     }
 }
 
@@ -72,12 +71,12 @@ impl PlacementRequest {
 pub struct PlacementCandidate {
     #[doc(hidden)]
     pub ordinal: usize,
-    /// Floor resolved against this candidate's immutable profile.
+    /// Cap resolved against this candidate's resident snapshot.
     #[doc(hidden)]
-    pub required_floor_bytes: u64,
-    /// Headroom the normative equation offers a new grant on this device.
+    pub query_cap_bytes: u64,
+    /// Capacity remaining after this admission.
     #[doc(hidden)]
-    pub max_new_grant_bytes: u64,
+    pub spare_capacity_bytes: u64,
     #[doc(hidden)]
     pub active_attempts: usize,
     #[doc(hidden)]
@@ -110,13 +109,13 @@ pub struct PlacementCandidateSnapshot {
     /// the snapshot so callers do not reconstruct a different permanent-
     /// capacity classification after ranking.
     #[doc(hidden)]
-    pub can_ever_fit_required_floor: bool,
+    pub can_ever_fit_query_cap: bool,
 }
 
 impl PlacementCandidate {
     /// Spare bytes beyond this candidate's required floor after admission.
     fn spare_after(&self) -> u64 {
-        self.max_new_grant_bytes.saturating_sub(self.required_floor_bytes)
+        self.spare_capacity_bytes
     }
 }
 
@@ -153,9 +152,9 @@ pub fn preferred_placement_candidate(
 
 #[cfg(test)]
 #[doc(hidden)]
-pub fn rank_placement_candidates(mut candidates: Vec<PlacementCandidate>, required_floor_bytes: u64) -> Vec<usize> {
+pub fn rank_placement_candidates(mut candidates: Vec<PlacementCandidate>, query_cap_bytes: u64) -> Vec<usize> {
     for candidate in &mut candidates {
-        candidate.required_floor_bytes = required_floor_bytes;
+        candidate.query_cap_bytes = query_cap_bytes;
     }
     candidates.sort_by(compare_placement_candidates);
     candidates.into_iter().map(|candidate| candidate.ordinal).collect()
@@ -171,7 +170,7 @@ pub(crate) fn snapshot_placement_candidates(
     registry: &DeviceRegistry,
     request: &PlacementRequest,
     ordinals: impl IntoIterator<Item = usize>,
-    protected_ordinal: Option<usize>,
+    _protected_ordinal: Option<usize>,
 ) -> Result<Vec<PlacementCandidateSnapshot>> {
     // Every healthy device participates so the placement loop can distinguish
     // transiently busy devices (capacity fits, equation not yet satisfied)
@@ -189,22 +188,32 @@ pub(crate) fn snapshot_placement_candidates(
         if !matches!(snapshot.health, super::DeviceAdmissionHealth::Open) {
             continue;
         }
-        let required_floor_bytes = request.required_floor_bytes_for(context.ledger())?;
-        let can_ever_fit_required_floor = context.ledger().can_ever_fit_required_floor_bytes(required_floor_bytes)?;
-        let max_new_grant_bytes =
-            snapshot.max_new_grant_bytes(required_floor_bytes, protected_ordinal == Some(ordinal));
+        let query_cap_bytes = request.requested_query_cap_bytes.unwrap_or_else(|| {
+            snapshot
+                .default_query_limit_bytes
+                .min(snapshot.managed_capacity_bytes.saturating_sub(snapshot.frozen_resident_bytes))
+        });
+        let can_ever_fit_query_cap = snapshot.can_ever_fit_query_cap(request.requested_query_cap_bytes);
+        let admitted_cap = snapshot.admissible_query_cap_bytes(request.requested_query_cap_bytes);
+        let spare_capacity_bytes = admitted_cap.map_or(0, |cap| {
+            snapshot
+                .managed_capacity_bytes
+                .saturating_sub(snapshot.frozen_resident_bytes)
+                .saturating_sub(snapshot.live_grants_bytes)
+                .saturating_sub(cap)
+        });
         candidates.push(PlacementCandidateSnapshot {
             candidate: PlacementCandidate {
                 ordinal: context.device().ordinal(),
-                required_floor_bytes,
-                max_new_grant_bytes: max_new_grant_bytes.unwrap_or(0),
+                query_cap_bytes,
+                spare_capacity_bytes,
                 active_attempts: snapshot.active_attempts,
                 live_grants_bytes: snapshot.live_grants_bytes,
                 worker_depth: snapshot.worker_depth,
                 stream_slots_available: snapshot.stream_slots_available(),
             },
-            can_admit_now: max_new_grant_bytes.is_some(),
-            can_ever_fit_required_floor,
+            can_admit_now: admitted_cap.is_some(),
+            can_ever_fit_query_cap,
         });
     }
     Ok(candidates)
@@ -256,8 +265,8 @@ mod tests {
     ) -> PlacementCandidate {
         PlacementCandidate {
             ordinal,
-            required_floor_bytes: 0,
-            max_new_grant_bytes: max_new_grant,
+            query_cap_bytes: 0,
+            spare_capacity_bytes: max_new_grant,
             active_attempts: active,
             live_grants_bytes: live,
             worker_depth: depth,
@@ -310,7 +319,7 @@ mod tests {
             configured_limit_bytes: 1_000,
             headroom_bytes: 0,
             backend_reserve_bytes: 0,
-            attempt_floor_bytes: 100,
+            default_query_limit_bytes: 100,
             max_active_attempts: 1,
             source_work_per_attempt: 1,
             stream_pool_size: 2,
@@ -324,7 +333,7 @@ mod tests {
             configured_limit_bytes: 1_000,
             headroom_bytes: 0,
             backend_reserve_bytes: 0,
-            attempt_floor_bytes: 100,
+            default_query_limit_bytes: 100,
             max_active_attempts: 1,
             source_work_per_attempt: 1,
             stream_pool_size: 2,

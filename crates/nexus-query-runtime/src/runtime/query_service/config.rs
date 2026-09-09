@@ -1,7 +1,6 @@
 use std::time::Duration;
 
 use nexus_query_planning::{
-    admission::AttemptReservationPolicy,
     capability::{AggregateStrategyExecutionOptions, KeyedHashJoinStrategyOptions},
     chunk::SourceChunkPlanningOptions,
     dynamic_filter::DynamicFilterExecutionOptions,
@@ -22,9 +21,6 @@ pub struct QueueBounds {
     pub max_waiters: usize,
     /// Maximum time one waiter may remain queued. Must be nonzero.
     pub max_wait: Duration,
-    /// Number of compatible-device bypasses before a waiter protects a slot.
-    /// Must be nonzero to guarantee finite overtaking.
-    pub max_overtakes_per_waiter: u32,
 }
 
 impl QueueBounds {
@@ -34,13 +30,12 @@ impl QueueBounds {
     /// surfaces, but must not restate them. Keeping the construction here
     /// makes the runtime controller the sole owner of queue defaults.
     pub const fn canonical_default() -> Self {
-        Self { max_waiters: 64, max_wait: Duration::from_secs(30), max_overtakes_per_waiter: 4 }
+        Self { max_waiters: 64, max_wait: Duration::from_secs(30) }
     }
 
     pub(super) fn validate(&self) -> Result<()> {
         validate_nonzero_config_field("queue_bounds.max_waiters", self.max_waiters == 0)?;
-        validate_nonzero_config_field("queue_bounds.max_wait", self.max_wait.is_zero())?;
-        validate_nonzero_config_field("queue_bounds.max_overtakes_per_waiter", self.max_overtakes_per_waiter == 0)
+        validate_nonzero_config_field("queue_bounds.max_wait", self.max_wait.is_zero())
     }
 }
 
@@ -109,20 +104,6 @@ impl QueryExecutionConfig {
             max_retry_attempts: self.max_retry_attempts,
             min_retry_chunk_row_groups: self.min_retry_chunk_row_groups,
         }
-    }
-
-    /// The service-owned policy inputs used to resolve proof-held physical
-    /// reservation shapes before ledger admission.
-    pub(super) const fn attempt_reservation_policy(&self) -> AttemptReservationPolicy {
-        AttemptReservationPolicy::new(
-            self.max_source_chunk_bytes,
-            self.max_row_groups_per_chunk,
-            self.max_retry_attempts,
-            self.min_retry_chunk_row_groups,
-            self.source_scheduler_policy,
-            self.source_chunk_planning_mode,
-            self.source_chunk_planning_options,
-        )
     }
 }
 

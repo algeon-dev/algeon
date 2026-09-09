@@ -110,7 +110,7 @@ impl DeviceCapabilities {
 /// Frozen capacity and execution-slot bounds for one CUDA device.
 ///
 /// `cache_cap_bytes` reserves a bounded per-device cache share alongside the
-/// active-attempt floors within managed capacity.
+/// default query limit within managed capacity.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceResourceProfile {
     pub device_ordinal: usize,
@@ -121,7 +121,7 @@ pub struct DeviceResourceProfile {
     pub backend_reserve_bytes: u64,
     pub usable_capacity_bytes: u64,
     pub managed_capacity_bytes: u64,
-    pub attempt_floor_bytes: u64,
+    pub default_query_limit_bytes: u64,
     pub max_active_attempts: usize,
     pub root_lane_count: usize,
     pub root_stream_count: usize,
@@ -135,7 +135,7 @@ pub struct DeviceResourceProfile {
 /// Immutable input contract for one device's resolved resource envelope.
 ///
 /// These fields jointly define the admission envelope one device freezes at
-/// installation: capacity splits, the per-attempt floor, sloting, and cache
+/// installation: capacity splits, the default query limit, sloting, and cache
 /// share. `resolve` consumes the envelope; the derived capacities, lane and
 /// stream counts, and aux-source-work arithmetic stay computed outputs on
 /// [`DeviceResourceProfile`].
@@ -151,8 +151,8 @@ pub struct DeviceResourceEnvelope {
     pub headroom_bytes: u64,
     /// Backend-reserved bytes unavailable to managed attempts.
     pub backend_reserve_bytes: u64,
-    /// Per-attempt floor guaranteed inside managed capacity.
-    pub attempt_floor_bytes: u64,
+    /// Default per-query limit guaranteed inside managed capacity.
+    pub default_query_limit_bytes: u64,
     /// Maximum simultaneously admitted attempts.
     pub max_active_attempts: usize,
     /// Auxiliary source-work slots granted per attempt.
@@ -161,7 +161,7 @@ pub struct DeviceResourceEnvelope {
     pub stream_pool_size: usize,
     /// Installed worker-job capacity; must cover root and auxiliary work.
     pub worker_job_capacity: usize,
-    /// Bounded per-device cache share reserved alongside attempt floors.
+    /// Bounded per-device cache share reserved alongside the default query limit.
     pub cache_cap_bytes: u64,
 }
 
@@ -175,7 +175,7 @@ impl DeviceResourceProfile {
             configured_limit_bytes,
             headroom_bytes,
             backend_reserve_bytes,
-            attempt_floor_bytes,
+            default_query_limit_bytes,
             max_active_attempts,
             source_work_per_attempt,
             stream_pool_size,
@@ -207,41 +207,36 @@ impl DeviceResourceProfile {
                 invalid(device_ordinal, "max_active_attempts", "must be greater than zero").with_fact("reason", "zero")
             );
         }
-        if attempt_floor_bytes == 0 {
-            return Err(
-                invalid(device_ordinal, "attempt_floor_bytes", "must be greater than zero").with_fact("reason", "zero")
-            );
+        if default_query_limit_bytes == 0 {
+            return Err(invalid(device_ordinal, "default_query_limit_bytes", "must be greater than zero")
+                .with_fact("reason", "zero"));
         }
-        let source_work_per_attempt = source_work_per_attempt.max(1);
-        let active_attempts_u64 = u64::try_from(max_active_attempts).map_err(|_error| {
-            invalid(device_ordinal, "max_active_attempts", "does not fit capacity arithmetic")
-                .with_fact("reason", "out_of_range")
-        })?;
-        let required_floor = attempt_floor_bytes.checked_mul(active_attempts_u64).ok_or_else(|| {
-            invalid(device_ordinal, "attempt_floor_bytes", "attempt floor multiplication overflowed")
-                .with_fact("reason", "attempt_floor_overflow")
-        })?;
-        if required_floor > managed_capacity_bytes {
-            return Err(invalid(device_ordinal, "attempt_floor_bytes", "attempt floors exceed managed capacity")
-                .with_fact("reason", "attempt_floor_exceeds_managed_capacity")
-                .with_fact("attempt_floor_total_bytes", required_floor)
-                .with_fact("managed_capacity_bytes", managed_capacity_bytes));
+        if default_query_limit_bytes > managed_capacity_bytes {
+            return Err(invalid(
+                device_ordinal,
+                "default_query_limit_bytes",
+                "default query limit exceeds managed capacity",
+            )
+            .with_fact("reason", "default_query_limit_exceeds_managed_capacity")
+            .with_fact("default_query_limit_bytes", default_query_limit_bytes)
+            .with_fact("managed_capacity_bytes", managed_capacity_bytes));
         }
-        let cache_attempt_floor = cache_cap_bytes.checked_add(required_floor).ok_or_else(|| {
-            invalid(device_ordinal, "cache_cap_bytes", "cache cap and attempt floors overflow capacity arithmetic")
+        let cache_query_limit = cache_cap_bytes.checked_add(default_query_limit_bytes).ok_or_else(|| {
+            invalid(device_ordinal, "cache_cap_bytes", "cache cap and default query limit overflow capacity arithmetic")
                 .with_fact("reason", "cache_cap_overflow")
         })?;
-        if cache_attempt_floor > managed_capacity_bytes {
+        if cache_query_limit > managed_capacity_bytes {
             return Err(invalid(
                 device_ordinal,
                 "cache_cap_bytes",
-                "cache cap plus attempt floors exceed managed capacity",
+                "cache cap plus default query limit exceed managed capacity",
             )
             .with_fact("reason", "cache_cap_exceeds_managed_capacity")
             .with_fact("cache_cap_bytes", cache_cap_bytes)
-            .with_fact("attempt_floor_total_bytes", required_floor)
+            .with_fact("default_query_limit_bytes", default_query_limit_bytes)
             .with_fact("managed_capacity_bytes", managed_capacity_bytes));
         }
+        let source_work_per_attempt = source_work_per_attempt.max(1);
         let aux_source_work_capacity = max_active_attempts.checked_mul(source_work_per_attempt).ok_or_else(|| {
             invalid(device_ordinal, "source_work_per_attempt", "auxiliary source-work capacity overflowed")
                 .with_fact("reason", "aux_source_work_overflow")
@@ -266,7 +261,7 @@ impl DeviceResourceProfile {
             backend_reserve_bytes,
             usable_capacity_bytes,
             managed_capacity_bytes,
-            attempt_floor_bytes,
+            default_query_limit_bytes,
             max_active_attempts,
             root_lane_count: max_active_attempts,
             root_stream_count: max_active_attempts,
@@ -298,7 +293,7 @@ mod tests {
             configured_limit_bytes: 1_000,
             headroom_bytes: 100,
             backend_reserve_bytes: 100,
-            attempt_floor_bytes: 100,
+            default_query_limit_bytes: 100,
             max_active_attempts: 2,
             source_work_per_attempt: 3,
             stream_pool_size: 8,
@@ -311,7 +306,7 @@ mod tests {
             configured_limit_bytes: 2_000,
             headroom_bytes: 200,
             backend_reserve_bytes: 100,
-            attempt_floor_bytes: 100,
+            default_query_limit_bytes: 100,
             max_active_attempts: 3,
             source_work_per_attempt: 1,
             stream_pool_size: 6,
@@ -326,7 +321,7 @@ mod tests {
     }
 
     #[test]
-    fn rejects_invalid_capacity_and_floor_arithmetic() {
+    fn rejects_invalid_capacity_and_query_limit_arithmetic() {
         for (limit, headroom, reserve, reason) in [
             (99, 100, 0, "configured_limit_below_headroom"),
             (100, 0, 101, "backend_reserve_exceeds_usable_capacity"),
@@ -337,7 +332,7 @@ mod tests {
                 configured_limit_bytes: limit,
                 headroom_bytes: headroom,
                 backend_reserve_bytes: reserve,
-                attempt_floor_bytes: 0,
+                default_query_limit_bytes: 0,
                 max_active_attempts: 1,
                 source_work_per_attempt: 1,
                 stream_pool_size: 2,
@@ -351,10 +346,10 @@ mod tests {
         }
         let error = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
             device_ordinal: 7,
-            configured_limit_bytes: u64::MAX,
+            configured_limit_bytes: u64::MAX - 1,
             headroom_bytes: 0,
             backend_reserve_bytes: 0,
-            attempt_floor_bytes: u64::MAX,
+            default_query_limit_bytes: u64::MAX,
             max_active_attempts: 2,
             source_work_per_attempt: 1,
             stream_pool_size: 4,
@@ -363,17 +358,17 @@ mod tests {
             cache_cap_bytes: 0,
         })
         .unwrap_err();
-        assert_eq!(error.fact_value("reason"), Some("attempt_floor_overflow"));
+        assert_eq!(error.fact_value("reason"), Some("default_query_limit_exceeds_managed_capacity"));
     }
 
     #[test]
-    fn validates_cache_cap_against_managed_capacity_and_floor() {
+    fn validates_cache_cap_against_managed_capacity() {
         let profile = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
             device_ordinal: 0,
             configured_limit_bytes: 1_000,
             headroom_bytes: 0,
             backend_reserve_bytes: 0,
-            attempt_floor_bytes: 100,
+            default_query_limit_bytes: 100,
             max_active_attempts: 2,
             source_work_per_attempt: 1,
             stream_pool_size: 4,
@@ -388,26 +383,26 @@ mod tests {
             configured_limit_bytes: 1_000,
             headroom_bytes: 0,
             backend_reserve_bytes: 0,
-            attempt_floor_bytes: 100,
+            default_query_limit_bytes: 100,
             max_active_attempts: 2,
             source_work_per_attempt: 1,
             stream_pool_size: 4,
             worker_job_capacity: 4,
             device_capabilities: DeviceCapabilities::default(),
-            cache_cap_bytes: 801,
+            cache_cap_bytes: 1_001,
         })
         .unwrap_err();
         assert_eq!(error.fact_value("reason"), Some("cache_cap_exceeds_managed_capacity"));
     }
 
     #[test]
-    fn rejects_zero_attempt_floor_for_an_otherwise_valid_profile() {
+    fn rejects_zero_default_query_limit_for_an_otherwise_valid_profile() {
         let error = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
             device_ordinal: 7,
             configured_limit_bytes: 100,
             headroom_bytes: 0,
             backend_reserve_bytes: 0,
-            attempt_floor_bytes: 0,
+            default_query_limit_bytes: 0,
             max_active_attempts: 1,
             source_work_per_attempt: 1,
             stream_pool_size: 2,
@@ -416,18 +411,18 @@ mod tests {
             cache_cap_bytes: 0,
         })
         .unwrap_err();
-        assert_eq!(error.fact_value("field"), Some("attempt_floor_bytes"));
+        assert_eq!(error.fact_value("field"), Some("default_query_limit_bytes"));
         assert_eq!(error.fact_value("reason"), Some("zero"));
     }
 
     #[test]
-    fn rejects_floor_and_slot_capacity_below_requirements() {
-        let floor = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
+    fn rejects_query_limit_and_slot_capacity_below_requirements() {
+        let query_limit = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
             device_ordinal: 3,
             configured_limit_bytes: 100,
             headroom_bytes: 0,
             backend_reserve_bytes: 0,
-            attempt_floor_bytes: 51,
+            default_query_limit_bytes: 101,
             max_active_attempts: 2,
             source_work_per_attempt: 1,
             stream_pool_size: 4,
@@ -436,13 +431,13 @@ mod tests {
             cache_cap_bytes: 0,
         })
         .unwrap_err();
-        assert_eq!(floor.fact_value("reason"), Some("attempt_floor_exceeds_managed_capacity"));
+        assert_eq!(query_limit.fact_value("reason"), Some("default_query_limit_exceeds_managed_capacity"));
         let slots = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
             device_ordinal: 3,
             configured_limit_bytes: 100,
             headroom_bytes: 0,
             backend_reserve_bytes: 0,
-            attempt_floor_bytes: 10,
+            default_query_limit_bytes: 10,
             max_active_attempts: 2,
             source_work_per_attempt: 3,
             stream_pool_size: 7,

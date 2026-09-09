@@ -1,7 +1,7 @@
 use std::{cell::Cell, rc::Rc};
 
 use super::{
-    ActiveReservationEventContext, GpuDataFrame, MemoryGrant, MemoryGrantLiveReservation, MemoryReservationEvent,
+    ActiveReservationEventContext, FrozenResidentLease, GpuDataFrame, MemoryGrant, MemoryReservationEvent,
     MemoryReservationEventAction, MemoryReservationRequest, MemorySpaceId, QueryMetrics, ReservationObservation,
     ReservationProjectionLedgerHandle, ReservationTracker, Result, RuntimeReservationAction,
     RuntimeReservationDisposition, RuntimeSpanId, TaskAttemptId,
@@ -56,7 +56,7 @@ pub(in crate::exec) struct ActiveReservation {
     pub(super) bytes: u64,
     pub(super) charged_bytes: u64,
     /// Bytes in `charged_bytes` whose ledger charge now belongs to a
-    /// [`MemoryGrantLiveReservation`].
+    /// [`FrozenResidentLease`].
     pub(super) transferred_live_charge_bytes: u64,
     pub(super) released: bool,
 }
@@ -208,7 +208,7 @@ impl ActiveReservation {
     /// lifetime. The ledger remains charged exactly once throughout the
     /// transfer; releasing this tracker still emits its normal historical
     /// release event but leaves the transferred bytes for the result handle.
-    pub(in crate::exec) fn transfer_grant_live_reservation(&mut self) -> Option<MemoryGrantLiveReservation> {
+    pub(in crate::exec) fn transfer_grant_live_reservation(&mut self) -> Option<FrozenResidentLease> {
         if self.released || self.charged_bytes == 0 || self.transferred_live_charge_bytes != 0 {
             return None;
         }
@@ -216,6 +216,35 @@ impl ActiveReservation {
             self.live_accounting.as_ref().and_then(|grant| grant.transfer_live_reservation(self.charged_bytes))?;
         self.transferred_live_charge_bytes = self.charged_bytes;
         Some(retained)
+    }
+
+    /// Retains the exact escaping output owner when P1 cap-only execution did
+    /// not create a projection reservation for it. Borrowed aliases remain
+    /// owned by their input lease and must not be charged to this attempt.
+    pub(in crate::exec) fn retain_exact_grant_output_if_uncharged(
+        &self,
+        output_bytes: u64,
+    ) -> Result<Option<FrozenResidentLease>> {
+        if self.released || self.is_alias() || self.charged_bytes != 0 || output_bytes == 0 {
+            return Ok(None);
+        }
+        self.live_accounting.as_ref().map_or(Ok(None), |grant| grant.retain_live_reservation(output_bytes))
+    }
+
+    /// Retains the escaping GPU-resident output owner for this reservation.
+    ///
+    /// Every `GpuResident` sink uses this one path so an output escapes with
+    /// a lease whether or not its stage created a projection reservation.
+    /// The lease's byte count is executor-side evidence: the frozen resident
+    /// charge is reconciled to the allocator's own measurement at freeze.
+    pub(in crate::exec) fn retain_escaping_resident_output(
+        &mut self,
+        output_bytes: u64,
+    ) -> Result<Option<FrozenResidentLease>> {
+        match self.transfer_grant_live_reservation() {
+            Some(reservation) => Ok(Some(reservation)),
+            None => self.retain_exact_grant_output_if_uncharged(output_bytes),
+        }
     }
 
     pub(in crate::exec) fn is_alias(&self) -> bool {

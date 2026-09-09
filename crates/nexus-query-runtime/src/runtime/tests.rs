@@ -26,10 +26,11 @@ fn p6_snapshot_json_v1_samples() -> [(&'static str, Value); 9] {
         device_ordinal: 3,
         sequence: 17,
         managed_capacity_bytes: 10_000,
-        configured_floor_bytes: 100,
+        default_query_limit_bytes: 100,
         max_active_attempts: 4,
         active_attempts: 1,
         live_grants_bytes: 900,
+        frozen_resident_bytes: 0,
         live_reserved_bytes: 640,
         root_streams_available: 2,
         auxiliary_streams_available: 3,
@@ -49,6 +50,7 @@ fn p6_snapshot_json_v1_samples() -> [(&'static str, Value); 9] {
             admission_request_id: crate::observability::AdmissionRequestId::new(29),
             grant_bytes: 900,
             live_reserved_bytes: 640,
+            frozen_resident_bytes: None,
         }],
     };
     let device_memory_failure = DeviceMemoryFailureReport {

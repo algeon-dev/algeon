@@ -6,7 +6,7 @@ use std::{
 use super::*;
 
 #[test]
-fn auxiliary_spawn_is_rejected_when_its_class_is_saturated() {
+fn execution_spawn_is_rejected_when_its_class_is_saturated() {
     let pool = GpuExecutionPool::new_with_tracker_and_classes(
         cudf::DeviceId::DEFAULT.ordinal(),
         2,
@@ -30,7 +30,7 @@ fn auxiliary_spawn_is_rejected_when_its_class_is_saturated() {
     assert_eq!(error.fact_value("reason"), Some("gpu_execution_pool_class_saturated"));
     assert_eq!(error.fact_value("job_class"), Some("auxiliary"));
 
-    // Lifecycle work still admits: the root class is untouched.
+    // Lifecycle work still admits: the lifecycle class is untouched.
     pool.spawn(GpuExecutionJobKind::Cleanup, async {}).unwrap();
     barrier.wait();
 }

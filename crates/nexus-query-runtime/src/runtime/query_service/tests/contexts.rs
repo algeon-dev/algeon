@@ -164,7 +164,7 @@ fn cache_enabled_context_exposes_source_and_graph_leases_from_one_domain() {
         vec![GpuBackendDeviceConfig::new(
             GpuBackendDeviceProfile::new(0)
                 .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 64 * 1024 * 1024 })
-                .with_attempt_floor_bytes(8 * 1024 * 1024)
+                .with_default_query_limit_bytes(8 * 1024 * 1024)
                 .with_source_work_per_attempt(2)
                 .with_max_active_attempts(1)
                 .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(3, 1, 1))
@@ -240,7 +240,7 @@ fn admitted_context_gate_rejects_missing_identity_device_and_scope_proofs() {
             .validate_admitted_plan_capabilities(&changed_plan)
             .expect_err("a changed plan must not reuse an admitted proof");
         assert_eq!(error.code(), QueryErrorCode::UnsupportedPlanShape);
-        assert_eq!(error.fact_value("reason"), Some("admitted_reservation_envelope_mismatch"));
+        assert_eq!(error.fact_value("reason"), Some("admitted_capability_scope_mismatch"));
 
         drop(admitted);
         handle.finish();
@@ -581,14 +581,10 @@ fn finish_vs_runtime_derivation_is_linearizable_and_releases_once() {
             },
         };
         drop(handle);
-        if runtime.is_some() {
-            assert!(
-                service.try_admit_query().unwrap().is_none(),
-                "a runtime linearized before finish must retain admission"
-            );
-        }
+        let next = service
+            .admit_query()
+            .expect("a derived runtime is not an escaping owner and each raced query releases exactly once");
         drop(runtime);
-        let next = service.admit_query().expect("each raced query releases admission exactly once");
         drop(next);
     }
     service.close_and_wait_for_quiescence(Duration::from_secs(5)).unwrap();
@@ -727,7 +723,7 @@ fn escaped_context_causes_bounded_shutdown_timeout_until_final_anchor_drops() {
     drop(service);
 }
 #[test]
-fn held_runtime_and_produced_object_delay_service_drain_until_last_provenance_drop() {
+fn raw_runtime_output_is_not_an_escaping_owner_and_does_not_hold_admission() {
     let service = try_guaranteed_runtime_test_service().expect("first guaranteed service");
     let handle = service.admit_query().unwrap();
     let admitted_context = handle.acquire_context().unwrap();
@@ -739,12 +735,11 @@ fn held_runtime_and_produced_object_delay_service_drain_until_last_provenance_dr
     drop(retained_context);
     drop(handle);
 
-    let timeout = service.close_and_wait_for_quiescence(Duration::from_millis(10)).unwrap_err();
-    assert_eq!(timeout.fact_value("reason"), Some("query_service_shutdown_timeout"));
-    assert_eq!(timeout.fact_value("deadline_stage"), Some("admission_quiescence"));
-
+    service
+        .close_and_wait_for_quiescence(Duration::from_secs(5))
+        .expect("only a frozen resident lease may retain an escaping output after attempt cleanup");
+    assert_eq!(series.len(), 3, "the native owner remains valid while its device is quarantined");
     drop(series);
-    service.close_and_wait_for_quiescence(Duration::from_secs(5)).unwrap();
     drop(service);
 }
 #[test]

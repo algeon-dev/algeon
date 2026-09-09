@@ -442,7 +442,6 @@ async fn run_measured(
             &devices,
             plan.arrivals.len(),
             profile.backend.queue.max_queued_attempts,
-            profile.backend.queue.max_overtakes_per_waiter,
             driven.observed_peak_queued_attempts,
             driven.dropped_overrun_arrivals,
             driven.begin_failures,
@@ -627,7 +626,9 @@ async fn run_measured(
             shared_session_count: profile.session.shared_session_count,
             queue_max_queued_attempts: profile.backend.queue.max_queued_attempts,
             queue_max_queue_wait_ms: profile.backend.queue.max_queue_wait_ms,
-            queue_max_overtakes_per_waiter: profile.backend.queue.max_overtakes_per_waiter,
+            // Retain the historical artifact field as an explicit zero fact;
+            // queue admission no longer has a configurable overtake budget.
+            queue_max_overtakes_per_waiter: 0,
             // `GpuBackendDeviceStartupRecord` is not one of the nine
             // `Serialize` snapshot types and transitively holds a cuDF type, so
             // the artifact records the same startup facts through the
@@ -1002,8 +1003,7 @@ pub(super) fn build_backend(profile: &RunProfile) -> ToolResult<NexusGpuBackend>
     let native_execution = profile.backend.native_execution;
     let queue = NexusGpuQueuePolicy::default()
         .with_max_queued_attempts(profile.backend.queue.max_queued_attempts)
-        .with_max_queue_wait(Duration::from_millis(profile.backend.queue.max_queue_wait_ms))
-        .with_max_overtakes_per_waiter(profile.backend.queue.max_overtakes_per_waiter);
+        .with_max_queue_wait(Duration::from_millis(profile.backend.queue.max_queue_wait_ms));
     let backend = NexusGpuBackend::builder()
         .with_native_execution_config(NexusNativeExecutionConfig::bounded(
             native_execution.device_budget_bytes,
@@ -1023,7 +1023,7 @@ pub(super) fn build_backend(profile: &RunProfile) -> ToolResult<NexusGpuBackend>
                 .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: device.memory_limit_bytes })
                 .with_backend_reserve_bytes(device.backend_reserve_bytes)
                 .with_cache_cap_bytes(device.cache_cap_bytes)
-                .with_attempt_floor_bytes(device.attempt_floor_bytes)
+                .with_default_query_limit_bytes(device.default_query_limit_bytes)
                 .with_source_work_per_attempt(device.source_work_per_attempt)
                 .with_max_active_attempts(device.max_active_attempts)
                 .with_telemetry(device.install_telemetry)

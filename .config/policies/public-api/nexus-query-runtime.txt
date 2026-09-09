@@ -735,6 +735,7 @@ pub nexus_query_runtime::observability::AttemptAllocatorEventSource::Physical
 pub nexus_query_runtime::observability::AttemptAllocatorEventSource::ReservationLimit
 pub nexus_query_runtime::observability::AttemptAllocatorEventSource::Unknown
 pub enum nexus_query_runtime::observability::AttemptCapacityDisposition
+pub nexus_query_runtime::observability::AttemptCapacityDisposition::FrozenResident
 pub nexus_query_runtime::observability::AttemptCapacityDisposition::NotAdmitted
 pub nexus_query_runtime::observability::AttemptCapacityDisposition::Released
 pub nexus_query_runtime::observability::AttemptCapacityDisposition::RetainedQuarantine
@@ -769,6 +770,7 @@ pub nexus_query_runtime::observability::AttemptFailureFactValue::CugraphStdBadAl
 pub nexus_query_runtime::observability::AttemptFailureFactValue::DeadlineExpired
 pub nexus_query_runtime::observability::AttemptFailureFactValue::MemoryGrantWaitTimeout
 pub nexus_query_runtime::observability::AttemptFailureFactValue::ProtectedWaiterNoRunnableDevice
+pub nexus_query_runtime::observability::AttemptFailureFactValue::QueryCapExceedsResidentCapacity
 pub nexus_query_runtime::observability::AttemptFailureFactValue::QueueWaitElapsed
 pub nexus_query_runtime::observability::AttemptFailureFactValue::RequiredFloorExceedsDeviceCapacity
 pub enum nexus_query_runtime::observability::AttemptFailureOperation
@@ -2127,6 +2129,9 @@ impl nexus_query_runtime::runtime::NvidiaFsProbeStatus
 pub const fn nexus_query_runtime::runtime::NvidiaFsProbeStatus::as_str(&self) -> &'static str
 pub fn nexus_query_runtime::runtime::NvidiaFsProbeStatus::path(&self) -> core::option::Option<&std::path::Path>
 pub enum nexus_query_runtime::runtime::QueryAdmissionOutcome
+pub nexus_query_runtime::runtime::QueryAdmissionOutcome::BudgetUnavailable
+pub nexus_query_runtime::runtime::QueryAdmissionOutcome::BudgetUnavailable::largest_eligible_cap_bytes: core::option::Option<u64>
+pub nexus_query_runtime::runtime::QueryAdmissionOutcome::BudgetUnavailable::requested_cap_bytes: core::option::Option<u64>
 pub nexus_query_runtime::runtime::QueryAdmissionOutcome::Cancelled
 pub nexus_query_runtime::runtime::QueryAdmissionOutcome::CapabilityRejected
 pub nexus_query_runtime::runtime::QueryAdmissionOutcome::Capacity
@@ -2166,7 +2171,9 @@ pub const fn nexus_query_runtime::runtime::AttemptAllocationDomain::cap_bytes(&s
 pub fn nexus_query_runtime::runtime::AttemptAllocationDomain::create_member(&self, &cudf::runtime::stream::CudaStream) -> nexus_query_planning::error::Result<cudf::core::memory::StreamReservationLease>
 pub fn nexus_query_runtime::runtime::AttemptAllocationDomain::device_ordinal(&self) -> usize
 pub const fn nexus_query_runtime::runtime::AttemptAllocationDomain::domain_id(&self) -> u64
+pub fn nexus_query_runtime::runtime::AttemptAllocationDomain::freeze(&self) -> nexus_query_planning::error::Result<cudf::core::memory::QueryMemoryDomainUsage>
 pub const fn nexus_query_runtime::runtime::AttemptAllocationDomain::grant_identity(&self) -> GrantIdentity
+pub fn nexus_query_runtime::runtime::AttemptAllocationDomain::live_allocations(&self) -> nexus_query_planning::error::Result<alloc::vec::Vec<cudf::core::memory::QueryMemoryDomainAllocation>>
 pub fn nexus_query_runtime::runtime::AttemptAllocationDomain::usage(&self) -> nexus_query_planning::error::Result<cudf::core::memory::QueryMemoryDomainUsage>
 pub struct nexus_query_runtime::runtime::BackendAdmissionMetricsSnapshot
 pub nexus_query_runtime::runtime::BackendAdmissionMetricsSnapshot::active_attempts: u64
@@ -2294,7 +2301,6 @@ pub fn nexus_query_runtime::runtime::ExecutionContext::bounded_device_budget_byt
 pub fn nexus_query_runtime::runtime::ExecutionContext::builder() -> nexus_query_runtime::runtime::context::builder::ExecutionContextBuilder
 pub fn nexus_query_runtime::runtime::ExecutionContext::cancellation(&self) -> &nexus_query_runtime::runtime::ExecutionCancellation
 pub fn nexus_query_runtime::runtime::ExecutionContext::check_cancellation(&self, &'static str) -> nexus_query_planning::error::Result<()>
-pub fn nexus_query_runtime::runtime::ExecutionContext::composed_schedule_projection(&self) -> nexus_query_planning::error::Result<nexus_query_planning::schedule_projection::AttemptComposedScheduleProjection>
 pub fn nexus_query_runtime::runtime::ExecutionContext::deployment_io_capability(&self) -> &nexus_query_runtime::runtime::DeploymentIoCapability
 pub fn nexus_query_runtime::runtime::ExecutionContext::device_memory_space(&self) -> nexus_query_planning::execution_contracts::MemorySpaceId
 pub fn nexus_query_runtime::runtime::ExecutionContext::device_placement(&self) -> nexus_query_planning::execution_contracts::DevicePlacement
@@ -2382,9 +2388,9 @@ pub nexus_query_runtime::runtime::GpuBackendCoreIdentity::resource_core: u64
 pub nexus_query_runtime::runtime::GpuBackendCoreIdentity::resource_generation: u64
 pub struct nexus_query_runtime::runtime::GpuBackendDeviceConfig
 impl nexus_query_runtime::runtime::GpuBackendDeviceConfig
-pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::attempt_floor_bytes(&self) -> core::option::Option<u64>
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::backend_reserve_bytes(&self) -> u64
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::cache_cap_bytes(&self) -> u64
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::default_query_limit_bytes(&self) -> core::option::Option<u64>
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::device_capabilities(&self) -> &DeviceCapabilities
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::device_ordinal(&self) -> usize
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceConfig::install_telemetry(&self) -> bool
@@ -2405,12 +2411,12 @@ impl nexus_query_runtime::runtime::GpuBackendDeviceInstallationBounds
 pub const fn nexus_query_runtime::runtime::GpuBackendDeviceInstallationBounds::new(usize, usize, usize) -> Self
 pub struct nexus_query_runtime::runtime::GpuBackendDeviceProfile
 impl nexus_query_runtime::runtime::GpuBackendDeviceProfile
-pub const nexus_query_runtime::runtime::GpuBackendDeviceProfile::DEFAULT_ATTEMPT_FLOOR_BYTES: core::option::Option<u64>
 pub const nexus_query_runtime::runtime::GpuBackendDeviceProfile::DEFAULT_MAX_ACTIVE_ATTEMPTS: usize
+pub const nexus_query_runtime::runtime::GpuBackendDeviceProfile::DEFAULT_QUERY_LIMIT_BYTES: core::option::Option<u64>
 pub const nexus_query_runtime::runtime::GpuBackendDeviceProfile::DEFAULT_SOURCE_WORK_PER_ATTEMPT: usize
-pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::attempt_floor_bytes(&self) -> core::option::Option<u64>
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::backend_reserve_bytes(&self) -> u64
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::cache_cap_bytes(&self) -> u64
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::default_query_limit_bytes(&self) -> core::option::Option<u64>
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::device_capabilities(&self) -> &DeviceCapabilities
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::device_ordinal(&self) -> usize
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::install_telemetry(&self) -> bool
@@ -2419,9 +2425,9 @@ pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::max_active_attempt
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::memory_limit(&self) -> nexus_query_runtime::runtime::GpuDeviceMemoryLimit
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::new(usize) -> Self
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::source_work_per_attempt(&self) -> usize
-pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::with_attempt_floor_bytes(self, u64) -> Self
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::with_backend_reserve_bytes(self, u64) -> Self
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::with_cache_cap_bytes(self, u64) -> Self
+pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::with_default_query_limit_bytes(self, u64) -> Self
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::with_device_capabilities(self, DeviceCapabilities) -> Self
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::with_installation_bounds(self, nexus_query_runtime::runtime::GpuBackendDeviceInstallationBounds) -> Self
 pub fn nexus_query_runtime::runtime::GpuBackendDeviceProfile::with_max_active_attempts(self, usize) -> Self
@@ -2557,6 +2563,7 @@ pub fn nexus_query_runtime::runtime::QueryAdmissionRequest::new() -> Self
 pub fn nexus_query_runtime::runtime::QueryAdmissionRequest::planned_capability_proof(&self) -> core::option::Option<&nexus_query_planning::admission::requirement::capability::QueryPlanCapabilityProof>
 pub fn nexus_query_runtime::runtime::QueryAdmissionRequest::with_attempt_binding(self, nexus_query_runtime::attempt::AttemptAdmissionBinding) -> Self
 pub fn nexus_query_runtime::runtime::QueryAdmissionRequest::with_execution_cancellation(self, nexus_query_runtime::runtime::ExecutionCancellation) -> Self
+pub fn nexus_query_runtime::runtime::QueryAdmissionRequest::with_query_cap_bytes(self, u64) -> Self
 pub fn nexus_query_runtime::runtime::QueryAdmissionRequest::with_query_plan_capability_proof(self, nexus_query_planning::admission::requirement::capability::QueryPlanCapabilityProof) -> Self
 pub fn nexus_query_runtime::runtime::QueryAdmissionRequest::with_queue_deadline(self, std::time::Instant) -> Self
 pub fn nexus_query_runtime::runtime::QueryAdmissionRequest::with_runtime_observation_activity(self, nexus_query_runtime::runtime::QueryActivityLease) -> Self
@@ -2624,7 +2631,6 @@ pub fn nexus_query_runtime::runtime::QueryServiceStreamPool::acquire(&self) -> n
 pub fn nexus_query_runtime::runtime::QueryServiceStreamPool::device(&self) -> cudf::runtime::device::DeviceId
 pub fn nexus_query_runtime::runtime::QueryServiceStreamPool::pool_size(&self) -> usize
 pub struct nexus_query_runtime::runtime::QueueBounds
-pub nexus_query_runtime::runtime::QueueBounds::max_overtakes_per_waiter: u32
 pub nexus_query_runtime::runtime::QueueBounds::max_wait: core::time::Duration
 pub nexus_query_runtime::runtime::QueueBounds::max_waiters: usize
 impl nexus_query_runtime::runtime::QueueBounds

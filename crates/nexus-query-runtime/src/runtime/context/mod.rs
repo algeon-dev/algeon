@@ -13,9 +13,7 @@ use ::object_store::ObjectStoreExt;
 #[cfg(any(test, feature = "test-hooks"))]
 use bytes::Bytes;
 use nexus_query_planning::{
-    admission::{
-        AttemptBoundDerivation, AttemptReservationEnvelope, AttemptReservationPolicy, QueryPlanCapabilityProof,
-    },
+    admission::{AttemptRequirement, QueryPlanCapabilityProof},
     capability::AggregateStrategyExecutionOptions,
     chunk::SourceChunkPlanningOptions,
     error::{QueryError, QueryErrorCode, Result},
@@ -36,7 +34,6 @@ use super::{
     cache_events::{LakehouseCacheFillEventSink, LakehouseCacheFillEventSnapshot},
     cache_fill::{CacheFillConcurrencyGate, CacheFillOperationPermit},
     default_service_stream_pool_size_for_device,
-    gpu::MemoryGrantPhase,
     io_lifecycle::{IoLifecycle, IoLifecycleLease},
     object_store::{
         ObjectStoreCustomFetchResult, ObjectStoreFetchResult, S3ObjectStoreKey, SourceObjectStoreRegistry,
@@ -991,8 +988,6 @@ struct ActivatedDeferredResidentPhase {
     consumer_execution_scope_fingerprint: String,
     inputs: Vec<ActivatedDeferredResidentInput>,
     capability_proof: QueryPlanCapabilityProof,
-    reservation_envelope: AttemptReservationEnvelope,
-    phase_grant: MemoryGrantPhase,
     grant_identity: crate::runtime::gpu::GrantIdentity,
 }
 
@@ -1045,8 +1040,6 @@ impl ActivatedDeferredResidentInput {
             || input.frame().memory_identity() != self.input_memory_identity
             || input.producer_execution_scope() != Some(&self.producer_execution_scope_fingerprint)
             || row_count != self.input_row_count
-            || phase.phase_grant.grant_identity() != grant.identity()
-            || phase.reservation_envelope.complete_phase_peak_bytes() != Some(phase.phase_grant.required_bytes())
             || (physical_bytes > 0 && !retained_by_grant)
         {
             return Err(QueryError::new(
@@ -1332,13 +1325,13 @@ impl ExecutionContext {
     /// Returns the cudf runtime used for all GPU operations.
     pub fn runtime(&self) -> Result<cudf::Runtime> {
         let operation = "nexus_query_engine.runtime.context.runtime";
-        let Some(resource_epoch) = self.acquire_resource_epoch(operation)? else {
-            return Ok(self.runtime.as_ref().clone());
-        };
-        let retained: Arc<dyn Send + Sync> = resource_epoch;
-        self.runtime
-            .with_retained_lifetime(retained)
-            .map_err(|error| QueryError::from_cudf(operation, "failed to derive a counted query runtime", error))
+        // Validate the query/service epoch at acquisition time, but do not
+        // embed it in GPU allocations. Escaping allocations are owned by a
+        // FrozenResidentLease; unowned residual allocations must reach final
+        // validation so cleanup can fail closed instead of keeping the query
+        // epoch alive forever and preventing B-to-R handoff.
+        drop(self.acquire_resource_epoch(operation)?);
+        Ok(self.runtime.as_ref().clone())
     }
 
     /// Acquire permission for one file-backed native I/O call.
@@ -1743,6 +1736,122 @@ impl ExecutionContext {
         Ok(Some((proof, immutable_grant)))
     }
 
+    fn validate_admitted_capability_evidence(&self, evidence: &AttemptRequirement, plan: &QueryPlan) -> Result<()> {
+        evidence.validate_covers_plan(plan)?;
+        let execution_scope = nexus_query_planning::admission::canonical_execution_scope_fingerprint(plan);
+        let caller_visible_plan = plan.clone_with_caller_visible_sink_contract();
+        let expected_schema = nexus_query_planning::admission::log_safe_fingerprint(&format!(
+            "{:?}",
+            caller_visible_plan.output_schema()
+        ));
+        let scope_matches = evidence.reservation_shapes.iter().filter(|shape| shape.matches(plan)).collect::<Vec<_>>();
+        let matching_shapes = scope_matches
+            .iter()
+            .copied()
+            .filter(|shape| shape.output_schema_fingerprint() == expected_schema)
+            .collect::<Vec<_>>();
+        if matching_shapes.is_empty() {
+            if evidence.producer_occurrence_scope_count_for_plan(plan) > 0 {
+                return Ok(());
+            }
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.runtime.context",
+                "the admitted capability proof output schema differs from the native plan",
+            )
+            .with_fact("reason", "admitted_capability_schema_mismatch")
+            .with_fact("plan_scope", execution_scope)
+            .with_fact("matching_shape_count", scope_matches.len()));
+        }
+        for shape in matching_shapes {
+            shape.validate_manifest_core()?;
+            if let Some(reason) = shape.owner_term_rejection_reason() {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedPlanShape,
+                    "nexus_query_engine.runtime.context",
+                    "the admitted capability proof has unresolved owner evidence",
+                )
+                .with_fact("reason", reason)
+                .with_fact("plan_scope", execution_scope));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_admitted_occurrences(
+        &self,
+        evidence: &AttemptRequirement,
+        plan: &QueryPlan,
+        occurrence_ids: &[String],
+    ) -> Result<()> {
+        let caller_visible_plan = plan.clone_with_caller_visible_sink_contract();
+        let expected_schema = nexus_query_planning::admission::log_safe_fingerprint(&format!(
+            "{:?}",
+            caller_visible_plan.output_schema()
+        ));
+        let matching = evidence
+            .reservation_shapes
+            .iter()
+            .filter(|shape| shape.matches(plan) && shape.output_schema_fingerprint() == expected_schema)
+            .collect::<Vec<_>>();
+        if matching.is_empty() {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.runtime.context",
+                "the admitted capability proof has no occurrence manifest for the native plan",
+            )
+            .with_fact("reason", "admitted_capability_scope_mismatch")
+            .with_fact("matching_shape_count", 0));
+        }
+        if matching
+            .iter()
+            .any(|shape| shape.nested_consumer_occurrence_ids().is_none() && shape.is_accounted_by_producer_phase())
+        {
+            return Ok(());
+        }
+        let scheduled = matching
+            .iter()
+            .map(|shape| {
+                shape.nested_consumer_occurrence_ids().map_or_else(
+                    || {
+                        shape
+                            .producer_occurrences()
+                            .iter()
+                            .map(|occurrence| occurrence.occurrence_id())
+                            .collect::<Vec<_>>()
+                    },
+                    |occurrences| occurrences.iter().map(String::as_str).collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>();
+        if scheduled.iter().any(|candidate| candidate.as_slice() == occurrence_ids) {
+            return Ok(());
+        }
+        let Some(same_len) = scheduled.iter().find(|candidate| candidate.len() == occurrence_ids.len()) else {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.runtime.context",
+                "the runtime composed input count differs from the admitted capability manifest",
+            )
+            .with_fact("schedule_reason", "runtime_occurrence_count_mismatch")
+            .with_fact("scheduled_occurrence_count", scheduled.first().map_or(0, Vec::len))
+            .with_fact("runtime_occurrence_count", occurrence_ids.len()));
+        };
+        for (scheduled, runtime) in same_len.iter().zip(occurrence_ids) {
+            if *scheduled != runtime {
+                return Err(QueryError::new(
+                    QueryErrorCode::UnsupportedPlanShape,
+                    "nexus_query_engine.runtime.context",
+                    "the runtime composed input order differs from the admitted capability manifest",
+                )
+                .with_fact("schedule_reason", "runtime_occurrence_order_mismatch")
+                .with_fact("scheduled_occurrence_id", *scheduled)
+                .with_fact("runtime_occurrence_id", runtime));
+            }
+        }
+        Ok(())
+    }
+
     fn validate_admitted_proof(
         &self,
         plan: &QueryPlan,
@@ -1751,41 +1860,22 @@ impl ExecutionContext {
         let Some((proof, immutable_grant)) = self.validated_admitted_identity(plan)? else {
             return Ok(None);
         };
-        let projection_identity = || match proof.reservation_envelope().bound_derivation() {
-            Some(AttemptBoundDerivation::OrderedTimeline) => Ok(Some((
-                proof.grant_identity().attempt_id,
-                proof.selected_device(),
-                proof.grant_identity().generation,
-            ))),
-            Some(AttemptBoundDerivation::ConservativeOwnerSum) => Ok(None),
-            None => Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                "nexus_query_engine.runtime.context",
-                "an admitted execution proof has no selected bound derivation",
-            )
-            .with_fact("reason", "attempt_bound_derivation_unavailable")),
+        self.validate_admitted_capability_evidence(proof.submitted_capability_evidence(), plan)?;
+        let Some(descriptor) = proof.submitted_capability_evidence().deferred_resident_phase_for_plan(plan)? else {
+            if let Some(occurrence_ids) = occurrence_ids {
+                self.validate_admitted_occurrences(proof.submitted_capability_evidence(), plan, occurrence_ids)?;
+            }
+            return Ok(None);
         };
-        if let Some(descriptor) = proof.submitted_capability_evidence().deferred_resident_phase_for_plan(plan)? {
-            if descriptor.is_composed_consumer()
-                && self.activated_deferred_resident_phase.is_none()
-                && let Some(occurrence_ids) = occurrence_ids
-            {
-                proof.submitted_capability_evidence().validate_covers_plan(plan)?;
-                proof.reservation_envelope().validate_execution_with_grant(
-                    plan,
-                    self.memory_control_policy(),
-                    self.source_scheduler_policy,
-                    self.source_chunk_planning_mode,
-                    self.source_chunk_planning_options,
-                    immutable_grant.budget_bytes(),
-                )?;
+        if descriptor.is_composed_consumer() && self.activated_deferred_resident_phase.is_none() {
+            if let Some(occurrence_ids) = occurrence_ids {
                 if descriptor.inputs().len() != occurrence_ids.len() {
                     return Err(QueryError::new(
                         QueryErrorCode::UnsupportedPlanShape,
                         "nexus_query_engine.runtime.context",
                         "the deferred composed input count differs from the admitted descriptor",
                     )
-                    .with_fact("reason", "runtime_occurrence_count_mismatch")
+                    .with_fact("schedule_reason", "runtime_occurrence_count_mismatch")
                     .with_fact("scheduled_occurrence_count", descriptor.inputs().len())
                     .with_fact("runtime_occurrence_count", occurrence_ids.len()));
                 }
@@ -1796,88 +1886,39 @@ impl ExecutionContext {
                             "nexus_query_engine.runtime.context",
                             "the deferred composed input order differs from the admitted descriptor",
                         )
-                        .with_fact("reason", "runtime_occurrence_order_mismatch")
+                        .with_fact("schedule_reason", "runtime_occurrence_order_mismatch")
                         .with_fact("scheduled_occurrence_id", scheduled.input_name())
                         .with_fact("runtime_occurrence_id", runtime));
                     }
                 }
-                return Ok(None);
-            }
-            let activated = self.activated_deferred_resident_phase.as_ref().ok_or_else(|| {
-                QueryError::new(
-                    QueryErrorCode::UnsupportedPlanShape,
-                    "nexus_query_engine.runtime.context",
-                    "the admitted deferred phase requires its exact resident inputs before execution",
-                )
-                .with_fact("reason", "deferred_resident_phase_not_activated")
-                .with_fact("input_name", descriptor.input_name())
-            })?;
-            let execution_scope = nexus_query_planning::admission::canonical_execution_scope_fingerprint(plan);
-            if activated.consumer_execution_scope_fingerprint != execution_scope
-                || activated.grant_identity != immutable_grant.identity()
-            {
-                return Err(QueryError::new(
-                    QueryErrorCode::UnsupportedPlanShape,
-                    "nexus_query_engine.runtime.context",
-                    "the activated deferred phase differs from the admitted plan or immutable grant",
-                )
-                .with_fact("reason", "deferred_resident_phase_identity_mismatch"));
-            }
-            activated.capability_proof.as_requirement().validate_covers_plan(plan)?;
-            activated.reservation_envelope.validate_execution_with_grant(
-                plan,
-                self.memory_control_policy(),
-                self.source_scheduler_policy,
-                self.source_chunk_planning_mode,
-                self.source_chunk_planning_options,
-                immutable_grant.budget_bytes(),
-            )?;
-            if descriptor.is_composed_consumer()
-                && let Some(occurrence_ids) = occurrence_ids
-            {
-                let identity = match activated.reservation_envelope.bound_derivation() {
-                    Some(AttemptBoundDerivation::OrderedTimeline) => Some((
-                        proof.grant_identity().attempt_id,
-                        proof.selected_device(),
-                        proof.grant_identity().generation,
-                    )),
-                    Some(AttemptBoundDerivation::ConservativeOwnerSum) => None,
-                    None => {
-                        return Err(QueryError::new(
-                            QueryErrorCode::UnsupportedPlanShape,
-                            "nexus_query_engine.runtime.context",
-                            "an activated composed execution proof has no selected bound derivation",
-                        )
-                        .with_fact("reason", "attempt_bound_derivation_unavailable"));
-                    },
-                };
-                return activated.reservation_envelope.validate_and_project_composed_execution(
-                    plan,
-                    occurrence_ids,
-                    immutable_grant.budget_bytes(),
-                    identity,
-                );
             }
             return Ok(None);
         }
-        proof.submitted_capability_evidence().validate_covers_plan(plan)?;
-        proof.reservation_envelope().validate_execution_with_grant(
-            plan,
-            self.memory_control_policy(),
-            self.source_scheduler_policy,
-            self.source_chunk_planning_mode,
-            self.source_chunk_planning_options,
-            immutable_grant.budget_bytes(),
-        )?;
-        let Some(occurrence_ids) = occurrence_ids else {
-            return Ok(None);
-        };
-        proof.reservation_envelope().validate_and_project_composed_execution(
-            plan,
-            occurrence_ids,
-            immutable_grant.budget_bytes(),
-            projection_identity()?,
-        )
+        let activated = self.activated_deferred_resident_phase.as_ref().ok_or_else(|| {
+            QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.runtime.context",
+                "the admitted deferred phase requires its exact resident inputs before execution",
+            )
+            .with_fact("reason", "deferred_resident_phase_not_activated")
+            .with_fact("input_name", descriptor.input_name())
+        })?;
+        if activated.consumer_execution_scope_fingerprint
+            != nexus_query_planning::admission::canonical_execution_scope_fingerprint(plan)
+            || activated.grant_identity != immutable_grant.identity()
+        {
+            return Err(QueryError::new(
+                QueryErrorCode::UnsupportedPlanShape,
+                "nexus_query_engine.runtime.context",
+                "the activated deferred phase differs from the admitted plan or immutable grant",
+            )
+            .with_fact("reason", "deferred_resident_phase_identity_mismatch"));
+        }
+        self.validate_admitted_capability_evidence(activated.capability_proof.as_requirement(), plan)?;
+        if let Some(occurrence_ids) = occurrence_ids {
+            self.validate_admitted_occurrences(activated.capability_proof.as_requirement(), plan, occurrence_ids)?;
+        }
+        Ok(None)
     }
 
     /// Universal pre-GPU gate for service-created execution contexts. Direct
@@ -1886,11 +1927,7 @@ impl ExecutionContext {
         let Some((proof, _)) = self.validated_admitted_identity(plan)? else {
             return Ok(());
         };
-        proof.submitted_capability_evidence().validate_covers_plan(plan)?;
-        if proof.submitted_capability_evidence().deferred_resident_phase_for_plan(plan)?.is_some() {
-            return Ok(());
-        }
-        self.validate_admitted_proof(plan, None).map(|_| ())
+        self.validate_admitted_capability_evidence(proof.submitted_capability_evidence(), plan)
     }
 
     /// Refines an admitted deferred phase with the exact resident inputs that
@@ -1924,8 +1961,6 @@ impl ExecutionContext {
                 .submitted_capability_evidence()
                 .resolve_deferred_resident_consumer(plan, &resident_evidence)?
                 .requirement_for_device(immutable_grant.device_ordinal())?;
-            let (reservation_envelope, phase_grant) =
-                self.resolve_deferred_phase_envelope(plan, &capability_proof, &immutable_grant, None)?;
             let inputs = descriptor
                 .inputs()
                 .iter()
@@ -1963,8 +1998,6 @@ impl ExecutionContext {
                     nexus_query_planning::admission::canonical_execution_scope_fingerprint(plan),
                 inputs,
                 capability_proof,
-                reservation_envelope,
-                phase_grant,
                 grant_identity: immutable_grant.identity(),
             };
             activated.validate_inputs(gpu_inputs, &immutable_grant)?;
@@ -2024,14 +2057,6 @@ impl ExecutionContext {
                 .with_fact("reason", "deferred_graph_capability_missing")
             })?
             .with_graph_memory_admission_evidence(&evidence)?;
-        let exact_input_owner_bytes =
-            input.retained_reservation_identity_for(&immutable_grant).map(|(_, bytes)| bytes).unwrap_or_default();
-        let (reservation_envelope, phase_grant) = self.resolve_deferred_phase_envelope(
-            plan,
-            &capability_proof,
-            &immutable_grant,
-            Some((&evidence, exact_input_owner_bytes)),
-        )?;
         let activated = ActivatedDeferredResidentPhase {
             consumer_execution_scope_fingerprint:
                 nexus_query_planning::admission::canonical_execution_scope_fingerprint(plan),
@@ -2043,68 +2068,12 @@ impl ExecutionContext {
                 input_row_count: row_count,
             }],
             capability_proof,
-            reservation_envelope,
-            phase_grant,
             grant_identity: immutable_grant.identity(),
         };
         activated.validate_inputs(gpu_inputs, &immutable_grant)?;
         let mut context = self.clone();
         context.activated_deferred_resident_phase = Some(Arc::new(activated));
         Ok(context)
-    }
-
-    fn resolve_deferred_phase_envelope(
-        &self,
-        plan: &QueryPlan,
-        capability_proof: &QueryPlanCapabilityProof,
-        immutable_grant: &MemoryGrant,
-        retained_graph_input_owner: Option<(&nexus_query_planning::graph_memory::GraphMemoryAdmissionEvidence, u64)>,
-    ) -> Result<(AttemptReservationEnvelope, MemoryGrantPhase)> {
-        let MemoryControlPolicy::Bounded {
-            max_source_chunk_bytes,
-            max_row_groups_per_chunk,
-            max_retry_attempts,
-            min_retry_chunk_row_groups,
-            ..
-        } = self.memory_control_policy()
-        else {
-            return Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                "nexus_query_engine.runtime.context",
-                "a deferred resident phase requires the admitted bounded memory policy",
-            )
-            .with_fact("reason", "deferred_resident_unbounded_context"));
-        };
-        let mut reservation_envelope = capability_proof.resolve_reservation_envelope(AttemptReservationPolicy::new(
-            max_source_chunk_bytes,
-            max_row_groups_per_chunk,
-            max_retry_attempts,
-            min_retry_chunk_row_groups,
-            self.source_scheduler_policy,
-            self.source_chunk_planning_mode,
-            self.source_chunk_planning_options,
-        ))?;
-        if let Some((evidence, exact_owner_bytes)) = retained_graph_input_owner {
-            reservation_envelope = reservation_envelope.with_retained_graph_input_owner(evidence, exact_owner_bytes)?;
-        }
-        reservation_envelope.validate_execution_with_grant(
-            plan,
-            self.memory_control_policy(),
-            self.source_scheduler_policy,
-            self.source_chunk_planning_mode,
-            self.source_chunk_planning_options,
-            immutable_grant.budget_bytes(),
-        )?;
-        let phase_peak_bytes = reservation_envelope.complete_phase_peak_bytes().ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                "nexus_query_engine.runtime.context",
-                "the deferred resident phase did not resolve one complete immutable bound",
-            )
-            .with_fact("reason", "deferred_resident_phase_bound_incomplete")
-        })?;
-        let phase_grant = immutable_grant.activate_phase(phase_peak_bytes)?;
-        Ok((reservation_envelope, phase_grant))
     }
 
     #[cfg(feature = "cugraph")]
@@ -2140,11 +2109,9 @@ impl ExecutionContext {
         activated.validate_inputs(gpu_inputs, &immutable_grant)
     }
 
-    /// Validates one composed attempt against its final engine-selected bound.
-    /// Ordered envelopes validate their immutable schedule before publishing a
-    /// projection only for attempt-bound contexts; conservative envelopes have
-    /// no ordered projection but still require the same plan, grant, and device
-    /// checks.
+    /// Validates one composed attempt against its admitted capability and
+    /// resident-input identity contracts. Physical allocation remains owned
+    /// by the immutable grant and live resident handles.
     pub fn validate_admitted_composed_attempt(
         &self,
         consumer_plan: &QueryPlan,
@@ -2175,51 +2142,6 @@ impl ExecutionContext {
     #[doc(hidden)]
     pub fn attempt_allocation_domain_for_test(&self) -> Option<AttemptAllocationDomain> {
         self.attempt_allocation_domain.clone()
-    }
-
-    /// Returns the immutable composed schedule priced by this admitted
-    /// context. The projection is tied to this context's attempt id, grant,
-    /// and runtime device; no live allocator or telemetry value participates.
-    /// Requests against ordinary contexts or an admitted envelope without a
-    /// schedule fail closed.
-    pub fn composed_schedule_projection(&self) -> Result<AttemptComposedScheduleProjection> {
-        let proof = self.admitted_attempt_proof.as_ref().ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                "nexus_query_engine.runtime.context",
-                "a composed schedule requires an admitted execution proof",
-            )
-            .with_fact("reason", "admitted_attempt_proof_missing")
-        })?;
-        let grant = self.memory_grant()?.ok_or_else(|| {
-            QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                "nexus_query_engine.runtime.context",
-                "a composed schedule requires the immutable grant carried by its execution proof",
-            )
-            .with_fact("reason", "admitted_attempt_proof_grant_missing")
-            .with_fact("schedule_reason", "missing_immutable_grant")
-        })?;
-        let runtime_device_ordinal = self.runtime()?.device().ordinal();
-        if runtime_device_ordinal != proof.selected_device() || grant.identity() != proof.grant_identity() {
-            return Err(QueryError::new(
-                QueryErrorCode::UnsupportedPlanShape,
-                "nexus_query_engine.runtime.context",
-                "the composed schedule identity differs from its admitted execution proof",
-            )
-            .with_fact("reason", "admitted_attempt_proof_identity_mismatch")
-            .with_fact("schedule_reason", "runtime_device_grant_mismatch")
-            .with_fact("runtime_device_ordinal", runtime_device_ordinal)
-            .with_fact("proof_device_ordinal", proof.selected_device())
-            .with_fact("grant_generation", grant.identity().generation)
-            .with_fact("proof_generation", proof.grant_identity().generation));
-        }
-        proof.reservation_envelope().composed_schedule_projection(
-            proof.grant_identity().attempt_id,
-            runtime_device_ordinal,
-            proof.grant_identity().generation,
-            grant.budget_bytes(),
-        )
     }
 
     pub(super) fn install_root_stream_cleanup_completion(

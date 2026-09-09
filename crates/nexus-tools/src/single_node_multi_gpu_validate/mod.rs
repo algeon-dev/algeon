@@ -124,7 +124,7 @@ struct CliOptions {
     domain_exhaustion_probe: bool,
     /// Drive the dedicated finite-cohort overload scenario. All outcome
     /// proof comes from sealed reports; it never creates a synthetic queue
-    /// request or infers finite overtakes from task ordering.
+    /// request or infers queue ordering from task ordering.
     overload_fairness: bool,
     /// Drive the physical allocator pressure probe. The measured-run-only
     /// helper creates external CUDA pressure; no backend mode or synthetic

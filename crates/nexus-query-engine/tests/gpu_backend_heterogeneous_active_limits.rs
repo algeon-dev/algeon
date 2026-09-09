@@ -34,7 +34,7 @@ fn heterogeneous_device_active_limits_are_not_collapsed_to_the_largest_cap() {
 
     let controller = GpuBackendControllerDraft::new(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(250), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(250) },
     );
     let device = |device_ordinal, max_active_attempts| {
         GpuBackendDeviceConfig::new(
@@ -125,10 +125,10 @@ fn device_startup_records_carry_ordinal_local_resource_profiles() {
     assert_eq!(second.stream_pool_size, 3);
     assert_eq!(first.worker_job_capacity, 2 * 3);
     assert_eq!(second.worker_job_capacity, 3);
-    // Default floors are ordinal-local: derived from each device's own
-    // managed capacity rather than inherited from device 0.
-    assert_eq!(first.attempt_floor_bytes, DEVICE_CAPACITY_BYTES / 8);
-    assert_eq!(second.attempt_floor_bytes, DEVICE_ONE_LIMIT_BYTES / 8);
+    // Default query limits are ordinal-local: each resolves to its own
+    // managed capacity rather than inheriting a value from device 0.
+    assert_eq!(first.default_query_limit_bytes, DEVICE_CAPACITY_BYTES);
+    assert_eq!(second.default_query_limit_bytes, DEVICE_ONE_LIMIT_BYTES);
     assert_eq!(first.cache_cap_bytes, 0);
     assert_eq!(second.cache_cap_bytes, 0);
 

@@ -126,7 +126,17 @@ fn runtime_graph_statistics_probe_in_runtime(
         statistics,
     ) {
         Ok(statistics) => statistics,
-        Err(error) if error.code() == QueryErrorCode::CudfResourceExhausted => statistics,
+        Err(error)
+            if matches!(
+                error.code(),
+                QueryErrorCode::QueryMemoryLimitExceeded
+                    | QueryErrorCode::DeviceOutOfMemory
+                    | QueryErrorCode::DeviceAllocationFailed
+                    | QueryErrorCode::CudfResourceExhausted
+            ) =>
+        {
+            statistics
+        },
         Err(error) => return Err(error),
     };
 

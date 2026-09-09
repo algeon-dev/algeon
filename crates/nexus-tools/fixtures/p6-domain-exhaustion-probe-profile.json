@@ -14,7 +14,7 @@
         "memory_limit_bytes": 402653184,
         "backend_reserve_bytes": 0,
         "cache_cap_bytes": 0,
-        "attempt_floor_bytes": 134217728,
+        "default_query_limit_bytes": 134217728,
         "source_work_per_attempt": 2,
         "max_active_attempts": 1,
         "installation": {
@@ -26,8 +26,7 @@
     ],
     "queue": {
       "max_queued_attempts": 4,
-      "max_queue_wait_ms": 30000,
-      "max_overtakes_per_waiter": 1
+      "max_queue_wait_ms": 30000
     },
     "native_execution": {
       "device_budget_bytes": 1073741824,

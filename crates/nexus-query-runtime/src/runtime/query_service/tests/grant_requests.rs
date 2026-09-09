@@ -1,5 +1,5 @@
 #[test]
-fn attempt_requirement_hint_selects_grant_for_one_admission() {
+fn attempt_requirement_hint_does_not_select_grant_for_one_admission() {
     let service = AdmissionTestController::new_with_ledger(
         QueryExecutionConfig { ..QueryExecutionConfig::default() },
         QueueBounds::default(),
@@ -13,7 +13,7 @@ fn attempt_requirement_hint_selects_grant_for_one_admission() {
         )
         .unwrap()
         .expect("requirement should admit");
-    assert_eq!(handle.device_budget_bytes(), 1536);
+    assert_eq!(handle.device_budget_bytes(), 512);
 }
 
 #[test]
@@ -89,37 +89,19 @@ fn attempt_binding_identity_survives_request_placement_and_handle_commit() {
 }
 
 #[test]
-fn eager_device_entries_share_requirement_envelope_bytes_for_fit_grant_and_execution() {
+fn eager_device_entries_share_capability_requirement_for_fit_grant_and_execution() {
     let service = AdmissionTestController::new(QueryExecutionConfig::default(), QueueBounds::default())
         .expect("synthetic admission service");
     let proof = explicit_sink_capability_proof();
-    let policy = service.service.inner.config.attempt_reservation_policy();
     let resolved_proof = proof.requirement_for_device(0).expect("non-sort proof resolves on a synthetic ordinal");
-    let envelope = resolved_proof
-        .resolve_reservation_envelope(policy)
-        .expect("the selected proof resolves its immutable envelope");
-    let expected_requirement = resolved_proof.as_requirement().clone().with_reservation_envelope(&envelope);
     let admitted = service
         .try_admit_query_with_request(QueryAdmissionRequest::new().with_query_plan_capability_proof(proof))
         .expect("submission succeeds")
         .expect("the exact entry fits the synthetic ledger");
 
-    let expected_floor = service
-        .service
-        .inner
-        .fallback_device_ledger
-        .as_ref()
-        .expect("synthetic ledger")
-        .required_floor_bytes_for(&expected_requirement)
-        .expect("selected requirement has a finite fit floor");
-    assert!(admitted.handle.device_budget_bytes() >= expected_floor);
     assert_eq!(
         admitted.handle.lifetime.admitted_device_requirement_for_test(admitted.handle.device_ordinal()),
-        Some(&expected_requirement),
-    );
-    assert_eq!(
-        admitted.handle.lifetime.admitted_attempt_proof_for_test().map(|proof| proof.reservation_envelope()),
-        Some(&envelope),
+        Some(resolved_proof.as_requirement()),
     );
     let proof =
         admitted.handle.lifetime.admitted_attempt_proof_for_test().expect("submitted admission carries its proof");
@@ -129,28 +111,7 @@ fn eager_device_entries_share_requirement_envelope_bytes_for_fit_grant_and_execu
 }
 
 #[test]
-fn retry_floor_uses_the_candidate_requirement_projection() {
-    let requirements = BTreeMap::from([(0, requirement(10, Some(10))), (1, requirement(200, Some(200)))]);
-    let ledger = test_ledger_with_explicit_profile(1, 100, 8, 1, Default::default());
-
-    let selected_floor = ledger
-        .required_floor_bytes_for(requirements.get(&0).expect("selected requirement"))
-        .expect("selected floor resolves");
-    let alternate_floor = super::handle::required_floor_bytes_for_candidate(&requirements, 1, &ledger)
-        .expect("alternate floor resolves from the ordinal projection");
-
-    assert!(ledger.can_ever_fit_required_floor_bytes(selected_floor).expect("selected floor fit check"));
-    assert_eq!(alternate_floor, 200);
-    assert!(!ledger.can_ever_fit_required_floor_bytes(alternate_floor).expect("alternate floor fit check"));
-
-    let missing = super::handle::required_floor_bytes_for_candidate(&requirements, 2, &ledger)
-        .expect_err("missing candidate requirement must fail closed");
-    assert_eq!(missing.code(), QueryErrorCode::Internal);
-    assert_eq!(missing.fact_value("reason"), Some("missing_device_specific_admission_resolution"));
-}
-
-#[test]
-fn impossible_requirement_is_rejected_before_enqueue() {
+fn explicit_cap_above_device_capacity_is_rejected_before_enqueue() {
     let service = AdmissionTestController::new_with_ledger(
         QueryExecutionConfig { ..QueryExecutionConfig::default() },
         QueueBounds::default(),
@@ -160,15 +121,12 @@ fn impossible_requirement_is_rejected_before_enqueue() {
 
     let error = service
         .try_admit_query_with_request(
-            QueryAdmissionRequest::new().with_attempt_requirement(requirement(2048, Some(2048))),
+            QueryAdmissionRequest::new().with_query_cap_bytes(2048),
         )
-        .expect_err("floor exceeding capacity must reject");
-    assert_eq!(error.fact_value("reason"), Some("impossible_requirement"));
-    assert_eq!(error.fact_value("minimum_compatible_required_floor_bytes"), Some("2048"));
-    assert_eq!(error.fact_value("minimum_compatible_required_floor_device_ordinal"), Some("0"));
-    assert_eq!(error.fact_value("minimum_compatible_configured_floor_bytes"), Some("2048"));
-    assert_eq!(error.fact_value("minimum_compatible_required_phase_floor_bytes"), Some("0"));
-    assert_eq!(error.fact_value("minimum_compatible_capability_floor_raise_bytes"), Some("0"));
+        .expect_err("cap exceeding every eligible device must reject");
+    assert_eq!(error.code(), QueryErrorCode::QueryBudgetUnavailable);
+    assert_eq!(error.fact_value("reason"), Some("query_cap_exceeds_resident_capacity"));
+    assert_eq!(error.fact_value("requested_query_cap_bytes"), Some("2048"));
 }
 
 #[test]
@@ -297,7 +255,7 @@ async fn restricted_capability_profile_rejects_missing_async_requirement() {
 }
 
 #[test]
-fn raised_requirement_floor_is_preserved_across_admissions() {
+fn explicit_query_cap_is_preserved_across_admissions() {
     let service = AdmissionTestController::new_with_ledger(
         QueryExecutionConfig { ..QueryExecutionConfig::default() },
         QueueBounds::default(),
@@ -306,10 +264,12 @@ fn raised_requirement_floor_is_preserved_across_admissions() {
     .unwrap();
 
     let raised = service
-        .try_admit_query_with_request(QueryAdmissionRequest::new().with_attempt_requirement(requirement(40, Some(70))))
+        .try_admit_query_with_request(QueryAdmissionRequest::new().with_query_cap_bytes(70))
         .unwrap()
-        .expect("raised floor should admit");
-    assert!(raised.device_budget_bytes() >= 40);
+        .expect("explicit cap should admit");
+    // An explicit cap is never clamped: the admission issues exactly what the
+    // request asked for.
+    assert_eq!(raised.device_budget_bytes(), 70);
     let second = service.try_admit_query().unwrap().expect("remaining capacity admits unconstrained query");
     assert!(second.device_budget_bytes() > 0);
 }

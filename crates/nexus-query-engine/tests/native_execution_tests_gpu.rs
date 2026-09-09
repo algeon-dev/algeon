@@ -43,7 +43,8 @@ use nexus_query_engine::{
     metrics::{MemoryReservationEventAction, QueryMetrics},
     mode::StatisticalAggregateExecutionMode,
     observability::{
-        PlanExecutionBoundaryKind, RuntimeObservationConfig, RuntimeObservationPayload, RuntimeTerminalOutcome,
+        PlanExecutionBoundaryKind, RuntimeObservationConfig, RuntimeObservationOwner, RuntimeObservationPayload,
+        RuntimeTerminalOutcome,
     },
     plan::{
         GraphEdgeBetweennessCentralityParams, JoinKey, JoinNullEquality, JoinOutputColumn, JoinSide, JoinSpec,
@@ -81,9 +82,9 @@ use nexus_query_engine::{
 };
 use parquet::{arrow::ArrowWriter, file::properties::WriterProperties};
 
-// Keep small fixture grants exact while capacity remains bounded by the device
-// this integration suite actually owns.
-const NATIVE_EXECUTION_TEST_ATTEMPT_FLOOR_BYTES: u64 = 1;
+// Ordinary integration cases exercise real allocations under a bounded cap;
+// failure cases request their smaller cap explicitly through the fixture.
+const NATIVE_EXECUTION_TEST_QUERY_LIMIT_BYTES: u64 = 512 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BackendTestPolicy {
@@ -172,7 +173,7 @@ fn suite_backend_with_policy(policy: BackendTestPolicy) -> &'static GpuBackendCo
         );
         let device = GpuBackendDeviceConfig::new(
             GpuBackendDeviceProfile::new(0)
-                .with_attempt_floor_bytes(NATIVE_EXECUTION_TEST_ATTEMPT_FLOOR_BYTES)
+                .with_default_query_limit_bytes(NATIVE_EXECUTION_TEST_QUERY_LIMIT_BYTES)
                 .with_max_active_attempts(1)
                 .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(4, 1, 1)),
             GpuMemoryOwnership::WholeDeviceExclusive,
@@ -290,21 +291,6 @@ fn backend_context_with_policy_and_grant(
     BackendQueryContext { policy, requested_bytes }
 }
 
-/// Creates the exact synthetic placement request used to bound one test
-/// execution. It is not submitted-plan proof and cannot authorize an
-/// arbitrary plan at execution. Production source-stage estimates deliberately
-/// are not whole-attempt grant targets, so the fixture must state its test
-/// grant directly rather than laundering it through a Parquet source model.
-fn fixture_placement_requirement(bytes: u64) -> nexus_query_engine::admission::AttemptCapabilityEvidence {
-    nexus_query_engine::admission::AttemptCapabilityEvidence::from_parts(
-        0,
-        0,
-        Some(bytes),
-        nexus_query_engine::admission::EstimateQuality::Measured,
-        Vec::new(),
-    )
-}
-
 fn backend_runtime() -> Arc<cudf::Runtime> {
     backend_runtime_with_policy(BackendTestPolicy::default())
 }
@@ -354,9 +340,20 @@ impl BackendQueryContext {
     }
 
     fn admit_proof(&self, proof: QueryPlanCapabilityProof) -> nexus_query_engine::error::Result<AdmittedPlanContext> {
+        self.admit_proof_with_observation(proof, None)
+    }
+
+    fn admit_proof_with_observation(
+        &self,
+        proof: QueryPlanCapabilityProof,
+        observation: Option<RuntimeObservationOwner>,
+    ) -> nexus_query_engine::error::Result<AdmittedPlanContext> {
         let mut request = QueryAdmissionRequest::new().with_query_plan_capability_proof(proof);
         if let Some(bytes) = self.requested_bytes {
-            request = request.with_test_placement_requirement(fixture_placement_requirement(bytes));
+            request = request.with_query_cap_bytes(bytes);
+        }
+        if let Some(observation) = observation {
+            request = request.with_runtime_observation_owner(observation);
         }
         let handle = suite_backend_with_policy(self.policy).session_capability().admit_query_with_request(request)?;
         let context = handle.acquire_context()?;
@@ -368,8 +365,24 @@ impl BackendQueryContext {
         plan: &QueryPlan,
         gpu_inputs: &GpuResidentInputMap,
     ) -> nexus_query_engine::error::Result<QueryExecutionResult> {
-        let admitted = self.admit_plan(plan)?;
-        let result = execute_query_plan_with_gpu_inputs_direct(admitted.context.context(), plan, gpu_inputs);
+        nexus_query_engine::exec::preflight_bounded_query_plan(
+            plan,
+            ExecutionBoundaryPolicy::default(),
+            self.policy.statistical_aggregate_execution_mode,
+        )?;
+        let proof = capability_proof_for_fixture_plan_with_graph_memory_calibration_override(
+            plan,
+            GraphMemoryCalibrationOverride::none(),
+        )?;
+        let admitted = self.admit_proof_with_observation(proof, Some(RuntimeObservationOwner::disabled()))?;
+        let outcome = execute_query_plan_with_gpu_inputs_observed_direct(
+            admitted.context.context(),
+            plan,
+            gpu_inputs,
+            RuntimeObservationConfig::disabled(),
+        );
+        let (result, metrics, _observation) = outcome.into_parts();
+        let result = result.map(|output| QueryExecutionResult::new(output, metrics));
         if result.is_err()
             || result.as_ref().is_ok_and(|result| !matches!(result.output(), QueryOutput::GpuResident(_)))
         {
@@ -384,7 +397,23 @@ impl BackendQueryContext {
         gpu_inputs: &GpuResidentInputMap,
         config: RuntimeObservationConfig,
     ) -> QueryExecutionOutcome {
-        let admitted = self.admit_plan(plan).expect("native fixture plan must admit before observed execution");
+        nexus_query_engine::exec::preflight_bounded_query_plan(
+            plan,
+            ExecutionBoundaryPolicy::default(),
+            self.policy.statistical_aggregate_execution_mode,
+        )
+        .expect("native fixture plan must pass execution preflight");
+        let proof = capability_proof_for_fixture_plan_with_graph_memory_calibration_override(
+            plan,
+            GraphMemoryCalibrationOverride::none(),
+        )
+        .expect("native fixture plan must produce admission evidence");
+        let admitted = self
+            .admit_proof_with_observation(
+                proof,
+                Some(RuntimeObservationOwner::new("native-execution-test", None, config)),
+            )
+            .expect("native fixture plan must admit before observed execution");
         let outcome =
             execute_query_plan_with_gpu_inputs_observed_direct(admitted.context.context(), plan, gpu_inputs, config);
         if outcome.result().is_err()

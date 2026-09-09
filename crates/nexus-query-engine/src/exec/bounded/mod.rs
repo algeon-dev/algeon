@@ -55,8 +55,8 @@ pub(in crate::exec::bounded) use join::{
     execute_bounded_join_leaf_source, materialize_bounded_join_leaf_local_parquet_source_stream,
     plan_bounded_aggregate_input_local_parquet_source_stream, plan_bounded_join_leaf_local_parquet_source_stream,
     plan_bounded_shared_join_aggregate_local_parquet_source_stream, release_bounded_compiled_join_build_state,
-    release_bounded_compiled_join_probe_state, reusable_hash_join_stream_target_output_bytes,
-    stream_bounded_join_leaf_local_parquet_source_chunks, try_start_bounded_join_leaf_local_parquet_source_prefetch,
+    release_bounded_compiled_join_probe_state, stream_bounded_join_leaf_local_parquet_source_chunks,
+    try_start_bounded_join_leaf_local_parquet_source_prefetch,
 };
 pub use join::{
     JoinOutputColumnUpperBoundInput, PER_COLUMN_ALIGNMENT_PADDING_BYTES, STRING_OFFSET_BYTES_CONSERVATIVE,
@@ -112,7 +112,8 @@ pub(super) fn execute_bounded_query_plan(
     record_device_memory_observation(&frame.frame, execution.metrics_mut())?;
     match plan.sink() {
         ResultSink::GpuResident { .. } => {
-            let live_reservation = frame.reservation.transfer_grant_live_reservation();
+            let output_bytes = frame.frame.device_allocated_size_bytes()?;
+            let live_reservation = frame.reservation.retain_escaping_resident_output(output_bytes)?;
             let output_frame = frame
                 .frame
                 .with_producer_execution_scope(crate::admission::canonical_execution_scope_fingerprint(plan));

@@ -22,13 +22,11 @@ fn server_config_accepts_queue_admission_environment() {
     env.extend([
         (NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV, "8".to_string()),
         (NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV, "5000".to_string()),
-        (NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER_ENV, "7".to_string()),
     ]);
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
 
     assert_eq!(config.queue_policy.max_queued_attempts(), 8);
     assert_eq!(config.queue_policy.max_queue_wait(), Duration::from_millis(5000));
-    assert_eq!(config.queue_policy.max_overtakes_per_waiter(), 7);
 }
 
 #[test]
@@ -38,17 +36,14 @@ fn server_config_accepts_resource_admission_toml_and_env_overrides_it() {
 [admission]
 max_queued_attempts = 4
 max_queue_wait_ms = 1000
-max_overtakes_per_waiter = 2
 "#,
     );
     env.insert(NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV, "8".to_string());
     env.insert(NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV, "5000".to_string());
-    env.insert(NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER_ENV, "7".to_string());
 
     let config = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap();
     assert_eq!(config.queue_policy.max_queued_attempts(), 8);
     assert_eq!(config.queue_policy.max_queue_wait(), Duration::from_millis(5000));
-    assert_eq!(config.queue_policy.max_overtakes_per_waiter(), 7);
 }
 
 #[test]
@@ -66,19 +61,12 @@ fn server_config_rejects_removed_scalar_admission_environment() {
         "NEXUS_SERVER_ADMISSION_MAX_ACTIVE_ATTEMPTS_PER_DEVICE",
         "NEXUS_SERVER_ADMISSION_ATTEMPT_FLOOR_BYTES",
         "NEXUS_SERVER_ADMISSION_SOURCE_WORK_PER_ATTEMPT",
+        "NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER",
     ] {
         let env = BTreeMap::from([(field, "1".to_string())]);
         let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
         assert_eq!(error.fact_value("config_field"), Some(field), "{error}");
     }
-}
-
-#[test]
-fn server_config_rejects_overtake_budget_above_u32() {
-    let env =
-        BTreeMap::from([(NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER_ENV, (u64::from(u32::MAX) + 1).to_string())]);
-    let error = ServerConfig::from_env_get(|name| env.get(name).cloned()).unwrap_err();
-    assert!(error.to_string().contains(NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER_ENV));
 }
 
 #[test]
@@ -112,7 +100,7 @@ fn server_config_projects_each_explicit_multi_gpu_profile_by_ordinal() {
 device_ordinal = 0
 memory_limit_bytes = 4096
 backend_reserve_bytes = 0
-attempt_floor_bytes = 512
+default_query_limit_bytes = 512
 cache_cap_bytes = 0
 source_work_per_attempt = 2
 max_active_attempts = 2
@@ -125,7 +113,7 @@ install_telemetry = false
 device_ordinal = 3
 memory_limit_bytes = 8192
 backend_reserve_bytes = 128
-attempt_floor_bytes = 1024
+default_query_limit_bytes = 1024
 cache_cap_bytes = 2048
 source_work_per_attempt = 1
 max_active_attempts = 1
@@ -145,7 +133,7 @@ install_telemetry = true
     assert_eq!(first.device_ordinal(), 0);
     assert_eq!(first.memory_limit(), datafusion_nexus::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: 4096 });
     assert_eq!(first.backend_reserve_bytes(), 0);
-    assert_eq!(first.attempt_floor_bytes(), Some(512));
+    assert_eq!(first.default_query_limit_bytes(), Some(512));
     assert_eq!(first.cache_cap_bytes(), 0);
     assert_eq!(first.source_work_per_attempt(), 2);
     assert_eq!(first.max_active_attempts(), 2);
@@ -155,7 +143,7 @@ install_telemetry = true
     assert_eq!(second.device_ordinal(), 3);
     assert_eq!(second.memory_limit(), datafusion_nexus::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: 8192 });
     assert_eq!(second.backend_reserve_bytes(), 128);
-    assert_eq!(second.attempt_floor_bytes(), Some(1024));
+    assert_eq!(second.default_query_limit_bytes(), Some(1024));
     assert_eq!(second.cache_cap_bytes(), 2048);
     assert_eq!(second.source_work_per_attempt(), 1);
     assert_eq!(second.max_active_attempts(), 1);

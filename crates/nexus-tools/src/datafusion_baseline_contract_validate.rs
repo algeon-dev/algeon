@@ -853,7 +853,7 @@ async fn run_runtime_no_rescue_constrained(bench: &Path) -> ToolResult<CaseResul
     // device_budget_bytes=1 forces a memory reservation failure after native start.
     let profile = NexusGpuDeviceProfile::new(0)
         .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })
-        .with_attempt_floor_bytes(1);
+        .with_default_query_limit_bytes(1);
     let device = NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
     let backend = NexusGpuBackend::builder()
         .with_native_execution_config(NexusNativeExecutionConfig::bounded(1, 1024 * 1024, 1, 1, 1))
@@ -1196,10 +1196,10 @@ impl TableFormatPlanner for FixedPlanner {
     }
 }
 
-fn build_backend(attempt_floor_bytes: u64) -> ToolResult<NexusGpuBackend> {
+fn build_backend(default_query_limit_bytes: u64) -> ToolResult<NexusGpuBackend> {
     let profile = NexusGpuDeviceProfile::new(0)
         .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 256 * 1024 * 1024 })
-        .with_attempt_floor_bytes(attempt_floor_bytes);
+        .with_default_query_limit_bytes(default_query_limit_bytes);
     let device = NexusGpuDeviceConfig::new(profile, GpuMemoryOwnership::WholeDeviceExclusive);
     Ok(NexusGpuBackend::builder()
         .with_native_execution_config(NexusNativeExecutionConfig::bounded(256 * 1024 * 1024, 64 * 1024 * 1024, 1, 3, 1))

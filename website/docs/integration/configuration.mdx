@@ -60,14 +60,14 @@ deployment needs them.
 | `NEXUS_SERVER_GPU_DEVICES` | `0` | Comma-separated CUDA ordinals |
 | `NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS` | `64` | Maximum queued admission waiters |
 | `NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS` | `30000` | Maximum wait for a compatible device |
-| `NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER` | `4` | Compatible-device bypass budget before waiter protection |
 
-The three queue values can also be placed under `[admission]` as
-`max_queued_attempts`, `max_queue_wait_ms`, and
-`max_overtakes_per_waiter`. Environment values win.
+The two queue values can also be placed under `[admission]` as
+`max_queued_attempts` and `max_queue_wait_ms`. Environment values win.
+Admission is FIFO among capability-compatible waiters; there is no overtaking
+or protected-waiter setting.
 
 After `device_ordinal`, a profile accepts `memory_limit_bytes`,
-`backend_reserve_bytes`, `attempt_floor_bytes`, `max_active_attempts`,
+`backend_reserve_bytes`, `default_query_limit_bytes`, `max_active_attempts`,
 `source_work_per_attempt`, `cache_cap_bytes`, and the optional telemetry flag
 (`install_telemetry`). Configure `stream_pool_size`, `worker_count`, and
 `lane_count` together or omit all three. An explicit `memory_limit_bytes`
@@ -78,6 +78,9 @@ declared (`0` is a valid, deliberate choice).
 Selected ordinals and profile ordinals must match exactly. A profile outside
 `NEXUS_SERVER_GPU_DEVICES`, a missing profile, or a duplicate ordinal is an
 error. `cache_cap_bytes = 0` (the default) installs no resident GPU cache.
+`default_query_limit_bytes` is the immutable cap granted to a query unless an
+embedding caller supplies an explicit cap. It must be positive and no larger
+than the device's managed capacity; planner memory estimates do not resize it.
 
 Capabilities and memory ownership are not file settings. The shipped server
 binary declares `WholeDeviceExclusive` ownership for every selected ordinal;

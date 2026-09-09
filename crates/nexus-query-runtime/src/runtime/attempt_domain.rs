@@ -27,7 +27,7 @@ pub struct AttemptAllocationDomain {
 pub struct AttemptStreamProviderRoute {
     registration: cudf::AttemptStreamProviderRegistration,
     _member_leases: Vec<cudf::StreamReservationLease>,
-    _auxiliary_streams: Vec<cudf::runtime::CudaStream>,
+    _fork_streams: Vec<cudf::runtime::CudaStream>,
 }
 
 impl AttemptStreamProviderRoute {
@@ -151,23 +151,19 @@ impl AttemptAllocationDomain {
         let _entry = cudf::runtime::DeviceEntryGuard::enter(parent.device(), operation).map_err(|error| {
             QueryError::from_cudf(operation, "failed to enter the attempt stream-provider device", error)
         })?;
-        let mut auxiliary_streams = Vec::with_capacity(capacity);
+        let mut fork_streams = Vec::with_capacity(capacity);
         for _ in 0..capacity {
-            auxiliary_streams.push(cudf::runtime::CudaStream::new().map_err(|error| {
+            fork_streams.push(cudf::runtime::CudaStream::new().map_err(|error| {
                 QueryError::from_cudf(operation, "failed to create an attempt auxiliary stream", error)
             })?);
         }
-        let mut member_leases = Vec::with_capacity(auxiliary_streams.len());
-        for stream in &auxiliary_streams {
+        let mut member_leases = Vec::with_capacity(fork_streams.len());
+        for stream in &fork_streams {
             member_leases.push(self.create_member(stream)?);
         }
-        let registration = cudf::AttemptStreamProviderRegistration::register(parent, &auxiliary_streams)
+        let registration = cudf::AttemptStreamProviderRegistration::register(parent, &fork_streams)
             .map_err(|error| QueryError::from_cudf(operation, "failed to register attempt fork streams", error))?;
-        Ok(AttemptStreamProviderRoute {
-            registration,
-            _member_leases: member_leases,
-            _auxiliary_streams: auxiliary_streams,
-        })
+        Ok(AttemptStreamProviderRoute { registration, _member_leases: member_leases, _fork_streams: fork_streams })
     }
 
     pub fn as_cudf(&self) -> &Arc<cudf::QueryMemoryDomain> {
@@ -196,6 +192,31 @@ impl AttemptAllocationDomain {
             QueryError::from_cudf(
                 "nexus_query_engine.runtime.attempt_allocation_domain.usage",
                 "failed to sample attempt allocation domain usage",
+                error,
+            )
+            .with_fact("domain_id", self.domain_id())
+        })
+    }
+
+    /// Permanently closes the producer domain to allocation after all attempt
+    /// streams have drained and returns its measured resident charge.
+    pub fn freeze(&self) -> Result<cudf::QueryMemoryDomainUsage> {
+        self.domain.freeze().map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.runtime.attempt_allocation_domain.freeze",
+                "failed to freeze the attempt allocation domain",
+                error,
+            )
+            .with_fact("domain_id", self.domain_id())
+        })
+    }
+
+    /// Snapshots the allocations this domain's registry still owns.
+    pub fn live_allocations(&self) -> Result<Vec<cudf::QueryMemoryDomainAllocation>> {
+        self.domain.live_allocations().map_err(|error| {
+            QueryError::from_cudf(
+                "nexus_query_engine.runtime.attempt_allocation_domain.live_allocations",
+                "failed to read the attempt allocation domain registry",
                 error,
             )
             .with_fact("domain_id", self.domain_id())

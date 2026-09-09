@@ -43,11 +43,10 @@ pub use config::{
     NEXUS_ICEBERG_REST_TOKEN_ENV, NEXUS_ICEBERG_REST_URI_ENV, NEXUS_ICEBERG_S3_CREDENTIAL_SOURCE_ENV,
     NEXUS_ICEBERG_S3_ENDPOINT_ENV, NEXUS_ICEBERG_S3_PATH_STYLE_ENV, NEXUS_ICEBERG_S3_REGION_ENV,
     NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV, NEXUS_ICEBERG_TABLES_ENV, NEXUS_ICEBERG_WAREHOUSE_ENV,
-    NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER_ENV, NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV,
-    NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV, NEXUS_SERVER_BIND_ENV, NEXUS_SERVER_CONFIG_FILE_ENV,
-    NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV, NEXUS_SERVER_CUGRAPH_ENABLED_ENV,
-    NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV, NEXUS_SERVER_GPU_DEVICES_ENV, NEXUS_SERVER_LOG_ENV,
-    NEXUS_SERVER_NATIVE_CONFIG_OPTIONS, NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
+    NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV, NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV,
+    NEXUS_SERVER_BIND_ENV, NEXUS_SERVER_CONFIG_FILE_ENV, NEXUS_SERVER_CUGRAPH_CONSTRUCTION_POLICY_ENV,
+    NEXUS_SERVER_CUGRAPH_ENABLED_ENV, NEXUS_SERVER_FINAL_PLAN_REQUIREMENT_ENV, NEXUS_SERVER_GPU_DEVICES_ENV,
+    NEXUS_SERVER_LOG_ENV, NEXUS_SERVER_NATIVE_CONFIG_OPTIONS, NEXUS_SERVER_NATIVE_MAX_RETRY_ATTEMPTS_ENV,
     NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV,
     NEXUS_SERVER_NATIVE_MAX_SOURCE_READS_IN_FLIGHT_ENV, NEXUS_SERVER_NATIVE_SOURCE_CHUNK_PLANNING_MODE_ENV,
     NEXUS_SERVER_NATIVE_STATISTICAL_AGGREGATE_EXECUTION_MODE_ENV,
@@ -590,21 +589,13 @@ fn validate_injected_queue_policy(injected: &crate::backend::NexusGpuQueuePolicy
             injected.max_queue_wait().as_millis(),
         ));
     }
-    if queue_policy.max_overtakes_per_waiter() != injected.max_overtakes_per_waiter() {
-        return Err(ServerError::builder_conflict(
-            "server_backend_admission_conflict",
-            "admission.max_overtakes_per_waiter",
-            queue_policy.max_overtakes_per_waiter(),
-            injected.max_overtakes_per_waiter(),
-        ));
-    }
     Ok(())
 }
 
 /// Validate injected backends against the records frozen by the engine after
 /// discovery and allocator installation.  A planner budget is intentionally
 /// absent from this comparison: it is an unadmitted planning template, while
-/// capacity and floors are ordinal-local controller facts.
+/// capacity and query limits are ordinal-local controller facts.
 fn validate_injected_startup_profiles(
     records: &[nexus_query_engine::runtime::GpuBackendDeviceStartupRecord],
     config: &ServerConfig,
@@ -660,12 +651,12 @@ fn validate_injected_startup_profiles(
             profile.max_active_attempts(),
             record.resource_profile.max_active_attempts,
         )?;
-        if let Some(floor) = profile.attempt_floor_bytes() {
+        if let Some(default_query_limit_bytes) = profile.default_query_limit_bytes() {
             compare_profile_field(
                 ordinal,
-                "admission.device_profiles.attempt_floor_bytes",
-                floor,
-                record.resource_profile.attempt_floor_bytes,
+                "admission.device_profiles.default_query_limit_bytes",
+                default_query_limit_bytes,
+                record.resource_profile.default_query_limit_bytes,
             )?;
         }
         let source_work = profile.source_work_per_attempt();

@@ -1,3 +1,5 @@
+use crate::runtime::gpu::DeviceLedger;
+
 #[derive(Clone, Debug)]
 struct AdmissionTestController {
     service: QueryService,
@@ -160,16 +162,8 @@ impl AdmissionTestHandle {
         Self { handle }
     }
 
-    fn admission_sequence(&self) -> u64 {
-        self.handle.admission_sequence()
-    }
-
     fn admission_request_id(&self) -> AdmissionRequestId {
         self.handle.admission_request_id()
-    }
-
-    fn admission_wait_fact(&self) -> Option<crate::observability::AttemptAdmissionWaitFact> {
-        self.handle.admission_wait_fact()
     }
 
     fn device_budget_bytes(&self) -> u64 {
@@ -353,7 +347,7 @@ fn test_ledger_for_ordinal(
 fn test_ledger_with_explicit_profile(
     device_ordinal: usize,
     managed_capacity_bytes: u64,
-    attempt_floor_bytes: u64,
+    default_query_limit_bytes: u64,
     max_active_attempts: usize,
     device_capabilities: crate::runtime::DeviceCapabilities,
 ) -> DeviceLedger {
@@ -365,7 +359,7 @@ fn test_ledger_with_explicit_profile(
         configured_limit_bytes: managed_capacity_bytes,
         headroom_bytes: 0,
         backend_reserve_bytes: 0,
-        attempt_floor_bytes,
+        default_query_limit_bytes,
         max_active_attempts,
         source_work_per_attempt: source_work,
         stream_pool_size: slots,
@@ -384,7 +378,7 @@ fn admission_test_service_with_profile(
     config: QueryExecutionConfig,
     queue_bounds: QueueBounds,
     managed_capacity_bytes: u64,
-    attempt_floor_bytes: u64,
+    default_query_limit_bytes: u64,
     max_active_attempts: usize,
 ) -> AdmissionTestController {
     AdmissionTestController::new_with_ledger(
@@ -393,7 +387,7 @@ fn admission_test_service_with_profile(
         test_ledger_with_explicit_profile(
             0,
             managed_capacity_bytes,
-            attempt_floor_bytes,
+            default_query_limit_bytes,
             max_active_attempts,
             Default::default(),
         ),
@@ -402,7 +396,7 @@ fn admission_test_service_with_profile(
 }
 
 fn test_service(max_active_attempts_per_device: usize, max_waiters: usize) -> AdmissionTestController {
-    let queue_bounds = QueueBounds { max_waiters, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 };
+    let queue_bounds = QueueBounds { max_waiters, max_wait: Duration::from_millis(500) };
     admission_test_service_with_profile(
         QueryExecutionConfig::default(),
         queue_bounds,
@@ -412,7 +406,7 @@ fn test_service(max_active_attempts_per_device: usize, max_waiters: usize) -> Ad
     )
 }
 fn runtime_test_service(max_active_attempts_per_device: usize, max_waiters: usize) -> QueryService {
-    let queue_bounds = QueueBounds { max_waiters, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 };
+    let queue_bounds = QueueBounds { max_waiters, max_wait: Duration::from_millis(500) };
     runtime_test_service_with_profiles(
         QueryExecutionConfig::default(),
         queue_bounds,
@@ -431,7 +425,6 @@ fn try_guaranteed_runtime_test_service_with_concurrency(max_active_attempts_per_
             // inventory. Its regressions request small, deterministic grants.
             max_waiters: 8,
             max_wait: Duration::from_millis(500),
-            max_overtakes_per_waiter: 4,
         },
         vec![runtime_test_device_profile(max_active_attempts_per_device)],
     )
@@ -458,7 +451,7 @@ fn runtime_test_device_profile(max_active_attempts_per_device: usize) -> GpuBack
     const CAPACITY_BYTES: u64 = 64 * 1024 * 1024;
 
     let max_active_attempts = max_active_attempts_per_device.max(1);
-    let attempt_floor_bytes =
+    let default_query_limit_bytes =
         (CAPACITY_BYTES / u64::try_from(max_active_attempts.saturating_mul(8)).unwrap_or(u64::MAX)).max(1);
     // Match `SourceSchedulerPolicy::default()`: every active attempt reserves
     // one root stream plus two bounded auxiliary source-work slots.
@@ -467,7 +460,7 @@ fn runtime_test_device_profile(max_active_attempts_per_device: usize) -> GpuBack
     runtime_test_device_profile_with_limits(
         0,
         CAPACITY_BYTES,
-        attempt_floor_bytes,
+        default_query_limit_bytes,
         max_active_attempts,
         stream_pool_size,
         max_active_attempts,
@@ -478,7 +471,7 @@ fn runtime_test_device_profile(max_active_attempts_per_device: usize) -> GpuBack
 fn runtime_test_device_profile_with_limits(
     device_ordinal: usize,
     capacity_bytes: u64,
-    attempt_floor_bytes: u64,
+    default_query_limit_bytes: u64,
     max_active_attempts: usize,
     stream_pool_size: usize,
     worker_count: usize,
@@ -487,7 +480,7 @@ fn runtime_test_device_profile_with_limits(
     GpuBackendDeviceConfig::new(
         GpuBackendDeviceProfile::new(device_ordinal)
             .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: capacity_bytes })
-            .with_attempt_floor_bytes(attempt_floor_bytes)
+            .with_default_query_limit_bytes(default_query_limit_bytes)
             .with_source_work_per_attempt(2)
             .with_max_active_attempts(max_active_attempts)
             .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(

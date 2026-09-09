@@ -284,7 +284,7 @@ pub fn ordered_schedule(&self) -> Option<&AttemptReservationSchedule> {
     }
 
     #[doc(hidden)]
-pub fn validate_composed_execution(
+    pub fn validate_composed_execution(
         &self,
         consumer_plan: &QueryPlan,
         occurrence_ids: &[String],

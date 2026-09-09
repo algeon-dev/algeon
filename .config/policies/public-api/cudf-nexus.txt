@@ -795,12 +795,21 @@ pub fn cudf::core::memory::DeviceMemoryResourceUsage::from(cudf_sys::bindings::c
 pub struct cudf::core::memory::QueryMemoryDomain
 impl cudf::core::memory::QueryMemoryDomain
 pub fn cudf::core::memory::QueryMemoryDomain::device(&self) -> cudf::runtime::device::DeviceId
+pub fn cudf::core::memory::QueryMemoryDomain::freeze(&self) -> cudf::core::error::Result<cudf::core::memory::QueryMemoryDomainUsage>
 pub fn cudf::core::memory::QueryMemoryDomain::identity(&self) -> cudf::core::error::Result<cudf::core::memory::QueryMemoryDomainIdentity>
+pub fn cudf::core::memory::QueryMemoryDomain::live_allocations(&self) -> cudf::core::error::Result<alloc::vec::Vec<cudf::core::memory::QueryMemoryDomainAllocation>>
 pub fn cudf::core::memory::QueryMemoryDomain::manager(&self) -> &cudf::core::memory::DeviceMemoryManager
 pub fn cudf::core::memory::QueryMemoryDomain::pool_usage(&self) -> cudf::core::error::Result<cudf::core::memory::DeviceMemoryPoolUsage>
 pub fn cudf::core::memory::QueryMemoryDomain::reserve_stream(&self, &cudf::runtime::stream::CudaStream, u64, usize) -> cudf::core::error::Result<cudf::core::memory::StreamReservationLease>
 pub fn cudf::core::memory::QueryMemoryDomain::resize_grant(&self, usize) -> cudf::core::error::Result<()>
 pub fn cudf::core::memory::QueryMemoryDomain::usage(&self) -> cudf::core::error::Result<cudf::core::memory::QueryMemoryDomainUsage>
+pub struct cudf::core::memory::QueryMemoryDomainAllocation
+pub cudf::core::memory::QueryMemoryDomainAllocation::aligned_bytes: u64
+pub cudf::core::memory::QueryMemoryDomainAllocation::alignment: u64
+pub cudf::core::memory::QueryMemoryDomainAllocation::bytes: u64
+pub cudf::core::memory::QueryMemoryDomainAllocation::device_pointer: usize
+impl core::convert::From<cudf_sys::bindings::cudf_query_memory_domain_allocation_t> for cudf::core::memory::QueryMemoryDomainAllocation
+pub fn cudf::core::memory::QueryMemoryDomainAllocation::from(cudf_sys::bindings::cudf_query_memory_domain_allocation_t) -> Self
 pub struct cudf::core::memory::QueryMemoryDomainIdentity
 pub cudf::core::memory::QueryMemoryDomainIdentity::device: cudf::runtime::device::DeviceId
 pub cudf::core::memory::QueryMemoryDomainIdentity::domain_id: u64
@@ -8458,12 +8467,21 @@ pub fn cudf::QueryExecutionContext<'_>::fmt(&self, &mut core::fmt::Formatter<'_>
 pub struct cudf::QueryMemoryDomain
 impl cudf::core::memory::QueryMemoryDomain
 pub fn cudf::core::memory::QueryMemoryDomain::device(&self) -> cudf::runtime::device::DeviceId
+pub fn cudf::core::memory::QueryMemoryDomain::freeze(&self) -> cudf::core::error::Result<cudf::core::memory::QueryMemoryDomainUsage>
 pub fn cudf::core::memory::QueryMemoryDomain::identity(&self) -> cudf::core::error::Result<cudf::core::memory::QueryMemoryDomainIdentity>
+pub fn cudf::core::memory::QueryMemoryDomain::live_allocations(&self) -> cudf::core::error::Result<alloc::vec::Vec<cudf::core::memory::QueryMemoryDomainAllocation>>
 pub fn cudf::core::memory::QueryMemoryDomain::manager(&self) -> &cudf::core::memory::DeviceMemoryManager
 pub fn cudf::core::memory::QueryMemoryDomain::pool_usage(&self) -> cudf::core::error::Result<cudf::core::memory::DeviceMemoryPoolUsage>
 pub fn cudf::core::memory::QueryMemoryDomain::reserve_stream(&self, &cudf::runtime::stream::CudaStream, u64, usize) -> cudf::core::error::Result<cudf::core::memory::StreamReservationLease>
 pub fn cudf::core::memory::QueryMemoryDomain::resize_grant(&self, usize) -> cudf::core::error::Result<()>
 pub fn cudf::core::memory::QueryMemoryDomain::usage(&self) -> cudf::core::error::Result<cudf::core::memory::QueryMemoryDomainUsage>
+pub struct cudf::QueryMemoryDomainAllocation
+pub cudf::QueryMemoryDomainAllocation::aligned_bytes: u64
+pub cudf::QueryMemoryDomainAllocation::alignment: u64
+pub cudf::QueryMemoryDomainAllocation::bytes: u64
+pub cudf::QueryMemoryDomainAllocation::device_pointer: usize
+impl core::convert::From<cudf_sys::bindings::cudf_query_memory_domain_allocation_t> for cudf::core::memory::QueryMemoryDomainAllocation
+pub fn cudf::core::memory::QueryMemoryDomainAllocation::from(cudf_sys::bindings::cudf_query_memory_domain_allocation_t) -> Self
 pub struct cudf::QueryMemoryDomainIdentity
 pub cudf::QueryMemoryDomainIdentity::device: cudf::runtime::device::DeviceId
 pub cudf::QueryMemoryDomainIdentity::domain_id: u64

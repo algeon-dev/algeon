@@ -2,10 +2,7 @@
 
 use std::sync::Arc;
 
-use nexus_query_planning::{
-    admission::AttemptRequirement,
-    error::{QueryError, QueryErrorCode, Result},
-};
+use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
 
 use super::{
     DeviceFacts, DeviceLedger, DeviceMemoryFailureReport, DeviceMemoryFailureTracker, MemoryGrant,
@@ -245,11 +242,11 @@ impl DeviceContext {
         &self,
         waiter_id: AdmissionRequestId,
         attempt_id: crate::observability::AttemptId,
-        requirement: &AttemptRequirement,
+        requested_query_cap_bytes: Option<u64>,
     ) -> Result<Option<MemoryGrant>> {
         if self.synchronize_native_admission_health()? {
             return Ok(None);
         }
-        self.inner.ledger.try_admit_for_attempt(waiter_id, attempt_id, requirement)
+        self.inner.ledger.try_admit_for_attempt(waiter_id, attempt_id, requested_query_cap_bytes)
     }
 }

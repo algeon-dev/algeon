@@ -6,8 +6,8 @@ use super::{CompiledBoundedPipelineSupport, compiled_bounded_query_plan_support}
 use crate::{
     capability::{
         CapabilityAnalysis, CapabilityEnvelope, CapabilityEnvelopeAdmission, CapabilityRejectionCategory,
-        CapabilityRejectionOwner, CapabilityRejectionProjection, ContractQuality, ContractStatus,
-        ReservationRequirement, ReservationRequirementScope,
+        CapabilityRejectionOwner, CapabilityRejectionProjection, ContractQuality, ReservationRequirement,
+        ReservationRequirementScope,
     },
     error::{QueryError, QueryErrorCode, Result},
     pipeline::{CompiledPipeline, compile_pipeline},
@@ -150,7 +150,8 @@ fn rewrite_graph_requirements_for_cugraph_execution(analysis: &mut CapabilityAna
     );
     for node in &mut analysis.nodes {
         for requirement in &mut node.local_requirements {
-            if requirement.status == ContractStatus::BlockedByLowerLevel
+            if requirement.kind == crate::execution_contracts::ReservationKind::OperatorOutput
+                && requirement.memory_boundary == crate::plan::GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY
                 && requirement.required_contract == crate::plan::GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT
             {
                 *requirement = replacement.clone();

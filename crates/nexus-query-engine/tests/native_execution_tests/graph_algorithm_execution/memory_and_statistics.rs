@@ -293,7 +293,11 @@ fn bounded_betweenness_success_keeps_graph_memory_reservation() {
     assert_eq!(graph_budget.boundary, "graph_memory");
     assert_eq!(graph_budget.enforcement, "query_domain_member");
     assert_eq!(graph_budget.status, "reservation_enforced");
-    assert_eq!(graph_budget.budget_bytes, graph_reserve.requested_bytes);
+    // The graph-memory model is calibration evidence, never an allocation
+    // limit: cuGraph executes under the query cap, which is larger than the
+    // model's own reservation request here.
+    assert_eq!(graph_budget.budget_bytes, 16 * 1024 * 1024);
+    assert!(graph_budget.budget_bytes > graph_reserve.requested_bytes);
     assert!(result.metrics().reservation_events.iter().any(|event| {
         event.memory_boundary == "bounded_generic_graph_algorithm_output"
             && event.reservation_kind == ReservationKind::OperatorOutput
@@ -369,7 +373,7 @@ fn bounded_sparse_pagerank_uses_runtime_vertex_estimate_to_admit_graph_memory() 
 
     let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
     let QueryOutput::HostArrow(batch) = result.output() else {
-        panic!("host sink should materialize PageRank output");
+        panic!("host sink should materialize betweenness output");
     };
     assert_eq!(batch.num_rows(), 4);
 
@@ -696,4 +700,74 @@ fn pagerank_python_cugraph_reports_edge_normalize_in_graph_reservation() {
     drop(result);
     admitted.finish();
     fs::remove_dir_all(fixture_dir).unwrap();
+}
+
+
+#[test]
+fn graph_model_peak_above_the_query_cap_still_executes_under_allocator_arbitration() {
+    // The graph-memory model is a conservative upper bound. A workload whose
+    // modeled peak exceeds the query cap but whose real working set fits must
+    // execute: the allocator is the only arbiter of a query's allocations.
+    const QUERY_CAP_BYTES: u64 = 3 * 1024 * 1024;
+
+    let context = backend_context_with_grant(QUERY_CAP_BYTES);
+
+    let edge_count = 100_000_i32;
+    let edge_schema = Arc::new(Schema::new(vec![
+        Field::new("src", DataType::Int32, false),
+        Field::new("dst", DataType::Int32, false),
+    ]));
+    let source = (0..edge_count).map(|row| row % 64).collect::<Vec<_>>();
+    let destination = (0..edge_count).map(|row| (row + 1) % 64).collect::<Vec<_>>();
+    let edge_batch = RecordBatch::try_new(
+        Arc::clone(&edge_schema),
+        vec![Arc::new(Int32Array::from(source)), Arc::new(Int32Array::from(destination))],
+    )
+    .unwrap();
+
+    let mut builder = QueryPlanBuilder::new();
+    let edges = builder.add_source(SourceNode::GpuResident(gpu_resident_source("edges", Arc::clone(&edge_schema), &edge_batch)));
+    let spec = int32_graph_spec(
+        GraphAlgorithm::BetweennessCentrality,
+        GraphEdgeColumnBindings::new("src", "dst", None::<&str>),
+        GraphConstructionOptions { directed: true, renumber: true, policy: GraphConstructionPolicy::RawLibcugraph },
+        GraphAlgorithmParams::BetweennessCentrality(GraphBetweennessCentralityParams {
+            seeds: Some(GraphBetweennessSeeds::I64(vec![0, 1])),
+            ..Default::default()
+        }),
+    );
+    let graph = builder.add_graph_algorithm(edges, spec);
+    let plan = builder.finish_with_host_sink_schema(
+        graph,
+        int32_stable_graph_result_schema(GraphAlgorithm::BetweennessCentrality),
+    );
+    let admitted = context.admit_plan(&plan).unwrap();
+    let runtime = Arc::new(admitted.runtime().unwrap());
+
+    let mut gpu_inputs = GpuResidentInputMap::new();
+    gpu_inputs.insert(
+        "edges".to_string(),
+        GpuResultHandle::new(
+            &admitted,
+            GpuDataFrame::new(DataFrame::from_record_batch(&runtime, &edge_batch).unwrap()),
+            Arc::clone(&edge_schema),
+        )
+        .unwrap(),
+    );
+
+    let result = execute_query_plan_with_gpu_inputs(&admitted, &plan, &gpu_inputs).unwrap();
+
+    let graph_reservation =
+        result.metrics().graph_reservation_rows.first().expect("betweenness records a graph-memory calibration row");
+    assert!(
+        graph_reservation.requested_bytes > QUERY_CAP_BYTES,
+        "fixture must model a peak above the query cap; modeled {} vs cap {QUERY_CAP_BYTES}",
+        graph_reservation.requested_bytes
+    );
+    assert_eq!(result.metrics().graph_algorithm_runtime_rows.len(), 1);
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize PageRank output");
+    };
+    assert_eq!(batch.num_rows(), 64);
+    admitted.finish();
 }

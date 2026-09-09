@@ -252,7 +252,9 @@ pub(super) fn map_cugraph_error(
                 cugraph::AllocationSource::RmmBadAlloc => crate::error::CugraphAllocationSource::RmmBadAlloc,
                 cugraph::AllocationSource::StdBadAlloc => crate::error::CugraphAllocationSource::StdBadAlloc,
             };
-            query_error.with_cugraph_allocation_source(source)
+            query_error
+                .with_cugraph_allocation_source(source)
+                .with_fact("cugraph_allocation_failure_source", error.allocation_failure_source().as_str())
         } else {
             query_error
         };
@@ -260,17 +262,27 @@ pub(super) fn map_cugraph_error(
     }
 }
 
+/// Classifies a cuGraph allocation failure by the owner it was attributed to.
+///
+/// This is the same attribution table the cuDF boundary uses: only a proven
+/// physical provenance may become `DeviceOutOfMemory`, an owner reservation
+/// limit is the query cap rejecting an allocation, and an unattributed
+/// failure never impersonates either.
 #[cfg(feature = "cugraph")]
 fn code_for_cugraph_error(error: &cugraph::Error) -> QueryErrorCode {
     match error.kind() {
-        cugraph::ErrorKind::OutOfMemory => QueryErrorCode::CudfResourceExhausted,
+        cugraph::ErrorKind::OutOfMemory => match error.allocation_failure_source() {
+            cugraph::AllocationFailureSource::ReservationLimit => QueryErrorCode::QueryMemoryLimitExceeded,
+            cugraph::AllocationFailureSource::Physical => QueryErrorCode::DeviceOutOfMemory,
+            cugraph::AllocationFailureSource::Unknown => QueryErrorCode::DeviceAllocationFailed,
+        },
         cugraph::ErrorKind::InvalidInput | cugraph::ErrorKind::InvalidHandle => QueryErrorCode::CudfInvalidInput,
         cugraph::ErrorKind::UnsupportedType | cugraph::ErrorKind::NotImplemented => QueryErrorCode::CudfUnsupported,
-        cugraph::ErrorKind::InvalidState => QueryErrorCode::CudfInvariantViolation,
+        cugraph::ErrorKind::InvalidState => QueryErrorCode::InternalInvariantViolation,
         cugraph::ErrorKind::NonConvergence => QueryErrorCode::AlgorithmDidNotConverge,
         cugraph::ErrorKind::IoError | cugraph::ErrorKind::Unexpected => match error.status() {
             cugraph::ErrorStatus::Temporary => QueryErrorCode::CudfTemporaryFailure,
-            cugraph::ErrorStatus::Persistent => QueryErrorCode::CudfPersistentFailure,
+            cugraph::ErrorStatus::Persistent => QueryErrorCode::DeviceFault,
             cugraph::ErrorStatus::Permanent => QueryErrorCode::CudfDependencyFailure,
         },
         _ => QueryErrorCode::CudfDependencyFailure,
@@ -287,7 +299,10 @@ mod tests {
 
         let error = map_cugraph_error("nexus_query_engine.graph_algorithm.test", "cuGraph test OOM")(source);
 
-        assert_eq!(error.code(), QueryErrorCode::CudfResourceExhausted);
+        // An unattributed cuGraph allocation failure never impersonates a
+        // physical device OOM or a query-cap rejection.
+        assert_eq!(error.code(), QueryErrorCode::DeviceAllocationFailed);
+        assert_eq!(error.fact_value("cugraph_allocation_failure_source"), Some("unknown"));
         assert_eq!(error.fact_value("cugraph_allocation_source"), Some("unknown"));
         assert_eq!(error.cugraph_allocation_source(), Some(crate::error::CugraphAllocationSource::Unknown));
 
@@ -298,6 +313,34 @@ mod tests {
 
         assert_eq!(dependency_error.fact_value("cugraph_allocation_source"), None);
         assert_eq!(dependency_error.cugraph_allocation_source(), None);
+    }
+
+    #[test]
+    fn cugraph_allocation_failures_map_to_the_same_taxonomy_as_cudf() {
+        // The cuGraph boundary must classify allocation failures by the same
+        // attributed source as the cuDF boundary: an owner reservation limit
+        // is the query cap rejecting an allocation, a proven physical failure
+        // is device OOM, and an unattributed one is neither.
+        for (failure_source, expected) in [
+            (cugraph::AllocationFailureSource::ReservationLimit, QueryErrorCode::QueryMemoryLimitExceeded),
+            (cugraph::AllocationFailureSource::Physical, QueryErrorCode::DeviceOutOfMemory),
+            (cugraph::AllocationFailureSource::Unknown, QueryErrorCode::DeviceAllocationFailed),
+        ] {
+            let source = cugraph::Error::new(cugraph::ErrorKind::OutOfMemory, "cugraph.test.attributed_oom")
+                .with_allocation_failure_source(failure_source);
+
+            let error = map_cugraph_error("nexus_query_engine.graph_algorithm.test", "cuGraph attributed OOM")(source);
+
+            assert_eq!(error.code(), expected, "failure source {failure_source} must map to {expected:?}");
+            assert_eq!(error.fact_value("cugraph_allocation_failure_source"), Some(failure_source.as_str()));
+        }
+
+        // Routing and lifetime contradictions are programming defects, not
+        // user input errors.
+        let invalid_state = map_cugraph_error("nexus_query_engine.graph_algorithm.test", "cuGraph invalid state")(
+            cugraph::Error::new(cugraph::ErrorKind::InvalidState, "cugraph.test.invalid_state"),
+        );
+        assert_eq!(invalid_state.code(), QueryErrorCode::InternalInvariantViolation);
     }
 
     #[test]

@@ -350,27 +350,15 @@ fn builder_rejects_injected_backend_admission_conflict() {
 }
 
 #[test]
-fn builder_rejects_injected_backend_attempt_floor_conflict() {
+fn builder_rejects_injected_backend_default_query_limit_conflict() {
     let backend = runtime_backend(1);
     let mut config = bounded_config(1);
-    config.gpu_device_profiles[0] = config.gpu_device_profiles[0].clone().with_attempt_floor_bytes(256);
+    config.gpu_device_profiles[0] = config.gpu_device_profiles[0].clone().with_default_query_limit_bytes(256);
 
     let error = validate_injected_backend_matches_config(&backend, &config).unwrap_err();
 
     assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
-    assert_eq!(error.fact_value("config_field"), Some("admission.device_profiles.attempt_floor_bytes"));
-}
-
-#[test]
-fn builder_rejects_injected_backend_overtake_budget_conflict() {
-    let backend = runtime_backend(1);
-    let mut config = bounded_config(1);
-    config.queue_policy = config.queue_policy.with_max_overtakes_per_waiter(7);
-
-    let error = validate_injected_backend_matches_config(&backend, &config).unwrap_err();
-
-    assert_eq!(error.fact_value("reason"), Some("server_backend_admission_conflict"));
-    assert_eq!(error.fact_value("config_field"), Some("admission.max_overtakes_per_waiter"));
+    assert_eq!(error.fact_value("config_field"), Some("admission.device_profiles.default_query_limit_bytes"));
 }
 
 #[test]

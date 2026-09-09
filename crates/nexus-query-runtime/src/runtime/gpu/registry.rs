@@ -62,7 +62,7 @@ pub struct DeviceRegistryInstallProfile {
     #[doc(hidden)]
     pub cache_cap_bytes: u64,
     #[doc(hidden)]
-    pub attempt_floor_bytes: Option<u64>,
+    pub default_query_limit_bytes: Option<u64>,
     #[doc(hidden)]
     pub source_work_per_attempt: usize,
     #[doc(hidden)]
@@ -254,39 +254,17 @@ impl DeviceRegistry {
                     .with_fact("field", "backend_reserve_bytes")
                     .with_fact("reason", "configured_capacity_overflow")
                 })?;
-            // The default floor divides the managed capacity into eight
-            // baseline shares, or into one share per active-attempt slot when
-            // more than eight slots are configured, so the frozen
-            // `floor * A_d <= managed_capacity` invariant always holds.
-            // Explicit floors are validated against the same equation.
-            let max_active = profile.max_active_attempts;
-            let default_floor_divisor = u64::try_from(max_active).unwrap_or(u64::MAX).max(8);
-            let attempt_floor_bytes = match profile.attempt_floor_bytes {
-                Some(floor) => floor,
-                None => {
-                    let floor = capacity_bytes / default_floor_divisor;
-                    if floor == 0 {
-                        return Err(QueryError::new(
-                            QueryErrorCode::InvalidPlan,
-                            "nexus_query_engine.gpu.device_registry.capacity",
-                            "managed capacity is too small for the default attempt floor",
-                        )
-                        .with_fact("device_ordinal", *ordinal)
-                        .with_fact("field", "attempt_floor_bytes")
-                        .with_fact("reason", "managed_capacity_too_small_for_default_floor")
-                        .with_fact("managed_capacity_bytes", capacity_bytes)
-                        .with_fact("max_active_attempts", max_active));
-                    }
-                    floor
-                },
-            };
+            // An unresolved query limit is the complete managed capacity for
+            // this device. Explicit limits are validated by the immutable
+            // resource-profile resolver below.
+            let default_query_limit_bytes = profile.default_query_limit_bytes.unwrap_or(capacity_bytes);
             let resource_profile = DeviceResourceProfile::resolve(DeviceResourceEnvelope {
                 device_ordinal: *ordinal,
                 device_capabilities: profile.device_capabilities.clone(),
                 configured_limit_bytes,
                 headroom_bytes: 0,
                 backend_reserve_bytes: profile.backend_reserve_bytes,
-                attempt_floor_bytes,
+                default_query_limit_bytes,
                 max_active_attempts: profile.max_active_attempts,
                 source_work_per_attempt: profile.source_work_per_attempt,
                 stream_pool_size: profile.stream_pool_size,
@@ -846,6 +824,16 @@ fn validate_registry_config(config: &DeviceRegistryConfig) -> Result<()> {
             .with_fact("device_ordinal", *ordinal)
             .with_fact("reason", "zero"));
         }
+        if profile.default_query_limit_bytes == Some(0) {
+            return Err(QueryError::new(
+                QueryErrorCode::InvalidPlan,
+                "nexus_query_engine.gpu.device_registry.config",
+                "per-device default query limit must be greater than zero",
+            )
+            .with_fact("field", "device_profiles.default_query_limit_bytes")
+            .with_fact("device_ordinal", *ordinal)
+            .with_fact("reason", "zero"));
+        }
         match profile.capacity_policy {
             DeviceRegistryCapacityPolicy::Automatic { fallback_bytes: 0, .. } => {
                 return Err(QueryError::new(
@@ -1067,7 +1055,7 @@ mod tests {
             },
             backend_reserve_bytes: 0,
             cache_cap_bytes: 0,
-            attempt_floor_bytes: None,
+            default_query_limit_bytes: None,
             source_work_per_attempt: 1,
             worker_job_capacity: 2,
             lane_count: 1,
@@ -1125,7 +1113,7 @@ mod tests {
                 },
             ],
         };
-        let profile = |floor| DeviceRegistryInstallProfile {
+        let profile = |default_query_limit_bytes| DeviceRegistryInstallProfile {
             stream_pool_size: 4,
             device_capabilities: DeviceCapabilities::default(),
             max_active_attempts: 2,
@@ -1136,7 +1124,7 @@ mod tests {
             },
             backend_reserve_bytes: 100,
             cache_cap_bytes: 0,
-            attempt_floor_bytes: floor,
+            default_query_limit_bytes,
             source_work_per_attempt: 1,
             worker_job_capacity: 4,
             lane_count: 2,
@@ -1153,19 +1141,29 @@ mod tests {
         .unwrap();
         assert_eq!(plans.plans()[0].resource_profile.managed_capacity_bytes, 800);
         assert_eq!(plans.plans()[1].resource_profile.managed_capacity_bytes, 1_800);
-        assert_eq!(plans.plans()[0].resource_profile.attempt_floor_bytes, 100);
-        assert_eq!(plans.plans()[1].resource_profile.attempt_floor_bytes, 225);
+        assert_eq!(plans.plans()[0].resource_profile.default_query_limit_bytes, 800);
+        assert_eq!(plans.plans()[1].resource_profile.default_query_limit_bytes, 1_800);
 
-        let error = DeviceRegistry::resolve_install_plans(
+        let explicit = DeviceRegistry::resolve_install_plans(
             &inventory,
             &DeviceRegistryConfig::new(vec![0, 1], 4)
                 .with_device_profile(0, profile(None))
                 .with_device_profile(1, profile(Some(1_000))),
             None,
         )
+        .unwrap();
+        assert_eq!(explicit.plans()[1].resource_profile.default_query_limit_bytes, 1_000);
+
+        let error = DeviceRegistry::resolve_install_plans(
+            &inventory,
+            &DeviceRegistryConfig::new(vec![0, 1], 4)
+                .with_device_profile(0, profile(None))
+                .with_device_profile(1, profile(Some(2_000))),
+            None,
+        )
         .unwrap_err();
         assert_eq!(error.fact_value("device_ordinal"), Some("1"));
-        assert_eq!(error.fact_value("reason"), Some("attempt_floor_exceeds_managed_capacity"));
+        assert_eq!(error.fact_value("reason"), Some("default_query_limit_exceeds_managed_capacity"));
     }
 
     #[test]
@@ -1191,7 +1189,7 @@ mod tests {
             },
             backend_reserve_bytes: 50,
             cache_cap_bytes: 0,
-            attempt_floor_bytes: None,
+            default_query_limit_bytes: None,
             source_work_per_attempt: 1,
             worker_job_capacity: 2,
             lane_count: 2,
@@ -1210,7 +1208,7 @@ mod tests {
             },
             backend_reserve_bytes: 25,
             cache_cap_bytes: 0,
-            attempt_floor_bytes: None,
+            default_query_limit_bytes: None,
             source_work_per_attempt: 1,
             worker_job_capacity: 7,
             lane_count: 7,
@@ -1225,7 +1223,7 @@ mod tests {
             capacity_policy: DeviceRegistryCapacityPolicy::Explicit { limit_bytes: 700 },
             backend_reserve_bytes: 10,
             cache_cap_bytes: 0,
-            attempt_floor_bytes: None,
+            default_query_limit_bytes: None,
             source_work_per_attempt: 1,
             worker_job_capacity: 3,
             lane_count: 3,
@@ -1282,7 +1280,7 @@ mod tests {
             },
             backend_reserve_bytes: 0,
             cache_cap_bytes: 0,
-            attempt_floor_bytes: None,
+            default_query_limit_bytes: None,
             source_work_per_attempt: 1,
             worker_job_capacity: 1,
             lane_count: 1,

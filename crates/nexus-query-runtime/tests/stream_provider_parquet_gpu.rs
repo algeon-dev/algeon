@@ -24,11 +24,11 @@ fn unique_fixture_path() -> PathBuf {
 fn test_service() -> QueryService {
     QueryService::new_with_device_profiles_and_deployment_for_test(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 4, max_wait: Duration::from_secs(5), max_overtakes_per_waiter: 2 },
+        QueueBounds { max_waiters: 4, max_wait: Duration::from_secs(5) },
         vec![GpuBackendDeviceConfig::new(
             GpuBackendDeviceProfile::new(0)
                 .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: 64 * 1024 * 1024 })
-                .with_attempt_floor_bytes(4 * 1024 * 1024)
+                .with_default_query_limit_bytes(4 * 1024 * 1024)
                 .with_source_work_per_attempt(2)
                 .with_max_active_attempts(2)
                 .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(6, 2, 2)),

@@ -33,6 +33,7 @@
 #include <string>
 #include <unordered_map>
 #include <utility>
+#include <vector>
 
 RMM_NAMESPACE_BEGIN
 namespace mr {
@@ -215,6 +216,13 @@ class query_domain_allocation_registry final {
 
   [[nodiscard]] std::optional<query_domain_allocation_record> take(void* ptr) noexcept;
 
+  /// Snapshots every live allocation owned by `domain`, in ascending pointer
+  /// order. This is the registry's own view of surviving allocations; it is
+  /// the only evidence that can distinguish a published output owner's
+  /// buffers from leaked temporaries.
+  [[nodiscard]] std::vector<std::pair<void*, query_domain_allocation_record>> live_for_domain(
+    std::shared_ptr<query_domain_state> const& domain);
+
   void record_invariant_violation(invariant_violation violation) noexcept;
 
   void throw_if_invariant_violated() const;
@@ -284,6 +292,8 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
   [[nodiscard]] operation_guard begin_operation() noexcept;
 
   bool resize_grant(std::size_t grant_bytes, std::string& error);
+
+  bool freeze(std::string& error);
 
   bool pool_usage(cudf_memory_pool_usage_t& out) const noexcept;
 
@@ -357,6 +367,7 @@ class query_domain_resource final : public rmm::mr::device_memory_resource {
   std::atomic<std::size_t> in_flight_operations_{0};
   std::atomic<std::size_t> failed_allocation_count_{0};
   std::atomic<std::size_t> largest_failed_allocation_bytes_{0};
+  std::atomic<bool> allocation_open_{true};
 };
 
 struct query_domain_state {
@@ -523,6 +534,12 @@ class reservation_aware_resource_adaptor final : public rmm::mr::device_memory_r
   void destroy_arena(std::shared_ptr<reservation_arena_state> const& state);
 
   void destroy_query_domain(std::shared_ptr<query_domain_state> const& state);
+
+  bool freeze_query_domain(std::shared_ptr<query_domain_state> const& state,
+                           std::string& error);
+
+  [[nodiscard]] std::vector<std::pair<void*, query_domain_allocation_record>>
+  live_query_domain_allocations(std::shared_ptr<query_domain_state> const& state);
 
   cudf_memory_resource_usage_t usage(std::shared_ptr<reservation_state> const& state);
 

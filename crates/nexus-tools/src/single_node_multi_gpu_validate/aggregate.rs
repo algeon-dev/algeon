@@ -63,8 +63,9 @@ pub(super) struct AttemptObservation {
     /// without relying on runner task order or a host-side clock.
     pub(super) admission_requested_ns: Option<u64>,
     pub(super) admitted_ns: Option<u64>,
-    /// Bounded sealed queue/overtake facts emitted by the engine-owned
-    /// admission controller. They are not inferred from runner ordering.
+    /// Sealed FIFO queue facts emitted by the engine-owned admission
+    /// controller. Historical overtake fields remain zero and are not
+    /// inferred from runner ordering.
     pub(super) admission_wait: Option<AdmissionWaitEvidence>,
     /// Ledger grant identity, when the report carried available resource
     /// evidence. `None` means the evidence field was unavailable, which is a
@@ -606,16 +607,15 @@ pub(super) struct ScenarioEvidence {
 /// Evidence for the explicit public bounded-overload and drain scenario.
 ///
 /// `AttemptAdmissionWaitFact` is controller-owned and sealed with the final
-/// report. The release runner uses actual public plans, which can exercise
-/// the bounded queue but cannot author the unequal controller requirements
-/// needed to manufacture a finite overtake. Exact finite-overtake protection
-/// stays with the deterministic owning controller suite rather than being
-/// inferred from workload arrival order here.
+/// report. The release runner uses actual public plans to exercise the bounded
+/// oldest-eligible FIFO queue. Historical overtake fields are retained as
+/// zero-valued artifact facts.
 #[derive(Debug, Clone, Serialize)]
 pub(super) struct OverloadFairnessEvidence {
     pub(super) status: ClauseStatus,
     pub(super) configured_active_attempt_capacity: u64,
     pub(super) configured_queue_limit: u64,
+    /// Historical field retained as a zero fact after overtake policy removal.
     pub(super) configured_overtake_limit: u32,
     pub(super) planned_cohort_attempts: u64,
     pub(super) sealed_attempts: u64,
@@ -625,7 +625,7 @@ pub(super) struct OverloadFairnessEvidence {
     pub(super) bounded_overload_shape: bool,
     pub(super) all_planned_attempts_sealed: bool,
     pub(super) all_planned_attempts_admitted_and_completed: bool,
-    /// Highest public queue depth observed while the finite cohort was live.
+    /// Highest public queue depth observed while the bounded cohort was live.
     pub(super) observed_peak_queued_attempts: u64,
     pub(super) queue_limit_reached: bool,
     pub(super) queue_bound_respected: bool,
@@ -1066,7 +1066,6 @@ impl OverloadFairnessEvidence {
         devices: &[DeviceConfiguration],
         planned_cohort_attempts: usize,
         configured_queue_limit: usize,
-        configured_overtake_limit: u32,
         observed_peak_queued_attempts: usize,
         dropped_overrun_arrivals: u64,
         begin_failures: u64,
@@ -1106,76 +1105,23 @@ impl OverloadFairnessEvidence {
         let wait_facts_exact = !queued.is_empty()
             && queued.iter().all(|(attempt, wait)| {
                 submission_sequences.insert(wait.submission_sequence)
-                    && wait.overtake_limit > 0
-                    && wait.overtake_limit == configured_overtake_limit
-                    && wait.overtakes_consumed <= wait.overtake_limit
-                    && wait.overtakes_remaining <= wait.overtake_limit
-                    && wait
-                        .overtakes_consumed
-                        .checked_add(wait.overtakes_remaining)
-                        .is_some_and(|total| total == wait.overtake_limit)
+                    && wait.overtake_limit == 0
+                    && wait.overtakes_consumed == 0
+                    && wait.overtakes_remaining == 0
+                    && wait.protection_device_ordinal.is_none()
                     && attempt.admission_sequence.is_some()
                     && attempt.admission_wait_ns.is_some()
                     && attempt
                         .admission_requested_ns
                         .zip(attempt.admitted_ns)
                         .is_some_and(|(requested, admitted)| requested <= admitted)
-                    && wait
-                        .protection_device_ordinal
-                        .is_none_or(|ordinal| devices.iter().any(|device| device.ordinal == ordinal))
             });
-        let exhausted_waiters = queued
-            .iter()
-            .filter(|(_, wait)| wait.overtakes_consumed == wait.overtake_limit && wait.overtakes_remaining == 0)
-            .collect::<Vec<_>>();
-        let protected_waiters = exhausted_waiters
-            .iter()
-            .filter_map(|(attempt, wait)| {
-                let protection_ordinal = wait.protection_device_ordinal?;
-                (attempt.device_ordinal == Some(protection_ordinal)).then_some((
-                    protection_ordinal,
-                    wait.submission_sequence,
-                    attempt.admission_sequence?,
-                    attempt.admission_requested_ns?,
-                    attempt.admitted_ns?,
-                    *attempt,
-                ))
-            })
-            .collect::<Vec<_>>();
-        let protected_waiter =
-            protected_waiters.iter().min_by_key(|(_, submission_sequence, _, _, _, _)| *submission_sequence).copied();
-        let (protected_waiter_submission_sequence, protected_waiter_admission_sequence, protection_device_ordinal) =
-            protected_waiter.map_or((None, None, None), |(ordinal, submission, admission, _, _, _)| {
-                (Some(submission), Some(admission), Some(ordinal))
-            });
-        let (unrelated_device_progress_count, unrelated_device_completion_count) = protected_waiter.map_or(
-            (0, 0),
-            |(protection_ordinal, _, _, requested_ns, admitted_ns, protected_attempt)| {
-                observations
-                    .iter()
-                    .filter(|candidate| {
-                        !std::ptr::eq(*candidate, protected_attempt)
-                            && candidate.succeeded
-                            && candidate.reached_gpu
-                            && candidate.device_ordinal.is_some_and(|ordinal| ordinal != protection_ordinal)
-                            && candidate.admitted_ns.is_some_and(|candidate_admitted_ns| {
-                                candidate_admitted_ns >= requested_ns && candidate_admitted_ns < admitted_ns
-                            })
-                    })
-                    .fold((0_u64, 0_u64), |(progress, completion), candidate| {
-                        (
-                            progress.saturating_add(1),
-                            completion.saturating_add(u64::from(candidate.outcome_terminal_ns < admitted_ns)),
-                        )
-                    })
-            },
-        );
 
         let mut evidence = Self {
             status: ClauseStatus::Failed,
             configured_active_attempt_capacity,
             configured_queue_limit,
-            configured_overtake_limit,
+            configured_overtake_limit: 0,
             planned_cohort_attempts,
             sealed_attempts,
             begin_failures,
@@ -1189,13 +1135,13 @@ impl OverloadFairnessEvidence {
             queue_bound_respected: observed_peak_queued_attempts <= configured_queue_limit_usize,
             queued_admission_reports: queued.len() as u64,
             wait_facts_exact,
-            exhausted_waiter_count: exhausted_waiters.len() as u64,
-            protected_exhausted_waiter_count: protected_waiters.len() as u64,
-            protected_waiter_submission_sequence,
-            protected_waiter_admission_sequence,
-            protection_device_ordinal,
-            unrelated_device_progress_count,
-            unrelated_device_completion_count,
+            exhausted_waiter_count: 0,
+            protected_exhausted_waiter_count: 0,
+            protected_waiter_submission_sequence: None,
+            protected_waiter_admission_sequence: None,
+            protection_device_ordinal: None,
+            unrelated_device_progress_count: 0,
+            unrelated_device_completion_count: 0,
             eligible_device_completion_count,
         };
         evidence.status = if evidence.is_evidenced() { ClauseStatus::Evidenced } else { ClauseStatus::Failed };

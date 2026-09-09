@@ -127,15 +127,13 @@ fn bounded_native_query_executes_keyless_conditional_join_with_aggregate_over_jo
         Ok(_) => panic!("constrained aggregate-over-join subplan inputs pipeline should fail reservation"),
         Err(error) => error,
     };
-    assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
+    assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded);
     assert_eq!(error.fact_value("bounded_join_execution_family"), None);
     assert_eq!(error.fact_value("memory_boundary"), Some("join_source_read"));
-    assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
-    let requested_bytes = error.fact_value("requested_bytes").unwrap().parse::<u64>().unwrap();
-    let granted_bytes = error.fact_value("granted_bytes").unwrap().parse::<u64>().unwrap();
-    let budget_bytes = error.fact_value("budget_bytes").unwrap().parse::<u64>().unwrap();
-    assert!(requested_bytes > granted_bytes);
-    assert!(granted_bytes < budget_bytes);
+    assert_eq!(error.fact_value("budget_bytes"), Some("1"));
+    assert_eq!(error.fact_value("budget_enforcement"), Some("query_domain_member"));
+    assert_eq!(error.fact_value("failure_source"), Some("RESERVATION_LIMIT"));
+    assert!(error.fact_value("requested_allocation_bytes").is_some());
     assert!(error.fact_value("node_id").is_some());
     assert_eq!(error.fact_value("stage"), Some("join_source_read"));
     assert_eq!(error.fact_value("attempt"), Some("1"));

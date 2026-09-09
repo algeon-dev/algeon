@@ -125,6 +125,13 @@ pub enum QueryAdmissionOutcome {
     /// when the service attached them to the structured error; the configured
     /// wait bound is supplied by [`Self::from_error_with_queue_bounds`].
     Capacity { queued_queries: Option<usize>, queue_capacity: Option<usize>, max_queue_wait: Option<Duration> },
+    /// The requested query cap does not fit any eligible device after
+    /// resident ownership is deducted.
+    ///
+    /// This is deliberately not [`Self::Capacity`]: queueing and backoff
+    /// cannot make an impossible cap fit, so the caller must release resident
+    /// owners or change the cap, device, or query.
+    BudgetUnavailable { requested_cap_bytes: Option<u64>, largest_eligible_cap_bytes: Option<u64> },
     /// The plan or operator is permanently outside the supported capability
     /// catalogue.
     CapabilityRejected,
@@ -165,6 +172,10 @@ impl QueryAdmissionOutcome {
 
     fn from_error_with_optional_queue_bounds(error: &QueryError, queue_bounds: Option<&QueueBounds>) -> Self {
         match error.code() {
+            QueryErrorCode::QueryBudgetUnavailable => Self::BudgetUnavailable {
+                requested_cap_bytes: fact_u64(error, "requested_cap_bytes"),
+                largest_eligible_cap_bytes: fact_u64(error, "largest_eligible_cap_bytes"),
+            },
             QueryErrorCode::ServiceOverloaded
             | QueryErrorCode::MemoryReservationFailed
             | QueryErrorCode::CudfResourceExhausted => Self::Capacity {
@@ -192,6 +203,12 @@ impl QueryAdmissionOutcome {
             | QueryErrorCode::SourceObjectNotFound
             | QueryErrorCode::SourceTemporaryFailure
             | QueryErrorCode::CudfInvariantViolation
+            | QueryErrorCode::QueryMemoryLimitExceeded
+            | QueryErrorCode::DeviceOutOfMemory
+            | QueryErrorCode::DeviceAllocationFailed
+            | QueryErrorCode::DeviceFault
+            | QueryErrorCode::CleanupFailed
+            | QueryErrorCode::InternalInvariantViolation
             | QueryErrorCode::SizeOverflow
             | QueryErrorCode::HostMaterializationLimitExceeded
             | QueryErrorCode::Internal => Self::ExecutionFailure,
@@ -228,6 +245,10 @@ fn fact_usize(error: &QueryError, key: &str) -> Option<usize> {
     error.fact_value(key)?.parse().ok()
 }
 
+fn fact_u64(error: &QueryError, key: &str) -> Option<u64> {
+    error.fact_value(key)?.parse().ok()
+}
+
 #[cfg(test)]
 mod outcome_tests {
     use super::*;
@@ -242,7 +263,7 @@ mod outcome_tests {
             .with_fact("reason", "admission_queue_full")
             .with_fact("queued_queries", 7)
             .with_fact("max_waiters", 8);
-        let bounds = QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(11), max_overtakes_per_waiter: 2 };
+        let bounds = QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(11) };
 
         let outcome = QueryAdmissionOutcome::from_error_with_queue_bounds(&error, &bounds);
         assert_eq!(outcome.queued_queries(), Some(7));
@@ -255,6 +276,9 @@ mod outcome_tests {
     fn admission_projection_is_exhaustive_and_does_not_parse_reason_strings() {
         let cases = [
             (QueryErrorCode::MemoryReservationFailed, "capacity"),
+            // An impossible cap is not queue pressure: the caller must change
+            // the cap or release resident owners, never simply back off.
+            (QueryErrorCode::QueryBudgetUnavailable, "budget_unavailable"),
             (QueryErrorCode::UnsupportedPlanShape, "capability"),
             (QueryErrorCode::InvalidPlan, "invalid"),
             (QueryErrorCode::Cancelled, "cancelled"),
@@ -264,6 +288,7 @@ mod outcome_tests {
             let outcome = QueryAdmissionOutcome::from_error(&error(code).with_fact("reason", "unrelated_reason_name"));
             let actual = match outcome {
                 QueryAdmissionOutcome::Capacity { .. } => "capacity",
+                QueryAdmissionOutcome::BudgetUnavailable { .. } => "budget_unavailable",
                 QueryAdmissionOutcome::CapabilityRejected => "capability",
                 QueryAdmissionOutcome::InvalidInput => "invalid",
                 QueryAdmissionOutcome::Cancelled => "cancelled",
@@ -271,6 +296,16 @@ mod outcome_tests {
             };
             assert_eq!(actual, expected, "classification for {code:?}");
         }
+        // The budget projection never reports queue metrics, so a backend
+        // cannot mistake it for queue pressure with a wait bound.
+        let bounds = QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(11) };
+        let budget = QueryAdmissionOutcome::from_error_with_queue_bounds(
+            &error(QueryErrorCode::QueryBudgetUnavailable).with_fact("queued_queries", 7).with_fact("max_waiters", 8),
+            &bounds,
+        );
+        assert_eq!(budget.queued_queries(), None);
+        assert_eq!(budget.queue_capacity(), None);
+        assert_eq!(budget.max_queue_wait(), None);
     }
 
     #[test]
@@ -281,7 +316,7 @@ mod outcome_tests {
             QueryAdmissionOutcome::Capacity { queued_queries: None, queue_capacity: None, max_queue_wait: None }
         ));
 
-        let bounds = QueueBounds { max_waiters: 4, max_wait: Duration::from_secs(3), max_overtakes_per_waiter: 1 };
+        let bounds = QueueBounds { max_waiters: 4, max_wait: Duration::from_secs(3) };
         let outcome =
             QueryAdmissionOutcome::from_error_with_queue_bounds(&error(QueryErrorCode::CudfResourceExhausted), &bounds);
         assert_eq!(outcome.queued_queries(), None);
@@ -309,6 +344,9 @@ mod outcome_tests {
 #[derive(Debug, Default)]
 #[non_exhaustive]
 pub struct QueryAdmissionRequest {
+    /// Explicit immutable query cap. When absent, the selected device resolves
+    /// its configured default inside the admission transaction.
+    requested_query_cap_bytes: Option<u64>,
     /// Opaque capability proof emitted by planning.
     ///
     /// Request callers provide lifecycle and correlation metadata only;
@@ -378,6 +416,16 @@ impl QueryAdmissionRequest {
     /// Creates a request with no explicit capability requirement.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Requests an exact immutable query cap. Admission never clamps it.
+    pub fn with_query_cap_bytes(mut self, query_cap_bytes: u64) -> Self {
+        self.requested_query_cap_bytes = Some(query_cap_bytes);
+        self
+    }
+
+    pub(in crate::runtime::query_service) const fn requested_query_cap_bytes(&self) -> Option<u64> {
+        self.requested_query_cap_bytes
     }
 
     /// Borrows the engine-issued capability proof, if planning attached one.

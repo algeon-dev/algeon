@@ -170,8 +170,10 @@ impl QueryAdmission {
                         writeln!(output, "# device_{ordinal}_max_active_attempts={}", profile.max_active_attempts());
                     let _ = writeln!(
                         output,
-                        "# device_{ordinal}_attempt_floor_bytes={}",
-                        profile.attempt_floor_bytes().map_or_else(|| "none".to_string(), |value| value.to_string())
+                        "# device_{ordinal}_default_query_limit_bytes={}",
+                        profile
+                            .default_query_limit_bytes()
+                            .map_or_else(|| "none".to_string(), |value| value.to_string())
                     );
                 }
                 let _ = writeln!(output, "# max_queued_attempts={}", queue_policy.max_queued_attempts());
@@ -337,7 +339,7 @@ mod tests {
         assert_eq!(profile.max_active_attempts(), 1);
         assert_eq!(profile.device_ordinal(), 0);
         assert_eq!(profile.memory_limit(), crate::backend::GpuDeviceMemoryLimit::Explicit { limit_bytes: 3072 });
-        assert_eq!(profile.attempt_floor_bytes(), None);
+        assert_eq!(profile.default_query_limit_bytes(), None);
         assert_eq!(
             config
                 .native_optimizer_config
@@ -399,13 +401,18 @@ mod tests {
 
     #[tokio::test(flavor = "current_thread")]
     async fn query_service_admission_diagnostics_payload_reports_snapshot_and_governors() {
+        const HOLDER_DEVICE_CAP_BYTES: u64 = 1024 * 1024 * 1024;
+        const HOLDER_QUERY_CAP_BYTES: u64 = 512 * 1024 * 1024;
+
         let env = std::collections::BTreeMap::from([
             (crate::config::NEXUS_SERVER_NATIVE_MAX_SOURCE_CHUNK_BYTES_ENV, "512".to_string()),
             (crate::config::NEXUS_SERVER_NATIVE_MAX_ROW_GROUPS_PER_CHUNK_ENV, "1".to_string()),
         ]);
-        let mut config =
-            declare_test_gpu_ownership(server_config_with_test_device_profile(env, Some(1024 * 1024)).unwrap());
-        config.gpu_device_profiles[0] = config.gpu_device_profiles[0].clone().with_attempt_floor_bytes(256);
+        let mut config = declare_test_gpu_ownership(
+            server_config_with_test_device_profile(env, Some(HOLDER_DEVICE_CAP_BYTES)).unwrap(),
+        );
+        config.gpu_device_profiles[0] =
+            config.gpu_device_profiles[0].clone().with_default_query_limit_bytes(HOLDER_QUERY_CAP_BYTES);
         let backend = crate::backend_from_server_config(&config).unwrap();
         let admission = QueryAdmission::from_backend(&backend);
 
@@ -437,7 +444,7 @@ mod tests {
         let snapshot = backend.backend_metrics_snapshot();
         let device = snapshot.device(0).expect("configured device must have one bounded metrics slot");
         assert_eq!(device.admission.active_attempts, 1);
-        assert_eq!(device.admission.live_grant_bytes, 1024 * 1024);
+        assert_eq!(device.admission.live_grant_bytes, HOLDER_QUERY_CAP_BYTES);
         assert_eq!(device.admission.live_reserved_bytes, 16);
         // The default zero-cap profile creates no cache allocation domain, so
         // its ledger-backed cache projections remain byte-for-byte zero.
@@ -450,7 +457,7 @@ mod tests {
         assert!(payload.contains("# backend=query_service\n"), "{payload}");
         assert!(payload.contains("# device_profile_count=1\n"), "{payload}");
         assert!(payload.contains("# device_0_max_active_attempts=1\n"), "{payload}");
-        assert!(payload.contains("# device_0_attempt_floor_bytes=256\n"), "{payload}");
+        assert!(payload.contains("# device_0_default_query_limit_bytes=536870912\n"), "{payload}");
         assert!(
             payload.contains("[backend_metrics]\nbackend_generation\tgeneration\tconfigured_devices\n"),
             "{payload}"
@@ -461,7 +468,7 @@ mod tests {
             ),
             "{payload}"
         );
-        assert!(payload.contains("\t1\t1048576\t16\t65536\t0\t0\tOpen\n"), "{payload}");
+        assert!(payload.contains("\t1\t536870912\t16\t65536\t0\t0\tOpen\n"), "{payload}");
         assert!(
             payload.contains(
                 "[backend_device_telemetry]\ndevice_ordinal\trefresh_source\tsampled_at_unix_ms\tage_ms\tavailability\tallocation_failure_count\tallocation_failure_bytes\tlargest_allocation_failure_bytes\n0\tnone\tnone\tnone\tnone\t0\t0\t0\n"

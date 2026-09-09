@@ -104,7 +104,7 @@ async fn observed_job_defines_worker_and_records_host_lifecycle() {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn auxiliary_context_setup_uses_auxiliary_capacity_without_changing_its_observation_kind() {
+async fn execution_context_setup_uses_execution_capacity_without_changing_its_observation_kind() {
     let pool = GpuExecutionPool::new_with_tracker_and_classes(usize::MAX - 8, 2, 1, 1, GpuExecutionQueryTracker::new())
         .unwrap();
     let release = Arc::new(tokio::sync::Semaphore::new(0));
@@ -115,7 +115,7 @@ async fn auxiliary_context_setup_uses_auxiliary_capacity_without_changing_its_ob
         tokio::spawn(async move {
             pool.run_observed_scoped_in_class(
                 GpuExecutionJobKind::ContextSetup,
-                GpuExecutionJobClass::Auxiliary,
+                GpuExecutionJobClass::Execution,
                 RuntimeObservationHandle::disabled(),
                 move |_scope| async move {
                     let _ = started_sender.send(());
@@ -125,33 +125,33 @@ async fn auxiliary_context_setup_uses_auxiliary_capacity_without_changing_its_ob
             .await
         })
     };
-    started_receiver.await.expect("first auxiliary context setup starts");
+    started_receiver.await.expect("first execution context setup starts");
 
     let saturated = pool
         .clone()
         .run_observed_scoped_in_class(
             GpuExecutionJobKind::ContextSetup,
-            GpuExecutionJobClass::Auxiliary,
+            GpuExecutionJobClass::Execution,
             RuntimeObservationHandle::disabled(),
             |_scope| async {},
         )
         .await
-        .expect_err("second auxiliary setup must respect auxiliary capacity");
+        .expect_err("second execution setup must respect execution capacity");
     assert_eq!(saturated.code(), QueryErrorCode::ServiceOverloaded);
     assert_eq!(saturated.fact_value("job_kind"), Some("context_setup"));
     assert_eq!(saturated.fact_value("job_class"), Some("auxiliary"));
 
     pool.run_observed_scoped_in_class(
         GpuExecutionJobKind::ContextSetup,
-        GpuExecutionJobClass::Root,
+        GpuExecutionJobClass::Lifecycle,
         RuntimeObservationHandle::disabled(),
         |_scope| async {},
     )
     .await
-    .expect("root setup stays admissible while auxiliary capacity is full");
+    .expect("lifecycle setup stays admissible while execution capacity is full");
 
     release.add_permits(1);
-    first.await.expect("auxiliary setup task must not panic").expect("auxiliary setup completes after release");
+    first.await.expect("execution setup task must not panic").expect("execution setup completes after release");
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -471,7 +471,7 @@ async fn reentrant_same_class_submission_is_bounded_instead_of_bypassing_the_poo
         .await
         .expect("outer job runs");
 
-    let error = nested.expect_err("nested auxiliary work cannot bypass the outer class permit");
+    let error = nested.expect_err("nested execution work cannot bypass the outer class permit");
     assert_eq!(error.code(), QueryErrorCode::ServiceOverloaded);
     assert_eq!(error.fact_value("reason"), Some("gpu_execution_pool_class_saturated"));
     assert_eq!(pool.snapshot().peak_active_jobs, 1);

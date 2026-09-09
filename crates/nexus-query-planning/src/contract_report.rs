@@ -295,8 +295,7 @@ impl CapabilityContractGateRow {
             unresolved_preflight_gap: lower_level_unresolved_preflight_gap(
                 requirement.kind,
                 requirement.required_contract,
-            )
-            .filter(|_| requirement.quality == ContractQuality::HardBudgetedReportWithUnresolvedPreflight),
+            ),
         })
     }
 
@@ -521,14 +520,6 @@ fn validate_report_requirement(gate_id: &CapabilityContractGateId, requirement: 
                 .with_fact("required_contract", requirement.required_contract));
         }
     }
-    if unresolved_gap.is_some() && requirement.quality != ContractQuality::HardBudgetedReportWithUnresolvedPreflight {
-        return Err(contract_report_error("unresolved-preflight gate must use unresolved-preflight quality")
-            .with_fact("gate_id", gate_id)
-            .with_fact("reservation_kind", requirement.kind.as_str())
-            .with_fact("required_contract", requirement.required_contract)
-            .with_fact("contract_status", requirement.status.as_str())
-            .with_fact("contract_quality", requirement.quality.as_str()));
-    }
     Ok(())
 }
 
@@ -661,21 +652,35 @@ fn validate_quality_gap_consistency(
             .with_fact("expected_unresolved_preflight_gap", expected_gap)
             .with_fact("unresolved_preflight_gap", reported_unresolved_preflight_gap.unwrap_or("none")));
         }
-    } else if reported_unresolved_preflight_gap.is_some() {
-        return Err(contract_report_error("non-hard-budgeted gate must not carry unresolved preflight gap")
-            .with_fact("gate_id", gate_id.to_string())
-            .with_fact("reservation_kind", kind.as_str())
-            .with_fact("required_contract", required_contract)
-            .with_fact("contract_quality", quality.as_str())
-            .with_fact("unresolved_preflight_gap", reported_unresolved_preflight_gap.unwrap_or("none")));
-    }
-    if expected_gap.is_some() && quality != ContractQuality::HardBudgetedReportWithUnresolvedPreflight {
-        return Err(contract_report_error("unresolved-preflight gate must use unresolved-preflight quality")
-            .with_fact("gate_id", gate_id.to_string())
-            .with_fact("reservation_kind", kind.as_str())
-            .with_fact("required_contract", required_contract)
-            .with_fact("contract_status", status.as_str())
-            .with_fact("contract_quality", quality.as_str()));
+    } else {
+        match (expected_gap, reported_unresolved_preflight_gap) {
+            (Some(expected_gap), Some(reported_gap)) if expected_gap != reported_gap => {
+                return Err(contract_report_error("gate has mismatched lower-level unresolved preflight gap")
+                    .with_fact("gate_id", gate_id.to_string())
+                    .with_fact("reservation_kind", kind.as_str())
+                    .with_fact("required_contract", required_contract)
+                    .with_fact("expected_unresolved_preflight_gap", expected_gap)
+                    .with_fact("unresolved_preflight_gap", reported_gap));
+            },
+            (Some(expected_gap), None) => {
+                return Err(contract_report_error("gate is missing lower-level unresolved preflight gap")
+                    .with_fact("gate_id", gate_id.to_string())
+                    .with_fact("reservation_kind", kind.as_str())
+                    .with_fact("required_contract", required_contract)
+                    .with_fact("expected_unresolved_preflight_gap", expected_gap)
+                    .with_fact("contract_status", status.as_str())
+                    .with_fact("contract_quality", quality.as_str()));
+            },
+            (None, Some(reported_gap)) => {
+                return Err(contract_report_error("gate carries unknown lower-level unresolved preflight gap")
+                    .with_fact("gate_id", gate_id.to_string())
+                    .with_fact("reservation_kind", kind.as_str())
+                    .with_fact("required_contract", required_contract)
+                    .with_fact("contract_quality", quality.as_str())
+                    .with_fact("unresolved_preflight_gap", reported_gap));
+            },
+            (None, None) | (Some(_), Some(_)) => {},
+        }
     }
     Ok(())
 }

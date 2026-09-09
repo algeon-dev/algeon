@@ -683,7 +683,8 @@ fn leaf_code_for_status(status: cudf_sys::cudf_status_t, message: &str) -> Error
         && (message.contains("stream routing invariant")
             || message.contains("device allocation stream has no query domain")
             || message.contains("unknown or already-freed device allocation pointer")
-            || message.contains("unknown or already-freed query memory domain pointer"))
+            || message.contains("unknown or already-freed query memory domain pointer")
+            || message.contains("query memory domain is frozen to new allocations"))
     {
         return ErrorCode::ForeignInvariantViolation;
     }

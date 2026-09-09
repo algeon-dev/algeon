@@ -51,7 +51,7 @@ fn test_device_profiles(
     device_ordinals: &[usize],
     max_active_attempts: usize,
     stream_pool_size: usize,
-    attempt_floor_bytes: u64,
+    default_query_limit_bytes: u64,
 ) -> Vec<GpuBackendDeviceConfig> {
     device_ordinals
         .iter()
@@ -60,7 +60,7 @@ fn test_device_profiles(
             GpuBackendDeviceConfig::new(
                 GpuBackendDeviceProfile::new(device_ordinal)
                     .with_memory_limit(GpuDeviceMemoryLimit::Explicit { limit_bytes: TEST_DEVICE_CAPACITY_BYTES })
-                    .with_attempt_floor_bytes(attempt_floor_bytes)
+                    .with_default_query_limit_bytes(default_query_limit_bytes)
                     .with_source_work_per_attempt(1)
                     .with_max_active_attempts(max_active_attempts)
                     .with_installation_bounds(GpuBackendDeviceInstallationBounds::new(
@@ -96,7 +96,7 @@ fn query_service_places_concurrent_runtime_handles_on_distinct_devices_when_avai
     let _guard = service_claim_test_guard();
     let service = runtime_test_service(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500) },
         test_device_profiles(&[0, 1], 1, 6, TEST_DEVICE_CAPACITY_BYTES),
     );
 
@@ -128,7 +128,7 @@ fn alternating_multi_device_stream_cleanup_returns_each_pool_before_reuse() {
     let _guard = service_claim_test_guard();
     let service = runtime_test_service(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500) },
         test_device_profiles(&[0, 1], 1, 6, TEST_DEVICE_CAPACITY_BYTES),
     );
 
@@ -174,7 +174,7 @@ fn per_device_active_limit_forces_spread_and_then_blocks() {
     let _guard = service_claim_test_guard();
     let service = runtime_test_service(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500) },
         test_device_profiles(&[0, 1], 1, 9, TEST_DEVICE_CAPACITY_BYTES),
     );
 
@@ -194,7 +194,7 @@ fn least_loaded_placement_spreads_across_identical_devices() {
     let _guard = service_claim_test_guard();
     let service = runtime_test_service(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500) },
         test_device_profiles(&[0, 1], 2, 6, TEST_DEVICE_CAPACITY_BYTES / 2),
     );
 
@@ -214,7 +214,7 @@ fn query_service_memory_failure_callback_ignores_budget_failures() {
     let _guard = service_claim_test_guard();
     let service = runtime_test_service(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 2, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 2, max_wait: Duration::from_millis(500) },
         test_device_profiles(&[0], 1, 3, 64 * 1024),
     );
 
@@ -326,8 +326,7 @@ fn direct_test_services_do_not_retain_backend_ownership() {
     }
     let _guard = service_claim_test_guard();
     let config = QueryExecutionConfig::default();
-    let queue_bounds =
-        QueueBounds { max_waiters: 2, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 };
+    let queue_bounds = QueueBounds { max_waiters: 2, max_wait: Duration::from_millis(500) };
     let profiles = test_device_profiles(&[0], 1, 3, TEST_DEVICE_CAPACITY_BYTES);
     let first_service = runtime_test_service(config.clone(), queue_bounds.clone(), profiles.clone());
     let second_service = QueryService::new_with_device_profiles_and_deployment_for_test(
@@ -350,7 +349,7 @@ fn per_device_active_limit_is_enforced_within_one_backend() {
     let _guard = service_claim_test_guard();
     let service = runtime_test_service(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 2, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 2, max_wait: Duration::from_millis(500) },
         test_device_profiles(&[0], 1, 3, TEST_DEVICE_CAPACITY_BYTES),
     );
 
@@ -370,7 +369,7 @@ fn per_device_active_limit_release_wakes_waiter_in_same_backend() {
     let _guard = service_claim_test_guard();
     let service = runtime_test_service(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(2), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 2, max_wait: Duration::from_secs(2) },
         test_device_profiles(&[0], 1, 3, TEST_DEVICE_CAPACITY_BYTES),
     );
 
@@ -403,7 +402,7 @@ fn per_device_active_limit_waits_for_escaped_context_after_handle_finish() {
     let _guard = service_claim_test_guard();
     let service = runtime_test_service(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 2, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 2, max_wait: Duration::from_millis(500) },
         test_device_profiles(&[0], 1, 6, TEST_DEVICE_CAPACITY_BYTES),
     );
 
@@ -431,7 +430,7 @@ fn escaped_query_anchor_blocks_only_its_selected_device() {
     let _guard = service_claim_test_guard();
     let service = runtime_test_service(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 3, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 3, max_wait: Duration::from_millis(500) },
         test_device_profiles(&[0, 1], 1, 9, TEST_DEVICE_CAPACITY_BYTES),
     );
 
@@ -452,7 +451,7 @@ fn escaped_query_anchor_blocks_only_its_selected_device() {
 }
 
 #[test]
-fn multi_device_variable_grants_preserve_the_empty_slot_floor_on_one_device() {
+fn multi_device_admissions_preserve_each_profiles_fixed_default_query_limit() {
     if !has_required_device_inventory(2) {
         return;
     }
@@ -462,7 +461,7 @@ fn multi_device_variable_grants_preserve_the_empty_slot_floor_on_one_device() {
     assert!(min_budget > 0);
     let service = runtime_test_service(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500) },
         test_device_profiles(&[0, 1], 2, 6, TEST_DEVICE_CAPACITY_BYTES / 2),
     );
 
@@ -471,15 +470,12 @@ fn multi_device_variable_grants_preserve_the_empty_slot_floor_on_one_device() {
 
     assert_eq!(first.device_ordinal(), 0);
     assert_eq!(second.device_ordinal(), 1);
-    // The immutable ledger always preserves the configured floor for the
-    // still-empty slot on the same device, so neither grant reaches the
-    // preferred want even though the other device is idle.
     assert_eq!(first.device_budget_bytes(), min_budget);
     assert_eq!(second.device_budget_bytes(), min_budget);
 }
 
 #[test]
-fn multi_device_variable_grants_reserve_when_remaining_slots_exceed_other_device_capacity() {
+fn multi_device_admissions_do_not_resize_the_fixed_default_query_limit_for_open_slots() {
     if !has_required_device_inventory(2) {
         return;
     }
@@ -489,7 +485,7 @@ fn multi_device_variable_grants_reserve_when_remaining_slots_exceed_other_device
     assert!(min_budget > 0);
     let service = runtime_test_service(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500) },
         test_device_profiles(&[0, 1], 2, 9, TEST_DEVICE_CAPACITY_BYTES / 2),
     );
 
@@ -497,8 +493,6 @@ fn multi_device_variable_grants_reserve_when_remaining_slots_exceed_other_device
     let second = service.try_admit_query().unwrap().expect("second query should admit");
     let third = service.try_admit_query().unwrap().expect("third query should admit");
 
-    // Every admission receives exactly the configured floor: the immutable
-    // empty-slot reserve keeps one floor for the still-empty slot per device.
     assert_eq!(first.device_budget_bytes(), min_budget);
     assert_eq!(second.device_budget_bytes(), min_budget);
     assert_eq!(third.device_budget_bytes(), min_budget);
@@ -512,7 +506,7 @@ fn query_service_treats_transient_device_capacity_exhaustion_as_busy_not_rejecte
     let _guard = service_claim_test_guard();
     let service = runtime_test_service(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(500) },
         test_device_profiles(&[0], 1, 6, TEST_DEVICE_CAPACITY_BYTES),
     );
 
@@ -531,7 +525,7 @@ fn queued_query_service_admission_times_out_while_device_capacity_is_busy() {
     let _guard = service_claim_test_guard();
     let service = runtime_test_service(
         QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(1), max_overtakes_per_waiter: 4 },
+        QueueBounds { max_waiters: 8, max_wait: Duration::from_millis(1) },
         test_device_profiles(&[0], 1, 6, TEST_DEVICE_CAPACITY_BYTES),
     );
     let _active = service.try_admit_query().unwrap().expect("first query should admit");
@@ -542,72 +536,4 @@ fn queued_query_service_admission_times_out_while_device_capacity_is_busy() {
 
     assert_eq!(error.code(), nexus_query_planning::error::QueryErrorCode::ServiceOverloaded);
     assert_eq!(error.fact_value("reason"), Some("queue_wait_elapsed"));
-}
-
-#[test]
-fn protection_retargets_on_health_close_and_unrelated_devices_stay_work_conserving() {
-    if !has_required_device_inventory(2) {
-        return;
-    }
-    let _guard = service_claim_test_guard();
-    let floor = 48 * 1024 * 1024;
-    let service = runtime_test_service(
-        QueryExecutionConfig::default(),
-        QueueBounds { max_waiters: 8, max_wait: Duration::from_secs(5), max_overtakes_per_waiter: 1 },
-        test_device_profiles(&[0, 1], 2, 12, TEST_DEVICE_CAPACITY_BYTES / 8),
-    );
-
-    let active_zero = service.try_admit_query().unwrap().expect("first admits");
-    let active_one = service.try_admit_query().unwrap().expect("second admits");
-    let (zero_device, one_device) = (active_zero.device_ordinal(), active_one.device_ordinal());
-    assert_ne!(zero_device, one_device);
-
-    // A floor-raised waiter cannot fit anywhere behind the two grants.
-    let mut big = service
-        .enqueue_admission_with_request(crate::runtime::QueryAdmissionRequest::new().with_attempt_requirement(
-            AttemptRequirement {
-                configured_floor_bytes: floor,
-                capability_floor_raise_bytes: 0,
-                required_phase_floor_bytes: 0,
-                source_stage_bytes: None,
-                soft_working_set_hint_bytes: Some(floor),
-                estimate_quality: EstimateQuality::Modeled,
-                required_capabilities: Vec::new(),
-                owner_terms: Vec::new(),
-                bound_derivation: None,
-                requires_composed_producer_binding: false,
-                attested_cugraph_graph_execution_scopes: Vec::new(),
-                reservation_shapes: Vec::new(),
-                deferred_resident_phases: Vec::new(),
-            },
-        ))
-        .unwrap();
-    assert!(big.try_admit().unwrap().is_none(), "raised floor is capacity-blocked on both devices");
-
-    // A later floor-level waiter admitted on the same device counts the one
-    // allowed overtake and installs protection on the selected device.
-    let admitted_small = service.admit_query().expect("later waiter bypasses the capacity-blocked head");
-    assert_eq!(admitted_small.device_ordinal(), zero_device);
-    let protected = service.admission_snapshot().unwrap().protected_devices;
-    assert_eq!(protected, vec![one_device], "protection targets the deficit-ordered compatible device");
-
-    // Closing the protected device retargets the protection deterministically.
-    service.close_device_admission_for_test(one_device, "test_quarantine").unwrap();
-    let retargeted = service.admission_snapshot().unwrap().protected_devices;
-    assert_eq!(retargeted, vec![zero_device], "protection retargets to the next compatible device");
-
-    // The unrelated healthy device remains work-conserving: releases there
-    // bank the protected waiter's liveness until it is admitted. Cleanup
-    // commits asynchronously, so poll the waiter within its queue deadline.
-    drop(active_zero);
-    drop(active_one);
-    drop(admitted_small);
-    let admitted_big = loop {
-        if let Some(handle) = big.try_admit().unwrap() {
-            break handle;
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    };
-    assert_eq!(admitted_big.device_ordinal(), zero_device);
-    assert_eq!(service.admission_snapshot().unwrap().protected_devices, Vec::<usize>::new());
 }

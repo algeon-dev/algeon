@@ -163,7 +163,7 @@ fn registry_native_and_sql_inventories_have_matching_lengths() {
 }
 
 #[test]
-fn registry_algorithms_admit_under_capability_with_bounded_gate() {
+fn registry_algorithms_admit_under_execution_capability_without_a_memory_veto() {
     for entry in GRAPH_OPERATION_REGISTRY {
         let plan = graph_plan(entry.algorithm);
         let analysis = plan.capability_analysis();
@@ -194,22 +194,23 @@ fn registry_algorithms_admit_under_capability_with_bounded_gate() {
         let requirement = &node.local_requirements[0];
         assert_eq!(requirement.memory_boundary, GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY);
         assert_eq!(requirement.required_contract, GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT);
-        assert_eq!(requirement.status, ContractStatus::BlockedByLowerLevel);
-        assert_eq!(requirement.quality, ContractQuality::ExactPreflight);
+        assert_eq!(requirement.status, ContractStatus::Modeled);
+        assert_eq!(requirement.quality, ContractQuality::CapabilityProof);
 
         let report = CapabilityContractReport::from_capability_analysis(&analysis)
             .unwrap_or_else(|error| panic!("bounded report build failed for {}: {error}", entry.name));
         assert_eq!(
             report.execution_mode(),
-            CapabilityEnvelopeStatus::Rejected,
-            "bounded execution must stay rejected until lower-level memory contracts land for {}",
+            CapabilityEnvelopeStatus::Admitted,
+            "execution capability must not depend on a lower-level memory estimate for {}",
             entry.name,
         );
         assert!(
             report.gate_rows().iter().any(|row| {
                 row.memory_boundary == GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY
                     && row.required_contract == GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT
-                    && row.contract_status == ContractStatus::BlockedByLowerLevel
+                    && row.contract_status == ContractStatus::Modeled
+                    && row.contract_quality == ContractQuality::CapabilityProof
             }),
             "bounded report must carry the graph algorithm gate row for {}",
             entry.name,

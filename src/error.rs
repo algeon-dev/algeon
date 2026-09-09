@@ -518,11 +518,18 @@ impl Error {
     /// facts.
     pub fn from_cudf(operation: &'static str, message: impl Into<String>, source: cudf::Error) -> Self {
         let code = code_for_cudf_error(&source);
-        let error = Self::new(code, operation, message)
+        let mut error = Self::new(code, operation, message)
             .with_log_safe_fact("cudf_code", source.code())
             .with_log_safe_fact("cudf_kind", source.kind())
             .with_log_safe_fact("cudf_status", source.status())
             .with_log_safe_fact("cudf_operation", source.operation());
+        if let Some(detail) = source.ffi_detail() {
+            error = error
+                .with_log_safe_fact("failure_source", detail.failure_source)
+                .with_log_safe_fact("requested_allocation_bytes", detail.requested_bytes)
+                .with_log_safe_fact("allocation_alignment", detail.alignment)
+                .with_log_safe_fact("cuda_status", detail.cuda_error);
+        }
         match cudf_message_fact(&source) {
             Some(cudf_message) => error.with_fact("cudf_message", cudf_message),
             None => error,
@@ -746,16 +753,27 @@ fn redact_uri_tokens(message: &str) -> String {
 // `NotFound` is treated as invalid input, `ExecutionContext` is treated as an
 // invariant violation, and unknown kinds fall back to dependency failure.
 fn code_for_cudf_error(error: &cudf::Error) -> ErrorCode {
+    if error.budget_exhaustion().is_some() {
+        return ErrorCode::QueryMemoryLimitExceeded;
+    }
+    if let Some(detail) = error.ffi_detail() {
+        match detail.failure_source {
+            cudf::CudfErrorFailureSource::ReservationLimit => return ErrorCode::QueryMemoryLimitExceeded,
+            cudf::CudfErrorFailureSource::Physical => return ErrorCode::DeviceOutOfMemory,
+            cudf::CudfErrorFailureSource::Unknown => {},
+            _ => {},
+        }
+    }
     match cudf::classify_cudf_error(error) {
         cudf::CudfErrorClassification::SizeOverflow => ErrorCode::SizeOverflow,
         cudf::CudfErrorClassification::HostMaterializationLimitExceeded => ErrorCode::HostMaterializationLimitExceeded,
-        cudf::CudfErrorClassification::ResourceExhausted => ErrorCode::CudfResourceExhausted,
+        cudf::CudfErrorClassification::ResourceExhausted => ErrorCode::DeviceAllocationFailed,
         cudf::CudfErrorClassification::TemporaryFailure => ErrorCode::CudfTemporaryFailure,
-        cudf::CudfErrorClassification::PersistentFailure => ErrorCode::CudfPersistentFailure,
+        cudf::CudfErrorClassification::PersistentFailure => ErrorCode::DeviceFault,
         cudf::CudfErrorClassification::InvalidInput => ErrorCode::CudfInvalidInput,
         cudf::CudfErrorClassification::Unsupported => ErrorCode::CudfUnsupported,
         cudf::CudfErrorClassification::DependencyFailure => ErrorCode::CudfDependencyFailure,
-        cudf::CudfErrorClassification::InvariantViolation => ErrorCode::CudfInvariantViolation,
+        cudf::CudfErrorClassification::InvariantViolation => ErrorCode::InternalInvariantViolation,
     }
 }
 

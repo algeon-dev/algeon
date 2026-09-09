@@ -6,7 +6,7 @@
     "available_bytes": "number",
     "cache_evictable_resident_bytes": "number",
     "cache_pinned_in_use_bytes": "number",
-    "configured_floor_bytes": "number",
+    "default_query_limit_bytes": "number",
     "device_ordinal": "number",
     "evictable_bytes": "number",
     "free_bytes": "number",
@@ -15,6 +15,7 @@
         {
           "fields": {
             "admission_request_id": "number",
+            "frozen_resident_bytes": "null",
             "grant_bytes": "number",
             "grant_id": "number",
             "live_reserved_bytes": "number"
@@ -30,6 +31,7 @@
     "live_reserved_bytes": "number",
     "managed_capacity_bytes": "number",
     "max_active_attempts": "number",
+    "frozen_resident_bytes": "number",
     "protected_reserve_bytes": "number",
     "protected_slot": "boolean",
     "root_streams_available": "number",

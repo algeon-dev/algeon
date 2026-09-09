@@ -71,24 +71,24 @@ pub enum GpuExecutionJobKind {
 /// Resource class partitioning for bounded worker admission.
 ///
 /// For active-attempt limit `A_d` and per-attempt source-work bound `S_d`,
-/// each device reserves `A_d` root job slots and `A_d * S_d` auxiliary job
-/// slots. Child work can never consume a future root slot: class permits are
-/// acquired before a job occupies a worker thread, and no hidden fallback
-/// pool exists.
+/// each device reserves `A_d` lifecycle job slots and `A_d * S_d` execution
+/// job slots. Additional fragment setup is execution work. Child work can
+/// never consume a future lifecycle slot: class permits are acquired before a
+/// job occupies a worker thread, and no hidden fallback pool exists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GpuExecutionJobClass {
-    /// Per-attempt lifecycle work: context setup and cleanup.
-    Root,
-    /// Bounded execution and child work.
-    Auxiliary,
+    /// Per-attempt lifecycle work: initial context setup and cleanup.
+    Lifecycle,
+    /// Bounded query execution and additional fragment setup.
+    Execution,
 }
 
 impl GpuExecutionJobClass {
-    /// Stable diagnostic label for this job class.
+    /// Stable diagnostic label for this job class (`root` or `auxiliary`).
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Root => "root",
-            Self::Auxiliary => "auxiliary",
+            Self::Lifecycle => "root",
+            Self::Execution => "auxiliary",
         }
     }
 }
@@ -107,8 +107,8 @@ impl GpuExecutionJobKind {
     #[doc(hidden)]
     pub const fn job_class(self) -> GpuExecutionJobClass {
         match self {
-            Self::ContextSetup | Self::Cleanup => GpuExecutionJobClass::Root,
-            Self::QueryExecution => GpuExecutionJobClass::Auxiliary,
+            Self::ContextSetup | Self::Cleanup => GpuExecutionJobClass::Lifecycle,
+            Self::QueryExecution => GpuExecutionJobClass::Execution,
         }
     }
 }
@@ -137,13 +137,13 @@ pub struct GpuExecutionPoolSnapshot {
     pub active_query_jobs: usize,
     /// Highest observed device-local query-execution concurrency.
     pub peak_active_query_jobs: usize,
-    /// Configured root-class job slots (lifecycle work: context setup/cleanup).
+    /// Configured lifecycle-class job slots (`root` diagnostic label).
     pub root_job_capacity: usize,
-    /// Configured auxiliary-class job slots (bounded execution/child work).
+    /// Configured execution-class job slots (`auxiliary` diagnostic label).
     pub aux_job_capacity: usize,
-    /// Root-class job slots currently free.
+    /// Lifecycle-class job slots currently free (`root` diagnostic label).
     pub root_jobs_available: usize,
-    /// Auxiliary-class job slots currently free.
+    /// Execution-class job slots currently free (`auxiliary` diagnostic label).
     pub aux_jobs_available: usize,
 }
 
@@ -257,7 +257,7 @@ impl GpuExecutionPool {
     /// Creates a pool attached to a caller-provided aggregate query tracker.
     ///
     /// Direct constructors use the documented default class partition:
-    /// `worker_count` root job slots and `worker_count` auxiliary job slots.
+    /// `worker_count` lifecycle job slots and `worker_count` execution job slots.
     /// Backend-owned pools pass explicit `A_d`/`A_d * S_d` capacities from
     /// the device resource profile via [`Self::new_with_tracker_and_classes`].
     #[doc(hidden)]
@@ -269,17 +269,19 @@ impl GpuExecutionPool {
         Self::new_with_tracker_and_classes(device_ordinal, worker_count, worker_count, worker_count, query_tracker)
     }
 
-    /// Creates a pool with explicit root/auxiliary job-slot capacities.
+    /// Creates a pool with explicit lifecycle/execution job-slot capacities.
     #[doc(hidden)]
     pub fn new_with_tracker_and_classes(
         device_ordinal: usize,
         worker_count: usize,
-        root_job_capacity: usize,
-        aux_job_capacity: usize,
+        lifecycle_job_capacity: usize,
+        execution_job_capacity: usize,
         query_tracker: GpuExecutionQueryTracker,
     ) -> Result<Self> {
         validate_worker_count(device_ordinal, worker_count)?;
-        for (field, capacity) in [("root_job_capacity", root_job_capacity), ("aux_job_capacity", aux_job_capacity)] {
+        for (field, capacity) in
+            [("root_job_capacity", lifecycle_job_capacity), ("aux_job_capacity", execution_job_capacity)]
+        {
             if capacity == 0 {
                 return Err(QueryError::new(
                     QueryErrorCode::InvalidPlan,
@@ -305,16 +307,17 @@ impl GpuExecutionPool {
             submissions_closed: AtomicBool::new(false),
             submission_gate: Mutex::new(()),
             concurrency: Arc::new(Semaphore::new(worker_count)),
-            root_job_permits: Arc::new(Semaphore::new(root_job_capacity)),
-            aux_job_permits: Arc::new(Semaphore::new(aux_job_capacity)),
+            lifecycle_job_permits: Arc::new(Semaphore::new(lifecycle_job_capacity)),
+            execution_job_permits: Arc::new(Semaphore::new(execution_job_capacity)),
             // Every admitted attempt can transition to exactly one release
             // cleanup. Keep that bounded lifecycle tail separate from
-            // caller-submitted root jobs so an unrelated saturated root job
-            // cannot force CUDA-bound envelope destruction onto its caller.
+            // caller-submitted lifecycle jobs so an unrelated saturated
+            // lifecycle job cannot force CUDA-bound envelope destruction onto
+            // its caller.
             // The task still uses the same fixed-width device runtime.
-            release_cleanup_permits: Arc::new(Semaphore::new(root_job_capacity)),
-            root_job_capacity,
-            aux_job_capacity,
+            release_cleanup_permits: Arc::new(Semaphore::new(lifecycle_job_capacity)),
+            lifecycle_job_capacity,
+            execution_job_capacity,
             counters: Arc::new(PoolCounters::default()),
             drain: Arc::new(PoolDrain::default()),
             query_tracker,
@@ -331,8 +334,8 @@ impl GpuExecutionPool {
 
     fn class_semaphore_for_class(&self, class: GpuExecutionJobClass) -> &Arc<Semaphore> {
         match class {
-            GpuExecutionJobClass::Root => &self.inner.root_job_permits,
-            GpuExecutionJobClass::Auxiliary => &self.inner.aux_job_permits,
+            GpuExecutionJobClass::Lifecycle => &self.inner.lifecycle_job_permits,
+            GpuExecutionJobClass::Execution => &self.inner.execution_job_permits,
         }
     }
 
@@ -459,8 +462,9 @@ impl GpuExecutionPool {
     ///
     /// Context setup retains its stable observation kind even when a later
     /// fragment uses an auxiliary stream; its class is selected by the
-    /// admitted attempt's root-context reservation rather than inferred from
-    /// that observability label.
+    /// admitted attempt's context reservation rather than inferred from that
+    /// observability label. Initial setup uses the lifecycle class; additional
+    /// fragment setup uses the execution class.
     #[doc(hidden)]
     pub async fn run_observed_scoped_in_class<B, F, T>(
         self,
@@ -706,10 +710,10 @@ impl GpuExecutionPool {
             pool_id: self.inner.id,
             device_ordinal: self.inner.device_ordinal,
             worker_count: self.inner.worker_count,
-            root_job_capacity: self.inner.root_job_capacity,
-            aux_job_capacity: self.inner.aux_job_capacity,
-            root_jobs_available: self.inner.root_job_permits.available_permits(),
-            aux_jobs_available: self.inner.aux_job_permits.available_permits(),
+            root_job_capacity: self.inner.lifecycle_job_capacity,
+            aux_job_capacity: self.inner.execution_job_capacity,
+            root_jobs_available: self.inner.lifecycle_job_permits.available_permits(),
+            aux_jobs_available: self.inner.execution_job_permits.available_permits(),
             active_jobs,
             peak_active_jobs: counters.peak_active.load(Ordering::Acquire).max(active_jobs),
             queued_jobs,
@@ -844,11 +848,11 @@ struct GpuExecutionPoolInner {
     submissions_closed: AtomicBool,
     submission_gate: Mutex<()>,
     concurrency: Arc<Semaphore>,
-    root_job_permits: Arc<Semaphore>,
-    aux_job_permits: Arc<Semaphore>,
+    lifecycle_job_permits: Arc<Semaphore>,
+    execution_job_permits: Arc<Semaphore>,
     release_cleanup_permits: Arc<Semaphore>,
-    root_job_capacity: usize,
-    aux_job_capacity: usize,
+    lifecycle_job_capacity: usize,
+    execution_job_capacity: usize,
     counters: Arc<PoolCounters>,
     drain: Arc<PoolDrain>,
     query_tracker: GpuExecutionQueryTracker,

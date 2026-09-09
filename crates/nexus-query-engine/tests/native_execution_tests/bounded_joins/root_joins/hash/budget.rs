@@ -1,5 +1,5 @@
 #[test]
-fn bounded_native_query_splits_join_leaf_source_read_after_reservation_denial() {
+fn bounded_native_query_does_not_split_join_leaf_from_source_estimate() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-root-hash-join-source-retry-split");
     let left_path = dir.join("lineitem.parquet");
     let right_path = dir.join("orders.parquet");
@@ -55,26 +55,18 @@ fn bounded_native_query_splits_join_leaf_source_read_after_reservation_denial() 
 
     let result = execute_query_plan(&context, &plan).unwrap();
     let metrics = result.metrics();
-    assert!(metrics.retry_count >= 1);
-    assert!(metrics.retry_reservation_failure_count >= 1);
-    assert!(metrics.source_chunks_retried >= 1);
-    assert!(
-        metrics.reservation_events.iter().any(|event| {
-            event.outcome.as_str() == "denied"
-                && event.reservation_kind == ReservationKind::SourceRead
-                && event.memory_boundary == "join_source_read"
-                && event.requested_bytes == 3_000_000
-        }),
-        "coarse join source chunk should be denied before retry splitting"
-    );
+    assert_eq!(metrics.retry_count, 0);
+    assert_eq!(metrics.retry_reservation_failure_count, 0);
+    assert_eq!(metrics.source_chunks_retried, 0);
+    assert_eq!(metrics.reservation_denied_count, 0);
     assert!(
         metrics.reservation_events.iter().any(|event| {
             event.outcome.as_str() == "granted"
                 && event.reservation_kind == ReservationKind::SourceRead
                 && event.memory_boundary == "join_source_read"
-                && matches!(event.requested_bytes, 1_000_000 | 2_000_000)
+                && matches!(event.requested_bytes, 3_000_000 | 4_000_000)
         }),
-        "split join source chunks should be admitted on retry attempts"
+        "the original join source chunks remain observable without estimate-driven retry splitting"
     );
 
     let QueryOutput::HostArrow(batch) = result.output() else {
@@ -142,17 +134,16 @@ fn bounded_native_query_reports_join_leaf_source_read_hard_budget_failure() {
         Ok(_) => panic!("bounded join source read budget should fail"),
         Err(error) => error,
     };
-    let admitted_budget =
-        u64::try_from(cudf::DataFrame::minimum_parquet_source_read_budget_bytes()).unwrap().to_string();
-    assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
+    let admitted_budget = admitted_budget.to_string();
+    assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded);
+    assert_eq!(error.operation(), "nexus_query_engine.local_parquet_chunk_batch.read");
+    assert_eq!(error.fact_value("budget_boundary"), Some("join_source_read"));
     assert_eq!(error.fact_value("budget_bytes"), Some(admitted_budget.as_str()));
-    assert_eq!(error.fact_value("memory_boundary"), Some("join_source_read"));
-    assert_eq!(error.fact_value("reservation_kind"), Some("source_read"));
-    assert_eq!(error.fact_value("stage"), Some("join_source_read"));
-    assert_eq!(error.fact_value("chunk_index"), Some("0"));
-    assert_eq!(error.fact_value("file_index"), Some("0"));
-    assert_eq!(error.fact_value("row_group_indexes"), Some("0"));
-    assert_eq!(error.fact_value("row_group_count"), Some("1"));
+    assert_eq!(error.fact_value("budget_enforcement"), Some("query_domain_member"));
+    assert_eq!(error.fact_value("failure_source"), Some("RESERVATION_LIMIT"));
+    assert!(error.fact_value("requested_allocation_bytes").is_some());
+    assert_eq!(error.fact_value("first_chunk_index"), Some("0"));
+    assert_eq!(error.fact_value("first_file_index"), Some("0"));
 
     fs::remove_dir_all(dir).unwrap();
 }

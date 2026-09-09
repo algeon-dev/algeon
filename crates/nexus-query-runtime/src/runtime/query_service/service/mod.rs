@@ -73,12 +73,6 @@ pub(in crate::runtime::query_service) struct QueryServiceInner {
         Mutex<Option<Arc<transaction::AdmissionTransactionProbe>>>,
     #[cfg(test)]
     unknown_isolation_closure_pause: Mutex<Option<Arc<UnknownIsolationClosurePause>>>,
-    /// One-shot fault injection after a closed protection target has released
-    /// its ledger-local reservation and before the waiter can acquire a new
-    /// target. This proves that the affected waiter, rather than an unrelated
-    /// caller that happens to drive the next queue sweep, owns that failure.
-    #[cfg(test)]
-    protection_retarget_failure_after_release: AtomicBool,
     #[cfg(test)]
     direct_placement_resolution_failure: AtomicBool,
     #[cfg(test)]
@@ -367,27 +361,6 @@ impl QueryService {
             .or_else(|| self.inner.fallback_device_ledger.as_ref().map(DeviceLedger::device_ordinal))
     }
 
-    pub(super) fn max_active_attempt_limit(&self) -> usize {
-        self.inner.resources.as_ref().map_or_else(
-            || {
-                self.inner
-                    .fallback_device_ledger
-                    .as_ref()
-                    .expect("admission-only service has a fallback device ledger")
-                    .profile()
-                    .max_active_attempts
-            },
-            |resources| {
-                resources
-                    .devices
-                    .contexts()
-                    .map(|context| context.ledger().profile().max_active_attempts)
-                    .max()
-                    .expect("runtime service has an installed device")
-            },
-        )
-    }
-
     /// Performs an explicit, controlled device-local quarantine transition.
     ///
     /// This is intentionally an engine capability rather than a backend
@@ -456,13 +429,6 @@ impl QueryService {
         assert!(armed.is_none(), "only one unknown-isolation closure pause may be armed for a service");
         *armed = Some(pause);
         TestPauseHandle::new("unknown-isolation closure", entered_receiver, release_sender)
-    }
-
-    /// Injects one failure after an exhausted waiter's old protection has
-    /// ended during health-driven retargeting.
-    #[cfg(test)]
-    pub(in crate::runtime::query_service) fn fail_next_protection_retarget_after_release_for_test(&self) {
-        self.inner.protection_retarget_failure_after_release.store(true, Ordering::Release);
     }
 
     /// Installs a fault-injection probe over the admission transaction.

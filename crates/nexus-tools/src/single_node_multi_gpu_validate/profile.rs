@@ -266,7 +266,7 @@ pub(super) struct DeviceProfile {
     pub(super) memory_limit_bytes: u64,
     pub(super) backend_reserve_bytes: u64,
     pub(super) cache_cap_bytes: u64,
-    pub(super) attempt_floor_bytes: u64,
+    pub(super) default_query_limit_bytes: u64,
     pub(super) source_work_per_attempt: usize,
     pub(super) max_active_attempts: usize,
     /// Whether this ordinal installs diagnostic CUDA/NVML telemetry. The
@@ -349,17 +349,11 @@ pub(super) struct QueueProfile {
     pub(super) max_queued_attempts: usize,
     #[serde(default = "default_max_queue_wait_ms")]
     pub(super) max_queue_wait_ms: u64,
-    #[serde(default = "default_max_overtakes_per_waiter")]
-    pub(super) max_overtakes_per_waiter: u32,
 }
 
 impl Default for QueueProfile {
     fn default() -> Self {
-        Self {
-            max_queued_attempts: default_max_queued_attempts(),
-            max_queue_wait_ms: default_max_queue_wait_ms(),
-            max_overtakes_per_waiter: default_max_overtakes_per_waiter(),
-        }
+        Self { max_queued_attempts: default_max_queued_attempts(), max_queue_wait_ms: default_max_queue_wait_ms() }
     }
 }
 
@@ -369,10 +363,6 @@ const fn default_max_queued_attempts() -> usize {
 
 const fn default_max_queue_wait_ms() -> u64 {
     30_000
-}
-
-const fn default_max_overtakes_per_waiter() -> u32 {
-    4
 }
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
@@ -629,8 +619,8 @@ impl RunProfile {
     /// Validates the finite cohort used by the explicit overload probe.
     ///
     /// This is deliberately a profile shape rather than a second admission
-    /// policy: the backend still owns queueing, finite overtakes, placement,
-    /// and report sealing. The runner only requires enough bounded offered
+    /// policy: the backend still owns queueing, FIFO placement, and report
+    /// sealing. The runner only requires enough bounded offered
     /// work for those public facts to be falsifiable.
     pub(super) fn validate_overload_fairness_scenario(&self) -> ToolResult<()> {
         if self.backend.device_profiles.len() < 2 {
@@ -674,16 +664,6 @@ impl RunProfile {
         if self.scheduling.concurrency > bounded_cohort_capacity {
             return Err(format!(
                 "--overload-fairness scheduling.concurrency must not exceed active-plus-queue capacity {bounded_cohort_capacity}"
-            )
-            .into());
-        }
-        let required_queue_slots = usize::try_from(self.backend.queue.max_overtakes_per_waiter)
-            .ok()
-            .and_then(|overtakes| overtakes.checked_add(1))
-            .ok_or("--overload-fairness finite-overtake queue requirement overflows")?;
-        if self.backend.queue.max_queued_attempts < required_queue_slots {
-            return Err(format!(
-                "--overload-fairness requires backend.queue.max_queued_attempts of at least {required_queue_slots} for its finite-overtake witness"
             )
             .into());
         }
@@ -1315,8 +1295,8 @@ fn validate_native_execution(native_execution: &NativeExecutionProfile) -> ToolR
 }
 
 fn validate_queue(queue: &QueueProfile) -> ToolResult<()> {
-    if queue.max_queued_attempts == 0 || queue.max_queue_wait_ms == 0 || queue.max_overtakes_per_waiter == 0 {
-        return Err("backend.queue bounds must all be greater than zero".into());
+    if queue.max_queued_attempts == 0 || queue.max_queue_wait_ms == 0 {
+        return Err("backend.queue bounds must be greater than zero".into());
     }
     Ok(())
 }
@@ -1328,7 +1308,7 @@ fn validate_device_profiles(device_profiles: &[DeviceProfile]) -> ToolResult<()>
             return Err(format!("backend.device_profiles contains duplicate ordinal {}", profile.ordinal).into());
         }
         if profile.memory_limit_bytes == 0
-            || profile.attempt_floor_bytes == 0
+            || profile.default_query_limit_bytes == 0
             || profile.source_work_per_attempt == 0
             || profile.max_active_attempts == 0
             || profile.installation.stream_pool_size == 0

@@ -177,7 +177,6 @@ pub const nexus_server::NEXUS_ICEBERG_S3_REGION_ENV: &str
 pub const nexus_server::NEXUS_ICEBERG_SCAN_PLANNING_TIMEOUT_SECS_ENV: &str
 pub const nexus_server::NEXUS_ICEBERG_TABLES_ENV: &str
 pub const nexus_server::NEXUS_ICEBERG_WAREHOUSE_ENV: &str
-pub const nexus_server::NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER_ENV: &str
 pub const nexus_server::NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV: &str
 pub const nexus_server::NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV: &str
 pub const nexus_server::NEXUS_SERVER_BIND_ENV: &str

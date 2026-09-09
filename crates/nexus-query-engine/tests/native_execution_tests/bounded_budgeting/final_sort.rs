@@ -99,7 +99,7 @@ fn bounded_native_query_uses_hierarchical_topk_without_full_sort_first() {
 }
 
 #[test]
-fn bounded_native_query_accounts_full_final_sort_reservation_during_limited_output() {
+fn bounded_native_query_does_not_gate_limited_output_on_modeled_final_sort_overlap() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-final-sort-limit-reservation");
     let path = dir.join("input.parquet");
     let input_schema = write_single_row_group_final_sort_input_parquet(&path, 4096);
@@ -186,28 +186,19 @@ fn bounded_native_query_accounts_full_final_sort_reservation_during_limited_outp
         min_retry_chunk_row_groups: 1,
     });
 
-    let error = match execute_query_plan(&constrained_context, &plan) {
-        Ok(_) => panic!("bounded execution should account full final-sort output while producing limited output"),
-        Err(error) => error,
+    let result = execute_query_plan(&constrained_context, &plan)
+        .expect("modeled reservation overlap must not gate cap-only execution when physical allocations fit");
+    assert_eq!(result.metrics().reservation_denied_count, 0);
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
     };
-    assert_eq!(error.code(), QueryErrorCode::MemoryReservationFailed);
-    assert_eq!(error.fact_value("memory_boundary"), Some("final_sort_output"));
-    assert_eq!(error.fact_value("reservation_kind"), Some("final_sort"));
-    assert_eq!(error.fact_value("stage"), Some("final_sort"));
-    assert_eq!(error.fact_value("attempt"), Some("1"));
-    assert_eq!(error.fact_value("max_attempts"), Some("1"));
-    assert_eq!(error.fact_value("retry_action"), Some("retry_attempts_exhausted"));
-    assert_eq!(error.fact_value("resume_boundary"), Some("final_sort"));
-    let constrained_budget = constrained_budget.to_string();
-    let limited_output_bytes = limited_output_bytes.to_string();
-    assert_eq!(error.fact_value("budget_bytes"), Some(constrained_budget.as_str()));
-    assert_eq!(error.fact_value("requested_bytes"), Some(limited_output_bytes.as_str()));
+    assert_eq!(batch.num_rows(), 4095);
 
     fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]
-fn bounded_native_query_reports_retry_facts_when_final_sort_without_limit_fails() {
+fn bounded_native_query_does_not_gate_full_sort_on_modeled_reservation_peak() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-final-sort-retry-exhausted");
     let path = dir.join("input.parquet");
     let input_schema = write_single_row_group_final_sort_input_parquet(&path, 4096);
@@ -281,26 +272,14 @@ fn bounded_native_query_reports_retry_facts_when_final_sort_without_limit_fails(
         min_retry_chunk_row_groups: 1,
     });
 
-    let error = match execute_query_plan(&constrained_context, &plan) {
-        Ok(_) => panic!("bounded execution should fail final sort when no top-k retry boundary exists"),
-        Err(error) => error,
+    let result = execute_query_plan(&constrained_context, &plan)
+        .expect("modeled final-sort peak must not gate cap-only execution when physical allocations fit");
+    assert_eq!(result.metrics().reservation_denied_count, 0);
+    assert_eq!(result.metrics().retry_count, 0);
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
     };
-
-    assert!(matches!(error.code(), QueryErrorCode::MemoryReservationFailed | QueryErrorCode::CudfResourceExhausted));
-    assert_eq!(error.fact_value("memory_boundary"), Some("final_sort"));
-    assert_eq!(error.fact_value("stage"), Some("final_sort"));
-    assert_eq!(error.fact_value("attempt"), Some("1"));
-    assert_eq!(error.fact_value("max_attempts"), Some("3"));
-    assert_eq!(error.fact_value("retry_action"), Some("retry_attempts_exhausted"));
-    assert_eq!(error.fact_value("resume_boundary"), Some("final_sort"));
-    assert_eq!(error.fact_value("committed_chunks"), Some("1"));
-    assert_eq!(error.fact_value("committed_partials"), Some("1"));
-    if error.code() == QueryErrorCode::MemoryReservationFailed {
-        assert_eq!(error.fact_value("reservation_kind"), Some("final_sort"));
-    } else {
-        assert_eq!(error.fact_value("budget_boundary"), Some("final_sort"));
-        assert_eq!(error.fact_value("budget_enforcement"), Some("query_domain_member"));
-    }
+    assert_eq!(batch.num_rows(), 4096);
 
     fs::remove_dir_all(dir).unwrap();
 }

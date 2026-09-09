@@ -119,7 +119,9 @@ fn betweenness_k_selects_deterministic_approximate_seed_count() {
     assert_eq!(seed_budget.boundary, "graph_memory");
     assert_eq!(seed_budget.enforcement, "query_domain_member");
     assert_eq!(seed_budget.status, "reservation_enforced");
-    assert_eq!(seed_budget.budget_bytes, graph_reservations[0].requested_bytes);
+    // cuGraph executes under the query cap. The graph-memory model's own
+    // request is calibration evidence and never becomes the native limit.
+    assert_eq!(seed_budget.budget_bytes, 16 * 1024 * 1024);
     assert!(seed_budget.allocator_high_water_bytes.is_some());
     assert!(seed_budget.context_facts.contains_key("reservation_id"));
     admitted.finish();
@@ -348,7 +350,7 @@ fn bounded_betweenness_oom_retries_once_by_chunking_same_seed_set() {
     let metrics = outcome.metrics();
     assert!(batch.num_rows() > 0);
     assert_vertex_betweenness_batches_close(expected_batch, batch);
-    let graph_reservation = metrics
+    metrics
         .reservation_events
         .iter()
         .find(|event| {
@@ -367,7 +369,7 @@ fn bounded_betweenness_oom_retries_once_by_chunking_same_seed_set() {
         assert_eq!(event.enforcement, "query_domain_member");
         assert_eq!(event.status, "reservation_enforced");
         assert_eq!(event.unresolved_contract, None);
-        assert_eq!(event.budget_bytes, graph_reservation.requested_bytes);
+        assert_eq!(event.budget_bytes, 16 * 1024 * 1024);
         assert!(event.allocator_high_water_bytes.is_some());
     }
     assert!(metrics.max_task_observed_peak_bytes.is_some());
@@ -472,8 +474,8 @@ fn bounded_betweenness_failed_retry_still_records_graph_floor() {
         Ok(_) => panic!("forced failed graph retry should return resource exhausted"),
         Err(error) => error,
     };
-    assert_eq!(error.code(), QueryErrorCode::CudfResourceExhausted);
-    assert_eq!(error.status(), QueryErrorCode::CudfResourceExhausted.status());
+    assert_eq!(error.code(), QueryErrorCode::QueryMemoryLimitExceeded);
+    assert_eq!(error.status(), QueryErrorCode::QueryMemoryLimitExceeded.status());
     let snapshot = outcome.observation().expect("failed bounded retry retains its terminal observation");
     assert_eq!(
         snapshot.footer().terminal,

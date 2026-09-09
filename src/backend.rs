@@ -71,7 +71,7 @@ pub struct NexusGpuBackend {
 
 /// Queue-only policy for the shared admission queue.
 ///
-/// Device-local capacity, floor, concurrency, and source-work settings belong
+/// Device-local capacity, query-limit, concurrency, and source-work settings belong
 /// exclusively to [`NexusGpuDeviceProfile`].  Keeping this policy queue-only
 /// prevents a scalar from being implicitly broadcast to heterogeneous devices.
 ///
@@ -82,7 +82,6 @@ pub struct NexusGpuBackend {
 pub struct NexusGpuQueuePolicy {
     max_queued_attempts: usize,
     max_queue_wait: Duration,
-    max_overtakes_per_waiter: u32,
 }
 
 impl NexusGpuQueuePolicy {
@@ -96,11 +95,6 @@ impl NexusGpuQueuePolicy {
         self.max_queue_wait
     }
 
-    /// Finite overtake budget per queued waiter before slot protection. Default 4.
-    pub fn max_overtakes_per_waiter(&self) -> u32 {
-        self.max_overtakes_per_waiter
-    }
-
     pub fn with_max_queued_attempts(mut self, max_queued_attempts: usize) -> Self {
         self.max_queued_attempts = max_queued_attempts;
         self
@@ -110,21 +104,12 @@ impl NexusGpuQueuePolicy {
         self.max_queue_wait = max_queue_wait;
         self
     }
-
-    pub fn with_max_overtakes_per_waiter(mut self, max_overtakes_per_waiter: u32) -> Self {
-        self.max_overtakes_per_waiter = max_overtakes_per_waiter;
-        self
-    }
 }
 
 impl Default for NexusGpuQueuePolicy {
     fn default() -> Self {
         let bounds = QueueBounds::default();
-        Self {
-            max_queued_attempts: bounds.max_waiters,
-            max_queue_wait: bounds.max_wait,
-            max_overtakes_per_waiter: bounds.max_overtakes_per_waiter,
-        }
+        Self { max_queued_attempts: bounds.max_waiters, max_queue_wait: bounds.max_wait }
     }
 }
 
@@ -687,20 +672,13 @@ fn backend_query_execution_config(execution_config: &NexusNativeExecutionConfig)
 }
 
 fn backend_queue_bounds(queue_policy: &NexusGpuQueuePolicy) -> QueueBounds {
-    QueueBounds {
-        max_waiters: queue_policy.max_queued_attempts,
-        max_wait: queue_policy.max_queue_wait,
-        max_overtakes_per_waiter: queue_policy.max_overtakes_per_waiter,
-    }
+    QueueBounds { max_waiters: queue_policy.max_queued_attempts, max_wait: queue_policy.max_queue_wait }
 }
 
 fn validate_queue_policy(policy: &NexusGpuQueuePolicy) -> Result<()> {
     validate_positive_usize("max_queued_attempts", policy.max_queued_attempts)?;
     if policy.max_queue_wait.is_zero() {
         return Err(invalid_backend_config("max_queue_wait", "must be greater than zero"));
-    }
-    if policy.max_overtakes_per_waiter == 0 {
-        return Err(invalid_backend_config("max_overtakes_per_waiter", "must be greater than zero"));
     }
     Ok(())
 }

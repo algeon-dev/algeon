@@ -1,14 +1,13 @@
 //! Admission queue selection, sweep, and lock helpers.
 //!
 //! Queue order is strictly oldest-first by submission sequence. The first
-//! runnable waiter wins; a waiter blocked on one device never idles another
-//! compatible device for later work. Finite-overtake liveness protection is
-//! part of the controller state machine.
+//! runnable waiter wins on each compatible device; a blocked waiter does not
+//! idle unrelated devices needed only by later work.
 
 #[cfg(test)]
 use std::sync::Mutex;
 use std::{
-    collections::VecDeque,
+    collections::{BTreeSet, VecDeque},
     sync::{Arc, atomic::Ordering},
     time::Instant,
 };
@@ -43,33 +42,6 @@ use crate::{
     },
 };
 
-/// Returns the only ledgers on which a waiter may be placed right now.
-///
-/// A slot protection is ledger-local. Until it is consumed or explicitly
-/// retargeted, placement on any other compatible ledger would orphan the
-/// protected capacity.
-fn placement_candidate_ordinals(
-    compatible_devices: &[usize],
-    protected_device: Option<usize>,
-) -> impl Iterator<Item = usize> + '_ {
-    compatible_devices
-        .iter()
-        .copied()
-        .filter(move |ordinal| protected_device.is_none_or(|protected| protected == *ordinal))
-}
-
-/// Result of atomically trying the best ledger-local protection target.
-///
-/// Ranking is only an observation. `Installed` is returned solely after the
-/// target ledger accepts the protection under its own lock; contention and a
-/// health race remain retryable queue states.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExhaustedWaiterProtection {
-    Installed(usize),
-    Contended,
-    NoHealthyTarget,
-}
-
 impl QueryService {
     pub(in crate::runtime::query_service) fn reserve_pending_preflight_locked(
         &self,
@@ -93,13 +65,7 @@ impl QueryService {
         state: &mut AdmissionState,
         admission_request_id: AdmissionRequestId,
     ) -> Option<AdmissionRequest> {
-        let removed = remove_queued_request(state, admission_request_id);
-        if let Some(request) = &removed
-            && let Err(error) = self.end_request_protection(request)
-        {
-            eprintln!("[nexus-query-engine] warning: failed to end queue protection: {error}");
-        }
-        removed
+        remove_queued_request(state, admission_request_id)
     }
 
     /// Computes the immutable capability-compatible device set at submission.
@@ -272,82 +238,44 @@ impl QueryService {
         &self,
         device_entries: &DeviceAdmissionEntries,
         required_capabilities: &[nexus_query_planning::capability::ReservationRequirement],
+        requested_query_cap_bytes: Option<u64>,
     ) -> Result<()> {
         if device_entries.is_empty() && !required_capabilities.is_empty() {
             return Err(self.no_capable_device_error(required_capabilities));
         }
-        let mut maximum = None;
         let mut can_ever_fit = false;
-        let mut minimum_required_floor = None;
-        for (ordinal, entry) in device_entries {
+        let mut maximum_resident_capacity = 0u64;
+        let mut open_device_count = 0usize;
+        for ordinal in device_entries.keys() {
             let ledger = self.ledger_for_ordinal(*ordinal)?;
-            let managed = ledger.managed_capacity_bytes();
-            maximum = Some(maximum.unwrap_or(0u64).max(managed));
-            let required_floor = ledger.required_floor_bytes_for(&entry.requirement)?;
-            if minimum_required_floor.is_none_or(|(minimum, _)| required_floor < minimum) {
-                minimum_required_floor = Some((required_floor, *ordinal));
+            let snapshot = ledger.snapshot()?;
+            // A closed device can never run this attempt, so its capacity
+            // cannot keep an impossible cap waiting. Direct placement already
+            // skips closed devices; the waiter revalidation must agree, or a
+            // single closed device makes every cap look satisfiable until the
+            // waiter times out.
+            if !matches!(snapshot.health, crate::runtime::gpu::DeviceAdmissionHealth::Open) {
+                continue;
             }
-            can_ever_fit |= ledger.can_ever_fit_required_floor_bytes(required_floor)?;
+            open_device_count += 1;
+            maximum_resident_capacity = maximum_resident_capacity
+                .max(snapshot.managed_capacity_bytes.saturating_sub(snapshot.frozen_resident_bytes));
+            can_ever_fit |= snapshot.can_ever_fit_query_cap(requested_query_cap_bytes);
+        }
+        // A fully closed fleet is a health failure, not an impossible cap. Let
+        // the canonical closed-fleet error own that case.
+        if open_device_count == 0 && !device_entries.is_empty() {
+            return Ok(());
         }
         if device_entries.is_empty() || !can_ever_fit {
-            let mut error = QueryError::new(
-                QueryErrorCode::ServiceOverloaded,
+            return Err(QueryError::new(
+                QueryErrorCode::QueryBudgetUnavailable,
                 "nexus_query_engine.query_service.admission",
-                "no compatible device can satisfy the attempt required floor",
+                "no compatible device can satisfy the requested query cap after resident ownership",
             )
-            .with_fact("reason", "impossible_requirement")
-            .with_fact("max_compatible_managed_capacity_bytes", maximum.unwrap_or(0));
-            if let Some((required_floor, ordinal)) = minimum_required_floor {
-                let requirement =
-                    &device_entries.get(&ordinal).expect("minimum required floor must have a device entry").requirement;
-                error = error
-                    .with_fact("minimum_compatible_required_floor_bytes", required_floor)
-                    .with_fact("minimum_compatible_required_floor_device_ordinal", ordinal)
-                    .with_fact("minimum_compatible_configured_floor_bytes", requirement.configured_floor_bytes)
-                    .with_fact("minimum_compatible_required_phase_floor_bytes", requirement.required_phase_floor_bytes)
-                    .with_fact(
-                        "minimum_compatible_capability_floor_raise_bytes",
-                        requirement.capability_floor_raise_bytes,
-                    )
-                    .with_fact("minimum_compatible_owner_term_count", requirement.owner_terms.len());
-                let owner_term_bytes = requirement.owner_terms.iter().map(|term| term.bytes()).sum::<u64>();
-                error = error.with_fact("minimum_compatible_owner_term_bytes", owner_term_bytes);
-                if let Some(term) = requirement.owner_terms.iter().max_by_key(|term| term.bytes()) {
-                    error = error
-                        .with_fact("minimum_compatible_dominant_owner_bytes", term.bytes())
-                        .with_fact("minimum_compatible_dominant_owner", term.owner_label())
-                        .with_fact("minimum_compatible_dominant_owner_role", term.id().role_label())
-                        .with_fact("minimum_compatible_dominant_owner_occurrence", term.id().occurrence_label());
-                }
-                let mut top_owner_terms = requirement.owner_terms.iter().collect::<Vec<_>>();
-                top_owner_terms.sort_by_key(|term| std::cmp::Reverse(term.bytes()));
-                let top_owner_terms = top_owner_terms
-                    .into_iter()
-                    .take(8)
-                    .map(|term| {
-                        format!(
-                            "{}:{}:{}={}",
-                            term.owner_label(),
-                            term.id().role_label(),
-                            term.id().occurrence_label(),
-                            term.bytes()
-                        )
-                    })
-                    .collect::<Vec<_>>()
-                    .join(",");
-                error = error.with_fact("minimum_compatible_top_owner_terms", top_owner_terms);
-            }
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    pub(in crate::runtime::query_service::service) fn end_request_protection(
-        &self,
-        request: &AdmissionRequest,
-    ) -> Result<()> {
-        if let Some(ordinal) = request.protected_device {
-            self.ledger_for_ordinal(ordinal)?.end_protection(request.admission_request_id)?;
+            .with_fact("reason", "query_cap_exceeds_resident_capacity")
+            .with_fact("requested_query_cap_bytes", requested_query_cap_bytes.unwrap_or_default())
+            .with_fact("max_compatible_resident_capacity_bytes", maximum_resident_capacity));
         }
         Ok(())
     }
@@ -461,8 +389,8 @@ impl QueryService {
         };
         // Terminal intent has a strict precedence. A caller that cancelled or
         // expired while queued must be removed before a concurrent health
-        // transition can retarget its protection and replace that terminal
-        // result with a persistent-device failure.
+        // transition must not replace that terminal result with a
+        // persistent-device failure.
         let now = Instant::now();
         let mut expired = Vec::new();
         let mut cancelled = Vec::new();
@@ -470,12 +398,10 @@ impl QueryService {
         let mut retained = VecDeque::with_capacity(queued.len());
         while let Some(request) = queued.pop_front() {
             if request.execution_cancellation.is_cancelled() {
-                let _ = self.end_request_protection(&request);
                 let _ =
                     request.terminal.record(admission_cancellation_or_deadline_error(&request.execution_cancellation));
                 cancelled.push(request);
             } else if request.deadline <= now {
-                let _ = self.end_request_protection(&request);
                 let disposition = request.terminal.record(service_overloaded_error(
                     "queue_wait_elapsed",
                     state.queued.len(),
@@ -488,25 +414,30 @@ impl QueryService {
         }
         state.replace_queued_requests(retained);
 
-        // Retarget only live waiters. It may remove protected waiters whose
-        // last capable device closed, after which the ordinary health sweep
-        // handles unprotected waiters with the same disposition.
-        let mut terminated = match self.retarget_protections_locked(state) {
-            Ok(terminated) => terminated,
-            Err(error) => {
-                eprintln!("[nexus-query-engine] warning: protection retarget failed: {error}");
-                Vec::new()
-            },
-        };
+        let mut terminated = Vec::new();
         let mut queued = state.take_queued_requests();
         let mut retained = VecDeque::with_capacity(queued.len());
         while let Some(request) = queued.pop_front() {
             match self.all_compatible_devices_closed_error(&request.compatible_devices) {
                 Ok(Some(error)) => {
-                    let _ = self.end_request_protection(&request);
                     terminated.push((request, error));
                 },
-                Ok(None) => retained.push_back(request),
+                Ok(None) => match self.reject_impossible_requirements(
+                    &request.device_entries,
+                    &[],
+                    request.requested_query_cap_bytes,
+                ) {
+                    Ok(()) => retained.push_back(request),
+                    Err(error) if error.code() == QueryErrorCode::QueryBudgetUnavailable => {
+                        terminated.push((request, error));
+                    },
+                    Err(error) => {
+                        eprintln!(
+                            "[nexus-query-engine] warning: failed to revalidate queued resident capacity; retaining waiter: {error}"
+                        );
+                        retained.push_back(request);
+                    },
+                },
                 Err(error) => {
                     eprintln!(
                         "[nexus-query-engine] warning: failed to evaluate queued-device health; retaining waiter: {error}"
@@ -581,41 +512,30 @@ impl QueryService {
         state: &mut AdmissionState,
     ) -> Result<Option<(usize, usize)>> {
         let pending_barrier = self.pending_preflight_min(state);
-        // Pending submissions own FIFO order but no protection state, so a
-        // younger waiter must not reserve capacity across their barrier.
-        let previous_protections = state.queued.iter().map(|request| request.protected_device).collect::<Vec<_>>();
-        if let Err(error) = self.restore_exhausted_overtake_protections_locked(state, pending_barrier) {
-            return Err(self.rollback_new_exhausted_overtake_protections(state, &previous_protections, error));
-        }
+        let mut devices_claimed_by_older_waiters = BTreeSet::new();
         for (position, request) in state.queued.iter().enumerate() {
             if pending_barrier.is_some_and(|pending| request.submission_seq >= pending) {
                 break;
             }
-            let Some(best) = self.best_eligible_device_for(request)? else {
-                continue;
-            };
-            return Ok(Some((position, best)));
+            if let Some(best) = self.best_eligible_device_for_excluding(request, &devices_claimed_by_older_waiters)? {
+                return Ok(Some((position, best)));
+            }
+            devices_claimed_by_older_waiters.extend(request.compatible_devices.iter().copied());
         }
         Ok(None)
     }
 
-    /// Ranks one waiter's currently eligible devices and returns the best.
-    ///
-    /// A protection belongs to one ledger. Only that ledger can atomically
-    /// replace the protected slot and liveness bytes with this waiter's grant,
-    /// so a protected waiter must not be placed on another compatible device.
-    /// Health-driven retargeting releases and recreates the protection before
-    /// selection considers another ordinal.
-    pub(in crate::runtime::query_service::service) fn best_eligible_device_for(
+    fn best_eligible_device_for_excluding(
         &self,
         request: &AdmissionRequest,
+        excluded_devices: &BTreeSet<usize>,
     ) -> Result<Option<usize>> {
         if let Some(resources) = &self.inner.resources {
             let candidates = self.placement_candidates_for_entries(
                 resources,
                 &request.device_entries,
-                placement_candidate_ordinals(&request.compatible_devices, request.protected_device),
-                request.protected_device,
+                request.compatible_devices.iter().copied().filter(|ordinal| !excluded_devices.contains(ordinal)),
+                request.requested_query_cap_bytes,
             )?;
             return Ok(candidates
                 .into_iter()
@@ -623,33 +543,29 @@ impl QueryService {
                 .map(|candidate| candidate.candidate.ordinal));
         }
 
-        // Admission-only fixtures have one explicit synthetic ledger and no
-        // registry to snapshot.  They retain the same ledger-local protected
-        // reservation semantics while production queue/direct placement share
-        // the registry helper above.
         let mut candidates = Vec::new();
-        for ordinal in placement_candidate_ordinals(&request.compatible_devices, request.protected_device) {
+        for ordinal in request.compatible_devices.iter().copied().filter(|ordinal| !excluded_devices.contains(ordinal))
+        {
             let ledger = self.ledger_for_ordinal(ordinal)?;
             if !self.is_device_admission_healthy(ordinal)? {
                 continue;
             }
-            let requirement = request.requirement_for_device(ordinal)?;
-            let required_floor = ledger.required_floor_bytes_for(requirement)?;
-            // One snapshot contains every ranking input. The protected-waiter
-            // exception is a property of this queued request, so it is safe to
-            // resolve it against the same versioned ledger read.
+            request.requirement_for_device(ordinal)?;
             let snapshot = ledger.snapshot()?;
             if !matches!(snapshot.health, crate::runtime::gpu::DeviceAdmissionHealth::Open) {
                 continue;
             }
-            let is_protected_waiter = request.protected_device == Some(ordinal);
-            let Some(max_new_grant_bytes) = snapshot.max_new_grant_bytes(required_floor, is_protected_waiter) else {
+            let Some(query_cap_bytes) = snapshot.admissible_query_cap_bytes(request.requested_query_cap_bytes) else {
                 continue;
             };
             candidates.push(PlacementCandidate {
                 ordinal,
-                required_floor_bytes: required_floor,
-                max_new_grant_bytes,
+                query_cap_bytes,
+                spare_capacity_bytes: snapshot
+                    .managed_capacity_bytes
+                    .saturating_sub(snapshot.frozen_resident_bytes)
+                    .saturating_sub(snapshot.live_grants_bytes)
+                    .saturating_sub(query_cap_bytes),
                 active_attempts: snapshot.active_attempts,
                 live_grants_bytes: snapshot.live_grants_bytes,
                 worker_depth: snapshot.worker_depth,
@@ -688,12 +604,12 @@ impl QueryService {
             let candidates = self.placement_candidates_for_entries(
                 resources,
                 &first.device_entries,
-                placement_candidate_ordinals(&first.compatible_devices, first.protected_device),
-                first.protected_device,
+                first.compatible_devices.iter().copied(),
+                first.requested_query_cap_bytes,
             )?;
             return Ok(candidates.into_iter().next().map(|candidate| (0, candidate.candidate.ordinal)));
         }
-        for device in placement_candidate_ordinals(&first.compatible_devices, first.protected_device) {
+        for device in first.compatible_devices.iter().copied() {
             first.requirement_for_device(device)?;
             if self.is_device_admission_healthy(device)? {
                 return Ok(Some((0, device)));
@@ -702,290 +618,37 @@ impl QueryService {
         Ok(None)
     }
 
-    /// Ends protections on devices that closed admission and retargets each
-    /// affected waiter to its next compatible unprotected device by the
-    /// documented `(capacity deficit, active count, ordinal)` order. Waiters
-    /// with no remaining compatible unprotected device are terminated.
-    pub(in crate::runtime::query_service) fn retarget_protections_locked(
-        &self,
-        state: &mut AdmissionState,
-    ) -> Result<Vec<(AdmissionRequest, QueryError)>> {
-        let mut terminated = Vec::new();
-        for position in (0..state.queued.len()).rev() {
-            let Some(protected_ordinal) = state.queued[position].protected_device else {
-                continue;
-            };
-            let protected_ledger = self.ledger_for_ordinal(protected_ordinal)?;
-            if self.is_device_admission_healthy(protected_ordinal)? {
-                continue;
-            }
-            let request_id = state.queued[position].admission_request_id;
-            protected_ledger.end_protection(request_id)?;
-            state.queued[position].protected_device = None;
-            let device_entries = state.queued[position].device_entries.clone();
-            let compatible_devices = state.queued[position].compatible_devices.clone();
-            let protection = match self.try_install_exhausted_waiter_protection_after_old_target_release(
-                request_id,
-                &device_entries,
-                &compatible_devices,
-                Some(protected_ordinal),
-            ) {
-                Ok(protection) => protection,
-                Err(error) => {
-                    // The old ledger-local reservation has already ended.
-                    // This waiter owns any failure to establish a replacement;
-                    // retaining it unprotected would let a later caller fail
-                    // while driving queue repair and would violate finite
-                    // overtake protection.
-                    let removed = state.remove_queued_at(position).expect("scanned position is valid");
-                    terminated.push((removed, error));
-                    continue;
-                },
-            };
-            if let ExhaustedWaiterProtection::Installed(ordinal) = protection {
-                state.queued[position].protected_device = Some(ordinal);
-            }
-            // An older waiter may already protect the only viable device.
-            // Leave this waiter exhausted but unprotected and retry after a
-            // later admission/release; it is not terminally impossible yet.
-            if matches!(protection, ExhaustedWaiterProtection::NoHealthyTarget) {
-                // Health closure is terminal, not a transient resource
-                // shortage. Reuse the queue-wide decision so a protected
-                // waiter preserves the same persistent-fault taxonomy as a
-                // non-protected waiter on the same device set.
-                let error = match self.all_compatible_devices_closed_error(&compatible_devices) {
-                    Ok(Some(error)) => error,
-                    Ok(None) => service_overloaded_error(
-                        "protected_waiter_no_runnable_device",
-                        state.queued.len(),
-                        self.inner.queue_bounds.max_waiters,
-                    )
-                    .with_fact("protected_device_ordinal", protected_ordinal),
-                    Err(error) => error,
-                };
-                let removed = state.remove_queued_at(position).expect("scanned position is valid");
-                terminated.push((removed, error));
-            }
-        }
-        Ok(terminated)
-    }
-
-    /// Retargets only after the prior ledger-local protection has ended.
-    /// Production errors come from the candidate scan or target ledger; the
-    /// test-only hook covers that same ownership boundary deterministically.
-    fn try_install_exhausted_waiter_protection_after_old_target_release(
-        &self,
-        request_id: AdmissionRequestId,
-        device_entries: &DeviceAdmissionEntries,
-        compatible_devices: &[usize],
-        excluded_ordinal: Option<usize>,
-    ) -> Result<ExhaustedWaiterProtection> {
-        #[cfg(test)]
-        if self.inner.protection_retarget_failure_after_release.swap(false, Ordering::AcqRel) {
-            return Err(QueryError::new(
-                QueryErrorCode::Internal,
-                "nexus_query_engine.query_service.queue",
-                "injected protection retarget failure after previous target release",
-            )
-            .with_fact("reason", "injected_protection_retarget_failure"));
-        }
-        self.try_install_exhausted_waiter_protection(request_id, device_entries, compatible_devices, excluded_ordinal)
-    }
-
-    /// Ranks every currently viable protection target from one ledger
-    /// snapshot, then asks the selected ledgers to atomically install the
-    /// reservation. Both retarget and restore use this path so an internal
-    /// ledger failure cannot silently turn an exhausted waiter into an
-    /// unprotected waiter.
-    fn try_install_exhausted_waiter_protection(
-        &self,
-        request_id: AdmissionRequestId,
-        device_entries: &DeviceAdmissionEntries,
-        compatible_devices: &[usize],
-        excluded_ordinal: Option<usize>,
-    ) -> Result<ExhaustedWaiterProtection> {
-        let mut candidates = Vec::new();
-        let mut healthy_target_remains = false;
-        for ordinal in compatible_devices.iter().copied().filter(|ordinal| Some(*ordinal) != excluded_ordinal) {
-            let ledger = self.ledger_for_ordinal(ordinal)?;
-            let requirement = device_entries
-                .get(&ordinal)
-                .ok_or_else(|| super::super::admission::missing_device_admission_entry_error(ordinal))?
-                .requirement
-                .clone();
-            let required_floor = ledger.required_floor_bytes_for(&requirement)?;
-            if !ledger.can_ever_fit_required_floor_bytes(required_floor)? {
-                continue;
-            }
-            let snapshot = ledger.snapshot()?;
-            if !matches!(snapshot.health, crate::runtime::gpu::DeviceAdmissionHealth::Open) {
-                continue;
-            }
-            healthy_target_remains = true;
-            if snapshot.protected_slot {
-                continue;
-            }
-            let max_new = snapshot.max_new_grant_bytes(required_floor, false).unwrap_or(0);
-            candidates.push((
-                required_floor.saturating_sub(max_new),
-                snapshot.active_attempts,
-                ordinal,
-                required_floor,
-            ));
-        }
-        candidates.sort_unstable();
-
-        for (_, _, ordinal, required_floor) in candidates {
-            let ledger = self.ledger_for_ordinal(ordinal)?;
-            match ledger.protect_slot(request_id, required_floor) {
-                Ok(true) => return Ok(ExhaustedWaiterProtection::Installed(ordinal)),
-                // Another exhausted waiter won the ledger-local transaction.
-                Ok(false) => {},
-                // The device closed after the snapshot; a future canonical
-                // sweep will retarget or terminalize this waiter.
-                Err(error) if error.fact_value("reason") == Some("closed_protection_target") => {},
-                Err(error) => return Err(error),
-            }
-        }
-        Ok(if healthy_target_remains {
-            ExhaustedWaiterProtection::Contended
-        } else {
-            ExhaustedWaiterProtection::NoHealthyTarget
-        })
-    }
-
-    /// Reinstalls a liveness protection for each exhausted waiter that lost
-    /// its previous target. Callers hold the admission mutex, so no placement
-    /// can consume the newly available slot between this reconciliation and
-    /// candidate selection.
-    fn restore_exhausted_overtake_protections_locked(
-        &self,
-        state: &mut AdmissionState,
-        pending_barrier: Option<u64>,
-    ) -> Result<()> {
-        for position in 0..state.queued.len() {
-            let (request_id, device_entries, compatible_devices) = {
-                let request = &state.queued[position];
-                if pending_barrier.is_some_and(|pending| request.submission_seq >= pending) {
-                    break;
-                }
-                if request.overtakes_remaining != 0 || request.protected_device.is_some() {
-                    continue;
-                }
-                (request.admission_request_id, request.device_entries.clone(), request.compatible_devices.clone())
-            };
-            if let ExhaustedWaiterProtection::Installed(ordinal) =
-                self.try_install_exhausted_waiter_protection(request_id, &device_entries, &compatible_devices, None)?
-            {
-                state.queued[position].protected_device = Some(ordinal);
-            }
-        }
-        Ok(())
-    }
-
-    /// Ends every protection installed by a failed restoration pass and
-    /// restores the queue's prior protection references. A restoration can
-    /// touch several ledgers, so a later hard failure must not leave an
-    /// earlier waiter's slot and liveness bytes withheld indefinitely.
-    fn rollback_new_exhausted_overtake_protections(
-        &self,
-        state: &mut AdmissionState,
-        previous_protections: &[Option<usize>],
-        mut error: QueryError,
-    ) -> QueryError {
-        let mut protection_rolled_back = vec![true; state.queued.len()];
-        for (position, request) in state.queued.iter().enumerate() {
-            if previous_protections[position].is_some() || request.protected_device.is_none() {
-                continue;
-            }
-            let protected_device = request.protected_device.expect("new protection exists");
-            let rollback = self
-                .ledger_for_ordinal(protected_device)
-                .and_then(|ledger| ledger.end_protection(request.admission_request_id).map(|_| ()));
-            if let Err(rollback_error) = rollback {
-                protection_rolled_back[position] = false;
-                error = error.with_fact("overtake_rollback_error", rollback_error.to_string());
-            }
-        }
-        for (position, request) in state.queued.iter_mut().enumerate() {
-            if previous_protections[position].is_some() || protection_rolled_back[position] {
-                request.protected_device = previous_protections[position];
-            }
-        }
-        error
-    }
-
-    /// Accounts for a published later admission and installs protection for
-    /// every older still-queued compatible waiter that has exhausted its finite
-    /// overtake allowance. Any protection failure rolls back both decrements
-    /// and protections created by this call.
-    pub(in crate::runtime::query_service) fn record_overtake_locked(
-        &self,
-        state: &mut AdmissionState,
-        admitted_submission_seq: u64,
-        device_ordinal: usize,
-        publication_deadline: Instant,
-    ) -> Result<()> {
-        let previous = state
-            .queued
-            .iter()
-            .map(|request| (request.overtakes_remaining, request.protected_device))
-            .collect::<Vec<_>>();
-        for request in &mut state.queued {
-            // A published later admission consumes one overtake only when the
-            // older waiter remains queued and could have used that device.
-            if request.submission_seq < admitted_submission_seq
-                && request.compatible_devices.contains(&device_ordinal)
-                && request.overtakes_remaining > 0
-            {
-                request.overtakes_remaining -= 1;
-            }
-        }
-        let pending_barrier = self.pending_preflight_min(state);
-        let commit_result = self.restore_exhausted_overtake_protections_locked(state, pending_barrier).and_then(|()| {
-            super::transaction::publication_deadline_error(publication_deadline, None).map_or(Ok(()), Err)
-        });
-        if let Err(error) = commit_result {
-            let previous_protections = previous.iter().map(|(_, protection)| *protection).collect::<Vec<_>>();
-            let error = self.rollback_new_exhausted_overtake_protections(state, &previous_protections, error);
-            for (position, request) in state.queued.iter_mut().enumerate() {
-                request.overtakes_remaining = previous[position].0;
-            }
-            return Err(error);
-        }
-        Ok(())
-    }
-
     pub(in crate::runtime::query_service) fn memory_grant_wait_timeout_error(
         &self,
-        requirement: &AttemptRequirement,
+        requested_query_cap_bytes: Option<u64>,
         queued_queries: usize,
     ) -> QueryError {
-        let required_floor = requirement.required_floor_bytes().unwrap_or_default();
-        let soft_hint = requirement.soft_working_set_hint_bytes.unwrap_or_default();
         let mut error =
             service_overloaded_error("memory_grant_wait_timeout", queued_queries, self.inner.queue_bounds.max_waiters)
-                .with_fact("required_floor_bytes", required_floor)
-                .with_fact("soft_working_set_hint_bytes", soft_hint)
-                .with_fact("configured_max_active_attempts_per_device", self.max_active_attempt_limit());
+                .with_fact("requested_query_cap_bytes", requested_query_cap_bytes.unwrap_or_default());
         if let Ok(snapshots) = self.device_ledger_snapshots() {
+            let resident = snapshots
+                .iter()
+                .map(|snapshot| format!("{}:{}", snapshot.device_ordinal, snapshot.frozen_resident_bytes))
+                .collect::<Vec<_>>()
+                .join(",");
             let live_grants = snapshots
                 .iter()
                 .map(|snapshot| format!("{}:{}", snapshot.device_ordinal, snapshot.live_grants_bytes))
                 .collect::<Vec<_>>()
                 .join(",");
-            error = error.with_fact("device_live_grants_bytes", live_grants);
-            let idle_ceiling = snapshots
+            let admissible_caps = snapshots
                 .iter()
                 .map(|snapshot| {
-                    let reserve = snapshot.configured_floor_bytes.saturating_mul(
-                        u64::try_from(snapshot.max_active_attempts.saturating_sub(1)).unwrap_or(u64::MAX),
-                    );
-                    snapshot.managed_capacity_bytes.saturating_sub(reserve)
+                    let cap = snapshot.admissible_query_cap_bytes(requested_query_cap_bytes).unwrap_or_default();
+                    format!("{}:{}", snapshot.device_ordinal, cap)
                 })
-                .max()
-                .unwrap_or(0);
-            error = error.with_fact("guaranteed_min_idle_grant_ceiling_bytes", idle_ceiling);
+                .collect::<Vec<_>>()
+                .join(",");
+            error = error
+                .with_fact("device_frozen_resident_bytes", resident)
+                .with_fact("device_live_grants_bytes", live_grants)
+                .with_fact("device_admissible_query_cap_bytes", admissible_caps);
         }
         error
     }
@@ -1152,15 +815,5 @@ impl QueueSweep {
         for device_ordinal in self.transitioned_device_ordinals {
             notify_shared_device_admission_available(device_ordinal);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn protected_waiter_candidates_are_pinned_to_the_protecting_ledger() {
-        assert_eq!(placement_candidate_ordinals(&[0, 1], Some(0)).collect::<Vec<_>>(), vec![0]);
     }
 }

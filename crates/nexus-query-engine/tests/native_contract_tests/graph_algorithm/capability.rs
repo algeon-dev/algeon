@@ -1,5 +1,5 @@
 #[test]
-fn graph_algorithm_capability_blocks_bounded_on_lower_level_contract() {
+fn graph_algorithm_capability_admits_without_a_lower_level_memory_veto() {
     let plan = graph_plan(
         GraphAlgorithm::Bfs,
         GraphAlgorithmParams::Bfs(Box::new(GraphBfsParams::new(0, Some(3)))),
@@ -14,15 +14,16 @@ fn graph_algorithm_capability_blocks_bounded_on_lower_level_contract() {
     let requirement = &graph_capability.local_requirements[0];
     assert_eq!(requirement.memory_boundary, GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY);
     assert_eq!(requirement.required_contract, GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT);
-    assert_eq!(requirement.status, ContractStatus::BlockedByLowerLevel);
-    assert_eq!(requirement.quality, ContractQuality::ExactPreflight);
+    assert_eq!(requirement.status, ContractStatus::Modeled);
+    assert_eq!(requirement.quality, ContractQuality::CapabilityProof);
 
     let report = CapabilityContractReport::from_capability_analysis(&analysis).unwrap();
-    assert_eq!(report.execution_mode(), CapabilityEnvelopeStatus::Rejected);
+    assert_eq!(report.execution_mode(), CapabilityEnvelopeStatus::Admitted);
     assert!(report.gate_rows().iter().any(|row| {
         row.memory_boundary == GRAPH_ALGORITHM_CAPABILITY_MEMORY_BOUNDARY
             && row.required_contract == GRAPH_ALGORITHM_CAPABILITY_REQUIRED_CONTRACT
-            && row.contract_status == ContractStatus::BlockedByLowerLevel
+            && row.contract_status == ContractStatus::Modeled
+            && row.contract_quality == ContractQuality::CapabilityProof
     }));
 }
 

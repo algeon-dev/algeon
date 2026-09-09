@@ -1018,7 +1018,7 @@ fn bounded_native_query_reuses_source_adjacent_preflight_handle_for_low_cardinal
 }
 
 #[test]
-fn bounded_native_query_keeps_large_string_source_adjacent_inputs_on_group_key_partitions() {
+fn bounded_native_query_does_not_force_group_key_partitions_from_large_source_estimates() {
     let dir = unique_temp_dir("nexus-query-engine-bounded-source-adjacent-large-string-group-key");
     let path = dir.join("input.parquet");
     let context = backend_context();
@@ -1069,19 +1069,7 @@ fn bounded_native_query_keeps_large_string_source_adjacent_inputs_on_group_key_p
         .iter()
         .find(|decision| decision.facts.get("execution_stage").map(String::as_str) == Some("partial"))
         .expect("row-balanced partial strategy row");
-    assert_eq!(partial_strategy.facts.get("source_adjacent_partition_strategy").map(String::as_str), Some("group_key"));
-    assert!(
-        metrics.aggregate_strategy_decisions.iter().all(|decision| {
-            decision.facts.get("source_adjacent_partition_strategy").map(String::as_str) != Some("group_key")
-                || decision
-                    .facts
-                    .get("source_adjacent_max_partition_fan_in")
-                    .and_then(|fan_in| fan_in.parse::<u64>().ok())
-                    .is_some_and(|fan_in| fan_in <= 64)
-                || decision.facts.get("selected_strategy").map(String::as_str) != Some("prepared_sort_groupby")
-        }),
-        "high-fan-in group-key source-adjacent string aggregates must not use prepared sort groupby"
-    );
+    assert_eq!(partial_strategy.facts.get("source_adjacent_partition_strategy").map(String::as_str), Some("none"));
 
     let QueryOutput::HostArrow(batch) = result.output() else {
         panic!("host sink should materialize one RecordBatch");

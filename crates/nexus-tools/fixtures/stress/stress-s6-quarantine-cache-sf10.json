@@ -7,12 +7,12 @@
   "graph_claim_calibration": {},
   "backend": {
     "device_profiles": [
-      { "ordinal": 0, "ownership": "whole_device_exclusive", "memory_limit_bytes": 47244640256, "backend_reserve_bytes": 1073741824, "cache_cap_bytes": 6442450944, "attempt_floor_bytes": 268435456, "source_work_per_attempt": 2, "max_active_attempts": 2, "installation": { "stream_pool_size": 6, "worker_count": 4, "lane_count": 4 } },
-      { "ordinal": 1, "ownership": "whole_device_exclusive", "memory_limit_bytes": 47244640256, "backend_reserve_bytes": 1073741824, "cache_cap_bytes": 6442450944, "attempt_floor_bytes": 268435456, "source_work_per_attempt": 2, "max_active_attempts": 2, "installation": { "stream_pool_size": 6, "worker_count": 4, "lane_count": 4 } },
-      { "ordinal": 2, "ownership": "whole_device_exclusive", "memory_limit_bytes": 47244640256, "backend_reserve_bytes": 1073741824, "cache_cap_bytes": 6442450944, "attempt_floor_bytes": 268435456, "source_work_per_attempt": 2, "max_active_attempts": 2, "installation": { "stream_pool_size": 6, "worker_count": 4, "lane_count": 4 } },
-      { "ordinal": 3, "ownership": "whole_device_exclusive", "memory_limit_bytes": 47244640256, "backend_reserve_bytes": 1073741824, "cache_cap_bytes": 6442450944, "attempt_floor_bytes": 268435456, "source_work_per_attempt": 2, "max_active_attempts": 2, "installation": { "stream_pool_size": 6, "worker_count": 4, "lane_count": 4 } }
+      { "ordinal": 0, "ownership": "whole_device_exclusive", "memory_limit_bytes": 47244640256, "backend_reserve_bytes": 1073741824, "cache_cap_bytes": 6442450944, "default_query_limit_bytes": 268435456, "source_work_per_attempt": 2, "max_active_attempts": 2, "installation": { "stream_pool_size": 6, "worker_count": 4, "lane_count": 4 } },
+      { "ordinal": 1, "ownership": "whole_device_exclusive", "memory_limit_bytes": 47244640256, "backend_reserve_bytes": 1073741824, "cache_cap_bytes": 6442450944, "default_query_limit_bytes": 268435456, "source_work_per_attempt": 2, "max_active_attempts": 2, "installation": { "stream_pool_size": 6, "worker_count": 4, "lane_count": 4 } },
+      { "ordinal": 2, "ownership": "whole_device_exclusive", "memory_limit_bytes": 47244640256, "backend_reserve_bytes": 1073741824, "cache_cap_bytes": 6442450944, "default_query_limit_bytes": 268435456, "source_work_per_attempt": 2, "max_active_attempts": 2, "installation": { "stream_pool_size": 6, "worker_count": 4, "lane_count": 4 } },
+      { "ordinal": 3, "ownership": "whole_device_exclusive", "memory_limit_bytes": 47244640256, "backend_reserve_bytes": 1073741824, "cache_cap_bytes": 6442450944, "default_query_limit_bytes": 268435456, "source_work_per_attempt": 2, "max_active_attempts": 2, "installation": { "stream_pool_size": 6, "worker_count": 4, "lane_count": 4 } }
     ],
-    "queue": { "max_queued_attempts": 64, "max_queue_wait_ms": 30000, "max_overtakes_per_waiter": 4 },
+    "queue": { "max_queued_attempts": 64, "max_queue_wait_ms": 30000 },
     "native_execution": { "device_budget_bytes": 1073741824, "max_source_chunk_bytes": 268435456, "max_row_groups_per_chunk": 1024, "max_retry_attempts": 3, "min_retry_chunk_row_groups": 1 }
   },
   "session": { "shared_session_count": 2 },

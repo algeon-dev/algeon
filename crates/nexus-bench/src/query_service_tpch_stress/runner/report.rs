@@ -71,8 +71,7 @@ impl StressReport {
         output.push_str(&format!("# dataset_root={}\n", self.config.dataset_root.display()));
         output.push_str(&format!("# dataset_metadata_fingerprint={}\n", self.dataset.metadata_fingerprint));
         output.push_str(&format!("# device_capacity_bytes={}\n", self.config.device_capacity_bytes));
-        output.push_str(&format!("# attempt_floor_bytes={}\n", self.config.attempt_floor_bytes));
-        output.push_str(&format!("# soft_working_set_hint_bytes={}\n", self.config.soft_working_set_hint_bytes));
+        output.push_str(&format!("# default_query_limit_bytes={}\n", self.config.default_query_limit_bytes));
         output.push_str(&format!("# max_active_attempts_per_device={}\n", self.config.max_active_attempts_per_device));
         output.push_str(&format!("# effective_active_max={}\n", self.effective_active_max));
         output.push_str(&format!("# max_queued_attempts={}\n", self.config.max_queued_attempts));
@@ -266,8 +265,7 @@ mod tests {
             bulk_iterations: 1,
             interactive_iterations: 1,
             device_capacity_bytes: 100,
-            attempt_floor_bytes: 25,
-            soft_working_set_hint_bytes: 50,
+            default_query_limit_bytes: 25,
             max_active_attempts_per_device: 2,
             max_queued_attempts: 2,
             max_queue_wait: Duration::from_secs(1),
@@ -349,7 +347,7 @@ mod tests {
     }
 
     #[test]
-    fn stress_config_rejects_attempt_floor_larger_than_capacity() {
+    fn stress_config_accepts_default_query_limit_without_empty_slot_banking() {
         let config = StressConfig {
             dataset_root: PathBuf::new(),
             bulk_queries: vec!["q01".to_string()],
@@ -357,10 +355,9 @@ mod tests {
             bulk_iterations: 1,
             interactive_iterations: 1,
             device_capacity_bytes: 100,
-            attempt_floor_bytes: 60,
-            soft_working_set_hint_bytes: 60,
+            default_query_limit_bytes: 60,
             max_active_attempts_per_device: 2,
-            max_queued_attempts: 1,
+            max_queued_attempts: 3,
             max_queue_wait: Duration::from_secs(1),
             max_source_chunk_bytes: 1,
             max_row_groups_per_chunk: 1,
@@ -372,9 +369,7 @@ mod tests {
             device_ordinals: vec![0],
         };
 
-        let error = config.validate().unwrap_err();
-
-        assert!(error.to_string().contains(super::config::ATTEMPT_FLOOR_BYTES_ENV));
+        config.validate().unwrap();
     }
 
     #[test]

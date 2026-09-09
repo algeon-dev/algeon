@@ -51,7 +51,7 @@ mod vector_algorithm;
 #[doc(hidden)]
 pub use bounded::pipeline::{
     CompiledGpuResource, CompiledGpuTaskExecutor, CompiledPipelineScheduler, CompiledPipelineState,
-    CompiledSchedulingCycle, CompiledTaskAdmission, CompiledTaskExecutor, CompiledTaskOutput, ReleasedCompiledResource,
+    CompiledSchedulingCycle, CompiledTaskExecutor, CompiledTaskOutput, ReleasedCompiledResource,
 };
 #[cfg(test)]
 pub(crate) use bounded::pipeline::{ResidentFrameStreamProducerTestHarness, YieldedFrameCounterTestHarness};
@@ -80,7 +80,7 @@ pub use source::{
 pub mod reservation_contract_testing {
     use super::bounded::{BoundedExecutionAttempt, ReservationTracker, join::compiled::JoinMaterializationTxn};
     use crate::{
-        error::{QueryError, Result},
+        error::Result,
         metrics::QueryMetrics,
         pipeline::PipelineTaskKind,
         runtime::{MemoryReservationRequest, MemorySpaceId, ReservationKind},
@@ -93,13 +93,6 @@ pub mod reservation_contract_testing {
         pub(crate) reserved_after_alias_or_transfer: u64,
         pub(crate) reserved_after_intermediate_release: u64,
         pub(crate) reserved_after_final_release: u64,
-    }
-
-    #[derive(Debug)]
-    pub(crate) struct ReservationTrackerDenialProbe {
-        pub(crate) metrics: QueryMetrics,
-        pub(crate) error: QueryError,
-        pub(crate) reserved_after_denial: u64,
     }
 
     #[derive(Debug)]
@@ -186,34 +179,6 @@ pub mod reservation_contract_testing {
             reserved_after_intermediate_release,
             reserved_after_final_release,
         })
-    }
-
-    pub(crate) fn probe_denial_capacity_after_alias() -> Result<ReservationTrackerDenialProbe> {
-        let mut metrics = QueryMetrics::default();
-        let mut tracker = ReservationTracker::new(MemorySpaceId::Device { device_ordinal: 0 }, 100);
-        let owned = tracker.try_reserve_owned_resident(
-            request(ReservationKind::SourceRead, "source_read", 70, tracker.budget()),
-            &mut metrics,
-        )?;
-        let alias = tracker.alias_reservation(
-            &owned,
-            request(ReservationKind::OperatorOutput, "schema_only_projection", 70, tracker.budget()),
-            &mut metrics,
-        );
-        let error = match tracker.try_reserve_owned_resident(
-            request(ReservationKind::ProbeSide, "join_probe_side", 40, tracker.budget()),
-            &mut metrics,
-        ) {
-            Ok(reservation) => {
-                tracker.release(reservation, &mut metrics);
-                unreachable!("reservation denial probe unexpectedly admitted over-budget request")
-            },
-            Err(error) => error,
-        };
-        let reserved_after_denial = tracker.reserved_bytes();
-        tracker.release(alias, &mut metrics);
-        tracker.release(owned, &mut metrics);
-        Ok(ReservationTrackerDenialProbe { metrics, error, reserved_after_denial })
     }
 
     pub(crate) fn probe_join_materialization_txn_rollback_contract() -> Result<JoinMaterializationTxnRollbackProbe> {

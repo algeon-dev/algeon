@@ -1,7 +1,7 @@
 use super::{
     env::EnvValues,
     file::ServerAdmissionFileConfig,
-    native::{duration_millis_from_value, optional_duration_millis_value, optional_native_u64, optional_native_usize},
+    native::{duration_millis_from_value, optional_duration_millis_value, optional_native_usize},
     *,
 };
 use crate::backend::{
@@ -10,7 +10,6 @@ use crate::backend::{
 
 pub const NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS_ENV: &str = "NEXUS_SERVER_ADMISSION_MAX_QUEUED_ATTEMPTS";
 pub const NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS_ENV: &str = "NEXUS_SERVER_ADMISSION_MAX_QUEUE_WAIT_MS";
-pub const NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER_ENV: &str = "NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER";
 pub const NEXUS_SERVER_GPU_DEVICES_ENV: &str = "NEXUS_SERVER_GPU_DEVICES";
 pub(super) fn server_queue_policy(
     values: &mut EnvValues<'_>,
@@ -28,21 +27,10 @@ pub(super) fn server_queue_policy(
         "admission.max_queue_wait_ms",
         file.max_queue_wait_ms,
     )?;
-    let overtakes = optional_native_u64(
-        values,
-        NEXUS_SERVER_ADMISSION_MAX_OVERTAKES_PER_WAITER_ENV,
-        "admission.max_overtakes_per_waiter",
-        file.max_overtakes_per_waiter,
-    )?;
     for value in [queued.as_ref().map(|v| (v.value, v.field))].into_iter().flatten() {
         if value.0 == 0 {
             return Err(ServerError::invalid_config(value.1, "must be greater than zero"));
         }
-    }
-    if let Some(value) = overtakes.as_ref()
-        && value.value > u64::from(u32::MAX)
-    {
-        return Err(ServerError::invalid_config(value.field, "must fit in u32"));
     }
     let mut policy = NexusGpuQueuePolicy::default();
     if let Some(value) = queued {
@@ -50,9 +38,6 @@ pub(super) fn server_queue_policy(
     }
     if let Some(value) = wait {
         policy = policy.with_max_queue_wait(duration_millis_from_value(value)?);
-    }
-    if let Some(value) = overtakes {
-        policy = policy.with_max_overtakes_per_waiter(value.value as u32);
     }
     Ok(policy)
 }
@@ -117,7 +102,7 @@ pub(super) fn server_device_profiles(
 fn profile_from_file(raw: &super::file::ServerAdmissionDeviceProfileFileConfig) -> Result<NexusGpuDeviceProfile> {
     for (field, value) in [
         ("admission.device_profiles.memory_limit_bytes", raw.memory_limit_bytes),
-        ("admission.device_profiles.attempt_floor_bytes", raw.attempt_floor_bytes),
+        ("admission.device_profiles.default_query_limit_bytes", raw.default_query_limit_bytes),
     ] {
         if value == Some(0) {
             return Err(ServerError::invalid_config(field, "must be greater than zero"));
@@ -144,7 +129,7 @@ fn profile_from_file(raw: &super::file::ServerAdmissionDeviceProfileFileConfig) 
     }
     // Start from the root projection of engine defaults and apply only values
     // explicitly selected by the server file. This must not restate device
-    // controller defaults such as automatic floors, one active attempt, or
+    // controller defaults such as the automatic query limit, one active attempt, or
     // one source-work slot.
     let mut profile = NexusGpuDeviceProfile::new(raw.device_ordinal);
     if let Some(limit_bytes) = raw.memory_limit_bytes {
@@ -156,8 +141,8 @@ fn profile_from_file(raw: &super::file::ServerAdmissionDeviceProfileFileConfig) 
     if let Some(cache_cap_bytes) = raw.cache_cap_bytes {
         profile = profile.with_cache_cap_bytes(cache_cap_bytes);
     }
-    if let Some(attempt_floor_bytes) = raw.attempt_floor_bytes {
-        profile = profile.with_attempt_floor_bytes(attempt_floor_bytes);
+    if let Some(default_query_limit_bytes) = raw.default_query_limit_bytes {
+        profile = profile.with_default_query_limit_bytes(default_query_limit_bytes);
     }
     if let Some(source_work_per_attempt) = raw.source_work_per_attempt {
         profile = profile.with_source_work_per_attempt(source_work_per_attempt);

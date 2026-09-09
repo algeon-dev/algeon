@@ -41,6 +41,32 @@ cudf_status_t cudf_query_memory_domain_pool_usage(cudf_query_memory_domain_handl
                                                   cudf_memory_pool_usage_t* out);
 cudf_status_t cudf_query_memory_domain_resize_grant(cudf_query_memory_domain_handle domain,
                                                     size_t grant_bytes);
+cudf_status_t cudf_query_memory_domain_freeze(cudf_query_memory_domain_handle domain);
+
+/// One surviving allocation owned by a query memory domain.
+///
+/// `device_pointer` is the base pointer the allocator registered, not an
+/// interior column pointer. Owner attestation compares published output
+/// buffers against these base allocations.
+typedef struct {
+  size_t struct_size;
+  void* device_pointer;
+  size_t bytes;
+  size_t aligned_bytes;
+  size_t alignment;
+  uint64_t reserved[2];
+} cudf_query_memory_domain_allocation_t;
+
+/// Copies this domain's live allocation registry into `out`.
+///
+/// Writes at most `capacity` records and always reports the full live count
+/// in `out_count`, so a caller can detect truncation. Passing a null `out`
+/// with zero `capacity` queries the count alone.
+cudf_status_t cudf_query_memory_domain_live_allocations(
+  cudf_query_memory_domain_handle domain,
+  cudf_query_memory_domain_allocation_t* out,
+  size_t capacity,
+  size_t* out_count);
 cudf_status_t cudf_query_memory_domain_destroy(cudf_query_memory_domain_handle domain);
 
 #ifdef __cplusplus

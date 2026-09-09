@@ -92,13 +92,9 @@ pub(super) fn admit_graph_memory(
     if request.query_id.is_none() && metrics.query_id().is_assigned() {
         request.query_id = Some(metrics.query_id().clone());
     }
-    if report.outcome == crate::graph_memory::GraphReservationOutcome::Denied {
-        metrics.record_graph_claim_calibration_graph_memory_admission_denied(node_id, spec.algorithm);
-        let granted_bytes = request.budget_bytes;
-        metrics.record_reservation_denied_event(&request, granted_bytes);
-        return Err(report.denied_error(&request, granted_bytes));
-    }
 
+    // The model is calibration evidence, never an allocation veto: the query
+    // cap is the only allocation limit and the allocator is the only arbiter.
     metrics.record_reservation_granted_event(&request, request.requested_bytes);
     metrics.record_reservation_timeline_event(crate::metrics::MemoryReservationEvent::from_request(
         &request,
@@ -504,7 +500,13 @@ pub(super) fn attach_graph_budget_error_facts(
     token: &cudf::ExecutionBudgetToken,
     operation: &'static str,
 ) -> QueryError {
-    let status = if error.code() == QueryErrorCode::CudfResourceExhausted {
+    let status = if matches!(
+        error.code(),
+        QueryErrorCode::QueryMemoryLimitExceeded
+            | QueryErrorCode::DeviceOutOfMemory
+            | QueryErrorCode::DeviceAllocationFailed
+            | QueryErrorCode::CudfResourceExhausted
+    ) {
         "reservation_resource_exhausted"
     } else {
         "reservation_failed"

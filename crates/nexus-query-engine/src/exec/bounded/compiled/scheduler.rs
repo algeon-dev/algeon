@@ -67,74 +67,12 @@ pub trait CompiledTaskExecutor {
     fn remaining_reserved_bytes(&self) -> Option<u64> {
         None
     }
-
-    fn can_admit_task(
-        &self,
-        _task: &PipelineTask,
-        _state: &CompiledPipelineState<Self::Resource>,
-    ) -> Result<CompiledTaskAdmission> {
-        Ok(CompiledTaskAdmission::admitted())
-    }
 }
 
 /// Scheduler behavior selected by an executor at a scheduling-cycle boundary.
 #[doc(hidden)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct CompiledSchedulingCycle;
-
-/// A conservative scheduler-level task admission decision.
-///
-/// This is not an exact libcudf preflight. It lets an executor report whether
-/// the scheduler should start a dependency-ready task under the reservations
-/// currently visible to that executor.
-#[doc(hidden)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CompiledTaskAdmission {
-    admitted: bool,
-    estimated_required_bytes: Option<u64>,
-    remaining_bytes: Option<u64>,
-    reason: Option<&'static str>,
-}
-
-impl CompiledTaskAdmission {
-    pub fn admitted() -> Self {
-        Self { admitted: true, estimated_required_bytes: None, remaining_bytes: None, reason: None }
-    }
-
-    pub fn admitted_with_bytes(estimated_required_bytes: u64, remaining_bytes: u64) -> Self {
-        Self {
-            admitted: true,
-            estimated_required_bytes: Some(estimated_required_bytes),
-            remaining_bytes: Some(remaining_bytes),
-            reason: None,
-        }
-    }
-
-    pub fn not_ready(estimated_required_bytes: u64, remaining_bytes: u64, reason: &'static str) -> Self {
-        Self {
-            admitted: false,
-            estimated_required_bytes: Some(estimated_required_bytes),
-            remaining_bytes: Some(remaining_bytes),
-            reason: Some(reason),
-        }
-    }
-
-    pub fn is_admitted(&self) -> bool {
-        self.admitted
-    }
-
-    pub fn estimated_required_bytes(&self) -> Option<u64> {
-        self.estimated_required_bytes
-    }
-
-    pub fn remaining_bytes(&self) -> Option<u64> {
-        self.remaining_bytes
-    }
-
-    pub fn reason(&self) -> Option<&'static str> {
-        self.reason
-    }
-}
 
 /// The resident resources produced by one compiled task.
 #[doc(hidden)]
@@ -352,18 +290,14 @@ impl<'a> CompiledPipelineScheduler<'a> {
                 .with_fact("pipeline_task_count", self.pipeline.tasks().len()));
         }
 
-        let admissions = ready_tasks
+        ready_tasks
             .into_iter()
-            .map(|task| executor.can_admit_task(task, state).map(|admission| (task, admission)))
-            .collect::<Result<Vec<_>>>()?;
-        if let Some((task, _)) = admissions
-            .iter()
-            .filter(|(_, admission)| admission.is_admitted())
-            .min_by_key(|(task, _)| self.runnable_task_priority(task, state, live_reserved_bytes))
-        {
-            return Ok(*task);
-        }
-        Err(resource_not_ready_error(&admissions, state, self.pipeline))
+            .min_by_key(|task| self.runnable_task_priority(task, state, live_reserved_bytes))
+            .ok_or_else(|| {
+                invalid("compiled pipeline has no runnable task before completion")
+                    .with_fact("completed_task_count", state.completed_task_count())
+                    .with_fact("pipeline_task_count", self.pipeline.tasks().len())
+            })
     }
 
     fn runnable_task_priority<T>(
@@ -578,46 +512,6 @@ fn operator_class_rank(kind: PipelineTaskKind) -> u8 {
         PipelineTaskKind::EdgeNormalize => 2,
         PipelineTaskKind::SourceRead | PipelineTaskKind::GpuResidentSource | PipelineTaskKind::LiteralBatchSource => 4,
     }
-}
-
-fn resource_not_ready_error<T>(
-    admissions: &[(&PipelineTask, CompiledTaskAdmission)],
-    state: &CompiledPipelineState<T>,
-    pipeline: &CompiledPipeline,
-) -> QueryError {
-    let ready_task_ids = admissions.iter().map(|(task, _)| task.id().to_string()).collect::<Vec<_>>().join(",");
-    let ready_task_kinds = admissions.iter().map(|(task, _)| task.kind().as_str()).collect::<Vec<_>>().join(",");
-    let max_estimated_required_bytes = admissions
-        .iter()
-        .filter_map(|(_, admission)| admission.estimated_required_bytes())
-        .max()
-        .map_or_else(|| "unknown".to_string(), |bytes| bytes.to_string());
-    let max_remaining_bytes = admissions
-        .iter()
-        .filter_map(|(_, admission)| admission.remaining_bytes())
-        .max()
-        .map_or_else(|| "unknown".to_string(), |bytes| bytes.to_string());
-    let reasons = admissions
-        .iter()
-        .filter_map(|(_, admission)| admission.reason())
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>()
-        .join(",");
-
-    QueryError::new(
-        QueryErrorCode::MemoryReservationFailed,
-        OPERATION,
-        "no dependency-ready compiled task can be admitted with currently available reservations",
-    )
-    .with_fact("completed_task_count", state.completed_task_count())
-    .with_fact("pipeline_task_count", pipeline.tasks().len())
-    .with_fact("ready_task_count", admissions.len())
-    .with_fact("ready_task_ids", ready_task_ids)
-    .with_fact("ready_task_kinds", ready_task_kinds)
-    .with_fact("max_estimated_required_bytes", max_estimated_required_bytes)
-    .with_fact("max_remaining_bytes", max_remaining_bytes)
-    .with_fact("admission_not_ready_reasons", reasons)
 }
 
 fn invalid(message: &'static str) -> QueryError {

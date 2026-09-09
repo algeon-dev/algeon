@@ -46,26 +46,6 @@ impl ReservationObservation {
         );
     }
 
-    pub(super) fn record_denied(
-        &self,
-        context: &ActiveReservationEventContext,
-        denied_action: RuntimeReservationAction,
-        requested_bytes: u64,
-        granted_bytes: u64,
-        current_reserved_bytes: u64,
-    ) {
-        self.record_with_denied_action(
-            context,
-            RuntimeReservationAction::Deny,
-            Some(denied_action),
-            RuntimeReservationDisposition::Denied,
-            requested_bytes,
-            granted_bytes,
-            0,
-            current_reserved_bytes,
-        );
-    }
-
     #[expect(
         clippy::too_many_arguments,
         reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
