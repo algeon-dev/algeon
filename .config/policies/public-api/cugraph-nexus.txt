@@ -523,6 +523,14 @@ pub fn cugraph::cudf_interop::personalized_pagerank_side_input_workspace_preflig
 pub fn cugraph::cudf_interop::vertex_pairs_from_prepared_columns<T: cugraph::graph::Transposition>(&cugraph::handle::EnteredContext<'_>, &mut cugraph::graph::Graph<T>, &rapids_interop::prepared::PreparedColumnExport<'_>, &rapids_interop::prepared::PreparedColumnExport<'_>) -> cugraph::error::Result<cugraph::similarity::VertexPairs>
 pub fn cugraph::cudf_interop::vertex_pairs_from_prepared_table_export<T: cugraph::graph::Transposition>(&cugraph::handle::EnteredContext<'_>, &mut cugraph::graph::Graph<T>, &rapids_interop::prepared::PreparedTableExport<'_>, &cugraph::cudf_interop::TableVertexPairOptions) -> cugraph::error::Result<cugraph::similarity::VertexPairs>
 pub mod cugraph::error
+pub enum cugraph::error::AllocationFailureSource
+pub cugraph::error::AllocationFailureSource::Physical
+pub cugraph::error::AllocationFailureSource::ReservationLimit
+pub cugraph::error::AllocationFailureSource::Unknown
+impl cugraph::error::AllocationFailureSource
+pub const fn cugraph::error::AllocationFailureSource::as_str(self) -> &'static str
+impl core::fmt::Display for cugraph::error::AllocationFailureSource
+pub fn cugraph::error::AllocationFailureSource::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum cugraph::error::AllocationSource
 pub cugraph::error::AllocationSource::RmmBadAlloc
 pub cugraph::error::AllocationSource::RmmOutOfMemory
@@ -555,6 +563,13 @@ impl core::fmt::Display for cugraph::error::ErrorStatus
 pub fn cugraph::error::ErrorStatus::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct cugraph::error::Error
 impl cugraph::error::Error
+pub fn cugraph::error::Error::allocation_alignment(&self) -> u64
+pub fn cugraph::error::Error::allocation_cuda_error(&self) -> i32
+pub fn cugraph::error::Error::allocation_domain_id(&self) -> u64
+pub fn cugraph::error::Error::allocation_failure_source(&self) -> cugraph::error::AllocationFailureSource
+pub fn cugraph::error::Error::allocation_generation(&self) -> u64
+pub fn cugraph::error::Error::allocation_member_id(&self) -> u64
+pub fn cugraph::error::Error::allocation_requested_bytes(&self) -> u64
 pub fn cugraph::error::Error::allocation_source(&self) -> cugraph::error::AllocationSource
 pub fn cugraph::error::Error::context_value(&self, &str) -> core::option::Option<&str>
 pub fn cugraph::error::Error::is_permanent(&self) -> bool
@@ -1540,6 +1555,14 @@ impl cugraph::types::CugraphElement for u8
 pub fn u8::data_type() -> cugraph::types::DataType
 impl cugraph::types::CugraphElement for usize
 pub fn usize::data_type() -> cugraph::types::DataType
+pub enum cugraph::AllocationFailureSource
+pub cugraph::AllocationFailureSource::Physical
+pub cugraph::AllocationFailureSource::ReservationLimit
+pub cugraph::AllocationFailureSource::Unknown
+impl cugraph::error::AllocationFailureSource
+pub const fn cugraph::error::AllocationFailureSource::as_str(self) -> &'static str
+impl core::fmt::Display for cugraph::error::AllocationFailureSource
+pub fn cugraph::error::AllocationFailureSource::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub enum cugraph::AllocationSource
 pub cugraph::AllocationSource::RmmBadAlloc
 pub cugraph::AllocationSource::RmmOutOfMemory
@@ -1614,6 +1637,13 @@ impl core::fmt::Debug for cugraph::handle::EnteredContext<'_>
 pub fn cugraph::handle::EnteredContext<'_>::fmt(&self, &mut core::fmt::Formatter<'_>) -> core::fmt::Result
 pub struct cugraph::Error
 impl cugraph::error::Error
+pub fn cugraph::error::Error::allocation_alignment(&self) -> u64
+pub fn cugraph::error::Error::allocation_cuda_error(&self) -> i32
+pub fn cugraph::error::Error::allocation_domain_id(&self) -> u64
+pub fn cugraph::error::Error::allocation_failure_source(&self) -> cugraph::error::AllocationFailureSource
+pub fn cugraph::error::Error::allocation_generation(&self) -> u64
+pub fn cugraph::error::Error::allocation_member_id(&self) -> u64
+pub fn cugraph::error::Error::allocation_requested_bytes(&self) -> u64
 pub fn cugraph::error::Error::allocation_source(&self) -> cugraph::error::AllocationSource
 pub fn cugraph::error::Error::context_value(&self, &str) -> core::option::Option<&str>
 pub fn cugraph::error::Error::is_permanent(&self) -> bool

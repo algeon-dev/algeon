@@ -1265,8 +1265,6 @@ mod tests {
             active: false,
             active_members: 0,
             ceiling_bytes: 1024,
-            effective_driver_ceiling_bytes: 2048,
-            driver_ceiling_verified: true,
             allocation_limit_bytes: 768,
             current_bytes: 0,
             peak_bytes: 512,

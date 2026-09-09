@@ -41,6 +41,7 @@ __pycache__/
 
 # private documentation
 /docs/
+/note/
 
 # Local fixture data. The small cuGraph parity corpus under fixture/graph/cugraph
 # is versioned; generated and host-provisioned data is not.

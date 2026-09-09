@@ -8,7 +8,7 @@ use std::{
     },
 };
 
-use cudf::{DeviceMemoryFailureAction, DeviceMemoryFailureSource, DeviceMemoryPoolUsage};
+use cudf::{DeviceMemoryFailureSource, DeviceMemoryPoolUsage};
 use nexus_query_planning::error::{QueryError, QueryErrorCode, Result};
 use serde::Serialize;
 
@@ -43,7 +43,6 @@ struct DeviceMemoryFailureTrackerInner {
     allocation_failure_count: AtomicU64,
     total_failed_allocation_bytes: AtomicU64,
     largest_failed_allocation_bytes: AtomicU64,
-    trim_retry_count: AtomicU64,
     pool_usage_observation_count: AtomicU64,
     last_failed_allocation_bytes: AtomicU64,
     last_pool_reserved_current_bytes: AtomicU64,
@@ -79,7 +78,6 @@ impl DeviceMemoryFailureTracker {
                 allocation_failure_count: AtomicU64::new(0),
                 total_failed_allocation_bytes: AtomicU64::new(0),
                 largest_failed_allocation_bytes: AtomicU64::new(0),
-                trim_retry_count: AtomicU64::new(0),
                 pool_usage_observation_count: AtomicU64::new(0),
                 last_failed_allocation_bytes: AtomicU64::new(0),
                 last_pool_reserved_current_bytes: AtomicU64::new(0),
@@ -314,22 +312,17 @@ impl DeviceMemoryFailureTracker {
 
     /// Returns a re-entrancy-safe callback for cudf/RMM.
     ///
-    /// The callback records counters and asks cudf to trim idle async-pool
-    /// pages only when the failure payload shows enough reclaimable idle
-    /// memory for one trim retry. It must remain allocation-free and lock-free
-    /// because RMM invokes it inside allocation failure handling.
+    /// The callback records counters without deciding allocation retry or
+    /// reclamation. It must remain allocation-free and lock-free because RMM
+    /// invokes it inside allocation failure handling.
     #[doc(hidden)]
-    pub fn failure_callback(
-        &self,
-    ) -> Arc<dyn Fn(cudf::DeviceMemoryFailureInfo) -> DeviceMemoryFailureAction + Send + Sync + 'static> {
+    pub fn failure_callback(&self) -> Arc<dyn Fn(cudf::DeviceMemoryFailureInfo) + Send + Sync + 'static> {
         let tracker = self.clone();
         Arc::new(move |info| {
             if info.source != DeviceMemoryFailureSource::Physical {
-                return DeviceMemoryFailureAction::Decline;
+                return;
             }
-            let trim_retry = info.should_trim_and_retry();
-            tracker.record_allocation_failure(info.requested_bytes, info.pool_usage, trim_retry);
-            if trim_retry { DeviceMemoryFailureAction::TrimAndRetry } else { DeviceMemoryFailureAction::Decline }
+            tracker.record_allocation_failure(info.requested_bytes, info.pool_usage);
         })
     }
 
@@ -345,7 +338,7 @@ impl DeviceMemoryFailureTracker {
         self.inner.callback_install_unavailable.store(true, Ordering::Release);
     }
 
-    fn record_allocation_failure(&self, bytes: u64, pool_usage: Option<DeviceMemoryPoolUsage>, trim_retry: bool) {
+    fn record_allocation_failure(&self, bytes: u64, pool_usage: Option<DeviceMemoryPoolUsage>) {
         self.inner.allocation_failure_count.fetch_add(1, Ordering::Relaxed);
         self.inner.total_failed_allocation_bytes.fetch_add(bytes, Ordering::Relaxed);
         self.inner.last_failed_allocation_bytes.store(bytes, Ordering::Relaxed);
@@ -354,9 +347,6 @@ impl DeviceMemoryFailureTracker {
             self.inner.pool_usage_observation_count.fetch_add(1, Ordering::Relaxed);
             self.inner.last_pool_reserved_current_bytes.store(pool_usage.reserved_current_bytes, Ordering::Relaxed);
             self.inner.last_pool_used_current_bytes.store(pool_usage.used_current_bytes, Ordering::Relaxed);
-        }
-        if trim_retry {
-            self.inner.trim_retry_count.fetch_add(1, Ordering::Relaxed);
         }
     }
 
@@ -369,7 +359,7 @@ impl DeviceMemoryFailureTracker {
             allocation_failure_count: self.inner.allocation_failure_count.load(Ordering::Acquire),
             total_failed_allocation_bytes: self.inner.total_failed_allocation_bytes.load(Ordering::Acquire),
             largest_failed_allocation_bytes: self.inner.largest_failed_allocation_bytes.load(Ordering::Acquire),
-            trim_retry_count: self.inner.trim_retry_count.load(Ordering::Acquire),
+            trim_retry_count: 0,
             pool_usage_observation_count: self.inner.pool_usage_observation_count.load(Ordering::Acquire),
             last_failed_allocation_bytes: self.inner.last_failed_allocation_bytes.load(Ordering::Acquire),
             last_pool_reserved_current_bytes: self.inner.last_pool_reserved_current_bytes.load(Ordering::Acquire),
@@ -408,7 +398,7 @@ mod tests {
     fn failure_callback_records_counters_and_declines_retry() {
         let tracker = DeviceMemoryFailureTracker::new(3);
 
-        tracker.record_allocation_failure(10, None, false);
+        tracker.record_allocation_failure(10, None);
         tracker.record_allocation_failure(
             40,
             Some(DeviceMemoryPoolUsage {
@@ -417,9 +407,8 @@ mod tests {
                 used_current_bytes: 100,
                 used_high_bytes: 700,
             }),
-            true,
         );
-        tracker.record_allocation_failure(20, None, false);
+        tracker.record_allocation_failure(20, None);
 
         let report = tracker.report();
         assert_eq!(report.device_ordinal, 3);
@@ -427,7 +416,7 @@ mod tests {
         assert_eq!(report.allocation_failure_count, 3);
         assert_eq!(report.total_failed_allocation_bytes, 70);
         assert_eq!(report.largest_failed_allocation_bytes, 40);
-        assert_eq!(report.trim_retry_count, 1);
+        assert_eq!(report.trim_retry_count, 0);
         assert_eq!(report.pool_usage_observation_count, 1);
         assert_eq!(report.last_failed_allocation_bytes, 20);
         assert_eq!(report.last_pool_reserved_current_bytes, 400);
@@ -439,7 +428,7 @@ mod tests {
         let tracker = DeviceMemoryFailureTracker::new(3);
         let callback = tracker.failure_callback();
 
-        let action = callback(cudf::DeviceMemoryFailureInfo {
+        callback(cudf::DeviceMemoryFailureInfo {
             device: cudf::DeviceId::DEFAULT,
             source: DeviceMemoryFailureSource::ReservationLimit,
             allocation_domain: None,
@@ -454,7 +443,6 @@ mod tests {
             }),
         });
 
-        assert_eq!(action, DeviceMemoryFailureAction::Decline);
         let report = tracker.report();
         assert_eq!(report.allocation_failure_count, 0);
         assert_eq!(report.trim_retry_count, 0);
@@ -462,11 +450,11 @@ mod tests {
     }
 
     #[test]
-    fn failure_callback_trims_and_records_physical_failure_with_idle_pool() {
+    fn failure_callback_observes_physical_failure_with_idle_pool() {
         let tracker = DeviceMemoryFailureTracker::new(3);
         let callback = tracker.failure_callback();
 
-        let action = callback(cudf::DeviceMemoryFailureInfo {
+        callback(cudf::DeviceMemoryFailureInfo {
             device: cudf::DeviceId::DEFAULT,
             source: DeviceMemoryFailureSource::Physical,
             allocation_domain: None,
@@ -481,10 +469,9 @@ mod tests {
             }),
         });
 
-        assert_eq!(action, DeviceMemoryFailureAction::TrimAndRetry);
         let report = tracker.report();
         assert_eq!(report.allocation_failure_count, 1);
-        assert_eq!(report.trim_retry_count, 1);
+        assert_eq!(report.trim_retry_count, 0);
         assert_eq!(report.pool_usage_observation_count, 1);
         assert_eq!(report.last_failed_allocation_bytes, 10);
     }
@@ -501,7 +488,7 @@ mod tests {
         let original_inner = original_identity.upgrade().expect("registry must retain the original tracker");
         assert!(Arc::ptr_eq(&original_inner, &second_generation.inner));
 
-        let action = original_callback(cudf::DeviceMemoryFailureInfo {
+        original_callback(cudf::DeviceMemoryFailureInfo {
             device: cudf::DeviceId::DEFAULT,
             source: DeviceMemoryFailureSource::Physical,
             allocation_domain: None,
@@ -511,7 +498,6 @@ mod tests {
             pool_usage: None,
         });
 
-        assert_eq!(action, DeviceMemoryFailureAction::Decline);
         let report = second_generation.report();
         assert_eq!(report.allocation_failure_count, 1);
         assert_eq!(report.total_failed_allocation_bytes, 64);

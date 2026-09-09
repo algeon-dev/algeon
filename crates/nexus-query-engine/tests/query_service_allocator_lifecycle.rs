@@ -20,7 +20,18 @@ fn non_gds_deployment() -> DeploymentIoCapability {
 }
 
 fn canonical_options() -> DeviceMemoryManagerOptions {
-    DeviceMemoryManagerOptions::default()
+    let total_bytes = DeviceId::current().unwrap().available_memory().unwrap().total_bytes;
+    let managed_capacity = total_bytes
+        .checked_sub(500 * 1024 * 1024)
+        .filter(|capacity| *capacity > 0)
+        .unwrap_or((256 * 1024 * 1024).min(total_bytes));
+    DeviceMemoryManagerOptions {
+        base: DeviceMemoryManagerBase::CudaAsync {
+            initial_pool_size: None,
+            release_threshold: Some(usize::try_from(managed_capacity).unwrap()),
+        },
+        allocation_limit_bytes: None,
+    }
 }
 
 fn backend_draft(config: QueryExecutionConfig) -> GpuBackendCoreDraft {
@@ -80,11 +91,11 @@ fn rejected_configs_and_unidentified_allocator_do_not_mutate_the_allocator() {
     DeviceMemoryManager::install_for_device(device).unwrap();
     let incompatible = GpuBackendCore::builder(backend_draft(QueryExecutionConfig::default())).build().unwrap_err();
 
-    assert_eq!(incompatible.code(), QueryErrorCode::CudfPersistentFailure);
-    assert_eq!(incompatible.fact_value("reason"), Some("installed_callback_unrecoverable"));
+    assert_eq!(incompatible.code(), QueryErrorCode::InvalidPlan);
+    assert_eq!(incompatible.fact_value("reason"), Some("device_memory_manager_options_conflict"));
     assert_eq!(incompatible.fact_value("installation_status"), Some("Unidentified"));
     assert_eq!(incompatible.fact_value("installation_retry"), Some("PermanentlyUnusable"));
-    assert_eq!(incompatible.fact_value("installation_cause"), Some("FailureCallbackMissing"));
+    assert_eq!(incompatible.fact_value("installation_cause"), Some("OptionsMismatch"));
     assert_eq!(incompatible.fact_value("device_ordinal"), Some(device.ordinal().to_string().as_str()));
     assert_eq!(
         DeviceMemoryManager::options_for_device(device).unwrap(),

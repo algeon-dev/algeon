@@ -156,6 +156,16 @@ fn build_rs_tracks_layout_header_for_rerun() {
 }
 
 #[test]
+fn build_rs_tracks_cudf_error_boundary_and_cugraph_cmake_for_rerun() {
+    let build_rs = read_build_rs();
+
+    assert!(build_rs.contains("error_boundary.hpp"));
+    assert!(build_rs.contains("memory_resource.h"));
+    assert!(build_rs.contains("../cugraph/cpp/CMakeLists.txt"));
+    assert!(build_rs.contains("CUDF_INSTALL_DIR"));
+}
+
+#[test]
 fn build_rs_honors_cc_for_system_include_probing() {
     let build_rs = read_build_rs();
 
@@ -354,6 +364,21 @@ fn upstream_cugraph_consumer_contract_links_the_shared_cuvs_cpp_target() {
     assert!(get_cuvs.contains("rapids_cpm_find(cuvs ${PKG_VERSION}"));
     assert!(cmake_lists.contains("cuvs::cuvs"));
     assert!(cmake_lists.contains("$<IF:$<BOOL:${CUGRAPH_USE_CUVS_STATIC}>,cuvs::cuvs_static,cuvs::cuvs>"));
+}
+
+#[test]
+fn upstream_cugraph_requires_installed_cudf_rust_error_boundary_header() {
+    let cmake_lists = read_upstream_cugraph_file("CMakeLists.txt");
+
+    for fragment in [
+        "find_path(CUGRAPH_CUDF_RUST_INCLUDE_DIR",
+        "cudf_rust/error_boundary.hpp",
+        "HINTS \"${rmm_ROOT}\"",
+        "IS_SYMLINK",
+        "CUGRAPH_CUDF_RUST_INCLUDE_DIR",
+    ] {
+        assert!(cmake_lists.contains(fragment), "cuGraph CMake contract is missing '{fragment}'");
+    }
 }
 
 #[test]

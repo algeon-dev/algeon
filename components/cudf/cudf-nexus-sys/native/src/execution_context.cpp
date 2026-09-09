@@ -90,6 +90,27 @@ cudf_exec_context::cudf_exec_context(
 {
 }
 
+cudf_exec_context::cudf_exec_context(cudf_exec_context&& other) noexcept
+  : stream(other.stream),
+    stream_lifetime(std::move(other.stream_lifetime)),
+    mr(std::move(other.mr)),
+    mr_raw(other.mr_raw),
+    mr_lifetime(std::move(other.mr_lifetime)),
+    device(other.device),
+    current_resource_route(std::exchange(other.current_resource_route, nullptr)),
+    stream_provider_execution_scope(std::exchange(other.stream_provider_execution_scope, false)),
+    guard(std::move(other.guard))
+{
+}
+
+cudf_exec_context::~cudf_exec_context()
+{
+  if (stream_provider_execution_scope) { cudf_stream_provider_exit_execution(stream); }
+  if (current_resource_route != nullptr) {
+    cudf_current_resource_route_destroy_preserving_error(current_resource_route);
+  }
+}
+
 cudf_exec_context cudf_make_exec_context()
 {
   auto* mr_raw = cudf_tracked_current_device_resource_raw();
@@ -259,6 +280,27 @@ cudf_status_t cudf_resolve_required_exec_options(cudf_exec_options_t const* opti
                                              std::move(mr_lifetime),
                                              options->device,
                                              std::move(guard));
+
+  cudf_memory_manager_handle manager = nullptr;
+  cudf_status_t const manager_status =
+    cudf_memory_manager_for_device(options->device, &manager);
+  if (manager_status != CUDF_SUCCESS) {
+    out->reset();
+    return manager_status;
+  }
+  cudf_status_t const route_status = cudf_memory_manager_route_current_resource(
+    manager, options->stream, options->mr, &(*out)->current_resource_route);
+  if (route_status != CUDF_SUCCESS) {
+    out->reset();
+    return route_status;
+  }
+  try {
+    cudf_stream_provider_enter_execution((*out)->stream);
+    (*out)->stream_provider_execution_scope = true;
+  } catch (...) {
+    out->reset();
+    return translate_exception();
+  }
 
   cudf::rust::test_support::record_exec_context(
     reinterpret_cast<std::uintptr_t>((*out)->stream.value()), (*out)->mr_raw);

@@ -265,7 +265,10 @@ fn query_service_memory_failure_callback_ignores_budget_failures() {
     assert_eq!(domain_before.domain_id, grant_id);
     assert_eq!(domain_before.ceiling_bytes, GRANT_BYTES);
     assert_eq!(domain_before.allocation_limit_bytes, GRANT_BYTES);
-    assert_eq!(domain_before.active_members, 1, "the root runtime is the domain's sole member");
+    assert_eq!(
+        domain_before.active_members, 2,
+        "the root runtime and its one admitted provider stream are the domain members"
+    );
 
     let token = context
         .context()
@@ -296,14 +299,14 @@ fn query_service_memory_failure_callback_ignores_budget_failures() {
     assert_eq!(domain_after.domain_id, grant_id);
     assert_eq!(domain_after.ceiling_bytes, GRANT_BYTES);
     assert_eq!(domain_after.allocation_limit_bytes, GRANT_BYTES);
-    assert_eq!(domain_after.active_members, 1);
+    assert_eq!(domain_after.active_members, 2);
     assert_eq!(domain_after.current_bytes, member_after.current_bytes);
     assert_eq!(domain_after.peak_bytes, member_after.peak_bytes);
     assert_eq!(domain_after.current_allocations, member_after.current_allocations);
     assert_eq!(domain_after.peak_allocations, member_after.peak_allocations);
-    // The member rejects before an over-limit allocation reaches the parent
-    // domain, so the domain's failed counters remain zero while its live-use
-    // counters exactly mirror the sole attached member.
+    // The root member rejects before an over-limit allocation reaches the
+    // parent domain. The idle provider member contributes no live use, so the
+    // domain counters still exactly mirror the root member.
     assert_eq!(domain_after.failed_allocation_count, 0);
     assert_eq!(domain_after.largest_failed_allocation_bytes, 0);
 

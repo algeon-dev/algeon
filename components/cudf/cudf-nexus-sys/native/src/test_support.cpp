@@ -83,6 +83,11 @@ std::atomic<int32_t> g_raw_record_call_count{0};
 std::atomic<std::uintptr_t> g_last_raw_record_stream_raw{0};
 std::atomic<std::uintptr_t> g_last_raw_record_event_raw{0};
 std::atomic<int32_t> g_event_synchronize_call_count{0};
+std::atomic<std::uint64_t> g_allocation_attempt_count{0};
+std::mutex g_query_domain_allocation_failure_mutex;
+bool g_query_domain_allocation_failure_armed = false;
+std::uint64_t g_query_domain_allocation_failure_domain_id = 0;
+std::uint64_t g_query_domain_allocation_failure_remaining = 0;
 std::mutex g_synchronize_block_mutex;
 std::condition_variable g_synchronize_block_cv;
 bool g_block_event_synchronize = false;
@@ -292,6 +297,26 @@ void record_raw_event_record(std::uintptr_t stream_raw, std::uintptr_t event_raw
   g_raw_record_counts_by_stream_raw[stream_raw] += 1;
 }
 
+void record_allocation_attempt(std::size_t bytes) noexcept
+{
+  if (bytes != 0) { g_allocation_attempt_count.fetch_add(1, std::memory_order_relaxed); }
+}
+
+bool take_query_domain_allocation_failure(std::uint64_t domain_id)
+{
+  std::scoped_lock lock{g_query_domain_allocation_failure_mutex};
+  if (!g_query_domain_allocation_failure_armed ||
+      g_query_domain_allocation_failure_domain_id != domain_id) {
+    return false;
+  }
+  if (g_query_domain_allocation_failure_remaining != 0) {
+    --g_query_domain_allocation_failure_remaining;
+    return false;
+  }
+  g_query_domain_allocation_failure_armed = false;
+  return true;
+}
+
 }  // namespace cudf::rust::test_support
 
 extern "C" {
@@ -342,6 +367,33 @@ cudf_status_t cudf_test_checked_owning_handle_size_mul(size_t left, size_t right
 void cudf_test_fail_next_provenance_destroy(cudf_status_t status)
 {
   g_next_provenance_destroy_failure = status;
+}
+
+void cudf_test_memory_resource_reset_allocation_attempts()
+{
+  g_allocation_attempt_count.store(0, std::memory_order_relaxed);
+}
+
+void cudf_test_query_domain_fail_allocation_after(uint64_t domain_id,
+                                                  uint64_t successful_allocations)
+{
+  std::scoped_lock lock{g_query_domain_allocation_failure_mutex};
+  g_query_domain_allocation_failure_domain_id = domain_id;
+  g_query_domain_allocation_failure_remaining = successful_allocations;
+  g_query_domain_allocation_failure_armed     = true;
+}
+
+void cudf_test_query_domain_reset_allocation_failure()
+{
+  std::scoped_lock lock{g_query_domain_allocation_failure_mutex};
+  g_query_domain_allocation_failure_armed = false;
+}
+
+cudf_status_t cudf_test_memory_resource_allocation_attempt_count(uint64_t* out)
+{
+  CUDF_RUST_NULL_CHECK(out, "out is null");
+  *out = g_allocation_attempt_count.load(std::memory_order_relaxed);
+  return CUDF_SUCCESS;
 }
 
 void cudf_test_exec_reset_observation() { reset_exec_observation(); }

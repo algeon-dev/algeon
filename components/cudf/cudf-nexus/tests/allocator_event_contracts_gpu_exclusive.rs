@@ -4,8 +4,8 @@ use std::sync::{
 };
 
 use cudf::{
-    AllocatorEventAction, AllocatorEventRead, DeviceId, DeviceMemoryFailureAction, DeviceMemoryFailureAllocationDomain,
-    DeviceMemoryFailureSource, DeviceMemoryManager, ErrorKind, QueryMemoryDomainOptions, Runtime,
+    AllocatorEventAction, AllocatorEventRead, DeviceId, DeviceMemoryFailureAllocationDomain, DeviceMemoryFailureSource,
+    DeviceMemoryManager, ErrorKind, QueryMemoryDomainOptions, Runtime,
 };
 
 #[test]
@@ -17,7 +17,6 @@ fn allocator_event_ring_retains_callback_domain_identity_and_reports_overwrite()
         device,
         Arc::new(move |_| {
             observed_callbacks.fetch_add(1, Ordering::SeqCst);
-            DeviceMemoryFailureAction::Decline
         }),
     )
     .unwrap();

@@ -6,7 +6,7 @@ mod helpers;
 use std::ptr;
 
 use helpers::{make_i32_column, make_table_from_one_column, make_table_view};
-use support::{OwnedMemoryResource, OwnedStream, current_device, current_device_resource_raw, lock_shim_state};
+use support::{OwnedMemoryResource, OwnedStream, current_device, lock_shim_state};
 
 #[test]
 fn column_destroy_keeps_explicit_memory_resource_alive_after_handle_destroy() {
@@ -52,7 +52,6 @@ fn column_destroy_keeps_explicit_memory_resource_alive_after_handle_destroy() {
 #[test]
 fn distinct_hash_join_destroy_uses_build_memory_resource() {
     let _shim_state = lock_shim_state();
-    let previous_raw = current_device_resource_raw();
     let build_mr = OwnedMemoryResource::new_test_stats();
 
     let build_col = make_i32_column(&[1, 2, 3, 4, 5, 6, 7, 8]);
@@ -79,23 +78,13 @@ fn distinct_hash_join_destroy_uses_build_memory_resource() {
     assert!(!join.is_null());
 
     stream.synchronize();
-    // Device-domain model: the build constructor takes no memory resource, so
-    // its retained hash table allocates through (and later releases through)
-    // the device's current resource. The explicit execution memory resource is
-    // outputs-only and must stay untouched by construction.
-    assert_eq!(
-        build_mr.active_allocation_count(),
-        0,
-        "distinct hash-join construction must not charge build allocations to the outputs-only execution memory resource"
+    assert!(
+        build_mr.active_allocation_count() > 0,
+        "distinct hash-join construction must charge retained build allocations to the explicit execution memory resource"
     );
 
     unsafe { cudf_sys::cudf_distinct_hash_join_destroy(join) };
 
-    assert_eq!(
-        current_device_resource_raw(),
-        previous_raw,
-        "distinct hash-join destroy must leave the device's current resource unchanged"
-    );
     assert_eq!(
         build_mr.active_allocation_count(),
         0,
@@ -111,7 +100,6 @@ fn distinct_hash_join_destroy_uses_build_memory_resource() {
 #[test]
 fn hash_join_destroy_uses_build_memory_resource() {
     let _shim_state = lock_shim_state();
-    let previous_raw = current_device_resource_raw();
     let build_mr = OwnedMemoryResource::new_test_stats();
 
     let build_col = make_i32_column(&[1, 2, 3, 4, 5, 6, 7, 8]);
@@ -147,11 +135,6 @@ fn hash_join_destroy_uses_build_memory_resource() {
 
     unsafe { cudf_sys::cudf_hash_join_destroy(join) };
 
-    assert_eq!(
-        current_device_resource_raw(),
-        previous_raw,
-        "hash-join destroy must leave the device's current resource unchanged"
-    );
     assert_eq!(
         build_mr.active_allocation_count(),
         0,

@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use cudf::{
-    DeviceId, DeviceMemoryFailureAction, DeviceMemoryManager, DeviceMemoryManagerInstallationCause,
-    DeviceMemoryManagerInstallationIdentity, DeviceMemoryManagerInstallationOutcomeKind,
-    DeviceMemoryManagerInstallationRetry, DeviceMemoryManagerInstallationStatus, DeviceMemoryManagerOptions,
+    DeviceId, DeviceMemoryManager, DeviceMemoryManagerInstallationCause, DeviceMemoryManagerInstallationIdentity,
+    DeviceMemoryManagerInstallationOutcomeKind, DeviceMemoryManagerInstallationRetry,
+    DeviceMemoryManagerInstallationStatus, DeviceMemoryManagerOptions,
 };
 
 #[test]
@@ -16,7 +16,7 @@ fn failed_current_resource_switch_is_retryable_but_never_reusable() {
     let failure = DeviceMemoryManager::try_install_for_device_with_owned_failure_callback_details_and_options(
         device,
         identity,
-        Arc::new(|_| DeviceMemoryFailureAction::Decline),
+        Arc::new(|_| {}),
         options,
     )
     .unwrap_err();
@@ -36,7 +36,7 @@ fn failed_current_resource_switch_is_retryable_but_never_reusable() {
         DeviceMemoryManager::install_for_device_with_owned_failure_callback_details_and_options(
             device,
             identity,
-            Arc::new(|_| DeviceMemoryFailureAction::Decline),
+            Arc::new(|_| {}),
             options,
         )
         .unwrap();

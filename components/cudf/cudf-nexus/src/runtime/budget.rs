@@ -306,7 +306,7 @@ impl ExecutionBudgetToken {
     /// memory domain.
     ///
     /// The request's `budget_bytes` is enforced as the member limit under the
-    /// domain-wide grant gate and immutable driver pool ceiling.
+    /// domain-wide grant gate.
     pub fn from_runtime_in_query_domain(
         runtime: &Runtime,
         request: ExecutionBudgetRequest,

@@ -6,8 +6,8 @@ use std::sync::{
 };
 
 use cudf::{
-    DeviceId, DeviceMemoryFailureAction, DeviceMemoryFailureAllocationDomain, DeviceMemoryManager, ErrorKind,
-    ExecutionBudgetRequest, QueryMemoryDomainOptions, Runtime, testing::prelude::*,
+    DeviceId, DeviceMemoryFailureAllocationDomain, DeviceMemoryManager, ErrorKind, ExecutionBudgetRequest,
+    QueryMemoryDomainOptions, Runtime, testing::prelude::*,
 };
 
 #[test]
@@ -28,7 +28,6 @@ fn manager_installed_failure_callback_observes_reservation_failures_and_preserve
             callback_domain_id.store(domain_id, Ordering::SeqCst);
             callback_member_id.store(member_id, Ordering::SeqCst);
         }
-        DeviceMemoryFailureAction::Decline
     });
     let manager = DeviceMemoryManager::install_for_device_with_failure_callback_details(device, callback).unwrap();
     let state = DeviceMemoryManager::failure_callback_state_for_device(device).unwrap();
@@ -63,6 +62,17 @@ fn manager_installed_failure_callback_observes_reservation_failures_and_preserve
     assert!(first.usage().unwrap().attached);
 
     drop(first);
+    let panicking_resource =
+        manager.resource().with_failure_callback_details(Arc::new(|_| panic!("observation delivery failed"))).unwrap();
+    let panicking_runtime =
+        Runtime::builder().with_device(device).with_memory_resource(panicking_resource).build().unwrap();
+    let _panicking_lease = manager.reserve_stream(panicking_runtime.stream(), 103, 1).unwrap();
+    let err = panicking_runtime.series(&[1i32, 2, 3]).unwrap_err();
+    assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
+    let detail = err.ffi_detail().expect("canonical allocation error survives callback delivery failure");
+    assert_eq!(detail.failure_source, cudf::CudfErrorFailureSource::ReservationLimit);
+    assert!(!DeviceMemoryManager::failure_callback_state_for_device(device).unwrap().failure_callback_panicked);
+
     let domain = manager
         .query_memory_domain(90_001, QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024))
         .unwrap();

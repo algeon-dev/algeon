@@ -32,7 +32,7 @@ use super::{
     MemoryResourcePolicy, MemorySpaceId, ServiceStreamPool, SourceChunkPlanningMode, SourceReadStreamLease,
     SourceSchedulerPolicy, SourceStorageProfile, StreamLease,
     allocator_correlation::AttemptCacheScopeAllocatorCorrelation,
-    attempt_domain::AttemptAllocationDomain,
+    attempt_domain::{AttemptAllocationDomain, AttemptStreamProviderRoute},
     cache_events::{LakehouseCacheFillEventSink, LakehouseCacheFillEventSnapshot},
     cache_fill::{CacheFillConcurrencyGate, CacheFillOperationPermit},
     default_service_stream_pool_size_for_device,
@@ -206,6 +206,10 @@ impl AttemptAuxiliarySlots {
             available: Condvar::new(),
             async_available: tokio::sync::Notify::new(),
         })
+    }
+
+    pub(super) fn capacity(&self) -> usize {
+        self.capacity
     }
 
     #[doc(hidden)]
@@ -924,9 +928,16 @@ pub struct ExecutionContext {
     /// Direct contexts intentionally carry no proof.
     admitted_attempt_proof: Option<Arc<AdmittedAttemptProof>>,
     activated_deferred_resident_phase: Option<Arc<ActivatedDeferredResidentPhase>>,
+    /// Alias removal must happen before the member lease can detach the raw
+    /// stream from the attempt domain, and before the shared route can
+    /// unregister its native provider mapping.
+    _attempt_stream_provider_alias: Option<Arc<cudf::AttemptStreamProviderAlias>>,
     /// This context's shared member lease on its execution stream. One
     /// member per stream for the attempt; per-stage tokens clone it.
     attempt_member_lease: Option<cudf::StreamReservationLease>,
+    /// Shared attempt fork-stream routing owner. Aliases are retained by
+    /// derived contexts until their corresponding stream lease drains.
+    attempt_stream_provider_route: Option<Arc<AttemptStreamProviderRoute>>,
     /// Execution boundary contract used by source reads, build/probe reuse, and
     /// result materialization.
     boundary_policy: ExecutionBoundaryPolicy,
@@ -1133,7 +1144,9 @@ pub(super) struct ExecutionContextParts {
     pub(super) attempt_allocation_domain: Option<AttemptAllocationDomain>,
     pub(super) attempt_auxiliary_slots: Option<Arc<AttemptAuxiliarySlots>>,
     pub(super) admitted_attempt_proof: Option<Arc<AdmittedAttemptProof>>,
+    pub(super) attempt_stream_provider_alias: Option<Arc<cudf::AttemptStreamProviderAlias>>,
     pub(super) attempt_member_lease: Option<cudf::StreamReservationLease>,
+    pub(super) attempt_stream_provider_route: Option<Arc<AttemptStreamProviderRoute>>,
     pub(super) boundary_policy: ExecutionBoundaryPolicy,
     pub(super) source_scheduler_policy: SourceSchedulerPolicy,
     pub(super) source_chunk_planning_mode: SourceChunkPlanningMode,
@@ -1213,6 +1226,8 @@ impl ExecutionContext {
             attempt_auxiliary_slots: None,
             admitted_attempt_proof: None,
             attempt_member_lease: None,
+            attempt_stream_provider_route: None,
+            attempt_stream_provider_alias: None,
             boundary_policy: ExecutionBoundaryPolicy::default(),
             source_scheduler_policy: SourceSchedulerPolicy::default(),
             source_chunk_planning_mode: SourceChunkPlanningMode::default(),
@@ -1267,6 +1282,8 @@ impl ExecutionContext {
             admitted_attempt_proof: parts.admitted_attempt_proof,
             activated_deferred_resident_phase: None,
             attempt_member_lease: parts.attempt_member_lease,
+            attempt_stream_provider_route: parts.attempt_stream_provider_route,
+            _attempt_stream_provider_alias: parts.attempt_stream_provider_alias,
             boundary_policy: parts.boundary_policy,
             source_scheduler_policy: parts.source_scheduler_policy,
             source_chunk_planning_mode: parts.source_chunk_planning_mode,
@@ -1517,10 +1534,16 @@ impl ExecutionContext {
     pub fn with_stream_lease(&self, stream_lease: &StreamLease) -> Result<Self> {
         self.check_service_epoch("nexus_query_engine.runtime.context.with_stream_lease")?;
         validate_service_stream_pool_device(stream_lease.pool(), self.runtime.device())?;
+        let runtime = stream_lease.runtime()?;
         let attempt_member_lease = match self.attempt_allocation_domain.as_ref() {
-            Some(domain) => Some(domain.create_member(stream_lease.runtime()?.stream())?),
+            Some(domain) => Some(domain.create_member(runtime.stream())?),
             None => None,
         };
+        let attempt_stream_provider_alias = self
+            .attempt_stream_provider_route
+            .as_ref()
+            .map(|route| route.attach(runtime.stream()).map(Arc::new))
+            .transpose()?;
         Ok(Self::from_parts(ExecutionContextParts {
             service_epoch: self.service_epoch.clone(),
             query_epoch: self.query_epoch.clone(),
@@ -1534,7 +1557,7 @@ impl ExecutionContext {
             runtime_observation_owner: self.runtime_observation_owner.clone(),
             runtime_execution_scope: self.runtime_execution_scope.clone(),
             runtime_stream_lease_scope: self.runtime_stream_lease_scope.clone(),
-            runtime: stream_lease.shared_runtime()?,
+            runtime: Arc::new(runtime),
             gpu_execution_pool: self.gpu_execution_pool.clone(),
             memory_policy: MemoryResourcePolicy::ExternalRuntime,
             memory_control_policy: self.memory_control_policy,
@@ -1544,6 +1567,8 @@ impl ExecutionContext {
             attempt_auxiliary_slots: self.attempt_auxiliary_slots.as_ref().map(Arc::clone),
             admitted_attempt_proof: self.admitted_attempt_proof.clone(),
             attempt_member_lease,
+            attempt_stream_provider_route: self.attempt_stream_provider_route.as_ref().map(Arc::clone),
+            attempt_stream_provider_alias,
             boundary_policy: self.boundary_policy,
             source_scheduler_policy: self.source_scheduler_policy,
             source_chunk_planning_mode: self.source_chunk_planning_mode,

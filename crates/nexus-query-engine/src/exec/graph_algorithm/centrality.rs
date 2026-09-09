@@ -275,6 +275,14 @@ pub(super) fn execute_betweenness_centrality(
     let (edges, vertex_type) = project_edge_list(&input, spec)?;
     let seed_count =
         params.seeds.as_ref().map(|seeds| betweenness_seed_count(seeds, &inputs.side_inputs)).transpose()?;
+    let i32_seeds = match (vertex_type, params.seeds.as_ref()) {
+        (cudf::TypeId::Int32, Some(seeds)) => Some(betweenness_i32_seeds(seeds, &inputs.side_inputs)?),
+        _ => None,
+    };
+    let i64_seeds = match (vertex_type, params.seeds.as_ref()) {
+        (cudf::TypeId::Int64, Some(seeds)) => Some(betweenness_i64_seeds(seeds, &inputs.side_inputs)?),
+        _ => None,
+    };
     let options = table_graph_options(spec);
     let bc_params = betweenness_centrality_params(params);
 
@@ -286,18 +294,12 @@ pub(super) fn execute_betweenness_centrality(
         "datafusion_nexus_cugraph_betweenness_centrality",
         |runtime, entered, graph| {
             let result = match vertex_type {
-                cudf::TypeId::Int32 => match &params.seeds {
-                    Some(seeds) => {
-                        let seeds = betweenness_i32_seeds(seeds, &inputs.side_inputs)?;
-                        graph.betweenness_centrality(entered, seeds.as_slice(), &bc_params)
-                    },
+                cudf::TypeId::Int32 => match i32_seeds.as_deref() {
+                    Some(seeds) => graph.betweenness_centrality(entered, seeds, &bc_params),
                     None => graph.betweenness_centrality_all(entered, &bc_params),
                 },
-                cudf::TypeId::Int64 => match &params.seeds {
-                    Some(seeds) => {
-                        let seeds = betweenness_i64_seeds(seeds, &inputs.side_inputs)?;
-                        graph.betweenness_centrality(entered, seeds.as_slice(), &bc_params)
-                    },
+                cudf::TypeId::Int64 => match i64_seeds.as_deref() {
+                    Some(seeds) => graph.betweenness_centrality(entered, seeds, &bc_params),
                     None => graph.betweenness_centrality_all(entered, &bc_params),
                 },
                 dtype => {
@@ -347,6 +349,14 @@ pub(super) fn execute_edge_betweenness_centrality(
     let (edges, vertex_type) = project_edge_list(&input, spec)?;
     let seed_count =
         params.seeds.as_ref().map(|seeds| betweenness_seed_count(seeds, &inputs.side_inputs)).transpose()?;
+    let i32_seeds = match (vertex_type, params.seeds.as_ref()) {
+        (cudf::TypeId::Int32, Some(seeds)) => Some(betweenness_i32_seeds(seeds, &inputs.side_inputs)?),
+        _ => None,
+    };
+    let i64_seeds = match (vertex_type, params.seeds.as_ref()) {
+        (cudf::TypeId::Int64, Some(seeds)) => Some(betweenness_i64_seeds(seeds, &inputs.side_inputs)?),
+        _ => None,
+    };
     let options = table_graph_options(spec);
     let ebc_params = edge_betweenness_centrality_params(params);
 
@@ -358,18 +368,12 @@ pub(super) fn execute_edge_betweenness_centrality(
         "datafusion_nexus_cugraph_edge_betweenness_centrality",
         |runtime, entered, graph| {
             let result = match vertex_type {
-                cudf::TypeId::Int32 => match &params.seeds {
-                    Some(seeds) => {
-                        let seeds = betweenness_i32_seeds(seeds, &inputs.side_inputs)?;
-                        graph.edge_betweenness_centrality(entered, seeds.as_slice(), &ebc_params)
-                    },
+                cudf::TypeId::Int32 => match i32_seeds.as_deref() {
+                    Some(seeds) => graph.edge_betweenness_centrality(entered, seeds, &ebc_params),
                     None => graph.edge_betweenness_centrality_all(entered, &ebc_params),
                 },
-                cudf::TypeId::Int64 => match &params.seeds {
-                    Some(seeds) => {
-                        let seeds = betweenness_i64_seeds(seeds, &inputs.side_inputs)?;
-                        graph.edge_betweenness_centrality(entered, seeds.as_slice(), &ebc_params)
-                    },
+                cudf::TypeId::Int64 => match i64_seeds.as_deref() {
+                    Some(seeds) => graph.edge_betweenness_centrality(entered, seeds, &ebc_params),
                     None => graph.edge_betweenness_centrality_all(entered, &ebc_params),
                 },
                 dtype => {
@@ -588,7 +592,7 @@ where
     W: cudf::CudfType + cugraph::types::CugraphElement,
 {
     let vertices = personalization_series(personalization_frame, &personalization.vertex, "personalization_vertex")?;
-    let values = personalization_values_series::<W>(personalization_frame, &personalization.value)?;
+    let values = personalization_values_series::<W>(personalization_frame, &personalization.value, runtime)?;
     validate_personalization_series(&vertices, "personalization_vertex")?;
     validate_personalization_series(&values, "personalization_value")?;
     let vertex_slice = personalization_device_slice::<V>(&vertices, "personalization_vertex")?;
@@ -614,7 +618,7 @@ where
     })
 }
 
-fn personalization_values_series<W>(frame: &DataFrame, column: &str) -> Result<cudf::Series>
+fn personalization_values_series<W>(frame: &DataFrame, column: &str, runtime: &cudf::Runtime) -> Result<cudf::Series>
 where W: cudf::CudfType + cugraph::types::CugraphElement {
     let values = personalization_series(frame, column, "personalization_value")?;
     let target = match W::data_type() {
@@ -642,7 +646,9 @@ where W: cudf::CudfType + cugraph::types::CugraphElement {
         .with_fact("column", column)
         .with_fact("dtype", format!("{dtype:?}")));
     }
-    values.astype(cudf::DataType::new(target)).map_err(|error| {
+    let overrides =
+        cudf::ExecutionOverrides::new().with_stream(runtime.stream()).with_memory_resource(runtime.memory_resource());
+    values.astype_in(cudf::DataType::new(target), &overrides).map_err(|error| {
         QueryError::from_cudf(
             "nexus_query_engine.graph_algorithm.personalized_pagerank",
             "failed to cast personalized PageRank values to the graph weight dtype",

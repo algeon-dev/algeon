@@ -101,41 +101,26 @@ fn memory_runtime_split_keeps_owner_state_local() {
 }
 
 #[test]
-fn query_domain_teardown_activates_its_device_before_pool_destroy() {
+fn query_domains_share_the_manager_pool_and_own_no_pool_lifecycle() {
     let query_domain_cpp =
         fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("native/src/memory/query_domain.cpp"))
             .expect("memory/query_domain.cpp must be readable");
-    let destructor = query_domain_cpp
-        .split("query_domain_state::~query_domain_state()")
-        .nth(1)
-        .and_then(|tail| tail.split("\n}").next())
-        .expect("query_domain_state destructor must be defined in query_domain.cpp");
+    let manager_cpp = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("native/src/memory/manager.cpp"))
+        .expect("memory/manager.cpp must be readable");
 
-    let activation = "if (device >= 0 && guard.activate(device) == CUDF_SUCCESS) {";
-    let activation_offset = destructor
-        .find(activation)
-        .expect("query-domain teardown must activate its recorded device before destruction");
-    let destroy_offset =
-        destructor.find("cudaMemPoolDestroy(pool)").expect("query-domain teardown must destroy its private CUDA pool");
+    for forbidden in ["cudaMemPoolCreate", "cudaMemPoolDestroy", "cudaMemPoolTrimTo"] {
+        assert!(
+            !query_domain_cpp.contains(forbidden),
+            "query domains must not own physical pool lifecycle: {forbidden}"
+        );
+    }
     assert!(
-        activation_offset < destroy_offset,
-        "query-domain teardown must not destroy a CUDA pool before activating its recorded device"
+        manager_cpp.contains("make_shared_cuda_async_resource_box"),
+        "the device manager must own the shared CUDA async pool"
     );
     assert!(
-        destructor.contains(concat!(
-            "if (device >= 0 && guard.activate(device) == CUDF_SUCCESS) {\n",
-            "      if (cudaMemPoolDestroy(pool) != cudaSuccess) {"
-        )),
-        "private-pool destruction must remain nested below successful activation of the recorded device"
-    );
-    assert_eq!(
-        destructor.matches("cudaMemPoolDestroy(pool)").count(),
-        1,
-        "query-domain teardown must have one device-guarded private-pool destroy"
-    );
-    assert!(
-        destructor[activation_offset..].contains("pool = nullptr;"),
-        "activation failure must fail safe by releasing the handle without destroying against an ambient device"
+        query_domain_cpp.contains("async_pool_handle(manager_state->owner->async_pool)"),
+        "query domains must receive the manager-owned pool identity"
     );
 }
 

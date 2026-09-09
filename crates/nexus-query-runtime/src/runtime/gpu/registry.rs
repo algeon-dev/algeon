@@ -364,7 +364,19 @@ impl DeviceRegistry {
                     .with_fact("reason", "device_memory_manager_inspection_failed")
                 })?;
             let allocation_limit_bytes = discovered.profile.memory_partition.allocation_limit_bytes();
-            let requested_options = canonical_device_memory_manager_options(allocation_limit_bytes);
+            let release_threshold_bytes =
+                usize::try_from(discovered.resource_profile.managed_capacity_bytes).map_err(|_| {
+                    QueryError::new(
+                        QueryErrorCode::InvalidPlan,
+                        "nexus_query_engine.gpu.device_registry.memory_manager",
+                        "managed device capacity does not fit the native allocator size type",
+                    )
+                    .with_fact("device_ordinal", ordinal)
+                    .with_fact("managed_capacity_bytes", discovered.resource_profile.managed_capacity_bytes)
+                    .with_fact("reason", "managed_capacity_size_overflow")
+                })?;
+            let requested_options =
+                canonical_device_memory_manager_options(allocation_limit_bytes, Some(release_threshold_bytes));
             if installation_before.effective_options.is_some_and(|existing| existing != requested_options) {
                 return Err(device_memory_manager_options_conflict(device, installation_before, requested_options));
             }
@@ -747,8 +759,17 @@ fn device_memory_manager_options_conflict(
 /// Hard query domains require cuDF's canonical stream-ordered async base.
 /// This stays in the registry because allocation-manager installation is a
 /// process-owned backend concern, not a caller-selectable execution policy.
-fn canonical_device_memory_manager_options(allocation_limit_bytes: Option<usize>) -> cudf::DeviceMemoryManagerOptions {
-    cudf::DeviceMemoryManagerOptions { allocation_limit_bytes, ..Default::default() }
+fn canonical_device_memory_manager_options(
+    allocation_limit_bytes: Option<usize>,
+    release_threshold_bytes: Option<usize>,
+) -> cudf::DeviceMemoryManagerOptions {
+    cudf::DeviceMemoryManagerOptions {
+        base: cudf::DeviceMemoryManagerBase::CudaAsync {
+            initial_pool_size: None,
+            release_threshold: release_threshold_bytes,
+        },
+        allocation_limit_bytes,
+    }
 }
 
 fn partition_fingerprint(device_ordinal: usize, allocation_limit_bytes: Option<usize>) -> [u8; 16] {
@@ -848,8 +869,9 @@ fn validate_registry_config(config: &DeviceRegistryConfig) -> Result<()> {
             },
             _ => {},
         }
-        canonical_device_memory_manager_options(profile.memory_partition.allocation_limit_bytes()).validate().map_err(
-            |error| {
+        canonical_device_memory_manager_options(profile.memory_partition.allocation_limit_bytes(), None)
+            .validate()
+            .map_err(|error| {
                 QueryError::from_cudf(
                     "nexus_query_engine.gpu.device_registry.config",
                     "invalid per-device memory manager options",
@@ -858,8 +880,7 @@ fn validate_registry_config(config: &DeviceRegistryConfig) -> Result<()> {
                 .with_fact("field", "device_profiles.device_memory_manager_options")
                 .with_fact("device_ordinal", *ordinal)
                 .with_fact("reason", "invalid_device_memory_manager_options")
-            },
-        )?;
+            })?;
     }
     Ok(())
 }
@@ -1225,6 +1246,17 @@ mod tests {
         assert_ne!(whole, partitioned);
         assert_ne!(whole, partition_fingerprint(4, None));
         assert_ne!(partitioned, partition_fingerprint(3, Some(2_048)));
+    }
+
+    #[test]
+    fn canonical_manager_uses_managed_capacity_as_shared_pool_release_threshold() {
+        let options = canonical_device_memory_manager_options(Some(4_096), Some(8_192));
+
+        assert_eq!(options.allocation_limit_bytes, Some(4_096));
+        assert_eq!(
+            options.base,
+            cudf::DeviceMemoryManagerBase::CudaAsync { initial_pool_size: None, release_threshold: Some(8_192) }
+        );
     }
 
     #[test]

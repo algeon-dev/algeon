@@ -114,6 +114,13 @@ fn main() {
     println!("cargo:rerun-if-env-changed=LD_LIBRARY_PATH");
     println!("cargo:rerun-if-env-changed=CMAKE_CUDA_ARCHITECTURES");
     println!("cargo:rerun-if-changed=wrapper.h");
+    let cudf_install_dir = env::var_os("CUDF_INSTALL_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| manifest_dir.join("../../../target/native/cudf-install"));
+    for header in ["error_boundary.hpp", "memory_resource.h"] {
+        println!("cargo:rerun-if-changed={}", cudf_install_dir.join("include/cudf_rust").join(header).display());
+    }
+    println!("cargo:rerun-if-changed={}", manifest_dir.join("../cugraph/cpp/CMakeLists.txt").display());
     println!("cargo:rerun-if-changed={}", cuvs.cmake_config_dir.join("cuvs-config.cmake").display());
     println!("cargo:rerun-if-changed={}", cuvs.library_selector_path.display());
     println!("cargo:rerun-if-changed={}", cuvs.library_path.display());
@@ -153,6 +160,7 @@ fn main() {
         // Use newtype enums for FFI safety. Rust enums are UB-prone if C passes unknown values.
         .newtype_enum("cugraph_error_code_")
         .newtype_enum("cugraph_allocation_source_")
+        .newtype_enum("cugraph_error_failure_source_")
         .newtype_enum("bool_")
         .newtype_enum("data_type_id_");
 

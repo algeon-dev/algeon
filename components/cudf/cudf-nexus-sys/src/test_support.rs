@@ -101,10 +101,28 @@ unsafe extern "C" {
         handle: cudf_memory_resource_handle,
         out: *mut *mut core::ffi::c_void,
     ) -> cudf_status_t;
+    pub fn cudf_test_memory_resource_allocate(
+        handle: cudf_memory_resource_handle,
+        stream: cudf_stream_handle,
+        bytes: usize,
+        alignment: usize,
+        out: *mut *mut core::ffi::c_void,
+    ) -> cudf_status_t;
+    pub fn cudf_test_memory_resource_deallocate(
+        handle: cudf_memory_resource_handle,
+        stream: cudf_stream_handle,
+        ptr: *mut core::ffi::c_void,
+        bytes: usize,
+        alignment: usize,
+    ) -> cudf_status_t;
+    pub fn cudf_test_memory_resource_allocation_attempt_count(out: *mut u64) -> cudf_status_t;
+    pub fn cudf_test_memory_resource_reset_allocation_attempts();
+    pub fn cudf_test_query_domain_fail_allocation_after(domain_id: u64, successful_allocations: u64);
+    pub fn cudf_test_query_domain_reset_allocation_failure();
     pub fn cudf_test_memory_resource_set_current(handle: cudf_memory_resource_handle) -> cudf_status_t;
     pub fn cudf_test_memory_resource_set_current_untracked(handle: cudf_memory_resource_handle) -> cudf_status_t;
     pub fn cudf_test_memory_resource_set_current_raw(raw_mr: *mut core::ffi::c_void) -> cudf_status_t;
-    pub fn cudf_test_memory_manager_query_domain_pool_count_for_id(
+    pub fn cudf_test_memory_manager_query_domain_count_for_id(
         manager: cudf_memory_manager_handle,
         domain_id: u64,
         out: *mut usize,

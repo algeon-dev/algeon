@@ -712,9 +712,6 @@ fn test_filter_join_indices_null_handles_clear_outputs() {
 #[test]
 fn test_filter_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance() {
     let _shim_state = lock_shim_state();
-    let previous_raw = current_device_resource_raw();
-    let current_mr = OwnedMemoryResource::new_test_stats();
-    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
     let target_mr = OwnedMemoryResource::new_test_stats();
     let inputs = FilterJoinTestInputs::new();
     let stream = OwnedStream::new();
@@ -724,14 +721,10 @@ fn test_filter_join_indices_ex_uses_explicit_memory_resource_for_allocations_and
     let join_indices = cudf_filter_join_indices_ex_raw as FilterJoinIndicesExRaw;
 
     let target_before = target_mr.allocation_count();
-    let current_before = current_mr.allocation_count();
     reset_exec_observation();
 
     let mut out_left: cudf_sys::cudf_column_handle = ptr::null_mut();
     let mut out_right: cudf_sys::cudf_column_handle = ptr::null_mut();
-    let current_borrowed = current_mr.borrowed();
-    crate::support::set_current_device_resource(&current_borrowed)
-        .expect("failed to install current sentinel memory resource");
     let status = unsafe {
         join_indices(
             raw_handle(inputs.left_tv),
@@ -745,24 +738,12 @@ fn test_filter_join_indices_ex_uses_explicit_memory_resource_for_allocations_and
             &exec,
         )
     };
-    let restored_current = current_device_resource_raw();
-    unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
-        .expect("failed to restore previous current device resource");
 
     assert_eq!(raw_status(status), cudf_sys::CUDF_SUCCESS);
     assert!(!out_left.is_null(), "filter join did not publish left indices");
     assert!(!out_right.is_null(), "filter join did not publish right indices");
     assert_eq!(last_exec_stream_value(), stream_value(stream.as_raw()));
     assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
-    assert_eq!(
-        restored_current,
-        current_mr.raw_device_resource(),
-        "filter join must restore the caller's current memory resource"
-    );
-    // Device-domain model: libcudf temporaries resolve through the device's
-    // current resource by design, so the sentinel current resource may
-    // legitimately observe allocations here.
-    let _ = current_before;
     assert!(
         target_mr.allocation_count() > target_before,
         "filter join allocations must be charged to the explicit execution memory resource"
@@ -776,27 +757,10 @@ fn test_filter_join_indices_ex_uses_explicit_memory_resource_for_allocations_and
         target_active_before_destroy > 0,
         "filter join outputs should retain active allocations on the explicit memory resource"
     );
-    let current_before_destroy = current_mr.allocation_count();
-    let current_borrowed = current_mr.borrowed();
-    crate::support::set_current_device_resource(&current_borrowed)
-        .expect("failed to install current sentinel memory resource before destroy");
     unsafe {
         cudf_sys::cudf_column_destroy(out_right);
         cudf_sys::cudf_column_destroy(out_left);
     }
-    let restored_current = current_device_resource_raw();
-    unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
-        .expect("failed to restore previous current device resource after destroy");
-    assert_eq!(
-        restored_current,
-        current_mr.raw_device_resource(),
-        "filter join output destroy must restore the caller's current memory resource"
-    );
-    assert_eq!(
-        current_mr.allocation_count(),
-        current_before_destroy,
-        "filter join output destroy must not allocate through the caller's current memory resource"
-    );
     assert!(
         target_mr.active_allocation_count() < target_active_before_destroy,
         "filter join output destroy must release through the explicit execution memory resource"
@@ -833,19 +797,12 @@ fn test_hash_join_pre_build_sizing_allocates_no_device_payload_and_uses_explicit
     let tbl = make_table_from_one_column(col);
     let tv = make_table_view(tbl);
 
-    let previous_raw = current_device_resource_raw();
-    let current_mr = OwnedMemoryResource::new_test_stats();
-    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
     let target_mr = OwnedMemoryResource::new_test_stats();
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
     let target_borrowed = target_mr.borrowed();
     let exec = required_exec_options(&target_stream, &target_borrowed);
-    let current_borrowed = current_mr.borrowed();
-    crate::support::set_current_device_resource(&current_borrowed)
-        .expect("failed to install current sentinel memory resource");
 
-    let current_before = current_mr.allocation_count();
     let target_before = target_mr.allocation_count();
     reset_exec_observation();
     let mut reservation = 0usize;
@@ -855,11 +812,6 @@ fn test_hash_join_pre_build_sizing_allocates_no_device_payload_and_uses_explicit
     assert!(reservation > 0);
     assert_eq!(last_exec_stream_value(), stream_value(stream.as_raw()));
     assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
-    assert_eq!(
-        current_mr.allocation_count(),
-        current_before,
-        "pre-build admission sizing must not allocate a sanitized payload through ambient MR"
-    );
     assert_eq!(
         target_mr.allocation_count(),
         target_before,
@@ -877,7 +829,6 @@ fn test_hash_join_pre_build_sizing_allocates_no_device_payload_and_uses_explicit
 #[test]
 fn test_hash_join_create_ex_uses_explicit_memory_resource_for_build_allocations() {
     let _shim_state = lock_shim_state();
-    let previous_raw = current_device_resource_raw();
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let col = make_i32_column(&[1, 2, 3, 4, 5, 6, 7, 8]);
@@ -888,7 +839,6 @@ fn test_hash_join_create_ex_uses_explicit_memory_resource_for_build_allocations(
     let target_borrowed = target_mr.borrowed();
     let exec = required_exec_options(&target_stream, &target_borrowed);
 
-    let target_before = target_mr.allocation_count();
     reset_exec_observation();
 
     let mut join: cudf_sys::cudf_hash_join_handle = ptr::null_mut();
@@ -906,17 +856,11 @@ fn test_hash_join_create_ex_uses_explicit_memory_resource_for_build_allocations(
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!join.is_null());
     assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
-    assert_eq!(
-        current_device_resource_raw(),
-        previous_raw,
-        "hash-join construction must restore the caller's current device resource"
-    );
     // Device-domain model: the hash-join build constructor takes no memory
     // resource, so its retained hash table allocates through the device's
     // current resource. The explicit execution memory resource may therefore
     // see no build allocations; retained bytes are reported via the
     // pre-build sizing formula instead.
-    let _ = target_before;
     let mut retained_bytes = 0usize;
     let status = unsafe { cudf_sys::cudf_hash_join_device_allocated_size(join, &mut retained_bytes) };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
@@ -1216,9 +1160,6 @@ fn test_conditional_join_size_apis_report_exact_output_rows() {
 #[test]
 fn test_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations() {
     let _shim_state = lock_shim_state();
-    let previous_raw = current_device_resource_raw();
-    let current_mr = OwnedMemoryResource::new_test_stats();
-    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let build_col = make_i32_column(&[1, 2, 3, 4, 5, 6, 7, 8]);
@@ -1262,32 +1203,16 @@ fn test_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations()
         ("full", cudf_sys::cudf_hash_join_full_join_ex),
     ] {
         let target_before = target_mr.allocation_count();
-        let current_before = current_mr.allocation_count();
         reset_exec_observation();
 
         let mut out_left: cudf_sys::cudf_column_handle = ptr::null_mut();
         let mut out_right: cudf_sys::cudf_column_handle = ptr::null_mut();
-        let current_borrowed = current_mr.borrowed();
-        crate::support::set_current_device_resource(&current_borrowed)
-            .expect("failed to install current sentinel memory resource");
         let status = unsafe { probe(join, probe_tv, &mut out_left, &mut out_right, &exec) };
-        let restored_current = current_device_resource_raw();
-        unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
-            .expect("failed to restore previous current device resource");
 
         assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} hash-join probe failed");
         assert!(!out_left.is_null(), "{name} hash-join probe did not publish left indices");
         assert!(!out_right.is_null(), "{name} hash-join probe did not publish right indices");
         assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
-        assert_eq!(
-            restored_current,
-            current_mr.raw_device_resource(),
-            "{name} hash-join probe must restore the caller's current device resource"
-        );
-        // Device-domain model: libcudf temporaries resolve through the
-        // device's current resource by design, so the sentinel current
-        // resource may legitimately observe allocations here.
-        let _ = current_before;
         assert!(
             target_mr.allocation_count() > target_before,
             "{name} hash-join probe allocations must be charged to the explicit execution memory resource"
@@ -1312,9 +1237,6 @@ fn test_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations()
 #[test]
 fn test_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance() {
     let _shim_state = lock_shim_state();
-    let previous_raw = current_device_resource_raw();
-    let current_mr = OwnedMemoryResource::new_test_stats();
-    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let left_tbl = make_table_from_one_column(make_i32_column(&[1, 2, 2, 3]));
@@ -1343,34 +1265,18 @@ fn test_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_proven
         ("full", cudf_sys::cudf_full_join_indices_ex),
     ] {
         let target_before = target_mr.allocation_count();
-        let current_before = current_mr.allocation_count();
         reset_exec_observation();
 
         let mut out_left: cudf_sys::cudf_column_handle = ptr::null_mut();
         let mut out_right: cudf_sys::cudf_column_handle = ptr::null_mut();
-        let current_borrowed = current_mr.borrowed();
-        crate::support::set_current_device_resource(&current_borrowed)
-            .expect("failed to install current sentinel memory resource");
         let status = unsafe {
             join_indices(left_tv, right_tv, cudf_sys::CUDF_NULL_EQUALITY_EQUAL, &mut out_left, &mut out_right, &exec)
         };
-        let restored_current = current_device_resource_raw();
-        unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
-            .expect("failed to restore previous current device resource");
 
         assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} join indices failed");
         assert!(!out_left.is_null(), "{name} join indices did not publish left indices");
         assert!(!out_right.is_null(), "{name} join indices did not publish right indices");
         assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
-        assert_eq!(
-            restored_current,
-            current_mr.raw_device_resource(),
-            "{name} join indices must restore the caller's current memory resource"
-        );
-        // Device-domain model: libcudf temporaries resolve through the
-        // device's current resource by design, so the sentinel current
-        // resource may legitimately observe allocations here.
-        let _ = current_before;
         assert!(
             target_mr.allocation_count() > target_before,
             "{name} join-index allocations must be charged to the explicit execution memory resource"
@@ -1394,9 +1300,6 @@ fn test_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_proven
 #[test]
 fn test_filtered_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance() {
     let _shim_state = lock_shim_state();
-    let previous_raw = current_device_resource_raw();
-    let current_mr = OwnedMemoryResource::new_test_stats();
-    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let left_tbl = make_table_from_one_column(make_i32_column(&[1, 2, 2, 3, 5, 8, 13, 21]));
@@ -1423,30 +1326,14 @@ fn test_filtered_join_indices_ex_uses_explicit_memory_resource_for_allocations_a
         ("anti", cudf_sys::cudf_left_anti_join_indices_ex),
     ] {
         let target_before = target_mr.allocation_count();
-        let current_before = current_mr.allocation_count();
         reset_exec_observation();
 
         let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
-        let current_borrowed = current_mr.borrowed();
-        crate::support::set_current_device_resource(&current_borrowed)
-            .expect("failed to install current sentinel memory resource");
         let status = unsafe { join_indices(left_tv, right_tv, cudf_sys::CUDF_NULL_EQUALITY_EQUAL, &mut out, &exec) };
-        let restored_current = current_device_resource_raw();
-        unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
-            .expect("failed to restore previous current device resource");
 
         assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} filtered join indices failed");
         assert!(!out.is_null(), "{name} filtered join indices did not publish indices");
         assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
-        assert_eq!(
-            restored_current,
-            current_mr.raw_device_resource(),
-            "{name} filtered join indices must restore the caller's current memory resource"
-        );
-        // Device-domain model: libcudf temporaries resolve through the
-        // device's current resource by design, so the sentinel current
-        // resource may legitimately observe allocations here.
-        let _ = current_before;
         assert!(
             target_mr.allocation_count() > target_before,
             "{name} filtered join allocations must be charged to the explicit execution memory resource"
@@ -1467,9 +1354,6 @@ fn test_filtered_join_indices_ex_uses_explicit_memory_resource_for_allocations_a
 #[test]
 fn test_conditional_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance() {
     let _shim_state = lock_shim_state();
-    let previous_raw = current_device_resource_raw();
-    let current_mr = OwnedMemoryResource::new_test_stats();
-    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let left_tbl = make_table_from_one_column(make_i32_column(&[1, 4]));
@@ -1499,33 +1383,17 @@ fn test_conditional_join_indices_ex_uses_explicit_memory_resource_for_allocation
         ("full", cudf_sys::cudf_conditional_full_join_indices_ex),
     ] {
         let target_before = target_mr.allocation_count();
-        let current_before = current_mr.allocation_count();
         reset_exec_observation();
 
         let mut out_left: cudf_sys::cudf_column_handle = ptr::null_mut();
         let mut out_right: cudf_sys::cudf_column_handle = ptr::null_mut();
-        let current_borrowed = current_mr.borrowed();
-        crate::support::set_current_device_resource(&current_borrowed)
-            .expect("failed to install current sentinel memory resource");
         let status = unsafe { join_indices(left_tv, right_tv, predicate, &mut out_left, &mut out_right, &exec) };
-        let restored_current = current_device_resource_raw();
-        unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
-            .expect("failed to restore previous current device resource");
 
         assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} conditional join failed");
         assert!(!out_left.is_null(), "{name} conditional join did not publish left indices");
         assert!(!out_right.is_null(), "{name} conditional join did not publish right indices");
         assert_eq!(last_exec_stream_value(), stream_value(stream.as_raw()));
         assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
-        assert_eq!(
-            restored_current,
-            current_mr.raw_device_resource(),
-            "{name} conditional join must restore the caller's current memory resource"
-        );
-        // Device-domain model: libcudf temporaries resolve through the
-        // device's current resource by design, so the sentinel current
-        // resource may legitimately observe allocations here.
-        let _ = current_before;
         assert!(
             target_mr.allocation_count() > target_before,
             "{name} conditional join allocations must be charged to the explicit execution memory resource"
@@ -1554,31 +1422,15 @@ fn test_conditional_join_indices_ex_uses_explicit_memory_resource_for_allocation
         ("anti", cudf_sys::cudf_conditional_left_anti_join_indices_ex),
     ] {
         let target_before = target_mr.allocation_count();
-        let current_before = current_mr.allocation_count();
         reset_exec_observation();
 
         let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
-        let current_borrowed = current_mr.borrowed();
-        crate::support::set_current_device_resource(&current_borrowed)
-            .expect("failed to install current sentinel memory resource");
         let status = unsafe { join_indices(left_tv, right_tv, predicate, &mut out, &exec) };
-        let restored_current = current_device_resource_raw();
-        unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
-            .expect("failed to restore previous current device resource");
 
         assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} conditional join failed");
         assert!(!out.is_null(), "{name} conditional join did not publish indices");
         assert_eq!(last_exec_stream_value(), stream_value(stream.as_raw()));
         assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
-        assert_eq!(
-            restored_current,
-            current_mr.raw_device_resource(),
-            "{name} conditional join must restore the caller's current memory resource"
-        );
-        // Device-domain model: libcudf temporaries resolve through the
-        // device's current resource by design, so the sentinel current
-        // resource may legitimately observe allocations here.
-        let _ = current_before;
         assert!(
             target_mr.allocation_count() > target_before,
             "{name} conditional join allocations must be charged to the explicit execution memory resource"
@@ -1884,9 +1736,6 @@ fn test_mixed_join_null_handles_clear_outputs() {
 #[test]
 fn test_mixed_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_provenance() {
     let _shim_state = lock_shim_state();
-    let previous_raw = current_device_resource_raw();
-    let current_mr = OwnedMemoryResource::new_test_stats();
-    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let left_eq_tbl = make_table_from_one_column(make_i32_column(&[1, 1, 2, 3]));
@@ -1923,14 +1772,10 @@ fn test_mixed_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_
         ("full", cudf_sys::cudf_mixed_full_join_indices_ex),
     ] {
         let target_before = target_mr.allocation_count();
-        let current_before = current_mr.allocation_count();
         reset_exec_observation();
 
         let mut out_left: cudf_sys::cudf_column_handle = ptr::null_mut();
         let mut out_right: cudf_sys::cudf_column_handle = ptr::null_mut();
-        let current_borrowed = current_mr.borrowed();
-        crate::support::set_current_device_resource(&current_borrowed)
-            .expect("failed to install current sentinel memory resource");
         let status = unsafe {
             join_indices(
                 left_eq_tv,
@@ -1944,24 +1789,12 @@ fn test_mixed_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_
                 &exec,
             )
         };
-        let restored_current = current_device_resource_raw();
-        unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
-            .expect("failed to restore previous current device resource");
 
         assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} mixed join failed");
         assert!(!out_left.is_null(), "{name} mixed join did not publish left indices");
         assert!(!out_right.is_null(), "{name} mixed join did not publish right indices");
         assert_eq!(last_exec_stream_value(), stream_value(stream.as_raw()));
         assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
-        assert_eq!(
-            restored_current,
-            current_mr.raw_device_resource(),
-            "{name} mixed join must restore the caller's current memory resource"
-        );
-        // Device-domain model: libcudf temporaries resolve through the
-        // device's current resource by design, so the sentinel current
-        // resource may legitimately observe allocations here.
-        let _ = current_before;
         assert!(
             target_mr.allocation_count() > target_before,
             "{name} mixed join allocations must be charged to the explicit execution memory resource"
@@ -1993,13 +1826,9 @@ fn test_mixed_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_
         ("anti", cudf_sys::cudf_mixed_left_anti_join_indices_ex),
     ] {
         let target_before = target_mr.allocation_count();
-        let current_before = current_mr.allocation_count();
         reset_exec_observation();
 
         let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
-        let current_borrowed = current_mr.borrowed();
-        crate::support::set_current_device_resource(&current_borrowed)
-            .expect("failed to install current sentinel memory resource");
         let status = unsafe {
             join_indices(
                 left_eq_tv,
@@ -2012,23 +1841,11 @@ fn test_mixed_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_
                 &exec,
             )
         };
-        let restored_current = current_device_resource_raw();
-        unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
-            .expect("failed to restore previous current device resource");
 
         assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} mixed join failed");
         assert!(!out.is_null(), "{name} mixed join did not publish indices");
         assert_eq!(last_exec_stream_value(), stream_value(stream.as_raw()));
         assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
-        assert_eq!(
-            restored_current,
-            current_mr.raw_device_resource(),
-            "{name} mixed join must restore the caller's current memory resource"
-        );
-        // Device-domain model: libcudf temporaries resolve through the
-        // device's current resource by design, so the sentinel current
-        // resource may legitimately observe allocations here.
-        let _ = current_before;
         assert!(
             target_mr.allocation_count() > target_before,
             "{name} mixed join allocations must be charged to the explicit execution memory resource"
@@ -2055,9 +1872,6 @@ fn test_mixed_join_indices_ex_uses_explicit_memory_resource_for_allocations_and_
 #[test]
 fn test_distinct_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allocations() {
     let _shim_state = lock_shim_state();
-    let previous_raw = current_device_resource_raw();
-    let current_mr = OwnedMemoryResource::new_test_stats();
-    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let build_col = make_i32_column(&[1, 2, 3, 4, 5, 6, 7, 8]);
@@ -2079,30 +1893,14 @@ fn test_distinct_hash_join_probe_ex_uses_explicit_memory_resource_for_probe_allo
     let probe_tv = make_table_view(probe_tbl);
 
     let target_before = target_mr.allocation_count();
-    let current_before = current_mr.allocation_count();
     reset_exec_observation();
 
     let mut out: cudf_sys::cudf_column_handle = ptr::null_mut();
-    let current_borrowed = current_mr.borrowed();
-    crate::support::set_current_device_resource(&current_borrowed)
-        .expect("failed to install current sentinel memory resource");
     let status = unsafe { cudf_sys::cudf_distinct_hash_join_left_join_ex(join, probe_tv, &mut out, &exec) };
-    let restored_current = current_device_resource_raw();
-    unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
-        .expect("failed to restore previous current device resource");
 
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     assert!(!out.is_null());
     assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
-    assert_eq!(
-        restored_current,
-        current_mr.raw_device_resource(),
-        "distinct hash-join probe must restore the caller's current memory resource"
-    );
-    // Device-domain model: libcudf temporaries resolve through the device's
-    // current resource by design, so the sentinel current resource may
-    // legitimately observe allocations here.
-    let _ = current_before;
     assert!(
         target_mr.allocation_count() > target_before,
         "distinct hash-join probe allocations must be charged to the explicit execution memory resource"

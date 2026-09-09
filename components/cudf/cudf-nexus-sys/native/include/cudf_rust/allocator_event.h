@@ -22,7 +22,7 @@ enum {
   CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_DOMAIN_IDENTITY = 1u << 1,
   /// The event carries one bounded CUDA-pool usage sample.
   CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_POOL_USAGE = 1u << 2,
-  /// The event carries the allocator callback action.
+  /// The event carries the allocator's terminal action.
   CUDF_ALLOCATOR_EVENT_COMPLETENESS_HAS_ACTION = 1u << 3,
 };
 

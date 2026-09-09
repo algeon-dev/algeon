@@ -9,7 +9,7 @@ use std::{
 };
 
 use cudf::{
-    DataFrame, DataType, DeviceId, DeviceMemoryFailureAction, DeviceMemoryFailureAllocationDomain,
+    CudfErrorFailureSource, DataFrame, DataType, DeviceId, DeviceMemoryFailureAllocationDomain,
     DeviceMemoryFailureSource, DeviceMemoryManager, DeviceMemoryManagerBase, DeviceMemoryManagerOptions,
     DeviceMemoryResource, ErrorCode, ErrorKind, ErrorStatus, ExecutionBudgetEnforcement, ExecutionBudgetRequest,
     ExecutionBudgetStatus, QueryMemoryDomainOptions, Runtime, SortOptions, StreamReservationLease, TypeId,
@@ -124,7 +124,7 @@ fn failure_source_code(source: DeviceMemoryFailureSource) -> u32 {
     }
 }
 
-fn query_domain_pool_count_for_id(manager: &DeviceMemoryManager, domain_id: u64) -> usize {
+fn query_domain_count_for_id(manager: &DeviceMemoryManager, domain_id: u64) -> usize {
     let mut raw_manager = std::ptr::null_mut();
     let status =
         unsafe { cudf_sys::cudf_memory_manager_for_device(manager.device().ordinal() as i32, &mut raw_manager) };
@@ -132,11 +132,7 @@ fn query_domain_pool_count_for_id(manager: &DeviceMemoryManager, domain_id: u64)
     assert!(!raw_manager.is_null());
     let mut count = 0;
     let status = unsafe {
-        cudf_sys::test_support::cudf_test_memory_manager_query_domain_pool_count_for_id(
-            raw_manager,
-            domain_id,
-            &mut count,
-        )
+        cudf_sys::test_support::cudf_test_memory_manager_query_domain_count_for_id(raw_manager, domain_id, &mut count)
     };
     assert_eq!(status, cudf_sys::CUDF_SUCCESS);
     count
@@ -214,7 +210,7 @@ fn device_memory_manager_default_async_pool_exposes_usage_and_trim() {
 }
 
 #[test]
-fn failure_callback_trims_idle_async_pool_and_retries_before_rust_callback() {
+fn failure_callback_observes_physical_failure_without_trim_or_retry() {
     let device = DeviceId::current().unwrap();
     let idle_bytes = 128 * 1024 * 1024;
     let request_bytes = 1024 * 1024;
@@ -231,7 +227,7 @@ fn failure_callback_trims_idle_async_pool_and_retries_before_rust_callback() {
     assert_eq!(before.used_current_bytes, 0);
     assert!(
         before.reserved_current_bytes >= (10 * request_bytes) as u64,
-        "test setup must leave enough idle async-pool bytes to trigger trim retry: {before:?}"
+        "test setup must leave idle async-pool bytes before the observed failure: {before:?}"
     );
 
     let fail_first = fail_first_allocation_resource(&async_mr);
@@ -239,30 +235,24 @@ fn failure_callback_trims_idle_async_pool_and_retries_before_rust_callback() {
     let callback_calls = Arc::clone(&rust_callback_calls);
     let callback = Arc::new(move |_bytes: usize| {
         callback_calls.fetch_add(1, Ordering::SeqCst);
-        false
     });
-    let retrying_mr = fail_first.with_failure_callback(callback).unwrap();
-    let runtime = Runtime::builder().with_device(device).with_memory_resource(retrying_mr).build().unwrap();
+    let observing_mr = fail_first.with_failure_callback(callback).unwrap();
+    let runtime = Runtime::builder().with_device(device).with_memory_resource(observing_mr).build().unwrap();
 
-    let buffer = runtime.device_buffer(request_bytes).unwrap();
-    runtime.synchronize().unwrap();
+    let error = match runtime.device_buffer(request_bytes) {
+        Ok(_) => panic!("observation callback must not retry the failed allocation"),
+        Err(error) => error,
+    };
 
-    assert_eq!(
-        rust_callback_calls.load(Ordering::SeqCst),
-        0,
-        "native trim-retry should recover before invoking the Rust failure callback"
-    );
+    assert_eq!(error.code(), ErrorCode::OutOfMemory);
+    assert_eq!(rust_callback_calls.load(Ordering::SeqCst), 1);
     let after = async_mr.pool_usage().unwrap();
-    assert!(
-        after.reserved_current_bytes < before.reserved_current_bytes,
-        "trim-retry should release idle async-pool pages before retrying: before={before:?} after={after:?}"
-    );
-    assert!(after.used_current_bytes >= request_bytes as u64);
-    drop(buffer);
+    assert_eq!(after.reserved_current_bytes, before.reserved_current_bytes);
+    assert_eq!(after.used_current_bytes, before.used_current_bytes);
 }
 
 #[test]
-fn detailed_failure_callback_reports_pool_usage_and_can_trim_retry() {
+fn detailed_failure_callback_reports_pool_usage_without_trim_or_retry() {
     let device = DeviceId::current().unwrap();
     let idle_bytes = 128 * 1024 * 1024;
     let request_bytes = 1024 * 1024;
@@ -307,19 +297,17 @@ fn detailed_failure_callback_reports_pool_usage_and_can_trim_retry() {
             let pool_usage = info.pool_usage.expect("detailed callback should expose async pool usage");
             seen_reserved.store(pool_usage.reserved_current_bytes, Ordering::SeqCst);
             seen_used.store(pool_usage.used_current_bytes, Ordering::SeqCst);
-            if info.should_trim_and_retry() {
-                DeviceMemoryFailureAction::TrimAndRetry
-            } else {
-                DeviceMemoryFailureAction::Decline
-            }
         })
     };
-    let retrying_mr = fail_first.with_failure_callback_details(callback).unwrap();
-    let runtime = Runtime::builder().with_device(device).with_memory_resource(retrying_mr).build().unwrap();
+    let observing_mr = fail_first.with_failure_callback_details(callback).unwrap();
+    let runtime = Runtime::builder().with_device(device).with_memory_resource(observing_mr).build().unwrap();
 
-    let buffer = runtime.device_buffer(request_bytes).unwrap();
-    runtime.synchronize().unwrap();
+    let error = match runtime.device_buffer(request_bytes) {
+        Ok(_) => panic!("observation callback must not retry the failed allocation"),
+        Err(error) => error,
+    };
 
+    assert_eq!(error.code(), ErrorCode::OutOfMemory);
     assert_eq!(callback_calls.load(Ordering::SeqCst), 1);
     assert_eq!(seen_device.load(Ordering::SeqCst), device.ordinal());
     assert_eq!(seen_source.load(Ordering::SeqCst), 0);
@@ -329,11 +317,8 @@ fn detailed_failure_callback_reports_pool_usage_and_can_trim_retry() {
     assert_eq!(seen_used.load(Ordering::SeqCst), 0);
     assert!(seen_reserved.load(Ordering::SeqCst) >= (10 * request_bytes) as u64);
     let after = async_mr.pool_usage().unwrap();
-    assert!(
-        after.reserved_current_bytes < before.reserved_current_bytes,
-        "callback-requested trim should release idle async-pool pages: before={before:?} after={after:?}"
-    );
-    drop(buffer);
+    assert_eq!(after.reserved_current_bytes, before.reserved_current_bytes);
+    assert_eq!(after.used_current_bytes, before.used_current_bytes);
 }
 
 #[test]
@@ -362,26 +347,22 @@ fn detailed_failure_callback_reports_reservation_limit_source_and_does_not_trim(
 
     let callback_calls = Arc::new(AtomicUsize::new(0));
     let seen_source = Arc::new(AtomicU32::new(u32::MAX));
-    let seen_should_trim = Arc::new(AtomicBool::new(true));
     let seen_trim_count = Arc::new(AtomicU32::new(u32::MAX));
     let seen_reservation_id = Arc::new(AtomicU64::new(0));
     let callback = {
         let callback_calls = Arc::clone(&callback_calls);
         let seen_source = Arc::clone(&seen_source);
-        let seen_should_trim = Arc::clone(&seen_should_trim);
         let seen_trim_count = Arc::clone(&seen_trim_count);
         let seen_reservation_id = Arc::clone(&seen_reservation_id);
         Arc::new(move |info: cudf::DeviceMemoryFailureInfo| {
             callback_calls.fetch_add(1, Ordering::SeqCst);
             seen_source.store(failure_source_code(info.source), Ordering::SeqCst);
-            seen_should_trim.store(info.should_trim_and_retry(), Ordering::SeqCst);
             seen_trim_count.store(info.trim_retry_count, Ordering::SeqCst);
             if let Some(DeviceMemoryFailureAllocationDomain::StreamReservation { reservation_id }) =
                 info.allocation_domain
             {
                 seen_reservation_id.store(reservation_id, Ordering::SeqCst);
             }
-            DeviceMemoryFailureAction::TrimAndRetry
         })
     };
     let callback_mr = manager.resource().with_failure_callback_details(callback).unwrap();
@@ -394,14 +375,13 @@ fn detailed_failure_callback_reports_reservation_limit_source_and_does_not_trim(
     assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
     assert_eq!(callback_calls.load(Ordering::SeqCst), 1);
     assert_eq!(seen_source.load(Ordering::SeqCst), 1);
-    assert!(!seen_should_trim.load(Ordering::SeqCst));
     assert_eq!(seen_trim_count.load(Ordering::SeqCst), 0);
     assert_eq!(seen_reservation_id.load(Ordering::SeqCst), 9002);
 
     let after = manager.pool_usage().unwrap();
     assert_eq!(
         after.reserved_current_bytes, before.reserved_current_bytes,
-        "reservation-limit trim-and-retry requests must not trim the shared pool: before={before:?} after={after:?}"
+        "reservation-limit observation must not trim the shared pool: before={before:?} after={after:?}"
     );
     assert_eq!(after.used_current_bytes, before.used_current_bytes);
 }
@@ -425,7 +405,6 @@ fn reservation_arena_failure_callback_reports_arena_and_member_identity() {
             callback_arena_id.store(arena_id, Ordering::SeqCst);
             callback_reservation_id.store(reservation_id, Ordering::SeqCst);
         }
-        DeviceMemoryFailureAction::Decline
     });
     let callback_mr = manager.resource().with_failure_callback_details(callback).unwrap();
     let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_mr).build().unwrap();
@@ -944,16 +923,22 @@ fn query_memory_domain_preserves_device_resource_identity() {
         .unwrap();
 
     let lease = domain.reserve_stream(rt.stream(), 40_101, 32 * 1024 * 1024).unwrap();
+    let buffer = rt.device_buffer(1024 * 1024).unwrap();
+    rt.synchronize().unwrap();
 
     assert_eq!(rt.memory_resource().testing_raw_handle_value(), manager_mr);
     assert_ne!(lease.memory_resource().testing_raw_handle_value(), manager_mr);
-    assert_eq!(domain.usage().unwrap().domain_id, 40_001);
+    let domain_usage = domain.usage().unwrap();
+    assert_eq!(domain_usage.domain_id, 40_001);
+    assert!(domain_usage.current_bytes >= 1024 * 1024);
     let pool_usage = domain.pool_usage().unwrap();
     assert!(pool_usage.reserved_current_bytes >= pool_usage.used_current_bytes);
+    assert_eq!(pool_usage, manager.pool_usage().unwrap());
+    drop(buffer);
 }
 
 #[test]
-fn query_memory_domain_separates_logical_ceiling_from_driver_pool_maximum() {
+fn query_memory_domain_ceiling_is_logical_accounting_only() {
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let manager = runtime.device_memory_manager().unwrap();
     let requested_ceiling = 8 * 1024 * 1024;
@@ -967,8 +952,71 @@ fn query_memory_domain_separates_logical_ceiling_from_driver_pool_maximum() {
     let usage = domain.usage().unwrap();
     assert_eq!(usage.ceiling_bytes, requested_ceiling as u64);
     assert_eq!(usage.allocation_limit_bytes, requested_ceiling as u64);
-    assert_eq!(usage.effective_driver_ceiling_bytes, 0);
-    assert!(!usage.driver_ceiling_verified);
+}
+
+#[test]
+fn shared_pool_keeps_query_domain_limits_and_outputs_independent() {
+    let _pool_state = shared_device_pool_guard();
+    let left = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let right = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = left.device_memory_manager().unwrap();
+    let domain_limit = 8 * 1024 * 1024;
+    let left_domain = manager
+        .query_memory_domain(40_117, QueryMemoryDomainOptions::new(domain_limit).with_ceiling_bytes(domain_limit))
+        .unwrap();
+    let right_domain = manager
+        .query_memory_domain(40_118, QueryMemoryDomainOptions::new(domain_limit).with_ceiling_bytes(domain_limit))
+        .unwrap();
+    let _left_lease = left_domain.reserve_stream(left.stream(), 41_117, domain_limit).unwrap();
+    let _right_lease = right_domain.reserve_stream(right.stream(), 41_118, domain_limit).unwrap();
+
+    let right_output = right.series(&[7i32, 8, 9]).unwrap();
+    let identity = left_domain.identity().unwrap();
+    unsafe { test_support::cudf_test_query_domain_fail_allocation_after(identity.domain_id, 0) };
+    let physical_started = Instant::now();
+    let physical_error = left.series(&[1i32, 2, 3]).unwrap_err();
+    let physical_failure_latency = physical_started.elapsed();
+    unsafe { test_support::cudf_test_query_domain_reset_allocation_failure() };
+
+    assert_eq!(physical_error.kind(), ErrorKind::ResourceExhausted);
+    let detail = physical_error.ffi_detail().expect("physical failure keeps its canonical payload");
+    assert_eq!(detail.failure_source, CudfErrorFailureSource::Physical);
+    assert_eq!(detail.domain_id, 40_117);
+    assert_eq!(detail.member_id, 41_117);
+    assert_eq!(detail.generation, identity.generation);
+    assert_eq!(left_domain.usage().unwrap().current_allocations, 0);
+
+    left_domain.resize_grant(1).unwrap();
+    let left_error = left.series(&[1i32, 2, 3]).unwrap_err();
+    assert_eq!(left_error.kind(), ErrorKind::ResourceExhausted);
+    assert_eq!(left_error.ffi_detail().unwrap().failure_source, CudfErrorFailureSource::ReservationLimit);
+    assert_eq!(left_domain.usage().unwrap().current_allocations, 0);
+    assert_eq!(right_output.to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
+
+    left_domain.resize_grant(domain_limit).unwrap();
+    let alternating_started = Instant::now();
+    let left_sorted = left.series(&[5i32, 1, 4, 2, 3]).unwrap().sort_values(SortOptions::default()).unwrap();
+    let right_sorted = right_output.sort_values(SortOptions::default()).unwrap();
+    left.synchronize().unwrap();
+    right.synchronize().unwrap();
+    let alternating_temp_latency = alternating_started.elapsed();
+    assert_eq!(left_sorted.to_vec_strict::<i32>().unwrap(), vec![1, 2, 3, 4, 5]);
+    assert_eq!(right_sorted.to_vec_strict::<i32>().unwrap(), vec![7, 8, 9]);
+
+    let pool_usage = manager.pool_usage().unwrap();
+    assert!(pool_usage.reserved_current_bytes >= pool_usage.used_current_bytes);
+    assert!(pool_usage.reserved_current_bytes > 0);
+    assert_eq!(left_domain.pool_usage().unwrap(), right_domain.pool_usage().unwrap());
+    assert_eq!(right_domain.pool_usage().unwrap(), pool_usage);
+    eprintln!(
+        "E6 shared_pool physical_failure_ns={} alternating_temp_ns={} reserved_current_bytes={} reserved_high_bytes={} used_current_bytes={} used_high_bytes={}",
+        physical_failure_latency.as_nanos(),
+        alternating_temp_latency.as_nanos(),
+        pool_usage.reserved_current_bytes,
+        pool_usage.reserved_high_bytes,
+        pool_usage.used_current_bytes,
+        pool_usage.used_high_bytes,
+    );
 }
 
 #[test]
@@ -1236,7 +1284,6 @@ fn query_memory_domain_failure_callback_reports_reservation_limit_source() {
             callback_domain_id.store(domain_id, Ordering::SeqCst);
             callback_member_id.store(member_id, Ordering::SeqCst);
         }
-        DeviceMemoryFailureAction::Decline
     });
     let callback_mr = manager.resource().with_failure_callback_details(callback).unwrap();
     let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_mr).build().unwrap();
@@ -1272,7 +1319,6 @@ fn query_memory_domain_failure_identity_survives_fresh_thread_without_ambient_co
             callback_domain_id.store(domain_id, Ordering::SeqCst);
             callback_member_id.store(member_id, Ordering::SeqCst);
         }
-        DeviceMemoryFailureAction::Decline
     });
     let callback_mr = manager.resource().with_failure_callback_details(callback).unwrap();
     let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_mr).build().unwrap();
@@ -1302,7 +1348,7 @@ fn query_memory_domain_teardown_racing_allocation_blocks_stream_reattach_until_c
     const DOMAIN_ID: u64 = 60_001;
     let runtime = Arc::new(Runtime::builder().with_device_memory_manager().build().unwrap());
     let manager = runtime.device_memory_manager().unwrap();
-    assert_eq!(query_domain_pool_count_for_id(&manager, DOMAIN_ID), 0);
+    assert_eq!(query_domain_count_for_id(&manager, DOMAIN_ID), 0);
     let domain = manager
         .query_memory_domain(
             DOMAIN_ID,
@@ -1310,7 +1356,7 @@ fn query_memory_domain_teardown_racing_allocation_blocks_stream_reattach_until_c
         )
         .unwrap();
     let lease = domain.reserve_stream(runtime.stream(), 61_001, 64 * 1024 * 1024).unwrap();
-    assert_eq!(query_domain_pool_count_for_id(&manager, DOMAIN_ID), 1);
+    assert_eq!(query_domain_count_for_id(&manager, DOMAIN_ID), 1);
 
     if unsafe { cudf_sys::test_support::cudf_test_query_domain_route_pause_arm(DOMAIN_ID) } == 0 {
         eprintln!("skipping deterministic query-domain teardown race; debug test hooks are disabled");
@@ -1327,7 +1373,7 @@ fn query_memory_domain_teardown_racing_allocation_blocks_stream_reattach_until_c
 
     drop(lease);
     drop(domain);
-    assert_eq!(query_domain_pool_count_for_id(&manager, DOMAIN_ID), 1);
+    assert_eq!(query_domain_count_for_id(&manager, DOMAIN_ID), 1);
 
     let replacement = manager
         .query_memory_domain(
@@ -1340,7 +1386,7 @@ fn query_memory_domain_teardown_racing_allocation_blocks_stream_reattach_until_c
 
     drop(pause_release);
     let buffer = allocation.join().unwrap().unwrap();
-    assert_eq!(query_domain_pool_count_for_id(&manager, DOMAIN_ID), 1);
+    assert_eq!(query_domain_count_for_id(&manager, DOMAIN_ID), 1);
 
     let replacement_lease = replacement.reserve_stream(runtime.stream(), 61_102, 64 * 1024 * 1024).unwrap();
     assert_eq!(replacement_lease.usage().unwrap().current_allocations, 0);
@@ -1353,7 +1399,7 @@ fn query_memory_domain_teardown_racing_allocation_blocks_stream_reattach_until_c
     let replacement_lease = replacement.reserve_stream(runtime.stream(), 61_104, 64 * 1024 * 1024).unwrap();
 
     std::thread::spawn(move || drop(buffer)).join().unwrap();
-    assert_eq!(query_domain_pool_count_for_id(&manager, DOMAIN_ID), 0);
+    assert_eq!(query_domain_count_for_id(&manager, DOMAIN_ID), 0);
     let replacement_usage = replacement_lease.usage().unwrap();
     assert_eq!(replacement_usage.current_allocations, 0);
     assert_eq!(replacement_usage.routed_total_allocations, 0);
@@ -1381,7 +1427,116 @@ fn query_memory_domain_retained_output_survives_domain_handle_drop() {
 }
 
 #[test]
-fn query_domain_direct_output_keeps_private_pool_until_output_drop() {
+fn query_domain_pointer_registry_uses_recorded_owner_and_rejects_double_free() {
+    let _pool_state = shared_device_pool_guard();
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = runtime.device_memory_manager().unwrap();
+    let domain = manager
+        .query_memory_domain(40_106, QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024))
+        .unwrap();
+    let lease = domain.reserve_stream(runtime.stream(), 40_706, 8 * 1024 * 1024).unwrap();
+    let member_resource = lease.memory_resource().as_borrowed_sys();
+    let manager_resource = manager.resource().as_borrowed_sys();
+    let stream = runtime.stream().as_borrowed_sys();
+    let mut ptr = std::ptr::null_mut();
+
+    let allocate_status = unsafe {
+        test_support::cudf_test_memory_resource_allocate(member_resource.as_raw(), stream.as_raw(), 4096, 256, &mut ptr)
+    };
+    assert_eq!(allocate_status, cudf_sys::CUDF_SUCCESS);
+    assert!(!ptr.is_null());
+    assert_eq!(lease.usage().unwrap().current_allocations, 1);
+
+    let deallocate_status = unsafe {
+        test_support::cudf_test_memory_resource_deallocate(manager_resource.as_raw(), stream.as_raw(), ptr, 1, 1)
+    };
+    assert_eq!(deallocate_status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(lease.usage().unwrap().current_allocations, 0);
+    assert_eq!(domain.usage().unwrap().current_allocations, 0);
+
+    let second_deallocate_status = unsafe {
+        test_support::cudf_test_memory_resource_deallocate(manager_resource.as_raw(), stream.as_raw(), ptr, 4096, 256)
+    };
+    assert_eq!(second_deallocate_status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    let message = unsafe { cudf_sys::cudf_last_error_message() };
+    assert!(!message.is_null());
+    let message = unsafe { std::ffi::CStr::from_ptr(message) }.to_string_lossy();
+    assert!(message.contains("unknown or already-freed device allocation pointer"));
+
+    let invariant_error = match runtime.device_buffer(256) {
+        Ok(_) => panic!("allocator accepted a new allocation after an invariant violation"),
+        Err(error) => error,
+    };
+    assert_eq!(invariant_error.code(), ErrorCode::ForeignInvariantViolation);
+    assert_eq!(invariant_error.kind(), ErrorKind::InvariantViolation);
+    let detail = invariant_error.ffi_detail().expect("sticky allocator invariant keeps its typed native payload");
+    assert_eq!(detail.status, cudf_sys::CUDF_ERROR_INVALID_OPERATION);
+    assert!(detail.message.contains("allocator invariant violation"));
+    assert!(detail.message.contains("unknown or already-freed device allocation pointer"));
+}
+
+#[test]
+fn zero_byte_query_domain_allocation_does_not_change_counters_and_cleans_up_when_idle() {
+    const DOMAIN_ID: u64 = 40_107;
+    let _pool_state = shared_device_pool_guard();
+    let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
+    let manager = runtime.device_memory_manager().unwrap();
+    let domain = manager
+        .query_memory_domain(
+            DOMAIN_ID,
+            QueryMemoryDomainOptions::new(8 * 1024 * 1024).with_ceiling_bytes(8 * 1024 * 1024),
+        )
+        .unwrap();
+    let lease = domain.reserve_stream(runtime.stream(), 40_707, 8 * 1024 * 1024).unwrap();
+    let member_resource = lease.memory_resource().as_borrowed_sys();
+    let stream = runtime.stream().as_borrowed_sys();
+    let mut ptr = std::ptr::null_mut();
+
+    let allocate_status = unsafe {
+        test_support::cudf_test_memory_resource_allocate(member_resource.as_raw(), stream.as_raw(), 0, 256, &mut ptr)
+    };
+    assert_eq!(allocate_status, cudf_sys::CUDF_SUCCESS);
+    let deallocate_status = unsafe {
+        test_support::cudf_test_memory_resource_deallocate(member_resource.as_raw(), stream.as_raw(), ptr, 0, 256)
+    };
+    assert_eq!(deallocate_status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(lease.usage().unwrap().current_allocations, 0);
+    assert_eq!(domain.usage().unwrap().current_allocations, 0);
+
+    // The zero-byte release must not have latched the sticky unknown-pointer
+    // invariant: a later ordinary allocation on the same member still succeeds
+    // and accounts normally.
+    let mut sized_ptr = std::ptr::null_mut();
+    let sized_allocate_status = unsafe {
+        test_support::cudf_test_memory_resource_allocate(
+            member_resource.as_raw(),
+            stream.as_raw(),
+            4096,
+            256,
+            &mut sized_ptr,
+        )
+    };
+    assert_eq!(sized_allocate_status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(lease.usage().unwrap().current_allocations, 1);
+    let sized_deallocate_status = unsafe {
+        test_support::cudf_test_memory_resource_deallocate(
+            member_resource.as_raw(),
+            stream.as_raw(),
+            sized_ptr,
+            4096,
+            256,
+        )
+    };
+    assert_eq!(sized_deallocate_status, cudf_sys::CUDF_SUCCESS);
+    assert_eq!(lease.usage().unwrap().current_allocations, 0);
+
+    drop(lease);
+    drop(domain);
+    assert_eq!(query_domain_count_for_id(&manager, DOMAIN_ID), 0);
+}
+
+#[test]
+fn query_domain_direct_output_keeps_domain_registry_until_output_drop() {
     const DOMAIN_ID: u64 = 60_002;
     let runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let manager = runtime.device_memory_manager().unwrap();
@@ -1398,15 +1553,15 @@ fn query_domain_direct_output_keeps_private_pool_until_output_drop() {
     )
     .unwrap();
     let outcome = runtime.series_from_value_with_budget(11i32, 4096, &token).unwrap();
-    assert_eq!(query_domain_pool_count_for_id(&manager, DOMAIN_ID), 1);
+    assert_eq!(query_domain_count_for_id(&manager, DOMAIN_ID), 1);
 
     drop(token);
     drop(domain);
-    assert_eq!(query_domain_pool_count_for_id(&manager, DOMAIN_ID), 1);
+    assert_eq!(query_domain_count_for_id(&manager, DOMAIN_ID), 1);
 
     drop(outcome);
     runtime.synchronize().unwrap();
-    assert_eq!(query_domain_pool_count_for_id(&manager, DOMAIN_ID), 0);
+    assert_eq!(query_domain_count_for_id(&manager, DOMAIN_ID), 0);
 }
 
 #[test]
@@ -1662,7 +1817,7 @@ fn reservation_limit_failure_is_stream_local() {
 }
 
 #[test]
-fn failure_callback_memory_resource_retries_until_callback_declines() {
+fn failure_callback_memory_resource_observes_once_and_preserves_failure() {
     let device = DeviceId::current().unwrap();
     let upstream = DeviceMemoryResource::cuda_on(device).unwrap();
     let limiting = upstream.limiting(1).unwrap();
@@ -1670,7 +1825,7 @@ fn failure_callback_memory_resource_retries_until_callback_declines() {
     let callback_calls = Arc::clone(&calls);
     let callback = Arc::new(move |bytes: usize| {
         assert!(bytes > 0);
-        callback_calls.fetch_add(1, Ordering::SeqCst) == 0
+        callback_calls.fetch_add(1, Ordering::SeqCst);
     });
     let callback_mr = limiting.with_failure_callback(callback).unwrap();
     let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_mr).build().unwrap();
@@ -1679,7 +1834,7 @@ fn failure_callback_memory_resource_retries_until_callback_declines() {
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
     assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 #[test]
@@ -1689,7 +1844,7 @@ fn failure_callback_memory_resource_catches_rust_panics() {
     let limiting = upstream.limiting(1).unwrap();
     let calls = Arc::new(AtomicUsize::new(0));
     let callback_calls = Arc::clone(&calls);
-    let callback = Arc::new(move |_bytes: usize| -> bool {
+    let callback = Arc::new(move |_bytes: usize| {
         callback_calls.fetch_add(1, Ordering::SeqCst);
         panic!("failure callback panic must not cross FFI");
     });
@@ -1710,7 +1865,7 @@ fn failure_callback_memory_resource_catches_rust_panics() {
 }
 
 #[test]
-fn failure_callback_memory_resource_caps_retries_when_callback_keeps_retrying() {
+fn failure_callback_memory_resource_never_retries() {
     let device = DeviceId::current().unwrap();
     let upstream = DeviceMemoryResource::cuda_on(device).unwrap();
     let limiting = upstream.limiting(1).unwrap();
@@ -1718,7 +1873,6 @@ fn failure_callback_memory_resource_caps_retries_when_callback_keeps_retrying() 
     let callback_calls = Arc::clone(&calls);
     let callback = Arc::new(move |_bytes: usize| {
         callback_calls.fetch_add(1, Ordering::SeqCst);
-        true
     });
     let callback_mr = limiting.with_failure_callback(callback).unwrap();
     let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_mr).build().unwrap();
@@ -1727,11 +1881,11 @@ fn failure_callback_memory_resource_caps_retries_when_callback_keeps_retrying() 
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
     assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
-    assert_eq!(calls.load(Ordering::SeqCst), 8);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 #[test]
-fn failure_callback_memory_resource_retries_stream_reservation_limit_failures() {
+fn failure_callback_memory_resource_observes_stream_reservation_limit_once() {
     let manager_runtime = Runtime::builder().with_device_memory_manager().build().unwrap();
     let device = manager_runtime.device();
     let manager = manager_runtime.device_memory_manager().unwrap();
@@ -1739,7 +1893,7 @@ fn failure_callback_memory_resource_retries_stream_reservation_limit_failures() 
     let callback_calls = Arc::clone(&calls);
     let callback = Arc::new(move |bytes: usize| {
         assert!(bytes > 0);
-        callback_calls.fetch_add(1, Ordering::SeqCst) == 0
+        callback_calls.fetch_add(1, Ordering::SeqCst);
     });
     let callback_mr = manager.resource().with_failure_callback(callback).unwrap();
     let runtime = Runtime::builder().with_device(device).with_memory_resource(callback_mr).build().unwrap();
@@ -1749,7 +1903,7 @@ fn failure_callback_memory_resource_retries_stream_reservation_limit_failures() 
 
     assert_eq!(err.code(), ErrorCode::OutOfMemory);
     assert_eq!(err.kind(), ErrorKind::ResourceExhausted);
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
 #[test]

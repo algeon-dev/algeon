@@ -3,8 +3,8 @@ use std::ptr;
 use crate::{
     helpers::{make_i32_column, make_table_from_one_column, make_table_view, read_i32_column_data_with_exec},
     support::{
-        CurrentDeviceResourceRestore, OwnedMemoryResource, OwnedStream, current_device_resource_raw, last_exec_mr_raw,
-        last_exec_stream_value, lock_shim_state, required_exec_options, reset_exec_observation, stream_value,
+        OwnedMemoryResource, OwnedStream, last_exec_mr_raw, last_exec_stream_value, lock_shim_state,
+        required_exec_options, reset_exec_observation, stream_value,
     },
 };
 
@@ -38,9 +38,6 @@ fn read_all_i32(col: cudf_sys::cudf_column_handle, exec: &cudf_sys::cudf_exec_op
 #[test]
 fn filtered_join_probe_state_abi_materializes_retained_semi_and_anti_indices() {
     let _shim_state = lock_shim_state();
-    let previous_raw = current_device_resource_raw();
-    let current_mr = OwnedMemoryResource::new_test_stats();
-    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
     let target_mr = OwnedMemoryResource::new_test_stats();
     let stream = OwnedStream::new();
     let target_stream = stream.borrowed();
@@ -64,33 +61,15 @@ fn filtered_join_probe_state_abi_materializes_retained_semi_and_anti_indices() {
         ("anti", cudf_sys::cudf_filtered_join_begin_left_anti_probe_ex, 1usize, vec![0]),
     ] {
         let target_before = target_mr.allocation_count();
-        let current_before = current_mr.allocation_count();
-        let current_borrowed = current_mr.borrowed();
         reset_exec_observation();
-        crate::support::set_current_device_resource(&current_borrowed)
-            .expect("failed to install current sentinel memory resource");
 
         let mut state: cudf_sys::cudf_filtered_join_probe_handle = ptr::null_mut();
         let status = unsafe { begin_probe(join, probe_tv, &mut state, &exec) };
-        let restored_current = current_device_resource_raw();
-        unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
-            .expect("failed to restore previous current device resource");
 
         assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{name} probe-state begin failed");
         assert!(!state.is_null(), "{name} probe-state handle was not published");
         assert_eq!(last_exec_stream_value(), stream_value(stream.as_raw()));
         assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
-        assert_eq!(
-            restored_current,
-            current_mr.raw_device_resource(),
-            "{name} probe-state begin must restore the caller's current memory resource"
-        );
-        // Device-domain model: libcudf-internal temporaries deliberately
-        // resolve through the device's current resource (here the sentinel),
-        // so no equality is asserted on `current_mr.allocation_count()`. The
-        // retained probe state itself must still route through the explicit
-        // execution memory resource.
-        let _ = current_before;
         assert!(
             target_mr.allocation_count() > target_before,
             "{name} probe-state begin must allocate through the explicit execution memory resource"

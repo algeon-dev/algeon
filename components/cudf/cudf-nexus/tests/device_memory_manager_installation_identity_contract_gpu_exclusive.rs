@@ -4,10 +4,10 @@ use std::sync::{
 };
 
 use cudf::{
-    DeviceId, DeviceMemoryFailureAction, DeviceMemoryManager, DeviceMemoryManagerInstallationCause,
-    DeviceMemoryManagerInstallationIdentity, DeviceMemoryManagerInstallationOutcomeKind,
-    DeviceMemoryManagerInstallationRetry, DeviceMemoryManagerInstallationStatus, DeviceMemoryManagerOptions, ErrorCode,
-    ErrorKind, QueryMemoryDomainOptions, Runtime,
+    DeviceId, DeviceMemoryManager, DeviceMemoryManagerInstallationCause, DeviceMemoryManagerInstallationIdentity,
+    DeviceMemoryManagerInstallationOutcomeKind, DeviceMemoryManagerInstallationRetry,
+    DeviceMemoryManagerInstallationStatus, DeviceMemoryManagerOptions, ErrorCode, ErrorKind, QueryMemoryDomainOptions,
+    Runtime,
 };
 
 #[test]
@@ -23,7 +23,6 @@ fn identified_install_is_reusable_but_cannot_be_rebound() {
     let callback_calls_for_install = Arc::clone(&callback_calls);
     let callback = Arc::new(move |_| {
         callback_calls_for_install.fetch_add(1, Ordering::SeqCst);
-        DeviceMemoryFailureAction::Decline
     });
     let options = DeviceMemoryManagerOptions {
         allocation_limit_bytes: Some(8 * 1024 * 1024),
@@ -41,7 +40,7 @@ fn identified_install_is_reusable_but_cannot_be_rebound() {
     assert_eq!(installed.state.identity, Some(identity));
     let generation = installed.state.installation_generation.unwrap();
 
-    let replacement_callback = Arc::new(|_| DeviceMemoryFailureAction::TrimAndRetry);
+    let replacement_callback = Arc::new(|_| {});
     let (_manager, reused) = DeviceMemoryManager::install_for_device_with_owned_failure_callback_details_and_options(
         device,
         identity,
@@ -56,7 +55,7 @@ fn identified_install_is_reusable_but_cannot_be_rebound() {
     let error = DeviceMemoryManager::try_install_for_device_with_owned_failure_callback_details_and_options(
         device,
         other_identity,
-        Arc::new(|_| DeviceMemoryFailureAction::Decline),
+        Arc::new(|_| {}),
         options,
     )
     .unwrap_err();
@@ -81,7 +80,7 @@ fn identified_install_is_reusable_but_cannot_be_rebound() {
     let conflict = DeviceMemoryManager::try_install_for_device_with_owned_failure_callback_details_and_options(
         device,
         identity,
-        Arc::new(|_| DeviceMemoryFailureAction::Decline),
+        Arc::new(|_| {}),
         conflicting_options,
     )
     .unwrap_err();

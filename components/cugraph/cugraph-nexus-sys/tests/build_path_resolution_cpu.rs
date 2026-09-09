@@ -51,6 +51,15 @@ fn create_cuvs_install(prefix: &Path) -> PathBuf {
     prefix.to_path_buf()
 }
 
+fn create_cudf_public_headers(prefix: &Path) {
+    let include_dir = prefix.join("include/cudf_rust");
+    fs::create_dir_all(&include_dir).expect("create cudf_rust public include dir");
+    fs::write(include_dir.join("error_boundary.hpp"), "// test attributed exception header\n")
+        .expect("write error boundary header");
+    fs::write(include_dir.join("memory_resource.h"), "// test memory resource header\n")
+        .expect("write memory resource header");
+}
+
 fn workspace_manifest_dir(root: &Path) -> PathBuf {
     root.join("components/cugraph/cugraph-nexus-sys")
 }
@@ -278,6 +287,7 @@ fn prepare_workspace_cmake_export_dir_reuses_existing_canonical_build() {
     fs::create_dir_all(&manifest_dir).expect("create manifest dir");
     fs::create_dir_all(&cpp_dir).expect("create cpp dir");
     fs::create_dir_all(&build_dir).expect("create build dir");
+    create_cudf_public_headers(&cudf_install);
     fs::create_dir_all(&rmm_dir).expect("create rmm cmake dir");
     fs::create_dir_all(&logger_dir).expect("create rapids_logger cmake dir");
     fs::write(cpp_dir.join("CMakeLists.txt"), []).expect("write cmake lists");
@@ -285,9 +295,10 @@ fn prepare_workspace_cmake_export_dir_reuses_existing_canonical_build() {
     fs::write(
         build_dir.join("CMakeCache.txt"),
         format!(
-            "CMAKE_CUDA_ARCHITECTURES:STRING=NATIVE\nrmm_DIR:PATH={}\nrapids_logger_DIR:PATH={}\ncuvs_DIR:PATH={}\n",
+            "CMAKE_CUDA_ARCHITECTURES:STRING=NATIVE\nrmm_DIR:PATH={}\nrapids_logger_DIR:PATH={}\nCUGRAPH_CUDF_RUST_INCLUDE_DIR:PATH={}\ncuvs_DIR:PATH={}\n",
             rmm_dir.display(),
             logger_dir.display(),
+            cudf_install.join("include").display(),
             cuvs_dir.display()
         ),
     )
@@ -313,6 +324,7 @@ fn prepare_workspace_cmake_export_dir_honors_auto_build_opt_out() {
 
     fs::create_dir_all(&manifest_dir).expect("create manifest dir");
     fs::create_dir_all(&cpp_dir).expect("create cpp dir");
+    create_cudf_public_headers(&cudf_install);
     fs::create_dir_all(&rmm_dir).expect("create rmm cmake dir");
     fs::create_dir_all(&logger_dir).expect("create rapids_logger cmake dir");
     fs::write(cpp_dir.join("CMakeLists.txt"), []).expect("write cmake lists");
@@ -342,6 +354,7 @@ fn prepare_workspace_cmake_export_dir_rejects_stale_cuda_arch_when_auto_build_is
     fs::create_dir_all(&manifest_dir).expect("create manifest dir");
     fs::create_dir_all(&cpp_dir).expect("create cpp dir");
     fs::create_dir_all(&build_dir).expect("create build dir");
+    create_cudf_public_headers(&cudf_install);
     fs::create_dir_all(&rmm_dir).expect("create rmm cmake dir");
     fs::create_dir_all(&logger_dir).expect("create rapids_logger cmake dir");
     fs::write(cpp_dir.join("CMakeLists.txt"), []).expect("write cmake lists");
@@ -349,9 +362,10 @@ fn prepare_workspace_cmake_export_dir_rejects_stale_cuda_arch_when_auto_build_is
     fs::write(
         build_dir.join("CMakeCache.txt"),
         format!(
-            "CMAKE_CUDA_ARCHITECTURES:STRING=80\nrmm_DIR:PATH={}\nrapids_logger_DIR:PATH={}\ncuvs_DIR:PATH={}\n",
+            "CMAKE_CUDA_ARCHITECTURES:STRING=80\nrmm_DIR:PATH={}\nrapids_logger_DIR:PATH={}\nCUGRAPH_CUDF_RUST_INCLUDE_DIR:PATH={}\ncuvs_DIR:PATH={}\n",
             rmm_dir.display(),
             logger_dir.display(),
+            cudf_install.join("include").display(),
             cuvs_dir.display()
         ),
     )
@@ -371,6 +385,31 @@ fn prepare_workspace_cmake_export_dir_rejects_stale_cuda_arch_when_auto_build_is
 
     assert!(err.contains("CMAKE_CUDA_ARCHITECTURES"));
     assert!(err.contains("CUGRAPH_SYS_AUTO_BUILD"));
+}
+
+#[test]
+fn cudf_public_headers_must_be_regular_installed_files() {
+    let root = TestDir::new();
+    let cudf_install = root.path().join("cudf-install");
+    create_cudf_public_headers(&cudf_install);
+
+    build_support::validate_cudf_public_headers(&cudf_install).expect("validate installed cudf public headers");
+
+    fs::remove_file(cudf_install.join("include/cudf_rust/error_boundary.hpp")).expect("remove header");
+    let missing = build_support::validate_cudf_public_headers(&cudf_install).unwrap_err();
+    assert!(missing.contains("error_boundary.hpp"));
+    assert!(missing.contains("manual symlink"));
+
+    create_cudf_public_headers(&cudf_install);
+    let source = root.path().join("source-error-boundary.hpp");
+    fs::write(&source, "// source header\n").expect("write source header");
+    fs::remove_file(cudf_install.join("include/cudf_rust/error_boundary.hpp")).expect("remove regular header");
+    std::os::unix::fs::symlink(&source, cudf_install.join("include/cudf_rust/error_boundary.hpp"))
+        .expect("create target-local symlink");
+
+    let symlinked = build_support::validate_cudf_public_headers(&cudf_install).unwrap_err();
+    assert!(symlinked.contains("not a regular installed file"));
+    assert!(symlinked.contains("manual symlinks"));
 }
 
 #[test]

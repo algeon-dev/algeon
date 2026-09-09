@@ -44,6 +44,8 @@ mod tests;
 #[doc(hidden)]
 pub use admitted_proof::AdmittedAttemptProof;
 pub use attempt_domain::AttemptAllocationDomain;
+#[doc(hidden)]
+pub(crate) use attempt_domain::AttemptStreamProviderRoute;
 #[cfg(feature = "qualification")]
 pub use backend_core::GpuBackendFaultInjector;
 pub use backend_core::{

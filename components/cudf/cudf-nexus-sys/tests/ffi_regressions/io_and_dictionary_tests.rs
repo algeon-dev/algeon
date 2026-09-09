@@ -1,4 +1,5 @@
 use std::{
+    ffi::CStr,
     mem::{align_of, offset_of, size_of},
     os::raw::c_char,
     ptr,
@@ -7,8 +8,7 @@ use std::{
 use crate::{
     helpers::*,
     support::{
-        CurrentDeviceResourceRestore, OwnedMemoryResource, OwnedStream, current_device_resource_raw,
-        last_error_message, lock_shim_state, required_exec_options,
+        OwnedMemoryResource, OwnedStream, last_error_message, last_exec_mr_raw, lock_shim_state, required_exec_options,
     },
 };
 
@@ -32,6 +32,24 @@ fn test_parquet_pruning_evidence_ffi_layout() {
     assert_eq!(offset_of!(Evidence, row_groups_after_stats_filter), 16);
     assert_eq!(offset_of!(Evidence, has_row_groups_after_bloom_filter), 24);
     assert_eq!(offset_of!(Evidence, row_groups_after_bloom_filter), 32);
+}
+
+#[test]
+fn test_error_detail_ffi_layout() {
+    type Detail = cudf_sys::cudf_error_detail_t;
+
+    assert_eq!(size_of::<Detail>(), 568);
+    assert_eq!(align_of::<Detail>(), 8);
+    assert_eq!(offset_of!(Detail, status), 0);
+    assert_eq!(offset_of!(Detail, failure_source), 4);
+    assert_eq!(offset_of!(Detail, domain_id), 8);
+    assert_eq!(offset_of!(Detail, member_id), 16);
+    assert_eq!(offset_of!(Detail, generation), 24);
+    assert_eq!(offset_of!(Detail, requested_bytes), 32);
+    assert_eq!(offset_of!(Detail, alignment), 40);
+    assert_eq!(offset_of!(Detail, cuda_error), 48);
+    assert_eq!(offset_of!(Detail, message), 52);
+    assert_eq!(size_of::<[c_char; cudf_sys::CUDF_ERROR_MESSAGE_CAPACITY as usize]>(), 512);
 }
 
 #[test]
@@ -135,6 +153,32 @@ fn test_bad_alloc_maps_to_out_of_memory() {
 
     assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
     assert!(!last_error_message().is_empty());
+}
+
+#[test]
+fn test_bad_alloc_publishes_copyable_typed_error_detail() {
+    let _shim_state = lock_shim_state();
+    let status = unsafe { cudf_sys::test_support::cudf_test_throw_bad_alloc() };
+    assert_eq!(status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
+
+    let detail = unsafe {
+        let ptr = cudf_sys::cudf_last_error_detail();
+        assert!(!ptr.is_null());
+        ptr::read(ptr)
+    };
+    assert_eq!(detail.status, cudf_sys::CUDF_ERROR_OUT_OF_MEMORY);
+    assert_eq!(detail.failure_source, cudf_sys::CUDF_ERROR_FAILURE_SOURCE_UNKNOWN);
+    assert_eq!(detail.domain_id, 0);
+    assert_eq!(detail.member_id, 0);
+    assert_eq!(detail.generation, 0);
+    assert_eq!(detail.requested_bytes, 0);
+    assert_eq!(detail.alignment, 0);
+    assert_eq!(detail.cuda_error, -1);
+    let message = unsafe { CStr::from_ptr(detail.message.as_ptr()) }.to_string_lossy();
+    assert!(!message.is_empty());
+
+    unsafe { cudf_sys::cudf_clear_error() };
+    assert!(unsafe { cudf_sys::cudf_last_error_detail() }.is_null());
 }
 
 #[test]
@@ -439,9 +483,6 @@ fn test_io_write_parquet_null_column_name_entry_rejected() {
 #[test]
 fn test_io_write_parquet_ex_uses_explicit_memory_resource_for_writer_temporaries() {
     let _shim_state = lock_shim_state();
-    let previous_raw = current_device_resource_raw();
-    let current_mr = OwnedMemoryResource::new_test_stats();
-    let _restore = CurrentDeviceResourceRestore::new(previous_raw);
     let target_mr = OwnedMemoryResource::new_test_stats();
 
     let col = make_i32_column(&[10, 20, 30, 40, 50, 60]);
@@ -453,31 +494,11 @@ fn test_io_write_parquet_ex_uses_explicit_memory_resource_for_writer_temporaries
     let target_stream = stream.borrowed();
     let target_borrowed = target_mr.borrowed();
     let exec = required_exec_options(&target_stream, &target_borrowed);
-    let target_before = target_mr.allocation_count();
-    let current_before = current_mr.allocation_count();
 
-    let current_borrowed = current_mr.borrowed();
-    crate::support::set_current_device_resource(&current_borrowed)
-        .expect("failed to install current sentinel memory resource");
     let status = unsafe { cudf_sys::cudf_io_write_parquet_ex(tv, path.as_ptr(), ptr::null_mut(), 0, 0, -1, &exec) };
-    let restored_current = current_device_resource_raw();
-    unsafe { crate::support::set_current_device_resource_raw(previous_raw) }
-        .expect("failed to restore previous current device resource");
 
     assert_eq!(status, cudf_sys::CUDF_SUCCESS, "{}", last_error_message());
-    assert_eq!(
-        restored_current,
-        current_mr.raw_device_resource(),
-        "write_parquet must restore the caller's current device resource"
-    );
-    // Device-domain model: writer temporaries resolve through the device's
-    // current resource (the sentinel here), and a write has no device outputs,
-    // so the explicit execution memory resource may see no allocations.
-    assert!(
-        current_mr.allocation_count() > current_before,
-        "write_parquet temporaries must route through the device's current resource"
-    );
-    let _ = target_before;
+    assert_eq!(last_exec_mr_raw(), target_mr.raw_device_resource());
 
     stream.synchronize();
     let _ = std::fs::remove_file(path_buf);

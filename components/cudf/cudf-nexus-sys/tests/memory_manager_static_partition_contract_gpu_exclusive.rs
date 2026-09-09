@@ -108,7 +108,6 @@ fn native_manager_limit_is_enforced_inspected_and_immutable() {
                 7_001,
                 FIRST_ALLOCATION,
                 FIRST_ALLOCATION,
-                FIRST_ALLOCATION as u64,
                 &mut domain,
             )
         },
@@ -180,7 +179,6 @@ fn native_manager_limit_is_enforced_inspected_and_immutable() {
                     domain_id,
                     FIRST_ALLOCATION,
                     FIRST_ALLOCATION,
-                    FIRST_ALLOCATION as u64,
                     domain,
                 )
             },

@@ -11,6 +11,8 @@ use std::{borrow::Cow, error::Error as StdError, ffi::CStr, fmt, ptr::NonNull};
 
 use rapids_interop::{InteropError, InteropErrorKind};
 
+mod ffi;
+
 pub mod classification;
 pub mod code;
 pub mod facts;
@@ -26,6 +28,7 @@ pub(crate) use facts::{
     FACT_VALIDATION_STREAM, FactKey, IntoFactValue,
 };
 pub use facts::{FactKeyName, FactValue, Facts};
+pub use ffi::{CudfErrorDetail, CudfErrorFailureSource};
 
 type BoxedSourceError = Box<dyn StdError + Send + Sync + 'static>;
 
@@ -41,6 +44,7 @@ struct ErrorInner {
     facts: Facts,
     details: Vec<(&'static str, String)>,
     budget_exhaustion: Option<BudgetExhaustionDetail>,
+    ffi_detail: Option<CudfErrorDetail>,
     call_chain: Vec<&'static str>,
     source: Option<BoxedSourceError>,
 }
@@ -135,6 +139,7 @@ impl Error {
                 facts: Facts::new(),
                 details: Vec::new(),
                 budget_exhaustion: None,
+                ffi_detail: None,
                 call_chain: Vec::new(),
                 source: None,
             }),
@@ -204,6 +209,13 @@ impl Error {
         if self.inner.budget_exhaustion.is_none() {
             self.inner.budget_exhaustion = Some(detail);
         }
+        self
+    }
+
+    /// Internal: attach the copied native shim payload.
+    #[must_use]
+    pub(crate) fn with_ffi_detail(mut self, detail: CudfErrorDetail) -> Self {
+        self.inner.ffi_detail = Some(detail);
         self
     }
 
@@ -290,6 +302,11 @@ impl Error {
         self.inner.budget_exhaustion.as_ref()
     }
 
+    /// The native shim payload copied at the failed FFI boundary, if present.
+    pub fn ffi_detail(&self) -> Option<&CudfErrorDetail> {
+        self.inner.ffi_detail.as_ref()
+    }
+
     /// Ordered trail of prior primary operations this error has been
     /// re-anchored from. No deduplication.
     pub fn call_chain(&self) -> &[&'static str] {
@@ -339,6 +356,29 @@ impl Error {
             out.push_str(&diagnostic_quote(value));
         }
         out.push(']');
+
+        if let Some(detail) = self.ffi_detail() {
+            out.push_str(" ffi_detail={");
+            out.push_str("status=");
+            out.push_str(&detail.status.to_string());
+            out.push_str(", failure_source=");
+            out.push_str(&detail.failure_source.to_string());
+            out.push_str(", domain_id=");
+            out.push_str(&detail.domain_id.to_string());
+            out.push_str(", member_id=");
+            out.push_str(&detail.member_id.to_string());
+            out.push_str(", generation=");
+            out.push_str(&detail.generation.to_string());
+            out.push_str(", requested_bytes=");
+            out.push_str(&detail.requested_bytes.to_string());
+            out.push_str(", alignment=");
+            out.push_str(&detail.alignment.to_string());
+            out.push_str(", cuda_error=");
+            out.push_str(&detail.cuda_error.to_string());
+            out.push_str(", message=");
+            out.push_str(&diagnostic_quote(&detail.message));
+            out.push('}');
+        }
 
         out.push_str(" call_chain=[");
         for (index, operation) in self.call_chain().iter().enumerate() {
@@ -411,6 +451,9 @@ impl fmt::Debug for Error {
         writeln!(f, "operation: {}", self.inner.operation)?;
         writeln!(f, "call_chain: {:?}", self.inner.call_chain)?;
         writeln!(f, "facts: {}", self.inner.facts)?;
+        if let Some(detail) = &self.inner.ffi_detail {
+            writeln!(f, "ffi_detail: {:?}", detail)?;
+        }
         for (k, v) in &self.inner.details {
             writeln!(f, "{}: {}", k, v)?;
         }
@@ -636,6 +679,14 @@ fn leaf_code_for_status(status: cudf_sys::cudf_status_t, message: &str) -> Error
     {
         return ErrorCode::RuntimeBindingMismatch;
     }
+    if status == cudf_sys::CUDF_ERROR_INVALID_OPERATION
+        && (message.contains("stream routing invariant")
+            || message.contains("device allocation stream has no query domain")
+            || message.contains("unknown or already-freed device allocation pointer")
+            || message.contains("unknown or already-freed query memory domain pointer"))
+    {
+        return ErrorCode::ForeignInvariantViolation;
+    }
     match status {
         cudf_sys::CUDF_ERROR_INVALID_ARGUMENT | cudf_sys::CUDF_ERROR_INVALID_OPERATION | cudf_sys::CUDF_ERROR_TYPE => {
             ErrorCode::ForeignInvalidArgument
@@ -667,8 +718,21 @@ fn is_transient_cuda_io_message(message: &str) -> bool {
 }
 
 fn error_for_ffi_status(status: cudf_sys::cudf_status_t, operation: &'static str, message: String) -> Error {
+    error_for_ffi_status_with_detail(status, operation, message, None)
+}
+
+fn error_for_ffi_status_with_detail(
+    status: cudf_sys::cudf_status_t,
+    operation: &'static str,
+    message: String,
+    ffi_detail: Option<CudfErrorDetail>,
+) -> Error {
     let code = leaf_code_for_status(status, &message);
     let error = Error::new_with(code, operation, message);
+    let error = match ffi_detail {
+        Some(detail) => error.with_ffi_detail(detail),
+        None => error,
+    };
     if code == ErrorCode::TransientIoFailure {
         error.with_detail("transient_promotion", "cuda_invalid_value_copy")
     } else {
@@ -690,12 +754,30 @@ fn read_ffi_last_error_message() -> String {
     }
 }
 
+fn read_ffi_error(status: cudf_sys::cudf_status_t) -> (String, Option<CudfErrorDetail>) {
+    // SAFETY: the native getter returns a pointer to a fixed, thread-local
+    // record that remains valid until the next shim call. Copy the entire
+    // payload before returning to the caller.
+    unsafe {
+        let detail =
+            cudf_sys::cudf_last_error_detail().as_ref().map(|detail| CudfErrorDetail::from_raw(detail, status));
+        match detail {
+            Some(detail) if !detail.message.is_empty() => (detail.message.clone(), Some(detail)),
+            Some(detail) => (String::from("(no error message)"), Some(detail)),
+            None => (read_ffi_last_error_message(), None),
+        }
+    }
+}
+
 /// Convert a C shim status into a `Result<()>` anchored at the caller's
 /// operation label.
 pub(crate) fn check_status_in(status: cudf_sys::cudf_status_t, operation: &'static str) -> Result<()> {
     if status == cudf_sys::CUDF_SUCCESS {
         return Ok(());
     }
+    // Copy the native record before any health-reporting path can make
+    // another shim call on this thread and replace the TLS payload.
+    let (message, ffi_detail) = read_ffi_error(status);
     if status == cudf_sys::CUDF_ERROR_FATAL_CUDA
         && let Some(device) = crate::runtime::device_guard::current_entered_device()
     {
@@ -706,7 +788,7 @@ pub(crate) fn check_status_in(status: cudf_sys::cudf_status_t, operation: &'stat
             Some(crate::runtime::DeviceFaultNativeStatus::Cudf(status)),
         );
     }
-    check_status_in_without_device_report(status, operation)
+    Err(error_for_ffi_status_with_detail(status, operation, message, ffi_detail))
 }
 
 /// Convert a C shim status without inferring device ownership from the
@@ -722,8 +804,8 @@ pub(crate) fn check_status_in_without_device_report(
     if status == cudf_sys::CUDF_SUCCESS {
         return Ok(());
     }
-    let message = read_ffi_last_error_message();
-    Err(error_for_ffi_status(status, operation, message))
+    let (message, ffi_detail) = read_ffi_error(status);
+    Err(error_for_ffi_status_with_detail(status, operation, message, ffi_detail))
 }
 
 /// Convert a C shim status, attaching diagnostic details on failure.
@@ -919,5 +1001,35 @@ mod size_overflow_tests {
         assert_eq!(error.kind(), ErrorKind::ResourceExhausted);
         assert_eq!(error.status(), ErrorStatus::Permanent);
         assert!(!error.is_retryable());
+    }
+}
+
+#[cfg(test)]
+mod ffi_detail_tests {
+    use super::*;
+
+    #[test]
+    fn ffi_detail_is_retained_as_typed_error_payload() {
+        let detail = CudfErrorDetail {
+            status: cudf_sys::CUDF_ERROR_OUT_OF_MEMORY,
+            failure_source: CudfErrorFailureSource::ReservationLimit,
+            domain_id: 41,
+            member_id: 3,
+            generation: 9,
+            requested_bytes: 4096,
+            alignment: 256,
+            cuda_error: -1,
+            message: "query memory domain grant exceeded".to_string(),
+        };
+        let error = error_for_ffi_status_with_detail(
+            cudf_sys::CUDF_ERROR_OUT_OF_MEMORY,
+            "testing::ffi_detail",
+            detail.message.clone(),
+            Some(detail.clone()),
+        );
+
+        assert_eq!(error.code(), ErrorCode::OutOfMemory);
+        assert_eq!(error.ffi_detail(), Some(&detail));
+        assert!(error.diagnostic_string().contains("failure_source=RESERVATION_LIMIT"));
     }
 }

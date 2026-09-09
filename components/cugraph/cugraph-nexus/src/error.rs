@@ -11,8 +11,10 @@ use std::{
 };
 
 use cugraph_sys::{
-    cugraph_allocation_source_t, cugraph_error_allocation_source, cugraph_error_code_t, cugraph_error_free,
-    cugraph_error_message, cugraph_error_t,
+    cugraph_allocation_source_t, cugraph_error_alignment, cugraph_error_allocation_source, cugraph_error_code_t,
+    cugraph_error_cuda_error, cugraph_error_domain_id, cugraph_error_failure_source, cugraph_error_failure_source_t,
+    cugraph_error_free, cugraph_error_generation, cugraph_error_member_id, cugraph_error_message,
+    cugraph_error_requested_bytes, cugraph_error_t,
 };
 
 const CUGRAPH_RS_CUDA_FAILURE_NONE: i32 = 0;
@@ -157,6 +159,54 @@ impl fmt::Display for AllocationSource {
     }
 }
 
+/// Which owner or device condition caused an allocation failure.
+///
+/// This is separate from [`AllocationSource`], which records only the C++
+/// exception type caught at the native boundary. `Unknown` is fail-closed and
+/// must not be inferred from an error message or from `ErrorStatus`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum AllocationFailureSource {
+    /// The native error did not carry an attributable failure source.
+    #[default]
+    Unknown,
+    /// The query or owner reservation limit rejected the allocation.
+    ReservationLimit,
+    /// The device allocator reported physical memory pressure.
+    Physical,
+}
+
+impl AllocationFailureSource {
+    fn from_native(value: cugraph_error_failure_source_t) -> Self {
+        match value {
+            cugraph_error_failure_source_t::CUGRAPH_ERROR_FAILURE_SOURCE_PHYSICAL => Self::Physical,
+            cugraph_error_failure_source_t::CUGRAPH_ERROR_FAILURE_SOURCE_RESERVATION_LIMIT => Self::ReservationLimit,
+            _ => Self::Unknown,
+        }
+    }
+
+    unsafe fn from_error(error: *const cugraph_error_t) -> Self {
+        // SAFETY: the caller guarantees that `error` is either null or a live
+        // cuGraph error object for the duration of this call.
+        let value = unsafe { cugraph_error_failure_source(error) };
+        Self::from_native(value)
+    }
+
+    /// Returns the stable fact value for this failure source.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unknown => "unknown",
+            Self::ReservationLimit => "reservation_limit",
+            Self::Physical => "physical",
+        }
+    }
+}
+
+impl fmt::Display for AllocationFailureSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// Retry semantics for an error.
 ///
 /// Separates retryability from error categorisation so callers can make
@@ -202,10 +252,37 @@ impl fmt::Display for ErrorStatus {
 ///   Format: `{kind} ({status}) at {operation}[ => {message}][, context: { ... }][, source: ...]`
 /// - **`Debug`** (multi-line): for human debugging with context breakdown.
 /// - **`Debug` alternate** (`{:#?}`): standard Rust struct-style inspection.
+#[derive(Debug, Clone, Copy)]
+struct AllocationFacts {
+    source: AllocationSource,
+    failure_source: AllocationFailureSource,
+    domain_id: u64,
+    member_id: u64,
+    generation: u64,
+    requested_bytes: u64,
+    alignment: u64,
+    cuda_error: i32,
+}
+
+impl Default for AllocationFacts {
+    fn default() -> Self {
+        Self {
+            source: AllocationSource::Unknown,
+            failure_source: AllocationFailureSource::Unknown,
+            domain_id: 0,
+            member_id: 0,
+            generation: 0,
+            requested_bytes: 0,
+            alignment: 0,
+            cuda_error: -1,
+        }
+    }
+}
+
 pub struct Error {
     kind: ErrorKind,
     status: ErrorStatus,
-    allocation_source: AllocationSource,
+    allocation: Option<Box<AllocationFacts>>,
     operation: &'static str,
     message: String,
     context: Vec<(&'static str, String)>,
@@ -223,7 +300,7 @@ impl Error {
         Self {
             kind,
             status: ErrorStatus::Permanent,
-            allocation_source: AllocationSource::Unknown,
+            allocation: None,
             operation,
             message: String::new(),
             context: Vec::new(),
@@ -234,6 +311,10 @@ impl Error {
                 .filter(|bt| bt.status() == BacktraceStatus::Captured)
                 .map(Box::new),
         }
+    }
+
+    fn allocation_facts(&self) -> AllocationFacts {
+        self.allocation.as_deref().copied().unwrap_or_default()
     }
 
     /// Set the human-readable error message.
@@ -306,7 +387,42 @@ impl Error {
     /// allocation failure. It reports only the caught exception type and is
     /// never inferred from message text or error status.
     pub fn allocation_source(&self) -> AllocationSource {
-        self.allocation_source
+        self.allocation_facts().source
+    }
+
+    /// Which owner or device condition caused this allocation failure.
+    pub fn allocation_failure_source(&self) -> AllocationFailureSource {
+        self.allocation_facts().failure_source
+    }
+
+    /// Stable domain identity supplied by the native allocation owner.
+    pub fn allocation_domain_id(&self) -> u64 {
+        self.allocation_facts().domain_id
+    }
+
+    /// Stable member identity supplied by the native allocation owner.
+    pub fn allocation_member_id(&self) -> u64 {
+        self.allocation_facts().member_id
+    }
+
+    /// Native generation for the allocation owner identity.
+    pub fn allocation_generation(&self) -> u64 {
+        self.allocation_facts().generation
+    }
+
+    /// Bytes requested by the failed allocation, when known.
+    pub fn allocation_requested_bytes(&self) -> u64 {
+        self.allocation_facts().requested_bytes
+    }
+
+    /// Alignment requested by the failed allocation, when known.
+    pub fn allocation_alignment(&self) -> u64 {
+        self.allocation_facts().alignment
+    }
+
+    /// CUDA status observed at the allocation boundary, or `-1` when absent.
+    pub fn allocation_cuda_error(&self) -> i32 {
+        self.allocation_facts().cuda_error
     }
 
     /// Whether this error is temporary (retryable).
@@ -344,10 +460,18 @@ impl fmt::Debug for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if f.alternate() {
             // {:#?} — standard Rust struct-style inspection.
+            let allocation = self.allocation_facts();
             let mut d = f.debug_struct("Error");
             d.field("kind", &self.kind);
             d.field("status", &self.status);
-            d.field("allocation_source", &self.allocation_source);
+            d.field("allocation_source", &allocation.source);
+            d.field("allocation_failure_source", &allocation.failure_source);
+            d.field("allocation_domain_id", &allocation.domain_id);
+            d.field("allocation_member_id", &allocation.member_id);
+            d.field("allocation_generation", &allocation.generation);
+            d.field("allocation_requested_bytes", &allocation.requested_bytes);
+            d.field("allocation_alignment", &allocation.alignment);
+            d.field("allocation_cuda_error", &allocation.cuda_error);
             d.field("operation", &self.operation);
             if !self.message.is_empty() {
                 d.field("message", &self.message);
@@ -448,12 +572,18 @@ pub(crate) unsafe fn check_error(
         return Ok(());
     }
 
+    // Copy every field while the C error object is still live. The CUDA
+    // classification probe below is another FFI call and must not be allowed
+    // to race a native payload that is only valid until the next call.
+    // SAFETY: the native call leaves either a null pointer or a live error
+    // object until this function frees it after copying the payload.
+    let payload = unsafe { copy_native_error_payload(error_ptr) };
     // SAFETY: owner-device entry remains live and the native probe accepts no
     // borrowed resource other than its valid stack out-pointer.
     let cuda_failure = unsafe { native_cuda_failure_after_error() };
     // SAFETY: this forwards the caller's error-pointer contract and consumes
     // the pointer exactly once on the failure path.
-    unsafe { check_error_with_cuda_failure(code, error_ptr, Some((device, cuda_failure)), operation) }
+    unsafe { check_error_with_payload(code, error_ptr, payload, Some((device, cuda_failure)), operation) }
 }
 
 /// Check a host-only cuGraph C API call that cannot execute CUDA work.
@@ -470,9 +600,12 @@ pub(crate) unsafe fn check_host_error(
     if code == cugraph_error_code_t::CUGRAPH_SUCCESS {
         return Ok(());
     }
+    // SAFETY: the native call leaves either a null pointer or a live error
+    // object until this function frees it after copying the payload.
+    let payload = unsafe { copy_native_error_payload(error_ptr) };
     // SAFETY: this forwards the caller's error-pointer contract and consumes
     // the pointer exactly once on the failure path.
-    unsafe { check_error_with_cuda_failure(code, error_ptr, None, operation) }
+    unsafe { check_error_with_payload(code, error_ptr, payload, None, operation) }
 }
 
 unsafe fn native_cuda_failure_after_error() -> NativeCudaFailure {
@@ -488,22 +621,105 @@ unsafe fn native_cuda_failure_after_error() -> NativeCudaFailure {
     }
 }
 
-unsafe fn check_error_with_cuda_failure(
+struct NativeErrorPayload {
+    allocation_source: AllocationSource,
+    allocation_failure_source: AllocationFailureSource,
+    domain_id: u64,
+    member_id: u64,
+    generation: u64,
+    requested_bytes: u64,
+    alignment: u64,
+    cuda_error: i32,
+    message: String,
+}
+
+impl NativeErrorPayload {
+    fn unknown() -> Self {
+        Self {
+            allocation_source: AllocationSource::Unknown,
+            allocation_failure_source: AllocationFailureSource::Unknown,
+            domain_id: 0,
+            member_id: 0,
+            generation: 0,
+            requested_bytes: 0,
+            alignment: 0,
+            cuda_error: -1,
+            message: String::new(),
+        }
+    }
+}
+
+unsafe fn copy_native_error_payload(error: *const cugraph_error_t) -> NativeErrorPayload {
+    if error.is_null() {
+        return NativeErrorPayload::unknown();
+    }
+
+    // SAFETY: the caller guarantees that `error` is live until this complete
+    // owned copy finishes.
+    let message = unsafe { cugraph_error_message(error) };
+    let message = if message.is_null() {
+        String::new()
+    } else {
+        // SAFETY: cuGraph returns a NUL-terminated string owned by `error`.
+        unsafe { std::ffi::CStr::from_ptr(message) }.to_string_lossy().into_owned()
+    };
+
+    // SAFETY: `error` is non-null and live for these accessors. Each call
+    // reads the native object without retaining the pointer.
+    let (
+        allocation_source,
+        allocation_failure_source,
+        domain_id,
+        member_id,
+        generation,
+        requested_bytes,
+        alignment,
+        cuda_error,
+    ) = unsafe {
+        (
+            AllocationSource::from_error(error),
+            AllocationFailureSource::from_error(error),
+            cugraph_error_domain_id(error),
+            cugraph_error_member_id(error),
+            cugraph_error_generation(error),
+            cugraph_error_requested_bytes(error),
+            cugraph_error_alignment(error),
+            cugraph_error_cuda_error(error),
+        )
+    };
+
+    NativeErrorPayload {
+        allocation_source,
+        allocation_failure_source,
+        domain_id,
+        member_id,
+        generation,
+        requested_bytes,
+        alignment,
+        cuda_error,
+        message,
+    }
+}
+
+unsafe fn check_error_with_payload(
     code: cugraph_error_code_t,
     error_ptr: *mut cugraph_error_t,
+    payload: NativeErrorPayload,
     device_failure: Option<(i32, NativeCudaFailure)>,
     operation: &'static str,
 ) -> Result<()> {
     let kind = ErrorKind::from_error_code(code);
-    let allocation_source = if error_ptr.is_null() {
-        AllocationSource::Unknown
-    } else {
-        // SAFETY: `error_ptr` is live until it is freed below on this failure
-        // path, and the accessor does not retain the pointer.
-        unsafe { AllocationSource::from_error(error_ptr) }
-    };
     let mut err = Error::new(kind, operation);
-    err.allocation_source = allocation_source;
+    err.allocation = Some(Box::new(AllocationFacts {
+        source: payload.allocation_source,
+        failure_source: payload.allocation_failure_source,
+        domain_id: payload.domain_id,
+        member_id: payload.member_id,
+        generation: payload.generation,
+        requested_bytes: payload.requested_bytes,
+        alignment: payload.alignment,
+        cuda_error: payload.cuda_error,
+    }));
 
     // OutOfMemory is typically transient — GPU memory may free up.
     if kind == ErrorKind::OutOfMemory {
@@ -540,16 +756,11 @@ unsafe fn check_error_with_cuda_failure(
         }
     }
 
+    if !payload.message.is_empty() {
+        err = err.with_message(payload.message);
+    }
+
     if !error_ptr.is_null() {
-        // SAFETY: the caller guarantees that a failed C API call populated
-        // `error_ptr` with a valid cuGraph error object.
-        let msg_ptr = unsafe { cugraph_error_message(error_ptr) };
-        if !msg_ptr.is_null() {
-            // SAFETY: cuGraph returns a NUL-terminated message owned by the
-            // live error object, which is freed only after copying below.
-            let msg = unsafe { std::ffi::CStr::from_ptr(msg_ptr) }.to_string_lossy().into_owned();
-            err = err.with_message(msg);
-        }
         // SAFETY: `error_ptr` is a live cuGraph error object and this function
         // consumes it exactly once on the failure path. Upstream owns only a
         // host `std::string`; no CUDA resource is touched by this destructor.
@@ -602,6 +813,35 @@ mod tests {
         assert_eq!(AllocationSource::RmmOutOfMemory.as_str(), "rmm_out_of_memory");
         assert_eq!(AllocationSource::RmmBadAlloc.as_str(), "rmm_bad_alloc");
         assert_eq!(AllocationSource::StdBadAlloc.as_str(), "std_bad_alloc");
+    }
+
+    #[test]
+    fn allocation_failure_source_maps_native_values_and_fails_closed() {
+        assert_eq!(
+            AllocationFailureSource::from_native(cugraph_error_failure_source_t::CUGRAPH_ERROR_FAILURE_SOURCE_PHYSICAL),
+            AllocationFailureSource::Physical
+        );
+        assert_eq!(
+            AllocationFailureSource::from_native(
+                cugraph_error_failure_source_t::CUGRAPH_ERROR_FAILURE_SOURCE_RESERVATION_LIMIT
+            ),
+            AllocationFailureSource::ReservationLimit
+        );
+        assert_eq!(
+            AllocationFailureSource::from_native(cugraph_error_failure_source_t::CUGRAPH_ERROR_FAILURE_SOURCE_UNKNOWN),
+            AllocationFailureSource::Unknown
+        );
+        assert_eq!(
+            AllocationFailureSource::from_native(cugraph_error_failure_source_t(999)),
+            AllocationFailureSource::Unknown
+        );
+    }
+
+    #[test]
+    fn allocation_failure_source_fact_values_are_stable() {
+        assert_eq!(AllocationFailureSource::Unknown.as_str(), "unknown");
+        assert_eq!(AllocationFailureSource::ReservationLimit.as_str(), "reservation_limit");
+        assert_eq!(AllocationFailureSource::Physical.as_str(), "physical");
     }
 
     #[test]
@@ -711,6 +951,54 @@ mod tests {
         assert!(err.is_permanent());
         assert!(!err.is_temporary());
         assert!(!err.is_persistent());
+        assert_eq!(err.allocation_source(), AllocationSource::Unknown);
+        assert_eq!(err.allocation_failure_source(), AllocationFailureSource::Unknown);
+        assert_eq!(err.allocation_domain_id(), 0);
+        assert_eq!(err.allocation_member_id(), 0);
+        assert_eq!(err.allocation_generation(), 0);
+        assert_eq!(err.allocation_requested_bytes(), 0);
+        assert_eq!(err.allocation_alignment(), 0);
+        assert_eq!(err.allocation_cuda_error(), -1);
+    }
+
+    #[test]
+    fn native_payload_preserves_allocation_facts_and_error_identity() {
+        let payload = NativeErrorPayload {
+            allocation_source: AllocationSource::RmmOutOfMemory,
+            allocation_failure_source: AllocationFailureSource::ReservationLimit,
+            domain_id: 11,
+            member_id: 17,
+            generation: 23,
+            requested_bytes: 4096,
+            alignment: 256,
+            cuda_error: 2,
+            message: "reservation limit".to_string(),
+        };
+
+        // SAFETY: a null error pointer is the supported missing-native-error
+        // case, so the conversion has nothing to free.
+        let err = unsafe {
+            check_error_with_payload(
+                cugraph_error_code_t::CUGRAPH_ALLOC_ERROR,
+                std::ptr::null_mut(),
+                payload,
+                None,
+                "allocation_op",
+            )
+        }
+        .expect_err("allocation payload must produce an error");
+
+        assert_eq!(err.kind(), ErrorKind::OutOfMemory);
+        assert_eq!(err.status(), ErrorStatus::Temporary);
+        assert_eq!(err.allocation_source(), AllocationSource::RmmOutOfMemory);
+        assert_eq!(err.allocation_failure_source(), AllocationFailureSource::ReservationLimit);
+        assert_eq!(err.allocation_domain_id(), 11);
+        assert_eq!(err.allocation_member_id(), 17);
+        assert_eq!(err.allocation_generation(), 23);
+        assert_eq!(err.allocation_requested_bytes(), 4096);
+        assert_eq!(err.allocation_alignment(), 256);
+        assert_eq!(err.allocation_cuda_error(), 2);
+        assert_eq!(err.message(), "reservation limit");
     }
 
     #[test]
@@ -816,9 +1104,10 @@ mod tests {
         // CUDA classification is injected directly into the Rust translation
         // layer, without crossing the production CUDA probe.
         let error = unsafe {
-            check_error_with_cuda_failure(
+            check_error_with_payload(
                 cugraph_error_code_t::CUGRAPH_UNKNOWN_ERROR,
                 std::ptr::null_mut(),
+                NativeErrorPayload::unknown(),
                 Some((7, NativeCudaFailure::Fatal(700))),
                 "test_fatal_cugraph_call",
             )
