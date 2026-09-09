@@ -90,7 +90,7 @@ fn execute_compiled_partitioned_hash_equi_join_materialize_output(
         result.summary.observe_concatenated_output(&output);
         Some(output)
     };
-    record_partitioned_join_operator_metrics(plan, result.original, &result.summary, execution.metrics_mut());
+    record_partitioned_join_operator_metrics(plan, result.original, &result.summary, execution.metrics());
     if let Some(output) = output {
         Ok(BoundedCompiledJoinMaterializeOutput::Frame(Box::new(output)))
     } else {
@@ -162,8 +162,8 @@ fn materialize_partitioned_hash_equi_join_partition(
             return Err(error);
         },
     };
-    execution.metrics_mut().operator_time += timer.elapsed();
-    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics_mut()) {
+    execution.metrics().add_operator_time(timer.elapsed());
+    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             txn.rollback();
@@ -223,7 +223,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
         partition_count,
         partition_target_bytes,
     };
-    execution.metrics_mut().record_join_strategy_decision(
+    execution.metrics().record_join_strategy_decision(
         node_id,
         &BTreeMap::from([
             ("join_strategy", "partitioned_hash_equi".to_string()),
@@ -274,7 +274,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     });
     match stream_result {
         Ok(()) => {
-            execution.metrics_mut().record_join_strategy_decision(
+            execution.metrics().record_join_strategy_decision(
                 node_id,
                 &BTreeMap::from([
                     ("join_strategy", "partitioned_hash_equi".to_string()),
@@ -333,7 +333,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
     let build_partitioned =
         hash_partition_join_side(execution, build_side, build.input, &build_keys, partition_count, &overrides)?;
     let build_partitioned_bytes = build_partitioned.device_bytes();
-    execution.metrics_mut().record_join_strategy_decision(
+    execution.metrics().record_join_strategy_decision(
         node_id,
         &BTreeMap::from([
             ("join_strategy", "partitioned_hash_equi".to_string()),
@@ -404,7 +404,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_partitioned_has
             },
         };
     let build_partitioned_bytes = build.partitioned.device_bytes();
-    execution.metrics_mut().record_join_strategy_decision(
+    execution.metrics().record_join_strategy_decision(
         node_id,
         &BTreeMap::from([
             ("join_strategy", "partitioned_hash_equi".to_string()),
@@ -509,7 +509,7 @@ impl PartitionedHashEquiJoinProbeStreamSource {
             self.build_rows,
             self.build_bytes,
             &self.summary,
-            execution.metrics_mut(),
+            execution.metrics(),
         );
     }
 

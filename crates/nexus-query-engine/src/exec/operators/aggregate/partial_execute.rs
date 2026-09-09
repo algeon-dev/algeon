@@ -13,7 +13,7 @@ pub(in crate::exec::operators::aggregate) fn prepare_prepared_sort_groupby_with_
     frame: &DataFrame,
     aggregate: &LoweredAggregate,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     operation: &'static str,
 ) -> Result<(PreparedDataFrameGroupBy, Duration)> {
     let input_rows = frame.num_rows() as u64;
@@ -66,7 +66,7 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_singl
     mut decision: crate::capability::AggregateStrategyCapabilityDecision,
     selection_elapsed: Duration,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let input_rows = frame.num_rows() as u64;
     let total_timer = Instant::now();
@@ -128,7 +128,7 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_singl
     })?;
     let elapsed = total_timer.elapsed();
     let output_rows = output.num_rows() as u64;
-    metrics.operator_time += elapsed;
+    metrics.add_operator_time(elapsed);
     record_single_grouped_aggregate_strategy_decision_with_metrics(
         metrics,
         context,
@@ -164,7 +164,7 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_parti
     input_evidence: Option<PartialAggregateInputEvidence>,
     prepared_input: Option<(PreparedDataFrameGroupBy, Duration)>,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let input_rows = frame.num_rows() as u64;
     let preprepared_input = prepared_input.is_some();
@@ -229,7 +229,7 @@ pub(in crate::exec::operators::aggregate) fn execute_prepared_sort_groupby_parti
     let elapsed =
         total_timer.elapsed().saturating_add(if preprepared_input { prepare_elapsed } else { Duration::ZERO });
     let output_rows = output.num_rows() as u64;
-    metrics.operator_time += elapsed;
+    metrics.add_operator_time(elapsed);
     record_grouped_aggregate_strategy_decision(
         metrics,
         node_id.map(|id| id.to_string()),
@@ -268,7 +268,7 @@ pub(in crate::exec::operators::aggregate) fn execute_encoded_key_partial_aggrega
     selection_elapsed: Duration,
     input_evidence: Option<PartialAggregateInputEvidence>,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let input_rows = frame.num_rows() as u64;
     let overrides = token.execution_overrides();
@@ -376,7 +376,7 @@ pub(in crate::exec::operators::aggregate) fn execute_encoded_key_partial_aggrega
     })?;
     let elapsed = total_timer.elapsed();
     let output_rows = output.num_rows() as u64;
-    metrics.operator_time += elapsed;
+    metrics.add_operator_time(elapsed);
     record_grouped_aggregate_strategy_decision(
         metrics,
         node_id.map(|id| id.to_string()),

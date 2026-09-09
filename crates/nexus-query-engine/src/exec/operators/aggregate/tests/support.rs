@@ -205,7 +205,7 @@ fn partial_strategy_for_multi_key_sum(input_rows: u64) -> AggregateStrategyCapab
         &schema,
         input_rows,
         None,
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     )
 }
 
@@ -221,7 +221,7 @@ fn partial_strategy_for_simple_string_sum(
         &schema,
         input_rows,
         None,
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
     (schema, spec, decision)
 }
@@ -234,8 +234,8 @@ fn metrics_with_prior_partial_decision(
     input_rows: u64,
     output_group_count: u64,
     selected_strategy: &'static str,
-) -> QueryMetrics {
-    let mut metrics = QueryMetrics::default();
+) -> ExecutionMetrics {
+    let metrics = ExecutionMetrics::detached("aggregate-test");
     let facts = BTreeMap::from([
         ("execution_stage", "partial".to_string()),
         ("aggregate_structural_key", aggregate_structural_key(spec, schema, input_evidence)),
@@ -255,8 +255,8 @@ fn metrics_with_prior_partial_structural_decision(
     input_rows: u64,
     output_group_count: u64,
     selected_strategy: &'static str,
-) -> QueryMetrics {
-    let mut metrics = QueryMetrics::default();
+) -> ExecutionMetrics {
+    let metrics = ExecutionMetrics::detached("aggregate-test");
     let facts = BTreeMap::from([
         ("execution_stage", "partial".to_string()),
         ("aggregate_structural_key", aggregate_structural_key(spec, schema, None)),

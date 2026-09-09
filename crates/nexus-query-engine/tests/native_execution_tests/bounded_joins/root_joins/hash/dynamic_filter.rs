@@ -211,21 +211,22 @@ fn bounded_native_query_applies_post_decode_filter_to_shared_local_source_frame(
     let analysis = optimized.plan.capability_analysis(nexus_query_engine::rapids_backend::rapids_analysis_context());
     let pipeline = nexus_query_engine::pipeline::compile_pipeline(&optimized.plan, &analysis).unwrap();
     let scheduler = nexus_query_engine::exec::CompiledPipelineScheduler::new(&pipeline).unwrap();
-    let mut metrics = QueryMetrics::default();
+    let metrics_recorder = nexus_query_engine::exec::ExecutionMetrics::detached("metrics");
     let gpu_inputs = GpuResidentInputMap::new();
     let output = {
+        let metrics_context = metrics_recorder.scope_context(&admitted).unwrap();
         let mut executor = nexus_query_engine::exec::CompiledGpuTaskExecutor::new(
-            &admitted,
+            &metrics_context,
             &optimized.plan,
             &pipeline,
             &gpu_inputs,
-            &mut metrics,
-            None,
+            &metrics_recorder,
         )
         .unwrap();
         scheduler.run(&mut executor).unwrap();
         executor.take_host_output().unwrap()
     };
+    let metrics = metrics_recorder.snapshot();
     assert_eq!(output.num_rows(), 2);
     assert_eq!(int32_array(&output, 0).values().as_ref(), &[1, 3]);
     assert_eq!(int32_array(&output, 1).values().as_ref(), &[5, 4]);

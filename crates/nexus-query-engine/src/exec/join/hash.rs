@@ -1,8 +1,8 @@
 use super::{
     DataFrame, DataFrameHashJoin, DataFrameHashJoinOptions, DataFrameHashJoinPairIndices, EquiJoinIndices,
-    ExecutionContext, ExecutionOverrides, ExecutionScratch, GpuHashJoinBuildHandle, HashJoinCacheKey, JoinIndexInput,
-    JoinIndexResult, JoinNode, JoinSide, JoinType, QueryError, QueryErrorCode, QueryMetrics, Result, cudf_query_error,
-    join_index_error_base, lower_null_equality,
+    ExecutionContext, ExecutionMetrics, ExecutionOverrides, ExecutionScratch, GpuHashJoinBuildHandle, HashJoinCacheKey,
+    JoinIndexInput, JoinIndexResult, JoinNode, JoinSide, JoinType, QueryError, QueryErrorCode, Result,
+    cudf_query_error, join_index_error_base, lower_null_equality,
 };
 
 struct JoinKeyDiagnostics {
@@ -30,7 +30,7 @@ pub(super) fn execute_reusable_hash_join_indices(
     input: &JoinIndexInput<'_, '_>,
     node: &JoinNode,
     scratch: &mut ExecutionScratch,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<JoinIndexResult> {
     match node.spec.build_side {
         JoinSide::Right => {
@@ -86,7 +86,7 @@ fn build_hash_join(
     overrides: &ExecutionOverrides<'_>,
     node: &JoinNode,
     scratch: &mut ExecutionScratch,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<BuiltHashJoin> {
     let build_node = match node.spec.build_side {
         JoinSide::Left => node.inputs[0],

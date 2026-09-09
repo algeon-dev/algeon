@@ -34,10 +34,10 @@ pub(super) fn concatenate_join_source_chunks(
             .with_fact("chunk_count", chunk_count));
         },
     };
-    execution.metrics_mut().operator_time += timer.elapsed();
+    execution.metrics().add_operator_time(timer.elapsed());
 
     let output_frame = GpuDataFrame::new(output);
-    let output_bytes = observe_device_memory_bytes(&output_frame, execution.metrics_mut())?;
+    let output_bytes = observe_device_memory_bytes(&output_frame, execution.metrics())?;
     Ok(ResidentGpuFrame::with_device_bytes(output_frame, output_bytes))
 }
 

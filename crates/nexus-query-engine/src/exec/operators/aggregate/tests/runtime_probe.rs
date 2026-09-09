@@ -21,7 +21,7 @@ fn medium_single_string_avg_does_not_admit_exact_cardinality_probe_candidate() {
         &schema,
         204_000,
         None,
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
 
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
@@ -47,7 +47,7 @@ fn medium_single_string_sum_keeps_libcudf_without_hot_path_probe() {
         &schema,
         204_000,
         None,
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
 
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
@@ -70,7 +70,7 @@ fn aggregate_strategy_options_no_longer_enable_hot_path_exact_probe() {
         204_000,
         None,
         AggregateStrategyExecutionOptions::default(),
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
     let options =
         AggregateStrategyExecutionOptions::default().with_exact_single_key_cardinality_probe_min_input_rows(100_000);
@@ -96,7 +96,7 @@ fn medium_single_string_mixed_avg_sum_keeps_libcudf_without_hot_path_probe() {
         &schema,
         204_000,
         None,
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
 
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
@@ -118,7 +118,7 @@ fn medium_partial_single_string_avg_keeps_libcudf_without_hot_path_probe() {
         &schema,
         204_000,
         None,
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
 
     assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::LibcudfGroupby);
@@ -146,7 +146,7 @@ fn large_two_key_does_not_admit_exact_grouped_key_cardinality_probe_candidate() 
         &schema,
         5_000_000,
         None,
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
 
     assert_eq!(exact_grouped_key_cardinality_probe_candidate(&decision, &spec, &schema, 5_000_000), None);
@@ -167,7 +167,7 @@ fn medium_two_key_keeps_libcudf_without_hot_path_probe() {
         &schema,
         204_000,
         None,
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
 
     assert_eq!(
@@ -188,7 +188,7 @@ fn large_three_key_does_not_admit_exact_grouped_key_cardinality_probe_candidate(
         &schema,
         5_000_000,
         None,
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
 
     assert_eq!(exact_grouped_key_cardinality_probe_candidate(&decision, &spec, &schema, 5_000_000), None);
@@ -204,7 +204,7 @@ fn three_key_runtime_probe_helper_stays_disabled_for_hot_path() {
         &schema,
         AggregateStrategyExecutionOptions::DEFAULT_EXACT_THREE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS + 1,
         None,
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
     assert_eq!(
         exact_grouped_key_cardinality_probe_candidate(
@@ -233,7 +233,7 @@ fn three_key_runtime_probe_helper_stays_disabled_for_hot_path() {
         &schema,
         5_000_000,
         None,
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
     assert_eq!(exact_grouped_key_cardinality_probe_candidate(&all_fixed_decision, &spec, &schema, 5_000_000), None);
 }
@@ -248,7 +248,7 @@ fn five_key_does_not_admit_exact_grouped_key_cardinality_probe_candidate() {
         &schema,
         6_900_000,
         None,
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
 
     assert_eq!(exact_grouped_key_cardinality_probe_candidate(&decision, &spec, &schema, 6_900_000), None);
@@ -264,7 +264,7 @@ fn five_key_runtime_probe_helper_stays_disabled_for_hot_path() {
         &schema,
         AggregateStrategyExecutionOptions::DEFAULT_EXACT_FIVE_KEY_CARDINALITY_PROBE_MAX_INPUT_ROWS + 1,
         None,
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
     assert_eq!(
         exact_grouped_key_cardinality_probe_candidate(
@@ -301,7 +301,7 @@ fn five_key_runtime_probe_helper_stays_disabled_for_hot_path() {
         &schema,
         6_900_000,
         None,
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
     assert_eq!(exact_grouped_key_cardinality_probe_candidate(&wrong_mix_decision, &spec, &schema, 6_900_000), None);
 
@@ -330,7 +330,7 @@ fn five_key_runtime_probe_helper_stays_disabled_for_hot_path() {
         &schema,
         6_900_000,
         None,
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
     assert_eq!(exact_grouped_key_cardinality_probe_candidate(&string_heavy_decision, &spec, &schema, 6_900_000), None);
 }
@@ -364,7 +364,7 @@ fn exact_grouped_key_cardinality_probe_candidate_rejects_single_small_and_wide_k
         &wide_schema,
         5_000_000,
         None,
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
     assert_eq!(
         exact_grouped_key_cardinality_probe_candidate(&wide_decision, &wide_spec, &wide_schema, 5_000_000),
@@ -405,7 +405,7 @@ fn exact_grouped_key_cardinality_probe_selects_prepared_by_reduction_ratio() {
         &schema,
         5_000_000,
         None,
-        &QueryMetrics::default(),
+        &ExecutionMetrics::detached("aggregate-test"),
     );
     let low_cardinality = ExactGroupedKeyCardinalityProbe {
         key_columns: vec!["quarter".to_string(), "year".to_string()],

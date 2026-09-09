@@ -3,10 +3,13 @@ use std::{cell::Cell, collections::VecDeque, rc::Rc};
 use crate::{
     dynamic_filter::{DynamicFilter, DynamicFilterRoute},
     error::{QueryError, QueryErrorCode, Result},
-    exec::bounded::{
-        BoundedExecutionAttempt, ResidentGpuFrame, execute_bounded_generic_projection, execute_bounded_generic_unary,
+    exec::{
+        ExecutionMetrics,
+        bounded::{
+            BoundedExecutionAttempt, ResidentGpuFrame, execute_bounded_generic_projection,
+            execute_bounded_generic_unary,
+        },
     },
-    metrics::QueryMetrics,
     plan::{FilterNode, NodeId, ProjectionNode},
     runtime::resident::GpuDataFrame,
 };
@@ -442,7 +445,7 @@ impl UnaryMappedResidentFrameStreamSource {
         }
     }
 
-    fn record_metrics(&self, input_rows: u64, output: &ResidentGpuFrame, metrics: &mut QueryMetrics) {
+    fn record_metrics(&self, input_rows: u64, output: &ResidentGpuFrame, metrics: &ExecutionMetrics) {
         if let UnaryMappedResidentFrameStreamOperator::DynamicFilter { route, dynamic_filter, .. } = &self.operator {
             metrics.record_dynamic_filter_post_decode_rows(
                 route,
@@ -474,7 +477,7 @@ impl ResidentFrameStreamSource for UnaryMappedResidentFrameStreamSource {
                 let frame = yielded.take_for_release();
                 let input_rows = frame.frame.num_rows() as u64;
                 Some(self.execute(execution, frame).inspect(|output| {
-                    self.record_metrics(input_rows, output, execution.metrics_mut());
+                    self.record_metrics(input_rows, output, execution.metrics());
                 }))
             },
             Some(Err(error)) => Some(Err(error)),

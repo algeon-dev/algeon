@@ -193,6 +193,17 @@ impl NativeTpchBenchmarkReport {
             self.config.max_source_reads_in_flight,
             self.devices.first().map(|device| device.managed_capacity_bytes),
         );
+        // A loss flag cannot say how many detail rows were lost, only that the
+        // rendered rows are not the full history.
+        for row in self.rows.iter().filter(|row| row.metrics.detail_capture_lost) {
+            push_line(
+                &mut output,
+                format_args!(
+                    "# metric_detail_capture query_id={} status=incomplete lost_records=unknown",
+                    row.query_id
+                ),
+            );
+        }
         debug_assert_eq!(NATIVE_TPCH_BENCHMARK_TSV_COLUMNS.join("\t"), NATIVE_TPCH_BENCHMARK_TSV_HEADER);
         output.push_str(NATIVE_TPCH_BENCHMARK_TSV_HEADER);
         output.push('\n');

@@ -59,7 +59,7 @@ pub(super) fn execute_compiled_mixed_join_materialize(
     .map_err(|error| join_index_error(error, node))?;
     let expected_output_rows = size_data.output_size() as u64;
     let size_data_bytes = size_data.device_allocated_size_bytes(node)?;
-    execution.metrics_mut().record_mixed_join_size_data_bytes(size_data_bytes);
+    execution.metrics().record_mixed_join_size_data_bytes(size_data_bytes);
     let indices = size_data.materialize_indices_in(&overrides, node)?;
     let gather_map_bytes = indices.device_allocated_size_bytes(node)?;
     materialize_compiled_indices_output(

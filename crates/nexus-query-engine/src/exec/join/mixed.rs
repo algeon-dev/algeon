@@ -1,14 +1,14 @@
 use super::{
-    EquiJoinIndices, ExecutionScratch, JoinIndexInput, JoinIndexResult, JoinNode, JoinType, QueryError, QueryErrorCode,
-    QueryMetrics, Result, cudf_query_error, dataframe_mixed_join_options, dataframe_predicate_join_options,
-    join_index_error, lower_join_match_predicate, lower_join_residual_predicate,
+    EquiJoinIndices, ExecutionMetrics, ExecutionScratch, JoinIndexInput, JoinIndexResult, JoinNode, JoinType,
+    QueryError, QueryErrorCode, Result, cudf_query_error, dataframe_mixed_join_options,
+    dataframe_predicate_join_options, join_index_error, lower_join_match_predicate, lower_join_residual_predicate,
 };
 
 pub(super) fn execute_mixed_join_indices(
     input: &JoinIndexInput<'_, '_>,
     node: &JoinNode,
     _scratch: &mut ExecutionScratch,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<JoinIndexResult> {
     match node.spec.join_type {
         JoinType::Inner | JoinType::Left => {

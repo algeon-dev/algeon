@@ -1,4 +1,4 @@
-use super::{QueryError, QueryMetrics, RetryFacts, SourceChunk};
+use super::{BoundedExecutionAttempt, ExecutionMetrics, QueryError, RetryFacts, SourceChunk};
 
 pub(in crate::exec::bounded) fn is_retryable_chunk_error(error: &QueryError) -> bool {
     crate::exec::retry::is_retryable_resource_error(error)
@@ -9,7 +9,7 @@ pub(in crate::exec::bounded::chunks) fn is_prefetch_chunk_error(error: &QueryErr
         || error.fact_value("memory_boundary") == Some("source_chunk_prefetch")
 }
 
-pub(in crate::exec) fn record_chunk_retry_error(error: &QueryError, metrics: &mut QueryMetrics) {
+pub(in crate::exec) fn record_chunk_retry_error(error: &QueryError, metrics: &ExecutionMetrics) {
     crate::exec::retry::record_retryable_resource_error(error, metrics);
 }
 
@@ -175,18 +175,22 @@ pub(in crate::exec::bounded) fn proportional_bytes(
     Some(numerator.div_ceil(denominator).min(u128::from(u64::MAX)) as u64)
 }
 
-pub(in crate::exec::bounded) fn chunk_retry_facts(chunk: &SourceChunk, metrics: &QueryMetrics) -> RetryFacts {
+pub(in crate::exec::bounded) fn chunk_retry_facts(
+    chunk: &SourceChunk,
+    execution: &BoundedExecutionAttempt<'_>,
+) -> RetryFacts {
     let retry_action = if chunk.reads_all_row_groups || chunk.row_group_indexes.len() <= 1 {
         "fail_min_chunk"
     } else {
         "retry_attempts_exhausted"
     };
 
+    let progress = execution.metrics().progress();
     RetryFacts::new()
         .with_retry_action(retry_action)
         .with_resume_boundary("source_chunk")
-        .with_committed_chunks(metrics.source_chunks_committed as usize)
-        .with_committed_partials(metrics.partial_aggregate_count as usize)
+        .with_committed_chunks(progress.source_chunks_committed as usize)
+        .with_committed_partials(progress.partial_aggregate_count as usize)
 }
 
 #[cfg(test)]

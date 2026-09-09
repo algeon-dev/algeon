@@ -174,7 +174,7 @@ pub(super) fn measure_join_build_key_unique(
     let keys = match build_frame.frame().select(key_refs.clone()) {
         Ok(keys) => keys,
         Err(error) => {
-            execution.metrics_mut().operator_time += timer.elapsed();
+            execution.metrics().add_operator_time(timer.elapsed());
             return Err(cudf_query_error(
                 "nexus_query_engine.bounded.join.build_key_uniqueness_probe.input",
                 "failed to project join build-key uniqueness probe columns",
@@ -187,7 +187,7 @@ pub(super) fn measure_join_build_key_unique(
     ) {
         Ok(unique_keys) => unique_keys,
         Err(error) => {
-            execution.metrics_mut().operator_time += timer.elapsed();
+            execution.metrics().add_operator_time(timer.elapsed());
             return Err(attach_budget_token_failure_facts(
                 cudf_query_error(
                     "nexus_query_engine.bounded.join.build_key_uniqueness_probe.distinct_keys",
@@ -198,7 +198,7 @@ pub(super) fn measure_join_build_key_unique(
             ));
         },
     };
-    execution.metrics_mut().operator_time += timer.elapsed();
+    execution.metrics().add_operator_time(timer.elapsed());
     Ok(unique_keys.num_rows() == build_frame.num_rows())
 }
 

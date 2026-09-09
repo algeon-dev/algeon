@@ -3,9 +3,9 @@ use std::time::Instant;
 use super::{
     BoundedExecutionAttempt, BoundedPartitionRowPolicy, BoundedPartitionTargetPolicy, BoundedSourceBatchingPolicy,
     CommittedPartial, DataFrame, DropDuplicatesOptions, DuplicateKeepOption, ExecutionBudgetToken, ExecutionContext,
-    ExecutionOverrides, Expr, FilterNode, GpuDataFrame, GpuFilteredJoinBuildHandle, GpuHashJoinBuildHandle,
-    GpuResidentInputMap, JoinNode, JoinOutputColumn, JoinSide, JoinType, LocalParquetFile, LocalParquetSource,
-    MemoryControlPolicy, NodeId, NullAwareAntiProbe, ProjectionNode, QueryError, QueryErrorCode, QueryMetrics,
+    ExecutionMetrics, ExecutionOverrides, Expr, FilterNode, GpuDataFrame, GpuFilteredJoinBuildHandle,
+    GpuHashJoinBuildHandle, GpuResidentInputMap, JoinNode, JoinOutputColumn, JoinSide, JoinType, LocalParquetFile,
+    LocalParquetSource, MemoryControlPolicy, NodeId, NullAwareAntiProbe, ProjectionNode, QueryError, QueryErrorCode,
     ResidentGpuFrame, Result, RetryFacts, SourceAdjacentAggregateChunkCapHints, SourceChunk, SourceChunkBatch,
     SourceChunkPlanningPolicy, SourceTaskMemoryModel, annotate_source_chunk_batching_reasons,
     apply_source_adjacent_aggregate_chunk_caps, attach_budget_token_failure_facts, chunk_retry_facts, cudf_query_error,

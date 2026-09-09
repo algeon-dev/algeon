@@ -9,7 +9,7 @@ use super::{
     NativeDataFusionRuntime, NativeDataFusionRuntimeSummary, NativeFallbackPressureRow,
     NativeFallbackPressureWorkloadItem, NexusNativeExecutionConfig, NexusNativePhysicalOptimizerRule, TsvRow,
     WorkloadDatasetMetadata, datafusion_execution_rows_for_item, datafusion_planning_rows_for_item,
-    report_rows_for_item, write_workload_dataset_metadata,
+    report_rows_for_item, write_metric_detail_completeness, write_workload_dataset_metadata,
 };
 
 /// In-memory fallback-pressure report.
@@ -237,6 +237,7 @@ impl NativeDataFusionExecutionReport {
                 writeln!(output, "# statistical_aggregate_tolerance_contract={}", mode.tolerance_contract().as_str());
         }
         write_workload_dataset_metadata(&mut output, self.workload_dataset.as_ref());
+        write_metric_detail_completeness(&mut output, &self.rows);
         debug_assert_eq!(NativeDataFusionExecutionRow::COLUMNS.join("\t"), NATIVE_DATAFUSION_EXECUTION_TSV_HEADER);
         output.push_str(NATIVE_DATAFUSION_EXECUTION_TSV_HEADER);
         output.push('\n');

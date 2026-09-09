@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use super::{
-    ArrowDataType, DataFrame, ExecutionBudgetToken, ExecutionContext, Expr, GpuDataFrame, ProjectionNode, QueryError,
-    QueryErrorCode, QueryMetrics, Result, attach_budget_token_failure_facts, budgeted_value,
+    ArrowDataType, DataFrame, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, Expr, GpuDataFrame,
+    ProjectionNode, QueryError, QueryErrorCode, Result, attach_budget_token_failure_facts, budgeted_value,
     cudf_dtype_from_arrow_type, cudf_query_error, cudf_query_error_with_budget_details, datafusion_order_columns,
     execution_overrides, is_supported_arrow_implicit_cast, lower_projection_output_expr,
     projection_schema_mismatch_error,
@@ -16,12 +16,12 @@ pub(in crate::exec) fn execute_projection(
     context: &ExecutionContext,
     node: &ProjectionNode,
     input: GpuDataFrame,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let frame = input.frame().clone();
     let timer = Instant::now();
     if let Some(output) = try_execute_column_only_projection(node, frame.clone(), None, metrics)? {
-        metrics.operator_time += timer.elapsed();
+        metrics.add_operator_time(timer.elapsed());
         return GpuDataFrame::try_new_with_source_residency(output, &input);
     }
     let PreparedProjectionColumns { exprs, output_columns } = prepare_projection_columns(node, &frame)?;
@@ -39,7 +39,7 @@ pub(in crate::exec) fn execute_projection(
             },
         )?;
     output = coerce_projection_output_schema(output, node, None, metrics)?;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     GpuDataFrame::try_new_with_source_residency(output, &input)
 }
 
@@ -48,7 +48,7 @@ pub(in crate::exec) fn execute_projection_with_budget(
     node: &ProjectionNode,
     input: GpuDataFrame,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     execute_projection_with_budget_and_prepared(context, node, input, token, None, metrics)
 }
@@ -59,12 +59,12 @@ pub(in crate::exec) fn execute_projection_with_budget_and_prepared(
     input: GpuDataFrame,
     token: &ExecutionBudgetToken,
     prepared: Option<PreparedProjectionRegexpReplace>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let frame = input.frame().clone();
     let timer = Instant::now();
     if let Some(output) = try_execute_column_only_projection(node, frame.clone(), Some(token), metrics)? {
-        metrics.operator_time += timer.elapsed();
+        metrics.add_operator_time(timer.elapsed());
         return GpuDataFrame::try_new_with_source_residency(output, &input);
     }
 
@@ -96,7 +96,7 @@ pub(in crate::exec) fn execute_projection_with_budget_and_prepared(
             Ok(output_frame) => {
                 let output = coerce_projection_output_schema(output_frame, node, Some(token), metrics)?;
                 stage_guard.finish(Some(output.num_rows() as u64), None);
-                metrics.operator_time += timer.elapsed();
+                metrics.add_operator_time(timer.elapsed());
                 return GpuDataFrame::try_new_with_source_residency(output, &input);
             },
             Err(error) => {
@@ -128,7 +128,7 @@ pub(in crate::exec) fn execute_projection_with_budget_and_prepared(
         )
     })?;
     output = coerce_projection_output_schema(output, node, Some(token), metrics)?;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     GpuDataFrame::try_new_with_source_residency(output, &input)
 }
 
@@ -163,7 +163,7 @@ pub(in crate::exec) fn projection_regexp_replace_prepare(
     context: &ExecutionContext,
     node: &ProjectionNode,
     input: &GpuDataFrame,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<Option<PreparedProjectionRegexpReplace>> {
     if !node.outputs.iter().any(|output| output.expr.contains_regexp_replace()) {
         return Ok(None);
@@ -175,7 +175,7 @@ fn prepare_projection_regexp_replace(
     context: &ExecutionContext,
     node: &ProjectionNode,
     input: &GpuDataFrame,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<PreparedProjectionRegexpReplace> {
     let frame = input.frame();
     let input_rows = frame.num_rows() as u64;
@@ -232,7 +232,7 @@ fn prepare_projection_regexp_replace(
                             .with_fact("output_field", output.field.name().as_str())
                             .with_fact("required_contract", cudf::REPLACE_WITH_BACKREFS_OUTPUT_SIZE_PREFLIGHT_CONTRACT)
                         })?;
-                    metrics.operator_time += timer.elapsed();
+                    metrics.add_operator_time(timer.elapsed());
                     let facts = prepared.output_size_facts();
                     let component_bytes = u64::try_from(facts.required_budget_bytes()).map_err(|_| {
                         QueryError::new(
@@ -301,7 +301,7 @@ fn materialize_prepared_regexp_replace_projection(
     mut frame: DataFrame,
     prepared: PreparedProjectionRegexpReplace,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<DataFrame> {
     let prepared_by_field: std::collections::HashMap<String, cudf::SeriesPreparedReplaceWithBackrefs> =
         prepared.components.into_iter().map(|component| (component.output_field, component.prepared)).collect();
@@ -424,7 +424,7 @@ fn try_execute_column_only_projection(
     node: &ProjectionNode,
     frame: DataFrame,
     token: Option<&ExecutionBudgetToken>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<Option<DataFrame>> {
     let mut mappings = Vec::with_capacity(node.outputs.len());
     for output in &node.outputs {
@@ -471,7 +471,7 @@ fn coerce_projection_output_schema(
     mut frame: DataFrame,
     node: &ProjectionNode,
     token: Option<&ExecutionBudgetToken>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<DataFrame> {
     for (field_index, field) in node.output_fields().enumerate() {
         let field_name = field.name();

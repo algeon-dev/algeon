@@ -35,6 +35,7 @@ use cudf::{
 mod bounded;
 mod edge_normalize;
 mod edge_null_filter;
+mod execution_metrics;
 mod graph_algorithm;
 mod join;
 mod materialize;
@@ -56,6 +57,8 @@ pub use bounded::pipeline::{
     CompiledSchedulingCycle, CompiledTaskExecutor, CompiledTaskOutput, ReleasedCompiledResource,
 };
 use edge_normalize::execute_edge_normalize;
+#[doc(hidden)]
+pub use execution_metrics::ExecutionMetrics;
 use nvtx::attempt_execution_range;
 use output::QueryOutput;
 use source::{read_gpu_resident_source, read_literal_batch_source, read_local_parquet_source};
@@ -277,10 +280,16 @@ fn execute_query_plan_with_observation(
         });
     let plan_execution_id =
         PlanExecutionId::new(format!("native-plan-{}", NEXT_PLAN_EXECUTION_ID.fetch_add(1, Ordering::Relaxed)));
-    let lifecycle = context.begin_runtime_execution_observation(plan_execution_id);
+    let lifecycle = context.begin_runtime_execution_observation(plan_execution_id.clone());
     let execution_scope = lifecycle.execution_scope();
+    let execution_metrics = ExecutionMetrics::bind(
+        execution_scope.observation(),
+        plan_execution_id,
+        query_id.as_str(),
+        trace_id.as_ref().map(TraceId::as_str),
+    );
+    let execution_scope = execution_scope.with_metrics(execution_metrics.recorder().clone());
     record_query_plan_topology(&execution_scope, plan);
-    let mut metrics = query_metrics(context, query_id.clone(), trace_id.clone());
     let result = observed_context
         .and_then(|context| context.with_runtime_execution_scope(execution_scope.clone()))
         .and_then(|observed_context| {
@@ -289,16 +298,18 @@ fn execute_query_plan_with_observation(
                 plan,
                 bounded_admission,
                 gpu_inputs,
-                &mut metrics,
+                &execution_metrics,
                 Some(&execution_scope),
             )
         })
-        .map_err(|error| with_optional_trace_id(error.with_query_id(query_id), trace_id.as_ref()));
+        .map_err(|error| with_optional_trace_id(error.with_query_id(query_id.clone()), trace_id.as_ref()));
     let terminal = match &result {
         Ok(_) => RuntimeTerminalOutcome::Succeeded,
         Err(error) => RuntimeTerminalOutcome::from_query_error(error),
     };
     let snapshot = lifecycle.finish(terminal);
+    let mut metrics = query_metrics(context, query_id, trace_id);
+    execution_metrics.project_onto(&mut metrics);
     QueryExecutionOutcome::new(result, metrics, snapshot)
 }
 
@@ -365,7 +376,7 @@ fn execute_query_plan_output(
     plan: &QueryPlan,
     bounded_admission: Option<&crate::admission::BoundedPipelineAdmission>,
     gpu_inputs: &GpuResidentInputMap,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     observation_scope: Option<&RuntimeExecutionObservationScope>,
 ) -> Result<Output> {
     context.check_cancellation("nexus_query_engine.exec.execute_query_plan")?;
@@ -396,8 +407,17 @@ fn execute_query_plan_output(
 }
 
 /// Materialize a GPU-resident result handle to host Arrow and record boundary metrics.
+///
+/// The handle outlives its plan execution, so this reports into the caller's
+/// detached metrics value rather than an execution's metrics owner.
 pub fn materialize_gpu_result_to_host(handle: GpuResultHandle, metrics: &mut QueryMetrics) -> Result<RecordBatch> {
-    materialize_to_host(handle, metrics)
+    let timer = std::time::Instant::now();
+    let output = handle.to_host_record_batch()?;
+    metrics.materialization_time += timer.elapsed();
+    metrics
+        .boundary
+        .record_device_to_host_materialization(output.num_rows() as u64, record_batch_memory_size(&output) as u64);
+    Ok(output)
 }
 
 fn gpu_result_handle(context: &ExecutionContext, plan: &QueryPlan, frame: GpuDataFrame) -> Result<GpuResultHandle> {
@@ -414,7 +434,7 @@ fn execute_node(
     id: NodeId,
     gpu_inputs: &GpuResidentInputMap,
     scratch: &mut ExecutionScratch,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     context.check_cancellation("nexus_query_engine.exec.execute_node")?;
     if let Some(frame) = scratch.node_results.get(&id) {

@@ -114,7 +114,7 @@ pub(super) fn partition_final_merge_partial(
     drop(frame);
     let (partitioned_frame, offsets) = partitioned.into_parts();
     let partitioned_gpu = GpuDataFrame::new(partitioned_frame.clone());
-    let partitioned_bytes = match observe_device_memory_bytes(&partitioned_gpu, execution.metrics_mut()) {
+    let partitioned_bytes = match observe_device_memory_bytes(&partitioned_gpu, execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             return Err(error);
@@ -177,7 +177,7 @@ pub(super) fn slice_partitioned_final_merge_partition(
         .with_fact("partition_rows", len)
     })?;
     let gpu = GpuDataFrame::new(sliced);
-    let bytes = observe_device_memory_bytes(&gpu, execution.metrics_mut())?;
+    let bytes = observe_device_memory_bytes(&gpu, execution.metrics())?;
     Ok(ResidentGpuFrame::with_device_bytes(gpu, bytes))
 }
 
@@ -258,7 +258,7 @@ pub(super) fn apply_partitioned_final_merge_topk(
     topk_stats.partition_count += 1;
     topk_stats.input_rows = topk_stats.input_rows.saturating_add(frame.num_rows() as u64);
 
-    let input_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+    let input_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
     let input = ResidentGpuFrame::with_device_bytes(frame, input_bytes);
     let (observation, plan_execution_id, parent_span_id) =
         crate::observability::stage_context_from_execution(execution.context());
@@ -336,7 +336,7 @@ pub(super) fn concatenate_partitioned_final_merge_outputs(
             return Err(error);
         },
     };
-    let output_bytes = match observe_device_memory_bytes(&concatenated, execution.metrics_mut()) {
+    let output_bytes = match observe_device_memory_bytes(&concatenated, execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             return Err(error);
@@ -349,18 +349,23 @@ pub(in crate::exec::bounded) fn reduce_merge_fan_in(merge_fan_in: usize) -> Opti
     BoundedFinalMergePolicy::default().reduce_merge_fan_in(merge_fan_in)
 }
 
-pub(super) fn final_merge_retry_facts(merge_level: usize, merge_fan_in: usize, metrics: &QueryMetrics) -> RetryFacts {
+pub(super) fn final_merge_retry_facts(
+    merge_level: usize,
+    merge_fan_in: usize,
+    metrics: &ExecutionMetrics,
+) -> RetryFacts {
     let retry_action = if BoundedFinalMergePolicy::default().merge_fan_in_is_at_retry_floor(merge_fan_in) {
         "fail_min_merge_fan_in"
     } else {
         "retry_attempts_exhausted"
     };
 
+    let progress = metrics.progress();
     RetryFacts::new()
         .with_retry_action(retry_action)
         .with_resume_boundary("final_merge")
-        .with_committed_chunks(metrics.source_chunks_committed as usize)
-        .with_committed_partials(metrics.partial_aggregate_count as usize)
+        .with_committed_chunks(progress.source_chunks_committed as usize)
+        .with_committed_partials(progress.partial_aggregate_count as usize)
         .with_merge_level(merge_level)
         .with_merge_fan_in(merge_fan_in)
 }

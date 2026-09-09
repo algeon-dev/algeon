@@ -1,8 +1,8 @@
 use super::{
-    BTreeMap, BoundedExecutionAttempt, BoundedJoinSideFrame, ExecutionContext, GpuDataFrame, JoinNode, JoinSide,
-    JoinType, KeyedHashJoinStrategyOptions, MemoryControlPolicy, NodeId, PartitionedJoinPartitionOutput,
-    PartitionedJoinRowRange, PartitionedJoinSide, QueryError, QueryMetrics, ResidentGpuFrame, Result, RetryFacts,
-    VecDeque, cudf_query_error, execution_overrides, hash_partition_join_side, join_keys_for_side,
+    BTreeMap, BoundedExecutionAttempt, BoundedJoinSideFrame, ExecutionContext, ExecutionMetrics, GpuDataFrame,
+    JoinNode, JoinSide, JoinType, KeyedHashJoinStrategyOptions, MemoryControlPolicy, NodeId,
+    PartitionedJoinPartitionOutput, PartitionedJoinRowRange, PartitionedJoinSide, QueryError, ResidentGpuFrame, Result,
+    RetryFacts, VecDeque, cudf_query_error, execution_overrides, hash_partition_join_side, join_keys_for_side,
     observe_device_memory_bytes, partition_row_range, partitioned_join_reusable_rejected_reason, probe_side,
     release_bounded_join_side_frame, release_partitioned_join_side, release_streamed_join_outputs_reverse, side_metric,
     slice_partition_join_side_range,
@@ -119,7 +119,7 @@ impl PartitionedJoinProbeChunk {
             match self.partition_range(execution, plan, keys, range) {
                 Ok(output) => return Ok(Some(output)),
                 Err(error) if crate::exec::retry::is_retryable_resource_error(&error) => {
-                    record_partitioned_join_retry_error(&error, execution.metrics_mut());
+                    record_partitioned_join_retry_error(&error, execution.metrics());
                     let action = if attempt >= policy.max_attempts {
                         "retry_attempts_exhausted"
                     } else if let Some((first, second)) = split_partitioned_join_row_range(range, policy.min_probe_rows)
@@ -174,7 +174,7 @@ impl PartitionedJoinProbeChunk {
                 .with_fact("side", side)
             })?
         };
-        let bytes = observe_device_memory_bytes(&GpuDataFrame::new(frame.clone()), execution.metrics_mut())?;
+        let bytes = observe_device_memory_bytes(&GpuDataFrame::new(frame.clone()), execution.metrics())?;
         let input = BoundedJoinSideFrame { frame, rows: range.len as u64, bytes };
         let partitioned = hash_partition_join_side(execution, side, input, keys, plan.partition_count, &overrides)?;
         Ok((partitioned, range.len as u64, bytes))
@@ -226,11 +226,11 @@ where
         right_rows: right.rows,
         right_bytes: right.bytes,
     };
-    record_partitioned_join_selection(plan, original, execution.metrics_mut());
+    record_partitioned_join_selection(plan, original, execution.metrics());
     let partitioned = partition_join_sides(execution, plan, left, right)?;
     let left_partitioned_bytes = partitioned.left.device_bytes();
     let right_partitioned_bytes = partitioned.right.device_bytes();
-    record_partitioned_join_sides(plan, left_partitioned_bytes, right_partitioned_bytes, execution.metrics_mut());
+    record_partitioned_join_sides(plan, left_partitioned_bytes, right_partitioned_bytes, execution.metrics());
 
     let mut outputs = Vec::with_capacity(plan.partition_count);
     let mut summary = PartitionedJoinOutputSummary::default();
@@ -371,7 +371,7 @@ where
         BoundedJoinSideFrame,
     ) -> Result<PartitionedJoinPartitionOutput>,
 {
-    record_partitioned_join_retry_error(&error, execution.metrics_mut());
+    record_partitioned_join_retry_error(&error, execution.metrics());
     if attempt >= policy.max_attempts {
         return Err(attach_partitioned_join_retry_error(
             error,
@@ -442,7 +442,7 @@ where
     Err(attach_partitioned_join_retry_error(error, plan, work, attempt, policy, retry_action))
 }
 
-fn record_partitioned_join_retry_error(error: &QueryError, metrics: &mut QueryMetrics) {
+fn record_partitioned_join_retry_error(error: &QueryError, metrics: &ExecutionMetrics) {
     crate::exec::retry::record_retryable_resource_error(error, metrics);
 }
 
@@ -834,7 +834,7 @@ pub(super) struct PartitionedJoinSides {
 pub(super) fn record_partitioned_join_selection(
     plan: PartitionedJoinDriverPlan<'_>,
     original: PartitionedJoinInputStats,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) {
     metrics.record_join_strategy_decision(
         plan.node_id,
@@ -877,7 +877,7 @@ pub(super) fn record_partitioned_join_sides(
     plan: PartitionedJoinDriverPlan<'_>,
     left_partitioned_bytes: u64,
     right_partitioned_bytes: u64,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) {
     metrics.record_join_strategy_decision(
         plan.node_id,
@@ -904,7 +904,7 @@ pub(super) fn record_partitioned_join_operator_metrics(
     plan: PartitionedJoinDriverPlan<'_>,
     original: PartitionedJoinInputStats,
     summary: &PartitionedJoinOutputSummary,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) {
     metrics.record_operator_metrics(crate::metrics::OperatorMetrics::join(
         plan.node_id,
@@ -1060,9 +1060,9 @@ mod tests {
     #[test]
     fn retry_error_evidence_records_resource_exhaustion() {
         let error = retryable_error_with_fact("memory_boundary", "join_partition_right_side");
-        let mut metrics = QueryMetrics::default();
+        let metrics = crate::exec::ExecutionMetrics::detached("partitioned-join-retry");
 
-        record_partitioned_join_retry_error(&error, &mut metrics);
-        assert_eq!(metrics.retry_resource_exhausted_count, 1);
+        record_partitioned_join_retry_error(&error, &metrics);
+        assert_eq!(metrics.snapshot().retry_resource_exhausted_count, 1);
     }
 }

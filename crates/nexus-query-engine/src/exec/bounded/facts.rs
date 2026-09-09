@@ -1,4 +1,4 @@
-use super::{NodeId, QueryError, QueryErrorCode, QueryMetrics, RetryFacts, SourceChunk, SourceChunkBatch};
+use super::{ExecutionMetrics, NodeId, QueryError, QueryErrorCode, RetryFacts, SourceChunk, SourceChunkBatch};
 use crate::exec::source::{attach_row_group_facts_if_absent, parquet_chunk_path_fact};
 
 #[derive(Debug, Clone, Copy)]
@@ -9,15 +9,16 @@ pub(in crate::exec) struct RuntimeResourceFacts<'a> {
     pub(in crate::exec) attempt: usize,
     pub(in crate::exec) max_attempts: usize,
     pub(in crate::exec) resume_boundary: &'static str,
-    pub(in crate::exec) metrics: &'a QueryMetrics,
+    pub(in crate::exec) metrics: &'a ExecutionMetrics,
 }
 
 impl RuntimeResourceFacts<'_> {
     pub(in crate::exec) fn attach_retry_context(self, error: QueryError) -> QueryError {
+        let progress = self.metrics.progress();
         RetryFacts::new()
             .with_resume_boundary(self.resume_boundary)
-            .with_committed_chunks(self.metrics.source_chunks_committed as usize)
-            .with_committed_partials(self.metrics.partial_aggregate_count as usize)
+            .with_committed_chunks(progress.source_chunks_committed as usize)
+            .with_committed_partials(progress.partial_aggregate_count as usize)
             .attach_to_error(error)
     }
 
@@ -42,7 +43,7 @@ pub(in crate::exec) fn attach_chunk_resource_facts(
     memory_boundary: &'static str,
     attempt: usize,
     max_attempts: usize,
-    metrics: &QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> QueryError {
     if error.code() != QueryErrorCode::CudfResourceExhausted {
         return error;
@@ -70,7 +71,7 @@ pub(in crate::exec) fn attach_source_batch_resource_facts(
     memory_boundary: &'static str,
     attempt: usize,
     max_attempts: usize,
-    metrics: &QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> QueryError {
     let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
     if batch.is_singleton() {

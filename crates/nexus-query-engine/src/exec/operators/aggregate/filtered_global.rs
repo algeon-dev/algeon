@@ -146,11 +146,11 @@ pub(super) fn execute_segmented_filtered_global_aggregate_with_budget(
     output_schema: &ArrowSchemaRef,
     token: &ExecutionBudgetToken,
     decision: FilteredGlobalAggregateStrategyDecision,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let input_rows = input.num_rows() as u64;
     let selection_elapsed = Duration::ZERO;
-    let budget_event_start = metrics.budgeted_execution_events.len();
+    let budget_window = metrics.open_budget_window();
     let timer = Instant::now();
     let mut stats = FilteredGlobalSegmentRuntimeStats::default();
     let result = (|| -> Result<(GpuDataFrame, u64, u64)> {
@@ -190,8 +190,7 @@ pub(super) fn execute_segmented_filtered_global_aggregate_with_budget(
     add_segmented_budgeted_execution_stats(
         &mut stats.observed_temporary_peak_bytes,
         &mut stats.observed_retained_peak_bytes,
-        metrics,
-        budget_event_start,
+        metrics.take_budget_window(budget_window),
     );
     match result {
         Ok((output, output_rows, partial_rows)) => {
@@ -245,10 +244,10 @@ pub(super) fn execute_segmented_filtered_global_partial_aggregate_with_budget(
     token: &ExecutionBudgetToken,
     input_evidence: Option<PartialAggregateInputEvidence>,
     decision: FilteredGlobalAggregateStrategyDecision,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let input_rows = input.num_rows() as u64;
-    let budget_event_start = metrics.budgeted_execution_events.len();
+    let budget_window = metrics.open_budget_window();
     let timer = Instant::now();
     let mut stats = FilteredGlobalSegmentRuntimeStats::default();
     let result = (|| -> Result<(GpuDataFrame, u64, u64)> {
@@ -275,8 +274,7 @@ pub(super) fn execute_segmented_filtered_global_partial_aggregate_with_budget(
     add_segmented_budgeted_execution_stats(
         &mut stats.observed_temporary_peak_bytes,
         &mut stats.observed_retained_peak_bytes,
-        metrics,
-        budget_event_start,
+        metrics.take_budget_window(budget_window),
     );
     match result {
         Ok((output, output_rows, partial_rows)) => {
@@ -321,7 +319,7 @@ pub(super) fn execute_segmented_filtered_global_partial_aggregate_with_budget(
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
 )]
 pub(super) fn record_filtered_global_partial_single_pass(
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     context: &ExecutionContext,
     node_id: Option<NodeId>,
     spec: &AggregateSpec,
@@ -361,7 +359,7 @@ pub(super) fn record_filtered_global_partial_single_pass(
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
 )]
 pub(super) fn record_filtered_global_aggregate_single_pass(
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     context: &ExecutionContext,
     node_id: Option<NodeId>,
     spec: &AggregateSpec,
@@ -395,7 +393,7 @@ pub(super) fn record_filtered_global_aggregate_single_pass(
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
 )]
 pub(super) fn record_filtered_global_segmented_failure(
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     context: &ExecutionContext,
     node_id: Option<NodeId>,
     stage: AggregateExecutionStage,
@@ -471,7 +469,7 @@ fn execute_segmented_filtered_global_partial_state(
     token: &ExecutionBudgetToken,
     decision: &FilteredGlobalAggregateStrategyDecision,
     stats: &mut FilteredGlobalSegmentRuntimeStats,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let input_rows = input.num_rows();
     let frame = input.into_frame();
@@ -539,7 +537,7 @@ fn execute_filtered_global_partial_state_for_chunk(
     filtered_inputs_per_segment: usize,
     chunk_rows: usize,
     stats: &mut FilteredGlobalSegmentRuntimeStats,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let prepared_chunk = prepare_filtered_global_predicates_for_chunk(&chunk, input_schema, spec, token, metrics)?;
     let mut output_series = Vec::with_capacity(state_schema.fields().len());
@@ -619,7 +617,7 @@ fn append_filtered_global_partial_segment(
     indexed_exprs: &[(usize, AggregateExpr)],
     output_series: &mut Vec<(String, cudf::Series)>,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<()> {
     let (prepared, prepared_indexed, prepared_schema) =
         prepare_filtered_global_partial_segment(prepared_chunk, input_schema, indexed_exprs, token, metrics)?;
@@ -654,7 +652,7 @@ fn prepare_filtered_global_predicates_for_chunk(
     input_schema: &ArrowSchemaRef,
     spec: &AggregateSpec,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<FilteredGlobalPreparedChunk> {
     let timer = Instant::now();
     let mut frame = chunk.clone();
@@ -688,7 +686,7 @@ fn prepare_filtered_global_predicates_for_chunk(
                 budgeted_value(outcome, metrics, "nexus_query_engine.filtered_global_aggregate.filter_predicates")
             })?;
     }
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     Ok(FilteredGlobalPreparedChunk { frame, schema: Arc::new(Schema::new(fields)), predicate_aliases })
 }
 
@@ -698,7 +696,7 @@ fn prepare_filtered_global_partial_segment(
     input_schema: &ArrowSchemaRef,
     indexed_exprs: &[(usize, AggregateExpr)],
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<(DataFrame, Vec<(usize, AggregateExpr)>, ArrowSchemaRef)> {
     let timer = Instant::now();
     let mut frame = prepared_chunk.frame.clone();
@@ -747,7 +745,7 @@ fn prepare_filtered_global_partial_segment(
                 budgeted_value(outcome, metrics, "nexus_query_engine.filtered_global_aggregate.filter_inputs")
             })?;
     }
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     Ok((frame, prepared_indexed, Arc::new(Schema::new(fields))))
 }
 
@@ -896,7 +894,7 @@ fn concat_partial_state_frames(
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
 )]
 fn record_segmented_filtered_global_aggregate_strategy(
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     context: &ExecutionContext,
     node_id: Option<NodeId>,
     spec: &AggregateSpec,
@@ -935,7 +933,7 @@ fn record_segmented_filtered_global_aggregate_strategy(
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
 )]
 fn record_segmented_filtered_global_partial_strategy(
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     context: &ExecutionContext,
     node_id: Option<NodeId>,
     spec: &AggregateSpec,

@@ -96,6 +96,8 @@ impl QueryMetrics {
         measured_peak_bytes: Option<u64>,
         measured_peak_provenance: GraphMeasuredPeakProvenance,
     ) {
+        // The query peak is a total; it must not depend on finding the row.
+        self.max_task_observed_peak_bytes = self.max_task_observed_peak_bytes.max(measured_peak_bytes);
         let Some(row) = self
             .graph_claim_calibration_rows
             .iter_mut()
@@ -105,7 +107,6 @@ impl QueryMetrics {
             return;
         };
         row.record_measured_peak(measured_peak_bytes, measured_peak_provenance);
-        self.max_task_observed_peak_bytes = self.max_task_observed_peak_bytes.max(measured_peak_bytes);
     }
 
     /// Records the exact transition into the native graph algorithm executor.

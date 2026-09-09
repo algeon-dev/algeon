@@ -220,7 +220,7 @@ impl QueryMetrics {
         operator.elapsed_time += elapsed;
     }
 
-    pub(super) fn record_task_budget_observation(
+    pub(crate) fn record_task_budget_observation(
         &mut self,
         compiled_task_id: &str,
         observed_peak_bytes: Option<u64>,

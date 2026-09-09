@@ -3,9 +3,10 @@ use std::time::Instant;
 use parquet::file::reader::FileReader;
 
 use super::{
-    DataFrame, ExecutionContext, LocalParquetFile, LocalParquetSource, NodeId, QueryError, QueryMetrics, Result,
+    DataFrame, ExecutionContext, LocalParquetFile, LocalParquetSource, NodeId, QueryError, Result, SourceReadFact,
     SourceReadMode, cudf_query_error_with_budget_details, cudf_query_error_without_source_with_budget_details,
     local_parquet_file_row_group_metadata_count, parquet_file_path_fact, record_source_file_read_runtime,
+    record_source_read,
 };
 
 #[expect(
@@ -21,7 +22,6 @@ pub(super) fn read_local_parquet_file(
     cudf_source: &cudf::io::source::LocalParquetSource,
     cudf_chunk: &cudf::io::source::SourceChunk,
     columns: &[&str],
-    metrics: &mut QueryMetrics,
 ) -> Result<DataFrame> {
     context.check_cancellation("nexus_query_engine.local_parquet_source.read")?;
     let _io_lease = context.acquire_io_lease("nexus_query_engine.local_parquet_source.read")?;
@@ -46,13 +46,18 @@ pub(super) fn read_local_parquet_file(
     let read_evidence = output.read_evidence().cloned();
     let read_elapsed = read_timer.elapsed();
     let frame = output.into_frame();
-    metrics.parquet_read_time += read_elapsed;
-    metrics.source_read_time += read_elapsed;
-    metrics.parquet_files += 1;
-    metrics.parquet_bytes_known += file.file_size_bytes.unwrap_or(0);
-    metrics.row_groups_selected += local_file_selected_row_group_count(file);
-    metrics.read_columns += columns.len() as u64;
-    metrics.record_input_batch(frame.num_rows() as u64);
+    record_source_read(context, SourceReadFact::ParquetReadTime(read_elapsed));
+    record_source_read(context, SourceReadFact::SourceReadTime(read_elapsed));
+    record_source_read(
+        context,
+        SourceReadFact::ParquetSource {
+            files: 1,
+            known_bytes: file.file_size_bytes.unwrap_or(0),
+            selected_row_groups: local_file_selected_row_group_count(file),
+            read_columns: columns.len() as u64,
+        },
+    );
+    record_source_read(context, SourceReadFact::InputBatch { rows: frame.num_rows() as u64 });
     record_source_file_read_runtime(
         source,
         source_node_id,
@@ -63,7 +68,7 @@ pub(super) fn read_local_parquet_file(
         frame.num_rows() as u64,
         read_elapsed,
         read_evidence.as_ref(),
-        metrics,
+        context,
     );
     Ok(frame)
 }

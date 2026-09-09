@@ -34,10 +34,11 @@ impl QueryMetrics {
         if metrics.query_id.is_none() {
             metrics.query_id = self.inherited_query_id();
         }
-        if let Some(join) = &mut metrics.join
-            && join.query_id.is_none()
-        {
-            join.query_id = metrics.query_id.clone();
+        if let Some(join) = &mut metrics.join {
+            if join.query_id.is_none() {
+                join.query_id = metrics.query_id.clone();
+            }
+            self.join_gather_map_bytes = self.join_gather_map_bytes.saturating_add(join.gather_map_bytes);
         }
         self.operators.push(metrics);
     }

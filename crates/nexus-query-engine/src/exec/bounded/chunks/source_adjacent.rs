@@ -2,8 +2,8 @@ use std::time::Instant;
 
 use super::{
     BoundedExecutionAttempt, BoundedPlan, BoundedSourceBatchingPolicy, CommittedPartial, ExecutionBudgetToken,
-    ExecutionContext, GpuDataFrame, LocalParquetFile, LocalParquetSource, ParquetReadStrategy,
-    PartialAggregateInputEvidence, ProjectionNode, QueryMetrics, Result, ScheduledLocalParquetReadOutput, SourceChunk,
+    ExecutionContext, ExecutionMetrics, GpuDataFrame, LocalParquetFile, LocalParquetSource, ParquetReadStrategy,
+    PartialAggregateInputEvidence, ProjectionNode, Result, ScheduledLocalParquetReadOutput, SourceChunk,
     SourceChunkBatch, attach_chunk_resource_facts, execute_filter_with_budget, execute_partial_aggregate_with_budget,
     execute_projection_with_budget, execute_projection_with_budget_and_prepared,
     execution::{execute_bounded_chunk_with_retry, release_committed_partials_reverse, sum_optional_u64},
@@ -12,6 +12,7 @@ use super::{
     projection_regexp_replace_prepare, read_local_parquet_chunk_batch_required_only_no_commit,
     record_chunk_retry_error,
 };
+use crate::observability::SourceReadFact;
 
 pub(in crate::exec::bounded::chunks) fn bounded_source_adjacent_chunk_batching_enabled(
     context: &ExecutionContext,
@@ -124,8 +125,8 @@ pub(in crate::exec::bounded::chunks) fn execute_bounded_source_adjacent_chunk_ba
     match execute_bounded_source_adjacent_chunk_batch_attempt(execution, bounded, &batch) {
         Ok(partial) => Ok(vec![partial]),
         Err(error) if is_retryable_chunk_error(&error) => {
-            record_chunk_retry_error(&error, execution.metrics_mut());
-            execution.metrics_mut().record_source_chunk_retry();
+            record_chunk_retry_error(&error, execution.metrics());
+            execution.record_source_read(SourceReadFact::ChunkRetried);
             let Some((left, right)) = batch.split_for_retry() else {
                 return Err(error);
             };
@@ -182,14 +183,7 @@ pub(in crate::exec::bounded::chunks) fn execute_bounded_chunk_batch_operator_fro
     ) {
         Ok(token) => token,
         Err(error) => {
-            return Err(attach_chunk_resource_facts(
-                error,
-                first_chunk,
-                "chunk_operator",
-                1,
-                1,
-                execution.metrics_mut(),
-            ));
+            return Err(attach_chunk_resource_facts(error, first_chunk, "chunk_operator", 1, 1, execution.metrics()));
         },
     };
 
@@ -220,30 +214,23 @@ pub(in crate::exec::bounded::chunks) fn execute_bounded_chunk_batch_operator_fro
         frame,
         &operator_token,
         Some(input_evidence),
-        execution.metrics_mut(),
+        execution.metrics(),
     );
-    execution.metrics_mut().chunk_operator_time += chunk_operator_timer.elapsed();
+    execution.metrics().add_chunk_operator_time(chunk_operator_timer.elapsed());
     let frame = match chunk_output {
         Ok(frame) => frame,
         Err(error) => {
-            return Err(attach_chunk_resource_facts(
-                error,
-                first_chunk,
-                "chunk_operator",
-                1,
-                1,
-                execution.metrics_mut(),
-            ));
+            return Err(attach_chunk_resource_facts(error, first_chunk, "chunk_operator", 1, 1, execution.metrics()));
         },
     };
 
-    let partial_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut()).map_err(|error| {
-        attach_chunk_resource_facts(error, first_chunk, "partial_state", 1, 1, execution.metrics_mut())
-    })?;
-    execution
-        .metrics_mut()
-        .record_source_chunk_commit_count(batch.chunk_count() as u64, batch.row_group_count() as u64);
-    execution.metrics_mut().record_partial_aggregate(partial_input_rows, frame.num_rows() as u64, partial_bytes);
+    let partial_bytes = observe_device_memory_bytes(&frame, execution.metrics())
+        .map_err(|error| attach_chunk_resource_facts(error, first_chunk, "partial_state", 1, 1, execution.metrics()))?;
+    execution.record_source_read(SourceReadFact::ChunkCommitted {
+        chunk_count: batch.chunk_count() as u64,
+        row_groups: batch.row_group_count() as u64,
+    });
+    execution.metrics().record_partial_aggregate(partial_input_rows, frame.num_rows() as u64, partial_bytes);
 
     Ok(CommittedPartial::with_device_bytes(frame, partial_bytes))
 }
@@ -326,8 +313,7 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_projection(
 
     let input_frame = input.frame;
     let prepared =
-        match projection_regexp_replace_prepare(execution.context(), projection, &input_frame, execution.metrics_mut())
-        {
+        match projection_regexp_replace_prepare(execution.context(), projection, &input_frame, execution.metrics()) {
             Ok(Some(prepared)) => prepared,
             Ok(None) => {
                 let token = match execution_budget_token_for_boundary(
@@ -345,7 +331,7 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_projection(
                             stage,
                             attempt,
                             max_attempts,
-                            execution.metrics_mut(),
+                            execution.metrics(),
                         ));
                     },
                 };
@@ -354,7 +340,7 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_projection(
                     projection,
                     input_frame,
                     &token,
-                    execution.metrics_mut(),
+                    execution.metrics(),
                 );
                 return finish_source_adjacent_chunk_unary(
                     execution,
@@ -373,7 +359,7 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_projection(
                     stage,
                     attempt,
                     max_attempts,
-                    execution.metrics_mut(),
+                    execution.metrics(),
                 ));
             },
         };
@@ -387,14 +373,7 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_projection(
     ) {
         Ok(token) => token,
         Err(error) => {
-            return Err(attach_chunk_resource_facts(
-                error,
-                chunk,
-                stage,
-                attempt,
-                max_attempts,
-                execution.metrics_mut(),
-            ));
+            return Err(attach_chunk_resource_facts(error, chunk, stage, attempt, max_attempts, execution.metrics()));
         },
     };
 
@@ -404,7 +383,7 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_projection(
         input_frame,
         &token,
         Some(prepared),
-        execution.metrics_mut(),
+        execution.metrics(),
     );
     finish_source_adjacent_chunk_unary(execution, stage, output_boundary, chunk, result, attempt, max_attempts)
 }
@@ -421,17 +400,10 @@ fn finish_source_adjacent_chunk_unary(
     let frame = match result {
         Ok(frame) => frame,
         Err(error) => {
-            return Err(attach_chunk_resource_facts(
-                error,
-                chunk,
-                stage,
-                attempt,
-                max_attempts,
-                execution.metrics_mut(),
-            ));
+            return Err(attach_chunk_resource_facts(error, chunk, stage, attempt, max_attempts, execution.metrics()));
         },
     };
-    let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics_mut()) {
+    let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             return Err(attach_chunk_resource_facts(
@@ -440,7 +412,7 @@ fn finish_source_adjacent_chunk_unary(
                 output_boundary,
                 attempt,
                 max_attempts,
-                execution.metrics_mut(),
+                execution.metrics(),
             ));
         },
     };
@@ -459,7 +431,7 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_unary(
     intermediate_input: CommittedPartial,
     attempt: usize,
     max_attempts: usize,
-    execute: impl FnOnce(&ExecutionContext, GpuDataFrame, &ExecutionBudgetToken, &mut QueryMetrics) -> Result<GpuDataFrame>,
+    execute: impl FnOnce(&ExecutionContext, GpuDataFrame, &ExecutionBudgetToken, &ExecutionMetrics) -> Result<GpuDataFrame>,
 ) -> Result<CommittedPartial> {
     let token = match execution_budget_token_for_boundary(
         execution.context(),
@@ -470,31 +442,17 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_unary(
     ) {
         Ok(token) => token,
         Err(error) => {
-            return Err(attach_chunk_resource_facts(
-                error,
-                chunk,
-                stage,
-                attempt,
-                max_attempts,
-                execution.metrics_mut(),
-            ));
+            return Err(attach_chunk_resource_facts(error, chunk, stage, attempt, max_attempts, execution.metrics()));
         },
     };
-    let result = execute(execution.context(), intermediate_input.frame, &token, execution.metrics_mut());
+    let result = execute(execution.context(), intermediate_input.frame, &token, execution.metrics());
     let frame = match result {
         Ok(frame) => frame,
         Err(error) => {
-            return Err(attach_chunk_resource_facts(
-                error,
-                chunk,
-                stage,
-                attempt,
-                max_attempts,
-                execution.metrics_mut(),
-            ));
+            return Err(attach_chunk_resource_facts(error, chunk, stage, attempt, max_attempts, execution.metrics()));
         },
     };
-    let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics_mut()) {
+    let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             return Err(attach_chunk_resource_facts(
@@ -503,7 +461,7 @@ pub(in crate::exec::bounded) fn execute_source_adjacent_chunk_unary(
                 output_boundary,
                 attempt,
                 max_attempts,
-                execution.metrics_mut(),
+                execution.metrics(),
             ));
         },
     };

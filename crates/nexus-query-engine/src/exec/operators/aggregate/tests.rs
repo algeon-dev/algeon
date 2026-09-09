@@ -23,7 +23,6 @@ use super::{
 use crate::{
     capability::{AggregateStrategyExecutionOptions, aggregate_strategy_capability_decision},
     error::{QueryError, QueryErrorCode},
-    metrics::QueryMetrics,
     runtime::MemoryControlPolicy,
 };
 

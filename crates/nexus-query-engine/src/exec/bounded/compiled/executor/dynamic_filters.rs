@@ -58,7 +58,7 @@ impl CompiledGpuTaskExecutor<'_> {
         if join.spec.keys.len() != 1 || join.spec.null_equality != JoinNullEquality::NullsDoNotMatch {
             for route in &routes {
                 self.dynamic_filters.insert_skipped(route.id, "unsupported_join_key_contract");
-                self.execution.metrics_mut().record_dynamic_filter_skipped(route, "unsupported_join_key_contract");
+                self.execution.metrics().record_dynamic_filter_skipped(route, "unsupported_join_key_contract");
             }
             return Ok(());
         }
@@ -84,7 +84,7 @@ impl CompiledGpuTaskExecutor<'_> {
         if build_schema.index_of(build_key).is_err() {
             for route in &routes {
                 self.dynamic_filters.insert_skipped(route.id, "producer_key_not_in_build_input");
-                self.execution.metrics_mut().record_dynamic_filter_skipped(route, "producer_key_not_in_build_input");
+                self.execution.metrics().record_dynamic_filter_skipped(route, "producer_key_not_in_build_input");
             }
             return Ok(());
         };
@@ -128,9 +128,7 @@ impl CompiledGpuTaskExecutor<'_> {
         let Some(group_key_state) = group_key_state else {
             for route in &routes {
                 self.dynamic_filters.insert_skipped(route.id, "producer_group_key_state_unavailable");
-                self.execution
-                    .metrics_mut()
-                    .record_dynamic_filter_skipped(route, "producer_group_key_state_unavailable");
+                self.execution.metrics().record_dynamic_filter_skipped(route, "producer_group_key_state_unavailable");
             }
             return Ok(());
         };
@@ -160,7 +158,7 @@ impl CompiledGpuTaskExecutor<'_> {
             for route in routes {
                 self.dynamic_filters.insert_skipped(route.id, "producer_key_row_count_exceeds_runtime_limit");
                 self.execution
-                    .metrics_mut()
+                    .metrics()
                     .record_dynamic_filter_skipped(route, "producer_key_row_count_exceeds_runtime_limit");
             }
             return Ok(());
@@ -180,7 +178,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     {
                         self.dynamic_filters.insert_skipped(route.id, LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON);
                         self.execution
-                            .metrics_mut()
+                            .metrics()
                             .record_dynamic_filter_skipped(route, LARGE_KEYSET_DIMENSION_SOURCE_SKIP_REASON);
                         None
                     } else {
@@ -213,14 +211,12 @@ impl CompiledGpuTaskExecutor<'_> {
             for route in routes {
                 let Some(producer_column) = route.producer_columns.first() else {
                     self.dynamic_filters.insert_skipped(route.id, "unsupported_producer_key_contract");
-                    self.execution
-                        .metrics_mut()
-                        .record_dynamic_filter_skipped(route, "unsupported_producer_key_contract");
+                    self.execution.metrics().record_dynamic_filter_skipped(route, "unsupported_producer_key_contract");
                     continue;
                 };
                 if producer_schema.index_of(producer_column).is_err() {
                     self.dynamic_filters.insert_skipped(route.id, missing_key_reason);
-                    self.execution.metrics_mut().record_dynamic_filter_skipped(route, missing_key_reason);
+                    self.execution.metrics().record_dynamic_filter_skipped(route, missing_key_reason);
                 }
             }
             return Ok(());
@@ -254,8 +250,8 @@ impl CompiledGpuTaskExecutor<'_> {
                 selected_schema.clone(),
             )?;
             let batch = handle.to_host_record_batch()?;
-            self.execution.metrics_mut().materialization_time += timer.elapsed();
-            self.execution.metrics_mut().boundary.record_device_to_host_materialization(
+            self.execution.metrics().add_materialization_time(timer.elapsed());
+            self.execution.metrics().record_device_to_host_materialization(
                 batch.num_rows() as u64,
                 crate::exec::util::record_batch_memory_size(&batch) as u64,
             );
@@ -265,12 +261,12 @@ impl CompiledGpuTaskExecutor<'_> {
         for route in routes {
             let Some(producer_column) = route.producer_columns.first() else {
                 self.dynamic_filters.insert_skipped(route.id, "unsupported_producer_key_contract");
-                self.execution.metrics_mut().record_dynamic_filter_skipped(route, "unsupported_producer_key_contract");
+                self.execution.metrics().record_dynamic_filter_skipped(route, "unsupported_producer_key_contract");
                 continue;
             };
             let Ok(key_index) = selected_schema.index_of(producer_column) else {
                 self.dynamic_filters.insert_skipped(route.id, missing_key_reason);
-                self.execution.metrics_mut().record_dynamic_filter_skipped(route, missing_key_reason);
+                self.execution.metrics().record_dynamic_filter_skipped(route, missing_key_reason);
                 continue;
             };
             let mut values = Vec::with_capacity(producer_rows);
@@ -286,12 +282,12 @@ impl CompiledGpuTaskExecutor<'_> {
             }
             if unsupported {
                 self.dynamic_filters.insert_skipped(route.id, "unsupported_producer_key_type");
-                self.execution.metrics_mut().record_dynamic_filter_skipped(route, "unsupported_producer_key_type");
+                self.execution.metrics().record_dynamic_filter_skipped(route, "unsupported_producer_key_type");
                 continue;
             }
             let filter = DynamicFilter::from_i64_values(values, options.small_in_list_limit);
             self.dynamic_filters.insert(route.id, filter.clone());
-            self.execution.metrics_mut().record_dynamic_filter_produced(route, &filter, producer_rows as u64);
+            self.execution.metrics().record_dynamic_filter_produced(route, &filter, producer_rows as u64);
         }
         Ok(())
     }
@@ -307,12 +303,12 @@ impl CompiledGpuTaskExecutor<'_> {
         for route in routes {
             let Some(producer_column) = route.producer_columns.first() else {
                 self.dynamic_filters.insert_skipped(route.id, "unsupported_producer_key_contract");
-                self.execution.metrics_mut().record_dynamic_filter_skipped(route, "unsupported_producer_key_contract");
+                self.execution.metrics().record_dynamic_filter_skipped(route, "unsupported_producer_key_contract");
                 continue;
             };
             let Ok(producer_field) = producer_schema.field_with_name(producer_column) else {
                 self.dynamic_filters.insert_skipped(route.id, missing_key_reason);
-                self.execution.metrics_mut().record_dynamic_filter_skipped(route, missing_key_reason);
+                self.execution.metrics().record_dynamic_filter_skipped(route, missing_key_reason);
                 continue;
             };
             let mut filter = Some(DynamicFilter::Empty);
@@ -334,11 +330,11 @@ impl CompiledGpuTaskExecutor<'_> {
             }
             let Some(filter) = filter else {
                 self.dynamic_filters.insert_skipped(route.id, "unsupported_producer_key_type");
-                self.execution.metrics_mut().record_dynamic_filter_skipped(route, "unsupported_producer_key_type");
+                self.execution.metrics().record_dynamic_filter_skipped(route, "unsupported_producer_key_type");
                 continue;
             };
             self.dynamic_filters.insert(route.id, filter.clone());
-            self.execution.metrics_mut().record_dynamic_filter_produced(route, &filter, producer_rows as u64);
+            self.execution.metrics().record_dynamic_filter_produced(route, &filter, producer_rows as u64);
         }
         Ok(())
     }
@@ -428,7 +424,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 options,
             )?;
             let after = stream.dynamic_filter_source_snapshot();
-            self.execution.metrics_mut().record_dynamic_filter_applied(route, &filter, before, after);
+            self.execution.metrics().record_dynamic_filter_applied(route, &filter, before, after);
         }
         Ok(stream)
     }
@@ -491,12 +487,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 || input.as_ref().map(|input| input.num_rows() as u64),
                 |frame| Some(frame.frame.num_rows() as u64),
             );
-            self.execution.metrics_mut().record_dynamic_filter_applied(
-                route,
-                &filter,
-                source_snapshot,
-                source_snapshot,
-            );
+            self.execution.metrics().record_dynamic_filter_applied(route, &filter, source_snapshot, source_snapshot);
             frame = Some(match frame.take() {
                 Some(frame) => execute_bounded_generic_unary(
                     &mut self.execution,
@@ -531,7 +522,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     },
                 )?,
             });
-            self.execution.metrics_mut().record_dynamic_filter_source_post_decode_stage(
+            self.execution.metrics().record_dynamic_filter_source_post_decode_stage(
                 route,
                 &filter,
                 rows_before,
@@ -586,7 +577,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     )
                 },
             )?;
-            self.execution.metrics_mut().record_dynamic_filter_applied_post_decode(
+            self.execution.metrics().record_dynamic_filter_applied_post_decode(
                 route,
                 &filter,
                 Some(rows_before),
@@ -631,7 +622,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     )
                 },
             )?;
-            self.execution.metrics_mut().record_dynamic_filter_applied_post_decode(
+            self.execution.metrics().record_dynamic_filter_applied_post_decode(
                 route,
                 &dynamic_filter,
                 Some(rows_before),
@@ -699,7 +690,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     },
                 )?,
             });
-            self.execution.metrics_mut().record_dynamic_filter_applied_post_decode(
+            self.execution.metrics().record_dynamic_filter_applied_post_decode(
                 route,
                 &dynamic_filter,
                 rows_before,
@@ -733,7 +724,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 route.clone(),
                 dynamic_filter.clone(),
             );
-            self.execution.metrics_mut().record_dynamic_filter_applied_post_decode(route, &dynamic_filter, None, None);
+            self.execution.metrics().record_dynamic_filter_applied_post_decode(route, &dynamic_filter, None, None);
         }
         Ok(stream)
     }
@@ -805,7 +796,7 @@ impl CompiledGpuTaskExecutor<'_> {
                     },
                 )?,
             });
-            self.execution.metrics_mut().record_dynamic_filter_applied_post_decode(
+            self.execution.metrics().record_dynamic_filter_applied_post_decode(
                 route,
                 &filter,
                 rows_before,
@@ -848,7 +839,7 @@ impl CompiledGpuTaskExecutor<'_> {
                 route.clone(),
                 filter.clone(),
             );
-            self.execution.metrics_mut().record_dynamic_filter_applied_post_decode(route, &filter, None, None);
+            self.execution.metrics().record_dynamic_filter_applied_post_decode(route, &filter, None, None);
         }
         Ok(stream)
     }
@@ -860,11 +851,11 @@ impl CompiledGpuTaskExecutor<'_> {
     ) -> Option<(DynamicFilter, Expr)> {
         let dynamic_filter = self.dynamic_filters.produced(route.id).cloned()?;
         let Some(column) = route.consumer_columns.first() else {
-            self.execution.metrics_mut().record_dynamic_filter_skipped(route, "unsupported_consumer_key_contract");
+            self.execution.metrics().record_dynamic_filter_skipped(route, "unsupported_consumer_key_contract");
             return None;
         };
         let Some(predicate) = dynamic_filter_predicate_for_schema(schema, column, &dynamic_filter) else {
-            self.execution.metrics_mut().record_dynamic_filter_skipped(route, "post_decode_predicate_unsupported");
+            self.execution.metrics().record_dynamic_filter_skipped(route, "post_decode_predicate_unsupported");
             return None;
         };
         Some((dynamic_filter, predicate))

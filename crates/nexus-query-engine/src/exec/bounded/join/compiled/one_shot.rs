@@ -3,7 +3,7 @@ use std::time::Instant;
 use super::{
     BoundedCompiledJoinProbeState, BoundedCompiledPreparedJoinBuildState, BoundedExecutionAttempt,
     BoundedJoinLeafLocalParquetSourceStream, BoundedJoinSideFrame, CompiledEqualityJoinPreflightIndices,
-    CompiledJoinMaterializationRequest, GpuDataFrame, JoinNode, JoinSide, JoinType, NodeId, QueryMetrics,
+    CompiledJoinMaterializationRequest, ExecutionMetrics, GpuDataFrame, JoinNode, JoinSide, JoinType, NodeId,
     ResidentFrameStreamPayload, ResidentGpuFrame, Result, StreamedOneShotJoinSummary, compiled_join_input_columns,
     execution_overrides, materialize_compiled_indices_output,
     materialize_compiled_keyed_equality_join_indices_with_preflight, materialize_compiled_one_shot_residual_output,
@@ -91,7 +91,7 @@ pub(super) fn execute_compiled_one_shot_equi_join_materialize(
             node.spec.build_side,
             probe_side(node.spec.build_side),
             &chunk_metrics,
-            execution.metrics_mut(),
+            execution.metrics(),
         );
         return Ok(output);
     }
@@ -215,7 +215,7 @@ struct OneShotEquiJoinProbeStreamSource {
 }
 
 impl OneShotEquiJoinProbeStreamSource {
-    fn record_success_metrics(&mut self, metrics: &mut QueryMetrics) {
+    fn record_success_metrics(&mut self, metrics: &ExecutionMetrics) {
         if self.metrics_recorded {
             return;
         }
@@ -241,7 +241,7 @@ impl ResidentFrameStreamSource for OneShotEquiJoinProbeStreamSource {
             Some(Ok(input)) => input,
             Some(Err(error)) => return Some(Err(error)),
             None => {
-                self.record_success_metrics(execution.metrics_mut());
+                self.record_success_metrics(execution.metrics());
                 self.release(execution);
                 return None;
             },
@@ -364,8 +364,8 @@ pub(super) fn materialize_compiled_one_shot_equi_join_probe_chunk(
             return Err(error);
         },
     };
-    execution.metrics_mut().operator_time += timer.elapsed();
-    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics_mut()) {
+    execution.metrics().add_operator_time(timer.elapsed());
+    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             return Err(error);

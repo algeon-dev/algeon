@@ -955,6 +955,18 @@ pub enum RuntimeObservationRecordClass {
     WorkerDefinition,
     Resource,
     TimelineEvent,
+    /// A source-read detail row offered for bounded retention.
+    SourceReadDetail,
+    /// An operator occurrence row offered for bounded retention.
+    OperatorDetail,
+    /// A join strategy decision row offered for bounded retention.
+    JoinStrategyDetail,
+    /// An aggregate strategy decision row offered for bounded retention.
+    AggregateStrategyDetail,
+    /// A dynamic-filter runtime row offered for bounded retention.
+    DynamicFilterDetail,
+    /// A lower-level budget report row offered for bounded retention.
+    BudgetDetail,
 }
 
 /// Reason an attempted record was not retained.

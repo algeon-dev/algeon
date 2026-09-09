@@ -6,9 +6,9 @@ use super::{
     AggregateExpr, AggregateFunction, AggregateNode, AggregateSpec, ArrowDataType, AvgStateAliases, BinaryOp,
     BudgetedExecutionOutcome, CaseWhen, CudfAggSpec, CudfScalar, CudfShiftSpec, CudfSortOptions, DataFrame,
     DropDuplicatesOptions, DuplicateKeepOption, ExecutionBudgetRequest, ExecutionBudgetToken, ExecutionContext,
-    ExecutionOverrides, Expr, Field, FilterNode, GpuDataFrame, GpuResultHandle, GroupByAgg, GroupByOptions, LimitNode,
-    LimitSpec, LiteralValue, LoweredAggregate, NodeId, ProjectionNode, QueryError, QueryErrorCode, QueryMetrics,
-    RecordBatch, ReduceAgg, Result, ScanAgg, Schema, SortNode, WindowFrame, WindowNode,
+    ExecutionMetrics, ExecutionOverrides, Expr, Field, FilterNode, GpuDataFrame, GpuResultHandle, GroupByAgg,
+    GroupByOptions, LimitNode, LimitSpec, LiteralValue, LoweredAggregate, NodeId, ProjectionNode, QueryError,
+    QueryErrorCode, RecordBatch, ReduceAgg, Result, ScanAgg, Schema, SortNode, WindowFrame, WindowNode,
     aggregate_expr_is_exact_nunique, aggregate_spec_has_avg, aggregate_spec_has_distinct, aggregate_spec_has_filters,
     aggregate_spec_has_floating_statistical_aggregate, col, cudf_dtype_from_arrow_type, cudf_query_error,
     cudf_query_error_with_budget_details, datafusion_order_columns, execution_overrides, global_count_star_expr,
@@ -78,7 +78,7 @@ pub(super) fn attach_budget_token_failure_facts(error: QueryError, token: &Execu
 
 pub(super) fn budgeted_value<T>(
     outcome: BudgetedExecutionOutcome<T>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     operation: &'static str,
 ) -> T {
     let (value, report) = outcome.into_parts();
@@ -90,7 +90,7 @@ pub(super) fn execute_filter(
     context: &ExecutionContext,
     node: &FilterNode,
     input: GpuDataFrame,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let frame = input.frame().clone();
     let overrides_lease = execution_overrides(context)?;
@@ -110,7 +110,7 @@ pub(super) fn execute_filter(
             cudf_query_error("nexus_query_engine.filter.execute", "failed to execute nexus native filter", error)
         })?
     };
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     GpuDataFrame::try_new_with_source_residency(output, &input)
 }
 
@@ -119,7 +119,7 @@ pub(super) fn execute_filter_with_budget(
     node: &FilterNode,
     input: GpuDataFrame,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let frame = input.frame().clone();
     let overrides = token.execution_overrides();
@@ -144,7 +144,7 @@ pub(super) fn execute_filter_with_budget(
             )
         })?
     };
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     GpuDataFrame::try_new_with_source_residency(output, &input)
 }
 
@@ -233,7 +233,7 @@ pub(super) fn execute_sort(
     context: &ExecutionContext,
     node: &SortNode,
     input: GpuDataFrame,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let output = execute_sort_on_frame(context, node, input.frame().clone(), metrics)?;
     GpuDataFrame::try_new_with_source_residency(output.into_frame(), &input)
@@ -243,7 +243,7 @@ pub(super) fn execute_sort_on_frame(
     context: &ExecutionContext,
     node: &SortNode,
     frame: DataFrame,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let sort = lower_sort_spec(&node.spec)?;
     let options = CudfSortOptions::new().with_descending(sort.descending).with_nulls_first(sort.nulls_first);
@@ -253,7 +253,7 @@ pub(super) fn execute_sort_on_frame(
     let output = frame.with_execution(&overrides).sort_values(sort.columns, options).map_err(|error| {
         cudf_query_error("nexus_query_engine.sort.execute", "failed to execute nexus native sort", error)
     })?;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     Ok(GpuDataFrame::new(output))
 }
 
@@ -261,7 +261,7 @@ pub(super) fn execute_limit(
     context: &ExecutionContext,
     node: &LimitNode,
     input: GpuDataFrame,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let row_count = input.num_rows();
     if limit_keeps_all_rows(row_count, node.spec)? {
@@ -276,7 +276,7 @@ pub(super) fn execute_union(
     context: &ExecutionContext,
     node_id: NodeId,
     inputs: Vec<GpuDataFrame>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     if inputs.len() == 1 {
         return Ok(inputs.into_iter().next().expect("single-input union has one frame"));
@@ -302,7 +302,7 @@ pub(super) fn execute_union(
             .with_fact("node_id", node_id)
             .with_fact("input_count", input_count)
     })?;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     Ok(GpuDataFrame::new(output))
 }
 
@@ -312,7 +312,7 @@ pub(super) fn execute_window(
     input_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
     output_schema: &ArrowSchemaRef,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     if node.spec.functions.is_empty() {
         return Err(QueryError::new(
@@ -376,7 +376,7 @@ fn execute_partition_window_aggregate(
     input_schema: &ArrowSchemaRef,
     frame: DataFrame,
     output_schema: &ArrowSchemaRef,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<DataFrame> {
     if node.spec.partition_by.is_empty() {
         return Err(QueryError::new(
@@ -490,7 +490,7 @@ fn execute_cumulative_window_aggregate(
     context: &ExecutionContext,
     node: &WindowNode,
     frame: DataFrame,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<DataFrame> {
     let overrides_lease = execution_overrides(context)?;
     let overrides = overrides_lease.overrides();
@@ -660,7 +660,7 @@ fn execute_cumulative_window_aggregate(
                 error,
             )
         })?;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     Ok(working)
 }
 
@@ -683,7 +683,7 @@ fn execute_rank_window(
     node: &WindowNode,
     frame: DataFrame,
     alias: &str,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<DataFrame> {
     let overrides_lease = execution_overrides(context)?;
     let overrides = overrides_lease.overrides();
@@ -732,7 +732,7 @@ fn execute_rank_window(
     output = output.without_columns(temp_columns.iter().map(String::as_str)).map_err(|error| {
         cudf_query_error("nexus_query_engine.window.rank.cleanup", "failed to remove rank work columns", error)
     })?;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     Ok(output)
 }
 
@@ -742,7 +742,7 @@ fn execute_row_number_window(
     frame: DataFrame,
     alias: &str,
     output_type: &ArrowDataType,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<DataFrame> {
     let overrides_lease = execution_overrides(context)?;
     let overrides = overrides_lease.overrides();
@@ -772,7 +772,7 @@ fn execute_row_number_window(
                 error,
             )
         })?;
-        metrics.operator_time += timer.elapsed();
+        metrics.add_operator_time(timer.elapsed());
         return Ok(output);
     }
     let mut output = frame;
@@ -833,7 +833,7 @@ fn execute_row_number_window(
             error,
         )
     })?;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     Ok(output)
 }
 
@@ -848,7 +848,7 @@ fn execute_lag_lead_window(
     default: Option<&crate::expr::LiteralValue>,
     alias: &str,
     direction: crate::plan::ShiftDirection,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<DataFrame> {
     let overrides_lease = execution_overrides(context)?;
     let overrides = overrides_lease.overrides();
@@ -1014,7 +1014,7 @@ fn execute_lag_lead_window(
     })?;
 
     let _ = temp_columns;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     Ok(result)
 }
 
@@ -1116,7 +1116,7 @@ pub(super) fn execute_limit_on_frame(
     context: &ExecutionContext,
     node: &LimitNode,
     frame: DataFrame,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let row_count = frame.num_rows();
     execute_limit_spec_on_frame(context, node.spec, frame, row_count, metrics)
@@ -1127,7 +1127,7 @@ pub(super) fn execute_limit_spec_on_frame(
     spec: LimitSpec,
     frame: DataFrame,
     row_count: usize,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let (offset, length) = limit_slice(row_count, spec)?;
     if offset == 0 && length == row_count {
@@ -1140,7 +1140,7 @@ pub(super) fn execute_limit_spec_on_frame(
     let output = frame.with_execution(&overrides).slice(offset, length).map_err(|error| {
         cudf_query_error("nexus_query_engine.limit.execute", "failed to execute nexus native limit", error)
     })?;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     Ok(GpuDataFrame::new(output))
 }
 

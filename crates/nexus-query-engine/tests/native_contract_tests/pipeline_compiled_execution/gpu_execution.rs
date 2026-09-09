@@ -25,17 +25,24 @@ fn compiled_gpu_executor_runs_root_hash_join_build_probe_materialize() {
     );
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
     let context = bounded_context(shared_runtime(runtime), &compiled_plan);
-    let mut compiled_metrics = QueryMetrics::default();
+    let compiled_metrics_recorder = nexus_query_engine::exec::ExecutionMetrics::detached("compiled_metrics");
+    let compiled_metrics_context = compiled_metrics_recorder.scope_context(&context).unwrap();
     let gpu_inputs = nexus_query_engine::runtime::resident::GpuResidentInputMap::new();
 
     let (state, compiled_batch) = {
-        let mut executor =
-            CompiledGpuTaskExecutor::new(&context, &compiled_plan, &pipeline, &gpu_inputs, &mut compiled_metrics, None)
-                .unwrap();
+        let mut executor = CompiledGpuTaskExecutor::new(
+            &compiled_metrics_context,
+            &compiled_plan,
+            &pipeline,
+            &gpu_inputs,
+            &compiled_metrics_recorder,
+        )
+        .unwrap();
         let state = scheduler.run(&mut executor).expect("compiled root hash join should execute");
         let output = executor.take_host_output().expect("compiled host sink should materialize");
         (state, output)
     };
+    let compiled_metrics = compiled_metrics_recorder.snapshot();
     let production_result = execute_query_plan(&context, &legacy_plan).expect("bounded root join should execute");
     let production_batch = production_result.output().as_host_arrow().expect("production output should be host Arrow");
 
@@ -84,16 +91,18 @@ fn compiled_gpu_executor_runs_shared_source_hash_join_without_rereading() {
     );
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
     let context = bounded_context(shared_runtime(runtime), &plan);
-    let mut metrics = QueryMetrics::default();
+    let metrics_recorder = nexus_query_engine::exec::ExecutionMetrics::detached("metrics");
+    let metrics_context = metrics_recorder.scope_context(&context).unwrap();
     let gpu_inputs = nexus_query_engine::runtime::resident::GpuResidentInputMap::new();
 
     let (state, compiled_batch) = {
         let mut executor =
-            CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics, None).unwrap();
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics_recorder).unwrap();
         let state = scheduler.run(&mut executor).expect("compiled shared-source join should execute");
         let output = executor.take_host_output().expect("compiled host sink should materialize");
         (state, output)
     };
+    let metrics = metrics_recorder.snapshot();
 
     assert_eq!(
         state.execution_order(),
@@ -212,11 +221,12 @@ fn execute_query_plan_runs_join_sort_limit_filter_through_admission() {
 
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
     let context = compiled_executor_context(shared_runtime(runtime), &plan);
-    let mut metrics = QueryMetrics::default();
+    let metrics_recorder = nexus_query_engine::exec::ExecutionMetrics::detached("metrics");
+    let metrics_context = metrics_recorder.scope_context(&context).unwrap();
     let gpu_inputs = GpuResidentInputMap::new();
     let (state, batch) = {
         let mut executor =
-            CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics, None).unwrap();
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics_recorder).unwrap();
         let state = scheduler.run(&mut executor).expect("join sort limit filter should execute");
         let output = executor.take_host_output().expect("compiled host sink should materialize");
         (state, output)
@@ -273,11 +283,12 @@ fn execute_query_plan_applies_limit_offset_once_through_fused_topk() {
 
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
     let context = compiled_executor_context(shared_runtime(runtime), &plan);
-    let mut metrics = QueryMetrics::default();
+    let metrics_recorder = nexus_query_engine::exec::ExecutionMetrics::detached("metrics");
+    let metrics_context = metrics_recorder.scope_context(&context).unwrap();
     let gpu_inputs = GpuResidentInputMap::new();
     let (state, batch) = {
         let mut executor =
-            CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics, None).unwrap();
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics_recorder).unwrap();
         let state = scheduler.run(&mut executor).expect("join sort limit offset should execute");
         let output = executor.take_host_output().expect("compiled host sink should materialize");
         (state, output)
@@ -317,16 +328,18 @@ fn compiled_gpu_executor_streams_grouped_aggregate_join_build_input_source() {
     );
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
     let context = compiled_executor_context(shared_runtime(runtime), &plan);
-    let mut metrics = QueryMetrics::default();
+    let metrics_recorder = nexus_query_engine::exec::ExecutionMetrics::detached("metrics");
+    let metrics_context = metrics_recorder.scope_context(&context).unwrap();
     let gpu_inputs = GpuResidentInputMap::new();
 
     let (state, batch) = {
         let mut executor =
-            CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics, None).unwrap();
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics_recorder).unwrap();
         let state = scheduler.run(&mut executor).expect("compiled aggregate join input should execute");
         let output = executor.take_host_output().expect("compiled host sink should materialize");
         (state, output)
     };
+    let metrics = metrics_recorder.snapshot();
 
     assert_eq!(state.live_resource_count(), 0);
     assert_eq!(int32_int64_pairs_sorted(&batch, 0, 1), vec![(Some(1), Some(15)), (Some(2), Some(20))]);
@@ -394,16 +407,18 @@ fn compiled_gpu_executor_streams_shared_source_for_join_build_and_grouped_aggreg
     );
     let scheduler = CompiledPipelineScheduler::new(&pipeline).expect("pipeline should be schedulable");
     let context = compiled_executor_context(shared_runtime(runtime), &plan);
-    let mut metrics = QueryMetrics::default();
+    let metrics_recorder = nexus_query_engine::exec::ExecutionMetrics::detached("metrics");
+    let metrics_context = metrics_recorder.scope_context(&context).unwrap();
     let gpu_inputs = GpuResidentInputMap::new();
 
     let (state, batch) = {
         let mut executor =
-            CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics, None).unwrap();
+            CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics_recorder).unwrap();
         let state = scheduler.run(&mut executor).expect("shared source aggregate should execute");
         let output = executor.take_host_output().expect("compiled host sink should materialize");
         (state, output)
     };
+    let metrics = metrics_recorder.snapshot();
 
     assert_eq!(state.live_resource_count(), 0);
     assert_eq!(
@@ -1257,9 +1272,10 @@ fn compiled_host_sink_diagnostics_are_structured_without_legacy_routing_terms() 
     let pipeline = compile_pipeline(&plan, &analysis).expect("root join should compile");
     let context = bounded_context(shared_runtime(runtime), &plan);
     let gpu_inputs = nexus_query_engine::runtime::resident::GpuResidentInputMap::new();
-    let mut metrics = QueryMetrics::default();
+    let metrics_recorder = nexus_query_engine::exec::ExecutionMetrics::detached("metrics");
+    let metrics_context = metrics_recorder.scope_context(&context).unwrap();
     let mut executor =
-        CompiledGpuTaskExecutor::new(&context, &plan, &pipeline, &gpu_inputs, &mut metrics, None).unwrap();
+        CompiledGpuTaskExecutor::new(&metrics_context, &plan, &pipeline, &gpu_inputs, &metrics_recorder).unwrap();
 
     let error = executor.take_host_output().expect_err("empty host sink should be a structured invariant error");
     let rendered = error.to_string();

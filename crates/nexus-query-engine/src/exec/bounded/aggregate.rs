@@ -7,7 +7,10 @@ use arrow::{
 };
 
 use super::{compiled::ResidentFrameStreamPayload, *};
-use crate::exec::{operators::final_global_aggregate_spec, source::record_bounded_parquet_source_metrics};
+use crate::{
+    exec::{operators::final_global_aggregate_spec, source::record_bounded_parquet_source_metrics},
+    observability::SourceReadFact,
+};
 
 mod final_merge;
 mod final_merge_policy;
@@ -119,9 +122,9 @@ pub(in crate::exec::bounded) fn execute_bounded_aggregate_to_frame(
         execution.context(),
     )?;
     for chunk in &chunk_plan.chunks {
-        execution.metrics_mut().record_source_chunk_planned(chunk.row_group_count() as u64);
+        execution.record_source_read(SourceReadFact::ChunkPlanned { row_groups: chunk.row_group_count() as u64 });
     }
-    record_bounded_parquet_source_metrics(bounded.source, &chunk_plan, execution.metrics_mut());
+    record_bounded_parquet_source_metrics(bounded.source, &chunk_plan, execution.metrics());
     if chunk_plan.chunks.is_empty() {
         return execute_final_aggregate_merge(execution, bounded, Vec::new());
     }
@@ -327,7 +330,7 @@ fn execute_compiled_bounded_exact_host_aggregate_from_frame(
         input_schema,
         &aggregate.spec,
         Some(&token),
-        execution.metrics_mut(),
+        execution.metrics(),
     ) {
         Ok(prepared) => prepared,
         Err(error) => {
@@ -339,14 +342,14 @@ fn execute_compiled_bounded_exact_host_aggregate_from_frame(
         execution.context(),
         prepared,
         &prepared_input_schema,
-        execution.metrics_mut(),
+        execution.metrics(),
     ) {
         Ok(input) => input,
         Err(error) => {
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
-    observe_device_memory_bytes(&exact_input, execution.metrics_mut())
+    observe_device_memory_bytes(&exact_input, execution.metrics())
         .map_err(|error| error.with_fact_if_absent("node_id", node_id))?;
     let batch =
         match materialize_datafusion_exact_host_aggregate_input(execution.context(), exact_input, exact_input_schema) {
@@ -362,7 +365,7 @@ fn execute_compiled_bounded_exact_host_aggregate_from_frame(
         &spec,
         &batch,
         output_schema,
-        execution.metrics_mut(),
+        execution.metrics(),
         None,
     )?;
     let _ = record_batch_memory_size(&output_batch);
@@ -374,7 +377,7 @@ fn execute_compiled_bounded_exact_host_aggregate_from_frame(
             return Err(error.with_fact_if_absent("node_id", node_id));
         },
     };
-    let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics_mut()) {
+    let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             return Err(error.with_fact_if_absent("node_id", node_id));
@@ -442,7 +445,7 @@ fn empty_resident_frame_for_schema(
         .with_fact("node_id", node_id)
     })?;
     let frame = GpuDataFrame::new(frame);
-    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
     let _ = (reservation_kind, memory_boundary, stage);
     Ok(ResidentGpuFrame::with_device_bytes(frame, output_bytes))
 }

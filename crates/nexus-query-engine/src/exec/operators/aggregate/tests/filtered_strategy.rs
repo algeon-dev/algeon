@@ -246,7 +246,7 @@ fn filtered_global_segmented_failure_records_error_budget_progress_and_partial_e
         })
         .build()
         .expect("execution context builds");
-    let mut metrics = QueryMetrics::default();
+    let metrics = ExecutionMetrics::detached("aggregate-test");
     let node_id = NodeId::from_index_for_internal_use(7);
     let stats = FilteredGlobalSegmentRuntimeStats {
         chunk_count: 2,
@@ -271,7 +271,7 @@ fn filtered_global_segmented_failure_records_error_budget_progress_and_partial_e
     let input_evidence = Some(source_adjacent_group_key_evidence(4, 3));
 
     record_filtered_global_segmented_failure(
-        &mut metrics,
+        &metrics,
         &context,
         Some(node_id),
         AggregateExecutionStage::Partial,
@@ -285,7 +285,8 @@ fn filtered_global_segmented_failure_records_error_budget_progress_and_partial_e
         Duration::from_millis(3),
     );
 
-    let recorded = metrics
+    let snapshot = metrics.snapshot();
+    let recorded = snapshot
         .aggregate_strategy_decisions
         .iter()
         .find(|decision| decision.node_id == node_id.to_string())

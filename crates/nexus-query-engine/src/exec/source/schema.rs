@@ -1,8 +1,8 @@
 use std::time::Instant;
 
 use super::{
-    ArrowDataType, DataFrame, ExecutionBudgetToken, ExecutionContext, LocalParquetSource, QueryError, QueryErrorCode,
-    QueryMetrics, Result, budgeted_value, cudf_dtype_from_arrow_type, cudf_query_error,
+    ArrowDataType, DataFrame, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, LocalParquetSource, QueryError,
+    QueryErrorCode, Result, budgeted_value, cudf_dtype_from_arrow_type, cudf_query_error,
     cudf_query_error_with_budget_details, timestamp_unit_to_cudf_resolution,
 };
 use crate::datatypes::is_supported_list_carry_type;
@@ -12,7 +12,7 @@ pub(super) fn materialize_missing_columns(
     source: &LocalParquetSource,
     mut frame: DataFrame,
     row_count_override: Option<usize>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<DataFrame> {
     if source.missing_columns.is_empty() {
         return Ok(frame);
@@ -38,7 +38,7 @@ pub(super) fn materialize_missing_columns(
             .with_fact("missing_type", format!("{:?}", missing_column.data_type))
         })?;
     }
-    metrics.source_read_time += timer.elapsed();
+    metrics.add_source_read_time(timer.elapsed());
     Ok(frame)
 }
 
@@ -134,7 +134,7 @@ pub(super) fn coerce_local_parquet_source_schema(
     mut frame: DataFrame,
     source: &LocalParquetSource,
     token: Option<&ExecutionBudgetToken>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<DataFrame> {
     let timer = Instant::now();
     for (field_index, field) in source.schema.fields().iter().enumerate() {
@@ -194,6 +194,6 @@ pub(super) fn coerce_local_parquet_source_schema(
             })?,
         };
     }
-    metrics.source_read_time += timer.elapsed();
+    metrics.add_source_read_time(timer.elapsed());
     Ok(frame)
 }

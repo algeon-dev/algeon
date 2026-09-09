@@ -17,6 +17,6 @@ mod implementation;
 pub(in crate::exec) use implementation::graph_algorithm_feature_disabled;
 #[cfg(feature = "cugraph")]
 pub(in crate::exec) use implementation::{
-    bounded_betweenness, diagnostics, execute_graph_algorithm, execute_graph_algorithm_sanitized,
-    graph_empty_input_prevalidated, statistics,
+    bounded_betweenness, execute_graph_algorithm, execute_graph_algorithm_sanitized, graph_empty_input_prevalidated,
+    statistics,
 };

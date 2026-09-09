@@ -1,6 +1,6 @@
 use super::{
-    Array, ExecutionContext, ExecutionOverrides, GpuDataFrame, InfoDetail, LimitSpec, NodeId, QueryError,
-    QueryErrorCode, QueryMetrics, RecordBatch, Result, cudf_query_error,
+    Array, ExecutionContext, ExecutionMetrics, ExecutionOverrides, GpuDataFrame, InfoDetail, LimitSpec, NodeId,
+    QueryError, QueryErrorCode, RecordBatch, Result, cudf_query_error,
 };
 pub(super) use crate::util::comma_separated_usize;
 
@@ -20,7 +20,7 @@ pub(super) fn execution_overrides(context: &ExecutionContext) -> Result<Executio
     context.runtime().map(|runtime| ExecutionOverridesLease { runtime })
 }
 
-pub(super) fn observe_device_memory_bytes(frame: &GpuDataFrame, metrics: &mut QueryMetrics) -> Result<u64> {
+pub(super) fn observe_device_memory_bytes(frame: &GpuDataFrame, metrics: &ExecutionMetrics) -> Result<u64> {
     let info = frame.frame().info_with(InfoDetail::DEVICE_ALLOCATED).map_err(|error| {
         cudf_query_error(
             "nexus_query_engine.metrics.device_memory",
@@ -41,7 +41,7 @@ pub(super) fn observe_device_memory_bytes(frame: &GpuDataFrame, metrics: &mut Qu
     Ok(bytes as u64)
 }
 
-pub(super) fn record_device_memory_observation(frame: &GpuDataFrame, metrics: &mut QueryMetrics) -> Result<()> {
+pub(super) fn record_device_memory_observation(frame: &GpuDataFrame, metrics: &ExecutionMetrics) -> Result<()> {
     observe_device_memory_bytes(frame, metrics).map(|_| ())
 }
 

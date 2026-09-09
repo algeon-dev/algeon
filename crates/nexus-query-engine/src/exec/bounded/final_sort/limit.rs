@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use super::{
-    CommittedPartial, DataFrame, GpuDataFrame, LimitNode, LimitSpec, QueryMetrics, Result,
+    CommittedPartial, DataFrame, ExecutionMetrics, GpuDataFrame, LimitNode, LimitSpec, Result,
     cudf_query_error_with_budget_details, limit_keeps_all_rows, limit_slice,
 };
 
@@ -10,7 +10,7 @@ pub(super) fn execute_limit_with_token(
     input: GpuDataFrame,
     token: &cudf::ExecutionBudgetToken,
     operation: &'static str,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let row_count = input.num_rows();
     if limit_keeps_all_rows(row_count, node.spec)? {
@@ -25,7 +25,7 @@ pub(super) fn execute_limit_on_frame_with_token(
     frame: DataFrame,
     token: &cudf::ExecutionBudgetToken,
     operation: &'static str,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let row_count = frame.num_rows();
     execute_limit_spec_on_frame_with_token(node.spec, frame, row_count, token, operation, metrics)
@@ -36,7 +36,7 @@ pub(super) fn execute_limit_spec_with_token(
     input: GpuDataFrame,
     token: &cudf::ExecutionBudgetToken,
     operation: &'static str,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let row_count = input.num_rows();
     if limit_keeps_all_rows(row_count, spec)? {
@@ -52,7 +52,7 @@ pub(super) fn execute_limit_spec_on_frame_with_token(
     row_count: usize,
     token: &cudf::ExecutionBudgetToken,
     operation: &'static str,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let (offset, length) = limit_slice(row_count, spec)?;
     if offset == 0 && length == row_count {
@@ -66,7 +66,7 @@ pub(super) fn execute_limit_spec_on_frame_with_token(
             .with_fact_if_absent("budget_bytes", token.request().budget_bytes())
             .with_fact_if_absent("budget_operation", "dataframe::slice")
     })?;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     Ok(GpuDataFrame::new(output))
 }
 

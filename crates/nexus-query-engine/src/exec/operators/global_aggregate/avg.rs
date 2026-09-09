@@ -2,7 +2,7 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
     AggregateFunction, AggregateSpec, ArrowDataType, AvgStateAliases, BinaryOp, DataFrame, ExecutionBudgetToken,
-    ExecutionContext, Expr, LiteralValue, QueryError, QueryErrorCode, QueryMetrics, Result, aggregate_spec_has_avg,
+    ExecutionContext, ExecutionMetrics, Expr, LiteralValue, QueryError, QueryErrorCode, Result, aggregate_spec_has_avg,
     budgeted_value, cudf_query_error, cudf_query_error_with_budget_details, execution_overrides,
     frame_column_arrow_data_type, lower_expr, validate_avg_output_fields,
 };
@@ -22,7 +22,7 @@ pub(in crate::exec) fn finalize_avg_output_columns_with_budget(
     spec: &AggregateSpec,
     output_schema: &ArrowSchemaRef,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<DataFrame> {
     finalize_avg_output_columns_impl(context, frame, spec, output_schema, Some((token, metrics)))
 }
@@ -32,7 +32,7 @@ fn finalize_avg_output_columns_impl(
     frame: DataFrame,
     spec: &AggregateSpec,
     output_schema: &ArrowSchemaRef,
-    token: Option<(&ExecutionBudgetToken, &mut QueryMetrics)>,
+    token: Option<(&ExecutionBudgetToken, &ExecutionMetrics)>,
 ) -> Result<DataFrame> {
     if !aggregate_spec_has_avg(spec) {
         return Ok(frame);

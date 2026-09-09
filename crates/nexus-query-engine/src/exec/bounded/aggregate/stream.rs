@@ -481,7 +481,7 @@ fn execute_compiled_bounded_statistical_partial_from_frame(
         &aggregate.spec,
         input_schema,
         &token,
-        execution.metrics_mut(),
+        execution.metrics(),
     );
     let frame = match output {
         Ok(frame) => frame,
@@ -489,13 +489,13 @@ fn execute_compiled_bounded_statistical_partial_from_frame(
             return Err(error);
         },
     };
-    let partial_bytes = match observe_device_memory_bytes(&frame, execution.metrics_mut()) {
+    let partial_bytes = match observe_device_memory_bytes(&frame, execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             return Err(error);
         },
     };
-    execution.metrics_mut().record_partial_aggregate(input_rows, frame.num_rows() as u64, partial_bytes);
+    execution.metrics().record_partial_aggregate(input_rows, frame.num_rows() as u64, partial_bytes);
     Ok(ResidentGpuFrame::with_device_bytes(frame, partial_bytes))
 }
 
@@ -551,7 +551,7 @@ fn execute_compiled_bounded_distinct_aggregate_from_stream(
     };
     while frames.pop().is_some() {}
     let concatenated = concatenated.map(GpuDataFrame::new)?;
-    let concatenated_bytes = observe_device_memory_bytes(&concatenated, execution.metrics_mut())?;
+    let concatenated_bytes = observe_device_memory_bytes(&concatenated, execution.metrics())?;
     execute_bounded_generic_unary(
         execution,
         node_id,
@@ -644,7 +644,7 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_retry_budget(
         },
     };
     if should_split_compiled_aggregate_stream_frame(execution, &input, upper_bound_bytes, retry_budget) {
-        execution.metrics_mut().record_retry_resource_exhausted();
+        execution.metrics().record_retry_resource_exhausted();
         crate::exec::retry::backoff_before_retry(
             execution.context(),
             "nexus_query_engine.exec.bounded.compiled_aggregate_stream_frame_retry",
@@ -727,7 +727,7 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_upper_bound(
         input.frame,
         &token,
         None,
-        execution.metrics_mut(),
+        execution.metrics(),
     );
     let frame = match output {
         Ok(frame) => frame,
@@ -735,13 +735,13 @@ fn execute_compiled_bounded_partial_aggregate_from_frame_with_upper_bound(
             return Err(error);
         },
     };
-    let partial_bytes = match observe_device_memory_bytes(&frame, execution.metrics_mut()) {
+    let partial_bytes = match observe_device_memory_bytes(&frame, execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             return Err(error);
         },
     };
-    execution.metrics_mut().record_partial_aggregate(input_rows, frame.num_rows() as u64, partial_bytes);
+    execution.metrics().record_partial_aggregate(input_rows, frame.num_rows() as u64, partial_bytes);
     Ok(ResidentGpuFrame::with_device_bytes(frame, partial_bytes))
 }
 
@@ -810,8 +810,8 @@ fn split_compiled_aggregate_stream_frame(
     };
     let left = GpuDataFrame::new(left);
     let right = GpuDataFrame::new(right);
-    let left_bytes = observe_device_memory_bytes(&left, execution.metrics_mut())?;
-    let right_bytes = observe_device_memory_bytes(&right, execution.metrics_mut())?;
+    let left_bytes = observe_device_memory_bytes(&left, execution.metrics())?;
+    let right_bytes = observe_device_memory_bytes(&right, execution.metrics())?;
     Ok((ResidentGpuFrame::with_device_bytes(left, left_bytes), ResidentGpuFrame::with_device_bytes(right, right_bytes)))
 }
 
@@ -832,7 +832,7 @@ pub(in crate::exec::bounded) fn execute_bounded_whole_input_aggregate_from_raw_c
     for chunk in chunks {
         match execute_bounded_raw_source_chunk(execution, bounded, chunk) {
             Ok(raw) => {
-                execution.metrics_mut().record_source_chunk_commit(raw.source_row_group_count);
+                execution.metrics().record_source_chunk_commit(raw.source_row_group_count);
                 raw_frames.push(raw.partial);
             },
             Err(error) => {
@@ -887,7 +887,7 @@ pub(in crate::exec::bounded) fn execute_bounded_whole_input_aggregate_from_raw_c
     };
     release_partials_reverse(raw_frames);
     let concatenated = concatenated.map(GpuDataFrame::new)?;
-    let concat_bytes = observe_device_memory_bytes(&concatenated, execution.metrics_mut())?;
+    let concat_bytes = observe_device_memory_bytes(&concatenated, execution.metrics())?;
     execute_compiled_bounded_aggregate_from_frame(
         execution,
         bounded.aggregate_id,

@@ -493,7 +493,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame(
         },
         BoundedCompiledJoinBuildState::Prepared(build) => {
             if mixed_left_match_probe_supported(node, build.strategy) {
-                let bytes = observe_device_memory_bytes(&input, execution.metrics_mut())?;
+                let bytes = observe_device_memory_bytes(&input, execution.metrics())?;
                 return execute_compiled_mixed_left_join_probe_from_frame_stream(
                     execution,
                     node,
@@ -513,7 +513,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_probe_from_frame(
             }))
         },
         BoundedCompiledJoinBuildState::Partitioned(build) => {
-            let bytes = match observe_device_memory_bytes(&input, execution.metrics_mut()) {
+            let bytes = match observe_device_memory_bytes(&input, execution.metrics()) {
                 Ok(bytes) => bytes,
                 Err(error) => {
                     release_partitioned_join_side(build.partitioned);
@@ -878,7 +878,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize_preser
                 build_rows,
                 build_bytes,
                 &summary,
-                execution.metrics_mut(),
+                execution.metrics(),
             );
             Ok(BoundedCompiledJoinMaterializeOutput::Stream(outputs))
         },
@@ -906,7 +906,7 @@ pub(in crate::exec::bounded) fn execute_bounded_compiled_join_materialize_preser
                 build_rows,
                 build_bytes,
                 &summary,
-                execution.metrics_mut(),
+                execution.metrics(),
             );
             Ok(BoundedCompiledJoinMaterializeOutput::Stream(outputs))
         },
@@ -1054,10 +1054,10 @@ fn concatenate_streamed_hash_join_outputs(
             .with_fact("chunk_count", chunk_count));
         },
     };
-    execution.metrics_mut().operator_time += timer.elapsed();
+    execution.metrics().add_operator_time(timer.elapsed());
 
     let output_frame = GpuDataFrame::new(output);
-    let output_bytes = match observe_device_memory_bytes(&output_frame, execution.metrics_mut()) {
+    let output_bytes = match observe_device_memory_bytes(&output_frame, execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             return Err(error);
@@ -1490,9 +1490,9 @@ fn materialize_compiled_indices_output(
         },
     };
     if let Some(index_bytes) = one_shot_index_bytes {
-        execution.metrics_mut().record_one_shot_join();
-        execution.metrics_mut().record_one_shot_join_index_bytes(index_bytes);
-        execution.metrics_mut().record_one_shot_join_materialization_bytes(output_reservation_bytes);
+        execution.metrics().record_one_shot_join();
+        execution.metrics().record_one_shot_join_index_bytes(index_bytes);
+        execution.metrics().record_one_shot_join_materialization_bytes(output_reservation_bytes);
     }
     let (left, right) = txn.sides();
     let output = match txn.indices().materialize_output(
@@ -1509,10 +1509,10 @@ fn materialize_compiled_indices_output(
             return Err(error);
         },
     };
-    execution.metrics_mut().operator_time += timer.elapsed();
+    execution.metrics().add_operator_time(timer.elapsed());
     let output_rows = output.num_rows() as u64;
     debug_assert_eq!(output_rows, expected_output_rows);
-    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics_mut()) {
+    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             txn.rollback();
@@ -1520,11 +1520,11 @@ fn materialize_compiled_indices_output(
         },
     };
     if one_shot_index_bytes.is_some() {
-        execution.metrics_mut().record_one_shot_join_output_bytes(output_bytes);
+        execution.metrics().record_one_shot_join_output_bytes(output_bytes);
     }
     debug_assert_eq!(observed_gather_map_bytes, gather_map_bytes);
     let (left, right) = txn.sides();
-    execution.metrics_mut().record_operator_metrics(crate::metrics::OperatorMetrics::join(
+    execution.metrics().record_operator_metrics(crate::metrics::OperatorMetrics::join(
         node_id,
         crate::metrics::JoinOperatorMetrics {
             query_id: None,

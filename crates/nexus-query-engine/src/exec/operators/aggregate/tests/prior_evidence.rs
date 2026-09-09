@@ -21,6 +21,40 @@ fn fixed_width_low_cardinality_prior_selects_prepared_sort_groupby() {
 }
 
 #[test]
+fn prior_partial_evidence_selects_the_same_strategy_when_no_decision_row_is_retained() {
+    let (schema, spec) = fixed_width_sum_spec();
+    let node_id = NodeId::from_index_for_internal_use(7);
+    let session = crate::observability::RuntimeObservationSession::new(
+        "zero-retention",
+        None,
+        crate::observability::RuntimeObservationConfig::bounded(0, 0),
+    );
+    let metrics = ExecutionMetrics::bind(
+        &session.handle(),
+        crate::observability::PlanExecutionId::new("zero-retention-plan"),
+        "zero-retention",
+        None,
+    );
+    let facts = BTreeMap::from([
+        ("execution_stage", "partial".to_string()),
+        ("aggregate_structural_key", aggregate_structural_key(&spec, &schema, None)),
+        ("input_rows", "5000000".to_string()),
+        ("output_group_count", "1000".to_string()),
+        ("reduction_ratio_ppm", reduction_ratio_ppm(5_000_000, 1_000).to_string()),
+        ("selected_strategy", "libcudf_groupby".to_string()),
+    ]);
+    metrics.record_aggregate_strategy_decision(node_id, &facts);
+    assert!(metrics.snapshot().aggregate_strategy_decisions.is_empty(), "retention must decline the decision row");
+
+    let decision = aggregate_strategy_capability_decision(&spec, &schema, AggregateExecutionStage::Partial);
+    let decision =
+        select_partial_aggregate_strategy_decision(decision, Some(node_id), &spec, &schema, 5_000_000, None, &metrics);
+
+    assert_eq!(decision.selected_strategy, AggregateExecutionStrategy::PreparedSortGroupby);
+    assert_eq!(decision.facts.get("prior_cardinality_evidence_scope").map(String::as_str), Some("exact_node"));
+}
+
+#[test]
 fn fixed_width_low_cardinality_structural_prior_selects_prepared_sort_groupby_for_different_node() {
     let (schema, spec) = fixed_width_sum_spec();
     let prior_node_id = NodeId::from_index_for_internal_use(7);
@@ -57,7 +91,7 @@ fn exact_node_partial_cardinality_prior_takes_precedence_over_structural_prior()
     let (schema, spec) = fixed_width_sum_spec();
     let current_node_id = NodeId::from_index_for_internal_use(12);
     let structural_node_id = NodeId::from_index_for_internal_use(13);
-    let mut metrics = metrics_with_prior_partial_structural_decision(
+    let metrics = metrics_with_prior_partial_structural_decision(
         structural_node_id,
         &spec,
         &schema,
@@ -97,7 +131,7 @@ fn exact_node_partial_cardinality_prior_takes_precedence_over_structural_prior()
 fn exact_node_partial_cardinality_prior_with_mismatched_structural_key_is_ignored() {
     let (schema, spec) = fixed_width_sum_spec();
     let current_node_id = NodeId::from_index_for_internal_use(14);
-    let mut metrics = QueryMetrics::default();
+    let metrics = ExecutionMetrics::detached("aggregate-test");
     let mismatched_facts = BTreeMap::from([
         ("execution_stage", "partial".to_string()),
         ("aggregate_structural_key", "agg-v1-fnv64-mismatched".to_string()),

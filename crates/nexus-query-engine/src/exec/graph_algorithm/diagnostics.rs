@@ -1,24 +1,11 @@
 use arrow::datatypes::SchemaRef;
 
-use super::{
-    DataFrame, NodeId, QueryError, QueryErrorCode, QueryMetrics, Result, cudf_dtype_from_arrow_type, cudf_query_error,
-};
+use super::{DataFrame, QueryError, QueryErrorCode, Result, cudf_dtype_from_arrow_type, cudf_query_error};
 
 #[cfg(feature = "cugraph")]
 pub(super) fn graph_algorithm_metadata_with_null_drops(metadata: String, null_edge_rows_dropped: u64) -> String {
     let null_metadata = format!("null_edge_rows_dropped={null_edge_rows_dropped}");
     if metadata.is_empty() { null_metadata } else { format!("{metadata},{null_metadata}") }
-}
-
-#[cfg(feature = "cugraph")]
-pub(in crate::exec) fn graph_input_null_edge_rows_dropped(metrics: &QueryMetrics, input: NodeId) -> u64 {
-    let input_node_id = input.to_string();
-    metrics
-        .operators
-        .iter()
-        .filter(|row| row.node_id == input_node_id && row.operator_kind == "graph_edge_null_filter")
-        .map(|row| row.input_rows.saturating_sub(row.output_rows))
-        .sum()
 }
 
 #[cfg(feature = "cugraph")]

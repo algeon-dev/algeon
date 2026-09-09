@@ -208,6 +208,9 @@ pub struct NativeDataFusionExecutionMetrics {
     pub aggregate_strategy_rows: Vec<NativeAggregateStrategyMetricRow>,
     /// Stable nested join strategy rows.
     pub join_strategy_rows: Vec<NativeJoinStrategyMetricRow>,
+    /// Whether detail rows were lost before these metrics were rendered. The
+    /// source only flags a loss, so how many rows were lost is unknown.
+    pub detail_capture_lost: bool,
 }
 
 impl NativeDataFusionExecutionMetrics {
@@ -308,6 +311,7 @@ impl NativeDataFusionExecutionMetrics {
             join_gather_map_bytes: metric_count(metrics, "join_gather_map_bytes"),
             aggregate_strategy_rows: aggregate_strategy_rows(metrics),
             join_strategy_rows: join_strategy_rows(metrics),
+            detail_capture_lost: metric_count(metrics, crate::native_exec::SERVER_CAPTURE_LOSS_METRIC_NAME) > 0,
         }
     }
 
@@ -395,6 +399,7 @@ impl NativeDataFusionExecutionMetrics {
             join_gather_map_bytes,
             aggregate_strategy_rows,
             join_strategy_rows,
+            detail_capture_lost,
         } = other;
 
         self.gpu_resident_input_handoffs = self.gpu_resident_input_handoffs.saturating_add(gpu_resident_input_handoffs);
@@ -518,6 +523,7 @@ impl NativeDataFusionExecutionMetrics {
         self.join_gather_map_bytes = self.join_gather_map_bytes.saturating_add(join_gather_map_bytes);
         self.merge_aggregate_strategy_rows(aggregate_strategy_rows);
         self.merge_join_strategy_rows(join_strategy_rows);
+        self.detail_capture_lost |= detail_capture_lost;
     }
 
     /// Classifies dynamic-filter runtime evidence by the strongest measured reduction.

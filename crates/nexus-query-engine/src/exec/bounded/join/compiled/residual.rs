@@ -78,7 +78,7 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
     let candidate_output_rows = candidate.num_rows() as u64;
     debug_assert_eq!(candidate_output_rows, candidate_rows);
     let candidate_output_bytes =
-        match observe_device_memory_bytes(&GpuDataFrame::new(candidate.clone()), execution.metrics_mut()) {
+        match observe_device_memory_bytes(&GpuDataFrame::new(candidate.clone()), execution.metrics()) {
             Ok(bytes) => bytes,
             Err(error) => {
                 txn.rollback();
@@ -138,9 +138,9 @@ pub(super) fn materialize_compiled_one_shot_residual_output(
             ));
         },
     };
-    execution.metrics_mut().operator_time += timer.elapsed();
+    execution.metrics().add_operator_time(timer.elapsed());
     let output_rows = output.num_rows() as u64;
-    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics_mut()) {
+    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             txn.rollback();

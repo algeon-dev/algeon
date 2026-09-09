@@ -2,7 +2,7 @@
 
 use nexus_query_engine::{metrics::QueryMetrics, runtime::LakehouseCacheFillEventSnapshot};
 
-use super::{NexusNativeMetrics, add_optional_count, count, join_gather_map_bytes};
+use super::{NexusNativeMetrics, add_optional_count, count};
 use crate::native_exec::{
     admission::QueryAdmissionFacts,
     metrics::contract::{for_each_native_nexus_metric, recording_marker},
@@ -297,7 +297,7 @@ impl NativeMetricRecording<recording_marker::join_gather_map_bytes> for NexusNat
     recording_kind!(Query);
 
     fn record_query(&self, metrics: &QueryMetrics) {
-        self.join_gather_map_bytes.add(count(join_gather_map_bytes(metrics)));
+        self.join_gather_map_bytes.add(count(metrics.join_gather_map_bytes));
     }
 }
 

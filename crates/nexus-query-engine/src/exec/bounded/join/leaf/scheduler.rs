@@ -48,9 +48,9 @@ pub(super) fn read_join_leaf_source_chunks_with_scheduler(
             },
         };
         if is_prefetch {
-            execution.metrics_mut().record_source_read_prefetch_completed();
+            execution.metrics().record_source_read_prefetch_completed();
         }
-        let observed_bytes = match observe_device_memory_bytes(&output.frame, execution.metrics_mut()) {
+        let observed_bytes = match observe_device_memory_bytes(&output.frame, execution.metrics()) {
             Ok(bytes) => bytes,
             Err(error) => {
                 abandon_join_leaf_reads(execution, pending);
@@ -62,9 +62,9 @@ pub(super) fn read_join_leaf_source_chunks_with_scheduler(
             reader_dynamic_filters,
             &output.chunk,
             &output.frame,
-            execution.metrics_mut(),
+            execution.metrics(),
         );
-        execution.metrics_mut().record_source_chunk_commit(
+        execution.metrics().record_source_chunk_commit(
             output
                 .observed_row_group_count
                 .or_else(|| chunk.known_read_row_group_count().map(|row_groups| row_groups as u64))
@@ -144,10 +144,10 @@ pub(super) fn fill_optional_join_leaf_reads(
         };
         let Some(requested_bytes) = join_leaf_prefetch_budget_bytes(execution.context().memory_control_policy(), chunk)
         else {
-            execution.metrics_mut().record_source_read_prefetch_skipped();
+            execution.metrics().record_source_read_prefetch_skipped();
             break;
         };
-        execution.metrics_mut().record_source_read_prefetch_started();
+        execution.metrics().record_source_read_prefetch_started();
         pending.push_back(start_join_leaf_scheduled_source_read(
             execution,
             source,
@@ -179,10 +179,11 @@ pub(super) fn start_join_leaf_scheduled_source_read(
     max_attempts: usize,
 ) -> Result<ScheduledLocalParquetRead> {
     execution.context().check_cancellation("nexus_query_engine.exec.bounded.join_leaf_source_scheduler_start")?;
-    execution.metrics_mut().record_source_chunk_attempt();
+    execution.metrics().record_source_chunk_attempt();
     let source_token_budget = if hard_token_budget { requested_bytes } else { execution.device_budget_bytes() };
     ScheduledLocalParquetRead::spawn(
         execution.context().clone(),
+        execution.metrics().clone(),
         source.clone(),
         chunk.clone(),
         source_token_budget,

@@ -63,7 +63,7 @@ impl FinalSortExecutor<'_, '_> {
                 input.frame.frame().clone(),
                 &token,
                 "nexus_query_engine.final_sort.limit",
-                self.execution.metrics_mut(),
+                self.execution.metrics(),
             ) {
                 Ok(output) => output,
                 Err(error) => {
@@ -90,8 +90,8 @@ impl FinalSortExecutor<'_, '_> {
         ) {
             Ok(candidates) => candidates,
             Err(error) => {
-                record_final_sort_retry_error(&error, self.execution.metrics_mut());
-                return Err(final_sort_retry_facts("hierarchical_topk_initial_failed", self.execution.metrics_mut())
+                record_final_sort_retry_error(&error, self.execution.metrics());
+                return Err(final_sort_retry_facts("hierarchical_topk_initial_failed", self.execution.metrics())
                     .attach_to_error(error));
             },
         };
@@ -110,7 +110,7 @@ impl FinalSortExecutor<'_, '_> {
                         break;
                     },
                     Err(error) if is_retryable_final_sort_error(&error) => {
-                        record_final_sort_retry_error(&error, self.execution.metrics_mut());
+                        record_final_sort_retry_error(&error, self.execution.metrics());
                         if attempt < self.max_attempts
                             && let Some(reduced_fan_in) = reduce_merge_fan_in(merge_fan_in)
                         {
@@ -123,12 +123,8 @@ impl FinalSortExecutor<'_, '_> {
                             continue;
                         }
 
-                        return Err(final_sort_topk_retry_facts(
-                            merge_level,
-                            merge_fan_in,
-                            self.execution.metrics_mut(),
-                        )
-                        .attach_to_error(error));
+                        return Err(final_sort_topk_retry_facts(merge_level, merge_fan_in, self.execution.metrics())
+                            .attach_to_error(error));
                     },
                     Err(error) => {
                         return Err(error);
@@ -162,7 +158,7 @@ impl FinalSortExecutor<'_, '_> {
             candidate.frame,
             &token,
             "nexus_query_engine.final_sort.limit",
-            self.execution.metrics_mut(),
+            self.execution.metrics(),
         ) {
             Ok(output) => output,
             Err(error) => {
@@ -171,7 +167,7 @@ impl FinalSortExecutor<'_, '_> {
                     self.node_id,
                     self.max_attempts,
                     self.max_attempts,
-                    self.execution.metrics_mut(),
+                    self.execution.metrics(),
                     error,
                 ));
             },
@@ -246,7 +242,7 @@ impl FinalSortExecutor<'_, '_> {
                     inputs.release_remaining_frames();
                     return Err(final_sort_retry_facts(
                         "hierarchical_topk_stream_initial_failed",
-                        self.execution.metrics_mut(),
+                        self.execution.metrics(),
                     )
                     .attach_to_error(error));
                 },
@@ -276,7 +272,7 @@ impl FinalSortExecutor<'_, '_> {
                         break;
                     },
                     Err(error) if is_retryable_final_sort_error(&error) => {
-                        record_final_sort_retry_error(&error, self.execution.metrics_mut());
+                        record_final_sort_retry_error(&error, self.execution.metrics());
                         if attempt < self.max_attempts
                             && let Some(reduced_fan_in) = reduce_merge_fan_in(merge_fan_in)
                         {
@@ -289,12 +285,8 @@ impl FinalSortExecutor<'_, '_> {
                             continue;
                         }
 
-                        return Err(final_sort_topk_retry_facts(
-                            merge_level,
-                            merge_fan_in,
-                            self.execution.metrics_mut(),
-                        )
-                        .attach_to_error(error));
+                        return Err(final_sort_topk_retry_facts(merge_level, merge_fan_in, self.execution.metrics())
+                            .attach_to_error(error));
                     },
                     Err(error) => {
                         return Err(error);
@@ -352,7 +344,7 @@ impl FinalSortExecutor<'_, '_> {
             first.frame.into_frame(),
             &token,
             "nexus_query_engine.final_sort.limit",
-            self.execution.metrics_mut(),
+            self.execution.metrics(),
         ) {
             Ok(output) => output,
             Err(error) => {
@@ -457,7 +449,7 @@ impl FinalSortExecutor<'_, '_> {
                             self.node_id,
                             attempt,
                             self.max_attempts,
-                            self.execution.metrics_mut(),
+                            self.execution.metrics(),
                             error,
                         ));
                     },
@@ -469,7 +461,7 @@ impl FinalSortExecutor<'_, '_> {
                     frame,
                     &work_token,
                     memory_boundary,
-                    self.execution.metrics_mut(),
+                    self.execution.metrics(),
                 )
             })
         };
@@ -481,7 +473,7 @@ impl FinalSortExecutor<'_, '_> {
                     self.node_id,
                     attempt,
                     self.max_attempts,
-                    self.execution.metrics_mut(),
+                    self.execution.metrics(),
                     error,
                 ));
             },
@@ -497,7 +489,7 @@ impl FinalSortExecutor<'_, '_> {
             sorted,
             &limit_token,
             "nexus_query_engine.final_sort.topk_limit",
-            self.execution.metrics_mut(),
+            self.execution.metrics(),
         ) {
             Ok(frame) => frame,
             Err(error) => {
@@ -506,7 +498,7 @@ impl FinalSortExecutor<'_, '_> {
                     self.node_id,
                     attempt,
                     self.max_attempts,
-                    self.execution.metrics_mut(),
+                    self.execution.metrics(),
                     error,
                 ));
             },
@@ -598,7 +590,7 @@ impl FinalSortExecutor<'_, '_> {
             candidate.frame,
             &token,
             "nexus_query_engine.final_sort.limit",
-            self.execution.metrics_mut(),
+            self.execution.metrics(),
         ) {
             Ok(output) => output,
             Err(error) => {
@@ -607,7 +599,7 @@ impl FinalSortExecutor<'_, '_> {
                     self.node_id,
                     attempt,
                     self.max_attempts,
-                    self.execution.metrics_mut(),
+                    self.execution.metrics(),
                     error,
                 ));
             },

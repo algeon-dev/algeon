@@ -64,7 +64,7 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_mixed_left_join
         operator_time += timer.elapsed();
         state_bytes = state_bytes
             .max(finalized.device_allocated_size_bytes().map_err(|error| join_index_error(error, node))? as u64);
-        execution.metrics_mut().record_mixed_join_size_data_bytes(state_bytes);
+        execution.metrics().record_mixed_join_size_data_bytes(state_bytes);
         Ok(BoundedCompiledJoinProbeState::MixedLeftMatched(BoundedCompiledMixedLeftJoinProbeState {
             left: build.input,
             finalized,
@@ -112,10 +112,10 @@ pub(in crate::exec::bounded::join::compiled) fn execute_compiled_mixed_left_join
         &node.spec.output_projection,
         node.spec.join_type,
     )?;
-    execution.metrics_mut().operator_time += operator_time + timer.elapsed();
+    execution.metrics().add_operator_time(operator_time + timer.elapsed());
     let output = GpuDataFrame::new(output);
-    let output_bytes = observe_device_memory_bytes(&output, execution.metrics_mut())?;
-    execution.metrics_mut().record_operator_metrics(crate::metrics::OperatorMetrics::join(
+    let output_bytes = observe_device_memory_bytes(&output, execution.metrics())?;
+    execution.metrics().record_operator_metrics(crate::metrics::OperatorMetrics::join(
         node_id,
         crate::metrics::JoinOperatorMetrics {
             query_id: None,

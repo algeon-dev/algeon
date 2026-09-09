@@ -64,13 +64,13 @@ fn execute_compiled_projected_cross_join_materialize_with_strategy(
         .with_fact("join_type", node.spec.join_type)
     })?;
     let output = reorder_projected_cross_join_output(output, &node.spec.output_projection)?;
-    execution.metrics_mut().operator_time += timer.elapsed();
+    execution.metrics().add_operator_time(timer.elapsed());
     let output_rows = output.num_rows() as u64;
     debug_assert_eq!(output_rows, expected_output_rows);
-    let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics_mut())?;
+    let output_bytes = observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics())?;
     let build_side = node.spec.build_side;
     let probe_side = probe_side(build_side);
-    execution.metrics_mut().record_operator_metrics(crate::metrics::OperatorMetrics::join(
+    execution.metrics().record_operator_metrics(crate::metrics::OperatorMetrics::join(
         node_id,
         crate::metrics::JoinOperatorMetrics {
             query_id: None,

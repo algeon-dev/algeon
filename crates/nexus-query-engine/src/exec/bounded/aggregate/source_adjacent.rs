@@ -201,7 +201,7 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
         let batch_task_id =
             source_adjacent_aggregate_task_id(bounded.aggregate_id, "source_adjacent_raw_batch", batch_ordinal);
         batch_ordinal += 1;
-        let budget_event_start = execution.metrics_mut().budgeted_execution_event_count();
+        let budget_window = execution.metrics().open_budget_window();
         let raw_inputs = match execute_source_adjacent_raw_source_batch(execution, bounded, batch) {
             Ok(raw_inputs) => raw_inputs,
             Err(error) => {
@@ -315,7 +315,7 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
             committed_source_batches.push((batch_chunks.len() as u64, source_row_group_count));
             feedback.observe(sample);
         }
-        execution.metrics_mut().record_task_budget_observations_since(&batch_task_id, budget_event_start);
+        execution.metrics().close_budget_window(&batch_task_id, budget_window);
     }
 
     let partition_count = partition_count.unwrap_or(1);
@@ -340,7 +340,7 @@ pub(in crate::exec::bounded) fn execute_bounded_partitioned_source_adjacent_aggr
         }
     }
     for (chunk_count, row_group_count) in committed_source_batches {
-        execution.metrics_mut().record_source_chunk_commit_count(chunk_count, row_group_count);
+        execution.metrics().record_source_chunk_commit_count(chunk_count, row_group_count);
     }
 
     if let Some(key_columns) = partitioner.group_key_columns() {
@@ -473,8 +473,8 @@ fn execute_source_adjacent_raw_source_batch(
     match execute_bounded_raw_source_chunk_batch(execution, bounded, &batch) {
         Ok(raw) => Ok(vec![(batch.chunks, raw)]),
         Err(error) if is_retryable_chunk_error(&error) => {
-            record_chunk_retry_error(&error, execution.metrics_mut());
-            execution.metrics_mut().record_source_chunk_retry();
+            record_chunk_retry_error(&error, execution.metrics());
+            execution.metrics().record_source_chunk_retry();
             let Some((left, right)) = batch.split_for_retry() else {
                 return Err(error);
             };
@@ -713,7 +713,7 @@ fn partition_source_adjacent_raw_chunk(
     let PartitionedSourceAdjacentChunk { frame: partitioned_frame, offsets, original_columns, token } =
         hash_partition_source_adjacent_raw_chunk(execution, node_id, chunk_index, raw, partition_count, partitioner)?;
     let partitioned_gpu = GpuDataFrame::new(partitioned_frame.clone());
-    match observe_device_memory_bytes(&partitioned_gpu, execution.metrics_mut()) {
+    match observe_device_memory_bytes(&partitioned_gpu, execution.metrics()) {
         Ok(_) => {},
         Err(error) => {
             return Err(error);
@@ -902,7 +902,7 @@ fn slice_source_adjacent_aggregate_partition(
             .with_fact("partition", partition)
             .with_fact("partition_rows", len)
         })?,
-        execution.metrics_mut(),
+        execution.metrics(),
         "nexus_query_engine.bounded.aggregate.source_adjacent_hash_partition_slice",
     );
     let sliced = if let Some(output_columns) = output_columns {
@@ -921,7 +921,7 @@ fn slice_source_adjacent_aggregate_partition(
         sliced
     };
     let gpu = GpuDataFrame::new(sliced);
-    let bytes = observe_device_memory_bytes(&gpu, execution.metrics_mut())?;
+    let bytes = observe_device_memory_bytes(&gpu, execution.metrics())?;
     Ok(Some(ResidentGpuFrame::with_device_bytes(gpu, bytes)))
 }
 
@@ -981,7 +981,7 @@ fn execute_source_adjacent_partition_aggregate_with_retry(
         retry_budget,
         execution.device_budget_bytes(),
     ) {
-        execution.metrics_mut().record_retry_resource_exhausted();
+        execution.metrics().record_retry_resource_exhausted();
         if let Err(error) = crate::exec::retry::backoff_before_retry(
             execution.context(),
             "nexus_query_engine.exec.bounded.source_adjacent_partition_aggregate_split_retry",
@@ -1067,7 +1067,7 @@ fn execute_source_adjacent_partition_aggregate_with_upper_bound(
         },
     };
     let chunk_operator_timer = Instant::now();
-    let budget_event_start = execution.metrics_mut().budgeted_execution_event_count();
+    let budget_window = execution.metrics().open_budget_window();
     let result = execute_partial_aggregate_with_budget(
         execution.context(),
         Some(bounded.aggregate_id),
@@ -1077,24 +1077,24 @@ fn execute_source_adjacent_partition_aggregate_with_upper_bound(
         input_frame,
         &token,
         Some(input_evidence),
-        execution.metrics_mut(),
+        execution.metrics(),
     );
-    execution.metrics_mut().record_task_budget_observations_since(&task_id, budget_event_start);
-    execution.metrics_mut().chunk_operator_time += chunk_operator_timer.elapsed();
+    execution.metrics().close_budget_window(&task_id, budget_window);
+    execution.metrics().add_chunk_operator_time(chunk_operator_timer.elapsed());
     let frame = match result {
         Ok(frame) => frame,
         Err(error) => {
             return Err(source_adjacent_partition_aggregate_error(error, bounded.aggregate_id, stage, partition_index));
         },
     };
-    let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics_mut()) {
+    let output_bytes = match observe_device_memory_bytes(&frame, execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             return Err(source_adjacent_partition_aggregate_error(error, bounded.aggregate_id, stage, partition_index));
         },
     };
     let output = ResidentGpuFrame::with_device_bytes(frame, output_bytes);
-    execution.metrics_mut().record_partial_aggregate(input_rows, output.frame.num_rows() as u64, output.device_bytes());
+    execution.metrics().record_partial_aggregate(input_rows, output.frame.num_rows() as u64, output.device_bytes());
     Ok(output)
 }
 
@@ -1182,11 +1182,11 @@ fn split_source_adjacent_partition_aggregate_input(
     };
     let left = GpuDataFrame::new(left);
     let right = GpuDataFrame::new(right);
-    let left_bytes = match observe_device_memory_bytes(&left, execution.metrics_mut()) {
+    let left_bytes = match observe_device_memory_bytes(&left, execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => return Err(source_adjacent_partition_aggregate_error(error, node_id, stage, partition_index)),
     };
-    let right_bytes = match observe_device_memory_bytes(&right, execution.metrics_mut()) {
+    let right_bytes = match observe_device_memory_bytes(&right, execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => return Err(source_adjacent_partition_aggregate_error(error, node_id, stage, partition_index)),
     };
@@ -1268,7 +1268,7 @@ fn concatenate_committed_frames(
             return Err(error);
         },
     };
-    let output_bytes = match observe_device_memory_bytes(&concatenated, execution.metrics_mut()) {
+    let output_bytes = match observe_device_memory_bytes(&concatenated, execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             return Err(error);

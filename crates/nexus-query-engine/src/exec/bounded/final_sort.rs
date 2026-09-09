@@ -70,7 +70,7 @@ pub(super) fn execute_final_sort_node_with_retry(
         match final_sort.should_use_hierarchical_topk(limit, &input) {
             Ok(true) => {
                 let result = final_sort.hierarchical_topk(limit, input, 1);
-                final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
+                final_sort.execution.metrics().add_final_sort_time(timer.elapsed());
                 return match result {
                     Ok(output) => {
                         stage_guard.finish(Some(output.frame.num_rows() as u64), None);
@@ -84,7 +84,7 @@ pub(super) fn execute_final_sort_node_with_retry(
             },
             Ok(false) => {},
             Err(error) => {
-                final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
+                final_sort.execution.metrics().add_final_sort_time(timer.elapsed());
                 stage_guard.fail(&error);
                 return Err(error);
             },
@@ -95,12 +95,12 @@ pub(super) fn execute_final_sort_node_with_retry(
 
     match result {
         Ok(output) => {
-            final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
+            final_sort.execution.metrics().add_final_sort_time(timer.elapsed());
             stage_guard.finish(Some(output.frame.num_rows() as u64), None);
             Ok(output)
         },
         Err(error) if is_retryable_final_sort_error(&error) => {
-            record_final_sort_retry_error(&error, final_sort.execution.metrics_mut());
+            record_final_sort_retry_error(&error, final_sort.execution.metrics());
             if max_attempts > 1
                 && let Some(limit) = limit
             {
@@ -113,26 +113,26 @@ pub(super) fn execute_final_sort_node_with_retry(
                 }
                 match final_sort.hierarchical_topk(limit, input, 2) {
                     Ok(output) => {
-                        final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
+                        final_sort.execution.metrics().add_final_sort_time(timer.elapsed());
                         stage_guard.finish(Some(output.frame.num_rows() as u64), None);
                         Ok(output)
                     },
                     Err(error) => {
-                        final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
+                        final_sort.execution.metrics().add_final_sort_time(timer.elapsed());
                         stage_guard.fail(&error);
                         Err(error)
                     },
                 }
             } else {
-                final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
-                let error = final_sort_retry_facts("retry_attempts_exhausted", final_sort.execution.metrics_mut())
+                final_sort.execution.metrics().add_final_sort_time(timer.elapsed());
+                let error = final_sort_retry_facts("retry_attempts_exhausted", final_sort.execution.metrics())
                     .attach_to_error(error);
                 stage_guard.fail(&error);
                 Err(error)
             }
         },
         Err(error) => {
-            final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
+            final_sort.execution.metrics().add_final_sort_time(timer.elapsed());
             stage_guard.fail(&error);
             Err(error)
         },
@@ -165,17 +165,17 @@ pub(in crate::exec::bounded) fn execute_final_sort_node_from_frame_with_retry(
 
     match result {
         Ok(output) => {
-            final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
+            final_sort.execution.metrics().add_final_sort_time(timer.elapsed());
             Ok(ResidentGpuFrame { frame: output.frame, device_bytes: output.device_bytes })
         },
         Err(error) if is_retryable_final_sort_error(&error) => {
-            record_final_sort_retry_error(&error, final_sort.execution.metrics_mut());
-            final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
-            Err(final_sort_retry_facts("retry_attempts_exhausted", final_sort.execution.metrics_mut())
+            record_final_sort_retry_error(&error, final_sort.execution.metrics());
+            final_sort.execution.metrics().add_final_sort_time(timer.elapsed());
+            Err(final_sort_retry_facts("retry_attempts_exhausted", final_sort.execution.metrics())
                 .attach_to_error(error))
         },
         Err(error) => {
-            final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
+            final_sort.execution.metrics().add_final_sort_time(timer.elapsed());
             Err(error)
         },
     }
@@ -196,7 +196,7 @@ pub(in crate::exec::bounded) fn execute_final_sort_node_from_stream_with_retry(
     let mut final_sort = FinalSortExecutor { execution, node_id, sort, max_attempts };
     let result = final_sort.hierarchical_topk_stream(limit, &mut input_stream, 1);
     input_stream.release_producer(final_sort.execution);
-    final_sort.execution.metrics_mut().final_sort_time += timer.elapsed();
+    final_sort.execution.metrics().add_final_sort_time(timer.elapsed());
     result
 }
 
@@ -212,7 +212,7 @@ fn final_sort_runtime_facts(
     node_id: NodeId,
     attempt: usize,
     max_attempts: usize,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     error: QueryError,
 ) -> QueryError {
     RuntimeResourceFacts {

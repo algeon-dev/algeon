@@ -1,12 +1,14 @@
-use super::{LocalParquetSource, QueryError, QueryMetrics, SourceChunk, SourceChunkPlan, comma_separated_usize};
+use super::{ExecutionMetrics, LocalParquetSource, QueryError, SourceChunk, SourceChunkPlan, comma_separated_usize};
+use crate::observability::{RuntimeExecutionObservationScope, SourceReadFact};
 
+/// Records what a source's chunk plan already knows about its Parquet files.
 pub(in crate::exec) fn record_bounded_parquet_source_metrics(
     source: &LocalParquetSource,
     chunk_plan: &SourceChunkPlan,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) {
     if source.has_position_delete_visible_scan_limit() {
-        metrics.source_metadata_load_time += chunk_plan.metadata_load_time;
+        metrics.record_source_read(SourceReadFact::MetadataLoadTime(chunk_plan.metadata_load_time));
         return;
     }
 
@@ -30,14 +32,30 @@ pub(in crate::exec) fn record_bounded_parquet_source_metrics(
         .sum::<u64>()
         .saturating_add(extra_planned_row_group_bytes);
 
-    metrics.parquet_files = metrics.parquet_files.saturating_add(source.file_count() as u64);
-    metrics.parquet_bytes_known = metrics.parquet_bytes_known.saturating_add(known_bytes);
-    metrics.row_groups_selected = metrics.row_groups_selected.saturating_add(
-        chunk_plan.chunks.iter().map(|chunk| chunk.known_read_row_group_count().unwrap_or(0) as u64).sum::<u64>(),
-    );
-    metrics.read_columns =
-        metrics.read_columns.saturating_add((source.file_count() * source.read_column_count()) as u64);
-    metrics.source_metadata_load_time += chunk_plan.metadata_load_time;
+    metrics.record_source_read(SourceReadFact::ParquetSource {
+        files: source.file_count() as u64,
+        known_bytes,
+        selected_row_groups: chunk_plan
+            .chunks
+            .iter()
+            .map(|chunk| chunk.known_read_row_group_count().unwrap_or(0) as u64)
+            .sum::<u64>(),
+        read_columns: (source.file_count() * source.read_column_count()) as u64,
+    });
+    metrics.record_source_read(SourceReadFact::MetadataLoadTime(chunk_plan.metadata_load_time));
+}
+
+/// The plan execution a source-read fact belongs to.
+///
+/// Every production execution admits a plan-execution scope before any source
+/// is read (`execute_query_plan_with_observation`), so a missing scope means a
+/// harness skipped admission. That is a bug to surface, not a reason to lose
+/// facts production would have counted.
+pub(in crate::exec) fn admitted_source_read_scope(
+    scope: Option<&RuntimeExecutionObservationScope>,
+) -> Option<&RuntimeExecutionObservationScope> {
+    debug_assert!(scope.is_some(), "source-read facts require an admitted plan-execution scope");
+    scope
 }
 
 pub(in crate::exec) fn format_row_groups(chunk: &SourceChunk) -> String {
@@ -71,10 +89,20 @@ mod tests {
     use super::*;
     use crate::{
         chunk::{SourceChunk, SourceChunkPlan},
+        observability::SourceReadTotals,
         plan::NodeId,
         runtime::SourceChunkPlanningMode,
         source::{LocalParquetFile, LocalParquetSource, ParquetSourceLocation, ResolvedParquetSource},
     };
+
+    /// Runs `record` against a freshly admitted plan execution and returns its
+    /// exact source-read totals, mirroring the checkpoint every real caller
+    /// projects from.
+    fn recorded_source_read_totals(label: &str, record: impl FnOnce(&ExecutionMetrics)) -> SourceReadTotals {
+        let metrics = ExecutionMetrics::detached(label);
+        record(&metrics);
+        metrics.checkpoint().expect("a detached execution owns its metrics").summary.source_read
+    }
 
     #[test]
     fn bounded_source_metrics_do_not_report_estimated_bytes_as_known() {
@@ -94,13 +122,14 @@ mod tests {
             metadata_load_time: Duration::ZERO,
             metadata_load_count: 0,
         };
-        let mut metrics = QueryMetrics::default();
 
-        record_bounded_parquet_source_metrics(&source, &plan, &mut metrics);
+        let totals = recorded_source_read_totals("estimated-only-single-file", |metrics| {
+            record_bounded_parquet_source_metrics(&source, &plan, metrics);
+        });
 
-        assert_eq!(metrics.parquet_bytes_known, 0);
-        assert_eq!(metrics.parquet_files, 1);
-        assert_eq!(metrics.row_groups_selected, 1);
+        assert_eq!(totals.parquet_bytes_known, 0);
+        assert_eq!(totals.parquet_files, 1);
+        assert_eq!(totals.row_groups_selected, 1);
 
         let source = LocalParquetSource::from_files(
             vec![LocalParquetFile::new("/tmp/estimated-only.parquet").with_file_size_bytes(100)],
@@ -121,11 +150,12 @@ mod tests {
             metadata_load_time: Duration::ZERO,
             metadata_load_count: 0,
         };
-        let mut metrics = QueryMetrics::default();
 
-        record_bounded_parquet_source_metrics(&source, &plan, &mut metrics);
+        let totals = recorded_source_read_totals("estimated-only-known-file-size", |metrics| {
+            record_bounded_parquet_source_metrics(&source, &plan, metrics);
+        });
 
-        assert_eq!(metrics.parquet_bytes_known, 100);
+        assert_eq!(totals.parquet_bytes_known, 100);
 
         let source = LocalParquetSource::from_files(
             vec![
@@ -153,11 +183,12 @@ mod tests {
             metadata_load_time: Duration::ZERO,
             metadata_load_count: 0,
         };
-        let mut metrics = QueryMetrics::default();
 
-        record_bounded_parquet_source_metrics(&source, &plan, &mut metrics);
+        let totals = recorded_source_read_totals("mixed-file-size-and-row-group-known", |metrics| {
+            record_bounded_parquet_source_metrics(&source, &plan, metrics);
+        });
 
-        assert_eq!(metrics.parquet_bytes_known, 160);
+        assert_eq!(totals.parquet_bytes_known, 160);
     }
 
     fn estimated_only_chunk(chunk_index: usize) -> SourceChunk {

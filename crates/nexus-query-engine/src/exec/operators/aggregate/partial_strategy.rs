@@ -9,13 +9,14 @@ use fnv::FnvHasher;
 use super::{
     AggregateExecutionStage, AggregateExecutionStrategy, AggregateFunction, AggregateSpec,
     AggregateStrategyCandidateRejection, AggregateStrategyCapabilityDecision, DataFrame, DropDuplicatesOptions,
-    DuplicateKeepOption, ExecutionBudgetToken, ExecutionContext, Expr, NodeId, PartialAggregateInputEvidence,
-    QueryError, QueryErrorCode, QueryMetrics, ReduceAgg, Result, SourceChunk, attach_budget_token_failure_facts,
-    budgeted_value, cudf_query_error, cudf_query_error_with_budget_details,
+    DuplicateKeepOption, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, Expr, NodeId,
+    PartialAggregateInputEvidence, QueryError, QueryErrorCode, ReduceAgg, Result, SourceChunk,
+    attach_budget_token_failure_facts, budgeted_value, cudf_query_error, cudf_query_error_with_budget_details,
 };
 use crate::{
     capability::{AggregateStrategyExecutionOptions, aggregate_strategy_capability_decision},
     datatypes::arrow_fixed_width_byte_size,
+    exec::execution_metrics::PriorEvidenceScope,
 };
 
 #[cfg(test)]
@@ -26,7 +27,7 @@ pub(super) fn select_partial_aggregate_strategy_decision(
     input_schema: &arrow::datatypes::Schema,
     input_rows: u64,
     input_evidence: Option<PartialAggregateInputEvidence>,
-    metrics: &QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> AggregateStrategyCapabilityDecision {
     select_partial_aggregate_strategy_decision_with_options(
         decision,
@@ -52,7 +53,7 @@ pub(super) fn select_partial_aggregate_strategy_decision_with_options(
     input_rows: u64,
     input_evidence: Option<PartialAggregateInputEvidence>,
     options: AggregateStrategyExecutionOptions,
-    metrics: &QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> AggregateStrategyCapabilityDecision {
     add_aggregate_strategy_execution_option_facts(&mut decision.facts, options);
     add_prepared_sort_groupby_gate_facts(&mut decision, input_rows);
@@ -373,54 +374,22 @@ pub(in crate::exec::operators::aggregate) struct ExactGroupedKeyCardinalityProbe
 }
 
 fn prior_partial_cardinality_evidence(
-    metrics: &QueryMetrics,
+    metrics: &ExecutionMetrics,
     node_id: Option<NodeId>,
     structural_key: &str,
 ) -> Option<PriorAggregateCardinalityEvidence> {
-    if let Some(node_id) = node_id {
-        let node_id = node_id.to_string();
-        if let Some(evidence) = metrics.aggregate_strategy_decisions.iter().rev().find_map(|decision| {
-            if decision.node_id != node_id
-                || decision.facts.get("execution_stage").map(String::as_str) != Some("partial")
-                || decision.facts.get("aggregate_structural_key").map(String::as_str) != Some(structural_key)
-            {
-                return None;
-            }
-            prior_partial_cardinality_evidence_from_decision(decision, "exact_node")
-        }) {
-            return Some(evidence);
-        }
-    }
-
-    metrics.aggregate_strategy_decisions.iter().rev().find_map(|decision| {
-        if decision.facts.get("execution_stage").map(String::as_str) != Some("partial")
-            || decision.facts.get("aggregate_structural_key").map(String::as_str) != Some(structural_key)
-        {
-            return None;
-        }
-        prior_partial_cardinality_evidence_from_decision(decision, "structural_reused")
-    })
-}
-
-fn prior_partial_cardinality_evidence_from_decision(
-    decision: &crate::metrics::AggregateStrategyDecisionMetrics,
-    evidence_scope: &'static str,
-) -> Option<PriorAggregateCardinalityEvidence> {
-    let input_rows = parse_strategy_fact_u64(decision.facts.get("input_rows")?)?;
-    if input_rows == 0 {
-        return None;
-    }
+    let node_id = node_id.map(|node_id| node_id.to_string());
+    let (evidence, scope) = metrics.prior_partial_aggregate_cardinality(node_id.as_deref(), structural_key)?;
     Some(PriorAggregateCardinalityEvidence {
-        input_rows,
-        output_group_count: parse_strategy_fact_u64(decision.facts.get("output_group_count")?)?,
-        reduction_ratio_ppm: parse_strategy_fact_u64(decision.facts.get("reduction_ratio_ppm")?)?,
-        selected_strategy: decision.facts.get("selected_strategy")?.clone(),
-        evidence_scope,
+        input_rows: evidence.input_rows,
+        output_group_count: evidence.output_group_count,
+        reduction_ratio_ppm: evidence.reduction_ratio_ppm,
+        selected_strategy: evidence.selected_strategy,
+        evidence_scope: match scope {
+            PriorEvidenceScope::ExactNode => "exact_node",
+            PriorEvidenceScope::StructuralReused => "structural_reused",
+        },
     })
-}
-
-fn parse_strategy_fact_u64(value: &str) -> Option<u64> {
-    value.parse::<u64>().ok()
 }
 
 fn encoded_key_partial_contract_available(decision: &AggregateStrategyCapabilityDecision) -> bool {
@@ -536,7 +505,7 @@ pub(super) fn exact_single_key_cardinality_probe(
     key_column: &str,
     input_rows: u64,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<ExactSingleKeyCardinalityProbe> {
     let timer = Instant::now();
     let series = frame.series(key_column).map_err(|error| {
@@ -1068,7 +1037,7 @@ fn update_rejected_candidate_summary(decision: &mut AggregateStrategyCapabilityD
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
 )]
 pub(in crate::exec) fn record_default_grouped_aggregate_strategy_decision(
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     node_id: Option<String>,
     stage: AggregateExecutionStage,
     memory_mode: &'static str,
@@ -1105,7 +1074,7 @@ pub(in crate::exec) fn record_default_grouped_aggregate_strategy_decision(
     reason = "strategy-decision facts are reported individually; grouping them would be a projection DTO"
 )]
 pub(in crate::exec) fn record_grouped_aggregate_strategy_decision(
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     node_id: Option<String>,
     stage: AggregateExecutionStage,
     memory_mode: &'static str,
@@ -1131,8 +1100,9 @@ pub(in crate::exec) fn record_grouped_aggregate_strategy_decision(
     facts.insert("memory_mode", memory_mode.to_string());
     facts.insert("input_rows", input_rows.to_string());
     facts.insert("chunk_row_count", if stage == AggregateExecutionStage::Partial { input_rows } else { 0 }.to_string());
-    facts.insert("chunk_count", metrics.source_chunks_planned.to_string());
-    facts.insert("partial_aggregate_count", metrics.partial_aggregate_count.to_string());
+    let progress = metrics.progress();
+    facts.insert("chunk_count", progress.source_chunks_planned.to_string());
+    facts.insert("partial_aggregate_count", progress.partial_aggregate_count.to_string());
     facts.insert("output_group_count", output_rows.to_string());
     facts.insert("reduction_ratio_ppm", reduction_ratio_ppm(input_rows, output_rows).to_string());
     facts.insert("selection_elapsed_ns", duration_ns(selection_elapsed).to_string());

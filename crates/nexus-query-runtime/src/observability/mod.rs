@@ -4,6 +4,8 @@ mod attempt_report;
 mod clock;
 mod jsonl;
 mod lifecycle;
+mod metrics_recorder;
+mod metrics_summary;
 mod operator_stage;
 mod recorder;
 mod runtime_observation;
@@ -35,6 +37,11 @@ pub use lifecycle::{
     RuntimeExecutionObservationScope, RuntimePlanExecutionLifecycle, RuntimeQueryLifecycle, RuntimeTaskLifecycle,
     task_attempt_id,
 };
+pub use metrics_recorder::{ExecutionProgress, MetricsRecorder};
+pub use metrics_summary::{
+    MetricsCaptureMode, MetricsCompleteness, QueryMetricsCheckpoint, QueryMetricsSummary, SourceReadFact,
+    SourceReadTotals,
+};
 pub use nexus_query_planning::{
     error::AttemptFailureCode,
     execution_contracts::{RuntimeAttemptId, RuntimeTaskId, TaskAttemptId},
@@ -48,8 +55,8 @@ pub use operator_stage::{
     stage_context_from_execution,
 };
 pub use recorder::{
-    LiveRuntimeObservationSnapshot, RuntimeEventContext, RuntimeObservationConfig, RuntimeObservationHandle,
-    RuntimeObservationOwner, RuntimeObservationRecordDisposition, RuntimeObservationSession,
+    BudgetWindow, BudgetWindowPeaks, LiveRuntimeObservationSnapshot, RuntimeEventContext, RuntimeObservationConfig,
+    RuntimeObservationHandle, RuntimeObservationOwner, RuntimeObservationRecordDisposition, RuntimeObservationSession,
     SealedRuntimeObservationSnapshot,
 };
 #[doc(hidden)]

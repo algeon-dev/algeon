@@ -3,7 +3,7 @@ use std::{cell::Cell, sync::Arc, time::Instant};
 use arrow::datatypes::{DataType as ArrowDataType, Field, Schema, SchemaRef};
 use cudf::{DataFrame, SortOptions as CudfSortOptions};
 
-use super::{QueryMetrics, cudf_query_error, execution_overrides};
+use super::{ExecutionMetrics, cudf_query_error, execution_overrides};
 use crate::{
     error::{QueryError, QueryErrorCode, Result},
     naming::{DATAFUSION_ORDER_COLUMN_PREFIX, is_datafusion_order_column_name},
@@ -176,7 +176,7 @@ pub(in crate::exec) fn append_datafusion_join_order_columns(
 pub(in crate::exec) fn sort_by_datafusion_order_if_present(
     context: &ExecutionContext,
     frame: DataFrame,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<DataFrame> {
     let order_columns = datafusion_order_columns(&frame);
     if order_columns.is_empty() {
@@ -196,7 +196,7 @@ pub(in crate::exec) fn sort_by_datafusion_order_if_present(
             )
             .with_fact("order_columns", order_columns.join(","))
         })?;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     Ok(output)
 }
 

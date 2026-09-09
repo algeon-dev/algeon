@@ -1237,6 +1237,7 @@ pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::admission
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::admission_wait_time_ns: core::option::Option<usize>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::aggregate_strategy_rows: alloc::vec::Vec<datafusion_nexus::native_report::NativeAggregateStrategyMetricRow>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::allocator_high_water_bytes: core::option::Option<usize>
+pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::detail_capture_lost: bool
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::device_ordinal: core::option::Option<usize>
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::device_to_device_copied_bytes: usize
 pub datafusion_nexus::native_report::NativeDataFusionExecutionMetrics::device_to_device_copies: usize

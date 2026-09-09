@@ -135,16 +135,16 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
             return Err(error);
         },
     };
-    execution.metrics_mut().operator_time += timer.elapsed();
+    execution.metrics().add_operator_time(timer.elapsed());
 
     let output_rows = output.num_rows() as u64;
-    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics_mut()) {
+    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             return Err(error);
         },
     };
-    execution.metrics_mut().record_operator_metrics(crate::metrics::OperatorMetrics::join(
+    execution.metrics().record_operator_metrics(crate::metrics::OperatorMetrics::join(
         node_id,
         crate::metrics::JoinOperatorMetrics {
             query_id: None,
@@ -209,7 +209,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_i
     ) {
         Ok(output) => Ok(vec![output]),
         Err(error) if len > 1 && is_retryable_join_stream_slice_error(&error) => {
-            record_join_stream_slice_retry_error(&error, execution.metrics_mut());
+            record_join_stream_slice_retry_error(&error, execution.metrics());
             crate::exec::retry::backoff_before_retry(
                 execution.context(),
                 "nexus_query_engine.exec.bounded.hash_join_slice_retry",
@@ -339,7 +339,7 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_i
     };
     let output_rows = output.num_rows() as u64;
     debug_assert_eq!(output_rows, expected_output_rows);
-    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics_mut()) {
+    let output_bytes = match observe_device_memory_bytes(&GpuDataFrame::new(output.clone()), execution.metrics()) {
         Ok(bytes) => bytes,
         Err(error) => {
             return Err(error);

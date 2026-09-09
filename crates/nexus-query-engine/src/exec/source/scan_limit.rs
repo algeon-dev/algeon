@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use super::{
-    DataFrame, ExecutionContext, LocalParquetSource, QueryError, QueryErrorCode, QueryMetrics, Result, SourceChunk,
+    DataFrame, ExecutionContext, ExecutionMetrics, LocalParquetSource, QueryError, QueryErrorCode, Result, SourceChunk,
     cudf_query_error, execution_overrides, local_parquet_execution_frame_schema, parquet_chunk_path_fact,
 };
 
@@ -37,7 +37,7 @@ pub(in crate::exec) fn apply_source_scan_limit_to_frame(
     context: &ExecutionContext,
     frame: DataFrame,
     remaining_rows: Option<usize>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<(DataFrame, Option<usize>)> {
     let Some(remaining_rows) = remaining_rows else {
         return Ok((frame, None));
@@ -61,7 +61,7 @@ pub(in crate::exec) fn apply_source_scan_limit_to_frame(
         .with_fact("input_rows", row_count)
         .with_fact("keep_rows", keep_rows)
     })?;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     Ok((frame, remaining_rows))
 }
 
@@ -69,7 +69,7 @@ pub(super) fn apply_source_chunk_scan_limit(
     context: &ExecutionContext,
     chunk: &SourceChunk,
     frame: DataFrame,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<DataFrame> {
     let Some(keep_rows) = chunk.scan_limit_rows else {
         return Ok(frame);
@@ -94,6 +94,6 @@ pub(super) fn apply_source_chunk_scan_limit(
         .with_fact("input_rows", row_count)
         .with_fact("keep_rows", keep_rows)
     })?;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     Ok(frame)
 }

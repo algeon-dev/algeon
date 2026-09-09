@@ -1,13 +1,13 @@
 use std::time::Instant;
 
 use super::{
-    BackgroundLakehouseCacheFillEnqueue, DataFrame, ExecutionBudgetRequest, ExecutionContext, GpuDataFrame,
-    LakehouseOptimizedBatchCacheEntry, LocalParquetFile, LocalParquetSource, NodeId, ParquetReadOptions, QueryError,
-    QueryErrorCode, QueryMetrics, Result, SourceChunk, acquire_lakehouse_optimized_batch_read_pin,
+    BackgroundLakehouseCacheFillEnqueue, DataFrame, ExecutionBudgetRequest, ExecutionContext, ExecutionMetrics,
+    GpuDataFrame, LakehouseOptimizedBatchCacheEntry, LocalParquetFile, LocalParquetSource, NodeId, ParquetReadOptions,
+    QueryError, QueryErrorCode, Result, SourceChunk, SourceReadFact, acquire_lakehouse_optimized_batch_read_pin,
     append_source_order_columns, coerce_local_parquet_source_schema, cudf_query_error_with_budget_details,
     enqueue_background_lakehouse_cache_chunk_fill, enqueue_background_lakehouse_cache_file_fill,
     optimized_cache_path_fact, record_background_cache_chunk_fill_enqueue_runtime,
-    record_background_cache_file_fill_enqueue_runtime, record_source_chunk_batch_read_runtime,
+    record_background_cache_file_fill_enqueue_runtime, record_source_chunk_batch_read_runtime, record_source_read,
 };
 
 pub(super) fn record_background_cache_file_fill_enqueue(
@@ -16,7 +16,6 @@ pub(super) fn record_background_cache_file_fill_enqueue(
     source: &LocalParquetSource,
     file: &LocalParquetFile,
     file_index: usize,
-    metrics: &mut QueryMetrics,
 ) {
     let outcome = match enqueue_background_lakehouse_cache_file_fill(context, file) {
         Ok(BackgroundLakehouseCacheFillEnqueue::Enqueued) => "enqueued".to_string(),
@@ -32,15 +31,11 @@ pub(super) fn record_background_cache_file_fill_enqueue(
         },
     };
     if file.resolved_source.lakehouse_cache_fill_mode == crate::source::LakehouseCacheFillMode::Background {
-        record_background_cache_file_fill_enqueue_runtime(source_node_id, source, file, file_index, outcome, metrics);
+        record_background_cache_file_fill_enqueue_runtime(source_node_id, source, file, file_index, outcome, context);
     }
 }
 
-pub(super) fn record_background_cache_chunk_fill_enqueue(
-    context: &ExecutionContext,
-    chunk: &SourceChunk,
-    metrics: &mut QueryMetrics,
-) {
+pub(super) fn record_background_cache_chunk_fill_enqueue(context: &ExecutionContext, chunk: &SourceChunk) {
     let outcome = match enqueue_background_lakehouse_cache_chunk_fill(context, chunk) {
         Ok(BackgroundLakehouseCacheFillEnqueue::Enqueued) => "enqueued".to_string(),
         Ok(BackgroundLakehouseCacheFillEnqueue::Skipped(reason)) => reason.to_string(),
@@ -55,7 +50,7 @@ pub(super) fn record_background_cache_chunk_fill_enqueue(
         },
     };
     if chunk.resolved_source.lakehouse_cache_fill_mode == crate::source::LakehouseCacheFillMode::Background {
-        record_background_cache_chunk_fill_enqueue_runtime(chunk, outcome, metrics);
+        record_background_cache_chunk_fill_enqueue_runtime(chunk, outcome, context);
     }
 }
 
@@ -71,7 +66,7 @@ pub(super) fn read_optimized_local_cache_chunk_batch(
     budget_bytes: u64,
     budget_boundary: &'static str,
     reader_dynamic_filter_count: usize,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     context.check_cancellation("nexus_query_engine.local_parquet_chunk_batch.optimized_cache_read")?;
     let budget_bytes = usize::try_from(budget_bytes).map_err(|_error| {
@@ -121,8 +116,8 @@ pub(super) fn read_optimized_local_cache_chunk_batch(
         outcome.report(),
     );
     let read_elapsed = read_timer.elapsed();
-    metrics.parquet_read_time += read_elapsed;
-    metrics.source_read_time += read_elapsed;
+    record_source_read(context, SourceReadFact::ParquetReadTime(read_elapsed));
+    record_source_read(context, SourceReadFact::SourceReadTime(read_elapsed));
     let frame = outcome.into_value();
     let frame = coerce_local_parquet_source_schema(frame, source, Some(&token), metrics)?;
     record_source_chunk_batch_read_runtime(
@@ -133,9 +128,9 @@ pub(super) fn read_optimized_local_cache_chunk_batch(
         read_elapsed,
         reader_dynamic_filter_count,
         None,
-        metrics,
+        context,
     );
-    metrics.record_input_batch(frame.num_rows() as u64);
+    record_source_read(context, SourceReadFact::InputBatch { rows: frame.num_rows() as u64 });
     let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
     let frame = append_source_order_columns(context, frame, first_chunk.chunk_index)?;
     Ok(GpuDataFrame::new(frame))

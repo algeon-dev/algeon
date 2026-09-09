@@ -69,7 +69,7 @@ pub(super) fn execute_bounded_query_plan(
     plan: &QueryPlan,
     admission: Option<&crate::admission::BoundedPipelineAdmission>,
     gpu_inputs: &GpuResidentInputMap,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     observation_scope: Option<&crate::observability::RuntimeExecutionObservationScope>,
 ) -> Result<QueryOutput> {
     context.check_cancellation("nexus_query_engine.exec.bounded.execute_query_plan")?;
@@ -84,26 +84,26 @@ pub(super) fn execute_bounded_query_plan(
     }
 
     if !plan.nodes().iter().any(|node| matches!(node.kind, PlanNode::Aggregate(_))) {
-        return execute_bounded_generic_query_plan(context, plan, gpu_inputs, metrics, observation_scope);
+        return execute_bounded_generic_query_plan(context, plan, gpu_inputs, metrics);
     }
 
     let bounded = match BoundedPlan::analyze(plan) {
         Ok(bounded) => bounded,
         Err(_error) => {
-            return execute_bounded_generic_query_plan(context, plan, gpu_inputs, metrics, observation_scope);
+            return execute_bounded_generic_query_plan(context, plan, gpu_inputs, metrics);
         },
     };
     let Some(device_budget_bytes) = context.bounded_device_budget_bytes() else {
         unreachable!("execute_bounded_query_plan is called only for bounded policies");
     };
-    let mut execution = BoundedExecutionAttempt::new(context, device_budget_bytes, metrics, observation_scope)?;
+    let mut execution = BoundedExecutionAttempt::new(context, device_budget_bytes, metrics)?;
     let frame = execute_bounded_aggregate_to_frame(&mut execution, &bounded)?;
     let frame = execute_post_aggregate_stages(&mut execution, &bounded, frame)?;
     let frame = execute_final_sort_limit_with_retry(&mut execution, &bounded, frame)?;
     let frame = execute_post_sort_projections(&mut execution, &bounded, frame)?;
     let frame = execute_standalone_limit(&mut execution, &bounded, frame)?;
 
-    record_device_memory_observation(&frame.frame, execution.metrics_mut())?;
+    record_device_memory_observation(&frame.frame, execution.metrics())?;
     match plan.sink() {
         ResultSink::GpuResident { .. } => {
             let output_bytes = frame.frame.device_allocated_size_bytes()?;

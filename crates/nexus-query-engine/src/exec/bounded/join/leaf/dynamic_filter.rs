@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use super::{
     BoundedJoinLeafSourceStreamDynamicFilterStage, DynamicFilter, DynamicFilterConsumerLowering,
     DynamicFilterExecutionOptions, DynamicFilterId, DynamicFilterRoute, DynamicFilterSet, DynamicFilterSourceSnapshot,
-    FilterNode, GpuDataFrame, LocalParquetSource, NodeId, QueryMetrics, Result, SourceChunk, SourceChunkBatch,
+    ExecutionMetrics, FilterNode, GpuDataFrame, LocalParquetSource, NodeId, Result, SourceChunk, SourceChunkBatch,
     SourceFooterFacts, dynamic_filter_predicate_for_schema, dynamic_filter_reader_predicate_should_merge,
 };
 
@@ -211,7 +211,7 @@ pub(super) fn record_dynamic_filter_reader_predicate_rows(
     reader_dynamic_filters: &[BoundedJoinLeafSourceStreamDynamicFilterStage],
     chunk: &SourceChunk,
     frame: &GpuDataFrame,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) {
     if reader_dynamic_filters.is_empty() {
         return;
@@ -235,7 +235,7 @@ pub(super) fn record_dynamic_filter_reader_predicate_batch_rows(
     reader_dynamic_filters: &[BoundedJoinLeafSourceStreamDynamicFilterStage],
     batch: &SourceChunkBatch,
     frame: &GpuDataFrame,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) {
     if reader_dynamic_filters.is_empty() {
         return;

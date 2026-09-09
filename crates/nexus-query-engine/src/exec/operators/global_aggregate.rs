@@ -4,11 +4,11 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 
 use super::{
     AggregateExpr, AggregateFunction, AggregateSpec, ArrowDataType, AvgStateAliases, BinaryOp, CudfScalar, DataFrame,
-    ExecutionBudgetToken, ExecutionContext, ExecutionOverrides, Expr, Field, GpuDataFrame, LiteralValue, QueryError,
-    QueryErrorCode, QueryMetrics, ReduceAgg, Result, Schema, aggregate_expr_is_exact_nunique, aggregate_spec_has_avg,
-    budgeted_value, cudf_dtype_from_arrow_type, cudf_query_error, cudf_query_error_with_budget_details,
-    execution_overrides, global_count_star_expr, global_valid_count_state_alias, lower_column_expr, lower_expr,
-    validate_avg_output_fields, validate_global_aggregate_capability,
+    ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, ExecutionOverrides, Expr, Field, GpuDataFrame,
+    LiteralValue, QueryError, QueryErrorCode, ReduceAgg, Result, Schema, aggregate_expr_is_exact_nunique,
+    aggregate_spec_has_avg, budgeted_value, cudf_dtype_from_arrow_type, cudf_query_error,
+    cudf_query_error_with_budget_details, execution_overrides, global_count_star_expr, global_valid_count_state_alias,
+    lower_column_expr, lower_expr, validate_avg_output_fields, validate_global_aggregate_capability,
 };
 
 mod avg;
@@ -34,7 +34,7 @@ pub(in crate::exec) fn execute_global_aggregate(
     spec: &AggregateSpec,
     input: GpuDataFrame,
     output_schema: &ArrowSchemaRef,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     execute_global_aggregate_impl(context, spec, input, output_schema, None, metrics)
 }
@@ -45,7 +45,7 @@ pub(in crate::exec) fn execute_global_aggregate_with_budget(
     input: GpuDataFrame,
     output_schema: &ArrowSchemaRef,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     execute_global_aggregate_impl(context, spec, input, output_schema, Some(token), metrics)
 }
@@ -56,7 +56,7 @@ fn execute_global_aggregate_impl(
     input: GpuDataFrame,
     output_schema: &ArrowSchemaRef,
     token: Option<&ExecutionBudgetToken>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     validate_global_aggregate_capability(spec, output_schema)?;
     let frame = input.into_frame();
@@ -149,7 +149,7 @@ fn execute_global_aggregate_impl(
             error,
         )
     })?;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     Ok(GpuDataFrame::new(output))
 }
 #[expect(
@@ -164,7 +164,7 @@ fn reduce_global_aggregate_column_impl(
     function: AggregateFunction,
     output_type: &ArrowDataType,
     token: Option<&ExecutionBudgetToken>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<cudf::Series> {
     let input_column = lower_column_expr(&expr.expr, "nexus_query_engine.global_aggregate.lower_expr")?;
     let series = frame.series(input_column.as_str()).map_err(|error| {
@@ -320,7 +320,7 @@ fn execute_scalar_reduction_with_budget(
     function: AggregateFunction,
     token: &ExecutionBudgetToken,
     input_column: &str,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<CudfScalar> {
     let reduce_agg = match function {
         AggregateFunction::Sum => ReduceAgg::Sum,
@@ -372,7 +372,7 @@ fn global_null_output_series_with_budget(
     output_type: &ArrowDataType,
     alias: &str,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<cudf::Series> {
     global_null_output_series_impl(context, output_type, alias, Some((token, metrics)))
 }
@@ -381,7 +381,7 @@ fn global_null_output_series_impl(
     context: &ExecutionContext,
     output_type: &ArrowDataType,
     alias: &str,
-    token: Option<(&ExecutionBudgetToken, &mut QueryMetrics)>,
+    token: Option<(&ExecutionBudgetToken, &ExecutionMetrics)>,
 ) -> Result<cudf::Series> {
     let dtype = cudf_dtype_from_arrow_type(output_type).ok_or_else(|| {
         QueryError::new(

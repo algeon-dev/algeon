@@ -2,6 +2,7 @@ use super::{
     BoundedExecutionAttempt, GpuDataFrame, LocalParquetSource, MemoryControlPolicy, QueryError, QueryErrorCode, Result,
     SourceChunk, SourceReadBudgetPolicy, cudf_budget_exhaustion, read_local_parquet_chunk, record_chunk_retry_error,
 };
+use crate::observability::SourceReadFact;
 
 pub(in crate::exec::bounded) fn source_read_budget_bytes(policy: MemoryControlPolicy, chunk: &SourceChunk) -> u64 {
     source_read_sizing(policy, chunk).requested_bytes
@@ -164,20 +165,20 @@ pub(in crate::exec::bounded::chunks) fn try_read_local_parquet_chunk_with_correc
     let Some(correction) = source_read_budget_correction_from_error(execution, error) else {
         return Ok(None);
     };
-    record_chunk_retry_error(error, execution.metrics_mut());
-    execution.metrics_mut().record_source_chunk_retry();
+    record_chunk_retry_error(error, execution.metrics());
+    execution.record_source_read(SourceReadFact::ChunkRetried);
     crate::exec::retry::backoff_before_retry(
         execution.context(),
         "nexus_query_engine.exec.bounded.source_chunk_budget_retry",
     )?;
-    execution.metrics_mut().record_source_chunk_attempt();
+    execution.record_source_read(SourceReadFact::ChunkAttempted);
     read_local_parquet_chunk(
         execution.context(),
         source,
         chunk,
         correction.corrected_budget_bytes(),
         memory_boundary,
-        execution.metrics_mut(),
+        execution.metrics(),
     )
     .map(Some)
     .map_err(|error| correction.attach_to_error(error))

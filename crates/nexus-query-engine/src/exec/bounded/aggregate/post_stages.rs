@@ -2,7 +2,7 @@ use std::{sync::Arc, time::Instant};
 
 use super::{
     AggregateFunction, AggregateSpec, BoundedExecutionAttempt, BoundedPlan, BoundedUnaryStage, CommittedPartial,
-    ExecutionBudgetToken, ExecutionContext, GpuDataFrame, NodeId, QueryMetrics, Result, RuntimeResourceFacts,
+    ExecutionBudgetToken, ExecutionContext, ExecutionMetrics, GpuDataFrame, NodeId, Result, RuntimeResourceFacts,
     aggregate_spec_has_avg, cast_count_output_columns_with_budget, cudf_query_error, execute_aggregate_with_budget,
     execute_bounded_generic_unary_consuming_input, execute_filter_with_budget, execute_global_aggregate_with_budget,
     execute_groupby_aggregate_with_budget_observed, execute_limit, execute_projection_with_budget,
@@ -105,7 +105,7 @@ fn execute_post_final_stage(
         &ExecutionContext,
         GpuDataFrame,
         Option<&ExecutionBudgetToken>,
-        &mut QueryMetrics,
+        &ExecutionMetrics,
     ) -> Result<GpuDataFrame>,
     use_budget_token: bool,
 ) -> Result<CommittedPartial> {
@@ -141,7 +141,7 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate_projection(
                     attempt: 1,
                     max_attempts: 1,
                     resume_boundary: "final_projection",
-                    metrics: execution.metrics_mut(),
+                    metrics: execution.metrics(),
                 }
                 .attach_to(error));
             },
@@ -152,7 +152,7 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate_projection(
             &bounded.aggregate.0.spec,
             bounded.aggregate.1,
             &token,
-            execution.metrics_mut(),
+            execution.metrics(),
         )
     } else {
         Ok(input.frame.into_frame())
@@ -177,13 +177,13 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate_projection(
                 attempt: 1,
                 max_attempts: 1,
                 resume_boundary: "final_projection",
-                metrics: execution.metrics_mut(),
+                metrics: execution.metrics(),
             }
             .attach_to(error));
         },
     };
 
-    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut()).map_err(|error| {
+    let output_bytes = observe_device_memory_bytes(&frame, execution.metrics()).map_err(|error| {
         RuntimeResourceFacts {
             memory_boundary: "final_aggregate_projection_output",
             stage: "final_projection",
@@ -191,7 +191,7 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate_projection(
             attempt: 1,
             max_attempts: 1,
             resume_boundary: "final_projection",
-            metrics: execution.metrics_mut(),
+            metrics: execution.metrics(),
         }
         .attach_to(error)
     })?;
@@ -204,7 +204,7 @@ pub(in crate::exec::bounded::aggregate) fn execute_final_aggregate(
     input: GpuDataFrame,
     token: &ExecutionBudgetToken,
     record_strategy: bool,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     if bounded.aggregate.0.spec.group_exprs.is_empty() {
         let final_spec = final_global_aggregate_spec(&bounded.aggregate.0.spec);

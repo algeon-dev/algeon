@@ -8,8 +8,8 @@ use arrow::datatypes::SchemaRef as ArrowSchemaRef;
 use super::{
     AggregateExpr, AggregateFunction, AggregateNode, AggregateSpec, ArrowDataType, AvgStateAliases, BinaryOp, CaseWhen,
     CudfAggSpec, DataFrame, DropDuplicatesOptions, DuplicateKeepOption, ExecutionBudgetToken, ExecutionContext,
-    ExecutionOverrides, Expr, Field, GpuDataFrame, GpuResultHandle, GroupByAgg, GroupByOptions, LiteralValue,
-    LoweredAggregate, NodeId, QueryError, QueryErrorCode, QueryMetrics, RecordBatch, ReduceAgg, Result, Schema,
+    ExecutionMetrics, ExecutionOverrides, Expr, Field, GpuDataFrame, GpuResultHandle, GroupByAgg, GroupByOptions,
+    LiteralValue, LoweredAggregate, NodeId, QueryError, QueryErrorCode, RecordBatch, ReduceAgg, Result, Schema,
     aggregate_spec_has_avg, aggregate_spec_has_distinct, aggregate_spec_has_filters,
     aggregate_spec_has_floating_statistical_aggregate, attach_budget_token_failure_facts, avg_sum_state_data_type,
     budgeted_value, cast_count_output_columns, cast_count_output_columns_with_budget, cast_reduction_output_columns,
@@ -161,7 +161,7 @@ pub(in crate::exec) fn execute_aggregate(
     input_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
     output_schema: &ArrowSchemaRef,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let (frame, spec, prepared_input_schema) =
         prepare_filtered_aggregate_frame(context, input.into_frame(), input_schema, &node.spec, None, metrics)?;
@@ -233,7 +233,7 @@ pub(in crate::exec) fn execute_aggregate(
     })?;
     let elapsed = timer.elapsed();
     let output_rows = output.num_rows() as u64;
-    metrics.operator_time += elapsed;
+    metrics.add_operator_time(elapsed);
     record_single_grouped_aggregate_strategy_decision(
         metrics,
         context,
@@ -256,7 +256,7 @@ pub(in crate::exec) fn execute_aggregate_with_budget(
     input: GpuDataFrame,
     output_schema: &ArrowSchemaRef,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     execute_aggregate_with_budget_for_node(context, None, node, input_schema, input, output_schema, token, metrics)
 }
@@ -273,7 +273,7 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
     input: GpuDataFrame,
     output_schema: &ArrowSchemaRef,
     token: &ExecutionBudgetToken,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let input_rows = input.num_rows() as u64;
     let filtered_global_strategy = if node.spec.group_exprs.is_empty() && aggregate_spec_has_filters(&node.spec) {
@@ -538,7 +538,7 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
     ) {
         let exact_probe = exact_single_key_cardinality_probe(context, &frame, key_column, input_rows, token, metrics)?;
         selection_elapsed = selection_elapsed.saturating_add(exact_probe.elapsed);
-        metrics.operator_time += exact_probe.elapsed;
+        metrics.add_operator_time(exact_probe.elapsed);
         add_exact_single_key_cardinality_probe_facts(&mut decision, &exact_probe);
         if exact_cardinality_probe_should_select_prepared_sort_groupby_with_options(
             &decision,
@@ -558,7 +558,7 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
     ) {
         let exact_probe = exact_grouped_key_cardinality_probe(context, &frame, &key_columns, input_rows, token)?;
         selection_elapsed = selection_elapsed.saturating_add(exact_probe.elapsed);
-        metrics.operator_time += exact_probe.elapsed;
+        metrics.add_operator_time(exact_probe.elapsed);
         add_exact_grouped_key_cardinality_probe_facts(&mut decision, &exact_probe);
         if exact_grouped_key_cardinality_probe_should_select_prepared_sort_groupby_with_options(
             &decision,
@@ -626,7 +626,7 @@ pub(in crate::exec) fn execute_aggregate_with_budget_for_node(
     })?;
     let elapsed = timer.elapsed();
     let output_rows = output.num_rows() as u64;
-    metrics.operator_time += elapsed;
+    metrics.add_operator_time(elapsed);
     record_single_grouped_aggregate_strategy_decision(
         metrics,
         context,
@@ -655,7 +655,7 @@ pub(in crate::exec) fn should_execute_datafusion_exact_floating_statistical_aggr
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
 )]
 fn record_single_grouped_aggregate_strategy_decision(
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     context: &ExecutionContext,
     node_id: Option<String>,
     spec: &AggregateSpec,
@@ -688,7 +688,7 @@ fn record_single_grouped_aggregate_strategy_decision(
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
 )]
 pub(in crate::exec::operators::aggregate) fn record_single_grouped_aggregate_strategy_decision_with_metrics(
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     context: &ExecutionContext,
     node_id: Option<String>,
     spec: &AggregateSpec,
@@ -750,7 +750,7 @@ pub(in crate::exec) fn execute_partial_aggregate_with_budget(
     input: GpuDataFrame,
     token: &ExecutionBudgetToken,
     input_evidence: Option<PartialAggregateInputEvidence>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let input_rows = input.num_rows() as u64;
     if node.spec.group_exprs.is_empty() && aggregate_spec_has_filters(&node.spec) {
@@ -888,7 +888,7 @@ fn execute_partial_aggregate_with_budget_single_pass(
     token: &ExecutionBudgetToken,
     input_evidence: Option<PartialAggregateInputEvidence>,
     filtered_grouped_strategy: Option<&filtered_grouped::FilteredGroupedAggregateStrategyDecision>,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<GpuDataFrame> {
     let original_input_rows = input.num_rows() as u64;
     let (frame, spec, prepared_input_schema) = match prepare_filtered_aggregate_frame(
@@ -992,7 +992,7 @@ fn execute_partial_aggregate_with_budget_single_pass(
     ) {
         let exact_probe = exact_single_key_cardinality_probe(context, &frame, key_column, input_rows, token, metrics)?;
         selection_elapsed = selection_elapsed.saturating_add(exact_probe.elapsed);
-        metrics.operator_time += exact_probe.elapsed;
+        metrics.add_operator_time(exact_probe.elapsed);
         add_exact_single_key_cardinality_probe_facts(&mut decision, &exact_probe);
         if exact_cardinality_probe_should_select_prepared_sort_groupby_with_options(
             &decision,
@@ -1012,7 +1012,7 @@ fn execute_partial_aggregate_with_budget_single_pass(
     ) {
         let exact_probe = exact_grouped_key_cardinality_probe(context, &frame, &key_columns, input_rows, token)?;
         selection_elapsed = selection_elapsed.saturating_add(exact_probe.elapsed);
-        metrics.operator_time += exact_probe.elapsed;
+        metrics.add_operator_time(exact_probe.elapsed);
         add_exact_grouped_key_cardinality_probe_facts(&mut decision, &exact_probe);
         if exact_grouped_key_cardinality_probe_should_select_prepared_sort_groupby_with_options(
             &decision,
@@ -1157,7 +1157,7 @@ fn execute_partial_aggregate_with_budget_single_pass(
     let elapsed = timer.elapsed().saturating_add(prepared_preflight_elapsed);
     let groupby_elapsed = groupby_timer.elapsed().saturating_add(prepared_preflight_elapsed);
     let output_rows = output.num_rows() as u64;
-    metrics.operator_time += elapsed;
+    metrics.add_operator_time(elapsed);
     record_grouped_aggregate_strategy_decision(
         metrics,
         node_id.map(|id| id.to_string()),

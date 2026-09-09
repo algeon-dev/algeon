@@ -1,16 +1,17 @@
 use std::time::Instant;
 
-use parquet::file::reader::FileReader;
-
 use super::{
     BoundedExecutionAttempt, BoundedSourceBatchingPolicy, ExecutionContext, GpuDataFrame, LocalParquetFile,
-    LocalParquetSource, MemoryControlPolicy, NodeId, QueryError, QueryMetrics, ResidentGpuFrame, Result,
+    LocalParquetSource, MemoryControlPolicy, NodeId, QueryError, ResidentGpuFrame, Result,
     ScheduledLocalParquetReadOutput, SourceChunk, apply_source_scan_limit_to_frame, chunk_retry_facts,
-    cudf_query_error, execution::source_chunk_batch_read_row_groups, execution_overrides, is_retryable_chunk_error,
-    observe_device_memory_bytes, plan_source_chunk_batches, read_local_parquet_chunk, read_local_parquet_chunk_batch,
-    record_chunk_retry_error, source_budget::try_read_local_parquet_chunk_with_corrected_budget_after_error,
+    cudf_query_error,
+    execution::{reported_source_chunk_read_row_groups, source_chunk_batch_static_read_row_groups},
+    execution_overrides, is_retryable_chunk_error, observe_device_memory_bytes, plan_source_chunk_batches,
+    read_local_parquet_chunk, read_local_parquet_chunk_batch, record_chunk_retry_error,
+    source_budget::try_read_local_parquet_chunk_with_corrected_budget_after_error,
     split_retryable_chunk,
 };
+use crate::observability::SourceReadFact;
 
 pub(in crate::exec::bounded) fn read_local_parquet_chunks_required_only(
     execution: &mut BoundedExecutionAttempt<'_>,
@@ -48,10 +49,10 @@ pub(in crate::exec::bounded) fn concatenate_source_read_outputs(
                 .with_fact("node_id", node_id)
                 .with_fact("chunk_count", chunk_count)
         })?;
-        execution.metrics_mut().operator_time += timer.elapsed();
+        execution.metrics().add_operator_time(timer.elapsed());
 
         let output_frame = GpuDataFrame::new(output);
-        let output_bytes = observe_device_memory_bytes(&output_frame, execution.metrics_mut())?;
+        let output_bytes = observe_device_memory_bytes(&output_frame, execution.metrics())?;
         Ok::<_, QueryError>((output_frame, output_bytes))
     })();
     match output {
@@ -118,7 +119,7 @@ fn read_local_parquet_chunks_serial_with_position_delete_visible_limit(
             Some(&mut remaining_rows),
         ) {
             Ok(output) => {
-                record_position_delete_visible_limit_chunk_metrics(&output.chunk, execution.metrics_mut());
+                record_position_delete_visible_limit_chunk_metrics(&output.chunk, execution);
                 outputs.push(output);
             },
             Err(error) => {
@@ -133,14 +134,13 @@ fn read_local_parquet_chunks_serial_with_position_delete_visible_limit(
     Ok(outputs)
 }
 
-fn record_position_delete_visible_limit_chunk_metrics(chunk: &SourceChunk, metrics: &mut QueryMetrics) {
-    metrics.parquet_files = metrics.parquet_files.saturating_add(1);
-    metrics.parquet_bytes_known =
-        metrics.parquet_bytes_known.saturating_add(chunk.known_row_group_bytes.or(chunk.known_file_bytes).unwrap_or(0));
-    metrics.read_columns = metrics.read_columns.saturating_add(chunk.read_columns.len() as u64);
-    if let Some(row_group_count) = chunk.known_read_row_group_count() {
-        metrics.row_groups_selected = metrics.row_groups_selected.saturating_add(row_group_count as u64);
-    }
+fn record_position_delete_visible_limit_chunk_metrics(chunk: &SourceChunk, execution: &BoundedExecutionAttempt<'_>) {
+    execution.record_source_read(SourceReadFact::ParquetSource {
+        files: 1,
+        known_bytes: chunk.known_row_group_bytes.or(chunk.known_file_bytes).unwrap_or(0),
+        selected_row_groups: chunk.known_read_row_group_count().unwrap_or(0) as u64,
+        read_columns: chunk.read_columns.len() as u64,
+    });
 }
 
 fn read_local_parquet_source_batch_or_split(
@@ -165,14 +165,15 @@ fn read_local_parquet_source_batch_or_split(
     }
     match read_local_parquet_chunk_batch_required_only_no_commit(execution, source, &batch, memory_boundary) {
         Ok(output) => {
-            execution
-                .metrics_mut()
-                .record_source_chunk_commit_count(batch.chunk_count() as u64, batch.row_group_count() as u64);
+            execution.record_source_read(SourceReadFact::ChunkCommitted {
+                chunk_count: batch.chunk_count() as u64,
+                row_groups: batch.row_group_count() as u64,
+            });
             Ok(vec![output])
         },
         Err(error) if is_retryable_chunk_error(&error) => {
-            record_chunk_retry_error(&error, execution.metrics_mut());
-            execution.metrics_mut().record_source_chunk_retry();
+            record_chunk_retry_error(&error, execution.metrics());
+            execution.record_source_read(SourceReadFact::ChunkRetried);
             let Some((left, right)) = batch.split_for_retry() else {
                 return Err(error);
             };
@@ -226,11 +227,11 @@ fn read_local_parquet_chunk_required_only_or_split(
     ) {
         Ok(output) => Ok(vec![output]),
         Err(error) if is_retryable_chunk_error(&error) => {
-            record_chunk_retry_error(&error, execution.metrics_mut());
+            record_chunk_retry_error(&error, execution.metrics());
             if attempt < max_attempts
                 && let Some((left, right)) = split_retryable_chunk(&chunk, min_retry_chunk_row_groups)
             {
-                execution.metrics_mut().record_source_chunk_retry();
+                execution.record_source_read(SourceReadFact::ChunkRetried);
                 crate::exec::retry::backoff_before_retry(
                     execution.context(),
                     "nexus_query_engine.exec.bounded.serial_source_chunk_split_retry",
@@ -263,7 +264,7 @@ fn read_local_parquet_chunk_required_only_or_split(
                     },
                 }
             } else {
-                Err(chunk_retry_facts(&chunk, execution.metrics_mut()).attach_to_error(error))
+                Err(chunk_retry_facts(&chunk, execution).attach_to_error(error))
             }
         },
         Err(error) => Err(error),
@@ -297,8 +298,7 @@ fn read_local_parquet_chunk_required_only_attempt(
     attempt: usize,
     max_attempts: usize,
 ) -> Result<ScheduledLocalParquetReadOutput> {
-    execution.metrics_mut().record_source_chunk_attempt();
-    let selected_row_groups_before_read = execution.metrics_mut().row_groups_selected;
+    execution.record_source_read(SourceReadFact::ChunkAttempted);
     let source_token_budget = execution.device_budget_bytes();
     let frame = match read_local_parquet_chunk(
         execution.context(),
@@ -306,7 +306,7 @@ fn read_local_parquet_chunk_required_only_attempt(
         chunk,
         source_token_budget,
         memory_boundary,
-        execution.metrics_mut(),
+        execution.metrics(),
     ) {
         Ok(frame) => frame,
         Err(error) => {
@@ -334,7 +334,7 @@ fn read_local_parquet_chunk_required_only_attempt(
             execution.context(),
             frame.frame().clone(),
             *remaining_rows,
-            execution.metrics_mut(),
+            execution.metrics(),
         ) {
             Ok((limited, remaining)) => {
                 *remaining_rows = remaining;
@@ -355,34 +355,12 @@ fn read_local_parquet_chunk_required_only_attempt(
     } else {
         frame
     };
-    let observed_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+    let observed_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
     let output =
         ScheduledLocalParquetReadOutput { chunk: chunk.clone(), frame, observed_bytes, observed_row_group_count: None };
-    let committed_row_groups =
-        committed_source_chunk_row_groups(chunk, selected_row_groups_before_read, execution.metrics());
-    execution.metrics_mut().record_source_chunk_commit(committed_row_groups);
+    let committed_row_groups = reported_source_chunk_read_row_groups(chunk, None);
+    execution.record_source_read(SourceReadFact::ChunkCommitted { chunk_count: 1, row_groups: committed_row_groups });
     Ok(output)
-}
-
-fn committed_source_chunk_row_groups(
-    chunk: &SourceChunk,
-    selected_row_groups_before_read: u64,
-    metrics: &QueryMetrics,
-) -> u64 {
-    if let Some(row_groups) = chunk.known_read_row_group_count() {
-        return row_groups as u64;
-    }
-    let observed_delta = metrics.row_groups_selected.saturating_sub(selected_row_groups_before_read);
-    if observed_delta > 0 {
-        return observed_delta;
-    }
-    if chunk.reads_all_row_groups && chunk.path.is_file() {
-        return parquet::file::reader::SerializedFileReader::try_from(chunk.path.as_path())
-            .ok()
-            .map(|reader| reader.metadata().num_row_groups() as u64)
-            .unwrap_or(0);
-    }
-    chunk.row_group_count() as u64
 }
 
 pub(in crate::exec::bounded) fn read_local_parquet_chunk_batch_required_only_no_commit(
@@ -392,9 +370,8 @@ pub(in crate::exec::bounded) fn read_local_parquet_chunk_batch_required_only_no_
     memory_boundary: &'static str,
 ) -> Result<ScheduledLocalParquetReadOutput> {
     for _chunk in &batch.chunks {
-        execution.metrics_mut().record_source_chunk_attempt();
+        execution.record_source_read(SourceReadFact::ChunkAttempted);
     }
-    let selected_row_groups_before_read = execution.metrics_mut().row_groups_selected;
     let source_token_budget = execution.device_budget_bytes();
     let frame = match read_local_parquet_chunk_batch(
         execution.context(),
@@ -403,24 +380,20 @@ pub(in crate::exec::bounded) fn read_local_parquet_chunk_batch_required_only_no_
         source_token_budget,
         memory_boundary,
         0,
-        execution.metrics_mut(),
+        execution.metrics(),
     ) {
         Ok(frame) => frame,
         Err(error) => {
             return Err(error);
         },
     };
-    let observed_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+    let observed_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
     let first_chunk = batch.chunks.first().expect("source chunk batch is non-empty");
     Ok(ScheduledLocalParquetReadOutput {
         chunk: first_chunk.clone(),
         frame,
         observed_bytes,
-        observed_row_group_count: source_chunk_batch_read_row_groups(
-            batch,
-            selected_row_groups_before_read,
-            execution.metrics_mut(),
-        ),
+        observed_row_group_count: source_chunk_batch_static_read_row_groups(batch),
     })
 }
 

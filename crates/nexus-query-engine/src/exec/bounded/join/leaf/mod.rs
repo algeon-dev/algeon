@@ -1,13 +1,13 @@
 use std::collections::BTreeSet;
 
 use super::{
-    BoundedExecutionAttempt, BoundedSourceBatchingPolicy, ExecutionBudgetToken, ExecutionContext, FilterNode,
-    GpuDataFrame, GpuResidentInputMap, Instant, LocalParquetFile, LocalParquetSource, MemoryControlPolicy, NodeId,
-    ProjectionNode, QueryError, QueryMetrics, ResidentGpuFrame, Result, SourceAdjacentAggregateChunkCapHints,
-    SourceChunk, SourceChunkBatch, SourceChunkPlanningPolicy, SourceTaskMemoryModel,
-    annotate_source_chunk_batching_reasons, apply_source_adjacent_aggregate_chunk_caps, chunk_retry_facts,
-    cudf_query_error, execute_bounded_generic_local_parquet_source, execute_filter_with_budget,
-    execute_projection_with_budget, execution_budget_token_for_boundary, execution_overrides, is_retryable_chunk_error,
+    BoundedExecutionAttempt, BoundedSourceBatchingPolicy, ExecutionBudgetToken, ExecutionContext, ExecutionMetrics,
+    FilterNode, GpuDataFrame, GpuResidentInputMap, Instant, LocalParquetFile, LocalParquetSource, MemoryControlPolicy,
+    NodeId, ProjectionNode, QueryError, ResidentGpuFrame, Result, SourceAdjacentAggregateChunkCapHints, SourceChunk,
+    SourceChunkBatch, SourceChunkPlanningPolicy, SourceTaskMemoryModel, annotate_source_chunk_batching_reasons,
+    apply_source_adjacent_aggregate_chunk_caps, chunk_retry_facts, cudf_query_error,
+    execute_bounded_generic_local_parquet_source, execute_filter_with_budget, execute_projection_with_budget,
+    execution_budget_token_for_boundary, execution_overrides, is_retryable_chunk_error,
     join_leaf_prefetch_budget_bytes, observe_device_memory_bytes,
     plan_local_parquet_source_chunks_with_execution_context, plan_source_chunk_batches, read_gpu_resident_source,
     read_literal_batch_source, record_bounded_parquet_source_metrics, record_chunk_retry_error, split_retryable_chunk,
@@ -291,10 +291,10 @@ impl BoundedJoinLeafLocalParquetSourcePrefetch {
         let is_prefetch = self.scheduled.is_prefetch();
         let output = self.scheduled.finish(execution)?;
         if is_prefetch {
-            execution.metrics_mut().record_source_read_prefetch_completed();
+            execution.metrics().record_source_read_prefetch_completed();
         }
-        let device_bytes = observe_device_memory_bytes(&output.frame, execution.metrics_mut())?;
-        execution.metrics_mut().record_source_chunk_commit(
+        let device_bytes = observe_device_memory_bytes(&output.frame, execution.metrics())?;
+        execution.metrics().record_source_chunk_commit(
             output
                 .observed_row_group_count
                 .or_else(|| output.chunk.known_read_row_group_count().map(|row_groups| row_groups as u64))
@@ -322,7 +322,7 @@ pub(in crate::exec::bounded) fn try_start_bounded_join_leaf_local_parquet_source
     }
     let chunk = stream.chunks.first().expect("single chunk checked");
     let requested_bytes = source_read_budget_bytes(execution.context().memory_control_policy(), chunk);
-    execution.metrics_mut().record_source_read_prefetch_started();
+    execution.metrics().record_source_read_prefetch_started();
     let scheduled = start_join_leaf_scheduled_source_read(
         execution,
         &stream.source,
@@ -359,13 +359,13 @@ pub(in crate::exec::bounded) fn execute_bounded_join_leaf_source(
             execute_bounded_join_leaf_local_parquet_source(execution, source, node_id)
         },
         crate::source::SourceNode::GpuResident(source) => {
-            let frame = read_gpu_resident_source(execution.context(), source, gpu_inputs, execution.metrics_mut())?;
-            let device_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+            let frame = read_gpu_resident_source(execution.context(), source, gpu_inputs, execution.metrics())?;
+            let device_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
             Ok(ResidentGpuFrame::with_device_bytes(frame, device_bytes))
         },
         crate::source::SourceNode::LiteralBatch(source) => {
-            let frame = read_literal_batch_source(execution.context(), source, execution.metrics_mut())?;
-            let device_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+            let frame = read_literal_batch_source(execution.context(), source, execution.metrics())?;
+            let device_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
             Ok(ResidentGpuFrame::with_device_bytes(frame, device_bytes))
         },
     }
@@ -454,7 +454,7 @@ fn execute_bounded_join_leaf_local_parquet_source(
         source,
         node_id,
         false,
-        execution.metrics_mut(),
+        execution.metrics(),
     )?;
     let chunks = read_join_leaf_source_stream_chunks(execution, &stream)?;
     concatenate_join_source_chunks(execution, node_id, chunks)
@@ -548,8 +548,7 @@ fn empty_join_leaf_source_frame(
     execution: &mut BoundedExecutionAttempt<'_>,
     stream: &BoundedJoinLeafLocalParquetSourceStream,
 ) -> Result<ResidentGpuFrame> {
-    let frame =
-        read_local_parquet_source(execution.context(), stream.node_id, &stream.source, execution.metrics_mut())?;
-    let device_bytes = observe_device_memory_bytes(&frame, execution.metrics_mut())?;
+    let frame = read_local_parquet_source(execution.context(), stream.node_id, &stream.source, execution.metrics())?;
+    let device_bytes = observe_device_memory_bytes(&frame, execution.metrics())?;
     Ok(ResidentGpuFrame::with_device_bytes(frame, device_bytes))
 }

@@ -13,6 +13,7 @@ use super::{
     },
     source_read_budget_bytes,
 };
+use crate::observability::SourceReadFact;
 
 pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
     execution: &mut BoundedExecutionAttempt<'_>,
@@ -87,7 +88,7 @@ pub(in crate::exec::bounded) fn execute_bounded_chunks_with_source_scheduler(
         let source = match finish_scheduled_source_read(execution, scheduled) {
             Ok(source) => source,
             Err(error) if is_prefetch_chunk_error(&error) && is_retryable_chunk_error(&error) => {
-                execution.metrics_mut().record_source_read_prefetch_abandoned();
+                execution.record_source_read(SourceReadFact::PrefetchAbandoned);
                 queue.abandon_all(execution, index + 1);
                 let chunk_partials = match execute_bounded_chunk_with_retry(execution, bounded, chunk) {
                     Ok(partials) => partials,
@@ -393,7 +394,7 @@ fn try_start_optional_scheduled_source_read(
         return Ok(None);
     };
     let requested_bytes = prefetch_budget_bytes(execution.context().memory_control_policy(), chunk);
-    execution.metrics_mut().record_source_read_prefetch_started();
+    execution.record_source_read(SourceReadFact::PrefetchStarted);
     start_scheduled_source_read(
         execution,
         source,
@@ -423,10 +424,11 @@ fn start_scheduled_source_read(
     prefetch: bool,
 ) -> Result<ScheduledLocalParquetRead> {
     execution.context().check_cancellation("nexus_query_engine.exec.bounded.source_scheduler_start")?;
-    execution.metrics_mut().record_source_chunk_attempt();
+    execution.record_source_read(SourceReadFact::ChunkAttempted);
     let source_token_budget = if hard_token_budget { requested_bytes } else { execution.device_budget_bytes() };
     ScheduledLocalParquetRead::spawn(
         execution.context().clone(),
+        execution.metrics().clone(),
         source.clone(),
         chunk.clone(),
         source_token_budget,
@@ -443,9 +445,9 @@ fn finish_scheduled_source_read(
 ) -> Result<ScheduledLocalParquetReadOutput> {
     let is_prefetch = scheduled.is_prefetch();
     let mut output = scheduled.finish(execution)?;
-    output.observed_bytes = observe_device_memory_bytes(&output.frame, execution.metrics_mut())?;
+    output.observed_bytes = observe_device_memory_bytes(&output.frame, execution.metrics())?;
     if is_prefetch {
-        execution.metrics_mut().record_source_read_prefetch_completed();
+        execution.record_source_read(SourceReadFact::PrefetchCompleted);
     }
     Ok(output)
 }

@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 
 use super::{
     BoundedExecutionAttempt, BoundedJoinSideFrame, BoundedPartitionTargetPolicy, BoundedRootHashJoinBuildState,
-    BoundedRootHashJoinProbeState, ExecutionContext, Instant, JoinNode, JoinSide, NodeId, QueryError, QueryMetrics,
+    BoundedRootHashJoinProbeState, ExecutionContext, ExecutionMetrics, Instant, JoinNode, JoinSide, NodeId, QueryError,
     ResidentFrameStreamSource, ResidentGpuFrame, Result, execution_overrides, join_side_output_upper_bound_bytes,
     materialize::{materialize_bounded_root_hash_join_index_slice, release_root_hash_join_stream_outputs},
     probe::reusable_hash_join_execution_strategy,
@@ -145,8 +145,8 @@ pub(in crate::exec::bounded::join::hash) fn materialize_bounded_root_hash_join_p
             },
         }
     }
-    execution.metrics_mut().operator_time += timer.elapsed();
-    execution.metrics_mut().record_operator_metrics(crate::metrics::OperatorMetrics::join(
+    execution.metrics().add_operator_time(timer.elapsed());
+    execution.metrics().record_operator_metrics(crate::metrics::OperatorMetrics::join(
         node_id,
         crate::metrics::JoinOperatorMetrics {
             query_id: None,
@@ -280,8 +280,8 @@ impl RootHashJoinMaterializeStreamSource {
             let original_right_rows = right.rows;
             let left_bytes = left.bytes;
             let right_bytes = right.bytes;
-            execution.metrics_mut().operator_time += timer.elapsed();
-            execution.metrics_mut().record_operator_metrics(crate::metrics::OperatorMetrics::join(
+            execution.metrics().add_operator_time(timer.elapsed());
+            execution.metrics().record_operator_metrics(crate::metrics::OperatorMetrics::join(
                 self.node_id,
                 crate::metrics::JoinOperatorMetrics {
                     query_id: None,
@@ -373,7 +373,7 @@ pub(in crate::exec::bounded::join::hash) fn is_retryable_join_stream_slice_error
 
 pub(in crate::exec::bounded::join::hash) fn record_join_stream_slice_retry_error(
     error: &QueryError,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) {
     crate::exec::retry::record_retryable_resource_error(error, metrics);
 }

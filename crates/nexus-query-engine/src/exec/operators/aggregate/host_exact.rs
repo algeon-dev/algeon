@@ -307,7 +307,7 @@ pub(super) fn execute_datafusion_exact_host_aggregate(
     input_schema: &ArrowSchemaRef,
     input: GpuDataFrame,
     output_schema: &ArrowSchemaRef,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     extra_strategy_facts: Option<&BTreeMap<&'static str, String>>,
 ) -> Result<GpuDataFrame> {
     let timer = Instant::now();
@@ -323,7 +323,7 @@ pub(super) fn execute_datafusion_exact_host_aggregate(
         extra_strategy_facts,
     )?;
     let output = upload_datafusion_exact_host_aggregate_output(context, &output_batch)?;
-    metrics.operator_time += timer.elapsed();
+    metrics.add_operator_time(timer.elapsed());
     Ok(GpuDataFrame::new(output))
 }
 
@@ -331,7 +331,7 @@ pub(in crate::exec) fn prepare_datafusion_exact_host_aggregate_input_frame(
     context: &ExecutionContext,
     input: GpuDataFrame,
     input_schema: &ArrowSchemaRef,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
 ) -> Result<(GpuDataFrame, ArrowSchemaRef)> {
     let frame = sort_by_datafusion_order_if_present(context, input.into_frame(), metrics)?;
     let schema = schema_with_datafusion_order_columns(&frame, input_schema);
@@ -353,7 +353,7 @@ pub(in crate::exec) fn execute_datafusion_exact_host_aggregate_batch(
     spec: &AggregateSpec,
     batch: &RecordBatch,
     output_schema: &ArrowSchemaRef,
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     extra_strategy_facts: Option<&BTreeMap<&'static str, String>>,
 ) -> Result<RecordBatch> {
     let key_columns = spec
@@ -517,7 +517,7 @@ pub(in crate::exec) fn upload_datafusion_exact_host_aggregate_output(
     reason = "strategy-decision facts are reported individually; grouping them would be a metrics DTO"
 )]
 fn record_datafusion_exact_floating_statistical_aggregate_strategy_decision(
-    metrics: &mut QueryMetrics,
+    metrics: &ExecutionMetrics,
     node_id: Option<String>,
     memory_mode: &'static str,
     aggregate_strategy_options: AggregateStrategyExecutionOptions,
@@ -527,6 +527,7 @@ fn record_datafusion_exact_floating_statistical_aggregate_strategy_decision(
     output_rows: u64,
     extra_strategy_facts: Option<&BTreeMap<&'static str, String>>,
 ) {
+    let progress = metrics.progress();
     let mut facts = BTreeMap::from([
         ("selected_strategy", "datafusion_exact_host_welford".to_string()),
         ("execution_stage", AggregateExecutionStage::Single.as_str().to_string()),
@@ -539,8 +540,8 @@ fn record_datafusion_exact_floating_statistical_aggregate_strategy_decision(
         ("distinct_aggregate_count", spec.aggr_exprs.iter().filter(|expr| expr.distinct).count().to_string()),
         ("input_rows", input_rows.to_string()),
         ("chunk_row_count", "0".to_string()),
-        ("chunk_count", metrics.source_chunks_planned.to_string()),
-        ("partial_aggregate_count", metrics.partial_aggregate_count.to_string()),
+        ("chunk_count", progress.source_chunks_planned.to_string()),
+        ("partial_aggregate_count", progress.partial_aggregate_count.to_string()),
         ("output_group_count", output_rows.to_string()),
         ("reduction_ratio_ppm", reduction_ratio_ppm(input_rows, output_rows).to_string()),
         ("source_adjacent_partial", "unknown".to_string()),
@@ -659,8 +660,8 @@ mod tests {
     fn run_exact_host_aggregate(spec: &AggregateSpec, batch: &RecordBatch, output_fields: Vec<Field>) -> RecordBatch {
         let context = ExecutionContext::builder().build().expect("execution context builds");
         let output_schema = Arc::new(Schema::new(output_fields));
-        let mut metrics = QueryMetrics::default();
-        execute_datafusion_exact_host_aggregate_batch(&context, None, spec, batch, &output_schema, &mut metrics, None)
+        let metrics = ExecutionMetrics::detached("exact-host-aggregate");
+        execute_datafusion_exact_host_aggregate_batch(&context, None, spec, batch, &output_schema, &metrics, None)
             .expect("exact host aggregate executes")
     }
 

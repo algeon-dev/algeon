@@ -1,11 +1,12 @@
 //! Exactly-once query and task lifecycle guards.
 
 use super::{
-    PlanExecutionBoundaryKind, PlanExecutionId, RuntimeEventContext, RuntimeObservationHandle, RuntimeObservationOwner,
-    RuntimeObservationPayload, RuntimeObservationSession, RuntimeSpanId, RuntimeTaskId,
-    RuntimeTaskLifecycleObservation, RuntimeTerminalOutcome, SealedRuntimeObservationSnapshot, TaskAttemptId,
-    TaskLifecycleState,
+    MetricsRecorder, PlanExecutionBoundaryKind, PlanExecutionId, QueryMetricsCheckpoint, RuntimeEventContext,
+    RuntimeObservationHandle, RuntimeObservationOwner, RuntimeObservationPayload, RuntimeObservationSession,
+    RuntimeSpanId, RuntimeTaskId, RuntimeTaskLifecycleObservation, RuntimeTerminalOutcome,
+    SealedRuntimeObservationSnapshot, SourceReadFact, TaskAttemptId, TaskLifecycleState,
 };
+use crate::metrics::SourceReadRuntimeMetrics;
 
 /// Owner-only query lifecycle. Normal completion consumes the owner; Drop
 /// terminalizes abandoned and unwinding executions without exposing seal
@@ -37,6 +38,7 @@ pub struct RuntimeExecutionObservationScope {
     observation: RuntimeObservationHandle,
     plan_execution_id: PlanExecutionId,
     plan_span_id: RuntimeSpanId,
+    metrics: MetricsRecorder,
 }
 
 impl RuntimeExecutionObservationScope {
@@ -53,6 +55,54 @@ impl RuntimeExecutionObservationScope {
     /// Returns the parent span for task attempts.
     pub const fn plan_span_id(&self) -> RuntimeSpanId {
         self.plan_span_id
+    }
+
+    /// A scope on `observation` whose metrics go to `metrics`, for driving
+    /// plan stages outside a plan-execution lifecycle.
+    pub fn for_metrics(observation: RuntimeObservationHandle, metrics: MetricsRecorder) -> Self {
+        Self {
+            observation,
+            plan_execution_id: metrics.plan_execution_id().clone(),
+            plan_span_id: RuntimeSpanId::new(1),
+            metrics,
+        }
+    }
+
+    /// Where this plan execution's metrics are reduced.
+    pub const fn metrics(&self) -> &MetricsRecorder {
+        &self.metrics
+    }
+
+    /// Reports this plan execution's metrics to `metrics` instead of the trace
+    /// session, for an execution whose metrics owner is bound separately.
+    #[must_use]
+    pub fn with_metrics(mut self, metrics: MetricsRecorder) -> Self {
+        self.metrics = metrics;
+        self
+    }
+
+    /// Folds one source-read fact into this plan execution's exact totals.
+    pub fn record_source_read(&self, fact: SourceReadFact) {
+        self.metrics.record_source_read(fact);
+    }
+
+    /// Offers one source-read detail row for this plan execution's bounded retention.
+    pub fn record_source_read_row(&self, row: SourceReadRuntimeMetrics) {
+        self.metrics.record_source_read_runtime(row);
+    }
+
+    /// Returns one internally consistent view of this plan execution's metrics.
+    pub fn metrics_checkpoint(&self) -> Option<QueryMetricsCheckpoint> {
+        self.metrics.checkpoint()
+    }
+
+    fn new(
+        observation: RuntimeObservationHandle,
+        plan_execution_id: PlanExecutionId,
+        plan_span_id: RuntimeSpanId,
+    ) -> Self {
+        let metrics = MetricsRecorder::new(observation.clone(), plan_execution_id.clone());
+        Self { observation, plan_execution_id, plan_span_id, metrics }
     }
 }
 
@@ -86,11 +136,7 @@ impl RuntimeQueryLifecycle {
 
     /// Returns the non-owning scope passed to schedulers and reservations.
     pub fn execution_scope(&self) -> RuntimeExecutionObservationScope {
-        RuntimeExecutionObservationScope {
-            observation: self.handle(),
-            plan_execution_id: self.plan_execution_id.clone(),
-            plan_span_id: self.plan_span_id,
-        }
+        RuntimeExecutionObservationScope::new(self.handle(), self.plan_execution_id.clone(), self.plan_span_id)
     }
 
     /// Records cleanup and exactly one terminal, seals the owner, and consumes
@@ -154,11 +200,7 @@ impl RuntimePlanExecutionLifecycle {
 
     /// Returns the non-owning scope passed to schedulers and reservations.
     pub fn execution_scope(&self) -> RuntimeExecutionObservationScope {
-        RuntimeExecutionObservationScope {
-            observation: self.handle(),
-            plan_execution_id: self.plan_execution_id.clone(),
-            plan_span_id: self.plan_span_id,
-        }
+        RuntimeExecutionObservationScope::new(self.handle(), self.plan_execution_id.clone(), self.plan_span_id)
     }
 
     /// Records the plan terminal and contributes its outcome to the query

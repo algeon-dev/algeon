@@ -3,7 +3,7 @@ use std::cmp;
 use arrow::datatypes::DataType as ArrowDataType;
 
 use super::{filtered_segment_policy::FilteredAggregateSegmentationPolicy, *};
-use crate::datatypes::arrow_fixed_width_byte_size;
+use crate::{datatypes::arrow_fixed_width_byte_size, observability::BudgetWindowPeaks};
 
 pub(super) fn unsupported_stateful_filtered_merge(spec: &AggregateSpec) -> bool {
     spec.aggr_exprs.iter().any(|expr| {
@@ -23,16 +23,13 @@ pub(super) fn unsupported_stateful_filtered_merge(spec: &AggregateSpec) -> bool 
 pub(super) fn add_segmented_budgeted_execution_stats(
     observed_temporary_peak_bytes: &mut u64,
     observed_retained_peak_bytes: &mut u64,
-    metrics: &QueryMetrics,
-    budget_event_start: usize,
+    peaks: BudgetWindowPeaks,
 ) {
-    for event in metrics.budgeted_execution_events.iter().skip(budget_event_start) {
-        if let Some(bytes) = event.allocator_high_water_bytes {
-            *observed_temporary_peak_bytes = (*observed_temporary_peak_bytes).max(bytes);
-        }
-        if let Some(bytes) = event.retained_bytes {
-            *observed_retained_peak_bytes = (*observed_retained_peak_bytes).max(bytes);
-        }
+    if let Some(bytes) = peaks.observed_peak_bytes {
+        *observed_temporary_peak_bytes = (*observed_temporary_peak_bytes).max(bytes);
+    }
+    if let Some(bytes) = peaks.retained_bytes {
+        *observed_retained_peak_bytes = (*observed_retained_peak_bytes).max(bytes);
     }
 }
 
