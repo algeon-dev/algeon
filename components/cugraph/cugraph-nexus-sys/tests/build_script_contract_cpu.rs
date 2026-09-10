@@ -329,6 +329,29 @@ fn build_rs_emits_runtime_library_metadata_for_downstream_consumers() {
 }
 
 #[test]
+fn prebuilt_contract_carries_cudf_include_for_rmm_headers() {
+    let build_rs = read_build_rs();
+
+    assert!(
+        build_rs.contains("cudf_install_dir.join(\"include\")"),
+        "build.rs should append the cuDF prefix include dir to the prebuilt native contract: \
+         cugraph-install/include does not vendor the RMM headers the downstream shim includes"
+    );
+    assert!(
+        build_rs.contains("cudf_include_dir.join(\"rapids\")"),
+        "build.rs should append the cuDF-vendored CCCL dir: RMM requires CCCL 3.3+, which the toolkit includes cannot satisfy"
+    );
+    assert!(
+        build_rs.contains("contract.native_include_dirs.push(include_dir)"),
+        "build.rs should carry the cuDF include dirs in native-include-dirs, mirroring the cuDF runtime dir handling"
+    );
+    assert!(
+        build_rs.contains("rmm/aligned.hpp"),
+        "build.rs should fail fast when the cuDF prefix lacks RMM headers instead of surfacing a bare cc error"
+    );
+}
+
+#[test]
 fn manual_and_cargo_builds_share_runtime_cuvs_contract() {
     let build_rs = read_build_rs();
     let build_support = read_build_support_rs();
