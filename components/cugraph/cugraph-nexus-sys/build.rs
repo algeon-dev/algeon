@@ -33,6 +33,10 @@ fn emit_cuvs_metadata(cuvs: &build_support::CanonicalCuvsContract) {
 
 fn main() {
     let manifest_dir = PathBuf::from(env::var("CARGO_MANIFEST_DIR").unwrap());
+    let repo_root = manifest_dir.join("../../..");
+    let cudf_install_dir = env::var_os("CUDF_INSTALL_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| repo_root.join("target/native/cudf-install"));
     let cmake_build_dir_env = env::var_os("CUGRAPH_CMAKE_BUILD_DIR");
     let explicit_contract_count = build_support::explicit_native_contract_count(
         env::var_os("CUGRAPH_NATIVE_INCLUDE_DIRS").as_ref(),
@@ -66,6 +70,25 @@ fn main() {
     .unwrap_or_else(|err| panic!("{err}"));
     let cuvs = build_support::resolve_canonical_cuvs_contract(&manifest_dir, env::var_os("CUVS_INSTALL_DIR"))
         .unwrap_or_else(|err| panic!("{err}"));
+    if explicit_contract_count == 0 {
+        let cmake_export_dir = PathBuf::from(
+            effective_cmake_build_dir_env
+                .as_deref()
+                .expect("CMake contract resolution must retain its selected export directory"),
+        );
+        let components = build_support::cuda_architecture_components(
+            &repo_root,
+            &cudf_install_dir,
+            &cuvs.install_dir,
+            &cmake_export_dir,
+        );
+        let requested = build_support::resolved_cuda_architectures(env::var_os("CMAKE_CUDA_ARCHITECTURES").as_deref());
+        for path in build_support::validate_cuda_architecture_contracts(&components, &requested.to_string_lossy())
+            .unwrap_or_else(|err| panic!("{err}"))
+        {
+            println!("cargo:rerun-if-changed={}", path.display());
+        }
+    }
     let validated_loader =
         build_support::validate_cugraph_cuvs_loader(&contract.native_link_dirs, &contract.runtime_lib_dirs, &cuvs)
             .unwrap_or_else(|err| panic!("{err}"));
@@ -114,10 +137,10 @@ fn main() {
     println!("cargo:rerun-if-env-changed=CUGRAPH_ENFORCE_STALENESS_CHECK");
     println!("cargo:rerun-if-env-changed=LD_LIBRARY_PATH");
     println!("cargo:rerun-if-env-changed=CMAKE_CUDA_ARCHITECTURES");
+    println!("cargo:rerun-if-env-changed=CUDAToolkit_ROOT");
+    println!("cargo:rerun-if-env-changed=CUDA_HOME");
+    println!("cargo:rerun-if-env-changed=CUDA_PATH");
     println!("cargo:rerun-if-changed=wrapper.h");
-    let cudf_install_dir = env::var_os("CUDF_INSTALL_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| manifest_dir.join("../../../target/native/cudf-install"));
     for header in ["error_boundary.hpp", "memory_resource.h"] {
         println!("cargo:rerun-if-changed={}", cudf_install_dir.join("include/cudf_rust").join(header).display());
     }

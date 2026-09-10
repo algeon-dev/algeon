@@ -10,10 +10,11 @@
 # hits this because cudf-sys links the .so files directly without a CMake
 # configure.
 #
-# This script installs those missing CMake packages into the cudf install
-# prefix from the cudf C++ build tree (`_deps/*-build`). It is idempotent:
-# packages already present are left alone. Run it once per machine after
-# building libcudf and before building cugraph-sys.
+# This script installs those missing CMake packages from the cudf C++ build
+# tree (`_deps/*-build`) and the cuDF Rust shim headers consumed by cuGraph.
+# It is idempotent: packages already present are left alone and the headers are
+# refreshed from their owning source. Run it after building libcudf and before
+# building cugraph-sys.
 #
 # Env:
 #   CUDF_INSTALL_DIR    cudf install prefix (default: target/native/cudf-install)
@@ -22,6 +23,7 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cudf_install_dir="${CUDF_INSTALL_DIR:-${repo_root}/target/native/cudf-install}"
+cudf_rust_include_dir="${repo_root}/components/cudf/cudf-nexus-sys/native/include/cudf_rust"
 
 if [[ ! -d "${cudf_install_dir}" ]]; then
     echo "error: cudf install prefix '${cudf_install_dir}' does not exist." >&2
@@ -61,6 +63,29 @@ install_from_build() {
     cmake --install "${build}" --prefix "${cudf_install_dir}" >/dev/null
 }
 
+install_cudf_rust_public_headers() {
+    local destination_dir="${cudf_install_dir}/include/cudf_rust"
+    local source
+    local destination
+
+    install -d --mode=0755 "${destination_dir}"
+    while IFS= read -r -d '' source; do
+        destination="${destination_dir}/${source#"${cudf_rust_include_dir}/"}"
+        if [[ -L "${destination}" ]]; then
+            rm -f -- "${destination}"
+        fi
+        install --mode=0644 "${source}" "${destination}"
+        if [[ ! -f "${destination}" || -L "${destination}" ]]; then
+            echo "error: failed to install regular cuDF Rust shim public header '${destination}'." >&2
+            exit 1
+        fi
+    done < <(find "${cudf_rust_include_dir}" -mindepth 1 -maxdepth 1 -type f ! -name test_support.h -print0)
+
+    if [[ -e "${destination_dir}/test_support.h" || -L "${destination_dir}/test_support.h" ]]; then
+        rm -f -- "${destination_dir}/test_support.h"
+    fi
+}
+
 # nvtx3: header-only; rmm::rmm needs the nvtx3::nvtx3-cpp target.
 if package_present nvtx3 nvtx3-config.cmake; then
     echo "nvtx3: already present"
@@ -87,6 +112,8 @@ else
     echo "rapids_logger (+ fmt, spdlog): installing into ${cudf_install_dir}"
     install_from_build rapids_logger-build
 fi
+
+install_cudf_rust_public_headers
 
 # Verify the closure cuGraph's configure needs.
 missing=0

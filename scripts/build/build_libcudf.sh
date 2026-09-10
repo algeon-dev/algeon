@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+source "${repo_root}/scripts/build/cuda_architecture_contract.sh"
 upstream_build="${repo_root}/components/cudf/cudf/build.sh"
 build_dir="${CUDF_CPP_BUILD_DIR:-${repo_root}/target/native/cudf-build}"
 install_dir="${CUDF_INSTALL_DIR:-${repo_root}/target/native/cudf-install}"
@@ -9,6 +10,7 @@ install_dir="${CUDF_INSTALL_DIR:-${repo_root}/target/native/cudf-install}"
 build_dir="$(realpath -m -- "${build_dir}")"
 install_dir="$(realpath -m -- "${install_dir}")"
 cache_file="${build_dir}/CMakeCache.txt"
+cuda_architectures="$(nexus_cuda_architectures)"
 
 validate_cache_identity() {
     local cached_install_dir
@@ -48,6 +50,7 @@ fi
 
 LIB_BUILD_DIR="${build_dir}" \
 INSTALL_PREFIX="${install_dir}" \
+CUDF_CMAKE_CUDA_ARCHITECTURES="${cuda_architectures}" \
     "${upstream_build}" libcudf
 
 validate_cache_identity
@@ -56,5 +59,19 @@ CUDF_INSTALL_DIR="${install_dir}" \
 CUDF_CPP_BUILD_DIR="${build_dir}" \
     "${repo_root}/scripts/build/bootstrap_cudf_install.sh"
 
+cudf_library=""
+for candidate in "${install_dir}/lib/libcudf.so" "${install_dir}/lib64/libcudf.so"; do
+    if [[ -f "${candidate}" ]]; then
+        cudf_library="${candidate}"
+        break
+    fi
+done
+[[ -n "${cudf_library}" ]] || {
+    echo "error: canonical cuDF install does not contain libcudf.so under ${install_dir}/{lib,lib64}" >&2
+    exit 1
+}
+architecture_contract="$(nexus_cuda_write_contract "${install_dir}" "${cudf_library}" "${cuda_architectures}")"
+
 echo "canonical cuDF/RMM prefix ready: ${install_dir}"
 echo "native build: ${build_dir}"
+echo "CUDA architectures: requested=${cuda_architectures}, real=$(nexus_cuda_read_contract_value "${architecture_contract}" real)"

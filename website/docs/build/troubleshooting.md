@@ -58,21 +58,50 @@ bootstrap nothing to install from — rebuild libcudf first (keeping
 cd "$NEXUS_ROOT" && bash scripts/build/build_libcudf.sh
 ```
 
+## Native build rejects a CUDA architecture contract
+
+The cuVS and cuGraph helpers stop before an expensive downstream build when a
+dependency was built with another `CMAKE_CUDA_ARCHITECTURES` value or contains
+a different full-kernel real cubin set. Small embedded dependency stub sets are
+ignored. The check compares the native layers against each other only; it does
+not compare them against the GPU installed in this host.
+
+Choose one value and rebuild in dependency order:
+
+```bash
+export CMAKE_CUDA_ARCHITECTURES=NATIVE # or an explicit list such as 89-real;120a-real
+bash scripts/build/build_libcudf.sh
+bash scripts/build/build_libcuvs.sh
+bash scripts/build/build_libcugraph.sh
+```
+
+The old cuDF-only `CUDF_CMAKE_CUDA_ARCHITECTURES` selector is intentionally
+rejected. The wrapper maps the shared CMake selector to cuDF internally.
+
+To inspect what the canonical builds requested and actually contain:
+
+```bash
+for root in "$CUDF_INSTALL_DIR" "$CUVS_INSTALL_DIR" "$CUGRAPH_CMAKE_BUILD_DIR"; do
+  echo "== $root =="
+  cat "$root/share/nexus-native/cuda-architectures.env"
+done
+```
+
 ## GPU op aborts: `cudaErrorNoKernelImageForDevice`
 
 The binary loads and links fine, then the first kernel launch aborts. The
-libcudf or libcugraph build did not include full kernels for the GPU it is
-running on — `CMAKE_CUDA_ARCHITECTURES=NATIVE` bakes kernels **only** for
-the GPU present at build time. Rebuild **both** native libraries listing every
-deployment architecture (`CUDF_CMAKE_CUDA_ARCHITECTURES` for libcudf,
-`CMAKE_CUDA_ARCHITECTURES` for `scripts/build/build_libcugraph.sh`), and verify coverage of
-each `.so`:
+native build did not include full kernels for the GPU it is running on —
+`CMAKE_CUDA_ARCHITECTURES=NATIVE` bakes kernels **only** for the GPU present at
+build time. Set one explicit deployment architecture list and rebuild cuDF,
+cuVS, and cuGraph in that order. The build helpers then confirm the three
+layers agree. For deeper inspection, list each `.so`:
 
 ```bash
 for so in "$CUDF_INSTALL_DIR"/lib/libcudf.so \
+          "$CUVS_INSTALL_DIR"/lib/libcuvs.so \
           "$NEXUS_ROOT"/target/native/cugraph-build/libcugraph.so; do
   echo "== $so =="
-  cuobjdump --list-elf "$so" | grep -oE 'sm_[0-9]+' | sort | uniq -c
+  cuobjdump --list-elf "$so" | grep -oE 'sm_[0-9]+[a-z]?' | sort | uniq -c
 done
 ```
 
