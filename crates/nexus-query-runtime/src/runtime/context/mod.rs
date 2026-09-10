@@ -990,6 +990,12 @@ pub struct ExecutionContext {
     cancellation: ExecutionCancellation,
     /// Selected execution contract for floating statistical aggregates.
     statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
+    /// Per-query DataFusion exact-order scope for floating statistical aggregates.
+    ///
+    /// Source-read workers run on spawned OS threads that cannot observe the
+    /// caller thread's tracking state, so this flag travels with the context
+    /// clone handed to the worker instead of living in a thread-local.
+    datafusion_order_tracking: bool,
     /// Runtime threshold policy for grouped aggregate strategy selection.
     aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
     /// Expert policy for local-throughput source chunk planning.
@@ -1230,6 +1236,7 @@ pub(super) struct ExecutionContextParts {
     pub(super) deployment_io_capability: DeploymentIoCapability,
     pub(super) cancellation: ExecutionCancellation,
     pub(super) statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode,
+    pub(super) datafusion_order_tracking: bool,
     pub(super) aggregate_strategy_execution_options: AggregateStrategyExecutionOptions,
     pub(super) source_chunk_planning_options: SourceChunkPlanningOptions,
     pub(super) stream_lease_guard: Option<Arc<StreamLease>>,
@@ -1313,6 +1320,7 @@ impl ExecutionContext {
             deployment_io_capability: DeploymentIoCapability::cached_current_host(),
             cancellation: ExecutionCancellation::new(),
             statistical_aggregate_execution_mode: StatisticalAggregateExecutionMode::default(),
+            datafusion_order_tracking: false,
             aggregate_strategy_execution_options: AggregateStrategyExecutionOptions::default(),
             source_chunk_planning_options: SourceChunkPlanningOptions::default(),
             stream_lease_guard: None,
@@ -1365,6 +1373,7 @@ impl ExecutionContext {
             deployment_io_capability: parts.deployment_io_capability,
             cancellation: parts.cancellation,
             statistical_aggregate_execution_mode: parts.statistical_aggregate_execution_mode,
+            datafusion_order_tracking: parts.datafusion_order_tracking,
             aggregate_strategy_execution_options: parts.aggregate_strategy_execution_options,
             source_chunk_planning_options: parts.source_chunk_planning_options,
             auxiliary_stream_permit_guard: parts.auxiliary_stream_permit_guard,
@@ -1642,6 +1651,7 @@ impl ExecutionContext {
             deployment_io_capability: self.deployment_io_capability.clone(),
             cancellation: self.cancellation.clone(),
             statistical_aggregate_execution_mode: self.statistical_aggregate_execution_mode,
+            datafusion_order_tracking: self.datafusion_order_tracking,
             aggregate_strategy_execution_options: self.aggregate_strategy_execution_options,
             source_chunk_planning_options: self.source_chunk_planning_options,
             stream_lease_guard: None,
@@ -2513,6 +2523,23 @@ impl ExecutionContext {
     /// Returns the selected execution contract for floating statistical aggregates.
     pub fn statistical_aggregate_execution_mode(&self) -> StatisticalAggregateExecutionMode {
         self.statistical_aggregate_execution_mode
+    }
+
+    /// Returns whether this query preserves DataFusion input order for floating
+    /// statistical aggregates.
+    ///
+    /// Native execution derives this per query from the aggregate execution
+    /// mode and the plan shape, then carries it on every context clone so
+    /// source-read workers on spawned threads observe the same scope as the
+    /// caller thread.
+    pub fn datafusion_order_tracking(&self) -> bool {
+        self.datafusion_order_tracking
+    }
+
+    /// Attaches the per-query DataFusion exact-order scope to this context clone.
+    pub fn with_datafusion_order_tracking(mut self, enabled: bool) -> Self {
+        self.datafusion_order_tracking = enabled;
+        self
     }
 
     /// Returns grouped aggregate strategy execution policy.

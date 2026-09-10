@@ -2010,6 +2010,7 @@ impl QueryHandle {
             deployment_io_capability: resources.deployment_io_capability.clone(),
             cancellation,
             statistical_aggregate_execution_mode: service.config.statistical_aggregate_execution_mode,
+            datafusion_order_tracking: false,
             aggregate_strategy_execution_options: service.config.aggregate_strategy_execution_options,
             source_chunk_planning_options: service.config.source_chunk_planning_options,
             stream_lease_guard: Some(stream_lease_guard),

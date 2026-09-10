@@ -494,6 +494,164 @@ fn join_grouped_stddev_samp_uses_datafusion_probe_major_order_bits() {
 }
 
 #[test]
+fn bounded_join_grouped_stddev_samp_uses_datafusion_probe_major_order_bits() {
+    // Bounded leaf source reads run on spawned worker threads. The exact-order
+    // scope travels with the execution context clone, so worker-read chunks
+    // must carry the same hidden order columns as caller-thread reads.
+    // A one-shot hash join over a large probe does not preserve probe order,
+    // so without restored order columns the pre-aggregate sort is a no-op and
+    // Welford input order is lost at the bit level.
+    let dir = unique_temp_dir("nexus-query-engine-bounded-join-ordered-stddev-samp");
+    const PROBE_FILES: usize = 10;
+    const PROBE_ROWS_PER_FILE: usize = 10_000;
+    const PROBE_ROWS: usize = PROBE_FILES * PROBE_ROWS_PER_FILE;
+    const SENSITIVE_PATTERN: [f64; 5] = [1.0e16, 1.0e-16, 1.0, 2.0, 3.0];
+    let left_paths = (0..PROBE_FILES).map(|file| dir.join(format!("left-{file}.parquet"))).collect::<Vec<_>>();
+    let right_path = dir.join("right.parquet");
+    let context = backend_context_with_grant_and_statistical_aggregate_mode(
+        16 * 1024 * 1024,
+        StatisticalAggregateExecutionMode::DataFusionExactHostWelford,
+    );
+    let runtime = Arc::new(context.runtime().unwrap());
+    let left_schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("v", DataType::Float64, true)]));
+    let right_schema = Arc::new(Schema::new(vec![
+        Field::new("k", DataType::Int32, false),
+        Field::new("grp", DataType::Int32, false),
+        Field::new("keep", DataType::Int32, false),
+    ]));
+    let right_batch = RecordBatch::try_new(
+        Arc::clone(&right_schema),
+        vec![
+            Arc::new(Int32Array::from_iter_values(0..10)),
+            Arc::new(Int32Array::from(vec![7; 10])),
+            Arc::new(Int32Array::from(vec![1; 10])),
+        ],
+    )
+    .unwrap();
+    DataFrame::from_record_batch(&runtime, &right_batch).unwrap().write_parquet(&right_path).unwrap();
+    let mut left_values = Vec::with_capacity(PROBE_ROWS);
+    for (file_ordinal, path) in left_paths.iter().enumerate() {
+        let base = file_ordinal * PROBE_ROWS_PER_FILE;
+        let keys = (0..PROBE_ROWS_PER_FILE).map(|row| ((base + row) * 7 % 10) as i32).collect::<Vec<_>>();
+        let values = (0..PROBE_ROWS_PER_FILE)
+            .map(|row| SENSITIVE_PATTERN[(base + row) % SENSITIVE_PATTERN.len()])
+            .collect::<Vec<_>>();
+        left_values.extend(values.iter().copied());
+        let left_batch = RecordBatch::try_new(
+            Arc::clone(&left_schema),
+            vec![Arc::new(Int32Array::from(keys)), Arc::new(Float64Array::from(values))],
+        )
+        .unwrap();
+        DataFrame::from_record_batch(&runtime, &left_batch).unwrap().write_parquet(path).unwrap();
+    }
+
+    // Probe files deliberately carry no byte estimates so chunk batching keeps
+    // every chunk a singleton batch, which routes leaf reads through the
+    // spawned source-read workers instead of serial batch reads.
+    let left = LocalParquetSource::from_files(
+        left_paths.iter().map(LocalParquetFile::new).collect(),
+        Arc::clone(&left_schema),
+        vec!["k".to_string(), "v".to_string()],
+    );
+    let right = LocalParquetSource::from_files(
+        vec![LocalParquetFile::new(&right_path).with_file_size_bytes(fs::metadata(&right_path).unwrap().len())],
+        Arc::clone(&right_schema),
+        vec!["k".to_string(), "grp".to_string(), "keep".to_string()],
+    );
+    let projected_right_schema =
+        Arc::new(Schema::new(vec![Field::new("k", DataType::Int32, false), Field::new("grp", DataType::Int32, false)]));
+    let join_schema = Arc::new(Schema::new(vec![
+        Field::new("grp", DataType::Int32, false),
+        Field::new("v", DataType::Float64, true),
+    ]));
+    let aggregate_schema = Arc::new(Schema::new(vec![
+        Field::new("grp", DataType::Int32, false),
+        Field::new("stdev", DataType::Float64, true),
+        Field::new("avg_v", DataType::Float64, true),
+    ]));
+    let output_schema = Arc::new(Schema::new(vec![
+        Field::new("grp", DataType::Int32, false),
+        Field::new("stdev", DataType::Float64, true),
+        Field::new("avg_v", DataType::Float64, true),
+        Field::new("cov", DataType::Float64, true),
+    ]));
+
+    let mut builder = QueryPlanBuilder::new();
+    let left = builder.add_source(SourceNode::LocalParquet(left));
+    let right = builder.add_source(SourceNode::LocalParquet(right));
+    let right = builder.add_filter(
+        right,
+        Expr::binary(Expr::column("keep"), BinaryOp::Gt, Expr::literal(LiteralValue::Int32(0))),
+        Arc::clone(&right_schema),
+    );
+    let right = builder.add_projection(
+        right,
+        projection_outputs(vec![Expr::column("k"), Expr::column("grp")], Arc::clone(&projected_right_schema)),
+    );
+    let join = builder.add_join(
+        left,
+        right,
+        JoinSpec::new(
+            JoinType::Inner,
+            vec![JoinKey::new(
+                nexus_query_engine::expr::ColumnRef::input(0, "k", "k"),
+                nexus_query_engine::expr::ColumnRef::input(1, "k", "k"),
+            )],
+        )
+        .with_output_projection(vec![
+            JoinOutputColumn::right(nexus_query_engine::expr::ColumnRef::input(1, "grp", "grp"), "grp"),
+            JoinOutputColumn::left(nexus_query_engine::expr::ColumnRef::input(0, "v", "v"), "v"),
+        ])
+        .with_build_side(JoinSide::Right)
+        .with_datafusion_order_preserved_side(JoinSide::Left),
+        Arc::clone(&join_schema),
+    );
+    let aggregate = builder.add_aggregate(
+        join,
+        AggregateSpec::new(
+            vec![Expr::column("grp")],
+            vec![
+                AggregateExpr::new(AggregateFunction::StddevSamp, Expr::column("v"), "stdev"),
+                AggregateExpr::new(AggregateFunction::Avg, Expr::column("v"), "avg_v"),
+            ],
+        ),
+        Arc::clone(&aggregate_schema),
+    );
+    let projection = builder.add_projection(
+        aggregate,
+        projection_outputs(
+            vec![
+                Expr::column("grp"),
+                Expr::column("stdev"),
+                Expr::column("avg_v"),
+                Expr::binary(Expr::column("stdev"), BinaryOp::Divide, Expr::column("avg_v")).alias("cov"),
+            ],
+            Arc::clone(&output_schema),
+        ),
+    );
+    let plan = builder.finish_with_host_sink(projection);
+
+    let result = execute_query_plan(&context, &plan).unwrap();
+    let QueryOutput::HostArrow(batch) = result.output() else {
+        panic!("host sink should materialize one RecordBatch");
+    };
+
+    assert_eq!(result.metrics().memory_control_policy.as_str(), "bounded");
+    assert_eq!(result.metrics().compiled_pipeline_attempts, 1);
+    let expected = welford_stddev_samp(left_values.iter().copied()).unwrap();
+    let reversed = welford_stddev_samp(left_values.iter().rev().copied()).unwrap();
+    let expected_avg = ordered_avg(left_values.iter().copied()).unwrap();
+    assert_ne!(expected.to_bits(), reversed.to_bits(), "test values must expose join-order sensitivity");
+    assert_eq!(batch.num_rows(), 1);
+    assert_eq!(int32_array(batch, 0).values().as_ref(), &[7]);
+    assert_eq!(float64_array(batch, 1).value(0).to_bits(), expected.to_bits());
+    assert_eq!(float64_array(batch, 3).value(0).to_bits(), (expected / expected_avg).to_bits());
+
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn join_grouped_stddev_samp_can_preserve_left_probe_order_bits() {
     let dir = unique_temp_dir("nexus-query-engine-left-probe-ordered-stddev-samp");
     let fact_path = dir.join("fact.parquet");

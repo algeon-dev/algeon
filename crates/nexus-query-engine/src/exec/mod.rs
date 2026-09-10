@@ -382,13 +382,15 @@ fn execute_query_plan_output(
     context.check_cancellation("nexus_query_engine.exec.execute_query_plan")?;
     validate_query_plan(plan, crate::rapids_backend::rapids_analysis_context())?;
     let context = context.with_admitted_gpu_inputs(plan, gpu_inputs)?;
+    // Derive the per-query exact-order scope here so every context clone,
+    // including the source-read worker contexts on spawned threads, observes
+    // the same scope.
+    let datafusion_order_tracking = context.statistical_aggregate_execution_mode().is_datafusion_exact()
+        && plan_requires_datafusion_exact_statistical_order(plan);
+    let context = context.with_datafusion_order_tracking(datafusion_order_tracking);
     let context = &context;
     context.validate_admitted_plan_capabilities_with_gpu_inputs(plan, gpu_inputs)?;
     let _attempt_execution_range = attempt_execution_range(context);
-    let _order_tracking = DataFusionOrderTrackingGuard::new(
-        context.statistical_aggregate_execution_mode().is_datafusion_exact()
-            && plan_requires_datafusion_exact_statistical_order(plan),
-    );
     let output = if context.memory_control_policy().is_bounded() {
         execute_bounded_query_plan(context, plan, bounded_admission, gpu_inputs, metrics, observation_scope)?
     } else {

@@ -125,7 +125,7 @@ pub(in crate::exec) fn read_local_parquet_source(
 fn resident_source_cache(
     context: &ExecutionContext,
 ) -> Option<crate::runtime::cache::local_parquet::GpuLocalParquetSourceCache> {
-    (!crate::exec::order::datafusion_order_tracking_enabled()).then(|| context.resident_source_cache()).flatten()
+    (!context.datafusion_order_tracking()).then(|| context.resident_source_cache()).flatten()
 }
 
 /// Returns the schema of the exact [`SourceReadMode::ExecutionFrame`] value
